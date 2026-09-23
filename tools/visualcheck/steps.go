@@ -27,6 +27,7 @@ type visualCheckStep struct {
 // been captured.
 var visualCheckSteps = []visualCheckStep{
 	{"01-list", stepList},
+	{"15-state-visibility", stepStateVisibility},
 	{"02-preview", stepPreview},
 	{"03-group-view", stepGroupView},
 	{"04-expand-collapse", stepExpandCollapse},
@@ -46,6 +47,61 @@ var expectedFrames = []string{
 	"01-list", "02-preview", "03-group-view", "04-collapsed", "04-expanded",
 	"05-create-dialog", "06-edit", "07-switcher", "08-mcp-manager", "09-settings",
 	"10-help", "11-update-banner", "12-attach-shell", "13-detach-shell", "14-fork",
+	"15-filter-running", "16-filter-waiting", "17-time-today", "18-view-active-top",
+	"19-archived-empty", "20-stopped-preview", "21-filter-empty",
+}
+
+func stepStateVisibility(w *widthRun) error {
+	for _, state := range []struct{ key, frame string }{
+		{"!", "15-filter-running"},
+		{"@", "16-filter-waiting"},
+		{"&", "21-filter-empty"},
+		{"*", "17-time-today"},
+		{"t", "18-view-active-top"},
+		{"^", "19-archived-empty"},
+	} {
+		if err := w.send(state.key); err != nil {
+			return err
+		}
+		// The baseline hides the selected state at 80 columns. Wait for a
+		// stable list rather than using the new label as a capture gate.
+		time.Sleep(100 * time.Millisecond)
+		if err := waitScreen(w, 5*time.Second, "SESSIONS"); err != nil {
+			return fmt.Errorf("%s: %w", state.frame, err)
+		}
+		w.capture(state.frame)
+		switch state.key {
+		case "!", "@", "&":
+			if err := w.send("0"); err != nil {
+				return err
+			}
+		case "*", "t":
+			remaining := 3 // four time-filter modes
+			if state.key == "t" {
+				remaining = 2 // three view modes
+			}
+			for i := 0; i < remaining; i++ {
+				if err := w.send(state.key); err != nil {
+					return err
+				}
+			}
+		case "^":
+			if err := w.send("^"); err != nil {
+				return err
+			}
+		}
+		if err := w.waitContains("alpha", 5*time.Second); err != nil {
+			return fmt.Errorf("restore after %s: %w", state.frame, err)
+		}
+	}
+	if err := w.moveCursorToText("claude-stopped", 40); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "claude-stopped"); err != nil {
+		return err
+	}
+	w.capture("20-stopped-preview")
+	return nil
 }
 
 func stepList(w *widthRun) error {
@@ -439,7 +495,8 @@ func stepFork(w *widthRun) error {
 			return strings.Contains(pane, "claude-waiting (fork)  ◐ waiting") &&
 				strings.Contains(pane, "Status:  clean"), nil
 		}
-		return strings.Contains(pane, "Claude Code synthetic fixture") &&
+		return strings.Contains(pane, "claude-waiting (fork)  ◐ waiting") &&
+			strings.Contains(pane, "Claude Code synthetic fixture") &&
 			!strings.Contains(pane, "Starting Claude session..."), nil
 	}, 30*time.Second); err != nil {
 		return fmt.Errorf("forked client did not settle: %w", err)

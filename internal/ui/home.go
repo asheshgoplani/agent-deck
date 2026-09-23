@@ -258,6 +258,7 @@ type Home struct {
 	storage            *session.Storage
 	groupTree          *session.GroupTree
 	flatItems          []session.Item // Flattened view for cursor navigation
+	keepEmptyFilter    bool           // Set by filter key presses; restored filters retain the old fallback.
 	liveSet            *pipeLiveSet   // sessions that should hold a live control pipe
 	focusedSessionName string         // tmux name of the cursor-selected session (focusMu)
 	focusMu            sync.Mutex     // protects focusedSessionName for the reconciler goroutine
@@ -2105,7 +2106,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.remotePolls = session.LoadRemotePolls()
 
 	// Apply default_filter from config if no filter was restored from persisted state.
-	// Auto-clears if no sessions match (handled in rebuildFlatItems).
+	// Restored and configured filters fall back to All when nothing matches.
 	if h.statusFilter == "" && h.defaultFilter != "" {
 		h.statusFilter = session.Status(h.defaultFilter)
 	}
@@ -3325,8 +3326,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 			}
 		}
-		// Auto-clear filter if it matches nothing but sessions exist
-		if len(filtered) == 0 && len(allItems) > 0 {
+		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter {
 			h.statusFilter = ""
 			h.flatItems = allItems
 		} else {
@@ -3388,8 +3388,8 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 				hasCandidates = true
 				if h.timeFilter.Matches(inst.DisplayLastActivityTime(), now) {
-					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
 					hasMatches = true
+					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
 					markGroupPathAndAncestors(groupsWithMatches, group.Path)
 				}
 			}
@@ -3398,14 +3398,14 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			for _, remote := range sessions {
 				hasCandidates = true
 				if remoteMatchesTime(remote) {
+					hasMatches = true
 					if activity, known := remote.LastActivity(); known {
 						h.recordTimeFilterExpiry(activity, now)
 					}
-					hasMatches = true
 				}
 			}
 		}
-		if hasCandidates && !hasMatches {
+		if hasCandidates && !hasMatches && !h.keepEmptyFilter {
 			h.timeFilter = session.TimeFilterAll
 		} else {
 			filtered := make([]session.Item, 0, len(h.flatItems))
@@ -12487,6 +12487,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 't' view-mode cycle above.
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.timeFilter = session.TimeFilterMode((int(h.timeFilter) + 1) % session.TimeFilterModeCount)
+		h.keepEmptyFilter = true
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.syncViewport()
 		h.saveUIState()
@@ -12832,11 +12833,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "0":
 		// Clear status filter (show all)
 		h.statusFilter = ""
+		h.keepEmptyFilter = true
 		h.rebuildFlatItems()
 		return h, nil
 
 	case "!", "shift+1":
 		// Filter to running sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusRunning {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12847,6 +12850,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "@", "shift+2":
 		// Filter to waiting sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusWaiting {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12857,6 +12861,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "#", "shift+3":
 		// Filter to idle sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusIdle {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12877,6 +12882,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case FilterKeyError, "shift+7":
 		// Filter to error sessions only.
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12887,6 +12893,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case FilterKeyActive, "shift+5":
 		// Filter to open sessions (excludes error/stopped)
+		h.keepEmptyFilter = true
 		if h.statusFilter == FilterModeActive {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12896,6 +12903,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case FilterKeyArchived, "shift+6":
+		h.keepEmptyFilter = true
 		if h.statusFilter == FilterModeArchived {
 			h.statusFilter = ""
 		} else {
@@ -18252,11 +18260,6 @@ func (h *Home) renderFilterBar() string {
 		Bold(true).
 		Padding(0, 1)
 
-	inactivePillStyle := lipgloss.NewStyle().
-		Foreground(ColorText).
-		Background(ColorSurface).
-		Padding(0, 1)
-
 	dimPillStyle := lipgloss.NewStyle().
 		Foreground(ColorText).
 		Faint(true).
@@ -18265,24 +18268,15 @@ func (h *Home) renderFilterBar() string {
 	// Build pills
 	var pills []string
 
-	// "All" / "Open" pill
+	// The first pill names the selected status even when its count pill is
+	// farther to the right than a narrow terminal can show.
 	isActive := h.statusFilter == FilterModeActive
-	activeLabel := h.activeFilterLabel
-	if activeLabel == "" {
-		activeLabel = "Open"
-	}
-	// "All" is shorter than "Open" — pad with a trailing space outside the pill
-	// so toggling doesn't shift the bar, without extending the highlight.
-	allPad := ""
-	if len(activeLabel) > len("All") {
-		allPad = " "
-	}
-	if isActive {
-		pills = append(pills, activePillStyle.Render(activeLabel))
-	} else if h.statusFilter == "" {
-		pills = append(pills, activePillStyle.Render("All")+allPad)
+	filterLabel := h.statusFilterLabel()
+	// Keep the existing All-pill spacing in the default view.
+	if h.statusFilter != "" {
+		pills = append(pills, activePillStyle.Render(filterLabel))
 	} else {
-		pills = append(pills, inactivePillStyle.Render("All")+allPad)
+		pills = append(pills, activePillStyle.Render("All")+" ")
 	}
 
 	runningLabel := fmt.Sprintf("● %d", running)
@@ -18388,10 +18382,34 @@ func (h *Home) renderFilterBar() string {
 		Render(pillsRow + hint)
 }
 
+func (h *Home) statusFilterLabel() string {
+	switch h.statusFilter {
+	case FilterModeActive:
+		if h.activeFilterLabel != "" {
+			return h.activeFilterLabel
+		}
+		return "Open"
+	case FilterModeArchived:
+		return "Archived"
+	case session.StatusRunning:
+		return "Running"
+	case session.StatusWaiting:
+		return "Waiting"
+	case session.StatusIdle:
+		return "Idle"
+	case session.StatusStopped:
+		return "Stopped"
+	case session.StatusError:
+		return "Error"
+	default:
+		return "All"
+	}
+}
+
 // fitFilterBarHint fits as many leading filter-bar hint segments as possible
 // into the space remaining after usedWidth (the pills already rendered),
-// dropping low-priority segments from the end (view mode, then time range,
-// then archived, ...) when the full hint would overflow h.width. A trailing
+// dropping legend segments before selected modes when the full hint would
+// overflow h.width. A trailing
 // ellipsis is appended only when a segment was actually dropped, and the cut
 // always lands on a "• " boundary rather than mid-word.
 func (h *Home) fitFilterBarHint(usedWidth int) string {
@@ -19291,9 +19309,11 @@ func renderShutdownSplash(width, height int, frame int, subtitle string) string 
 
 // EmptyStateConfig holds content for responsive empty state rendering
 type EmptyStateConfig struct {
-	Icon     string
-	Title    string
-	Subtitle string
+	Icon                string
+	Title               string
+	Subtitle            string
+	ShowSubtitleMinimal bool // Keep the selected filter visible in a narrow list card.
+	ShowAllHintsMinimal bool // Combined filters need both recovery keys in the list card.
 	// Body is extra plain (non-bulleted) lines shown between Subtitle and
 	// Hints, one per element, in "full" and "compact" tiers only (dropped in
 	// "minimal", same as Subtitle). Unset by every caller except the remote
@@ -19382,7 +19402,7 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 	content.WriteString(titleStyle.Render(config.Title))
 
 	// Subtitle - shown in full and compact modes
-	if config.Subtitle != "" && tier != "minimal" {
+	if config.Subtitle != "" && (tier != "minimal" || config.ShowSubtitleMinimal) {
 		content.WriteString("\n")
 		// Truncate subtitle if width is tight
 		subtitle := config.Subtitle
@@ -19419,7 +19439,11 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 
 	// Hints - progressive disclosure based on tier
 	if len(config.Hints) > 0 {
-		hintsToShow := config.Hints[:emptyStateHintCount(tier, len(config.Hints))]
+		hintCount := emptyStateHintCount(tier, len(config.Hints))
+		if tier == "minimal" && config.ShowAllHintsMinimal {
+			hintCount = len(config.Hints)
+		}
+		hintsToShow := config.Hints[:hintCount]
 
 		if tier == "full" {
 			content.WriteString("\n\n")
@@ -19451,6 +19475,51 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 
 	// Ensure exact height
 	return ensureExactHeight(rendered, height)
+}
+
+// filteredEmptyState describes an empty view without treating it as a new workspace.
+func (h *Home) filteredEmptyState() (EmptyStateConfig, bool) {
+	if h.statusFilter == FilterModeArchived {
+		hints := []string{FilterKeyArchived + " back to active"}
+		if key := h.actionKey(hotkeyArchiveSession); key != "" {
+			hints = append(hints, key+" archives a session")
+		}
+		return EmptyStateConfig{
+			Icon:     "◇",
+			Title:    "No archived sessions",
+			Subtitle: "Archive a session to see it here",
+			Hints:    hints,
+		}, true
+	}
+	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		return EmptyStateConfig{}, false
+	}
+	parts := make([]string, 0, 2)
+	if h.statusFilter != "" {
+		parts = append(parts, h.statusFilterLabel())
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		parts = append(parts, h.timeFilter.Label())
+	}
+	hints := make([]string, 0, 2)
+	if h.statusFilter != "" {
+		hints = append(hints, "0 show all")
+	}
+	timeKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeKey == "" {
+		timeKey = "*"
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		hints = append(hints, timeKey+" time range")
+	}
+	return EmptyStateConfig{
+		Icon:                "◇",
+		Title:               "No sessions match",
+		Subtitle:            strings.Join(parts, " · "),
+		ShowSubtitleMinimal: true,
+		ShowAllHintsMinimal: true,
+		Hints:               hints,
+	}, true
 }
 
 // ensureExactHeight is a critical helper that ensures any content has EXACTLY n lines.
@@ -20342,26 +20411,25 @@ func (h *Home) renderHelpBarCompact() string {
 		}
 	}
 
-	leftPart := strings.Join(contextHints, " ")
 	rightPart := strings.Join(globalHints, " ")
-	// Drop lowest-priority entries as whole units — context hints first (the
-	// rarer, more optional per-item actions), then global hints from the
-	// tail. MaxWidth alone can truncate a label halfway through instead of
-	// dropping a full entry, which is what used to leave a key glued onto
-	// whatever text survived truncation.
-	for lipgloss.Width(leftPart)+lipgloss.Width(rightPart)+6 > h.width {
-		if len(contextHints) > 0 {
-			contextHints = contextHints[:len(contextHints)-1]
-			leftPart = strings.Join(contextHints, " ")
-			continue
-		}
-		if len(globalHints) > 1 {
-			globalHints = globalHints[:len(globalHints)-1]
-			rightPart = strings.Join(globalHints, " ")
-			continue
-		}
-		break
+	for len(globalHints) > 1 && lipgloss.Width(rightPart)+6 > h.width {
+		globalHints = globalHints[:len(globalHints)-1]
+		rightPart = strings.Join(globalHints, " ")
 	}
+	// A long optional hint must not block a shorter later one from using
+	// the gap between the context and global blocks.
+	kept := make([]string, 0, len(contextHints))
+	for _, hint := range contextHints {
+		candidate := strings.Join(kept, " ")
+		if candidate != "" {
+			candidate += " "
+		}
+		candidate += hint
+		if lipgloss.Width(candidate)+lipgloss.Width(rightPart)+6 <= h.width {
+			kept = append(kept, hint)
+		}
+	}
+	leftPart := strings.Join(kept, " ")
 	padding := max(2, h.width-lipgloss.Width(leftPart)-lipgloss.Width(rightPart)-4)
 
 	content := leftPart + sep + strings.Repeat(" ", padding) + rightPart
@@ -20592,8 +20660,9 @@ func (h *Home) renderHelpBarFull() string {
 	if key := h.actionKey(hotkeySettings); key != "" {
 		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Settings"))
 	}
-	if key := h.actionKey(hotkeyHelp); key != "" {
-		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Help"))
+	helpKey := h.actionKey(hotkeyHelp)
+	if helpKey != "" {
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(helpKey+" Help"))
 	}
 
 	leftPrefix := contextLabel
@@ -20601,7 +20670,7 @@ func (h *Home) renderHelpBarFull() string {
 		leftPrefix = reloadIndicator + sep + leftPrefix
 	}
 
-	helpContent := h.fitFullFooter(fullFooterParts{
+	parts := fullFooterParts{
 		leftPrefix: leftPrefix,
 		primary:    primaryHints,
 		secondary:  secondaryHints,
@@ -20609,7 +20678,29 @@ func (h *Home) renderHelpBarFull() string {
 		nav:        navHint,
 		droppable:  droppableGlobal,
 		quit:       quitHint,
-	})
+	}
+	helpContent := h.fitFullFooter(parts)
+	// Keep the original order where Help already fits. On crowded 120-column
+	// rows, shorter labels make room for Help without losing existing actions.
+	if h.width >= 120 && h.width < 160 && helpKey != "" && !strings.Contains(helpContent, helpKey+" Help") {
+		shorten := func(hints []string) {
+			for i, hint := range hints {
+				hint = strings.Replace(hint, "New/Quick", "New", 1)
+				hint = strings.Replace(hint, "Restart Fresh", "Fresh", 1)
+				hint = strings.Replace(hint, "Enter", "⏎", 1)
+				hint = strings.Replace(hint, "Import", "Add", 1)
+				hint = strings.Replace(hint, "Group", "Grp", 1)
+				hints[i] = hint
+			}
+		}
+		shorten(primaryHints)
+		shorten(secondaryHints)
+		parts.nav += sep + droppableGlobal[len(droppableGlobal)-1]
+		parts.droppable = droppableGlobal[:len(droppableGlobal)-1]
+		parts.primary = primaryHints
+		parts.secondary = secondaryHints
+		helpContent = h.fitFullFooter(parts)
+	}
 
 	raw := lipgloss.JoinVertical(lipgloss.Left, border, helpContent)
 	return lipgloss.NewStyle().MaxWidth(h.width).Render(raw)
@@ -20637,7 +20728,7 @@ type fullFooterParts struct {
 //
 // It tries, in order: (1) the full left block with progressively fewer
 // droppable global hints, dropped lowest-priority-first (from the end of
-// droppable, i.e. Help before Settings before ...); (2) once even the bare
+// droppable, i.e. Help before Settings before ... when Help is not reserved); (2) once even the bare
 // Nav+Quit global block doesn't fit alongside the full left block,
 // progressively fewer context hints — also dropped lowest-priority-first,
 // i.e. from the end of secondary then the end of primary — with a trailing
@@ -20997,6 +21088,12 @@ func (h *Home) renderSessionList(width, height int) string {
 		}
 		if contentHeight < 5 {
 			contentHeight = 5
+		}
+		if config, filtered := h.filteredEmptyState(); filtered {
+			return lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Render(renderEmptyStateResponsive(config, contentWidth, contentHeight))
 		}
 
 		// Group-scoped empty state
@@ -22777,6 +22874,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
 		// Show different message when there are no sessions vs just no selection
 		if len(h.flatItems) == 0 {
+			if config, filtered := h.filteredEmptyState(); filtered {
+				return renderEmptyStateResponsive(config, width, height)
+			}
 			// Group-scoped empty preview
 			if h.groupScope != "" {
 				return renderEmptyStateResponsive(EmptyStateConfig{
@@ -23515,9 +23615,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		// PreviewModeBoth: use config settings (default)
 	}
 
-	// Special handling for stopped state - user-intentional stop with resume guidance
+	// A stopped status can also follow a clean process exit. Do not infer intent.
 	if selectedStatus == session.StatusStopped {
-		stoppedHeader := renderSectionDivider("Session Stopped", width-4)
+		stoppedHeader := renderSectionDivider("Process Exited", width-4)
 		b.WriteString(stoppedHeader)
 		b.WriteString("\n\n")
 
@@ -23525,9 +23625,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		dimStyle := lipgloss.NewStyle().Foreground(ColorText)
 		keyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
-		b.WriteString(warnStyle.Render("■ Session stopped by user"))
+		b.WriteString(warnStyle.Render("■ Process exited"))
 		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render("You stopped this session intentionally."))
+		b.WriteString(dimStyle.Render("The process ended or was stopped."))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("The session record is preserved for resuming."))
 		b.WriteString("\n\n")
@@ -25306,8 +25406,38 @@ func (h *Home) renderFilterBarHint() []string {
 		}
 		return dim.Render(c)
 	}
+	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeFilterKey == "" {
+		timeFilterKey = "*"
+	}
 
-	segs := []string{
+	// Selected modes lead the legend, so they survive its width budget.
+	var segs []string
+	if h.timeFilter != session.TimeFilterAll {
+		label := h.timeFilter.Label()
+		if h.width <= 80 {
+			switch h.timeFilter {
+			case session.TimeFilter3Days:
+				label = "3 days"
+			case session.TimeFilter7Days:
+				label = "7 days"
+			}
+		}
+		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+label))
+	}
+	if h.groupViewMode != session.GroupViewNormal {
+		label := h.groupViewMode.Label()
+		if h.width <= 80 {
+			switch h.groupViewMode {
+			case session.GroupViewActiveTop:
+				label = "Active top"
+			case session.GroupViewPopulatedTop:
+				label = "Populated top"
+			}
+		}
+		segs = append(segs, mark("t", true)+dim.Render(" "+label))
+	}
+	segs = append(segs, []string{
 		mark("!", h.statusFilter == session.StatusRunning) +
 			mark("@", h.statusFilter == session.StatusWaiting) +
 			mark("#", h.statusFilter == session.StatusIdle) +
@@ -25316,23 +25446,15 @@ func (h *Home) renderFilterBarHint() []string {
 		mark("0", h.statusFilter == "") + dim.Render(" all"),
 		mark(FilterKeyActive, h.statusFilter == FilterModeActive) + dim.Render(" open"),
 		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) + dim.Render(" archived"),
-	}
+	}...)
 
 	// View-mode indicator (running-on-top / populated-on-top), only when active.
-	if h.groupViewMode != session.GroupViewNormal {
-		segs = append(segs, mark("t", true)+dim.Render(" "+h.groupViewMode.Label()))
-	} else {
+	if h.groupViewMode == session.GroupViewNormal {
 		segs = append(segs, mark("t", false)+dim.Render(" view"))
 	}
 
 	// Time-range filter indicator (today / 3 days / 7 days), only when active.
-	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
-	if timeFilterKey == "" {
-		timeFilterKey = "*"
-	}
-	if h.timeFilter != session.TimeFilterAll {
-		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+h.timeFilter.Label()))
-	} else {
+	if h.timeFilter == session.TimeFilterAll {
 		segs = append(segs, mark(timeFilterKey, false)+dim.Render(" time"))
 	}
 	return segs
