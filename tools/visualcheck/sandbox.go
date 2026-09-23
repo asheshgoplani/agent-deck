@@ -250,6 +250,9 @@ func (s *suite) execIn(dir, name string, args ...string) (string, error) {
 	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
+	if filepath.Base(name) == "tmux" && len(args) > 0 && args[0] == "capture-pane" {
+		text = strings.TrimRight(string(out), "\n")
+	}
 	if err != nil {
 		return text, fmt.Errorf("%s %s: %w: %s", filepath.Base(name), strings.Join(args, " "), err, text)
 	}

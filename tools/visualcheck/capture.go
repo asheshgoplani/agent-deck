@@ -85,7 +85,11 @@ func runWidthIsolated(ctx context.Context, bin, updateBin string, spec widthSpec
 // runStepWithRetry retries failed navigation or golden comparisons twice.
 // Exhaustion fails the width; it never turns a failure into advisory.
 func runStepWithRetry(w *widthRun, step visualCheckStep) error {
-	const attempts = 3
+	attempts := 3
+	if step.name == "14-fork" {
+		// Fork mutates the store. Retrying would create duplicate sessions.
+		attempts = 1
+	}
 	updating := os.Getenv("UPDATE_GOLDEN") == "1"
 	var lastErr error
 	startFrames := len(w.frames)

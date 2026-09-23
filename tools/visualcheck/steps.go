@@ -368,13 +368,21 @@ func stepFork(w *widthRun) error {
 	// status call is in flight and only then resolves to clean/dirty. The
 	// cursor lands on the new fork row automatically, so that transient
 	// text is exactly what a same-instant capture would show.
+	polls := 0
 	if err := w.waitFor(func() (bool, error) {
+		polls++
+		if polls%10 == 0 {
+			// Re-select the fork so the preview's async git status is refreshed.
+			if err := w.send("Down", "Up"); err != nil {
+				return false, err
+			}
+		}
 		pane, err := w.pane()
 		if err != nil {
 			return false, err
 		}
 		return !contains(pane, "checking..."), nil
-	}, 15*time.Second); err != nil {
+	}, 30*time.Second); err != nil {
 		return err
 	}
 	w.capture("14-fork")
