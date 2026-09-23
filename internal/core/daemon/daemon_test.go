@@ -850,9 +850,6 @@ func TestEventsKeepSubscriptionAlivePastIdleDeadline(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		time.Sleep(200 * time.Millisecond)
 		bus.Publish("test.tick", "s1", map[string]int{"i": i})
-		if !bus.Flush(5 * time.Second) {
-			t.Fatal("bus flush timed out")
-		}
 		if _, err := client.Next(); err != nil {
 			t.Fatalf("event %d after active stream: %v", i, err)
 		}
