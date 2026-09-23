@@ -35,6 +35,7 @@ var scrubRules = []scrubRule{
 	// session title "shell-live" is a fixed seed constant, so it anchors
 	// the match precisely instead of a loose host:dir pattern.
 	{"shell-prompt", regexp.MustCompile(`(?m)^\S*:shell-live \S+\$`), "<shell-prompt>$"},
+	{"shell-tmux-label", regexp.MustCompile(`agentdeck_shell-live_[0-9a-f]{8}`), "agentdeck_shell-live_<id>"},
 	// The preview pane's "Output" summary for a shell session reads raw
 	// scrollback, bypassing the attach step's `clear` (that only clears the
 	// visible screen, not history): production's own shell launch command

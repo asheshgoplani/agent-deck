@@ -113,9 +113,13 @@ func stepGroupView(w *widthRun) error {
 	}); err != nil {
 		return err
 	}
-	raw, err := w.s.capturePane(name)
-	if err != nil {
-		return err
+	var raw string
+	if err := w.s.waitFor(5*time.Second, func() (bool, error) {
+		var err error
+		raw, err = w.s.capturePane(name)
+		return err == nil && !strings.Contains(raw, "⟳ Reloading..."), err
+	}); err != nil {
+		return fmt.Errorf("group view did not settle: %w", err)
 	}
 	w.frames = append(w.frames, frameCapture{step: "03-group-view", width: w.spec.name, raw: raw, scrub: scrubFrame(raw)})
 	return nil

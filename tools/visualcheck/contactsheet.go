@@ -36,8 +36,8 @@ pre { margin: 0; padding: 10px; white-space: pre; overflow-x: auto; font-size: 1
 		counts[r.status]++
 	}
 	b.WriteString("<div class=\"summary\">")
-	fmt.Fprintf(&b, "%d frames — PASS %d, DIFF %d, MISSING %d, ADVISORY %d",
-		len(reports), counts["PASS"], counts["DIFF"], counts["MISSING"], counts["ADVISORY"])
+	fmt.Fprintf(&b, "%d frames — PASS %d, DIFF %d, FAIL %d, MISSING %d, ADVISORY %d",
+		len(reports), counts["PASS"], counts["DIFF"], counts["FAIL"], counts["MISSING"], counts["ADVISORY"])
 	b.WriteString("</div>")
 
 	for _, r := range reports {

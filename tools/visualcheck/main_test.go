@@ -48,6 +48,7 @@ func TestScrubFrameRedactsVolatileText(t *testing.T) {
 		{"version", "Agent Deck v1.16.10", "<version>"},
 		{"clock-time", "updated at 14:32:09", "<time>"},
 		{"relative-age", "3m ago", "<age> ago"},
+		{"shell-tmux-label", "[agentdeck_shell-live_b4a97a39]", "[agentdeck_shell-live_<id>]"},
 		{"socket-pid", "tmux -L vc-12345", "vc-<pid>"},
 	}
 	for _, c := range cases {
@@ -135,6 +136,9 @@ func TestGalleryRowOrderHasNoDuplicates(t *testing.T) {
 // (set by `make visual-check`); otherwise this builds cmd/agent-deck itself,
 // so a plain `go test ./tools/visualcheck` on the test box is enough.
 func TestVisualCheckAgainstRealBinary(t *testing.T) {
+	if *regenerateGoldens {
+		t.Skip("golden regeneration runs only in TestVisualCheckRegenerateGoldens")
+	}
 	runVisualCheckTest(t)
 }
 

@@ -88,23 +88,37 @@ func runWidthIsolated(ctx context.Context, bin, updateBin string, spec widthSpec
 	return w.frames, nil
 }
 
-// probeRedraw repeats the author's rapid onto/off-session navigation, then
-// records the immediate, settled and forced-repaint panes for inspection.
-// A duplicate waiting/stopped row after the settle is a persistent defect.
+// probeRedraw navigates onto a session and straight off it, then records
+// immediate, settled and forced-repaint panes. It verifies the selected row
+// and preview target, so dropped keys cannot make an unexercised probe pass.
 func (w *widthRun) probeRedraw() error {
-	if err := w.send("Home", "Down", "Down", "Down", "Down"); err != nil {
+	if err := w.moveCursorToText("claude-waiting", 40); err != nil {
+		return err
+	}
+	if err := w.send("Down"); err != nil {
 		return err
 	}
 	immediate, err := w.pane()
 	if err != nil {
 		return err
 	}
-	// Record what the rapid burst actually selected. A lost or delayed key
-	// must not be misreported as a persistent painted duplicate.
+	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.paneStyledStable()
+		if err != nil {
+			return false, err
+		}
+		on, found := cursorOnRow(pane, visibleRowName("claude-stopped", w.spec.width))
+		return found && on, nil
+	}, 5*time.Second); err != nil {
+		return fmt.Errorf("navigation off waiting did not select stopped: %w", err)
+	}
 	time.Sleep(600 * time.Millisecond)
 	settled, err := w.pane()
 	if err != nil {
 		return err
+	}
+	if !strings.Contains(settled, "claude-stopped  ■ stopped") {
+		return fmt.Errorf("settled preview does not identify claude-stopped")
 	}
 	if err := w.send("?"); err != nil {
 		return err
@@ -283,6 +297,16 @@ func (w *widthRun) capture(step string) {
 			return strings.Contains(pane, "● 1"), nil
 		}, 5*time.Second)
 	}
+	if strings.Contains(raw, "⟳ Reloading...") {
+		_ = w.waitFor(func() (bool, error) {
+			pane, err := w.pane()
+			if err != nil {
+				return false, err
+			}
+			raw = pane
+			return !strings.Contains(pane, "⟳ Reloading..."), nil
+		}, 5*time.Second)
+	}
 	w.frames = append(w.frames, frameCapture{
 		step:  step,
 		width: w.spec.name,
@@ -291,9 +315,8 @@ func (w *widthRun) capture(step string) {
 	})
 }
 
-// captureAdvisory records a step that could not be reached deterministically
-// headlessly. reason is shown in the contact sheet instead of a PASS/DIFF
-// mark, per the PROMPT's "if a step is flaky, mark it advisory and say why".
+// captureAdvisory records a deliberate exclusion declared in advisoryReasons.
+// Its reason appears in the contact sheet.
 func (w *widthRun) captureAdvisory(step, reason string) {
 	if declared, ok := advisoryReasons[step]; !ok || declared != reason {
 		panic("undeclared advisory: " + step)
@@ -415,7 +438,7 @@ func (w *widthRun) moveCursorToText(text string, maxPresses int) error {
 }
 
 func visibleRowName(name string, width int) string {
-	// At 80 columns the left pane renders this title as "claude-wait…".
+	// At 80 columns the left pane truncates both of these session titles.
 	if width == 80 && name == "claude-waiting" {
 		return "claude-wait"
 	}
