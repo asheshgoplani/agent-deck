@@ -39,3 +39,11 @@
 - [x] Verify the equivalence test fails when daemon use is bypassed.
 - [x] Run full touched-package tests on g14 and compare failures with origin/main.
 - [x] Complete host checks, simplification review, RESULTS.md and bundle.
+
+# tui-round5-r2-20260923 (local only)
+
+- [x] Read the review and reproduce the four behavior gaps with focused assertions.
+- [x] Fix digit navigation, split labels, search titles, jump hints, and switcher spacing.
+- [x] Regenerate and inspect the affected G14 frames.
+- [x] Rewrite into green commits and verify each commit on G14.
+- [x] Record overlap hunks, results, and a verified branch bundle.

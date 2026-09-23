@@ -1,24 +1,23 @@
-              ╭──────────────────────────────────────────────────╮              
-              │  Fork Session                                    │              
-              │                                                  │              
-              │    Name:                                         │              
-              │    > probe (fork)                                │              
-              │                                                  │              
-              │    Group:                                        │              
-              │    > alpha                                       │              
-              │    [x] Create in worktree                        │              
-              │                                                  │              
-              │  ▶ Branch:                                       │              
-              │    > fork/probe                                  │              
-              │    ─ branches (↑↓/Enter/Esc) ─                   │              
-              │      ▶ main                                      │              
-              │        feature/one                               │              
-              │        feature/two                               │              
-              │                                                  │              
-              │                                                  │              
-              │      [ ] Carry parent state (y)                  │              
-              │        ↳ creates a NEW branch at parent HEAD     │              
-              │  ▼ more below                                    │              
-              │  Type filter │ ↑↓ navigate                       │              
-              │  Enter select │ Esc close                        │              
-              ╰──────────────────────────────────────────────────╯              
+              ╭──────────────────────────────────────────────────╮
+              │  Fork Session                                    │
+              │                                                  │
+              │    Name:                                         │
+              │    > probe (fork)                                │
+              │                                                  │
+              │    Group:                                        │
+              │    > alpha                                       │
+              │    [x] Create in worktree                        │
+              │                                                  │
+              │  ▶ Branch:                                       │
+              │    > fork/probe                                  │
+              │    ─ branches (↑↓/Enter/Esc) ─                   │
+              │      ▶ main                                      │
+              │        feature/one                               │
+              │        feature/two                               │
+              │                                                  │
+              │                                                  │
+              │      [ ] Carry parent state (y)                  │
+              │  ▼ more below                                    │
+              │  Type filter │ ↑↓ navigate                       │
+              │  Enter select │ Esc close                        │
+              ╰──────────────────────────────────────────────────╯

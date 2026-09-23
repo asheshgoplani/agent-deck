@@ -3554,22 +3554,22 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	}
 
 	// Pre-compute root group numbers for O(1) hotkey lookup (replaces O(n) loop in renderGroupItem).
-	// View-mode partitioning can duplicate root headers; every copy of the same
-	// logical root reuses the same digit.
+	// View-mode partitioning can duplicate root headers; only the first copy
+	// owns the logical root's digit.
 	rootNum := 0
-	rootNums := make(map[string]int)
+	seenRoots := make(map[string]bool)
 	for i := range h.flatItems {
 		if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Level == 0 {
 			rootKey := h.flatItems[i].Path
 			if rootKey == "" && h.flatItems[i].Group != nil {
 				rootKey = h.flatItems[i].Group.Path
 			}
-			if n, ok := rootNums[rootKey]; ok {
-				h.flatItems[i].RootGroupNum = n
+			if seenRoots[rootKey] {
+				h.flatItems[i].RootGroupNum = 0
 				continue
 			}
 			rootNum++
-			rootNums[rootKey] = rootNum
+			seenRoots[rootKey] = true
 			h.flatItems[i].RootGroupNum = rootNum
 		}
 	}
@@ -3956,26 +3956,19 @@ func (h *Home) getVisibleHeight() int {
 	return maxVisible
 }
 
-// jumpToRootGroup jumps the cursor to the Nth root-level group (1-indexed)
-// Root groups are those at Level 0 (no "/" in path)
+// jumpToRootGroup jumps to the root header carrying the requested digit.
 func (h *Home) jumpToRootGroup(n int) {
 	if n < 1 || n > 9 {
 		return
 	}
 
-	// Find the Nth root group in flatItems
-	rootGroupCount := 0
 	for i, item := range h.flatItems {
-		if item.Type == session.ItemTypeGroup && item.Level == 0 {
-			rootGroupCount++
-			if rootGroupCount == n {
-				h.cursor = i
-				h.syncViewport()
-				return
-			}
+		if item.Type == session.ItemTypeGroup && item.Level == 0 && item.RootGroupNum == n {
+			h.cursor = i
+			h.syncViewport()
+			return
 		}
 	}
-	// If n exceeds available root groups, do nothing (no-op)
 }
 
 // Init initializes the model
@@ -10732,15 +10725,16 @@ func (h *Home) handleNotesEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-// overlayJumpHint places a badge-style hint label at the item name position.
-func (h *Home) overlayJumpHint(line string, hint string, buffer string, itemName string) string {
+// overlayJumpHint paints the hint in the row gutter.
+func (h *Home) overlayJumpHint(line string, hint string, buffer string) string {
+	return h.overlayJumpHintAtWidth(line, hint, buffer, h.width)
+}
+
+func (h *Home) overlayJumpHintAtWidth(line string, hint string, buffer string, width int) string {
 	if hint == "" {
 		return line
 	}
-
-	offset := findNameOffset(line, itemName)
-	visibleLen := lipgloss.Width(line)
-	if visibleLen < offset+len(hint) {
+	if cellWidth(line) < leftGutterWidth {
 		return line
 	}
 
@@ -10756,7 +10750,10 @@ func (h *Home) overlayJumpHint(line string, hint string, buffer string, itemName
 		}
 	}
 
-	return replaceVisibleRange(line, offset, len(hint), hintRendered)
+	if len(hint) > leftGutterWidth {
+		return cellTruncate(hintRendered+" "+ansi.Cut(line, leftGutterWidth, cellWidth(line)), width, "")
+	}
+	return replaceVisibleRange(line, 0, leftGutterWidth, hintRendered+strings.Repeat(" ", leftGutterWidth-len(hint)))
 }
 
 // jumpItemName returns the display name for an item, used to locate hint badge position.
@@ -15947,6 +15944,7 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	// Pre-populate dialog with source session info
 	conductors := h.activeConductorSessions()
 	suggestedParentID := h.suggestConductorParent()
+	h.forkDialog.SetSize(h.width, h.height)
 	h.forkDialog.ShowWithParentSandboxed(source.Title, source.ProjectPath, source.GroupPath, conductors, suggestedParentID, source.IsSandboxed())
 	return nil
 }
@@ -19073,8 +19071,23 @@ func (h *Home) renderSessionSwitcherOverlay(background string) string {
 	if card == "" {
 		return background
 	}
+	// Pad short card lines to the border. Separate a preview rule only where
+	// it actually touches the border; a fixed extra cell can erase "Output".
+	cardWidth := lipgloss.Width(card)
 	cardHeight := lipgloss.Height(card)
 	y := region.Y + max((region.Height-cardHeight)/2, 0)
+	cardLines := strings.Split(card, "\n")
+	backgroundLines := strings.Split(background, "\n")
+	for i, line := range cardLines {
+		cardLines[i] = line + strings.Repeat(" ", max(0, cardWidth-cellWidth(line)))
+		if row := y + i; cardWidth < region.Width && row >= 0 && row < len(backgroundLines) {
+			next := ansi.Strip(ansi.Cut(backgroundLines[row], region.X+cardWidth, region.X+cardWidth+1))
+			if next == "─" {
+				cardLines[i] += " "
+			}
+		}
+	}
+	card = strings.Join(cardLines, "\n")
 	// View runs the composite through the final clampViewToViewport.
 	return overlayAtCells(background, card, y, region.X)
 }
@@ -21171,21 +21184,19 @@ func (h *Home) renderSessionList(width, height int) string {
 				nextItem = i + 1
 				continue
 			}
-			// Render item to temp buffer, then overlay hint badge at name position
+			// Render item to temp buffer, then paint the fixed row gutter.
 			var itemBuf strings.Builder
 			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot, width)
 			raw := itemBuf.String()
 			isMatch := h.jumpBuffer == "" || strings.HasPrefix(hint, h.jumpBuffer)
 
 			if isMatch {
-				// Get the display name for this item type
-				itemName := jumpItemName(item)
 				// Overlay hint on the first line, preserve rest exactly
 				if idx := strings.Index(raw, "\n"); idx >= 0 {
-					b.WriteString(h.overlayJumpHint(raw[:idx], hint, h.jumpBuffer, itemName))
+					b.WriteString(h.overlayJumpHintAtWidth(raw[:idx], hint, h.jumpBuffer, width))
 					b.WriteString(raw[idx:]) // includes \n and any subsequent lines
 				} else {
-					b.WriteString(h.overlayJumpHint(raw, hint, h.jumpBuffer, itemName))
+					b.WriteString(h.overlayJumpHintAtWidth(raw, hint, h.jumpBuffer, width))
 				}
 			} else {
 				// Non-matching: render normally (no dimming to preserve layout)
@@ -21345,6 +21356,15 @@ func (h *Home) renderGroupItem(
 	listWidth int,
 ) {
 	group := item.Group
+	groupName := group.Name
+	if h.groupViewMode == session.GroupViewActiveTop {
+		for i := 0; i < itemIndex && i < len(h.flatItems); i++ {
+			if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Path == item.Path {
+				groupName += " (idle)"
+				break
+			}
+		}
+	}
 
 	// Fixed-width hotkey gutter, reserved on every row (see leftGutterWidth). It
 	// holds the root group's hotkey number ("N·") when present; otherwise blanks.
@@ -21394,7 +21414,7 @@ func (h *Home) renderGroupItem(
 		if selected {
 			prefix = gutter
 		}
-		row := prefix + indent + expandIcon + " " + nameStyle.Render(group.Name) + countStr
+		row := prefix + indent + expandIcon + " " + nameStyle.Render(groupName) + countStr
 		row = fitCellWidth(row, max(1, listWidth))
 		if selected {
 			row = lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface).Render(row)
@@ -21418,7 +21438,7 @@ func (h *Home) renderGroupItem(
 		gutter,
 		indent,
 		expandIcon,
-		nameStyle.Render(group.Name),
+		nameStyle.Render(groupName),
 		countStr,
 		statusStr,
 	)
@@ -22032,6 +22052,9 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 
 		versionState, _ := h.remoteVersionState(item.RemoteName)
 		statsResult, hasStats := h.remoteHostStatsState(item.RemoteName)
+		h.remoteSessionsMu.RLock()
+		poll := h.remotePolls[item.RemoteName]
+		h.remoteSessionsMu.RUnlock()
 		fields := session.DefaultRemotePreviewFields
 		if config != nil {
 			fields = config.UI.GetRemotePreviewFields()
@@ -22043,6 +22066,13 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 			Hints:    []string{"Press Enter on a session to attach via SSH"},
 		}
 		state.Body = remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields, time.Now(), emptyStateBodyLayout(state, width, height))
+		if poll.LastPollError != "" {
+			state.Subtitle = ""
+			state.Body = append([]string{
+				ErrorStyle.Render("Unreachable: " + poll.LastPollError),
+				fmt.Sprintf("Host: %s · %d sessions", host, count),
+			}, state.Body...)
+		}
 		return renderEmptyStateResponsive(state, width, height)
 	}
 
@@ -22201,7 +22231,11 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 
 	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
 	if hasPoll && poll.LastPollError != "" {
-		trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
+		if listWidth > 0 && listWidth < 60 {
+			trailer = " " + ErrorStyle.Render("· "+poll.LastPollError)
+		} else {
+			trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
+		}
 		if poll.LastPollStatus == "auth_failed" {
 			trailer += " " + DimStyle.Render("(paused; R retry)")
 		}
@@ -22219,7 +22253,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		trailer += " " + DimStyle.Render("· refreshing…")
 	}
 
-	if hasPoll && poll.LastPollMS != nil {
+	if hasPoll && poll.LastPollMS != nil && (poll.LastPollError == "" || listWidth == 0 || listWidth >= 60) {
 		trailer += " " + DimStyle.Render(fmt.Sprintf("· poll %dms", *poll.LastPollMS))
 	}
 	if selected && (!hasPoll || poll.LastPollStatus != "auth_failed") {

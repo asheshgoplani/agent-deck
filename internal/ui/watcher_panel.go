@@ -212,20 +212,21 @@ func (wp *WatcherPanel) View() string {
 		Width(dialogWidth)
 
 	if wp.detailMode {
-		return wp.renderDetail(dialogWidth, titleStyle, borderStyle)
+		return centerInScreen(wp.renderDetail(dialogWidth, titleStyle, borderStyle), wp.width, wp.height)
 	}
-	return wp.renderList(dialogWidth, titleStyle, borderStyle)
+	return centerInScreen(wp.renderList(dialogWidth, titleStyle, borderStyle), wp.width, wp.height)
 }
 
 // renderList renders the list view of all watchers.
 func (wp *WatcherPanel) renderList(dialogWidth int, titleStyle, borderStyle lipgloss.Style) string {
 	var sb strings.Builder
+	rule := strings.Repeat("─", dialogWidth-2) // One padding cell on each side.
 
 	// Title
 	title := titleStyle.Render("WATCHERS")
 	sb.WriteString(title)
 	sb.WriteString("\n")
-	sb.WriteString(strings.Repeat("─", dialogWidth))
+	sb.WriteString(rule)
 	sb.WriteString("\n")
 
 	if len(wp.watchers) == 0 {
@@ -259,7 +260,7 @@ func (wp *WatcherPanel) renderList(dialogWidth int, titleStyle, borderStyle lipg
 		}
 	}
 
-	sb.WriteString(strings.Repeat("─", dialogWidth))
+	sb.WriteString(rule)
 	sb.WriteString("\n")
 
 	footerStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
@@ -276,13 +277,14 @@ func (wp *WatcherPanel) renderDetail(dialogWidth int, titleStyle, borderStyle li
 	}
 
 	var sb strings.Builder
+	rule := strings.Repeat("─", dialogWidth-2) // One padding cell on each side.
 
 	// Header
 	dot := wp.statusDot(sel.HealthStatus)
 	header := fmt.Sprintf("%s %s (%s) — %s", dot, sel.Name, sel.Type, sel.Status)
 	sb.WriteString(titleStyle.Render(header))
 	sb.WriteString("\n")
-	sb.WriteString(strings.Repeat("─", dialogWidth))
+	sb.WriteString(rule)
 	sb.WriteString("\n")
 
 	// Recent Events section
@@ -321,7 +323,7 @@ func (wp *WatcherPanel) renderDetail(dialogWidth int, titleStyle, borderStyle li
 		}
 	}
 
-	sb.WriteString(strings.Repeat("─", dialogWidth))
+	sb.WriteString(rule)
 	sb.WriteString("\n")
 
 	// Quick Actions section
@@ -332,7 +334,7 @@ func (wp *WatcherPanel) renderDetail(dialogWidth int, titleStyle, borderStyle li
 	sb.WriteString(actStyle.Render("  [s] Start   [x] Stop   [t] Test"))
 	sb.WriteString("\n")
 
-	sb.WriteString(strings.Repeat("─", dialogWidth))
+	sb.WriteString(rule)
 	sb.WriteString("\n")
 
 	footerStyle := lipgloss.NewStyle().Foreground(ColorTextDim)

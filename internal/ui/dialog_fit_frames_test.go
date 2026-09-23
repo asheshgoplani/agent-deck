@@ -105,14 +105,14 @@ func dialogFitCases() []dialogFitCase {
 				d.focusIndex = len(d.fields) - 1
 				return d.View()
 			}},
-			dialogFitCase{name: "search-cursor-last", w: w, h: h, mustShow: []string{"Local Search", "› session-10", "[Esc] Cancel"}, view: func() string {
+			dialogFitCase{name: "search-cursor-last", w: w, h: h, mustShow: []string{"Local Search", "› session-11", "[Esc] Cancel"}, view: func() string {
 				s := NewSearch()
 				s.SetSize(w, h)
 				s.SetItems(dialogFitSearchItems())
 				s.Show()
 				s.SetNotice(recallOffNotice)
-				s.View() // caps the list at ten results, as the first frame does
-				s.cursor = len(s.results) - 1
+				s.View()
+				s.cursor = len(s.results) - 1 // the eleventh result; the ten-row window follows it
 				return s.View()
 			}},
 			dialogFitCase{name: "wizard-tool-last", w: w, h: h, mustShow: []string{"[Tool]", "omp", "Esc: back"}, view: func() string {

@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -216,21 +218,18 @@ func (s *Search) View() string {
 	s.input.Width = innerWidth - lipgloss.Width(s.input.Prompt)
 	searchBox := searchBoxStyle.Width(innerWidth).Render(s.input.View())
 
-	// Build results list, one row per result: on a short terminal
-	// renderFittedDialog scrolls these rows around the cursor.
-	maxResults := 10
-	if len(s.results) > maxResults {
-		s.results = s.results[:maxResults]
+	// Build results list, one row per result: the ten-row window follows the
+	// cursor, and on a short terminal renderFittedDialog scrolls these rows
+	// around it.
+	const maxResults = 10
+	start := 0
+	if s.cursor >= maxResults {
+		start = s.cursor - maxResults + 1
 	}
-
-	resultRows := make([]string, 0, len(s.results))
-	for i, item := range s.results {
-		label := item.Title + " (" + item.Tool + ")"
-		if i == s.cursor {
-			resultRows = append(resultRows, selectedResultStyle.Render("› "+label))
-		} else {
-			resultRows = append(resultRows, resultItemStyle.Render("  "+label))
-		}
+	end := min(start+maxResults, len(s.results))
+	resultRows := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		resultRows = append(resultRows, renderSearchResult(s.results[i], i == s.cursor, overlayWidth-overlayStyle.GetHorizontalFrameSize()-resultItemStyle.GetHorizontalFrameSize()))
 	}
 	if len(resultRows) == 0 {
 		resultRows = []string{""}
@@ -280,7 +279,7 @@ func (s *Search) View() string {
 	sections := dialogSections{
 		head:  append(head, ""),
 		body:  resultRows,
-		focus: s.cursor,
+		focus: s.cursor - start,
 		foot:  []string{countStr, keysHint},
 	}
 
@@ -289,6 +288,38 @@ func (s *Search) View() string {
 
 	// Center in the screen
 	return centerInScreen(overlay, s.width, s.height)
+}
+
+func renderSearchResult(item *session.Instance, selected bool, width int) string {
+	name := item.Title + " (" + item.Tool + ")"
+	group := item.GroupPath
+	if group == "" {
+		group = session.DefaultGroupPath
+	}
+	pathTail := filepath.Base(strings.TrimRight(item.ProjectPath, string(filepath.Separator)))
+	if item.ProjectPath == "" {
+		pathTail = "?"
+	}
+	// Give the title the row first. Metadata uses the remaining space and
+	// disappears only when even its shortest useful form cannot fit.
+	available := max(1, width-4)
+	if cellWidth(name) > available {
+		keep := available - 1
+		head := keep / 2
+		name = ansi.Cut(name, 0, head) + "…" + ansi.Cut(name, cellWidth(name)-(keep-head), cellWidth(name))
+	}
+	meta := ""
+	if budget := available - cellWidth(name); budget >= 5 {
+		meta = "  " + cellTruncate(group+" · "+pathTail, budget-2, "…")
+	}
+	prefix := "  "
+	if selected {
+		prefix = "› "
+		meta = lipgloss.NewStyle().Foreground(ColorBg).Background(ColorAccent).Faint(true).Render(meta)
+		return selectedResultStyle.Render(prefix + name + meta)
+	}
+	meta = lipgloss.NewStyle().Foreground(ColorComment).Render(meta)
+	return resultItemStyle.Render(prefix + name + meta)
 }
 
 // searchOverlayWidth returns the responsive overlay width for a screen width.

@@ -28,6 +28,26 @@ func mruThree() []*session.Instance {
 	return []*session.Instance{c, b, a}
 }
 
+func TestSwitcherOverlayKeepsPreviewTitleAtWideWidth(t *testing.T) {
+	h := NewHome()
+	h.width, h.height = 200, 50
+	if !h.sessionSwitcher.Show("a", mruThree(), nil) {
+		t.Fatal("switcher did not open")
+	}
+	region := h.sessionSwitcherOverlayRegion()
+	card := h.sessionSwitcher.dialogView(region.Width)
+	x := region.X + cellWidth(strings.Split(card, "\n")[0])
+	if x+len("Output") > h.width {
+		t.Fatalf("card leaves no room for preview title: x=%d", x)
+	}
+	line := strings.Repeat(" ", x) + "Output" + strings.Repeat(" ", h.width-x-len("Output"))
+	background := strings.TrimSuffix(strings.Repeat(line+"\n", h.height), "\n")
+	got := stripAnsi(h.renderSessionSwitcherOverlay(background))
+	if !strings.Contains(got, "╮Output") {
+		t.Fatalf("switcher erased the preview title: %q", got)
+	}
+}
+
 func TestSessionSwitcher_ShowOrdersMRUAndPreselectsCurrent(t *testing.T) {
 	sw := NewSessionSwitcher()
 	if !sw.Show("a", mruThree(), nil) {

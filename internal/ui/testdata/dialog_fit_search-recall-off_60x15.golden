@@ -7,9 +7,9 @@
     │  config.toml)                                    │
     │    Tip: waiting / running / idle to filter by    │
     │  status                                          │
-    │    › session-01 (claude)                         │
-    │      session-02 (claude)                         │
-    │    10 results                                    │
+    │    › session-01 (claude)  my-sessions · ?        │
+    │      session-02 (claude)  my-sessions · ?        │
+    │    11 results                                    │
     │    [Enter] Select  [↑↓] Navigate                 │
     │    [Tab] Global  [Esc] Cancel                    │
     ╰──────────────────────────────────────────────────╯

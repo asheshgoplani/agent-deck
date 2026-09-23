@@ -8,17 +8,17 @@
          │  config.toml)                                              │
          │    Tip: waiting / running / idle to filter by status       │
          │                                                            │
-         │    › session-01 (claude)                                   │
-         │      session-02 (claude)                                   │
-         │      session-03 (claude)                                   │
-         │      session-04 (claude)                                   │
-         │      session-05 (claude)                                   │
-         │      session-06 (claude)                                   │
-         │      session-07 (claude)                                   │
-         │      session-08 (claude)                                   │
-         │      session-09 (claude)                                   │
-         │      session-10 (claude)                                   │
-         │    10 results                                              │
+         │    › session-01 (claude)  my-sessions · ?                  │
+         │      session-02 (claude)  my-sessions · ?                  │
+         │      session-03 (claude)  my-sessions · ?                  │
+         │      session-04 (claude)  my-sessions · ?                  │
+         │      session-05 (claude)  my-sessions · ?                  │
+         │      session-06 (claude)  my-sessions · ?                  │
+         │      session-07 (claude)  my-sessions · ?                  │
+         │      session-08 (claude)  my-sessions · ?                  │
+         │      session-09 (claude)  my-sessions · ?                  │
+         │      session-10 (claude)  my-sessions · ?                  │
+         │    11 results                                              │
          │    [Enter] Select  [↑↓] Navigate                           │
          │    [Tab] Global  [Esc] Cancel                              │
          ╰────────────────────────────────────────────────────────────╯
