@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent-deck update --check --json` now reports `auto_update_remotes` (the effective `[updates]` setting, on by default) next to `auto_install` and `auto_restart`, so a release gate can verify all three hands-off update settings from one command.
+
 ## [1.16.16] - 2026-09-20
 
 ### Fixed
