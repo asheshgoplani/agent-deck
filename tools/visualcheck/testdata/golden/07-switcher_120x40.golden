@@ -1,0 +1,40 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                     <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+SESSIONS                                   │ PREVIEW
+────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1                      │ claude-waiting  ◐ waiting
+   ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle claude                 │ ⏱ <age>
+  ▶├─ ◐ claude-waiting claude <id>…  │ 👁️ no viewers
+   └─ ■ claude-stopped claude              │  claude   alpha
+    ▾ backend (3) ● 1                      │ ─────────────────────────────── Claude ───────────────────────────────
+     ├─ ✕ codex-idle codex                 │ Status:  ● Connected
+     ├─ ● claude-running claude            │ Session: <uuid>
+     └─ ✕ claude-error claude              │ Model:   tool default
+2·▾ beta (4) ◐ 1                           │ ╭────────────────────────────────────────────────────────╮
+   ├─ ✕ gemini-idle gemini                 │ │                                                        │
+   ├─ ✕ pi-idle pi                         │ │  Switch session                                        │────────────
+   ├─ ◐ claude-i18n claude                 │ │                                                        │
+   └─ ○ shell-live shell                   │ │  > ◐ claude-waiting (claude) <id>              │
+  ▾ remotes/lab (0) · unreachable: host d… │ │    ● claude-running (claude) <id>              │
+                                           │ │    ◐ claude-i18n (claude) <id>                 │
+                                           │ │    ○ shell-live (shell) <id>                   │
+                                           │ │                                                        │
+                                           │ │  Ctrl+S next · Ctrl+A prev                             │
+                                           │ │  ↑/↓ browse · Enter attach · Esc close                 │
+                                           │ │                                                        │
+                                           │ ╰────────────────────────────────────────────────────────╯
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP …   ↑↓ Nav │ q Quit

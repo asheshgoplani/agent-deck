@@ -1,0 +1,39 @@
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+SESSIONS                                   │ PREVIEW
+────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1                      │ claude-i18n  ◐ waiting
+   ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle claude                 │ ⏱ <age>
+   ├─ ◐ claude-waiting claude              │ 👁️ no viewers
+   └─ ■ claude-stopped claude              │  claude   beta
+    ▾ backend (3) ● 1                      │ ─────────────────────────────── Claude ───────────────────────────────
+     ├─ ✕ codex-idle codex                 │ Status:  ● Connected
+     ├─ ● claude-running claude            │ Session: <uuid>
+     └─ ✕ claude-error claude              │ Model:   tool default
+2·▾ beta (4) ◐ 1                           │ Fork:    f quick fork, F fork with options
+   ├─ ✕ gemini-idle gemini                 │
+   ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Output ───────────────────────────────
+  ▶├─ ◐ claude-i18n claude <id>    │ Claude Code synthetic fixture
+   └─ ○ shell-live shell                   │ ❯
+  ▾ remotes/lab (0) · unreachable: host d… │ fixture received: VC_I18N
+                                           │ esc to interrupt
+                                           │ नमस्ते दुनिया 🚀🌟 यह परीक्षण है।
+                                           │
+                                           │ ❯
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP …   ↑↓ Nav │ q Quit
