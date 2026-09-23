@@ -33,9 +33,9 @@ var visualCheckSteps = []visualCheckStep{
 	{"05-create-dialog", stepCreateDialog},
 	{"06-edit", stepEdit},
 	{"07-switcher", stepSwitcher},
+	{"08-mcp-manager", stepMCPManager},
 	{"09-settings", stepSettings},
 	{"10-help", stepHelp},
-	{"08-mcp-manager", stepMCPManager},
 	{"11-update-banner", stepUpdateBanner},
 	{"12-attach-shell", stepAttachShell},
 	{"13-detach-shell", stepDetachShell},
@@ -269,20 +269,18 @@ func closeScreen(w *widthRun, title string) error {
 	if err := w.send("Escape"); err != nil {
 		return err
 	}
-	var previous string
+	consecutive := 0
 	return w.waitFor(func() (bool, error) {
 		pane, err := w.pane()
 		if err != nil {
 			return false, err
 		}
 		if strings.Contains(pane, title) || !strings.Contains(pane, "SESSIONS") {
-			previous = ""
+			consecutive = 0
 			return false, nil
 		}
-		current := scrubFrame(pane)
-		stable := previous == current
-		previous = current
-		return stable, nil
+		consecutive++
+		return consecutive >= 2, nil
 	}, 5*time.Second)
 }
 
