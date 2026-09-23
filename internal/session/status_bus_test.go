@@ -7,44 +7,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
-func busFramesForProfile(t *testing.T, profile string) []events.Frame {
-	t.Helper()
-	if err := events.CloseDefault(); err != nil {
-		t.Fatal(err)
-	}
-	b := events.OpenProfile(profile)
-	defer b.Close()
-	data, err := os.ReadFile(filepath.Join(b.Stats().Dir, "active.ndjson"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out []events.Frame
-	for _, line := range splitLines(data) {
-		f, err := events.ParseFrameLine(line)
-		if err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, f)
-	}
-	return out
+type busRecord struct {
+	profile, kind, session string
+	data                   []byte
 }
 
-func splitLines(b []byte) [][]byte {
-	var out [][]byte
-	start := 0
-	for i, c := range b {
-		if c == '\n' {
-			if i > start {
-				out = append(out, b[start:i])
-			}
-			start = i + 1
-		}
+// recordBus captures what the session taps publish, without the
+// process-wide bus (closing it would silence later tests).
+func recordBus(t *testing.T) *[]busRecord {
+	t.Helper()
+	var got []busRecord
+	prev := busPublish
+	busPublish = func(profile, kind, sessionID string, data any) {
+		b, _ := json.Marshal(data)
+		got = append(got, busRecord{profile, kind, sessionID, b})
 	}
-	return out
+	t.Cleanup(func() { busPublish = prev })
+	return &got
 }
 
 func TestStatusBusProfile(t *testing.T) {
@@ -66,12 +48,7 @@ func TestStatusBusProfile(t *testing.T) {
 // session.status with from/to/tmux_session/changed_at, plus session.turn
 // started/ended with the turn duration. An unchanged write publishes nothing.
 func TestWriteStatusPublishesStatusAndTurnFrames(t *testing.T) {
-	t.Setenv("AGENTDECK_EVENTS_BUS", "1")
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
-	events.SetProfile("statusbus")
-	t.Cleanup(func() { events.SetProfile("default") })
-
+	rec := recordBus(t)
 	dbPath := filepath.Join(t.TempDir(), "profiles", "statusbus", "state.db")
 	db, err := statedb.Open(dbPath)
 	if err != nil {
@@ -91,12 +68,12 @@ func TestWriteStatusPublishesStatusAndTurnFrames(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	frames := busFramesForProfile(t, "statusbus")
+	frames := *rec
 	var kinds []string
 	for _, f := range frames {
-		kinds = append(kinds, f.Kind)
-		if f.SessionID != "sess-1" {
-			t.Errorf("frame session = %q", f.SessionID)
+		kinds = append(kinds, f.kind)
+		if f.session != "sess-1" || f.profile != "statusbus" {
+			t.Errorf("frame session/profile = %q/%q", f.session, f.profile)
 		}
 	}
 	want := []string{"session.status", "session.turn", "session.status", "session.turn"}
@@ -109,19 +86,19 @@ func TestWriteStatusPublishesStatusAndTurnFrames(t *testing.T) {
 		}
 	}
 	var st StatusBusEvent
-	if err := json.Unmarshal(frames[2].Data, &st); err != nil {
+	if err := json.Unmarshal(frames[2].data, &st); err != nil {
 		t.Fatal(err)
 	}
 	if st.From != "running" || st.To != "waiting" || st.TmuxSession != "agentdeck_t_1" || st.ChangedAt == "" {
 		t.Fatalf("status data: %+v", st)
 	}
 	var first StatusBusEvent
-	_ = json.Unmarshal(frames[0].Data, &first)
+	_ = json.Unmarshal(frames[0].data, &first)
 	if first.From != "idle" || first.To != "running" {
 		t.Fatalf("first transition: %+v", first)
 	}
 	var ended TurnBusEvent
-	if err := json.Unmarshal(frames[3].Data, &ended); err != nil {
+	if err := json.Unmarshal(frames[3].data, &ended); err != nil {
 		t.Fatal(err)
 	}
 	if ended.Phase != "ended" || ended.DurationMs <= 0 || ended.To != "waiting" {
@@ -130,13 +107,10 @@ func TestWriteStatusPublishesStatusAndTurnFrames(t *testing.T) {
 }
 
 func TestTranscriptGrowthFrames(t *testing.T) {
-	t.Setenv("AGENTDECK_EVENTS_BUS", "1")
+	rec := recordBus(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
-	events.SetProfile("growth")
-	t.Cleanup(func() { events.SetProfile("default") })
 	project := filepath.Join(home, "proj")
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
@@ -159,12 +133,12 @@ func TestTranscriptGrowthFrames(t *testing.T) {
 	f.Close()
 	g.publish("growth", []*Instance{inst})
 	g.publish("growth", []*Instance{inst}) // unchanged: nothing
-	frames := busFramesForProfile(t, "growth")
-	if len(frames) != 1 || frames[0].Kind != "session.transcript" {
+	frames := *rec
+	if len(frames) != 1 || frames[0].kind != "session.transcript" || frames[0].profile != "growth" {
 		t.Fatalf("frames: %+v", frames)
 	}
 	var ev TranscriptBusEvent
-	_ = json.Unmarshal(frames[0].Data, &ev)
+	_ = json.Unmarshal(frames[0].data, &ev)
 	if ev.Path != path || ev.BytesAppended != 8 || ev.Size != 11 {
 		t.Fatalf("transcript frame: %+v", ev)
 	}

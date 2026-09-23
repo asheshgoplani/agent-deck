@@ -43,6 +43,9 @@ func init() {
 	statedb.SetStatusChangeObserver(publishStatusChange)
 }
 
+// busPublish is the bus tap; tests replace it with a recorder.
+var busPublish = events.PublishProfile
+
 // turnStarts remembers when this process saw each session enter running,
 // for the ended frame's duration.
 var turnStarts sync.Map // id -> time.Time
@@ -65,7 +68,7 @@ func publishStatusChange(c statedb.StatusChange) {
 	if profile == "" || c.ID == "" {
 		return
 	}
-	events.PublishProfile(profile, "session.status", c.ID, StatusBusEvent{
+	busPublish(profile, "session.status", c.ID, StatusBusEvent{
 		From:        c.From,
 		To:          c.To,
 		Tool:        c.Tool,
@@ -76,13 +79,13 @@ func publishStatusChange(c statedb.StatusChange) {
 	switch {
 	case c.To == running:
 		turnStarts.Store(c.ID, c.At)
-		events.PublishProfile(profile, "session.turn", c.ID, TurnBusEvent{Phase: "started"})
+		busPublish(profile, "session.turn", c.ID, TurnBusEvent{Phase: "started"})
 	case c.From == running:
 		ev := TurnBusEvent{Phase: "ended", To: c.To}
 		if v, ok := turnStarts.LoadAndDelete(c.ID); ok {
 			ev.DurationMs = c.At.Sub(v.(time.Time)).Milliseconds()
 		}
-		events.PublishProfile(profile, "session.turn", c.ID, ev)
+		busPublish(profile, "session.turn", c.ID, ev)
 	}
 }
 
@@ -140,7 +143,7 @@ func (t *transcriptSizes) publish(profile string, instances []*Instance) {
 		prev, known := t.sizes[key]
 		t.sizes[key] = info.Size()
 		if known && info.Size() > prev {
-			events.PublishProfile(profile, "session.transcript", inst.ID, TranscriptBusEvent{Path: path, BytesAppended: info.Size() - prev, Size: info.Size()})
+			busPublish(profile, "session.transcript", inst.ID, TranscriptBusEvent{Path: path, BytesAppended: info.Size() - prev, Size: info.Size()})
 		}
 	}
 	for key := range t.sizes {
