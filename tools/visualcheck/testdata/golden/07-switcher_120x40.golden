@@ -36,4 +36,5 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
                                            │
-⚠ Health: tmux calls exceed twice the session count
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP …   ↑↓ Nav │ q Quit

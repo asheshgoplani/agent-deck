@@ -106,7 +106,13 @@ func (w *widthRun) probeRedraw() error {
 	if err != nil {
 		return err
 	}
-	if err := w.hardKick(); err != nil {
+	if err := w.send("?"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "KEYBOARD SHORTCUTS"); err != nil {
+		return err
+	}
+	if err := closeScreen(w, "KEYBOARD SHORTCUTS"); err != nil {
 		return err
 	}
 	repainted, err := w.pane()

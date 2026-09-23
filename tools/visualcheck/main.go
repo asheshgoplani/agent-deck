@@ -80,6 +80,7 @@ func runMain(args []string) int {
 			st, cmpErr := compareGolden(f.step, f.width, f.scrub)
 			if cmpErr != nil {
 				fmt.Fprintln(os.Stderr, "compare golden:", cmpErr)
+				reports = append(reports, frameReport{step: f.step, width: f.width, status: "FAIL", reason: cmpErr.Error(), frame: f.scrub})
 				failed = true
 				continue
 			}

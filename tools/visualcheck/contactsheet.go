@@ -22,6 +22,7 @@ h1 { font-size: 18px; }
 .frame > .head .name { font-weight: bold; }
 .pass { color: #9ece6a; }
 .diff { color: #f7768e; font-weight: bold; }
+.fail { color: #f7768e; font-weight: bold; }
 .missing { color: #e0af68; font-weight: bold; }
 .advisory { color: #7aa2f7; font-style: italic; }
 pre { margin: 0; padding: 10px; white-space: pre; overflow-x: auto; font-size: 12px; line-height: 1.25; }
@@ -47,6 +48,8 @@ pre { margin: 0; padding: 10px; white-space: pre; overflow-x: auto; font-size: 1
 		body := r.frame
 		if r.status == "ADVISORY" {
 			body = "(not captured)\n\n" + r.reason
+		} else if r.status == "FAIL" {
+			body += "\n\n" + r.reason
 		} else if r.status == "MISSING" {
 			body += "\n\n(no committed golden yet; run `make visual-check-golden` and get a reviewer's PASS)"
 		}

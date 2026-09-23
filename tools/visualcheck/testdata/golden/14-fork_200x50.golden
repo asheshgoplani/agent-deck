@@ -17,7 +17,7 @@ SESSIONS                                                               │ PREVI
    ├─ ✕ pi-idle pi                                                     │ ───────────────────────────────────────────────────────── Claude ─────────────────────────────────────────────────────────
    ├─ ◐ claude-i18n claude                                             │ Status:  ● Connected
    └─ ○ shell-live shell                                               │ Session: <uuid>
-  ▾ remotes/lab (0) · unreachable: host down · poll <age>               │ Model:   tool default
+  ▾ remotes/lab (0) · unreachable: host down · poll <age>              │ Model:   tool default
                                                                        │
                                                                        │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
                                                                        │

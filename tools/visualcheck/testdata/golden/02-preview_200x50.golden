@@ -15,7 +15,7 @@ SESSIONS                                                               │ PREVI
    ├─ ✕ pi-idle pi                                                     │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
   ▶├─ ◐ claude-i18n claude <id>                                │ Claude Code synthetic fixture
    └─ ○ shell-live shell                                               │ ❯
-  ▾ remotes/lab (0) · unreachable: host down · poll <age>               │ fixture received: VC_I18N
+  ▾ remotes/lab (0) · unreachable: host down · poll <age>              │ fixture received: VC_I18N
                                                                        │ esc to interrupt
                                                                        │ नमस्ते दुनिया 🚀🌟 यह परीक्षण है।
                                                                        │
@@ -45,4 +45,5 @@ SESSIONS                                                               │ PREVI
                                                                        │
                                                                        │
                                                                        │
-⚠ Health: tmux calls exceed twice the session count
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP  v  Both  s  Skills  H  Shell  c  Copy  V  Copy pane  x  Send │  r  Rename …        ↑↓ Nav │ q Quit

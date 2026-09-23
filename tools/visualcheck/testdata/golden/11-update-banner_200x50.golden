@@ -17,7 +17,7 @@ SESSIONS                                                               │ PREVI
    ├─ ✕ pi-idle pi                                                     │ ───────────────────────────────────────────────────────── Output ─────────────────────────────────────────────────────────
    ├─ ◐ claude-i18n claude                                             │ Claude Code synthetic fixture
    └─ ○ shell-live shell                                               │ ❯
-  ▾ remotes/lab (0) · unreachable: host down · poll <age>               │
+  ▾ remotes/lab (0) · unreachable: host down · poll <age>              │
                                                                        │
                                                                        │
                                                                        │
