@@ -151,7 +151,8 @@ func (e *recallEnv) close() {
 
 // openRecallEnv opens recall.db and the profile's state.db. It exits with
 // a clear message when the feature is off.
-func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
+// requireRecallEnabled exits 2 unless [recall] enabled = true.
+func requireRecallEnabled(out *CLIOutput) *session.UserConfig {
 	cfg, _ := session.LoadUserConfig()
 	if cfg == nil {
 		cfg = &session.UserConfig{}
@@ -160,6 +161,11 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 		out.Error("recall is off: set [recall] enabled = true in config.toml (docs/recall.md); hints and 'session annotate' work without it", ErrCodeInvalidOperation)
 		os.Exit(2)
 	}
+	return cfg
+}
+
+func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
+	cfg := requireRecallEnabled(out)
 	dbPath, err := recall.DBPath()
 	if err != nil {
 		out.Error(fmt.Sprintf("recall: resolve data dir: %v", err), ErrCodeInvalidOperation)

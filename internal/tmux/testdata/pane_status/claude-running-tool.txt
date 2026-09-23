@@ -1,0 +1,9 @@
+⏺ Bash(go build ./...)
+  ⎿  Running…
+
+✻ Cogitating… (12s · ↓ 1.2k tokens)
+  ⎿  Running go build…
+────────────────────────────────────────────────────────────────── worker ─
+❯ Press up to edit queued messages
+───────────────────────────────────────────────────────────────────────────
+  ⏸ plan mode on (shift+tab to cycle)

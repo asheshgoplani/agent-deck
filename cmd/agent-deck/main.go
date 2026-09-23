@@ -494,6 +494,12 @@ func main() {
 		case "accounts":
 			handleAccounts(args[1:])
 			return
+		case "harness":
+			handleHarness(profile, args[1:])
+			return
+		case "limits":
+			handleLimits(args[1:])
+			return
 		case "conductor":
 			handleConductor(profile, args[1:])
 			return
@@ -1440,7 +1446,7 @@ var storeRootQuietCommands = map[string]bool{
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
 var commandRegistry = map[string]bool{
-	"add": true, "accounts": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"add": true, "accounts": true, "harness": true, "limits": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
 	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
@@ -2966,6 +2972,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Channels          []string  `json:"channels,omitempty"`
 		ExtraArgs         []string  `json:"extra_args,omitempty"`
 		Color             string    `json:"color,omitempty"` // issue #391
+		Favorite          bool      `json:"favorite,omitempty"`
 		Archived          bool      `json:"archived"`
 		ArchivedAt        time.Time `json:"archived_at,omitempty"`
 		SupersededBy      string    `json:"superseded_by,omitempty"`
@@ -3014,6 +3021,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Channels:          inst.Channels,
 			ExtraArgs:         inst.ExtraArgs,
 			Color:             inst.Color,
+			Favorite:          inst.Favorite,
 			Archived:          inst.IsArchived(),
 			ArchivedAt:        inst.ArchivedAt,
 			SupersededBy:      inst.SupersededBy,
@@ -4366,6 +4374,8 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
+	fmt.Println("  harness          Installed harnesses, login and hook state, install/login commands [--json]")
+	fmt.Println("  limits           Claude 5h/7d and Codex weekly usage per account [--json] ([macapp] plugins)")
 	fmt.Println("  doctor           Check accounts and runtime health")
 	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")

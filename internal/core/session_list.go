@@ -68,6 +68,7 @@ type SessionRow struct {
 	Channels          []string       `json:"channels,omitempty" doc:"live"`
 	ExtraArgs         []string       `json:"extra_args,omitempty" doc:"live"`
 	Color             string         `json:"color,omitempty" doc:"live"`
+	Favorite          bool           `json:"favorite,omitempty" doc:"live"`
 	Archived          bool           `json:"archived" doc:"live"`
 	ArchivedAt        time.Time      `json:"archived_at,omitempty" doc:"live"`
 	SupersededBy      string         `json:"superseded_by,omitempty" doc:"live"`
@@ -157,6 +158,7 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		row.Channels = inst.Channels
 		row.ExtraArgs = inst.ExtraArgs
 		row.Color = inst.Color
+		row.Favorite = inst.Favorite
 		row.Archived = inst.IsArchived()
 		row.ArchivedAt = inst.ArchivedAt
 		row.SupersededBy = inst.SupersededBy

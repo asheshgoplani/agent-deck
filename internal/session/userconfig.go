@@ -18,6 +18,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/asheshgoplani/agent-deck/internal/harness"
+
 	dark "github.com/thiagokokada/dark-mode-go"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -302,6 +304,30 @@ type UserConfig struct {
 
 	// Core holds the one-core registry and daemon switches (docs/core-registry.md).
 	Core CoreSettings `toml:"core,omitempty"`
+
+	// Macapp holds the switches for the Mac app surface (docs/macapp-core.md).
+	Macapp MacappSettings `toml:"macapp,omitempty"`
+
+	// Harnesses overrides the core install/login table per harness
+	// ([harnesses.<name>] binary, install_command, login_command, docs_url).
+	Harnesses map[string]harness.Override `toml:"harnesses,omitempty"`
+}
+
+// MacappSettings is the [macapp] section. Everything is off by default.
+type MacappSettings struct {
+	// Plugins enables the plugin-facing commands: `limits --json` and the
+	// macapp.* namespace of `events publish`.
+	Plugins bool `toml:"plugins,omitempty"`
+
+	// TranscriptEvents makes the notify daemon publish a session.transcript
+	// bus frame whenever a live session's native transcript grows, so a
+	// client never stats transcript files itself.
+	TranscriptEvents bool `toml:"transcript_events,omitempty"`
+
+	// StatusEvents makes every status owner (TUI poller, notify daemon)
+	// publish session.status and session.turn bus frames when it writes a
+	// status transition to state.db.
+	StatusEvents bool `toml:"status_events,omitempty"`
 }
 
 // CoreSettings is the [core] section.
@@ -3881,6 +3907,9 @@ func LoadUserConfig() (*UserConfig, error) {
 
 	userConfigCacheMu.Lock()
 	defer userConfigCacheMu.Unlock()
+	// Every (re)load re-applies the [macapp] status_events gate, so an
+	// edited config.toml turns the session.status tap on or off live.
+	defer func() { applyStatusBusGate(userConfigCache) }()
 
 	// Re-check under write lock: another goroutine may have refreshed the
 	// cache to match currentMtime between our RLock drop and Lock acquire.

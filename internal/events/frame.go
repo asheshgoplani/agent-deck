@@ -25,6 +25,16 @@ type Frame struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 }
 
+// marshalData encodes a producer payload. A nil payload (JSON null) is
+// stored as no data at all, so frames never carry `"data": null`.
+func marshalData(data any) (json.RawMessage, error) {
+	raw, err := json.Marshal(data)
+	if err != nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, err
+	}
+	return raw, nil
+}
+
 // CanonicalJSON renders the frame as compact JSON with every object's keys
 // sorted lexicographically and no trailing whitespace, so the same logical
 // frame always serializes to identical bytes. The append log, the golden
@@ -37,7 +47,7 @@ func (f Frame) CanonicalJSON() ([]byte, error) {
 		"kind":       f.Kind,
 		"session_id": f.SessionID,
 	}
-	if len(f.Data) > 0 {
+	if len(f.Data) > 0 && !bytes.Equal(bytes.TrimSpace(f.Data), []byte("null")) {
 		dataAny, err := decodeCanonicalValue(f.Data)
 		if err != nil {
 			return nil, fmt.Errorf("decode frame data: %w", err)

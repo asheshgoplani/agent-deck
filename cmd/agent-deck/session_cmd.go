@@ -108,6 +108,10 @@ func handleSession(profile string, args []string) {
 		handleSessionMove(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
+	case "send-status":
+		handleSessionSendStatus(profile, args[1:])
+	case "send-worker":
+		handleSessionSendWorker(profile, args[1:])
 	case "approve":
 		handleSessionApprove(profile, args[1:])
 	case "send-keys":
@@ -166,7 +170,8 @@ func printSessionHelp() {
 	fmt.Println("  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target")
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
-	fmt.Println("  send <id> <message>     Send a message to a running session")
+	fmt.Println("  send <id> <message>     Send a message to a running session (--queue: never silently lost, see send-status; --image <path>)")
+	fmt.Println("  send-status <send-id>   State of a queued send: queued, typed, submitted, landed or failed")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  context [id]            Show what is loaded into the agent's context, ranked by cost")
@@ -222,6 +227,7 @@ func printSessionHelp() {
 	fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 	fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
+	fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
 	fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)")
 	fmt.Println()
@@ -1935,6 +1941,19 @@ func handleSessionShow(profile string, args []string) {
 	// ambiguous with absence-of-value, and here that ambiguity cost a user a
 	// bug report against the wrong component.
 	jsonData["wrapper"] = inst.Wrapper
+	if inst.Favorite {
+		jsonData["favorite"] = true
+	}
+
+	// macapp-core-needs §3: the live native transcript and every native id
+	// seen for this session (Codex re-creates its rollout after the trust
+	// prompt). Omitted when unknown, so older consumers see no change.
+	if p := session.LiveTranscriptPath(inst, instances); p != "" {
+		jsonData["transcript_path"] = p
+	}
+	if ids := session.TranscriptIDs(inst, instances); len(ids) > 0 {
+		jsonData["transcript_ids"] = ids
+	}
 
 	if session.SupportsNativeFork(inst.Tool) {
 		jsonData["can_fork"] = inst.CanFork()
@@ -2162,6 +2181,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  model              Per-session model override (e.g. opus/sonnet/haiku or a gemini model); persists across restart (#1436). Empty clears it.")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
+		fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
 		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
@@ -3030,6 +3050,10 @@ func handleSessionSend(profile string, args []string) {
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
+	codexComposerFallback := fs.Bool("codex-composer-fallback", false, "Codex only: when the session's Codex identity is provably unavailable (fresh composer, rollout re-created after the trust prompt), send through the verified composer path instead of refusing. Never used for --json --wait; every other acceptance error still refuses")
+	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle, at most once; every send ends landed, failed or settled with a reason (see session send-status)")
+	var images imageList
+	fs.Var(&images, "image", "Attach an image (repeatable): Claude Code and Gemini get @<copy under .agentdeck-images/>; Codex and other harnesses exit 2")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session send <id|title> <message> [options]")
@@ -3056,6 +3080,16 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
+		fmt.Println("  agent-deck session send my-project --message-file - --json --queue   # returns send_id at once")
+		fmt.Println("  agent-deck session send my-project \"what is this?\" --image shot.png")
+		fmt.Println()
+		fmt.Println("--queue: result {send_id, state, reason, target_status, ...}; the send waits while the")
+		fmt.Println("  target runs, is typed and verified when it is idle, and is watched until its text lands in")
+		fmt.Println("  the transcript (state landed, landed_row_id). Retry budget 30m, then failed with a reason.")
+		fmt.Println("  Exit 0 queued, 1 failed at once (e.g. target not running).")
+		fmt.Println("--image: Claude Code and Gemini receive @path; Codex takes images only at launch (-i), so a")
+		fmt.Println("  running Codex session exits 2, as does any other harness. Exit codes: 0 sent/queued,")
+		fmt.Println("  1 delivery failed, 2 usage error, unknown session or unsupported image.")
 		fmt.Println()
 		fmt.Println("Codex --json --wait:")
 		fmt.Println("  Emits one structured result correlated to the accepted Codex turn.")
@@ -3117,6 +3151,24 @@ func handleSessionSend(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	if len(images) > 0 || *queue {
+		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
+			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+		var imgErr error
+		var copies []string
+		message, copies, imgErr = attachImages(inst, message, images, time.Now())
+		if imgErr != nil {
+			out.Error(imgErr.Error(), ErrCodeInvalidOperation)
+			os.Exit(2)
+		}
+		if *queue {
+			queueSend(profile, storage, inst, message, copies, out)
+			return
+		}
 	}
 
 	// --stream is Claude-only in Phase 1. Non-Claude tools error cleanly
@@ -3184,17 +3236,28 @@ func handleSessionSend(profile string, args []string) {
 	acceptanceFence := codexAcceptanceFence{}
 	var acceptanceGuard *codexAcceptanceGuard
 	if shouldAcquireCodexAcceptanceGuard(inst, *jsonOutput, *wait, *draft) {
-		if err := hydrateLegacyCodexIdentity(inst, instances, storage); err != nil {
-			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
+		// Every send keeps the double-send refusal: an unresolved earlier
+		// submission, an identity owned by another session, a held
+		// acceptance lock or a remote rollout all refuse, whatever the
+		// flags. Only --codex-composer-fallback, and only when the identity
+		// is provably unavailable (macapp-core-needs §3: right after the
+		// trust prompt there is no identity, or the stored id has no
+		// rollout), sends through the verified composer path instead.
+		guardErr := hydrateLegacyCodexIdentity(inst, instances, storage)
+		if guardErr == nil {
+			acceptanceGuard, guardErr = acquireCodexAcceptanceGuard(inst, codexAcceptanceLockWait(*timeout))
+		}
+		switch {
+		case guardErr == nil:
+			acceptanceFence = acceptanceGuard.fence
+		case codexComposerFallbackAllowed(guardErr, *codexComposerFallback, structuredCodexWait):
+			acceptanceGuard = nil
+			fmt.Fprintf(os.Stderr, "Note: no Codex accepted-turn receipt yet (%v); sending through the composer (--codex-composer-fallback)\n", guardErr)
+		default:
+			out.ErrorWithData(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", guardErr), ErrCodeInvalidOperation,
+				map[string]interface{}{"delivery": deliveryAcceptanceRefused})
 			os.Exit(1)
 		}
-		lockWait := codexAcceptanceLockWait(*timeout)
-		acceptanceGuard, err = acquireCodexAcceptanceGuard(inst, lockWait)
-		if err != nil {
-			out.Error(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		acceptanceFence = acceptanceGuard.fence
 	}
 
 	// Wait for agent to be ready (unless --no-wait is specified).
@@ -3930,6 +3993,11 @@ const (
 	// per-target lock after the bounded wait (messaging audit P2-2, #2104).
 	// Nothing was typed, so a retry is safe.
 	deliveryTargetBusy = "target_busy"
+	// deliveryAcceptanceRefused: no input sent because exact Codex turn
+	// acceptance could not be established (an unresolved earlier
+	// submission, another session owning the identity, the acceptance lock
+	// held by another send). Nothing was typed, so a retry is safe.
+	deliveryAcceptanceRefused = "acceptance_refused"
 	// deliveryQueued: the message was typed and Entered once, and the
 	// target's hook-driven status reports it mid-turn (issue #2033). Claude
 	// holds such input as a queued message and takes it up when the turn
@@ -4193,7 +4261,7 @@ func hydrateLegacyCodexIdentity(
 		processOwned = candidate != ""
 	}
 	if candidate == "" {
-		return fmt.Errorf("Codex session identity is unavailable")
+		return errCodexIdentityUnavailable
 	}
 	if _, _, err := session.SetField(inst, session.FieldCodexSessionID, candidate, nil); err != nil {
 		restore()
@@ -4231,6 +4299,28 @@ func hydrateLegacyCodexIdentity(
 	return nil
 }
 
+// The two acceptance errors that mean the Codex identity is provably
+// unavailable, rather than contested: no identity at all, or a stored id
+// with no current rollout generation. Only these may use
+// --codex-composer-fallback.
+var (
+	errCodexIdentityUnavailable   = errors.New("Codex session identity is unavailable")
+	errCodexGenerationUnavailable = errors.New("current rollout generation is unavailable")
+)
+
+// codexComposerFallbackAllowed reports whether a send whose acceptance
+// guard failed with err may go through the composer instead of refusing:
+// only with --codex-composer-fallback, never for a structured --json --wait,
+// and only when the identity is provably unavailable. Contested identity
+// (an unresolved earlier submission, another session's thread, the
+// acceptance lock held by another send, a remote rollout) always refuses.
+func codexComposerFallbackAllowed(err error, flag, structuredWait bool) bool {
+	if err == nil || !flag || structuredWait {
+		return false
+	}
+	return errors.Is(err, errCodexIdentityUnavailable) || errors.Is(err, errCodexGenerationUnavailable)
+}
+
 // liveCodexSessionID reads only the authoritative Codex identity from a live
 // pane. Unlike broad session-ID synchronization, it does not mutate metadata
 // for Codex or any unrelated tool.
@@ -4257,7 +4347,7 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 		return nil, fmt.Errorf("exact rollout is unavailable for remote or sandboxed sessions")
 	}
 	if strings.TrimSpace(inst.CodexSessionID) == "" {
-		return nil, fmt.Errorf("Codex session identity is unavailable")
+		return nil, errCodexIdentityUnavailable
 	}
 	lock, err := session.AcquireCodexAcceptanceLock(inst.CodexSessionID, timeout)
 	if err != nil {
@@ -4266,7 +4356,7 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 	fence := captureCodexAcceptanceFence(inst)
 	if !fence.available {
 		lock.Release()
-		return nil, fmt.Errorf("current rollout generation is unavailable")
+		return nil, errCodexGenerationUnavailable
 	}
 	if _, err := session.ReconcileCodexSubmissionMarker(inst.ID, inst.CodexSessionID, fence.priorTurnGeneration); err != nil {
 		lock.Release()
