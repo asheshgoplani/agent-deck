@@ -37,6 +37,8 @@ when one notify daemon walks several profiles. Watcher producers call
 groups up to 256 frames under one cross-process file lock and syncs at most
 once per second or at close. A normal shutdown drains accepted taps for up to
 two seconds; a held disk lock cannot hold the TUI exit path indefinitely.
+`CloseDefault` returns `ErrCloseTimeout` when that deadline expires and counts
+accepted unwritten frames as drops where the bus handle is available.
 
 ## On-disk layout
 

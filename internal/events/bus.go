@@ -68,6 +68,7 @@ type Bus struct {
 	publishMu      sync.RWMutex
 	closed         atomic.Bool
 	failed         atomic.Bool
+	abandoned      atomic.Bool
 	ioMu           sync.Mutex
 	lockFile       *os.File
 	persistedDrops uint64
@@ -349,6 +350,10 @@ func (b *Bus) enqueue(qf queuedFrame) {
 	}
 	b.publishMu.RLock()
 	defer b.publishMu.RUnlock()
+	if b.abandoned.Load() {
+		b.dropped.Add(1)
+		return
+	}
 	if b.closed.Load() || b.failed.Load() {
 		return
 	}
@@ -509,6 +514,9 @@ func (b *Bus) writerLoop() {
 // writeBatch takes the cross-process lock once for up to maxWriteBatch frames.
 // Sync runs on the one-second tick and at shutdown, never per output line.
 func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
+	if b.abandoned.Load() {
+		return
+	}
 	if b.failed.Load() {
 		b.dropped.Add(uint64(len(batch)))
 		return
@@ -519,6 +527,9 @@ func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 		return
 	}
 	defer b.unlockDisk()
+	if b.abandoned.Load() {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(batch) > 0 {
@@ -528,9 +539,16 @@ func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 			return
 		}
 		for i, qf := range batch {
+			if b.abandoned.Load() {
+				break
+			}
 			if err := b.appendFrameLocked(qf); err != nil {
 				b.fail(err)
 				b.dropped.Add(uint64(len(batch) - i))
+				break
+			}
+			if b.failed.Load() {
+				b.dropped.Add(uint64(len(batch) - i - 1))
 				break
 			}
 		}

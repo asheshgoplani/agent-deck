@@ -2,6 +2,7 @@ package events
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ var (
 	tapDone       chan struct{}
 	tapClosed     bool
 	tapDropped    atomic.Uint64
+	tapAbandoned  atomic.Bool
+	timeoutOnce   sync.Once
 	closeDone     chan struct{}
 	closeErr      error
 )
@@ -28,6 +31,8 @@ var (
 // off without touching config.toml: "0"/"false"/"no"/"off" (case-
 // insensitive) disables it. It is enabled by default in every process.
 const disableEnvVar = "AGENTDECK_EVENTS_BUS"
+
+var ErrCloseTimeout = errors.New("events: shutdown drain exceeded two seconds")
 
 // envOverride reports an explicit operator/test choice, if any. ok is false
 // when the variable is unset, in which case the caller falls back to its
@@ -155,7 +160,12 @@ func defaultTapLoop(queue <-chan queuedFrame, done chan<- struct{}) {
 				}
 				return
 			}
-			busForTap(qf.profile).enqueue(qf)
+			b := busForTap(qf.profile)
+			if tapAbandoned.Load() {
+				b.dropped.Add(1)
+			} else {
+				b.enqueue(qf)
+			}
 		case <-ticker.C:
 			if n := tapDropped.Swap(0); n > 0 {
 				Default().dropped.Add(n)
@@ -202,19 +212,29 @@ func CloseDefault() error {
 	case <-done:
 		return closeErr
 	case <-time.After(2 * time.Second):
-		// Disk locks can outlive this process. Count what is still visibly
-		// queued; the background drain persists it if the lock is released.
-		if defaultMu.TryLock() {
-			if defaultBus != nil {
-				defaultBus.dropped.Add(uint64(len(defaultBus.queue)))
+		timeoutOnce.Do(func() {
+			tapAbandoned.Store(true)
+			// Count accepted but unwritten frames once. The writer checks
+			// abandoned after acquiring a delayed flock and persists drops
+			// if that lock becomes available before process exit.
+			if defaultMu.TryLock() {
+				abandonBus(defaultBus)
+				for _, b := range profileBuses {
+					abandonBus(b)
+				}
+				defaultMu.Unlock()
 			}
-			for _, b := range profileBuses {
-				b.dropped.Add(uint64(len(b.queue)))
-			}
-			defaultMu.Unlock()
-		}
-		return nil
+		})
+		return ErrCloseTimeout
 	}
+}
+
+func abandonBus(b *Bus) {
+	if b == nil || !b.enabled {
+		return
+	}
+	b.abandoned.Store(true)
+	b.dropped.Add(b.enqueued.Load() - b.written.Load())
 }
 
 func drainDefault(tapDone <-chan struct{}, done chan<- struct{}) {
@@ -251,6 +271,8 @@ func resetDefaultForTest() {
 	tapDone = nil
 	tapClosed = false
 	tapDropped.Store(0)
+	tapAbandoned.Store(false)
+	timeoutOnce = sync.Once{}
 	closeDone = nil
 	closeErr = nil
 	tapMu.Unlock()

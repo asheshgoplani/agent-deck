@@ -16,7 +16,12 @@ func TestWatcherHomeUsesConfiguredDefaultProfile(t *testing.T) {
 	if err := session.SaveConfig(&session.Config{DefaultProfile: "work"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := watcherProfileForHome(); got != "work" {
+	h := &Home{profile: session.GetEffectiveProfile("")}
+	if got := h.watcherProfileForHome(); got != "work" {
 		t.Fatalf("watcher Engine profile = %q, want configured default work", got)
+	}
+	h.profile = "explicit"
+	if got := h.watcherProfileForHome(); got != "explicit" {
+		t.Fatalf("watcher Engine profile = %q, want opened Home profile explicit", got)
 	}
 }

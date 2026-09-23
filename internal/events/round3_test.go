@@ -55,14 +55,34 @@ func TestCloseDefaultHasDeadlineWithHeldWriterLock(t *testing.T) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	released := false
+	defer func() {
+		if !released {
+			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		}
+	}()
 	PublishDefault("blocked", "", nil)
 	done := make(chan error, 1)
 	go func() { done <- CloseDefault() }()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != ErrCloseTimeout {
+			t.Fatalf("CloseDefault error = %v, want timeout", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("CloseDefault blocked on another process's writer lock")
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	released = true
+	select {
+	case <-closeDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("background close did not finish after lock release")
+	}
+	if got := bus.Stats().Dropped; got == 0 {
+		t.Fatal("abandoned frame was not counted")
 	}
 }
 
@@ -79,6 +99,17 @@ func TestOutputBatchThroughput(t *testing.T) {
 	if err := bus.Close(); err != nil {
 		t.Fatal(err)
 	}
+	opened, err := Open(bus.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opened.Cursor(); got != frames {
+		t.Errorf("persisted %d/%d output frames", got, frames)
+	}
+	if got := opened.Stats().Dropped; got != 0 {
+		t.Errorf("output drops = %d", got)
+	}
+	_ = opened.Close()
 	perSecond := float64(frames) / time.Since(start).Seconds()
 	t.Logf("tmux.output: %.0f frames/s", perSecond)
 	if perSecond < 20000 {
