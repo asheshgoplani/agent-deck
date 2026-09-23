@@ -92,6 +92,12 @@ func dialogFitCases() []dialogFitCase {
 	for _, sz := range dialogFitShortSizes {
 		w, h := sz[0], sz[1]
 		cases = append(cases,
+			dialogFitCase{name: "fork-picker-first", w: w, h: h, mustShow: []string{"Fork Session", "▶ main", "Enter select", "Esc close"}, view: func() string {
+				return dialogFitForkPicker(w, h, 0).View()
+			}},
+			dialogFitCase{name: "fork-picker-last", w: w, h: h, mustShow: []string{"Fork Session", "▶ feature/two", "Enter select", "Esc close"}, view: func() string {
+				return dialogFitForkPicker(w, h, 2).View()
+			}},
 			dialogFitCase{name: "edit-last-field", w: w, h: h, mustShow: []string{"Edit Session", "Esc cancel"}, view: func() string {
 				d := NewEditSessionDialog()
 				d.SetSize(w, h)
@@ -190,6 +196,17 @@ func dialogFitFork(w, h int, worktree bool) *ForkDialog {
 	d.Show("probe", "/nonexistent/probe-project", "alpha", nil, "")
 	d.worktreeCapable = worktree
 	d.worktreeEnabled = worktree
+	return d
+}
+
+func dialogFitForkPicker(w, h, cursor int) *ForkDialog {
+	d := dialogFitFork(w, h, true)
+	d.focusIndex = 2 // name, group, branch
+	d.updateFocus()
+	d.branchPicker.visible = true
+	d.branchPicker.branches = []string{"main", "feature/one", "feature/two"}
+	d.branchPicker.cursor = cursor
+	d.branchPicker.offset = 0
 	return d
 }
 

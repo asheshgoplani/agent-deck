@@ -828,7 +828,16 @@ func (d *ForkDialog) focusedRow(rows []string, optionsRow int) int {
 	case forkFocusConductor:
 		return find(0, prefix("▶ Conductor:")) + 1 + d.conductorCursor
 	case forkFocusBranch:
-		return find(0, prefix("▶ Branch:"))
+		branchRow := find(0, prefix("▶ Branch:"))
+		if d.branchPicker != nil && d.branchPicker.IsVisible() && len(d.branchPicker.branches) > 0 {
+			selected := "▶ " + d.branchPicker.branches[d.branchPicker.cursor]
+			for i := branchRow + 1; i < len(rows); i++ {
+				if strings.Contains(stripAnsi(rows[i]), selected) {
+					return i
+				}
+			}
+		}
+		return branchRow
 	case forkFocusCarryState:
 		return find(0, marked("Carry parent state"))
 	case forkFocusGitignored:

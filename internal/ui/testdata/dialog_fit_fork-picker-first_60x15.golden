@@ -1,0 +1,15 @@
+    ╭──────────────────────────────────────────────────╮    
+    │  Fork Session                                    │    
+    │                                                  │    
+    │  ▲ more above                                    │    
+    │    [x] Create in worktree                        │    
+    │                                                  │    
+    │  ▶ Branch:                                       │    
+    │    > fork/probe                                  │    
+    │    ─ branches (↑↓/Enter/Esc) ─                   │    
+    │      ▶ main                                      │    
+    │        feature/one                               │    
+    │  ▼ more below                                    │    
+    │  Type filter │ ↑↓ navigate                       │    
+    │  Enter select │ Esc close                        │    
+    ╰──────────────────────────────────────────────────╯    
