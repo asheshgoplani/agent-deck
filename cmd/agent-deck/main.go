@@ -318,13 +318,13 @@ func inheritedEnviron() []string {
 	return env
 }
 
-func configureEventProfile(profile string) (string, error) {
+func configureEventProfile(profile string) error {
 	selected, err := session.ResolveProfileForStorage(profile)
 	if err != nil {
-		return "", err
+		return err
 	}
 	events.SetProfile(selected)
-	return selected, nil
+	return nil
 }
 
 func main() {
@@ -342,7 +342,7 @@ func main() {
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
 	applyProfileFlag(profile)
-	if _, err := configureEventProfile(profile); err != nil {
+	if err := configureEventProfile(profile); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to resolve events profile: %v\n", err)
 		os.Exit(1)
 	}

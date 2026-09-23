@@ -19,10 +19,10 @@ func TestEventProfileUsesStorageFallbackForMissingInference(t *testing.T) {
 	if err := session.SaveConfig(&session.Config{DefaultProfile: "work"}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := configureEventProfile("")
-	if err != nil {
+	if err := configureEventProfile(""); err != nil {
 		t.Fatal(err)
 	}
+	got := events.CurrentProfile()
 	if got != "work" {
 		t.Fatalf("events profile = %q, want storage fallback work", got)
 	}
