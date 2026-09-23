@@ -487,7 +487,7 @@ func listBodyLines(styledPane string) []string {
 	body := lines[start:footerIdx]
 	out := body[:0:0]
 	for _, l := range body {
-		if !isSeparatorLine(l) { // a stray divider can still land inside this range
+		if !isSeparatorLine(sessionsColumn(l)) { // preview dividers can share a real session row
 			out = append(out, l)
 		}
 	}
