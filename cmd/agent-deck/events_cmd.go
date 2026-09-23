@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -31,7 +32,7 @@ func handleEvents(profile string, args []string) {
 		fmt.Fprintln(os.Stdout, eventsUsage)
 		return
 	case "follow":
-		handleEventsFollow(args[1:])
+		handleEventsFollow(profile, args[1:])
 	case "stats":
 		handleEventsStats(args[1:])
 	case "publish":
@@ -51,7 +52,7 @@ func handleEvents(profile string, args []string) {
 // with every other agent-deck command's envelope convention; NDJSON is the
 // only output shape this command has, so the flag doesn't change anything.
 // --kind and --session only filter what is printed; cursors stay the bus's.
-func handleEventsFollow(args []string) {
+func handleEventsFollow(profile string, args []string) {
 	fs := flag.NewFlagSet("agent-deck events follow", flag.ExitOnError)
 	afterFlag := fs.Uint64("after", 0, "resume after this cursor (0 = from the beginning of the retained log)")
 	_ = fs.Bool("json", true, "stream NDJSON frames (always on; kept for CLI symmetry)")
@@ -73,6 +74,15 @@ func handleEventsFollow(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// A client that only follows the bus still gets queued sends that a
+	// reboot left unfinished delivered: their workers restart here.
+	// Read-only: the queue directory is only looked at, never created.
+	if p, err := session.ResolveProfileForStorage(profile); err == nil {
+		if dir, err := session.GetProfileDir(p); err == nil {
+			kickPendingSendWorkers(profile, sendqueue.Dir(dir), "")
+		}
+	}
 
 	bus := events.Default()
 	sub, err := bus.Subscribe(ctx, events.Cursor(*afterFlag))

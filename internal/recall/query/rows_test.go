@@ -618,21 +618,65 @@ func TestRowsFromTurnsCoversV1Kinds(t *testing.T) {
 func TestFindLanded(t *testing.T) {
 	ctx := context.Background()
 	path := rowsFixture(t, "claude")
-	if id, ts, ok := FindLanded(ctx, "claude", path, 0, "  Write hello.py,   नमस्ते 🚀 "); !ok || id != "u1" || ts != "2026-09-23T08:00:03.000Z" {
+	var zero time.Time
+	if id, ts, ok := FindLanded(ctx, "claude", path, 0, "  Write hello.py,   नमस्ते 🚀 ", zero); !ok || id != "u1" || ts != "2026-09-23T08:00:03.000Z" {
 		t.Fatalf("user row: %q %q %v", id, ts, ok)
 	}
 	// An absorbed mid-turn message lands as its queue row.
-	if id, _, ok := FindLanded(ctx, "claude", path, 0, "MIDTURN: are you there?"); !ok || !strings.HasPrefix(id, "queue:2026-09-23T08:00:15.000Z:") {
+	if id, _, ok := FindLanded(ctx, "claude", path, 0, "MIDTURN: are you there?", zero); !ok || !strings.HasPrefix(id, "queue:2026-09-23T08:00:15.000Z:") {
 		t.Fatalf("queued row: %q %v", id, ok)
 	}
+	// A dequeued message lands as the user row that replaces its queue copy.
+	if id, _, ok := FindLanded(ctx, "claude", path, 0, "next task please", zero); !ok || id != "u2" {
+		t.Fatalf("dequeued message: %q %v", id, ok)
+	}
 	info, _ := os.Stat(path)
-	if _, _, ok := FindLanded(ctx, "claude", path, info.Size(), "Write hello.py, नमस्ते 🚀"); ok {
+	if _, _, ok := FindLanded(ctx, "claude", path, info.Size(), "Write hello.py, नमस्ते 🚀", zero); ok {
 		t.Fatal("found text before the offset")
 	}
-	if _, _, ok := FindLanded(ctx, "claude", path, 0, "never sent"); ok {
+	if _, _, ok := FindLanded(ctx, "claude", path, 0, "never sent", zero); ok {
 		t.Fatal("found a message that was never sent")
 	}
-	if id, _, ok := FindLanded(ctx, "codex", rowsFixture(t, "codex"), 0, "Run hello.py"); !ok || id != "msg_u1" {
+	if id, _, ok := FindLanded(ctx, "codex", rowsFixture(t, "codex"), 0, "Run hello.py", zero); !ok || id != "msg_u1" {
 		t.Fatalf("codex user row: %q %v", id, ok)
+	}
+}
+
+// TestFindLandedNeedsDeliveryEvidence: an enqueue is not delivery (review of
+// the macapp core surface). "oops typo" was enqueued and then removed
+// without being absorbed, so it never reached the model; a message still
+// only enqueued has not landed yet either.
+func TestFindLandedNeedsDeliveryEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := rowsFixture(t, "claude")
+	if id, _, ok := FindLanded(ctx, "claude", path, 0, "oops typo", time.Time{}); ok {
+		t.Fatalf("an enqueue that was removed unabsorbed counted as landed: %s", id)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	partial := filepath.Join(t.TempDir(), "partial.jsonl")
+	if err := os.WriteFile(partial, []byte(strings.Join(lines[:17], "")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if id, _, ok := FindLanded(ctx, "claude", partial, 0, "MIDTURN: are you there?", time.Time{}); ok {
+		t.Fatalf("a message still only enqueued counted as landed: %s", id)
+	}
+}
+
+// TestFindLandedIgnoresEarlierIdenticalText: with no byte offset known at
+// send time the scan starts at 0, and an earlier message with the same text
+// must not be taken for this send.
+func TestFindLandedIgnoresEarlierIdenticalText(t *testing.T) {
+	ctx := context.Background()
+	path := rowsFixture(t, "claude")
+	sentAt := time.Date(2026, 9, 23, 8, 5, 0, 0, time.UTC) // after every row in the fixture
+	if id, _, ok := FindLanded(ctx, "claude", path, 0, "next task please", sentAt); ok {
+		t.Fatalf("an earlier identical message counted as this send: %s", id)
+	}
+	if id, _, ok := FindLanded(ctx, "claude", path, 0, "next task please", sentAt.Add(-5*time.Minute+23*time.Second)); !ok || id != "u2" {
+		t.Fatalf("a row stamped after the send: %q %v", id, ok)
 	}
 }

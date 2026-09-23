@@ -295,7 +295,7 @@ func handleRecallFollowRows(profile, ref, after string, f rowsFlags, withStatus 
 	enc := json.NewEncoder(os.Stdout)
 	var delivery func() []query.RowFrame
 	if t.inst != nil {
-		delivery = deliveryFrames(t.storage, t.inst.ID)
+		delivery = deliveryFrames(profile, t.storage, t.inst.ID)
 	}
 	err = query.FollowRows(ctx, t.src, after, 0, status, delivery, func(frame query.RowFrame) error {
 		return enc.Encode(frame)

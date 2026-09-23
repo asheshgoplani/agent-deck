@@ -3159,13 +3159,14 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(2)
 		}
 		var imgErr error
-		message, _, imgErr = attachImages(inst, message, images, time.Now())
+		var copies []string
+		message, copies, imgErr = attachImages(inst, message, images, time.Now())
 		if imgErr != nil {
 			out.Error(imgErr.Error(), ErrCodeInvalidOperation)
 			os.Exit(2)
 		}
 		if *queue {
-			queueSend(profile, storage, inst, message, images, out)
+			queueSend(profile, storage, inst, message, copies, out)
 			return
 		}
 	}

@@ -79,3 +79,60 @@ func TestTryLockIsExclusivePerTarget(t *testing.T) {
 	l2.Release()
 	l3.Release()
 }
+
+// TestNextIDIsMonotonicWithinAMillisecond: callers in the same millisecond,
+// or behind a clock that stepped back, still get ids in call order.
+func TestNextIDIsMonotonicWithinAMillisecond(t *testing.T) {
+	dir := t.TempDir()
+	now := time.UnixMilli(1790150376000)
+	var ids []string
+	for i := 0; i < 200; i++ {
+		at := now
+		if i == 100 {
+			at = now.Add(-time.Second) // clock stepped back
+		}
+		id, err := NextID(dir, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !validID(id) {
+			t.Fatalf("invalid id %q", id)
+		}
+		if len(ids) > 0 && id <= ids[len(ids)-1] {
+			t.Fatalf("id %d %s does not sort after %s", i, id, ids[len(ids)-1])
+		}
+		ids = append(ids, id)
+	}
+}
+
+func TestPendingTargetsAndPrune(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().Add(-10 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	recent := time.Now().UTC().Format(time.RFC3339Nano)
+	mk := func(sess, state string, settled bool, updated string) string {
+		id, _ := NextID(dir, time.Now())
+		r := &Record{SendID: id, State: state, SessionID: sess, Settled: settled, UpdatedAt: updated}
+		if err := Save(dir, r); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	oldLanded := mk("a", StateLanded, false, old)
+	mk("a", StateLanded, false, recent)
+	mk("b", StateTyping, false, old)
+	mk("c", StateQueued, false, recent)
+	oldSettled := mk("d", StateTyped, true, old)
+	if got := PendingTargets(dir); len(got) != 2 || got[0] != "b" || got[1] != "c" {
+		t.Fatalf("pending targets = %v", got)
+	}
+	Prune(dir, time.Now().Add(-RetainFinished))
+	recs, _ := List(dir, "")
+	if len(recs) != 3 {
+		t.Fatalf("after prune %d records", len(recs))
+	}
+	for _, r := range recs {
+		if r.SendID == oldLanded || r.SendID == oldSettled {
+			t.Fatalf("old finished record kept: %+v", r)
+		}
+	}
+}
