@@ -14,7 +14,7 @@ import (
 func TestTreeConnectorFrames(t *testing.T) {
 	forceTrueColorProfile()
 	for _, size := range []struct{ width, height int }{{80, 24}, {120, 40}, {200, 50}} {
-		for _, scenario := range []string{"nested", "collapsed-siblings", "remotes"} {
+		for _, scenario := range []string{"nested", "collapsed-siblings", "remotes", "deep-groups", "empty-group", "status-filter"} {
 			name := fmt.Sprintf("tree-%s-%dx%d", scenario, size.width, size.height)
 			t.Run(name, func(t *testing.T) {
 				h := treeConnectorFrameHome(scenario)
@@ -23,6 +23,7 @@ func TestTreeConnectorFrames(t *testing.T) {
 				if !strings.Contains(frame, "└─") {
 					t.Fatal("fixture did not render a closing connector")
 				}
+				t.Logf("rendered frame:\n%s", strings.TrimRight(stripAnsi(frame), "\n"))
 				assertFunctionalGolden(t, name, frame)
 			})
 		}
@@ -69,6 +70,24 @@ func treeConnectorFrameHome(scenario string) *Home {
 				{ID: "remote-nested", Title: "remote-nested", Tool: "claude", Status: "idle", Group: "work/api", RemoteName: "lab"},
 			},
 		}
+	case "deep-groups":
+		instances = []*session.Instance{
+			makeSession("deep-root", "alpha", nil),
+			makeSession("deep-leaf", "alpha/one/two/three/four", nil),
+		}
+	case "empty-group":
+		archived := makeSession("archived-only", "alpha/empty", nil)
+		archived.ArchivedAt = time.Unix(1, 0)
+		instances = []*session.Instance{
+			makeSession("visible-root", "alpha", nil), archived,
+		}
+	case "status-filter":
+		running := makeSession("running-last", "alpha", nil)
+		running.Status = session.StatusRunning
+		instances = []*session.Instance{
+			makeSession("idle-hidden", "alpha", nil), running,
+		}
+		h.statusFilter = session.StatusRunning
 	}
 	h.instances = instances
 	h.instanceByID = make(map[string]*session.Instance, len(instances))
