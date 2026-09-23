@@ -194,8 +194,9 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				// bullet lines or merely named delegate_task matched busy
 				// forever (instance stuck "running"). Neither pi nor
 				// pi-subagents prints "delegate_task"; a live subagent runs
-				// inside a turn, under pi's braille "Working (escape to
-				// interrupt)" loader, which the spinner detection covers.
+				// inside a turn, under pi's "── ⠴ Working ──" banner, which
+				// the spinner detection covers (real capture: corpus frame
+				// pi-local-subagent-working_747fe48a).
 				`re:(?m)^\[subagent\]`,
 				`re:(?m)^\[running\]`,
 			},

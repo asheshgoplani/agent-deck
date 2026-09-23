@@ -20,7 +20,8 @@ func piCorpusFrame(t *testing.T, name string) string {
 
 // Review r2 P1, through GetStatus in a fresh process: an idle pi pane whose
 // finished answer names delegate_task must not read running, and a live pi
-// subagent (Working loader under the subagent tool call) must.
+// subagent (real capture: "── ⠴ Working ──" banner over the running
+// subagent step) must.
 func TestAuditR3_PiDelegateTaskProseVsLiveSubagent(t *testing.T) {
 	cases := []struct {
 		frame     string
@@ -29,7 +30,8 @@ func TestAuditR3_PiDelegateTaskProseVsLiveSubagent(t *testing.T) {
 		wantTmux  string
 	}{
 		{"pi-synth-idle-delegate-task-prose", StatusRunning, StatusWaiting, "waiting"},
-		{"pi-synth-subagent-working", StatusWaiting, StatusRunning, "active"},
+		{"pi-local-idle-delegate-task-prose_747fe48a", StatusRunning, StatusWaiting, "waiting"},
+		{"pi-local-subagent-working_747fe48a", StatusWaiting, StatusRunning, "active"},
 	}
 	for _, c := range cases {
 		t.Run(c.frame, func(t *testing.T) {

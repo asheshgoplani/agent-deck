@@ -90,4 +90,5 @@ synth-claude-spinner-12-subagents	claude	active	SYNTHETIC (review r1): live spin
 synth-claude-idle-12-subagent-rows	claude	waiting	SYNTHETIC (review r1): idle prompt + 12 roster rows under the footer
 synth-claude-awaited-agents-above-16-roster-rows	claude	active	SYNTHETIC: turn handed off to 3 background agents, 16 roster rows push the Waiting line out of the 20-line window
 pi-synth-idle-delegate-task-prose	pi	waiting	SYNTHETIC (review r2 P1): idle composer, finished answer mentions delegate_task in prose; layout of pi-local-tets
-pi-synth-subagent-working	pi	active	SYNTHETIC from pi source (pi-tui Loader "Working (escape to interrupt)", pi-subagents 0.51.0 subagent tool call, compact running row); no live subagent pane was available to capture
+pi-local-subagent-working_747fe48a	pi	active	REAL pi 0.85.1 + pi-subagents 0.51.0, captured 2026-09-23 from a live agent-deck pi session mid subagent_wait: async delegate run "running", step row "⠇ delegate · step 1/1", "── ⠴ Working ──" banner, "1 active agent" row; token/cost status line present while busy
+pi-local-idle-delegate-task-prose_747fe48a	pi	waiting	REAL pi 0.85.1, same session after the turn ended: finished answer names delegate_task in prose, token/cost composer (installed v1.16.16 reported this pane running)
