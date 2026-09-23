@@ -21570,6 +21570,9 @@ func (h *Home) renderSessionItem(
 	}
 
 	tool := toolStyle.Render(" " + instTool)
+	if listWidth > 0 && listWidth < 40 {
+		tool = ""
+	}
 
 	// Supervisor badge for the maestro row.
 	maestroBadge := ""
