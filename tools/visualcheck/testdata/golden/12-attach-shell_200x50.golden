@@ -47,4 +47,4 @@ $
 
 
 
-[agentdeck_shell-live_6b256090] 0:sh*                                                                                                        ctrl+q detach · ctrl+s switch │ 📁 shell-live | shell-live
+[agentdeck_shell-live_<id>] 0:sh*                                                                                                        ctrl+q detach · ctrl+s switch │ 📁 shell-live | shell-live
