@@ -227,6 +227,7 @@ func printSessionHelp() {
 	fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 	fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
+	fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
 	fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (resume_flag after reboot)")
 	fmt.Println()
@@ -1940,6 +1941,9 @@ func handleSessionShow(profile string, args []string) {
 	// ambiguous with absence-of-value, and here that ambiguity cost a user a
 	// bug report against the wrong component.
 	jsonData["wrapper"] = inst.Wrapper
+	if inst.Favorite {
+		jsonData["favorite"] = true
+	}
 
 	// macapp-core-needs §3: the live native transcript and every native id
 	// seen for this session (Codex re-creates its rollout after the trust
@@ -2177,6 +2181,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  model              Per-session model override (e.g. opus/sonnet/haiku or a gemini model); persists across restart (#1436). Empty clears it.")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
+		fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
 		fmt.Println("  tool-session-id    Custom [tools.*] conversation ID (for resume_flag after reboot)")
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")

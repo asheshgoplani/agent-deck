@@ -2972,6 +2972,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Channels          []string  `json:"channels,omitempty"`
 		ExtraArgs         []string  `json:"extra_args,omitempty"`
 		Color             string    `json:"color,omitempty"` // issue #391
+		Favorite          bool      `json:"favorite,omitempty"`
 		Archived          bool      `json:"archived"`
 		ArchivedAt        time.Time `json:"archived_at,omitempty"`
 		SupersededBy      string    `json:"superseded_by,omitempty"`
@@ -3020,6 +3021,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Channels:          inst.Channels,
 			ExtraArgs:         inst.ExtraArgs,
 			Color:             inst.Color,
+			Favorite:          inst.Favorite,
 			Archived:          inst.IsArchived(),
 			ArchivedAt:        inst.ArchivedAt,
 			SupersededBy:      inst.SupersededBy,

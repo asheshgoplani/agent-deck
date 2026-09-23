@@ -507,6 +507,11 @@ type Instance struct {
 	// so existing sessions are unaffected on upgrade.
 	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
 
+	// Favorite marks the session as a favourite: `session set <id> favorite
+	// true|false`, shown in list/show JSON. Persisted in the tool_data extras
+	// zone (favorite_persist.go).
+	Favorite bool `json:"favorite,omitempty"`
+
 	// IsForkAwaitingStart signals that this instance was produced by a
 	// fork builder and must run a pre-built fork command verbatim on the
 	// first Start() (#745). Claude fork targets usually store that command
