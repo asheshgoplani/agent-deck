@@ -7147,8 +7147,17 @@ func ListAgentDeckSessionsOnSocket(socket string) ([]string, error) {
 // ListAgentDeckCodexSessionIDsOnSocket reads all managed session bindings in
 // one tmux call. Session environment variables expand in list-sessions format
 // on the named server, so ownership refresh does not fork once per session.
+//
+// A format looks a bare variable up in the session environment first and then
+// in the server's GLOBAL environment (tmux FORMATS: "or the name of an
+// environment variable"; verified on 3.3a, 3.6a and 3.7b). Only the session
+// environment is a binding: a CODEX_SESSION_ID the server inherited from the
+// client that started it (a Codex tool shell, a Codex conductor) would
+// otherwise be reported for every unbound session and exclude the real
+// owner. So the global value is read once, and every row that merely echoes
+// it is resolved with the per-session read the old code used for all rows.
 func ListAgentDeckCodexSessionIDsOnSocket(socket string) (map[string]string, error) {
-	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}\t#{E:CODEX_SESSION_ID}")
+	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}\t#{CODEX_SESSION_ID}")
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "no sessions") {
 			return map[string]string{}, nil
@@ -7168,7 +7177,56 @@ func ListAgentDeckCodexSessionIDsOnSocket(socket string) (map[string]string, err
 			bindings[name] = id
 		}
 	}
+	if len(bindings) == 0 {
+		return bindings, nil
+	}
+	global, err := globalEnvironmentValue(socket, "CODEX_SESSION_ID")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read global Codex session binding: %w", err)
+	}
+	if global == "" {
+		return bindings, nil
+	}
+	for name, id := range bindings {
+		if id != global {
+			continue
+		}
+		// Ambiguous: the session's own environment may hold the same value
+		// (bound by the process that also started the server) or nothing.
+		peer := &Session{Name: name, SocketName: socket}
+		own, err := peer.ReadEnvironment("CODEX_SESSION_ID")
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve Codex session binding for %s: %w", name, err)
+		}
+		if own == "" {
+			delete(bindings, name)
+		} else {
+			bindings[name] = own
+		}
+	}
 	return bindings, nil
+}
+
+// globalEnvironmentValue reads one variable from the server's global
+// environment. An unset variable (tmux prints "unknown variable" and exits 1)
+// and an unset marker ("-NAME") both read as empty.
+func globalEnvironmentValue(socket, key string) (string, error) {
+	output, err := runBoundedOutput(socket, "show-environment", "-g", key)
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown variable") {
+			return "", nil
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && strings.Contains(string(exitErr.Stderr), "unknown variable") {
+			return "", nil
+		}
+		return "", err
+	}
+	line := strings.TrimSpace(string(output))
+	if value, ok := strings.CutPrefix(line, key+"="); ok {
+		return value, nil
+	}
+	return "", nil
 }
 
 // SetStatusLeft sets the left side of tmux status bar for a session.
