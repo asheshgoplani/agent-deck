@@ -14,9 +14,9 @@ SESSIONS                                   │ PREVIEW
 2·▾ beta (4) ◐ 1                           │ Fork:    f quick fork, F fork with options
    ├─ ✕ gemini-idle gemini                 │
    ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Output ───────────────────────────────
-  ▶├─ ◐ claude-i18n claude <id>    │ Claude Code synthetic fixture
+  ▶├─ ◐ claude-i18n claude                 │ Claude Code synthetic fixture
    └─ ○ shell-live shell                   │ ❯
-  ▾ remotes/lab (0) · unreachable: host d… │ fixture received: VC_I18N
+  ▾ remotes/lab (0) · host down            │ fixture received: VC_I18N
                                            │ esc to interrupt
                                            │ नमस्ते दुनिया 🚀🌟 यह परीक्षण है।
                                            │ ❯
@@ -37,4 +37,4 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP …   ↑↓ Nav │ q Quit
+Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  T  Fresh  f/F  Fork  m  MCP  v  Both …     ↑↓ Nav │ ? Help │ q Quit

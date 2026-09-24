@@ -27,7 +27,15 @@ type visualCheckStep struct {
 // been captured.
 var visualCheckSteps = []visualCheckStep{
 	{"01-list", stepList},
+	{"15-jump", stepJump},
+	{"16-view-cycle", stepViewCycle},
+	{"17-local-search", stepLocalSearch},
+	{"18-remote-unreachable", stepRemoteUnreachable},
+	{"15-state-visibility", stepStateVisibility},
 	{"02-preview", stepPreview},
+	{"19-fork-options", stepForkOptions},
+	{"20-plugin-manager", stepPluginManager},
+	{"21-watchers", stepWatchers},
 	{"03-group-view", stepGroupView},
 	{"04-expand-collapse", stepExpandCollapse},
 	{"05-create-dialog", stepCreateDialog},
@@ -43,9 +51,71 @@ var visualCheckSteps = []visualCheckStep{
 }
 
 var expectedFrames = []string{
-	"01-list", "02-preview", "03-group-view", "04-collapsed", "04-expanded",
+	"01-list", "15-jump", "16-view-cycle", "17-local-search", "17-local-search-shell", "18-remote-unreachable",
+	"02-preview", "19-fork-options", "20-plugin-manager", "21-watchers",
+	"03-group-view", "04-collapsed", "04-expanded",
 	"05-create-dialog", "06-edit", "07-switcher", "08-mcp-manager", "09-settings",
 	"10-help", "11-update-banner", "12-attach-shell", "13-detach-shell", "14-fork",
+	"15-filter-running", "16-filter-waiting", "17-time-today", "18-view-active-top",
+	"19-archived-empty", "20-stopped-preview", "21-filter-empty",
+}
+
+func stepStateVisibility(w *widthRun) error {
+	// The jump, view-cycle, search and remote steps run first and leave the
+	// cursor on remotes/lab; start from the first row, as after 01-list.
+	if err := w.moveCursorToText(galleryRowOrder[0], 40); err != nil {
+		return err
+	}
+	for _, state := range []struct{ key, frame string }{
+		{"!", "15-filter-running"},
+		{"@", "16-filter-waiting"},
+		{"&", "21-filter-empty"},
+		{"*", "17-time-today"},
+		{"t", "18-view-active-top"},
+		{"^", "19-archived-empty"},
+	} {
+		if err := w.send(state.key); err != nil {
+			return err
+		}
+		// The baseline hides the selected state at 80 columns. Wait for a
+		// stable list rather than using the new label as a capture gate.
+		time.Sleep(100 * time.Millisecond)
+		if err := waitScreen(w, 5*time.Second, "SESSIONS"); err != nil {
+			return fmt.Errorf("%s: %w", state.frame, err)
+		}
+		w.capture(state.frame)
+		switch state.key {
+		case "!", "@", "&":
+			if err := w.send("0"); err != nil {
+				return err
+			}
+		case "*", "t":
+			remaining := 3 // four time-filter modes
+			if state.key == "t" {
+				remaining = 2 // three view modes
+			}
+			for i := 0; i < remaining; i++ {
+				if err := w.send(state.key); err != nil {
+					return err
+				}
+			}
+		case "^":
+			if err := w.send("^"); err != nil {
+				return err
+			}
+		}
+		if err := w.waitContains("alpha", 5*time.Second); err != nil {
+			return fmt.Errorf("restore after %s: %w", state.frame, err)
+		}
+	}
+	if err := w.moveCursorToText("claude-stopped", 40); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "claude-stopped"); err != nil {
+		return err
+	}
+	w.capture("20-stopped-preview")
+	return nil
 }
 
 func stepList(w *widthRun) error {
@@ -69,6 +139,75 @@ func stepList(w *widthRun) error {
 	return nil
 }
 
+func stepJump(w *widthRun) error {
+	if err := w.send("Space"); err != nil {
+		return err
+	}
+	marker := "Type hint"
+	if w.spec.width <= 100 {
+		marker = "a-z"
+	}
+	if err := waitScreen(w, 5*time.Second, marker, "alpha", "beta"); err != nil {
+		return err
+	}
+	w.capture("15-jump")
+	if err := w.send("Escape"); err != nil {
+		return err
+	}
+	return w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		return err == nil && strings.Contains(pane, "SESSIONS") && !strings.Contains(pane, marker), err
+	}, 5*time.Second)
+}
+
+func stepViewCycle(w *widthRun) error {
+	if err := w.send("t"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "idle / done"); err != nil {
+		return err
+	}
+	w.capture("16-view-cycle")
+	if err := w.send("t", "t"); err != nil { // restore normal list order
+		return err
+	}
+	return w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		return err == nil && !strings.Contains(pane, "idle / done") && !strings.Contains(pane, "empty groups"), err
+	}, 5*time.Second)
+}
+
+func stepLocalSearch(w *widthRun) error {
+	if err := w.send("/"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "Local Search"); err != nil {
+		return err
+	}
+	w.capture("17-local-search")
+	for i := 0; i < 10; i++ {
+		if err := w.send("Down"); err != nil {
+			return err
+		}
+	}
+	if err := waitScreen(w, 5*time.Second, "› shell-live"); err != nil {
+		return err
+	}
+	w.capture("17-local-search-shell")
+	return closeScreen(w, "Local Search")
+}
+
+func stepRemoteUnreachable(w *widthRun) error {
+	if err := w.moveCursorToText("remotes/lab", 40); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "Unreachable: host down"); err != nil {
+		return err
+	}
+	w.capture("18-remote-unreachable")
+	return nil
+}
+
 func stepPreview(w *widthRun) error {
 	if err := w.moveCursorToText("claude-i18n", 40); err != nil {
 		return err
@@ -78,6 +217,39 @@ func stepPreview(w *widthRun) error {
 	}
 	w.capture("02-preview")
 	return nil
+}
+
+func stepForkOptions(w *widthRun) error {
+	if err := w.send("F"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "Fork Session"); err != nil {
+		return err
+	}
+	w.capture("19-fork-options")
+	return closeScreen(w, "Fork Session")
+}
+
+func stepPluginManager(w *widthRun) error {
+	if err := w.send("L"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "Plugin Manager"); err != nil {
+		return err
+	}
+	w.capture("20-plugin-manager")
+	return closeScreen(w, "Plugin Manager")
+}
+
+func stepWatchers(w *widthRun) error {
+	if err := w.send("w"); err != nil {
+		return err
+	}
+	if err := waitScreen(w, 5*time.Second, "WATCHERS"); err != nil {
+		return err
+	}
+	w.capture("21-watchers")
+	return closeScreen(w, "WATCHERS")
 }
 
 // stepGroupView captures the group-scoped view (`agent-deck --group alpha`):
@@ -439,7 +611,8 @@ func stepFork(w *widthRun) error {
 			return strings.Contains(pane, "claude-waiting (fork)  ◐ waiting") &&
 				strings.Contains(pane, "Status:  clean"), nil
 		}
-		return strings.Contains(pane, "Claude Code synthetic fixture") &&
+		return strings.Contains(pane, "claude-waiting (fork)  ◐ waiting") &&
+			strings.Contains(pane, "Claude Code synthetic fixture") &&
 			!strings.Contains(pane, "Starting Claude session..."), nil
 	}, 30*time.Second); err != nil {
 		return fmt.Errorf("forked client did not settle: %w", err)

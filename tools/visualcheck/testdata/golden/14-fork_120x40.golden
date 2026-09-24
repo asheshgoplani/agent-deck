@@ -17,7 +17,7 @@ SESSIONS                                   │ PREVIEW
    ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Claude ───────────────────────────────
    ├─ ◐ claude-i18n claude                 │ Status:  ● Connected
    └─ ○ shell-live shell                   │ Session: <uuid>
-  ▾ remotes/lab (0) · unreachable: host d… │ Model:   tool default
+  ▾ remotes/lab (0) · host down            │ Model:   tool default
                                            │
                                            │ ─────────────────────────────── Output ───────────────────────────────
                                            │ Claude Code synthetic fixture
@@ -37,4 +37,4 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  m  MCP  v  Both …     ↑↓ Nav │ q Quit
+Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  T  Fresh  m  MCP  v  Both  s  Skills …     ↑↓ Nav │ ? Help │ q Quit

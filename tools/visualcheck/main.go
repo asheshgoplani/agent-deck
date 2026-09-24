@@ -77,6 +77,11 @@ func runMain(args []string) int {
 				reports = append(reports, frameReport{step: f.step, width: f.width, status: "ADVISORY", reason: f.advisory})
 				continue
 			}
+			if reason := clippedDialogBorder(f.scrub); reason != "" {
+				reports = append(reports, frameReport{step: f.step, width: f.width, status: "FAIL", reason: reason, frame: f.scrub})
+				failed = true
+				continue
+			}
 			st, cmpErr := compareGolden(f.step, f.width, f.scrub)
 			if cmpErr != nil {
 				fmt.Fprintln(os.Stderr, "compare golden:", cmpErr)

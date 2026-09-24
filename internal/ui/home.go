@@ -258,6 +258,7 @@ type Home struct {
 	storage            *session.Storage
 	groupTree          *session.GroupTree
 	flatItems          []session.Item // Flattened view for cursor navigation
+	keepEmptyFilter    bool           // Set by filter key presses; restored filters retain the old fallback.
 	liveSet            *pipeLiveSet   // sessions that should hold a live control pipe
 	focusedSessionName string         // tmux name of the cursor-selected session (focusMu)
 	focusMu            sync.Mutex     // protects focusedSessionName for the reconciler goroutine
@@ -2105,7 +2106,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.remotePolls = session.LoadRemotePolls()
 
 	// Apply default_filter from config if no filter was restored from persisted state.
-	// Auto-clears if no sessions match (handled in rebuildFlatItems).
+	// Restored and configured filters fall back to All when nothing matches.
 	if h.statusFilter == "" && h.defaultFilter != "" {
 		h.statusFilter = session.Status(h.defaultFilter)
 	}
@@ -3325,8 +3326,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 			}
 		}
-		// Auto-clear filter if it matches nothing but sessions exist
-		if len(filtered) == 0 && len(allItems) > 0 {
+		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter {
 			h.statusFilter = ""
 			h.flatItems = allItems
 		} else {
@@ -3388,8 +3388,8 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 				hasCandidates = true
 				if h.timeFilter.Matches(inst.DisplayLastActivityTime(), now) {
-					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
 					hasMatches = true
+					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
 					markGroupPathAndAncestors(groupsWithMatches, group.Path)
 				}
 			}
@@ -3398,14 +3398,14 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			for _, remote := range sessions {
 				hasCandidates = true
 				if remoteMatchesTime(remote) {
+					hasMatches = true
 					if activity, known := remote.LastActivity(); known {
 						h.recordTimeFilterExpiry(activity, now)
 					}
-					hasMatches = true
 				}
 			}
 		}
-		if hasCandidates && !hasMatches {
+		if hasCandidates && !hasMatches && !h.keepEmptyFilter {
 			h.timeFilter = session.TimeFilterAll
 		} else {
 			filtered := make([]session.Item, 0, len(h.flatItems))
@@ -3444,37 +3444,13 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
 	}
 
-	// Recompute IsLastInGroup on the final visible list. GroupTree.Flatten sets
-	// it over a group's full session list (archived sessions included), but the
-	// archived/status filtering and view-mode partitioning above can drop or
-	// reorder the trailing rows — leaving the flag on a session that is no longer
-	// visually last, so the last VISIBLE row renders ├─ instead of └─ (seen when
-	// a group's trailing sessions are archived). A group's session rows share the
-	// group's Path; walking backwards, the first row seen for a Path is the true
-	// last row of that group's current segment. Only top-level sessions drive the
-	// └─ connector (sub-sessions use IsLastSubSession), so only they are rewritten
-	// here. Runs before window injection so injected windows inherit the flag.
-	seenLaterRowInGroup := make(map[string]bool)
-	for i := len(h.flatItems) - 1; i >= 0; i-- {
-		it := &h.flatItems[i]
-		if it.Type == session.ItemTypeGroup {
-			// A group header starts a fresh segment for its Path. View-mode
-			// partitioning can duplicate a header and split one group's rows into
-			// separate top/bottom sections that each end with their own └─, so a
-			// later section's "seen" must not leak backward across the header into
-			// an earlier section of the same Path.
-			delete(seenLaterRowInGroup, it.Path)
-			continue
-		}
-		if it.Type != session.ItemTypeSession || it.Session == nil {
-			continue
-		}
-		isLastRow := !seenLaterRowInGroup[it.Path]
-		seenLaterRowInGroup[it.Path] = true
-		if !it.IsSubSession {
-			it.IsLastInGroup = isLastRow
-		}
-	}
+	// Recompute IsLastInGroup, IsLastSubSession and ParentIsLastInGroup on the
+	// final visible list. GroupTree.Flatten sets them over a group's full
+	// session list (archived sessions included), but the archived/status
+	// filtering and view-mode partitioning above can drop or reorder the
+	// trailing rows. Runs before window injection so injected windows inherit
+	// the corrected flags.
+	h.flatItems = session.RecomputeTreeConnectors(h.flatItems)
 
 	// Inject window items after sessions that have 2+ windows
 	if len(h.flatItems) > 0 {
@@ -3494,6 +3470,15 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				continue
 			}
 
+			// A window hangs off the row above it, so it takes that row's own
+			// "am I last" flag: IsLastSubSession for a sub-session row,
+			// IsLastInGroup for a top-level row. Reading IsLastInGroup
+			// unconditionally left a dangling │ under the last visible
+			// sub-session's windows (R4).
+			parentIsLast := item.IsLastInGroup
+			if item.IsSubSession {
+				parentIsLast = item.IsLastSubSession
+			}
 			for winIdx, win := range wins {
 				expanded = append(expanded, session.Item{
 					Type:                session.ItemTypeWindow,
@@ -3506,8 +3491,8 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 					Path:                item.Path,
 					IsWindow:            true,
 					IsLastWindow:        winIdx == len(wins)-1,
-					IsLastInGroup:       item.IsLastInGroup && winIdx == len(wins)-1,
-					ParentIsLastInGroup: item.IsLastInGroup,
+					IsLastInGroup:       parentIsLast && winIdx == len(wins)-1,
+					ParentIsLastInGroup: parentIsLast,
 				})
 			}
 		}
@@ -3569,22 +3554,22 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	}
 
 	// Pre-compute root group numbers for O(1) hotkey lookup (replaces O(n) loop in renderGroupItem).
-	// View-mode partitioning can duplicate root headers; every copy of the same
-	// logical root reuses the same digit.
+	// View-mode partitioning can duplicate root headers; only the first copy
+	// owns the logical root's digit.
 	rootNum := 0
-	rootNums := make(map[string]int)
+	seenRoots := make(map[string]bool)
 	for i := range h.flatItems {
 		if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Level == 0 {
 			rootKey := h.flatItems[i].Path
 			if rootKey == "" && h.flatItems[i].Group != nil {
 				rootKey = h.flatItems[i].Group.Path
 			}
-			if n, ok := rootNums[rootKey]; ok {
-				h.flatItems[i].RootGroupNum = n
+			if seenRoots[rootKey] {
+				h.flatItems[i].RootGroupNum = 0
 				continue
 			}
 			rootNum++
-			rootNums[rootKey] = rootNum
+			seenRoots[rootKey] = true
 			h.flatItems[i].RootGroupNum = rootNum
 		}
 	}
@@ -3971,26 +3956,19 @@ func (h *Home) getVisibleHeight() int {
 	return maxVisible
 }
 
-// jumpToRootGroup jumps the cursor to the Nth root-level group (1-indexed)
-// Root groups are those at Level 0 (no "/" in path)
+// jumpToRootGroup jumps to the root header carrying the requested digit.
 func (h *Home) jumpToRootGroup(n int) {
 	if n < 1 || n > 9 {
 		return
 	}
 
-	// Find the Nth root group in flatItems
-	rootGroupCount := 0
 	for i, item := range h.flatItems {
-		if item.Type == session.ItemTypeGroup && item.Level == 0 {
-			rootGroupCount++
-			if rootGroupCount == n {
-				h.cursor = i
-				h.syncViewport()
-				return
-			}
+		if item.Type == session.ItemTypeGroup && item.Level == 0 && item.RootGroupNum == n {
+			h.cursor = i
+			h.syncViewport()
+			return
 		}
 	}
-	// If n exceeds available root groups, do nothing (no-op)
 }
 
 // Init initializes the model
@@ -5853,7 +5831,7 @@ type sessionRenderState struct {
 	account        string // Stored slot; empty means inherited, not a login identity.
 	accountDisplay accountPresentation
 	title          string // Instance.Title at snapshot time
-	autoName       bool   // session displays a captured/live task description
+	autoName       bool   // session may show a captured/live task description as a suffix
 	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
 	// archivedSuperseded mirrors session.VisibleInstances' exclusion: true
 	// for an archived cross-harness source still superseded by a "Restart
@@ -5863,15 +5841,6 @@ type sessionRenderState struct {
 	archivedSuperseded bool
 }
 
-// displaySessionTitle returns the label to render for a session row. For an
-// auto-named quick session (AutoName) it returns, in order of preference: the
-// live Claude task description (paneTitle), the last description we persisted,
-// then the session's own Title. Non-auto-named sessions always return Title
-// (the CLI handle or a user/Claude-chosen name).
-//
-// paneTitle must already be cleaned by cleanPaneTitle: an empty paneTitle means
-// idle/just-started. The persisted-description fallback keeps the meaningful
-// name visible on reopen before the session resumes and re-emits a live title.
 // shouldPersistAutoNameDesc decides whether the background status loop should
 // write a new task description for an auto-named session, given the live
 // (already-cleaned) pane title and the value last persisted for it. It returns
@@ -5887,18 +5856,8 @@ func shouldPersistAutoNameDesc(autoName bool, paneTitle, lastPersisted string) (
 	return paneTitle, true
 }
 
-func displaySessionTitle(inst *session.Instance, paneTitle string) string {
-	if inst.GetAutoName() {
-		// Prefer the live task description; fall back to the last one we
-		// persisted so the name still shows on reopen when the session is
-		// stopped/idle (no live pane title); finally fall back to the handle.
-		if paneTitle != "" {
-			return paneTitle
-		}
-		if desc := inst.GetAutoNameDescription(); desc != "" {
-			return desc
-		}
-	}
+// displaySessionTitle keeps the session name as the primary label.
+func displaySessionTitle(inst *session.Instance, _ string) string {
 	return inst.Title
 }
 
@@ -5907,44 +5866,32 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 // background UpdateStatus writer (#1753; see the field comments on
 // sessionRenderState). The overview row renderer must use this form.
 func displaySessionTitleFromState(state sessionRenderState) string {
-	if state.autoName {
-		if state.paneTitle != "" {
-			return state.paneTitle
-		}
-		if state.autoNameDesc != "" {
-			return state.autoNameDesc
-		}
-	}
 	return state.title
 }
 
-// sessionDisplayLabels returns the primary title and the optional dim secondary
-// subtitle to render for a session row, given its live pane title (already
-// cleaned by cleanPaneTitle). Both render paths — the overview
-// (renderSessionItem) and the session switcher (SessionSwitcher.View) — go
-// through this so the two cannot drift apart again: an auto-named session
-// promotes the live/persisted Claude task description to the primary title and
-// shows no subtitle (it would only duplicate the title); every other session
-// keeps its handle/name as the title and surfaces the pane title as the dim
-// subtitle. The subtitle is empty when there is nothing to show. Callers may
-// layer extra visibility policy on the subtitle — the overview, for instance,
-// only renders it for the selected row or when showPaneTitles is enabled.
+// sessionDisplayLabels keeps the session name first, with a useful pane or
+// saved task description as an optional dim suffix. Both overview and switcher
+// use this ordering.
 func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subtitle string) {
 	title = displaySessionTitle(inst, paneTitle)
-	if !inst.GetAutoName() {
-		subtitle = paneTitle
+	subtitle = paneTitle
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && subtitle == tmuxSess.Name {
+		subtitle = ""
+	}
+	if inst.GetAutoName() && subtitle == "" {
+		subtitle = cleanPaneTitle(inst.GetAutoNameDescription())
 	}
 	return title, subtitle
 }
 
 // sessionDisplayLabelsFromState is the lock-free form of sessionDisplayLabels,
-// reading everything from the render snapshot (#1753). Same policy: an
-// auto-named session promotes the task description to the title and shows no
-// subtitle; everything else keeps its handle and shows the pane title dim.
+// reading everything from the render snapshot (#1753). Auto-named sessions
+// show a live or saved task description after the name.
 func sessionDisplayLabelsFromState(state sessionRenderState) (title, subtitle string) {
 	title = displaySessionTitleFromState(state)
-	if !state.autoName {
-		subtitle = state.paneTitle
+	subtitle = state.paneTitle
+	if state.autoName && subtitle == "" {
+		subtitle = cleanPaneTitle(state.autoNameDesc)
 	}
 	return title, subtitle
 }
@@ -5963,7 +5910,10 @@ func cleanPaneTitle(title string) string {
 	})
 	cleaned = strings.TrimSpace(cleaned)
 	switch cleaned {
-	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+	case "", "Claude Code", "Gemini CLI", "Codex CLI", "bash", "zsh", "fish", "sh":
+		return ""
+	}
+	if host, err := os.Hostname(); err == nil && strings.EqualFold(cleaned, host) {
 		return ""
 	}
 	return cleaned
@@ -6067,6 +6017,9 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
 				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+				if state.paneTitle == tmuxSess.Name {
+					state.paneTitle = ""
+				}
 			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
 				if prevState, hadPrev := prev[inst.ID]; hadPrev {
 					state.paneTitle = prevState.paneTitle
@@ -10772,15 +10725,16 @@ func (h *Home) handleNotesEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-// overlayJumpHint places a badge-style hint label at the item name position.
-func (h *Home) overlayJumpHint(line string, hint string, buffer string, itemName string) string {
+// overlayJumpHint paints the hint in the row gutter.
+func (h *Home) overlayJumpHint(line string, hint string, buffer string) string {
+	return h.overlayJumpHintAtWidth(line, hint, buffer, h.width)
+}
+
+func (h *Home) overlayJumpHintAtWidth(line string, hint string, buffer string, width int) string {
 	if hint == "" {
 		return line
 	}
-
-	offset := findNameOffset(line, itemName)
-	visibleLen := lipgloss.Width(line)
-	if visibleLen < offset+len(hint) {
+	if cellWidth(line) < leftGutterWidth {
 		return line
 	}
 
@@ -10796,7 +10750,10 @@ func (h *Home) overlayJumpHint(line string, hint string, buffer string, itemName
 		}
 	}
 
-	return replaceVisibleRange(line, offset, len(hint), hintRendered)
+	if len(hint) > leftGutterWidth {
+		return cellTruncate(hintRendered+" "+ansi.Cut(line, leftGutterWidth, cellWidth(line)), width, "")
+	}
+	return replaceVisibleRange(line, 0, leftGutterWidth, hintRendered+strings.Repeat(" ", leftGutterWidth-len(hint)))
 }
 
 // jumpItemName returns the display name for an item, used to locate hint badge position.
@@ -12512,6 +12469,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 't' view-mode cycle above.
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.timeFilter = session.TimeFilterMode((int(h.timeFilter) + 1) % session.TimeFilterModeCount)
+		h.keepEmptyFilter = true
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.syncViewport()
 		h.saveUIState()
@@ -12857,11 +12815,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "0":
 		// Clear status filter (show all)
 		h.statusFilter = ""
+		h.keepEmptyFilter = true
 		h.rebuildFlatItems()
 		return h, nil
 
 	case "!", "shift+1":
 		// Filter to running sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusRunning {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12872,6 +12832,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "@", "shift+2":
 		// Filter to waiting sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusWaiting {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12882,6 +12843,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "#", "shift+3":
 		// Filter to idle sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusIdle {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12902,6 +12864,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case FilterKeyError, "shift+7":
 		// Filter to error sessions only.
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12912,6 +12875,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case FilterKeyActive, "shift+5":
 		// Filter to open sessions (excludes error/stopped)
+		h.keepEmptyFilter = true
 		if h.statusFilter == FilterModeActive {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12921,6 +12885,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case FilterKeyArchived, "shift+6":
+		h.keepEmptyFilter = true
 		if h.statusFilter == FilterModeArchived {
 			h.statusFilter = ""
 		} else {
@@ -15979,6 +15944,7 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	// Pre-populate dialog with source session info
 	conductors := h.activeConductorSessions()
 	suggestedParentID := h.suggestConductorParent()
+	h.forkDialog.SetSize(h.width, h.height)
 	h.forkDialog.ShowWithParentSandboxed(source.Title, source.ProjectPath, source.GroupPath, conductors, suggestedParentID, source.IsSandboxed())
 	return nil
 }
@@ -18201,7 +18167,7 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		if state.archivedSuperseded {
 			continue
 		}
-		switch state.status {
+		switch statusBucket(state.status) {
 		case session.StatusRunning:
 			running++
 		case session.StatusWaiting:
@@ -18235,19 +18201,19 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		age, known := h.remoteRowAgeLocked(name)
 		stale := known && age >= remoteRowStaleAge
 		for _, rs := range sessions {
-			switch rs.Status {
-			case "running":
+			switch statusBucket(session.Status(rs.Status)) {
+			case session.StatusRunning:
 				if stale {
 					continue
 				}
 				running++
-			case "waiting":
+			case session.StatusWaiting:
 				waiting++
-			case "idle":
+			case session.StatusIdle:
 				idle++
-			case "stopped":
+			case session.StatusStopped:
 				stopped++
-			case "error":
+			case session.StatusError:
 				errored++
 			}
 		}
@@ -18277,11 +18243,6 @@ func (h *Home) renderFilterBar() string {
 		Bold(true).
 		Padding(0, 1)
 
-	inactivePillStyle := lipgloss.NewStyle().
-		Foreground(ColorText).
-		Background(ColorSurface).
-		Padding(0, 1)
-
 	dimPillStyle := lipgloss.NewStyle().
 		Foreground(ColorText).
 		Faint(true).
@@ -18290,24 +18251,15 @@ func (h *Home) renderFilterBar() string {
 	// Build pills
 	var pills []string
 
-	// "All" / "Open" pill
+	// The first pill names the selected status even when its count pill is
+	// farther to the right than a narrow terminal can show.
 	isActive := h.statusFilter == FilterModeActive
-	activeLabel := h.activeFilterLabel
-	if activeLabel == "" {
-		activeLabel = "Open"
-	}
-	// "All" is shorter than "Open" — pad with a trailing space outside the pill
-	// so toggling doesn't shift the bar, without extending the highlight.
-	allPad := ""
-	if len(activeLabel) > len("All") {
-		allPad = " "
-	}
-	if isActive {
-		pills = append(pills, activePillStyle.Render(activeLabel))
-	} else if h.statusFilter == "" {
-		pills = append(pills, activePillStyle.Render("All")+allPad)
+	filterLabel := h.statusFilterLabel()
+	// Keep the existing All-pill spacing in the default view.
+	if h.statusFilter != "" {
+		pills = append(pills, activePillStyle.Render(filterLabel))
 	} else {
-		pills = append(pills, inactivePillStyle.Render("All")+allPad)
+		pills = append(pills, activePillStyle.Render("All")+" ")
 	}
 
 	runningLabel := fmt.Sprintf("● %d", running)
@@ -18413,10 +18365,34 @@ func (h *Home) renderFilterBar() string {
 		Render(pillsRow + hint)
 }
 
+func (h *Home) statusFilterLabel() string {
+	switch h.statusFilter {
+	case FilterModeActive:
+		if h.activeFilterLabel != "" {
+			return h.activeFilterLabel
+		}
+		return "Open"
+	case FilterModeArchived:
+		return "Archived"
+	case session.StatusRunning:
+		return "Running"
+	case session.StatusWaiting:
+		return "Waiting"
+	case session.StatusIdle:
+		return "Idle"
+	case session.StatusStopped:
+		return "Stopped"
+	case session.StatusError:
+		return "Error"
+	default:
+		return "All"
+	}
+}
+
 // fitFilterBarHint fits as many leading filter-bar hint segments as possible
 // into the space remaining after usedWidth (the pills already rendered),
-// dropping low-priority segments from the end (view mode, then time range,
-// then archived, ...) when the full hint would overflow h.width. A trailing
+// dropping legend segments before selected modes when the full hint would
+// overflow h.width. A trailing
 // ellipsis is appended only when a segment was actually dropped, and the cut
 // always lands on a "• " boundary rather than mid-word.
 func (h *Home) fitFilterBarHint(usedWidth int) string {
@@ -19095,8 +19071,23 @@ func (h *Home) renderSessionSwitcherOverlay(background string) string {
 	if card == "" {
 		return background
 	}
+	// Pad short card lines to the border. Separate a preview rule only where
+	// it actually touches the border; a fixed extra cell can erase "Output".
+	cardWidth := lipgloss.Width(card)
 	cardHeight := lipgloss.Height(card)
 	y := region.Y + max((region.Height-cardHeight)/2, 0)
+	cardLines := strings.Split(card, "\n")
+	backgroundLines := strings.Split(background, "\n")
+	for i, line := range cardLines {
+		cardLines[i] = line + strings.Repeat(" ", max(0, cardWidth-cellWidth(line)))
+		if row := y + i; cardWidth < region.Width && row >= 0 && row < len(backgroundLines) {
+			next := ansi.Strip(ansi.Cut(backgroundLines[row], region.X+cardWidth, region.X+cardWidth+1))
+			if next == "─" {
+				cardLines[i] += " "
+			}
+		}
+	}
+	card = strings.Join(cardLines, "\n")
 	// View runs the composite through the final clampViewToViewport.
 	return overlayAtCells(background, card, y, region.X)
 }
@@ -19316,9 +19307,11 @@ func renderShutdownSplash(width, height int, frame int, subtitle string) string 
 
 // EmptyStateConfig holds content for responsive empty state rendering
 type EmptyStateConfig struct {
-	Icon     string
-	Title    string
-	Subtitle string
+	Icon                string
+	Title               string
+	Subtitle            string
+	ShowSubtitleMinimal bool // Keep the selected filter visible in a narrow list card.
+	ShowAllHintsMinimal bool // Combined filters need both recovery keys in the list card.
 	// Body is extra plain (non-bulleted) lines shown between Subtitle and
 	// Hints, one per element, in "full" and "compact" tiers only (dropped in
 	// "minimal", same as Subtitle). Unset by every caller except the remote
@@ -19407,7 +19400,7 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 	content.WriteString(titleStyle.Render(config.Title))
 
 	// Subtitle - shown in full and compact modes
-	if config.Subtitle != "" && tier != "minimal" {
+	if config.Subtitle != "" && (tier != "minimal" || config.ShowSubtitleMinimal) {
 		content.WriteString("\n")
 		// Truncate subtitle if width is tight
 		subtitle := config.Subtitle
@@ -19444,7 +19437,11 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 
 	// Hints - progressive disclosure based on tier
 	if len(config.Hints) > 0 {
-		hintsToShow := config.Hints[:emptyStateHintCount(tier, len(config.Hints))]
+		hintCount := emptyStateHintCount(tier, len(config.Hints))
+		if tier == "minimal" && config.ShowAllHintsMinimal {
+			hintCount = len(config.Hints)
+		}
+		hintsToShow := config.Hints[:hintCount]
 
 		if tier == "full" {
 			content.WriteString("\n\n")
@@ -19476,6 +19473,51 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 
 	// Ensure exact height
 	return ensureExactHeight(rendered, height)
+}
+
+// filteredEmptyState describes an empty view without treating it as a new workspace.
+func (h *Home) filteredEmptyState() (EmptyStateConfig, bool) {
+	if h.statusFilter == FilterModeArchived {
+		hints := []string{FilterKeyArchived + " back to active"}
+		if key := h.actionKey(hotkeyArchiveSession); key != "" {
+			hints = append(hints, key+" archives a session")
+		}
+		return EmptyStateConfig{
+			Icon:     "◇",
+			Title:    "No archived sessions",
+			Subtitle: "Archive a session to see it here",
+			Hints:    hints,
+		}, true
+	}
+	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		return EmptyStateConfig{}, false
+	}
+	parts := make([]string, 0, 2)
+	if h.statusFilter != "" {
+		parts = append(parts, h.statusFilterLabel())
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		parts = append(parts, h.timeFilter.Label())
+	}
+	hints := make([]string, 0, 2)
+	if h.statusFilter != "" {
+		hints = append(hints, "0 show all")
+	}
+	timeKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeKey == "" {
+		timeKey = "*"
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		hints = append(hints, timeKey+" time range")
+	}
+	return EmptyStateConfig{
+		Icon:                "◇",
+		Title:               "No sessions match",
+		Subtitle:            strings.Join(parts, " · "),
+		ShowSubtitleMinimal: true,
+		ShowAllHintsMinimal: true,
+		Hints:               hints,
+	}, true
 }
 
 // ensureExactHeight is a critical helper that ensures any content has EXACTLY n lines.
@@ -20367,26 +20409,25 @@ func (h *Home) renderHelpBarCompact() string {
 		}
 	}
 
-	leftPart := strings.Join(contextHints, " ")
 	rightPart := strings.Join(globalHints, " ")
-	// Drop lowest-priority entries as whole units — context hints first (the
-	// rarer, more optional per-item actions), then global hints from the
-	// tail. MaxWidth alone can truncate a label halfway through instead of
-	// dropping a full entry, which is what used to leave a key glued onto
-	// whatever text survived truncation.
-	for lipgloss.Width(leftPart)+lipgloss.Width(rightPart)+6 > h.width {
-		if len(contextHints) > 0 {
-			contextHints = contextHints[:len(contextHints)-1]
-			leftPart = strings.Join(contextHints, " ")
-			continue
-		}
-		if len(globalHints) > 1 {
-			globalHints = globalHints[:len(globalHints)-1]
-			rightPart = strings.Join(globalHints, " ")
-			continue
-		}
-		break
+	for len(globalHints) > 1 && lipgloss.Width(rightPart)+6 > h.width {
+		globalHints = globalHints[:len(globalHints)-1]
+		rightPart = strings.Join(globalHints, " ")
 	}
+	// A long optional hint must not block a shorter later one from using
+	// the gap between the context and global blocks.
+	kept := make([]string, 0, len(contextHints))
+	for _, hint := range contextHints {
+		candidate := strings.Join(kept, " ")
+		if candidate != "" {
+			candidate += " "
+		}
+		candidate += hint
+		if lipgloss.Width(candidate)+lipgloss.Width(rightPart)+6 <= h.width {
+			kept = append(kept, hint)
+		}
+	}
+	leftPart := strings.Join(kept, " ")
 	padding := max(2, h.width-lipgloss.Width(leftPart)-lipgloss.Width(rightPart)-4)
 
 	content := leftPart + sep + strings.Repeat(" ", padding) + rightPart
@@ -20617,8 +20658,9 @@ func (h *Home) renderHelpBarFull() string {
 	if key := h.actionKey(hotkeySettings); key != "" {
 		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Settings"))
 	}
-	if key := h.actionKey(hotkeyHelp); key != "" {
-		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Help"))
+	helpKey := h.actionKey(hotkeyHelp)
+	if helpKey != "" {
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(helpKey+" Help"))
 	}
 
 	leftPrefix := contextLabel
@@ -20626,7 +20668,7 @@ func (h *Home) renderHelpBarFull() string {
 		leftPrefix = reloadIndicator + sep + leftPrefix
 	}
 
-	helpContent := h.fitFullFooter(fullFooterParts{
+	parts := fullFooterParts{
 		leftPrefix: leftPrefix,
 		primary:    primaryHints,
 		secondary:  secondaryHints,
@@ -20634,7 +20676,29 @@ func (h *Home) renderHelpBarFull() string {
 		nav:        navHint,
 		droppable:  droppableGlobal,
 		quit:       quitHint,
-	})
+	}
+	helpContent := h.fitFullFooter(parts)
+	// Keep the original order where Help already fits. On crowded 120-column
+	// rows, shorter labels make room for Help without losing existing actions.
+	if h.width >= 120 && h.width < 160 && helpKey != "" && !strings.Contains(helpContent, helpKey+" Help") {
+		shorten := func(hints []string) {
+			for i, hint := range hints {
+				hint = strings.Replace(hint, "New/Quick", "New", 1)
+				hint = strings.Replace(hint, "Restart Fresh", "Fresh", 1)
+				hint = strings.Replace(hint, "Enter", "⏎", 1)
+				hint = strings.Replace(hint, "Import", "Add", 1)
+				hint = strings.Replace(hint, "Group", "Grp", 1)
+				hints[i] = hint
+			}
+		}
+		shorten(primaryHints)
+		shorten(secondaryHints)
+		parts.nav += sep + droppableGlobal[len(droppableGlobal)-1]
+		parts.droppable = droppableGlobal[:len(droppableGlobal)-1]
+		parts.primary = primaryHints
+		parts.secondary = secondaryHints
+		helpContent = h.fitFullFooter(parts)
+	}
 
 	raw := lipgloss.JoinVertical(lipgloss.Left, border, helpContent)
 	return lipgloss.NewStyle().MaxWidth(h.width).Render(raw)
@@ -20662,7 +20726,7 @@ type fullFooterParts struct {
 //
 // It tries, in order: (1) the full left block with progressively fewer
 // droppable global hints, dropped lowest-priority-first (from the end of
-// droppable, i.e. Help before Settings before ...); (2) once even the bare
+// droppable, i.e. Help before Settings before ... when Help is not reserved); (2) once even the bare
 // Nav+Quit global block doesn't fit alongside the full left block,
 // progressively fewer context hints — also dropped lowest-priority-first,
 // i.e. from the end of secondary then the end of primary — with a trailing
@@ -21023,6 +21087,12 @@ func (h *Home) renderSessionList(width, height int) string {
 		if contentHeight < 5 {
 			contentHeight = 5
 		}
+		if config, filtered := h.filteredEmptyState(); filtered {
+			return lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Render(renderEmptyStateResponsive(config, contentWidth, contentHeight))
+		}
 
 		// Group-scoped empty state
 		if h.groupScope != "" {
@@ -21114,21 +21184,19 @@ func (h *Home) renderSessionList(width, height int) string {
 				nextItem = i + 1
 				continue
 			}
-			// Render item to temp buffer, then overlay hint badge at name position
+			// Render item to temp buffer, then paint the fixed row gutter.
 			var itemBuf strings.Builder
 			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot, width)
 			raw := itemBuf.String()
 			isMatch := h.jumpBuffer == "" || strings.HasPrefix(hint, h.jumpBuffer)
 
 			if isMatch {
-				// Get the display name for this item type
-				itemName := jumpItemName(item)
 				// Overlay hint on the first line, preserve rest exactly
 				if idx := strings.Index(raw, "\n"); idx >= 0 {
-					b.WriteString(h.overlayJumpHint(raw[:idx], hint, h.jumpBuffer, itemName))
+					b.WriteString(h.overlayJumpHintAtWidth(raw[:idx], hint, h.jumpBuffer, width))
 					b.WriteString(raw[idx:]) // includes \n and any subsequent lines
 				} else {
-					b.WriteString(h.overlayJumpHint(raw, hint, h.jumpBuffer, itemName))
+					b.WriteString(h.overlayJumpHintAtWidth(raw, hint, h.jumpBuffer, width))
 				}
 			} else {
 				// Non-matching: render normally (no dimming to preserve layout)
@@ -21288,13 +21356,24 @@ func (h *Home) renderGroupItem(
 	listWidth int,
 ) {
 	group := item.Group
+	groupName := group.Name
+	if h.groupViewMode == session.GroupViewActiveTop {
+		for i := 0; i < itemIndex && i < len(h.flatItems); i++ {
+			if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Path == item.Path {
+				groupName += " (idle)"
+				break
+			}
+		}
+	}
 
 	// Fixed-width hotkey gutter, reserved on every row (see leftGutterWidth). It
 	// holds the root group's hotkey number ("N·") when present; otherwise blanks.
 	// Keeping it a constant width means the number no longer eats a level of
 	// indentation, so a numbered root and its children stay properly nested.
 	gutter := strings.Repeat(" ", leftGutterWidth)
-	if item.Level == 0 && !selected && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
+	if selected {
+		gutter = SessionSelectionPrefix.Render("▶ ")
+	} else if item.Level == 0 && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
 		gutter = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
 	}
 
@@ -21331,7 +21410,11 @@ func (h *Home) renderGroupItem(
 	stats := groupStats[group.Path]
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
 	if h.compactEmbeddedSidebar() {
-		row := indent + expandIcon + " " + nameStyle.Render(group.Name) + countStr
+		prefix := ""
+		if selected {
+			prefix = gutter
+		}
+		row := prefix + indent + expandIcon + " " + nameStyle.Render(groupName) + countStr
 		row = fitCellWidth(row, max(1, listWidth))
 		if selected {
 			row = lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface).Render(row)
@@ -21355,7 +21438,7 @@ func (h *Home) renderGroupItem(
 		gutter,
 		indent,
 		expandIcon,
-		nameStyle.Render(group.Name),
+		nameStyle.Render(groupName),
 		countStr,
 		statusStr,
 	)
@@ -21595,6 +21678,9 @@ func (h *Home) renderSessionItem(
 	}
 
 	tool := toolStyle.Render(" " + instTool)
+	if listWidth > 0 && listWidth < 40 {
+		tool = ""
+	}
 
 	// Supervisor badge for the maestro row.
 	maestroBadge := ""
@@ -21731,12 +21817,8 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Auto-named quick sessions display Claude's live task description (the
-	// tmux pane title) in place of the random handle. instState.paneTitle is
-	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
-	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
-	// trailing pane title for non-auto-named rows ("" when auto-named, since the
-	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
+	// The session name stays first. A useful pane or saved task description is
+	// the optional dim suffix, including for auto-named quick sessions.
 	// Snapshot form only here: the per-row Instance.mu reads the inst-based
 	// form does can block behind a mid-sweep UpdateStatus writer for seconds,
 	// scaling with visible rows (#1753 black-screen).
@@ -21760,6 +21842,24 @@ func (h *Home) renderSessionItem(
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
 		cellWidth(agentBadge) + cellWidth(timestampBadge)
+	// Keep a useful title before spending narrow-row space on a worktree badge.
+	if listWidth > 0 && listWidth < 40 && worktreeBadge != "" {
+		originalWidth := cellWidth(worktreeBadge)
+		badgeWidth := max(0, listWidth-(reserved-originalWidth)-minSessionTitleWidth-1)
+		if originalWidth > badgeWidth {
+			badge := ""
+			if badgeWidth >= 4 {
+				branch := strings.TrimSuffix(strings.TrimPrefix(stripAnsi(worktreeBadge), " ["), "]")
+				badge = " [" + cellTruncate(branch, badgeWidth-3, "…") + "]"
+			}
+			if selected {
+				worktreeBadge = SessionStatusSelStyle.Render(badge)
+			} else {
+				worktreeBadge = lipgloss.NewStyle().Foreground(ColorCyan).Render(badge)
+			}
+			reserved = reserved - originalWidth + cellWidth(badge)
+		}
+	}
 	// Reserve the title's floor before the viewers and account badges claim
 	// any of the remaining width, so a narrow column shrinks and then drops
 	// the badges instead of collapsing the title (#2201). The viewers badge
@@ -21829,9 +21929,7 @@ func (h *Home) renderSessionItem(
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
 	if (selected || h.showPaneTitles) && paneSubtitle != "" {
-		// paneSubtitle is non-empty only for non-auto-named rows (auto-named rows
-		// promote the pane title to displayTitle), so the auto-name guard that
-		// used to sit here is folded into the snapshot-based label helper.
+		// The snapshot label helper has already omitted generic pane titles.
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
@@ -21954,6 +22052,9 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 
 		versionState, _ := h.remoteVersionState(item.RemoteName)
 		statsResult, hasStats := h.remoteHostStatsState(item.RemoteName)
+		h.remoteSessionsMu.RLock()
+		poll := h.remotePolls[item.RemoteName]
+		h.remoteSessionsMu.RUnlock()
 		fields := session.DefaultRemotePreviewFields
 		if config != nil {
 			fields = config.UI.GetRemotePreviewFields()
@@ -21965,6 +22066,13 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 			Hints:    []string{"Press Enter on a session to attach via SSH"},
 		}
 		state.Body = remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields, time.Now(), emptyStateBodyLayout(state, width, height))
+		if poll.LastPollError != "" {
+			state.Subtitle = ""
+			state.Body = append([]string{
+				ErrorStyle.Render("Unreachable: " + poll.LastPollError),
+				fmt.Sprintf("Host: %s · %d sessions", host, count),
+			}, state.Body...)
+		}
 		return renderEmptyStateResponsive(state, width, height)
 	}
 
@@ -22123,7 +22231,11 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 
 	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
 	if hasPoll && poll.LastPollError != "" {
-		trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
+		if listWidth > 0 && listWidth < 60 {
+			trailer = " " + ErrorStyle.Render("· "+poll.LastPollError)
+		} else {
+			trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
+		}
 		if poll.LastPollStatus == "auth_failed" {
 			trailer += " " + DimStyle.Render("(paused; R retry)")
 		}
@@ -22141,7 +22253,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		trailer += " " + DimStyle.Render("· refreshing…")
 	}
 
-	if hasPoll && poll.LastPollMS != nil {
+	if hasPoll && poll.LastPollMS != nil && (poll.LastPollError == "" || listWidth == 0 || listWidth >= 60) {
 		trailer += " " + DimStyle.Render(fmt.Sprintf("· poll %dms", *poll.LastPollMS))
 	}
 	if selected && (!hasPoll || poll.LastPollStatus != "auth_failed") {
@@ -22781,6 +22893,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
 		// Show different message when there are no sessions vs just no selection
 		if len(h.flatItems) == 0 {
+			if config, filtered := h.filteredEmptyState(); filtered {
+				return renderEmptyStateResponsive(config, width, height)
+			}
 			// Group-scoped empty preview
 			if h.groupScope != "" {
 				return renderEmptyStateResponsive(EmptyStateConfig{
@@ -23519,9 +23634,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		// PreviewModeBoth: use config settings (default)
 	}
 
-	// Special handling for stopped state - user-intentional stop with resume guidance
+	// A stopped status can also follow a clean process exit. Do not infer intent.
 	if selectedStatus == session.StatusStopped {
-		stoppedHeader := renderSectionDivider("Session Stopped", width-4)
+		stoppedHeader := renderSectionDivider("Process Exited", width-4)
 		b.WriteString(stoppedHeader)
 		b.WriteString("\n\n")
 
@@ -23529,9 +23644,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		dimStyle := lipgloss.NewStyle().Foreground(ColorText)
 		keyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
-		b.WriteString(warnStyle.Render("■ Session stopped by user"))
+		b.WriteString(warnStyle.Render("■ Process exited"))
 		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render("You stopped this session intentionally."))
+		b.WriteString(dimStyle.Render("The process ended or was stopped."))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("The session record is preserved for resuming."))
 		b.WriteString("\n\n")
@@ -24343,7 +24458,7 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	// Status breakdown with inline badges
 	running, waiting, idle, stopped, errored := 0, 0, 0, 0, 0
 	for _, sess := range visibleSessions {
-		switch sess.Status {
+		switch statusBucket(sess.Status) {
 		case session.StatusRunning:
 			running++
 		case session.StatusWaiting:
@@ -25281,13 +25396,14 @@ func markGroupPathAndAncestors(groupsWithMatches map[string]bool, groupPath stri
 }
 
 // matchesStatusFilter reports whether status passes the current filter.
-// FilterModeActive consults [display].active_filter_excludes; concrete
-// filters require exact match.
+// FilterModeActive consults [display].active_filter_excludes (a status is
+// excluded when it or its statusBucket is); concrete filters match the
+// status's statusBucket, the bucket its row glyph and the pill count show.
 func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 	if filter == FilterModeActive {
-		return !h.activeFilterExcludes[status]
+		return !h.activeFilterExcludes[status] && !h.activeFilterExcludes[statusBucket(status)]
 	}
-	return status == filter
+	return statusBucket(status) == filter
 }
 
 // renderFilterBarHint returns the filter bar's keyboard-shortcut hint as
@@ -25309,8 +25425,38 @@ func (h *Home) renderFilterBarHint() []string {
 		}
 		return dim.Render(c)
 	}
+	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeFilterKey == "" {
+		timeFilterKey = "*"
+	}
 
-	segs := []string{
+	// Selected modes lead the legend, so they survive its width budget.
+	var segs []string
+	if h.timeFilter != session.TimeFilterAll {
+		label := h.timeFilter.Label()
+		if h.width <= 80 {
+			switch h.timeFilter {
+			case session.TimeFilter3Days:
+				label = "3 days"
+			case session.TimeFilter7Days:
+				label = "7 days"
+			}
+		}
+		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+label))
+	}
+	if h.groupViewMode != session.GroupViewNormal {
+		label := h.groupViewMode.Label()
+		if h.width <= 80 {
+			switch h.groupViewMode {
+			case session.GroupViewActiveTop:
+				label = "Active top"
+			case session.GroupViewPopulatedTop:
+				label = "Populated top"
+			}
+		}
+		segs = append(segs, mark("t", true)+dim.Render(" "+label))
+	}
+	segs = append(segs, []string{
 		mark("!", h.statusFilter == session.StatusRunning) +
 			mark("@", h.statusFilter == session.StatusWaiting) +
 			mark("#", h.statusFilter == session.StatusIdle) +
@@ -25319,23 +25465,15 @@ func (h *Home) renderFilterBarHint() []string {
 		mark("0", h.statusFilter == "") + dim.Render(" all"),
 		mark(FilterKeyActive, h.statusFilter == FilterModeActive) + dim.Render(" open"),
 		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) + dim.Render(" archived"),
-	}
+	}...)
 
 	// View-mode indicator (running-on-top / populated-on-top), only when active.
-	if h.groupViewMode != session.GroupViewNormal {
-		segs = append(segs, mark("t", true)+dim.Render(" "+h.groupViewMode.Label()))
-	} else {
+	if h.groupViewMode == session.GroupViewNormal {
 		segs = append(segs, mark("t", false)+dim.Render(" view"))
 	}
 
 	// Time-range filter indicator (today / 3 days / 7 days), only when active.
-	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
-	if timeFilterKey == "" {
-		timeFilterKey = "*"
-	}
-	if h.timeFilter != session.TimeFilterAll {
-		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+h.timeFilter.Label()))
-	} else {
+	if h.timeFilter == session.TimeFilterAll {
 		segs = append(segs, mark(timeFilterKey, false)+dim.Render(" time"))
 	}
 	return segs

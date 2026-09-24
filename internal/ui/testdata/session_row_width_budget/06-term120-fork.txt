@@ -1,0 +1,2 @@
+terminal_width=120 list_width=42
+   └─ ○ a genui… claude [fork/claude-...]

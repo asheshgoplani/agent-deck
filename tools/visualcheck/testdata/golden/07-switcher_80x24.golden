@@ -3,22 +3,22 @@
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
 1·▾ alpha (7) ● 1 ◐ 1        │ claude-waiting  ◐ waiting
-   ├─ ■ opencode-… opencode  │ ╭─────────────────────────────────────────────╮
-   ├─ ✕ claude-idle claude   │ │                                             │
-  ▶├─ ◐ claude-wait… claude  │ │  Switch session                             │
-   └─ ■ claude-stop… claude  │ │                                             │
-    ▾ backend (3) ● 1        │ │  > ◐ claude-waiting (claude) <id>   │
-     ├─ ✕ codex-idle codex   │ │    ● claude-running (claude) <id>   │
-     ├─ ● claude-ru… claude  │ │    ◐ claude-i18n (claude) <id>      │
-     └─ ✕ claude-er… claude  │ │    ○ shell-live (shell) <id>        │
+   ├─ ■ opencode-idle        │ ╭─────────────────────────────────────────────╮
+   ├─ ✕ claude-idle          │ │                                             │
+  ▶├─ ◐ claude-waiting       │ │  Switch session                             │
+   └─ ■ claude-stopped       │ │                                             │
+    ▾ backend (3) ● 1        │ │  > ◐ claude-waiting (claude)                │
+     ├─ ✕ codex-idle         │ │    ● claude-running (claude)                │
+     ├─ ● claude-running     │ │    ◐ claude-i18n (claude)                   │
+     └─ ✕ claude-error       │ │    ○ shell-live (shell)                     │
 2·▾ beta (4) ◐ 1             │ │                                             │
-   ├─ ✕ gemini-idle gemini   │ │  Ctrl+S next · Ctrl+A prev                  │
-   ├─ ✕ pi-idle pi           │ │  ↑/↓ browse · Enter attach · Esc close      │
-   ├─ ◐ claude-i18n claude   │ │                                             │
-   └─ ○ shell-live shell     │ ╰─────────────────────────────────────────────╯
-  ▾ remotes/lab (0) · unrea… │
+   ├─ ✕ gemini-idle          │ │  Ctrl+S next · Ctrl+A prev                  │
+   ├─ ✕ pi-idle              │ │  ↑/↓ browse · Enter attach · Esc close      │
+   ├─ ◐ claude-i18n          │ │                                             │
+   └─ ○ shell-live           │ ╰─────────────────────────────────────────────╯
+  ▾ remotes/lab (0) · host … │
                              │
                              │
                              │
 ────────────────────────────────────────────────────────────────────────────────
-⏎ Attach n/N New R Restart │           ↑↓ Nav / Search S Settings ? Help q Quit
+⏎ Attach n/N New R Restart T Fresh │   ↑↓ Nav / Search S Settings ? Help q Quit

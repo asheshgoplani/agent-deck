@@ -479,10 +479,11 @@ func (gs *GlobalSearch) View() string {
 	totalWidth := min(max(gs.width-4, 40), recallMaxWidth)
 	leftWidth := totalWidth * 38 / 100
 	rightWidth := totalWidth - leftWidth - 4
-	previewHeight := max(gs.height-12, 10)
+	previewHeight := max(gs.height-12, 6)
 	gs.input.Width = max(leftWidth-8, 10)
 
 	var left strings.Builder
+	var resultRows []string
 	left.WriteString(globalSearchHeaderStyle.Render(gs.headerLine()) + "\n")
 	left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(gs.staleLine()) + "\n\n")
 	left.WriteString(globalSearchBoxStyle.Width(leftWidth-4).Render(gs.input.View()) + "\n\n")
@@ -501,7 +502,7 @@ func (gs *GlobalSearch) View() string {
 		if gs.ceilingHit {
 			summary += " (capped; narrow the query)"
 		}
-		left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(summary) + "\n")
+		left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(summary))
 		for i, r := range gs.results {
 			title := clipCells(firstNonEmpty(r.Title, r.Snippet, r.SessionID), max(leftWidth-14, 20))
 			prefix := "  "
@@ -509,15 +510,28 @@ func (gs *GlobalSearch) View() string {
 				prefix = "• "
 			}
 			if i == gs.cursor {
-				left.WriteString(globalSelectedStyle.Render("› "+title) + "\n")
-				left.WriteString(lipgloss.NewStyle().Foreground(ColorPurple).Render("    "+gs.resultMeta(r)) + "\n")
+				resultRows = append(resultRows, globalSelectedStyle.Render("› "+title)+"\n"+
+					lipgloss.NewStyle().Foreground(ColorPurple).Render("    "+gs.resultMeta(r)))
 			} else {
-				left.WriteString(globalResultStyle.Render(prefix+title) + "\n")
+				resultRows = append(resultRows, globalResultStyle.Render(prefix+title))
 			}
 		}
 	}
-	left.WriteString("\n")
-	left.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("[↑↓] Select  [Enter] Open  [Tab] Local\n[ ] scroll preview   [Esc] Cancel"))
+	// The key hints stay two rows at every width: on a narrow pane the
+	// less important hints drop out instead of wrapping.
+	keyWidth := leftWidth - 2 // the pane's Padding(0, 1)
+	keys := lipgloss.NewStyle().Foreground(ColorComment).Render(
+		renderDialogFooter(keyWidth, "  ", []string{"[↑↓] Select", "[Enter] Open", "[Tab] Local"}, 0) + "\n" +
+			strings.TrimSpace(renderDialogFooter(keyWidth, "  ", []string{"[ ] scroll preview", " [Esc] Cancel"}, 0)))
+	// The results scroll inside the pane around the cursor; the header, the
+	// query box and the key hints stay put.
+	sections := dialogSections{head: []string{left.String()}, foot: []string{"", keys}}
+	if resultRows != nil {
+		sections.body, sections.focus = resultRows, gs.cursor
+	} else {
+		sections.foot = []string{keys}
+	}
+	leftContent := fitDialogRows(keyWidth, previewHeight+6, sections)
 
 	var right strings.Builder
 	if sel := gs.Selected(); sel != nil {
@@ -554,7 +568,7 @@ func (gs *GlobalSearch) View() string {
 		BorderStyle(lipgloss.RoundedBorder()).BorderForeground(ColorAccent).Padding(0, 1)
 	rightStyle := lipgloss.NewStyle().Width(rightWidth).Height(previewHeight+6).
 		BorderStyle(lipgloss.RoundedBorder()).BorderForeground(ColorCyan).Padding(0, 1)
-	combined := lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(left.String()), rightStyle.Render(right.String()))
+	combined := lipgloss.JoinHorizontal(lipgloss.Top, leftStyle.Render(leftContent), rightStyle.Render(right.String()))
 	return centerInScreen(combined, gs.width, gs.height)
 }
 

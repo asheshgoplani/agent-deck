@@ -252,3 +252,36 @@ func TestPreviewShowsLivePane(t *testing.T) {
 		}
 	}
 }
+
+func TestClippedDialogBorder(t *testing.T) {
+	whole := "  ╭────╮\n  │ hi │\n  ╰────╯"
+	if reason := clippedDialogBorder(whole); reason != "" {
+		t.Fatalf("whole box reported clipped: %s", reason)
+	}
+	clipped := "  │ hi │\n  ╰────╯"
+	if clippedDialogBorder(clipped) == "" {
+		t.Fatal("box without its top border was not reported")
+	}
+}
+
+// TestCommittedGoldensKeepWholeDialogBoxes scans every committed frame for a
+// dialog that lost its top or bottom border (17-local-search at 80x24 lost
+// its top border once round 1's fitter and round 5's search composed).
+func TestCommittedGoldensKeepWholeDialogBoxes(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join(goldenDir, "*.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatalf("no goldens under %s", goldenDir)
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reason := clippedDialogBorder(string(data)); reason != "" {
+			t.Errorf("%s: %s", filepath.Base(path), reason)
+		}
+	}
+}

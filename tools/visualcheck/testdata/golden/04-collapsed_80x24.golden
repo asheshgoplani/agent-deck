@@ -2,13 +2,13 @@
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
 SESSIONS                     │ PREVIEW
 ──────────────────────────── │ ─────────────────────────────────────────────────
-  ▸ alpha (7) ● 1 ◐ 1        │ 📁 alpha
+▶ ▸ alpha (7) ● 1 ◐ 1        │ 📁 alpha
 2·▾ beta (4) ◐ 1             │
-   ├─ ✕ gemini-idle gemini   │ 4 sessions
-   ├─ ✕ pi-idle pi           │
-   ├─ ◐ claude-i18n claude   │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
-   └─ ○ shell-live shell     │
-  ▾ remotes/lab (0) · unrea… │ ───────────────── Sessions ─────────────────
+   ├─ ✕ gemini-idle          │ 4 sessions
+   ├─ ✕ pi-idle              │
+   ├─ ◐ claude-i18n          │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+   └─ ○ shell-live           │
+  ▾ remotes/lab (0) · host … │ ───────────────── Sessions ─────────────────
                              │   ■ opencode-idle opencode
                              │   ✕ claude-idle claude
                              │   ◐ claude-waiting claude

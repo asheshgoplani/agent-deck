@@ -3260,7 +3260,7 @@ func TestRestartSessionFreshCmdSessionMissingReturnsError(t *testing.T) {
 	}
 }
 
-func TestRebuildFlatItemsAutoClearsEmptyStatusFilter(t *testing.T) {
+func TestRebuildFlatItemsKeepsEmptyStatusFilter(t *testing.T) {
 	home := NewHome()
 	home.initialLoading = false
 
@@ -3277,23 +3277,32 @@ func TestRebuildFlatItemsAutoClearsEmptyStatusFilter(t *testing.T) {
 
 	// Set a filter for a status that no session has
 	home.statusFilter = session.StatusError
+	home.keepEmptyFilter = true
 
 	home.rebuildFlatItems()
 
-	// Filter should have been auto-cleared since no sessions match "error"
-	if home.statusFilter != "" {
-		t.Errorf("statusFilter should be auto-cleared when filter matches nothing, got %q", home.statusFilter)
+	if home.statusFilter != session.StatusError {
+		t.Errorf("statusFilter should remain selected when nothing matches, got %q", home.statusFilter)
 	}
 
-	// All sessions should be visible
+	// No sessions should be visible until the user changes the filter.
 	sessionCount := 0
 	for _, item := range home.flatItems {
 		if item.Type == session.ItemTypeSession {
 			sessionCount++
 		}
 	}
-	if sessionCount != 2 {
-		t.Errorf("expected 2 sessions in flatItems after auto-clear, got %d", sessionCount)
+	if sessionCount != 0 {
+		t.Errorf("expected no sessions in filtered flatItems, got %d", sessionCount)
+	}
+}
+
+func TestRebuildFlatItemsRestoredStatusFilterFallsBack(t *testing.T) {
+	inst := &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}
+	h := &Home{statusFilter: session.StatusError, groupTree: session.NewGroupTree([]*session.Instance{inst})}
+	h.rebuildFlatItems()
+	if h.statusFilter != "" || len(h.flatItems) == 0 {
+		t.Fatalf("restored zero-match filter did not fall back: filter=%q rows=%d", h.statusFilter, len(h.flatItems))
 	}
 }
 
@@ -3742,18 +3751,19 @@ func TestRebuildFlatItemsTimeFilter(t *testing.T) {
 	}
 }
 
-func TestRebuildFlatItemsAutoClearsEmptyTimeFilter(t *testing.T) {
+func TestRebuildFlatItemsKeepsEmptyTimeFilter(t *testing.T) {
 	h := &Home{}
 	// Only session is 30 days old; "today" should match nothing.
 	inst := &session.Instance{ID: "s1", Title: "old", Tool: "claude", Status: session.StatusIdle, LastAccessedAt: time.Now().AddDate(0, 0, -30)}
 	h.timeFilter = session.TimeFilterToday
+	h.keepEmptyFilter = true
 	h.groupTree = session.NewGroupTree([]*session.Instance{inst})
 	h.windowsCollapsed = make(map[string]bool)
 
 	h.rebuildFlatItems()
 
-	if h.timeFilter != session.TimeFilterAll {
-		t.Errorf("timeFilter should be auto-cleared when it matches nothing, got %v", h.timeFilter)
+	if h.timeFilter != session.TimeFilterToday {
+		t.Errorf("timeFilter should remain selected when nothing matches, got %v", h.timeFilter)
 	}
 	sessionCount := 0
 	for _, item := range h.flatItems {
@@ -3761,8 +3771,8 @@ func TestRebuildFlatItemsAutoClearsEmptyTimeFilter(t *testing.T) {
 			sessionCount++
 		}
 	}
-	if sessionCount != 1 {
-		t.Errorf("expected 1 session in flatItems after auto-clear, got %d", sessionCount)
+	if sessionCount != 0 {
+		t.Errorf("expected no sessions in filtered flatItems, got %d", sessionCount)
 	}
 }
 

@@ -1,0 +1,7 @@
+▶ ▾ alpha (1)
+   └─ ○ local-last claude
+  ▾ remotes/lab (2)
+    ▾ work (2)
+      └─ ○ remote-root claude
+      ▾ api (1)
+        └─ ○ remote-nested claude

@@ -66,6 +66,14 @@ func foreignTUIBinary(t *testing.T) string {
 // for diagnostics.
 func startTUIInForeignTmuxServer(t *testing.T, bin, profile string) func() string {
 	t.Helper()
+	return startTUIInForeignTmuxServerWithTmpdir(t, bin, profile, os.Getenv("TMUX_TMPDIR"))
+}
+
+// startTUIInForeignTmuxServerWithTmpdir is startTUIInForeignTmuxServer with
+// the TUI given its own TMUX_TMPDIR, so it can compute a default socket other
+// than the one the test's sessions live on.
+func startTUIInForeignTmuxServerWithTmpdir(t *testing.T, bin, profile, tuiTmpdir string) func() string {
+	t.Helper()
 	configPath, err := GetUserConfigPath()
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +87,7 @@ func startTUIInForeignTmuxServer(t *testing.T, bin, profile string) func() strin
 	sock, cleanup := testutil.ShortTmuxSocket()
 	t.Cleanup(cleanup)
 	cmdline := fmt.Sprintf("exec env HOME=%q TMUX_TMPDIR=%q AGENT_DECK_ALLOW_OUTER_TMUX=1 AGENTDECK_SKIP_UPDATE_CHECK=1 AGENTDECK_TELEMETRY=0 TERM=xterm-256color %q -p %q",
-		os.Getenv("HOME"), os.Getenv("TMUX_TMPDIR"), bin, profile)
+		os.Getenv("HOME"), tuiTmpdir, bin, profile)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if out, err := tmux.ExecContext(ctx, "", "-S", sock, "new-session", "-d", "-s", "tui", "-x", "160", "-y", "45", cmdline).CombinedOutput(); err != nil {

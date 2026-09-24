@@ -6,7 +6,7 @@ SESSIONS                                   │ PREVIEW
 1·▾ alpha (7) ● 1 ◐ 1                      │ claude-waiting  ◐ waiting
    ├─ ■ opencode-idle opencode             │ 📁 /tmp/vc-<tmp>
    ├─ ✕ claude-idle claude                 │ ⏱ <age>
-  ▶├─ ◐ claude-waiting claude <id>…  │ 👁️ no viewers
+  ▶├─ ◐ claude-waiting claude              │ 👁️ no viewers
    └─ ■ claude-stopped claude              │  claude   alpha
     ▾ backend (3) ● 1                      │ ─────────────────────────────── Claude ───────────────────────────────
      ├─ ✕ codex-idle codex                 │ Status:  ● Connected
@@ -17,7 +17,7 @@ SESSIONS                                   │ PREVIEW
    ├─ ✕ pi-idle pi                         │ ─────────────────────────────── Output ───────────────────────────────
    ├─ ◐ claude-i18n claude                 │ Claude Code synthetic fixture
    └─ ○ shell-live shell                   │ ❯
-  ▾ remotes/lab (0) · unreachable: host d… │
+  ▾ remotes/lab (0) · host down            │
                                            │
                                            │
                                            │
@@ -37,4 +37,4 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP …   ↑↓ Nav │ q Quit
+Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  T  Fresh  f/F  Fork  m  MCP  v  Both …     ↑↓ Nav │ ? Help │ q Quit

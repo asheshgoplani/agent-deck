@@ -1,5 +1,16 @@
 # Lessons
 
+- Allocate search row space to the full title before metadata, then let metadata use all remaining cells; a fixed fraction can truncate both a long title and a short distinguishing path.
+- A switcher spacer must inspect the adjacent preview cell. Adding one at every width can erase the first letter of a section title.
+- A shortcut label derived from a precomputed row number must use that same number for navigation; counting rendered headers includes duplicate view sections and points at the wrong row.
+- Before changing a field during a multi-pass view rebuild, locate its final assignment. A later numbering pass can silently overwrite an earlier duplicate-row fix.
+- For narrow preview errors, inspect the rendered frame: a subtitle helper may truncate text that fits as a body line. Keep the actionable reason in the first visible body row.
+- When a requested behavior reverses an existing contract, update the old assertion alongside the new regression test; a passing new test does not make the old expectation disappear.
+- A passing regenerated visual check only proves consistency with its new golden. Inspect the changed pixels or text for the original symptom before accepting the golden.
+- Centering an overlay does not make an overheight dialog fit. Bound its inner rows before framing, and verify the title, focused control, and footer in the physical terminal capture.
+- A dialog's own centering tests can pass while the live screen stays anchored if Home never passes terminal dimensions. Verify the actual key route and size wiring.
+- A framed dialog that exactly fills terminal rows can still scroll its top border away when the renderer emits a trailing newline. Leave one row of headroom and assert both borders in the captured terminal frame.
+
 - When a test checks an operator-facing recovery message, assert the required paths and instruction independently. Exact adjacent wording can fail a correct message without testing its meaning.
 - A stream-idle test must not wait for a slower durability sync between messages. After batching, `events.Flush` can wait for the one-second sync tick and close a deliberately short-idle subscription even when events stream promptly.
 

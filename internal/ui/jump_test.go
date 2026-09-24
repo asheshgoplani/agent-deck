@@ -198,6 +198,40 @@ func TestJumpModeRenderDoesNotSpendHintOnDivider(t *testing.T) {
 	}
 }
 
+func TestJumpHintKeepsNamesIntactAtEachWidth(t *testing.T) {
+	h := NewHome()
+	for _, width := range []int{80, 120, 200} {
+		for _, hint := range []string{"f", "sa"} {
+			line := "1·▾ alpha (2)"
+			got := stripAnsi(h.overlayJumpHint(line, hint, ""))
+			if !strings.HasPrefix(got, hint) || !strings.Contains(got, "alpha (2)") || cellWidth(got) != cellWidth(line) {
+				t.Errorf("%d columns, hint %q: corrupted row %q", width, hint, got)
+			}
+		}
+	}
+}
+
+func TestThreeLetterJumpHintVisible(t *testing.T) {
+	h := NewHome()
+	h.width = 80
+	line := "  ▾ alpha (2)"
+	hint := ""
+	for _, candidate := range generateJumpHints(200) {
+		if len(candidate) == 3 {
+			hint = candidate
+			break
+		}
+	}
+	if hint == "" {
+		t.Fatal("200 selectable rows produced no three-letter hint")
+	}
+	got := stripAnsi(h.overlayJumpHint(line, hint, ""))
+	if !strings.Contains(got, hint) || !strings.Contains(got, "alpha (2)") || cellWidth(got) > h.width {
+		t.Fatalf("three-letter hint missing or row damaged: %q", got)
+	}
+	t.Logf("three-letter hint frame: %q", got)
+}
+
 func TestJumpKeyDoesNotSpendHintOnDivider(t *testing.T) {
 	home := NewHome()
 	home.width = 120

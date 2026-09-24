@@ -24,11 +24,15 @@ func TestSessionRowWidthBudget_Golden(t *testing.T) {
 		name          string
 		terminalWidth int
 		account       string
+		fork          bool
 	}{
-		{"01-term80-inherited", 80, ""},
-		{"02-term60-inherited", 60, ""},
-		{"03-term80-named", 80, "personal"},
-		{"04-term60-named", 60, "personal"},
+		{"01-term80-inherited", 80, "", false},
+		{"02-term60-inherited", 60, "", false},
+		{"03-term80-named", 80, "personal", false},
+		{"04-term60-named", 60, "personal", false},
+		{"05-term80-fork", 80, "", true},
+		{"06-term120-fork", 120, "", true},
+		{"07-term200-fork", 200, "", true},
 	}
 	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
@@ -41,6 +45,10 @@ func TestSessionRowWidthBudget_Golden(t *testing.T) {
 				Tool:    "claude",
 				Status:  session.StatusIdle,
 				Account: step.account,
+			}
+			if step.fork {
+				inst.WorktreePath = "/tmp/fork"
+				inst.WorktreeBranch = "fork/claude-many-steps"
 			}
 			state := sessionRenderState{
 				status:         session.StatusIdle,

@@ -2,13 +2,13 @@
   All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
 SESSIONS                                   │ PREVIEW
 ────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
-  ▸ alpha (7) ● 1 ◐ 1                      │ 📁 alpha
+▶ ▸ alpha (7) ● 1 ◐ 1                      │ 📁 alpha
 2·▾ beta (4) ◐ 1                           │
    ├─ ✕ gemini-idle gemini                 │ 4 sessions
    ├─ ✕ pi-idle pi                         │
    ├─ ◐ claude-i18n claude                 │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
    └─ ○ shell-live shell                   │
-  ▾ remotes/lab (0) · unreachable: host d… │ ────────────────────────────── Sessions ──────────────────────────────
+  ▾ remotes/lab (0) · host down            │ ────────────────────────────── Sessions ──────────────────────────────
                                            │   ■ opencode-idle opencode
                                            │   ✕ claude-idle claude
                                            │   ◐ claude-waiting claude
@@ -37,4 +37,4 @@ SESSIONS                                   │ PREVIEW
                                            │
                                            │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Group:  Tab  Toggle  n/N  New/Quick  g  Group │  r  Rename  d  Delete  ↑↓ Nav │ +/- Move │ / Search │ G Global │ q Quit
+Group:  Tab  Toggle  n/N  New  g  Grp │  r  Rename  d  Delete  ↑↓ Nav │ ? Help │ +/- Move │ / Search │ G Global │ q Quit
