@@ -27,7 +27,13 @@ printf '%s\n' "$*" >> "$CODEX_SCAN_LOG"
 if [ "$1" = -u ]; then shift; fi
 if [ "$1" = -L ]; then shift 2; fi
 case "$1" in
-list-sessions) printf '%s' "$CODEX_SCAN_NAMES" ;;
+list-sessions)
+ if [ "$CODEX_SCAN_FAIL" = 1 ]; then exit 1; fi
+ if [ "$CODEX_SCAN_EMPTY" = 1 ]; then
+  printf '%s' "$CODEX_SCAN_NAMES" | while IFS= read -r name; do printf '%s\t\n' "$name"; done
+ else
+  printf '%s' "$CODEX_SCAN_NAMES" | while IFS= read -r name; do printf '%s\tid-%s\n' "$name" "$name"; done
+ fi ;;
 show-environment)
  if [ "$CODEX_SCAN_FAIL" = 1 ]; then exit 1; fi
  if [ "$CODEX_SCAN_EMPTY" = 1 ]; then exit 0; fi
@@ -68,8 +74,8 @@ func TestCodexExclusionScanLinear(t *testing.T) {
 	}
 	calls := strings.Split(strings.TrimSpace(string(data)), "\n")
 	t.Logf("%d concurrent instances: %d tmux calls, %s", n, len(calls), elapsed)
-	if len(calls) > n+1 {
-		t.Fatalf("exclusion scan made %d tmux calls; want at most %d (one list plus one environment read per session)", len(calls), n+1)
+	if len(calls) != 1 {
+		t.Fatalf("exclusion scan made %d tmux calls; want one batched list", len(calls))
 	}
 }
 
@@ -122,8 +128,8 @@ func TestCodexExclusionPassPinsSnapshotAndRefreshes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 6 {
-		t.Fatalf("two scans: got %d calls, want 6", got)
+	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 2 {
+		t.Fatalf("two scans: got %d calls, want 2", got)
 	}
 }
 
@@ -139,7 +145,7 @@ func TestCodexExclusionSocketsAndDuplicateOwners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(data), "-L first") != 3 || strings.Count(string(data), "-L second") != 3 {
+	if strings.Count(string(data), "-L first") != 1 || strings.Count(string(data), "-L second") != 1 {
 		t.Fatalf("socket routing: %s", data)
 	}
 	pass.bySocket["first"] = codexOwnershipSnapshot{claims: &codexOwnershipClaims{bySession: map[string]string{"agentdeck_scan_0": "shared", "agentdeck_scan_1": "shared"}}}
@@ -237,7 +243,7 @@ func TestCodexExclusionFailedPeerReadIsUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 2 {
+	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 1 {
 		t.Fatalf("failed pass re-probed: %d calls", got)
 	}
 }

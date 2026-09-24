@@ -7144,6 +7144,33 @@ func ListAgentDeckSessionsOnSocket(socket string) ([]string, error) {
 	return sessions, nil
 }
 
+// ListAgentDeckCodexSessionIDsOnSocket reads all managed session bindings in
+// one tmux call. Session environment variables expand in list-sessions format
+// on the named server, so ownership refresh does not fork once per session.
+func ListAgentDeckCodexSessionIDsOnSocket(socket string) (map[string]string, error) {
+	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}\t#{E:CODEX_SESSION_ID}")
+	if err != nil {
+		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "no sessions") {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("failed to list Codex session bindings: %w", err)
+	}
+	bindings := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSuffix(string(output), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		name, id, ok := strings.Cut(line, "\t")
+		if !ok {
+			return nil, fmt.Errorf("malformed Codex session binding row")
+		}
+		if strings.HasPrefix(name, SessionPrefix) && id != "" {
+			bindings[name] = id
+		}
+	}
+	return bindings, nil
+}
+
 // SetStatusLeft sets the left side of tmux status bar for a session.
 // Used by NotificationManager to display waiting session notifications.
 func SetStatusLeft(sessionName, text string) error {
