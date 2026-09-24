@@ -99,3 +99,14 @@ func TestBusyAndIdleHarnessQueueGate(t *testing.T) {
 		}
 	}
 }
+
+func TestQueuedSendFieldsKeepSyncKeys(t *testing.T) {
+	queued := queuedSendFields(&sendqueue.Record{SendID: "01A", State: sendqueue.StateQueued, Verdict: "queued"})
+	if queued["success"] != true || queued["delivery"] != deliveryQueued || queued["submitted"] != false || queued["confirmation"] != "unknown" || queued["send_id"] != "01A" || queued["verdict"] != "queued" {
+		t.Fatalf("queued reply: %v", queued)
+	}
+	failed := queuedSendFields(&sendqueue.Record{SendID: "01B", State: sendqueue.StateFailed, Reason: "target not running", Verdict: "unknown"})
+	if failed["success"] != false || failed["delivery"] != deliveryPaneGone || failed["submitted"] != false || failed["confirmation"] != "failed" || failed["state"] != "failed" {
+		t.Fatalf("failed reply: %v", failed)
+	}
+}

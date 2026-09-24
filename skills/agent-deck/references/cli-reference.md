@@ -410,6 +410,8 @@ agent-deck session send <id|title> --message-file <file|-> [--wait|--stream|--no
 
 Use `--message-file` for long or multiline messages, or `--message-file -` for stdin. Do not combine it with an inline message.
 
+`--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
+
 ```bash
 git diff | agent-deck session send my-project --message-file -
 agent-deck session send my-project --message-file task.md --wait

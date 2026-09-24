@@ -17,6 +17,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
+	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -137,7 +138,7 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 	}
 	publishSendState(profile, rec)
 	if rec.State == sendqueue.StateFailed {
-		out.ErrorWithData(fmt.Sprintf("send %s failed: %s", rec.SendID, rec.Reason), ErrCodeDeliveryFailed, recordFields(rec))
+		out.ErrorWithData(fmt.Sprintf("send %s failed: %s", rec.SendID, rec.Reason), ErrCodeDeliveryFailed, queuedSendFields(rec))
 		os.Exit(1)
 	}
 	if err := spawnSendWorker(profile, inst.ID); err != nil {
@@ -145,7 +146,24 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 		// this target starts a worker again.
 		fmt.Fprintf(os.Stderr, "Warning: could not start the delivery worker yet: %v\n", err)
 	}
-	out.Success(fmt.Sprintf("Queued %s for '%s' (%s)", rec.SendID, inst.Title, status), recordFields(rec))
+	out.Success(fmt.Sprintf("Queued %s for '%s' (%s)", rec.SendID, inst.Title, status), queuedSendFields(rec))
+}
+
+// queuedSendFields is the immediate --json reply for a queued send: the
+// record plus the documented sync-send keys (success, delivery, submitted,
+// confirmation), so a reader written against the synchronous reply keeps
+// working. A queued send has been accepted, not yet submitted, and its
+// confirmation is unknown until send-status reports; a record that failed
+// at once reports the failure the same way the sync path does.
+func queuedSendFields(rec *sendqueue.Record) map[string]interface{} {
+	fields := recordFields(rec)
+	fields["submitted"] = false
+	if rec.State == sendqueue.StateFailed {
+		fields["success"], fields["delivery"], fields["confirmation"] = false, deliveryPaneGone, send.ConfirmationFailed
+		return fields
+	}
+	fields["success"], fields["delivery"], fields["confirmation"] = true, deliveryQueued, send.ConfirmationUnknown
+	return fields
 }
 
 func recordFields(r *sendqueue.Record) map[string]interface{} {

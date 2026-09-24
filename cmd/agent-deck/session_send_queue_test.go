@@ -21,6 +21,10 @@ type sendRecordJSON struct {
 	Attempts     int    `json:"attempts"`
 	Settled      bool   `json:"settled"`
 	LandedRowID  string `json:"landed_row_id"`
+	Success      *bool  `json:"success"`
+	Delivery     string `json:"delivery"`
+	Submitted    *bool  `json:"submitted"`
+	Confirmation string `json:"confirmation"`
 }
 
 func addSessionJSON(t *testing.T, home, title, tool string) string {
@@ -183,6 +187,10 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 			var fast sendRecordJSON
 			if code != 0 || json.Unmarshal([]byte(stdout), &fast) != nil || fast.SendID == "" || fast.Verdict != "queued" {
 				t.Fatalf("plain --json send: %d %s %s", code, stdout, stderr)
+			}
+			// The documented sync-send keys stay on the immediate reply.
+			if fast.Success == nil || !*fast.Success || fast.Delivery != "queued" || fast.Submitted == nil || *fast.Submitted || fast.Confirmation != "unknown" {
+				t.Fatalf("plain --json send lost the documented fields: %s", stdout)
 			}
 			if elapsed := time.Since(start); elapsed >= time.Second {
 				t.Fatalf("plain --json send took %v, want <1s", elapsed)
