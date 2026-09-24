@@ -1580,6 +1580,12 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 		// actual process asserts its own directory rather than trusting the
 		// `-c workDir` above alone — see cwdAssertCommand's doc comment.
 		tmuxArgs = append(tmuxArgs, bashBinary, "-c", cwdAssertCommand(workDir, command))
+		// A one-shot can exit before Start's later option pass reaches tmux.
+		// Set remain-on-exit in this command queue so tmux retains its output
+		// even when the initial process finishes immediately.
+		if s.OptionOverrides["remain-on-exit"] == "on" {
+			tmuxArgs = append(tmuxArgs, ";", "set-option", "-t", s.Name, "remain-on-exit", "on")
+		}
 	}
 
 	unitBase := serviceUnitBase(s.Name)
