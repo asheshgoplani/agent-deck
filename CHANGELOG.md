@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- One-shot harness panes keep their output when the process exits immediately, so headless replies are not lost.
 - Dialogs for Edit, Settings, MCP, Skills, Local Search, Recall, Fork and first-run setup fit at 80x24 and 60x15. Tall dialog bodies scroll around the focused field while the title and wrapped key hints remain visible.
 - Narrow rows preserve complete session names, put generated names before task descriptions, fit fork badges and mark the selected group in the gutter.
 - The active filter, time range and view remain visible; selected rows keep the help footer; an empty filter says "No sessions match"; a stopped preview says "Process Exited".
