@@ -13,6 +13,7 @@ import (
 type sendRecordJSON struct {
 	SendID       string `json:"send_id"`
 	State        string `json:"state"`
+	Verdict      string `json:"verdict"`
 	Reason       string `json:"reason"`
 	TargetStatus string `json:"target_status"`
 	SessionID    string `json:"session_id"`
@@ -148,6 +149,7 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _, _ = run("", "session", "stop", added.ID) })
 	time.Sleep(time.Second)
+	start := time.Now()
 	stdout, stderr, code = run("echo queued-worker-ok", "session", "send", added.ID, "--message-file", "-", "--json", "--queue")
 	if code != 0 {
 		t.Fatalf("queue: %d %s %s", code, stdout, stderr)
@@ -155,6 +157,14 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 	var rec sendRecordJSON
 	if err := json.Unmarshal([]byte(stdout), &rec); err != nil || rec.State != "queued" || rec.SendID == "" {
 		t.Fatalf("queued record: %v %s", err, stdout)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("--queue took %v, want <1s", elapsed)
+	} else {
+		t.Logf("explicit queue return: %d ms", elapsed.Milliseconds())
+	}
+	if rec.Verdict != "queued" {
+		t.Fatalf("initial verdict = %q, want queued", rec.Verdict)
 	}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
@@ -167,6 +177,17 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 		if st.Settled || st.State == "landed" {
 			if st.Attempts != 1 || (st.State != "typed" && st.State != "submitted") {
 				t.Fatalf("settled record: %+v", st)
+			}
+			start := time.Now()
+			stdout, stderr, code = run("echo json-fast-ok", "session", "send", added.ID, "--message-file", "-", "--json")
+			var fast sendRecordJSON
+			if code != 0 || json.Unmarshal([]byte(stdout), &fast) != nil || fast.SendID == "" || fast.Verdict != "queued" {
+				t.Fatalf("plain --json send: %d %s %s", code, stdout, stderr)
+			}
+			if elapsed := time.Since(start); elapsed >= time.Second {
+				t.Fatalf("plain --json send took %v, want <1s", elapsed)
+			} else {
+				t.Logf("plain JSON return: %d ms", elapsed.Milliseconds())
 			}
 			return
 		}

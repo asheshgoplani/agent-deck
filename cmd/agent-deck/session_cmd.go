@@ -3052,6 +3052,7 @@ func handleSessionSend(profile string, args []string) {
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
 	codexComposerFallback := fs.Bool("codex-composer-fallback", false, "Codex only: when the session's Codex identity is provably unavailable (fresh composer, rollout re-created after the trust prompt), send through the verified composer path instead of refusing. Never used for --json --wait; every other acceptance error still refuses")
 	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle, at most once; every send ends landed, failed or settled with a reason (see session send-status)")
+	queueWorker := fs.Bool("queue-worker", false, "Internal: deliver a durable queued send directly")
 	var images imageList
 	fs.Var(&images, "image", "Attach an image (repeatable): Claude Code and Gemini get @<copy under .agentdeck-images/>; Codex and other harnesses exit 2")
 
@@ -3080,11 +3081,13 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project --message-file answer.md   # long reply from file")
 		fmt.Println("  git diff | agent-deck session send my-project --message-file -   # message from stdin")
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
-		fmt.Println("  agent-deck session send my-project --message-file - --json --queue   # returns send_id at once")
+		fmt.Println("  agent-deck session send my-project --message-file - --json   # returns send_id at once")
 		fmt.Println("  agent-deck session send my-project \"what is this?\" --image shot.png")
 		fmt.Println()
-		fmt.Println("--queue: result {send_id, state, reason, target_status, ...}; the send waits while the")
-		fmt.Println("  target runs, is typed and verified when it is idle, and is watched until its text lands in")
+		fmt.Println("--json (without --wait/--stream/--draft/--no-wait) and --queue return a durable")
+		fmt.Println("  send_id with verdict queued. Claude accepts input while busy; other harnesses wait")
+		fmt.Println("  for idle. send-status and delivery events upgrade the verdict when evidence arrives.")
+		fmt.Println("  The send is watched until its text lands in")
 		fmt.Println("  the transcript (state landed, landed_row_id). Retry budget 30m, then failed with a reason.")
 		fmt.Println("  Exit 0 queued, 1 failed at once (e.g. target not running).")
 		fmt.Println("--image: Claude Code and Gemini receive @path; Codex takes images only at launch (-i), so a")
@@ -3153,7 +3156,10 @@ func handleSessionSend(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
-	if len(images) > 0 || *queue {
+	// Machine callers get a durable id immediately. The worker opts out of
+	// this branch so its own JSON result describes the actual transport.
+	asyncJSON := *jsonOutput && !*queueWorker && !*wait && !*stream && !*draft && !*deferIfBusy && !*noWait
+	if len(images) > 0 || *queue || asyncJSON {
 		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
 			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
 			os.Exit(2)
@@ -3165,7 +3171,11 @@ func handleSessionSend(profile string, args []string) {
 			out.Error(imgErr.Error(), ErrCodeInvalidOperation)
 			os.Exit(2)
 		}
-		if *queue {
+		if *queue || asyncJSON {
+			if err := inst.PromptDeliveryError(); err != nil {
+				out.Error(err.Error(), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
 			queueSend(profile, storage, inst, message, copies, out)
 			return
 		}
@@ -3264,7 +3274,12 @@ func handleSessionSend(profile string, args []string) {
 	// Issue #957: honor --timeout for the readiness phase too, not just the
 	// post-ready completion wait. Otherwise --timeout 5m against a busy
 	// recipient silently fails at ~80s.
-	if !*noWait {
+	busyAcceptsInput := !*wait && session.AcceptsInputWhileBusy(inst.Tool)
+	if busyAcceptsInput {
+		status, statusErr := fetchHookDrivenStatus(profile, inst.ID)
+		busyAcceptsInput = statusErr == nil && status == "running"
+	}
+	if !*noWait && !busyAcceptsInput {
 		if err := send.WaitForAgentReady(tmuxSess, inst.Tool, *timeout, send.PromptGates{
 			ClaudeComposer: session.IsClaudeCompatible(inst.Tool),
 			CodexPrompt:    session.IsCodexCompatible(inst.Tool),
@@ -3366,6 +3381,12 @@ func handleSessionSend(profile string, args []string) {
 	if *noWait {
 		tun = noWaitSendTuning()
 	}
+	if *queueWorker || busyAcceptsInput {
+		// A live Claude composer already exists. Startup preflight and the
+		// 30-check idle-turn probe add delay without proving this queued send.
+		tun.preflightWait, tun.settleDelay = 0, 0
+		tun.retry.maxRetries, tun.retry.checkDelay = 10, 100*time.Millisecond
+	}
 	// #2033: give the verification loop the hook-driven busy signal so the
 	// Ctrl+C-and-resend recovery can tell a queued message on a live turn
 	// from a message lost during TUI init. Same signal --defer-if-busy reads.
@@ -3406,7 +3427,7 @@ func handleSessionSend(profile string, args []string) {
 	// on, so it needs the same lookup closure. performSend only calls it
 	// under --wait, which is the only caller that acts on the answer.
 	hookStatus := func() (string, error) { return fetchHookDrivenStatus(profile, sessionRef) }
-	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait, tun, sendTransportValue, *wait, hookStatus, nil, nil)
+	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait || busyAcceptsInput, tun, sendTransportValue, *wait, hookStatus, nil, nil)
 	// Computed now (accurate ack_ms), journaled after the verdict at every
 	// exit path below — never before it, per the same rule applied to
 	// handleSessionStop/handleSessionRestart.
@@ -5200,10 +5221,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			// confirmation unknown: exit 0, and the CLI says so.
 			return deliveryDelivered, nil
 		}
-		// Issue #876: with verifyDelivery, refuse to claim success when no
-		// positive signal was ever observed — the message was very likely
-		// dropped silently. Claude echoes what it is typed, so a pane that
-		// never showed the body after a send is evidence, not silence.
+		// A target known busy before the send may keep the submitted line off
+		// screen until its next turn. No visible echo is an unknown outcome.
+		if hookBusyBeforeSend {
+			return deliveryUnverified, nil
+		}
+		// Idle targets still retain the startup silent-drop guard (#876).
 		return deliveryNoEvidence, fmt.Errorf("send dropped silently: no evidence of delivery after %d checks (issue #876). "+
 			"The agent never transitioned to 'active', no composer/unsent-paste marker appeared, "+
 			"and the message body was not visible in the pane. Verify the inner agent is reading from "+

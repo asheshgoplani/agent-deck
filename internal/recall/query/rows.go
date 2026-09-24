@@ -74,8 +74,9 @@ type LiveStatus struct {
 // Delivery is the payload of a delivery frame, mirroring `session
 // send-status` for one queued send.
 type Delivery struct {
-	SendID string `json:"send_id"`
-	State  string `json:"state"`
+	SendID  string `json:"send_id"`
+	State   string `json:"state"`
+	Verdict string `json:"verdict"`
 }
 
 const rowBodyCap = 32 << 10
