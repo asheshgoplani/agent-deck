@@ -271,4 +271,74 @@ test.describe('service worker SSE recovery', () => {
       window.__agentDeckAppSSE.slice(-2).every(source => source.readyState === EventSource.OPEN),
     )
   })
+
+  test('recovers a peer that closes while another source is being probed', async ({ page }) => {
+    await page.addInitScript(() => {
+      class ControlledEventSource {
+        static CONNECTING = 0
+        static OPEN = 1
+        static CLOSED = 2
+
+        constructor(url) {
+          this.url = url
+          this.readyState = ControlledEventSource.OPEN
+          this.listeners = new Map()
+          window.__controlledSSE.push(this)
+        }
+
+        addEventListener(type, listener) {
+          const listeners = this.listeners.get(type) || []
+          listeners.push(listener)
+          this.listeners.set(type, listeners)
+        }
+
+        close() { this.readyState = ControlledEventSource.CLOSED }
+
+        emit(type) {
+          for (const listener of this.listeners.get(type) || []) listener({})
+        }
+      }
+
+      window.__controlledSSE = []
+      window.EventSource = ControlledEventSource
+      const nativeFetch = window.fetch.bind(window)
+      window.__sseRecoveryProbes = []
+      window.fetch = async (...args) => {
+        const rawURL = typeof args[0] === 'string' ? args[0] : args[0]?.url
+        const path = rawURL && new URL(rawURL, location.href).pathname
+        if (!path?.startsWith('/events/')) return nativeFetch(...args)
+        window.__sseRecoveryProbes.push(path)
+        if (path === '/events/menu') {
+          const commandCenter = window.__controlledSSE.find(source =>
+            new URL(source.url, location.href).pathname === '/events/command-center')
+          commandCenter.close()
+          commandCenter.emit('error')
+        }
+        return new Response('', { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+      }
+    })
+
+    await page.goto('/')
+    await page.waitForFunction(() => window.__controlledSSE.length === 2)
+    await page.evaluate(() => {
+      const menu = window.__controlledSSE.find(source =>
+        new URL(source.url, location.href).pathname === '/events/menu')
+      menu.close()
+      menu.emit('error')
+    })
+
+    await expect.poll(
+      () => page.evaluate(() => window.__sseRecoveryProbes),
+      { timeout: 5000 },
+    ).toEqual(['/events/menu', '/events/command-center'])
+
+    // Both probes were ready, so both streams must have been reopened.
+    await expect.poll(
+      () => page.evaluate(() => window.__controlledSSE
+        .filter(source => source.readyState === 1)
+        .map(source => new URL(source.url, location.href).pathname)
+        .sort()),
+      { timeout: 5000 },
+    ).toEqual(['/events/command-center', '/events/menu'])
+  })
 })

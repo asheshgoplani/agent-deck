@@ -116,14 +116,10 @@ function scheduleSSERecovery(delay) {
     if (_sseRecoveryAbort === controller) _sseRecoveryAbort = null
     if (generation !== _sseRecoveryGeneration) return
 
-    let retryTransient = false
     _sseRecoveryAttempt = Math.min(_sseRecoveryAttempt + 1, SSE_RECOVERY_DELAYS_MS.length - 1)
     for (let i = 0; i < closed.length; i += 1) {
       const { kind, source } = closed[i]
-      if (outcomes[i] === 'transient') {
-        retryTransient = true
-        continue
-      }
+      if (outcomes[i] === 'transient') continue
       if (outcomes[i] !== 'ready') {
         _sseTerminalFailures.add(source)
         continue
@@ -140,7 +136,10 @@ function scheduleSSERecovery(delay) {
       }
     }
 
-    if (retryTransient) scheduleSSERecovery()
+    // Retry whatever is still closed: a transient source, or a peer that
+    // closed while this probe was in flight. It was absent from the snapshot
+    // above, so it has no outcome in this pass.
+    scheduleSSERecovery()
   }, wait)
 }
 
