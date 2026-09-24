@@ -44,6 +44,7 @@ const RetainFinished = 7 * 24 * time.Hour
 // Record is one queued send. It is also the `send-status --json` object.
 type Record struct {
 	SendID       string   `json:"send_id"`
+	Verdict      string   `json:"verdict"`
 	State        string   `json:"state"`
 	Reason       string   `json:"reason"`
 	TargetStatus string   `json:"target_status"`

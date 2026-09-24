@@ -17,6 +17,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
+	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -108,7 +109,7 @@ func sendQueueDir(storage *session.Storage) string {
 // publishSendState mirrors a queued send's state on the bus so a client
 // following `events follow --kind session.send` never polls send-status.
 func publishSendState(profile string, r *sendqueue.Record) {
-	events.PublishProfile(profile, "session.send", r.SessionID, map[string]string{"send_id": r.SendID, "state": r.State, "reason": r.Reason})
+	events.PublishProfile(profile, "session.send", r.SessionID, map[string]string{"send_id": r.SendID, "state": r.State, "verdict": r.Verdict, "reason": r.Reason})
 }
 
 // queueSend records the send and hands it to the target's worker. It never
@@ -116,23 +117,20 @@ func publishSendState(profile string, r *sendqueue.Record) {
 func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, out *CLIOutput) {
 	now := time.Now()
 	dir := sendQueueDir(storage)
-	status := "stopped"
-	if inst.Exists() {
-		status, _ = fetchHookDrivenStatus(profile, inst.ID)
-	}
+	status := "unknown"
 	id, err := sendqueue.NextID(dir, now)
 	if err != nil {
 		out.Error(fmt.Sprintf("cannot queue send: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	rec := &sendqueue.Record{
-		SendID: id, State: sendqueue.StateQueued, TargetStatus: status,
+		SendID: id, State: sendqueue.StateQueued, Verdict: "queued", TargetStatus: status,
 		SessionID: inst.ID, SessionTitle: inst.Title, Tool: inst.Tool, Message: message, Images: images,
 		CreatedAt: now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
 		Deadline: now.Add(sendqueue.DefaultRetryBudget).UTC().Format(time.RFC3339Nano),
 	}
 	if !inst.Exists() {
-		rec.State, rec.Reason = sendqueue.StateFailed, "target not running"
+		rec.State, rec.Reason, rec.Verdict = sendqueue.StateFailed, "target not running", "unknown"
 	}
 	if err := sendqueue.Save(dir, rec); err != nil {
 		out.Error(fmt.Sprintf("cannot queue send: %v", err), ErrCodeInvalidOperation)
@@ -140,7 +138,7 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 	}
 	publishSendState(profile, rec)
 	if rec.State == sendqueue.StateFailed {
-		out.ErrorWithData(fmt.Sprintf("send %s failed: %s", rec.SendID, rec.Reason), ErrCodeDeliveryFailed, recordFields(rec))
+		out.ErrorWithData(fmt.Sprintf("send %s failed: %s", rec.SendID, rec.Reason), ErrCodeDeliveryFailed, queuedSendFields(rec))
 		os.Exit(1)
 	}
 	if err := spawnSendWorker(profile, inst.ID); err != nil {
@@ -148,7 +146,24 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 		// this target starts a worker again.
 		fmt.Fprintf(os.Stderr, "Warning: could not start the delivery worker yet: %v\n", err)
 	}
-	out.Success(fmt.Sprintf("Queued %s for '%s' (%s)", rec.SendID, inst.Title, status), recordFields(rec))
+	out.Success(fmt.Sprintf("Queued %s for '%s' (%s)", rec.SendID, inst.Title, status), queuedSendFields(rec))
+}
+
+// queuedSendFields is the immediate --json reply for a queued send: the
+// record plus the documented sync-send keys (success, delivery, submitted,
+// confirmation), so a reader written against the synchronous reply keeps
+// working. A queued send has been accepted, not yet submitted, and its
+// confirmation is unknown until send-status reports; a record that failed
+// at once reports the failure the same way the sync path does.
+func queuedSendFields(rec *sendqueue.Record) map[string]interface{} {
+	fields := recordFields(rec)
+	fields["submitted"] = false
+	if rec.State == sendqueue.StateFailed {
+		fields["success"], fields["delivery"], fields["confirmation"] = false, deliveryPaneGone, send.ConfirmationFailed
+		return fields
+	}
+	fields["success"], fields["delivery"], fields["confirmation"] = true, deliveryQueued, send.ConfirmationUnknown
+	return fields
 }
 
 func recordFields(r *sendqueue.Record) map[string]interface{} {
@@ -259,7 +274,8 @@ func sendLandWindow() time.Duration {
 func handleSessionSendWorker(profile string, args []string) {
 	fs := flag.NewFlagSet("session send-worker", flag.ContinueOnError)
 	target := fs.String("target", "", "deck session id")
-	if err := fs.Parse(args); err != nil || *target == "" {
+	watch := fs.String("watch", "", "send id whose transcript is being watched")
+	if err := fs.Parse(args); err != nil || (*target == "" && *watch == "") {
 		os.Exit(2)
 	}
 	storage, err := session.NewStorageWithProfile(profile)
@@ -268,6 +284,10 @@ func handleSessionSendWorker(profile string, args []string) {
 	}
 	dir := sendQueueDir(storage)
 	storage.Close()
+	if *watch != "" {
+		watchQueuedSend(profile, dir, *watch)
+		return
+	}
 	sendqueue.Prune(dir, time.Now().Add(-sendqueue.RetainFinished))
 	for {
 		lock, ok, err := sendqueue.TryLock(dir, *target)
@@ -279,8 +299,9 @@ func handleSessionSendWorker(profile string, args []string) {
 			if rec == nil {
 				break
 			}
-			deliverQueued(profile, dir, rec)
+			deliverQueuedAsync(profile, dir, rec)
 		}
+		startPendingWatchers(profile, dir, *target)
 		lock.Release()
 		// A send queued while this worker was finishing: pick it up.
 		if nextPending(dir, *target) == nil {
@@ -292,11 +313,62 @@ func handleSessionSendWorker(profile string, args []string) {
 func nextPending(dir, target string) *sendqueue.Record {
 	recs, _ := sendqueue.List(dir, target)
 	for _, r := range recs {
-		if !r.Final() {
+		if r.State == sendqueue.StateQueued || r.State == sendqueue.StateTyping {
 			return r
 		}
 	}
 	return nil
+}
+
+// Transcript confirmation is independent of typing. Watching one send must
+// not block later messages from entering a busy Claude harness's own queue.
+func startPendingWatchers(profile, dir, target string) {
+	recs, _ := sendqueue.List(dir, target)
+	for _, r := range recs {
+		if !r.Final() && (r.State == sendqueue.StateTyped || r.State == sendqueue.StateSubmitted) {
+			if err := spawnSendWatcher(profile, r.SendID); err != nil {
+				watchQueuedSend(profile, dir, r.SendID)
+			}
+		}
+	}
+}
+
+func spawnSendWatcher(profile, sendID string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, profileArgs(profile, "session", "send-worker", "--watch", sendID)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+func watchQueuedSend(profile, dir, sendID string) {
+	lock, ok, err := sendqueue.TryLock(dir, "watch-"+sendID)
+	if err != nil || !ok {
+		return
+	}
+	defer lock.Release()
+	rec, err := sendqueue.Load(dir, sendID)
+	if err != nil || rec.Final() || (rec.State != sendqueue.StateTyped && rec.State != sendqueue.StateSubmitted) {
+		return
+	}
+	set := func(fn func(*sendqueue.Record)) error {
+		r, err := sendqueue.Update(dir, sendID, time.Now(), fn)
+		if err != nil {
+			return err
+		}
+		if r.State != rec.State || r.Reason != rec.Reason || r.Verdict != rec.Verdict {
+			publishSendState(profile, r)
+		}
+		*rec = *r
+		return nil
+	}
+	watchLanded(profile, rec, set)
 }
 
 // childOutcome is what a `session send` child's result says happened.
@@ -350,6 +422,14 @@ var sendChild = startChildSend
 // deliverQueued drives one record to landed, failed (only when nothing was
 // typed), or settled typed/submitted.
 func deliverQueued(profile, dir string, rec *sendqueue.Record) {
+	deliverQueuedMode(profile, dir, rec, true)
+}
+
+func deliverQueuedAsync(profile, dir string, rec *sendqueue.Record) {
+	deliverQueuedMode(profile, dir, rec, false)
+}
+
+func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 	poll := sendWorkerPoll()
 	deadline, _ := time.Parse(time.RFC3339Nano, rec.Deadline)
 	set := func(fn func(*sendqueue.Record)) error {
@@ -357,14 +437,14 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 		if err != nil {
 			return err
 		}
-		if r.State != rec.State || r.Reason != rec.Reason {
+		if r.State != rec.State || r.Reason != rec.Reason || r.Verdict != rec.Verdict {
 			publishSendState(profile, r)
 		}
 		*rec = *r
 		return nil
 	}
 	fail := func(reason string) {
-		_ = set(func(r *sendqueue.Record) { r.State, r.Reason = sendqueue.StateFailed, reason })
+		_ = set(func(r *sendqueue.Record) { r.State, r.Reason, r.Verdict = sendqueue.StateFailed, reason, "unknown" })
 	}
 	pastDeadline := func() bool { return !deadline.IsZero() && time.Now().After(deadline) }
 	if rec.State == sendqueue.StateTyping {
@@ -387,7 +467,7 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 			return
 		}
 		status, _ := fetchHookDrivenStatus(profile, inst.ID)
-		if status == "running" || status == "starting" {
+		if shouldWaitForIdle(inst.Tool, status) {
 			if pastDeadline() {
 				fail("target stayed busy past the retry budget")
 				return
@@ -417,7 +497,13 @@ func deliverQueued(profile, dir string, rec *sendqueue.Record) {
 	if rec.Final() {
 		return
 	}
-	watchLanded(profile, rec, set)
+	if watch {
+		watchLanded(profile, rec, set)
+	}
+}
+
+func shouldWaitForIdle(tool, status string) bool {
+	return status == "" || status == "unknown" || status == "starting" || (status == "running" && !session.AcceptsInputWhileBusy(tool))
 }
 
 // typeQueued hands one queued record to a `session send` child. The record
@@ -460,13 +546,18 @@ func applyChildResult(rec *sendqueue.Record, result map[string]interface{}, code
 		r.ChildPID = 0
 		switch outcome {
 		case childSubmitted:
-			r.State, r.Reason = sendqueue.StateSubmitted, ""
+			r.State, r.Reason, r.Verdict = sendqueue.StateSubmitted, "", "delivered"
 		case childTyped:
 			r.State, r.Reason = sendqueue.StateTyped, ""
+			if result["delivery"] == deliveryQueued || result["delivery"] == deliveryDelivered {
+				r.Verdict = "delivered"
+			} else {
+				r.Verdict = "unknown"
+			}
 		case childNotSent:
-			r.State, r.Reason = sendqueue.StateQueued, "retrying: "+reason
+			r.State, r.Reason, r.Verdict = sendqueue.StateQueued, "retrying: "+reason, "queued"
 		default:
-			r.State, r.Reason = sendqueue.StateTyped, "outcome unknown ("+reason+"); not retyped, watching the transcript"
+			r.State, r.Reason, r.Verdict = sendqueue.StateTyped, "outcome unknown ("+reason+"); not retyped, watching the transcript", "unknown"
 		}
 	})
 }
@@ -521,7 +612,7 @@ func watchLanded(profile string, rec *sendqueue.Record, set func(func(*sendqueue
 		if rec.TranscriptPath != "" {
 			if id, ts, ok := query.FindLanded(context.Background(), harness, rec.TranscriptPath, rec.TranscriptFrom, rec.Message, sentAt); ok {
 				_ = set(func(r *sendqueue.Record) {
-					r.State, r.Reason, r.LandedRowID, r.LandedAt = sendqueue.StateLanded, "", id, ts
+					r.State, r.Reason, r.Verdict, r.LandedRowID, r.LandedAt = sendqueue.StateLanded, "", "delivered", id, ts
 				})
 				waitTurnStarted(profile, rec.SessionID, 5*time.Second)
 				return
@@ -621,7 +712,7 @@ func startChildSend(profile, id, message, resultPath string) (int, func() int, e
 	if err != nil {
 		return 0, nil, err
 	}
-	cmd := exec.Command(exe, profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json")...)
+	cmd := exec.Command(exe, profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")...)
 	cmd.Stdout = out
 	if err := cmd.Start(); err != nil {
 		out.Close()
@@ -658,9 +749,9 @@ func deliveryFrames(profile string, storage *session.Storage, sessionID string) 
 		var out []query.RowFrame
 		for _, r := range recs {
 			prev, known := seen[r.SendID]
-			seen[r.SendID] = r.State
-			if (first && !r.Final()) || (!first && (!known || prev != r.State)) {
-				out = append(out, query.RowFrame{Frame: "delivery", Reason: r.Reason, Delivery: &query.Delivery{SendID: r.SendID, State: r.State}})
+			seen[r.SendID] = r.State + ":" + r.Verdict
+			if (first && !r.Final()) || (!first && (!known || prev != seen[r.SendID])) {
+				out = append(out, query.RowFrame{Frame: "delivery", Reason: r.Reason, Delivery: &query.Delivery{SendID: r.SendID, State: r.State, Verdict: r.Verdict}})
 			}
 		}
 		first = false

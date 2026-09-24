@@ -25,24 +25,24 @@ read-only transcript and pane reads named below.
 ## Queued send
 
 ```
-agent-deck session send <id> --message-file - --json --queue
-{"send_id":"01K5…","state":"queued","reason":"","target_status":"running","session_id":"…",
+agent-deck session send <id> --message-file - --json
+{"send_id":"01K5…","state":"queued","verdict":"queued","reason":"","target_status":"unknown","session_id":"…",
  "message":"…","created_at":"…","updated_at":"…","deadline":"…","attempts":0}
 agent-deck session send-status 01K5… --json
-{… "state":"landed","landed_row_id":"<uuid or queue:<ts>:<hash>>","landed_at":"…","attempts":1}
+{… "state":"landed","verdict":"delivered","landed_row_id":"<uuid or queue:<ts>:<hash>>","landed_at":"…","attempts":1}
 ```
 
 The record is written under `<profile dir>/sendqueue/<send_id>.json` and a
 detached worker (`session send-worker`, one per target, serialised by a lock
 file) takes it from there:
 
-1. While the target's hook-driven status is `running` the send stays
-   `queued` (`target_status` says why). A target that is not running fails
+1. Claude accepts input while busy, so its worker delivers immediately to a
+   running turn. Codex, Pi, shell and unknown harnesses wait for idle. A target that is not running fails
    at once with `reason: "target not running"` (exit 1).
-2. When the target is idle the record moves to `typing` (attempts, sent_at
+2. When delivery can start the record moves to `typing` (attempts, sent_at
    and the transcript offset are written to disk first), and a `session
-   send` child types and submits it through the normal path (readiness
-   wait, composer guard, submit verification). The child reads the message
+   send` child types and submits it through the composer guard and bounded
+   verification. The child reads the message
    from `<send_id>.message` and writes its JSON result to
    `<send_id>.result`, so it finishes even if the worker dies.
 3. The child's result decides the next state: `submitted` when the harness
@@ -53,14 +53,15 @@ file) takes it from there:
    record stays `typed` with `reason: "outcome unknown (…)"` and the
    transcript decides. It is never `failed`, because a client that resends
    on `failed` would double the message.
-4. The worker watches the native transcript from the byte offset before the
+4. A separate watcher checks the native transcript from the byte offset before the
    send until the text lands: state `landed` with `landed_row_id`, the same
    id `recall timeline`/`follow` give that row. Only delivery counts: a user
    row (a command row for a `/name` message), or a Claude queued message
    once it is absorbed into the turn. An enqueue alone is not delivery, and
    a row stamped before the send is an earlier message, never this one. The
-   worker then waits for the target to take the turn up before the next
-   queued send, so five sends in a row land as five user rows in order.
+   typing worker can submit later queued sends while the first message is
+   still waiting for its turn. The watcher is locked per send and can be
+   restarted after a process exit without retyping.
 5. The retry budget is 30 minutes (`deadline`), then `failed` with a reason
    (only ever when nothing was typed). A send not seen in the transcript
    within 2 minutes, or sent to a harness with no transcript reader (not
@@ -72,8 +73,8 @@ without one settles the record `typed` with an unknown outcome. No worker
 ever types a record that has left `queued`.
 
 Send ids sort in send order, also for callers in the same millisecond.
-Each state change is also a `session.send` bus frame and, in a running
-`recall follow` for that session, a `{"frame":"delivery","send_id","state"}`
+Each state or verdict change is also a `session.send` bus frame and, in a running
+`recall follow` for that session, a `{"frame":"delivery","send_id","state","verdict"}`
 line. `send-status`, `events follow` and `recall follow` restart the worker
 for a send that is still in flight (after a reboot, say). Finished records
 are pruned after 7 days. Exit codes: 0 queued or sent, 1 delivery failed,

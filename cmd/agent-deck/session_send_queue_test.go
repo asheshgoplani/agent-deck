@@ -13,6 +13,7 @@ import (
 type sendRecordJSON struct {
 	SendID       string `json:"send_id"`
 	State        string `json:"state"`
+	Verdict      string `json:"verdict"`
 	Reason       string `json:"reason"`
 	TargetStatus string `json:"target_status"`
 	SessionID    string `json:"session_id"`
@@ -20,6 +21,10 @@ type sendRecordJSON struct {
 	Attempts     int    `json:"attempts"`
 	Settled      bool   `json:"settled"`
 	LandedRowID  string `json:"landed_row_id"`
+	Success      *bool  `json:"success"`
+	Delivery     string `json:"delivery"`
+	Submitted    *bool  `json:"submitted"`
+	Confirmation string `json:"confirmation"`
 }
 
 func addSessionJSON(t *testing.T, home, title, tool string) string {
@@ -148,6 +153,7 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _, _ = run("", "session", "stop", added.ID) })
 	time.Sleep(time.Second)
+	start := time.Now()
 	stdout, stderr, code = run("echo queued-worker-ok", "session", "send", added.ID, "--message-file", "-", "--json", "--queue")
 	if code != 0 {
 		t.Fatalf("queue: %d %s %s", code, stdout, stderr)
@@ -155,6 +161,14 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 	var rec sendRecordJSON
 	if err := json.Unmarshal([]byte(stdout), &rec); err != nil || rec.State != "queued" || rec.SendID == "" {
 		t.Fatalf("queued record: %v %s", err, stdout)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("--queue took %v, want <1s", elapsed)
+	} else {
+		t.Logf("explicit queue return: %d ms", elapsed.Milliseconds())
+	}
+	if rec.Verdict != "queued" {
+		t.Fatalf("initial verdict = %q, want queued", rec.Verdict)
 	}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
@@ -167,6 +181,21 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 		if st.Settled || st.State == "landed" {
 			if st.Attempts != 1 || (st.State != "typed" && st.State != "submitted") {
 				t.Fatalf("settled record: %+v", st)
+			}
+			start := time.Now()
+			stdout, stderr, code = run("echo json-fast-ok", "session", "send", added.ID, "--message-file", "-", "--json")
+			var fast sendRecordJSON
+			if code != 0 || json.Unmarshal([]byte(stdout), &fast) != nil || fast.SendID == "" || fast.Verdict != "queued" {
+				t.Fatalf("plain --json send: %d %s %s", code, stdout, stderr)
+			}
+			// The documented sync-send keys stay on the immediate reply.
+			if fast.Success == nil || !*fast.Success || fast.Delivery != "queued" || fast.Submitted == nil || *fast.Submitted || fast.Confirmation != "unknown" {
+				t.Fatalf("plain --json send lost the documented fields: %s", stdout)
+			}
+			if elapsed := time.Since(start); elapsed >= time.Second {
+				t.Fatalf("plain --json send took %v, want <1s", elapsed)
+			} else {
+				t.Logf("plain JSON return: %d ms", elapsed.Milliseconds())
 			}
 			return
 		}
