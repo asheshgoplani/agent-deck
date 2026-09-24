@@ -32,7 +32,16 @@ if [ "$1" = -u ]; then shift; fi
 socket=default
 if [ "$1" = -L ]; then socket=$2; shift 2; fi
 case "$1" in
-list-sessions) cat "$STATUS_FIXTURE/names";;
+list-sessions)
+ case "$*" in
+ *CODEX_SESSION_ID*)
+  if [ "$socket" = slow ] && [ -f "$STATUS_FIXTURE/gate" ]; then
+   touch "$STATUS_FIXTURE/entered"
+   while [ -f "$STATUS_FIXTURE/gate" ]; do sleep 0.02; done
+  fi
+  while IFS= read -r name; do printf '%s\t\n' "$name"; done < "$STATUS_FIXTURE/names";;
+ *) cat "$STATUS_FIXTURE/names";;
+ esac;;
 show-environment)
  case "$*" in
  *CODEX_SESSION_ID*) if [ -f "$STATUS_FIXTURE/rotation" ]; then cat "$STATUS_FIXTURE/rotation"; fi;;
@@ -183,8 +192,8 @@ func TestStatusPassSweepPinsOwnershipBeyondTTL(t *testing.T) {
 		}
 	}
 	t.Logf("12 production UpdateStatus calls across TTL: scans=%d environment reads=%d elapsed=%s", scans, peers, time.Since(start))
-	if scans != 1 || peers != 24 {
-		t.Fatalf("ownership sweep scans=%d environment reads=%d, want 1 and 24", scans, peers)
+	if scans != 1 || peers != 12 {
+		t.Fatalf("ownership sweep scans=%d environment reads=%d, want 1 and 12", scans, peers)
 	}
 }
 
