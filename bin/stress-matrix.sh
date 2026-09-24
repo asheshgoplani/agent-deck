@@ -40,6 +40,19 @@ for size in 50 150 300 600; do
   done
 done
 
+# The reported incident had mostly error rows in one local group. Keep this
+# separate from the mixed fleet so its measurements cannot be mistaken for a
+# Cartesian cell of the requested matrix.
+for phase in before after; do
+  if [ "$phase" = before ]; then cli=$before_cli; ui=$before_ui; else cli=$after_cli; ui=$after_ui; fi
+  if ! "$bench" -scenario mostly-stopped -binary "$cli" -ui-harness "$ui" \
+    -out "$outdir/$phase-136-stopped.json" -sizes 136 -runs 3 \
+    -machine "$(hostname -s)" -revision "$phase" \
+    >"$outdir/$phase-136-stopped.log" 2>&1; then
+    failed=1
+  fi
+done
+
 python3 - "$outdir" <<'PY'
 import json
 import pathlib
@@ -74,6 +87,28 @@ for size in (50, 150, 300, 600):
     for phase in ("before", "after"):
         if phase not in data:
             lines.append(f"\n{size} sessions, {phase}: failed. See `{phase}-{size}.log` for the exact error.")
+lines.append("")
+lines.extend([
+    "## 136-session mostly-stopped profile",
+    "",
+    "One local group, 130 error rows, six live shell panes, no remote. "
+    "The terminal metric is measured from the real TUI PTY on the private socket.",
+    "",
+    "| Metric | Before p50 | Before p95 | After p50 | After p95 |",
+    "|---|---:|---:|---:|---:|",
+])
+stopped = {}
+for phase in ("before", "after"):
+    path = root / f"{phase}-136-stopped.json"
+    if path.exists():
+        report = json.loads(path.read_text())
+        stopped[phase] = {m["name"]: m for m in report["metrics"]}
+for name in ("tui_terminal_key_frame_ms", "tui_key_repeat_frame_ms", "status_pass_ms", "tmux_calls", "rss_bytes"):
+    values = []
+    for phase in ("before", "after"):
+        metric = stopped.get(phase, {}).get(name)
+        values.extend([f'{metric[key]:.3f}' if metric else "unmeasured" for key in ("p50", "p95")])
+    lines.append(f"| {name} | {' | '.join(values)} |")
 lines.append("")
 (root / "STRESS-MATRIX-20260924.md").write_text("\n".join(lines))
 PY
