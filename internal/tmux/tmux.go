@@ -3559,7 +3559,7 @@ func (s *Session) Kill() error {
 	}
 
 	// Kill the tmux session. Bounded — see tmuxMutationTimeout. A client
-	// SIGKILLed at the deadline yields a non-nil err, which the Exists() re-probe
+	// SIGKILLed at the deadline yields a non-nil err, which the ProbeExists re-probe
 	// below resolves: if the server did process the kill, the session is gone and
 	// this returns success anyway.
 	err := s.runBoundedMutation("kill-session", "-t", s.Name)
@@ -3576,9 +3576,13 @@ func (s *Session) Kill() error {
 	// fail to persist the archive when re-archiving a session whose tmux was
 	// already gone (the post-Unarchive path — Unarchive clears the flag without
 	// restarting tmux). Only surface the error if the session is genuinely
-	// still alive after the kill attempt.
-	if err != nil && !s.Exists() {
-		return nil
+	// still alive or its absence cannot be proved after the kill attempt.
+	if err != nil {
+		// A positive activity cache can still describe the session just killed.
+		// Only a completed probe of this exact name proves teardown succeeded.
+		if exists, probeErr := s.ProbeExists(); probeErr == nil && !exists {
+			return nil
+		}
 	}
 
 	return err
