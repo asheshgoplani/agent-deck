@@ -7234,6 +7234,32 @@ func (i *Instance) bindGeminiSessionFromHook(sessionID, hookEvent string) {
 
 // GetHookStatus returns the current hook-based status and its freshness.
 // Freshness window is tool-specific.
+// StatusEvidence is the externally fed evidence UpdateStatus turns into a
+// rendered status: the latest hook sample and the latest OpenCode SSE sample.
+// It changes only when a feed lands (UpdateHookStatus, UpdateOpenCodeSSEStatus)
+// and reverts when a feed is rejected, so a poller can compare two readings to
+// learn whether this instance has unapplied evidence.
+type StatusEvidence struct {
+	HookStatus string
+	HookEvent  string
+	HookAt     time.Time
+	SSEStatus  string
+	SSEAt      time.Time
+}
+
+// StatusEvidence returns the current evidence snapshot (read lock).
+func (i *Instance) StatusEvidence() StatusEvidence {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return StatusEvidence{
+		HookStatus: i.hookStatus,
+		HookEvent:  i.hookEvent,
+		HookAt:     i.hookLastUpdate,
+		SSEStatus:  i.sseStatus,
+		SSEAt:      i.sseLastUpdate,
+	}
+}
+
 func (i *Instance) GetHookStatus() (string, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()

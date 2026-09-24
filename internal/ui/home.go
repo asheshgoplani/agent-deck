@@ -407,6 +407,15 @@ type Home struct {
 	// This reduces CPU usage by 90%+ while maintaining responsiveness
 	statusUpdateIndex     atomic.Int32 // Current position in round-robin cycle (atomic for thread safety)
 	fullStatusUpdateIndex atomic.Int32 // Next session in the periodic status sweep
+	// sweepVisibleIDs is the UI tick's latest view of which session rows are
+	// on screen; the periodic sweep refreshes those every pass, outside the
+	// rotation budget, so a visible row is never older than one sweep.
+	sweepVisibleMu  sync.Mutex
+	sweepVisibleIDs map[string]bool
+	// sweepEvidence records, per instance, the hook/SSE evidence the sweep
+	// last applied. A row whose evidence moved since is refreshed on the next
+	// pass regardless of rotation. Touched only by backgroundStatusUpdate.
+	sweepEvidence map[string]session.StatusEvidence
 	// Visible-row round-robin state (#1753): with a large group expanded the
 	// visible set approaches fleet size, so "always refresh every visible row"
 	// degenerates into the same per-row storm the off-screen batching exists to
@@ -6235,6 +6244,78 @@ func shouldPollStatusInLoop(inst *session.Instance) bool {
 
 const fullStatusBatchSize = 32
 
+// Why a row is polled ahead of the rotation budget.
+type sweepRowReason int
+
+const (
+	sweepRowVisible  sweepRowReason = iota + 1 // on screen or focused
+	sweepRowEvidence                           // hook/SSE evidence moved since last applied
+)
+
+// noteSweepVisibleRows records the on-screen session rows for the periodic
+// sweep. Called on the UI goroutine with each status tick request.
+func (h *Home) noteSweepVisibleRows(req statusUpdateRequest) {
+	visible := make(map[string]bool, req.visibleHeight)
+	for i := req.viewOffset; i < len(req.flatItemIDs) && i < req.viewOffset+req.visibleHeight; i++ {
+		visible[req.flatItemIDs[i]] = true
+	}
+	h.sweepVisibleMu.Lock()
+	h.sweepVisibleIDs = visible
+	h.sweepVisibleMu.Unlock()
+}
+
+// sweepPriorityRows selects the rows the periodic sweep must poll on this
+// pass regardless of the rotation budget, keyed by index into instances, and
+// returns the evidence snapshot the sweep records for every row it polls.
+// A row seen for the first time is only recorded: a cold start with hook
+// files on disk for hundreds of stopped rows must not turn into one unbounded
+// pass. Rows that stop being tracked are forgotten.
+func (h *Home) sweepPriorityRows(instances []*session.Instance) (map[int]sweepRowReason, map[string]session.StatusEvidence) {
+	h.sweepVisibleMu.Lock()
+	visible := h.sweepVisibleIDs
+	h.sweepVisibleMu.Unlock()
+	h.focusMu.Lock()
+	focused := h.focusedSessionName
+	h.focusMu.Unlock()
+	if h.sweepEvidence == nil {
+		h.sweepEvidence = make(map[string]session.StatusEvidence, len(instances))
+	}
+
+	forced := make(map[int]sweepRowReason)
+	evidence := make(map[string]session.StatusEvidence, len(instances))
+	tracked := make(map[string]bool, len(instances))
+	for idx, inst := range instances {
+		if !h.shouldSweepInstance(inst) {
+			continue
+		}
+		tracked[inst.ID] = true
+		ev := inst.StatusEvidence()
+		evidence[inst.ID] = ev
+		prev, seen := h.sweepEvidence[inst.ID]
+		if !seen {
+			h.sweepEvidence[inst.ID] = ev
+		} else if ev != prev {
+			forced[idx] = sweepRowEvidence
+			continue
+		}
+		if visible[inst.ID] {
+			forced[idx] = sweepRowVisible
+			continue
+		}
+		if focused != "" {
+			if ts := inst.GetTmuxSession(); ts != nil && ts.Name == focused {
+				forced[idx] = sweepRowVisible
+			}
+		}
+	}
+	for id := range h.sweepEvidence {
+		if !tracked[id] {
+			delete(h.sweepEvidence, id)
+		}
+	}
+	return forced, evidence
+}
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -6418,10 +6499,15 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 	}
 
-	// Poll a fixed-size slice of the fleet on each periodic pass. A full-fleet
-	// pass can launch hundreds of probes when the list contains stopped or
-	// disconnected sessions, starving tmux and status readers. Hook and pipe
-	// events still refresh active rows independently.
+	// Two tiers per periodic pass. Tier one, unbudgeted but screen-bounded:
+	// every visible or focused row, and every row whose hook/SSE evidence
+	// moved since the sweep last applied it, so a Stop or a permission prompt
+	// renders on the next tick rather than when its rotation slot comes up.
+	// Tier two, budgeted: a fixed-size slice of the remaining fleet. A
+	// full-fleet pass launched hundreds of probes when the list held stopped
+	// or disconnected sessions, starving tmux and status readers; the budget
+	// bounds that tail without delaying the rows that just changed.
+	forced, evidence := h.sweepPriorityRows(instances)
 	startIndex := 0
 	if len(instances) > 0 {
 		startIndex = int(h.fullStatusUpdateIndex.Load()) % len(instances)
@@ -6444,41 +6530,19 @@ func (h *Home) backgroundStatusUpdate() {
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
-	for scan := 0; scan < len(instances); scan++ {
-		idx := (startIndex + scan) % len(instances)
-		inst := instances[idx]
-
-		// Skip archived sessions: their tmux pane is torn down and their row
-		// status is display-frozen (rowStatusGlyph forces the stopped glyph
-		// regardless of Status), so UpdateStatus can only burn a serialized tmux
-		// subprocess without changing anything the UI shows. With a large archive
-		// backlog this dominated the loop (observed: 723 archived of 742 total
-		// pushed the sweep to multi-second spikes). Unarchiving runs its own
-		// refresh, so the periodic loop never needs to poll archived sessions.
-		if !h.shouldSweepInstance(inst) {
-			skipped++
-			nextIndex = (idx + 1) % len(instances)
-			continue
+	pipeIdle := func(inst *session.Instance) bool {
+		if pm == nil {
+			return false
 		}
-		if scheduled == fullStatusBatchSize {
-			skipped += len(instances) - scan
-			break
+		ts := inst.GetTmuxSession()
+		if ts == nil || !pm.IsConnected(ts.Name) {
+			return false
 		}
-		scheduled++
-		nextIndex = (idx + 1) % len(instances)
-
-		// Skip idle sessions when PipeManager knows they haven't produced output.
-		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
-		if pm != nil {
-			if ts := inst.GetTmuxSession(); ts != nil && pm.IsConnected(ts.Name) {
-				lastOut := pm.LastOutputTime(ts.Name)
-				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second {
-					skipped++
-					continue
-				}
-			}
-		}
-
+		lastOut := pm.LastOutputTime(ts.Name)
+		return !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second
+	}
+	poll := func(inst *session.Instance) {
+		h.sweepEvidence[inst.ID] = evidence[inst.ID]
 		g.Go(func() error {
 			oldStatus := inst.GetStatusThreadSafe()
 			instStart := time.Now()
@@ -6506,6 +6570,53 @@ func (h *Home) backgroundStatusUpdate() {
 			}
 			return nil
 		})
+	}
+
+	// Tier one. A row with moved evidence is polled even when its pipe is
+	// quiet: the hook is the newer signal. A merely visible row keeps the
+	// pipe-idle skip, its pipe events refresh it.
+	for idx, why := range forced {
+		inst := instances[idx]
+		if why == sweepRowVisible && pipeIdle(inst) {
+			skipped++
+			continue
+		}
+		poll(inst)
+	}
+
+	// Tier two: the rotation.
+	for scan := 0; scan < len(instances); scan++ {
+		idx := (startIndex + scan) % len(instances)
+		inst := instances[idx]
+
+		// Skip archived sessions: their tmux pane is torn down and their row
+		// status is display-frozen (rowStatusGlyph forces the stopped glyph
+		// regardless of Status), so UpdateStatus can only burn a serialized tmux
+		// subprocess without changing anything the UI shows. With a large archive
+		// backlog this dominated the loop (observed: 723 archived of 742 total
+		// pushed the sweep to multi-second spikes). Unarchiving runs its own
+		// refresh, so the periodic loop never needs to poll archived sessions.
+		if !h.shouldSweepInstance(inst) || forced[idx] != 0 {
+			if forced[idx] == 0 {
+				skipped++
+			}
+			nextIndex = (idx + 1) % len(instances)
+			continue
+		}
+		if scheduled == fullStatusBatchSize {
+			skipped += len(instances) - scan
+			break
+		}
+		scheduled++
+		nextIndex = (idx + 1) % len(instances)
+
+		// Skip idle sessions when PipeManager knows they haven't produced output.
+		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
+		if pipeIdle(inst) {
+			skipped++
+			continue
+		}
+		poll(inst)
 	}
 	h.fullStatusUpdateIndex.Store(int32(nextIndex)) // #nosec G115 -- bounded by instance count
 	_ = g.Wait()                                    // Errors are logged within each goroutine
@@ -6898,6 +7009,7 @@ func (h *Home) triggerStatusUpdate() {
 		visibleHeight: visibleHeight,
 		flatItemIDs:   flatItemIDs,
 	}
+	h.noteSweepVisibleRows(req)
 
 	// Non-blocking send - if worker is busy, skip this tick
 	select {
