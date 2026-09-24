@@ -6,13 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.16.17] - 2026-09-25
+
 ### Fixed (status lights)
 
+- A Codex sub-agent finishing its turn no longer flips a working session to waiting or raises a false inbox event for its parent.
+- A deck started inside a private tmux server no longer reports live sessions on the default server as errors. When the current server cannot establish that a session exited, its last known status is kept.
+- The startup watchdog no longer respawns a healthy Claude pane: accepted hook events end the startup phase, and an overdue pane is checked for a live prompt or busy indicator before it expires (#2361, thanks @tarekrached for #2362 and #2364).
 - Session status lights across Claude, Codex and pi: Claude sessions sitting at the prompt with only background shells left are waiting (substate `background-work`) instead of running; Codex's `• Working (… • esc to interrupt)` line above the composer counts as running, but the same text inside Codex's own transcript does not; unsent drafts and pi's status line count as a prompt; an idle pi session whose last answer names `delegate_task` no longer reads running; stale remote rows, headers and the running pill no longer show a full-colour green (status-detection audit 2026-09-23).
 - **Remotes need this update too.** A remote row is the remote's own verdict, so a remote still on 1.16.16 or older keeps showing idle Claude sessions with background shells as running, whatever version the controller runs. Update the remotes (`agent-deck remote update --all`) to clear it.
 
 ### Fixed
 
+- Dialogs for Edit, Settings, MCP, Skills, Local Search, Recall, Fork and first-run setup fit at 80x24 and 60x15. Tall dialog bodies scroll around the focused field while the title and wrapped key hints remain visible.
+- Narrow rows preserve complete session names, put generated names before task descriptions, fit fork badges and mark the selected group in the gutter.
+- The active filter, time range and view remain visible; selected rows keep the help footer; an empty filter says "No sessions match"; a stopped preview says "Process Exited".
+- Jump hints use the gutter, overlays are centred, the session switcher stays out of the preview, unreachable remotes show their reason first, and search and group numbers match the list. Local Search keeps its top border at every size.
+- The header tally, group preview and filter pills count every row the list draws, including starting and queued rows.
+- Tree connectors are computed from the final visible list, including nested sessions and window rows (#2363, thanks @AdamiecRadek).
+- Groups reorder among their siblings, so a root group can move past one that has subgroups (#2346, thanks @scottyallen).
+- Large session lists remain responsive: status readers do not block behind tmux probes, Codex ownership uses one tmux query, and periodic status work is bounded per tick while visible rows and fresh hook evidence refresh first.
 - The update banner no longer offers Ctrl+T while the background update is still running and would refuse the key. It now says what the run is doing (finishing the update, nudging remotes to update, or the remote sweep), and pressing Ctrl+T during the run queues the restart for when it ends (#2336).
 - The preview of a remote session now shows the account that session runs on, with its usage and when it was polled. When that is not known it says so plainly ("accounts not polled yet", or that the remote runs an older agent-deck). Pressing the context inspector key on a remote session shows a notice instead of doing nothing.
 - A shared session with two people attached no longer stays frozen at the size of someone who already left, which showed everyone a small box of dots. agent-deck's own background tmux client used to take the place the window follows; it now hands that place back to a person. Nobody's terminal is ever resized.
@@ -39,8 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`agent-deck events follow --json [--after <cursor>]` streams a new durable event bus** (CORE-PLAN slice 4, additive only). A new `internal/events` package taps `session.transition`/`session.finished`, `tmux.output`, and `watcher.event`/`watcher.health` into a profile-specific append log at `<data-dir>/bus/<profile>/` (see `docs/events.md`). `session.status` is reserved; no production path publishes it today. Existing event, inbox, outbox and database writes remain in place. A bounded queue keeps producer calls asynchronous, while batched appends under a file lock give simultaneous processes unique cursors without syncing every tmux output line. `events stats --json` reads persisted drop counts across processes. A normal process shutdown drains accepted taps for up to two seconds; followers can resume from a retained cursor across restart and rotation. The command uses plain CLI dispatch while the slice-1 registry remains on its separate branch.
-- `agent-deck daemon serve|status|stop` serves the command registry and the event bus on a 0600 unix socket in the profile runtime dir: framed JSON with a per-connection token, owner-uid peer check, single-owner lock with stale-socket takeover, and `subscribe` streaming `events follow` frames resumable after a cursor (CORE-PLAN slice 5, additive). Direct mode stays the default; `[core] daemon = true` sends `--json=envelope` requests to a live daemon and runs them in process when none answers. See docs/daemon-protocol.md.
+- **`agent-deck events follow --json [--after <cursor>]` streams a new durable event bus.** A new `internal/events` package taps `session.transition`/`session.finished`, `tmux.output`, and `watcher.event`/`watcher.health` into a profile-specific append log at `<data-dir>/bus/<profile>/` (see `docs/events.md`). Existing event, inbox, outbox and database writes remain in place. A bounded queue keeps producer calls asynchronous, while batched appends under a file lock give simultaneous processes unique cursors without syncing every tmux output line. `events stats --json` reads persisted drop counts across processes. A normal process shutdown drains accepted taps for up to two seconds; followers can resume from a retained cursor across restart and rotation.
+- `agent-deck daemon serve|status|stop` serves the command registry and the event bus on a 0600 unix socket in the profile runtime dir: framed JSON with a per-connection token, owner-uid peer check, single-owner lock with stale-socket takeover, and `subscribe` streaming `events follow` frames resumable after a cursor. Direct mode stays the default; `[core] daemon = true` sends `--json=envelope` requests to a live daemon and runs them in process when none answers. See docs/daemon-protocol.md.
 
 ### Fixed
 
