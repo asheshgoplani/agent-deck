@@ -616,6 +616,13 @@ func terminalKeyFrames(binary string, count int) ([]float64, error) {
 	}()
 	waitFrame := func() error {
 		var frame strings.Builder
+		var settled *time.Timer
+		var settledCh <-chan time.Time
+		defer func() {
+			if settled != nil {
+				settled.Stop()
+			}
+		}()
 		for {
 			select {
 			case chunk, ok := <-chunks:
@@ -623,9 +630,15 @@ func terminalKeyFrames(binary string, count int) ([]float64, error) {
 					return fmt.Errorf("TUI closed before a populated frame")
 				}
 				frame.WriteString(chunk)
-				if strings.Contains(frame.String(), "bench-0") {
-					return nil
+				if settled != nil || strings.Contains(frame.String(), "bench-0") {
+					if settled != nil {
+						settled.Stop()
+					}
+					settled = time.NewTimer(5 * time.Millisecond)
+					settledCh = settled.C
 				}
+			case <-settledCh:
+				return nil
 			case <-ctx.Done():
 				return fmt.Errorf("TUI frame timeout: %w", ctx.Err())
 			}
@@ -636,6 +649,7 @@ func terminalKeyFrames(binary string, count int) ([]float64, error) {
 	}
 	values := make([]float64, 0, count)
 	for i := 0; i < count; i++ {
+		time.Sleep(20 * time.Millisecond)
 		// Drain any queued startup or background output before the next key.
 		for draining := true; draining; {
 			select {
