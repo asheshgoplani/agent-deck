@@ -6294,7 +6294,8 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
 	if i.hookStatus == "" && HookStatusTool(i.Tool) {
-		if hs := readHookStatusFile(i.ID); hs != nil {
+		if hs := readHookStatusFile(i.ID); hs != nil &&
+			(!IsCodexCompatible(i.Tool) || !i.shouldRejectCodexSubagentRebind(hs.SessionID)) {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
@@ -6310,6 +6311,16 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				i.tmuxSession.ResetAcknowledged()
 			}
 		}
+	}
+
+	// Recheck cached evidence too: a rollout may acquire its subagent metadata
+	// after the hook was first read, or an older reader may have cached it.
+	if IsCodexCompatible(i.Tool) && i.hookSessionID != "" &&
+		i.shouldRejectCodexSubagentRebind(i.hookSessionID) {
+		i.hookStatus, i.hookEvent, i.hookSessionID = "", "", ""
+		i.hookLastUpdate = time.Time{}
+		i.codexStartedGeneration, i.codexCompletedGeneration = "", ""
+		i.codexStartedSessionID, i.codexCompletedSessionID = "", ""
 	}
 
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
@@ -6829,10 +6840,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	prevHookStatus, prevHookEvent, prevHookLastUpdate := i.hookStatus, i.hookEvent, i.hookLastUpdate
 	prevStartedGen, prevCompletedGen := i.codexStartedGeneration, i.codexCompletedGeneration
 	prevStartedSID, prevCompletedSID := i.codexStartedSessionID, i.codexCompletedSessionID
+	prevInvalidatingGen := i.codexInvalidatingGeneration
 	restoreHook := func() {
 		i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
 		i.codexStartedGeneration, i.codexCompletedGeneration = prevStartedGen, prevCompletedGen
 		i.codexStartedSessionID, i.codexCompletedSessionID = prevStartedSID, prevCompletedSID
+		i.codexInvalidatingGeneration = prevInvalidatingGen
 	}
 
 	// Detect whether this is genuinely new data (newer timestamp than last seen).
@@ -6989,6 +7002,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// refuses turn/start and error-loops the session. See
 		// codex_subagent_gate.go.
 		if i.shouldRejectCodexSubagentRebind(sessionID) {
+			restoreHook()
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
