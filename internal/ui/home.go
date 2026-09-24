@@ -422,7 +422,7 @@ type Home struct {
 	// Moves status updates to a separate goroutine, completely decoupling from UI
 	statusTrigger       chan statusUpdateRequest // Triggers background status update
 	statusWorkerDone    chan struct{}            // Signals worker has stopped
-	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last full background status sweep
+	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last periodic status batch (legacy field name)
 	lastPersistedStatus map[string]string        // instanceID -> last status written to SQLite
 	// lastPersistedAutoNameDesc tracks the last auto-name description written to
 	// SQLite per instance, so the background loop only issues a targeted write
