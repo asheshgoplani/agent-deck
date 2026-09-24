@@ -324,6 +324,11 @@ host = "bench-auth"
 	if err = storage.Save(instances); err != nil {
 		return err
 	}
+	// Install only into this worker's throwaway Claude config so a first-run
+	// prompt cannot hide the real TUI frame in either scenario.
+	if _, err = session.InjectClaudeHooks(session.GetClaudeConfigDir()); err != nil {
+		return err
+	}
 	if scenario == "mostly-stopped" {
 		values := map[string][]float64{}
 		for i := 0; i < runs; i++ {
@@ -334,11 +339,6 @@ host = "bench-auth"
 			values["tui_terminal_key_frame_ms"] = append(values["tui_terminal_key_frame_ms"], frames...)
 		}
 		return measureUIHarness(harness, root, size, runs, out, values)
-	}
-	// Install only into the worker's throwaway Claude config so first-run
-	// consent cannot hide the fleet. Exercise the real watcher at startup.
-	if _, err = session.InjectClaudeHooks(session.GetClaudeConfigDir()); err != nil {
-		return err
 	}
 	values := map[string][]float64{}
 	groupTree := session.NewGroupTree(instances)
