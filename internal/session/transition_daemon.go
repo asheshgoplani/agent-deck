@@ -134,6 +134,8 @@ type TransitionDaemon struct {
 	// global so tests get a fresh trigger per daemon.
 	recallBackfillMu      sync.Mutex
 	recallBackfillStarted bool
+	// Join the worker before tests replace its shared configuration.
+	recallBackfillWG sync.WaitGroup
 }
 
 func NewTransitionDaemon() *TransitionDaemon {

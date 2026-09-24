@@ -17,11 +17,17 @@ import (
 // otherwise, and must start it at most once per daemon even across repeated
 // ticks (the poll loop calls it every SyncOnce).
 
+func initialBackfillStarted(d *TransitionDaemon) bool {
+	d.recallBackfillMu.Lock()
+	defer d.recallBackfillMu.Unlock()
+	return d.recallBackfillStarted
+}
+
 func TestMaybeStartInitialRecallBackfill_RecallDisabled(t *testing.T) {
 	recallHome(t, false)
 	d := NewTransitionDaemon()
 	d.maybeStartInitialRecallBackfill(context.Background())
-	if d.recallBackfillStarted {
+	if initialBackfillStarted(d) {
 		t.Fatal("started with [recall] enabled = false")
 	}
 }
@@ -35,7 +41,7 @@ func TestMaybeStartInitialRecallBackfill_BackfillOnEnableDisabled(t *testing.T) 
 
 	d := NewTransitionDaemon()
 	d.maybeStartInitialRecallBackfill(context.Background())
-	if d.recallBackfillStarted {
+	if initialBackfillStarted(d) {
 		t.Fatal("started with [recall] backfill_on_enable = false")
 	}
 }
@@ -45,12 +51,19 @@ func TestMaybeStartInitialRecallBackfill_StartsOnlyOnce(t *testing.T) {
 
 	d := NewTransitionDaemon()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() {
+		cancel()
+		d.recallBackfillWG.Wait()
+	}()
 
 	d.maybeStartInitialRecallBackfill(ctx)
-	if !d.recallBackfillStarted {
+	if !initialBackfillStarted(d) {
 		t.Fatal("did not start with recall enabled and backfill_on_enable at its true default")
 	}
+
+	// Join before changing the shared configuration read by the worker.
+	cancel()
+	d.recallBackfillWG.Wait()
 
 	// A later tick under a config that would otherwise refuse must still be
 	// a no-op: the in-process guard, not a config re-check, decides.
@@ -59,7 +72,7 @@ func TestMaybeStartInitialRecallBackfill_StartsOnlyOnce(t *testing.T) {
 	cfg.Recall.Enabled = &off
 	withConfig(t, cfg)
 	d.maybeStartInitialRecallBackfill(ctx)
-	if !d.recallBackfillStarted {
+	if !initialBackfillStarted(d) {
 		t.Fatal("second call reset the started guard")
 	}
 }
@@ -77,6 +90,9 @@ func TestInitialRecallBackfill_EndToEnd(t *testing.T) {
 	// RecallRoots(), which reads [recall] harnesses).
 	cfg := userConfigCache
 	cfg.Recall.Harnesses = []string{"claude"}
+	// Throttling has its own tests; host load must not hold this fixture open.
+	noLoadGate := 0.0
+	cfg.Recall.MaxLoadAvg = &noLoadGate
 	withConfig(t, cfg)
 
 	stats, err := testcorpus.Generate(filepath.Join(home, ".claude"), testcorpus.Options{Files: 5, Seed: 11, SubagentEvery: 2})
@@ -98,9 +114,12 @@ func TestInitialRecallBackfill_EndToEnd(t *testing.T) {
 
 	d := NewTransitionDaemon()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer func() {
+		cancel()
+		d.recallBackfillWG.Wait()
+	}()
 	d.maybeStartInitialRecallBackfill(ctx)
-	if !d.recallBackfillStarted {
+	if !initialBackfillStarted(d) {
 		t.Fatal("trigger did not fire with recall enabled and a Claude corpus on disk")
 	}
 
