@@ -60,13 +60,21 @@ esac
 	t.Cleanup(tmux.ResetSocketSessionCacheForTest)
 	started := time.Now()
 	h.backgroundStatusUpdate()
+	firstPass, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads := strings.Count(string(firstPass), "show-environment"); reads > 2*fullStatusBatchSize {
+		t.Fatalf("first tick made %d environment reads, budget %d", reads, 2*fullStatusBatchSize)
+	}
+	h.backgroundStatusUpdate()
 	elapsed := time.Since(started)
 	data, err := os.ReadFile(filepath.Join(dir, "calls"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	reads := strings.Count(string(data), "show-environment")
-	t.Logf("production background sweep: %d instances, %d environment reads, %s", n, reads, elapsed)
+	t.Logf("production background sweep: %d instances across two ticks, %d environment reads, %s", n, reads, elapsed)
 	if elapsed < 2*time.Second {
 		t.Fatal("fixture did not cross ownership TTL")
 	}

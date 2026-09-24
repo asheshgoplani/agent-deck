@@ -6233,6 +6233,8 @@ func shouldPollStatusInLoop(inst *session.Instance) bool {
 	return inst != nil && !inst.IsArchived()
 }
 
+const fullStatusBatchSize = 32
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -6420,7 +6422,6 @@ func (h *Home) backgroundStatusUpdate() {
 	// pass can launch hundreds of probes when the list contains stopped or
 	// disconnected sessions, starving tmux and status readers. Hook and pipe
 	// events still refresh active rows independently.
-	const fullStatusBatchSize = 32
 	startIndex := 0
 	if len(instances) > 0 {
 		startIndex = int(h.fullStatusUpdateIndex.Load()) % len(instances)
