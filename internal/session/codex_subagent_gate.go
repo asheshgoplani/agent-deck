@@ -56,6 +56,7 @@ import (
 type codexThreadMeta struct {
 	ThreadSource   string
 	ParentThreadID string
+	valid          bool
 }
 
 // codexThreadMetaCache memoizes session_meta head reads. A thread's origin
@@ -142,6 +143,7 @@ func readCodexRolloutThreadMeta(path string) codexThreadMeta {
 	meta := codexThreadMeta{
 		ThreadSource:   head.Payload.ThreadSource,
 		ParentThreadID: head.Payload.ParentThreadID,
+		valid:          true,
 	}
 	// Older payloads carry parenthood only inside source.subagent.thread_spawn.
 	if meta.ParentThreadID == "" && len(head.Payload.Source) > 0 {
@@ -171,7 +173,11 @@ func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bo
 		return codexThreadMeta{}, false
 	}
 	meta := readCodexRolloutThreadMeta(path)
-	codexThreadMetaCache.Store(sessionID, meta)
+	// A rollout can be visible before its session_meta line is complete.
+	// Retry an empty head on the next observation instead of caching it.
+	if meta.valid {
+		codexThreadMetaCache.Store(sessionID, meta)
+	}
 	return meta, true
 }
 
