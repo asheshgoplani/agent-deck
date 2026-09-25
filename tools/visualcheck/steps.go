@@ -201,6 +201,17 @@ func stepRemoteUnreachable(w *widthRun) error {
 	if err := w.moveCursorToText("remotes/lab", 40); err != nil {
 		return err
 	}
+	// The failed session poll and the separate `agent-deck version` check
+	// land independently; the preview shows "last checked never" until the
+	// second one does. Capturing on the poll result alone raced the version
+	// check (v1.16.17 release run: DIFF on GitHub runners, PASS on g14).
+	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		return err == nil && strings.Contains(pane, "Unreachable: host down") &&
+			!strings.Contains(pane, "(last checked never)"), err
+	}, 15*time.Second); err != nil {
+		return fmt.Errorf("remote poll and version check never both settled: %w", err)
+	}
 	if err := waitScreen(w, 5*time.Second, "Unreachable: host down"); err != nil {
 		return err
 	}
