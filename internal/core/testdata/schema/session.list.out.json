@@ -142,6 +142,10 @@
         "status": {
           "type": "string"
         },
+        "status_source": {
+          "description": "cached for a stopped row whose stored status was used; live after a status refresh",
+          "type": "string"
+        },
         "substate": {
           "description": "live",
           "type": "string"

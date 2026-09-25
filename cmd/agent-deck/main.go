@@ -2881,8 +2881,9 @@ func handleList(profile string, args []string) {
 		// reports the same Status the TUI and /api/menu do (issue #610).
 		statusStarted := time.Now()
 		tmuxBefore := tmux.SubprocessStarts()
-		session.RefreshInstancesForCLIStatus(instances)
-		output, err := buildListJSON(storage.Profile(), instances)
+		refresh, cached := session.CLIStatusCandidates(instances)
+		session.RefreshInstancesForCLIStatus(refresh)
+		output, err := buildListJSON(storage.Profile(), instances, cached)
 		statusElapsed := time.Since(statusStarted)
 		tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
 		// #2331: this status pass is the one thing both the poll (`list
@@ -2947,7 +2948,11 @@ func emitListStats(elapsed time.Duration, tmuxCalls int64, sessions int) {
 // so a listing that arrives by push is byte-identical to one that was
 // fetched. Callers warm the status caches first
 // (session.RefreshInstancesForCLIStatus); an empty profile yields "[]".
-func buildListJSON(profileName string, instances []*session.Instance) ([]byte, error) {
+func buildListJSON(profileName string, instances []*session.Instance, cachedStatus ...map[*session.Instance]bool) ([]byte, error) {
+	var cached map[*session.Instance]bool
+	if len(cachedStatus) != 0 {
+		cached = cachedStatus[0]
+	}
 	type sessionJSON struct {
 		ID                string    `json:"id"`
 		ParentSessionID   string    `json:"parent_session_id,omitempty"`
@@ -2962,6 +2967,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Model             string    `json:"model,omitempty"`
 		ModelVersion      string    `json:"model_version,omitempty"`
 		Status            string    `json:"status"`
+		StatusSource      string    `json:"status_source,omitempty"`
 		Substate          string    `json:"substate,omitempty"`        // Honest Status v2: additive refinement
 		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
@@ -2995,11 +3001,16 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 	for i, inst := range instances {
 		// Listings need live status, not native-session discovery. Persisted
 		// rows have no status freshness stamp, so still validate liveness.
-		_ = pass.UpdateStatusOnly(inst)
+		if !cached[inst] {
+			_ = pass.UpdateStatusOnly(inst)
+		}
 		// The substate read is this pass's one pane capture and can settle
 		// the status it reads (hook lag, session/hook_lag.go): take it
 		// before the status so both describe the same frame.
-		substate := string(inst.Substate())
+		substate := ""
+		if !cached[inst] {
+			substate = string(inst.Substate())
+		}
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
 			ID:                inst.ID,
@@ -3012,6 +3023,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Account:           inst.Account,
 			Command:           inst.Command,
 			Status:            StatusString(inst.Status),
+			StatusSource:      "live",
 			Substate:          substate,
 			SubstateDetail:    inst.SubstateDetail(),
 			Profile:           profileName,
@@ -3029,6 +3041,9 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			CodexSessionID:    inst.CodexSessionID,
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
+		}
+		if cached[inst] {
+			sj.StatusSource = "cached"
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			sj.TmuxSession = tmuxSess.Name

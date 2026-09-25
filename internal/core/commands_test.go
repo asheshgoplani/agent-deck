@@ -239,6 +239,21 @@ func TestSessionListLiveStatusFillsLiveFields(t *testing.T) {
 	}
 }
 
+func TestSessionListMarksStoredStoppedStatus(t *testing.T) {
+	const profile = "_core_list_cached_stopped"
+	stopped := session.NewInstance("stopped", t.TempDir())
+	stopped.Status = session.StatusStopped
+	live := session.NewInstance("live", t.TempDir())
+	seedStore(t, profile, nil, stopped, live)
+	out, res := Invoke[SessionListOut](context.Background(), testRegistry(t, Deps{}), IDSessionList, SessionListIn{Profile: profile, LiveStatus: true})
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if len(out.Sessions) != 2 || out.Sessions[0].StatusSource != "cached" || out.Sessions[0].Status != "stopped" || out.Sessions[1].StatusSource != "live" {
+		t.Fatalf("status evidence = %+v", out.Sessions)
+	}
+}
+
 func TestSessionListAllProfilesCountsEveryProfile(t *testing.T) {
 	seedStore(t, "_core_all_a", nil, session.NewInstance("a1", t.TempDir()))
 	seedStore(t, "_core_all_b", nil)
