@@ -56,6 +56,19 @@ The `recall` verbs forwarded are the read-only ones above (`docs/recall.md` "Rem
 
 The configured remote profile selects the server registry. An explicit `--account` on add/launch selects a server account slot. Your computer's account environment is not copied to the server: no config directory, credentials, MCP definition or skill source travels over SSH, only the names, which the server resolves against its own `config.toml`. An account given as a directory path is refused before the command is sent. Long-running sends are not limited by the background remote status-probe timeout.
 
+## Attaching over mosh
+
+Interactive attaches (Enter in the TUI, the embedded terminal, Shift+Enter, and `agent-deck remote attach`) run over `ssh -tt` by default, so on a high-latency link every keystroke waits for the round trip. Set `transport = "mosh"` to carry them over [mosh](https://mosh.org) instead: it echoes typing locally, keeps the session through sleep and network changes, and holds up on a relayed Tailscale path.
+
+```toml
+[remotes.lab]
+host = "developer@shared-mac"
+transport = "mosh"
+mosh_server = "/opt/homebrew/bin/mosh-server"  # only when it is not on the non-login SSH PATH
+```
+
+Install `mosh` on your computer and `mosh-server` on the remote, and allow UDP 60000–61000 to reach it (Tailscale already does). mosh starts its server through the deck's existing SSH ControlMaster and connects to the address the server sees that connection arrive on, so a host reached through a jump host needs a direct UDP route. Listing, previews, sends and every other command stay on SSH. Leaving an attach asks mosh to shut its server down rather than killing the client, which would leave the server and its attach waiting indefinitely for a reconnect.
+
 ## PATH for sessions the server starts
 
 A remote runs `session start` under the PATH of a non-login, non-interactive SSH shell, and the tmux server it starts inherits that PATH. A login shell would add `~/.local/bin` (where `claude` and most user-installed tools live); this environment does not, so without help the session's `exec claude ...` fails with "command not found" and the row goes to error after about 250ms.

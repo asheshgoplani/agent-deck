@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -205,6 +206,11 @@ type SSHRunner struct {
 
 	// nudgeFn lets tests stub NudgeCheckNow without spawning ssh. nil = real SSH.
 	nudgeFn func(ctx context.Context) error
+
+	// transport and moshServer choose how interactive attaches reach the
+	// host (see RemoteConfig.Transport). Empty transport means SSH.
+	transport  string
+	moshServer string
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
@@ -217,6 +223,8 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 		commandTimeout: rc.GetCommandTimeout(),
 		name:           name,
 		lastStderr:     &lastStderrBox{},
+		transport:      rc.GetTransport(),
+		moshServer:     strings.TrimSpace(rc.MoshServer),
 	}
 }
 
@@ -384,7 +392,7 @@ func (r *SSHRunner) consumeLastStderr() []byte {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
-	return r.attachSSHArgs(r.buildAttachArgs(sessionID))
+	return r.attachInteractive("session", "attach", sessionID)
 }
 
 // RunInteractiveCreation uses the same PTY flow as ordinary remote attach.
@@ -393,20 +401,36 @@ func (r *SSHRunner) RunInteractiveCreation(args ...string) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return fmt.Errorf("remote creation attach requires an interactive terminal")
 	}
-	remoteCmd := "env TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand(args...)
-	sshArgs := append([]string{"-tt"}, r.sshConnOpts()...)
-	sshArgs = append(sshArgs, r.Host, remoteCmd)
-	return r.attachSSHArgs(sshArgs)
+	return r.attachInteractive(args...)
 }
 
-func (r *SSHRunner) attachSSHArgs(sshArgs []string) error {
+// moshQuitTimeout is terminal.MoshQuitTimeout, a variable so tests can shorten it.
+var moshQuitTimeout = terminal.MoshQuitTimeout
+
+// attachInteractive runs an agent-deck command on the remote in a local PTY,
+// over the remote's configured transport.
+func (r *SSHRunner) attachInteractive(args ...string) error {
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	switch r.transport {
+	case "", RemoteTransportSSH:
+		_ = os.MkdirAll(sshControlDir, 0700)
+		return runRemoteAttach(exec.Command("ssh", r.sshAttachArgs(args...)...), RemoteTransportSSH)
+	case RemoteTransportMosh:
+		mosh, err := exec.LookPath("mosh")
+		if err != nil {
+			return fmt.Errorf("remote %q uses transport = \"mosh\", but mosh is not installed on this machine: %w", r.name, err)
+		}
+		return runRemoteAttach(exec.Command(mosh, r.moshAttachArgs(args...)...), RemoteTransportMosh)
+	default:
+		return fmt.Errorf("remote %q has unknown transport %q (use \"ssh\" or \"mosh\")", r.name, r.transport)
+	}
+}
 
-	cmd := exec.Command("ssh", sshArgs...)
-
+// runRemoteAttach runs an interactive transport command (ssh or mosh) in a
+// local PTY until it exits or the user detaches.
+func runRemoteAttach(cmd *exec.Cmd, transport string) error {
 	// Start SSH with a local PTY pre-sized to the controlling terminal so the
 	// remote tmux client connects full-width from frame one (#1167). A bare
 	// pty.Start creates the PTY at the 80x24 default, which can size the remote
@@ -414,9 +438,16 @@ func (r *SSHRunner) attachSSHArgs(sshArgs []string) error {
 	// Shares the local-attach helper so both paths size identically.
 	ptmx, err := tmux.StartAttachPTY(cmd, os.Stdin)
 	if err != nil {
-		return fmt.Errorf("failed to start ssh with pty: %w", err)
+		return fmt.Errorf("failed to start %s with pty: %w", transport, err)
 	}
-	defer ptmx.Close()
+	// A mosh detach hands the PTY to a background quit (see below), which
+	// closes it once mosh-client has exited.
+	ptyHandedOff := false
+	defer func() {
+		if !ptyHandedOff {
+			_ = ptmx.Close()
+		}
+	}()
 
 	// Set the PTY slave to raw mode so all bytes pass through transparently.
 	if _, err := term.MakeRaw(int(ptmx.Fd())); err != nil {
@@ -465,13 +496,14 @@ func (r *SSHRunner) attachSSHArgs(sshArgs []string) error {
 	detachCh := make(chan struct{})
 	input := sshAttachInput{writer: ptmx}
 	outputDone := make(chan struct{})
+	output := &attachOutput{w: os.Stdout}
 
 	// Copy PTY output to stdout.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer close(outputDone)
-		_, _ = io.Copy(os.Stdout, ptmx)
+		_, _ = io.Copy(output, ptmx)
 	}()
 
 	// Read stdin, intercept Ctrl+Q (all encodings), forward the rest.
@@ -542,9 +574,11 @@ func (r *SSHRunner) attachSSHArgs(sshArgs []string) error {
 
 	// Block until detach or SSH exit.
 	var attachErr error
+	exited := false
 	select {
 	case <-detachCh:
 	case attachErr = <-cmdDone:
+		exited = true
 	}
 
 	// Cleanup: close PTY and wait for output to drain.
@@ -553,14 +587,7 @@ func (r *SSHRunner) attachSSHArgs(sshArgs []string) error {
 	// closed PTY, losing it. Mirrors cleanupAttach in internal/tmux/pty.go,
 	// which cancels the pump before closing the PTY.
 	close(stdinReaderStop)
-	_ = ptmx.Close()
-	if cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
-	select {
-	case <-outputDone:
-	case <-time.After(50 * time.Millisecond):
-	}
+	ptyHandedOff = stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, output, transport, exited)
 	// Hand stdin back to the TUI: drop whatever the remote's teardown left in
 	// the input queue and arm the reply quarantine. The join-before-flush
 	// ordering is the load-bearing invariant here, so this calls the same
@@ -584,9 +611,64 @@ func (r *SSHRunner) attachSSHArgs(sshArgs []string) error {
 	}
 
 	if attachErr = input.result(attachErr); attachErr != nil {
-		return fmt.Errorf("ssh attach failed: %w", attachErr)
+		return fmt.Errorf("%s attach failed: %w", transport, attachErr)
 	}
 	return nil
+}
+
+// stopRemoteAttach ends the transport once the attach loop has returned. It
+// reports whether it handed the PTY to a background quit, which then owns
+// closing it.
+func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, outputDone <-chan struct{}, output *attachOutput, transport string, exited bool) bool {
+	if transport == RemoteTransportMosh && !exited && cmd.Process != nil {
+		// SIGTERM, not a kill (see terminal.MoshQuitTimeout). The quit takes a
+		// network round trip, so finish it in the background with the output
+		// discarded and hand the terminal back now.
+		output.discard()
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		go func() {
+			select {
+			case <-cmdDone:
+			case <-time.After(moshQuitTimeout):
+				_ = cmd.Process.Kill()
+			}
+			_ = ptmx.Close()
+		}()
+		return true
+	}
+	_ = ptmx.Close()
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	select {
+	case <-outputDone:
+	case <-time.After(50 * time.Millisecond):
+	}
+	return false
+}
+
+// attachOutput forwards attach output to the terminal until discard is
+// called, after which it swallows it so a transport winding down in the
+// background cannot draw over the dashboard.
+type attachOutput struct {
+	mu        sync.Mutex
+	w         io.Writer
+	discarded bool
+}
+
+func (o *attachOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.discarded {
+		return len(p), nil
+	}
+	return o.w.Write(p)
+}
+
+func (o *attachOutput) discard() {
+	o.mu.Lock()
+	o.discarded = true
+	o.mu.Unlock()
 }
 
 // sshAttachInput owns input forwarding and intentional-detach state for one attach.
@@ -683,6 +765,15 @@ func (r *SSHRunner) buildRemoteCommand(args ...string) string {
 		parts = append(parts, shellQuote(arg))
 	}
 	return strings.Join(parts, " ")
+}
+
+// remoteArgv is buildRemoteCommand's command as unquoted argv.
+func (r *SSHRunner) remoteArgv(args ...string) []string {
+	argv := []string{r.AgentDeckPath}
+	if r.Profile != "" && r.Profile != "default" {
+		argv = append(argv, "-p", r.Profile)
+	}
+	return append(argv, args...)
 }
 
 // FetchSessions retrieves the session list from the remote agent-deck
@@ -2056,9 +2147,21 @@ func remoteVerbReadOnly(args []string) bool {
 // ConnectTimeout, so an unknown host key could hang on a prompt instead of
 // failing fast). "-tt" forces a remote PTY.
 func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
-	remoteCmd := "env TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand("session", "attach", sessionID)
-	args := append([]string{"-tt"}, r.sshConnOpts()...)
-	return append(args, r.Host, remoteCmd)
+	return r.sshAttachArgs("session", "attach", sessionID)
+}
+
+// sshAttachArgs is the ssh argv that runs an agent-deck command on a remote PTY.
+func (r *SSHRunner) sshAttachArgs(args ...string) []string {
+	remoteCmd := "env TERM=" + shellQuote(remoteAttachTERM()) + " " + r.buildRemoteCommand(args...)
+	sshArgs := append([]string{"-tt"}, r.sshConnOpts()...)
+	return append(sshArgs, r.Host, remoteCmd)
+}
+
+// moshAttachArgs is the mosh argv that runs an agent-deck command on the
+// remote. TERM is left to mosh-server, which names the terminal mosh emulates
+// rather than whatever the local one is.
+func (r *SSHRunner) moshAttachArgs(args ...string) []string {
+	return terminal.MoshArgs(r.Host, r.moshServer, r.remoteArgv(args...))
 }
 
 // Modern local terminals may name terminfo entries absent on the SSH host.

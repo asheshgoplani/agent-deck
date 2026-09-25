@@ -995,6 +995,34 @@ type RemoteConfig struct {
 	// old hardcoded 10s silently killed fetches from hosts with many sessions,
 	// making the whole remote look unavailable (#1859 family).
 	CommandTimeoutSeconds int `toml:"command_timeout_seconds,omitempty"`
+
+	// Transport carries interactive attaches: "ssh" (default) or "mosh".
+	// Mosh answers keystrokes locally and survives roaming, which matters on
+	// high-latency links such as a relayed tailnet path. Listing, polling,
+	// and every other command stay on SSH regardless.
+	Transport string `toml:"transport,omitempty"`
+
+	// MoshServer is the command that starts mosh-server on the remote, for
+	// hosts where it is not on the non-login SSH PATH (e.g.
+	// "/opt/homebrew/bin/mosh-server"). Empty uses mosh's default.
+	MoshServer string `toml:"mosh_server,omitempty"`
+}
+
+// Remote attach transports accepted by RemoteConfig.Transport.
+const (
+	RemoteTransportSSH  = "ssh"
+	RemoteTransportMosh = "mosh"
+)
+
+// GetTransport returns the normalized interactive transport, defaulting to
+// "ssh". An unrecognized value is returned as written so attach can refuse it
+// instead of silently falling back to a transport the user did not choose.
+func (rc RemoteConfig) GetTransport() string {
+	t := strings.ToLower(strings.TrimSpace(rc.Transport))
+	if t == "" {
+		return RemoteTransportSSH
+	}
+	return t
 }
 
 // GetAgentDeckPath returns the agent-deck binary path, defaulting to "agent-deck".

@@ -1364,6 +1364,10 @@ func buildRemoteAttachRequest(remoteName, sessionID, openAs string) (terminal.At
 	if !ok || rc.Host == "" {
 		return terminal.AttachRequest{}, false
 	}
+	// A mistyped transport must not quietly fall back to ssh.
+	if t := rc.GetTransport(); t != session.RemoteTransportSSH && t != session.RemoteTransportMosh {
+		return terminal.AttachRequest{}, false
+	}
 	return terminal.AttachRequest{
 		Name:   sessionID,
 		OpenAs: openAs,
@@ -1371,6 +1375,8 @@ func buildRemoteAttachRequest(remoteName, sessionID, openAs string) (terminal.At
 			Host:          rc.Host,
 			AgentDeckPath: rc.GetAgentDeckPath(),
 			Profile:       rc.GetProfile(),
+			Transport:     rc.GetTransport(),
+			MoshServer:    rc.MoshServer,
 		},
 	}, true
 }
