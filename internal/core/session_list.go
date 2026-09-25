@@ -58,6 +58,7 @@ type SessionRow struct {
 	Model             string         `json:"model,omitempty" doc:"live"`
 	ModelVersion      string         `json:"model_version,omitempty" doc:"live"`
 	Status            string         `json:"status"`
+	StatusSource      string         `json:"status_source,omitempty" doc:"cached for a stopped row whose stored status was used; live after a status refresh"`
 	Substate          string         `json:"substate,omitempty" doc:"live"`
 	SubstateDetail    string         `json:"substate_detail,omitempty" doc:"live"`
 	TmuxSession       string         `json:"tmux_session,omitempty" doc:"live"`
@@ -109,8 +110,9 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 	// status the TUI and /api/menu do (#610), and record the pass (#2331).
 	started := time.Now()
 	tmuxBefore := tmux.SubprocessStarts()
-	session.RefreshInstancesForCLIStatus(instances)
-	out.Sessions = liveSessionRows(ctx, out.Profile, instances)
+	refresh, cached := session.CLIStatusCandidates(instances)
+	session.RefreshInstancesForCLIStatus(refresh)
+	out.Sessions = liveSessionRows(ctx, out.Profile, instances, cached)
 	elapsed := time.Since(started)
 	tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
 	health.RecordStatusPass(elapsed, len(instances), tmuxCalls)
@@ -142,17 +144,32 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 
 // liveSessionRows refreshes each session's status and fills every field.
 // Callers warm the status caches first.
-func liveSessionRows(ctx context.Context, profile string, instances []*session.Instance) []SessionRow {
+func liveSessionRows(ctx context.Context, profile string, instances []*session.Instance, cached map[*session.Instance]bool) []SessionRow {
 	rows := make([]SessionRow, len(instances))
-	viewers := session.ViewersByTmuxSession(ctx, instances)
+	active := make([]*session.Instance, 0, len(instances))
+	for _, inst := range instances {
+		if !cached[inst] {
+			active = append(active, inst)
+		}
+	}
+	viewers := session.ViewersByTmuxSession(ctx, active)
 	var pass session.StatusUpdatePass
 	for i, inst := range instances {
 		// Listings need live status, not native-session discovery.
-		_ = pass.UpdateStatusOnly(inst)
+		if !cached[inst] {
+			_ = pass.UpdateStatusOnly(inst)
+		}
 		// The substate read is this pass's one pane capture and can settle
 		// the status (hook lag): take it before the status.
-		substate := string(inst.Substate())
+		substate := ""
+		if !cached[inst] {
+			substate = string(inst.Substate())
+		}
 		row := staticSessionRow(inst, instances, profile)
+		row.StatusSource = "live"
+		if cached[inst] {
+			row.StatusSource = "cached"
+		}
 		row.Substate = substate
 		row.SubstateDetail = inst.SubstateDetail()
 		row.Channels = inst.Channels
