@@ -47,8 +47,13 @@ const DEFAULT_GROUP_PATH = 'my-sessions'
 // groupOptions lists every group the session can move to, indented by depth,
 // from the menu the dialog already has (no extra fetch).
 function groupOptions(groups) {
-  const out = groups.map(g => ({ path: g.path, label: `${'\u00a0\u00a0'.repeat(g.level || 0)}${g.name || g.path}` }))
-  if (!out.some(g => g.path === DEFAULT_GROUP_PATH)) out.unshift({ path: DEFAULT_GROUP_PATH, label: 'My Sessions' })
+  const out = groups.map(g => ({
+    path: g.path,
+    label: '\u00a0\u00a0'.repeat(g.level || 0) + (g.name || g.path),
+  }))
+  if (!out.some(g => g.path === DEFAULT_GROUP_PATH)) {
+    out.unshift({ path: DEFAULT_GROUP_PATH, label: 'My Sessions' })
+  }
   return out
 }
 
@@ -107,15 +112,16 @@ export function EditSessionDialog() {
       { title, notes, color, tool, extraArgs, plugins, channels, skipPermissions, autoMode },
       session,
     )
+    const patching = Object.keys(updates).length > 0
     const moving = group !== (session.group || '')
-    if (Object.keys(updates).length === 0 && !moving) {
+    if (!patching && !moving) {
       close()
       return
     }
     setSubmitting(true)
     try {
       const sessionPath = `/api/sessions/${encodeURIComponent(session.id)}`
-      if (Object.keys(updates).length > 0) await apiFetch('PATCH', sessionPath, updates)
+      if (patching) await apiFetch('PATCH', sessionPath, updates)
       if (moving) {
         const moved = await apiFetch('POST', `${sessionPath}/move`, { groupPath: group })
         // No conversation is migrated (same as `group move`); the new
