@@ -299,6 +299,23 @@ func stepGroupView(w *widthRun) error {
 	}); err != nil {
 		return err
 	}
+	// The golden has the cursor on the scope's first row (alpha). A fresh
+	// instance does not always open there (a release-gate run on g14 opened
+	// on backend), so put it there explicitly: Home, then wait for alpha's
+	// own preview.
+	if err := w.s.waitFor(5*time.Second, func() (bool, error) {
+		if _, err := w.s.exec("tmux", "send-keys", "-t", name, "Home"); err != nil {
+			return false, err
+		}
+		time.Sleep(80 * time.Millisecond)
+		pane, err := w.s.capturePane(name)
+		if err != nil {
+			return false, err
+		}
+		return strings.Contains(pane, "📁 alpha"), nil
+	}); err != nil {
+		return fmt.Errorf("group view cursor never reached alpha: %w", err)
+	}
 	var raw string
 	if err := w.s.waitFor(5*time.Second, func() (bool, error) {
 		var err error
