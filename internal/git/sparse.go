@@ -116,7 +116,8 @@ func ApplySparseCheckout(worktreePath string, st SparseCheckoutState, configArgs
 		return fmt.Errorf("sparse-checkout set: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
-	if out, err := exec.Command("git", append(slices.Clone(configArgs), "-C", worktreePath, "checkout")...).CombinedOutput(); err != nil {
+	checkout := append(slices.Clone(configArgs), "-C", worktreePath, "checkout")
+	if out, err := exec.Command("git", checkout...).CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout sparse worktree: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
