@@ -23,9 +23,10 @@ func CreateMultiRepoWorktrees(allPaths []string, parentDir string, branch string
 
 // CreateMultiRepoWorktreesWithOptions is CreateMultiRepoWorktrees driven by
 // the caller-resolved [worktree] settings: setup timeout, #1708 sparse-checkout
-// inheritance and #2366 checkout_git_config. Each repo inherits from its OWN input path — the
-// directory the user selected — because that, and not the base root this
-// function derives from it, is the worktree carrying the sparse configuration.
+// inheritance and #2366 checkout_git_config. Each repo inherits from its OWN
+// input path — the directory the user selected — because that, and not the
+// base root this function derives from it, is the worktree carrying the sparse
+// configuration.
 func CreateMultiRepoWorktreesWithOptions(allPaths []string, parentDir string, branch string, wtSettings WorktreeSettings) MultiRepoWorktreeResult {
 	result, _ := createMultiRepoWorktrees(allPaths, parentDir, branch, wtSettings.SetupTimeout(), wtSettings, false)
 	return result

@@ -553,7 +553,7 @@ func runWorktreeAdd(spec worktreeAddSpec) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", spec.failMsg, err)
 	}
-	args := append(configArgs, "-C", spec.repoDir, "worktree", "add")
+	args := append(slices.Clone(configArgs), "-C", spec.repoDir, "worktree", "add")
 	if spec.sparse.Enabled {
 		// The whole point of #1708: patterns must be installed before the
 		// first materialization, not after a full checkout.
