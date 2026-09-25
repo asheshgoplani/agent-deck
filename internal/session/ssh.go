@@ -404,9 +404,6 @@ func (r *SSHRunner) RunInteractiveCreation(args ...string) error {
 	return r.attachInteractive(args...)
 }
 
-// moshQuitTimeout is terminal.MoshQuitTimeout, a variable so tests can shorten it.
-var moshQuitTimeout = terminal.MoshQuitTimeout
-
 // attachInteractive runs an agent-deck command on the remote in a local PTY,
 // over the remote's configured transport.
 func (r *SSHRunner) attachInteractive(args ...string) error {
@@ -416,12 +413,16 @@ func (r *SSHRunner) attachInteractive(args ...string) error {
 	switch r.transport {
 	case "", RemoteTransportSSH:
 		_ = os.MkdirAll(sshControlDir, 0700)
+		// #nosec G204 -- fixed binary; the host was validated above and the
+		// remote command is built from shellQuote'd operands.
 		return runRemoteAttach(exec.Command("ssh", r.sshAttachArgs(args...)...), RemoteTransportSSH)
 	case RemoteTransportMosh:
 		mosh, err := exec.LookPath("mosh")
 		if err != nil {
 			return fmt.Errorf("remote %q uses transport = \"mosh\", but mosh is not installed on this machine: %w", r.name, err)
 		}
+		// #nosec G204 -- mosh is resolved from PATH and every operand is a
+		// discrete argv element (no shell); the host was validated above.
 		return runRemoteAttach(exec.Command(mosh, r.moshAttachArgs(args...)...), RemoteTransportMosh)
 	default:
 		return fmt.Errorf("remote %q has unknown transport %q (use \"ssh\" or \"mosh\")", r.name, r.transport)
@@ -587,7 +588,7 @@ func runRemoteAttach(cmd *exec.Cmd, transport string) error {
 	// closed PTY, losing it. Mirrors cleanupAttach in internal/tmux/pty.go,
 	// which cancels the pump before closing the PTY.
 	close(stdinReaderStop)
-	ptyHandedOff = stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, output, transport, exited)
+	ptyHandedOff = stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, output, transport, exited, terminal.MoshQuitTimeout)
 	// Hand stdin back to the TUI: drop whatever the remote's teardown left in
 	// the input queue and arm the reply quarantine. The join-before-flush
 	// ordering is the load-bearing invariant here, so this calls the same
@@ -619,7 +620,7 @@ func runRemoteAttach(cmd *exec.Cmd, transport string) error {
 // stopRemoteAttach ends the transport once the attach loop has returned. It
 // reports whether it handed the PTY to a background quit, which then owns
 // closing it.
-func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, outputDone <-chan struct{}, output *attachOutput, transport string, exited bool) bool {
+func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, outputDone <-chan struct{}, output *attachOutput, transport string, exited bool, quitTimeout time.Duration) bool {
 	if transport == RemoteTransportMosh && !exited && cmd.Process != nil {
 		// SIGTERM, not a kill (see terminal.MoshQuitTimeout). The quit takes a
 		// network round trip, so finish it in the background with the output
@@ -629,7 +630,7 @@ func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, output
 		go func() {
 			select {
 			case <-cmdDone:
-			case <-time.After(moshQuitTimeout):
+			case <-time.After(quitTimeout):
 				_ = cmd.Process.Kill()
 			}
 			_ = ptmx.Close()

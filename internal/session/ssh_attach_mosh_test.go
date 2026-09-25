@@ -103,7 +103,7 @@ func TestStopRemoteAttachMoshQuitsGracefully(t *testing.T) {
 
 	output := &attachOutput{w: &strings.Builder{}}
 	start := time.Now()
-	if !stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, output, RemoteTransportMosh, false) {
+	if !stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, output, RemoteTransportMosh, false, terminal.MoshQuitTimeout) {
 		t.Fatal("mosh detach did not hand the PTY to a background quit")
 	}
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
@@ -123,16 +123,12 @@ func TestStopRemoteAttachMoshQuitsGracefully(t *testing.T) {
 }
 
 func TestStopRemoteAttachMoshKillsAStuckQuit(t *testing.T) {
-	old := moshQuitTimeout
-	moshQuitTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { moshQuitTimeout = old })
-
 	ready := filepath.Join(t.TempDir(), "ready")
 	cmd, ptmx, cmdDone, outputDone := startAttachFixture(t,
 		`trap '' TERM; echo up > "`+ready+`"; while :; do sleep 0.05; done`)
 	waitForFile(t, ready)
 
-	stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, &attachOutput{w: &strings.Builder{}}, RemoteTransportMosh, false)
+	stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, &attachOutput{w: &strings.Builder{}}, RemoteTransportMosh, false, 100*time.Millisecond)
 	select {
 	case <-outputDone:
 	case <-time.After(5 * time.Second):
@@ -146,7 +142,7 @@ func TestStopRemoteAttachSSHKillsImmediately(t *testing.T) {
 		`trap '' TERM HUP; echo up > "`+ready+`"; while :; do sleep 0.05; done`)
 	waitForFile(t, ready)
 
-	if stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, &attachOutput{w: &strings.Builder{}}, RemoteTransportSSH, false) {
+	if stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, &attachOutput{w: &strings.Builder{}}, RemoteTransportSSH, false, terminal.MoshQuitTimeout) {
 		t.Fatal("ssh detach handed off the PTY")
 	}
 	select {
