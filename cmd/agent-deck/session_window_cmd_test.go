@@ -38,18 +38,20 @@ func armWindowCloseSession(t *testing.T) (*session.Instance, string, string, str
 	// internal/ui armKillWindowHome.
 	socket := fmt.Sprintf("wcc%d-%d", os.Getpid(), windowCloseSocketSeq.Add(1))
 	target := "agentdeck_windowclose_cli"
+	const serverStartRace = "server exited unexpectedly"
+	const maxAttempts = 3
 	var out []byte
 	var err error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		out, err = exec.Command("tmux", "-L", socket, "new-session", "-d", "-x", "80", "-y", "24", "-s", target, "-n", "agent", "sleep", "300").CombinedOutput()
-		if err == nil || !strings.Contains(string(out), "server exited unexpectedly") {
+		if err == nil || !strings.Contains(string(out), serverStartRace) {
 			break
 		}
 		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
 	}
 	if err != nil {
-		if strings.Contains(string(out), "server exited unexpectedly") {
-			t.Skipf("tmux server could not start on a fresh socket after 3 attempts (shared-runner tmux start race): %s", out)
+		if strings.Contains(string(out), serverStartRace) {
+			t.Skipf("tmux server could not start on a fresh socket after %d attempts (shared-runner tmux start race): %s", maxAttempts, out)
 		}
 		t.Fatalf("create tmux session: %v: %s", err, out)
 	}

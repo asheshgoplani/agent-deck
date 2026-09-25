@@ -207,8 +207,11 @@ func stepRemoteUnreachable(w *widthRun) error {
 	// check (v1.16.17 release run: DIFF on GitHub runners, PASS on g14).
 	if err := w.waitFor(func() (bool, error) {
 		pane, err := w.pane()
-		return err == nil && strings.Contains(pane, "Unreachable: host down") &&
-			!strings.Contains(pane, "(last checked never)"), err
+		if err != nil {
+			return false, err
+		}
+		return strings.Contains(pane, "Unreachable: host down") &&
+			!strings.Contains(pane, "(last checked never)"), nil
 	}, 15*time.Second); err != nil {
 		return fmt.Errorf("remote poll and version check never both settled: %w", err)
 	}
