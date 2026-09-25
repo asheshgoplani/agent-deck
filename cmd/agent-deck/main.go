@@ -2996,13 +2996,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		Viewers *[]tmux.Viewer `json:"viewers,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
-	active := make([]*session.Instance, 0, len(instances))
-	for _, inst := range instances {
-		if !cached[inst] {
-			active = append(active, inst)
-		}
-	}
-	viewers := session.ViewersByTmuxSession(context.Background(), active)
+	viewers := session.ViewersByTmuxSession(context.Background(), instances)
 	var pass session.StatusUpdatePass
 	for i, inst := range instances {
 		// Listings need live status, not native-session discovery. Persisted
