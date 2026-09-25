@@ -7,6 +7,10 @@
 // session.SetField, so we surface its error messages verbatim.
 //
 // Closes "Edit session settings" MISSING row in tests/web/PARITY_MATRIX.md.
+//
+// GROUP moves the session through POST /api/sessions/{id}/move (#2368), the
+// web side of the TUI's M and `agent-deck group move`. Group membership lives
+// in the group tree, not in session.SetField, so it is a separate call.
 
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
@@ -14,6 +18,7 @@ import { editSessionDialogSignal, mutationsEnabledSignal, pickerToolsSignal } fr
 import { menuModelSignal } from './dataModel.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
+import { addToast } from './toasts.js'
 import { displayLabelForTool, resolveEditSessionPickerTools } from './pickerTools.js'
 
 // Build PATCH body from form state. Only includes fields that differ from
@@ -35,11 +40,23 @@ function diffUpdates(form, original) {
   return out
 }
 
+// The session's default group ("my-sessions"), which `group move` also
+// reaches with "root". Offered even when no session currently sits in it.
+const DEFAULT_GROUP_PATH = 'my-sessions'
+
+// groupOptions lists every group the session can move to, indented by depth,
+// from the menu the dialog already has (no extra fetch).
+function groupOptions(groups) {
+  const out = groups.map(g => ({ path: g.path, label: `${'\u00a0\u00a0'.repeat(g.level || 0)}${g.name || g.path}` }))
+  if (!out.some(g => g.path === DEFAULT_GROUP_PATH)) out.unshift({ path: DEFAULT_GROUP_PATH, label: 'My Sessions' })
+  return out
+}
+
 export function EditSessionDialog() {
   const open = editSessionDialogSignal.value
   // Hooks must run unconditionally — see CreateSessionDialog.js for the same
   // pattern (state first, guards after).
-  const { sessions } = menuModelSignal.value
+  const { sessions, groups } = menuModelSignal.value
   const session = useMemo(
     () => (open ? sessions.find(s => s.id === open.sessionId) : null),
     [open && open.sessionId, sessions],
@@ -55,6 +72,7 @@ export function EditSessionDialog() {
   const [channels, setChannels] = useState(seed.channels || '')
   const [skipPermissions, setSkipPermissions] = useState(!!seed.skipPermissions)
   const [autoMode, setAutoMode] = useState(!!seed.autoMode)
+  const [group, setGroup] = useState(seed.group || '')
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [seededFor, setSeededFor] = useState(open ? open.sessionId : null)
@@ -72,6 +90,7 @@ export function EditSessionDialog() {
     setChannels(session.channels || '')
     setSkipPermissions(!!session.skipPermissions)
     setAutoMode(!!session.autoMode)
+    setGroup(session.group || '')
     setError(null)
     setSeededFor(open.sessionId)
   }
@@ -88,13 +107,23 @@ export function EditSessionDialog() {
       { title, notes, color, tool, extraArgs, plugins, channels, skipPermissions, autoMode },
       session,
     )
-    if (Object.keys(updates).length === 0) {
+    const moving = group !== (session.group || '')
+    if (Object.keys(updates).length === 0 && !moving) {
       close()
       return
     }
     setSubmitting(true)
     try {
-      await apiFetch('PATCH', `/api/sessions/${encodeURIComponent(session.id)}`, updates)
+      const sessionPath = `/api/sessions/${encodeURIComponent(session.id)}`
+      if (Object.keys(updates).length > 0) await apiFetch('PATCH', sessionPath, updates)
+      if (moving) {
+        const moved = await apiFetch('POST', `${sessionPath}/move`, { groupPath: group })
+        // No conversation is migrated (same as `group move`); the new
+        // group's Claude config dir only applies from the next restart.
+        if (moved && moved.restartRequired) {
+          addToast(`Moved "${session.title}". Restart it to use the new group's Claude config dir.`, 'info')
+        }
+      }
       close()
     } catch (err) {
       setError(err.message || String(err))
@@ -145,6 +174,17 @@ export function EditSessionDialog() {
               value=${color}
               onInput=${e => setColor(e.target.value)}
               placeholder="#RRGGBB, 0-255, or blank to clear"/>
+          </div>
+          <div class="field">
+            <label>GROUP</label>
+            <select
+              data-testid="edit-session-group"
+              value=${group}
+              onChange=${e => setGroup(e.target.value)}>
+              ${groupOptions(groups).map(g => html`
+                <option key=${g.path} value=${g.path}>${g.label}</option>
+              `)}
+            </select>
           </div>
           <div class="field">
             <label>TOOL (restart required)</label>
