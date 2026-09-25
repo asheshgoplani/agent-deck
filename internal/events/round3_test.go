@@ -6,6 +6,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestPublishProfileKeepsTwoProfilesSeparate(t *testing.T) {
@@ -91,6 +93,10 @@ func TestCloseDefaultHasDeadlineWithHeldWriterLock(t *testing.T) {
 	}
 }
 
+// outputTapFramesPerSecond is the unscaled tmux.output tap budget; the
+// enforced floor is scaled by testutil.ThroughputFloor.
+const outputTapFramesPerSecond = 20000
+
 func TestOutputBatchThroughput(t *testing.T) {
 	bus, err := Open(t.TempDir())
 	if err != nil {
@@ -117,8 +123,8 @@ func TestOutputBatchThroughput(t *testing.T) {
 	_ = opened.Close()
 	perSecond := float64(frames) / time.Since(start).Seconds()
 	t.Logf("tmux.output: %.0f frames/s", perSecond)
-	if perSecond < 20000 {
-		t.Fatalf("tap throughput %.0f frames/s below 20000", perSecond)
+	if floor := testutil.ThroughputFloor(t, outputTapFramesPerSecond); perSecond < floor {
+		t.Fatalf("tap throughput %.0f frames/s below %.0f", perSecond, floor)
 	}
 }
 
@@ -154,7 +160,7 @@ func TestDefaultOutputTapThroughput(t *testing.T) {
 	}
 	_ = b.Close()
 	t.Logf("tmux.output default tap: %.0f frames/s", perSecond)
-	if perSecond < 20000 {
-		t.Fatalf("default tap throughput %.0f frames/s below 20000", perSecond)
+	if floor := testutil.ThroughputFloor(t, outputTapFramesPerSecond); perSecond < floor {
+		t.Fatalf("default tap throughput %.0f frames/s below %.0f", perSecond, floor)
 	}
 }
