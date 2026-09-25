@@ -49,9 +49,9 @@ function rowFor(page, title) {
 }
 
 async function gotoSidebar(page) {
-  await page.goto('/')
   // `personal` is seeded collapsed; open it so SEEDED_COUNT rows are on screen.
   await expandSeededCollapsedGroups(page)
+  await page.goto('/')
   await expect(page.locator('.sess')).toHaveCount(SEEDED_COUNT, { timeout: 5000 })
 }
 

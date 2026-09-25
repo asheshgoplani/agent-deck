@@ -19,10 +19,10 @@ test.describe('group selection', () => {
     // Reset like every other suite does rather than inheriting whatever the
     // previously-run file left behind.
     await request.post('/__fixture/reset')
-    await page.goto('/')
     // `personal` is seeded collapsed and the sidebar now honors that, so open
-    // it to get all four seeded rows on screen.
+    // it before loading to get all four seeded rows on screen.
     await expandSeededCollapsedGroups(page)
+    await page.goto('/')
     await expect(page.locator('.sess')).toHaveCount(4, { timeout: 5000 })
   })
 

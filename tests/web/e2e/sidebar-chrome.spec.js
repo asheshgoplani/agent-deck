@@ -37,9 +37,9 @@ const RUNNING_TITLES = ['frontend']
 const IDLE_TITLES = ['agent-deck', 'innotrade-api', 'scratch']
 
 async function gotoSidebar(page) {
+  await expandSeededCollapsedGroups(page)
   await page.goto('/')
   // Sidebar list takes the initial /api/menu fetch + render to populate.
-  await expandSeededCollapsedGroups(page)
   await expect(page.locator('.sess')).toHaveCount(ALL_TITLES.length, { timeout: 5000 })
 }
 

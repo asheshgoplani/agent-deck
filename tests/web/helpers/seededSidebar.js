@@ -12,27 +12,35 @@
 // collapsed on a fresh load, hiding `scratch` (sess-004).
 //
 // Specs that need all four rows now say so explicitly instead of relying on
-// "collapsed groups render open anyway". Expanding through the chevron — a
-// real user action that round-trips the new endpoint — is deliberate: it keeps
-// these specs honest about the seeded state rather than pretending the group
-// was never collapsed.
+// "collapsed groups render open anyway".
+//
+// CALL THIS BEFORE page.goto(). It opens the group server-side, so the page's
+// very first /api/menu fetch already reports it expanded. Both alternatives
+// break some caller:
+//   - clicking the chevron after load cannot work on the phone project, where
+//     the sidebar is laid out but not shown (service-worker-recovery runs on
+//     every viewport);
+//   - PATCHing after load relies on the SSE snapshot to tell the client, and
+//     some specs deliberately abort /events/menu (session-actions-ui's Fork
+//     test) so a doctored /api/menu payload can't be overwritten.
+// The chevron click itself is covered where it belongs, by the collapse tests
+// in group-selection.spec.js and sidebar-chrome.spec.js.
 import { expect } from '@playwright/test'
 
-/** Chevron glyph the sidebar renders for a collapsed group (Sidebar.js). */
-const COLLAPSED = '▸'
+/** Groups the fixture seeds with Expanded:false. */
+const SEEDED_COLLAPSED = ['personal']
 
 /**
- * Expand every group the fixture seeds collapsed, so the full seeded session
- * set is visible. Safe to call when the group is already open.
+ * Open every group the fixture seeds collapsed, via the same endpoint the
+ * sidebar's chevron writes through. Idempotent. Run after /__fixture/reset
+ * (which re-collapses them) and before navigating; the caller's own row-count
+ * assertion then waits for the render.
  */
 export async function expandSeededCollapsedGroups(page) {
-  const chevron = page.locator('[data-testid="group-chev-personal"]')
-  await chevron.waitFor({ state: 'visible', timeout: 5000 })
-
-  if ((await chevron.textContent())?.trim() === COLLAPSED) {
-    await chevron.click()
-    // The click PATCHes the server and waits for the snapshot to come back, so
-    // assert the row actually arrived rather than racing the next assertion.
-    await expect(page.locator('.sess .tt', { hasText: 'scratch' })).toHaveCount(1, { timeout: 5000 })
+  for (const path of SEEDED_COLLAPSED) {
+    const res = await page.request.patch(`/api/groups/${encodeURIComponent(path)}`, {
+      data: { expanded: true },
+    })
+    expect(res.ok(), `PATCH /api/groups/${path} {expanded:true} -> ${res.status()}`).toBeTruthy()
   }
 }
