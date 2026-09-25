@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,6 +78,14 @@ func runWidthIsolated(ctx context.Context, bin, updateBin string, spec widthSpec
 
 	for _, step := range visualCheckSteps {
 		if err := runStepWithRetry(w, step); err != nil {
+			// A golden DIFF is an assertion result, not broken navigation:
+			// the step reached its screen and the frame is kept for the
+			// report (main marks it DIFF). Stopping here would report every
+			// later step as "not captured" FAIL and hide whether they pass.
+			if errors.Is(err, errGoldenMismatch) {
+				fmt.Fprintf(os.Stderr, "step %q at %s: %v\n", step.name, spec.name, err)
+				continue
+			}
 			return w.frames, fmt.Errorf("step %q at %s: %w", step.name, spec.name, err)
 		}
 		if step.name == "13-detach-shell" {
@@ -195,6 +204,10 @@ func runStepWithRetry(w *widthRun, step visualCheckStep) error {
 	return fmt.Errorf("failed after %d attempts: %w\nlast pane:\n%s", attempts, lastErr, pane)
 }
 
+// errGoldenMismatch marks a step whose frame differs from (or has no)
+// committed golden, as opposed to a step that failed to navigate.
+var errGoldenMismatch = errors.New("golden mismatch")
+
 // firstGoldenMismatch compares each already-captured frame against its
 // committed golden and returns an error describing the first mismatch, or
 // nil if every frame (including any advisory ones, which carry no golden)
@@ -209,10 +222,31 @@ func firstGoldenMismatch(frames []frameCapture) error {
 			return err
 		}
 		if st.status != "PASS" {
-			return fmt.Errorf("%s/%s golden %s", f.step, f.width, st.status)
+			return fmt.Errorf("%w: %s/%s golden %s\n%s", errGoldenMismatch, f.step, f.width, st.status, frameDiff(st.want, f.scrub))
 		}
 	}
 	return nil
+}
+
+// frameDiff lists the lines that differ between a golden and a scrubbed
+// frame, so a DIFF in a CI log shows what changed without the contact sheet.
+func frameDiff(want, got string) string {
+	wantLines := strings.Split(strings.TrimRight(want, "\n"), "\n")
+	gotLines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	var b strings.Builder
+	for i := 0; i < max(len(wantLines), len(gotLines)); i++ {
+		var w, g string
+		if i < len(wantLines) {
+			w = wantLines[i]
+		}
+		if i < len(gotLines) {
+			g = gotLines[i]
+		}
+		if w != g {
+			fmt.Fprintf(&b, "line %d:\n  - %s\n  + %s\n", i+1, w, g)
+		}
+	}
+	return b.String()
 }
 
 // send sends a tmux key spec (e.g. "Down", "Enter", "Escape", "C-s") to this
