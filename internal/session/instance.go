@@ -6400,8 +6400,6 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			i.shouldRejectCodexUnbackedTurnEnd(i.hookSessionID, i.hookEvent)) {
 		i.hookStatus, i.hookEvent, i.hookSessionID = "", "", ""
 		i.hookLastUpdate = time.Time{}
-		i.codexStartedGeneration, i.codexCompletedGeneration = "", ""
-		i.codexStartedSessionID, i.codexCompletedSessionID = "", ""
 	}
 
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
