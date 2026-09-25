@@ -1315,7 +1315,7 @@ func handleSessionFork(profile string, args []string) {
 				// #1708: inherit the PARENT SESSION's sparse state (its own
 				// worktree), not repoRoot's — see git.CaptureSparseCheckout.
 				createdBranch, cwErr := git.CreateWorktreeAtStartPointWithOptions(repoRoot, worktreePath, wtBranch, parentHead,
-					git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), inst.ProjectPath))
+					wtSettings.CreateOptions(inst.ProjectPath))
 				if cwErr != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
 					os.Exit(1)
@@ -1387,7 +1387,7 @@ func handleSessionFork(profile string, args []string) {
 				setupErr, cwErr = git.CreateWorktreeWithSetupOptions(
 					repoRoot, worktreePath, wtBranch,
 					git.WorktreeStateOptions{},
-					git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), inst.ProjectPath),
+					wtSettings.CreateOptions(inst.ProjectPath),
 					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 				if cwErr != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)

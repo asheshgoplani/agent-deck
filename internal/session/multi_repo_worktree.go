@@ -17,27 +17,28 @@ type MultiRepoWorktreeResult struct {
 }
 
 func CreateMultiRepoWorktrees(allPaths []string, parentDir string, branch string, setupTimeout time.Duration) MultiRepoWorktreeResult {
-	return CreateMultiRepoWorktreesWithOptions(allPaths, parentDir, branch, setupTimeout, false)
+	result, _ := createMultiRepoWorktrees(allPaths, parentDir, branch, setupTimeout, WorktreeSettings{}, false)
+	return result
 }
 
-// CreateMultiRepoWorktreesWithOptions is CreateMultiRepoWorktrees plus the
-// #1708 sparse-checkout inheritance switch (`[worktree] sparse_checkout`,
-// resolved by the caller). Each repo inherits from its OWN input path — the
+// CreateMultiRepoWorktreesWithOptions is CreateMultiRepoWorktrees driven by
+// the caller-resolved [worktree] settings: setup timeout, #1708 sparse-checkout
+// inheritance and #2366 checkout_git_config. Each repo inherits from its OWN input path — the
 // directory the user selected — because that, and not the base root this
 // function derives from it, is the worktree carrying the sparse configuration.
-func CreateMultiRepoWorktreesWithOptions(allPaths []string, parentDir string, branch string, setupTimeout time.Duration, inheritSparse bool) MultiRepoWorktreeResult {
-	result, _ := createMultiRepoWorktrees(allPaths, parentDir, branch, setupTimeout, inheritSparse, false)
+func CreateMultiRepoWorktreesWithOptions(allPaths []string, parentDir string, branch string, wtSettings WorktreeSettings) MultiRepoWorktreeResult {
+	result, _ := createMultiRepoWorktrees(allPaths, parentDir, branch, wtSettings.SetupTimeout(), wtSettings, false)
 	return result
 }
 
 // CreateMultiRepoWorktreesStrictWithOptions refuses to replace a requested Git
 // worktree with an original-repository symlink. On error, the result identifies
 // worktrees already created so the owner can roll them back.
-func CreateMultiRepoWorktreesStrictWithOptions(allPaths []string, parentDir, branch string, setupTimeout time.Duration, inheritSparse bool) (MultiRepoWorktreeResult, error) {
-	return createMultiRepoWorktrees(allPaths, parentDir, branch, setupTimeout, inheritSparse, true)
+func CreateMultiRepoWorktreesStrictWithOptions(allPaths []string, parentDir, branch string, wtSettings WorktreeSettings) (MultiRepoWorktreeResult, error) {
+	return createMultiRepoWorktrees(allPaths, parentDir, branch, wtSettings.SetupTimeout(), wtSettings, true)
 }
 
-func createMultiRepoWorktrees(allPaths []string, parentDir, branch string, setupTimeout time.Duration, inheritSparse, strict bool) (MultiRepoWorktreeResult, error) {
+func createMultiRepoWorktrees(allPaths []string, parentDir, branch string, setupTimeout time.Duration, wtSettings WorktreeSettings, strict bool) (MultiRepoWorktreeResult, error) {
 	var result MultiRepoWorktreeResult
 	dirnames := DeduplicateDirnames(allPaths)
 
@@ -60,7 +61,7 @@ func createMultiRepoWorktrees(allPaths []string, parentDir, branch string, setup
 			setupErr, err := git.CreateWorktreeWithSetupOptions(
 				repoRoot, wtPath, branch,
 				git.WorktreeStateOptions{},
-				git.SparseInheritOptions(inheritSparse, p),
+				wtSettings.CreateOptions(p),
 				&buf, &buf, setupTimeout,
 			)
 			if err != nil {
