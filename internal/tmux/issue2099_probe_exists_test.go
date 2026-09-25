@@ -65,7 +65,7 @@ func TestProbeExists_CompletedClientFailureIsNotAbsence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte("#!/bin/sh\necho '"+tc.diagnostic+"' >&2\nexit 1\n"), 0o755); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte("#!/bin/sh\nprintf '%s\\n' \""+tc.diagnostic+"\" >&2\nexit 1\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", dir)
