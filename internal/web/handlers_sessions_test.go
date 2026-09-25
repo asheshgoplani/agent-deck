@@ -28,6 +28,7 @@ type fakeMutator struct {
 	updateSessionFn    func(id string, updates map[string]string) ([]string, bool, error)
 	createGroupFn      func(name, parentPath string) (string, error)
 	renameGroupFn      func(groupPath, newName string) error
+	moveSessionFn      func(id, groupPath string) (string, bool, error)
 	deleteGroupFn      func(groupPath string) error
 	finishWorktreeFn   func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
@@ -121,6 +122,13 @@ func (f *fakeMutator) RenameGroup(groupPath, newName string) error {
 		return fmt.Errorf("renameGroup not configured")
 	}
 	return f.renameGroupFn(groupPath, newName)
+}
+
+func (f *fakeMutator) MoveSessionToGroup(id, groupPath string) (string, bool, error) {
+	if f.moveSessionFn == nil {
+		return "", false, fmt.Errorf("moveSession not configured")
+	}
+	return f.moveSessionFn(id, groupPath)
 }
 
 func (f *fakeMutator) DeleteGroup(groupPath string) error {

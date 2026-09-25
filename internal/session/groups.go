@@ -1120,6 +1120,28 @@ func (t *GroupTree) SetSessionOrder(inst *Instance, n int) {
 	}
 }
 
+// ResolveMoveTargetGroup maps a user-supplied move target to a group path the
+// way `agent-deck group move` always has: "" and "root" mean the default
+// group; otherwise an exact match, then a case-insensitive match against the
+// existing groups, and failing both a new group via CreateGroup (which
+// sanitizes the name). Shared by the CLI and the web move endpoint (#2368) so
+// the same input lands a session in the same group from either surface.
+func (t *GroupTree) ResolveMoveTargetGroup(target string) string {
+	if target == "" || target == "root" || target == DefaultGroupPath {
+		return DefaultGroupPath
+	}
+	if _, ok := t.Groups[target]; ok {
+		return target
+	}
+	lower := strings.ToLower(target)
+	for path := range t.Groups {
+		if strings.ToLower(path) == lower {
+			return path
+		}
+	}
+	return t.CreateGroup(target).Path
+}
+
 // MoveSessionToGroup moves a session to a different group
 func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 	// Defense in depth: a creating-session placeholder row (Item.Type ==

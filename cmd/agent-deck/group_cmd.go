@@ -1065,12 +1065,6 @@ func handleGroupMove(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
-	// Normalize target group
-	// Handle special cases for moving to root/default group
-	if targetGroup == "root" || targetGroup == "" {
-		targetGroup = session.DefaultGroupPath
-	}
-
 	// Store original group for output
 	fromGroup := inst.GroupPath
 	if fromGroup == "" {
@@ -1084,34 +1078,7 @@ func handleGroupMove(profile string, args []string) {
 	cfg, _ := session.LoadUserConfig()
 	groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
 
-	// Try to match an existing group by exact name first, then case-insensitive
-	targetGroupPath := targetGroup
-	if targetGroup != session.DefaultGroupPath {
-		matched := false
-		for path := range groupTree.Groups {
-			if path == targetGroup {
-				targetGroupPath = path
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			// Case-insensitive match against existing groups
-			targetLower := strings.ToLower(targetGroup)
-			for path := range groupTree.Groups {
-				if strings.ToLower(path) == targetLower {
-					targetGroupPath = path
-					matched = true
-					break
-				}
-			}
-		}
-		if !matched {
-			// No existing group found - CreateGroup normalizes the path
-			created := groupTree.CreateGroup(targetGroupPath)
-			targetGroupPath = created.Path
-		}
-	}
+	targetGroupPath := groupTree.ResolveMoveTargetGroup(targetGroup)
 
 	// Move the session
 	groupTree.MoveSessionToGroup(inst, targetGroupPath)
