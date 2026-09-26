@@ -138,7 +138,7 @@ func TestCodexLiveRolloutNeverBindsAnotherThread(t *testing.T) {
 	cwd := t.TempDir()
 	now := time.Now()
 	stored := "01c00000-0000-7000-8000-000000000001"
-	mine := writeRollout(t, home, "01c00000-0000-7000-8000-00000000000a", cwd, "", "", now.Add(-10*time.Second))
+	writeRollout(t, home, "01c00000-0000-7000-8000-00000000000a", cwd, "", "", now.Add(-10*time.Second))
 	peerThread := "01c00000-0000-7000-8000-00000000000b"
 	writeRollout(t, home, peerThread, cwd, "", "", now.Add(-time.Second))
 	writeRolloutSource(t, home, "01c00000-0000-7000-8000-00000000000c", cwd, "", `"exec"`, "", now)
@@ -164,7 +164,7 @@ func TestCodexLiveRolloutNeverBindsAnotherThread(t *testing.T) {
 		t.Fatalf("transcript ids = %v (another thread listed)", ids)
 	}
 	// Once it references the stored id structurally it is this session's.
-	mine = writeRollout(t, home, "01c00000-0000-7000-8000-00000000000a", cwd, "",
+	mine := writeRollout(t, home, "01c00000-0000-7000-8000-00000000000a", cwd, "",
 		`{"type":"event_msg","payload":{"type":"thread_settings_applied","previous_thread_id":"`+stored+`"}}`, now.Add(-10*time.Second))
 	if got := CodexLiveRolloutPath(a, []*Instance{a, b}); got != mine {
 		t.Fatalf("got %s, want the thread referencing the stored id %s", got, mine)

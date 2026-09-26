@@ -50,6 +50,7 @@ func TestScrubFrameRedactsVolatileText(t *testing.T) {
 		{"relative-age", "3m ago", "<age> ago"},
 		{"shell-tmux-label", "[agentdeck_shell-live_b4a97a39]", "[agentdeck_shell-live_<id>]"},
 		{"socket-pid", "tmux -L vc-12345", "vc-<pid>"},
+		{"vs16-emoji-padding", "│ 👁️  no viewers", "│ 👁️ no viewers"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

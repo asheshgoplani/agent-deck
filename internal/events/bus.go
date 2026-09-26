@@ -552,11 +552,11 @@ func (b *Bus) writeBatch(batch []queuedFrame, sync bool) {
 			}
 			if err := b.appendFrameLocked(qf); err != nil {
 				b.fail(err)
-				b.dropAccepted(uint64(len(batch) - i))
+				b.dropAccepted(uint64(len(batch) - i)) //nolint:gosec // G115: i < len(batch), so the difference is positive
 				break
 			}
 			if b.failed.Load() {
-				b.dropAccepted(uint64(len(batch) - i - 1))
+				b.dropAccepted(uint64(len(batch) - i - 1)) //nolint:gosec // G115: i < len(batch), so the difference is non-negative
 				break
 			}
 		}

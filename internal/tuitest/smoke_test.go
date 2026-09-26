@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,13 @@ func buildBinary(t *testing.T) string {
 
 	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/agent-deck")
 	cmd.Dir = repoRoot(t)
-	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=go1.25.13")
+	cmd.Env = os.Environ()
+	// Pin the go1.25 toolchain only when the local go is not already 1.25.x:
+	// forcing an exact patch release makes go download it, which fails in
+	// an offline test container that already ships a newer go1.25.
+	if !strings.HasPrefix(runtime.Version(), "go1.25") {
+		cmd.Env = append(cmd.Env, "GOTOOLCHAIN=go1.25.13")
+	}
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
