@@ -1,0 +1,50 @@
+  xxxxxxxx xx x xxxxx xxxxxx, xxx xxxxxxx xxxx-xx-xx. xxxxx x (xxxxxx.xx, xxxxxx xxxxxx xxxxxx xxxx xxx xxxxxx xxxxxxxxx, xxxxxxxx, xxxxxx xxxxxx/xxxx/xxxx, xxxxx xxxxxxxxxx xxxxxx xx)
+  xxx xxxx-xx-xx. xxxxx x (xxxx-xxxx xxxxxx-xxxx xxxxxx, xxxxx/xx/xxxxxx/xxxxxxxx/xxxxxx xxxxxxx, xxx x xxx, xxx xx xxxxxxxxxxx xxxxx, xxxx xxxx) xxx xxxx-xx-xx. xxx xxxxxxxxx'x
+  xxxxxxxx xxxxxxx (xxx xx xxxxx xxx x.x xx, x.x xxx xxxxxxxx, xx-xx xx xxx, x.x x xxxxxxxxxxx xx-xxxxx, xxxxxxxx xxxxx xx xx) xxx xxx xxxxxxxxxx xxx xxx xxxxxx xxxxx; xxx xxxxxxx-xxxxx
+  xxxxxxx xx xxxx/xxxxxxx-xxxxxxx xx xxxxxx xxx xxx-xxxxxxx xxxxxx. xxxxx x (xxxxxxxxxx xxxxx, xxxxxx xxxxxxxxxx, xxxxxx xxxxxxx --xxxx xxxxxxx, xxx) xxxxx xx-xx xxxx xx xx-xx xxx
+  xxxxx xx xx-xx, xxxxxxxxx xxx xxxxxxx xxxxx. xxxx-xxxxxxxx xxxxxxxx xxxx xx xxxxxx xxxx; xxx xxxxxxxxxxxxxxxxx xxxx xxxxxxx xxxxx xxxxxxxxx xxxxx xxxxxx xxxxxxx.
+
+❯ xxxxxxxxxxxx (xxxxxxxxx-xxxxx-xxxx, xx:xx): xxxxxx xxxxx xxx xx xxx xx xx.xx.xx (xxxxxx xxx xxxx-xx-xx), xxxxxx x-x xxxxxxxx, xxxxx x xx xx-xx xxx xxxxx xx xx-xx. xxxxx xxxxxx
+  xxxxxxxx: xxx xxxxxx xxxxxxx xx xxxxxx/xxxxx-xxxx/xxxxx.xx (xxxx xxxxxxxx, xxxxxxxx, xxxxxx xxxxxxx --xxxx xxxxxxx, xxxxxx xxxx, xxxxxx) xxx xxx xxxx xxxxx
+  xxxxxx/xxxxx-xxxx/xxxxxx/xxxxx.xx xxxx xxxxx-xxxxxx xxxxxxx x xxxx xxxx xxxxx x, xxxx xxx xxxxx xxx xxxxxxx xxxxxx, xxx xxx xxx xxxxx-x xxxxx xxxxx xx xxxxx x xxxxx xxx xxxxx. xxx xxx
+  xxxxx: xxxxx x xxxxxxx xxxx-xx-xx (xxxxxx xx xx xxx, xxxxx xxxxxx); xxxxx x (xxxxxx.xx, xxxxxx xxxxxx xxxx xxx xxxxxxxxx, xxxxxxxx, xxxxxx xxxxxx/xxxx/xxxx, xxxxx xxxxxx xx)
+  xxxx-xx-xx; xxxxx x (xxxx-xxxx xxxxxx, xxxxx/xx/xxxxxx/xxxxxxxx/xxxxxx xxxxxxx, xxx x xxx, xxxxx xxxx) xxxx-xx-xx; xxxxx x (xxxxxxxxxx, xxxxxx xxxxxxxxxx, --xxxx xxxxxxx, xxx) xx-xx
+  xx xx xxxx, xxxx xxx xxxxxxx xxxxx. xxxxxxxxxx = xxx xxxxxxxxx'x xxxxxxxx xxxxxxx xx xxxxx, xx xxxxxx, xxxx xxxx. xxxx xxxxx xx x xxxxxxxx xxxxxxxx xx; xxxxxxx xx xxxxxx xxxxxx
+  xxxxxx'x xx.
+
+⏺ xxx xxxxxxxxx xxx xxxxxxxxxxxx xxx xxxxxxx. xxx xx xxxxxx xxx xxxxxx xx xxxxxx, xxxx xxxx xx xxx xxxxxxx.
+
+  Ran 1 shell command
+
+⏺ xx'x xx xxxxxx. xxx xxxxx-xxxx xxxxxxxxx xxx xxxxxxxx xxx xxxx xxx xxxxxxx xxx x xxxxxx xx xxxxx x.
+
+  xxxx xxx xxxxxxxxx xxxxxxxxx xx
+
+  - xxxxxx xxxxx xxxxxxxx xx xxx xxxx xxxxxxx, xx.xx.xx, xxxxxx xxxxxx xx xxx. xxx xxxxxxx xx xxx xxxxxxxx (xx.xx.xx) xx xxx xxx xxxxxxxxx.
+  - xxxxx x, xxxxx xxx xxxxxxxxxxx: xxxxxxx.
+  - xxxxx x, xxx xxxxx, xxxxxx xxxxxx xxxxxx xxxx xxx xxxxxxxxx, xxxxxxxx, xxxxxx xxxxxx/xxxx/xxxx: xxxxxx xx xxx.
+  - xxxxx x, xxxx-xxxx xxxxxx, xxxxx, xx, xxxxxx, xxxxxxxx xxx xxxxxx xxxxxxx, xxx xxx x xxx, xxxx xxx xxxxx xxxxxx xx xxxxx xxxxxxx xxxxx xxx xx xxx xxxxxx: xxxxxxx xx xxx.
+  - xxxxx x, xxxxxxxx xxxxx, xxxxxx xxxxxxxxxx, xxxxxx xxxxxxx --xxxx xxxxxxx, xxx: xx xxx xxxx xxxx xx xxxxxx x xx x xxx xxxxx xx xxx xxxx, xxxxxxxxx xxx xxxxxxx xxxxx.
+  - xxx xxxxxxxx xxxxxxxxx xxxxxxx xxxxxx xxxxxxxxxx xxxxx: xxx xx xxxxx xxx x.x xx, x.x xxxxxx xxxxxxxx, xxxxx xx xx xxxxxx, xxxxxxx xxx x xx-xxxxx, xxxxxxxx xxxxx xx xx, xx xxxxxx,
+    xxxx xxxx.
+  - xxx xxxxxxxx xx xxx xxxxx, xxxxxxx xxxxxx xx xxxxxx xxxxxxx xxxx xx.
+
+  xxxx x xxxxxx xxxx: xxx xxxx xxxxxx, xxxxxxxx, xxxxxxxxx, xxxx xxx, xxx xxxxxxxxx xxxx xxx xxx xxx xxxxxxx, xxxx xxxx xxxxx, xxx xxxxxxx xxxxxxx xx xxx xxxx xxxx xxxxxxxxx, xxxx xxxxx
+  xxxxxxxxxxxx (xxxx xxxxx xxx xxxxx xxxxxxxx, xxxxxxxxx xxxxxxxxx, xxxxxxxx xxxx x xxxxxx), xxx xxx xxxxx-xxxxxx xxxxxxx. xxx xx xx xx xx
+  ~/xxxxx-xxxx-xxxxxxxx/xxxxx-xxxxxxxx/xxxxxx-xxxxx/.
+
+  xxx xxxxxx xxxxx xxxxx xx xxxxxx
+
+  1. xxx xxxx xxxx xxxxxxxxx: xxx xxxxxxxxx xx xxxxx xx xxxxxxxxxxx xxxxxxxx. xxxx xx, xx xx, xx xxx xxxx xxx xxxxxxx xxxxxx xxxxx x xxxxxx xx xxxxxx.
+  2. xxx xxxx, xxxxxx xxx xxxxxxx xxxxxx xxxxxxxx xxxxx xxxx xxx xx-xxx xxxxxxxxxx xxxxxxx xxxxxxx. xxxx xx x xxx-xxxx xxxxxxxx xxxxxx xxx xxxxxxx; xxx xxx xxxx xxx x'xx xxxx xx.
+
+  The car-plan session is also still running in agent-deck if you want to pick that conversation back up.
+
+✻ Worked for 12m 48s · done 12:13 PM
+                                                                                                                                                  new task? /clear to save 288.7k tokens
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── sessions ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/tmp/exec-feat-session-metrics-r4 | [Fable 5.1] ctx:29% in:288.0k out:701 7d:76%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+  ⧉  recall-plan

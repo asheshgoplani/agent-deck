@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/session.restart/v1/in",
+  "title": "session.restart input",
+  "type": "object",
+  "properties": {
+    "all": {
+      "description": "Restart every active session",
+      "type": "boolean"
+    },
+    "env": {
+      "description": "Environment variables for the restarted process",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "force": {
+      "description": "Restart even if the session is healthy and fresh",
+      "type": "boolean"
+    },
+    "profile": {
+      "description": "Profile whose store holds the session",
+      "type": "string"
+    },
+    "session": {
+      "description": "Session id, id prefix, title or path; empty with all",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile"
+  ],
+  "additionalProperties": false
+}

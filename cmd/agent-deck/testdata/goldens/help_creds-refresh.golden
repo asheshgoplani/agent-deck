@@ -1,0 +1,15 @@
+Usage: agent-deck creds-refresh [options]
+
+Keep Claude OAuth credentials refreshed for configured profiles.
+
+Options:
+  -config-dir value
+    	profile config dir to keep warm (repeatable); defaults to ~/.claude, ~/.claude-work and every config_dir declared in config.toml
+  -endpoint string
+    	OAuth token endpoint (override for testing only) (default "https://platform.claude.com/v1/oauth/token")
+  -interval duration
+    	refresh cadence when running as a daemon (default 25m0s)
+  -once
+    	run a single refresh pass and exit (cron-friendly)
+  -threshold duration
+    	refresh when the access token expires within this window (default 20m0s)

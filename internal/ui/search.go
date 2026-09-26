@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -216,24 +218,21 @@ func (s *Search) View() string {
 	s.input.Width = innerWidth - lipgloss.Width(s.input.Prompt)
 	searchBox := searchBoxStyle.Width(innerWidth).Render(s.input.View())
 
-	// Build results list
-	var resultsStr strings.Builder
-	maxResults := 10
-	if len(s.results) > maxResults {
-		s.results = s.results[:maxResults]
+	// Build results list, one row per result: the ten-row window follows the
+	// cursor, and on a short terminal renderFittedDialog scrolls these rows
+	// around it.
+	const maxResults = 10
+	start := 0
+	if s.cursor >= maxResults {
+		start = s.cursor - maxResults + 1
 	}
-
-	for i, item := range s.results {
-		var line string
-		if i == s.cursor {
-			line = selectedResultStyle.Render("› " + item.Title + " (" + item.Tool + ")")
-		} else {
-			line = resultItemStyle.Render("  " + item.Title + " (" + item.Tool + ")")
-		}
-		resultsStr.WriteString(line)
-		if i < len(s.results)-1 {
-			resultsStr.WriteString("\n")
-		}
+	end := min(start+maxResults, len(s.results))
+	resultRows := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		resultRows = append(resultRows, renderSearchResult(s.results[i], i == s.cursor, overlayWidth-overlayStyle.GetHorizontalFrameSize()-resultItemStyle.GetHorizontalFrameSize()))
+	}
+	if len(resultRows) == 0 {
+		resultRows = []string{""}
 	}
 
 	// Show count
@@ -263,24 +262,64 @@ func (s *Search) View() string {
 		}
 	}
 
-	// Keyboard shortcuts hint
+	// Keyboard shortcuts hint, on at most two rows broken between hints so
+	// "[Esc] Cancel" never wraps onto a line of its own; [↑↓] Navigate drops
+	// out only when even two rows are too narrow.
+	keys := renderDialogFooterRows(overlayWidth-overlayStyle.GetHorizontalPadding(), 2, "  ",
+		[]string{"  [Enter] Select", "[↑↓] Navigate", "[Tab] Global", "[Esc] Cancel"}, 1)
 	keysHint := lipgloss.NewStyle().
 		Foreground(ColorComment).
-		Render(glueBracketHintGroups("  [Enter] Select  [↑↓] Navigate  [Tab] Global  [Esc] Cancel"))
+		Render(glueBracketHintGroups(keys))
 
 	// Combine everything
-	var content string
+	head := []string{header, "", searchBox}
 	if hintStr != "" {
-		content = header + "\n\n" + searchBox + "\n" + hintStr + "\n\n" + resultsStr.String() + "\n" + countStr + "\n" + keysHint
-	} else {
-		content = header + "\n\n" + searchBox + "\n\n" + resultsStr.String() + "\n" + countStr + "\n" + keysHint
+		head = append(head, hintStr)
+	}
+	sections := dialogSections{
+		head:  append(head, ""),
+		body:  resultRows,
+		focus: s.cursor - start,
+		foot:  []string{countStr, keysHint},
 	}
 
-	// Wrap in overlay box - responsive width
-	overlay := overlayStyle.Width(overlayWidth).Render(content)
+	// Wrap in overlay box - responsive width, never taller than the screen
+	overlay := renderFittedDialog(overlayStyle.Width(overlayWidth), centeredDialogHeight(s.height), sections)
 
 	// Center in the screen
 	return centerInScreen(overlay, s.width, s.height)
+}
+
+func renderSearchResult(item *session.Instance, selected bool, width int) string {
+	name := item.Title + " (" + item.Tool + ")"
+	group := item.GroupPath
+	if group == "" {
+		group = session.DefaultGroupPath
+	}
+	pathTail := filepath.Base(strings.TrimRight(item.ProjectPath, string(filepath.Separator)))
+	if item.ProjectPath == "" {
+		pathTail = "?"
+	}
+	// Give the title the row first. Metadata uses the remaining space and
+	// disappears only when even its shortest useful form cannot fit.
+	available := max(1, width-4)
+	if cellWidth(name) > available {
+		keep := available - 1
+		head := keep / 2
+		name = ansi.Cut(name, 0, head) + "…" + ansi.Cut(name, cellWidth(name)-(keep-head), cellWidth(name))
+	}
+	meta := ""
+	if budget := available - cellWidth(name); budget >= 5 {
+		meta = "  " + cellTruncate(group+" · "+pathTail, budget-2, "…")
+	}
+	prefix := "  "
+	if selected {
+		prefix = "› "
+		meta = lipgloss.NewStyle().Foreground(ColorBg).Background(ColorAccent).Faint(true).Render(meta)
+		return selectedResultStyle.Render(prefix + name + meta)
+	}
+	meta = lipgloss.NewStyle().Foreground(ColorComment).Render(meta)
+	return resultItemStyle.Render(prefix + name + meta)
 }
 
 // searchOverlayWidth returns the responsive overlay width for a screen width.

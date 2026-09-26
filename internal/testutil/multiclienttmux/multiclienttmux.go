@@ -20,6 +20,7 @@ package multiclienttmux
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -37,6 +38,9 @@ import (
 type Harness struct {
 	SocketPath  string // -S <path> for every tmux command targeting this server
 	SessionName string
+	// SocketName is the server's `tmux -L` name when it was booted by
+	// NewNamed, "" otherwise.
+	SocketName string
 
 	t  *testing.T
 	mu sync.Mutex
@@ -45,8 +49,9 @@ type Harness struct {
 }
 
 type clientProc struct {
-	cmd *exec.Cmd
-	pty *os.File
+	cmd   *exec.Cmd
+	pty   *os.File       // pty-attached clients
+	stdin io.WriteCloser // control-mode clients
 }
 
 // New boots a fresh tmux server on a per-test isolated socket and creates a
@@ -57,25 +62,55 @@ type clientProc struct {
 // Skips the test (via t.Skip) if the tmux binary is unavailable.
 func New(t *testing.T, sessionName string) *Harness {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("multiclienttmux: tmux binary not available")
-	}
+	skipWithoutTmux(t)
 
 	// Use a short /tmp-based socket path: t.TempDir() on darwin resolves under
 	// /var/folders/<hash>/T/<TestName>... and overshoots the sun_path 104-byte
 	// limit for long test names ("File name too long").
 	socketPath, sockCleanup := testutil.ShortTmuxSocket()
 	t.Cleanup(sockCleanup)
+	return boot(t, sessionName, []string{"-S", socketPath}, socketPath, "")
+}
+
+// NewNamed is New on a server addressed by name (`tmux -L <name>`, under the
+// test binary's TMUX_TMPDIR), the way Agent Deck addresses its own servers,
+// so a test can point production code (a control pipe, a PipeManager) at the
+// harness through SocketName. Every harness method still targets SocketPath.
+func NewNamed(t *testing.T, sessionName string) *Harness {
+	t.Helper()
+	skipWithoutTmux(t)
+	name := fmt.Sprintf("mct-%d-%d", os.Getpid(), time.Now().UnixNano())
+	return boot(t, sessionName, []string{"-L", name}, "", name)
+}
+
+func skipWithoutTmux(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("multiclienttmux: tmux binary not available")
+	}
+}
+
+// boot creates the session on the server selected by selector and applies
+// the sizing policy. socketPath may be empty when the selector is a -L name;
+// it is then read back from the server.
+func boot(t *testing.T, sessionName string, selector []string, socketPath, socketName string) *Harness {
+	t.Helper()
 
 	// Detached new-session on the isolated socket. -x/-y set the initial
 	// window size; clients attaching later may shrink it depending on
 	// aggressive-resize.
-	out, err := exec.Command("tmux", "-S", socketPath,
-		"new-session", "-d", "-s", sessionName,
-		"-x", "200", "-y", "60",
-	).CombinedOutput()
+	args := append(append([]string{}, selector...), "new-session", "-d", "-s", sessionName, "-x", "200", "-y", "60")
+	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("multiclienttmux: new-session: %v\n%s", err, out)
+	}
+	if socketPath == "" {
+		args = append(append([]string{}, selector...), "display-message", "-p", "#{socket_path}")
+		out, err = exec.Command("tmux", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("multiclienttmux: read socket path: %v\n%s", err, out)
+		}
+		socketPath = strings.TrimSpace(string(out))
 	}
 
 	// Explicitly mirror Session.Start (internal/tmux sharedview.go) rather
@@ -90,6 +125,7 @@ func New(t *testing.T, sessionName string) *Harness {
 	h := &Harness{
 		SocketPath:  socketPath,
 		SessionName: sessionName,
+		SocketName:  socketName,
 		t:           t,
 	}
 	t.Cleanup(h.cleanup)
@@ -119,6 +155,30 @@ func (h *Harness) AddClient(cols, rows int) error {
 	return nil
 }
 
+// AddControlClient attaches a control-mode client (`tmux -C`) that asks for a
+// size with `refresh-client -C cols x rows`, the way iTerm2's tmux integration
+// (`tmux -CC`) does: a person on a sized control client. It stays attached
+// until cleanup.
+func (h *Harness) AddControlClient(cols, rows int) error {
+	cmd := exec.Command("tmux", "-S", h.SocketPath, "-C", "attach-session", "-t", h.SessionName)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("multiclienttmux: control stdin: %w", err)
+	}
+	cmd.Stdout = io.Discard
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("multiclienttmux: start control client: %w", err)
+	}
+	h.mu.Lock()
+	h.clients = append(h.clients, &clientProc{cmd: cmd, stdin: stdin})
+	h.mu.Unlock()
+	if _, err := fmt.Fprintf(stdin, "refresh-client -C %dx%d\n", cols, rows); err != nil {
+		return fmt.Errorf("multiclienttmux: refresh-client -C: %w", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
 // ResizeClient changes an attached client's PTY dimensions and waits briefly
 // for tmux to process the resulting SIGWINCH.
 func (h *Harness) ResizeClient(index, cols, rows int) error {
@@ -127,7 +187,7 @@ func (h *Harness) ResizeClient(index, cols, rows int) error {
 	}
 
 	h.mu.Lock()
-	if index < 0 || index >= len(h.clients) {
+	if index < 0 || index >= len(h.clients) || h.clients[index] == nil {
 		h.mu.Unlock()
 		return fmt.Errorf("multiclienttmux: client index %d out of range", index)
 	}
@@ -137,6 +197,23 @@ func (h *Harness) ResizeClient(index, cols, rows int) error {
 	if err := pty.Setsize(clientPTY, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
 		return fmt.Errorf("multiclienttmux: pty.Setsize: %w", err)
 	}
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
+// DetachClient ends an attached client (its terminal closes, as when a
+// person closes the window) and waits for tmux to drop it.
+func (h *Harness) DetachClient(index int) error {
+	h.mu.Lock()
+	if index < 0 || index >= len(h.clients) || h.clients[index] == nil {
+		h.mu.Unlock()
+		return fmt.Errorf("multiclienttmux: client index %d out of range", index)
+	}
+	c := h.clients[index]
+	h.clients[index] = nil
+	h.mu.Unlock()
+
+	c.close()
 	time.Sleep(100 * time.Millisecond)
 	return nil
 }
@@ -185,14 +262,25 @@ func (h *Harness) cleanup() {
 	h.mu.Unlock()
 
 	for _, c := range clients {
-		_ = c.pty.Close()
-		if c.cmd.Process != nil {
-			_ = c.cmd.Process.Kill()
+		if c != nil {
+			c.close()
 		}
-		_, _ = c.cmd.Process.Wait()
 	}
 
 	// Best-effort kill-server. Errors are non-fatal (server may already
 	// be gone if a client tore it down).
 	_ = exec.Command("tmux", "-S", h.SocketPath, "kill-server").Run()
+}
+
+func (c *clientProc) close() {
+	if c.pty != nil {
+		_ = c.pty.Close()
+	}
+	if c.stdin != nil {
+		_ = c.stdin.Close()
+	}
+	if c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
+		_, _ = c.cmd.Process.Wait()
+	}
 }

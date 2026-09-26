@@ -243,9 +243,10 @@ func (d *FeedbackDialog) View() string {
 	}
 
 	// 80 cols keeps the disclosure URL (62 chars) on a single line after the
-	// "  Where:  " prefix, border, and padding — narrower dialogs wrap the URL
-	// across two lines and break the test (and readability).
-	const dialogWidth = 80
+	// "  Where:  " prefix, border, and padding. On a terminal narrower than
+	// the box it shrinks to fit (the right border used to fall off screen);
+	// the URL then word-wraps onto its own row whole.
+	dialogWidth := fitDialogWidth(80, 40, d.width)
 
 	titleStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 	textStyle := lipgloss.NewStyle().Foreground(ColorText)

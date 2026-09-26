@@ -1,0 +1,24 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  12 sessions                                 <version>
+  All    ● 1   ◐ 3   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+SESSIONS                     │ PREVIEW
+──────────────────────────── │ ─────────────────────────────────────────────────
+1·▾ alpha (8) ● 1 ◐ 2        │ claude-waiting (fork)  ◐ waiting
+   ├─ ■ opencode-idle        │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle          │ ⏱ <age>
+   ├─ ◐ claude-waiting       │ 👁️ no viewers
+   ├─ ■ claude-stopped       │  claude   alpha
+  ▶└─ ◐ claude-wait… [for…]  │ ───────────────── Worktree ─────────────────
+    ▾ backend (3) ● 1        │ Branch:  fork/claude-waiting
+     ├─ ✕ codex-idle         │ Repo:    /tmp/vc-<tmp>
+     ├─ ● claude-running     │ Path:    /tmp/vc-<tmp>
+     └─ ✕ claude-error       │ Status:  clean
+2·▾ beta (4) ◐ 1             │ Setup:   b re-run setup script
+   ├─ ✕ gemini-idle          │ Finish:  W merge + cleanup
+   ├─ ✕ pi-idle              │ ────────────────── Claude ──────────────────
+   ├─ ◐ claude-i18n          │ Status:  ● Connected
+   └─ ○ shell-live           │ Session: <uuid>
+  ▾ remotes/lab (0) · host … │ Model:   tool default
+                             │
+                             │ ────────────────── Output ──────────────────
+────────────────────────────────────────────────────────────────────────────────
+⏎ Attach n/N New R Restart T Fresh │   ↑↓ Nav / Search S Settings ? Help q Quit

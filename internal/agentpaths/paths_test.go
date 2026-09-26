@@ -466,3 +466,21 @@ func TestEnsureSafeForTest_IgnoresOtherMarkerValues(t *testing.T) {
 		}
 	}
 }
+
+func TestProfileRuntimeDir(t *testing.T) {
+	home := setupHome(t)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	got, err := ProfileRuntimeDir("work")
+	if err != nil {
+		t.Fatalf("ProfileRuntimeDir() error = %v", err)
+	}
+	if want := filepath.Join(home, ".local", "share", AppDirName, "runtime", "profiles", "work"); got != want {
+		t.Fatalf("ProfileRuntimeDir() = %q, want %q", got, want)
+	}
+	for _, bad := range []string{"", ".", "..", "a/b", "../x", "/abs"} {
+		if _, err := ProfileRuntimeDir(bad); err == nil {
+			t.Errorf("ProfileRuntimeDir(%q) succeeded", bad)
+		}
+	}
+}

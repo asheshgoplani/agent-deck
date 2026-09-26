@@ -51,6 +51,12 @@ type TransitionDaemon struct {
 	lastStatus  map[string]map[string]string
 	initialized map[string]bool
 
+	// livePrior carries, per (profile, instance), the verdict the no-live-TUI
+	// probe loop settled on the previous pass plus its pending-flip flag, so
+	// the running→waiting/error debounce survives the per-pass Instance
+	// reload (LoadWithGroups builds fresh objects). See Instance.SeedLiveStatusPrior.
+	livePrior map[string]map[string]liveStatusPrior
+
 	// lastDone tracks the most recently emitted completion sentinel per
 	// (profile, instance) so a finished event (issue #1186) is emitted once
 	// per distinct completion. Re-reading the same done-bearing hook file
@@ -143,6 +149,7 @@ func NewTransitionDaemon() *TransitionDaemon {
 		storages:       map[string]*Storage{},
 		lastStatus:     map[string]map[string]string{},
 		initialized:    map[string]bool{},
+		livePrior:      map[string]map[string]liveStatusPrior{},
 		lastDone:       map[string]map[string]DoneSignal{},
 		lastTurn:       map[string]map[string]string{},
 		turnLiveCheck:  func(inst *Instance) bool { return inst.Exists() },
@@ -311,6 +318,13 @@ var syncPassBudget = 30 * time.Second
 // breadcrumb so a permanently wedged instance doesn't flood the log.
 const probeStallLogInterval = time.Minute
 
+// liveStatusPrior is one pass's settled verdict for an instance, carried to
+// the next pass so the flip debounce can confirm on a second sample.
+type liveStatusPrior struct {
+	status      Status
+	flipPending bool
+}
+
 // statusProbeFunc is the signature of the swappable status-probe seam.
 type statusProbeFunc = func(inst *Instance) error
 
@@ -448,7 +462,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	for _, inst := range instances {
 		byID[inst.ID] = inst
 		if HookStatusTool(inst.Tool) {
-			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
+			// A record from a Codex subagent or helper thread is not this
+			// pane's turn edge: using it emitted running -> waiting every time
+			// a spawned subagent finished (codexHookFromForeignThread).
+			if hs := d.hookStatusForInstance(inst.ID); hs != nil && !inst.codexHookFromForeignThread(hs) {
 				// Issue #1349: only let a hook status rebind the session id when
 				// the instance is actually LIVE (running/waiting/idle with a real
 				// tmux session). A stopped/removed session keeps a stale
@@ -482,6 +499,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// itself; anything else is unknown to the journal, never "none".
 	substates := map[string]string{}
 	if tuiAlive {
+		// The TUI owns the verdicts while it is alive; a prior carried from an
+		// earlier no-TUI pass would be hours old by the time the TUI exits.
+		delete(d.livePrior, profile)
 		if db != nil {
 			if rows, err := db.ReadAllStatuses(); err == nil {
 				for id, row := range rows {
@@ -506,8 +526,13 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		// reasoning.
 		passStart := time.Now()
 		passBudgetSpent := false
+		priors := d.livePrior[profile]
+		nextPriors := make(map[string]liveStatusPrior, len(instances))
 		for _, inst := range instances {
 			previousStatus := normalizeStatusString(string(inst.Status))
+			if prior, ok := priors[inst.ID]; ok {
+				inst.SeedLiveStatusPrior(prior.status, prior.flipPending)
+			}
 			if passBudgetSpent || time.Since(passStart) > syncPassBudget {
 				if !passBudgetSpent {
 					passBudgetSpent = true
@@ -530,10 +555,14 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			status := normalizeStatusString(string(inst.GetStatusThreadSafe()))
 			statuses[inst.ID] = status
 			substates[inst.ID] = string(inst.CachedSubstate())
+			if st, pending, sampled := inst.LiveStatusPrior(); sampled {
+				nextPriors[inst.ID] = liveStatusPrior{status: st, flipPending: pending}
+			}
 			if db != nil && status != previousStatus {
 				_ = db.WriteStatus(inst.ID, status, inst.Tool)
 			}
 		}
+		d.livePrior[profile] = nextPriors
 	}
 
 	// Self-heal Stage 1 (observe-only): evaluate every instance through the
@@ -553,6 +582,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
 	d.journalStatusChanges(profile, byID, statuses, substates)
+	if cfg, _ := LoadUserConfig(); cfg != nil && cfg.Macapp.TranscriptEvents {
+		transcriptGrowth.publish(profile, instances)
+	}
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.

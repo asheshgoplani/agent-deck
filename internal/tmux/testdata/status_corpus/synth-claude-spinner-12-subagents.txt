@@ -1,0 +1,63 @@
+      xxx/xxxxx-xxxx/xxxxxxxx/xxxxxxx/xxxx_xxxxxx.xxxxxx |  x ++
+      xxxxxxxx/xx/xxxxxx_xxxxxxx_xxxxxxx_xxxx.xx         | xx ++++--
+     … +x xxxxx
+  ⎿  xxxxxxx xxxxxxxxx.xx (+xx -x)
+       x
+       x  ## [xxxxxxxxxx]
+       x
+      xx -### xxxxx
+      xx +### xxxxx
+      xx +
+      xx +- xxx xxxxxx xxxxxx xx xxxxxx xxxxxx xxxx+x xxxxx xxx xxxxxxxxxx xxxxxx xx xxxxx xxxxxxx xxx xxxxx xxxxxx xxx xxx. xx xxx xxxx xxxx xxx xxx xx xxxxx (xxxxxxxxx xxx xxxxxx, xxxxxxx xxx
+         +xxxx xx xxxxxx, xx xxx xxxxxx xxxxx), xxx xxxxxxxx xxxx+x xxxxxx xxx xxx xxxxxx xxx xxxxxxx xxx xxxx xx xxxx (#xxxx).
+      xx +- xxx xxxxxxx xx x xxxxxx xxxxxxx xxx xxxxx xxx xxxxxxx xxxx xxxxxxx xxxx xx, xxxx xxx xxxxx xxx xxxx xx xxx xxxxxx. xxxx xxxx xx xxx xxxxx xx xxxx xx xxxxxxx ("xxxxxxxx xxx xxxxxx xx
+         +x", xx xxxx xxx xxxxxx xxxx xx xxxxx xxxxx-xxxx). xxxxxxxx xxx xxxxxxx xxxxxxxxx xxx xx x xxxxxx xxxxxxx xxxxx x xxxxxx xxxxxxx xx xxxxx xxxxxxx.
+      xx +- x xxxxxx xxxxxxx xxxx xxx xxxxxx xxxxxxxx xx xxxxxx xxxxx xxxxxx xx xxx xxxx xx xxxxxxx xxx xxxxxxx xxxx, xxxxx xxxxxx xxxxxxxx x xxxxx xxx xx xxxx. xxxxx-xxxx'x xxx xxxxxxxxxx xxxx
+         + xxxxxx xxxx xx xxxx xxx xxxxx xxx xxxxxx xxxxxxx; xx xxx xxxxx xxxx xxxxx xxxx xx x xxxxxx. xxxxxx'x xxxxxxxx xx xxxx xxxxxxx.
+      xx +- xxx xxxx xxx xxxxxx xxxxx xxxxxxx xxx x xxxxxxxxx xxxxx xx xxxxxxx xxx xxx xxxx `xxxxxxxxx_xxxx_xxx` (xxxxxxxxx) xxxx xxx xxxxxxx. xxx `xxxxxxxxx_xxxx_xxxx=<xxxx>` xx xxxxx xxxxx xx
+         +xx xxx xx xxxx xxxx xxx x xxx xxxxxx.
+      xx +- xxxxxxxxxx xxx xxxxx xxxxxxx-xxxxxx xxxx xx xxx xxxxxxx xxx xx xxxxxx xxxx x xxx xxx xxxxxxx xxx xxxx (xxxxxxxx xxxxxx xxxxxx, xxxx xxxxxxxx xxxx xxx xxxxxxx xxxx). xxx xxx xxx-xx `
+         +[xxxx] xxxxx_xxxx_xxxxx_xxxxx = xxxx` (xxxx x.x xx xxxxx, xxx xx xxxxxxx) xxxxx xxxx xxxxxxx xxxxx xxxxx xxxxx xxx xxx xxxxxx xxxx xxxx; xxxxxxx xx xxx xxxxxxx xxxxxxx xxx xxxxxxx xxx
+         +xx-xxxx xxxxx (#xxxx).
+      xx +- `xxxxx-xxxx xxxxxx` xx xxxxxx xxxxx xx xx x xxxx xxxxxxxxxx xxxxx xxx xxxxxxx. xxx xxxxxxxx xxx xxxxx xxx xxxx xxxx xx xxxxxx, xxxxxxx xxxxx xx xxxxxxx xx xxxxx, xxxxx xxxxxxxx xx x
+         + xxxxxxxx, xxx xxxxxxx xx xxxxxxxxx xxxxxxxx.
+      xx +- `xxxxxxx.xx` xxxxx xxx xxxxxx xxxxxxx xxxx `xxx_xxxx` xxxxx xxxxxxx xx xxxxxxx xx `xxxx` xxxx xxx xxxxxxx xxxxxxxxx, xxx xxx xxxxx xxxx xx xxx xxxxxxx xxxxxxx xx xxxxxxx (#xxxx).
+      xx +- xxxxxxx xxx xxx xxxxxxx xx x xxxx xxxx xxxx xxx xxxxxxx xx xxx xxxxx x xxxxxx xxxxxx xxxxxxx xx xxxxx xxxxxxx (#xxxx, xxxxxx @xxxxxxxxxx).
+      xx +- x xxxxxxxxx xxxxx `xxxx.xxxx` xxxxx xx xxxxx xxx xxxxxx xxxxxx xxx xx xx xxxxxx xxxxxxxxx xx xxxxxx; xxx xxxxxx xxxxxxx xxxxxxx (#xxxx, #xxxx, xxxxxx @xxxxx). xx xxxxxxx xxxxx xx x
+         +xxxxx xxxxxxx xxxx xx `xxxx.xxxx` xx xxxxxx xxxxx xxx xxxxxxxxx xxxx xxxxx xx xxxxx xxxxxxxx; xx xx xxxxxx xxxx x xxxxxxx xx xxx xxx.
+      xx +- xxxxxxxx xxxxxxx xxxx xx `?xx;x;x;xx` xx xxxxxx xxxx xxxx xxx xxxxxxx xxxxxx xxxx xxx xxxxxx xxxxxxxx xxxxxxx. xxxx xxx xxxxx xx xxxx xxxx xxxxxxx xxxx xxx xxxxxx (#xxxx).
+      xx +
+      xx +### xxxx (xxx xxx xxxxxxxx xxx xxx)
+      xx
+      xx  - xxxxxx xxxxxxxx xxx xxxxxx xxxxxxxx xxxxxx xxxxxxx, xxxxx xxxxxx xxxxxxxxxxxx xxxxxx xxxx x xxxxxxxxx xxxxxx xxx xxxxx xxxx xxxxxxx. xxxx xxxxxx xxxxxx `[xxxxxx] xxxxxxx`.
+      xx  - `xxxxxxx xxxxx`, `xxxxxxx xxxx`, `xxxxxxx xxxxxxx`, `xxxx` xxx `xxxxx xxxx` xxx xxx xxxxxxx x xxxxx xxxxxxx xxxxxxxx (`xxxxxxxx/xxxx`). xxxxx xxxxxx xx xxxxxxxxx; `--xxxx=xxxxxxxx`
+          xxxxxx x xxxxxxxx xxxxxxxx xxxx x xxxxxx xxxxx xxxx xxxxxxx xx xxx xxxxxx xxxx. xxx xxxx/xxxx-xxxxxxxx.xx. `xxxxx_xxxx_xxxx_xxxxxxxx=x` xxxxxxxx xxxx xx xxx xxxxxxxx xxxxxxxx.
+  ⎿  (xxxx xxxx xxxxxxx xxxxxxx; x xxxxxxxxxxx xxxx, xxx x xxxxxx xx xxxxx xx xxx xxxxxxx)
+
+  xxx x xxxxx xxxxxxx
+
+❯ xxxxxxxx xxxxxxxxxxxx xx xxx xxx xxxxxxx xxxxxxxx xx xxxxxxx: xxxxxx xxx xxxxxxxxx, xxx xxx xxx, xxxxx xxxxxxx.xx xxx xxxxxx.xxxxxx xxxx xxx xxxxx xxxxxxxx xxxx.
+
+  xxxxxxx x xxxxx xxxxxxx…
+
+✳ Transfiguring… (9m 18s · ↓ 15.6k tokens · thinking)
+  ⎿  xxx: xxx /xxx xx xxx x xxxxx xxxx xxxxxxxx xxxxxxx xxxxxxxxxxxx xxxxxx'x xxxxxxx xxxx
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fix-next-integration ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [p] u@host:/x | [Opus 5.5] ctx:12% in:119.2k out:281 5h:17% 7d:5%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+  ⏺ main
+  ◯ general-purpose  Task 1: review slice 1
+  ◯ general-purpose  Task 2: review slice 2
+  ◯ general-purpose  Task 3: review slice 3
+  ◯ general-purpose  Task 4: review slice 4
+  ◯ general-purpose  Task 5: review slice 5
+  ◯ general-purpose  Task 6: review slice 6
+  ◯ general-purpose  Task 7: review slice 7
+  ◯ general-purpose  Task 8: review slice 8
+  ◯ general-purpose  Task 9: review slice 9
+  ◯ general-purpose  Task 10: review slice 10
+  ◯ general-purpose  Task 11: review slice 11
+  ◯ general-purpose  Task 12: review slice 12

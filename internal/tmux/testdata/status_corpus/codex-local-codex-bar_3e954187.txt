@@ -1,0 +1,133 @@
+    xxx +    xxxxxx '%x%x%x%x%x' "$x_xxx" "$xxx" "$x_xxx" "$
+         xxx" "$x_xxxx"
+    xxx    xxxx
+    xxx -    xxxxxx '%x%x%x' "${x_xxx:-x}" "$xxx" "$x_xxx"
+    xxx +    xxxxxx '%x%x%x%x%x' "${x_xxx:-x}" "$xxx" "$x_xx
+         x" "$xxx" "$x_xxxx"
+    xxx    xx
+        ⋮
+    xxx  xxx xxx xx "$xxxxxx_xxxx" "$xxxxxx_xxxx"-*; xx
+    xxx -  [ -x "$xxx/.xxxxxxxxxxx.xxxx" ] || xxxxxxxx
+    xxx +  [ -x "$xxx/.xxxxxx.xxxx" ] || [ -x "$xxx/.xxxxxxx
+         xxxx.xxxx" ] || xxxxxxxx
+    xxx    xxxx=$(xxxxxxxx "$xxx")
+        ⋮
+    xxx      xxxxx=$(xx -x '.xxxxxxxxxxxx.xxxxxxxxxxxx // "x
+         xxxxxx"' "$xxx/.xxxxxx.xxxx" x>/xxx/xxxx)
+    xxx -    xxxx=$(xx -x '.xxxxxxxxxxxxx.xxxxxxxxxxxxxxxx /
+         / "?"' "$xxx/.xxxxxxxxxxx.xxxx" x>/xxx/xxxx)
+    xxx -    xxx="$xxx" xxxx -x xxxxxxx_xx xxxxx <<< "$(xxxx
+         _xxxxxx_xxxxxxxxxxx "$xxx")"
+    xxx +    xxx="$xxx" xxxx -x xxxxxxx_xx xxxxx xxxx <<< "$
+         (xxxx_xxxxxx_xxxxxxxxxxx "$xxx")"
+    xxx      xx [ -x "$xxxxx" ]; xxxx
+
+  └ .xxxxxx/xx-xxxxx-xxx/xxxxx.xx (+x -x)
+    xx          xxx xxxxxx xx [xxxx, *xxxxxx(xxxx.xxxxxx.xxx
+        x(xxxx.xxxx + '-*'))]:
+    xx -            xxxxxxxxxxx = '.xxxxxxxxxxx.xxxx' xx xxx
+        x == 'xxxxxx' xxxx 'xxxx.xxxx'
+    xx -            xx xxxxxx.xxxx xx xxxxxx.xxx('xxxxxxx',
+        []) xx xxx (xxxxxx / xxxxxxxxxxx).xx_xxxx():
+    xx +            xx xxxx == 'xxxxxx':
+    xx +                xxxxxxxxxx = (xxxxxx / '.xxxxxx.xxxx
+        ').xx_xxxx() xx (xxxxxx / '.xxxxxxxxxxx.xxxx').xx_xx
+        xx()
+    xx +            xxxx:
+    xx +                xxxxxxxxxx = (xxxxxx / 'xxxx.xxxx').
+        xx_xxxx()
+    xx +            xx xxxxxx.xxxx xx xxxxxx.xxx('xxxxxxx',
+        []) xx xxx xxxxxxxxxx:
+    xx                  xxxxxxxx
+
+  └ .xxxxxx/xx-xxxxx-xxx/xxxx_xxxxx.xx (+x -x)
+     xx
+     xx +    xxx xxxx_xxxxxxxx_xxxx_xxxxxx_xxxxxxx_xx_xxxxxx
+         xxxx(xxxx):
+     xx +        (xxxx.xxxxxx / '.xxxxxxxxxxx.xxxx').xxxxxx(
+         )
+     xx +        (xxxx.xxxxxx / '.xxxxxx.xxxx').xxxxx_xxxx('
+         {}')
+    xxx +        xxxxx = xxxx(xxxxx.xxxxxxxx(xxxx.xxxxxx))
+    xxx +        xxxx.xxxxxxxxxxx(xxxxx, [('xxxxxx', 'xxxxxx
+         xx', xxxx.xxxxxx)])
+    xxx +
+    xxx
+
+• xxx xx -x /xxxxxx/xxxxxxx/xxxx
+  └ xxxxxxxxxx      xxxx    xxxx   xxxxx xxxxxxxx xxxxx
+    xxxxx %xxxxx  xxxxxxx xx
+    /xxx/xxxxxxx   xxxxx   xxxxx   xxxxx    xx%    x.xx
+    x.xx    x%   /xxxxxx/xxxxxxx/xxxx
+
+• xxx xxxx -x /xxxxx/x/.xxxxxx/xx-xxxxx-xxx/xxxxxxx.xx
+  │ && /opt/homebrew/bin/python3 -m py_compile /Users/
+  │ owner/.config/ai-usage-bar/meter.py && /opt/homebrew/
+  │ … +2 lines
+  └ .......
+    --------------------------------------------------------
+    … +x xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+
+    xx
+
+• xxx /xxxxx/x/.xxxxxx/xx-xxxxx-xxx/xxxxxx.xx xxxxxxx
+  │ /Users/u/.config/ai-usage-bar/action.sh | rg '^(◔|
+  │ CC |CX )'
+  └ ◔ xxx% ⚠|xxxxx=#xxxxxx
+    xx xxxxxxxx · xx x% · xx xx% · xxxxx xx xxx%!*|
+    … +x xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+    xxx-xxxxxxx xx x% · x xxxxxx xxxxxx|xxxxx=#xxxxxx
+    xx xxxxxxx · xxxx xxx%! · x xxxxxx xxxxxx|xxxxx=#xxxxxx
+
+────────────────────────────────────────────────────────────
+
+• xxx xxx xxxxxxx xx xxxx: xx xxxxxxxx, xxxxxx xx xx
+  xxxx@xxxxxxx.xxx, xxxxxxxxx xxxxxxx x% xxxxx. x’x
+  xxxxxxx xxx xxxxx xx xxx xxx xxx xx xx xxx xxxx xxx.
+
+• xxx /xxx/xxxxxxxx/xxx/xxxxxxxx xxxxxxx xxxxx
+  │ 'ai-usage.5m.sh' --json
+  │ /opt/homebrew/bin/peekaboo image --mode screen --path /
+  │ … +1 lines
+  └ {
+      "xxxxx_xxxx" : [
+    … +xxx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+      ]
+    }
+
+• xxxxxx xxxxx
+  └ /xxx/xx-xxxxx-xxxxxxxx.xxx
+
+• xxxxxx .xxxxxx/xx-xxxxx-xxx/xxxxx/xxxxxxx.xx (+x -x)
+    x  xxxx xxx xxxx xxxx xxxxx x xxxxxx xxxxx, xxxxxxxxxxx
+       xxx xxxxx xxx-xxxx xxxxx xxxxxxxxx xxxx xxx xxxxxxxxx
+        xxxxx-xxxxxx xxxxx xxxx. xxxxxxx xxx xxxxxxx xxxx xx
+        xxxxxxxx xxxxxxxxxxxxx xxxxxx xxxxxxxx xxx xxxxxxx.
+       xxxxxxx xxx xxxxxxx xxxx xxx xxxxxxxxx xxxxxxxxx x xx
+       xxx.
+    x +
+    x +xxxxxx xxx xxxxx x xxxxx xxxxx xxxxxx-xx xxxxxxx xxxx
+        xx xxxxx xxxxxxxx. xxxxxxxx xxxxxxxx xxxx `.xxxxxx.x
+       xxx` xx xxxx xx `.xxxxxxxxxxx.xxxx`, xxxx xxx xxx xxx
+       xxxxx xxxxxxxxxx xxxxxxxx xxxxxx xxx xxxxxxxx xxxxxxx
+       x xx xxxx xxxxx.
+
+────────────────────────────────────────────────────────────
+
+• xxxx. xx xxxxxxxx xxx xxxxxxx xx xxx xxxx xxx xxxx xxx
+  xxxxxxxx xxxxxxx xxxx@xxxxxxx.xxx
+
+  xxxxxxx xxxxx: xx x% · xx x% · xxxxx xx x%.
+
+  x xxxx xxxxx xxx xxxxx xx xxxxxxx xxxxxx xxxxxxxx xxxxxx
+  xxxx xx xxxxx xxxxxxxx. xxx xxxxx xxxxx xxxxx xxxx.
+
+─ xxxxxx xxx xx xxx ────────────────────────────────────────
+
+⚠ Heads up, you have less than 5% of your weekly limit left.
+  xxx /xxxxxx xxx x xxxxxxxxx.
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol · ~ · Context 34% left · Context 66% used · w…

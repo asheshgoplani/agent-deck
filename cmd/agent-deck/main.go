@@ -27,6 +27,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/health"
@@ -42,7 +43,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.16.16" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.17" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -317,6 +318,15 @@ func inheritedEnviron() []string {
 	return env
 }
 
+func configureEventProfile(profile string) error {
+	selected, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return err
+	}
+	events.SetProfile(selected)
+	return nil
+}
+
 func main() {
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
@@ -332,6 +342,11 @@ func main() {
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
 	applyProfileFlag(profile)
+	if err := configureEventProfile(profile); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve events profile: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = events.CloseDefault() }()
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer
@@ -414,7 +429,11 @@ func main() {
 			handleAdd(profile, args[1:])
 			return
 		case "list", "ls":
-			handleList(profile, args[1:])
+			if coreRegistryEnabled() {
+				cliList(profile, args[1:])
+			} else {
+				handleList(profile, args[1:])
+			}
 			return
 		case "remove", "rm":
 			handleRemove(profile, args[1:])
@@ -475,6 +494,12 @@ func main() {
 		case "accounts":
 			handleAccounts(args[1:])
 			return
+		case "harness":
+			handleHarness(profile, args[1:])
+			return
+		case "limits":
+			handleLimits(args[1:])
+			return
 		case "conductor":
 			handleConductor(profile, args[1:])
 			return
@@ -507,6 +532,12 @@ func main() {
 			return
 		case "costs":
 			handleCosts(profile, args[1:])
+			return
+		case "events":
+			handleEvents(profile, args[1:])
+			return
+		case "daemon":
+			handleDaemon(profile, args[1:])
 			return
 		case "recall":
 			handleRecall(profile, args[1:])
@@ -884,6 +915,7 @@ func main() {
 		// Hand the outer terminal's cursor and pointer back if the embedded
 		// terminal owned them; deferred releases do not survive os.Exit.
 		runEmbeddedTerminalCleanup()
+		_ = events.CloseDefault()
 		os.Exit(0)
 	}()
 
@@ -1414,13 +1446,13 @@ var storeRootQuietCommands = map[string]bool{
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
 var commandRegistry = map[string]bool{
-	"add": true, "accounts": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"add": true, "accounts": true, "harness": true, "limits": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
 	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "events": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -2849,8 +2881,9 @@ func handleList(profile string, args []string) {
 		// reports the same Status the TUI and /api/menu do (issue #610).
 		statusStarted := time.Now()
 		tmuxBefore := tmux.SubprocessStarts()
-		session.RefreshInstancesForCLIStatus(instances)
-		output, err := buildListJSON(storage.Profile(), instances)
+		refresh, cached := session.CLIStatusCandidates(instances)
+		session.RefreshInstancesForCLIStatus(refresh)
+		output, err := buildListJSON(storage.Profile(), instances, cached)
 		statusElapsed := time.Since(statusStarted)
 		tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
 		// #2331: this status pass is the one thing both the poll (`list
@@ -2915,7 +2948,11 @@ func emitListStats(elapsed time.Duration, tmuxCalls int64, sessions int) {
 // so a listing that arrives by push is byte-identical to one that was
 // fetched. Callers warm the status caches first
 // (session.RefreshInstancesForCLIStatus); an empty profile yields "[]".
-func buildListJSON(profileName string, instances []*session.Instance) ([]byte, error) {
+func buildListJSON(profileName string, instances []*session.Instance, cachedStatus ...map[*session.Instance]bool) ([]byte, error) {
+	var cached map[*session.Instance]bool
+	if len(cachedStatus) != 0 {
+		cached = cachedStatus[0]
+	}
 	type sessionJSON struct {
 		ID                string    `json:"id"`
 		ParentSessionID   string    `json:"parent_session_id,omitempty"`
@@ -2930,6 +2967,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Model             string    `json:"model,omitempty"`
 		ModelVersion      string    `json:"model_version,omitempty"`
 		Status            string    `json:"status"`
+		StatusSource      string    `json:"status_source,omitempty"`
 		Substate          string    `json:"substate,omitempty"`        // Honest Status v2: additive refinement
 		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
@@ -2940,6 +2978,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 		Channels          []string  `json:"channels,omitempty"`
 		ExtraArgs         []string  `json:"extra_args,omitempty"`
 		Color             string    `json:"color,omitempty"` // issue #391
+		Favorite          bool      `json:"favorite,omitempty"`
 		Archived          bool      `json:"archived"`
 		ArchivedAt        time.Time `json:"archived_at,omitempty"`
 		SupersededBy      string    `json:"superseded_by,omitempty"`
@@ -2962,11 +3001,16 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 	for i, inst := range instances {
 		// Listings need live status, not native-session discovery. Persisted
 		// rows have no status freshness stamp, so still validate liveness.
-		_ = pass.UpdateStatusOnly(inst)
+		if !cached[inst] {
+			_ = pass.UpdateStatusOnly(inst)
+		}
 		// The substate read is this pass's one pane capture and can settle
 		// the status it reads (hook lag, session/hook_lag.go): take it
 		// before the status so both describe the same frame.
-		substate := string(inst.Substate())
+		substate := ""
+		if !cached[inst] {
+			substate = string(inst.Substate())
+		}
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
 			ID:                inst.ID,
@@ -2979,6 +3023,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Account:           inst.Account,
 			Command:           inst.Command,
 			Status:            StatusString(inst.Status),
+			StatusSource:      "live",
 			Substate:          substate,
 			SubstateDetail:    inst.SubstateDetail(),
 			Profile:           profileName,
@@ -2988,6 +3033,7 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			Channels:          inst.Channels,
 			ExtraArgs:         inst.ExtraArgs,
 			Color:             inst.Color,
+			Favorite:          inst.Favorite,
 			Archived:          inst.IsArchived(),
 			ArchivedAt:        inst.ArchivedAt,
 			SupersededBy:      inst.SupersededBy,
@@ -2995,6 +3041,9 @@ func buildListJSON(profileName string, instances []*session.Instance) ([]byte, e
 			CodexSessionID:    inst.CodexSessionID,
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
+		}
+		if cached[inst] {
+			sj.StatusSource = "cached"
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			sj.TmuxSession = tmuxSess.Name
@@ -4340,6 +4389,8 @@ func printHelp() {
 	fmt.Println("  add <path>       Add a new session")
 	fmt.Println("  launch [path]    Add, start, and optionally send a message in one step")
 	fmt.Println("  accounts         List configured named account slots")
+	fmt.Println("  harness          Installed harnesses, login and hook state, install/login commands [--json]")
+	fmt.Println("  limits           Claude 5h/7d and Codex weekly usage per account [--json] ([macapp] plugins)")
 	fmt.Println("  doctor           Check accounts and runtime health")
 	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")

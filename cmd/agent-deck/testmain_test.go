@@ -69,6 +69,10 @@ func runTestMain(m *testing.M) int {
 
 	// Run tests
 	code := m.Run()
+	if err := cleanupGoldensBinary(); err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup goldens binary: %v\n", err)
+		code = 1
+	}
 
 	// Cleanup: Kill any orphaned test sessions after tests complete
 	// This prevents RAM waste from lingering test sessions

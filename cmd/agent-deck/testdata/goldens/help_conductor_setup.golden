@@ -1,0 +1,51 @@
+Usage: agent-deck [-p profile] conductor setup <name> [options]
+
+Set up a named conductor: creates its directory, instructions file, meta.json, and session registration.
+Multiple conductors can exist per profile.
+
+Arguments:
+  <name>    Conductor name (e.g., ryan, infra, monitor)
+
+Options:
+  -agent string
+        Conductor agent runtime: claude, codex, hermes, or pi (default "claude")
+  -description string
+        Description for this conductor
+  -heartbeat
+        Enable heartbeat for this conductor (default)
+  -no-heartbeat
+        Disable heartbeat for this conductor
+  -heartbeat-idle-minutes int
+        Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)
+  -no-clear-on-compact
+        Claude-only: allow normal compaction instead of /clear when context fills up
+        The /clear only arms on an established context window (AGENTDECK_CONTEXT_WINDOW
+        or a harness-reported size); a window inferred from the model id leaves it off.
+
+Conductor-specific files:
+  -instructions-md string
+        Custom instructions file for this conductor (agent-specific)
+  -claude-md string
+        Deprecated Claude-only alias for -instructions-md
+  -policy-md string
+        Custom POLICY.md for this conductor (e.g., ~/docs/my-policy.md)
+  -heartbeat-rules-md string
+        Custom HEARTBEAT_RULES.md for this conductor (e.g., ~/docs/my-heartbeat-rules.md)
+
+Shared files (all conductors):
+  -shared-instructions-md string
+        Custom shared instructions file for all conductors of this agent
+  -shared-claude-md string
+        Deprecated Claude-only alias for -shared-instructions-md
+  -shared-policy-md string
+        Custom path for shared POLICY.md (e.g., ~/docs/conductor-policy.md)
+
+Environment:
+  -env KEY=VALUE
+        Environment variable for the conductor session (can be repeated)
+  -env-file string
+        Path to .env file to source before conductor starts
+
+Output:
+  -json
+        Output as JSON

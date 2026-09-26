@@ -1,0 +1,2 @@
+terminal_width=200 list_width=70
+   └─ ○ a genuinely lon… claude [fork/claude-...] [account:inherited]

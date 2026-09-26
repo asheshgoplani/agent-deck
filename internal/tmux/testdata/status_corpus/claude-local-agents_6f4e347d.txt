@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.269
+▝▜██████▀  Fable 5.1 with medium effort · Claude Max
+  ▝▝ ▝▝    /Users/u · /rc
+
+
+⏺ Remote Control disconnected — Claude.ai login expired — run /login to restore Remote Control
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                  ✔ Update installed · Restart to update
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── agents ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u | [Fable 5.1] ctx:0% in:0 out:0
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

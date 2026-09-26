@@ -6,5 +6,6 @@ Remote:  lab
 Path:    /srv/app
 Tool:    claude
 Viewers: ashesh (200x60, active 5s ago) · yasir (120x40, 3m ago)
+accounts not polled yet
 
 Last response

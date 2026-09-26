@@ -1,0 +1,26 @@
+Usage: agent-deck worktree <command> [options]
+
+Manage git worktrees and their session associations.
+
+Commands:
+  list              List all worktrees in current repository
+  info <session>    Show worktree info for a session
+  finish <session>  Merge branch, remove worktree, and delete session
+  cleanup [--force] Find and remove orphaned worktrees/sessions
+  trust-scripts <repo-path>  Approve .agent-deck/worktree-*.sh for this repo
+
+Global Options:
+  -p, --profile <name>   Use specific profile
+  --json                 Output as JSON
+
+Examples:
+  agent-deck worktree list
+  agent-deck worktree list --json
+  agent-deck worktree info "My Session"
+  agent-deck worktree finish "My Session"
+  agent-deck worktree finish "My Session" --no-merge
+  agent-deck worktree finish "My Session" --into develop
+  agent-deck worktree cleanup
+  agent-deck worktree cleanup --force
+  agent-deck worktree trust-scripts .
+  agent-deck worktree trust-scripts . --revoke

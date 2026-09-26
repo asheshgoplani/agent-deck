@@ -390,9 +390,21 @@ type ConductorMeta struct {
 	// HeartbeatIdleMinutes is the minutes of inactivity before pausing heartbeats.
 	// 0 or negative = disabled (never pause). Positive = number of minutes.
 	HeartbeatIdleMinutes int `json:"heartbeat_idle_minutes"`
+
+	// Warning is set by LoadConductorMeta when meta.json parsed successfully
+	// but contained something this build doesn't fully understand (an agent
+	// this binary doesn't recognize, for example a newer release's runtime
+	// read by an older binary). The conductor is still returned rather than
+	// treated as missing; a caller that must not trust the stored agent for
+	// a destructive or recreating action (like the bridge's fresh-create
+	// path) should check this and refuse instead. Never persisted.
+	Warning string `json:"-"`
 }
 
 // GetAgent returns the normalized conductor agent, defaulting to Claude.
+// LoadConductorMeta preserves an unrecognized agent as-is (with a warning);
+// this is the zero-value fallback for display/dispatch call sites that need
+// a supported agent rather than the raw stored value.
 func (m *ConductorMeta) GetAgent() string {
 	if m == nil {
 		return ConductorAgentClaude
@@ -654,16 +666,36 @@ func LoadConductorMeta(name string) (*ConductorMeta, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read meta.json for conductor %q: %w", name, err)
 	}
-	var meta ConductorMeta
+	// Invalid UTF-8 anywhere in the file (e.g. in an unrelated field like
+	// description) is not fatal: json.Unmarshal already sanitizes invalid
+	// byte sequences in string values to U+FFFD, same as main did before this
+	// validation existed. Rejecting the whole file here would make an older
+	// binary treat metadata as missing over a field it doesn't even care
+	// about, so we don't add a stricter check than json.Unmarshal already does.
+	var meta *ConductorMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("failed to parse meta.json for conductor %q: %w", name, err)
+	}
+	if meta == nil {
+		return nil, fmt.Errorf("failed to parse meta.json for conductor %q: expected an object", name)
 	}
 	if meta.Name == "" {
 		meta.Name = name
 	}
-	meta.Agent = meta.GetAgent()
+	// An agent this build doesn't recognize (the older-binary/newer-data
+	// case: a release that adds a conductor runtime, as hermes and pi were
+	// added) must not make the whole conductor disappear from ListConductors,
+	// getConductorEnv, and ConductorClearOnCompact. Keep the record and
+	// preserve the raw agent value instead of silently coercing it to claude;
+	// a warning is attached so a caller that must not treat it as safe to
+	// recreate (the bridge's fresh-create path) can see it's unrecognized.
+	if spec, specErr := GetConductorAgentSpec(meta.Agent); specErr != nil {
+		meta.Warning = fmt.Sprintf("unrecognized agent %q in meta.json for conductor %q: %v", meta.Agent, name, specErr)
+	} else {
+		meta.Agent = spec.Agent
+	}
 	meta.Profile = normalizeConductorProfile(meta.Profile)
-	return &meta, nil
+	return meta, nil
 }
 
 // SaveConductorMeta writes meta.json for a conductor. It takes the conductor
@@ -710,11 +742,17 @@ func saveConductorMetaLocked(meta *ConductorMeta) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal meta.json: %w", err)
 	}
-	metaPath := filepath.Join(dir, "meta.json")
 	perm := os.FileMode(0o644)
 	if len(meta.Env) > 0 || meta.EnvFile != "" {
 		perm = 0o600 // restrict access when env vars contain secrets
 	}
+	return writeConductorMetaFile(dir, data, perm)
+}
+
+// writeConductorMetaFile atomically replaces dir/meta.json with data. The
+// caller MUST already hold the conductor base lock.
+func writeConductorMetaFile(dir string, data []byte, perm os.FileMode) error {
+	metaPath := filepath.Join(dir, "meta.json")
 	// Write atomically via unique temp-file + rename so a crash mid-write
 	// cannot truncate or corrupt meta.json. Same pattern used by
 	// event_writer.go, mcp_catalog.go, transition_notifier.go, and
@@ -766,6 +804,11 @@ func ListConductors() ([]ConductorMeta, error) {
 		meta, err := LoadConductorMeta(entry.Name())
 		if err != nil {
 			continue
+		}
+		if meta.Warning != "" {
+			sessionLog.Warn("conductor_meta_warning",
+				slog.String("conductor", entry.Name()),
+				slog.String("warning", meta.Warning))
 		}
 		conductors = append(conductors, *meta)
 	}
@@ -1371,8 +1414,8 @@ const conductorHeartbeatScript = `#!/bin/bash
 SESSION="conductor-{NAME}"
 PROFILE="{PROFILE}"
 
-# Check if conductor is enabled (grep -q avoids quoting issues in subshells)
-if ! agent-deck -p "$PROFILE" conductor status --json 2>/dev/null | grep -q '"enabled".*true'; then
+# Check this conductor's heartbeat flag, including after teardown.
+if ! agent-deck -p "$PROFILE" conductor status "{NAME}" --json 2>/dev/null | grep -q '"heartbeat"[[:space:]]*:[[:space:]]*true'; then
     exit 0
 fi
 
@@ -1396,13 +1439,45 @@ for candidate in \
     fi
 done
 
-MSG="{HEARTBEAT_PREFIX} Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention."
-if [ -n "$RULES_FILE" ]; then
-    MSG="$MSG Read heartbeat rules from $RULES_FILE."
+if [ "$STATUS" != "idle" ] && [ "$STATUS" != "waiting" ]; then
+    exit 0
 fi
 
-if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
-    agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q
+# Issue #2348: every send is a new turn that re-reads the conductor's whole
+# conversation. heartbeat-tick prints a delta-only {HEARTBEAT_PREFIX} message,
+# or nothing when no waiting/error session or inbox record changed since the
+# last delivered tick; nothing printed means no turn at all.
+LOG_FILE="$CONDUCTOR_ROOT/{NAME}/heartbeat.log"
+TICK_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick-failed"
+SEND_FAILURE="$CONDUCTOR_ROOT/{NAME}/heartbeat-send-failed"
+TICK_ERROR="$CONDUCTOR_ROOT/{NAME}/heartbeat-tick.stderr"
+if ! MSG=$(agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" 2>"$TICK_ERROR"); then
+    if [ ! -f "$TICK_FAILURE" ]; then
+        IFS= read -r TICK_DETAIL < "$TICK_ERROR" || true
+        printf 'heartbeat: tick failed: %s\n' "${TICK_DETAIL:-unknown error}" >> "$LOG_FILE"
+        : > "$TICK_FAILURE"
+    fi
+    unlink "$TICK_ERROR" 2>/dev/null || true
+    exit 1
+fi
+if [ -s "$TICK_ERROR" ]; then
+    if [ ! -f "$TICK_FAILURE" ]; then
+        IFS= read -r TICK_DETAIL < "$TICK_ERROR" || true
+        printf 'heartbeat: tick diagnostic: %s\n' "$TICK_DETAIL" >> "$LOG_FILE"
+        : > "$TICK_FAILURE"
+    fi
+else
+    unlink "$TICK_FAILURE" 2>/dev/null || true
+fi
+unlink "$TICK_ERROR" 2>/dev/null || true
+if [ -n "$MSG" ]; then
+    if SEND_ERROR=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q 2>&1); then
+        unlink "$SEND_FAILURE" 2>/dev/null || true
+        agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" --commit-message="$MSG" >/dev/null
+    elif [ ! -f "$SEND_FAILURE" ]; then
+        printf 'heartbeat: send failed: %s\n' "${SEND_ERROR%%$'\n'*}" >> "$LOG_FILE"
+        : > "$SEND_FAILURE"
+    fi
 fi
 `
 
@@ -2944,14 +3019,65 @@ func installHeartbeatDaemonSystemd(name string, intervalMinutes int) error {
 // UninstallHeartbeatDaemon stops and removes the heartbeat timer for a conductor.
 func UninstallHeartbeatDaemon(name string) error {
 	plat := platform.Detect()
+	var err error
 	switch plat {
 	case platform.PlatformMacOS:
-		return uninstallHeartbeatDaemonLaunchd(name)
+		err = uninstallHeartbeatDaemonLaunchd(name)
 	case platform.PlatformLinux, platform.PlatformWSL2:
-		return uninstallHeartbeatDaemonSystemd(name)
-	default:
-		return nil
+		err = uninstallHeartbeatDaemonSystemd(name)
 	}
+	if err != nil {
+		return err
+	}
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		return err
+	}
+	if meta.Warning != "" {
+		// Older binary, newer data (#2354): SaveConductorMeta would reject
+		// the unrecognized agent and drop fields this build doesn't know.
+		// Turning the heartbeat off must never be blocked by that.
+		return disableConductorHeartbeatRaw(name)
+	}
+	meta.HeartbeatEnabled = false
+	return SaveConductorMeta(meta)
+}
+
+// disableConductorHeartbeatRaw sets heartbeat_enabled=false in meta.json
+// without decoding it into ConductorMeta, so the stored agent and any fields
+// this build doesn't know are kept as they are.
+func disableConductorHeartbeatRaw(name string) error {
+	lock, err := acquireConductorBaseLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		return err
+	}
+	metaPath := filepath.Join(dir, "meta.json")
+	info, err := os.Stat(metaPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat meta.json for conductor %q: %w", name, err)
+	}
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return fmt.Errorf("failed to read meta.json for conductor %q: %w", name, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("failed to parse meta.json for conductor %q: %w", name, err)
+	}
+	if fields == nil {
+		return fmt.Errorf("failed to parse meta.json for conductor %q: expected an object", name)
+	}
+	fields["heartbeat_enabled"] = json.RawMessage("false")
+	data, err = json.MarshalIndent(fields, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal meta.json: %w", err)
+	}
+	return writeConductorMetaFile(dir, data, info.Mode().Perm())
 }
 
 func uninstallHeartbeatDaemonLaunchd(name string) error {
@@ -2959,21 +3085,38 @@ func uninstallHeartbeatDaemonLaunchd(name string) error {
 	if err != nil {
 		return err
 	}
-	_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+	if _, err := os.Stat(hbPlistPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := exec.Command("launchctl", "unload", hbPlistPath).Run(); err != nil {
+		return fmt.Errorf("stop launchd heartbeat: %w", err)
+	}
 	return RemoveHeartbeatPlist(name)
 }
 
 func uninstallHeartbeatDaemonSystemd(name string) error {
-	timerName := SystemdHeartbeatTimerName(name)
-	_ = exec.Command("systemctl", "--user", "disable", "--now", timerName).Run()
-
 	timerPath, err := SystemdHeartbeatTimerPath(name)
-	if err == nil {
-		_ = os.Remove(timerPath)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(timerPath); err == nil {
+		if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdHeartbeatTimerName(name)).Run(); err != nil { //nolint:gosec // G204: fixed binary and argv, no shell; name only selects a --user unit
+			return fmt.Errorf("stop systemd heartbeat: %w", err)
+		}
+		if err := os.Remove(timerPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	svcPath, err := SystemdHeartbeatServicePath(name)
-	if err == nil {
-		_ = os.Remove(svcPath)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(svcPath); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return nil

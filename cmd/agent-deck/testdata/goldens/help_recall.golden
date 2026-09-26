@@ -1,0 +1,37 @@
+Usage: agent-deck recall <command> [options]
+
+Search and inspect every conversation on this machine, across harnesses
+(Claude, Codex, pi, Gemini, OpenCode, Hermes; docs/recall.md). Requires
+[recall] enabled = true in config.toml. The index (recall.db) is disposable;
+hints and tags live in state.db and survive a rebuild.
+
+Commands:
+  search "<q>"     Full-text search over messages, titles and hints (--remote <host> / --all-remotes federate)
+  sessions         List indexed sessions (newest first)
+  show <session>   One session: card, derived summary, tools, files, messages
+  timeline <session>  Ordered typed conversation turns with a resume cursor
+  follow <session>    Stream new turns after a timeline cursor as JSONL
+  context <session>  Render a session as context for any harness; --into current delivers it to this session
+  open <session>   Relaunch a session (start its deck session, or resume a Claude conversation)
+  enrich           Drain the classifier queue (where did we lose time, session kind, outcome)
+  status           Index size, sources by state, what is pending
+  backfill         Index all history (resumable; refuses while sessions are busy)
+  sweep            Index what changed since the last sweep
+  gc               Reclaim space from vanished transcripts
+  rebuild          Delete the index and backfill again
+  export           Emit this machine's session cards (no bodies, no paths) for a remote to pull
+  import           Import cards exported elsewhere (--host <alias> required)
+  pull <host>      Run export on a remote and import its cards ([recall] remote_cards = true)
+  mcp              Serve search/show/context to an agent as an MCP server over stdio
+
+Every command accepts --json and --help. <session> is a #number from a
+listing, a harness conversation id (or unique prefix), or an agent-deck
+session id. The TUI's G key is the same search over the same index.
+
+Examples:
+  agent-deck recall search "clock skew" --since 30d --profile work
+  agent-deck recall search SB-412 --hint ticket=SB-412 --phrase
+  agent-deck recall search "retry budget" --all-remotes --json
+  agent-deck recall show 91fd7978 --turns 20
+  agent-deck recall context 91fd7978 --tier brief --into current
+  agent-deck recall backfill --budget 5m

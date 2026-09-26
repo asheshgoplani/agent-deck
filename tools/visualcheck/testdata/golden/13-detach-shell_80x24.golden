@@ -1,0 +1,24 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                 <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+SESSIONS                     │ PREVIEW
+──────────────────────────── │ ─────────────────────────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1        │ shell-live  ○ idle
+   ├─ ■ opencode-idle        │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle          │ ⏱ <age>
+   ├─ ◐ claude-waiting       │ 👁️ no viewers
+   └─ ■ claude-stopped       │  shell   beta
+    ▾ backend (3) ● 1        │
+     ├─ ✕ codex-idle         │ ────────────────── Output ──────────────────
+     ├─ ● claude-running     │ $
+     └─ ✕ claude-error       │
+2·▾ beta (4) ◐ 1             │
+   ├─ ✕ gemini-idle          │
+   ├─ ✕ pi-idle              │
+   ├─ ◐ claude-i18n          │
+  ▶└─ ○ shell-live           │
+  ▾ remotes/lab (0) · host … │
+                             │
+                             │
+                             │
+────────────────────────────────────────────────────────────────────────────────
+⏎ Attach n/N New R Restart c Copy │    ↑↓ Nav / Search S Settings ? Help q Quit

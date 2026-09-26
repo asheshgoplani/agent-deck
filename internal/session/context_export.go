@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -309,6 +310,8 @@ func exactCodexRolloutMatches(sessionID, home string) ([]string, error) {
 	return matches, nil
 }
 
+var errNoExactContextArtifact = errors.New("no exact context artifact found")
+
 func uniqueRegularArtifact(paths []string, label string) (string, error) {
 	var found []string
 	for _, path := range paths {
@@ -328,7 +331,7 @@ func uniqueRegularArtifact(paths []string, label string) (string, error) {
 		found = append(found, path)
 	}
 	if len(found) == 0 {
-		return "", fmt.Errorf("no exact context artifact found for %s", label)
+		return "", fmt.Errorf("%w for %s", errNoExactContextArtifact, label)
 	}
 	if len(found) > 1 {
 		return "", fmt.Errorf("ambiguous exact context artifact for %s (%d matches)", label, len(found))

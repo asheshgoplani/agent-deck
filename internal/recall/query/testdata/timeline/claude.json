@@ -1,0 +1,189 @@
+[
+  {
+    "seq": 1,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-09-10T01:00:00Z",
+    "text": "Review the auth fix",
+    "raw": {
+      "cwd": "/Users/x/app",
+      "message": {
+        "content": "Review the auth fix",
+        "role": "user",
+        "usage": {
+          "input_tokens": 1,
+          "output_tokens": 1
+        }
+      },
+      "sessionId": "aaaaaaaa-0000-4000-8000-000000000001",
+      "timestamp": "2026-09-10T01:00:00Z",
+      "type": "user",
+      "uuid": "aaaaaaaa-0000-4000-8000-000000000001-0"
+    }
+  },
+  {
+    "seq": 2,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-09-10T02:00:00Z",
+    "text": "I will inspect it.",
+    "raw": {
+      "cwd": "/Users/x/app",
+      "message": {
+        "content": "I will inspect it.",
+        "role": "assistant",
+        "usage": {
+          "input_tokens": 1,
+          "output_tokens": 1
+        }
+      },
+      "sessionId": "aaaaaaaa-0000-4000-8000-000000000001",
+      "timestamp": "2026-09-10T02:00:00Z",
+      "type": "assistant",
+      "uuid": "aaaaaaaa-0000-4000-8000-000000000001-1"
+    }
+  },
+  {
+    "seq": 3,
+    "role": "assistant",
+    "kind": "bash",
+    "timestamp": "2026-09-11T01:00:00Z",
+    "tool_name": "Bash",
+    "text": "go test ./internal/auth",
+    "raw": {
+      "id": "toolu_1",
+      "input": {
+        "command": "go test ./internal/auth"
+      },
+      "name": "Bash",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 4,
+    "role": "user",
+    "kind": "tool_result",
+    "timestamp": "2026-09-11T01:00:01Z",
+    "text": "PASS",
+    "raw": {
+      "content": "PASS",
+      "tool_use_id": "toolu_1",
+      "type": "tool_result"
+    }
+  },
+  {
+    "seq": 5,
+    "role": "assistant",
+    "kind": "edit",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "Edit",
+    "text": "auth.go",
+    "raw": {
+      "id": "toolu_2",
+      "input": {
+        "file_path": "auth.go",
+        "new_string": "good",
+        "old_string": "bad"
+      },
+      "name": "Edit",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 6,
+    "role": "assistant",
+    "kind": "todo",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "TodoWrite",
+    "text": "TodoWrite",
+    "raw": {
+      "id": "toolu_3",
+      "input": {
+        "todos": [
+          {
+            "content": "verify auth"
+          }
+        ]
+      },
+      "name": "TodoWrite",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 7,
+    "role": "assistant",
+    "kind": "subagent",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "Agent",
+    "text": "check flow",
+    "raw": {
+      "id": "toolu_4",
+      "input": {
+        "description": "inspect auth",
+        "prompt": "check flow"
+      },
+      "name": "Agent",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 8,
+    "role": "assistant",
+    "kind": "skill",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "Skill",
+    "text": "code-simplifier",
+    "raw": {
+      "id": "toolu_5",
+      "input": {
+        "skill": "code-simplifier"
+      },
+      "name": "Skill",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 9,
+    "role": "assistant",
+    "kind": "permission",
+    "timestamp": "2026-09-11T01:00:02Z",
+    "tool_name": "AskUserQuestion",
+    "text": "AskUserQuestion",
+    "raw": {
+      "id": "toolu_6",
+      "input": {
+        "questions": [
+          {
+            "question": "Proceed?"
+          }
+        ]
+      },
+      "name": "AskUserQuestion",
+      "type": "tool_use"
+    }
+  },
+  {
+    "seq": 10,
+    "role": "system",
+    "kind": "compaction",
+    "timestamp": "2026-09-11T01:00:03Z",
+    "raw": {
+      "subtype": "compact_boundary",
+      "timestamp": "2026-09-11T01:00:03Z",
+      "type": "system"
+    }
+  },
+  {
+    "seq": 11,
+    "role": "system",
+    "kind": "other",
+    "timestamp": "2026-09-11T01:00:04Z",
+    "raw": {
+      "payload": {
+        "step": "preserve"
+      },
+      "timestamp": "2026-09-11T01:00:04Z",
+      "type": "future_workflow"
+    }
+  }
+]

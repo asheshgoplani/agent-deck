@@ -1,0 +1,8 @@
+Usage: agent-deck rename <id|title> <new-title>
+
+Rename a session by ID or title.
+
+Examples:
+  agent-deck rename abc12345 "New Name"
+  agent-deck rename "Old Name" "New Name"
+  agent-deck -p work rename abc12345 "New Name"   # Rename in 'work' profile

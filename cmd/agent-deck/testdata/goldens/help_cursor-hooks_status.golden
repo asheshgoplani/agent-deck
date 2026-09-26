@@ -1,0 +1,8 @@
+Usage: agent-deck cursor-hooks <command>
+
+Manage Cursor Agent CLI hook integration.
+
+Commands:
+  install      Install agent-deck Cursor hooks
+  uninstall    Remove agent-deck Cursor hooks
+  status       Show Cursor hooks install status

@@ -231,6 +231,11 @@ func runTestMain(m *testing.M) int {
 	// See internal/testutil/homeenv.go for the postmortem.
 	cleanupHome := testutil.IsolateHome()
 	defer cleanupHome()
+	// Most session tests replace HOME per case and remove it immediately.
+	// They exercise the existing writers, not the process-owned bus. Explicitly
+	// opt out here so a writer cannot race a case's TempDir cleanup. Dedicated
+	// events and watcher tests run the real bus, including its shutdown path.
+	_ = os.Setenv("AGENTDECK_EVENTS_BUS", "0")
 
 	// Git hooks export GIT_DIR/GIT_WORK_TREE; clear them so test subprocess git
 	// commands operate on their temp repos instead of the real repository.

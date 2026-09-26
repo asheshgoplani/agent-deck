@@ -35,10 +35,10 @@ func TestRemoteStatusCounts_SubGroupScoped(t *testing.T) {
 }
 
 func TestRemoteStatusSuffix_EmptyWhenIdle(t *testing.T) {
-	if got := remoteStatusSuffix(0, 0); got != "" {
+	if got := remoteStatusSuffix(0, 0, false); got != "" {
 		t.Fatalf("idle suffix = %q, want empty", got)
 	}
-	if got := remoteStatusSuffix(2, 3); got == "" {
+	if got := remoteStatusSuffix(2, 3, false); got == "" {
 		t.Fatalf("active suffix should not be empty")
 	}
 }

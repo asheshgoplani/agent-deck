@@ -1,0 +1,130 @@
+ ──
+   [personal] u@host:/Users/u/.agent-deck/watcher/whatsapp | [Opus 5 (1M context)] ctx:32% in:316.5k out:25 5h:9% 7d:81%
+   ⏵⏵ auto mode on · 1 monitor · ← for agents
+
+ Took 0.1s
+
+
+
+ $ python3 - <<'PY'
+ xxxxxx xxxxxxx,xxxx,xxxxxxxx
+ x=xxxxxxx.xxxx('xxxxx.xxxx');x=xxxx.xxxxx(x.xxxx_xxxx());xxx=xxxxxxxx.xxxxxxxx.xxx(xxxxxxxx.xxxxxxxx.xxx).xxxxxxxxx();x['xxxxxx_xxxxx_xxxxx']={'xxxxxxxxx':xxx,'xxxxxx_xxxxxxx':x,'xxxxx
+ ':'xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx','xxxxxxxxxxx':'xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx@xxxxxxxxxxxxxxxx','xxxxxxxxxxx':'xxxxxx xxxxxx xxx xxxxx xxxx xxxxxx xxxx xxxxxx xxxxx, xxxxxxxxxxx
+ xxxxx xxxx. xxxxxx xxxxxxxx xxxxxxxx; xxxxxxxx xxx xxxxx xxxxxxxxxx xxxxxx xxxxxxx xxxxxxxx xxxxxxxx. xx xxxxxxxxx xxxxxx-xx, xxxxxxx xx xxxxxx.','xxxxxx':'xx xxxxxxx xx xxxxx;
+ xxxxxxxxxx xxxxxxxxxx xxx
+ xxxxxxxx.'};x.xxxxxxxxxx('xxxxxxxx_xxxxxxxxxxx_xxxxxx',{}).xxxxxx({'xxxxxx_xxxxx_xxxxxx':'xxxx-xx-xxxxx:xx:xxx','xxxxxx_xxxxx_xxxxxxxx':x});x.xxxxx_xxxx(xxxx.xxxxx(x,xxxxxx=x)+'\x')
+ xxxx xxxxxxx.xxxx('xxxx-xxx.xx').xxxx('x') xx x:x.xxxxx('\x'+xxx+' — xxxxxxx xxx xxxxxxx xxxxxx: xxxxxx xxxxx x→x, xxxxxxxxx xxxxx xxxx xxx xxxxx/xxxxx xxxx. xxxxxxxx
+ xxxxxxxx/xxxxx-xxx xxxxxxxx xxxxx xxxxxxxxx. xx xxxxxxx/xxxxxx xx xxxxxxxxx xxxx.\x')
+ xx (xxxxxxx xxx)
+
+ (no output)
+
+ Took 0.1s
+
+
+ xxxxxxx. xxx xxxxxx xxxxxxx xxxx xxxxx xxxxxx, xx xxxx xxxx; xxxxxxxxx xxxxx xxxx. xxxxxxxx xxx xxxxx xxx xxxxxx xxxxxxxx xxxxxxxx. xx xxxxxxx xx xxxxxx xxxxxxxxx.
+
+
+ [xxxxx] x xxxxx xxxx xxxxxxxxx x xxxxxxxxxx xx xxxx xxxxx — xxxxx xx xxx xxx xx xxxx xxxx xxx.
+
+
+
+ $ /Users/u/.local/bin/agent-deck -p personal inbox drain self --json (timeout 20s)
+
+ [{"xxxxx_xxxxxxx_xx":"xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx","xxxxx_xxxxx":"xxxxxxxx-xxxxxxx","xxxxxxx":"xxxxxxxx","xxxx_xxxxxx":"xxxxxxx","xx_xxxxxx":"xxxxxxx","xxxxxxxxx":"xxxx-xx-xxxxx:xx
+ :xx.xxxxxx+xx:xx","xxxx_xxxxxx_xxxx":"xxxxx:xxxxxxx","xxxxxx_xxxxxxx_xx":"xxxxxxxx-xxx xxx xxx","xxxxxx_xxxx":"xxxxxx","xxxxxxxx_xxxxxx":"xxxxxxxxx_xxxxx","xxxx_xxxxxxxxxxx":"xxxxxx-xxx
+ xxxxxxxxxxxxxxxxxxxxx@xxxxxxxxxxxxxxxx"}]
+
+ Took 0.1s
+
+
+
+ $ /Users/u/.local/bin/agent-deck -p personal session output switch-5a70b8a8e595bbb572c210bb -q; env -u TMUX /opt/homebrew/bin/tmux -L default capture-pane -p -t
+ xxxxxxxxx_xxxxxxxx-xxxxxxx_xxxxxxxx -x -x (xxxxxxx xxx)
+
+ ... (xx xxxxxxx xxxxx, xxxx+x xx xxxxxx)
+ ❯ 
+ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ──
+   [personal] u@host:/Users/u/.agent-deck/watcher/whatsapp | [Opus 5 (1M context)] ctx:32% in:317.2k out:160 5h:10% 7d:81%
+   ⏵⏵ auto mode on · 1 monitor · ← for agents
+
+ Took 0.1s
+
+
+
+ $ python3 - <<'PY'
+ xxxxxx xxxxxxx,xxxx,xxxxxxxx
+ x=xxxxxxx.xxxx('xxxxx.xxxx');x=xxxx.xxxxx(x.xxxx_xxxx());xxx=xxxxxxxx.xxxxxxxx.xxx(xxxxxxxx.xxxxxxxx.xxx).xxxxxxxxx();x['xxxxxx_xxxxx_xxxxx']={'xxxxxxxxx':xxx,'xxxxxx_xxxxxxx':x,'xxxxx
+ ':'xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx','xxxxxxxxxxx':'xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx@xxxxxxxxxxxxxxxx','xxxxxxxxxxx':'xxxxx xxxxxxx xxxxxxxxxxx xxxxxxxxx xxxxxxx:xxxxx xx xxx xxxx
+ xxxxxxx; xxxx xxxxx xxxxxxxxxxx:xxxxx, xxxxx xxxxx. xxxxxx xxxxxxxxx xxxxxx/xxxx, xxx xxx xxxxxxx/xxxxxx. xxxxxxxx xxxxx xxx xxxxxx xxxxxxxx xxx xxxxxxxxxxxxx xxxxxxxx; xxxxx xxxxx xxx
+ xxxxx xx xx xxxx/xxxxx/xxxxxxxxx xxxxxxxxxx. xxxxxxx:xx xxxxxx xxxxx xxxxxxxxxx xx xxxx xxxxxxxxxxxxx xxxxxx. xxxxxx-xxxxx xxx xxxxxxx xxxxxxxx-xxxxx.','xxxxxx':'xx xxxxxxx xx xxxxx;
+ xxxxxxxxxx xxxxxxxxxx xxx xxxxxxxx.'};x.xxxxxxxxxx('xxxxxxxx_xxxxxxxxxxx_xxxxxx',{}).xxxxxx({'xxxxxx_xxxxx_xxxxxx':'xxxx-xx-xxxxx:xx:xxx','xxxxxx':'xxxxxxxx xxxxxxxx xx xxxxx; xxx
+ xxxxxxxxxxxxx xxxxxxxx','xxxxxxxxx_xx_xxxxxxxx':'xxxx-xx-xxxxx:xx:xxx','xxxxxx_xxxxx_xxxxxxxx':x,'xxxxx_xxxxxxxxx_xxxxxxxx':x,'xxxxxxxx_xxxxx':'xxxxxxx; xxx xxxx
+ xxxxxx','xxxx_xxxxxx':'xx xxxxxxx xx xxxxxxxxx xxxxxx xxxxxx xx xxxxxxx xxxxxx. xxxxxx-xxxxx xxxxxxxxxx xxxxx xxxxxxxx xxxxxxxx xxx xxxxxxxxxx xxxxxxxx; xxx-xx-xxx xxxxxxxxxxxx
+ xxxxxxxxxx.'});x.xxxxx_xxxx(xxxx.xxxxx(x,xxxxxx=x)+'\x')
+ xxxx xxxxxxx.xxxx('xxxx-xxx.xx').xxxx('x') xx x:x.xxxxx('\x'+xxx+' — xxxxxxx xxxxxxxx xxxxxx: xxxxx xxxx xxxxxxxxx xxxxxxxxxx:xxxxx, xxxx xxxxxx xxxxx xxxxxxxxxxx:xxxxx, xxxxx xxxxx.
+ xxxxxx xxx xxx xxxxxxx/xxxxxx; xxxxxxxx xxxxx/xxxxxx xxxxxxxxxx xxx xx-xxxx xxxxxx xxxxxxxxxx. xxxxxxxxxx xxxxxxx xxxxxx xxxxxx; xxxxx xxxxxx xxxxxxx xxxxxxxx-xxxxx.\x')
+ xx (xxxxxxx xxx)
+
+ (no output)
+
+ Took 0.1s
+
+
+ xxxxxxx. xxx xxxxxx xxxxxxx xxxxxxxxx xxxxxxxxx, xxxx xxxxxx xxxxx xxxxxxxxx, xxxxx xxxxx. x xxxxxxxxx xx xxxxxxx xx xxxxxx; xxx-xx-xxx xxxxxxxxxxxx xxxxxxx xxxxxxxxxx.
+
+ xxx xxxxxx-xxxxx xxx xxxxx xxxxxx xxxxxxxx.
+
+
+ [xxxxx] x xxxxx xxxx xxxxxxxxx x xxxxxxxxxx xx xxxx xxxxx — xxxxx xx xxx xxx xx xxxx xxxx xxx.
+
+
+
+ $ /Users/u/.local/bin/agent-deck -p personal inbox drain self --json (timeout 20s)
+
+ [{"xxxxx_xxxxxxx_xx":"xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx","xxxxx_xxxxx":"xxxxxxxx-xxxxxxx","xxxxxxx":"xxxxxxxx","xxxx_xxxxxx":"xxxxxxx","xx_xxxxxx":"xxxx","xxxxxxxxx":"xxxx-xx-xxxxx:xx:xx
+ .xxxxxx+xx:xx","xxxx_xxxxxx_xxxx":"xxxxx:xxxxxxx","xxxxxx_xxxx_xxxxx":xxxx,"xxxxxx_xxxxxxx_xx":"xxxxxxxx-xxx xxx xxx","xxxxxx_xxxx":"xxxxxx","xxxxxxxx_xxxxxx":"xxxxxxxxx_xxxxx","xxxx_xx
+ xxxxxxxxx":"xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx@xxxxxxxxxxxxxxxx"}]
+
+ Took 0.1s
+
+
+
+ $ /Users/u/.local/bin/agent-deck -p personal session output switch-5a70b8a8e595bbb572c210bb -q; env -u TMUX /opt/homebrew/bin/tmux -L default capture-pane -p -t
+ xxxxxxxxx_xxxxxxxx-xxxxxxx_xxxxxxxx -x -x (xxxxxxx xxx)
+
+ ... (xx xxxxxxx xxxxx, xxxx+x xx xxxxxx)
+ ─────────────────────────────────────────────────────────────────────────────────────────────
+ ❯ xxxxx
+ ─────────────────────────────────────────────────────────────────────────────────────────────
+   [xxxxxxxx] x@xxxx:/xxxxx/x/.xxxxx-xxxx/xxxxxxx/xxxxxxxx | [xxxx x (x…
+   ⏵⏵ auto mode on · 1 monitor
+
+ Took 0.1s
+
+
+
+ $ python3 - <<'PY'
+ xxxxxx xxxxxxx,xxxx,xxxxxxxx
+ x=xxxxxxx.xxxx('xxxxx.xxxx');x=xxxx.xxxxx(x.xxxx_xxxx());xxx=xxxxxxxx.xxxxxxxx.xxx(xxxxxxxx.xxxxxxxx.xxx).xxxxxxxxx();x['xxxxxx_xxxxx_xxxxx']={'xxxxxxxxx':xxx,'xxxxxx_xxxxxxx':x,'xxxxx
+ ':'xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx','xxxxxxxxxxx':'xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx@xxxxxxxxxxxxxxxx','xxxxxxxxxxx':'xxxxx xxxx xxxxx: xxxxxx xxx xxxxx xxxx xxxxxx xxxxxx xxxxxxxx
+ xxxxxx; xx xxxxx xxxxxx/xxxxxxxxxx xxxxxxxx. xxxxxx xxxx xxxxx xxxxxxxxx xxxxxxxxx. xx xxxxxx-xx, xxxxxxx, xxxxxx xx xxxxx xxxxxxxxxxxx. xxxxxxxx xxxxx-xxx xxxxxxxx xxxx
+ xxxxxxx.','xxxxxx':'xx xxxxxxx xx xxxxxxx xxxxx; xxxxxxxxxx xxxxxxxxxx xxx xxxxxxxx.'};x.xxxxx_xxxx(xxxx.xxxxx(x,xxxxxx=x)+'\x')
+ xxxx xxxxxxx.xxxx('xxxx-xxx.xx').xxxx('x') xx x:x.xxxxx('\x'+xxx+' — xxxxxxx xxxxx xxxxxxx xxxx xxxxx; xxxxx xxxx xxxxxxx xxxxx xxxxxxxx xxxxxx xxx xxxxxxxx xxxxxx xxxxx. xxxxxxxxx
+ xxxxx; xx xxxxx xxxxxx xxxxxxxxx, xx xxxx/xxxxxxx/xxxxxx. xxxxx-xxx xxxxxxxx xxxx xxxxxxxxx.\x')
+ xx (xxxxxxx xxx)
+
+ (no output)
+
+ Took 0.0s
+
+
+ xxxxxxx: xxxxx xxxx xxxxxxxxxxxx xxxxxxxxx xxx xxxxx xxxxxxxx xxxxxx—xxx x xxxxx xxxxxx xxxxx. xxxx xxxxxx xxxxx xx xxxxxxxxx. xxxxx xxx xxxxx xxxxxx xxxxxxxx; xx xxxxxxxxxxx xxxxxxx
+ xxxx.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.agent-deck/conductor/agent-deck (main)
+↑5.2M ↓298k R170M CH99.3% $236.069 (sub) 20.9%/272k (auto)                                                                                                (openai-codex) gpt-6-astra • low

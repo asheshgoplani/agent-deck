@@ -599,6 +599,30 @@ func TestCSIuReaderDropsTerminalRepliesDuringQuarantine(t *testing.T) {
 	}
 }
 
+func TestCSIuReaderReplyBudgetResetsForNextQuarantine(t *testing.T) {
+	t.Cleanup(termreply.Clear)
+	termreply.Clear()
+	r := newCSIuReader(nil)
+	reply := []byte("\x1b[?61;4c")
+
+	termreply.QuarantineFor(time.Second)
+	if got := r.consume(reply, false); !bytes.Equal(got, reply) {
+		t.Fatalf("first window reply = %q, want %q", got, reply)
+	}
+	if got := r.consume(reply, false); len(got) != 0 {
+		t.Fatalf("duplicate in first window = %q, want dropped", got)
+	}
+
+	termreply.Clear()
+	termreply.QuarantineFor(time.Second)
+	if got := r.consume(reply, false); !bytes.Equal(got, reply) {
+		t.Fatalf("second window reply = %q, want %q", got, reply)
+	}
+	if got := r.consume(reply, false); len(got) != 0 {
+		t.Fatalf("duplicate in second window = %q, want dropped", got)
+	}
+}
+
 func TestCSIuReaderDropsSplitTerminalRepliesDuringQuarantine(t *testing.T) {
 	t.Cleanup(termreply.Clear)
 	termreply.QuarantineFor(time.Second)

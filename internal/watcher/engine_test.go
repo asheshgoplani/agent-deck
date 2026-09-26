@@ -201,6 +201,30 @@ func TestWatcherEngine_Stop_NoLeaks(t *testing.T) {
 	// goleak.VerifyNone runs via defer and will fail the test if any goroutines leaked.
 }
 
+func TestWatcherEngine_StopClosesProductionBus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("AGENTDECK_EVENTS_BUS", "1")
+	engine, db := newTestEngine(t, nil)
+	saveTestWatcher(t, db, "w-bus", "bus-test", "mock")
+	engine.RegisterAdapter("w-bus", &MockAdapter{
+		events:      []Event{{Source: "mock", Sender: "sender@test.com", Subject: "tap", Timestamp: time.Now()}},
+		listenDelay: time.Millisecond,
+	}, AdapterConfig{Type: "mock", Name: "bus-test"}, 60)
+	if err := engine.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	engine.Stop()
+	defer goleak.VerifyNone(t,
+		goleak.IgnoreTopFunction("database/sql.(*DB).connectionOpener"),
+		goleak.IgnoreTopFunction("database/sql.(*DB).connectionResetter"),
+		goleak.IgnoreAnyFunction("modernc.org"),
+		goleak.IgnoreAnyFunction("poll.runtime_pollWait"),
+		goleak.IgnoreTopFunction("go.opencensus.io/stats/view.(*worker).start"),
+	)
+}
+
 // TestWatcherEngine_KnownSenderRouting verifies that an event from a sender
 // in the clients map is saved with the correct routed_to conductor.
 func TestWatcherEngine_KnownSenderRouting(t *testing.T) {

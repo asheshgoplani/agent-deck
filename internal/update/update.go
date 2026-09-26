@@ -5,6 +5,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -810,7 +811,7 @@ func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
 	}
 
 	fmt.Printf("Downloading and verifying %s/%s release binary...\n", goos, goarch)
-	binaryData, err := DownloadVerifiedBinary(release, goos, goarch)
+	binaryData, err := DownloadVerifiedBinaryContext(context.Background(), release, goos, goarch, terminalProgress())
 	if err != nil {
 		return fmt.Errorf("download/verify failed: %w", err)
 	}

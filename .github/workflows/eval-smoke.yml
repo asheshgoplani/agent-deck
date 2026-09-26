@@ -75,12 +75,17 @@ jobs:
           sudo apt-get install -y zoxide
           zoxide --version
 
+      # internal/ui is scoped to its eval cases (every eval_smoke-tagged
+      # test there is named TestEval_*): without -run this also ran the
+      # whole untagged internal/ui suite under -race, which the Go test
+      # shards already cover and which now outlasts the 3m package timeout
+      # and the 6m job limit.
       - name: Run eval_smoke suite
         env:
           GOTOOLCHAIN: go1.25.13
         run: |
-          go test -tags eval_smoke -race -count=1 -timeout 3m \
-            ./tests/eval/... ./internal/ui/...
+          go test -tags eval_smoke -race -count=1 -timeout 3m ./tests/eval/...
+          go test -tags eval_smoke -race -count=1 -timeout 3m -run '^TestEval_' ./internal/ui/...
 
   # The hygiene half of the same problem: scripts/reap-stale-tmux.sh cleans up
   # what leaks past this harness (test tmux servers, agent-deck-eval-bin

@@ -151,3 +151,39 @@ func TestDoctorRemoteNeverRunsLocally(t *testing.T) {
 		t.Fatalf("remote rejection changed HOME")
 	}
 }
+
+// #2334: doctor says nothing about Indic zero-width marks by default, and
+// prints an INFO note (never a warning) for users who opted in.
+func TestDoctorIndicZeroWidthMarksOnlyWhenOptedIn(t *testing.T) {
+	home := t.TempDir()
+	stdout, stderr, code := runAgentDeck(t, home, "doctor")
+	if code != 0 || strings.Contains(stdout, "indic_zero_width_marks") {
+		t.Fatalf("default doctor mentions the opt-in: exit %d: %s %s", code, stdout, stderr)
+	}
+	stdout, _, _ = runAgentDeck(t, home, "doctor", "--json")
+	if strings.Contains(stdout, "tmux_indic_zero_width_marks") {
+		t.Fatalf("default doctor JSON carries the opt-in: %s", stdout)
+	}
+
+	configDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[tmux]\nindic_zero_width_marks = true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "doctor")
+	if code != 0 || !strings.Contains(stdout, "tmux indic_zero_width_marks INFO: on") {
+		t.Fatalf("opted-in doctor lacks the INFO note: exit %d: %s %s", code, stdout, stderr)
+	}
+	stdout, _, _ = runAgentDeck(t, home, "doctor", "--json")
+	var report struct {
+		Indic *struct {
+			Applied bool   `json:"applied"`
+			Detail  string `json:"detail"`
+		} `json:"tmux_indic_zero_width_marks"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil || report.Indic == nil || report.Indic.Detail == "" {
+		t.Fatalf("opted-in doctor JSON: %v: %s", err, stdout)
+	}
+}

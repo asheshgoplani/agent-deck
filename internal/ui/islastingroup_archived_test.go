@@ -11,10 +11,12 @@
 package ui
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 func TestIsLastInGroup_ArchivedSessionAtGroupEnd_LastVisibleRendersLast(t *testing.T) {
@@ -108,5 +110,131 @@ func TestIsLastInGroup_ViewModeSplit_EachSectionEndsWithLast(t *testing.T) {
 	cidx := sessionIndexByTitle(home, "c-idle")
 	if cidx < 0 || !home.flatItems[cidx].IsLastInGroup {
 		t.Errorf("c-idle is the last row of the bottom section but IsLastInGroup=false")
+	}
+}
+
+// --- Tree connector fix (2026-09-17 spec): defect 1 (groups.go:711's
+// `&& len(subs) == 0` guard blanks IsLastInGroup for any top-level session
+// with children) and defect 2 (ParentIsLastInGroup and IsLastSubSession are
+// computed once from the raw, archived-inclusive list in Flatten() and never
+// corrected the way IsLastInGroup already is above). ---
+
+// TestWindowRowsInheritParentIsLast: injected tmux-window rows for a
+// defect-1-shaped session (sole top-level with a child) must inherit the
+// CORRECTED IsLastInGroup/ParentIsLastInGroup, not the raw pre-correction one.
+func TestWindowRowsInheritParentIsLast(t *testing.T) {
+	home := NewHome()
+	home.width, home.height = 120, 40
+	home.initialLoading = false
+
+	p := session.NewInstanceWithTool("p", "/tmp/p", "claude")
+	p.GroupPath = "alpha"
+	p.Status = session.StatusIdle
+
+	s1 := session.NewInstanceWithTool("s1", "/tmp/s1", "claude")
+	s1.GroupPath = "alpha"
+	s1.Status = session.StatusIdle
+	s1.SetParent(p.ID)
+
+	tmuxName := p.GetTmuxSession().Name
+	tmux.SeedWindowCacheForTest(t, map[string][]tmux.WindowInfo{
+		tmuxName: {{Index: 0, Name: "w0"}, {Index: 1, Name: "w1"}},
+	})
+
+	instances := []*session.Instance{p, s1}
+	home.instancesMu.Lock()
+	home.instances = instances
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(instances)
+	home.rebuildFlatItems()
+
+	found := false
+	for _, it := range home.flatItems {
+		if it.Type == session.ItemTypeWindow && it.WindowSessionID == p.ID && it.WindowIndex == 1 {
+			found = true
+			if !it.IsLastInGroup {
+				t.Errorf("p's last window row has IsLastInGroup=false, but p is the sole top-level " +
+					"session in its group → window rows inherit the stale, uncorrected flag (defect 1)")
+			}
+			if !it.ParentIsLastInGroup {
+				t.Errorf("p's window row has ParentIsLastInGroup=false, but p is last in its group")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected window rows for p (2 cached windows) to be injected into flatItems")
+	}
+}
+
+// TestWindowRowsInheritParentIsLast_RemoteSessionsNotApplicable documents,
+// per the internal/ui RemoteSession coverage guideline, that this test needs
+// no RemoteSession case: RecomputeTreeConnectors only reads/writes
+// ItemTypeGroup and ItemTypeSession rows (tree_connectors.go:10-12) and
+// passes every other row type, including ItemTypeRemoteSession, through
+// untouched. Remote rows get their own IsLastInGroup from
+// remote_tree.go:159 and render through renderRemoteSessionItemAtWidth, a
+// path entirely separate from the window-injection logic this test
+// exercises. Mirrors TestDialogWidth_RemoteSessionsNotApplicable's
+// documented-skip convention.
+func TestWindowRowsInheritParentIsLast_RemoteSessionsNotApplicable(t *testing.T) {
+	t.Skip("not applicable: RecomputeTreeConnectors and window-row flag inheritance never touch ItemTypeRemoteSession rows (tree_connectors.go:10-12, remote_tree.go:159)")
+}
+
+// TestWindowRows_LastVisibleSubSession_ArchivedSiblingsAfter_NoDanglingBar:
+// tmux-window rows injected under the last VISIBLE sub-session, which has
+// archived siblings created after it, must not carry a dangling │ (G3): the
+// window row's connector comes from the parent row's own IsLastSubSession,
+// not unconditionally from IsLastInGroup (which is always false for a
+// sub-session).
+func TestWindowRows_LastVisibleSubSession_ArchivedSiblingsAfter_NoDanglingBar(t *testing.T) {
+	home := NewHome()
+	home.width, home.height = 120, 40
+	home.initialLoading = false
+
+	p := session.NewInstanceWithTool("p", "/tmp/p", "claude")
+	p.GroupPath = "alpha"
+	p.Status = session.StatusIdle
+
+	s1 := session.NewInstanceWithTool("s1", "/tmp/s1", "claude") // sole live child, created first
+	s1.GroupPath = "alpha"
+	s1.Status = session.StatusIdle
+	s1.SetParent(p.ID)
+
+	tmuxName := s1.GetTmuxSession().Name
+	tmux.SeedWindowCacheForTest(t, map[string][]tmux.WindowInfo{
+		tmuxName: {{Index: 0, Name: "w0"}, {Index: 1, Name: "w1"}},
+	})
+
+	instances := []*session.Instance{p, s1}
+	for i := 0; i < 2; i++ {
+		archived := session.NewInstanceWithTool(fmt.Sprintf("archived-%d", i), "/tmp/archived", "claude")
+		archived.GroupPath = "alpha"
+		archived.Status = session.StatusIdle
+		archived.SetParent(p.ID)
+		archived.ArchivedAt = time.Now()
+		instances = append(instances, archived) // raw order: created after s1
+	}
+
+	home.instancesMu.Lock()
+	home.instances = instances
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(instances)
+	home.rebuildFlatItems()
+
+	found := false
+	for _, it := range home.flatItems {
+		if it.Type == session.ItemTypeWindow && it.WindowSessionID == s1.ID && it.WindowIndex == 1 {
+			found = true
+			if !it.IsLastInGroup {
+				t.Errorf("s1's last window row has IsLastInGroup=false, but s1 is the last VISIBLE " +
+					"sub-session (2 archived siblings created after it) → dangling │ under └─ (G3)")
+			}
+			if !it.ParentIsLastInGroup {
+				t.Errorf("s1's window row has ParentIsLastInGroup=false, but s1 is last in its segment")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected window rows for s1 (2 cached windows) to be injected into flatItems")
 	}
 }

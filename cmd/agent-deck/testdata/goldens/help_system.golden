@@ -1,0 +1,4 @@
+Usage: agent-deck system <subcommand>
+
+Subcommands:
+  stats    Print this host's CPU/memory/disk/load snapshot

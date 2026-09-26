@@ -76,21 +76,9 @@ func loadCodexOwnership(socket string) codexOwnershipSnapshot {
 	snapshot.refreshing = make(chan struct{})
 	codexOwnershipCache.bySocket[socket] = snapshot
 	codexOwnershipCache.Unlock()
-	var bySession map[string]string
-	names, err := tmux.ListAgentDeckSessionsOnSocket(socket)
-	if err == nil {
-		bySession = make(map[string]string, len(names))
-		for _, name := range names {
-			peer := &tmux.Session{Name: name, SocketName: socket}
-			id, err := peer.ReadEnvironment("CODEX_SESSION_ID")
-			if err != nil {
-				bySession = nil
-				break
-			}
-			if id != "" {
-				bySession[name] = id
-			}
-		}
+	bySession, err := tmux.ListAgentDeckCodexSessionIDsOnSocket(socket)
+	if err != nil {
+		bySession = nil
 	}
 	// Only a complete enumeration is usable for bootstrap. Publications still
 	// survive successful refreshes that read an older environment value.

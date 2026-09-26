@@ -1,0 +1,5 @@
+terminal_width=80 list_width=28
+▶ ▾ alpha (3)
+  ▶└─ ○ a genuinely long s…
+  ▶└─ ○ thorny-sky
+  ▶└─ ○ a useful fo… [for…]

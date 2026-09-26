@@ -1,0 +1,5 @@
+Usage: agent-deck skill list [options]
+
+List discoverable skills from configured global sources.
+
+Options:

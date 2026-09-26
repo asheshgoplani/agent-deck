@@ -41,13 +41,14 @@ func updateTrigger(flagValue string) string {
 
 // updateCheckJSON is the --check --json document.
 type updateCheckJSON struct {
-	Current     string             `json:"current"`
-	Latest      string             `json:"latest"`
-	Available   bool               `json:"available"`
-	Publishing  string             `json:"publishing,omitempty"`
-	AutoInstall bool               `json:"auto_install"`
-	AutoRestart bool               `json:"auto_restart"`
-	Timer       update.TimerStatus `json:"timer"`
+	Current           string             `json:"current"`
+	Latest            string             `json:"latest"`
+	Available         bool               `json:"available"`
+	Publishing        string             `json:"publishing,omitempty"`
+	AutoInstall       bool               `json:"auto_install"`
+	AutoRestart       bool               `json:"auto_restart"`
+	AutoUpdateRemotes bool               `json:"auto_update_remotes"`
+	Timer             update.TimerStatus `json:"timer"`
 	// OnDisk is the version of the binary at this executable's path (what
 	// a TUI restarts into); RunningTUIs lists every TUI with a heartbeat,
 	// outdated when it runs something older than OnDisk, with the reason
@@ -74,6 +75,7 @@ func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettin
 		Publishing:          info.PublishingVersion,
 		AutoInstall:         settings.GetAutoInstall(),
 		AutoRestart:         settings.GetAutoRestart(),
+		AutoUpdateRemotes:   settings.GetAutoUpdateRemotes(),
 		Timer:               timer,
 		OnDisk:              onDisk,
 		RunningTUIs:         tuis,

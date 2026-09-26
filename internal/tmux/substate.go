@@ -37,6 +37,13 @@ const (
 	// answer (#2185).
 	SubstateInteractiveMenu Substate = "interactive-menu"
 
+	// SubstateBackgroundWork marks a Claude session sitting at its input
+	// prompt with run_in_background shells or a Monitor still alive ("N
+	// shells still running" / "· N shells ·" in the footer). The turn is
+	// done and the session is waiting for input; the shells are context, not
+	// activity. See background_work.go for why this is not "running".
+	SubstateBackgroundWork Substate = "background-work"
+
 	// SubstateModelUnavailable marks the Fable-down no-op loop: the model
 	// reports unavailable ("X is currently unavailable", "Crunched for 0s")
 	// and the session cannot make progress despite looking alive. The single
@@ -198,6 +205,9 @@ func (d *PromptDetector) classifyClaudeSubstate(content string) Substate {
 	if d.hasClaudePrompt(content) {
 		if hasOpenInteractiveMenu(content) {
 			return SubstateInteractiveMenu
+		}
+		if claudeBackgroundShellsPending(content) {
+			return SubstateBackgroundWork
 		}
 		return SubstateIdleAtEmptyPrompt
 	}

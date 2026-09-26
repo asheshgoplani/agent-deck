@@ -1,0 +1,24 @@
+Usage: agent-deck web [options]
+
+Start the TUI with web UI server running alongside.
+
+Options:
+Examples:
+  agent-deck web
+  agent-deck -p work web --listen 127.0.0.1:9000
+  agent-deck web --read-only
+  agent-deck web --push
+  agent-deck web --push --push-test-every 10s
+  agent-deck web --no-tui                 # headless, perf win
+  agent-deck web --no-tui --listen 127.0.0.1:9000
+  agent-deck web --listen 0.0.0.0:8420 --token secret  # expose to LAN (token REQUIRED)
+  agent-deck web --listen 0.0.0.0:8420 --token-file ~/.config/agent-deck/web-token
+
+Security: the server binds loopback (127.0.0.1) by default. Binding a
+non-loopback address without --token or --token-file is refused — it would
+expose an unauthenticated remote-code-execution surface. Override with
+--insecure-bind (unsafe) only when you understand the risk.
+--token-file must be a regular file that is not group- or world-accessible
+(chmod 600); it keeps the secret out of argv, where any local user can read
+it from /proc. MCP administration over HTTP is only wired when a token is
+configured — an unauthenticated server keeps those routes unavailable.

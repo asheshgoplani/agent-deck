@@ -1,0 +1,2 @@
+No named account slots configured.
+Add one as [profiles.<name>.claude].config_dir in <SANDBOX_HOME>/.config/agent-deck/config.toml.

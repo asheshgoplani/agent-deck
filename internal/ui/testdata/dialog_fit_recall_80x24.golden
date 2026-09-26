@@ -1,0 +1,22 @@
+
+
+  ╭────────────────────────────╮╭────────────────────────────────────────────╮
+  │ 🔍 Recall                  ││ 📄 recall-hit-00                           │
+  │ refreshing the index       ││ claude  aaaaaaaa-000                       │
+  │ (bounded: 150 ms / 32 MB   ││ 📁 /Users/x/proj                           │
+  │ per pass)...               ││                                            │
+  │                            ││ loading turns...                           │
+  │ ╭────────────────────────╮ ││                                            │
+  │ │ > Search every conv…   │ ││                                            │
+  │ ╰────────────────────────╯ ││                                            │
+  │                            ││                                            │
+  │   0 matching message(s)    ││                                            │
+  │   › recall-hit-00          ││                                            │
+  │     claude • 1 in body     ││                                            │
+  │     recall-hit-01          ││                                            │
+  │     recall-hit-02          ││                                            │
+  │ ▼ more below               ││                                            │
+  │                            ││                                            │
+  │ [Enter] Open  [Tab] Local  ││                                            │
+  │ [Esc] Cancel               ││                                            │
+  ╰────────────────────────────╯╰────────────────────────────────────────────╯

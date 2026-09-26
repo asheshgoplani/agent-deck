@@ -1,0 +1,9 @@
+Runtime health
+  Budgets: status pass <250 ms; descriptors <512; tmux calls <=2 per session; remote poll <2000 ms
+  runtime health unknown: no samples
+Profile store: <SANDBOX_HOME>/.local/share/agent-deck (xdg, reason=xdg_only)
+  legacy <SANDBOX_HOME>/.agent-deck: no profiles
+  xdg    <SANDBOX_HOME>/.local/share/agent-deck: 6 sessions (goldens=6) [active]
+Codex notify hooks not installed (content detection only); run 'CODEX_HOME=<SANDBOX_HOME>/.codex agent-deck codex-hooks install'
+Named Claude account directories:
+No named Claude account slots configured.

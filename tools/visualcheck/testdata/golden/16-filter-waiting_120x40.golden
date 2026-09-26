@@ -1,0 +1,40 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                     <version>
+  Waiting   ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+SESSIONS                                   │ PREVIEW
+────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
+▶ ▾ alpha (7) ● 1 ◐ 1                      │ 📁 alpha
+   └─ ◐ claude-waiting claude              │
+2·▾ beta (4) ◐ 1                           │ 4 sessions
+   └─ ◐ claude-i18n claude                 │
+                                           │ ◐ 1 waiting  ■ 2 stopped  ✕ 1 error
+                                           │
+                                           │ ────────────────────────────── Sessions ──────────────────────────────
+                                           │   ■ opencode-idle opencode
+                                           │   ✕ claude-idle claude
+                                           │   ◐ claude-waiting claude
+                                           │   ■ claude-stopped claude
+                                           │
+                                           │ Tab toggle • r rename • d delete • g subgroup
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Group:  Tab  Toggle  n/N  New  g  Grp │  r  Rename  d  Delete  ↑↓ Nav │ ? Help │ +/- Move │ / Search │ G Global │ q Quit

@@ -28,16 +28,16 @@ func homeWithSession(inst *session.Instance) *Home {
 	return h
 }
 
-// Test 1: Stopped session preview contains "Session Stopped" header
-func TestPreviewPane_Stopped_HasSessionStoppedHeader(t *testing.T) {
+// Test 1: A stopped session can follow a clean process exit.
+func TestPreviewPane_Stopped_HasProcessExitedHeader(t *testing.T) {
 	inst := session.NewInstance("stopped-session", t.TempDir())
 	inst.Status = session.StatusStopped
 
 	h := homeWithSession(inst)
 	rendered := h.renderPreviewPane(80, 30)
 
-	if !strings.Contains(rendered, "Session Stopped") {
-		t.Fatalf("expected 'Session Stopped' in stopped-session preview\nrendered=%q", rendered)
+	if !strings.Contains(rendered, "Process Exited") {
+		t.Fatalf("expected 'Process Exited' in stopped-session preview\nrendered=%q", rendered)
 	}
 	if strings.Contains(rendered, "Session Inactive") {
 		t.Fatalf("stopped-session preview should not contain 'Session Inactive'\nrendered=%q", rendered)
@@ -80,7 +80,7 @@ func TestPreviewPane_Error_PromotesRestartBesideStateLine(t *testing.T) {
 	}
 }
 
-// Test 3: Stopped session preview contains user-intentional language
+// Test 3: Stopped session preview preserves recovery guidance without claiming intent.
 func TestPreviewPane_Stopped_HasResumeOrientedText(t *testing.T) {
 	inst := session.NewInstance("stopped-resume", t.TempDir())
 	inst.Status = session.StatusStopped
@@ -92,14 +92,11 @@ func TestPreviewPane_Stopped_HasResumeOrientedText(t *testing.T) {
 		t.Fatalf("stopped-session preview should contain 'stopped'\nrendered=%q", rendered)
 	}
 
-	// Must have intentional/user-oriented language
-	hasIntentionalLanguage := strings.Contains(rendered, "intentionally") ||
-		strings.Contains(rendered, "by user") ||
-		strings.Contains(rendered, "preserved") ||
-		strings.Contains(rendered, "resuming")
-
-	if !hasIntentionalLanguage {
-		t.Fatalf("stopped-session preview should contain user-intentional language (intentionally/by user/preserved/resuming)\nrendered=%q", rendered)
+	if strings.Contains(rendered, "intentionally") || strings.Contains(rendered, "by user") {
+		t.Fatalf("stopped-session preview must not claim user intent\nrendered=%q", rendered)
+	}
+	if !strings.Contains(rendered, "preserved") || !strings.Contains(rendered, "Resume") {
+		t.Fatalf("stopped-session preview should retain recovery guidance\nrendered=%q", rendered)
 	}
 }
 

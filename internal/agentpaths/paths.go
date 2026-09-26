@@ -321,3 +321,14 @@ func CachePath(name string) (string, error) {
 	}
 	return filepath.Join(cacheDir, cleanName), nil
 }
+
+// ProfileRuntimeDir returns "<data dir>/runtime/profiles/<profile>", the
+// per-profile directory for sockets and owner locks (the profile daemon's
+// socket lives here). It creates nothing. profile must be one path segment.
+func ProfileRuntimeDir(profile string) (string, error) {
+	name, err := cleanLocal(profile)
+	if err != nil || name != filepath.Base(name) {
+		return "", fmt.Errorf("invalid profile name: %q", profile)
+	}
+	return EffectiveDataPath(filepath.Join("runtime", "profiles", name), "runtime")
+}

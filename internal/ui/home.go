@@ -258,6 +258,7 @@ type Home struct {
 	storage            *session.Storage
 	groupTree          *session.GroupTree
 	flatItems          []session.Item // Flattened view for cursor navigation
+	keepEmptyFilter    bool           // Set by filter key presses; restored filters retain the old fallback.
 	liveSet            *pipeLiveSet   // sessions that should hold a live control pipe
 	focusedSessionName string         // tmux name of the cursor-selected session (focusMu)
 	focusMu            sync.Mutex     // protects focusedSessionName for the reconciler goroutine
@@ -404,7 +405,17 @@ type Home struct {
 	// Round-robin status updates (Priority 1A optimization)
 	// Instead of updating ALL sessions every tick, we update batches of 5-10 sessions
 	// This reduces CPU usage by 90%+ while maintaining responsiveness
-	statusUpdateIndex atomic.Int32 // Current position in round-robin cycle (atomic for thread safety)
+	statusUpdateIndex     atomic.Int32 // Current position in round-robin cycle (atomic for thread safety)
+	fullStatusUpdateIndex atomic.Int32 // Next session in the periodic status sweep
+	// sweepVisibleIDs is the UI tick's latest view of which session rows are
+	// on screen; the periodic sweep refreshes those every pass, outside the
+	// rotation budget, so a visible row is never older than one sweep.
+	sweepVisibleMu  sync.Mutex
+	sweepVisibleIDs map[string]bool
+	// sweepEvidence records, per instance, the hook/SSE evidence the sweep
+	// last applied. A row whose evidence moved since is refreshed on the next
+	// pass regardless of rotation. Touched only by backgroundStatusUpdate.
+	sweepEvidence map[string]session.StatusEvidence
 	// Visible-row round-robin state (#1753): with a large group expanded the
 	// visible set approaches fleet size, so "always refresh every visible row"
 	// degenerates into the same per-row storm the off-screen batching exists to
@@ -420,7 +431,7 @@ type Home struct {
 	// Moves status updates to a separate goroutine, completely decoupling from UI
 	statusTrigger       chan statusUpdateRequest // Triggers background status update
 	statusWorkerDone    chan struct{}            // Signals worker has stopped
-	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last full background status sweep
+	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last periodic status batch (legacy field name)
 	lastPersistedStatus map[string]string        // instanceID -> last status written to SQLite
 	// lastPersistedAutoNameDesc tracks the last auto-name description written to
 	// SQLite per instance, so the background loop only issues a targeted write
@@ -525,6 +536,11 @@ type Home struct {
 	// for ("" when none); autoInstallAttempts is when each version was last
 	// tried, so a failure is not retried every check.
 	autoInstallInFlight string
+	// autoInstallProgress is the remote-phase progress of that run (nil
+	// when none); restartQueued is set by a restart key press that arrived
+	// while it ran: the restart fires as soon as the run ends (restart.go).
+	autoInstallProgress *update.UnattendedProgress
+	restartQueued       bool
 	autoInstallAttempts map[string]time.Time
 	// restartWaitReason is why the last tick did not restart into the
 	// newer build ("" when it could); restartOverdueReason is the same
@@ -737,6 +753,11 @@ type Home struct {
 	// disk, discarding the just-applied mutation. These are re-applied after
 	// the reload (mirrors pendingTitleChanges for session renames).
 	pendingGroupOps []pendingGroupOp
+
+	// Duplicate-row warning throttle and dump-error latch (flat_items_dump.go).
+	dupWarnKey    string
+	dupWarnAt     time.Time
+	dumpErrLogged bool
 
 	// UI state persistence across restarts
 	pendingCursorRestore *uiState // Consumed on first loadSessionsMsg to restore cursor
@@ -2095,7 +2116,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.remotePolls = session.LoadRemotePolls()
 
 	// Apply default_filter from config if no filter was restored from persisted state.
-	// Auto-clears if no sessions match (handled in rebuildFlatItems).
+	// Restored and configured filters fall back to All when nothing matches.
 	if h.statusFilter == "" && h.defaultFilter != "" {
 		h.statusFilter = session.Status(h.defaultFilter)
 	}
@@ -2155,6 +2176,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		})
 		tmux.SetPipeManager(pm)
 		pm.SetWantPipe(func(name string) bool { return h.liveSet.want(name) })
+		pm.SetSharedViewOverrides(session.SharedViewOverrides)
 
 		go h.livePipeReconciler()
 		go h.statusWorker()
@@ -3314,8 +3336,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 			}
 		}
-		// Auto-clear filter if it matches nothing but sessions exist
-		if len(filtered) == 0 && len(allItems) > 0 {
+		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter {
 			h.statusFilter = ""
 			h.flatItems = allItems
 		} else {
@@ -3377,8 +3398,8 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 				hasCandidates = true
 				if h.timeFilter.Matches(inst.DisplayLastActivityTime(), now) {
-					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
 					hasMatches = true
+					h.recordTimeFilterExpiry(inst.DisplayLastActivityTime(), now)
 					markGroupPathAndAncestors(groupsWithMatches, group.Path)
 				}
 			}
@@ -3387,14 +3408,14 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			for _, remote := range sessions {
 				hasCandidates = true
 				if remoteMatchesTime(remote) {
+					hasMatches = true
 					if activity, known := remote.LastActivity(); known {
 						h.recordTimeFilterExpiry(activity, now)
 					}
-					hasMatches = true
 				}
 			}
 		}
-		if hasCandidates && !hasMatches {
+		if hasCandidates && !hasMatches && !h.keepEmptyFilter {
 			h.timeFilter = session.TimeFilterAll
 		} else {
 			filtered := make([]session.Item, 0, len(h.flatItems))
@@ -3433,37 +3454,13 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
 	}
 
-	// Recompute IsLastInGroup on the final visible list. GroupTree.Flatten sets
-	// it over a group's full session list (archived sessions included), but the
-	// archived/status filtering and view-mode partitioning above can drop or
-	// reorder the trailing rows — leaving the flag on a session that is no longer
-	// visually last, so the last VISIBLE row renders ├─ instead of └─ (seen when
-	// a group's trailing sessions are archived). A group's session rows share the
-	// group's Path; walking backwards, the first row seen for a Path is the true
-	// last row of that group's current segment. Only top-level sessions drive the
-	// └─ connector (sub-sessions use IsLastSubSession), so only they are rewritten
-	// here. Runs before window injection so injected windows inherit the flag.
-	seenLaterRowInGroup := make(map[string]bool)
-	for i := len(h.flatItems) - 1; i >= 0; i-- {
-		it := &h.flatItems[i]
-		if it.Type == session.ItemTypeGroup {
-			// A group header starts a fresh segment for its Path. View-mode
-			// partitioning can duplicate a header and split one group's rows into
-			// separate top/bottom sections that each end with their own └─, so a
-			// later section's "seen" must not leak backward across the header into
-			// an earlier section of the same Path.
-			delete(seenLaterRowInGroup, it.Path)
-			continue
-		}
-		if it.Type != session.ItemTypeSession || it.Session == nil {
-			continue
-		}
-		isLastRow := !seenLaterRowInGroup[it.Path]
-		seenLaterRowInGroup[it.Path] = true
-		if !it.IsSubSession {
-			it.IsLastInGroup = isLastRow
-		}
-	}
+	// Recompute IsLastInGroup, IsLastSubSession and ParentIsLastInGroup on the
+	// final visible list. GroupTree.Flatten sets them over a group's full
+	// session list (archived sessions included), but the archived/status
+	// filtering and view-mode partitioning above can drop or reorder the
+	// trailing rows. Runs before window injection so injected windows inherit
+	// the corrected flags.
+	h.flatItems = session.RecomputeTreeConnectors(h.flatItems)
 
 	// Inject window items after sessions that have 2+ windows
 	if len(h.flatItems) > 0 {
@@ -3483,6 +3480,15 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				continue
 			}
 
+			// A window hangs off the row above it, so it takes that row's own
+			// "am I last" flag: IsLastSubSession for a sub-session row,
+			// IsLastInGroup for a top-level row. Reading IsLastInGroup
+			// unconditionally left a dangling │ under the last visible
+			// sub-session's windows (R4).
+			parentIsLast := item.IsLastInGroup
+			if item.IsSubSession {
+				parentIsLast = item.IsLastSubSession
+			}
 			for winIdx, win := range wins {
 				expanded = append(expanded, session.Item{
 					Type:                session.ItemTypeWindow,
@@ -3495,8 +3501,8 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 					Path:                item.Path,
 					IsWindow:            true,
 					IsLastWindow:        winIdx == len(wins)-1,
-					IsLastInGroup:       item.IsLastInGroup && winIdx == len(wins)-1,
-					ParentIsLastInGroup: item.IsLastInGroup,
+					IsLastInGroup:       parentIsLast && winIdx == len(wins)-1,
+					ParentIsLastInGroup: parentIsLast,
 				})
 			}
 		}
@@ -3558,22 +3564,22 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	}
 
 	// Pre-compute root group numbers for O(1) hotkey lookup (replaces O(n) loop in renderGroupItem).
-	// View-mode partitioning can duplicate root headers; every copy of the same
-	// logical root reuses the same digit.
+	// View-mode partitioning can duplicate root headers; only the first copy
+	// owns the logical root's digit.
 	rootNum := 0
-	rootNums := make(map[string]int)
+	seenRoots := make(map[string]bool)
 	for i := range h.flatItems {
 		if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Level == 0 {
 			rootKey := h.flatItems[i].Path
 			if rootKey == "" && h.flatItems[i].Group != nil {
 				rootKey = h.flatItems[i].Group.Path
 			}
-			if n, ok := rootNums[rootKey]; ok {
-				h.flatItems[i].RootGroupNum = n
+			if seenRoots[rootKey] {
+				h.flatItems[i].RootGroupNum = 0
 				continue
 			}
 			rootNum++
-			rootNums[rootKey] = rootNum
+			seenRoots[rootKey] = true
 			h.flatItems[i].RootGroupNum = rootNum
 		}
 	}
@@ -3625,6 +3631,9 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	}
 	// Adjust viewport if cursor is out of view
 	h.syncViewport()
+
+	h.checkFlatItemsUnique()
+	h.dumpFlatItems()
 
 	// Publish an updated web snapshot when menu structure/session list changes.
 	h.publishWebMenuSnapshot()
@@ -3716,21 +3725,27 @@ func (h *Home) syncViewport() {
 		h.viewOffset = 0
 	}
 
+	// Measure once, then remove one row as the viewport advances. Recounting
+	// the entire remaining span at every offset made a jump to the end of a
+	// large embedded list quadratic in the number of sessions.
+	toCursorHeight := h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth, rowLines)
 	for h.viewOffset < h.cursor {
 		effectiveBudget := lineBudget
 		if h.viewOffset > 0 {
 			effectiveBudget--
 		}
 		effectiveBudget = max(1, effectiveBudget)
-		if h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, h.cursor+1, sidebarWidth, rowLines) <= effectiveBudget {
+		if toCursorHeight <= effectiveBudget {
 			break
 		}
+		toCursorHeight -= h.sidebarItemRenderHeightAtWidthLines(h.flatItems[h.viewOffset], sidebarWidth, rowLines)
 		h.viewOffset++
 	}
 
 	// Scroll back up only to reclaim blank space at the end of the list
 	// (after removals or a resize). Measuring to the end of the list — not
 	// the cursor — keeps the viewport still while the cursor moves within it.
+	toEndHeight := h.sidebarItemsHeightWithLines(h.flatItems, h.viewOffset, len(h.flatItems), sidebarWidth, rowLines)
 	for h.viewOffset > 0 {
 		candidate := h.viewOffset - 1
 		effectiveBudget := lineBudget
@@ -3738,10 +3753,12 @@ func (h *Home) syncViewport() {
 			effectiveBudget--
 		}
 		effectiveBudget = max(1, effectiveBudget)
-		if h.sidebarItemsHeightWithLines(h.flatItems, candidate, len(h.flatItems), sidebarWidth, rowLines) > effectiveBudget {
+		candidateHeight := toEndHeight + h.sidebarItemRenderHeightAtWidthLines(h.flatItems[candidate], sidebarWidth, rowLines)
+		if candidateHeight > effectiveBudget {
 			break
 		}
 		h.viewOffset = candidate
+		toEndHeight = candidateHeight
 	}
 }
 
@@ -3957,26 +3974,19 @@ func (h *Home) getVisibleHeight() int {
 	return maxVisible
 }
 
-// jumpToRootGroup jumps the cursor to the Nth root-level group (1-indexed)
-// Root groups are those at Level 0 (no "/" in path)
+// jumpToRootGroup jumps to the root header carrying the requested digit.
 func (h *Home) jumpToRootGroup(n int) {
 	if n < 1 || n > 9 {
 		return
 	}
 
-	// Find the Nth root group in flatItems
-	rootGroupCount := 0
 	for i, item := range h.flatItems {
-		if item.Type == session.ItemTypeGroup && item.Level == 0 {
-			rootGroupCount++
-			if rootGroupCount == n {
-				h.cursor = i
-				h.syncViewport()
-				return
-			}
+		if item.Type == session.ItemTypeGroup && item.Level == 0 && item.RootGroupNum == n {
+			h.cursor = i
+			h.syncViewport()
+			return
 		}
 	}
-	// If n exceeds available root groups, do nothing (no-op)
 }
 
 // Init initializes the model
@@ -5839,7 +5849,7 @@ type sessionRenderState struct {
 	account        string // Stored slot; empty means inherited, not a login identity.
 	accountDisplay accountPresentation
 	title          string // Instance.Title at snapshot time
-	autoName       bool   // session displays a captured/live task description
+	autoName       bool   // session may show a captured/live task description as a suffix
 	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
 	// archivedSuperseded mirrors session.VisibleInstances' exclusion: true
 	// for an archived cross-harness source still superseded by a "Restart
@@ -5849,15 +5859,6 @@ type sessionRenderState struct {
 	archivedSuperseded bool
 }
 
-// displaySessionTitle returns the label to render for a session row. For an
-// auto-named quick session (AutoName) it returns, in order of preference: the
-// live Claude task description (paneTitle), the last description we persisted,
-// then the session's own Title. Non-auto-named sessions always return Title
-// (the CLI handle or a user/Claude-chosen name).
-//
-// paneTitle must already be cleaned by cleanPaneTitle: an empty paneTitle means
-// idle/just-started. The persisted-description fallback keeps the meaningful
-// name visible on reopen before the session resumes and re-emits a live title.
 // shouldPersistAutoNameDesc decides whether the background status loop should
 // write a new task description for an auto-named session, given the live
 // (already-cleaned) pane title and the value last persisted for it. It returns
@@ -5873,18 +5874,8 @@ func shouldPersistAutoNameDesc(autoName bool, paneTitle, lastPersisted string) (
 	return paneTitle, true
 }
 
-func displaySessionTitle(inst *session.Instance, paneTitle string) string {
-	if inst.GetAutoName() {
-		// Prefer the live task description; fall back to the last one we
-		// persisted so the name still shows on reopen when the session is
-		// stopped/idle (no live pane title); finally fall back to the handle.
-		if paneTitle != "" {
-			return paneTitle
-		}
-		if desc := inst.GetAutoNameDescription(); desc != "" {
-			return desc
-		}
-	}
+// displaySessionTitle keeps the session name as the primary label.
+func displaySessionTitle(inst *session.Instance, _ string) string {
 	return inst.Title
 }
 
@@ -5893,44 +5884,32 @@ func displaySessionTitle(inst *session.Instance, paneTitle string) string {
 // background UpdateStatus writer (#1753; see the field comments on
 // sessionRenderState). The overview row renderer must use this form.
 func displaySessionTitleFromState(state sessionRenderState) string {
-	if state.autoName {
-		if state.paneTitle != "" {
-			return state.paneTitle
-		}
-		if state.autoNameDesc != "" {
-			return state.autoNameDesc
-		}
-	}
 	return state.title
 }
 
-// sessionDisplayLabels returns the primary title and the optional dim secondary
-// subtitle to render for a session row, given its live pane title (already
-// cleaned by cleanPaneTitle). Both render paths — the overview
-// (renderSessionItem) and the session switcher (SessionSwitcher.View) — go
-// through this so the two cannot drift apart again: an auto-named session
-// promotes the live/persisted Claude task description to the primary title and
-// shows no subtitle (it would only duplicate the title); every other session
-// keeps its handle/name as the title and surfaces the pane title as the dim
-// subtitle. The subtitle is empty when there is nothing to show. Callers may
-// layer extra visibility policy on the subtitle — the overview, for instance,
-// only renders it for the selected row or when showPaneTitles is enabled.
+// sessionDisplayLabels keeps the session name first, with a useful pane or
+// saved task description as an optional dim suffix. Both overview and switcher
+// use this ordering.
 func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subtitle string) {
 	title = displaySessionTitle(inst, paneTitle)
-	if !inst.GetAutoName() {
-		subtitle = paneTitle
+	subtitle = paneTitle
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && subtitle == tmuxSess.Name {
+		subtitle = ""
+	}
+	if inst.GetAutoName() && subtitle == "" {
+		subtitle = cleanPaneTitle(inst.GetAutoNameDescription())
 	}
 	return title, subtitle
 }
 
 // sessionDisplayLabelsFromState is the lock-free form of sessionDisplayLabels,
-// reading everything from the render snapshot (#1753). Same policy: an
-// auto-named session promotes the task description to the title and shows no
-// subtitle; everything else keeps its handle and shows the pane title dim.
+// reading everything from the render snapshot (#1753). Auto-named sessions
+// show a live or saved task description after the name.
 func sessionDisplayLabelsFromState(state sessionRenderState) (title, subtitle string) {
 	title = displaySessionTitleFromState(state)
-	if !state.autoName {
-		subtitle = state.paneTitle
+	subtitle = state.paneTitle
+	if state.autoName && subtitle == "" {
+		subtitle = cleanPaneTitle(state.autoNameDesc)
 	}
 	return title, subtitle
 }
@@ -5949,7 +5928,10 @@ func cleanPaneTitle(title string) string {
 	})
 	cleaned = strings.TrimSpace(cleaned)
 	switch cleaned {
-	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+	case "", "Claude Code", "Gemini CLI", "Codex CLI", "bash", "zsh", "fish", "sh":
+		return ""
+	}
+	if host, err := os.Hostname(); err == nil && strings.EqualFold(cleaned, host) {
 		return ""
 	}
 	return cleaned
@@ -6053,6 +6035,9 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
 				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+				if state.paneTitle == tmuxSess.Name {
+					state.paneTitle = ""
+				}
 			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
 				if prevState, hadPrev := prev[inst.ID]; hadPrev {
 					state.paneTitle = prevState.paneTitle
@@ -6257,6 +6242,80 @@ func shouldPollStatusInLoop(inst *session.Instance) bool {
 	return inst != nil && !inst.IsArchived()
 }
 
+const fullStatusBatchSize = 32
+
+// Why a row is polled ahead of the rotation budget.
+type sweepRowReason int
+
+const (
+	sweepRowVisible  sweepRowReason = iota + 1 // on screen or focused
+	sweepRowEvidence                           // hook/SSE evidence moved since last applied
+)
+
+// noteSweepVisibleRows records the on-screen session rows for the periodic
+// sweep. Called on the UI goroutine with each status tick request.
+func (h *Home) noteSweepVisibleRows(req statusUpdateRequest) {
+	visible := make(map[string]bool, req.visibleHeight)
+	for i := req.viewOffset; i < len(req.flatItemIDs) && i < req.viewOffset+req.visibleHeight; i++ {
+		visible[req.flatItemIDs[i]] = true
+	}
+	h.sweepVisibleMu.Lock()
+	h.sweepVisibleIDs = visible
+	h.sweepVisibleMu.Unlock()
+}
+
+// sweepPriorityRows selects the rows the periodic sweep must poll on this
+// pass regardless of the rotation budget, keyed by index into instances, and
+// returns the evidence snapshot the sweep records for every row it polls.
+// A row seen for the first time is only recorded: a cold start with hook
+// files on disk for hundreds of stopped rows must not turn into one unbounded
+// pass. Rows that stop being tracked are forgotten.
+func (h *Home) sweepPriorityRows(instances []*session.Instance) (map[int]sweepRowReason, map[string]session.StatusEvidence) {
+	h.sweepVisibleMu.Lock()
+	visible := h.sweepVisibleIDs
+	h.sweepVisibleMu.Unlock()
+	h.focusMu.Lock()
+	focused := h.focusedSessionName
+	h.focusMu.Unlock()
+	if h.sweepEvidence == nil {
+		h.sweepEvidence = make(map[string]session.StatusEvidence, len(instances))
+	}
+
+	forced := make(map[int]sweepRowReason)
+	evidence := make(map[string]session.StatusEvidence, len(instances))
+	tracked := make(map[string]bool, len(instances))
+	for idx, inst := range instances {
+		if !h.shouldSweepInstance(inst) {
+			continue
+		}
+		tracked[inst.ID] = true
+		ev := inst.StatusEvidence()
+		evidence[inst.ID] = ev
+		prev, seen := h.sweepEvidence[inst.ID]
+		if !seen {
+			h.sweepEvidence[inst.ID] = ev
+		} else if ev != prev {
+			forced[idx] = sweepRowEvidence
+			continue
+		}
+		if visible[inst.ID] {
+			forced[idx] = sweepRowVisible
+			continue
+		}
+		if focused != "" {
+			if ts := inst.GetTmuxSession(); ts != nil && ts.Name == focused {
+				forced[idx] = sweepRowVisible
+			}
+		}
+	}
+	for id := range h.sweepEvidence {
+		if !tracked[id] {
+			delete(h.sweepEvidence, id)
+		}
+	}
+	return forced, evidence
+}
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -6440,8 +6499,24 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 	}
 
-	// Update status for all instances in parallel (I/O bound: tmux subprocess calls)
-	// With PipeManager, skip sessions idle for >5s (no %output events = no status change)
+	// Two tiers per periodic pass. Tier one, unbudgeted but screen-bounded:
+	// every visible or focused row, and every row whose hook/SSE evidence
+	// moved since the sweep last applied it, so a Stop or a permission prompt
+	// renders on the next tick rather than when its rotation slot comes up.
+	// Tier two, budgeted: a fixed-size slice of the remaining fleet. A
+	// full-fleet pass launched hundreds of probes when the list held stopped
+	// or disconnected sessions, starving tmux and status readers; the budget
+	// bounds that tail without delaying the rows that just changed.
+	forced, evidence := h.sweepPriorityRows(instances)
+	startIndex := 0
+	if len(instances) > 0 {
+		startIndex = int(h.fullStatusUpdateIndex.Load()) % len(instances)
+	}
+	nextIndex := startIndex
+	scheduled := 0
+
+	// Update the selected sessions in parallel. With PipeManager, skip sessions
+	// idle for >5s (no %output events = no status change).
 	statusStart := time.Now()
 	var statusChanged atomic.Bool
 	var slowMu sync.Mutex
@@ -6455,33 +6530,19 @@ func (h *Home) backgroundStatusUpdate() {
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
-	for _, inst := range instances {
-		inst := inst // capture loop variable
-
-		// Skip archived sessions: their tmux pane is torn down and their row
-		// status is display-frozen (rowStatusGlyph forces the stopped glyph
-		// regardless of Status), so UpdateStatus can only burn a serialized tmux
-		// subprocess without changing anything the UI shows. With a large archive
-		// backlog this dominated the loop (observed: 723 archived of 742 total
-		// pushed the sweep to multi-second spikes). Unarchiving runs its own
-		// refresh, so the periodic loop never needs to poll archived sessions.
-		if !h.shouldSweepInstance(inst) {
-			skipped++
-			continue
+	pipeIdle := func(inst *session.Instance) bool {
+		if pm == nil {
+			return false
 		}
-
-		// Skip idle sessions when PipeManager knows they haven't produced output.
-		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
-		if pm != nil {
-			if ts := inst.GetTmuxSession(); ts != nil && pm.IsConnected(ts.Name) {
-				lastOut := pm.LastOutputTime(ts.Name)
-				if !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second {
-					skipped++
-					continue
-				}
-			}
+		ts := inst.GetTmuxSession()
+		if ts == nil || !pm.IsConnected(ts.Name) {
+			return false
 		}
-
+		lastOut := pm.LastOutputTime(ts.Name)
+		return !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second
+	}
+	poll := func(inst *session.Instance) {
+		h.sweepEvidence[inst.ID] = evidence[inst.ID]
 		g.Go(func() error {
 			oldStatus := inst.GetStatusThreadSafe()
 			instStart := time.Now()
@@ -6510,7 +6571,55 @@ func (h *Home) backgroundStatusUpdate() {
 			return nil
 		})
 	}
-	_ = g.Wait() // Errors are logged within each goroutine
+
+	// Tier one. A row with moved evidence is polled even when its pipe is
+	// quiet: the hook is the newer signal. A merely visible row keeps the
+	// pipe-idle skip, its pipe events refresh it.
+	for idx, why := range forced {
+		inst := instances[idx]
+		if why == sweepRowVisible && pipeIdle(inst) {
+			skipped++
+			continue
+		}
+		poll(inst)
+	}
+
+	// Tier two: the rotation.
+	for scan := 0; scan < len(instances); scan++ {
+		idx := (startIndex + scan) % len(instances)
+		inst := instances[idx]
+
+		// Skip archived sessions: their tmux pane is torn down and their row
+		// status is display-frozen (rowStatusGlyph forces the stopped glyph
+		// regardless of Status), so UpdateStatus can only burn a serialized tmux
+		// subprocess without changing anything the UI shows. With a large archive
+		// backlog this dominated the loop (observed: 723 archived of 742 total
+		// pushed the sweep to multi-second spikes). Unarchiving runs its own
+		// refresh, so the periodic loop never needs to poll archived sessions.
+		if !h.shouldSweepInstance(inst) || forced[idx] != 0 {
+			if forced[idx] == 0 {
+				skipped++
+			}
+			nextIndex = (idx + 1) % len(instances)
+			continue
+		}
+		if scheduled == fullStatusBatchSize {
+			skipped += len(instances) - scan
+			break
+		}
+		scheduled++
+		nextIndex = (idx + 1) % len(instances)
+
+		// Skip idle sessions when PipeManager knows they haven't produced output.
+		// Only skip if pipe is alive (otherwise we need UpdateStatus for Error detection).
+		if pipeIdle(inst) {
+			skipped++
+			continue
+		}
+		poll(inst)
+	}
+	h.fullStatusUpdateIndex.Store(int32(nextIndex)) // #nosec G115 -- bounded by instance count
+	_ = g.Wait()                                    // Errors are logged within each goroutine
 
 	statusDur := time.Since(statusStart)
 	tracker.tickEnd(statusStart, time.Now())
@@ -6900,6 +7009,7 @@ func (h *Home) triggerStatusUpdate() {
 		visibleHeight: visibleHeight,
 		flatItemIDs:   flatItemIDs,
 	}
+	h.noteSweepVisibleRows(req)
 
 	// Non-blocking send - if worker is busy, skip this tick
 	select {
@@ -10758,15 +10868,16 @@ func (h *Home) handleNotesEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return h, cmd
 }
 
-// overlayJumpHint places a badge-style hint label at the item name position.
-func (h *Home) overlayJumpHint(line string, hint string, buffer string, itemName string) string {
+// overlayJumpHint paints the hint in the row gutter.
+func (h *Home) overlayJumpHint(line string, hint string, buffer string) string {
+	return h.overlayJumpHintAtWidth(line, hint, buffer, h.width)
+}
+
+func (h *Home) overlayJumpHintAtWidth(line string, hint string, buffer string, width int) string {
 	if hint == "" {
 		return line
 	}
-
-	offset := findNameOffset(line, itemName)
-	visibleLen := lipgloss.Width(line)
-	if visibleLen < offset+len(hint) {
+	if cellWidth(line) < leftGutterWidth {
 		return line
 	}
 
@@ -10782,7 +10893,10 @@ func (h *Home) overlayJumpHint(line string, hint string, buffer string, itemName
 		}
 	}
 
-	return replaceVisibleRange(line, offset, len(hint), hintRendered)
+	if len(hint) > leftGutterWidth {
+		return cellTruncate(hintRendered+" "+ansi.Cut(line, leftGutterWidth, cellWidth(line)), width, "")
+	}
+	return replaceVisibleRange(line, 0, leftGutterWidth, hintRendered+strings.Repeat(" ", leftGutterWidth-len(hint)))
 }
 
 // jumpItemName returns the display name for an item, used to locate hint badge position.
@@ -11751,8 +11865,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// MCP Manager — Claude, Gemini, and Cursor Agent CLI
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil &&
-				session.ToolSupportsMCPManager(item.Session.Tool) {
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				if !session.ToolSupportsMCPManager(item.Session.Tool) {
+					h.setError(fmt.Errorf("MCP management is not supported for tool %q", item.Session.Tool))
+					return h, nil
+				}
 				h.mcpDialog.SetSize(h.width, h.height)
 				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
 					h.setError(err)
@@ -12495,6 +12612,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 't' view-mode cycle above.
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.timeFilter = session.TimeFilterMode((int(h.timeFilter) + 1) % session.TimeFilterModeCount)
+		h.keepEmptyFilter = true
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 		h.syncViewport()
 		h.saveUIState()
@@ -12641,6 +12759,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				return h, h.openContextInspector(item.Session)
+			}
+			// The inspector reads the harness transcript from local files; a
+			// remote row has none here, and a per-open SSH call would add remote
+			// load (#2332). Say so instead of silently doing nothing.
+			if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				h.setError(fmt.Errorf("context inspector: not available for remote sessions yet"))
 			}
 		}
 		return h, nil
@@ -12834,11 +12958,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "0":
 		// Clear status filter (show all)
 		h.statusFilter = ""
+		h.keepEmptyFilter = true
 		h.rebuildFlatItems()
 		return h, nil
 
 	case "!", "shift+1":
 		// Filter to running sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusRunning {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12849,6 +12975,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "@", "shift+2":
 		// Filter to waiting sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusWaiting {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12859,6 +12986,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "#", "shift+3":
 		// Filter to idle sessions only
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusIdle {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12879,6 +13007,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case FilterKeyError, "shift+7":
 		// Filter to error sessions only.
+		h.keepEmptyFilter = true
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12889,6 +13018,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case FilterKeyActive, "shift+5":
 		// Filter to open sessions (excludes error/stopped)
+		h.keepEmptyFilter = true
 		if h.statusFilter == FilterModeActive {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -12898,6 +13028,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case FilterKeyArchived, "shift+6":
+		h.keepEmptyFilter = true
 		if h.statusFilter == FilterModeArchived {
 			h.statusFilter = ""
 		} else {
@@ -15956,6 +16087,7 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	// Pre-populate dialog with source session info
 	conductors := h.activeConductorSessions()
 	suggestedParentID := h.suggestConductorParent()
+	h.forkDialog.SetSize(h.width, h.height)
 	h.forkDialog.ShowWithParentSandboxed(source.Title, source.ProjectPath, source.GroupPath, conductors, suggestedParentID, source.IsSandboxed())
 	return nil
 }
@@ -18178,7 +18310,7 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		if state.archivedSuperseded {
 			continue
 		}
-		switch state.status {
+		switch statusBucket(state.status) {
 		case session.StatusRunning:
 			running++
 		case session.StatusWaiting:
@@ -18207,17 +18339,24 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		if state, known := h.remotePolls[name]; h.remoteFromCache[name] || (known && state.LastPollStatus != "ok") {
 			continue
 		}
+		// A snapshot older than remoteRowStaleAge renders dimmed; its
+		// running rows must not feed the green pill either.
+		age, known := h.remoteRowAgeLocked(name)
+		stale := known && age >= remoteRowStaleAge
 		for _, rs := range sessions {
-			switch rs.Status {
-			case "running":
+			switch statusBucket(session.Status(rs.Status)) {
+			case session.StatusRunning:
+				if stale {
+					continue
+				}
 				running++
-			case "waiting":
+			case session.StatusWaiting:
 				waiting++
-			case "idle":
+			case session.StatusIdle:
 				idle++
-			case "stopped":
+			case session.StatusStopped:
 				stopped++
-			case "error":
+			case session.StatusError:
 				errored++
 			}
 		}
@@ -18247,11 +18386,6 @@ func (h *Home) renderFilterBar() string {
 		Bold(true).
 		Padding(0, 1)
 
-	inactivePillStyle := lipgloss.NewStyle().
-		Foreground(ColorText).
-		Background(ColorSurface).
-		Padding(0, 1)
-
 	dimPillStyle := lipgloss.NewStyle().
 		Foreground(ColorText).
 		Faint(true).
@@ -18260,24 +18394,15 @@ func (h *Home) renderFilterBar() string {
 	// Build pills
 	var pills []string
 
-	// "All" / "Open" pill
+	// The first pill names the selected status even when its count pill is
+	// farther to the right than a narrow terminal can show.
 	isActive := h.statusFilter == FilterModeActive
-	activeLabel := h.activeFilterLabel
-	if activeLabel == "" {
-		activeLabel = "Open"
-	}
-	// "All" is shorter than "Open" — pad with a trailing space outside the pill
-	// so toggling doesn't shift the bar, without extending the highlight.
-	allPad := ""
-	if len(activeLabel) > len("All") {
-		allPad = " "
-	}
-	if isActive {
-		pills = append(pills, activePillStyle.Render(activeLabel))
-	} else if h.statusFilter == "" {
-		pills = append(pills, activePillStyle.Render("All")+allPad)
+	filterLabel := h.statusFilterLabel()
+	// Keep the existing All-pill spacing in the default view.
+	if h.statusFilter != "" {
+		pills = append(pills, activePillStyle.Render(filterLabel))
 	} else {
-		pills = append(pills, inactivePillStyle.Render("All")+allPad)
+		pills = append(pills, activePillStyle.Render("All")+" ")
 	}
 
 	runningLabel := fmt.Sprintf("● %d", running)
@@ -18383,10 +18508,34 @@ func (h *Home) renderFilterBar() string {
 		Render(pillsRow + hint)
 }
 
+func (h *Home) statusFilterLabel() string {
+	switch h.statusFilter {
+	case FilterModeActive:
+		if h.activeFilterLabel != "" {
+			return h.activeFilterLabel
+		}
+		return "Open"
+	case FilterModeArchived:
+		return "Archived"
+	case session.StatusRunning:
+		return "Running"
+	case session.StatusWaiting:
+		return "Waiting"
+	case session.StatusIdle:
+		return "Idle"
+	case session.StatusStopped:
+		return "Stopped"
+	case session.StatusError:
+		return "Error"
+	default:
+		return "All"
+	}
+}
+
 // fitFilterBarHint fits as many leading filter-bar hint segments as possible
 // into the space remaining after usedWidth (the pills already rendered),
-// dropping low-priority segments from the end (view mode, then time range,
-// then archived, ...) when the full hint would overflow h.width. A trailing
+// dropping legend segments before selected modes when the full hint would
+// overflow h.width. A trailing
 // ellipsis is appended only when a segment was actually dropped, and the cut
 // always lands on a "• " boundary rather than mid-word.
 func (h *Home) fitFilterBarHint(usedWidth int) string {
@@ -18982,22 +19131,31 @@ func (h *Home) renderFrame() string {
 	// CRITICAL: Use ensureExactHeight for robust, consistent output across all platforms
 	// This is the single source of truth for output height - guarantees exactly h.height lines
 	// regardless of component content, ANSI codes, or terminal differences
-	rendered := clampViewToViewport(b.String(), h.width, h.height)
-
-	// #1410: when the inline prompt input is open, overlay it at the bottom of
-	// the (already viewport-clamped) list so the operator types without
-	// attaching. Rendered last so it sits above the status line.
-	if h.promptInputDialog.IsVisible() {
-		rendered = h.promptInputDialog.View(rendered)
+	content := b.String()
+	if h.promptInputDialog.IsVisible() || h.sessionSwitcher.IsVisible() {
+		// Overlays compose on rows already fitted to the viewport, and the
+		// composite then goes through the same final clamp as every frame
+		// (#2334), so their rows get the same width safety net and exactly
+		// one auto-wrap off/on bracket each.
+		// The final clamp fits these rows a second time; fitting is
+		// idempotent, so only the overlay rows change.
+		content = fitViewportRows(content, h.width, h.height)
+		// #1410: when the inline prompt input is open, overlay it at the
+		// bottom of the list so the operator types without attaching.
+		// Rendered last so it sits above the status line.
+		if h.promptInputDialog.IsVisible() {
+			content = h.promptInputDialog.View(content)
+		}
+		// Keep the session list and preview visible while Ctrl+S is open.
+		// The card is anchored to the left edge of the active-session area,
+		// immediately beside the sidebar in a dual layout, so the current
+		// sidebar selection remains visible and spatially close to the
+		// choices.
+		if h.sessionSwitcher.IsVisible() {
+			content = h.renderSessionSwitcherOverlay(content)
+		}
 	}
-	// Keep the session list and preview visible while Ctrl+S is open. The card
-	// is anchored to the left edge of the active-session area, immediately
-	// beside the sidebar in a dual layout, so the current sidebar selection
-	// remains visible and spatially close to the choices.
-	if h.sessionSwitcher.IsVisible() {
-		rendered = h.renderSessionSwitcherOverlay(rendered)
-	}
-	return rendered
+	return clampViewToViewport(content, h.width, h.height)
 }
 
 // sessionSwitcherOverlayRegion returns the active-session portion of the
@@ -19056,10 +19214,25 @@ func (h *Home) renderSessionSwitcherOverlay(background string) string {
 	if card == "" {
 		return background
 	}
+	// Pad short card lines to the border. Separate a preview rule only where
+	// it actually touches the border; a fixed extra cell can erase "Output".
+	cardWidth := lipgloss.Width(card)
 	cardHeight := lipgloss.Height(card)
 	y := region.Y + max((region.Height-cardHeight)/2, 0)
-	composite := overlayAtCells(background, card, y, region.X)
-	return clampViewToViewport(composite, h.width, h.height)
+	cardLines := strings.Split(card, "\n")
+	backgroundLines := strings.Split(background, "\n")
+	for i, line := range cardLines {
+		cardLines[i] = line + strings.Repeat(" ", max(0, cardWidth-cellWidth(line)))
+		if row := y + i; cardWidth < region.Width && row >= 0 && row < len(backgroundLines) {
+			next := ansi.Strip(ansi.Cut(backgroundLines[row], region.X+cardWidth, region.X+cardWidth+1))
+			if next == "─" {
+				cardLines[i] += " "
+			}
+		}
+	}
+	card = strings.Join(cardLines, "\n")
+	// View runs the composite through the final clampViewToViewport.
+	return overlayAtCells(background, card, y, region.X)
 }
 
 // overlayAtCells paints overlay over base at terminal-cell coordinates. The
@@ -19277,9 +19450,11 @@ func renderShutdownSplash(width, height int, frame int, subtitle string) string 
 
 // EmptyStateConfig holds content for responsive empty state rendering
 type EmptyStateConfig struct {
-	Icon     string
-	Title    string
-	Subtitle string
+	Icon                string
+	Title               string
+	Subtitle            string
+	ShowSubtitleMinimal bool // Keep the selected filter visible in a narrow list card.
+	ShowAllHintsMinimal bool // Combined filters need both recovery keys in the list card.
 	// Body is extra plain (non-bulleted) lines shown between Subtitle and
 	// Hints, one per element, in "full" and "compact" tiers only (dropped in
 	// "minimal", same as Subtitle). Unset by every caller except the remote
@@ -19368,7 +19543,7 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 	content.WriteString(titleStyle.Render(config.Title))
 
 	// Subtitle - shown in full and compact modes
-	if config.Subtitle != "" && tier != "minimal" {
+	if config.Subtitle != "" && (tier != "minimal" || config.ShowSubtitleMinimal) {
 		content.WriteString("\n")
 		// Truncate subtitle if width is tight
 		subtitle := config.Subtitle
@@ -19405,7 +19580,11 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 
 	// Hints - progressive disclosure based on tier
 	if len(config.Hints) > 0 {
-		hintsToShow := config.Hints[:emptyStateHintCount(tier, len(config.Hints))]
+		hintCount := emptyStateHintCount(tier, len(config.Hints))
+		if tier == "minimal" && config.ShowAllHintsMinimal {
+			hintCount = len(config.Hints)
+		}
+		hintsToShow := config.Hints[:hintCount]
 
 		if tier == "full" {
 			content.WriteString("\n\n")
@@ -19437,6 +19616,51 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 
 	// Ensure exact height
 	return ensureExactHeight(rendered, height)
+}
+
+// filteredEmptyState describes an empty view without treating it as a new workspace.
+func (h *Home) filteredEmptyState() (EmptyStateConfig, bool) {
+	if h.statusFilter == FilterModeArchived {
+		hints := []string{FilterKeyArchived + " back to active"}
+		if key := h.actionKey(hotkeyArchiveSession); key != "" {
+			hints = append(hints, key+" archives a session")
+		}
+		return EmptyStateConfig{
+			Icon:     "◇",
+			Title:    "No archived sessions",
+			Subtitle: "Archive a session to see it here",
+			Hints:    hints,
+		}, true
+	}
+	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		return EmptyStateConfig{}, false
+	}
+	parts := make([]string, 0, 2)
+	if h.statusFilter != "" {
+		parts = append(parts, h.statusFilterLabel())
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		parts = append(parts, h.timeFilter.Label())
+	}
+	hints := make([]string, 0, 2)
+	if h.statusFilter != "" {
+		hints = append(hints, "0 show all")
+	}
+	timeKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeKey == "" {
+		timeKey = "*"
+	}
+	if h.timeFilter != session.TimeFilterAll {
+		hints = append(hints, timeKey+" time range")
+	}
+	return EmptyStateConfig{
+		Icon:                "◇",
+		Title:               "No sessions match",
+		Subtitle:            strings.Join(parts, " · "),
+		ShowSubtitleMinimal: true,
+		ShowAllHintsMinimal: true,
+		Hints:               hints,
+	}, true
 }
 
 // ensureExactHeight is a critical helper that ensures any content has EXACTLY n lines.
@@ -19476,6 +19700,17 @@ func ensureExactHeight(content string, n int) string {
 // This is the final safety net against any component returning an unexpected
 // extra line or a line that still exceeds the viewport width.
 func clampViewToViewport(content string, width, height int) string {
+	return clampRows(content, width, height, true)
+}
+
+// fitViewportRows is clampViewToViewport without the per-row auto-wrap
+// toggles: the base overlays are composed on before the final clamp, which
+// must be the only place a row gets its ?7l/?7h bracket (#2334).
+func fitViewportRows(content string, width, height int) string {
+	return clampRows(content, width, height, false)
+}
+
+func clampRows(content string, width, height int, autoWrapOff bool) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
@@ -19491,7 +19726,7 @@ func clampViewToViewport(content string, width, height int) string {
 
 	const sgrReset = "\x1b[0m"
 	var rendered strings.Builder
-	rendered.Grow(len(content) + len(lines)*2*len(sgrReset))
+	rendered.Grow(len(content) + len(lines)*(2*len(sgrReset)+len(ansi.ResetModeAutoWrap)+len(ansi.SetModeAutoWrap)))
 
 	for i, line := range lines {
 		// #937 v2: cellWidth/cellTruncate (not ansi.*) so this final
@@ -19526,8 +19761,25 @@ func clampViewToViewport(content string, width, height int) string {
 		// scrolling the header off the alternate screen. Every row starts at
 		// column 0 here, so per-row expansion lands on the same stops the
 		// terminal would use.
+		//
+		// #2334: fitTerminalRow instead of fitCellWidth so a complex-script
+		// row (Devanagari vowel signs, ZWJ emoji) fits under the per code
+		// point width convention too, and every row runs with auto-wrap off
+		// (DECAWM) and switches it back on at its own end. A row that is still
+		// wider on some terminal is clipped at the right margin instead of
+		// wrapping onto the next screen row, which would shift every later row
+		// against Bubble Tea's line-diff model and leave the duplicated,
+		// interleaved preview blocks of the report on screen. Restoring per
+		// row keeps auto-wrap on between writes, so no exit, suspend, attach
+		// or crash path can leave it off in the user's shell.
 		rendered.WriteString(sgrReset)
-		rendered.WriteString(fitCellWidth(expandTabs(line), width))
+		if autoWrapOff {
+			rendered.WriteString(ansi.ResetModeAutoWrap)
+		}
+		rendered.WriteString(fitTerminalRow(expandTabs(line), width))
+		if autoWrapOff {
+			rendered.WriteString(ansi.SetModeAutoWrap)
+		}
 		rendered.WriteString(sgrReset)
 	}
 
@@ -20300,26 +20552,25 @@ func (h *Home) renderHelpBarCompact() string {
 		}
 	}
 
-	leftPart := strings.Join(contextHints, " ")
 	rightPart := strings.Join(globalHints, " ")
-	// Drop lowest-priority entries as whole units — context hints first (the
-	// rarer, more optional per-item actions), then global hints from the
-	// tail. MaxWidth alone can truncate a label halfway through instead of
-	// dropping a full entry, which is what used to leave a key glued onto
-	// whatever text survived truncation.
-	for lipgloss.Width(leftPart)+lipgloss.Width(rightPart)+6 > h.width {
-		if len(contextHints) > 0 {
-			contextHints = contextHints[:len(contextHints)-1]
-			leftPart = strings.Join(contextHints, " ")
-			continue
-		}
-		if len(globalHints) > 1 {
-			globalHints = globalHints[:len(globalHints)-1]
-			rightPart = strings.Join(globalHints, " ")
-			continue
-		}
-		break
+	for len(globalHints) > 1 && lipgloss.Width(rightPart)+6 > h.width {
+		globalHints = globalHints[:len(globalHints)-1]
+		rightPart = strings.Join(globalHints, " ")
 	}
+	// A long optional hint must not block a shorter later one from using
+	// the gap between the context and global blocks.
+	kept := make([]string, 0, len(contextHints))
+	for _, hint := range contextHints {
+		candidate := strings.Join(kept, " ")
+		if candidate != "" {
+			candidate += " "
+		}
+		candidate += hint
+		if lipgloss.Width(candidate)+lipgloss.Width(rightPart)+6 <= h.width {
+			kept = append(kept, hint)
+		}
+	}
+	leftPart := strings.Join(kept, " ")
 	padding := max(2, h.width-lipgloss.Width(leftPart)-lipgloss.Width(rightPart)-4)
 
 	content := leftPart + sep + strings.Repeat(" ", padding) + rightPart
@@ -20550,8 +20801,9 @@ func (h *Home) renderHelpBarFull() string {
 	if key := h.actionKey(hotkeySettings); key != "" {
 		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Settings"))
 	}
-	if key := h.actionKey(hotkeyHelp); key != "" {
-		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Help"))
+	helpKey := h.actionKey(hotkeyHelp)
+	if helpKey != "" {
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(helpKey+" Help"))
 	}
 
 	leftPrefix := contextLabel
@@ -20559,7 +20811,7 @@ func (h *Home) renderHelpBarFull() string {
 		leftPrefix = reloadIndicator + sep + leftPrefix
 	}
 
-	helpContent := h.fitFullFooter(fullFooterParts{
+	parts := fullFooterParts{
 		leftPrefix: leftPrefix,
 		primary:    primaryHints,
 		secondary:  secondaryHints,
@@ -20567,7 +20819,29 @@ func (h *Home) renderHelpBarFull() string {
 		nav:        navHint,
 		droppable:  droppableGlobal,
 		quit:       quitHint,
-	})
+	}
+	helpContent := h.fitFullFooter(parts)
+	// Keep the original order where Help already fits. On crowded 120-column
+	// rows, shorter labels make room for Help without losing existing actions.
+	if h.width >= 120 && h.width < 160 && helpKey != "" && !strings.Contains(helpContent, helpKey+" Help") {
+		shorten := func(hints []string) {
+			for i, hint := range hints {
+				hint = strings.Replace(hint, "New/Quick", "New", 1)
+				hint = strings.Replace(hint, "Restart Fresh", "Fresh", 1)
+				hint = strings.Replace(hint, "Enter", "⏎", 1)
+				hint = strings.Replace(hint, "Import", "Add", 1)
+				hint = strings.Replace(hint, "Group", "Grp", 1)
+				hints[i] = hint
+			}
+		}
+		shorten(primaryHints)
+		shorten(secondaryHints)
+		parts.nav += sep + droppableGlobal[len(droppableGlobal)-1]
+		parts.droppable = droppableGlobal[:len(droppableGlobal)-1]
+		parts.primary = primaryHints
+		parts.secondary = secondaryHints
+		helpContent = h.fitFullFooter(parts)
+	}
 
 	raw := lipgloss.JoinVertical(lipgloss.Left, border, helpContent)
 	return lipgloss.NewStyle().MaxWidth(h.width).Render(raw)
@@ -20595,7 +20869,7 @@ type fullFooterParts struct {
 //
 // It tries, in order: (1) the full left block with progressively fewer
 // droppable global hints, dropped lowest-priority-first (from the end of
-// droppable, i.e. Help before Settings before ...); (2) once even the bare
+// droppable, i.e. Help before Settings before ... when Help is not reserved); (2) once even the bare
 // Nav+Quit global block doesn't fit alongside the full left block,
 // progressively fewer context hints — also dropped lowest-priority-first,
 // i.e. from the end of secondary then the end of primary — with a trailing
@@ -20956,6 +21230,12 @@ func (h *Home) renderSessionList(width, height int) string {
 		if contentHeight < 5 {
 			contentHeight = 5
 		}
+		if config, filtered := h.filteredEmptyState(); filtered {
+			return lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Render(renderEmptyStateResponsive(config, contentWidth, contentHeight))
+		}
 
 		// Group-scoped empty state
 		if h.groupScope != "" {
@@ -21047,21 +21327,19 @@ func (h *Home) renderSessionList(width, height int) string {
 				nextItem = i + 1
 				continue
 			}
-			// Render item to temp buffer, then overlay hint badge at name position
+			// Render item to temp buffer, then paint the fixed row gutter.
 			var itemBuf strings.Builder
 			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot, width)
 			raw := itemBuf.String()
 			isMatch := h.jumpBuffer == "" || strings.HasPrefix(hint, h.jumpBuffer)
 
 			if isMatch {
-				// Get the display name for this item type
-				itemName := jumpItemName(item)
 				// Overlay hint on the first line, preserve rest exactly
 				if idx := strings.Index(raw, "\n"); idx >= 0 {
-					b.WriteString(h.overlayJumpHint(raw[:idx], hint, h.jumpBuffer, itemName))
+					b.WriteString(h.overlayJumpHintAtWidth(raw[:idx], hint, h.jumpBuffer, width))
 					b.WriteString(raw[idx:]) // includes \n and any subsequent lines
 				} else {
-					b.WriteString(h.overlayJumpHint(raw, hint, h.jumpBuffer, itemName))
+					b.WriteString(h.overlayJumpHintAtWidth(raw, hint, h.jumpBuffer, width))
 				}
 			} else {
 				// Non-matching: render normally (no dimming to preserve layout)
@@ -21221,13 +21499,24 @@ func (h *Home) renderGroupItem(
 	listWidth int,
 ) {
 	group := item.Group
+	groupName := group.Name
+	if h.groupViewMode == session.GroupViewActiveTop {
+		for i := 0; i < itemIndex && i < len(h.flatItems); i++ {
+			if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Path == item.Path {
+				groupName += " (idle)"
+				break
+			}
+		}
+	}
 
 	// Fixed-width hotkey gutter, reserved on every row (see leftGutterWidth). It
 	// holds the root group's hotkey number ("N·") when present; otherwise blanks.
 	// Keeping it a constant width means the number no longer eats a level of
 	// indentation, so a numbered root and its children stay properly nested.
 	gutter := strings.Repeat(" ", leftGutterWidth)
-	if item.Level == 0 && !selected && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
+	if selected {
+		gutter = SessionSelectionPrefix.Render("▶ ")
+	} else if item.Level == 0 && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
 		gutter = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
 	}
 
@@ -21264,7 +21553,11 @@ func (h *Home) renderGroupItem(
 	stats := groupStats[group.Path]
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
 	if h.compactEmbeddedSidebar() {
-		row := indent + expandIcon + " " + nameStyle.Render(group.Name) + countStr
+		prefix := ""
+		if selected {
+			prefix = gutter
+		}
+		row := prefix + indent + expandIcon + " " + nameStyle.Render(groupName) + countStr
 		row = fitCellWidth(row, max(1, listWidth))
 		if selected {
 			row = lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface).Render(row)
@@ -21288,7 +21581,7 @@ func (h *Home) renderGroupItem(
 		gutter,
 		indent,
 		expandIcon,
-		nameStyle.Render(group.Name),
+		nameStyle.Render(groupName),
 		countStr,
 		statusStr,
 	)
@@ -21528,6 +21821,9 @@ func (h *Home) renderSessionItem(
 	}
 
 	tool := toolStyle.Render(" " + instTool)
+	if listWidth > 0 && listWidth < 40 {
+		tool = ""
+	}
 
 	// Supervisor badge for the maestro row.
 	maestroBadge := ""
@@ -21664,12 +21960,8 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Auto-named quick sessions display Claude's live task description (the
-	// tmux pane title) in place of the random handle. instState.paneTitle is
-	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
-	// paneTitle) falls back to the handle automatically. paneSubtitle is the dim
-	// trailing pane title for non-auto-named rows ("" when auto-named, since the
-	// pane title is already promoted to displayTitle) — see sessionDisplayLabels.
+	// The session name stays first. A useful pane or saved task description is
+	// the optional dim suffix, including for auto-named quick sessions.
 	// Snapshot form only here: the per-row Instance.mu reads the inst-based
 	// form does can block behind a mid-sweep UpdateStatus writer for seconds,
 	// scaling with visible rows (#1753 black-screen).
@@ -21693,6 +21985,24 @@ func (h *Home) renderSessionItem(
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
 		cellWidth(agentBadge) + cellWidth(timestampBadge)
+	// Keep a useful title before spending narrow-row space on a worktree badge.
+	if listWidth > 0 && listWidth < 40 && worktreeBadge != "" {
+		originalWidth := cellWidth(worktreeBadge)
+		badgeWidth := max(0, listWidth-(reserved-originalWidth)-minSessionTitleWidth-1)
+		if originalWidth > badgeWidth {
+			badge := ""
+			if badgeWidth >= 4 {
+				branch := strings.TrimSuffix(strings.TrimPrefix(stripAnsi(worktreeBadge), " ["), "]")
+				badge = " [" + cellTruncate(branch, badgeWidth-3, "…") + "]"
+			}
+			if selected {
+				worktreeBadge = SessionStatusSelStyle.Render(badge)
+			} else {
+				worktreeBadge = lipgloss.NewStyle().Foreground(ColorCyan).Render(badge)
+			}
+			reserved = reserved - originalWidth + cellWidth(badge)
+		}
+	}
 	// Reserve the title's floor before the viewers and account badges claim
 	// any of the remaining width, so a narrow column shrinks and then drops
 	// the badges instead of collapsing the title (#2201). The viewers badge
@@ -21762,9 +22072,7 @@ func (h *Home) renderSessionItem(
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
 	if (selected || h.showPaneTitles) && paneSubtitle != "" {
-		// paneSubtitle is non-empty only for non-auto-named rows (auto-named rows
-		// promote the pane title to displayTitle), so the auto-name guard that
-		// used to sit here is folded into the snapshot-based label helper.
+		// The snapshot label helper has already omitted generic pane titles.
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
@@ -21887,6 +22195,9 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 
 		versionState, _ := h.remoteVersionState(item.RemoteName)
 		statsResult, hasStats := h.remoteHostStatsState(item.RemoteName)
+		h.remoteSessionsMu.RLock()
+		poll := h.remotePolls[item.RemoteName]
+		h.remoteSessionsMu.RUnlock()
 		fields := session.DefaultRemotePreviewFields
 		if config != nil {
 			fields = config.UI.GetRemotePreviewFields()
@@ -21898,6 +22209,13 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 			Hints:    []string{"Press Enter on a session to attach via SSH"},
 		}
 		state.Body = remotePreviewFieldLines(versionState, Version, sessions, statsResult, hasStats, fields, time.Now(), emptyStateBodyLayout(state, width, height))
+		if poll.LastPollError != "" {
+			state.Subtitle = ""
+			state.Body = append([]string{
+				ErrorStyle.Render("Unreachable: " + poll.LastPollError),
+				fmt.Sprintf("Host: %s · %d sessions", host, count),
+			}, state.Body...)
+		}
 		return renderEmptyStateResponsive(state, width, height)
 	}
 
@@ -21919,6 +22237,16 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	if rs.Archived {
 		statusLabel = "archived"
 	}
+	// The preview mirrors the list row's freshness rule: it must never show
+	// a green "● running" for a remote whose poll failed or whose snapshot
+	// is stale (status-detection audit 2026-09-23).
+	if h.remotePollUnavailable(item.RemoteName) {
+		statusIcon, statusStyle = "?", DimStyle
+		statusLabel += " (last known)"
+	} else if age, stale := h.remoteRowStale(item.RemoteName); stale {
+		statusStyle = DimStyle
+		statusLabel += " (status " + formatRemoteAge(age) + " old)"
+	}
 	b.WriteString(statusStyle.Render(statusIcon + " " + statusLabel))
 	b.WriteString("\n\n")
 
@@ -21938,6 +22266,11 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 		unknownReason = remoteViewersUnknownReason(versionState, Version)
 	}
 	b.WriteString(dimStyle.Render("Viewers: ") + viewersText(remoteViewers, remoteViewersKnown, unknownReason, time.Now()) + "\n")
+	// Account usage comes from the host stats already polled for the group
+	// header, so this adds no SSH round trip.
+	if line := h.remoteAccountsLine(item.RemoteName, rs.Account, time.Now()); line != "" {
+		b.WriteString(dimStyle.Render(line) + "\n")
+	}
 	b.WriteString("\n")
 
 	pvKey := remotePreviewCacheKey(item.RemoteName, rs.ID)
@@ -22005,6 +22338,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		if h.remotePollUnavailable(item.RemoteName) {
 			counts.running, counts.waiting = 0, 0
 		}
+		_, stale := h.remoteRowStale(item.RemoteName)
 
 		segName := groupPath
 		if idx := strings.LastIndex(groupPath, "/"); idx >= 0 {
@@ -22017,7 +22351,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 			expandIcon,
 			nameStyle.Render(segName),
 			countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
-			remoteStatusSuffix(counts.running, counts.waiting),
+			remoteStatusSuffix(counts.running, counts.waiting, stale),
 		)
 		b.WriteString(truncateRemoteGroupLine(line, listWidth))
 		b.WriteString("\n")
@@ -22029,6 +22363,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 	if h.remotePollUnavailable(item.RemoteName) {
 		counts.running, counts.waiting = 0, 0
 	}
+	_, stale := h.remoteRowStale(item.RemoteName)
 	h.remoteSessionsMu.RLock()
 	fromCache := h.remoteFromCache[item.RemoteName]
 	fetching := h.remotesFetchActive
@@ -22039,7 +22374,11 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 
 	trailer := h.renderRemoteLatencyMarker(item.RemoteName, selected)
 	if hasPoll && poll.LastPollError != "" {
-		trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
+		if listWidth > 0 && listWidth < 60 {
+			trailer = " " + ErrorStyle.Render("· "+poll.LastPollError)
+		} else {
+			trailer = " " + DimStyle.Render("· unreachable: "+poll.LastPollError)
+		}
 		if poll.LastPollStatus == "auth_failed" {
 			trailer += " " + DimStyle.Render("(paused; R retry)")
 		}
@@ -22057,7 +22396,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		trailer += " " + DimStyle.Render("· refreshing…")
 	}
 
-	if hasPoll && poll.LastPollMS != nil {
+	if hasPoll && poll.LastPollMS != nil && (poll.LastPollError == "" || listWidth == 0 || listWidth >= 60) {
 		trailer += " " + DimStyle.Render(fmt.Sprintf("· poll %dms", *poll.LastPollMS))
 	}
 	if selected && (!hasPoll || poll.LastPollStatus != "auth_failed") {
@@ -22070,7 +22409,7 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
 		renderRemoteVersionMarker(versionState, Version, selected), // #2164: drift marker, e.g. " v1.15.0 ↑"
-		remoteStatusSuffix(counts.running, counts.waiting),
+		remoteStatusSuffix(counts.running, counts.waiting, stale),
 		trailer,
 	)
 	b.WriteString(truncateRemoteGroupLine(line, listWidth))
@@ -22114,14 +22453,19 @@ func (h *Home) remoteHeaderCount(item session.Item) remoteHeaderCount {
 }
 
 // remoteStatusSuffix renders the same running/waiting glyph counts local
-// group headers show, for remote host and sub-group headers.
-func remoteStatusSuffix(running, waiting int) string {
+// group headers show, for remote host and sub-group headers. stale renders
+// them dimmed, like the rows of a snapshot older than remoteRowStaleAge.
+func remoteStatusSuffix(running, waiting int, stale bool) string {
+	runningStyle, waitingStyle := GroupStatusRunning, GroupStatusWaiting
+	if stale {
+		runningStyle, waitingStyle = DimStyle, DimStyle
+	}
 	out := ""
 	if running > 0 {
-		out += " " + GroupStatusRunning.Render(fmt.Sprintf("● %d", running))
+		out += " " + runningStyle.Render(fmt.Sprintf("● %d", running))
 	}
 	if waiting > 0 {
-		out += " " + GroupStatusWaiting.Render(fmt.Sprintf("◐ %d", waiting))
+		out += " " + waitingStyle.Render(fmt.Sprintf("◐ %d", waiting))
 	}
 	return out
 }
@@ -22180,6 +22524,18 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 	if h.embeddedLayout && listWidth >= embeddedCardMinWidth {
 		statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
+		// Same freshness rule as the classic row below: a failed/cached poll
+		// shows "?" and "last known"; a snapshot older than remoteRowStaleAge
+		// keeps its glyph but dims it and says how old it is. A green ● here
+		// was the one place a stale remote row still claimed a live session.
+		staleNote := ""
+		if h.remotePollUnavailable(item.RemoteName) {
+			statusIcon, statusStyle = "?", DimStyle
+			staleNote = " · last known"
+		} else if age, stale := h.remoteRowStale(item.RemoteName); stale {
+			statusStyle = DimStyle
+			staleNote = " · status " + formatRemoteAge(age) + " old"
+		}
 		indent := strings.Repeat("  ", max(0, item.Level-1))
 		marker := "  "
 		if selected {
@@ -22214,6 +22570,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if !h.compactSidebar {
 			secondText += " · " + item.RemoteName
 		}
+		secondText += staleNote
 		second := fitCellWidth(indent+"  ╰ "+secondText, max(1, listWidth))
 		if selected || embedded {
 			style := lipgloss.NewStyle().Foreground(ColorText).Background(ColorSurface)
@@ -22284,8 +22641,13 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		// its snapshot can be tens of seconds old by the time this row
 		// paints, with nothing above to say so. remotePollUnavailable only
 		// catches an outright failed/paused poll; this catches the row that
-		// is quietly stale despite the poll having gone fine.
+		// is quietly stale despite the poll having gone fine. The glyph is
+		// dimmed with it: a full-colour ● next to "status 47s old" still
+		// read as "running now" (status-detection audit 2026-09-23).
 		pendingStr = " " + DimStyle.Render(fmt.Sprintf("· status %s old", formatRemoteAge(age)))
+		if !selected {
+			sStyle = DimStyle
+		}
 	}
 	if item.RemoteSession != nil {
 		if verb, ok := h.remotePending[item.RemoteSession.ID]; ok {
@@ -22674,6 +23036,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
 		// Show different message when there are no sessions vs just no selection
 		if len(h.flatItems) == 0 {
+			if config, filtered := h.filteredEmptyState(); filtered {
+				return renderEmptyStateResponsive(config, width, height)
+			}
 			// Group-scoped empty preview
 			if h.groupScope != "" {
 				return renderEmptyStateResponsive(EmptyStateConfig{
@@ -23412,9 +23777,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		// PreviewModeBoth: use config settings (default)
 	}
 
-	// Special handling for stopped state - user-intentional stop with resume guidance
+	// A stopped status can also follow a clean process exit. Do not infer intent.
 	if selectedStatus == session.StatusStopped {
-		stoppedHeader := renderSectionDivider("Session Stopped", width-4)
+		stoppedHeader := renderSectionDivider("Process Exited", width-4)
 		b.WriteString(stoppedHeader)
 		b.WriteString("\n\n")
 
@@ -23422,9 +23787,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		dimStyle := lipgloss.NewStyle().Foreground(ColorText)
 		keyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 
-		b.WriteString(warnStyle.Render("■ Session stopped by user"))
+		b.WriteString(warnStyle.Render("■ Process exited"))
 		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render("You stopped this session intentionally."))
+		b.WriteString(dimStyle.Render("The process ended or was stopped."))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("The session record is preserved for resuming."))
 		b.WriteString("\n\n")
@@ -24236,7 +24601,7 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	// Status breakdown with inline badges
 	running, waiting, idle, stopped, errored := 0, 0, 0, 0, 0
 	for _, sess := range visibleSessions {
-		switch sess.Status {
+		switch statusBucket(sess.Status) {
 		case session.StatusRunning:
 			running++
 		case session.StatusWaiting:
@@ -25174,13 +25539,14 @@ func markGroupPathAndAncestors(groupsWithMatches map[string]bool, groupPath stri
 }
 
 // matchesStatusFilter reports whether status passes the current filter.
-// FilterModeActive consults [display].active_filter_excludes; concrete
-// filters require exact match.
+// FilterModeActive consults [display].active_filter_excludes (a status is
+// excluded when it or its statusBucket is); concrete filters match the
+// status's statusBucket, the bucket its row glyph and the pill count show.
 func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 	if filter == FilterModeActive {
-		return !h.activeFilterExcludes[status]
+		return !h.activeFilterExcludes[status] && !h.activeFilterExcludes[statusBucket(status)]
 	}
-	return status == filter
+	return statusBucket(status) == filter
 }
 
 // renderFilterBarHint returns the filter bar's keyboard-shortcut hint as
@@ -25202,8 +25568,38 @@ func (h *Home) renderFilterBarHint() []string {
 		}
 		return dim.Render(c)
 	}
+	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
+	if timeFilterKey == "" {
+		timeFilterKey = "*"
+	}
 
-	segs := []string{
+	// Selected modes lead the legend, so they survive its width budget.
+	var segs []string
+	if h.timeFilter != session.TimeFilterAll {
+		label := h.timeFilter.Label()
+		if h.width <= 80 {
+			switch h.timeFilter {
+			case session.TimeFilter3Days:
+				label = "3 days"
+			case session.TimeFilter7Days:
+				label = "7 days"
+			}
+		}
+		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+label))
+	}
+	if h.groupViewMode != session.GroupViewNormal {
+		label := h.groupViewMode.Label()
+		if h.width <= 80 {
+			switch h.groupViewMode {
+			case session.GroupViewActiveTop:
+				label = "Active top"
+			case session.GroupViewPopulatedTop:
+				label = "Populated top"
+			}
+		}
+		segs = append(segs, mark("t", true)+dim.Render(" "+label))
+	}
+	segs = append(segs, []string{
 		mark("!", h.statusFilter == session.StatusRunning) +
 			mark("@", h.statusFilter == session.StatusWaiting) +
 			mark("#", h.statusFilter == session.StatusIdle) +
@@ -25212,23 +25608,15 @@ func (h *Home) renderFilterBarHint() []string {
 		mark("0", h.statusFilter == "") + dim.Render(" all"),
 		mark(FilterKeyActive, h.statusFilter == FilterModeActive) + dim.Render(" open"),
 		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) + dim.Render(" archived"),
-	}
+	}...)
 
 	// View-mode indicator (running-on-top / populated-on-top), only when active.
-	if h.groupViewMode != session.GroupViewNormal {
-		segs = append(segs, mark("t", true)+dim.Render(" "+h.groupViewMode.Label()))
-	} else {
+	if h.groupViewMode == session.GroupViewNormal {
 		segs = append(segs, mark("t", false)+dim.Render(" view"))
 	}
 
 	// Time-range filter indicator (today / 3 days / 7 days), only when active.
-	timeFilterKey := h.actionKey(hotkeyCycleTimeFilter)
-	if timeFilterKey == "" {
-		timeFilterKey = "*"
-	}
-	if h.timeFilter != session.TimeFilterAll {
-		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+h.timeFilter.Label()))
-	} else {
+	if h.timeFilter == session.TimeFilterAll {
 		segs = append(segs, mark(timeFilterKey, false)+dim.Render(" time"))
 	}
 	return segs
@@ -25270,4 +25658,33 @@ func hookCleanupCmd(cleanup func(), done chan struct{}) tea.Cmd {
 		cleanup()
 		return nil
 	}
+}
+
+// remoteAccountsLine is the per-session preview's account usage line: the
+// session's own slot (rs.Account, "" = default) from the cached host stats,
+// with the poll age. Never blank: an unpolled host or older remote says so.
+func (h *Home) remoteAccountsLine(remoteName, account string, now time.Time) string {
+	result, ok := h.remoteHostStatsState(remoteName)
+	if !ok {
+		// No stats entry: either never polled or the remote cannot report
+		// them. Only blame the remote when it is known to be older.
+		versionState, _ := h.remoteVersionState(remoteName)
+		if versionState.Compare(Version) == session.RemoteVersionOlder {
+			return remoteStatsUnknownLine(versionState, Version)
+		}
+		return "accounts not polled yet"
+	}
+	if !result.Stats.AccountsAvailable {
+		return "accounts unknown (remote does not report accounts)"
+	}
+	slot := account
+	if slot == "" {
+		slot = "default"
+	}
+	for _, u := range result.Stats.Accounts {
+		if u.Name == slot {
+			return fmt.Sprintf("account   %s · polled %s", renderAccountUsageEntry(u, now), remoteStatsPolledLabel(result.FetchedAt))
+		}
+	}
+	return fmt.Sprintf("account unknown (slot %q not reported by remote)", slot)
 }

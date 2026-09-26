@@ -60,6 +60,45 @@ verify_download_checksum() {
     [[ -n "$actual" && "$expected" == "$actual" ]]
 }
 
+# extract_json_field reads a JSON body from stdin and prints every value of
+# field $1, one per line. Defined at top level so it and its callers are
+# unit-testable in isolation (see
+# internal/releasetests/issue2359_install_version_parse_test.go).
+#
+# The GitHub releases API returns its body as a single line (no
+# pretty-printing). A naive `grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/'`
+# therefore matches the WHOLE document, and the greedy `.*` in the sed
+# capture backtracks to the LAST quoted string on that line rather than the
+# value next to the field name — e.g. for "tag_name" that's the trailing
+# reactions object's "eyes" key, not the tag (#2359). Anchor on the field
+# name itself instead, and use grep -o (not a bare match) so every
+# occurrence on the line is captured, not just the first/last.
+extract_json_field() {
+    grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+# parse_latest_tag reads a `GET /repos/{repo}/releases/...` JSON body from
+# stdin and prints the release tag.
+parse_latest_tag() {
+    extract_json_field "tag_name" | head -1
+}
+
+# count_release_assets reads a release JSON body from stdin and prints how
+# many assets it has, counted via "browser_download_url" occurrences.
+# `grep -c` counts matching *lines*, not occurrences — on the single-line API
+# response every asset's URL shares one line, so it always reports 0 or 1
+# regardless of the real asset count. Use `grep -o | wc -l` to count
+# occurrences instead.
+count_release_assets() {
+    grep -o '"browser_download_url"' | wc -l | tr -d ' '
+}
+
+# extract_tarball_asset_names reads a release JSON body from stdin and prints
+# the "name" of every tarball/checksums asset, one per line.
+extract_tarball_asset_names() {
+    extract_json_field "name" | grep '\.tar\.gz\|checksums' || true
+}
+
 # Wrap in main() so the entire script is read before execution.
 # Without this, `curl | bash` can fail because `read` commands
 # consume script bytes from stdin, or hit EOF with set -e.
@@ -492,7 +531,7 @@ fi
 # Get version
 if [[ "$VERSION" == "latest" ]]; then
     echo -e "Fetching latest version..."
-    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | parse_latest_tag)
     if [[ -z "$VERSION" ]]; then
         echo -e "${RED}Error: Could not determine latest version${NC}"
         echo "Please specify a version with --version"
@@ -527,8 +566,8 @@ if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/agent-deck.tar.gz"; then
         ASSET_NAMES=$(echo "$RELEASE_JSON" | jq -r '.assets[].name // empty' 2>/dev/null || true)
         ASSET_COUNT=$(echo "$RELEASE_JSON" | jq '.assets | length' 2>/dev/null || echo "0")
     else
-        ASSET_NAMES=$(echo "$RELEASE_JSON" | grep '"name"' | sed 's/.*"name": *"\([^"]*\)".*/\1/' | grep '\.tar\.gz\|checksums' || true)
-        ASSET_COUNT=$(echo "$RELEASE_JSON" | grep -c '"browser_download_url"' || echo "0")
+        ASSET_NAMES=$(echo "$RELEASE_JSON" | extract_tarball_asset_names)
+        ASSET_COUNT=$(echo "$RELEASE_JSON" | count_release_assets)
     fi
 
     if [[ "$ASSET_COUNT" -eq 0 ]]; then

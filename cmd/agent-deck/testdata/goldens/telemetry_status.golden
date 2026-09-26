@@ -1,0 +1,9 @@
+Telemetry: OFF
+  Reason:        consent has not been given (default off)
+  Consent:       undecided
+  Install id:    
+  Endpoint:      https://telemetry.agent-deck.invalid/v1/ping
+  Last sent:     never
+  Pending:       0 counter(s)
+  State file:    <SANDBOX_HOME>/.local/share/agent-deck/telemetry-state.json
+  Docs:          https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md

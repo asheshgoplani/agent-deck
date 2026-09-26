@@ -1,0 +1,39 @@
+
+
+
+
+
+
+
+
+
+
+                                                                          ╭──────────────────────────────────────────────────╮
+                                                                          │                                                  │
+                                                                          │  Fork Session                                    │
+                                                                          │                                                  │
+                                                                          │  ▶ Name:                                         │
+                                                                          │    > claude-i18n (fork)                          │
+                                                                          │                                                  │
+                                                                          │    Group:                                        │
+                                                                          │    > beta                                        │
+                                                                          │    [x] Create in worktree                        │
+                                                                          │                                                  │
+                                                                          │    Branch:                                       │
+                                                                          │    > fork/claude-i18n                            │
+                                                                          │                                                  │
+                                                                          │      [x] Carry parent state (y)                  │
+                                                                          │        ↳ creates a NEW branch at parent HEAD     │
+                                                                          │        [ ] Include gitignored files (i)          │
+                                                                          │    [ ] Run in Docker sandbox                     │
+                                                                          │                                                  │
+                                                                          │  ─ Advanced Options ─                            │
+                                                                          │    [x] Skip permissions                          │
+                                                                          │    [ ] Auto mode                                 │
+                                                                          │    [ ] Chrome mode                               │
+                                                                          │    [ ] Teammate mode                             │
+                                                                          │                                                  │
+                                                                          │  Enter create │ Esc cancel                       │
+                                                                          │  Tab next │ s sandbox │ Space toggle             │
+                                                                          │                                                  │
+                                                                          ╰──────────────────────────────────────────────────╯

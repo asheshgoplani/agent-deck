@@ -1,0 +1,24 @@
+         ╭────────────────────────────────────────────────────────────╮
+         │    Edit Session                                            │
+         │                                                            │
+         │      in group: alpha                                       │
+         │      session: claude-waiting                               │
+         │      Current: claude/default → claude/default              │
+         │      same-harness resume                                   │
+         │                                                            │
+         │    ▶ Title:                                                │
+         │      > claude-waiting                                      │
+         │      Harness (choose destination first):                   │
+         │        shell     claude     gemini     opencode            │
+         │      codex     pi     copilot     crush     muse           │
+         │      cursor agent     hermes     deepseek     omp          │
+         │      Pin position:                                         │
+         │        Off     Top     Bottom                              │
+         │      [x] Skip permissions (restart, claude)                │
+         │      [ ] Auto mode (restart, claude)                       │
+         │      Extra args (restart, claude) — space-separated:       │
+         │      > --model opus --verbose                              │
+         │                                                            │
+         │                                                            │
+         │    Type to edit │ Enter save │ Tab next │ Esc cancel       │
+         ╰────────────────────────────────────────────────────────────╯

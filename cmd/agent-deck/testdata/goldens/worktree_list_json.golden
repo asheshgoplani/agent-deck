@@ -1,0 +1,5 @@
+{
+  "code": "INVALID_OPERATION",
+  "error": "not a git or jujutsu repository: <SANDBOX_HOME>",
+  "success": false
+}

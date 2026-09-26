@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1309,16 +1310,82 @@ func (s *StateDB) DeleteGroupSubtree(path string) error {
 // handler). Without retry, transient SQLITE_BUSY drops the user-visible
 // status update and the TUI shows stale state.
 func (s *StateDB) WriteStatus(id, status, tool string) error {
-	return withBusyRetry(func() error {
-		_, err := s.db.Exec(
-			`UPDATE instances
-			 SET status = ?, tool = ?,
-			     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
-			 WHERE id = ?`,
-			status, tool, status, id,
-		)
+	observe := loadStatusChangeObserver()
+	if observe == nil {
+		// Only read the prior value when someone listens: the write path
+		// stays one statement for every caller otherwise.
+		return withBusyRetry(func() error {
+			_, err := s.db.Exec(writeStatusSQL, status, tool, status, id)
+			return err
+		})
+	}
+	var from, tmuxName string
+	var changed bool
+	err := withBusyRetry(func() error {
+		from, tmuxName = "", ""
+		_ = s.db.QueryRow(`SELECT status, tmux_session FROM instances WHERE id = ?`, id).Scan(&from, &tmuxName)
+		if afterStatusRead != nil {
+			afterStatusRead()
+		}
+		// The edge is claimed by the write that changes the row: when the
+		// TUI and the notify daemon both write the same transition, only
+		// one UPDATE matches status IS NOT ?, so only one publishes.
+		res, err := s.db.Exec(writeStatusSQL+` AND status IS NOT ?`, status, tool, status, id, status)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		changed = n > 0 && from != status
+		if n == 0 {
+			// Same status: still refresh tool and the acknowledged reset.
+			_, err = s.db.Exec(writeStatusSQL, status, tool, status, id)
+		}
 		return err
 	})
+	if err == nil && changed {
+		observe(StatusChange{DBPath: s.path, ID: id, TmuxSession: tmuxName, From: from, To: status, Tool: tool, At: time.Now()})
+	}
+	return err
+}
+
+// afterStatusRead is a test seam between WriteStatus's read of the prior
+// status and its update, where a second writer can interleave.
+var afterStatusRead func()
+
+const writeStatusSQL = `UPDATE instances
+	 SET status = ?, tool = ?,
+	     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+	 WHERE id = ?`
+
+// StatusChange is one status row transition written through WriteStatus.
+type StatusChange struct {
+	DBPath      string
+	ID          string
+	TmuxSession string
+	From        string
+	To          string
+	Tool        string
+	At          time.Time
+}
+
+var statusChangeObserver atomic.Pointer[func(StatusChange)]
+
+// SetStatusChangeObserver registers the single process-wide listener for
+// status transitions (the event bus tap). nil removes it. The observer runs
+// on the writer's goroutine after the write committed and must not block.
+func SetStatusChangeObserver(fn func(StatusChange)) {
+	if fn == nil {
+		statusChangeObserver.Store(nil)
+		return
+	}
+	statusChangeObserver.Store(&fn)
+}
+
+func loadStatusChangeObserver() func(StatusChange) {
+	if p := statusChangeObserver.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // WriteAutoNameDescription persists the latest Claude task description for an

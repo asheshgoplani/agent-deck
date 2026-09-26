@@ -1,0 +1,39 @@
+Usage: agent-deck session context [id|title] [options]
+
+Show everything that is being passed to the agent for a session: the instruction-file
+hierarchy, skills, agents, tool schemas and MCP servers, ranked by what each costs.
+
+This measures the FIXED STARTUP OVERHEAD — the bytes loaded into every turn, which is
+the part you can clean up. It does not measure your conversation, which is what
+usually fills a context window.
+
+Every figure states where it came from. A number the harness measured, a number
+agent-deck estimated and a number that does not exist are rendered differently, and
+an unknown is never printed as zero. Harnesses with no token accounting print the
+inventory with '—' for every figure and exit 0.
+
+Options:
+
+Examples:
+  agent-deck session context my-project                  # overview
+  agent-deck session context my-project --tab breakdown  # what to remove, and how
+  agent-deck session context my-project --item memory:/path/to/CLAUDE.md
+                                                        # one item's text (ids come from --tab breakdown)
+  agent-deck session context my-project --tab verify     # the arithmetic
+  agent-deck session context my-project --json | jq .    # full report
+  agent-deck session context --glossary                  # what adapter, basis, anchor, CAPT, RECON… mean
+  agent-deck session context my-project --capabilities   # what this harness can tell you
+  agent-deck session context my-project --verify         # diff against the harness's own /context
+
+--verify is the only part of this command that writes anything: it types the harness's own
+accounting command into the live session and reads the panel back, so it asks first. It waits
+for the agent to go idle and moves an unsent draft out of the composer, but the command still
+joins that conversation for good. The context hotkey in the TUI never does this.
+
+Exit codes:
+  0  done; with --verify, every graded group agreed within tolerance
+  1  could not run (bad arguments, no live pane, unreadable panel) — nothing was compared
+  2  no session matched
+  3  --strict: the report failed its own reconciliation or an invariant
+  4  --verify: a group disagreed with the harness beyond tolerance
+  5  --verify: nothing could be graded, so no agreement is claimed (never read this as a pass)
