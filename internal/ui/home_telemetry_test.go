@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 // calling it on the TUI goroutine.
 func TestSettingsPrivacyOffNeverBlocksTheTUI(t *testing.T) {
 	h := telemetryDialogHarness(t)
-	os.Unsetenv(telemetry.EnvTelemetry) // set-but-empty is a hard off
 	if err := telemetry.Grant(h.st, "9.9.9", time.Now()); err != nil {
 		t.Fatal(err)
 	}

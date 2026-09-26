@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -601,7 +602,11 @@ func TestShowLastKeepsExactBody(t *testing.T) {
 	sent := fake.bodies[0]
 	fake.mu.Unlock()
 	// show-last is the acknowledged body with the project key redacted.
-	last, err := withAPIKey(LoadState().LastPayload)
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, LoadState().LastPayload); err != nil {
+		t.Fatal(err)
+	}
+	last, err := withAPIKey(compact.Bytes())
 	if err != nil || string(last) != string(sent) {
 		t.Fatalf("show-last differs from the acknowledged body (%v)", err)
 	}

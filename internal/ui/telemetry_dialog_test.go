@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ func telemetryDialogHarness(t *testing.T) dialogHarness {
 	t.Setenv("XDG_CONFIG_HOME", home+"/config")
 	t.Setenv("XDG_CACHE_HOME", home+"/cache")
 	t.Setenv(telemetry.EnvTelemetry, "")
+	os.Unsetenv(telemetry.EnvTelemetry) // set-but-empty is a hard off
 	t.Setenv(telemetry.EnvDoNotTrack, "")
 	t.Setenv("CI", "")
 	for _, k := range []string{"AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID", "CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
