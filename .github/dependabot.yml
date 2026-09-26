@@ -6,6 +6,15 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      # golang.org/x/* releases from crypto v0.57 / sys v0.48 / text v0.42 on
+      # declare `go 1.26.0`, and taking them rewrites go.mod to Go 1.26 while
+      # the toolchain stays pinned to 1.25.13 in CI, the Makefile, goreleaser
+      # and the test images (docs/ROADMAP.md "Go 1.26 toolchain"). Every other
+      # module in the go-minor-patch group still resolves on 1.25.13. Remove
+      # this rule in the PR that moves the toolchain to Go 1.26.
+      - dependency-name: "golang.org/x/*"
+        update-types: ["version-update:semver-minor"]
     groups:
       go-minor-patch:
         update-types:
