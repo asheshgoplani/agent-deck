@@ -38,6 +38,12 @@ const sshAttachReplyQuarantine = 500 * time.Millisecond
 // Bound draining pipes inherited by a surviving SSH ControlPersist process.
 const sshWaitDelay = 100 * time.Millisecond
 
+// sshMuxFallbackGrace is how long a read-only command waits, after the shared
+// ControlMaster refuses its session, for OpenSSH's own in-call direct fallback
+// before opening a dedicated connection (#2355). A healthy fallback lands in a
+// few seconds even on a saturated master, and racing it only adds a login.
+const sshMuxFallbackGrace = 8 * time.Second
+
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"
 
@@ -316,39 +322,201 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
-	sshArgs := r.sshBaseArgs(remoteCmd)
+	return r.runExec(ctx, remoteCmd, remoteVerbReadOnly(args))
+}
 
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
-	cmd.WaitDelay = sshWaitDelay
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if detail := strings.TrimSpace(stderr.String()); detail != "" {
-		level := slog.LevelDebug
-		if err != nil {
-			level = slog.LevelWarn
+// runExec runs one remote command over the shared ControlMaster and, when the
+// command is read-only and the master has no channels left, retries once on a
+// dedicated connection.
+//
+// sshd caps concurrent channels per connection at MaxSessions. When its
+// ControlMaster refuses a session, ssh reports that refusal on stderr (#2355).
+//
+// Only read-only verbs are retried. A refusal is not proof that nothing ran:
+// OpenSSH can fall back to a direct connection within the same invocation, so a
+// mutating verb that ran and then exited nonzero would be executed twice. This
+// matches the read-only gate already used when a channel reply is lost
+// (errChannelInterrupted). The status poll's commands (list, costs summary,
+// group list) are all read-only, so this still covers the failure users see.
+func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string, readOnly bool) ([]byte, error) {
+	var stdout, stderr []byte
+	var err error
+	retried := false
+	if readOnly {
+		// OpenSSH may print the mux refusal, then try a fresh connection inside
+		// the same ssh process. That fallback can consume the whole deadline.
+		// Observe stderr while ssh runs so the dedicated attempt still has time.
+		sharedCtx, cancel := context.WithCancel(ctx)
+		type result struct {
+			stdout, stderr []byte
+			err            error
 		}
-		sessionLog.Log(ctx, level, "ssh_command_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+		finished := make(chan result, 1)
+		refused := make(chan struct{}, 1)
+		go func() {
+			out, detail, runErr := r.execSSH(sharedCtx, r.sshBaseArgs(remoteCmd), refused)
+			finished <- result{out, detail, runErr}
+		}()
+	attempt:
+		select {
+		case first := <-finished:
+			stdout, stderr, err = first.stdout, first.stderr, first.err
+		case <-refused:
+			// Give OpenSSH's own fallback a chance first. A shared attempt that
+			// finishes inside the grace takes the completed-refusal path below,
+			// so a healthy fallback never pays for an extra connection.
+			grace := time.NewTimer(muxFallbackGrace(ctx))
+			select {
+			case first := <-finished:
+				grace.Stop()
+				stdout, stderr, err = first.stdout, first.stderr, first.err
+				break attempt
+			case <-grace.C:
+			case <-ctx.Done():
+				grace.Stop()
+			}
+			if ctx.Err() != nil {
+				first := <-finished
+				stdout, stderr, err = first.stdout, first.stderr, first.err
+				break
+			}
+			retried = true
+			dedicatedCtx, dedicatedCancel := context.WithCancel(ctx)
+			dedicated := make(chan result, 1)
+			go func() {
+				out, detail, runErr := r.execSSH(dedicatedCtx, r.dedicatedSSHArgs(remoteCmd), nil)
+				dedicated <- result{out, detail, runErr}
+			}()
+			var retry result
+			sharedPending, dedicatedPending := true, true
+			recovered := false
+		recovery:
+			for sharedPending || dedicatedPending {
+				select {
+				case first := <-finished:
+					sharedPending = false
+					if first.err == nil {
+						dedicatedCancel()
+						if dedicatedPending {
+							<-dedicated
+						}
+						stdout, stderr, err = first.stdout, first.stderr, nil
+						recovered = true
+						break recovery
+					}
+				case retry = <-dedicated:
+					dedicatedPending = false
+					if retry.err == nil {
+						cancel()
+						if sharedPending {
+							<-finished
+						}
+						stdout, stderr, err = retry.stdout, retry.stderr, nil
+						recovered = true
+						break recovery
+					}
+				}
+			}
+			if !recovered {
+				stdout, stderr, err = retry.stdout, retry.stderr, retry.err
+			}
+			dedicatedCancel()
+		}
+		cancel()
+	} else {
+		stdout, stderr, err = r.execSSH(ctx, r.sshBaseArgs(remoteCmd), nil)
 	}
+	if !retried && err != nil && ctx.Err() == nil && readOnly && isSSHChannelExhaustion(string(stderr)) {
+		out, retryStderr, retryErr := r.execSSH(ctx, r.dedicatedSSHArgs(remoteCmd), nil)
+		if retryErr == nil {
+			r.logSSHStderr(ctx, retryStderr, false)
+			r.setLastStderr(retryStderr)
+			return out, nil
+		}
+		// The dedicated attempt is the one that matters: report its result,
+		// not the superseded shared-master failure it replaced.
+		stdout, stderr, err = out, retryStderr, retryErr
+	}
+	r.logSSHStderr(ctx, stderr, err != nil)
 	if err != nil {
 		// The remote CLI reports refusals such as "path does not exist" on
 		// stdout; fall back to it so the failure is not a bare exit status.
 		// stdout is returned as well: a --json verb that exits non-zero
 		// (switch-preview refusal, switch failure) still answered there.
-		detail := stderr.String()
-		if strings.TrimSpace(detail) == "" {
-			detail = strings.TrimSpace(stdout.String())
+		detail := stderr
+		if strings.TrimSpace(string(detail)) == "" {
+			detail = bytes.TrimSpace(stdout)
 		}
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		return stdout.Bytes(), fmt.Errorf("ssh command failed: %w: %s", err, detail)
+		return stdout, fmt.Errorf("ssh command failed: %w: %s", err, detail)
 	}
 
-	r.setLastStderr(stderr.Bytes())
-	return stdout.Bytes(), nil
+	r.setLastStderr(stderr)
+	return stdout, nil
+}
+
+// muxFallbackGrace bounds the wait for OpenSSH's own fallback to half the
+// remaining deadline, so the dedicated attempt keeps the other half.
+func muxFallbackGrace(ctx context.Context) time.Duration {
+	grace := sshMuxFallbackGrace
+	if deadline, ok := ctx.Deadline(); ok {
+		grace = min(grace, time.Until(deadline)/2)
+	}
+	return grace
+}
+
+// execSSH runs one ssh invocation and returns stdout, stderr and the exit error.
+func (r *SSHRunner) execSSH(ctx context.Context, args []string, refused chan<- struct{}) ([]byte, []byte, error) {
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.WaitDelay = sshWaitDelay
+	var stdout bytes.Buffer
+	stderr := &sshStderrCapture{refused: refused}
+	cmd.Stdout = &stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	return stdout.Bytes(), stderr.buf.Bytes(), err
+}
+
+type sshStderrCapture struct {
+	buf     bytes.Buffer
+	refused chan<- struct{}
+	emitted bool
+}
+
+func (s *sshStderrCapture) Write(p []byte) (int, error) {
+	n, err := s.buf.Write(p)
+	if !s.emitted && s.refused != nil && isSSHChannelExhaustion(s.buf.String()) {
+		s.emitted = true
+		s.refused <- struct{}{}
+	}
+	return n, err
+}
+
+// logSSHStderr records an ssh run's stderr at debug (success) or warn (failure).
+func (r *SSHRunner) logSSHStderr(ctx context.Context, stderr []byte, failed bool) {
+	if detail := strings.TrimSpace(string(stderr)); detail != "" {
+		level := slog.LevelDebug
+		if failed {
+			level = slog.LevelWarn
+		}
+		sessionLog.Log(ctx, level, "ssh_command_stderr", slog.String("remote", r.name), slog.String("stderr", detail))
+	}
+}
+
+// dedicatedSSHArgs keeps the normal connection options and host config while
+// disabling reuse of the saturated ControlMaster for this one attempt.
+func (r *SSHRunner) dedicatedSSHArgs(remoteCmd string) []string {
+	return append([]string{"-o", "ControlPath=none"}, r.sshBaseArgs(remoteCmd)...)
+}
+
+// isSSHChannelExhaustion recognizes the OpenSSH mux client's session-open
+// refusal. Generic "open failed" can describe forwarding or other channels;
+// "no more sessions" is an sshd log message, not proof in client stderr.
+func isSSHChannelExhaustion(stderr string) bool {
+	d := strings.ToLower(stderr)
+	return strings.Contains(d, "mux_client_request_session: session request failed: session open refused by peer")
 }
 
 // lastStderrBox is lastStderr's storage: a pointer field on SSHRunner so
