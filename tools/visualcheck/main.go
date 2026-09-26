@@ -119,12 +119,18 @@ func runMain(args []string) int {
 	for _, r := range reports {
 		fmt.Printf("| %s | %s | %s |\n", r.step, r.width, r.status)
 	}
-	fmt.Println("\ncontact-sheet.html and visualcheck-report.json written. A DIFF needs a reviewer's PASS before the golden is updated.")
+	fmt.Printf("\ncontact-sheet.html and visualcheck-report.json written; redraw frames are in %s. A DIFF needs a reviewer's PASS before the golden is updated.\n", artifactDir())
 
 	if failed {
 		return 1
 	}
 	return 0
+}
+
+// artifactDir is where kept frames and report copies go. It lives outside
+// the repository so a test run leaves the checkout clean for GoReleaser.
+func artifactDir() string {
+	return filepath.Join(os.TempDir(), "visualcheck-artifacts")
 }
 
 func writeJSONReport(path string, reports []frameReport) error {

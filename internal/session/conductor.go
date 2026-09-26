@@ -3102,7 +3102,7 @@ func uninstallHeartbeatDaemonSystemd(name string) error {
 		return err
 	}
 	if _, err := os.Stat(timerPath); err == nil {
-		if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdHeartbeatTimerName(name)).Run(); err != nil {
+		if err := exec.Command("systemctl", "--user", "disable", "--now", SystemdHeartbeatTimerName(name)).Run(); err != nil { //nolint:gosec // G204: fixed binary and argv, no shell; name only selects a --user unit
 			return fmt.Errorf("stop systemd heartbeat: %w", err)
 		}
 		if err := os.Remove(timerPath); err != nil {
