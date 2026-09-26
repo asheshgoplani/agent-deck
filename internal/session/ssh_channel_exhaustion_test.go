@@ -120,7 +120,8 @@ func TestRunExecDoesNotRetryMutatingVerb(t *testing.T) {
 	writeFakeSSH(t, dir, logPath)
 
 	r := &SSHRunner{Host: "host-a.example.com"}
-	if _, err := r.runExec(context.Background(), "agent-deck session restart s1", false); err == nil {
+	// Through run, so the read-only gate itself is exercised, not a literal.
+	if _, err := r.run(context.Background(), "session", "restart", "s1"); err == nil {
 		t.Fatal("expected an error from the refused channel")
 	}
 	log, err := os.ReadFile(logPath)

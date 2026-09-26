@@ -37,6 +37,12 @@ const sshAttachReplyQuarantine = 500 * time.Millisecond
 // Bound draining pipes inherited by a surviving SSH ControlPersist process.
 const sshWaitDelay = 100 * time.Millisecond
 
+// sshMuxFallbackGrace is how long a read-only command waits, after the shared
+// ControlMaster refuses its session, for OpenSSH's own in-call direct fallback
+// before opening a dedicated connection (#2355). A healthy fallback lands in a
+// few seconds even on a saturated master, and racing it only adds a login.
+const sshMuxFallbackGrace = 8 * time.Second
+
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"
 
@@ -343,10 +349,24 @@ func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string, readOnly bool
 			out, detail, runErr := r.execSSH(sharedCtx, r.sshBaseArgs(remoteCmd), refused)
 			finished <- result{out, detail, runErr}
 		}()
+	attempt:
 		select {
 		case first := <-finished:
 			stdout, stderr, err = first.stdout, first.stderr, first.err
 		case <-refused:
+			// Give OpenSSH's own fallback a chance first. A shared attempt that
+			// finishes inside the grace takes the completed-refusal path below,
+			// so a healthy fallback never pays for an extra connection.
+			grace := time.NewTimer(muxFallbackGrace(ctx))
+			select {
+			case first := <-finished:
+				grace.Stop()
+				stdout, stderr, err = first.stdout, first.stderr, first.err
+				break attempt
+			case <-grace.C:
+			case <-ctx.Done():
+				grace.Stop()
+			}
 			if ctx.Err() != nil {
 				first := <-finished
 				stdout, stderr, err = first.stdout, first.stderr, first.err
@@ -427,6 +447,16 @@ func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string, readOnly bool
 
 	r.setLastStderr(stderr)
 	return stdout, nil
+}
+
+// muxFallbackGrace bounds the wait for OpenSSH's own fallback to half the
+// remaining deadline, so the dedicated attempt keeps the other half.
+func muxFallbackGrace(ctx context.Context) time.Duration {
+	grace := sshMuxFallbackGrace
+	if deadline, ok := ctx.Deadline(); ok {
+		grace = min(grace, time.Until(deadline)/2)
+	}
+	return grace
 }
 
 // execSSH runs one ssh invocation and returns stdout, stderr and the exit error.

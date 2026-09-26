@@ -101,3 +101,50 @@ printf '[{"id":"shared-success"}]'
 		t.Fatalf("successful shared fallback must win: stdout=%q err=%v", out, err)
 	}
 }
+
+// Field check on a saturated master: OpenSSH's own direct fallback answered in
+// a few seconds, and racing it with a dedicated link only added logins and
+// latency. A fallback that lands inside the grace must be the only connection.
+func TestSSHReadOnlyHealthyMuxFallbackOpensNoDedicatedLink2355(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$SSH_CALL_LOG"
+case "$*" in
+  *ControlPath=none*) printf '[{"id":"dedicated"}]'; exit 0 ;;
+esac
+printf 'mux_client_request_session: session request failed: Session open refused by peer\n' >&2
+sleep 0.3
+printf '[{"id":"shared-fallback"}]'
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_CALL_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	r := &SSHRunner{Host: "fixture.example"}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := r.run(ctx, "list", "--json")
+	if err != nil || string(out) != `[{"id":"shared-fallback"}]` {
+		t.Fatalf("healthy fallback: stdout=%q err=%v", out, err)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(calls), "\n"); n != 1 || strings.Contains(string(calls), "ControlPath=none") {
+		t.Fatalf("healthy fallback must not open a dedicated link: calls=%q", calls)
+	}
+}
+
+func TestMuxFallbackGraceLeavesHalfTheDeadline2355(t *testing.T) {
+	if got := muxFallbackGrace(context.Background()); got != sshMuxFallbackGrace {
+		t.Fatalf("no deadline: grace=%s, want %s", got, sshMuxFallbackGrace)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if got := muxFallbackGrace(ctx); got <= 0 || got > time.Second {
+		t.Fatalf("2s deadline: grace=%s, want at most half", got)
+	}
+}
