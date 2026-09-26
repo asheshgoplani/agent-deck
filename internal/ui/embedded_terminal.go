@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
@@ -135,6 +136,10 @@ type embeddedTerminal struct {
 	outputDone chan struct{}
 	replyDone  chan struct{}
 
+	// quitGracefully marks a transport that must be asked to quit rather than
+	// killed (mosh). Close then finishes tearing it down in the background.
+	quitGracefully bool
+
 	cursorMu sync.RWMutex
 	cursor   embeddedCursorState
 	exitMu   sync.RWMutex
@@ -187,6 +192,13 @@ func startEmbeddedTerminalWithClipboard(
 	// TestShellQuote_SafeAgainstShellInjection in internal/terminal.
 	cmd := exec.CommandContext(ctx, "sh", "-c", "exec "+command)
 	cmd.Env = embeddedTerminalEnv(childenv.ForLaunch(""))
+	quitGracefully := req.Remote.UsesMosh()
+	if quitGracefully {
+		// Ending the client must let mosh tell its server to exit (see
+		// deckterminal.MoshQuitTimeout); Go kills it once WaitDelay elapses.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+		cmd.WaitDelay = deckterminal.MoshQuitTimeout
+	}
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(size.Cols), // #nosec G115 -- dimensions are clamped above and by the UI viewport
@@ -220,6 +232,7 @@ func startEmbeddedTerminalWithClipboard(
 			Style:   vt.CursorBlock,
 		},
 	}
+	t.quitGracefully = quitGracefully
 	t.emulator.SetCallbacks(t.emulatorCallbacks())
 
 	go t.copyPTYOutput()
@@ -403,24 +416,39 @@ func (t *embeddedTerminal) Close() error {
 	var closeErr error
 	t.closeOnce.Do(func() {
 		t.cancel()
-		closeErr = t.ptmx.Close()
-		if t.cmd.Process != nil {
-			_ = t.cmd.Process.Kill()
+		if t.quitGracefully {
+			// cancel sent SIGTERM; the quit takes a network round trip, bounded
+			// by the command's WaitDelay. Keep the PTY open until the process
+			// has exited so it can finish, off the caller's path.
+			go func() {
+				<-t.exited
+				_ = t.teardown()
+			}()
+			return
 		}
-		// SafeEmulator.Read delegates directly to Emulator.Read, whose closed
-		// flag is not synchronized with Emulator.Close. Close the input pipe
-		// before waiting for output: a parser producing another reply can be
-		// blocked in this pipe after the reply copier exits on a PTY error.
-		// Once both loops stop, closing the emulator cannot race its flag.
-		if input, ok := t.emulator.InputPipe().(io.Closer); ok {
-			_ = input.Close()
-		}
-		<-t.outputDone
-		<-t.replyDone
-		_ = t.emulator.Close()
-		// Reap the attach process before returning so it cannot keep using the
-		// caller's HOME after an evaluator or application shutdown.
-		<-t.exited
+		closeErr = t.teardown()
 	})
+	return closeErr
+}
+
+func (t *embeddedTerminal) teardown() error {
+	closeErr := t.ptmx.Close()
+	if t.cmd.Process != nil {
+		_ = t.cmd.Process.Kill()
+	}
+	// SafeEmulator.Read delegates directly to Emulator.Read, whose closed
+	// flag is not synchronized with Emulator.Close. Close the input pipe
+	// before waiting for output: a parser producing another reply can be
+	// blocked in this pipe after the reply copier exits on a PTY error.
+	// Once both loops stop, closing the emulator cannot race its flag.
+	if input, ok := t.emulator.InputPipe().(io.Closer); ok {
+		_ = input.Close()
+	}
+	<-t.outputDone
+	<-t.replyDone
+	_ = t.emulator.Close()
+	// Reap the attach process before returning so it cannot keep using the
+	// caller's HOME after an evaluator or application shutdown.
+	<-t.exited
 	return closeErr
 }

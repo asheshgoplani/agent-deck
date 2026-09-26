@@ -15,6 +15,7 @@ package terminal
 import (
 	"errors"
 	"strings"
+	"time"
 )
 
 // ErrUnsupported is returned by OpenSessionInNewWindow on platforms that have
@@ -86,6 +87,57 @@ type RemoteAttach struct {
 	// Profile is the remote profile selector. Empty or "default" omits
 	// the -p flag.
 	Profile string
+
+	// Transport is the remote's configured interactive transport: "mosh"
+	// attaches through mosh; anything else uses ssh.
+	Transport string
+
+	// MoshServer is the remote's mosh_server command; empty uses mosh's
+	// default.
+	MoshServer string
+}
+
+// UsesMosh reports whether the attach runs over mosh rather than ssh.
+func (r *RemoteAttach) UsesMosh() bool {
+	return r != nil && strings.EqualFold(strings.TrimSpace(r.Transport), "mosh")
+}
+
+// MoshQuitTimeout bounds how long a mosh attach may take to quit after the
+// deck asks it to. Killing mosh-client strands mosh-server, and the remote
+// attach it runs, waiting indefinitely for the client to roam back, so
+// callers send SIGTERM (which makes the client tell the server to exit) and
+// only kill once this elapses. The server acts on the first shutdown packet
+// it receives, so this only needs to cover a few relayed round trips.
+const MoshQuitTimeout = 5 * time.Second
+
+// MoshServerProbe is the remote shell command that succeeds only when the
+// host can start mosh-server: the program named by mosh_server (its first
+// word), or mosh's default.
+func MoshServerProbe(moshServer string) string {
+	program := "mosh-server"
+	if fields := strings.Fields(moshServer); len(fields) > 0 {
+		program = fields[0]
+	}
+	return "command -v " + shellQuote(program)
+}
+
+// MoshArgs returns mosh's arguments for running argv on host. The bootstrap
+// ssh reuses the deck's ControlMaster, so starting mosh-server costs one
+// multiplexed exec rather than a fresh SSH handshake; the UDP endpoint then
+// comes from the server's SSH_CONNECTION (--experimental-remote-ip=remote),
+// because mosh's default discovery forces its own connection with
+// ControlPath=none. argv is passed unquoted: mosh quotes it for the remote
+// shell and mosh-server execs it directly.
+func MoshArgs(host, moshServer string, argv []string) []string {
+	args := []string{
+		"--experimental-remote-ip=remote",
+		"--ssh=ssh -o ControlMaster=auto -o ControlPath=" + SSHControlDir + "/%r@%h:%p -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes",
+	}
+	if server := strings.TrimSpace(moshServer); server != "" {
+		args = append(args, "--server="+server)
+	}
+	args = append(args, host, "--")
+	return append(args, argv...)
 }
 
 // SSHControlDir is the directory the launcher tells SSH to keep its
@@ -147,6 +199,32 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 	}
 	profile := strings.TrimSpace(r.Profile)
 
+	sshCmd := buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName)
+	if !r.UsesMosh() {
+		return sshCmd
+	}
+
+	argv := []string{agentDeckPath}
+	if profile != "" && profile != "default" {
+		argv = append(argv, "-p", profile)
+	}
+	argv = append(argv, "session", "attach", remoteName)
+	parts := []string{"mosh"}
+	for _, arg := range MoshArgs(host, r.MoshServer, argv) {
+		parts = append(parts, shellQuote(arg))
+	}
+	// A remote without mosh-server attaches over ssh instead of failing with
+	// mosh's bootstrap errors. The probe reuses the ControlMaster, and both
+	// branches exec so the attach keeps the shell's pid (signals reach it).
+	probe := "ssh -n -o ControlMaster=auto -o ControlPath=" + shellQuote(SSHControlDir+"/%r@%h:%p") +
+		" -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes " + shellQuote(host) + " " +
+		shellQuote(MoshServerProbe(r.MoshServer))
+	script := "if " + probe + " >/dev/null 2>&1; then exec " + strings.Join(parts, " ") + "; else exec " + sshCmd + "; fi"
+	return "/bin/sh -c " + shellQuote(script)
+}
+
+// buildRemoteSSHAttachCommand is the ssh command line for a remote attach.
+func buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName string) string {
 	// ssh with -tt (force remote PTY) and the same ControlMaster flags
 	// as the in-TUI remote attach, so the multiplexed connection is
 	// reused.
