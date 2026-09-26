@@ -284,12 +284,20 @@ func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName string) {
 // final viewport clamp can truncate when the panel fills the height), this dialog
 // replaces the whole view while visible, so the message is always seen. Dismissed
 // with Enter/Esc/o.
-// crossHarnessConfirmationSource is the complete mutable source identity
-// which participates in a transfer. It is captured before the disclosure is
-// shown, so accepting the modal cannot silently transfer a later incarnation.
+// crossHarnessConfirmationSource is the source identity which participates in
+// a transfer. It is captured before the disclosure is shown, so accepting the
+// modal cannot silently transfer a later incarnation.
+//
+// Status is deliberately NOT part of it. A live session's Status is refreshed
+// by the background poller (Running/Idle/Waiting) independently of anything
+// the operator does, so including it made a confirmation held open for one
+// poll tick cancel itself with "the source session changed while this
+// confirmation was open" - the switch then only landed on a retry that raced
+// the poller successfully. Status is liveness, not identity: it changes no
+// transcript, config dir, account or target, and the durable recovery guard
+// (sourceRecoveryIdentityMatches) already excludes it for the same reason.
 type crossHarnessConfirmationSource struct {
 	id, tool, account, project, title, group, command string
-	status                                            session.Status
 	claudeID, codexID, workingDir                     string
 	lastStartedAt                                     time.Time
 }
@@ -300,7 +308,7 @@ func snapshotCrossHarnessConfirmationSource(inst *session.Instance) crossHarness
 	}
 	return crossHarnessConfirmationSource{
 		id: inst.ID, tool: inst.Tool, account: inst.Account, project: inst.ProjectPath,
-		title: inst.Title, group: inst.GroupPath, command: inst.Command, status: inst.Status,
+		title: inst.Title, group: inst.GroupPath, command: inst.Command,
 		claudeID: inst.ClaudeSessionID, codexID: inst.CodexSessionID,
 		workingDir: inst.EffectiveWorkingDir(), lastStartedAt: inst.LastStartedAt,
 	}
@@ -309,7 +317,7 @@ func snapshotCrossHarnessConfirmationSource(inst *session.Instance) crossHarness
 func (s crossHarnessConfirmationSource) matches(inst *session.Instance) bool {
 	return inst != nil && s.id == inst.ID && s.tool == inst.Tool && s.account == inst.Account &&
 		s.project == inst.ProjectPath && s.title == inst.Title && s.group == inst.GroupPath &&
-		s.command == inst.Command && s.status == inst.Status && s.claudeID == inst.ClaudeSessionID &&
+		s.command == inst.Command && s.claudeID == inst.ClaudeSessionID &&
 		s.codexID == inst.CodexSessionID && s.workingDir == inst.EffectiveWorkingDir() &&
 		s.lastStartedAt.Equal(inst.LastStartedAt)
 }

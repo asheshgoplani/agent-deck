@@ -1770,8 +1770,13 @@ func sourceRecoveryIdentityMatches(j switchIdentity, inst *Instance) bool {
 }
 
 // SwitchModalIdentity is a UI-only stale-confirmation guard. Unlike durable
-// recovery, it rejects any display or lifecycle refresh made while a modal was
+// recovery, it rejects any identity or lifecycle change made while a modal was
 // open. Its fields must not be added to switchRequestGeneration.
+//
+// Status is excluded on purpose: the background status poller rewrites a live
+// session's Status on its own schedule, so comparing it made a confirmed
+// switch fail with "session changed while switch was pending" whenever a tick
+// landed in the window. sourceRecoveryIdentityMatches excludes it too.
 type SwitchModalIdentity struct {
 	identity switchIdentity
 }
@@ -1786,7 +1791,7 @@ func (captured SwitchModalIdentity) Matches(inst *Instance) bool {
 		captured.identity.Account == current.Account && captured.identity.ProjectPath == current.ProjectPath &&
 		captured.identity.WorkingDir == current.WorkingDir && captured.identity.Title == current.Title &&
 		captured.identity.GroupPath == current.GroupPath && captured.identity.Command == current.Command &&
-		captured.identity.Status == current.Status && captured.identity.ClaudeID == current.ClaudeID &&
+		captured.identity.ClaudeID == current.ClaudeID &&
 		captured.identity.CodexID == current.CodexID && captured.identity.LastStartedAt.Equal(current.LastStartedAt)
 }
 

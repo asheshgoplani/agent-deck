@@ -232,9 +232,15 @@ func TestHarnessSwitchRecovery_DurableBindingSurvivesDiskRoundTripAndStatusRefre
 		t.Fatalf("default and explicit native harness hashes differ: %s != %s", got, want)
 	}
 
+	// Status is poller-owned liveness, not identity (#2344): a status refresh
+	// alone must not force reconfirmation, but a changed binding still must.
 	modal := CaptureSwitchModalIdentity(&Instance{ID: "instance-a", Tool: "claude", Account: "", ClaudeSessionID: "native-a", ProjectPath: "/project-a", Title: "test2", GroupPath: "tmp", Command: "claude", Status: StatusWaiting, LastStartedAt: startedLocal})
-	if modal.Matches(inst) {
-		t.Fatal("UI stale-modal guard accepted a status/metadata change that it must make the user reconfirm")
+	if !modal.Matches(inst) {
+		t.Fatal("UI stale-modal guard rejected a status-only refresh that must not require reconfirmation")
+	}
+	rebound := &Instance{ID: "instance-a", Tool: "claude", Account: "", ClaudeSessionID: "native-b", ProjectPath: "/project-a", Title: "test2", GroupPath: "tmp", Command: "claude", Status: StatusIdle, LastStartedAt: startedLocal.UTC()}
+	if modal.Matches(rebound) {
+		t.Fatal("UI stale-modal guard accepted a changed Claude session binding that it must make the user reconfirm")
 	}
 }
 
