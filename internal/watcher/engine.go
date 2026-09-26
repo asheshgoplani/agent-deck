@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -49,7 +50,7 @@ type EngineConfig struct {
 	ClientsPath string
 
 	// Profile is the agent-deck profile flag passed to spawned triage sessions.
-	// Defaults to AGENTDECK_PROFILE env var, then "default".
+	// Defaults to the profile selected for this process.
 	Profile string
 }
 
@@ -92,6 +93,7 @@ type adapterEntry struct {
 type Engine struct {
 	cfg      EngineConfig
 	adapters []adapterEntry
+	bus      *events.Bus
 
 	// eventCh is the internal channel from adapter goroutines to the single-writer.
 	// Capacity 64 per D-12 / T-13-06.
@@ -163,10 +165,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		}
 	}
 	if cfg.Profile == "" {
-		cfg.Profile = os.Getenv("AGENTDECK_PROFILE")
-		if cfg.Profile == "" {
-			cfg.Profile = "default"
-		}
+		cfg.Profile = events.CurrentProfile()
 	}
 	if cfg.TriageSpawner == nil {
 		cfg.TriageSpawner = AgentDeckLaunchSpawner{} // BinaryPath resolved lazily at spawn time
@@ -207,6 +206,7 @@ func (e *Engine) RegisterAdapter(watcherID string, adapter WatcherAdapter, confi
 // then launches an adapter goroutine. It also starts the single-writer goroutine
 // and optionally the health check loop.
 func (e *Engine) Start() error {
+	e.bus = events.OpenProfile(e.cfg.Profile)
 	// Migrate legacy watchers/ dir and scaffold watcher/ layout on every boot.
 	// Non-fatal: log and continue so a filesystem error never prevents event processing.
 	if err := MigrateLegacyWatchersDir(); err != nil {
@@ -441,6 +441,15 @@ func (e *Engine) writerLoop() {
 				// New event: update health tracker and forward to TUI (D-14).
 				env.tracker.RecordEvent()
 
+				// Slice 4 (CORE-PLAN): additive tap onto the event bus.
+				e.bus.Publish("watcher.event", env.watcherID, map[string]any{
+					"sender":    env.event.Sender,
+					"subject":   env.event.Subject,
+					"routed_to": routedTo,
+					"dedup_key": env.event.DedupKey(),
+					"is_triage": isTriage,
+				})
+
 				// Persist per-watcher event log + state snapshot. Failures MUST NOT drop the event — log and continue.
 				// Snapshot current health via the existing public Check() method. Check() returns a
 				// read-locked HealthState copy: we pull ConsecutiveErrors directly and derive
@@ -651,6 +660,10 @@ func (e *Engine) healthLoop() {
 
 				state := entry.tracker.Check()
 
+				// Slice 4 (CORE-PLAN): additive tap onto the event bus —
+				// this is the "health journal" producer named in the plan.
+				e.bus.Publish("watcher.health", entry.config.Name, state)
+
 				// Non-blocking send to healthCh.
 				select {
 				case e.healthCh <- state:
@@ -695,6 +708,9 @@ func (e *Engine) Stop() {
 		// After Wait, no goroutine can send on routedEventCh / healthCh, so it
 		// is safe to close them.
 		e.wg.Wait()
+		if e.bus != nil {
+			_ = e.bus.Close()
+		}
 
 		close(e.routedEventCh)
 		close(e.healthCh)

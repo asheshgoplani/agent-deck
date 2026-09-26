@@ -57,18 +57,21 @@ type GroupDialog struct {
 	pathDropdownLineOffset int      // content line of the Default Path row (View-computed)
 }
 
+// groupDialogInputWidth is the text inputs' width when the dialog has room.
+const groupDialogInputWidth = 30
+
 // NewGroupDialog creates a new group dialog
 func NewGroupDialog() *GroupDialog {
 	ti := textinput.New()
 	ti.Placeholder = "Group name"
 	ti.CharLimit = 50
-	ti.Width = 30
+	ti.Width = groupDialogInputWidth
 
 	// Issue #918: optional default working directory for new groups.
 	pi := textinput.New()
 	pi.Placeholder = "Default path (optional)"
 	pi.CharLimit = 1024
-	pi.Width = 30
+	pi.Width = groupDialogInputWidth
 
 	return &GroupDialog{
 		nameInput:  ti,
@@ -596,16 +599,27 @@ func (g *GroupDialog) View() string {
 		return ""
 	}
 
+	// Responsive dialog width
+	dialogWidth := fitDialogWidth(44, 30, g.width)
+	titleWidth := dialogWidth - 4
+
 	var title string
 	var content string
 
 	switch g.mode {
 	case GroupDialogCreate:
 		labelStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+		// A label (14 cells) plus a 30-cell input is wider than the 40-cell
+		// content of the box, and the centred block below then wrapped every
+		// line of the dialog. Shrink the inputs to what the box leaves.
+		inputWidth := max(min(groupDialogInputWidth, titleWidth-14), 1)
+		g.nameInput.Width, g.pathInput.Width = inputWidth, inputWidth
 		// Issue #918: show "Name" + optional "Default Path" fields stacked.
 		nameRow := labelStyle.Render("Name:         ") + g.nameInput.View()
 		pathRow := labelStyle.Render("Default Path: ") + g.pathInput.View()
-		fields := nameRow + "\n" + pathRow
+		// Joined Left so both rows share one width: the dialog centres each
+		// line, and rows of equal width keep the two labels aligned.
+		fields := lipgloss.JoinVertical(lipgloss.Left, nameRow, pathRow)
 
 		if g.parentName != "" {
 			title = "Create Subgroup"
@@ -646,6 +660,7 @@ func (g *GroupDialog) View() string {
 		}
 	case GroupDialogRename:
 		title = "Rename Group"
+		g.nameInput.Width = groupDialogInputWidth
 		content = g.nameInput.View()
 	case GroupDialogMove:
 		title = "Move to Group"
@@ -668,12 +683,9 @@ func (g *GroupDialog) View() string {
 		content = strings.Join(items, "\n")
 	case GroupDialogRenameSession:
 		title = "Rename Session"
+		g.nameInput.Width = groupDialogInputWidth
 		content = g.nameInput.View()
 	}
-
-	// Responsive dialog width
-	dialogWidth := fitDialogWidth(44, 30, g.width)
-	titleWidth := dialogWidth - 4
 
 	// Content line of the Default Path row (for anchoring the suggestion
 	// dropdown overlay): title + blank, then the optional toggle tabs block
@@ -691,17 +703,23 @@ func (g *GroupDialog) View() string {
 
 	titleStyle := DialogTitleStyle.Width(titleWidth)
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
-	var hint string
+	// The hint stays on one row no wider than the dialog. A wider hint used
+	// to widen the centred JoinVertical below past the box, so every centred
+	// label (title, tabs, Name, Default Path) wrapped mid-phrase.
+	var hintItems []string
+	var hintDrop []int
 	switch {
 	case g.mode == GroupDialogCreate && g.IsPathDropdownVisible():
-		hint = hintStyle.Render("↑↓ select │ Tab/Enter accept │ Esc dismiss")
+		hintItems, hintDrop = []string{"↑↓ select", "Tab/Enter accept", "Esc dismiss"}, []int{0}
 	case g.mode == GroupDialogCreate && g.CanToggle():
-		hint = hintStyle.Render("↑↓ Root/Subgroup │ Tab next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
+		hintItems = []string{"↑↓ Root/Subgroup", "Tab next", "Shift+Tab prev", "Enter confirm", "Esc cancel"}
+		hintDrop = []int{2, 0} // Shift+Tab prev, ↑↓ Root/Subgroup; never Tab next
 	case g.mode == GroupDialogCreate:
-		hint = hintStyle.Render("Tab next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
+		hintItems, hintDrop = []string{"Tab next", "Shift+Tab prev", "Enter confirm", "Esc cancel"}, []int{1}
 	default:
-		hint = hintStyle.Render("Enter confirm │ Esc cancel")
+		hintItems = []string{"Enter confirm", "Esc cancel"}
 	}
+	hint := hintStyle.Render(renderDialogFooter(titleWidth, " │ ", hintItems, hintDrop...))
 
 	errContent := ""
 	if g.validationErr != "" {

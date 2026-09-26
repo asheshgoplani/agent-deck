@@ -100,6 +100,22 @@ func uniqueSID(t *testing.T) string {
 	return fmt.Sprintf("019f0000-0000-7000-8000-%012d", sidCounter)
 }
 
+func TestCodexThreadMetaIncompleteHeadIsRetried(t *testing.T) {
+	_, codexHome := newCodexGateInstance(t)
+	sid := uniqueSID(t)
+	path := seedCodexRolloutWithMeta(t, codexHome, sid, "subagent", uniqueSID(t), false)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if meta, ok := codexThreadMetaForSession(sid, codexHome); !ok || meta.ThreadSource != "" {
+		t.Fatalf("incomplete rollout should have no readable pedigree: %+v, ok=%t", meta, ok)
+	}
+	seedCodexRolloutWithMeta(t, codexHome, sid, "subagent", uniqueSID(t), false)
+	if meta, ok := codexThreadMetaForSession(sid, codexHome); !ok || meta.ThreadSource != "subagent" {
+		t.Fatalf("completed rollout pedigree was not reread: %+v, ok=%t", meta, ok)
+	}
+}
+
 func TestCodexHookRebind_RejectsSubagentThread(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 
@@ -170,11 +186,14 @@ func TestCodexHookRebind_AllowsUnflushedCandidate(t *testing.T) {
 	seedCodexRolloutWithMeta(t, codexHome, oldSID, "", "", false)
 	newSID := uniqueSID(t) // no rollout on disk yet
 
+	// Only events that can precede the rollout keep the fail-open binding; a
+	// turn-end without a rollout is an ephemeral helper thread (see
+	// codex_title_thread_rebind_test.go).
 	inst.CodexSessionID = oldSID
 	inst.UpdateHookStatus(&HookStatus{
-		Status:    "running",
+		Status:    "waiting",
 		SessionID: newSID,
-		Event:     "agent-turn-complete",
+		Event:     "thread.started",
 		UpdatedAt: time.Now(),
 	})
 

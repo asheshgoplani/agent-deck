@@ -1,0 +1,63 @@
+
+  xxxxxx x xxxxxxxxx, xxx x xxxxx xxxxxxxx
+
+⏺ x xxxxx x xxxxxxxxxxxx xxxxxx xxxx xxxx xxxxxxxxxx xx xxxxxxx xxxxxxxx, xxxxxxx x xxxxx xxxxx xxxxx x xxxx xxxxxx—xxxxxx xxxxxxx xx xxx xxxxxxxxx xxxx xxxxx. x'xx xxx xxx xxxxxxxx
+  xxxxxxxxx xx xxxx xxxxxxx xxxxx; xx xx, x xxx xxxxxx xxxx xxxxxxx xx xxxx. · xxxxxxxxxx
+
+✻ Crunched for 1m 30s · done 1:26 AM
+
+❯ [xxxxx] x xxxxx xxxx xxxxxxxxx x xxxxxxxxxx xx xxxx xxxxx — xxxxx xx xxx xxx xx xxxx xxxx xxx.
+
+  xxx x xxxxx xxxxxxx
+
+⏺ xxxxx xxxx xxxxxxxx xxxx; xxxxxxx xx xxx xx.
+
+✻ Brewed for 15s · done 1:28 AM
+
+❯ [xxxxx] x xxxxx xxxx xxxxxxxxx x xxxxxxxxxx xx xxxx xxxxx — xxxxx xx xxx xxx xx xxxx xxxx xxx.
+
+  xxx x xxxxx xxxxxxxx
+
+⏺ xxxxx x xx xxxxx #xxxx xxxxx xxx xxxx-xxxxxxx xxxxx xxx xxxxxx x xxxxxxxxxx xxxxx x xxxx xxxxxx xxxxx xxxxxxx xxx xxxxxxxxx xxxxx xxxx xxx xxxxx xxxxxxxxx xxxxx xxxxx xxxxx xxxxxx.
+  xxxxx xxxx xx xxx xxxx-xxxxx xxxxx, x'x xxxxxx xx xxx xxxx xxxxxx xxxxx xxxxxxx xx xxxxxxx xx xxx; xx xxxx xxx xxxxx, x'xx xxxxx xx xx xxx xxxx xxxxxxx. · xxxxxxxxxx
+
+✻ Crunched for 1m 23s · done 1:32 AM
+
+❯ [xxxxx] x xxxxx xxxx xxxxxxxxx x xxxxxxxxxx xx xxxx xxxxx — xxxxx xx xxx xxx xx xxxx xxxx xxx.
+
+  xxx x xxxxx xxxxxxxx
+
+⏺ xxxxxx-xxxx xxxxxx xx xxxxxxxx — xxxxx xxxxx xxxxxxx xxxx xxx xxxxxx xxx xx xxxxxxx xxxxxxxxx xxxxxxx, xxxxx xxxxxxx xxxxxxxx, xx xxxxxxxx, xxx xxxxx xxx xxxxxx. xxxxxxxxx xxx
+  xxxxxxxxxxx-xxx xxxxxx xx xxxxxxxx/xxxx xxxx. · xxxxxxxxxx
+
+  xxx x xxxxx xxxxxxx
+
+✻ Crunched for 1m 46s · done 1:34 AM
+
+❯ [xxxxx] x xxxxx xxxx xxxxxxxxx x xxxxxxxxxx xx xxxx xxxxx — xxxxx xx xxx xxx xx xxxx xxxx xxx.
+
+  xxx x xxxxx xxxxxxxx
+
+⏺ xxxxxxxxx xxx xxxxx: xxxx xxxxxx xxxxxxxx xxxx xxxxx xxxxxxx xxxxxxxxxx xxxxxx/xxxxxxxx xxxx xxxxxxx, xxxxxxx xxxxxxxx xx xxxxxx xxxx—xxxx xxxx x xxxxx xxxxx xxxxxx xxx xxx xxxxx xxx
+  xxxxx xxxxxxxxxxx xxxxxx. xxxxxxxxx, xxx xxx xx (xxxx xxxxxxxx xxxxxxx, xxx xx-xxxxxx xxxx, xxx xxxxxxxxxx xxx xxxxxxxxx xxx xxxxxx xxxx) xx xxxxxxxx xx xxxxx. · xxxxxxxxxx
+
+✻ Cooked for 2m 18s · done 1:42 AM
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── xxxxxxxxx-xxxxx-xxxx ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [p] u@host:/x | [Fable 5.1] ctx:41% in:408.7k out:1.1k 5h:17% 7d:5%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+  ⏺ main
+  ◯ general-purpose  Task 1: review slice 1
+  ◯ general-purpose  Task 2: review slice 2
+  ◯ general-purpose  Task 3: review slice 3
+  ◯ general-purpose  Task 4: review slice 4
+  ◯ general-purpose  Task 5: review slice 5
+  ◯ general-purpose  Task 6: review slice 6
+  ◯ general-purpose  Task 7: review slice 7
+  ◯ general-purpose  Task 8: review slice 8
+  ◯ general-purpose  Task 9: review slice 9
+  ◯ general-purpose  Task 10: review slice 10
+  ◯ general-purpose  Task 11: review slice 11
+  ◯ general-purpose  Task 12: review slice 12

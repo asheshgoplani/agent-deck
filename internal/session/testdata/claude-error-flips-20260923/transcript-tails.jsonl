@@ -1,0 +1,40 @@
+{"_flip_offset": "ux-audit jsonl:4823995"}
+{"isSidechain": false, "type": "user", "timestamp": "2026-09-23T08:53:27.805Z", "sessionId": "ux-audit", "message": {"role": "user", "content": [{"type": "tool_result", "is_error": false, "content": "[redacted]"}]}}
+{"isSidechain": false, "type": "assistant", "timestamp": "2026-09-23T08:53:30.065Z", "sessionId": "ux-audit", "message": {"role": "assistant", "stop_reason": "tool_use", "model": "claude-fable-5-1", "content": [{"type": "tool_use", "name": "Bash"}]}}
+{"isSidechain": false, "type": "assistant", "timestamp": "2026-09-23T08:53:32.560Z", "sessionId": "ux-audit", "message": {"role": "assistant", "stop_reason": "tool_use", "model": "claude-fable-5-1", "content": [{"type": "tool_use", "name": "Bash"}]}}
+{"_flip_offset": "ux-audit jsonl:4836767"}
+{"isSidechain": false, "type": "assistant", "timestamp": "2026-09-23T08:53:32.560Z", "sessionId": "ux-audit", "message": {"role": "assistant", "stop_reason": "tool_use", "model": "claude-fable-5-1", "content": [{"type": "tool_use", "name": "Bash"}]}}
+{"isSidechain": false, "type": "user", "timestamp": "2026-09-23T08:53:36.160Z", "sessionId": "ux-audit", "message": {"role": "user", "content": [{"type": "tool_result", "is_error": false, "content": "[redacted]"}]}}
+{"isSidechain": false, "type": "attachment", "timestamp": "2026-09-23T08:53:36.160Z", "sessionId": "ux-audit"}
+{"_flip_offset": "ux-audit jsonl:4839410"}
+{"isSidechain": false, "type": "user", "timestamp": "2026-09-23T08:53:36.762Z", "sessionId": "ux-audit", "message": {"role": "user", "content": [{"type": "tool_result", "is_error": false, "content": "[redacted]"}]}}
+{"isSidechain": false, "type": "attachment", "timestamp": "2026-09-23T08:53:36.768Z", "sessionId": "ux-audit"}
+{"isSidechain": false, "type": "attachment", "timestamp": "2026-09-23T08:53:36.769Z", "sessionId": "ux-audit"}
+{"_flip_offset": "ux-audit jsonl:4862208"}
+{"type": "mode", "mode": "normal", "sessionId": "ux-audit"}
+{"type": "permission-mode", "permissionMode": "bypassPermissions", "sessionId": "ux-audit"}
+{"type": "atis-latch", "atis": "", "sessionId": "ux-audit"}
+{"_flip_offset": "ux-audit jsonl:4865239"}
+{"isSidechain": false, "type": "user", "timestamp": "2026-09-23T08:54:23.064Z", "sessionId": "ux-audit", "message": {"role": "user", "content": [{"type": "tool_result", "is_error": true, "content": "[redacted]"}]}}
+{"isSidechain": false, "type": "attachment", "timestamp": "2026-09-23T08:54:23.067Z", "sessionId": "ux-audit"}
+{"isSidechain": false, "type": "attachment", "timestamp": "2026-09-23T08:54:23.068Z", "sessionId": "ux-audit"}
+{"_flip_offset": "ux-audit jsonl:4893279"}
+{"isSidechain": false, "type": "assistant", "timestamp": "2026-09-23T08:54:33.527Z", "sessionId": "ux-audit", "message": {"role": "assistant", "stop_reason": "tool_use", "model": "claude-fable-5-1", "content": [{"type": "tool_use", "name": "Bash"}]}}
+{"isSidechain": false, "type": "user", "timestamp": "2026-09-23T08:54:40.441Z", "sessionId": "ux-audit", "message": {"role": "user", "content": [{"type": "tool_result", "is_error": true, "content": "[redacted]"}]}}
+{"isSidechain": false, "type": "assistant", "timestamp": "2026-09-23T08:54:48.958Z", "sessionId": "ux-audit", "message": {"role": "assistant", "stop_reason": "tool_use", "model": "claude-fable-5-1", "content": [{"type": "tool_use", "name": "Bash"}]}}
+{"_flip_offset": "conv-root jsonl:5552118"}
+{"isSidechain": false, "type": "user", "timestamp": "2026-09-23T08:52:59.101Z", "sessionId": "conv-root", "message": {"role": "user", "content": [{"type": "tool_result", "is_error": false, "content": "[redacted]"}]}}
+{"isSidechain": false, "type": "attachment", "timestamp": "2026-09-23T08:52:59.104Z", "sessionId": "conv-root"}
+{"isSidechain": false, "type": "attachment", "timestamp": "2026-09-23T08:52:59.105Z", "sessionId": "conv-root"}
+{"_flip_offset": "conv-root jsonl:5602933"}
+{"type": "mode", "mode": "normal", "sessionId": "conv-root"}
+{"type": "permission-mode", "permissionMode": "bypassPermissions", "sessionId": "conv-root"}
+{"type": "atis-latch", "atis": "", "sessionId": "conv-root"}
+{"_flip_offset": "conv-root jsonl:5603394"}
+{"type": "permission-mode", "permissionMode": "bypassPermissions", "sessionId": "conv-root"}
+{"type": "atis-latch", "atis": "", "sessionId": "conv-root"}
+{"type": "file-history-delta", "timestamp": "2026-09-23T08:55:09.838Z", "sessionId": "conv-root"}
+{"_flip_offset": "conv-root jsonl:5677459"}
+{"type": "mode", "mode": "normal", "sessionId": "conv-root"}
+{"type": "permission-mode", "permissionMode": "bypassPermissions", "sessionId": "conv-root"}
+{"type": "atis-latch", "atis": "", "sessionId": "conv-root"}

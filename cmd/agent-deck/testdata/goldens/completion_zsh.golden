@@ -1,0 +1,381 @@
+#compdef agent-deck
+# agent-deck zsh completion
+
+_agent_deck() {
+    local -a top_commands subs cands profile_args extra_args
+    local start cmd sub arg_index kind
+    top_commands=(add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback creds-refresh telegram-doctor version help completion profile inbox session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek)
+
+    start=2
+    case ${words[2]} in
+        -p|--profile)
+            if (( CURRENT == 3 )); then
+                cands=(${(f)"$(agent-deck __complete profiles 2>/dev/null)"})
+                compadd -a cands
+                return
+            fi
+            start=4
+            ;;
+        -p=*|--profile=*)
+            start=3
+            ;;
+    esac
+
+    if (( CURRENT < start )); then
+        return
+    fi
+    if (( CURRENT == start )); then
+        compadd -a top_commands
+        return
+    fi
+
+    cmd=${words[start]}
+    sub=""
+    arg_index=$(( CURRENT - start - 1 ))
+
+    case $cmd in
+    completion)
+        if (( CURRENT == start + 1 )); then
+            subs=(bash zsh fish)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    profile)
+        if (( CURRENT == start + 1 )); then
+            subs=(list create delete default)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    inbox)
+        if (( CURRENT == start + 1 )); then
+            subs=(drain)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    session)
+        if (( CURRENT == start + 1 )); then
+            subs=(start stop remove cleanup prune archive unarchive restart revive fork handoff attach focus show viewers current primer set-parent unset-parent update set-transition-notify set-title-lock set switch-account move send approve send-keys output children search)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    fleet)
+        if (( CURRENT == start + 1 )); then
+            subs=(status recover)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    mcp)
+        if (( CURRENT == start + 1 )); then
+            subs=(list attached attach detach server)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    plugin)
+        if (( CURRENT == start + 1 )); then
+            subs=(list attached attach detach)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    skill)
+        if (( CURRENT == start + 1 )); then
+            subs=(list attached attach detach source)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    group)
+        if (( CURRENT == start + 1 )); then
+            subs=(list show create update delete move change reorder)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    conductor)
+        if (( CURRENT == start + 1 )); then
+            subs=(setup teardown status list move migrate-dir)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    agents)
+        if (( CURRENT == start + 1 )); then
+            subs=(adopt list show)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    agent)
+        if (( CURRENT == start + 1 )); then
+            subs=(adopt list show)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    watcher)
+        if (( CURRENT == start + 1 )); then
+            subs=(import create start stop list status test routes install-skill)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    openclaw)
+        if (( CURRENT == start + 1 )); then
+            subs=(sync bridge status list send)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    oc)
+        if (( CURRENT == start + 1 )); then
+            subs=(sync bridge status list send)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    remote)
+        if (( CURRENT == start + 1 )); then
+            subs=(add remove list sessions drain attach rename update)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    worktree)
+        if (( CURRENT == start + 1 )); then
+            subs=(list info cleanup finish trust-scripts)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    wt)
+        if (( CURRENT == start + 1 )); then
+            subs=(list info cleanup finish trust-scripts)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    costs)
+        if (( CURRENT == start + 1 )); then
+            subs=(sync summary recompute)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    hooks)
+        if (( CURRENT == start + 1 )); then
+            subs=(install uninstall status)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    codex-hooks)
+        if (( CURRENT == start + 1 )); then
+            subs=(install uninstall status)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    gemini-hooks)
+        if (( CURRENT == start + 1 )); then
+            subs=(install uninstall status)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    hermes-hooks)
+        if (( CURRENT == start + 1 )); then
+            subs=(install uninstall status)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    cursor-hooks)
+        if (( CURRENT == start + 1 )); then
+            subs=(install uninstall status)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    tmux-hooks)
+        if (( CURRENT == start + 1 )); then
+            subs=(install uninstall status)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    pi-hooks)
+        if (( CURRENT == start + 1 )); then
+            subs=(install uninstall status)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    deepseek)
+        if (( CURRENT == start + 1 )); then
+            subs=(status profiles sessions)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    esac
+
+    kind=""
+    case "$cmd:$sub:$arg_index" in
+    agent:show:0) kind=agents ;;
+    agents:show:0) kind=agents ;;
+    conductor:move:0) kind=sessions ;;
+    group:change:0) kind=groups ;;
+    group:change:1) kind=groups ;;
+    group:delete:0) kind=groups ;;
+    group:move:0) kind=sessions ;;
+    group:move:1) kind=groups ;;
+    group:reorder:0) kind=groups ;;
+    group:show:0) kind=groups ;;
+    group:update:0) kind=groups ;;
+    mcp:attach:0) kind=sessions ;;
+    mcp:attached:0) kind=sessions ;;
+    mcp:detach:0) kind=sessions ;;
+    mv::0) kind=sessions ;;
+    plugin:attach:0) kind=sessions ;;
+    plugin:attached:0) kind=sessions ;;
+    plugin:detach:0) kind=sessions ;;
+    profile:default:0) kind=profiles ;;
+    profile:delete:0) kind=profiles ;;
+    remote:attach:0) kind=remotes ;;
+    remote:attach:1) kind=remote-sessions ;;
+    remote:remove:0) kind=remotes ;;
+    remote:rename:0) kind=remotes ;;
+    remote:rename:1) kind=remote-sessions ;;
+    remote:sessions:0) kind=remotes ;;
+    remote:update:0) kind=remotes ;;
+    remove::0) kind=sessions ;;
+    rename::0) kind=sessions ;;
+    rm::0) kind=sessions ;;
+    session:approve:0) kind=sessions ;;
+    session:archive:0) kind=sessions ;;
+    session:attach:0) kind=sessions ;;
+    session:children:0) kind=sessions ;;
+    session:focus:0) kind=sessions ;;
+    session:fork:0) kind=sessions ;;
+    session:handoff:0) kind=sessions ;;
+    session:move:0) kind=sessions ;;
+    session:output:0) kind=sessions ;;
+    session:primer:0) kind=sessions ;;
+    session:remove:0) kind=sessions ;;
+    session:restart:0) kind=sessions ;;
+    session:send:0) kind=sessions ;;
+    session:send-keys:0) kind=sessions ;;
+    session:set:0) kind=sessions ;;
+    session:set-parent:0) kind=sessions ;;
+    session:set-parent:1) kind=sessions ;;
+    session:set-title-lock:0) kind=sessions ;;
+    session:set-transition-notify:0) kind=sessions ;;
+    session:show:0) kind=sessions ;;
+    session:start:0) kind=sessions ;;
+    session:stop:0) kind=sessions ;;
+    session:switch-account:0) kind=sessions ;;
+    session:switch-account:1) kind=profiles ;;
+    session:unarchive:0) kind=sessions ;;
+    session:unset-parent:0) kind=sessions ;;
+    session:update:0) kind=sessions ;;
+    session:viewers:0) kind=sessions ;;
+    skill:attach:0) kind=sessions ;;
+    skill:attached:0) kind=sessions ;;
+    skill:detach:0) kind=sessions ;;
+    worktree:finish:0) kind=sessions ;;
+    worktree:info:0) kind=sessions ;;
+    wt:finish:0) kind=sessions ;;
+    wt:info:0) kind=sessions ;;
+    esac
+
+    if [[ -n $kind ]]; then
+        profile_args=()
+        if (( start > 2 )); then
+            if [[ ${words[2]} == -p || ${words[2]} == --profile ]]; then
+                profile_args=(-p ${words[3]})
+            else
+                profile_args=(-p ${words[2]#*=})
+            fi
+        fi
+        # remote-sessions scopes to the remote named in the preceding
+        # positional (`remote attach <remote> <session>`, `remote rename
+        # <remote> <session> <new-title>`) — forward it as an extra arg.
+        extra_args=()
+        if [[ $kind == remote-sessions ]]; then
+            extra_args=(${words[start+1+arg_index]})
+        fi
+        cands=(${(f)"$(agent-deck ${profile_args[@]} __complete $kind ${extra_args[@]} 2>/dev/null)"})
+    fi
+    # No dynamic completer applies (a leaf command's own positional args,
+    # e.g. `add <TAB>`) or it produced no candidates — fall back to
+    # filename completion, matching bash's `complete -o default`.
+    if (( ${#cands[@]} )); then
+        compadd -a cands
+    else
+        _files
+    fi
+}
+
+if [[ $(type compdef) = *function* ]]; then
+    compdef _agent_deck agent-deck
+fi

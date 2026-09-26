@@ -1,0 +1,23 @@
+              ╭──────────────────────────────────────────────────╮
+              │  Fork Session                                    │
+              │                                                  │
+              │    Name:                                         │
+              │    > probe (fork)                                │
+              │                                                  │
+              │    Group:                                        │
+              │    > alpha                                       │
+              │    [x] Create in worktree                        │
+              │                                                  │
+              │  ▶ Branch:                                       │
+              │    > fork/probe                                  │
+              │                                                  │
+              │      [ ] Carry parent state (y)                  │
+              │        ↳ creates a NEW branch at parent HEAD     │
+              │    [ ] Run in Docker sandbox                     │
+              │                                                  │
+              │  ─ Advanced Options ─                            │
+              │    [x] Skip permissions                          │
+              │  ▼ more below                                    │
+              │  ^F branch search │ Enter create                 │
+              │  Esc cancel │ Tab next                           │
+              ╰──────────────────────────────────────────────────╯

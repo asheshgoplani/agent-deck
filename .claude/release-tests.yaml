@@ -1,5 +1,27 @@
 version: 1
 tests:
+- id: issue2359-parse-latest-tag
+  added: '2026-09-22'
+  task: fix-2359
+  file: internal/releasetests/issue2359_install_version_parse_test.go
+  test_name: TestParseLatestTag_RealAPIFixture
+  purpose: install.sh's latest-version lookup must read tag_name from a real single-line GitHub releases API response, not the last quoted string on the line (the trailing reactions object's "eyes" key)
+  source: issue-2359
+  manual: false
+  run:
+    command: go test ./internal/releasetests/ -run TestParseLatestTag_RealAPIFixture -count=1 -v
+    expected: pass
+- id: issue2359-count-release-assets
+  added: '2026-09-22'
+  task: fix-2359
+  file: internal/releasetests/issue2359_install_version_parse_test.go
+  test_name: TestCountReleaseAssets_RealAPIFixture
+  purpose: install.sh's asset-count fallback must count browser_download_url occurrences, not matching lines (grep -c undercounts on single-line JSON)
+  source: issue-2359
+  manual: false
+  run:
+    command: go test ./internal/releasetests/ -run TestCountReleaseAssets_RealAPIFixture -count=1 -v
+    expected: pass
 - id: ch-support-append-channels
   added: 2026-04-16
   task: ch-support

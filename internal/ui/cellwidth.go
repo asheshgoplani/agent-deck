@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
@@ -53,6 +54,119 @@ func fitCellWidth(s string, width int) string {
 		return s + strings.Repeat(" ", width-w)
 	}
 	return s
+}
+
+// terminalSafeWidth reports the most cells s can occupy on any terminal the
+// deck may be drawn on, whichever width convention that terminal follows
+// (#2334).
+//
+// cellWidth counts a grapheme cluster by its base (Claude Code's
+// Bun.stringWidth agrees). Terminals disagree: xterm, glibc-built tmux and
+// Ghostty's legacy mode advance per code point, giving every Indic spacing
+// vowel sign (ा ि ी ो, Unicode category Mc) its own cell and drawing the
+// parts of a ZWJ emoji or a jamo-spelled Hangul syllable side by side, and
+// Ghostty 1.3's default unicode mode widens a cluster to 2 cells whenever a
+// vowel sign or a second consonant joins it. A Devanagari reply line that
+// measures 103 cells here takes 114 to 116 there, so a row padded to the pane
+// by cellWidth auto-wraps. The upper bound is taken per cluster, because the
+// conventions disagree in opposite directions (a VS16 emoji is wider as a
+// cluster, a vowel sign wider per code point) and whole-string totals can
+// cancel.
+func terminalSafeWidth(s string) int {
+	if widthConventionsAgree(s) {
+		return cellWidth(s)
+	}
+	s = ansi.Strip(s)
+	n := 0
+	for s != "" {
+		cluster, w := ansi.FirstGraphemeCluster(s, ansi.GraphemeWidth)
+		if cluster == "" { // defensive: never spin on a malformed tail
+			break
+		}
+		n += max(w, ansi.StringWidthWc(cluster))
+		s = s[len(cluster):]
+	}
+	return n
+}
+
+// terminalSafeTruncate returns the longest prefix of s (via cellTruncate, so
+// ANSI and keycap handling are unchanged) whose terminalSafeWidth is <= width.
+// terminalSafeWidth only grows with the prefix, so a binary search over the
+// cellTruncate budget finds it in a handful of passes.
+func terminalSafeTruncate(s string, width int) string {
+	if terminalSafeWidth(s) <= width {
+		return s
+	}
+	best := ""
+	for lo, hi := 0, width; lo <= hi; {
+		mid := (lo + hi) / 2
+		if out := cellTruncate(s, mid, ""); terminalSafeWidth(out) <= width {
+			best, lo = out, mid+1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best
+}
+
+// fitTerminalRow fits one final frame row to width so that it cannot
+// auto-wrap on any terminal (#2334).
+//
+// A row every convention measures the same (ASCII, box drawing, CJK) keeps the
+// exact fitCellWidth pad. A row the conventions disagree on has no single
+// correct pad: it is cut to width-1 cells under the widest convention and
+// finished with erase-to-end-of-line. On a terminal that draws it narrower,
+// the erase clears the stale cells the pad no longer reaches; on the widest
+// terminal the last column stays blank, so the erase (which acts on the
+// cursor's own cell) never eats a glyph.
+func fitTerminalRow(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	// Equality is exact per cluster: terminalSafeWidth takes each cluster's
+	// max with the cellWidth figure, so a row that measures the same cannot
+	// hide a disagreement.
+	if widthConventionsAgree(s) || terminalSafeWidth(s) == cellWidth(s) {
+		return fitCellWidth(s, width)
+	}
+	row := terminalSafeTruncate(s, width-1)
+	return row + strings.Repeat(" ", max(0, width-1-terminalSafeWidth(row))) + "\x1b[0m" + ansi.EraseLineRight
+}
+
+// widthConventionsAgree reports, without segmenting, that every rune of s
+// comes from blocks where the grapheme-cluster and per-code-point widths are
+// the same and no two runes can join into one cluster: Latin through
+// U+02FF, general punctuation, super/subscripts and currency, and U+2100 to
+// U+2BFF (letterlike, arrows, math, technical, box drawing, blocks, shapes,
+// misc symbols, dingbats). That covers the deck's own chrome (│ ─ ● ○ ◐ ■ ×
+// ▶ ⚙ ⛁ ▪ ⇅), so ordinary rows skip the per-cluster walk (#2334).
+// TestWidthConventionsAgree_WhitelistIsExact checks every pair of these runes
+// against the pinned width tables. Escape sequences are ASCII and pass.
+func widthConventionsAgree(s string) bool {
+	for i := 0; i < len(s); {
+		if s[i] < utf8.RuneSelf {
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if !widthConventionsAgreeRune(r) {
+			return false
+		}
+		i += size
+	}
+	return true
+}
+
+func widthConventionsAgreeRune(r rune) bool {
+	switch {
+	case r < 0x0300,
+		r >= 0x2010 && r <= 0x2027,
+		r >= 0x2030 && r <= 0x205E,
+		r >= 0x2070 && r <= 0x20CF,
+		r >= 0x2100 && r <= 0x2BFF:
+		return true
+	}
+	return false
 }
 
 // cellTruncate returns a prefix of s whose cellWidth is <= width, appending

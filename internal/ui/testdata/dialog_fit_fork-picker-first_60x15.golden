@@ -1,0 +1,14 @@
+    ╭──────────────────────────────────────────────────╮
+    │  Fork Session                                    │
+    │                                                  │
+    │  ▲ more above                                    │
+    │                                                  │
+    │  ▶ Branch:                                       │
+    │    > fork/probe                                  │
+    │    ─ branches (↑↓/Enter/Esc) ─                   │
+    │      ▶ main                                      │
+    │        feature/one                               │
+    │  ▼ more below                                    │
+    │  Type filter │ ↑↓ navigate                       │
+    │  Enter select │ Esc close                        │
+    ╰──────────────────────────────────────────────────╯

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/group.list/v1/in",
+  "title": "group.list input",
+  "type": "object",
+  "properties": {
+    "profile": {
+      "description": "Profile whose groups to list",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile"
+  ],
+  "additionalProperties": false
+}

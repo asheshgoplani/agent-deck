@@ -1,0 +1,130 @@
+     xxx -xx
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+
+⏺ xxx xx xxxxxxxxx xxx xxxxxxxxx xxxxxxx xxxxxxxx.
+
+⏺ xxxx(xx ~/.xxxxx/xxxxxxx/xxxxx/xxxxxx-xxxxxxx/xxxxxxxx-xxxxxxx/x.x.xxxxxxx && xxxxxx '%x\x' '{"xxxxxxx":"x.x","xx":x,"xxxxxx":"xxxxxxxxxx","xxxxxx":{"xxxxxxxxxxxxxxx…)
+  ⎿  {
+       "xx": x,
+       "xxxxxxx": "x.x",
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+
+❯ xxxxxxx xxxxx xx xx xx xxxxxxxx xx xxxxxxx xx xxxxx xxxx xx x xxxxxxxxxxx
+
+⏺ xxxx(xx ~/.xxxxx/xxxxxxx/xxxxx/xxxxxx-xxxxxxx/xxxxxxxx-xxxxxxx/x.x.xxxxxxx && (xxxxxx '%x\x' '{"xxxxxxx":"x.x","xx":x,"xxxxxx":"xxxxxxxxxx","xxxxxx":{"xxxxxxxxxxxxxx…)
+  ⎿  {
+       "xx": x,
+       "xxxxxxx": "x.x",
+     … +xxx xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+
+⏺ xxxx(xx ~/.xxxxx/xxxxxxx/xxxxx/xxxxxx-xxxxxxx/xxxxxxxx-xxxxxxx/x.x.xxxxxxx && (xxxxxx '%x\x' '{"xxxxxxx":"x.x","xx":x,"xxxxxx":"xxxxxxxxxx","xxxxxx":{"xxxxxxxxxxxxxx…)
+  ⎿  env: timeout: No such file or directory
+     (xxxx):x: xx xxxxxxx xxxxx: /xxxxx/x/.xxxxx/xxx/*
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+
+⏺ xxxx(xx ~/.xxxxx/xxxxxxx/xxxxx/xxxxxx-xxxxxxx/xxxxxxxx-xxxxxxx/x.x.xxxxxxx && x=$(xxxxx xxxxxxx); (xxxxxx '%x\x' '{"xxxxxxx":"x.x","xx":x,"xxxxxx":"xxxxxxxxxx","xxxx…)
+  ⎿  {
+       "xx": x,
+       "xxxxxxx": "x.x",
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+
+⏺ xxxx(xxxxxxx ~/.xxxxx/xxxxxx.xxxxxx "xxxxxx xxxxxxxxxx(xxxx);" ; xxxxxxx ~/.xxxxx/xxxxxx.xxxxxx "xxxxxx xx, xxxxxx(xxxxxxx,x,xxx) xxxx xxxx xxxxx xxxxxxx xxxx '%xxxx…)
+  ⎿  0|id|INTEGER|0||1
+     x|xx|xxxxxxx|x||x
+     x|xx_xxxxx|xxxxxxx|x||x
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxx(xxxxxxx ~/.xxxxx/xxxxxx.xxxxxx "xxxxxx xxxxxxxx(xx,'xxxxxxxxx'), xxxxx, xxxxxx, xxxxxx(xxxxxxxxxxxxxxxxx,x,xxx) xxxx xxxx xxxxx xxxxxxxxxxxxxxxxx xxxx '%xxxxxxx…)
+  ⎿  2026-09-19 11:00:22|TRACE|codex_mcp::connection_manager::tool_catalog|session_loop{thread_id=01a0b952-cf2a-7e93-8839-0582c177ac73}:submission_dispatch{otel.name="op.dispatch.tu
+     xx_xxxxx" xxxxxxxxxx.xx="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" xxxxx.xx="xxxx_xxxxx"}:xxxx{xxxx.xxxx="xxxxxxx_xxxx.xxxx" xxxxxx.xx=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx xxxx.xx=
+     xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx xxxxx=xxx-x.x-xxx xxxxx.xxxx.xxxxxxxxx_xxxxxx=xxxx}:xxxxxxx_xxxx.xxx:xxx_xxxx:xxxx_xxxxxxx.xxxxxxx:xxx.xxxxxxx.xxxxxxx_xxx_xxxx: xxxxxxxx x
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxxx xxxxxxx. xxx xxxxxx xxxxx xxxx x xxxxx xx xx xxxx, xx x'x xxxxxxxx xxxxxxx xxx xxxxxx xxxxx xxxxxx xx xxxxx'x xxxxxxx xxxxxxxxxxx.
+
+  xxxxxx x xxxxxxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxx(xxxxxxx ~/.xxxxx/xxxxxx.xxxxxx "xxxxxx xxxxxxxxxxxxxxxxx xxxx xxxx xxxxx xxxxx='xxxx' xxx xxxxxxxxxxxxxxxxx xxxx '%xxxxxxxx-xxxxxxx%xxxxxxx xxxxxx%' xxxxx xx xx…)
+  ⎿  FAILED server_name="computer-history" error=handshaking with MCP server failed: JSON-RPC error: -32603: Internal error: The data couldn’t be read because it isn’t in the correc
+     x xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."}): xxxx-xxx xxxxx: -xxxxx: xxxxxxxx xxxxx: xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx
+      xxx xxxxxxx xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."})
+     xxxx
+
+⏺ xxxx(x=/xxxxxxx/xxx/xxxxxx-xxx/-xxxxxxx-xxx-xxxx-xxxxxx-xxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxxxxxxx; xxxxx -x $x; xxx > $x/xxxx.xx <<xxx
+      #!/xxx/xx…)
+  ⎿  IN:
+     xxx: /xxxxxxx/xxx/xxxxxx-xxx/-xxxxxxx-xxx-xxxx-xxxxxx-xxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxxxxxxx/xx.xxx: xx xxxx xxxx xx xxxxxxxxx
+     … +x xxxxx (xxxx+x xx xxxxxx)
+  ⎿  (timeout 1m 30s)
+
+⏺ xxxx(x=/xxxxxxx/xxx/xxxxxx-xxx/-xxxxxxx-xxx-xxxx-xxxxxx-xxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxxxxxxx; xxxx -xx $x/xxx.xxx)
+  ⎿  Reading additional input from stdin...
+
+⏺ xxxx(x=/xxxxxxx/xxx/xxxxxx-xxx/-xxxxxxx-xxx-xxxx-xxxxxx-xxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxxxxxxx; xx $x && xxxxxxx xx xxxxx xxxx --xxxx-xxx-xxxx-xxxxx -…)
+  ⎿  IN:
+     {
+       "xxxxxxx": "x.x",
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+  ⎿  (timeout 2m)
+
+⏺ xxxxxxxxxx. xxx xxxxxxxxx xxxx xxxxx xxxxx xx xxxxx'x xxxxxxxxxx xxxxxxx xxxxxx xxx xxxxxx.
+
+⏺ xxxx(x="$xxxx/.xxxxx/xxxxxxxx-xxx/xxxxx xxxxxxxx xxx.xxx/xxxxxxxx/xxxxxxxxxxxxx/xxxxxxxxxxxxxxxxxxxx.xxx/xxxxxxxx/xxxxx/xxxxxxxxxxxxxxxxxxxx"
+      xxx xxxx xx '{"xxxxxxxx…)
+  ⎿  == {"experimental":{"codex/auth-change":{}}}
+     {"xxxxx":{"xxxx":-xxxxx,"xxxx":{"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."},"xxxxxxx":
+     == {"xxxxxxxxxxx":{"xxxx":{},"xxx":{}}}
+     … +x xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxx(x=/xxxxxxx/xxx/xxxxxx-xxx/-xxxxxxx-xxx-xxxx-xxxxxx-xxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxxxxxxx; xxxxx $x/xx.xxx $x/xxx.xxx; xx $x && xxxxxxx xx /xxxxx…)
+  ⎿  {
+       "xxxxxxx": "x.x",
+       "xx": x,
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+  ⎿  (timeout 2m)
+
+⏺ xxxx(xxxxx xxxxxxxx xxxx x>/xxx/xxxx)
+  ⎿  apply_patch_freeform                     removed            false
+     xxxxx_xxxxx_xxxxxxxx_xxxx_xxxxxxx        xxxxx xxxxxxxxxxx  xxxxx
+     xxxxx_xxxxx_xxxxxxxxx_xxxxxx             xxxxx xxxxxxxxxxx  xxxxx
+     … +xxx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxx(x=/xxxxxxx/xxx/xxxxxx-xxx/-xxxxxxx-xxx-xxxx-xxxxxx-xxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxxxxxxx; xxxxx $x/xx.xxx $x/xxx.xxx; xx $x && xxxxxxx xx xxxxx…)
+  ⎿  {
+       "xxxxxxx": "x.x",
+       "xx": x,
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+  ⎿  (timeout 2m)
+
+⏺ xxxx xxxxx xxxxx. xxx xxxxxxxx xxx xxxx xxx xxx xxx xxxxxxxxx xxxxxxx (xxxxxx xxxxx).
+
+⏺ xxxx(xx ~/.xxxxx/xxxxxx.xxxx ~/.xxxxx/xxxxxx.xxxx.xxx-xxxxxxxx-xxxx-$(xxxx +%x) && /xxx/xxx/xxx -x '' 'x/^xxxxxxxxxxxx = "xxxxxxx"$/xxxxxxxxxxxx = "xxxxxxx"\xxxxxxxx…)
+  ⎿  approvals_reviewer = "user"
+     xxxxx = "xxx-x-xxxxx"
+     xxxxx_xxxxxxxxx_xxxxxx = "xxxxxx"
+     … +x xxxxx (xxxx+x xx xxxxxx)
+  ⎿  Shell cwd was reset to /private/tmp/exec-macapp-codex
+  ⎿  (timeout 2m)
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Comp-history
+
+│ The computer-history error is a bug in OpenAI's Computer Use helper, not in your setup: your Codex CLI (0.154.0) sends a new handshake field the helper can't read yet. Your desktop app
+│ (0.153.4) doesn't send that field, so it works fine there. How do you want to handle it?
+
+❯ 1. xxxxx xx (xxxxxxxxxxx)
+     xxx xxxxxxx xxxx xx xxxx. xxxxxxxx xxxxxxx xxxx xxxxx xx xxx xxxxxxxx xxx xxx xxxxx xxxxx xx xxx xxxxxxx xxx. xx xxxx xx xxxx xxxx xxxxxx xxxxxxx xxx xxxxxx.
+  2. xxxxxxx xxxxxx
+     xxx xxxxxxxx-xxxxxxx xxxxxxx = xxxxx xx ~/.xxxxx/xxxxxx.xxxx. xxx xxxxxxx xxxx xxxx, xxx xxxxxxxx xxxxxxx xxxx xxxxx xxx xx xxx xxxxxxx xxx xxxxxxx xxxx xxx xxx xxxx xxxxxx.
+  3. xxxx xxxxxxxxx.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. xxxx xxxxx xxxx
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+

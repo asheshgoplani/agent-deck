@@ -1,0 +1,5 @@
+terminal_width=200 list_width=70
+▶ ▾ alpha (3)
+  ▶└─ ○ a genuinely long session title claude
+  ▶└─ ○ thorny-sky claude Review the deployment
+  ▶└─ ○ a useful fork session title claude [fork/claude-...]

@@ -1,0 +1,9 @@
+Usage: agent-deck remote list [options]
+
+Options:
+  --check
+        Ask each remote for its agent-deck version now (one SSH call per remote)
+  --retry
+        Clear cached poll/authentication state for all configured remotes (no SSH unless --check)
+  --json
+        Output as JSON

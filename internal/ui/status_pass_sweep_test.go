@@ -35,7 +35,11 @@ printf '%s\n' "$*" >> "$SWEEP_FIXTURE/calls"
 if [ "$1" = -u ]; then shift; fi
 if [ "$1" = -L ]; then shift 2; fi
 case "$1" in
-list-sessions) cat "$SWEEP_FIXTURE/names";;
+list-sessions)
+ case "$*" in
+ *CODEX_SESSION_ID*) while IFS= read -r name; do printf '%s\t\n' "$name"; done < "$SWEEP_FIXTURE/names";;
+ *) cat "$SWEEP_FIXTURE/names";;
+ esac;;
 list-windows) cat "$SWEEP_FIXTURE/windows";;
 list-panes) case "$*" in *pane_pid*) printf '1\n';; *-a*) cat "$SWEEP_FIXTURE/panes";; *) printf '0\n';; esac;;
 show-environment)
@@ -60,18 +64,26 @@ esac
 	t.Cleanup(tmux.ResetSocketSessionCacheForTest)
 	started := time.Now()
 	h.backgroundStatusUpdate()
+	firstPass, err := os.ReadFile(filepath.Join(dir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads := strings.Count(string(firstPass), "show-environment"); reads > fullStatusBatchSize {
+		t.Fatalf("first tick made %d environment reads, budget %d", reads, fullStatusBatchSize)
+	}
+	h.backgroundStatusUpdate()
 	elapsed := time.Since(started)
 	data, err := os.ReadFile(filepath.Join(dir, "calls"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	reads := strings.Count(string(data), "show-environment")
-	t.Logf("production background sweep: %d instances, %d environment reads, %s", n, reads, elapsed)
+	t.Logf("production background sweep: %d instances across two ticks, %d environment reads, %s", n, reads, elapsed)
 	if elapsed < 2*time.Second {
 		t.Fatal("fixture did not cross ownership TTL")
 	}
-	if reads != 2*n {
-		t.Fatalf("environment reads=%d, want %d (one own read and one shared peer read per instance)", reads, 2*n)
+	if reads != n {
+		t.Fatalf("environment reads=%d, want %d (one own read per instance)", reads, n)
 	}
 	snapshot := h.getSessionRenderSnapshot()
 	for _, inst := range h.instances {

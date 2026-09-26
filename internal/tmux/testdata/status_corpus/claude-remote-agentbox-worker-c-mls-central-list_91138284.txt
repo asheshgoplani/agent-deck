@@ -1,0 +1,35 @@
+  │                Run                │                                             Result                                              │
+  ├───────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ New unit tests                    │ 16 pass                                                                                         │
+  ├───────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ New integration tests, fresh      │ 22 pass                                                                                         │
+  │ Postgres 17                       │                                                                                                 │
+  ├───────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ All 8 MLS integration files       │ 123 pass                                                                                        │
+  ├───────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Journal and snapshot guards       │ 26 pass                                                                                         │
+  ├───────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Full unit suite                   │ 6751 pass                                                                                       │
+  ├───────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Control run, mail call disabled   │ 4 red for the right reason                                                                      │
+  ├───────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ Full integration suite            │ 39 red files, all pre-existing (28 on the known-red list, 11 in the migrations family, proven   │
+  │                                   │ red on untouched alpha)                                                                         │
+  └───────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  xx xx: xxxx xxx xxxxx, xxxx-xxxxxx xxxxxxxxxxx xxx xxxxx xxxxxxx xx xxxxxx xxxx.
+
+  xxxxxx-xx xxxx, xxx xxxxxxx xxxxx xxx xxxx xx: xxxxxxx xxxxx xx xxxxxx. xxx xx xxx xxx xxxx xxxx xxxx xx xxxxxxx xxxxxxxx xxxx xxxxxx xxx
+  xxxx xxxx xxx xxxxx xx, xx xxxx xxx xxxx xxxxx.
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  xxx xxxxxxxx xxxx xx xxx xxxxx xxxxxx xxx_xxxxxxxx_xxxxx_xxxxxxx xxxxxxx xxx, xxxxxxxxx xxxx xxxxxxx xxx xxxxxx, #xxx xxxx-xxxxxx xxxx
+  xxxxxxxxx, xxxxxxxx xxx xxxxxx xxxxxxx xx xxx xx xxxx
+
+✻ Baked for 2m 42s · done 10:18 AM · 2 shells still running
+                                                                                                    new task? /clear to save 276.3k tokens
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── worker-c-mls-central-list ─
+❯ xxxxxx xx xxx xxxxxx xxxx
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [worker-c · semantic] u@host:/srv/proj-a/worktrees/worker-c/mls-central-list | [Fable 5.1] ctx:28% in:275.3k out:1.0k 7d:16%
+  ⏵⏵ bypass permissions on · PR #719 · 2 shells · ← for agents

@@ -1,25 +1,53 @@
-# Opt-in telemetry design
+# Opt-in telemetry design (schema 2)
 
-Owner requirement: "make sure the user opts in, not do it without asking them at any cost".
+Original owner requirement (schema 1): "make sure the user opts in, not do it without asking them at any cost".
+
+## Owner decision of 2026-09-26: Accept is highlighted and Enter confirms
+
+For schema 2 the owner decided that the consent screen has two same-size buttons with **Share anonymous data** highlighted, and that Enter confirms the highlighted button. This reverses the schema 1 rule that only a deliberate `y` enables in the TUI. It is recorded here as a deliberate decision, with its risks:
+
+1. **It departs from the schema 1 requirement quoted above.** Schema 1 treated every key but `y` as no; schema 2 treats Enter on the highlighted Accept as yes.
+2. **EU validity is untested.** ePrivacy Art 5(3) (EDPB Guidelines 2/2023) covers the upload, and Planet49 rejects pre-ticked boxes. Whether Enter on a highlighted Accept is "unambiguous" consent has no ruling.
+3. **Reputation.** A highlighted Accept may be called a dark pattern.
+
+Mitigations built in: the whole disclosure must be visible before Enter or `y` can accept (78×22 minimum, destination line must fit); keys in the first 750 ms and pasted input are ignored; No is the same size and always visible; `n` and Esc both decline and are remembered; Ctrl-C postpones without answering; the confirmation line names the off command; **nothing is sent before the next local day**, so a user has a full day to change their mind; `telemetry preview` and `AGENTDECK_TELEMETRY=log` let anyone audit. The CLI (`telemetry on`) keeps schema 1 strictness: a plain shell prompt has no highlighted button, so only `y` enables.
+
+**Re-asking schema 1 decliners (open question Q1, decided 2026-09-26: yes, once).** Schema 1 recorded any key, including Enter, as no, so many schema 1 declines are accidental. Such installs are asked the schema 2 question once, with the line "You said no to an earlier, smaller version of this question."; the answer is stored with `declined_schema = 2` and a schema 2 no is final.
 
 ## Consent state machine
 
-Missing, corrupt, unreadable or unknown-schema state is undecided and off. Only an explicit terminal answer transitions to granted. A negative answer or `telemetry disable` transitions to declined, remembered across upgrades. No timer, script, CI marker, environment value or --yes can grant consent. The TUI never prompts over insert mode or another modal, or during a storage reload. A clipped question cannot accept yes. CLI JSON mode verifies its disclosure stream is a TTY.
+Missing, corrupt, unreadable or unknown-schema state is undecided and off. Only an explicit answer at a terminal transitions to granted: Enter on the highlighted Accept or `y` in the TUI, `y` in the CLI. `n`, Esc, a CLI answer other than `y`, `telemetry off` or the Settings Privacy row transition to declined. Ctrl-C leaves the state unchanged. No timer, script, CI marker, environment value or `--yes` can grant consent, and `AGENTDECK_TELEMETRY=log` never grants.
 
-Consent binds to the exact endpoint and schema shown. A mismatch suspends sending until fresh consent, with a new random ID and empty counters. Config and hard-off environment switches cannot grant consent. The exact shared prompt is in consent.go and reproduced in [TELEMETRY.md](../TELEMETRY.md).
+Consent binds to the exact endpoint and schema shown. Schema 2 turns every schema 1 grant into undecided, so schema 1 users are asked again. A mismatch later (endpoint changed in config) suspends recording and upload until fresh consent, with a new random id and salt. A grant is written durably before anything is recorded; the consent events themselves are recorded only after that write. The exact prompt is in `internal/telemetry/consent.go` and reproduced in [TELEMETRY.md](../TELEMETRY.md).
 
-## Data and concurrency
+Hard off, checked on every call: `DO_NOT_TRACK` truthy, `AGENTDECK_TELEMETRY` other than `1/true/yes/on/log`, `[telemetry] disabled = true`, unreadable config, any CI marker, non-TTY stdin/stdout, and Go test binaries (`testing.Testing()`) unless a test opts in with `telemetry.EnableForTest`.
 
-State contains schema, consent, consent endpoint/version/day, revision, random ID, counters, last attempted/acknowledged days and exact acknowledged payload. It is shared across profiles in the effective data directory, mode 0600. Durable atomic replacement prevents partial state. A stable sibling advisory lock covers read/modify/write and the bounded request across processes. Revision comparisons reject stale affirmative saves. Negative choices reload and save under the lock. An already-started request may finish before disable returns, at most five seconds; a completed disable prevents subsequent sends unless consent is explicitly renewed. Counter recording uses a nonblocking lock and drops samples while another operation holds it, so a sender never stalls the UI through a counter hook. Manual edits, rollback and deletion bypass the concurrency/daily-history guarantees; deletion resets off.
+## Data
 
-## Payload and transport
+Schema 2 publishes 29 events (16 with call sites in 1.16.18, the rest reserved so adding their call sites later does not change the schema and re-prompt everyone). Every event name, property key and value is validated against tables in `internal/telemetry/schema.go` at record time and again when the spool is read back; anything else is dropped and counted. Helpers take typed enums; raw tool, MCP and skill names are normalised to the allow-list (`other`/`custom`) and session ids are hashed with a local salt inside the telemetry package. Numbers are bucketed with fixed published edges. Time is the local day, hour and weekday only. The field list in TELEMETRY.md is generated by `agent-deck telemetry schema --markdown` and a test keeps it equal to the code.
 
-TELEMETRY.md and CLI --help enumerate the exact fields and counter allowlist. Unknown keys are dropped twice; versions and IDs are validated; counts saturate at 1000; dates are UTC days; the body is bounded at 2 KiB. Only interactive TUI code calls MaybeSend. It rechecks consent, environment and interactivity and durably reserves the day before POST. No retries that day, redirects, cookies, proxy env, response interpretation or CLI sends. Acknowledgement loss is unknown delivery.
+## Storage and concurrency
 
-## Backend decision and threat model
+`telemetry-state.json` (mode 0600) holds consent, endpoint, schema, level, install id, salt, sequence counter, local first-seen facts, funnel bitmask, up to 15 days of rollup counters and the upload schedule. `telemetry-spool.ndjson` (mode 0600) is the local queue. One stable sibling lock file guards both. Recording takes it non-blocking and drops the event on contention, so the UI never waits; the uploader holds it for the whole bounded send, so `telemetry off` either waits for an in-flight upload or prevents it, and after it returns nothing further is sent. Revision checks reject stale positive choices. One TUI per machine samples `activity.hourly` (a non-blocking lock held for the TUI's lifetime), so hours are never double counted.
 
-The .invalid placeholder remains undeployed and triggers no network or DNS. A self-hosted endpoint requires HTTPS, except loopback test HTTP; URL credentials, queries and fragments are refused. Operators must validate the strict schema, cap bodies, suppress IP/header/body logs throughout their proxy/CDN/hosting stack, and publish retention/deletion policies. No running receiver is claimed here. The client cannot enforce server retention. Transport necessarily reveals a source IP, and pseudonymous IDs, rare usage and timing can correlate reports. Rotation removes the explicit ID link, not every possible correlation. A local account attacker who can rewrite consent state can forge it; that is outside this boundary.
+## Transport and backend
+
+Backend decision of 2026-09-26: **PostHog Cloud EU** through its public `/batch/` capture API, no server of our own and no SDK (`go.mod` gains nothing). The endpoint is a config value defaulting to `https://eu.i.posthog.com` so a hostname we own can front PostHog later without a code change (open question Q2); changing it re-asks consent. The project key (`phc_...`) is a compiled-in default that stays empty until the PostHog project exists; only builds without one take `AGENTDECK_POSTHOG_KEY` or `[telemetry] posthog_key`, so the environment cannot redirect a release build's uploads; with no key the client spools locally and never uploads.
+
+Only the interactive TUI uploads (plus the one synchronous `uninstall` event): at most every 6 hours (open question Q4, decided: 6-hourly, completed hours only; the consent text says "a few times a day"), never on the consent day, completed local hours of events and completed local days of rollups. Retry and rejection rules are in TELEMETRY.md. The hardened client follows no redirects, ignores proxy environment, keeps no cookies, times out after 5 s and reads at most 1 KiB of the response. Dev builds and `.invalid` endpoints never send. The per-install daily cap (60 events plus rollups) keeps volume inside PostHog's free plan; a billing limit is a PostHog setting, not client code (open question Q3).
+
+## Threat model
+
+- **Transport sees the source IP.** PostHog is configured to discard client IPs and GeoIP is disabled per event and per project; the client sends no `$ip`. Verified by a dogfood event before release (gate G4).
+- **Correlation.** The install id is random and rotatable, but rare usage patterns can still correlate reports. `reset-id` removes the explicit link, not every possible correlation.
+- **The project key is public by design.** It can only write events. Abuse means junk events and a burned quota; dashboards filter on `schema = 2` and `$lib = agent-deck`, and the key can be rotated in a release (old clients then get 4xx and stop after 3 days).
+- **Deletion.** Personless events cannot currently be deleted by id; TELEMETRY.md says so plainly and states the 1-year expiry (gate G3).
+- **Local attacker.** An account that can rewrite the state file can forge consent; that is outside this boundary.
+
+## Launch gates before a release sets the key
+
+G1 second-person review of the consent screen, schema and the redaction test; G2 PostHog plan retention confirmed as 1 year (else change the screen text); G3 deletion wording confirmed; G4 IP discard and GeoIP off verified with a dogfood event; G5 this document updated with the owner decision (done).
 
 ## Verification
 
-Tests cover no-consent paths, hard-off switches, automation, endpoint/schema changes, payload values, CLI JSON/EOF, clipped prompts, stale decisions and cross-process count/send/disable schedules. Tests and contributor self-check run only in bounded Docker or CI. A separate agent reviews consent and privacy.
+Tests cover the consent gate table (state × environment × TTY), the dialog keys and golden frames, allow-list golden batch, redaction canaries, bucket edges, spool limits and torn lines, cross-process appends, upload against a fake PostHog (backoff, Retry-After, rejection, chunking, redirects, proxy and foreign env, log mode, dev builds, consent day, completed hours), schema doc drift and remote isolation. Tests run only in bounded Docker or CI; a transport guard fails the telemetry tests on any non-loopback request.

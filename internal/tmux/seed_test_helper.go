@@ -26,6 +26,28 @@ func SeedPaneInfoCacheForTest(t testing.TB, info map[string]PaneInfo) {
 	})
 }
 
+// SeedWindowCacheForTest replaces the package's window cache with the supplied
+// data and marks it fresh. Test cleanup wipes the cache back to its pristine
+// zero state so concurrent or follow-on tests do not see seeded data.
+//
+// Production callers must use RefreshSessionCache; this exists so packages
+// outside internal/tmux (notably internal/ui) can drive window-row injection
+// through the real rebuildFlatItems path without standing up a real tmux
+// server.
+func SeedWindowCacheForTest(t testing.TB, windows map[string][]WindowInfo) {
+	t.Helper()
+	windowCacheMu.Lock()
+	windowCacheData = windows
+	windowCacheTime = time.Now()
+	windowCacheMu.Unlock()
+	t.Cleanup(func() {
+		windowCacheMu.Lock()
+		windowCacheData = nil
+		windowCacheTime = time.Time{}
+		windowCacheMu.Unlock()
+	})
+}
+
 // ExpireStartupWindowForTest ends the session's startup window (see
 // inStartupWindowLocked) so GetStatus classifies the pane from live evidence
 // instead of reporting "starting".

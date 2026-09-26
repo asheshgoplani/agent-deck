@@ -3,6 +3,7 @@ package git
 import (
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -85,11 +86,15 @@ func CaptureSparseCheckout(dir string) SparseCheckoutState {
 //
 // Callers must treat an error here as fatal for the worktree: it is at that
 // point half-initialized and has to be cleaned up.
-func ApplySparseCheckout(worktreePath string, st SparseCheckoutState) error {
+//
+// configArgs are `-c key=value` pairs (see gitConfigArgs) prepended to both
+// git invocations, so `[worktree] checkout_git_config` reaches the checkout
+// that actually materializes the files (#2366).
+func ApplySparseCheckout(worktreePath string, st SparseCheckoutState, configArgs ...string) error {
 	if !st.Enabled {
 		return nil
 	}
-	args := []string{"-C", worktreePath, "sparse-checkout", "set"}
+	args := append(slices.Clone(configArgs), "-C", worktreePath, "sparse-checkout", "set")
 	if st.Cone {
 		args = append(args, "--cone")
 		// Only meaningful in cone mode (see SparseCheckoutState.SparseIndex);
@@ -111,7 +116,8 @@ func ApplySparseCheckout(worktreePath string, st SparseCheckoutState) error {
 		return fmt.Errorf("sparse-checkout set: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 
-	if out, err := exec.Command("git", "-C", worktreePath, "checkout").CombinedOutput(); err != nil {
+	checkout := append(slices.Clone(configArgs), "-C", worktreePath, "checkout")
+	if out, err := exec.Command("git", checkout...).CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout sparse worktree: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil

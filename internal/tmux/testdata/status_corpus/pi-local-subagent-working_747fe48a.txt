@@ -1,0 +1,50 @@
+
+[Extensions]
+  extension, pi-subagents@0.51.0, pi-web-search@1.3.1:src
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Update Available
+ New version 0.87.1 is available. Run pi update
+ Changelog: https://pi.dev/changelog
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+ Use the subagent tool (delegate the work to a subagent, do not read the files yourself) to summarize notes1.md and notes2.md in this directory in three bullets each. Then report the subagent's
+ summary.
+
+
+
+ subagent list
+ Executable agents: · 22 lines
+   Press ctrl+o for full output
+
+
+
+ subagent delegate
+ Run fan-out: 0/64 used, 64 remaining · 9 lines
+   Press ctrl+o for full output
+
+
+
+ subagent_wait
+ Waiting 3.0s for 1 async run(s) and 0 provider item(s). · delegate: thinking…
+ Active async runs: 1
+
+ - 1914dead-9141-492d-989b-235ab87ae881 | running | active 1s ago | 1 turns | 2 tools | workflow | step 1/1 | /private/tmp/exec-status-audit-r4/sb-pi
+   1. main (delegate) | running | active 1s ago | 1 turns | 2 tools | gpt-5.6-sol
+   Run fan-out: 1/64 used, 63 remaining
+
+
+ async subagent delegate · background
+ ⠇ delegate · step 1/1 · 2 tool uses · 5.1s
+   ⠧ Step 1/1: delegate · running (gpt-5.6-sol) · 1 turns · 2 tool uses
+     ⎿  active now
+     Press ctrl+o for live detail
+     output: /var/folders/23/dr045wf527x5d7c9clbqp8hm0000gn/T/pi-subagents-uid-501/async-subagent-runs/1914dead-9141-492d-989b-235ab87ae881/output-0.log
+── ⠴ Working ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1 active agent · Async runs 0/∞ · ↓ 2.6k tokens · ↓/← to inspect
+/private/tmp/exec-status-audit-r4/sb-pi
+↑7.5k ↓150 R13k CH92.2% $0.049 (sub) 2.7%/272k (auto)                                                                                                                   (openai-codex) gpt-5.6-sol • low

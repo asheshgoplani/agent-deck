@@ -1,0 +1,50 @@
+  xxx xxxxx xxxxx: xxxxxxxxxx.xxxxx.xx → xxxxxxxxxx.xxxxxxxxxxxxxx →
+  xxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxx. xxxx xxxxxx xxxxxxx x xxxx xxxxxxxx (xxx xxxxxxxx xxxxxx) xxx                                                                                  ✕
+  xxx xxxx xxxxxxxxxxxxxxxxxx xx x xxxx xxxxxx.
+
+  xxxx'x xxx xxxxx xx.x-xx-xx.x xxxxxxxxxxx — xxxxxxx xxx xxxxxx xxx xxxxxxx xxx xxxxxx xx xxxx
+  xxxxxxx. xxxxxxxx xx xxx xxxx xx.x xxxxx, xxxx xxxxxx xxxx xxxxx, xx xxxxx xxxx xxx xxxxxxxxxx:
+
+  ┌─────────────────────────────────────┬────────┐
+  │                Path                 │ Dialog │
+  ├─────────────────────────────────────┼────────┤
+  │ cold launch, stored dark            │ light  │
+  ├─────────────────────────────────────┼────────┤
+  │ same session, toggle off→on, reopen │ dark   │
+  └─────────────────────────────────────┴────────┘
+
+  xxx (xxxxxxx-xxxx, xx). xxx xxxxxxx xxxxx xxx xxxxx xxx xxxxxx xxxxxxx @xxxx/xx/xxxxxxx-xxxxxxx'x xxx
+  xxxx xxxx xxxxxxxxxxx xxx xx xxx xxxx xxxxxxxx() xxxxxxxx — xxxxx xx xxxx xxxxxxxxxx xxx xx xxxxx
+  xxxxxx, xxxxxxxxxxx xx xxxx xxxxx xxxx xxxxxxx xxx xxxxxxxx. @xxxx/xx/xxxxxxx-xxxxxxx xx xxxxxxxx xx
+  xxxxx xxxxxxx xxxxxx, xxx xxxxxxxx, xx xxx xxxxxxxxx xxxx xx xx; xxx xxx xxxxxx xxxxxxx xxx xxxx
+  xxxxxx xxxxxxx xxxxxx xxxx xxx xxxx xxxxx.
+
+  xxxxxxxx xxxx-xxxxxx (xx.x xxxxxx + xxxx xxxxxx'x xx): xxxx → xxxx xxxxx xxx xxx xxxxxxx xxxx; xxxxx                               xx xxxxxxx xxxx xxxxxxx
+  → xxxx xxxxx; xxxxxx xxx xx xxxxx xxxxx xx xxxxx xxxx.
+
+  xxxxx: xxx xxxxx; xxxx xxxx/xxxx — xxxx xxxxx xxxxxxxxxxxxxxxxxxxxxxxxxxx xxxxx (x/x xxxxx). xxx xxx
+  xxxxx xxx xxx xxxx xxxx xxx xxx'x xxxx/xxxxx xxxxxx; xxx xxxxxxxx xxxxxxx xxxxx xxx xxxxx xxx
+  xxxxxxx-xxxxxxx xxxxxx, xx xxxx xxxxx xxx xxxxx xxxx.
+
+  xxxxxx xxxxxxxx xx xxx xxxx xxxxxx (xx #xxx, xxxxx xxxxx, x xxxxxxx); xxxxxx xxxxxxxx xx
+  xxxxxxxxxxxxxxxxxxxxxxxx xx xxx xxxxxx xxx. xxx-xx-xxxxxx.xx xxx x xxx "xxx-xxx — xxxxxx xxxxx"
+  xxxxxxx xxxx xxx xxxxxx. xxxxxxxx xxxxxxx.
+
+  xxx xxxxxxxxx xxxx xxxxx xxxx xxxxxxxxx: xx-xxxxxxxxx xxxxxxxxxx.xxxxxxxxxxxxxx xxxx xxx xxxxxxxx xx
+  xx xxxxx xxx xxxx xxxxx xxxxx — xxxxx xxxxxxx/xxxxxxxxx xxxxxxx xxxxxxx xxx xxxxxxxx xxxxxx,
+  xxxxxxxxx xxx xxxx xxxxx xxxxxx xxx xxx-xx/xx/xx/xx xxxxx xxx-xxx — xx xxxxx xxxxx xxxxx. x xxx xxx
+  xxxx xx xxxx: xx xxxxxxx xxxx xxx xxxxxx xxx'x xxxxxx xxxxxx xx-xxxxxx xxx xxxxx xxx xxx xxxxxx-xxxxx
+  xxxxxxxxxxx. x'xx xxxxxxx xx xx xxx xxxxxx xx xxx xxxxxxxxxxx xxxx xxxxxx, xxxx xxxx xxxxxxxx xx xxx
+  xxxxxxxx xxxxxxxxxxx.
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  xxxxxx; xxx-xxxxxxxx, xxx xxxx #xxx), xxxx xxx xxxx xxx xxx xxxxxx, xxxx+xxxxx xxxx-xxxxxx xxxxxxxx,
+  xxxxxx xxxxxxxx xx #xxx, xxxxx xxxxx, xxxxxxxx xxxxxxx
+                                                                                                        +xx xxxxx xxxxxx xxxxxx xxxx xxxxxxx (xxxx)
+✻ Worked for 15m 43s · done 4:36 PM · 2 shells still running
+                                                                                                                                                  ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── worker-b-r6-bug07 ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏵⏵ bypass permissions on · PR #499 · 2 shells · ← for agents

@@ -32,11 +32,7 @@ func TestStoredAccountWidthMatrix(t *testing.T) {
 						// The title cell is never squeezed to nothing to make
 						// room for the account badge (#2201): the badge is
 						// the first thing shortened, then dropped, instead.
-						wantTitlePrefix := "Title"
-						if auto {
-							wantTitlePrefix = "pane sub"
-						}
-						require.Contains(t, line, wantTitlePrefix, "title must stay visible even in a narrow column")
+						require.Contains(t, line, "Title", "title must stay visible even in a narrow column")
 						if width >= 48 {
 							require.Contains(t, line, "[account:")
 						}

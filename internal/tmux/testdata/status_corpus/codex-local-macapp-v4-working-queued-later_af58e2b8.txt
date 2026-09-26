@@ -1,0 +1,50 @@
+• xxxxxxxx
+  └ xxxx xxxxxx-xxxxxxx.xx, xxxx-xxx.xx, xx-xxxx-xxxxx.xx
+    xxxxxx xxxx|xxxxxxxxxxx|xxxx|xxxx xxxx|xxxxxxxxx|xxxxxx|xxxxxxxxxxxx|xxxxxx\( xx xxx.xxxxx
+
+• xxx xx -x xxxxx -x xxx=,xxxxxxx=; /xxx/xxxx-xxxxxx-xxxxxx-xx/xxxxxxxx xxxxx
+  └ xxxxx xxxxx/xxxxxxxxx.xxx/xxxxxxxx/xxxxx/xxxxxxxxx --xxxx-xxxx /xxx/xxxx-xxxxxx-xx/xxxx-xx.xxxxx --xxxxxx xxxxxx-xx-xxxxxx --xxxxx-xxx /xxx/xxxx-xxxxxx-xx/xxxxx-xx.xxx
+    xxxxx
+
+• xxxxxxxx
+  └ xxxx xxx.xxxxx
+
+• xxx xxxxx/xxxxxxxxx.xxx/xxxxxxxx/xxxxx/xxxxxxxxx --xxxx-xxxx /xxx/xxxx-xxxxxx-xx/xxxx-xx.xxxxx --xxxxxx xxxxxx-xx-xxxxxx --xxxxx-xxx /xxx/xxxx-xxxxxx-xx/xxxxx-xx.xxx
+  └ (xx xxxxxx)
+
+• xxx xxxx xxxxx; xxxxx /xxx/xxxx-xxxxxx-xx/xxxx-xxxxx.xxxxx; /xxx/xxxx-xxxxxx-xx/xxxxx/xxxxxxxxx.xxx/xxxxxxxx/xxxxx/xxxxxxxxx --xxxx-xxxx /xxx/xxxx-xxxxxx-xx/xxxx-xxxxx.xxxxx --xxxxxx
+  │ xxxxxx-xx-xxxxxx --xxxxx-xxx /xxx/xxxx-xxxxxx-xx/xxxxx-xxxxx.xxx >/xxx/xxxx-xxxxxx-xx/xxx-xxxxx.xxxxxx x>/xxx/xxxx-xxxxxx-xx/xxx-xxxxx.xxxxxx &
+  └ (xx xxxxxx)
+
+• xxx xxxxx -xx '/xxx/xxxx-xxxxxx-xx/xxxxx/xxxxxxxxx.xxx/xxxxxxxx/xxxxx/xxxxxxxxx|xxxxx/xxxxxxxxx.xxx/xxxxxxxx/xxxxx/xxxxxxxxx'; xxx /xxx/xxxx-xxxxxx-xx/xxx-xxxxx.xxxxxx
+  └ (xx xxxxxx)
+
+• xxx xxx >> /xxx/xxxx-xxxxxx-xx/xxxx-xxxxx.xxxxx <<'xxx'
+  │ {"xx":"xxxxx","xxxxx":"xxxx","xxxxxx":"xxx"}
+  │ {"xx":"xxxx","xxxx":"/xxx/xxxx-xxxxxx-xx/xxxxx-xxxxx.xxxx"}
+  │ … +x xxxxx
+  └ (xx xxxxxx)
+
+• xxxxxx xxxxx
+  └ /xxx/xxxx-xxxxxx-xx/xxxxx-xxxx.xxx
+
+• Working (37m 34s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+
+• Queued follow-up inputs
+  ↳ xxx xxxx xxxxxx (xxxxxxxx xx xxxxxx.xx, xxxxxxx 'xxxxxx, xx xxxxxxx'): xxx xxx xxxx xxxx xxxxxx xxx xxxx xxxxxxxxxx: xxxxxx <xx, xxxxx xxxxxxx xxxxxx <xxxxx xxxx xxxxx, xxxxxx xxxxxx xxxx xxxxxxx
+    xxxx xxxx <xx, xx xxxxxxxx xxx xxxxxx xxxx, xx xxxxx xxx, xxxxx xxxxxx; xxxxxxx xxx xxx x xxxxxx/xxxxx xxxx xxxxx xx xxxxxxx.xx. xxxx xxx xxxxxxx xxx xxxxxxx xx xx xxxx xxxxx.
+  ↳ xxx xxxx xxxxxx: xxxxxxx xxxxxx xxxxx. xxxx /xxxxxxx/xxx/xxxx-xxxxxx-xx/xxxxxx-xxxxxxx.xx (xxxxxxxxx, xxxx xxxxx, xxxxxxx, xxxxxx, xxxxxxxx, xxxx, xxxxxxxx) xxx xxxxx xx xx xxxx xxxxx; xxxxx+xxxx
+    xxxxxxxxxxx xx xxxxx xxxxxx xx xxxxxxx.xx.
+  ↳ xxxxx xx xxxxxx-xxxxxxx.xx (xxxxxxx xxxxxxxxx): xxxxxxx xxxxxx xxxxxxxxx xxx xxxxxx/xxxxx/xxxxxxx/xxxxx xxxxxxx (xxxx + xxxx + xxxxx xxxxxx), xxx xxxxxxx xxxxx (xxxxxx/xxxxx/xxxxxx/xx/xxx., xxx
+    xxx xxxxx xxxxx, xxxxxx xxxx xxx xxx xxxxxx) xx xxxxxxx xxxx, xxxxxxxxxxxx xxxxxx xxx xxxxxxxx xxxx xxx; xxxxxx xxxxx xxxx x xxxxxx xxxx xxx xxxxxx xxx. xxxxxxx xx xxxx xxxxx.
+  ↳ xxx xxxx xxxxxx (xxxxxx.xx xxxxxxx 'xxxxxxx xxxxxxxxxx'): xxxx xxxxx xxxx xxxxxx (xxxxxx, xxxxxx, xxxxx xxxxx, xxxx xxxxxxx, xxxx->xxxxxxxxx, xxxxxx xxxx, xxxxxxx xxxxxxx) xxxx x xxxxxxx xxxx xxx
+    + xx-xxx xxxxxxxxxxx xxxxx (xxx-xxx-x) xxxx xxx/xxx; xxxxx xxxxxx xxx xxxx xxxxxxx xx xxxxxxx.xx xxx xxxxx. xxxxx xxxxxxxx xxxxxx xxxxx+xxxx xxxxxxxxxxx, xxxxxxx xxxxx + xxxxxx/xxxxx.xx xxxx xxxx/
+    xxxx. xxxxxxx xx xxxx xxxxx xxxxxx xxx xxxxxxxx.
+  ↳ xxx xxxx xxxxxx (xxxxxx.xx xxxxxxx 'xxx xx xxx xxx xxxxx-xxxx'): xxx xxx xxxx xxx xxx xx xxxxxx ~/.xxxxx/xxx/xxxxx-xxxx-xx (x.xx.xx-xxx) xx xxxxxxx: xxxxx = xxxxxxx > xxxxx-xxxx-xx > xxxxx-xxxx >
+    xxxxxxxx > /xxx/xxxxx; xxxx xxxxxxxx xxxx + xxxxxxx xx xxxxxxx xxxxxx xxx xxxxxxxx; xxxxxxx x.xx.xx xxxx x xxxxxx + xxxxxx xxxxxx xx xxxxx; xxx xxx xxxx xxxxxxx (xxxxxx, xxxxxx xxxxxx, xxxxxx)
+    xxxxx xxxxxxx; xxxxxxx.xx xxxxx xxx xxxxxx xxx xxxxxxxxxx/xxxxxx.
+    shift + ← edit last queued message
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/exec-macapp-v4 · Context 86% left · Context 14% used · weekly 87% left · 258K window · Main [default]

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/session.stop/v1/in",
+  "title": "session.stop input",
+  "type": "object",
+  "properties": {
+    "profile": {
+      "description": "Profile whose store holds the session",
+      "type": "string"
+    },
+    "session": {
+      "description": "Session id, id prefix, title or path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "profile",
+    "session"
+  ],
+  "additionalProperties": false
+}

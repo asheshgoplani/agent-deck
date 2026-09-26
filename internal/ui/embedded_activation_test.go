@@ -142,8 +142,8 @@ func TestEmbeddedRemoteRowMinimalDensityIsOneLineWithoutTool(t *testing.T) {
 }
 
 // The embedded row reads its label from the render snapshot like the classic
-// row: no per-row Instance lock in View(), and auto-named sessions show their
-// task description instead of the generated handle.
+// row: no per-row Instance lock in View(), and auto-named sessions keep their
+// generated name before the task description.
 func TestEmbeddedSessionRowUsesSnapshotLabel(t *testing.T) {
 	home, inst, _ := armHomeWithOneSession(t)
 	home.embeddedLayout = true
@@ -159,9 +159,12 @@ func TestEmbeddedSessionRowUsesSnapshotLabel(t *testing.T) {
 	home.renderEmbeddedSessionItem(&b, session.Item{Type: session.ItemTypeSession, Session: inst, Level: 1}, false, state, 48)
 	row := ansi.Strip(b.String())
 	if !strings.Contains(row, "Fix the login redirect") {
-		t.Fatalf("auto-named row did not promote the task description:\n%s", row)
+		t.Fatalf("auto-named row did not show the task description:\n%s", row)
 	}
-	if strings.Contains(row, "quick-a1b2") {
-		t.Fatalf("auto-named row still shows the generated handle:\n%s", row)
+	if !strings.Contains(row, "quick-a1b2") {
+		t.Fatalf("auto-named row did not show the generated name:\n%s", row)
+	}
+	if strings.Index(row, "quick-a1b2") > strings.Index(row, "Fix the login redirect") {
+		t.Fatalf("generated name must come first:\n%s", row)
 	}
 }

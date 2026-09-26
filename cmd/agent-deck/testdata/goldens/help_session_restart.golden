@@ -1,0 +1,25 @@
+Usage: agent-deck session restart [id|title] [options]
+
+Restart a session. For Claude sessions, this reloads MCPs.
+
+By default, a restart is skipped (no-op) when the session is already
+healthy (running/waiting/idle/starting) and was started within the last
+60 seconds. This prevents watchdog double-fires from destroying a
+just-created tmux scope (issue #30). Use --force to restart anyway.
+
+A restart is also skipped when the session's agent could not authenticate
+(401 / invalid credentials): a restart cannot fix a credential, and each
+attempt races the rotating token shared by every session on this host.
+Re-authenticate (run /login), then restart — --force overrides the hold.
+
+--all paces restarts with a jittered stagger, caps how many un-verified
+boots run at once, skips auth-held sessions, and STOPS early if several
+restarts in a row die on authentication (reported as auth_tripped).
+
+Options:
+
+Examples:
+  agent-deck session restart my-project
+  agent-deck session restart my-project --env API_URL=https://api.example.com
+  agent-deck session restart my-project --env FOO=one --env BAR=two
+  agent-deck session restart --all

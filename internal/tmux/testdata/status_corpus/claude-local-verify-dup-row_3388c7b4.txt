@@ -1,0 +1,50 @@
+        x +        "xxxxxxx"
+        x +        "xxxx"
+        x +        "xxxxxxx"
+        x +        "xxxx"
+        x +        "xxxxxxx"
+       xx +
+       xx +        xxx "xxxxxx.xxx/xxxxxxxxxxxxx/xxxxxxxxx"
+       xx +        "xxxxxx.xxx/xxxxxxxxxxxxx/x/xxxx"
+       xx +        "xxxxxx.xxx/xxxxx/xx-xxxxxxxxx"
+       xx +)
+       xx +
+       xx +// xxxxxxxxxxxxxxx xx xxx x xxxxxxxx xxxxx xxx xxxx xx xxxxxx.
+       xx +xxxx xxxxxxxxxxxxxxx xxx
+       xx +
+       xx +xxxxx (
+       xx +        // xxxxxxxxxxx xxxxx x xxxxxxxx xxxxxxx xx xxx xxxx, xx xxxx.xxxxxxxxxxx,
+       xx +        // xxxxxx xxxx'x xxx.xxxxxxxxxxx xxx xxxxxxxx xxxx xx.
+       xx +        xxxxxxxxxxx xxxxxxxxxxxxxxx = xxxx
+       xx +        // xxxxxxxxxxxxxxxx xxxxxxxx xxx xxxx xxxxx xx xxxxxxx, xx xxxxx,
+       xx +        // xxxxx-xxxxx xxxx xxx xxxxxxx'x xxxxxx xxxx xx.
+       xx +        xxxxxxxxxxxxxxxx
+       xx +        // xxxxxxxxxxxxx xx xxxxxxx x.x'x xxxxxxx xxxxxxx xxxx (xxxxxx x.x.x): x
+       xx +        // xxxxxxx xxxxxx xx xxx xxxx'x xxxxx xxx xxxxxxx x xxxxx xxxx x xxxxxx
+       xx +        // xxxx xx xxx xxxx-xxxxx-xx-xxxxxxxx (x xxxxxxx xxxxx xxxx, x xxxxxx
+       xx +        // xxxxxxxxx) xxxxx xx; xxxx xxxxxx, xxxx xxxxxxx.
+       xx +        xxxxxxxxxxxxx
+       xx +        // xxxxxxxxxxxxxxxxx xx x xxxxxxxx xxx xx xxxx xxxx xxxxx xxxxxxxxx
+       xx +        // xxxxxxxxxx (● ○ ◐ ■ x │ ─ … ↓ ↑ ▶ · •) xx x xxxxx: xxx xxxxxxx, xxx
+       xx +        // xxxxxx "xxxxxxxxx xxxxxxxxxx xxx xxxxxx-xxxxx" xxxxxx. xx xxxxx xxx
+       xx +        // xxx xx (xxx xxxxxxx xxxxxx xxx); xxxx xxxx-xxxx xxx xxxxx xxxx xx xxxxx.
+       xx +        xxxxxxxxxxxxxxxxx
+       xx +)
+       xx +
+       xx +xxx xxxxxxxxxxxxx = xxxx() *xxxxxxxxx.xxxxxxxxx {
+       xx +        x := xxxxxxxxx.xxxxxxxxxxxx()
+       xx +        x.xxxxxxxxxxxxxx = xxxx
+     … xxx xxxx xxxxx
+  ⎿  (what this command changed; a convenience view, not a review or audit of the command)
+
+  Running repro test on main via test box
+  ⎿  $ cd /tmp/exec-verify-dup-row/src && TAIL=4000 /Users/u/.agent-deck/conductor/agent-deck/bin/g14-test.sh . -count=1 -run 'TestDupRowFrame' -v ./internal/ui/ 2>&1 | tail -120
+
+✢ Deliberating… (7m 14s · ↓ 33.5k tokens · thinking)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── verify-dup-row ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/private/tmp/exec-verify-dup-row/src | [Opus 5.5] ctx:14% in:136.0k out:206 5h:6% 7d:2%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

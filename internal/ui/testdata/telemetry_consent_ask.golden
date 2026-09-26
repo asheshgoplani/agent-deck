@@ -1,0 +1,24 @@
+                                                                                
+ ╭────────────────────────────────────────────────────────────────────────────╮ 
+ │                                                                            │ 
+ │  Help improve agent-deck?                                                  │ 
+ │                                                                            │ 
+ │  Share anonymous usage data with the agent-deck maintainer.                │ 
+ │                                                                            │ 
+ │  Sent:   tools and features you use, session counts and lengths,           │ 
+ │          the hour and weekday you are active, error types, fleet           │ 
+ │          size, version and OS. Numbers are rounded into ranges.            │ 
+ │          A random ID links your reports; reset it any time.                │ 
+ │  Never:  prompts, output, titles, paths, repo, host or user names,         │ 
+ │          or anything you type. IP addresses are discarded.                 │ 
+ │  Where:  a few times a day to PostHog (EU). Kept for 1 year.               │ 
+ │  Check:  agent-deck telemetry preview   (exactly what would be sent)       │ 
+ │  Off:    agent-deck telemetry off   or   DO_NOT_TRACK=1                    │ 
+ │  More:   github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md        │ 
+ │                                                                            │ 
+ │         ▶ [ Share anonymous data ]          [ No thanks ]                  │ 
+ │                                                                            │ 
+ │   Enter: confirm highlighted · n / Esc: no · Ctrl-C: ask me later          │ 
+ │                                                                            │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                

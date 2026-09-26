@@ -10,6 +10,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
+import { registerOsc52Handler } from './terminalClipboard.js'
 import { createTerminalLinkHandler } from './terminalLinks.js'
 
 // Mobile detection: pointer:coarse for touch devices
@@ -145,6 +146,11 @@ export function TerminalPanel() {
       // confirms on every link. Ours skips the confirm for `[web]
       // trusted_domains` hosts and honors `confirm_link_open`.
       linkHandler: createTerminalLinkHandler(),
+      // Issue #2372: on macOS, Option-drag makes a native selection past an
+      // app's mouse capture (Claude Code, tmux `mouse on`), matching iTerm2 and
+      // Terminal.app. xterm defaults this off, which leaves no modifier that
+      // can select text in those sessions on a Mac.
+      macOptionClickForcesSelection: true,
       scrollback: 10000,
       theme: {
         background: '#0a1220',
@@ -156,6 +162,17 @@ export function TerminalPanel() {
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
     terminal.open(container)
+
+    // Issue #2372: copy a selection as it is made, like iTerm2's copy-on-select.
+    // An empty selection is skipped so a stray click never clears the
+    // clipboard, and navigator.clipboard is absent on plain-http origins other
+    // than localhost, where this quietly does nothing.
+    terminal.onSelectionChange(() => {
+      const text = terminal.getSelection()
+      if (text && navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {})
+      }
+    })
 
     // WebGL renderer with canvas fallback
     try {
@@ -295,6 +312,11 @@ export function TerminalPanel() {
         signal: controller.signal,
       })
     }
+
+    // #2370: OSC 52 copies from the pane (tmux copy mode, Claude Code's
+    // selection) reach the browser clipboard. Writes only; see
+    // registerOsc52Handler. Disposed with the terminal.
+    registerOsc52Handler(terminal)
 
     terminal.writeln('Connecting to terminal...')
 

@@ -1,0 +1,110 @@
+
+• xxxxxxxx
+  └ xxxx xxxxxxxxxxxxxxxxxx.xxxxx
+    xxxx xxx.xxxxx
+    xxxxxx xxxx xxxxx\( xx xxx.xxxxx
+
+• xxxxxx xxxxxxxxxxxxxx/xxxxxxx/xxxxxxxxxxxxxx/xxx.xxxxx (+x -x)
+    xx
+    xx -xxxxxxx xxx xxxxxxxxxx: xxxxxx = {
+    xx -    xx xxx xxxxx = xxxxxxxxxxx.xxxxxxxxxxx.xxxxxxxxxxx["xxxxxxxxx_xxx"], xxxxxxxxxxx.xxxxxxx.xxxxxxxxxxxxxxxx(xxxxxx: xxxxx) { xxxxxx xxxxx }
+    xx -    xxx xxxxxxxxx xx (xxxxxxxxxxx.xxxxxxxxxxx.xxxxxxxxxxx["xxxx"] ?? "").xxxxx(xxxxxxxxx: ":") {
+    xx -        xxx xxxxxxxxx = xxxxxx(xxxxxxxxx) + "/xxxxx-xxxx"
+    xx -        xx xxxxxxxxxxx.xxxxxxx.xxxxxxxxxxxxxxxx(xxxxxx: xxxxxxxxx) { xxxxxx xxxxxxxxx }
+    xx -    }
+    xx -    xxx xxxxxxxxx = [xxxxxxxxxxxxxxx() + "/.xxxxx/xxx/xxxxx-xxxx", "/xxx/xxxxxxxx/xxx/xxxxx-xxxx", "/xxx/xxxxx/xxx/xxxxx-xxxx"]
+    xx -    xxxxxx xxxxxxxxx.xxxxx { xxxxxxxxxxx.xxxxxxx.xxxxxxxxxxxxxxxx(xxxxxx: $x) } ?? "xxxxx-xxxx"
+    xx -}()
+    xx +xxxxxxx xxx xxxxxxxxxxxxxx = xxxxxxxxxxxxxxxxxx.xxxxxxx()
+    xx +xxxxxxx xxx xxxxxxxxxx: xxxxxx { xxxxxxxxxxxxxx.xxxx }
+    xx  xxxxxxx xxxx xxxxxxx(_ xxxxxx: xxxxxx, _ xxxx: [xxxxxx], xxxxx: xxxx? = xxx) -> (xxxxx, xxxx) {
+       ⋮
+    xx  xxxxxxx xxxx xxxx(_ xxxxxxx: xxxxxx, _ xxxx: [xxxxxx], xxxxx: xxxx? = xxx) -> (xxxxx, xxxx) {
+    xx +    xxxxx xxxxxxxxxxxxxx.xxxxxx xxxx { xxxxxx (-x, xxxx((xxxxxxxxxxxxxx.xxxxxxx ?? "xxxxx xxxx xxxxxx xxxxxxxxxxx").xxxx)) }
+    xx      xxxxxxx(xxxxxxxxxx, ["-x", xxxxxxx] + xxxx, xxxxx: xxxxx)
+
+• xxxxxx xxxxxxxxxxxxxx/xxxxxxx/xxxxxxxxxxxxxx/xxx.xxxxx (+x -x)
+    xx      xxxxx xxxxxxxxxxxxxx.xxxxxx xxxx { xxxxxx (-x, xxxx((xxxxxxxxxxxxxx.xxxxxxx ?? "xxxxx xxxx xxxxxx xxxxxxxxxxx").xxxx)) }
+    xx -    xxxxxxx(xxxxxxxxxx, ["-x", xxxxxxx] + xxxx, xxxxx: xxxxx)
+    xx +    xxxxxx xxxxxxx(xxxxxxxxxx, ["-x", xxxxxxx] + xxxx, xxxxx: xxxxx)
+    xx  }
+
+• xxxxxxxxx `/xxxx/xxxxxxxx`
+
+• xxxxxx xxxxxxxxxxxxxx/xxxxxxx/xxxxxxxxxxxxxx/xxx.xxxxx (+xx -x)
+     xxx  @xxxxxxxxx xxxxx xxxxx xxxxxxxxx: xxxxxxxxxxxxxxxx {
+     xxx +    @xxxxxxxxx xxx xxxxxxxxxxxxxxxx = xxxxxxxxxxxxxx
+     xxx +    @xxxxxxxxx xxx xxxxxxxxxxxx = xxxxx
+     xxx +    @xxxxxxxxx xxx xxxxxxxxxxxxxxx = xxxxxxxxxxxxxx.xxxx
+     xxx +    xxxx xxxxxxxxxxxxxxx(_ xxxx: xxxxxx) {
+     xxx +        xxxxxxxxxxxxxxxxxx.xxxxxxxxxxxx(xxxx)
+     xxx +        xxxxxxxxxxxxxx = xxxxxxxxxxxxxxxxxx.xxxxxxx()
+     xxx +        xxxxxxxxxxxxxxxx = xxxxxxxxxxxxxx
+     xxx +        xxxxxxxxxxxxxxx = xxxxxxxxxxxxxx.xxxx
+     xxx +        xxxxxxx()
+     xxx +    }
+     xxx      @xxxxxxxxx xxx xxxxx = xxxxxxxxxxxx()
+         ⋮
+    xxxx                  }
+    xxxx -                xxxxxx { xxxxxx("＋ xxx") { xxxxx.xxxxxxx = xxxx }; xxxxxx(); xxxx(xxxxx.xxxxxxx) { xxxxxxx(xxxxx.xxxxxxxx, xx: \.xxxx) { xxxx xx xxxxxx(xxxx) { xxxxx.xxxxxxx = xxxx; xxxxx.x
+          xxxxxxx = xxx; xxxxx.xxxxxxx() } } } }.xxxxxxx(xx)
+    xxxx +                xxxxxx { xxxxxx("＋ xxx") { xxxxx.xxxxxxx = xxxx }; xxxxxx(); xxxx(xxxxx.xxxxxxx) { xxxxxxx(xxxxx.xxxxxxxx, xx: \.xxxx) { xxxx xx xxxxxx(xxxx) { xxxxx.xxxxxxx = xxxx; xxxxx.x
+          xxxxxxx = xxx; xxxxx.xxxxxxx() } } }; xxxxxx { xxxxx.xxxxxxxxxxxx = xxxx } xxxxx: { xxxxx(xxxxxxxxxx: "xxxxxxxxx") }.xxxx("xxxxxxxx") }.xxxxxxx(xx)
+    xxxx +                xxxx("\(xxxxx.xxxxxxxxxxxxxxxx.xxxxxxx ?? "xxxxxxx") · \(xxxxx.xxxxxxxxxxxxxxxx.xxxx)").xxxx(.xxxxxx(xxxx: xx, xxxxxx: .xxxxxxxxxx)).xxxxxxxxxxxxxxx(xxxxxxx.xxx).xxxxxxxxx(x)
+          .xxxxxxx(.xxxxxxxxxx, xx).xxxxxxx(.xxxxxx, x)
+    xxxx              }.xxxxx(xxxxxxxx: xxx, xxxxxxxxxx: xxx, xxxxxxxx: xxx).xxxxxxxxxx(xxxxxxx.xx)
+         ⋮
+    xxxx                  xxxxxx(xxxxxxx: x) { xxxxxxx(["xxxxxxxxxxxx", "xxxxxxxx"], xx: \.xxxx) { xxx xx xxxxxx(xxx) { xxxxx.xxx = xxx } .xxxxxxxxxxx(.xxxxx).xxxxxxx(.xxxxxxxxxx, xx).xxxxxxx(.xxxxxxx
+          x, x).xxxxxxxxxx(xxxxx.xxx == xxx ? xxxxxxx.xxxxxxx : xxxxxxx.xxxxx.xxxxx, xx: xxxxxxxxxxxxxxxx(xxxxxxxxxxxx: x)) }; xxxxxx() }.xxxxxxx(.xxxxxxxxxx, x)
+    xxxx +                xx xxx xxxxxxx = xxxxx.xxxxxxxxxxxxxxxx.xxxxxxx {
+    xxxx +                    xxxxxx { xxxx(xxxxxxx).xxxx(.xxxxxxx).xxxxxxxxxxxxxxx(xxxxxxx.xxx); xxxxxx(); xxxxxx("xxx xx") { xxxxx.xxxxxxxxxxxxxxx(xxxxxxxxxxxxxxx() + "/.xxxxx/xxx/xxxxx-xxxx-xx") }
+          }.xxxxxxx(xx).xxxxxxxxxx(xxxxxxx.xxx.xxxxxxx(x.x))
+    xxxx +                }
+    xxxx                  xxxxxxx()
+         ⋮
+    xxxx              .xxxxx(xxxxxxxxxxx: $xxxxx.xxxxxxxxxx) { xxxxxx { xxxx("xxxxxx xxxxxxx"); xxxxxxxxx("xxxxx", xxxx: $xxxxx.xxxxxxxxxxx); xxxxxx { xxxxxx("xxxxxx") { xxxxx.xxxxxxxxxx = xxxxx }; xx
+          xxxx("xxxxxx") { xx xxx xxxxxxxx = xxxxx.xxxxxxxx { xxxxx.xxx(["xxxxxxx", "xxx", xxxxxxxx.xx, "xxxxx", xxxxx.xxxxxxxxxxx, "--xxxx"], xxx: xxxxxxxx) }; xxxxx.xxxxxxxxxx = xxxxx } } }.xxxxxxx(
+          xx).xxxxx(xxxxx: xxx) }
+    xxxx +            .xxxxx(xxxxxxxxxxx: $xxxxx.xxxxxxxxxxxx) {
+    xxxx +                xxxxxx(xxxxxxxxx: .xxxxxxx, xxxxxxx: xx) {
+    xxxx +                    xxxx("xxxxx xxxx xxxxxx").xxxx(.xxxxxxxx)
+    xxxx +                    xxxxxxxxx("xxxxxx xxxx", xxxx: $xxxxx.xxxxxxxxxxxxxxx)
+    xxxx +                    xxxx(xxxxx.xxxxxxxxxxxxxxxx.xxxxxxx ?? "xxxxxxx xxxxxxxxxxx").xxxx(.xxxxxxx).xxxxxxxxxxxxxxx(xxxxxxx.xxx)
+    xxxx +                    xxxx(xxxxx.xxxxxxxxxxxxxxxx.xxxxxxx ?? "xxxxx").xxxx(.xxxxxxx).xxxxxxxxxxxxxxx(xxxxx.xxxxxxxxxxxxxxxx.xxxxxx ? xxxxxxx.xxxxx : xxxxxxx.xxx)
+    xxxx +                    xxxxxx {
+    xxxx +                        xxxxxx("xxxxxx…") {
+    xxxx +                            xxx xxxxx = xxxxxxxxxxx()
+    xxxx +                            xxxxx.xxxxxxxxxxxxxx = xxxx
+    xxxx +                            xx xxxxx.xxxxxxxx() == .xx, xxx xxx = xxxxx.xxx { xxxxx.xxxxxxxxxxxxxxx = xxx.xxxx }
+    xxxx +                        }
+    xxxx +                        xxxxxx()
+    xxxx +                        xxxxxx("xxxxxx") { xxxxx.xxxxxxxxxxxx = xxxxx }
+    xxxx +                        xxxxxx("xxx xxxxxx") { xxxxx.xxxxxxxxxxxxxxx(xxxxx.xxxxxxxxxxxxxxx); xxxxx.xxxxxxxxxxxx = xxxxx }.xxxxxxxxxxx(.xxxxxxxxxxxxxxxxx)
+    xxxx +                    }
+    xxxx +                }.xxxxxxx(xx).xxxxx(xxxxx: xxx)
+    xxxx +            }
+    xxxx              .xxxxxxxxxxxxxxxxxx("xxxxxx \(xxxxx.xxxxxxxx?.xxxxx ?? "xxxxxxx")?", xxxxxxxxxxx: $xxxxx.xxxxxxxxxx) { xxxxxx("xxxxxx", xxxx: .xxxxxxxxxxx) { xxxxx.xxxxxx() } }
+
+• xxxxxxxx
+  └ xxxx xxx.xxxxx
+
+• Working (32m 32s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+
+• Queued follow-up inputs
+  ↳ xxx xxxx xxxxxx (xxxxxxxx xx xxxxxx.xx, xxxxxxx 'xxxxxx, xx xxxxxxx'): xxx xxx xxxx xxxx xxxxxx xxx xxxx xxxxxxxxxx: xxxxxx <xx, xxxxx xxxxxxx xxxxxx <xxxxx xxxx xxxxx, xxxxxx xxxxxx xxxx xxxxxxx
+    xxxx xxxx <xx, xx xxxxxxxx xxx xxxxxx xxxx, xx xxxxx xxx, xxxxx xxxxxx; xxxxxxx xxx xxx x xxxxxx/xxxxx xxxx xxxxx xx xxxxxxx.xx. xxxx xxx xxxxxxx xxx xxxxxxx xx xx xxxx xxxxx.
+  ↳ xxx xxxx xxxxxx: xxxxxxx xxxxxx xxxxx. xxxx /xxxxxxx/xxx/xxxx-xxxxxx-xx/xxxxxx-xxxxxxx.xx (xxxxxxxxx, xxxx xxxxx, xxxxxxx, xxxxxx, xxxxxxxx, xxxx, xxxxxxxx) xxx xxxxx xx xx xxxx xxxxx; xxxxx+xxxx
+    xxxxxxxxxxx xx xxxxx xxxxxx xx xxxxxxx.xx.
+  ↳ xxxxx xx xxxxxx-xxxxxxx.xx (xxxxxxx xxxxxxxxx): xxxxxxx xxxxxx xxxxxxxxx xxx xxxxxx/xxxxx/xxxxxxx/xxxxx xxxxxxx (xxxx + xxxx + xxxxx xxxxxx), xxx xxxxxxx xxxxx (xxxxxx/xxxxx/xxxxxx/xx/xxx., xxx
+    xxx xxxxx xxxxx, xxxxxx xxxx xxx xxx xxxxxx) xx xxxxxxx xxxx, xxxxxxxxxxxx xxxxxx xxx xxxxxxxx xxxx xxx; xxxxxx xxxxx xxxx x xxxxxx xxxx xxx xxxxxx xxx. xxxxxxx xx xxxx xxxxx.
+  ↳ xxx xxxx xxxxxx (xxxxxx.xx xxxxxxx 'xxxxxxx xxxxxxxxxx'): xxxx xxxxx xxxx xxxxxx (xxxxxx, xxxxxx, xxxxx xxxxx, xxxx xxxxxxx, xxxx->xxxxxxxxx, xxxxxx xxxx, xxxxxxx xxxxxxx) xxxx x xxxxxxx xxxx xxx
+    + xx-xxx xxxxxxxxxxx xxxxx (xxx-xxx-x) xxxx xxx/xxx; xxxxx xxxxxx xxx xxxx xxxxxxx xx xxxxxxx.xx xxx xxxxx. xxxxx xxxxxxxx xxxxxx xxxxx+xxxx xxxxxxxxxxx, xxxxxxx xxxxx + xxxxxx/xxxxx.xx xxxx xxxx/
+    xxxx. xxxxxxx xx xxxx xxxxx xxxxxx xxx xxxxxxxx.
+  ↳ xxx xxxx xxxxxx (xxxxxx.xx xxxxxxx 'xxx xx xxx xxx xxxxx-xxxx'): xxx xxx xxxx xxx xxx xx xxxxxx ~/.xxxxx/xxx/xxxxx-xxxx-xx (x.xx.xx-xxx) xx xxxxxxx: xxxxx = xxxxxxx > xxxxx-xxxx-xx > xxxxx-xxxx >
+    xxxxxxxx > /xxx/xxxxx; xxxx xxxxxxxx xxxx + xxxxxxx xx xxxxxxx xxxxxx xxx xxxxxxxx; xxxxxxx x.xx.xx xxxx x xxxxxx + xxxxxx xxxxxx xx xxxxx; xxx xxx xxxx xxxxxxx (xxxxxx, xxxxxx xxxxxx, xxxxxx)
+    xxxxx xxxxxxx; xxxxxxx.xx xxxxx xxx xxxxxx xxx xxxxxxxxxx/xxxxxx.
+    shift + ← edit last queued message
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/exec-macapp-v4 · Context 25% left · Context 75% used · weekly 87% left · 258K window · Main [default]

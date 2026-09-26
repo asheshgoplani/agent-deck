@@ -60,7 +60,7 @@ func TestAccountSlotsConfigurationTransition(t *testing.T) {
 				for _, selected := range []bool{false, true} {
 					var row strings.Builder
 					h.renderSessionItem(&row, h.flatItems[i], selected, h.getSessionRenderSnapshot(), 240)
-					require.Contains(t, row.String(), "cached pane title")
+					require.Contains(t, row.String(), "cached title")
 					if inst == inherited && !tc.configured {
 						require.NotContains(t, row.String(), "[account:")
 					} else {

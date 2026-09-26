@@ -101,7 +101,7 @@ func TestGroupNestingIndent(t *testing.T) {
 	}
 }
 
-func TestDuplicateRootHeadersReuseRootGroupNumber(t *testing.T) {
+func TestDuplicateRootHeadersOnlyFirstHasGroupNumber(t *testing.T) {
 	inst := session.NewInstanceWithTool("Add copy session", "/tmp/doozyx/agent-deck", "claude")
 	inst.GroupPath = "doozyx/agent-deck"
 	instances := []*session.Instance{inst}
@@ -122,6 +122,9 @@ func TestDuplicateRootHeadersReuseRootGroupNumber(t *testing.T) {
 	home.groupTree = session.NewGroupTreeWithGroups(instances, groups)
 	home.groupViewMode = session.GroupViewPopulatedTop
 	home.rebuildFlatItems()
+	if strings.Contains(stripANSIForGroupNesting(home.renderSessionList(120, 40)), "doozyx (idle)") {
+		t.Fatal("populated-on-top duplicate ancestor was labelled idle")
+	}
 
 	var nums []int
 	for _, it := range home.flatItems {
@@ -132,9 +135,12 @@ func TestDuplicateRootHeadersReuseRootGroupNumber(t *testing.T) {
 	if len(nums) < 2 {
 		t.Fatalf("expected duplicate doozyx headers in partitioned view, got %v", nums)
 	}
+	if nums[0] == 0 {
+		t.Fatalf("first root header must keep its number, got %v", nums)
+	}
 	for _, n := range nums[1:] {
-		if n != nums[0] {
-			t.Fatalf("duplicate root headers must reuse root number, got %v", nums)
+		if n != 0 {
+			t.Fatalf("duplicate root headers must not repeat the number, got %v", nums)
 		}
 	}
 }

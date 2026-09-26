@@ -1,0 +1,33 @@
+  -all
+    	Breakdown: print every item instead of the ranked top
+  -capabilities
+    	Print what this harness can report, without inspecting anything
+  -glossary
+    	Define every word these screens use — adapter, basis, anchor, residual, CAPT/RECON/ABSENT — and exit
+  -item string
+    	Print one item's provenance, lever and verbatim text (id from --tab breakdown)
+  -json
+    	Emit the report as JSON (stable schema; carries provenance on every figure)
+  -q	One-line summary (short for --quiet)
+  -quiet
+    	One-line summary: the gauge figure and how many items you can act on
+  -strict
+    	Exit 3 when the report fails its own reconciliation or breaks an invariant
+  -tab string
+    	Which view to print: overview, breakdown or verify (default "overview")
+  -timeout duration
+    	Abort inspection after this long (default 20s)
+  -tolerance-pct float
+    	--verify: relative tolerance, as a percentage of the harness figure (default 10)
+  -tolerance-tokens int
+    	--verify: absolute tolerance floor, in tokens (default 500)
+  -verbose
+    	Include the per-category notes explaining how each figure was obtained
+  -verify
+    	Compare against the harness's own accounting. MUTATES the live session: sends /context (Claude) or /status (Codex) and reads the panel back
+  -verify-ready-timeout duration
+    	--verify: how long to wait for the agent to go idle before typing into it (default 2m0s)
+  -verify-timeout duration
+    	How long to wait for the harness's own panel to render (default 30s)
+  -yes
+    	Skip the --verify confirmation prompt (for CI; the default always asks before typing into a session)

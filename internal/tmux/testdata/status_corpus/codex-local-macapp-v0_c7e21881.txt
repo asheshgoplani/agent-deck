@@ -1,0 +1,130 @@
+    xxx -                    xxx xxxx = xxxxxxxxxxxxxxxxxx(xxxxx: xxxxxx.xxxxxxxxxxx?.xxxxxx ?? .xxxx)
+    xxx -                    xxxx.xxxxxxxxxxxxxxxx = [.xxxxx, .xxxxxx]
+    xxx -                    xxxxxx.xxxxxxxxxxx = xxxx
+    xxx -                    xxxxxx.xxxxx = "xxxxxxxxx xxxxx xxxxxx xxxxxx"
+    xxx -                    xxxxxx.xxxxx = .xxxxxx
+    xxx -                    xxxxxx.xxxxxxxxxx(xxx)
+    xxx -                    xxxx.xxxxxx(xx)
+    xxx -                    xxxx.xxxxxxxxxxxx = xxxxxx
+    xxx -                xxxxxxx: xxxxx
+    xxx -                }
+    xxx -                xxxxx("xxxxxx \(xx) \(xxxx().xxxxxxxxxxxxxxxxxxxxx)")
+    xxx -            }
+    xxx -        }
+    xxx -    }
+    xxx -}
+    xxx -
+    xxx -xxxxxx xxxxxxx: xxxx {
+    xxx -    xxx xxx: xxxxxxxxxxxxxxx
+    xxx -    @xxxxx xxxxxxx xxx xxxxxxxx = xxxxx
+    xxx -    xxx xxxx: xxxx xxxx {
+    xxx -        xx xxx.xxxx == .xxxx {
+    xxx -            xxxxxx {
+    xxx -                xxxxxx(xxxxxxxxx: xx)
+    xxx -                xxxx(xxx.xxxx).xxxxxxxxxxxxx(.xxxxxxx).xxxxxxx(xx)
+    xxx -                    .xxxxxxxxxx(xxxxx.xxxxxxxxxxx.xxxxxxx(x.xx), xx: xxxxxxxxxxxxxxxx(xxxxxxxxxxxx: xx))
+    xxx -                    .xxxxx(xxxxxxxx: xxx, xxxxxxxxx: .xxxxxxxx)
+    xxx -            }
+    xxx -        } xxxx xx xxx.xxxx == .xxxxxxxxx {
+    xxx -            xxxxxx(xxxxxxxxx: .xxxxxxx, xxxxxxx: x) {
+    xxx -                xxxx(xxx.xxxxx).xxxx(.xxxxxxx.xxxxxx(.xxxxxxxx)).xxxxxxxxxxxxxxx(.xxxxxxxxx)
+    xxx -                xxxxxxxxxxxxxxxxxxx(xxxxxxxx: xxx.xxxx)
+    xxx -            }.xxxxx(xxxxxxxx: .xxxxxxxx, xxxxxxxxx: .xxxxxxx).xxxxxxx(.xxxxxxxx, x)
+    xxx -        } xxxx {
+    xxx -            xxxxxxxxxxxxxxx(xxxxxxxxxx: $xxxxxxxx) {
+    xxx -                xx !xxx.xxxx.xxxxxxx { xxxx(xxx.xxxx).xxxxxxxxxxxxx(.xxxxxxx) }
+    xxx -                xx !xxx.xxxxxx.xxxxxxx { xxxx(xxx.xxxxxx).xxxx(.xxxxxx(.xxxxxxx, xxxxxx: .xxxxxxxxxx)).xxxxxxxxxxxxx(.xxxxxxx) }
+    xxx -            } xxxxx: {
+    xxx -                xxxxx(xxx.xxxxx, xxxxxxxxxxx: xxxx).xxxx(.xxxxxxx.xxxxxx(.xxxxxx))
+    xxx -            }.xxxxxxx(x).xxxxxxxxxx(.xxxxxxxxxx.xxxxxxx(x.x), xx: xxxxxxxxxxxxxxxx(xxxxxxxxxxxx: x))
+    xxx -        }
+    xxx -    }
+    xxx -    xxx xxxx: xxxxxx {
+    xxx -        xxxxxx xxx.xxxx {
+    xxx -        xxxx .xxxxxxxx: "xxxxx.x.xxxxxxxxx.xxxxxxxxxxxx.xxxxxx"
+    xxx -        xxxx .xxxxx: "xxxxxx.x"
+    xxx -        xxxx .xxxxx: "xxxxxxxx"
+    xxx -        xxxx .xxxxxxxx: "xxxxxxxxxxxx.xxxxxx"
+    xxx -        xxxx .xxxx: "xxxxxxxxx"
+    xxx -        xxxx .xxxx: "xxxxxx.xxxx"
+    xxx -        xxxx .xxxx: "xxxxxxxx"
+    xxx -        xxxx .xxxxxxxxxx: "xxxx.xxxxxx"
+    xxx -        xxxx .xxxxxxxxxx: "xxxxxx.xxxxxxxx.xxxxxxxx"
+    xxx -        xxxx .xxxxxxxx: "xxxxx"
+    xxx -        xxxxxxx: "xxxxxx"
+    xxx -        }
+    xxx -    }
+    xxx -}
+    xxx -
+    xxx -xxxxxx xxxxxxxxxxx: xxxx {
+    xxx -    @xxxxxxxxxxx xxxxxxx xxx xxxxx = xxxxxxxxxx()
+    xxx -    @xxxxx xxxxxxx xxx xxxxxx = ""
+    xxx -    xxx xxxxxxxx: [xxxxxxx] { xxxxxx.xxxxxxx ? xxxxx.xxxxxxxx : xxxxx.xxxxxxxx.xxxxxx { $x.xxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(xxxxxx) } }
+    xxx -    xxx xxxx: xxxx xxxx {
+    xxx -        xxxxxxxxxx {
+    xxx -            xxxxxx(xxxxxxx: x) {
+    xxx -                xxxxxxxxx("xxxxxx xxxxxxxx", xxxx: $xxxxxx).xxxxxxxxxxxxxx(.xxxxxxxxxxxxx).xxxxxxx(x)
+    xxx -                xxxx(xxxxxxxx, xxxxxxxxx: $xxxxx.xxxxxxxx) { xxxxxxx xx
+    xxx -                    xxxxxx(xxxxxxxxx: .xxxxxxx, xxxxxxx: x) {
+    xxx -                        xxxx(xxxxxxx.xxxxx).xxxx(.xxxxxxxx)
+    xxx -                        xxxx("\(xxxxxxx.xxxxxx) · \(xxxxxxx.xxxx) · \(xxxxxxx.xxxxx)").xxxx(.xxxxxxx).xxxxxxxxxxxxxxx(.xxxxxxxxx)
+    xxx -                    }.xxx(xxxxxxx).xxxxxxxxxxxx { xxxxx.xxxxxx(xxxxxxx) }
+    xxx -                }
+    xxx -            }.xxxxx(xxxxxxxx: xxx, xxxxxxxxxx: xxx)
+    xxx -            xxxxxx(xxxxxxx: x) {
+    xxx -                xxxxxx {
+    xxx -                    xxxx(xxxxx.xxxxxxxx?.xxxxx ?? "xxxxxxxxxxxx").xxxx(.xxxxxxxx)
+    xxx -                    xxxxxx()
+    xxx -                    xx xxx xxxxxx = xxxxx.xxxxxx { xxxx(xxxxxx.xxxxxxx.xxxxxxxxxxx).xxxx(.xxxxxxx).xxxxxxxxxxxxxxx(.xxxxxxxxx) }
+    xxx -                }.xxxxxxx(xx)
+    xxx -                xxxxxxx()
+    xxx -                xxxxxxxxxxxxxxxx { xxxxx xx
+    xxx -                    xxxxxxxxxx {
+    xxx -                        xxxxxxxxxx(xxxxxxxxx: .xxxxxxx, xxxxxxx: x) {
+    xxx -                            xxxxxxx(xxxxx.xxxx) { xxx xx xxxxxxx(xxx: xxx).xx(xxx.xx) }
+    xxx -                        }.xxxxxxx(xx)
+    xxx -                    }.xxxxxxxx(xx: xxxxx.xxxx.xxxxx) { _ xx
+    xxx -                        xx xxx xx = xxxxx.xxxx.xxxx?.xx { xxxxx.xxxxxxxx(xx, xxxxxx: .xxxxxx) }
+    xxx -                    }
+    xxx -                }
+    xxx -                xxxxxxx()
+    xxx -                xxxxxx {
+    xxx -                    xx xxx xxxxxxxx = xxxxx.xxxxxxxx,
+    xxx -                       xxxxx.xxxxxxxx.xxxxx(xxxxx: { $x.xx == xxxxxxxx.xx })?.xxxxxx == "xxxxxxx" {
+    xxx -                        xxxxxxxxxxxx().xxxxxxxxxxx(.xxxx)
+    xxx -                    }
+    xxx -                    xxxx(xxxxx.xxxxxxxx).xxxxxxxxx(x)
+    xxx -                    xxxxxx()
+    xxx -                    xx xxx xx = xxxxx.xxxxxxxxx { xxxx(xxxxxx(xxxxxx: "xxxxx %.xx xx", xx)) }
+    xxx -                }.xxxx(.xxxxxxx).xxxxxxxxxxxxxxx(.xxxxxxxxx).xxxxxxx(x)
+    xxx -            }.xxxxx(xxxxxxxx: xxx, xxxxxxxxxx: xxx)
+    xxx -            xxxxxxxxxxxxxxxxxxxxx(xxxxxxxxx: xxxxx.xxxxxxxx?.xx).xx(xxxxx.xxxxxxxx?.xx)
+    xxx -                .xxxxx(xxxxxxxx: xxx, xxxxxxxxxx: xxx, xxxxxxxxx: xxx)
+    xxx -        }.xxxxx(xxxxxxxx: xxxx, xxxxxxxxx: xxx).xxxxxxxx { xxxxx.xxxxx() }
+    xxx -    }
+    xxx -}
+    xxx -
+    xxx -xxx xxx = xxxxxxxxxxxxx.xxxxxx
+    xxx -xxx.xxxxxxxxxxxxxxxxxxx(.xxxxxxx)
+    xxx -xxxxxx xxxxxxxx: xxx { xxx xxxx: xxxx xxxxx { xxxxxxxxxxx("xxxxxxxxx xxxxx") { xxxxxxxxxxx() } } }
+    xxx -xx xxxxxxxxx.xxxxxxxx("--xxxxx"), xxx x = xxxxxxxxx.xxxxxxxxxx(xx: "--xxxxxx"), x + x < xxxxxxxxx.xxxxx,
+    xxx -   xxx x = xxxxxxxxx.xxxxxxxxxx(xx: "--xxxxxxx"), x + x < xxxxxxxxx.xxxxx {
+    xxx -    xxx xxxx = xxxxxxxxx[x + x], xxxxxxx = xxxxxxxxx[x + x]
+    xxx -    xxx xxxxxx = xxxxxxxxxxxxxxxx(xxxxxxx: xxxxxxx, xxxx: xxxx, xxxxxxxx: "")
+    xxx -    xxx xxxxxxx = xxxx()
+    xxx -    xxx xxxx: [xxxxxxxxxxxxxxx]
+    xxx -    xx xxxxxxx == "xxxxxxxx" { xxxx = xxxxxxxxxxxxxxx.xxxxxxxx(xxxx) }
+    xxx -    xxxx xx xxxxxxx == "xxxxxx" { xxxx = xxxxxxxxxxxxxxx.xxxxxx(xxxx) }
+    xxx -    xxxx { xxxx = (xxx? xxxx(xxxxxxxxxx: xxx(xxxxxxxxxxxxxxx: xxxx))).xxx { xxxxxxxxxxxxxxxx.xxxx(xxxxxx: xxxxxx, xxxx: $x) } ?? [] }
+    xxx -    xxxx = xxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxx(xxxx)
+    xxx -    xxx xxxxxx: [xxxxxx: xxx] = [:]
+    xxx -    xxx xxx xx xxxx { xxxxxx[xxx.xxxx.xxxxxxxx, xxxxxxx: x] += x }
+    xxx -    xxxxx("xxxxx xxxxxxx=\(xxxxxxx) xxxx=\(xxxx.xxxxx) xxxxx_xx=\(xxx(xxxx().xxxxxxxxxxxxxxxxx(xxxxxxx) * xxxx)) xxxxx=\(xxxxxx)")
+    xxx -} xxxx { xxxxxxxx.xxxx() }
+
+• Working (2m 59s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/exec-macapp-v0 · Context 75% left · Context 25% used · weekly 94% left · 258K window

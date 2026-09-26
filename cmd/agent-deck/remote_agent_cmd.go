@@ -332,8 +332,9 @@ func newRemoteAgentProbe(profile string) (remoteAgentProbeFunc, func(), error) {
 		if err != nil {
 			return "", "", err
 		}
-		session.RefreshInstancesForCLIStatus(instances)
-		l, err := buildListJSON(storage.Profile(), instances)
+		refresh, cached := session.CLIStatusCandidates(instances)
+		session.RefreshInstancesForCLIStatus(refresh)
+		l, err := buildListJSON(storage.Profile(), instances, cached)
 		if err != nil {
 			return "", "", err
 		}

@@ -1,0 +1,130 @@
+
+      xx +  - xxxxxxxxxxxx: **€xxx** (xxxxx xxxxxxx xxxx)
+
+      xx +- xx x xx-xxxxx xxxx xxxx xxxx **€x,xxx / xx ≈ €xxx/xxxxx** xx xxx xx xxx xxxxxxxxxx xxxxx.
+
+      xx +- xxxxxxxxx, xxx, xxxxxxxxxxx, xxxxx xxxxxxxx xx xxxx. xxxx xxx xxxxxxxx.
+
+      xx +- xxxxxxxxxxx: xxxxxxx xxxxx xxxxx €xxx/xxxxx xxx-xx. xxxxxxxx xxxx xxxx ~€xxx–xxx xxxxxxxxx.
+
+      xx
+      xx -## xxxxxxxxxx
+
+      xx -(xx xxxx xx xxxx xxxx.xxx)
+
+      xx +## xxxxxxxxxx (xxx, xx xx, xxxx xx/xx — xxxxxxxxxx € → xxxxxxxxx € xxxx. xxxx)
+
+      xx +| xxx | xxxxxx | xxxx | xxxxxxxxxx | xxxxxxxxx | xxx. xxxx/xx* | xxxxxxxx |
+
+      xx +|---|---|---|---|---|---|---|
+
+      xx +| xx xx | x.x xxxxxxxx xxx xx xxxxxx | xxxxxx x.x x | xxx | ~xxx | ~xxx | xxxx xxx–xxx xxxx |
+
+      xx +| xxxx xxxxxx xxxxx | x.x xx xxxxx xxx xx xxxxxx | xxxxxx(xxxx-xxx) x.x x | xxx | ~xxx | ~xxx | ~x–xx xxx ✅ |
+
+      xx +| **xxxxx xxxxxx** | xxxx xxxxxx xxx xxxxxxx xxxxxx | xxxxxx x.x x | xxx (xxxxxxx) | ~xxx | ~xx | xx xxx–x xxx ✅ |
+
+      xx +| xxxx xxx | x.x xxxxxx xxx xx xxxxxxxxx | xxxxxx x.x x | xxx | ~xxx | ~xx | xx xxx–x xxx ✅ |
+
+      xx +| xxxxxxx xx xxxxxxxx | xxxxxx xxx xxxxxxxxx | xxxxxx x.x x | xxx–xxx | ~xxx–xxx | ~xx | ~x–xx xxx ✅ |
+
+      xx +| xxxx xxxxx | x.x xxxxx xx xxxxxx | xxxxxx x.x x | xxx | ~xxx | ~xxx | xx xxx–x xxx ✅ |
+
+      xx +| xxxx xxxxxxx | x-xxxxxx xxxxxxxxx (xxxxxxxxxxx xxxx xxx) | xxxxxx x.x x | xxx–xxx | ~xxx+ | ~xxx | ~x–xx xxx |
+
+      xx +| xxxxxxx xxxxxx | xxxx xxxxxx xxx xxx xxxxxxxxx | xxxxxx x.x x | xxx | ~xxx | ~xxx | x–xx xxx |
+
+      xx +| xxxxx xxxxxxx (xxxxxx) | xxxx xxxxxx xxx xxxxxxx xxxxxx | xxxxxx x.x x | xxx | ~xxx | ~xx | xx xxx–x xxx ✅ |
+
+      xx +| xxxxxxx xxxxxx | xx xxx xxxxx xx, xxx xx xxxx | xxxxxxxx xx.x xxx | xxx | ~xxx | ~xx–xx xxxxxx xxxxxxxx | x–xx xxx |
+
+      xx +| xxxxxx xxxxx xxxxx | xxxxxx xxx xx xxxxxxxxx | xxxxxx x.x x | xxx | ~xxx | ~xx | x–xx xxx |
+
+      xx
+      xx +*xxxx xx ~€x.xx/x xxxxxx, xxxx xx/xxxxx. xx xxxxxxx xxxxxx xxxxxxxx (~€x.xx/xxx) xxxxx xx xxxx xxxxxxx/xxxxxxx.
+
+      xx +
+
+      xx +## x-xxxx xxxxx xxxx xxxxxxx (xxxxx xxxxxx, xxx xxxxx xxxx)
+
+      xx +- xxxxxxxxxxxx: xxx x xx = €x,xxx
+
+      xx +- xxx-xxxx xxxx: x,xxx + xxx = €x,xxx
+
+      xx +- xxxx: ~€xx x xx ≈ €x,xxx
+
+      xx +- **xxx xxxxx: ~€x,xxx/xxxx (~€xxx/xxxxx)**
+
+      xx +- - xxxxxxx: + €x–xx/xxxxx xxxxxxxxx xx xxxx xxxxxxxx/xxxx xxxxxx (xxx xxxxx)
+
+      xx +
+
+      xx +## xxxxxxx (xxxxxxxxxxxx xxx. xx, xxxxxx — xx xxxxxx/xxxxx xxx)
+
+      xx +- xxxxx xxxx: xxx xxxxxxxx/xxxxxxxxxxx xx x xxxxxxxxxx xx xxxxxx xxxx xx xxxxxxxx — xxxxxxxxx €xx–xx/xxxxx xx xxxxxx.
+
+      xx +- xxxxxxxxx xxxxxx xxxxxxx; xx xxx xxxxxx xx xx x xxxxxxxxx' xxxxxxx xxxx, x xxxxxxxxxxxxxxxxxxx xx ~€xx–xx/xxxx xxxx xxx xxxx.
+
+      xx +- xx xx xxxxxxxxxxxx xxxxxxx xxx xxxxxxx xxxx (xx xxxx xxxxxxxx) → xxxxxx xxxxxx/xxxxxx.
+
+      xx +
+
+      xx +## xxxx xxxxx
+
+      xx +- [ ] xxxxxx: xxx xxxxxxxx/xxxxxxxxxxx xxxxx x xxxxxxx xxxx + xxxxx
+      xx +*xxxx xx ~€x.xx/x xxxxxx, xxxx xx/xxxxx. xx xxxxxxx xxxxxx xxxxxxxx (~€x.xx/xxx) xxxxx xx xxxx xxxxxxx/xxxxxxx.
+      xx +
+      xx +## x-xxxx xxxxx xxxx xxxxxxx (xxxxx xxxxxx, xxx xxxxx xxxx)
+      xx +- xxxxxxxxxxxx: xxx x xx = €x,xxx
+      xx +- xxx-xxxx xxxx: x,xxx + xxx = €x,xxx
+      xx +- xxxx: ~€xx x xx ≈ €x,xxx
+      xx +- **xxx xxxxx: ~€x,xxx/xxxx (~€xxx/xxxxx)**
+      xx +- - xxxxxxx: + €x–xx/xxxxx xxxxxxxxx xx xxxx xxxxxxxx/xxxx xxxxxx (xxx xxxxx)
+      xx +
+      xx +## xxxxxxx (xxxxxxxxxxxx xxx. xx, xxxxxx — xx xxxxxx/xxxxx xxx)
+      xx +- xxxxx xxxx: xxx xxxxxxxx/xxxxxxxxxxx xx x xxxxxxxxxx xx xxxxxx xxxx xx xxxxxxxx — xxxxxxxxx €xx–xx/xxxxx xx xxxxxx.
+      xx +- xxxxxxxxx xxxxxx xxxxxxx; xx xxx xxxxxx xx xx x xxxxxxxxx' xxxxxxx xxxx, x xxxxxxxxxxxxxxxxxxx xx ~€xx–xx/xxxx xxxx xxx xxxx.
+      xx +- xx xx xxxxxxxxxxxx xxxxxxx xxx xxxxxxx xxxx (xx xxxx xxxxxxxx) → xxxxxx xxxxxx/xxxxxx.
+      xx +
+      xx +## xxxx xxxxx
+      xx +- [ ] xxxxxx: xxx xxxxxxxx/xxxxxxxxxxx xxxxx x xxxxxxx xxxx + xxxxx
+      xx +- [ ] xxxxxxx xxxxxxx xxxxxxxxxx (xxxxxx xx, xx xxxxxxxxx xxxxxxxx?)
+      xx +- [ ] xxxx xxxxx xxxxxxxxx → xxxxxxxxx xx xxxx.xxx
+      xx +
+      xx  ## xxxxxxxx
+      xx -xxx
+      xx +xxxxxxx: **xxxxx xxxxxx xxxx xxxxxx xxx xxxxxxx** (€xxx/xx xxxxxxxxxx, ~€xxx xxxxxxxxx, xxxx xxx, xxxxxxxx xxxx xxxx) — xx **xxxx xxx xxxxxx / xxxxxxx xx xxxxxxxx xxxxxx
+         +** xx xxxxxxxxx xx xxxxxx.
+
+⏺ xxxx — xxxx xxxxxxxxxx xx xx xxxx.xx. xxx xxxxx xxxxxxx:
+
+  xxx xxxxx: xxxx'x xxxxxxxxxx xxxxxx xxxxxxx x €x,xxx xxx-xxxx xxx + €xxx xxxxxxxx xxx. xx xx xxxxxx xxxx'x +€xxx/xxxxx — xx xxxxxxx xxxxx xxxxx €xxx xxx-xx. xxxxxxxx xxxx xxxx xxxx xxx
+  xx ~€xxx–xxx/xxxxx xxxxxxxxx.
+
+  xxx xxxxx (xxx, xx xx, xxxx xx/xx, xxxx xxxxxxxx):
+  - xxxxx xxxxxx xxxx xxxxxx xxx — €xxx xxxxxxxxxx → ~€xxx xxxxxxxxx, xxxxxxxx xxxx xxxx. xxxx xxxxx.
+  - xxxx xxx xxxxxx (xxxxxxxxx) — €xxx → ~€xxx, xxxxxx (x.x x), xxxxxxxx ~x xxxx.
+  - xxxxxxx xx xxxxxxxx xxxxxx (xxxxxxxxx) — €xxx → ~€xxx, xxxxxxx, ~x xxxxx.
+  - xxxxxxx xxxxxx xx (€xxx → ~€xxx) — x'x xxxx xx: xxx xxxx xx xxxxxxx xxxx, xx xx xxxx xxxxxxxx.
+
+  x-xxxx xxxxx xxxx xxx xxxxxx: ~€x,xxx xxxxxxxxxxxx + €x,xxx xxxx + ~€x,xxx xxxxxx ≈ €x,xxx (~€xxx/xxxxx xxx-xx), xxxx xxxxxxx.
+
+  xxxxxxx xxxxx: xxxxxxx/xxxxxxxxxxx xxx xxxxx xxxxxxx xx xxxx'x xxxxxxxxx (xxx x xxxxxx xxxxxx xx x xxxxxxx). xxxx xx/xxxxx ≈ xxx xxxxxxxxx xxxxx xxxxx.
+
+  xxxxxxx: xxx, xxx xxxx xxxxxxxx xx xxxxxxxxxxx xxxxx — x xxxxxx xxxxxxxxxx xx xxxxxx xx xxxxxxxxx €xx–xx/xxxxx. xx xxxx xxxxxx xx x xxxxxxxxx' xxxx, x xxxxxxxxxxxxxxxxxxx xx xxxx
+  ~€xx/xxxx.
+
+  xxx xxxxxxxx: xx xxx xxxx xxxxxxxxx, xx xx xxxxxx xxxx? (xxxxxx xx xxxxxx; xxxx xxx / xx xxxxxxxx xxx xxxxxxxxx.)
+
+  xxxxxxx: xxxx xxxxxx xxxxx, xxxxxxxxx xxxxxx, xxxxxxxx xxxxxx
+
+✻ Worked for 12m 7s · done Monday, Aug 24 at 1:58 PM
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── car-plan ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u/owner-docs/car-plan | [Fable 5.1] ctx:13% in:131.8k out:724                                      ✔ Update installed · Restart to update
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                                                                                                       /rc
+
+
+

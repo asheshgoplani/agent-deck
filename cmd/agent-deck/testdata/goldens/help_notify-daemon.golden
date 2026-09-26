@@ -1,0 +1,3 @@
+Usage: agent-deck notify-daemon [--once]
+
+Run status-driven transition notification daemon.

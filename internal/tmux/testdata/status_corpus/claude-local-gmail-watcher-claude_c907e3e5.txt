@@ -1,0 +1,130 @@
+           xx /xxxxx/x/xxxxxx-xxxx/xxxxxxxxxxxxx. xxxxxx xxx xxxx xxxxxx xxxxx xx
+          xx xx; xxx xxxxx xx xxxxxxxxxx. xxxxxxx xxx xxx xxxxxxxx xxx xxxxxx.
+      xx
+      xx  xx xx xxxxx xx xxxxxx, xxxxxxxxxxx xx xxxxxxxxx, xxxxxx xxx xxxx xx xxxxxxx
+          xxx xxxx xxxxxx. xx xxx xxxxxxx, xxxxxxxxx, xxxxxxxx xx xxxxxxxxxx xxxxxxx x
+          xxxxxxxx.
+         +x-xxxxxx <xxxxxxx>` xx xxxxxxx, xxxxxxxx xxxxxxx xxxx-xx-xx). xxx xx xxx xxxxxx-xxx xxxxxxxxx xxxxxxx xxx xxx xxxxx xxxxx.
+      xx +
+      xx  xxx xxxxxxxxxxx xxxxxxx xxx xxxxxxxx xx xxxx-xx-xx xx xx xxxxxxxx-xxx xxx xxx xx /xxxxx/x/xxxxxx-xxxx/xxxxxxxxxxxxx. xxxxxx xxx xxxx xxxxxx xxxxx xxxx xx; xxx xxxxx
+          xx xxxxxxxxxx. xxxxxxx xxx xxx xxxxxxxx xxx xxxxxx.
+      xx
+      xx  xx xx xxxxx xx xxxxxx, xxxxxxxxxxx xx xxxxxxxxx, xxxxxx xxx xxxx xx xxxxxxx xxx xxxx xxxxxx. xx xxx xxxxxxx, xxxxxxxxx, xxxxxxxx xx xxxxxxxxxx xxxxxxx xxxxxxxxx.
+
+
+
+
+
+
+
+
+⏺ xxxxxx(xxxxxx.xx)
+  ⎿  Added 1 line, removed 1 line
+      xx
+      xx  xxxxxxxx xxxxxxxxx xxxxx xxx /xxxxx/x/.xxxxx-xxxx/xxxxxxxxx/<xxxxxxx>, xxxx xxxxxxx xxxxx xxxxx-xxxx, xxxx, xx, xxxxxxxxx, xxxxxxxxxxx, xxxxxxxx, xxxxxx.
+      xx
+      xx -xxxxxxxxx-xxxxxx xx xxx xxxxx; xx xxxx xx xxx `xxxxxxxx` xxxxxx (`xxxxx-xxxx xxxxxx xxxxxxxx xxxxxxx xxxxxxxx` xx xxxx, `xxxxx-xxxx xxxxxx xxxxxxxx xxxxxxx xxxx xxxxxxxx
+         -x-xxxxxx <xxxxxxx>` xx xxxxxxx, xxxxxxxx xxxxxxx xxxx-xx-xx). xxx xx xxx xxxxxx-xxx xxxxxxxxx xxxxxxx xxx xxx xxxxx xxxxx.
+      xx +xxxxxxxxx-xxxxxx xx xxx xxxxx; xx xxxx xx xxx `xxxxxxxx` xxxxxx (`xxxxx-xxxx xxxxxx xxxxxxxx xxxxxxxx` xx xxxx, `xxxxx-xxxx xxxxxx xxxxxxxx xxxxxxx xxxx xxxxxxxxx-xxxxxx
+         + <xxxxxxx>` xx xxxxxxx, xxxxxxxx xxxxxxx xxxx-xx-xx). xxx xx xxx xxxxxx-xxx xxxxxxxxx xxxxxxx xxx xxx xxxxx xxxxx.
+      xx
+      xx  xxx xxxxxxxxxxx xxxxxxx xxx xxxxxxxx xx xxxx-xx-xx xx xx xxxxxxxx-xxx xxx xxx xx /xxxxx/x/xxxxxx-xxxx/xxxxxxxxxxxxx. xxxxxx xxx xxxx xxxxxx xxxxx xxxx xx; xxx xxxxx
+          xx xxxxxxxxxx. xxxxxxx xxx xxx xxxxxxxx xxx xxxxxx.
+      xx
+
+⏺ xxxxxx.xx xxxxxxx: xxxxx-xxx xxxx (xxxxxxxxxx, xxx xxxx, xxx, xxx xxxxxx xxx xxxxxx) xxx xxxxxx xx xxxxxxxxx-xxxxxx xx xxx xxxxxxxx xxxxxx xxxxxxx xx xxxxxxxxx-xxxx, xxxx xxx xxxxxxxx
+  xxxx xxxxxxx xxxxxxxxxx.
+
+  xxxx xxx xxxxxx xxxxxxx xxxx xx xxxx xxxxxxxxx-xxxx'x xxxxxxx xxxxx xxx xxxxxxxxx-xxxxxx (x xxxxxxx xx xxxxx xxxx xxxx) — xx xxxxxxx xxxxxx, xxxx xxxxxxxx xx xx'x xxx x xxxxxxxx xx xxx
+  xxx xx xxxxx.
+
+✻ Cooked for 30s · done 12:30 PM
+
+❯ xxxx xx xxxx xxxxxxxx ? xxxx xxxxx xxxxxx xx x xxxxx x xxxxx x xxx?
+
+⏺ xxx, xxxxxxx xxxxxx xxx xxxxxxxxx xxxxxxx: x xxxx x xxxx xxxxxxx xx xxxxxxxxx-xxxxxx xx xxx xxxxxxxx xxxxxx xxx xxxxx xxx (xxxxxxx xxxxxxxx-xxx xxx xxx), xxx xx xxxx xxxx "xxxxxxxxx":
+  xxxx, "xxxxxxx": xxxx. x xxxx xxxxxxx xxx xxxx xxx xxxxxx xxxxxxxxxx xxxxx xxxxx xxx xxxx xxx, xxxx xxx xxxx xxxxxxxxxx xxxxxx.
+
+✻ Brewed for 4s · done 12:30 PM
+
+❯ xxx xxxx xxxx xxxxxxxx xxxxxxxxxxx xxxx xxx xxx xxxxxx xxxxxxxxxx
+
+⏺ xxxx(xx /xxxxx/x/.xxxxx-xxxx/xxxxxxx/xxxxx-xxxxxxx; xxxx "xxxxxxx-xxx xxxxxxx: $(xx -x < xxxxxxx-xxx.xxxxx)"; xxxx "xxxx x xxxxxxx:"; xxxx -x xxxxxxx-xxx.xxxxx;…)
+  ⎿  routing-log entries:      322
+     xxxx x xxxxxxx:
+     {
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+  Searched for 2 patterns, read 2 files, listed 1 directory (ctrl+o to expand)
+
+⏺ xxxx(xxxxx-xxxx -x xxxxxxxx xxxx --xxxx | xx -x '.[]|xxxxxx(.xxxxx|xxxx("xxxxx-xxxxxxx";"x"))')
+  ⎿  {
+       "xx": "xxxxxxxx-xxx xxx xxx",
+       "xxxxxx_xxxxxxx_xx": "xxxxxxxx-xxx xxx xxx",
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxxx x xxxx xxxxxxx: xxx xxxxx xxxxxx xxx xxxx xxxxxxx xxxxx xxxx-xx-xx xxx xxxx'x xxxxxxxxx x xxxxxx xxx-xxxxx xxxxx xxxxx.
+
+  xxxx xxxxx: xxxxxxx.xxxx xxxxx xxxxxxx xxxxxxx xxxxx xxxxx-xxxxxxx (xxx xxx xxxxx xxxxxxx, xx xxxxxxxx), xxx xxxx xxxxxxx xxx xxxxxxxx xx xxxx-xx-xx, xxx xxxx xxx xxxx xxxxxxx xx xx
+  (xxxxx-xxxxxxx-xxxxxx, xx xxxxxxxx) xxxxxxxx. xxxxxx xxxxxxx xxx xxxxxx xxxxxx xx xxxxx xx xxx xxx xxxxxxx. xxxxx xxxx xxxxx xxxxxxxx xxxxxxx xxxxx xxxx xxxxxxx 'xxxxx-xxxxxxx' xx xxx
+  xxxxxxx, xxx xxxxxxx xxxxxx xxxxx xxxx'x xxxxxx xxxx, xxx xxxxxx xxxx xxxxxxx xxxxxxx xxxxxxx xxxx xxxxxxxx xxx xxxxxxx.
+
+  xxxxxx: x,xxx xxxxxx xxxxxxx xxxxxxxx xxxxxx xxxxx xxxx-xx-xx. xxxx xxxx xxxxxxx xxxx xxxxxx xx xxxxxx, xxxxxxx x,xxx+ xxxxxx xxxxxxx xxxxxxxx xx
+  /xxxxx/x/.xxxxx-xxxx/xxxxx-xxxx-xxxx/xxxx/, xxxx xxxxxxx.
+
+  xxx: xxx xxxx xx /xxxxx/x/.xxxxx-xxxx/xxxxx-xxxx-xxxx/xxxxxxx.xxxx, xxxxxx [xxxxxx] xxxxxxx = "xxxxx-xxxxxxx" xx "xxxxx-xxxxxxx-xxxxxx".
+
+  xxxx xx xx xxxx xxxx xxxxxx xxx xxxx xxxx xxxxxxx xxx xxxxxxx?
+
+✻ Baked for 44s · done 1:42 PM
+
+❯ xxxxxx xx xx xx xxxx xxxxxxxxx xxxxxxxx xxxx xxxx xxxxx xxxx xxx xxx  xxx xxxxx xxxx xxxx xxx xxx xxxxxxxxx
+  ⎿  8 skills available
+
+⏺ xxxx(xxxxx-xxxx xxxxxx xxxxxxxx xxx --xxxx x>&x | xxxx -xx)
+  ⎿  [
+       {
+         "xx": "xxxxxxxx-xxx xxx xxx",
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxx(xxxxx-xxxx -x xxxxxxxx xxxx --xxxx | xx -x '.[]|xxxxxx(.xxxxx|xxxx("xxxxxxxx";"x"))')
+  ⎿  {
+       "xx": "xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx",
+       "xxxxxx_xxxxxxx_xx": "xxxxxxxx-xxx xxx xxx",
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+❯ xxxxxx xxxx xxxxx xxxxxxx xxx xxxxxxxxxx xx xxxxxx xxxxxxxx xxxxxx xxxx xxxx xxxx
+
+⏺ xxxx(xxxxx-xxxx xxxxxx xxxxxxxx xxx --xxxx x>&x | xx -x '.[]?.xxxxx' x>/xxx/xxxx | xxxx -x "xxxxx\|xxxxxxxx\|xxxxx" ; xxxx "---xxxx xxxxxx---"; xxxxx-xxxx xxxxxx xxx…)
+  ⎿  ---full titles---
+     xxxxxxxxxxx-xxx
+     xxxxxx-xxx-xxx xxx xxx
+     … +x xxxxx (xxxx+x xx xxxxxx)
+
+❯ xxxxxxxxxx
+
+❯ xxxxx xxxxx xxxx
+
+⏺ xxxx(xxxxx-xxxx xxxxxx xxxxxxxx xxx --xxxx x>&x | xx -x '.[] | {xxxxx, xxxxx, xxxxxx}' x>/xxx/xxxx)
+  ⎿  {
+       "xxxxx": "xxxx-xxx xxx xxx",
+       "xxxxx": "xxx",
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xx xxxxxxxx-xxxxxxx xx xxx xxxxxxxx xxxxx xxxxxxx xxxxxx xx xxx xxxxxx. xx xxxx xxxx xxxxxxx xx xxxx xxx (xxxxxxxx-xxxxxxx, xx xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx) — xxxxx'x xx xxx xxxxxx
+  xx xxxx xxx xxxxxxx xxxx.
+
+  xxxx, xxxx xxxx xxxxxx xx xxxxxxxx xxxx xxxxxxx xxxxxxx ("xxxxx xx xx... xxxxx xxxxx xx"): x xxx'x xxxxxxxx xxxx xxxx. xxxxx xxx xxxxxx xxxx xxx?
+
+  xxxxxxxxx, xxxxx xxxxxxx xx xxx xxxxxxx.xxxx xxx (xxxxxxxx xxx xxxxxx xx xxxxx-xxxxxxx-xxxxxx xxxxxxx xx xxx xxxx xxxxx-xxxxxxx) — xxxxxxx xx xxxx xx-xxxxx xxxxxx xxxxxxxx xx xx xxx
+  xxxxxxx.
+
+✻ Brewed for 32s · done 12:06 PM
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── gmail-watcher-claude ─
+❯ xxx, xx xxxxx xxx xxx xx
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u/.agent-deck/watcher/gmail-watcher | [Sonnet 5] ctx:16% in:159.8k out:219                          ✔ Update installed · Restart to update
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                                                                      new task? /clear to save 160k tokens
+                                                                                                                                                                                     /xx
+

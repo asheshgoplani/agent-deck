@@ -1,0 +1,50 @@
+
+
+❯ xxxxx xx xxxxxxx xxxxxxxxxx xxxx xxxx xxxxx x xxxxxxxxxxxxxx xx xxxxxxxxx xxxxxx xx xxxx xx xxxx xxxx xx x xxxxx  xxxx xx xxxxx xxxx xxx xxxx xxxxx xxxx xxxxxx xxxxx xxxx xxxxxxxx x
+  xxxxxxxxxx xxxxxx xxxx x xx xxxx xxxxxxxx xx xxxxxxx xxxx xxxxxxxxx xx xx xxxxxxxx
+
+⏺ xxxxx xxxxx-xxxx:xxxxx-xxxx xx xxxx xxx xxxxx xxxxxxx xxx xxxx xxxx xxxx.
+
+⏺ xxxxx(xxxxx-xxxx:xxxxx-xxxx)
+  ⎿  Successfully loaded skill
+
+  Ran 1 shell command
+
+❯ xx xxxxxxxxxxxxxxxxxx xxxx xxxx xxxxxx xxxxx xxxxxxxxxxx xxxx xxxxxxx
+
+  Ran 1 shell command
+
+❯ xxxxx xxxx xxxx xxxxxxxxx x
+
+❯ xxxx xxxxxxxxx x xxxx xxxxxx xxxxxx xxx xxxx xxxx xxxx x xxxx xxx xxxx xxx  xxxxx xxxx xxxxx xx xxxx xx xxx xxxx xxxxxx xxxx xxxx xx xxxxxxxx xx xxxxxxx
+
+  Ran 2 shell commands
+
+❯ xxxxx xxxxxx xxxx xxxx xxxxx xxx xx xxx xxx x
+
+  Ran 1 shell command
+
+⏺ xxxx. xxx xxxxx-xxxx xxxxxxxxx xxx xxx xxx xxxx xxxxx xxx xx xxxxxxx xx xx.
+
+  xxxx x xxxx xxxxxxxxx-xxxxx-xxxx
+
+  - xxxx xxxxxxxx xx: xxx xxx xxxxx xxxxxxx x xxxxx xxxxxx xxxx xxxxxxxxxxxxx xxxx x xxxxx xxxxxx xxx xx xxx xxxxx xxxx xx xxxxxxx xxx xx xxx xx, xxxx xx xxxx xxxxxxxxxx. xx'x x xxxx
+    xxxxxxxxxx xxx xxxxxx xxxxxx xxxx xxxx xxxxxxxx, xxx x xxxx xxxxx.
+  - xxxx xx xxxx: xxx xxx-xxxxxxxxx xxxxx xx ~/xxx-xxxxxxxxx, xxx xxxxxxx xxx xx xxx .xxx, xxx xxxxxxxxx xxxxxxxx@xxxxxxxx-xx xxxxxx, xxx xxx xxxxxxxx, xxxxx'x xxxxxxx, xxx xxx xxxxx
+    xxxxxx.
+  - xxxxx xxxxxx xx xxxxxxx xxx xxxx xxxx xxxx x xxx-xxxx xxxxxxxx, xx xxxxxxxxxxxxxx xxx:
+    x. xxxxxx. xxxxxxxx xxxxxxx xxxxxx xxxx xxxxx xxxxxxxxxxx, xxxxxxx xxxx, xxx xxxxx xxxxxxxx xx xxxx, xxxxx, xxxxx xxxxx, xx xxxxx xxxxx, xxxxxxx xxxxxxxx x xxxx xxxxxx xxxx.
+    x. xxxxxxx. xxx xxx-xxxxxxxxx xx xxxxx xxxx xxxxx xx xxx xxxxx-xxxx xxx xx xx xxxxxxx xxx xxxxxx xxxxxxxx. xxx xxx xx xxxxxxxx, xxx xxx, xx xx'x xxxxxx xxx xx xxxxx.
+    x. xxxxx xxx-xxxxxx xxxxxxxxx. xxxxxxx xxxxxxx xxxxxxxx xx xxx xxxxx xxxxxxxxx, xxxxxxx xxxxx xxxxxxx xx xxxxxx xx xxxxx, xxx xxx-xxxxxx xx xxx xxxx-xxxxxxxxxxx xxxxxxxxx.
+  - xxxxx xxx xxxx xxx xxxxxxx xxx xxxx, xxxxx xx xxxxx xxx xx xxx xxxx, x xxxxx xxxxxxxxxx, xxx xxxxx, xxxx xxx xxxxxxxx xxxx xxxx xxxxx.
+
+  xxxxx xxxx xxx xxxxxxxx xxxxxx xxxxxxxxx-xxxxx-xxxx xx xxx xxxxxxxx. xxxx xxx xxxxxx xxxx, xx xxx xxxxxxxx xxxxxxx, xx x xxxx xx xxxx xxx xx xx. xxx xx xx xxxxx xxx x'xx xxxx xxx
+  xxxxxx xxxx xxxxx-xxxx xxxxxxx xxxxxx.
+
+✻ Crunched for 1m 4s · done 1:37 PM
+                                                                                                                                                  new task? /clear to save 126.9k tokens
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── try this ─
+❯ xxx xxxxxx xxxx
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u/jev-ultrafast | [Fable 5.1] ctx:13% in:126.4k out:545 7d:3%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

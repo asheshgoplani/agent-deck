@@ -1,0 +1,12 @@
+Usage: agent-deck session start <id|title> [options]
+
+Start a session's tmux process.
+
+Options:
+
+Examples:
+  agent-deck session start my-project
+  agent-deck session start my-project --message "Research MCP patterns"
+  agent-deck session start my-project -m "Explain this codebase"
+  agent-deck session start my-project --message-file task.md   # long prompt from file, no shell quoting
+  git diff | agent-deck session start my-project --message-file -   # initial message from stdin

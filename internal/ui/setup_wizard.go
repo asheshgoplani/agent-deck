@@ -342,8 +342,12 @@ func (w *SetupWizard) View() string {
 		Padding(2, 4).
 		Width(dialogWidth)
 
+	// Key hints break between items, never mid-hint ("Esc:" / "back").
+	helpWidth := dialogWidth - dialogStyle.GetHorizontalPadding()
+
 	// Build content based on current step
 	var content strings.Builder
+	var sections dialogSections
 
 	// Step indicator
 	stepNames := []string{"Welcome", "Tool", "Claude", "Ready"}
@@ -384,6 +388,11 @@ func (w *SetupWizard) View() string {
 		content.WriteString("\n\n")
 		content.WriteString(subtitleStyle.Render("This tool will be pre-selected when creating new sessions:"))
 		content.WriteString("\n\n")
+		// One body section per tool so a short terminal scrolls the list
+		// around the selection instead of cutting off the step indicator.
+		sections.head = []string{strings.TrimSuffix(content.String(), "\n")}
+		sections.focus = w.selectedTool
+		content.Reset()
 
 		toolDescriptions := map[string]string{
 			"claude":   "Claude Code - Anthropic's AI coding assistant",
@@ -408,17 +417,18 @@ func (w *SetupWizard) View() string {
 			} else {
 				line = unselectedStyle.Render(icon + " " + tool)
 			}
-			content.WriteString("  " + line)
-			content.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Render("  " + desc))
-			content.WriteString("\n")
+			sections.body = append(sections.body, "  "+line+
+				lipgloss.NewStyle().Foreground(ColorTextDim).Render("  "+desc))
 		}
 
-		content.WriteString("\n")
-		content.WriteString(helpStyle.Render("Up/Down: select | Enter: continue | Esc: back"))
+		sections.foot = []string{"", helpStyle.Render(renderDialogFooterRows(helpWidth, 2, " | ", []string{"Up/Down: select", "Enter: continue", "Esc: back"}))}
 
 	case stepClaudeSettings:
 		content.WriteString(titleStyle.Render("Claude Code Settings"))
-		content.WriteString("\n\n")
+		// One body section per setting (blank rows between them) so a short
+		// terminal scrolls the settings around the cursor.
+		sections.head = []string{content.String(), ""}
+		content.Reset()
 
 		// Dangerous mode checkbox
 		checkbox := checkboxOff
@@ -434,7 +444,8 @@ func (w *SetupWizard) View() string {
 		content.WriteString(cursor + checkbox + " " + style.Render("Enable dangerous mode"))
 		content.WriteString("\n")
 		content.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Render("    Skip permission prompts (--dangerously-skip-permissions)"))
-		content.WriteString("\n\n")
+		sections.body = append(sections.body, content.String(), "")
+		content.Reset()
 
 		// Auto mode checkbox
 		checkbox = checkboxOff
@@ -450,7 +461,8 @@ func (w *SetupWizard) View() string {
 		content.WriteString(cursor + checkbox + " " + style.Render("Enable auto mode"))
 		content.WriteString("\n")
 		content.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Render("    Classifier-based auto-approval (--permission-mode auto)"))
-		content.WriteString("\n\n")
+		sections.body = append(sections.body, content.String(), "")
+		content.Reset()
 
 		// Config directory radio buttons
 		cursor = "  "
@@ -481,9 +493,10 @@ func (w *SetupWizard) View() string {
 		} else {
 			content.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Render("(press Space to select)"))
 		}
-		content.WriteString("\n\n")
-
-		content.WriteString(helpStyle.Render("Up/Down: navigate | Space: toggle | Enter: continue | Esc: back"))
+		sections.body = append(sections.body, content.String())
+		sections.focus = 2 * w.claudeSettingsCursor
+		content.Reset()
+		sections.foot = []string{"", helpStyle.Render(renderDialogFooterRows(helpWidth, 2, " | ", []string{"Up/Down: navigate", "Space: toggle", "Enter: continue", "Esc: back"}))}
 
 	case stepReady:
 		content.WriteString(titleStyle.Render("Ready to Go!"))
@@ -520,11 +533,22 @@ func (w *SetupWizard) View() string {
 		content.WriteString("\n")
 		content.WriteString(subtitleStyle.Render("Press Enter to save and start using Agent Deck!"))
 		content.WriteString("\n\n")
-		content.WriteString(helpStyle.Render("Enter: save & finish | Esc: back"))
+		content.WriteString(helpStyle.Render(renderDialogFooterRows(helpWidth, 2, " | ", []string{"Enter: save & finish", "Esc: back"})))
 	}
 
-	// Wrap in dialog box
-	dialog := dialogStyle.Render(content.String())
+	// Wrap in dialog box, never taller than the screen. A step without
+	// sections pins its last text row (the key hint) and what follows it
+	// as the foot, so a short terminal never cuts the hint off.
+	if sections.head == nil {
+		rows := strings.Split(content.String(), "\n")
+		last := len(rows) - 1
+		for last > 0 && strings.TrimSpace(rows[last]) == "" {
+			last--
+		}
+		sections.head = []string{strings.Join(rows[:last], "\n")}
+		sections.foot = rows[last:]
+	}
+	dialog := renderFittedDialog(dialogStyle, w.height, sections)
 
 	// Center the dialog using lipgloss.Place
 	return lipgloss.Place(

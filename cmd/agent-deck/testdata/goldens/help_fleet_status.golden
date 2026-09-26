@@ -1,0 +1,12 @@
+Usage: agent-deck fleet status [options]
+
+Report sessions the registry believes are alive whose tmux session is
+gone. Read-only: no restarts, no writes.
+
+With --group-by-credential the report additionally groups every
+auth-401-held session by WHICH credential is dead, so one dead token
+reads as one line instead of N per-session failures. Opt-in: without
+the flag the output is exactly the per-session view it has always been.
+The grouping is computed locally and never leaves the machine.
+
+Options:

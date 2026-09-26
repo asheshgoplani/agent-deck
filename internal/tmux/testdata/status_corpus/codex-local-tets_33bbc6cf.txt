@@ -1,0 +1,51 @@
+
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                         │
+│                                                    │
+│ model:       gpt-6-astra medium   /model to change │
+│ directory:   ~                                     │
+│ permissions: YOLO mode                             │
+╰────────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true
+
+⚠ 1 MCP startup issue · ctrl + t for details
+
+
+› xxx xxx xx xx xxxxx
+
+
+• xxx xxxxxx! xxxxx xxxx. xxx’x xxxx xxx xxxxx?
+
+⚠ xxxxx-xxxxxxxxxxx xxxxxxxx xxxxxxx: xxxxxxxxx. xxxxx-xxxxxxxxxxx xxxxxxxx xxx xxxxxxxxxx xxx xxx xxxxxx xxxxxxxxxxxxx. xx xxxxxxxx xxxx xxxxxxx, xxx `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  = xxxx` xx /xxxxx/x/.xxxxx/xxxxxx.xxxx.
+
+
+› xxx
+
+
+• xxx xxxxxx! xxxx’x xx xxxx xxxx?
+
+⚠ Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 10% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 5% of your weekly limit left. Run /status for a breakdown.
+
+⚠ MCP client for `computer-history` failed to start: MCP startup failed: handshaking with MCP server failed: JSON-RPC error: -32603: Internal error: The data couldn’t be read because it
+  xxx’x xx xxx xxxxxxx xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."}): xxxx-xxx xxxxx: -xxxxx: xxxxxxxx xxxxx: xxx xxxx xxxxxx’x xx xxxx xxxxxxx
+  xx xxx’x xx xxx xxxxxxx xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."})
+
+⚠ MCP startup incomplete (failed: computer-history)
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra · ~ · Context 91% left · Context 9% used · weekly 94% left · 258K window
+
+
+
+
+
+
+

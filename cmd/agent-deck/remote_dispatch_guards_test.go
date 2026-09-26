@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,12 +21,11 @@ import (
 func TestCLIDispatchTelemetryCounters(t *testing.T) {
 	bin := channelsCLIBinary(t)
 	for _, command := range []struct {
-		name     string
-		args     []string
-		counters map[string]int
+		name string
+		args []string
 	}{
-		{"local", []string{"list", "--json"}, map[string]int{"cli_invocations": 1}},
-		{"remote", []string{"remote", "list"}, map[string]int{"cli_invocations": 1, "remote_used": 1}},
+		{"local", []string{"list", "--json"}},
+		{"remote", []string{"remote", "list"}},
 	} {
 		for _, control := range []string{"enabled", "disabled", "declined", "nonterminal", "help"} {
 			t.Run(command.name+"/"+control, func(t *testing.T) {
@@ -42,7 +40,7 @@ func TestCLIDispatchTelemetryCounters(t *testing.T) {
 				}
 				statePath := filepath.Join(dataDir, telemetry.StateFileName)
 				state := telemetry.State{SchemaVersion: telemetry.SchemaVersion, Consent: telemetry.ConsentGranted,
-					ConsentEndpoint: telemetry.DefaultEndpoint, InstallID: strings.Repeat("a", 32), Counters: map[string]int{}}
+					ConsentEndpoint: telemetry.DefaultEndpoint, InstallID: strings.Repeat("a", 32), Salt: strings.Repeat("5", 64)}
 				if control == "declined" {
 					state.Consent = telemetry.ConsentDeclined
 				}
@@ -103,12 +101,17 @@ func TestCLIDispatchTelemetryCounters(t *testing.T) {
 				if err := json.Unmarshal(after, &got); err != nil {
 					t.Fatal(err)
 				}
+				spool, _ := os.ReadFile(filepath.Join(dataDir, telemetry.SpoolFileName))
 				if control == "enabled" {
-					if !reflect.DeepEqual(got.Counters, command.counters) {
-						t.Fatalf("counters=%v, want exactly %v", got.Counters, command.counters)
+					cmds := 0
+					for _, day := range got.Daily {
+						cmds += day.CLICmds
 					}
-				} else if !bytes.Equal(before, after) {
-					t.Fatalf("%s modified telemetry state: before=%s after=%s", control, before, after)
+					if cmds != 1 || bytes.Count(spool, []byte(`"e":"app.start"`)) != 1 || bytes.Count(spool, []byte("\n")) != 1 {
+						t.Fatalf("cli_cmds=%d spool=%s; want one counted command and one hourly app.start", cmds, spool)
+					}
+				} else if !bytes.Equal(before, after) || len(spool) != 0 {
+					t.Fatalf("%s modified telemetry state: before=%s after=%s spool=%s", control, before, after, spool)
 				}
 			})
 		}

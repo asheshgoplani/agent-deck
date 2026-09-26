@@ -93,19 +93,17 @@ func TestSendWithRetryTarget_SkipVerifyReportsUnverified(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_ReportsNoEvidenceStatus(t *testing.T) {
+func TestSendWithRetryTarget_NoEvidenceIsUnknown(t *testing.T) {
 	mock := &mockSendRetryTarget{
-		statuses: []string{"waiting"},
+		statuses: []string{"active"},
 		panes:    []string{""},
 	}
 	delivery, err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
 		maxRetries: 4, checkDelay: 0, verifyDelivery: true,
+		targetBusyByHook: func() (bool, bool) { return true, true },
 	})
-	if err == nil {
-		t.Fatal("expected #876 no-evidence error")
-	}
-	if delivery != deliveryNoEvidence {
-		t.Fatalf("delivery status: want %q, got %q", deliveryNoEvidence, delivery)
+	if err != nil || delivery != deliveryUnverified {
+		t.Fatalf("absence of evidence is unknown, got delivery=%q err=%v", delivery, err)
 	}
 }
 

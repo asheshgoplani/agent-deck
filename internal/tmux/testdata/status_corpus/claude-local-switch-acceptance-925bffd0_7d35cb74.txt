@@ -1,0 +1,50 @@
+ ▐▛███▛█   Claude Code v2.1.267
+▝▜██████▀  Fable 5.1 with medium effort · Claude Max
+  ▝▝ ▝▝    ~/agent-deck-recovery/local-acceptance-925bffd0/disposable-project
+
+
+❯ xxxxxxxxxx xxxxxxxxxx xxxx. xx xxxxx xx xxxx xxxxxx. xxxxxxxx xxxxxxxxxxxxxxxxxxxxxxxx xxx xxxxx xxxxxxx xxxxxxxxxxxxxxxxxxxxxxxx.
+
+⏺ Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access
+
+✻ Cooked for 0s · done 4:13 PM
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── switch-acceptance-925bffd0 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u/agent-deck-recovery/local-acceptance-925bffd0/disposable-project | [Fable 5.1] ctx:0% in:0 out:0                ✔ Update installed · Restart to update
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                                                                                                                     /rc
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

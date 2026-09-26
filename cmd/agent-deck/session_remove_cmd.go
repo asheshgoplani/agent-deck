@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
 // handleSessionRemove deletes a session from the registry.
@@ -95,6 +96,7 @@ func handleSessionRemove(profile string, args []string) {
 	// KillAndWait runs the SIGTERM→SIGKILL escalation synchronously so
 	// the kill completes before this short-lived CLI exits.
 	_ = inst.KillAndWait()
+	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
 	if *pruneWorktree {
 		pruneSessionWorktree(inst)

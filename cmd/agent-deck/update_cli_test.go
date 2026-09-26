@@ -46,6 +46,7 @@ func TestBuildUpdateCheckJSON(t *testing.T) {
 	assert.Equal(t, "1.17.1", got["publishing"])
 	assert.Equal(t, false, got["auto_install"])
 	assert.Equal(t, true, got["auto_restart"], "unset auto_restart defaults to true")
+	assert.Equal(t, true, got["auto_update_remotes"], "unset auto_update_remotes defaults to true")
 	timer := got["timer"].(map[string]any)
 	assert.Equal(t, true, timer["installed"])
 	assert.Equal(t, "launchd", timer["kind"])
@@ -73,6 +74,11 @@ func TestBuildUpdateCheckJSON(t *testing.T) {
 	require.NoError(t, printUpdateCheckJSON(&buf, buildUpdateCheckJSON(&update.UpdateInfo{}, session.UpdateSettings{}, update.TimerStatus{}, "", nil, nil)))
 	assert.Contains(t, buf.String(), `"running_tuis": []`)
 	assert.Contains(t, buf.String(), `"pending_launch_agents": []`)
+
+	// The release gate reads all three hands-off settings from this JSON.
+	buf.Reset()
+	require.NoError(t, printUpdateCheckJSON(&buf, buildUpdateCheckJSON(&update.UpdateInfo{}, session.UpdateSettings{AutoUpdateRemotes: &off}, update.TimerStatus{}, "", nil, nil)))
+	assert.Contains(t, buf.String(), `"auto_update_remotes": false`)
 }
 
 // unattendedHarness records which collaborators ran.
