@@ -1,0 +1,13 @@
+• Ran ls
+  └ a.go
+
+• Reviewing 4 approval requests (1m 02s • esc to interrupt)
+  └ • git push origin main
+    • rm -rf build
+    • curl https://example.com
+    +1 more
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project

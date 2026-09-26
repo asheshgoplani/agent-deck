@@ -1,0 +1,15 @@
+• Ran ls
+  └ a.go
+
+• Working (0s • esc to interrupt) · 1 background terminal r…
+  └ checking 日本語 ｶﾞﾊﾟ policy
+  └ Existing details that wrap onto a
+    second row
+• Queued follow-up inputs
+  ↳ also update the changelog
+    shift + ← edit last queued message
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project

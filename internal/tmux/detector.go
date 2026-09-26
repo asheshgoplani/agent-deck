@@ -69,7 +69,8 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// Busy indicators take priority over prompt markers, but only when the
 		// phrase has the shape of Codex's live status UI. Assistant prose and
 		// quoted examples remain in the pane above the current composer.
-		if hasCodexInterruptBusyProvenance(content, codexInterruptPhrases...) {
+		if codexLiveStatusLine(content) ||
+			hasCodexInterruptBusyProvenance(content, codexInterruptPhrases...) {
 			return false
 		}
 		// Direct prompt strings

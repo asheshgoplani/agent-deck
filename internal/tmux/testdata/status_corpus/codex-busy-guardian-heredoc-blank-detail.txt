@@ -1,0 +1,13 @@
+• Ran ls
+  └ a.go
+
+• Reviewing 2 approval requests (41s • esc to interrupt)
+  └ • python3 - <<'EOF'
+    import json
+
+    print(json.dumps({"ok": True}))…
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project
