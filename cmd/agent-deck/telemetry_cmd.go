@@ -196,7 +196,7 @@ func telemetryConsentBlocked(yes, interactive bool) string {
 	if telemetry.LogMode() {
 		return "cannot enable: AGENTDECK_TELEMETRY=log never grants consent. Unset it first."
 	}
-	if yes || !interactive || telemetry.InsideSession() || telemetry.IsCI() {
+	if yes || !interactive || telemetry.AgentActor() || telemetry.IsCI() {
 		return "consent must be given by a person at an interactive terminal; --yes is not supported (not a terminal or no explicit answer). Nothing changed."
 	}
 	return ""
@@ -237,7 +237,7 @@ func telemetryEnableCmd(version string, in io.Reader, out, errOut io.Writer, jso
 		fmt.Fprintln(out, telemetry.DeclinedLine)
 		return 0
 	}
-	if telemetry.HardDisabled() || telemetry.Endpoint() != shownEndpoint || telemetry.IsCI() || telemetry.InsideSession() {
+	if telemetry.HardDisabled() || telemetry.Endpoint() != shownEndpoint || telemetry.IsCI() || telemetry.AgentActor() {
 		fmt.Fprintln(errOut, "telemetry: consent conditions changed; nothing enabled")
 		return 1
 	}

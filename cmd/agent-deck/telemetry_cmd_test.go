@@ -19,7 +19,8 @@ func isolateTelemetryHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", home+"/data")
 	t.Setenv("XDG_CONFIG_HOME", home+"/config")
 	t.Setenv("XDG_CACHE_HOME", home+"/cache")
-	for _, k := range []string{telemetry.EnvTelemetry, telemetry.EnvDoNotTrack, telemetry.EnvPostHogKey, "CI", "GITHUB_ACTIONS", "AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID"} {
+	for _, k := range []string{telemetry.EnvTelemetry, telemetry.EnvDoNotTrack, telemetry.EnvPostHogKey, "CI", "GITHUB_ACTIONS", "AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID",
+		"CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
@@ -97,6 +98,10 @@ func TestTelemetryOnRefusals(t *testing.T) {
 		{"yes_flag", nil, []string{"on", "--yes"}, true},
 		{"inside_session", map[string]string{"AGENTDECK_INSTANCE_ID": "x"}, []string{"enable"}, true},
 		{"ci", map[string]string{"CI": "1"}, []string{"on"}, true},
+		{"claude_code", map[string]string{"CLAUDECODE": "1"}, []string{"on"}, true},
+		{"gemini_cli", map[string]string{"GEMINI_CLI": "1"}, []string{"on"}, true},
+		{"cursor_agent", map[string]string{"CURSOR_AGENT": "1"}, []string{"on"}, true},
+		{"codex", map[string]string{"CODEX_SANDBOX": "seatbelt"}, []string{"on"}, true},
 		{"dnt", map[string]string{telemetry.EnvDoNotTrack: "1"}, []string{"on"}, true},
 		{"log_mode", map[string]string{telemetry.EnvTelemetry: "log"}, []string{"on"}, true},
 	}

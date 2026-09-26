@@ -12,3 +12,11 @@ func EnableForTest(t testing.TB) {
 	testAllowed = true
 	t.Cleanup(func() { testAllowed = prev })
 }
+
+// SetTerminalForTest pins the stdin/stdout TTY check for the calling test.
+func SetTerminalForTest(t testing.TB, tty bool) {
+	t.Helper()
+	prev := isTerminalFn
+	isTerminalFn = func() bool { return tty }
+	t.Cleanup(func() { isTerminalFn = prev })
+}

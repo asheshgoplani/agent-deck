@@ -60,22 +60,27 @@ func TestConsentGateTable(t *testing.T) {
 		}, false},
 	}
 	type envCase struct {
-		name           string
-		vars           map[string]string
-		record, upload bool
+		name                   string
+		vars                   map[string]string
+		record, upload, prompt bool
 	}
 	envs := []envCase{
-		{"clean", nil, true, true},
-		{"dnt", map[string]string{EnvDoNotTrack: "1"}, false, false},
-		{"tel_0", map[string]string{EnvTelemetry: "0"}, false, false},
-		{"tel_off", map[string]string{EnvTelemetry: "off"}, false, false},
-		{"tel_garbage", map[string]string{EnvTelemetry: "maybe"}, false, false},
-		{"tel_1", map[string]string{EnvTelemetry: "1"}, true, true},
-		{"tel_log", map[string]string{EnvTelemetry: "log"}, true, false},
-		{"ci", map[string]string{"CI": "1"}, false, false},
-		{"github_actions", map[string]string{"GITHUB_ACTIONS": "true"}, false, false},
-		{"agent_marker", map[string]string{"CLAUDECODE": "1"}, true, true},
-		{"inside_session", map[string]string{"AGENTDECK_INSTANCE_ID": "x"}, true, false},
+		{"clean", nil, true, true, true},
+		{"dnt", map[string]string{EnvDoNotTrack: "1"}, false, false, false},
+		{"tel_0", map[string]string{EnvTelemetry: "0"}, false, false, false},
+		{"tel_off", map[string]string{EnvTelemetry: "off"}, false, false, false},
+		{"tel_garbage", map[string]string{EnvTelemetry: "maybe"}, false, false, false},
+		{"tel_1", map[string]string{EnvTelemetry: "1"}, true, true, true},
+		{"tel_log", map[string]string{EnvTelemetry: "log"}, true, false, false},
+		{"ci", map[string]string{"CI": "1"}, false, false, false},
+		{"github_actions", map[string]string{"GITHUB_ACTIONS": "true"}, false, false, false},
+		// A coding agent at a PTY records as actor=agent under a person's
+		// grant, but can never be asked, grant, or upload.
+		{"agent_marker", map[string]string{"CLAUDECODE": "1"}, true, false, false},
+		{"agent_gemini", map[string]string{"GEMINI_CLI": "1"}, true, false, false},
+		{"agent_cursor", map[string]string{"CURSOR_AGENT": "1"}, true, false, false},
+		{"agent_codex", map[string]string{"CODEX_THREAD_ID": "t"}, true, false, false},
+		{"inside_session", map[string]string{"AGENTDECK_INSTANCE_ID": "x"}, true, false, false},
 	}
 	for _, st := range states {
 		for _, e := range envs {
@@ -92,6 +97,11 @@ func TestConsentGateTable(t *testing.T) {
 						t.Setenv(k, v)
 					}
 					isTerminalFn = func() bool { return tty }
+					if st.name == "none" {
+						if want := e.prompt && tty; ShouldPrompt(LoadState()) != want {
+							t.Fatalf("prompt=%v want %v", !want, want)
+						}
+					}
 					SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaTUINew, SessionID: "s1"})
 					recorded := len(spoolLines(t)) > 0
 					if want := st.ok && e.record && tty; recorded != want {
@@ -131,6 +141,10 @@ func TestShouldPrompt(t *testing.T) {
 		{"dnt", func(t *testing.T, _ *clock) { t.Setenv(EnvDoNotTrack, "true") }, false},
 		{"ci", func(t *testing.T, _ *clock) { t.Setenv("BUILDKITE", "true") }, false},
 		{"inside_session", func(t *testing.T, _ *clock) { t.Setenv("AGENT_DECK_SESSION_ID", "x") }, false},
+		{"claude_code", func(t *testing.T, _ *clock) { t.Setenv("CLAUDECODE", "1") }, false},
+		{"gemini_cli", func(t *testing.T, _ *clock) { t.Setenv("GEMINI_CLI", "1") }, false},
+		{"cursor_agent", func(t *testing.T, _ *clock) { t.Setenv("CURSOR_AGENT", "1") }, false},
+		{"codex_sandbox", func(t *testing.T, _ *clock) { t.Setenv("CODEX_SANDBOX", "seatbelt") }, false},
 		{"not_a_tty", func(*testing.T, *clock) { isTerminalFn = func() bool { return false } }, false},
 		{"config_disabled", func(*testing.T, *clock) { SetConfigDisabled(true) }, false},
 		{"config_unreadable", func(*testing.T, *clock) { SetConfigUnreadable() }, false},

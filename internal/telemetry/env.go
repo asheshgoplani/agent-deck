@@ -162,7 +162,10 @@ func canRecord() bool {
 	return !HardDisabled() && !IsCI() && isTerminalFn()
 }
 
-// Interactive reports whether a human is plausibly at this terminal: stdin and stdout are TTYs, no CI marker is set, and the process is not inside an agent-deck session.
+// Interactive reports whether a human is plausibly at this terminal: stdin
+// and stdout are TTYs, no CI marker is set, and no agent-deck session or
+// coding-agent marker is set. An agent at a PTY can never answer the consent
+// question for the person, and never uploads.
 func Interactive() bool {
-	return isTerminalFn() && !IsCI() && !InsideSession()
+	return isTerminalFn() && !IsCI() && !AgentActor()
 }

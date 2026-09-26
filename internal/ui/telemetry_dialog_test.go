@@ -28,7 +28,9 @@ func telemetryDialogHarness(t *testing.T) dialogHarness {
 	t.Setenv(telemetry.EnvTelemetry, "")
 	t.Setenv(telemetry.EnvDoNotTrack, "")
 	t.Setenv("CI", "")
-	t.Setenv("AGENTDECK_INSTANCE_ID", "")
+	for _, k := range []string{"AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID", "CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
+		t.Setenv(k, "")
+	}
 	telemetry.SetConfigDisabled(false)
 
 	saves := &[]telemetry.State{}
@@ -249,6 +251,27 @@ func TestTelemetryDialogChangedConditionsCannotGrant(t *testing.T) {
 	h.d.Update(key("enter"))
 	if h.st.Consent == telemetry.ConsentGranted {
 		t.Fatal("granted after a kill switch appeared")
+	}
+}
+
+// An agent at a PTY must never be able to answer the question for a person:
+// the real consent check refuses under every coding-agent marker.
+func TestTelemetryDialogRefusesCodingAgents(t *testing.T) {
+	telemetryDialogHarness(t)
+	telemetry.SetTerminalForTest(t, true)
+	if !NewTelemetryDialog().canConsent() {
+		t.Fatal("a person at a terminal must be able to consent")
+	}
+	for _, marker := range []string{"CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
+		t.Run(marker, func(t *testing.T) {
+			t.Setenv(marker, "1")
+			d := NewTelemetryDialog()
+			d.SetSize(80, 24)
+			st := &telemetry.State{SchemaVersion: telemetry.SchemaVersion, Consent: telemetry.ConsentUndecided}
+			if d.canConsent() || d.Show("9.9.9", st) || d.ShowFromSettings("9.9.9", st) {
+				t.Fatalf("%s: the consent screen is available to a coding agent", marker)
+			}
+		})
 	}
 }
 
