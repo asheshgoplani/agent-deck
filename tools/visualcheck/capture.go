@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -142,8 +141,7 @@ func (w *widthRun) probeRedraw() error {
 	if err != nil {
 		return err
 	}
-	_, source, _, _ := runtime.Caller(0)
-	dir := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(source))), "visualcheck-artifacts", "redraw")
+	dir := filepath.Join(artifactDir(), "redraw")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
