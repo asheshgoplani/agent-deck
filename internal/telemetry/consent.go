@@ -85,11 +85,7 @@ func ShouldPrompt(s *State) bool {
 // existing ones were granted for this exact endpoint and schema.
 func Grant(s *State, version string, now time.Time) error {
 	if !validInstallID(s.InstallID) || len(s.Salt) != 64 || s.ConsentEndpoint != Endpoint() || s.SchemaVersion != SchemaVersion {
-		id, err := newInstallID()
-		if err != nil {
-			return err
-		}
-		salt, err := randomHex(32)
+		id, salt, err := newIdentity()
 		if err != nil {
 			return err
 		}
@@ -106,6 +102,17 @@ func Grant(s *State, version string, now time.Time) error {
 	}
 	s.initFirstSeen(now)
 	return nil
+}
+
+// newIdentity returns a fresh random install id and HMAC salt.
+func newIdentity() (id, salt string, err error) {
+	if id, err = newInstallID(); err != nil {
+		return "", "", err
+	}
+	if salt, err = randomHex(32); err != nil {
+		return "", "", err
+	}
+	return id, salt, nil
 }
 
 // resetCollected forgets everything recorded under an install id.
@@ -138,11 +145,7 @@ func Decline(s *State, version string, now time.Time) {
 // RotateInstallID replaces the install id and salt, and forgets the spool
 // and rollups recorded under the old id. Callers delete the spool.
 func RotateInstallID(s *State) error {
-	id, err := newInstallID()
-	if err != nil {
-		return err
-	}
-	salt, err := randomHex(32)
+	id, salt, err := newIdentity()
 	if err != nil {
 		return err
 	}

@@ -300,14 +300,19 @@ func telemetryPreviewCmd(out, errOut io.Writer, jsonOut bool) int {
 	}
 	fmt.Fprintf(out, "The next upload would POST %d request(s) to %s/batch/ (exact bodies):\n", len(bodies), telemetry.Endpoint())
 	for _, b := range bodies {
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, b, "", "  ") != nil {
-			fmt.Fprintln(out, string(b))
-			continue
-		}
-		fmt.Fprintln(out, pretty.String())
+		printIndentedJSON(out, b)
 	}
 	return 0
+}
+
+// printIndentedJSON prints a JSON body indented, or as-is if it does not parse.
+func printIndentedJSON(out io.Writer, body []byte) {
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, body, "", "  ") != nil {
+		fmt.Fprintln(out, string(body))
+		return
+	}
+	fmt.Fprintln(out, pretty.String())
 }
 
 func telemetryShowLastCmd(out io.Writer, jsonOut bool) int {
@@ -323,12 +328,7 @@ func telemetryShowLastCmd(out io.Writer, jsonOut bool) int {
 		return writeJSON(out, map[string]any{"sent": true, "last_sent_day": s.LastSentDay, "payload": s.LastPayload})
 	}
 	fmt.Fprintf(out, "Last request acknowledged on %s (exact body):\n", s.LastSentDay)
-	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, s.LastPayload, "", "  "); err != nil {
-		fmt.Fprintln(out, string(s.LastPayload))
-	} else {
-		fmt.Fprintln(out, pretty.String())
-	}
+	printIndentedJSON(out, s.LastPayload)
 	return 0
 }
 

@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"slices"
 	"strings"
 	"time"
 )
@@ -82,12 +83,7 @@ func AgeBucket(days int) string {
 }
 
 func validBucket(b Bucket, v string) bool {
-	for _, l := range bucketLabels[b] {
-		if l == v {
-			return true
-		}
-	}
-	return false
+	return contains(bucketLabels[b], v)
 }
 
 // toolBits is the fixed tool bitmask order; new tools append, "other" is bit 31.
@@ -101,21 +97,16 @@ const otherToolBit = 31
 // NormalizeTool maps a tool name to the built-in allow-list, else "other".
 func NormalizeTool(tool string) string {
 	tool = strings.ToLower(strings.TrimSpace(tool))
-	for _, t := range toolBits {
-		if t == tool {
-			return t
-		}
+	if contains(toolBits, tool) {
+		return tool
 	}
 	return toolOther
 }
 
 // ToolBit returns the bitmask bit for a tool name (normalised first).
 func ToolBit(tool string) uint32 {
-	tool = NormalizeTool(tool)
-	for i, t := range toolBits {
-		if t == tool {
-			return 1 << uint(i)
-		}
+	if i := slices.Index(toolBits, NormalizeTool(tool)); i >= 0 {
+		return 1 << uint(i)
 	}
 	return 1 << otherToolBit
 }
@@ -150,14 +141,11 @@ var ConfigSections = []string{
 func ConfigSectionMask(names ...string) uint32 {
 	var m uint32
 	for _, n := range names {
-		bit := uint32(1) << 31
-		for i, s := range ConfigSections {
-			if s == n {
-				bit = 1 << uint(i)
-				break
-			}
+		if i := slices.Index(ConfigSections, n); i >= 0 {
+			m |= 1 << uint(i)
+		} else {
+			m |= 1 << 31
 		}
-		m |= bit
 	}
 	return m
 }

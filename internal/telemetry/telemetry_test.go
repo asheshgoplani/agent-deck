@@ -410,7 +410,7 @@ func TestAllowListGolden(t *testing.T) {
 func TestRedactionCanaries(t *testing.T) {
 	canaries := []string{
 		"/Users/alice-canary/src/secret-repo", "alice.canary@example.com", "build-host-canary-7.internal",
-		"Fix the canary login bug in payments", "sk-ant-canary0123456789", "my-canary-mcp-server",
+		"Fix the canary login bug in payments", "apikey-canary-0123456789", "my-canary-mcp-server",
 		"../../etc/canary-passwd", "feat/canary-branch", "canary title with spaces",
 	}
 	rng := rand.New(rand.NewSource(42))

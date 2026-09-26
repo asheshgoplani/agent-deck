@@ -155,7 +155,9 @@ func MaybeUpload(ctx context.Context) UploadResult {
 	sent := map[string]bool{}
 	sentDays := map[string]bool{}
 	unsentDays := map[string]bool{}
+	chunked := 0
 	for i, g := range groups {
+		chunked += len(g)
 		for _, p := range g {
 			switch {
 			case p.spoolUUID != "" && i < okGroups:
@@ -167,7 +169,7 @@ func MaybeUpload(ctx context.Context) UploadResult {
 			}
 		}
 	}
-	for _, p := range events[len(flatten(groups)):] {
+	for _, p := range events[chunked:] {
 		if p.rollupDay != "" {
 			unsentDays[p.rollupDay] = true
 		}
@@ -195,14 +197,6 @@ func MaybeUpload(ctx context.Context) UploadResult {
 		res.Reason = "sent; could not persist acknowledgement"
 	}
 	return res
-}
-
-func flatten(groups [][]pendingEvent) []pendingEvent {
-	var out []pendingEvent
-	for _, g := range groups {
-		out = append(out, g...)
-	}
-	return out
 }
 
 func realEvents(group []pendingEvent) int {
@@ -371,13 +365,8 @@ func SendUninstall(ctx context.Context, sessions int, lastTool, reason string) U
 	if Validate("uninstall", props) != nil {
 		return UploadResult{Reason: "invalid event"}
 	}
-	s.Seq++
-	h, w := now.Local().Hour(), int(now.Local().Weekday())
-	l := spoolLine{E: "uninstall", U: newUUID(), D: dayOf(now), S: s.Seq, V: safeVersion(processVersion),
-		A: actor(), SF: string(SurfaceCLI), L: string(EffectiveLevel(s)), P: props}
-	if EffectiveLevel(s) == LevelFull {
-		l.H, l.W = &h, &w
-	}
+	l := s.newLine("uninstall", props, now, EffectiveLevel(s))
+	l.SF = string(SurfaceCLI) // uninstall is always a CLI event
 	key, _ := PostHogKey()
 	body, err := json.Marshal(phBatch{APIKey: key, Batch: []phEvent{s.toPostHog(l)}}) //nolint:gosec // G117: the PostHog project key is a public write-only token by design (TELEMETRY.md)
 	if err != nil {

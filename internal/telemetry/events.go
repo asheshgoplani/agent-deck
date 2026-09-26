@@ -506,9 +506,10 @@ func MessageSent(tool string, via SendVia, chars int, queued bool) {
 		if queued {
 			inc(&c.Queued)
 		}
-		l := c.Len[LenBucket(chars)]
-		inc(&l)
-		c.Len[LenBucket(chars)] = l
+		lb := LenBucket(chars)
+		n := c.Len[lb]
+		inc(&n)
+		c.Len[lb] = n
 		if actor() == "human" {
 			s.reach(stepFirstSend, NormalizeTool(tool), "", now)
 		}
