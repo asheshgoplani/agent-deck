@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // This file turns local state into the counts and enum values that opt-in
@@ -146,7 +147,7 @@ func TelemetryEnv() telemetry.EnvInfo {
 		ToolsInstalled: telemetryToolsOnPath(),
 		ConfigSections: telemetryConfigSections(),
 	}
-	if out, err := exec.Command("tmux", "-V").Output(); err == nil {
+	if out, err := tmux.Exec("", "-V").Output(); err == nil {
 		if m := tmuxMinorRe.FindStringSubmatch(string(out)); m != nil {
 			e.TmuxMinor = m[1] + "." + m[2]
 		}
