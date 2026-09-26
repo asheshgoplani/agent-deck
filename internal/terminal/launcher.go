@@ -110,6 +110,17 @@ func (r *RemoteAttach) UsesMosh() bool {
 // it receives, so this only needs to cover a few relayed round trips.
 const MoshQuitTimeout = 5 * time.Second
 
+// MoshServerProbe is the remote shell command that succeeds only when the
+// host can start mosh-server: the program named by mosh_server (its first
+// word), or mosh's default.
+func MoshServerProbe(moshServer string) string {
+	program := "mosh-server"
+	if fields := strings.Fields(moshServer); len(fields) > 0 {
+		program = fields[0]
+	}
+	return "command -v " + shellQuote(program)
+}
+
 // MoshArgs returns mosh's arguments for running argv on host. The bootstrap
 // ssh reuses the deck's ControlMaster, so starting mosh-server costs one
 // multiplexed exec rather than a fresh SSH handshake; the UDP endpoint then
@@ -188,19 +199,32 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 	}
 	profile := strings.TrimSpace(r.Profile)
 
-	if r.UsesMosh() {
-		argv := []string{agentDeckPath}
-		if profile != "" && profile != "default" {
-			argv = append(argv, "-p", profile)
-		}
-		argv = append(argv, "session", "attach", remoteName)
-		parts := []string{"mosh"}
-		for _, arg := range MoshArgs(host, r.MoshServer, argv) {
-			parts = append(parts, shellQuote(arg))
-		}
-		return strings.Join(parts, " ")
+	sshCmd := buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName)
+	if !r.UsesMosh() {
+		return sshCmd
 	}
 
+	argv := []string{agentDeckPath}
+	if profile != "" && profile != "default" {
+		argv = append(argv, "-p", profile)
+	}
+	argv = append(argv, "session", "attach", remoteName)
+	parts := []string{"mosh"}
+	for _, arg := range MoshArgs(host, r.MoshServer, argv) {
+		parts = append(parts, shellQuote(arg))
+	}
+	// A remote without mosh-server attaches over ssh instead of failing with
+	// mosh's bootstrap errors. The probe reuses the ControlMaster, and both
+	// branches exec so the attach keeps the shell's pid (signals reach it).
+	probe := "ssh -n -o ControlMaster=auto -o ControlPath=" + shellQuote(SSHControlDir+"/%r@%h:%p") +
+		" -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes " + shellQuote(host) + " " +
+		shellQuote(MoshServerProbe(r.MoshServer))
+	script := "if " + probe + " >/dev/null 2>&1; then exec " + strings.Join(parts, " ") + "; else exec " + sshCmd + "; fi"
+	return "/bin/sh -c " + shellQuote(script)
+}
+
+// buildRemoteSSHAttachCommand is the ssh command line for a remote attach.
+func buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName string) string {
 	// ssh with -tt (force remote PTY) and the same ControlMaster flags
 	// as the in-TUI remote attach, so the multiplexed connection is
 	// reused.

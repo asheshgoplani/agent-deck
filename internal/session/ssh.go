@@ -407,26 +407,55 @@ func (r *SSHRunner) RunInteractiveCreation(args ...string) error {
 // attachInteractive runs an agent-deck command on the remote in a local PTY,
 // over the remote's configured transport.
 func (r *SSHRunner) attachInteractive(args ...string) error {
-	if err := ValidateSSHHost(r.Host); err != nil {
+	cmd, transport, err := r.attachCommand(args...)
+	if err != nil {
 		return err
+	}
+	return runRemoteAttach(cmd, transport)
+}
+
+// moshServerProbeTimeout bounds the pre-attach check that the remote can
+// start mosh-server. It runs over the ControlMaster, so it is normally one
+// multiplexed round trip.
+const moshServerProbeTimeout = 10 * time.Second
+
+// attachCommand picks the interactive transport command for args. A mosh
+// remote whose host cannot start mosh-server (not installed, or not on the
+// non-login PATH) attaches over ssh instead of failing with mosh's bootstrap
+// errors; a missing local mosh is still an error because only the user can
+// fix it.
+func (r *SSHRunner) attachCommand(args ...string) (*exec.Cmd, string, error) {
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return nil, "", err
 	}
 	switch r.transport {
 	case "", RemoteTransportSSH:
-		_ = os.MkdirAll(sshControlDir, 0700)
-		// #nosec G204 -- fixed binary; the host was validated above and the
-		// remote command is built from shellQuote'd operands.
-		return runRemoteAttach(exec.Command("ssh", r.sshAttachArgs(args...)...), RemoteTransportSSH)
 	case RemoteTransportMosh:
 		mosh, err := exec.LookPath("mosh")
 		if err != nil {
-			return fmt.Errorf("remote %q uses transport = \"mosh\", but mosh is not installed on this machine: %w", r.name, err)
+			return nil, "", fmt.Errorf("remote %q uses transport = \"mosh\", but mosh is not installed on this machine: %w", r.name, err)
 		}
-		// #nosec G204 -- mosh is resolved from PATH and every operand is a
-		// discrete argv element (no shell); the host was validated above.
-		return runRemoteAttach(exec.Command(mosh, r.moshAttachArgs(args...)...), RemoteTransportMosh)
+		if r.remoteHasMoshServer() {
+			// #nosec G204 -- mosh is resolved from PATH and every operand is a
+			// discrete argv element (no shell); the host was validated above.
+			return exec.Command(mosh, r.moshAttachArgs(args...)...), RemoteTransportMosh, nil
+		}
+		sessionLog.Warn("mosh_server_unavailable_attaching_over_ssh", slog.String("remote", r.name))
 	default:
-		return fmt.Errorf("remote %q has unknown transport %q (use \"ssh\" or \"mosh\")", r.name, r.transport)
+		return nil, "", fmt.Errorf("remote %q has unknown transport %q (use \"ssh\" or \"mosh\")", r.name, r.transport)
 	}
+	_ = os.MkdirAll(sshControlDir, 0700)
+	// #nosec G204 -- fixed binary; the host was validated above and the
+	// remote command is built from shellQuote'd operands.
+	return exec.Command("ssh", r.sshAttachArgs(args...)...), RemoteTransportSSH, nil
+}
+
+// remoteHasMoshServer reports whether the remote can start mosh-server.
+func (r *SSHRunner) remoteHasMoshServer() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), moshServerProbeTimeout)
+	defer cancel()
+	_, err := r.remoteExec(ctx, terminal.MoshServerProbe(r.moshServer), nil)
+	return err == nil
 }
 
 // runRemoteAttach runs an interactive transport command (ssh or mosh) in a

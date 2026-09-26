@@ -1,6 +1,8 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,6 +53,44 @@ func TestAttachInteractiveRejectsUnusableTransport(t *testing.T) {
 	r.transport = RemoteTransportMosh
 	if err := r.attachInteractive("session", "attach", "id"); err == nil || !strings.Contains(err.Error(), "mosh is not installed") {
 		t.Fatalf("missing mosh err = %v", err)
+	}
+}
+
+// A mosh remote that cannot start mosh-server attaches over ssh rather than
+// failing with mosh's bootstrap errors; one that can attaches over mosh.
+func TestAttachCommandFallsBackToSSHWithoutMoshServer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mosh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var probed string
+	probeErr := errors.New("exit status 1")
+	r := &SSHRunner{Host: "me@box", AgentDeckPath: "agent-deck", name: "lab", transport: RemoteTransportMosh, moshServer: "/opt/mosh-server",
+		remoteExecFn: func(_ context.Context, cmd string, _ []byte) ([]byte, error) {
+			probed = cmd
+			return nil, probeErr
+		}}
+
+	cmd, transport, err := r.attachCommand("session", "attach", "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport != RemoteTransportSSH || filepath.Base(cmd.Path) != "ssh" || cmd.Args[1] != "-tt" {
+		t.Fatalf("missing mosh-server: transport %q, argv %q", transport, cmd.Args)
+	}
+	if probed != "command -v '/opt/mosh-server'" {
+		t.Fatalf("probe ran %q", probed)
+	}
+
+	probeErr = nil
+	cmd, transport, err = r.attachCommand("session", "attach", "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport != RemoteTransportMosh || cmd.Path != filepath.Join(dir, "mosh") {
+		t.Fatalf("mosh-server present: transport %q, path %q", transport, cmd.Path)
 	}
 }
 

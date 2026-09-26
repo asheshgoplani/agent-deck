@@ -22,7 +22,7 @@ mosh_server = "/opt/homebrew/bin/mosh-server"
 	if !ok || !req.Remote.UsesMosh() || req.Remote.MoshServer != "/opt/homebrew/bin/mosh-server" {
 		t.Fatalf("request = %+v (ok=%v)", req.Remote, ok)
 	}
-	if command := deckterminal.BuildAttachCommand(req); !strings.HasPrefix(command, "mosh ") {
+	if command := deckterminal.BuildAttachCommand(req); !strings.Contains(command, "exec mosh ") {
 		t.Fatalf("mosh remote rendered %q", command)
 	}
 
@@ -45,6 +45,10 @@ func TestEmbeddedMoshCloseQuitsGracefully(t *testing.T) {
 	ready := filepath.Join(dir, "ready")
 	fake := "#!/bin/sh\ntrap 'sleep 0.3; echo term > \"" + marker + "\"; exit 0' TERM\necho up > \"" + ready + "\"\nwhile :; do sleep 0.05; done\n"
 	if err := os.WriteFile(filepath.Join(dir, "mosh"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The remote has mosh-server: the pre-attach probe succeeds.
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

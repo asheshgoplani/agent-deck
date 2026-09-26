@@ -26,6 +26,18 @@ func TestMoshArgs(t *testing.T) {
 	}
 }
 
+func TestMoshServerProbe(t *testing.T) {
+	for server, want := range map[string]string{
+		"":                                  "command -v 'mosh-server'",
+		" /opt/homebrew/bin/mosh-server ":   "command -v '/opt/homebrew/bin/mosh-server'",
+		"/usr/local/bin/mosh-server new -v": "command -v '/usr/local/bin/mosh-server'",
+	} {
+		if got := MoshServerProbe(server); got != want {
+			t.Errorf("MoshServerProbe(%q) = %q, want %q", server, got, want)
+		}
+	}
+}
+
 func TestUsesMosh(t *testing.T) {
 	var nilRemote *RemoteAttach
 	for _, tc := range []struct {
@@ -45,21 +57,34 @@ func TestBuildAttachCommand_RemoteMoshArgv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "mosh"), []byte("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The fake ssh answers the mosh-server probe from $PROBE and otherwise
+	// prints its argv, so the ssh fallback is observable too.
+	fakeSSH := "#!/bin/sh\ncase \"$*\" in *'command -v'*) exit $PROBE;; esac\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(fakeSSH), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	remote := &RemoteAttach{Host: "me@box", AgentDeckPath: "/bin/agent ' deck", Profile: "wo'rk", Transport: "mosh", MoshServer: "/opt/mosh-server"}
 	command := BuildAttachCommand(AttachRequest{Name: "id ' 1", Remote: remote})
-	if !strings.HasPrefix(command, "mosh ") {
+	if !strings.Contains(command, "exec mosh ") {
 		t.Fatalf("mosh remote rendered %q", command)
 	}
-	cmd := exec.Command("/bin/sh", "-c", "exec "+command)
-	cmd.Env = append(os.Environ(), "PATH="+dir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%v: %s", err, out)
+	run := func(probe string) []string {
+		cmd := exec.Command("/bin/sh", "-c", "exec "+command)
+		cmd.Env = append(os.Environ(), "PATH="+dir, "PROBE="+probe)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	}
-	got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	want := MoshArgs("me@box", "/opt/mosh-server", []string{"/bin/agent ' deck", "-p", "wo'rk", "session", "attach", "id ' 1"})
-	if !reflect.DeepEqual(got, want) {
+	if got := run("0"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("mosh saw %q\nwant     %q", got, want)
+	}
+	// No mosh-server on the remote: the same command attaches over ssh.
+	wantSSH := []string{"-tt", "-o", "ControlMaster=auto", "-o", "ControlPath=" + SSHControlDir + "/%r@%h:%p", "-o", "ControlPersist=600", "me@box", "/bin/agent ' deck", "-p", "wo'rk", "session", "attach", "id ' 1"}
+	if got := run("1"); !reflect.DeepEqual(got, wantSSH) {
+		t.Fatalf("fallback ssh saw %q\nwant              %q", got, wantSSH)
 	}
 
 	remote.Transport = "ssh"

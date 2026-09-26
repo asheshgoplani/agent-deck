@@ -67,7 +67,7 @@ transport = "mosh"
 mosh_server = "/opt/homebrew/bin/mosh-server"  # only when it is not on the non-login SSH PATH
 ```
 
-Install `mosh` on your computer and `mosh-server` on the remote, and allow UDP 60000–61000 to reach it (Tailscale already does). mosh starts its server through the deck's existing SSH ControlMaster and connects to the address the server sees that connection arrive on, so a host reached through a jump host needs a direct UDP route. Listing, previews, sends and every other command stay on SSH. Leaving an attach asks mosh to shut its server down rather than killing the client, which would leave the server and its attach waiting indefinitely for a reconnect.
+Install `mosh` on your computer and `mosh-server` on the remote, and allow UDP 60000–61000 to reach it (Tailscale already does). mosh starts its server through the deck's existing SSH ControlMaster and connects to the address the server sees that connection arrive on, so a host reached through a jump host needs a direct UDP route. Before each mosh attach the deck checks over that ControlMaster that the remote can start `mosh-server` (the `mosh_server` program, or `mosh-server` on the non-login PATH); when it cannot, the attach runs over `ssh -tt` instead, so a remote that is not set up for mosh yet still attaches. A missing local `mosh` is an error. Listing, previews, sends and every other command stay on SSH. Leaving an attach asks mosh to shut its server down rather than killing the client, which would leave the server and its attach waiting indefinitely for a reconnect.
 
 ## PATH for sessions the server starts
 
