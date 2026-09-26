@@ -908,15 +908,15 @@ func TestPromptTextFitsAndDisclosesDestination(t *testing.T) {
 
 func TestPostHogKeyPrecedenceAndValidation(t *testing.T) {
 	env(t)
-	if Configured() {
+	if Configured() || PostHogKeySource() != KeySourceNone {
 		t.Fatal("no key must mean not configured")
 	}
 	SetPostHogKey("phc_fromconfig0123456789ab")
-	if k, ok := PostHogKey(); !ok || k != "phc_fromconfig0123456789ab" {
+	if k, ok := PostHogKey(); !ok || k != "phc_fromconfig0123456789ab" || PostHogKeySource() != KeySourceConfig {
 		t.Fatal("config key")
 	}
 	t.Setenv(EnvPostHogKey, testKey)
-	if k, _ := PostHogKey(); k != testKey {
+	if k, _ := PostHogKey(); k != testKey || PostHogKeySource() != KeySourceEnv {
 		t.Fatal("env must win over config")
 	}
 	t.Setenv(EnvPostHogKey, "not a key")
@@ -938,5 +938,8 @@ func TestPostHogKeyPrecedenceAndValidation(t *testing.T) {
 	SetPostHogKey("phc_fromconfig0123456789ab")
 	if k, ok := PostHogKey(); !ok || k != compiled {
 		t.Fatalf("key = %q: env or config must not override a compiled-in key", k)
+	}
+	if src := PostHogKeySource(); src != KeySourceCompiled {
+		t.Fatalf("key source = %q, want %q", src, KeySourceCompiled)
 	}
 }

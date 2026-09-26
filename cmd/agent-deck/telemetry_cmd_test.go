@@ -58,8 +58,11 @@ func TestTelemetryStatusDefaultOffNotConfigured(t *testing.T) {
 	if !strings.HasPrefix(st.Upload, "not configured") || st.Endpoint != telemetry.DefaultEndpoint || st.Level != "full" {
 		t.Fatalf("upload %q endpoint %q level %q", st.Upload, st.Endpoint, st.Level)
 	}
+	if st.KeySource != telemetry.KeySourceNone {
+		t.Fatalf("key source %q, want %q", st.KeySource, telemetry.KeySourceNone)
+	}
 	_, out, _ := runTel(t, "", true, "status")
-	for _, want := range []string{"Telemetry: OFF", "Upload:        not configured", "Spool:         0 event(s)", "Daily cap:     0/60"} {
+	for _, want := range []string{"Telemetry: OFF", "Upload:        not configured", "Project key:   none", "Spool:         0 event(s)", "Daily cap:     0/60"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}

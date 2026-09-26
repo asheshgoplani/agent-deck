@@ -28,6 +28,10 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.Version={{.Version}}
+      # Release builds carry the PostHog project key from the
+      # AGENTDECK_POSTHOG_KEY secret (release.yml); local and snapshot
+      # builds without it get no key and never upload (TELEMETRY.md).
+      - '{{ if index .Env "AGENTDECK_POSTHOG_KEY" }}-X github.com/asheshgoplani/agent-deck/internal/telemetry.defaultPostHogKey={{ .Env.AGENTDECK_POSTHOG_KEY }}{{ end }}'
 
 archives:
   - id: default

@@ -128,6 +128,8 @@ Builds without a project key record locally (with consent) but **never upload**;
    - `[telemetry] posthog_key = "phc_..."` in `config.toml`.
 4. `[telemetry] endpoint` (default `https://eu.i.posthog.com`) is the base URL; uploads go to `<endpoint>/batch/`. It exists so a hostname we own can front PostHog later without a code change. Changing the effective endpoint asks everyone for consent again.
 
+**Release builds.** Official release binaries carry the project key: the release workflow passes the `AGENTDECK_POSTHOG_KEY` repository secret to GoReleaser, which sets `defaultPostHogKey` through `-ldflags`. Dev, `go build` and snapshot builds have no compiled-in key and stay silent (nothing is uploaded) unless `[telemetry] posthog_key` or `AGENTDECK_POSTHOG_KEY` is set. `agent-deck telemetry status` shows where the key comes from (`Project key: compiled-in`, `environment`, `config` or `none`) and never prints the key itself.
+
 **Volume and billing.** The free plan includes 1M events a month. The client caps each install at 60 events a day plus about a dozen daily rollups. A hard spending cap is a PostHog setting, not client code: in PostHog, Billing → set a billing limit (for example $20/month) once the dashboard shows 70% of the free quota, and a billing alert at 800k events/month.
 
 ## Published field list

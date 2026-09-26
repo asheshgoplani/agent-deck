@@ -5,6 +5,7 @@ Telemetry: OFF
   Level:         full
   Endpoint:      https://eu.i.posthog.com
   Upload:        not configured (no PostHog project key; events stay local)
+  Project key:   none
   Spool:         0 event(s), 0 bytes, oldest day -
   Next upload:   -
   Last upload:   -
