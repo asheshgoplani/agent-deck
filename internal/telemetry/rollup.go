@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -170,10 +171,20 @@ type SessionSample struct {
 }
 
 // Sampler builds activity.hourly in the one TUI per machine that holds the
-// sampler lock. It is used from the TUI goroutine only.
+// sampler lock. The TUI goroutine feeds it; the exit path may close it from
+// another goroutine, so every method takes mu.
 type Sampler struct {
+	mu         sync.Mutex
 	unlock     func()
-	hourStart  time.Time
+	sawRunning bool
+	now        func() time.Time
+	emit       func(props map[string]any, at time.Time)
+	hour       hourSample
+}
+
+// hourSample accumulates one local hour.
+type hourSample struct {
+	start      time.Time
 	lastSample time.Time
 	running    int
 	waiting    int
@@ -182,9 +193,6 @@ type Sampler struct {
 	minutes    int
 	human      bool
 	tools      uint32
-	sawRunning bool
-	now        func() time.Time
-	emit       func(props map[string]any, at time.Time)
 }
 
 // SamplerLockFileName is held for the lifetime of the sampling TUI.
@@ -216,19 +224,31 @@ func (sp *Sampler) Observe(sessions func() []SessionSample) {
 	if sp == nil {
 		return
 	}
+	runningTool := sp.observe(sessions)
+	if runningTool != "" {
+		SessionRunning(runningTool)
+	}
+}
+
+// observe samples under the lock and returns the tool of the first running
+// session ever seen ("" after that), for the first_session_running milestone.
+func (sp *Sampler) observe(sessions func() []SessionSample) string {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
 	now := sp.now()
 	sp.rollHour(now)
-	if !sp.lastSample.IsZero() && now.Sub(sp.lastSample) < time.Minute {
-		return
+	h := &sp.hour
+	if !h.lastSample.IsZero() && now.Sub(h.lastSample) < time.Minute {
+		return ""
 	}
-	sp.lastSample = now
+	h.lastSample = now
 	var run, wait, idle, errd int
 	runningTool := ""
 	for _, s := range sessions() {
 		switch s.Status {
 		case StatusRunning:
 			run++
-			sp.tools |= ToolBit(s.Tool)
+			h.tools |= ToolBit(s.Tool)
 			runningTool = s.Tool
 		case StatusWaiting:
 			wait++
@@ -238,15 +258,16 @@ func (sp *Sampler) Observe(sessions func() []SessionSample) {
 			errd++
 		}
 	}
-	sp.running = max(sp.running, run)
-	sp.waiting = max(sp.waiting, wait)
-	sp.idle = max(sp.idle, idle)
-	sp.errored = max(sp.errored, errd)
-	sp.minutes++
-	if runningTool != "" && !sp.sawRunning {
-		sp.sawRunning = true
-		SessionRunning(runningTool)
+	h.running = max(h.running, run)
+	h.waiting = max(h.waiting, wait)
+	h.idle = max(h.idle, idle)
+	h.errored = max(h.errored, errd)
+	h.minutes++
+	if runningTool == "" || sp.sawRunning {
+		return ""
 	}
+	sp.sawRunning = true
+	return runningTool
 }
 
 // KeyPressed marks a human key press in the current hour.
@@ -254,33 +275,56 @@ func (sp *Sampler) KeyPressed() {
 	if sp == nil {
 		return
 	}
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
 	sp.rollHour(sp.now())
-	sp.human = true
+	sp.hour.human = true
 }
 
-func (sp *Sampler) rollHour(now time.Time) {
-	h := now.Truncate(time.Hour)
-	if sp.hourStart.IsZero() {
-		sp.hourStart = h
+// Reset forgets the current hour without emitting it. Called when consent is
+// granted mid-hour, so nothing observed before the grant is ever recorded.
+func (sp *Sampler) Reset() {
+	if sp == nil {
 		return
 	}
-	if h.Equal(sp.hourStart) {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	sp.hour = hourSample{start: localHourStart(sp.now())}
+}
+
+// localHourStart is the start of t's local wall-clock hour. Truncate would
+// align to UTC hours, which are not local hours in UTC+5:30 and similar zones.
+func localHourStart(t time.Time) time.Time {
+	l := t.Local()
+	return time.Date(l.Year(), l.Month(), l.Day(), l.Hour(), 0, 0, 0, time.Local)
+}
+
+// rollHour emits the previous hour when the local hour changed. Callers hold mu.
+func (sp *Sampler) rollHour(now time.Time) {
+	h := localHourStart(now)
+	if sp.hour.start.IsZero() {
+		sp.hour.start = h
+		return
+	}
+	if h.Equal(sp.hour.start) {
 		return
 	}
 	sp.flush()
-	sp.hourStart = h
+	sp.hour.start = h
 }
 
+// flush emits the current hour and starts an empty one. Callers hold mu.
 func (sp *Sampler) flush() {
-	if sp.minutes > 0 || sp.human {
+	h := sp.hour
+	if h.minutes > 0 || h.human {
 		sp.emit(map[string]any{
-			"running": CountBucket(sp.running), "waiting": CountBucket(sp.waiting),
-			"idle": CountBucket(sp.idle), "error": CountBucket(sp.errored),
-			"sampled_min": CountBucket(sp.minutes), "human_active": sp.human,
-			"tools_running": int(sp.tools),
-		}, sp.hourStart)
+			"running": CountBucket(h.running), "waiting": CountBucket(h.waiting),
+			"idle": CountBucket(h.idle), "error": CountBucket(h.errored),
+			"sampled_min": CountBucket(h.minutes), "human_active": h.human,
+			"tools_running": int(h.tools),
+		}, h.start)
 	}
-	*sp = Sampler{unlock: sp.unlock, now: sp.now, emit: sp.emit, sawRunning: sp.sawRunning}
+	sp.hour = hourSample{}
 }
 
 // Close flushes the current hour to the spool and releases the lock.
@@ -288,6 +332,8 @@ func (sp *Sampler) Close() {
 	if sp == nil {
 		return
 	}
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
 	sp.flush()
 	if sp.unlock != nil {
 		sp.unlock()

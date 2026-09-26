@@ -700,6 +700,95 @@ func TestSamplerOneSamplerPerMachineAndHourlyEvent(t *testing.T) {
 	}
 }
 
+func hourlyLines(t *testing.T) []spoolLine {
+	t.Helper()
+	var out []spoolLine
+	for _, l := range spoolLines(t) {
+		if l.E == "activity.hourly" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func running(n int) func() []SessionSample {
+	return func() []SessionSample {
+		out := make([]SessionSample, n)
+		for i := range out {
+			out[i] = SessionSample{Tool: "claude", Status: StatusRunning}
+		}
+		return out
+	}
+}
+
+// TestSamplerResetOnGrantDropsPreConsentMinutes: minutes observed before a
+// mid-hour grant never reach that hour's activity.hourly.
+func TestSamplerResetOnGrantDropsPreConsentMinutes(t *testing.T) {
+	c := env(t)
+	sp := &Sampler{now: c.now, emit: func(p map[string]any, at time.Time) { recordAt("activity.hourly", p, "", at) }}
+	for i := 0; i < 5; i++ {
+		sp.Observe(running(9))
+		sp.KeyPressed()
+		c.add(time.Minute)
+	}
+	grant(t, c)
+	sp.Reset()
+	sp.Observe(running(1))
+	c.set(at(0, 15, 1))
+	sp.Observe(running(0))
+	hourly := hourlyLines(t)
+	if len(hourly) != 1 {
+		t.Fatalf("%d hourly events", len(hourly))
+	}
+	if p := hourly[0].P; p["running"] != "1" || p["sampled_min"] != "1" || p["human_active"] != false {
+		t.Fatalf("pre-consent activity leaked into the hour: %v", p)
+	}
+}
+
+// TestSamplerUsesLocalHourBoundaries: in a UTC+5:30 zone an hour runs from
+// local :00 to :00, not from :30 to :30.
+func TestSamplerUsesLocalHourBoundaries(t *testing.T) {
+	prev := time.Local
+	time.Local = time.FixedZone("UTC+0530", 5*3600+1800)
+	t.Cleanup(func() { time.Local = prev })
+	c := env(t)
+	grant(t, c)
+	sp := &Sampler{now: c.now, emit: func(p map[string]any, at time.Time) { recordAt("activity.hourly", p, "", at) }}
+	c.set(at(1, 14, 10))
+	sp.Observe(running(1))
+	c.set(at(1, 14, 50))
+	sp.Observe(running(1))
+	c.set(at(1, 15, 5))
+	sp.Observe(running(0))
+	hourly := hourlyLines(t)
+	if len(hourly) != 1 || *hourly[0].H != 14 || hourly[0].P["sampled_min"] != "2-3" {
+		for _, l := range hourly {
+			t.Logf("hour %d %v", *l.H, l.P)
+		}
+		t.Fatalf("want one 14:00 hour with both samples, got %d event(s)", len(hourly))
+	}
+}
+
+// TestSamplerCloseRacesObserve: the exit path closes the sampler from the
+// signal goroutine while the TUI goroutine may be observing (run with -race).
+func TestSamplerCloseRacesObserve(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	sp := &Sampler{now: c.now, emit: func(map[string]any, time.Time) {}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			sp.Observe(running(1))
+			sp.KeyPressed()
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		sp.Close()
+	}
+	<-done
+}
+
 // TestRemotePathsNeverTouchTelemetryState: remote add/update/sweep code must
 // not read, write or copy telemetry-state.json (consent is per machine).
 func TestRemotePathsNeverTouchTelemetryState(t *testing.T) {

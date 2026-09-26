@@ -74,6 +74,9 @@ func (h *Home) telemetryGranted(msg telemetryGrantedMsg) tea.Cmd {
 	if h.tel.sampler == nil {
 		h.tel.sampler = telemetry.NewSampler()
 	}
+	// The sampler may have run since first load; nothing observed before
+	// the grant belongs in this hour's activity.hourly.
+	h.tel.sampler.Reset()
 	return func() tea.Msg {
 		telemetry.AfterConsent(msg.source, msg.previous, session.TelemetryBaseline(sum), fleet)
 		telemetry.EnvSnapshot(session.TelemetryEnv())
