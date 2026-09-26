@@ -177,8 +177,9 @@ func runVisualCheckTest(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	code := runMain([]string{abs})
-	artifactDir := filepath.Join(repoRoot, "visualcheck-artifacts")
-	if err := os.MkdirAll(artifactDir, 0755); err != nil {
+	artifacts := artifactDir()
+	t.Logf("visualcheck artifacts: %s", artifacts)
+	if err := os.MkdirAll(artifacts, 0755); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"contact-sheet.html", "visualcheck-report.json"} {
@@ -186,12 +187,12 @@ func runVisualCheckTest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(artifactDir, name), data, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(artifacts, name), data, 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if code != 0 {
-		t.Fatalf("visualcheck exited %d against %s; see contact-sheet.html in %s", code, abs, dir)
+		t.Fatalf("visualcheck exited %d against %s; see contact-sheet.html in %s", code, abs, artifacts)
 	}
 }
 
