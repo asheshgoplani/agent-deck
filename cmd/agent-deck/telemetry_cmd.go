@@ -457,7 +457,7 @@ Kill switches (win over stored consent, re-read on every run):
   [telemetry] disabled = true         hard off, in config.toml
   [telemetry] level = "basic"         record only app.start, usage.daily and env.snapshot
   [telemetry] endpoint = URL          receiver base URL (default %s; re-asks consent)
-  [telemetry] posthog_key / %s   PostHog project key; without one nothing is uploaded
+  [telemetry] posthog_key / %s   PostHog key, only for builds without a compiled-in one
 
 When data is sent:
   Only from the interactive TUI, never on the day you said yes, then at most

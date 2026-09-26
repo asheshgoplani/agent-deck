@@ -35,14 +35,17 @@ func SetConfigLevel(l string) {
 }
 
 // PostHogKey returns the effective project API key and whether it is usable.
-// Precedence: AGENTDECK_POSTHOG_KEY, then config, then the compiled-in default.
+// A compiled-in key always wins: consent binds to the endpoint, not the key,
+// so nothing in the environment or config may redirect a release build's
+// uploads to another project. Builds without one (dogfooding) take
+// AGENTDECK_POSTHOG_KEY, then config.
 func PostHogKey() (string, bool) {
-	k := strings.TrimSpace(os.Getenv(EnvPostHogKey))
+	k := defaultPostHogKey
 	if k == "" {
-		k = configKey
+		k = strings.TrimSpace(os.Getenv(EnvPostHogKey))
 	}
 	if k == "" {
-		k = defaultPostHogKey
+		k = configKey
 	}
 	return k, postHogKeyPattern.MatchString(k)
 }

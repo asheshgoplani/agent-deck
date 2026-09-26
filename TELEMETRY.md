@@ -123,9 +123,9 @@ Builds without a project key record locally (with consent) but **never upload**;
 1. Create the PostHog project in the **EU** region (`https://eu.posthog.com`), with IP capture set to discard, GeoIP disabled, and no billing card (or a billing limit, see below).
 2. Copy the project API key (`phc_...`). It is a write-only public key: it can add events to the project but cannot read anything.
 3. Provide it in one of these ways (first match wins):
-   - `AGENTDECK_POSTHOG_KEY=phc_...` in the environment (dogfooding),
-   - `[telemetry] posthog_key = "phc_..."` in `config.toml`,
-   - the compiled-in default: set `defaultPostHogKey` in `internal/telemetry/config.go` in a release commit, or build with `-ldflags "-X github.com/asheshgoplani/agent-deck/internal/telemetry.defaultPostHogKey=phc_..."`.
+   - the compiled-in default: set `defaultPostHogKey` in `internal/telemetry/config.go` in a release commit, or build with `-ldflags "-X github.com/asheshgoplani/agent-deck/internal/telemetry.defaultPostHogKey=phc_..."`. When a build has one, the two overrides below are ignored, so nothing in the environment or config can redirect its uploads to another project.
+   - `AGENTDECK_POSTHOG_KEY=phc_...` in the environment (dogfooding builds without a compiled-in key),
+   - `[telemetry] posthog_key = "phc_..."` in `config.toml`.
 4. `[telemetry] endpoint` (default `https://eu.i.posthog.com`) is the base URL; uploads go to `<endpoint>/batch/`. It exists so a hostname we own can front PostHog later without a code change. Changing the effective endpoint asks everyone for consent again.
 
 **Volume and billing.** The free plan includes 1M events a month. The client caps each install at 60 events a day plus about a dozen daily rollups. A hard spending cap is a PostHog setting, not client code: in PostHog, Billing → set a billing limit (for example $20/month) once the dashboard shows 70% of the free quota, and a billing alert at 800k events/month.

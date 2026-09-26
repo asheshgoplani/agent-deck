@@ -894,4 +894,14 @@ func TestPostHogKeyPrecedenceAndValidation(t *testing.T) {
 	if Configured() {
 		t.Fatal("POSTHOG_* environment must have no effect")
 	}
+
+	const compiled = "phc_compiledin0123456789ab"
+	prev := defaultPostHogKey
+	defaultPostHogKey = compiled
+	t.Cleanup(func() { defaultPostHogKey = prev })
+	t.Setenv(EnvPostHogKey, testKey)
+	SetPostHogKey("phc_fromconfig0123456789ab")
+	if k, ok := PostHogKey(); !ok || k != compiled {
+		t.Fatalf("key = %q: env or config must not override a compiled-in key", k)
+	}
 }

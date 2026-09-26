@@ -1000,9 +1000,9 @@ type TelemetrySettings struct {
 	// is accepted only for localhost. Changing it requires fresh consent.
 	Endpoint string `toml:"endpoint,omitempty"`
 
-	// PostHogKey is the PostHog project API key (phc_...). Empty uses
-	// AGENTDECK_POSTHOG_KEY or the compiled-in key; with none, events stay
-	// in the local spool and nothing is uploaded.
+	// PostHogKey is the PostHog project API key (phc_...), used only by
+	// builds without a compiled-in key, after AGENTDECK_POSTHOG_KEY; with
+	// none, events stay in the local spool and nothing is uploaded.
 	PostHogKey string `toml:"posthog_key,omitempty"`
 
 	// Level is "full" (default) or "basic". Config can only lower the level.
