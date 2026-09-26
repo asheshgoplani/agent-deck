@@ -9,11 +9,9 @@ import (
 	"time"
 )
 
-var debugNav = os.Getenv("VISUALCHECK_DEBUG_NAV") == "1"
-
 // visualCheckStep is one entry in the fixed key script every width is
 // driven through. run does the key presses, explicit waits, and calls
-// w.capture (or w.captureAdvisory) once per screen the step produces.
+// w.capture once per screen the step produces.
 type visualCheckStep struct {
 	name string
 	run  func(w *widthRun) error
@@ -283,7 +281,7 @@ func stepGroupView(w *widthRun) error {
 		return fmt.Errorf("launch group-scoped view: %w", err)
 	}
 	if os.Getenv("VISUALCHECK_KEEP_SANDBOX") != "1" {
-		defer w.s.exec("tmux", "kill-session", "-t", name)
+		defer func() { _, _ = w.s.exec("tmux", "kill-session", "-t", name) }()
 	}
 
 	if err := w.s.waitForPaneContains(name, "alpha", 8*time.Second); err != nil {

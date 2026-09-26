@@ -911,9 +911,8 @@ func TestDisabledBusIsANoOp(t *testing.T) {
 
 	b := Default()
 	b.Publish("kind.noop", "sess", map[string]any{"x": 1})
-	if !b.Flush(50 * time.Millisecond) {
-		// disabled Flush returns false immediately; that's expected, not a hang
-	}
+	// A disabled Flush returns false immediately; that's expected, not a hang.
+	_ = b.Flush(50 * time.Millisecond)
 	stats := b.Stats()
 	if stats.Enabled {
 		t.Fatal("expected disabled bus")

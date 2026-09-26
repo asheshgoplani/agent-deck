@@ -32,7 +32,7 @@ var widthSpecs = []widthSpec{
 type frameCapture struct {
 	step, width string
 	raw, scrub  string
-	advisory    string // only for entries explicitly listed in advisoryReasons
+	advisory    string // a deliberate, reviewed exclusion; none exist today
 }
 
 // widthRun drives one full walkthrough of the binary at a fixed terminal
@@ -349,19 +349,6 @@ func (w *widthRun) capture(step string) {
 		scrub: scrubFrame(raw),
 	})
 }
-
-// captureAdvisory records a deliberate exclusion declared in advisoryReasons.
-// Its reason appears in the contact sheet.
-func (w *widthRun) captureAdvisory(step, reason string) {
-	if declared, ok := advisoryReasons[step]; !ok || declared != reason {
-		panic("undeclared advisory: " + step)
-	}
-	w.frames = append(w.frames, frameCapture{step: step, width: w.spec.name, advisory: reason})
-}
-
-// Advisory entries require a deliberate, reviewed exclusion and a reason.
-// There are currently no exclusions: every named screen is required.
-var advisoryReasons = map[string]string{}
 
 // cursorHighlightBG is the background-color SGR substring the TUI paints
 // behind the selected row (and nothing else static on the list screen,
