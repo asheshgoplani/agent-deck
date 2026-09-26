@@ -46,7 +46,7 @@ func TestSettingsPanel_LastSetting_ScrollsTailIntoView(t *testing.T) {
 		t.Errorf("help bar must scroll into view at the last setting. Got:\n%s", view)
 	}
 	// The cursor's own row (the last setting) must still be visible.
-	if !containsString(view, "Sidebar density") {
+	if !containsString(view, "Usage data") {
 		t.Errorf("last setting row must remain visible after scrolling to the tail. Got:\n%s", view)
 	}
 }

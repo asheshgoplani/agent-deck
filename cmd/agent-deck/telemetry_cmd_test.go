@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -14,16 +13,20 @@ import (
 
 func isolateTelemetryHome(t *testing.T) {
 	t.Helper()
+	telemetry.EnableForTest(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", home+"/data")
 	t.Setenv("XDG_CONFIG_HOME", home+"/config")
 	t.Setenv("XDG_CACHE_HOME", home+"/cache")
-	for _, k := range []string{telemetry.EnvTelemetry, telemetry.EnvDoNotTrack, "CI", "GITHUB_ACTIONS", "AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID"} {
+	for _, k := range []string{telemetry.EnvTelemetry, telemetry.EnvDoNotTrack, telemetry.EnvPostHogKey, "AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID",
+		"CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
+	telemetry.ClearCIForTest(t)
 	telemetry.SetConfigDisabled(false)
+	telemetry.SetEndpoint("")
 }
 
 func runTel(t *testing.T, stdin string, interactive bool, args ...string) (code int, out, errOut string) {
@@ -33,228 +36,102 @@ func runTel(t *testing.T, stdin string, interactive bool, args ...string) (code 
 	return code, o.String(), e.String()
 }
 
-func TestTelemetryStatusDefaultOffJSON(t *testing.T) {
-	isolateTelemetryHome(t)
+func statusJSON(t *testing.T) telemetryStatus {
+	t.Helper()
 	code, out, _ := runTel(t, "", true, "status", "--json")
 	if code != 0 {
-		t.Fatalf("exit %d", code)
+		t.Fatalf("status exit %d", code)
 	}
 	var st telemetryStatus
 	if err := json.Unmarshal([]byte(out), &st); err != nil {
-		t.Fatalf("not JSON: %v\n%s", err, out)
+		t.Fatalf("status json: %v\n%s", err, out)
 	}
-	if st.Enabled || st.Consent != "undecided" || st.InstallID != "" {
-		t.Fatalf("fresh status = %+v", st)
-	}
-	if st.Reason == "" || st.Endpoint == "" || st.StatePath == "" {
-		t.Fatalf("status missing fields: %+v", st)
-	}
-	if code, out2, _ := runTel(t, "", true, "--json"); code != 0 || out2 != out {
-		t.Fatalf("bare telemetry differs from status: %d %s", code, out2)
-	}
+	return st
 }
 
-func TestTelemetryStatusHumanReadable(t *testing.T) {
+func TestTelemetryStatusDefaultOffNotConfigured(t *testing.T) {
 	isolateTelemetryHome(t)
+	st := statusJSON(t)
+	if st.Enabled || st.Consent != "undecided" || st.InstallID != "" || st.SchemaVersion != 2 {
+		t.Fatalf("default status %+v", st)
+	}
+	if !strings.HasPrefix(st.Upload, "not configured") || st.Endpoint != telemetry.DefaultEndpoint || st.Level != "full" {
+		t.Fatalf("upload %q endpoint %q level %q", st.Upload, st.Endpoint, st.Level)
+	}
 	_, out, _ := runTel(t, "", true, "status")
-	for _, want := range []string{"Telemetry: OFF", "consent has not been given", "Endpoint:", "Last sent:     never", telemetry.DocsURL} {
+	for _, want := range []string{"Telemetry: OFF", "Upload:        not configured", "Spool:         0 event(s)", "Daily cap:     0/60"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
 	}
 }
 
-func TestTelemetryEnableRefusesOnNonTerminalWithoutYes(t *testing.T) {
-	isolateTelemetryHome(t)
-	code, _, errOut := runTel(t, "y\n", false, "enable")
-	if code == 0 {
-		t.Fatal("enable succeeded on a non-terminal")
-	}
-	if !strings.Contains(errOut, "not a terminal") {
-		t.Fatalf("stderr = %q", errOut)
-	}
-	if telemetry.LoadState().Consent != telemetry.ConsentUndecided {
-		t.Fatal("state changed")
-	}
-}
-
-func TestTelemetryEnableInteractiveDefaultIsNo(t *testing.T) {
-	isolateTelemetryHome(t)
-	for _, answer := range []string{"\n", "n\n", "N\n", "maybe\n", ""} {
+func TestTelemetryOnRequiresExplicitY(t *testing.T) {
+	for _, answer := range []string{"\n", "yes please\n", "n\n", ""} {
 		isolateTelemetryHome(t)
-		code, out, _ := runTel(t, answer, true, "enable")
-		if code != 0 {
-			t.Fatalf("answer %q: exit %d", answer, code)
+		code, out, _ := runTel(t, answer, true, "on")
+		if code != 0 || statusJSON(t).Enabled {
+			t.Fatalf("answer %q enabled telemetry", answer)
 		}
-		if !strings.Contains(out, telemetry.DocsURL) || !strings.Contains(out, "[y/N]") {
-			t.Fatalf("disclosure not shown for %q:\n%s", answer, out)
-		}
-		st := telemetry.LoadState()
-		if st.Consent != telemetry.ConsentDeclined || st.InstallID != "" {
-			t.Fatalf("answer %q: state = %+v", answer, st)
+		if !strings.Contains(out, "Help improve agent-deck?") || !strings.Contains(out, "[y/N]") {
+			t.Fatalf("disclosure not shown:\n%s", out)
 		}
 	}
-}
-
-func TestTelemetryEnableInteractiveYes(t *testing.T) {
 	isolateTelemetryHome(t)
-	code, out, _ := runTel(t, "y\n", true, "enable")
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, out)
+	code, out, _ := runTel(t, "y\n", true, "on")
+	st := statusJSON(t)
+	if code != 0 || !st.Enabled || len(st.InstallID) != 32 {
+		t.Fatalf("y did not enable: %s %+v", out, st)
 	}
-	if !strings.Contains(out, "Help improve agent-deck?") || !strings.Contains(out, telemetry.Endpoint()) {
-		t.Fatalf("disclosure missing:\n%s", out)
-	}
-	st := telemetry.LoadState()
-	if st.Consent != telemetry.ConsentGranted || len(st.InstallID) != 32 || st.ConsentVersion != "9.9.9" {
-		t.Fatalf("state = %+v", st)
+	if !strings.Contains(out, "Nothing is sent before tomorrow") || !strings.Contains(out, "No upload destination is configured") {
+		t.Fatalf("confirmation:\n%s", out)
 	}
 }
 
-func TestTelemetryEnableJSONRequiresInteractiveAnswer(t *testing.T) {
-	isolateTelemetryHome(t)
-	if code, _, _ := runTel(t, "", false, "enable", "--yes", "--json"); code == 0 {
-		t.Fatal("script consent accepted")
+func TestTelemetryOnRefusals(t *testing.T) {
+	cases := []struct {
+		name        string
+		env         map[string]string
+		args        []string
+		interactive bool
+	}{
+		{"not_a_terminal", nil, []string{"on"}, false},
+		{"yes_flag", nil, []string{"on", "--yes"}, true},
+		{"inside_session", map[string]string{"AGENTDECK_INSTANCE_ID": "x"}, []string{"enable"}, true},
+		{"ci", map[string]string{"CI": "1"}, []string{"on"}, true},
+		{"claude_code", map[string]string{"CLAUDECODE": "1"}, []string{"on"}, true},
+		{"gemini_cli", map[string]string{"GEMINI_CLI": "1"}, []string{"on"}, true},
+		{"cursor_agent", map[string]string{"CURSOR_AGENT": "1"}, []string{"on"}, true},
+		{"codex", map[string]string{"CODEX_SANDBOX": "seatbelt"}, []string{"on"}, true},
+		{"dnt", map[string]string{telemetry.EnvDoNotTrack: "1"}, []string{"on"}, true},
+		{"log_mode", map[string]string{telemetry.EnvTelemetry: "log"}, []string{"on"}, true},
 	}
-	code, out, disclosure := runTel(t, "y\n", true, "enable", "--json")
-	var st telemetryStatus
-	if code != 0 || json.Unmarshal([]byte(out), &st) != nil || !st.Enabled {
-		t.Fatalf("code=%d out=%s", code, out)
-	}
-	if !strings.Contains(disclosure, telemetry.DocsURL) {
-		t.Fatal("missing disclosure on stderr")
-	}
-}
-
-func TestTelemetryEOFDoesNotGrant(t *testing.T) {
-	isolateTelemetryHome(t)
-	runTel(t, "y", true, "enable")
-	if telemetry.LoadState().Consent == telemetry.ConsentGranted {
-		t.Fatal("EOF granted consent")
-	}
-}
-
-func TestTelemetryEnableYesRefusedInsideSessionOrCI(t *testing.T) {
-	for _, k := range []string{"AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID", "CI", "GITHUB_ACTIONS"} {
-		t.Run(k, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			isolateTelemetryHome(t)
-			t.Setenv(k, "1")
-			code, _, errOut := runTel(t, "y\n", true, "enable", "--yes")
-			if code == 0 || !strings.Contains(errOut, "must be given by a person") {
-				t.Fatalf("--yes under %s: code=%d stderr=%q", k, code, errOut)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
 			}
-			if telemetry.LoadState().Consent != telemetry.ConsentUndecided {
-				t.Fatal("consent recorded by an agent/CI caller")
+			code, _, errOut := runTel(t, "y\n", tc.interactive, tc.args...)
+			if code == 0 || errOut == "" {
+				t.Fatalf("exit %d, stderr %q", code, errOut)
 			}
-			code, _, _ = runTel(t, "y\n", false, "enable")
-			if code == 0 || telemetry.LoadState().Consent != telemetry.ConsentUndecided {
-				t.Fatal("non-interactive enable changed state")
+			if telemetry.LoadState().Consent == telemetry.ConsentGranted {
+				t.Fatal("consent granted")
 			}
 		})
 	}
 }
 
-func TestTelemetryEnableRefusedUnderKillSwitch(t *testing.T) {
+func TestTelemetryJSONModeWritesQuestionToStderr(t *testing.T) {
 	isolateTelemetryHome(t)
-	t.Setenv(telemetry.EnvDoNotTrack, "1")
-	code, _, errOut := runTel(t, "y\n", true, "enable", "--yes")
-	if code == 0 || !strings.Contains(errOut, "DO_NOT_TRACK") {
-		t.Fatalf("enable under DNT: code=%d stderr=%q", code, errOut)
-	}
-	if telemetry.LoadState().Consent != telemetry.ConsentUndecided {
-		t.Fatal("consent recorded despite kill switch")
-	}
-}
-
-func TestTelemetryDisableAndResetID(t *testing.T) {
-	isolateTelemetryHome(t)
-	runTel(t, "y\n", true, "enable")
-	first := telemetry.LoadState().InstallID
-
-	code, out, _ := runTel(t, "", false, "reset-id", "--json")
-	if code != 0 {
-		t.Fatalf("reset-id exit %d", code)
+	code, out, errOut := runTel(t, "y\n", true, "on", "--json")
+	if code != 0 || !strings.Contains(errOut, "Help improve agent-deck?") {
+		t.Fatalf("exit %d stderr %q", code, errOut)
 	}
 	var st telemetryStatus
-	json.Unmarshal([]byte(out), &st)
-	if st.InstallID == first || len(st.InstallID) != 32 {
-		t.Fatalf("reset-id: %q -> %q", first, st.InstallID)
-	}
-
-	code, out, _ = runTel(t, "", false, "disable", "--json")
-	if code != 0 {
-		t.Fatalf("disable exit %d", code)
-	}
-	st = telemetryStatus{}
-	json.Unmarshal([]byte(out), &st)
-	if st.Enabled || st.Consent != "declined" || st.InstallID != "" {
-		t.Fatalf("after disable: %+v", st)
-	}
-	if code, _, errOut := runTel(t, "", false, "reset-id"); code == 0 || !strings.Contains(errOut, "not enabled") {
-		t.Fatalf("reset-id while disabled: %d %q", code, errOut)
-	}
-}
-
-func TestTelemetryShowLast(t *testing.T) {
-	isolateTelemetryHome(t)
-	code, out, _ := runTel(t, "", false, "show-last", "--json")
-	if code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	var v map[string]any
-	if err := json.Unmarshal([]byte(out), &v); err != nil || v["sent"] != false {
-		t.Fatalf("show-last before any send: %v %s", err, out)
-	}
-	_, out, _ = runTel(t, "", false, "show-last")
-	if !strings.Contains(out, "Nothing has ever been sent") {
-		t.Fatalf("human show-last: %s", out)
-	}
-
-	s := telemetry.LoadState()
-	s.LastSentDay = "2026-09-04"
-	s.LastPayload = json.RawMessage(`{"schema_version":1,"install_id":"ab","version":"9.9.9","os":"linux","arch":"arm64","day":"2026-09-04","counters":{"tui_launches":1}}`)
-	telemetry.SaveState(s)
-	code, out, _ = runTel(t, "", false, "show-last", "--json")
-	if err := json.Unmarshal([]byte(out), &v); err != nil || code != 0 || v["sent"] != true {
-		t.Fatalf("show-last after send: %v %s", err, out)
-	}
-	payload := v["payload"].(map[string]any)
-	if payload["day"] != "2026-09-04" || payload["counters"].(map[string]any)["tui_launches"] != 1.0 {
-		t.Fatalf("payload = %v", payload)
-	}
-	_, out, _ = runTel(t, "", false, "show-last")
-	if !strings.Contains(out, "Last report sent on 2026-09-04") || !strings.Contains(out, `"tui_launches": 1`) {
-		t.Fatalf("human show-last after send: %s", out)
-	}
-}
-
-func TestTelemetryHelpDocumentsEverything(t *testing.T) {
-	isolateTelemetryHome(t)
-	code, out, _ := runTel(t, "", false, "--help")
-	if code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	want := []string{"status", "enable", "disable", "show-last", "reset-id", "--json", "--yes",
-		"AGENTDECK_TELEMETRY=0", "DO_NOT_TRACK=1", "[telemetry] endpoint", "OFF by default",
-		telemetry.DocsURL, "install_id", "schema_version", "counters", "At most one", "Never sent"}
-	want = append(want, telemetry.AllowedCounterKeys()...)
-	for _, w := range want {
-		if !strings.Contains(out, w) {
-			t.Errorf("help lacks %q", w)
-		}
-	}
-	if code, _, _ := runTel(t, "", false, "help"); code != 0 {
-		t.Fatal("`telemetry help` failed")
-	}
-}
-
-func TestTelemetryUnknownSubcommandAndFlag(t *testing.T) {
-	isolateTelemetryHome(t)
-	if code, _, errOut := runTel(t, "", false, "bogus"); code != 2 || !strings.Contains(errOut, "unknown subcommand") {
-		t.Fatalf("bogus: %d %q", code, errOut)
-	}
-	if code, _, errOut := runTel(t, "", false, "status", "--nope"); code != 2 || !strings.Contains(errOut, "unknown flag") {
-		t.Fatalf("flag: %d %q", code, errOut)
+	if err := json.Unmarshal([]byte(out), &st); err != nil || !st.Enabled {
+		t.Fatalf("stdout %q", out)
 	}
 }
 
@@ -263,13 +140,167 @@ type failedDisclosure struct{}
 func (failedDisclosure) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func TestTelemetryFailedDisclosureCannotGrant(t *testing.T) {
-	for _, jsonOut := range []bool{false, true} {
-		t.Run(fmt.Sprint(jsonOut), func(t *testing.T) {
-			isolateTelemetryHome(t)
-			code := telemetryEnableCmd("9.9.9", strings.NewReader("y\n"), failedDisclosure{}, failedDisclosure{}, jsonOut, false, true)
-			if code == 0 || telemetry.LoadState().Consent != telemetry.ConsentUndecided {
-				t.Fatal("failed disclosure granted consent")
+	isolateTelemetryHome(t)
+	code := runTelemetry([]string{"on"}, "9.9.9", strings.NewReader("y\n"), failedDisclosure{}, io.Discard, true)
+	if code == 0 || telemetry.LoadState().Consent == telemetry.ConsentGranted {
+		t.Fatal("consent without a visible disclosure")
+	}
+}
+
+func TestTelemetryOffDeletesIdentityAndSpool(t *testing.T) {
+	isolateTelemetryHome(t)
+	runTel(t, "y\n", true, "on")
+	code, out, _ := runTel(t, "", true, "off")
+	st := statusJSON(t)
+	if code != 0 || st.Enabled || st.InstallID != "" || st.Consent != "declined" || st.Spool.Events != 0 {
+		t.Fatalf("off: %s %+v", out, st)
+	}
+	if code, _, _ := runTel(t, "", true, "reset-id"); code == 0 {
+		t.Fatal("reset-id without consent must fail")
+	}
+}
+
+func TestTelemetryResetIDKeepsConsent(t *testing.T) {
+	isolateTelemetryHome(t)
+	runTel(t, "y\n", true, "on")
+	before := statusJSON(t).InstallID
+	code, out, _ := runTel(t, "", true, "reset-id")
+	after := statusJSON(t)
+	if code != 0 || after.InstallID == before || !after.Enabled {
+		t.Fatalf("reset-id: %s", out)
+	}
+}
+
+func TestTelemetryPreviewNeverCreatesAnID(t *testing.T) {
+	isolateTelemetryHome(t)
+	code, out, _ := runTel(t, "", true, "preview")
+	if code != 0 || !strings.Contains(out, "Nothing is recorded or sent while telemetry is off") {
+		t.Fatalf("preview: %s", out)
+	}
+	if telemetry.LoadState().InstallID != "" {
+		t.Fatal("preview created an id")
+	}
+	_, out, _ = runTel(t, "", true, "preview", "--json")
+	if !strings.Contains(out, `"requests": []`) {
+		t.Fatalf("preview json: %s", out)
+	}
+}
+
+func TestTelemetryShowLastBeforeAnySend(t *testing.T) {
+	isolateTelemetryHome(t)
+	_, out, _ := runTel(t, "", true, "show-last", "--json")
+	if !strings.Contains(out, `"sent": false`) {
+		t.Fatalf("show-last: %s", out)
+	}
+}
+
+func TestTelemetryLevel(t *testing.T) {
+	isolateTelemetryHome(t)
+	runTel(t, "y\n", true, "on")
+	if code, _, _ := runTel(t, "", true, "level", "basic"); code != 0 || statusJSON(t).Level != "basic" {
+		t.Fatal("lowering to basic")
+	}
+	if code, out, _ := runTel(t, "\n", true, "level", "full"); code != 0 || statusJSON(t).Level != "basic" {
+		t.Fatalf("raising without confirmation: %s", out)
+	}
+	if code, _, _ := runTel(t, "", false, "level", "full"); code == 0 {
+		t.Fatal("raising from a non-terminal")
+	}
+	if code, _, _ := runTel(t, "y\n", true, "level", "full"); code != 0 || statusJSON(t).Level != "full" {
+		t.Fatal("raising with confirmation")
+	}
+	if code, _, _ := runTel(t, "", true, "level", "max"); code != 2 {
+		t.Fatal("invalid level accepted")
+	}
+}
+
+// TestTelemetrySchemaMarkdownMatchesTELEMETRYmd: the published field list in
+// TELEMETRY.md is generated by `telemetry schema --markdown` and cannot drift.
+func TestTelemetrySchemaMarkdownMatchesTELEMETRYmd(t *testing.T) {
+	isolateTelemetryHome(t)
+	code, out, _ := runTel(t, "", true, "schema", "--markdown")
+	if code != 0 {
+		t.Fatal(code)
+	}
+	doc, err := os.ReadFile("../../TELEMETRY.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const begin, end = "<!-- schema:begin (generated by `agent-deck telemetry schema --markdown`; do not edit) -->\n", "<!-- schema:end -->"
+	s := string(doc)
+	i, j := strings.Index(s, begin), strings.Index(s, end)
+	if i < 0 || j < i {
+		t.Fatal("TELEMETRY.md lacks the schema markers")
+	}
+	if got := s[i+len(begin) : j]; got != out {
+		t.Fatalf("TELEMETRY.md schema table is stale; regenerate with `agent-deck telemetry schema --markdown`.\n--- generated\n%s", out)
+	}
+	for _, line := range strings.Split(telemetry.PromptText(telemetry.DefaultEndpoint), "\n") {
+		if !strings.Contains(s, line) {
+			t.Fatalf("TELEMETRY.md does not reproduce the consent line %q", line)
+		}
+	}
+	code, out, _ = runTel(t, "", true, "schema", "--json")
+	var parsed struct {
+		Schema int `json:"schema"`
+		Events []struct {
+			Name string `json:"name"`
+		} `json:"events"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &parsed) != nil || parsed.Schema != 2 || len(parsed.Events) != 29 {
+		t.Fatalf("schema --json: %d %.200s", code, out)
+	}
+}
+
+func TestCLIFeatureTableUsesOnlyPublishedFeatures(t *testing.T) {
+	for cmd, entry := range cliFeatures {
+		all := []telemetry.Feature{entry.feature}
+		for _, f := range entry.sub {
+			all = append(all, f)
+		}
+		for _, f := range all {
+			if f == "" {
+				continue
 			}
-		})
+			found := false
+			for _, v := range telemetry.FeatureValues {
+				if v == string(f) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s maps to unpublished feature %q", cmd, f)
+			}
+		}
+	}
+	for _, excluded := range []string{"hook-handler", "codex-notify", "notify-daemon", "daemon", "run-task", "__complete", "completion", "telemetry"} {
+		if _, ok := cliFeatureFor(excluded, nil); ok {
+			t.Errorf("%s must not be counted", excluded)
+		}
+	}
+	if f, ok := cliFeatureFor("session", []string{"send", "x"}); !ok || f != "session_send" {
+		t.Fatal("session send")
+	}
+	if _, ok := cliFeatureFor("list", []string{"--help"}); ok {
+		t.Fatal("--help counted")
+	}
+}
+
+func TestTelemetryHelpAndUnknown(t *testing.T) {
+	isolateTelemetryHome(t)
+	_, out, _ := runTel(t, "", true, "--help")
+	for _, want := range []string{"on | enable", "off | disable", "schema", "level full|basic", "AGENTDECK_TELEMETRY=log", "DO_NOT_TRACK=1", "posthog_key"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help lacks %q", want)
+		}
+	}
+	if code, _, _ := runTel(t, "", true, "bogus"); code != 2 {
+		t.Fatal("unknown subcommand")
+	}
+	if code, _, _ := runTel(t, "", true, "status", "--bogus"); code != 2 {
+		t.Fatal("unknown flag")
+	}
+	if code, _, _ := runTel(t, "", true, "status", "extra"); code != 2 {
+		t.Fatal("extra argument")
 	}
 }

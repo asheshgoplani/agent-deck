@@ -299,6 +299,7 @@ type Home struct {
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
 	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
+	tel                  homeTelemetry         // Opt-in telemetry sampler and TUI lifetime (home_telemetry.go)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
 	feedbackState        *feedback.State       // Loaded at first show, avoids repeated disk I/O
 	feedbackSender       *feedback.Sender      // Sender constructed once in NewHome (Phase 3, per D-05)
@@ -4032,10 +4033,11 @@ func (h *Home) Init() tea.Cmd {
 		h.requestUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
-		// Opt-in telemetry daily report. MaybeSend re-reads consent from
-		// disk and the kill switches from env, so this is a no-op for
-		// everyone who has not said yes.
-		telemetrySendCmd(Version),
+		// Opt-in telemetry upload check, now and hourly. MaybeUpload re-reads
+		// consent from disk and the kill switches from env, so this is a
+		// no-op for everyone who has not said yes.
+		telemetryUploadCmd(),
+		telemetryUploadTick(),
 	}
 
 	// Start listening for storage changes
@@ -7867,6 +7869,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Pick up where the process we were exec'd from left off.
 			if firstLoad {
 				h.applyRestartHandoff()
+				if cmd := h.telemetryFirstLoad(); cmd != nil {
+					detectionCmds = append(detectionCmds, cmd)
+				}
 			}
 			// Trigger immediate preview fetch for initial selection (mutex-protected)
 			if selected := h.getSelectedSession(); selected != nil {
@@ -8963,9 +8968,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case telemetrySentMsg:
-		// Background daily report finished (or was refused by the package's
-		// own gates). Deliberately silent either way.
+	case telemetryUploadMsg:
+		// Background upload finished (or was refused by the package's own
+		// gates). Deliberately silent either way.
+		return h, nil
+
+	case telemetryUploadTickMsg:
+		return h, tea.Batch(telemetryUploadCmd(), telemetryUploadTick())
+
+	case telemetryGrantedMsg:
+		return h, h.telemetryGranted(msg)
+
+	case telemetryDisabledMsg:
+		if msg.err != nil {
+			h.err = msg.err
+			h.errTime = time.Now()
+		}
 		return h, nil
 
 	case modelsFetchedMsg:
@@ -9080,7 +9098,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// to run inline here, which held the event loop — and therefore the first
 		// repaint of the list — behind O(fleet) tmux round-trips. attachReturnSyncCmd
 		// carries the rationale; attachReturnSyncedMsg repaints when it lands.
-		syncCmd := h.attachReturnSyncCmd(msg.attachedSessionID)
+		syncCmd := tea.Batch(h.attachReturnSyncCmd(msg.attachedSessionID), h.telemetryAttachEnd())
 
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -9630,6 +9648,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		h.expireDividerHover(time.Now())
+		h.telemetrySample()
 
 		// Honor a pending `agent-deck session focus <id>` request from the CLI.
 		// A non-nil cmd means the request asked to --attach the session: open it
@@ -9894,6 +9913,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
+		h.tel.sampler.KeyPressed()
 		// Hands on the keyboard means the mouse is not about to grab anything,
 		// and the terminal stops reporting motion the instant the pointer
 		// leaves its window — so a keystroke is the most reliable signal we get
@@ -9982,6 +10002,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.toolVisibilityPanel.Show()
 				h.toolVisibilityPanel.SetSize(h.width, h.height)
 				return h, cmd
+			}
+			if h.settingsPanel.ConsumePrivacyRequest() {
+				return h, tea.Batch(cmd, h.togglePrivacyFromSettings())
 			}
 			if shouldSave {
 				// Merge panel output onto the on-disk config so top-level
@@ -10358,6 +10381,7 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		if err := inst.Start(); err != nil {
 			return sessionCreatedMsg{err: fmt.Errorf("failed to start session: %w", err)}
 		}
+		inst.RecordTelemetryCreate(telemetry.ViaTUINew)
 
 		return sessionCreatedMsg{instance: inst}
 	}
@@ -15488,6 +15512,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			uiLog.Error("session_create_failed", slog.String("error", err.Error()))
 			return sessionCreatedMsg{err: err, tempID: tempID}
 		}
+		inst.RecordTelemetryCreate(telemetry.ViaTUINew)
 		uiLog.Info("session_create_succeeded", slog.String("id", inst.ID))
 		return sessionCreatedMsg{instance: inst, tempID: tempID, setupWarning: setupWarning}
 	}
@@ -16208,7 +16233,14 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 			}
 			return nil
 		},
-		startInstance: func(inst *session.Instance) error { return inst.Start() },
+		startInstance: func(inst *session.Instance) error {
+			if err := inst.Start(); err != nil {
+				return err
+			}
+			inst.RecordTelemetryCreate(telemetry.ViaTUIFork)
+			telemetry.FeatureUsed("fork", false)
+			return nil
+		},
 		rollback: func(repoRoot, worktreePath, branch string) {
 			_ = rollbackForkWithStateWorktree(repoRoot, worktreePath, branch)
 		},
@@ -16739,6 +16771,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	}
 	return func() tea.Msg {
 		killErr := inst.Kill()
+		inst.RecordTelemetryEnd(telemetry.EndDelete)
 		if isWorktree && sharedWorktree {
 			// #1449: another live session still references this worktree; skip
 			// the destructive removal + branch delete and merely drop this
@@ -16825,6 +16858,7 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
 	return func() tea.Msg {
 		killErr := inst.Kill()
+		inst.RecordTelemetryEnd(telemetry.EndStop)
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
 	}
 }
@@ -17581,6 +17615,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// visible blank-screen delay before tmux attach starts.
 	// #2058: also records the visit for the alternate-session toggle / MRU walk.
 	h.markSessionVisited(inst)
+	h.telemetryAttachStart(inst)
 
 	// #1114 follow-up: Claude's /rename fires no agent-deck hook, so an idle
 	// session's title and iTerm2 badge can be stale at attach time (the

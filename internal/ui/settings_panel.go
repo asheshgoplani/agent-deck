@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
 // SettingType identifies which setting is being edited
@@ -54,10 +55,11 @@ const (
 	SettingVisibleTools
 	SettingEmbeddedTerminal
 	SettingSidebarDensity
+	SettingPrivacy
 )
 
 // Total number of navigable settings.
-const settingsCount = 38
+const settingsCount = 39
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -113,6 +115,8 @@ type SettingsPanel struct {
 	embeddedLayout         bool
 	sidebarDensity         int // index into sidebarDensityValues
 	pendingToolVisibility  bool
+	pendingPrivacy         bool   // Enter/Space on the Privacy row: home opens consent or turns it off
+	privacyLabel           string // "on (full)" / "off", read from telemetry state on Show
 
 	// Text input state
 	editingText bool
@@ -207,6 +211,7 @@ func (s *SettingsPanel) Show() {
 	s.scrollOffset = 0
 	s.editingText = false
 	s.needsRestart = false
+	s.privacyLabel = telemetryPrivacyLabel()
 
 	// Load current config
 	config, _ := session.LoadUserConfig()
@@ -604,10 +609,18 @@ func (s *SettingsPanel) Update(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd, bool) {
 		valueChanged = s.adjustValue(1)
 
 	case " ":
+		if SettingType(s.cursor) == SettingPrivacy {
+			s.pendingPrivacy = true
+			s.Hide()
+			break
+		}
 		valueChanged = s.toggleValue()
 
 	case "enter":
-		if s.isTextSetting() {
+		if SettingType(s.cursor) == SettingPrivacy {
+			s.pendingPrivacy = true
+			s.Hide()
+		} else if s.isTextSetting() {
 			s.startTextEdit()
 		} else if SettingType(s.cursor) == SettingVisibleTools {
 			s.pendingToolVisibility = true
@@ -626,6 +639,25 @@ func (s *SettingsPanel) ConsumeToolVisibilityRequest() bool {
 	}
 	s.pendingToolVisibility = false
 	return true
+}
+
+// ConsumePrivacyRequest reports whether the user activated the Privacy row
+// and clears the latch.
+func (s *SettingsPanel) ConsumePrivacyRequest() bool {
+	if !s.pendingPrivacy {
+		return false
+	}
+	s.pendingPrivacy = false
+	return true
+}
+
+// telemetryPrivacyLabel renders the Privacy row value from telemetry state.
+func telemetryPrivacyLabel() string {
+	st := telemetry.LoadState()
+	if ok, _ := telemetry.Enabled(st); ok {
+		return "on (" + string(telemetry.EffectiveLevel(st)) + ")"
+	}
+	return "off"
 }
 
 // adjustValue changes a radio or number value by delta
@@ -1257,6 +1289,15 @@ func (s *SettingsPanel) View() string {
 	content.WriteString(dimStyle.Render("    Lines per session in the embedded sidebar: 3 / 2 / 1 (1 keeps the tool marker)") + "\n")
 	content.WriteString(dimStyle.Render("    Auto: the most lines that still fit every open session on screen") + "\n\n")
 
+	// PRIVACY
+	content.WriteString(sectionStyle.Render("PRIVACY"))
+	content.WriteString("\n")
+	line = "Usage data: " + s.privacyLabel + "  (Enter to change)"
+	if s.cursor == int(SettingPrivacy) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1350,6 +1391,7 @@ func (s *SettingsPanel) View() string {
 			64, // SettingVisibleTools
 			67, // SettingEmbeddedTerminal (INTERFACE section)
 			68, // SettingSidebarDensity
+			73, // SettingPrivacy (PRIVACY section)
 		}
 		cursorLine := rowOf[cursorToLine[s.cursor]]
 

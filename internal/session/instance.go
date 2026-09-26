@@ -5403,10 +5403,6 @@ func (i *Instance) Start() error {
 		go i.detectCopilotSessionAsync()
 	}
 
-	// Opt-in usage telemetry: counts only when the user has consented
-	// (no-op otherwise), tool name normalised to the built-in list.
-	telemetry.RecordSessionStarted(i.Tool)
-
 	return nil
 }
 
@@ -5735,8 +5731,6 @@ func (i *Instance) StartWithMessage(message string) error {
 	if IsCodexCompatible(i.Tool) {
 		go i.detectCodexSessionAsync()
 	}
-
-	telemetry.RecordSessionStarted(i.Tool)
 
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
@@ -9664,7 +9658,7 @@ func (i *Instance) killInternal(sync bool) error {
 // stamp generation from any prior spawn is already in the new caller's
 // pre-lock snapshot.
 func (i *Instance) Restart() error {
-	return i.restart(nil)
+	return i.restartRecorded(nil)
 }
 
 // RestartWithEnv restarts the session with one-shot environment overrides.
@@ -9676,7 +9670,16 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 			return fmt.Errorf("invalid environment variable name %q", key)
 		}
 	}
-	return i.restart(env)
+	return i.restartRecorded(env)
+}
+
+// restartRecorded restarts and records session.end(restart) on success.
+func (i *Instance) restartRecorded(env map[string]string) error {
+	err := i.restart(env)
+	if err == nil {
+		i.RecordTelemetryEnd(telemetry.EndRestart)
+	}
+	return err
 }
 
 func (i *Instance) restart(env map[string]string) error {

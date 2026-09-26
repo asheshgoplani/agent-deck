@@ -71,7 +71,8 @@ func handleDoctor(args []string) {
 			StoreRoots *session.StoreRootSelection   `json:"store_roots,omitempty"`
 			StoreError string                        `json:"store_roots_error,omitempty"`
 			IndicMarks *tmux.IndicZeroWidthMarksInfo `json:"tmux_indic_zero_width_marks,omitempty"`
-		}{AccountSlots: slots, Health: runtimeHealth, IndicMarks: indicMarks}
+			Telemetry  string                        `json:"telemetry"`
+		}{AccountSlots: slots, Health: runtimeHealth, IndicMarks: indicMarks, Telemetry: telemetryDoctorLine()}
 		report.CodexHooks.State = codexHooks
 		report.CodexHooks.Config = codexConfig
 		if storeRootsErr != nil {
@@ -88,6 +89,7 @@ func handleDoctor(args []string) {
 	fmt.Print(health.Format(runtimeHealth))
 	fmt.Print(formatStoreRoots(storeRoots, storeRootsErr))
 	fmt.Printf("Codex notify %s\n", codexHooksLine(codexHooks, codexConfig))
+	fmt.Printf("Telemetry: %s\n", telemetryDoctorLine())
 	if indicMarks != nil {
 		fmt.Printf("tmux indic_zero_width_marks INFO: %s\n", indicMarks.Detail)
 	}

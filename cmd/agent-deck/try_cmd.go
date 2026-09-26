@@ -9,6 +9,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/experiments"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
 // handleTry handles the 'try' subcommand for quick experiments
@@ -170,6 +171,7 @@ func handleTry(profile string, args []string) {
 		out.Error(fmt.Sprintf("starting session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	newInst.RecordTelemetryCreate(telemetry.ViaTry)
 
 	// Capture session ID and re-save (first save at line above was before Start)
 	newInst.PostStartSync(3 * time.Second)

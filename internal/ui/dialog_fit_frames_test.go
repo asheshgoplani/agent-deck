@@ -318,7 +318,7 @@ func TestSettingsPanelFitsScreen(t *testing.T) {
 		// The last setting scrolls into view with the box still whole and
 		// the help bar still pinned.
 		s.cursor = int(settingsCount) - 1
-		assertDialogFits(t, s.View(), sz[0], sz[1], "Sidebar density", "j/k Navigate", "Esc Close")
+		assertDialogFits(t, s.View(), sz[0], sz[1], "Usage data", "j/k Navigate", "Esc Close")
 	}
 }
 

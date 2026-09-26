@@ -995,9 +995,18 @@ type TelemetrySettings struct {
 	// AGENTDECK_TELEMETRY=0. It cannot enable telemetry.
 	Disabled bool `toml:"disabled,omitempty"`
 
-	// Endpoint overrides the HTTPS receiver URL for self-hosting. Plain http
-	// is accepted only for localhost. Empty uses the compiled-in default.
+	// Endpoint overrides the receiver base URL (default PostHog Cloud EU,
+	// https://eu.i.posthog.com; uploads go to <endpoint>/batch/). Plain http
+	// is accepted only for localhost. Changing it requires fresh consent.
 	Endpoint string `toml:"endpoint,omitempty"`
+
+	// PostHogKey is the PostHog project API key (phc_...), used only by
+	// builds without a compiled-in key, after AGENTDECK_POSTHOG_KEY; with
+	// none, events stay in the local spool and nothing is uploaded.
+	PostHogKey string `toml:"posthog_key,omitempty"`
+
+	// Level is "full" (default) or "basic". Config can only lower the level.
+	Level string `toml:"level,omitempty"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
