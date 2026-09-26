@@ -56,6 +56,7 @@ import (
 type codexThreadMeta struct {
 	ThreadSource   string
 	ParentThreadID string
+	valid          bool
 }
 
 // codexThreadMetaCache memoizes session_meta head reads. A thread's origin
@@ -142,6 +143,7 @@ func readCodexRolloutThreadMeta(path string) codexThreadMeta {
 	meta := codexThreadMeta{
 		ThreadSource:   head.Payload.ThreadSource,
 		ParentThreadID: head.Payload.ParentThreadID,
+		valid:          true,
 	}
 	// Older payloads carry parenthood only inside source.subagent.thread_spawn.
 	if meta.ParentThreadID == "" && len(head.Payload.Source) > 0 {
@@ -171,7 +173,11 @@ func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bo
 		return codexThreadMeta{}, false
 	}
 	meta := readCodexRolloutThreadMeta(path)
-	codexThreadMetaCache.Store(sessionID, meta)
+	// A rollout can be visible before its session_meta line is complete.
+	// Retry an empty head on the next observation instead of caching it.
+	if meta.valid {
+		codexThreadMetaCache.Store(sessionID, meta)
+	}
 	return meta, true
 }
 
@@ -181,8 +187,82 @@ func codexThreadMetaForSession(sessionID, codexHome string) (codexThreadMeta, bo
 // flushed rollout are allowed through (fail-open, matching the pre-gate
 // behavior for freshly created sessions).
 func (i *Instance) shouldRejectCodexSubagentRebind(candidateID string) bool {
-	meta, ok := codexThreadMetaForSession(candidateID, i.getCodexHomeDir())
+	return CodexSubagentThread(candidateID, i.getCodexHomeDir())
+}
+
+// CodexSubagentThread reports whether threadID names a thread whose rollout
+// under codexHome says thread_source=subagent. A subagent's notify
+// (agent-turn-complete when the child finishes its task) says nothing about
+// the parent turn the pane shows: the parent keeps working, and usually
+// spawned the child from inside that very turn. The notify writer drops such
+// events and the readers refuse records carrying them (codexHookFromForeignThread);
+// otherwise every finished subagent reads as the pane's turn-finished edge
+// and flips a working session running -> waiting (rc feedback 2026-09-23).
+// Threads without a flushed rollout are not subagents here (fail-open).
+func CodexSubagentThread(threadID, codexHome string) bool {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return false
+	}
+	meta, ok := codexThreadMetaForSession(threadID, codexHome)
 	return ok && meta.ThreadSource == "subagent"
+}
+
+// codexHookFromForeignThread reports whether a hook status record belongs to a
+// Codex thread other than the one this pane talks to: a subagent thread, or an
+// ephemeral helper whose turn ended without a rollout. Such a record must not
+// drive this instance's status, transition candidates or done signals. Hook
+// files written before the notify writer gained these gates still carry them.
+func (i *Instance) codexHookFromForeignThread(hs *HookStatus) bool {
+	if i == nil || hs == nil || !IsCodexCompatible(i.Tool) {
+		return false
+	}
+	sid := strings.TrimSpace(hs.SessionID)
+	if sid == "" || sid == i.CodexSessionID {
+		return false
+	}
+	home := i.getCodexHomeDir()
+	return CodexSubagentThread(sid, home) || CodexUnbackedTurnEnd(sid, hs.Event, home)
+}
+
+// shouldRejectCodexUnbackedTurnEnd reports whether a turn-end notify names a
+// thread with no rollout in this instance's Codex home. Codex runs ephemeral
+// helper threads (thread-title generation) that fire the same
+// agent-turn-complete notify with their own id but never write a rollout. When
+// that notify lands after the main thread's, binding it points the instance
+// at a thread no rollout will ever exist for, and every exact-acceptance send
+// is refused until another main-thread turn completes. A real thread's rollout
+// is on disk from its turn start, so a turn-end without one is never the
+// thread the pane talks to. Earlier events (thread start, prompt submit) can
+// legitimately precede the rollout and keep the fail-open binding.
+func (i *Instance) shouldRejectCodexUnbackedTurnEnd(candidateID, event string) bool {
+	return CodexUnbackedTurnEnd(candidateID, event, i.getCodexHomeDir())
+}
+
+// CodexUnbackedTurnEnd reports whether a turn-end notify for threadID comes
+// from a thread with no rollout under codexHome: an ephemeral helper thread
+// (thread-title generation), never the thread the pane talks to. The notify
+// writer uses it to drop such events before they touch the hook status or
+// anchor; UpdateHookStatus uses it to reject them from older status files.
+func CodexUnbackedTurnEnd(threadID, event, codexHome string) bool {
+	if strings.TrimSpace(threadID) == "" || !codexHookEventEndsTurn(event) {
+		return false
+	}
+	_, flushed := codexThreadMetaForSession(threadID, codexHome)
+	return !flushed
+}
+
+func codexHookEventEndsTurn(event string) bool {
+	canon := strings.NewReplacer(".", "/", "-", "/", "_", "/").Replace(strings.ToLower(strings.TrimSpace(event)))
+	if !strings.Contains(canon, "turn") {
+		return false
+	}
+	for _, end := range []string{"complete", "fail", "abort", "cancel", "ended"} {
+		if strings.Contains(canon, end) {
+			return true
+		}
+	}
+	return false
 }
 
 func (i *Instance) filterCodexProcessProbeCandidate(candidateID string) string {

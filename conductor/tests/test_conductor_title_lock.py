@@ -11,6 +11,7 @@ creates a brand new one -- forever, once per restart.
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 import types
@@ -23,6 +24,7 @@ try:
 except ModuleNotFoundError:
     sys.modules["toml"] = types.SimpleNamespace(load=lambda *_args, **_kwargs: {})
 
+import bridge  # noqa: E402
 from bridge import CONDUCTOR_DIR, ensure_conductor_running, get_sessions_list  # noqa: E402
 
 
@@ -47,7 +49,18 @@ def _calls_for(mock_cli: mock.Mock, *prefix: str) -> list[tuple]:
     ]
 
 
-def test_conductor_creation_passes_title_lock():
+def _seed_conductor_meta(tmp_path: Path, monkeypatch, name: str) -> None:
+    root = tmp_path / "conductor"
+    conductor_dir = root / name
+    conductor_dir.mkdir(parents=True)
+    (conductor_dir / "meta.json").write_text(
+        json.dumps({"name": name, "profile": "default", "agent": "claude"})
+    )
+    monkeypatch.setattr(bridge, "CONDUCTOR_DIR", root)
+
+
+def test_conductor_creation_passes_title_lock(tmp_path, monkeypatch):
+    _seed_conductor_meta(tmp_path, monkeypatch, "monitor")
     with mock.patch(
         "bridge.get_session_status",
         side_effect=["unknown", "running"],

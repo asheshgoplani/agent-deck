@@ -1,0 +1,48 @@
+Usage: agent-deck watcher <command> [args]
+
+Watchers listen for inbound events (webhooks, push notifications,
+GitHub events, Slack messages) and route them to conductor sessions
+so your running agents can act on them automatically.
+
+Commands:
+  create <type> --name <name>   Create a new watcher (types: webhook, ntfy, github, slack)
+  start <name>                  Mark a watcher as running (picked up by TUI engine)
+  stop <name>                   Mark a watcher as stopped
+  list [--json]                 List all watchers with status and event rate
+  status <name> [--json]        Show detailed watcher info including recent events
+  test <name>                   Route a synthetic event to verify routing config
+  routes [--json]               Show all routing rules from clients.json
+  import <path>                 Migrate bash issue-watcher channels.json to Go watcher config
+  install-skill <skill-name>    Install a skill to ~/.config/agent-deck/skills/pool (e.g. watcher-creator)
+
+Examples (one per adapter type):
+
+  # Generic HTTP webhook listening on port 9000
+  agent-deck watcher create webhook --name my-webhook --port 9000
+
+  # GitHub repository webhook with HMAC-SHA256 verification
+  # Secret comes from the environment or a chmod-600 file, never a CLI arg:
+  GITHUB_WEBHOOK_SECRET=... agent-deck watcher create github --name gh-alerts
+  agent-deck watcher create github --name gh-alerts --secret-file ~/.gh-webhook-secret
+
+  # ntfy.sh push-notification topic
+  agent-deck watcher create ntfy --name phone-alerts --topic my-private-topic
+
+  # Slack-bridged via ntfy topic (see skill for Cloudflare Worker setup)
+  agent-deck watcher create slack --name team-slack --topic my-slack-topic
+
+After creating, activate and inspect:
+  agent-deck watcher start <name>
+  agent-deck watcher list              # see health + events/hour
+  agent-deck watcher test <name>       # fire a synthetic event
+
+Routing: edit ~/.local/share/agent-deck/watcher/clients.json to pick which
+conductor / group receives events. See `agent-deck watcher routes` for
+the currently-loaded rules across all watchers.
+
+Conversational setup (recommended for first-time use):
+  agent-deck watcher install-skill watcher-creator
+  # Then inside Claude Code in an agent-deck session, ask:
+  # "Use the watcher-creator skill to set up a GitHub watcher"
+
+Full reference: https://github.com/asheshgoplani/agent-deck#watchers

@@ -1,0 +1,91 @@
+
+╭───────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.154.0)                            │
+│                                                       │
+│ model:     gpt-6-astra medium   /model to change      │
+│ directory: ~/agent-deck-recovery/…/disposable-project │
+╰───────────────────────────────────────────────────────╯
+
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+
+› xxx xxx xxxxxxxxxx xx xxxxx xxxx xxxxxxx xx x xxxxx xxxxx xxxxxx.
+  xxxxxx xxxxxxx: xx
+  xxxxxx xxx: /xxxxx/x/xxxxx-xxxx-xxxxxxxx/xxxxx-xxxxxxxxxx-xxxxxxxx/xxxxxxxxxx-xxxxxxx
+  xxxxxx xxxxx: xxxxxx-xxxxx-xxxxxxxx
+  xxxxxx xxxxx: xxx/xxxxxx-xxxxxxxxxx
+  xxxx xx x xxxxxxxx xxxxxxxxxx xx xxxxxxxx xxxx xxx xxxxxxxxx xxxx xxxx. xxxxxx xxxxxxx xxxxx, xxxxxxxxxxx, xxxx
+  xxxxx, xxxxxxxxxxx xxxxxxxxxxx, xxxxxx/xxxxxxx xxxxxxxx, xxx xxxxxx xxxxxxx xxxxxxxx xxx xxx xxxxxxxxxxx.
+  --- xxxxx xxxxxxxxxxx xxxxxxx ---
+  [xxxx]
+  xxx xxx xxxxxxxxxx xx xxxxx xxxx xxxxxxx xx x xxxxx xx xxxxxx.
+  xxxxxx xxxxxxx: xxxxxx
+  xxxxxx xxx: /xxxxx/x/xxxxx-xxxx-xxxxxxxx/xxxxx-xxxxxxxxxx-xxxxxxxx/xxxxxxxxxx-xxxxxxx
+  xxxxxx xxxxx: xxxxxx-xxxxx-xxxxxxxx
+  xxxxxx xxxxx: xxx/xxxxxx-xxxxxxxxxx
+  xxxx xx x xxxxxxxx xxxxxxxxxx xx xxxxxxxx xxxx xxx xxxxxxxxx xxxx xxxx. xxxxxx xxxxxxx xxxxx, xxxxxxxxxxx, xxxx
+  xxxxx, xxxxxxxxxxx xxxxxxxxxxx, xxxxxx/xxxxxxx xxxxxxxx, xxx xxxxxx xxxxxxx xxxxxxxx xxx xxx xxxxxxxxxxx.
+  --- xxxxx xxxxxxxxxxx xxxxxxx ---
+  [xxxxxxxxx]
+  Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask
+  xxxx xxxxx xx xxxxxx xxxxxx
+
+  [xxxx]
+  xxxxxxxx xxxx xxxxx xxx xxxx xxx.
+
+  [xxxxxxxxx]
+  xx xxxxxxxx xxxxxxxxx.
+
+  [xxxx]
+  xx xxxxx. xxxxxx xxx xxxxx xxxxxxx_xxxxxxxxx xxxxxx xxxx xxxxxxx. xxxxx xxxx xxxx xxx xxxxxx.
+
+  [xxxxxxxxx]
+  xxxxxxx_xxxxxxxxx_xxxxx_xxxxx_xx
+  --- xxx xxxxxxxxxxx xxxxxxx ---
+  xxxxx xxxx xx xxxxxxx xxxx; xx xxx xxxxx xxxxxx xxxxxx.
+
+  [xxxxxxxxx]
+  xxxxxxx_xxxxxxxxx_xxxxx_xxxxx_xx
+
+  [xxxx]
+  xx xxxxx. xxxxxx xxx xxxxxxxxxxx xxxxxx, xxxx xx x xxx xxxx xxxxx xxxxxxxxx_xx. xxxx xxxxxx xxx xxx xxxxxxxx xxxxx
+  xxxxxxxx.
+
+  [xxxxxxxxx]
+  xxxxxxx_xxxxxxxxx_xxxxx_xxxxx_xx
+  xxxxxxxxx_xx
+  --- xxx xxxxxxxxxxx xxxxxxx ---
+  xxxxx xxxx xx xxxxxxx xxxx; xx xxx xxxxx xxxxxx xxxxxx.
+
+
+⚠ xxxxx-xxxxxxxxxxx xxxxxxxx xxxxxxx: xxxxxxxxx. xxxxx-xxxxxxxxxxx xxxxxxxx xxx xxxxxxxxxx xxx xxx xxxxxx xxxxxxxxxxxxx.
+  xx xxxxxxxx xxxx xxxxxxx, xxx `xxxxxxxx_xxxxxxxx_xxxxxxxx_xxxxxxx = xxxx` xx /xxxxx/x/.xxxxx/xxxxxx.xxxx.
+
+⚠ MCP client for `computer-history` failed to start: MCP startup failed: handshaking with MCP server failed: JSON-RPC
+  xxxxx: -xxxxx: xxxxxxxx xxxxx: xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx.({"xxxxxx":"xxx xxxx
+  xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx."}): xxxx-xxx xxxxx: -xxxxx: xxxxxxxx xxxxx: xxx xxxx xxxxxx’x
+  xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx xxxxxx.({"xxxxxx":"xxx xxxx xxxxxx’x xx xxxx xxxxxxx xx xxx’x xx xxx xxxxxxx
+  xxxxxx."})
+
+⚠ MCP startup incomplete (failed: computer-history)
+
+• xxxxxxxxxxx xxxxxxx xxxxxxxx. x xxx xxxxxxxx xxxx xxx xxxxxxxx xxxx; xxxx xx xxx x xxxxxx xxxxxxx xxxxxx.
+
+
+› xxxxxxx xxxxx, xxxxxx xxx xxxxxxxxxxxxxxxxx xxxxxx xx xxxxxxxxxxx xxxxxxx, xxxx xxxxxx xxxxxxxxxxxxxxx xx xxx xxxx
+  xxxx.
+
+
+• xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  xxxxxxxxx_xxxxx
+
+⚠ Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 10% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 5% of your weekly limit left. Run /status for a breakdown.
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra · ~/agent-deck-recovery/local-acceptance-925bffd0/disposable-project · Context 94% left · Context 6% used…

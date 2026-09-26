@@ -1,0 +1,364 @@
+[
+  {
+    "id": "a1",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:02.000Z",
+    "title": "SessionStart · hook_additional_context",
+    "raw_type": "attachment/hook_additional_context"
+  },
+  {
+    "id": "u1",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:03.000Z",
+    "body": "Write hello.py, नमस्ते 🚀",
+    "raw_type": "user"
+  },
+  {
+    "id": "as1",
+    "kind": "thinking",
+    "ts": "2026-09-23T08:00:04.000Z",
+    "title": "Thinking",
+    "body": "plan it",
+    "raw_type": "assistant"
+  },
+  {
+    "id": "as2",
+    "kind": "assistant",
+    "ts": "2026-09-23T08:00:05.000Z",
+    "body": "I'll **start** now.",
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_bash1",
+    "kind": "bash",
+    "ts": "2026-09-23T08:00:06.000Z",
+    "title": "Run hello.py",
+    "body": "1\n2\n3\n4",
+    "summary": "… +1 lines",
+    "detail": "python3 hello.py\nls",
+    "tool_id": "toolu_bash1",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "lines": 4,
+      "tool_name": "Bash"
+    },
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_edit1",
+    "kind": "edit",
+    "ts": "2026-09-23T08:00:08.000Z",
+    "title": "Edit /w/hello.py",
+    "body": "updated",
+    "summary": "Added 2 lines, removed 1 line",
+    "detail": "/w/hello.py",
+    "tool_id": "toolu_edit1",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "added": 2,
+      "input": {
+        "file_path": "/w/hello.py",
+        "old_string": "5",
+        "new_string": "10"
+      },
+      "lines": 1,
+      "path": "/w/hello.py",
+      "removed": 1,
+      "tool_name": "Edit"
+    },
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_read1",
+    "kind": "read",
+    "ts": "2026-09-23T08:00:08.000Z",
+    "title": "Read /w/NOTES.md",
+    "body": "# Notes",
+    "detail": "/w/NOTES.md",
+    "tool_id": "toolu_read1",
+    "finished": true,
+    "is_error": true,
+    "meta": {
+      "lines": 1,
+      "path": "/w/NOTES.md",
+      "tool_name": "Read"
+    },
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_agent1",
+    "kind": "subagent",
+    "ts": "2026-09-23T08:00:11.000Z",
+    "title": "Count lines",
+    "body": "2 lines",
+    "summary": "Done (1 tool use)",
+    "detail": "Explore",
+    "tool_id": "toolu_agent1",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "agent_id": "agent42",
+      "input": {
+        "description": "Count lines",
+        "prompt": "Count hello.py lines",
+        "subagent_type": "Explore"
+      },
+      "lines": 1,
+      "status": "completed",
+      "tool_name": "Agent"
+    },
+    "children": [
+      {
+        "id": "sub:agent42:sc1",
+        "kind": "user",
+        "ts": "2026-09-23T08:00:11.000Z",
+        "body": "Count hello.py lines",
+        "raw_type": "user"
+      },
+      {
+        "id": "sub:agent42:toolu_sub_bash",
+        "kind": "bash",
+        "ts": "2026-09-23T08:00:11.000Z",
+        "title": "wc -l hello.py",
+        "body": "2 hello.py",
+        "detail": "wc -l hello.py",
+        "tool_id": "toolu_sub_bash",
+        "finished": true,
+        "is_error": false,
+        "meta": {
+          "lines": 1,
+          "tool_name": "Bash"
+        },
+        "raw_type": "assistant"
+      },
+      {
+        "id": "sub:agent42:sc4",
+        "kind": "assistant",
+        "ts": "2026-09-23T08:00:12.000Z",
+        "body": "2 lines",
+        "raw_type": "assistant"
+      }
+    ],
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_todo1",
+    "kind": "todo",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "TodoWrite",
+    "summary": "1 of 2 done",
+    "tool_id": "toolu_todo1",
+    "finished": false,
+    "meta": {
+      "input": {
+        "todos": [
+          {
+            "content": "a",
+            "status": "completed"
+          },
+          {
+            "content": "b",
+            "status": "in_progress"
+          }
+        ]
+      },
+      "tool_name": "TodoWrite"
+    },
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_q1",
+    "kind": "question",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "Which?",
+    "body": "A",
+    "summary": "Which? → A",
+    "tool_id": "toolu_q1",
+    "finished": true,
+    "is_error": false,
+    "meta": {
+      "answers": {
+        "Which?": "A"
+      },
+      "input": {
+        "questions": [
+          {
+            "question": "Which?",
+            "options": [
+              {
+                "label": "A"
+              },
+              {
+                "label": "B"
+              }
+            ]
+          }
+        ]
+      },
+      "lines": 1,
+      "tool_name": "AskUserQuestion"
+    },
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_skill1",
+    "kind": "skill",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "Skill: brainstorming",
+    "tool_id": "toolu_skill1",
+    "finished": false,
+    "meta": {
+      "tool_name": "Skill"
+    },
+    "raw_type": "assistant"
+  },
+  {
+    "id": "toolu_mon1",
+    "kind": "tool",
+    "ts": "2026-09-23T08:00:13.000Z",
+    "title": "ScheduleWakeup",
+    "tool_id": "toolu_mon1",
+    "finished": false,
+    "meta": {
+      "input": {
+        "delaySeconds": 60
+      },
+      "tool_name": "ScheduleWakeup"
+    },
+    "raw_type": "assistant"
+  },
+  {
+    "id": "queue:2026-09-23T08:00:15.000Z:3edc30d96cda",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:17.000Z",
+    "body": "MIDTURN: are you there?",
+    "queued": false,
+    "meta": {
+      "delivery": "absorbed"
+    },
+    "raw_type": "queue-operation"
+  },
+  {
+    "id": "a3",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:18.000Z",
+    "title": "Agent \"x\" finished",
+    "body": "\u003ctask-notification\u003e\n\u003csummary\u003eAgent \"x\" finished\u003c/summary\u003e\n\u003c/task-notification\u003e",
+    "raw_type": "attachment/queued_command"
+  },
+  {
+    "id": "a5",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:19.000Z",
+    "title": "PreToolUse:Bash · hook_blocking_error",
+    "body": "blocked: rm is not allowed",
+    "raw_type": "attachment/hook_blocking_error"
+  },
+  {
+    "id": "s2",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:21.000Z",
+    "title": "Stop hook: hook exploded",
+    "body": "hook exploded",
+    "raw_type": "system/stop_hook_summary"
+  },
+  {
+    "id": "s3",
+    "kind": "turn_end",
+    "ts": "2026-09-23T08:00:22.000Z",
+    "title": "Worked for 1m 15s",
+    "meta": {
+      "duration_ms": 75000
+    },
+    "raw_type": "system/turn_duration"
+  },
+  {
+    "id": "u2",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:24.000Z",
+    "body": "next task please",
+    "raw_type": "user"
+  },
+  {
+    "id": "u3",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:25.000Z",
+    "title": "[INBOX] child finished",
+    "body": "[INBOX] child finished",
+    "raw_type": "user"
+  },
+  {
+    "id": "u4",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:26.000Z",
+    "title": "Stop hook feedback:",
+    "body": "Stop hook feedback:\nrun the tests",
+    "raw_type": "user"
+  },
+  {
+    "id": "u5",
+    "kind": "command",
+    "ts": "2026-09-23T08:00:27.000Z",
+    "title": "/loop 5m check",
+    "body": "\u003ccommand-message\u003eloop\u003c/command-message\u003e\n\u003ccommand-name\u003e/loop\u003c/command-name\u003e\n\u003ccommand-args\u003e5m check\u003c/command-args\u003e",
+    "raw_type": "user"
+  },
+  {
+    "id": "u6",
+    "kind": "user",
+    "ts": "2026-09-23T08:00:28.000Z",
+    "body": "what is this?",
+    "meta": {
+      "images": 1
+    },
+    "raw_type": "user"
+  },
+  {
+    "id": "s4",
+    "kind": "compaction",
+    "ts": "2026-09-23T08:00:29.000Z",
+    "title": "Context compacted · 844.0k → 19.0k",
+    "meta": {
+      "post_tokens": 19000,
+      "pre_tokens": 844000
+    },
+    "raw_type": "system/compact_boundary"
+  },
+  {
+    "id": "u7",
+    "kind": "system",
+    "ts": "2026-09-23T08:00:30.000Z",
+    "title": "Compaction summary",
+    "body": "This session is being continued...",
+    "raw_type": "user"
+  },
+  {
+    "id": "s5",
+    "kind": "command",
+    "ts": "2026-09-23T08:00:31.000Z",
+    "title": "/model opus",
+    "body": "\u003ccommand-name\u003e/model\u003c/command-name\u003e\n\u003ccommand-args\u003eopus\u003c/command-args\u003e",
+    "raw_type": "system/local_command"
+  },
+  {
+    "id": "o1",
+    "kind": "other",
+    "ts": "2026-09-23T08:00:34.000Z",
+    "title": "brand-new-row",
+    "meta": {
+      "raw": {
+        "type": "brand-new-row",
+        "payload": {
+          "k": 1
+        },
+        "uuid": "o1",
+        "timestamp": "2026-09-23T08:00:34.000Z",
+        "sessionId": "11111111-2222-3333-4444-555555555555",
+        "isSidechain": false
+      }
+    },
+    "raw_type": "brand-new-row"
+  }
+]

@@ -88,7 +88,7 @@ func TestIssue1595CopyPaneHelpAndFooter(t *testing.T) {
 			_ = home.storage.Close()
 		}
 	})
-	home.width = 120
+	home.width = 200
 	home.height = 40
 	home.flatItems = []session.Item{{
 		Type:    session.ItemTypeSession,

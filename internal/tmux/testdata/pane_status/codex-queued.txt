@@ -1,0 +1,7 @@
+• Working (30m 26s • esc to interrupt) · 1 background terminal running
+• Queued follow-up inputs
+  ↳ NEW from the owner: the app must feel smooth
+  ↳ and a second one
+    shift + ← edit last queued message
+› Ask Codex to do anything
+  gpt-6-sol · /work/v4 · Context 50% left · Context 50% used · weekly 87% left · 258K window · Main [default]

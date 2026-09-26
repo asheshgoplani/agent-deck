@@ -1,0 +1,16 @@
+  -c string
+    	AI tool to use (short)
+  -cmd string
+    	AI tool to use (defaults to config)
+  -json
+    	Output as JSON
+  -l	List experiments (short)
+  -list
+    	List experiments without creating session
+  -no-session
+    	Create folder only, don't start session
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -sandbox
+    	Run session in Docker sandbox

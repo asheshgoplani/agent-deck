@@ -1,0 +1,40 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  ● 1 running • ◐ 2 waiting • ○ 1 idle • ■ 2 stopped • ✕ 5 error                     <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • ^ archived • t view • * time
+SESSIONS                                   │ PREVIEW
+────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1                      │
+   ├─ ■ opencode-idle opencode             │
+   ├─ ✕ claude-idle claude                 │                                   ⬡
+   ├─ ◐ claude-waiting claude              │
+   └─ ■ claude-stopped claude              │                              Remote: lab
+    ▾ backend (3) ● 1                      │
+     ├─ ✕ codex-idle codex                 │     Unreachable: host down
+     ├─ ● claude-running claude            │     Host: fixture@vc-lab.invalid · 0 sessions
+     └─ ✕ claude-error claude              │     version unknown (last checked <age>)
+2·▾ beta (4) ◐ 1                           │     Sessions  0 running · 0 waiting · 0 idle · 0 stopped · 0 error
+   ├─ ✕ gemini-idle gemini                 │     Harnesses  none running
+   ├─ ✕ pi-idle pi                         │     stats unknown (remote does not report stats)
+   ├─ ◐ claude-i18n claude                 │
+   └─ ○ shell-live shell                   │              • Press Enter on a session to attach via SSH
+▶ ▾ remotes/lab (0) · host down (R retry)  │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+                                           │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Session:  ⏎  Attach  n/N  New  g  Grp  R  Restart  c  Copy  V  Copy pane  x  Send …           ↑↓ Nav │ ? Help │ q Quit

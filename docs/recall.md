@@ -180,6 +180,8 @@ agent-deck recall status [--json]
 agent-deck recall sessions [--profile work] [--project PATH] [--since 30d] [--hint k=v] [--tag t] [--session ID] [--subagents] [--limit 20] [--json]
 agent-deck recall search "<q>" [same filters] [--role user|assistant] [--phrase] [--phrase-scan-limit 2000] [--limit 20] [--no-sweep] [--json]
 agent-deck recall show <session> [--tier card|excerpt|raw] [--turns 40] [--json]
+agent-deck recall timeline <session> --json
+agent-deck recall follow <session> --after <through_cursor> --jsonl
 agent-deck recall open <session> [--title T] [--dry-run] [--json]
 agent-deck recall gc [--keep-days 30] [--json]
 agent-deck recall rebuild [--force] [--json]

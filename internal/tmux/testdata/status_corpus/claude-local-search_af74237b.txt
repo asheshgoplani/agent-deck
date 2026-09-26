@@ -1,0 +1,50 @@
+  │ Docker: dangling volumes               │ 22 GB       │ Need a look first                 │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ uv package cache (~/.cache/uv)         │ 58 GB       │ Yes, uv cache clean               │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ MacWhisper app data (models)           │ 42 GB       │ Your call, models re-download     │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ CocoaPods cache                        │ 30 GB       │ Yes, re-downloadable              │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ OGDB transfer snapshot from 2026-08-23 │ 26 GB       │ Probably, it's a stale copy       │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ OGDB search database                   │ 29 GB       │ No, live data (but bloated)       │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ iOS DeviceSupport symbols              │ 18 GB       │ Yes, Xcode re-downloads on demand │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ CoreSimulator                          │ 19 GB       │ Partially, unused runtimes        │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ go-build cache                         │ 12 GB       │ Yes, go clean -cache              │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ OGDB repair copy from 2026-08-11       │ 9 GB        │ Probably stale                    │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ Xcode Archives                         │ 8 GB        │ Your call, old app builds         │
+  ├────────────────────────────────────────┼─────────────┼───────────────────────────────────┤
+  │ Downloads                              │ 14 GB       │ Your call                         │
+  └────────────────────────────────────────┴─────────────┴───────────────────────────────────┘
+
+  xxxx x'x xxx xx xxxx xxx, xxxxx xxx xx xxxxx, xxx xxxxxxxxxxx:
+
+  xxxxxx xxxxxxxxx xxxxx -x
+  xxxxxx xxxxx xxxxx -x -x
+  xx xxxxx xxxxx
+  xx... (xx: xxxxx) ~/xxxxxxx/xxxxxx/xxxxxxxxx
+  xx xxxxx -xxxxx
+  xxxxx "~/xxxxxxx/xxxxxxxxx/xxxxx/xxx xxxxxxxxxxxxx"
+
+  xxxx xxx, xxxxx xxxx xxxxxxxx xxx: xxxxxx xxxxxx xxxxx (xx xx), xxx xxx xxxxx xxxx xxxxxx (xx xx, xxxx xxxxxxxxx xxxxxxxxx), xxxxxxxxxx xxxxxx (xx xx), xxxxx xxxxxxxx, xxxxxxxxx.
+
+  xxxxx "xxxx xxx" xxx x'xx xxx xx, xx xxxx xxxxxxxx xxxxx. xxxxx xxxx, xxx xxxx xxxx xxxxxxx xxx xxxxxxxxxx xxxxxx xx xxxxxxxxx xxxx xxxx xxxxx xx xxxx, xxx xxx xxxx xxxxxxxxx xxxxx xx
+  xxxxxx xxx xxxxxxx xxxxx xxxxxx xx-xxxxxxxx xxxxx-xxxx.
+
+✻ Sautéed for 3m 15s · done Monday, Sep 7 at 4:04 PM
+
+⏺ Remote Control disconnected — Remote Control server rejected the request (HTTP 403) — run /remote-control to retry
+
+⏺ Remote Control disconnected — OAuth token refresh failed — run /login to re-authenticate
+                                                                                                                                                  ✔ Update installed · Restart to update
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── search ─
+❯ x
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u | [Fable 5.1] ctx:9% in:87.6k out:918
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

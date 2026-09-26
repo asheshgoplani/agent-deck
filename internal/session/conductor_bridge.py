@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import asyncio
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -74,6 +75,9 @@ except ImportError:
 # bridge reads ~/.agent-deck -> routing dies (issue #1350). Keep this region
 # byte-identical with the embedded copy in conductor_templates.go.
 APP_DIR_NAME = "agent-deck"
+
+# Keep aligned with conductorAgentSpecs; setup persists these canonical names.
+CONDUCTOR_AGENTS = frozenset({"claude", "codex", "hermes", "pi"})
 
 
 def _xdg_dir(env_name: str, *fallback_parts: str) -> Path:
@@ -301,6 +305,60 @@ def load_config() -> dict:
     }
 
 
+class _JSONObject(dict):
+    def __init__(self, pairs: list[tuple[str, Any]]) -> None:
+        super().__init__(pairs)
+        self.pairs = pairs
+
+
+def _load_conductor_meta(meta_path: Path) -> dict | None:
+    """Read one durable conductor record, rejecting malformed metadata."""
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f, object_pairs_hook=_JSONObject)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        log.warning("Failed to read %s: %s", meta_path, e)
+        return None
+    if not isinstance(meta, dict):
+        log.warning("Invalid conductor metadata in %s: expected an object", meta_path)
+        return None
+    return meta
+
+
+def _conductor_agent_from_meta(meta: dict, meta_path: Path) -> str | None:
+    """Resolve a persisted runtime using encoding/json's field-name rules."""
+    value = None
+    # Match Go encoding/json: case-insensitive keys; type errors invalidate;
+    # null is a no-op and later strings replace earlier ones.
+    pairs = meta.pairs if isinstance(meta, _JSONObject) else meta.items()
+    for key, candidate in pairs:
+        if not isinstance(key, str) or key.lower() != "agent":
+            continue
+        if candidate is None:
+            continue
+        if not isinstance(candidate, str):
+            log.warning("Invalid conductor agent in %s: expected a string", meta_path)
+            return None
+        value = candidate
+    if value is None:
+        return "claude"
+    agent = value.strip().lower()
+    if not agent:
+        return "claude"
+    if agent not in CONDUCTOR_AGENTS:
+        log.warning("Unsupported conductor agent %r in %s", value, meta_path)
+        return None
+    return agent
+
+
+def _load_conductor_agent(name: str) -> str | None:
+    meta_path = CONDUCTOR_DIR / name / "meta.json"
+    meta = _load_conductor_meta(meta_path)
+    if meta is None:
+        return None
+    return _conductor_agent_from_meta(meta, meta_path)
+
+
 def discover_conductors() -> list[dict]:
     """Discover all conductors by scanning meta.json files.
 
@@ -313,11 +371,14 @@ def discover_conductors() -> list[dict]:
         if entry.is_dir():
             meta_path = entry / "meta.json"
             if meta_path.exists():
-                try:
-                    with open(meta_path) as f:
-                        conductors.append(json.load(f))
-                except (json.JSONDecodeError, IOError) as e:
-                    log.warning("Failed to read %s: %s", meta_path, e)
+                meta = _load_conductor_meta(meta_path)
+                if meta is None:
+                    continue
+                agent = _conductor_agent_from_meta(meta, meta_path)
+                if agent is None:
+                    continue
+                meta["agent"] = agent
+                conductors.append(meta)
     conductors.sort(key=lambda c: c.get("name", ""))
     return conductors
 
@@ -757,6 +818,39 @@ _WAIT_SEND_QUEUE_REQUIRED = "queue_required"
 _LEGACY_REPLY_CLAIM = "legacy"
 _reply_owner_lock = threading.Lock()
 _wait_send_reservations: dict[tuple[str | None, str], str | None] = {}
+
+
+def _conductor_inbox_snapshot(sessions: list[dict], name: str) -> tuple[int, str, bool]:
+    """Count durable records and identify replacement records at the same count."""
+    conductor = next((s for s in sessions if s.get("title") == conductor_session_title(name)), None)
+    if not conductor or not conductor.get("id"):
+        return 0, "", False
+    session_id = str(conductor["id"]).strip().replace("/", "_").replace("..", "_").replace(" ", "_")
+    path = resolve_data_dir("inboxes") / "inboxes" / f"{session_id}.jsonl"
+    try:
+        data = path.read_bytes()
+        count = sum(bool(line.strip()) for line in data.splitlines())
+        return count, hashlib.sha256(data).hexdigest() if count else "", False
+    except FileNotFoundError:
+        return 0, "", False
+    except OSError as exc:
+        log.warning("Heartbeat [%s]: cannot read inbox %s: %s", name, path, exc)
+        return 0, "", True
+
+
+def _heartbeat_fingerprint(scoped_sessions: list[dict], inbox_pending: int = 0, inbox_digest: str = "") -> str:
+    """Identify the actionable part of a heartbeat (issue #2348).
+
+    Every delivered heartbeat is a new turn that re-reads the conductor's whole
+    conversation, so a tick whose waiting/error set equals the last delivered
+    one is skipped. Running/idle churn is not actionable and is left out.
+    """
+    actionable = "|".join(sorted(
+        f"{s.get('status', '')}:{s.get('title', '')}:{s.get('path', '')}"
+        for s in scoped_sessions
+        if s.get("status", "") in ("waiting", "error")
+    ))
+    return f"{actionable}|inbox={inbox_pending}:{inbox_digest}"
 
 
 def _cli_json(stdout: str) -> dict:
@@ -1459,6 +1553,13 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
             profile,
         )
     else:
+        agent = _load_conductor_agent(name)
+        if agent is None:
+            log.error(
+                "Cannot recreate conductor %s without valid runtime metadata",
+                name,
+            )
+            return False
         log.info("Creating conductor session for %s...", name)
         result = await loop.run_in_executor(
             None,
@@ -1469,7 +1570,7 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
                 "-t",
                 session_title,
                 "-c",
-                "claude",
+                agent,
                 "-g",
                 "conductor",
                 "--title-lock",
@@ -3249,6 +3350,11 @@ async def heartbeat_loop(
     # override the guard and deliver anyway (see the block below).
     skip_count_by_conductor: dict[str, int] = {}
 
+    # issue #2348: fingerprint of the last DELIVERED heartbeat per conductor.
+    # An unchanged waiting/error set skips the tick instead of paying a
+    # full-conversation re-read for a message the conductor already acted on.
+    delivered_fingerprint_by_conductor: dict[str, str] = {}
+
     log.info("Heartbeat loop started (global interval: %d minutes)", global_interval)
 
     while True:
@@ -3283,14 +3389,21 @@ async def heartbeat_loop(
                 idle = sum(1 for s in scoped_sessions if s.get("status", "") == "idle")
                 error = sum(1 for s in scoped_sessions if s.get("status", "") == "error")
                 stopped = sum(1 for s in scoped_sessions if s.get("status", "") == "stopped")
+                inbox_pending, inbox_digest, inbox_error = _conductor_inbox_snapshot(sessions, name)
 
                 log.info(
                     "Heartbeat [%s/%s]: %d waiting, %d running, %d idle, %d error, %d stopped",
                     name, profile, waiting, running, idle, error, stopped,
                 )
 
-                # Only trigger conductor if there are waiting or error sessions
-                if waiting == 0 and error == 0:
+                # Inbox-only child transitions also need a turn to drain them.
+                if waiting == 0 and error == 0 and inbox_pending == 0 and not inbox_error:
+                    delivered_fingerprint_by_conductor.pop(name, None)
+                    continue
+
+                fingerprint = _heartbeat_fingerprint(scoped_sessions, inbox_pending, inbox_digest)
+                if not inbox_error and delivered_fingerprint_by_conductor.get(name) == fingerprint:
+                    log.info("Heartbeat [%s]: nothing changed since last delivery, skipping", name)
                     continue
 
                 # Build heartbeat message with waiting/error session details
@@ -3313,6 +3426,10 @@ async def heartbeat_loop(
                     parts.append(f"Waiting sessions: {', '.join(waiting_details)}.")
                 if error_details:
                     parts.append(f"Error sessions: {', '.join(error_details)}.")
+                if inbox_pending:
+                    parts.append(f"Inbox: {inbox_pending} pending, run `agent-deck inbox drain self` first.")
+                if inbox_error:
+                    parts.append("Inbox unreadable; inspect the conductor inbox before continuing.")
                 # Reference HEARTBEAT_RULES.md by path. Inlining the whole file
                 # on every tick bloats prompts and destabilizes the cache prefix.
                 rules_path_ref = None
@@ -3462,6 +3579,7 @@ async def heartbeat_loop(
                     continue
 
                 skip_count_by_conductor[name] = 0  # delivered → reset skip counter
+                delivered_fingerprint_by_conductor[name] = fingerprint
 
                 # Response is captured via get_session_output (see send_to_conductor).
                 log.info(

@@ -1,0 +1,395 @@
+[
+  {
+    "seq": 1,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-09-19T11:04:34.883Z",
+    "raw": {
+      "ordinal": 0,
+      "payload": {
+        "base_instructions": {
+          "text": "You are Codex"
+        },
+        "cli_version": "0.154.0",
+        "cwd": "/Users/x/proj",
+        "git": {
+          "branch": "perf/refresh-tick-v2",
+          "commit_hash": "c87af298",
+          "repository_url": "git@github.com:x/proj.git"
+        },
+        "id": "01a0b956-e4be-7301-8f3c-3f1e39ab75b0",
+        "model_provider": "openai",
+        "originator": "codex_exec",
+        "session_id": "01a0b956-e4be-7301-8f3c-3f1e39ab75b0",
+        "source": "exec",
+        "timestamp": "2026-09-19T11:04:34.750Z"
+      },
+      "timestamp": "2026-09-19T11:04:34.883Z",
+      "type": "session_meta"
+    }
+  },
+  {
+    "seq": 2,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-09-19T11:04:34.883Z",
+    "text": "task_started",
+    "raw": {
+      "ordinal": 1,
+      "payload": {
+        "model_context_window": 258400,
+        "started_at": 1789815874,
+        "turn_id": "t1",
+        "type": "task_started"
+      },
+      "timestamp": "2026-09-19T11:04:34.883Z",
+      "type": "event_msg"
+    }
+  },
+  {
+    "seq": 3,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-09-19T11:04:37.386Z",
+    "text": "## Memory\n\nzebra developer instructions must not be indexed",
+    "raw": {
+      "ordinal": 2,
+      "payload": {
+        "content": [
+          {
+            "text": "## Memory\n\nzebra developer instructions must not be indexed",
+            "type": "input_text"
+          }
+        ],
+        "id": "msg_dev",
+        "role": "developer",
+        "type": "message"
+      },
+      "timestamp": "2026-09-19T11:04:37.386Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 4,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-09-19T11:04:37.386Z",
+    "text": "\u003cenvironment_context\u003e\n  \u003ccwd\u003e/Users/x/proj\u003c/cwd\u003e\n\u003c/environment_context\u003e",
+    "raw": {
+      "ordinal": 3,
+      "payload": {
+        "content": [
+          {
+            "text": "\u003cenvironment_context\u003e\n  \u003ccwd\u003e/Users/x/proj\u003c/cwd\u003e\n\u003c/environment_context\u003e",
+            "type": "input_text"
+          }
+        ],
+        "id": "msg_env",
+        "role": "user",
+        "type": "message"
+      },
+      "timestamp": "2026-09-19T11:04:37.386Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 5,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-09-19T11:04:37.387Z",
+    "raw": {
+      "ordinal": 4,
+      "payload": {
+        "approval_policy": "never",
+        "cwd": "/Users/x/proj",
+        "model": "gpt-5.6-sol",
+        "sandbox_policy": {
+          "type": "read-only"
+        },
+        "turn_id": "t1"
+      },
+      "timestamp": "2026-09-19T11:04:37.387Z",
+      "type": "turn_context"
+    }
+  },
+  {
+    "seq": 6,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-09-19T11:04:37.400Z",
+    "text": "Fix the flaky auth test, the clock skew one",
+    "raw": {
+      "ordinal": 5,
+      "payload": {
+        "content": [
+          {
+            "text": "Fix the flaky auth test, the clock skew one",
+            "type": "input_text"
+          }
+        ],
+        "id": "msg_u1",
+        "role": "user",
+        "type": "message"
+      },
+      "timestamp": "2026-09-19T11:04:37.400Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 7,
+    "role": "system",
+    "kind": "other",
+    "timestamp": "2026-09-19T11:04:38.000Z",
+    "raw": {
+      "ordinal": 6,
+      "payload": {
+        "encrypted_content": "gAAAA-zebra-encrypted",
+        "id": "rs_1",
+        "summary": [],
+        "type": "reasoning"
+      },
+      "timestamp": "2026-09-19T11:04:38.000Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 8,
+    "role": "assistant",
+    "kind": "bash",
+    "timestamp": "2026-09-19T11:04:39.000Z",
+    "tool_name": "shell",
+    "text": "shell",
+    "raw": {
+      "ordinal": 7,
+      "payload": {
+        "arguments": "{\"command\":[\"go\",\"test\",\"./internal/auth/\"]}",
+        "call_id": "call_1",
+        "id": "fc_1",
+        "name": "shell",
+        "namespace": "",
+        "type": "function_call"
+      },
+      "timestamp": "2026-09-19T11:04:39.000Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 9,
+    "role": "tool",
+    "kind": "tool_result",
+    "timestamp": "2026-09-19T11:04:41.500Z",
+    "text": "FAIL\nExit code: 1",
+    "raw": {
+      "ordinal": 8,
+      "payload": {
+        "call_id": "call_1",
+        "id": "fco_1",
+        "output": "FAIL\nExit code: 1",
+        "type": "function_call_output"
+      },
+      "timestamp": "2026-09-19T11:04:41.500Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 10,
+    "role": "assistant",
+    "kind": "tool_call",
+    "timestamp": "2026-09-19T11:04:42.000Z",
+    "tool_name": "exec",
+    "text": "const r = await tools.exec_command({\"cmd\":\"sed -n 1,20p auth.go\"})",
+    "raw": {
+      "ordinal": 9,
+      "payload": {
+        "call_id": "call_2",
+        "id": "ctc_1",
+        "input": "const r = await tools.exec_command({\"cmd\":\"sed -n 1,20p auth.go\"})",
+        "name": "exec",
+        "status": "completed",
+        "type": "custom_tool_call"
+      },
+      "timestamp": "2026-09-19T11:04:42.000Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 11,
+    "role": "tool",
+    "kind": "tool_result",
+    "timestamp": "2026-09-19T11:04:42.250Z",
+    "text": "package auth",
+    "raw": {
+      "ordinal": 10,
+      "payload": {
+        "call_id": "call_2",
+        "id": "ctco_1",
+        "output": [
+          {
+            "text": "package auth",
+            "type": "input_text"
+          }
+        ],
+        "type": "custom_tool_call_output"
+      },
+      "timestamp": "2026-09-19T11:04:42.250Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 12,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-09-19T11:04:43.000Z",
+    "text": "The root cause was clock skew.",
+    "raw": {
+      "ordinal": 11,
+      "payload": {
+        "content": [
+          {
+            "text": "The root cause was clock skew.",
+            "type": "output_text"
+          }
+        ],
+        "id": "msg_a1",
+        "phase": "final_answer",
+        "role": "assistant",
+        "type": "message"
+      },
+      "timestamp": "2026-09-19T11:04:43.000Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 13,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-09-19T11:04:43.394Z",
+    "raw": {
+      "ordinal": 12,
+      "payload": {
+        "thread_id": "01a0b956-e4be-7301-8f3c-3f1e39ab75b0",
+        "thread_token_usage": {
+          "input_tokens": 99999
+        },
+        "turn_id": "t1",
+        "usage": {
+          "cache_write_input_tokens": 0,
+          "cached_input_tokens": 12928,
+          "input_tokens": 25088,
+          "output_tokens": 6,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 25094
+        }
+      },
+      "timestamp": "2026-09-19T11:04:43.394Z",
+      "type": "token_usage_record"
+    }
+  },
+  {
+    "seq": 14,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-09-19T11:04:44.000Z",
+    "text": "turn_aborted",
+    "raw": {
+      "ordinal": 13,
+      "payload": {
+        "reason": "interrupted",
+        "turn_id": "t1",
+        "type": "turn_aborted"
+      },
+      "timestamp": "2026-09-19T11:04:44.000Z",
+      "type": "event_msg"
+    }
+  },
+  {
+    "seq": 15,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-09-19T11:04:44.000Z",
+    "raw": {
+      "ordinal": 14,
+      "payload": {
+        "files": []
+      },
+      "timestamp": "2026-09-19T11:04:44.000Z",
+      "type": "world_state"
+    }
+  },
+  {
+    "seq": 16,
+    "role": "system",
+    "kind": "compaction",
+    "timestamp": "2026-09-19T11:04:45.000Z",
+    "text": "Summary so far: the auth test flakes on clock skew.",
+    "raw": {
+      "ordinal": 15,
+      "payload": {
+        "compaction_response_id": "resp_x",
+        "message": "Summary so far: the auth test flakes on clock skew.",
+        "replacement_history": [
+          {
+            "content": [
+              {
+                "text": "Fix the flaky auth test, the clock skew one",
+                "type": "input_text"
+              }
+            ],
+            "id": "msg_u1",
+            "role": "user",
+            "type": "message"
+          },
+          {
+            "content": [
+              {
+                "text": "The root cause was clock skew.",
+                "type": "output_text"
+              }
+            ],
+            "id": "msg_a1",
+            "role": "assistant",
+            "type": "message"
+          }
+        ],
+        "window_number": 1
+      },
+      "timestamp": "2026-09-19T11:04:45.000Z",
+      "type": "compacted"
+    }
+  },
+  {
+    "seq": 17,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-09-19T11:04:46.000Z",
+    "text": "Now add a regression test",
+    "raw": {
+      "ordinal": 16,
+      "payload": {
+        "content": [
+          {
+            "text": "Now add a regression test",
+            "type": "input_text"
+          }
+        ],
+        "id": "msg_u2",
+        "role": "user",
+        "type": "message"
+      },
+      "timestamp": "2026-09-19T11:04:46.000Z",
+      "type": "response_item"
+    }
+  },
+  {
+    "seq": 18,
+    "role": "system",
+    "kind": "other",
+    "timestamp": "2026-09-19T11:04:47.000Z",
+    "raw": {
+      "ordinal": 17,
+      "payload": {},
+      "timestamp": "2026-09-19T11:04:47.000Z",
+      "type": "brand_new_record"
+    }
+  }
+]

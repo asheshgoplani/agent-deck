@@ -1,0 +1,24 @@
+       ╭────────────────────────────────────────────────────────────────╮
+       │                                                                │
+       │  Settings                                    [Esc] Close       │
+       │  ------------------------------------------------------------  │
+       │                                                                │
+       │  THEME                                                         │
+       │    >Dark   Light   System                                      │
+       │                                                                │
+       │  DEFAULT TOOL                                                  │
+       │     Claude   Gemini   OpenCode   Codex   Pi   Copilot   Crush  │
+       │  Muse   Cursor   Hermes   DeepSeek   Oh My Pi  >None           │
+       │    Pre-selected when creating new sessions                     │
+       │                                                                │
+       │  CLAUDE                                                        │
+       │    [x] Dangerous mode - Skip permission prompts                │
+       │    Config directory: ~/.claude (default)                       │
+       │                                                                │
+       │  GEMINI                                                        │
+       │    [ ] YOLO mode - Auto-approve all actions                    │
+       │    ▼ more below                                                │
+       │  j/k Navigate  Space Toggle                                    │
+       │  h/l Adjust  Enter Edit  Esc Close                             │
+       │                                                                │
+       ╰────────────────────────────────────────────────────────────────╯

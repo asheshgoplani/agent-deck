@@ -226,7 +226,7 @@ func applyCreationExtras(inst *session.Instance, query string, additional []stri
 		}
 	}()
 	if branch != "" {
-		result, createErr := session.CreateMultiRepoWorktreesStrictWithOptions(allPaths, parent, branch, wtSettings.SetupTimeout(), wtSettings.InheritSparseCheckout())
+		result, createErr := session.CreateMultiRepoWorktreesStrictWithOptions(allPaths, parent, branch, wtSettings)
 		inst.MultiRepoWorktrees = result.Worktrees
 		if createErr != nil {
 			return createErr

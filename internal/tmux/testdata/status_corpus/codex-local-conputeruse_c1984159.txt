@@ -1,0 +1,130 @@
+
+• xxxxxx xxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxx({"xxx":"xxxxx://xxxxxxxxxx.xxxxxx.xxx/xxxxx/xxxxxxxxxxxxxx/"})
+  └ # xxx-xxxxxxxxxxx xxxx
+
+    > xxx xxx xxxxxxxx xxxxxxxxxxxxx xxxxx, xxx [xxxx.xxx](xxxxx://xxxxx.xxxxxxx.xxx/xxxx.xxx). xxxxxxxx xxxxxxxx xx xxxxxxxxxxxxx xxxxx xxx xxxxxxxxx xx xxxxxxxxx `.xx` xx xxx xxxx xxx.
+
+    xxx-xxxxxxxxxxx xxxx xxxx xxx xxx xxxxx xxxx xxxxxxx (xxx xxxxxxx, xxxxxxxxxx xxxxxxxxxxx (xx) xxxx) xxxxxxx xxxxxxx xxx xxxxxxxxxxx xxx.
+    xxx xxxxxx xx xxxx `xxxxx xxxx`.
+
+    xxx xxxx-xxxxx xxxxxxx, xxx [`xxxxx xxxx`](xxxxx://xxxxx.xxxxxxx.xxx/xxxx/xxxxxxxxx-xxxxxxxx?xxxxxxx=xxx#xxx-xxxxx-xxxx).
+
+    ## xxxx xx xxx `xxxxx xxxx`
+
+    xxx `xxxxx xxxx` xxxx xxx xxxx xxxxx xx:
+
+    - xxx xx xxxx xx x xxxxxxxx (xx, xxx-xxxxx xxxxxx, xxxxxxxxx xxxx).
+    - xxxxxxx xxxxxx xxx xxx xxxx xxxx xxxxx xxxxx (xxx xxxxxxx, xx xxxxxxxx xxxxxxx xxxxx xx xxxxxxxxx).
+    - xxx xxxxxxxxx xxxx xxx xxxxxxxxx xxxx xxxxx xxxxxxx xxxxxx xxxx xxxxx xxx xxxx xxxxx xxxxxx xx xxxxx xxxxx.
+    - xxx xxxx xxxxxxxx, xxx-xxx xxxxxxx xxx xxxxxxx...
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• xxx, xx’x xxxxxxxx xxxx xxx xxxxx xxx xxx. xxxxx xxxxxxxx xxxxxxxxxx xxxx xxxxxxx xxxxx xxxx. xxxxxxxx xxxxxxxxxxxxx (xxxxx://xxxxxxxxxx.xxxxxx.xxx/xxxxx/xxxxxxxxxxxxxx/)
+
+  xxx xxxx xxxx:
+
+  - xxxx xx xxxxxx x xxxxxxx xxxx: xx xxx xxx xxxx xxxxxxxxxxxxx xx xxxxx xxx xxxx x xxxxxxxxxx xxxxxxxxxx.
+  - xxx xx xx xxx xxxxxxxxxx: xxxxxxxx xxxx x xxxxxxxx xxxxxxx, xx xx xxxxx’x xxxx xxxx xxxx xxxxxx.
+  - xxx xxxxxxx xxxxxxxx xxxxxxx: xx xxx xxxxxxxx xxxx xxxx xxxxxxx xxxx xxx xxxxxxxxx xxxx xxxxx xx xxxxxxxx xxxx.
+
+  x xxxxx’x xxxxxxxx xxxxxxx xxxx xxx’x xxxxx xxxxxxxx xxx xxxx xx xxxxxxxxx xxxxxx xxxx xxx. xxx xxxxxxxxxx xxxxxxx xxxxxxxx xx xxxxxxxx, xxx xxxxxxxxx xxxxx xxxxx’x xxxxxxxxxxxxx
+  xxxxxx x xxxxxxxx xxxxxxxxxx.
+
+
+› xxxxx xxxxx xxx x xx xxxx xxxxxx x xxxxxx xxxx xxxxxx  xxx xxxxxxxxxx xx xx xx
+
+
+• x’xx xxxxx xxxxxxx x xxx xxxx xxx xxxx x xxxxxxx xx x xxxxxxxxxx xxxxxxx xx xxxx xxx.
+
+• xxxxxxxx
+  └ xxxx xxxxx.xx
+
+• xxxxxxxx
+  └ xxxxxx xxxxxxxx|xxx|xxxxxxxxxx|xxx-xxxxxx xx xxxxxx.xx
+
+
+› xxxxx xxx xxxx xxxx xxxx xxxxx xx x
+
+
+• xxx /xxxxx/x/xxx/xxx-xxxxxx xxxxxx
+  └ x.xx    /xxxxx/x/.xxxxx-xxxxxx
+
+• xxx xxxxxxx -x xxxxxxx-xxxxxxx
+  │ sed -n '1,170p' /Users/u/bin/mac-chrome
+  └ /xxxxx/x/.xxxxx/xxx/xxxxxxx-xxxxxxx
+    #!/xxx/xxx/xxx xxxx
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+      *)       xxxx "xxxxx: xxx-xxxxxx [xxxxxx|xxxxxx|xxxxxx|xxxx|xxxx]" >&x; xxxx x ;;
+    xxxx
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• xxx xxxxxxxxxx xxxxxxx xxxxx xxx xxxxxxxxx. x’x xxxxx xxx xxx xxxxxx xxx xxxxx xx xxxx x xxxx xx xxx xxxxxxxx xxxxxxxx xxxxxxx.
+
+• xxx xxxxxxx=xxx xxxxxxxxxx=xxxx://xxx.x.x.x:xxxx xxxxxxx-xxxxxxx <<'xx'
+  │ new_tab("https://example.com")
+  │ wait_for_load()
+  │ … +2 lines
+  └ {'xxx': 'xxxxx://xxxxxxx.xxx/', 'xxxxx': '🐴 xxxxxxx xxxxxx', 'x': xxx, 'x': xxx, 'xx': x, 'xx': x, 'xx': xxx, 'xx': xxx}
+
+• xxx /xxxxx/x/xxx/xxx-xxxxxx
+  └ xxxxx: xxxxx xxxxxx xxx xxx xxxx xx xx :xxxx
+
+• xxx xxxx -xx --xxx-xxxx x xxxx://xxx.x.x.x:xxxx/xxxx/xxxxxxx
+  │ ps -axo pid,args | rg '[G]oogle Chrome.*(headless|remote-debugging-port|agent-chrome)'
+  └ xxxxx /xxxxxxxxxxxx/xxxxxx xxxxxx.xxx/xxxxxxxx/xxxxx/xxxxxx xxxxxx --xxxxxxxx=xxx --xxxx-xxxx-xxx=/xxxxx/x/.xxxxx-xxxxxx --xxxxxx-xxxxxxxxx-xxxx=xxxx --xx-xxxxx-xxx
+    --xx-xxxxxxx-xxxxxxx-xxxxx --xxxxxxx-xxxx --xxxxxx-xxxx=xxxx,xxx xxxxx:xxxxx
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+    --xxxxxxx-xxxxxxxx=xxxxxxxxxxxx --xxxxxxxxxx-xxxx-xxxxxxx=xxxxxxxx-xxxxxx.xxxxxx-xxxxxxxxxx --xxxxxxxxxxxxxxxx-xxxx-xxxxxx=xxx xxx xxx,x,xxx xxx xxx,xxx xxx xxx,x
+    --xxxxx-xxxxxxx-xxxxx-xxxx=xxx xxx xxx --xxxxxxxx-xxxxxx=xxx
+
+• xxx xxxxxxx=xxx xxxxxxxxxx=xxxx://xxx.x.x.x:xxxx xxxxxxx-xxxxxxx <<'xx'
+  │ print(js("JSON.stringify({title:document.title,text:document.body.innerText,ua:navigator.userAgent})"))
+  │ PY
+  └ {"xxxxx":"🐴 xxxxxxx xxxxxx","xxxx":"xxxxxxx xxxxxx\x\xxxxx xxxxxx xx xxx xxx xx xxxxxxxxxxxxx xxxxxxxx xxxxxxx xxxxxxx xxxxxxxxxx. xxxxx xxx xx xxxxxxxxxx.\x\xxxxxx
+    xxxx","xx":"xxxxxxx/x.x (xxxxxxxxx; xxxxx xxx xx x xx_xx_x) xxxxxxxxxxx/xxx.xx (xxxxx, xxxx xxxxx) xxxxxx/xxx.x.x.x xxxxxx/xxx.xx"}
+
+• xxx xxxx -xxx /xxxxx/x/.xxxxx/xxx/xxxxxxx-xxxxxxx
+  └ #!/xxxxx/x/.xxxxx/xxxxx/xx/xxxxx/xxxxxxx-xxxxxxx/xxx/xxxxxx
+    # -*- xxxxxx: xxx-x -*-
+    … +x xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+            xxx.xxxx[x] = xxx.xxxx[x][:-x]
+        xxx.xxxx(xxxx())
+
+
+› xxx xx xxxxx x  x xxx xxx xx xx xxxxx xx xxxx xx xxxxxx xxxx x
+
+
+• xxxxxxxxxx: xx xxxx xxxxx xxxx xxxxxx xxx xxxxx xxxxx. xxx xxxxxxxx xxxxxxx xxxxxx xxxx’x xxxxxxx x xxxxxxxx xxxxxxxxxx, xx x’x xxxxxxxx x xxxxxxxx xxxxxxx xxxxxxxx xxxxxx xxxxxxx xxxx
+  xxxxxxxx.
+
+• xxx xx -x 'xxxxxxxxxx|xxxxxxx|xxxxxxxx|xxxx' /xxxxx/x/.xxxxx/xxxxx/xx/xxxxx/xxxxxxx-xxxxxxx/xxx/xxxxxx*/xxxx-xxxxxxxx/xxxxxxxxxxxxxxx/xxx.xx
+  └ xxx:x: xx xxxxxxx xxxxx: /xxxxx/x/.xxxxx/xxxxx/xx/xxxxx/xxxxxxx-xxxxxxx/xxx/xxxxxx*/xxxx-xxxxxxxx/xxxxxxx_xxxxxxx/xxx.xx
+
+• xxx /xxxxx/x/.xxxxx/xxxxx/xx/xxxxx/xxxxxxx-xxxxxxx/xxx/xxxxxx - <<'xx'
+  │ import subprocess, tempfile, urllib.request, time, json
+  │ profile=tempfile.mkdtemp(prefix='background-browser-check-')
+  │ … +19 lines
+  └ {"xxxx": "xxxxxxxx=xxx", "xxx": xxxxx, "xxxxx": [{"xxxxx": "xxxxxxx xxxxxx", "xxx": "xxxxx://xxxxxxx.xxx/"}]}
+    xxxx xxxxxxx xxxxxx
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• xxx, xxxxxxxx. x xxxxxx xxx xxxx x xxxx xxxxxxx xx x xxxxxxxx xxxxxxxx xxxxxx xxxxxxxx, xxxx xxxxxx xx. xxxx xxxxxxx xxx xx xxxxxxx xxxxxx xxx xxxxx’x xxx xxxx xxxxx xx xxxxxxxx.
+
+  xx xxx xxx xxxx xxxxxxxx xxx xxxxxxxxxx xxxxxxx xxxxx xxxxx xxx xxxx xxxxxxx. xxxxxxxxx xxx xxxxxxxxx xxxx xxxxxxxx xxxxx xxxxx x xxxxxxxx xxxx.
+
+⚠ xxxxx-xxxxxxxxxxx xxxxxxxx xxxxxxx: xxxxxxxxx. xxxxx-xxxxxxxxxxx xxxxxxxx xxx xxxxxxxxxx xxx xxx xxxxxx xxxxxxxxxxxxx. xx xxxxxxxx xxxx xxxxxxx, xxx `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  = xxxx` xx /xxxxx/x/.xxxxx/xxxxxx.xxxx.
+
+⚠ Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 10% of your weekly limit left. Run /status for a breakdown.
+
+⚠ Heads up, you have less than 5% of your weekly limit left. Run /status for a breakdown.
+
+
+› Ask Codex to do anything
+
+  gpt-6-astra · ~/agent-team-design · Context 86% left · Context 14% used · weekly 94% left · 258K window

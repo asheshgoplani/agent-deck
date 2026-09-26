@@ -1,0 +1,35 @@
+  xxxxx xx xx x xxxxxx.
+
+  xxxx: xxxx xx xxxxxx xxxxx xxxxx xxxx x xxxxxxx xx xxxxx'x xxxxxx xxxxx. xxxxx xx xxx xxxx xx xxxxxxx, xx xxxxx.
+
+  xx xxxxxxx xxxx xx. xxxxxxx xxxx xxx xxxx xxxxxxxxx.
+
+● Adding what the observer asked for: a partial-day flag, a person × day shipping view, a coverage table that separates "no sessions on the
+  xxx" xxxx "xxx", xxx xxxxxxxxxxx xxxxxxx.
+
+  Ran 3 shell commands
+
+● Found that worker-b's task-log uses a third bullet format (- 2026-09-17T08:41:36Z …) the collector never accounted for, causing his
+  xxx-xxx xxxx xx xx xxxxxxxxxx xx xxxx. xxxxxx xxx xxxxxx, xxxx xx-xxxxxxxxxx xxx xxxx xxxx xxx xxxxxxxxxx. · xxxxxxxxxx
+
+  Ran 3 shell commands
+
+● The message send to the observer is still in flight (its session is likely mid-turn). Waiting once for delivery.
+
+  xxxxxxx xxx xxx xxxxxxx xxxx xx xxxxxx xx xxxx xxx
+  ⎿  $ for i in $(seq 1 40); do pgrep -f "agent-deck session send" >/dev/null || break; sleep 5; done; echo "--- output:"; cat
+     /xxx/xxxxxx-xxxx/-xxx-xxxxx-xxxx-xxxxxx/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/xxxxx/xxxxxxxxx.xxxxxx; xxxxx -x "xxxxx-xxxx xxxxxxx xxxx"
+     >/xxx/xxxx && xxxx "xxxxx xxxxxxx" || xxx…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  You've reached your Fable limit
+
+  xxx'xx xxxx xxxx xxxxxxxx xxxxx xxxxx xxx xxxx xxxx. xxxxxxxxxx xx xxxxx x.x xxxx xxxxx xxxxxxx, xxxxxxxxx xxxxxxxxxx xxxx xxxx xxxx.
+
+  xxxxx xxxx: xxxxx://xxxxxxx.xxxxxx.xxx/xx/xxxxxxxx/xxxxxxxx-xxxxx-xxxxx-xxx-xxxx-xxxxxx-xxxxx
+
+  ❯ xxxxxx xx xxxx x (xx xxxxxxx) xxx xxxxxxxx
+    xxxxxxxx xxxx xxxxx x.x
+
+
+  Enter to confirm · Esc to cancel

@@ -213,9 +213,12 @@ func (h *Home) startUnattendedRun(key string) tea.Cmd {
 	}
 	h.autoInstallAttempts[key] = time.Now()
 	h.autoInstallInFlight = key
+	progress := &update.UnattendedProgress{}
+	h.autoInstallProgress = progress
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), autoInstallTimeout)
 		defer cancel()
+		ctx = update.WithProgress(ctx, progress)
 		out, err := runUnattendedUpdate(ctx, exe)
 		return unattendedInstallFinishedMsg{version: key, output: out, err: err}
 	}
@@ -227,6 +230,7 @@ func (h *Home) startUnattendedRun(key string) tea.Cmd {
 // the installer just invalidated.
 func (h *Home) handleUnattendedInstallFinished(msg unattendedInstallFinishedMsg) tea.Cmd {
 	h.autoInstallInFlight = ""
+	h.autoInstallProgress = nil
 	tail := strings.TrimSpace(msg.output)
 	if msg.err != nil {
 		uiLog.Warn("tui_auto_install_failed",
@@ -241,7 +245,10 @@ func (h *Home) handleUnattendedInstallFinished(msg unattendedInstallFinishedMsg)
 	} else {
 		uiLog.Info("tui_auto_install_finished", slog.String("latest", msg.version), slog.String("output", tail))
 	}
-	return tea.Batch(h.pollBinaryChange(), h.requestUpdateCheck(time.Now()))
+	// A restart asked for during the run fires now (the run's own child is
+	// gone, so the re-exec no longer cuts its pipe), unless something else
+	// blocks it, in which case the tick path retries.
+	return tea.Batch(h.pollBinaryChange(), h.requestUpdateCheck(time.Now()), h.fireQueuedRestart())
 }
 
 // firstLine returns the first non-blank line of text, or fallback.

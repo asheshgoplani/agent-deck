@@ -1,0 +1,50 @@
+      xxxx                  xxxxxx xxx
+      xxxx          }
+      xxxx -        xxxx, xxx := xxxxxxxxxxxxxxxxx(xxxx)
+      xxxx -        xx xxx != xxx {
+      xxxx -                xxxxxx xxx
+      xxxx -        }
+      xxxx -        xxxx.xxxxxxxxxxxxxxxx = xxxxx
+      xxxx -        xxxxxx xxxxxxxxxxxxxxxxx(xxxx)
+      xxxx +        xxxxxx xxx
+      xxxx  }
+      xxxx
+      xxxx  xxxx xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(xxxx xxxxxx) xxxxx {
+
+  Ran 1 shell command
+
+⏺ xxxxxxx xx xxx xxxx-xxx xxx xxx xxx xxxxxx (xxxx xxxxxxxx, xxxx=xxxx).
+
+⏺ xxx xxxxxx xxxx xxx xx xxxxx xxxxx xx xxx xxxx xxx. x'xx xxx x xxxxxxxxxxxx xxxx xx xxxxxxxx, xxx xxxxx xxxx x'xx xxx xxx xxxxxx/xxxx xxxxxxxx xxx xxx xx xxxxxx xxxxx xxx xx x xxxx.
+
+  xxxxx xx xxx:
+  - xxxxx-x xxxx xxxx xxxxxx. xxxxxxxx xxx xxxxxx xxx xxxxxxxxx xxxx xxx xxx xxxxxx xxxxxx xxxx xxxxxxxxx'x xxx xxxx. xxx xxxxxx xxxxxx xxxx xxxxx xx xxxxx-xxxx xxxxx xxx. xxx x xxx xxxxxx xxxxx xxxx
+    xxxx, xxx xxx x xxxxx xxxxxx xxxxxxxx xxxx xx xxxxxx/xxxx xxx.
+  - xxxxxx xxxxx (xxxxxx): x xxx xxx xxxxxx xxxx xxxx xx xxx xx xxx xxx x xx xxx x xxx xxxxx xxxx xxx, xx xxxx xxxxxx.
+  - xxxxx xxxxxx xxx xxxxx: xxxxx, xx xxxxx ./... xxx xx xxx ./... xxx xxxx.
+  - xxxxxx xxxx xxxxx:
+    - xxx xxxxxxxxx xxxxxx xxxxx xxx "xxxxxxx xxxxxxxxx" xxxxx xxxxxx xx xxxxx, xxx xxxxx xxxxxx xxxxxxx xxx xxxx xxxxxx. xx x xxxx xxxxx, xxxx xxxxxx xx xxxxx xxxxx xxxxx.
+    - xxxxxxx xxxxxx xx xxxxxx xxxxxxxx. xxxxxx xxxxxxx xxxx xxxxxx xxxx xxx xxxxxxxxx xxxx xxxxxx xxxxx xxxxxx x xxxx, xxx xxxxx xxxxx xxx xxxxx xx xxxx xx xxx.
+  - xxxxxxx xxxxxxx xxxx: xxxx xxxx xx xxx xxxx xx xxxxxx/xxxx, xx xx xx x xxxxxxxx xxxxxx-xx, xxx xxxx xx #xxxx. xx xxxx xxx, x xxxxxx xxxxxxxxx xxxxxx xxxxx xxxxxxxx xxxx xxxx x, xx xxxxxxxx xxxx
+    xxxx xxxx xxxxx xxx xxxxx xxx xxxxxxx xxxxxx.
+
+✻ Sautéed for 5m 10s · done 12:42 AM · 1 shell still running
+
+⏺ Background command "cd /tmp/exec-review-2348-r2/src && git rev-parse HEAD && TAIL=4000 /Users/u/.agent-deck/conductor/agent-deck/bin/g14-test.sh /tmp/exec-review-2348-r2/src -count=1
+./xxxxxxxx/xxxxxxx/... ./xxx/xxxxx-xxxx/... ./xxxxxxxx/xx/... > /xxx/xxxx-xxxxxx-xxxx-xx/xxx-xxxxxx.xxx x>&x; xxxx -x /xxx/xxxx-xxxxxx-xxxx-xx/xxx-xxxxxx.xxx" xxxxxxxxx (xxxx xxxx x)
+
+  Searched for 1 pattern
+
+⏺ xxxxxxxx/xxxxxxx xxxxxx xx xxxx xxxxxx, xxxx xxxx xxx xxxxx-xxxxx xxxxxxxxxxxxxxxxxx xxx xxxxxxxxxxxxxxxxxxxx xxxxx xxxxxxx. xxx x'xx xxx xxx xxxxxx/xxxx xxxxxxxx xxx xxxxxxxxxx. · xxxxxxx
+
+  Ran 1 shell command
+
+⏺ xxx xxxxxx/xxxx xxxxxxxx xx xxxxxxx xx xxx xxxx xxx; xxx xx xxxxxx xxxxx xxxxx xxxxx xx.
+
+✻ Worked for 7s · done 12:46 AM · 1 shell still running
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── review-2348-r2 ─
+❯ xxxxxxxx
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/private/tmp/exec-review-2348-r2/main | [Opus 5.5] ctx:13% in:128.7k out:28 5h:7% 7d:2%
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents

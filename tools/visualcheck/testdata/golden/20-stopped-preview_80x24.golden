@@ -1,0 +1,24 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+SESSIONS                     │ PREVIEW
+──────────────────────────── │ ─────────────────────────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1        │ claude-stopped  ■ stopped
+   ├─ ■ opencode-idle        │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle          │ ⏱ <age>
+   ├─ ◐ claude-waiting       │  claude   alpha
+  ▶└─ ■ claude-stopped       │ ────────────────── Claude ──────────────────
+    ▾ backend (3) ● 1        │ Status:  ■ Stopped
+     ├─ ✕ codex-idle         │ Session: <uuid>
+     ├─ ● claude-running     │ Model:   tool default
+     └─ ✕ claude-error       │ Fork:    f quick fork, F fork with options
+2·▾ beta (4) ◐ 1             │
+   ├─ ✕ gemini-idle          │ ────────────── Process Exited ──────────────
+   ├─ ✕ pi-idle              │
+   ├─ ◐ claude-i18n          │ ■ Process exited
+   └─ ○ shell-live           │
+  ▾ remotes/lab (0) · host … │ The process ended or was stopped.
+                             │ The session record is preserved for resuming.
+                             │
+                             │ Actions:
+────────────────────────────────────────────────────────────────────────────────
+⏎ Attach n/N New R Restart T Fresh │   ↑↓ Nav / Search S Settings ? Help q Quit

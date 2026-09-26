@@ -195,8 +195,12 @@ jobs:
         timeout-minutes: 10
         env:
           GOTOOLCHAIN: go1.25.13
+        # internal/ui is scoped to its eval cases (TestEval_*); the whole
+        # internal/ui suite already ran in "Run tests" and under -race it
+        # alone can outlast this step's 6m package timeout.
         run: |
-          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/... ./internal/ui/...
+          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/...
+          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m -run '^TestEval_' ./internal/ui/...
 
       - name: Run GoReleaser
         timeout-minutes: 15
@@ -207,6 +211,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          AGENTDECK_POSTHOG_KEY: ${{ secrets.AGENTDECK_POSTHOG_KEY }}
 
       - name: Validate release assets
         timeout-minutes: 5

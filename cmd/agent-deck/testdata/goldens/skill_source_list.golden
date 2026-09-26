@@ -1,0 +1,6 @@
+Skill sources:
+
+NAME           ENABLED  PATH                                       DESCRIPTION
+--------------------------------------------------------------------------------------------
+claude-global  yes      ~/.claude/skills                           Claude global skills directory
+pool           yes      ~/.config/agent-deck/skills/pool           Managed Agent Deck skill pool

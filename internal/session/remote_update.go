@@ -672,7 +672,8 @@ type RemoteUpdateOptions struct {
 	// means FetchRemoteUpdateRelease (GitHub).
 	FetchRelease func(target string) (*update.Release, error)
 	// Download fetches and verifies the binary for a platform. Nil means
-	// update.DownloadVerifiedBinary.
+	// update.DownloadVerifiedBinaryContext with the
+	// deploy context, so cancelling the sweep stops the download.
 	Download func(release *update.Release, goos, goarch string) ([]byte, error)
 	// CurrentVersion is what the remote runs now, when known. DeployRemoteBinary
 	// refuses to install a release that is not newer than it: the fallback
@@ -693,9 +694,6 @@ func (o RemoteUpdateOptions) withDefaults() RemoteUpdateOptions {
 	}
 	if o.FetchRelease == nil {
 		o.FetchRelease = FetchRemoteUpdateRelease
-	}
-	if o.Download == nil {
-		o.Download = update.DownloadVerifiedBinary
 	}
 	return o
 }
@@ -748,7 +746,12 @@ func DeployRemoteBinary(ctx context.Context, runner RemoteBinaryInstaller, targe
 	}
 
 	opts.Progress(fmt.Sprintf("Downloading + verifying %s/%s binary for v%s...", goos, goarch, deployed))
-	binaryData, err := opts.Download(release, goos, goarch)
+	var binaryData []byte
+	if opts.Download != nil {
+		binaryData, err = opts.Download(release, goos, goarch)
+	} else {
+		binaryData, err = update.DownloadVerifiedBinaryContext(ctx, release, goos, goarch, nil)
+	}
 	if err != nil {
 		return "", fmt.Errorf("download/verify failed: %w", err)
 	}

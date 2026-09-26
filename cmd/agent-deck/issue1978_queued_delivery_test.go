@@ -84,8 +84,7 @@ func TestIssue1978_QueuedWhenHookBusyAndBodyArrives(t *testing.T) {
 
 // TestIssue1978_HookBusyWithoutArrivalIsNotQueued: the hook says busy for the
 // whole budget but the body never reaches the pane. That is a busy target
-// that dropped the message, and it must keep today's failure verdict — a
-// hook signal alone must never manufacture a delivery.
+// whose outcome is unknown. A hook signal alone cannot manufacture delivery.
 func TestIssue1978_HookBusyWithoutArrivalIsNotQueued(t *testing.T) {
 	const msg = "PROBE reply with only OK"
 	mock := &mockSendRetryTarget{
@@ -98,8 +97,8 @@ func TestIssue1978_HookBusyWithoutArrivalIsNotQueued(t *testing.T) {
 	if delivery == deliveryQueued {
 		t.Fatalf("delivery = queued with the body never on screen — hook-busy is not arrival evidence")
 	}
-	if err == nil {
-		t.Fatalf("a send with no arrival evidence must fail (#876); got delivery=%q err=nil", delivery)
+	if err != nil || delivery != deliveryUnverified {
+		t.Fatalf("busy send without arrival evidence must stay unknown: delivery=%q err=%v", delivery, err)
 	}
 	if n := atomic.LoadInt32(&mock.sendCtrlCCalls); n != 0 {
 		t.Errorf("SendCtrlC called %d times, want 0", n)
@@ -123,8 +122,8 @@ func TestIssue1978_StaleIdenticalBodyIsNotTokenMovement(t *testing.T) {
 	if delivery == deliveryQueued {
 		t.Fatalf("delivery = queued from a pre-existing copy of the body; want the token count to move (#876 phantom)")
 	}
-	if err == nil {
-		t.Fatalf("expected a failure verdict without token movement, got delivery=%q", delivery)
+	if err != nil || delivery != deliveryUnverified {
+		t.Fatalf("stale body must stay unknown: delivery=%q err=%v", delivery, err)
 	}
 }
 
@@ -212,8 +211,7 @@ func TestIssue1978_UnknownHookNeverClaimsQueued(t *testing.T) {
 }
 
 // TestIssue1978_NoWaitQueuedNeedsArrivalToo: the --no-wait budget must
-// classify a queued message the same way — and refuse the same way when the
-// body never lands.
+// classify a queued message the same way and keep absent evidence unknown.
 func TestIssue1978_NoWaitQueuedNeedsArrivalToo(t *testing.T) {
 	const msg = "queued no-wait message"
 
@@ -235,8 +233,8 @@ func TestIssue1978_NoWaitQueuedNeedsArrivalToo(t *testing.T) {
 	opts = noWaitSendOptions()
 	opts.checkDelay = 0
 	opts.targetBusyByHook = hookSeq(probeBusy)
-	if delivery, err := sendWithRetryTarget(dropped, msg, false, opts); delivery == deliveryQueued || err == nil {
-		t.Fatalf("--no-wait dropped: delivery=%q err=%v, want a failure verdict", delivery, err)
+	if delivery, err := sendWithRetryTarget(dropped, msg, false, opts); delivery != deliveryUnverified || err != nil {
+		t.Fatalf("--no-wait no echo: delivery=%q err=%v, want unknown", delivery, err)
 	}
 }
 

@@ -80,6 +80,9 @@ func TestKillAndWait_RoutesKillToSessionSocket(t *testing.T) {
 	logPath := filepath.Join(dir, "tmux-argv.log")
 	t.Setenv("TMUX_KILL_LOG", logPath)
 	writeFakeTmux(t, dir, `printf '%s\n' "$*" >> "$TMUX_KILL_LOG"
+case "$*" in
+  *has-session*) printf "can't find session: =kill-and-wait-target\n" >&2 ;;
+esac
 exit 1`)
 
 	socket := "kill-and-wait-custom-socket"

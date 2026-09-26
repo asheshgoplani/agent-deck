@@ -33,6 +33,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[notifications] Section](#notifications-section)
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
+- [[core] Section](#core-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -447,6 +448,7 @@ branch_prefix = "feature/"                           # Prefix for branch names (
 auto_cleanup = true                                  # Remove worktree when session is deleted
 setup_timeout_seconds = 60                           # Timeout for .agent-deck/worktree-setup.sh
 sparse_checkout = "off"                              # "inherit" to copy the source worktree's sparse checkout
+checkout_git_config = ["core.hooksPath=/dev/null"]   # git -c entries for the worktree checkout (global only)
 ```
 
 | Key | Type | Default | Description |
@@ -458,6 +460,7 @@ sparse_checkout = "off"                              # "inherit" to copy the sou
 | `auto_cleanup` | bool | `false` | Remove worktree directory when the session is deleted. |
 | `setup_timeout_seconds` | int | `60` | Max seconds for `.agent-deck/worktree-setup.sh` to run. Set to `0` for unlimited. |
 | `sparse_checkout` | string | `"off"` | Sparse-checkout inheritance (#1708). `"inherit"` captures the mode (cone / non-cone, sparse index) and patterns of the worktree you create the session from, creates the new worktree with `git worktree add --no-checkout`, and materializes it with those patterns, so a sparse monorepo never checks out the full tree first. `"off"` / unset / any other value keeps git's normal checkout. A non-sparse source is also left unchanged. `.worktreeinclude` and the setup script still run afterwards. Requires git 2.32+ (`sparse-checkout set --[no-]sparse-index`). |
+| `checkout_git_config` | string array | `[]` | `key=value` git config entries passed as `git -c` to the commands that create and check out a new worktree (`worktree add`, and the sparse checkout when `sparse_checkout = "inherit"`) (#2366). `"core.hooksPath=/dev/null"` skips `post-checkout` hooks (for example the Git LFS hook); `"checkout.workers=8"` tunes checkout. Applied to that creation only; nothing is written to the worktree's config. Entries that are not `key=value` fail worktree creation. Global config only. |
 
 ### Path template examples
 
@@ -511,7 +514,8 @@ path_template = "{repo-root}/../wt-{branch}"
 **Allowlisted keys.** Only `default_location`, `path_template`, and
 `sparse_checkout` are eligible for directory-local overrides — the same three
 settings that affect *where* a worktree lands. `auto_cleanup`,
-`branch_prefix`, `setup_timeout_seconds`, `run_repo_scripts`, and every other
+`branch_prefix`, `setup_timeout_seconds`, `run_repo_scripts`,
+`checkout_git_config`, and every other
 top-level section stay global-only, since a dir-local file can come from a
 checkout you don't fully trust. **Any other key or section is refused** with
 an error naming the file and the bad key, rather than being silently
@@ -975,6 +979,19 @@ claim_polling = true   # Opt-in: dedupe status polling across concurrent instanc
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `claim_polling` | bool | `false` | When `true`, each session is actively polled (tmux status scan, live pipe attach) by exactly one instance instead of every open instance polling every session redundantly. Instances take ownership of sessions in their `-g` scope via a `session_claims` table in `state.db`, refreshing a heartbeat each sweep; a session with no live claim (owner heartbeat older than 15s, or no claim row at all) is up for grabs by the next instance that sees it in scope. Every 30s the elected primary instance additionally slow-polls **orphaned** sessions — those no scoped instance currently claims — so their statuses and notifications keep working even with no dedicated owner. Claims for sessions no longer present in the `instances` table (deleted, or archived-then-purged) are pruned periodically so the table cannot grow unbounded over a long-lived process. Default `false` preserves today's behavior: every instance polls every session it can see. |
+
+## [core] Section
+
+The one-core command registry and its daemon (`docs/core-registry.md`, `docs/daemon-protocol.md`).
+
+```toml
+[core]
+daemon = false   # Opt-in: send --json=envelope requests to `agent-deck daemon serve`
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `daemon` | bool | `false` | When `true`, a `--json=envelope` request of a registry command (`session start/stop/restart`, `list`, `group list`) is sent to the profile's daemon if one answers on its socket, and runs in process when none does, so the CLI keeps working with the daemon dead. Every other request, and every request when `false`, runs in process exactly as before; the socket is never dialled. |
 
 ## [tmux] Section
 

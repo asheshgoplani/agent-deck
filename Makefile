@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
+.PHONY: bench-fleet build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -140,6 +140,13 @@ dev:
 test:
 	go test -race -v ./...
 
+# Regenerate the CLI/storage-bytes behaviour-freeze goldens under
+# cmd/agent-deck/testdata/goldens/ after a reviewed, intended behaviour
+# change (CORE-PLAN.md section 7). Never run this to make a red suite green
+# without reading the diff first — see testdata/goldens/README.md.
+goldens-update:
+	AGENTDECK_UPDATE_GOLDENS=1 go test ./cmd/agent-deck/ -run 'TestCLIGoldens$$|TestStorageBytesGoldens$$' -v
+
 # Run hard-gated walltime regression tests (Track B). Honors PERF_BUDGET_MULTIPLIER
 # (default 1.0 locally; CI sets 2.0). See docs/perf-budget-suite.md.
 #
@@ -264,3 +271,18 @@ check-functional: funccheck-image
 		-e FUNCCHECK_BINARY="$(FUNCCHECK_BINARY)" "$(FUNCCHECK_IMAGE)" \
 		sh -ec 'mkdir -p "$$HOME"; if [ -z "$$FUNCCHECK_BINARY" ]; then go build $(LDFLAGS) -o /tmp/agent-deck-funccheck ./cmd/agent-deck; FUNCCHECK_BINARY=/tmp/agent-deck-funccheck; fi; go run ./tools/funccheck "$$FUNCCHECK_BINARY"'
 endif
+
+# Visual check (docs/CORE-PLAN.md section 7): drives a real agent-deck
+# binary through every TUI screen in a private tmux server, diffs captured
+# frames against tools/visualcheck/testdata/golden, writes contact-sheet.html.
+# Needs Linux + a real tmux (see tools/visualcheck/README.md); run on the
+# g14 test box, not natively on macOS.
+VISUALCHECK_BINARY ?=
+.PHONY: visual-check visual-check-golden
+visual-check:
+	@if [ -z "$(VISUALCHECK_BINARY)" ]; then go build $(LDFLAGS) -o build/agent-deck ./cmd/agent-deck; fi
+	go run ./tools/visualcheck "$(or $(VISUALCHECK_BINARY),build/agent-deck)"
+
+visual-check-golden:
+	@if [ -z "$(VISUALCHECK_BINARY)" ]; then go build $(LDFLAGS) -o build/agent-deck ./cmd/agent-deck; fi
+	UPDATE_GOLDEN=1 go run ./tools/visualcheck "$(or $(VISUALCHECK_BINARY),build/agent-deck)"

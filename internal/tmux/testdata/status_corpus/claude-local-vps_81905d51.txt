@@ -1,0 +1,50 @@
+  xxxxxxxxx xxxxx xxxxxxx, xxxx xxx xxxxxxx xxxxxx-xxxxxxx-xxxxxxx-xxxxxxxxxx xxx xxxxxx "xxxxxxx xxx xxxxxx".
+
+  xxxx xxx xxxx xxxx xxxx xx xxxx xxxxxxxxx xxxxxx xxxxx xx xxxxxxx xxx xxxxxxxxx-xxxx-xxxxxx.
+
+✻ Churned for 11s · done 2:49 PM
+
+❯ xxxxxxxxxx xxxx xxxx (.xxxxxx/xxxxxxxx.xxxx): xxxxx(///xxxx/x/.xxxxx/xxxxx/xxxxx-xxxx/xxxxxxxxx/xxxxxx/.xx) xx xxx xxxxxxx xx xxxx xxxxxxxxxx xxxxxx — xxxx xxxx(xxxx)
+  xxxxx xxx. xxx xxxx(///xxxx/x/.xxxxx/xxxxx/xxxxx-xxxx/xxxxxxxxx/xxxxxx/.xx) xxxxxxx (xxxx xxxxx xxxxx xxx xxxx-xxxxxxx xxxxx).
+  Welcome to Claude Code v2.1.272
+   ▐▛███▛█   Claude Code v2.1.272 whwy g eitngi this ?   isisi eveyhtigni co rveltly s eututp wi wiht lt ieke kkmsists aonand lala  cpaso  ro sheinitn gple plaplschek con thth eproj-d box
+  xxxxxxxx
+
+⏺ xxxx xxxxxxx xxxxx xxxx x xxxxxxxxxx xxxx xx xxx xxxxxxxxx'x xxx xxxxxxxx xxxx, xxxxxxx xxxx xxxxx(...) xxxxx xxxxxx xxxx x.x.xxx xxxx xxxxxxxxxxx xxxx(...). xxxxxxxx, xxx x xxx xx xxx
+  xxxxx xxx xxxxxx xxxxx xx xxxxxxx xx xxx xxxx xxxx.
+
+  Ran 1 shell command
+
+❯ xxxxxxx xxxx xxxxxx xx xxxxxxx xxx xxxxx xxxx x xxxxxx xxxxxx xx xxx xxxx xxxxxxxxxxxxx xx xxxxxxxxxxx xxxxx xxxx xxxxxxxx x
+
+  Ran 1 shell command
+
+❯ xxxxx xxx xxxxxx xx x xxxxxxx xxx
+
+⏺ xxx xxxxxxxxx xxxxx(...) xxxxxxx xxxxxxxxx xxxx(...) xxx xxxxxxxx xxx xxxxxxx xx xxxxxx xxxx, xx x'xx xxxxxx xxxx xxxx xxxxx xxxxxxxxx xxxxxx xxx xxxxx xxxxx. · xxxxxxxxxx
+
+  Ran 1 shell command
+
+⏺ xxx xxxxxxx xx xxxx xx xxx xxxxx xxxxx. xxx xxx xxxxxx xxxxxx xx xxxx xxxxxxxxxx xxxxxxxx, xxxxxxx xx xxxxxxx:
+
+  xxxx xxx xxxxxxxxx xxxxx xx. xxxx xxxxxxxxx'x xxxxxxxx xxxx xx xxxx xxxxxxx xxx xxx xxxxxxx, xxx xxxxxx xxx xxxxxxxx, xxx xxx "xxx" xxxx xxxxx xx xxxxx xxxxxx xxxxxxxxx xx xxxxxxxx
+  xxxxxxxx. xxxx xxxxxxx xxxx xxx xxxxxx xxxxxxx xxxx, xxx xxxx xxxx xxxxxxx.
+
+  xxxx xxxx xx xxx xx. xxxx xxx xxx xxxxxx xxxxxxx xxxxxxx xxx xxx xxxxx. xx xxxxx xxx xxxxxxx xxx xxxx xxx xx xx xxx xxxx xxxx xxxx, xxxxx xx xxxx xxxxx xxx xxx xxxxxx xxxxx-xxxx xxxx.
+  xxxx xxxxx xxxxxxxx xxx xxx xxxx xx xxx xxx, xxxxx xxx xxxx xx xxxx xxx, xxxxxxxxx xxxx xxxxxxx xxxxxxxxxxx xxx, xx xxxxxxx, xxxx xxxxxx xxxxxxxxxx xxxx xxx xxxx xxxxxxxxx xxxxx. xx
+  xxxxxx xxxxxxxxxx xxxx xxxxxxx xxxx. xxxxxx xxx xxxx xxx xxx xxxx: xxxxxxxx xx xxxxxxxx xx xxx xxx xx xxxxxx xx xxxxxx xx xxx.
+
+  xx xxx xxxxx xx xxxxx, xxx xxxxxxxxxxx. xxx xxxxx xx /xxx/*/xxxxxx/xxxxx.xx xxx xxxx xx xxxx xxx xxxxx. xx xxx xxxx xxxx xxxxxxxxxx, xxx xxxx xxx xx xxxxxxxx xxxx xxxxx, xxxxx xxxxx
+  xxx xxxxxx xxxx, xxx xxxx xx xxx xxxxx xxx xxxxx xx xxxxxxxx xxx xxxxx xxxx. xx xxxx xx xxxx xxx xxxxx, xxxxxxx xxxx xx xx. xx xxxxxxx xx xxxxxxxxxx xxxxxx xx xxxxxx xxxxxxx xxxxxxx xx
+  xx xxxxxxxxx'x, xxx xxx xxxxxxxx xxxx x xxxxx xxxx xx xxxxxx xxxx xxxxxxxxx xxxxxx xxxxx xxx xx xxx xxxxxx xxxx xxxx x xxx-xxxxxxx xxxx xxxxx, xx xxx xxx xxxx xxxx xxxxx xx xxxx xx
+  xxxx xxx xxxxx xx xxx xxxxx xx ~/.xxx-xxxxxxxxxxx. xxx xxx xxxx xxx x xx xxxx.
+
+  xxxxx xxxx, xxxx xxxxx: xxx xxxxxxxxx xxxxxx xxxxx, xxx xxxx xxxxxx xxxxx xx xxxxxxx.
+
+✻ Cooked for 52s · done 3:06 PM
+                                                                                                                                                  new task? /clear to save 384.3k tokens
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── vps ─
+❯ xxx xx xxxx xxx xxx xxxxxx xxxxx
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u/.claude-semproj-d/projects/-Users-owner/memory | [Fable 5.1] ctx:38% in:383.4k out:598
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -1,0 +1,98 @@
+# file	tool	expected	note   (expected = tmux-layer verdict for one frame: active | waiting | error)
+claude-local-account_a7ea4bd4	claude	waiting	idle prompt after completed turn
+claude-local-agent-deck-roadmap-fable-review_1b1f6986	claude	waiting	idle prompt with unsent draft
+claude-local-agents_6f4e347d	claude	waiting	fresh session, Remote Control disconnected notice, idle prompt
+claude-local-car-plan_0f3cf96e	claude	waiting	idle prompt
+claude-local-chain-verified-4bb16d15_dfef48c0	claude	waiting	idle prompt
+claude-local-claude-update_21a6d713	claude	waiting	fresh session idle prompt
+claude-local-codex-bar_e2e1c2e8	claude	waiting	MCP server trust menu
+claude-local-conductor-agent-deck_962c9aa1	claude	active	spinner Undulating… (8s)
+claude-local-conductor-personal_4b0ff296	claude	waiting	idle prompt with unsent draft
+claude-local-core-slice5_ce51cd22	claude	active	spinner · Calculating… (2m 5s)
+claude-local-core-visual_cca9a067	claude	active	spinner ✳ Architecting… (4m 2s)
+claude-local-diskspace_0049a9c0	claude	waiting	idle prompt with unsent draft
+claude-local-exam-prep_ff54e370	claude	waiting	idle prompt
+claude-local-fix_3e3ec13e	claude	waiting	AskUserQuestion menu
+claude-local-fork-eval_de8f6582	claude	waiting	folder trust prompt
+claude-local-fork-submodule_cd203d56	claude	waiting	folder trust prompt
+claude-local-Germany-Immigration_9a5c87bb	claude	waiting	weekly usage limit banner then idle prompt
+claude-local-gmail-watcher-claude_c907e3e5	claude	waiting	idle prompt with unsent draft
+claude-local-huawei_cfe7d2c4	claude	waiting	session feedback prompt (1: Bad 2: Fine)
+claude-local-mail_e98b18d5	claude	waiting	idle prompt with unsent draft
+claude-local-meeting-watcher_33b50278	claude	waiting	AskUserQuestion menu
+claude-local-mom-trip_e28b3d45	claude	waiting	idle prompt with unsent draft
+claude-local-move_f31e7d8e	claude	waiting	idle prompt with unsent draft
+claude-local-netx-messgae_6d5c8547	claude	waiting	idle prompt
+claude-local-oss-grants-research_73942337	claude	waiting	Fable limit notice then idle prompt
+claude-local-ram_a2f5916c	claude	waiting	Remote Control disconnected notices, idle prompt
+claude-local-review-2348-r2_43b89855	claude	waiting	turn done, 1 shell still running, unsent draft (false green in deck)
+claude-local-search_af74237b	claude	waiting	idle prompt with unsent draft
+claude-local-sessions_81cde3d6	claude	waiting	idle prompt
+claude-local-sponsor_246e5639	claude	waiting	idle prompt
+claude-local-start_c2dbbb1f	claude	waiting	idle prompt
+claude-local-status-audit_f04b4268	claude	active	spinner with 3 sub-agent rows below the footer
+claude-local-switch-acceptance-925bffd0_7d35cb74	claude	waiting	org-disabled notice then idle prompt
+claude-local-switch-fresh-b9eefe64_788d74d3	claude	waiting	idle prompt
+claude-local-switch-fresh-b9eefe64_901c4aec	claude	waiting	idle prompt
+claude-local-switch-fresh-b9eefe64_9b8b341c	claude	waiting	idle prompt
+claude-local-test_383a14d2	claude	waiting	weekly limit notice then idle prompt
+claude-local-tets_8d1c8e35	claude	waiting	folder trust prompt
+claude-local-transcirpt_6fe26d86	claude	waiting	idle prompt
+claude-local-try-this_80ebf23e	claude	waiting	idle prompt with unsent draft
+claude-local-verify-dup-row_3388c7b4	claude	active	spinner ✢ Deliberating… (7m 14s)
+claude-local-verify-next-f13a4459_129c46d5	claude	active	spinner ✳ Pondering… (5m 11s), 1 shell in footer
+claude-local-voice_7d609c90	claude	waiting	fresh session idle prompt
+claude-local-vps_81905d51	claude	waiting	idle prompt with unsent draft
+claude-local-whatsapp-watcher_71e154e9	claude	waiting	turn done, 1 monitor still running, unsent draft
+claude-local-write_7d7c258c	claude	waiting	idle prompt
+claude-derived-status-audit-18-agent-rows	claude	active	spinner with 18 sub-agent rows below the footer (derived from the 3-row frame)
+claude-remote-agentbox-conductor-proj-a-owner_b203faa8	claude	waiting	turn done, 1 shell still running, unsent draft (shown green on controller)
+claude-remote-agentbox-conductor-proj-a-worker-b_fc50c8f5	claude	waiting	turn done, 1 shell still running (shown green on controller)
+claude-remote-agentbox-conductor-proj-a-worker-c_75759d78	claude	waiting	turn done, unsent draft
+claude-remote-agentbox-LEDGER-proj-a_fd8d422e	claude	waiting	interactive menu
+claude-remote-agentbox-worker-b-r6-bug07_b3bb8b90	claude	waiting	DONE sentinel printed, 2 shells still running (shown green on controller)
+claude-remote-agentbox-worker-b-r6-bug50b_f2511f00	claude	waiting	DONE sentinel printed, 1 shell still running (shown green on controller)
+claude-remote-agentbox-worker-b-tutorial-redirect_59ff68f2	claude	waiting	DONE sentinel printed, 1 shell still running (shown green on controller)
+claude-remote-agentbox-worker-c-mls-central-list_91138284	claude	waiting	DONE sentinel printed, 2 shells still running, unsent draft (shown green on controller)
+claude-remote-proj-dbox-conductor-proj-d-worker-c_afd81d46	claude	waiting	turn done, 1 shell still running (shown green on controller)
+claude-remote-sbbox-bank_ea9dbf8d	claude	waiting	interactive menu
+codex-local-chain-context-row-acceptance_6e60a98c	codex	waiting	idle composer, weekly-limit warnings above
+codex-local-chain-verified-4bb16d15_29a23a54	codex	waiting	idle composer
+codex-local-codex-bar_3e954187	codex	waiting	idle composer after Worked for 2m 07s
+codex-local-conputeruse_c1984159	codex	waiting	idle composer
+codex-local-core-slice4-r2_6aa83a49	codex	active	• Working (9m 41s • esc to interrupt) above composer and footer
+codex-local-macapp-codex_6ab6997d	codex	waiting	idle composer, Model changed notice
+codex-local-macapp-v0_c7e21881	codex	active	• Working (2m 59s • esc to interrupt) above composer and footer
+codex-local-switch-fresh-b9eefe64_5889246d	codex	waiting	idle composer
+codex-local-switch-fresh-b9eefe64_72e5c749	codex	error	■ usage limit banner, idle composer
+codex-local-switch-fresh-b9eefe64_c4adcbad	codex	waiting	idle composer
+codex-local-tets_33bbc6cf	codex	waiting	idle composer
+codex-local-whatsapp-watcher_ddd4134f	codex	error	■ usage limit banner, idle composer
+codex-local-waiting-for-background-terminal	codex	active	• Waiting for background terminal (13m 23s • esc to interrupt) with └ command line below
+codex-local-working-with-background-terminal	codex	active	• Working (…) · 1 background terminal running
+codex-local-macapp-v4-compacting-queued-inputs_af58e2b8	codex	active	REAL Codex 0.155.1 (rc feedback 2026-09-23): • Compacting context (48s • esc to interrupt) · 1 background terminal running, then • Queued follow-up inputs list above the composer
+codex-local-macapp-v4-working-queued-inputs_af58e2b8	codex	active	REAL Codex 0.155.1 (rc feedback 2026-09-23, pane-101456): • Working (32m 32s • esc to interrupt) · 1 background terminal running, then • Queued follow-up inputs list above the composer
+codex-local-macapp-v4-working-queued-later_af58e2b8	codex	active	REAL Codex 0.155.1 (rc feedback 2026-09-23): • Working (…) after compaction, Queued follow-up inputs list above the composer
+codex-remote-agentbox-mac-setup-codex_12527017	codex	waiting	idle composer
+codex-remote-sbbox-swoetch_69b78550	codex	waiting	idle composer
+pi-local-conductor-agent-deck_0c83599d	pi	waiting	idle composer with unsent draft
+pi-local-conductor-maestro_d4b0ccaa	pi	waiting	idle composer with unsent draft
+pi-local-switch-fresh-b9eefe64_c1254672	pi	waiting	idle composer
+pi-local-switch-fresh-b9eefe64_c3508d21	pi	waiting	idle composer
+pi-local-tets_22d69864	pi	waiting	idle composer
+shell-local-mru-demo-a_26ca86de	shell	waiting	bash prompt
+shell-local-mru-demo-a_40b08ea8	shell	waiting	bash prompt
+shell-local-mru-demo-b_5b2759f7	shell	waiting	bash prompt
+shell-local-mru-demo-b_62de1d5d	shell	waiting	password prompt (known blind spot: no shell prompt glyph)
+shell-local-mru-demo-c_0d599f20	shell	waiting	bash prompt
+synth-codex-agent-quotes-status-line	codex	waiting	SYNTHETIC (review r1): idle; agent message quotes the "(9m 41s • esc to interrupt)" shape, then Worked for + composer
+synth-codex-ran-grep-for-status-line	codex	waiting	SYNTHETIC (review r1): idle; • Ran grep whose command contains the status shape, then composer
+synth-codex-user-pasted-working	codex	waiting	SYNTHETIC (review r1): idle; user pasted "Working (… • esc to interrupt)" into a › line
+pi-remote-agentbox-no-cache-field	pi	waiting	idle composer, status line without R/CH fields (openai provider, review r1 P2-4)
+synth-claude-spinner-12-subagents	claude	active	SYNTHETIC (review r1): live spinner + 12 roster rows under the footer
+synth-claude-idle-12-subagent-rows	claude	waiting	SYNTHETIC (review r1): idle prompt + 12 roster rows under the footer
+synth-claude-awaited-agents-above-16-roster-rows	claude	active	SYNTHETIC: turn handed off to 3 background agents, 16 roster rows push the Waiting line out of the 20-line window
+pi-synth-idle-delegate-task-prose	pi	waiting	SYNTHETIC (review r2 P1): idle composer, finished answer mentions delegate_task in prose; layout of pi-local-tets
+pi-local-subagent-working_747fe48a	pi	active	REAL pi 0.85.1 + pi-subagents 0.51.0, captured 2026-09-23 from a live agent-deck pi session mid subagent_wait: async delegate run "running", step row "⠇ delegate · step 1/1", "── ⠴ Working ──" banner, "1 active agent" row; token/cost status line present while busy
+pi-local-idle-delegate-task-prose_747fe48a	pi	waiting	REAL pi 0.85.1, same session after the turn ended: finished answer names delegate_task in prose, token/cost composer (installed v1.16.16 reported this pane running)
+claude-local-macapp-ux-audit-lollygagging_8a428ef2	claude	active	REAL Claude Code (Fable 5.1) pane of macapp-ux-audit at the 2026-09-23 10:53-10:58 error-flip storm, mid tool call: "✳ Lollygagging… (6m 17s · ↓ 24.7k tokens)" over a running Bash block; the daemon published running -> error for it while a nested TUI on a foreign tmux server wrote error rows

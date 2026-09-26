@@ -1,0 +1,65 @@
+❯ xxxx /xxx/xxxx-xxxxxx-xxxxx/xxxxxx.xx xxx xxxxxxx xx xxxxxxxxxxxx xxx-xx-xxx. xxxxx /xxx/xxxx-xxxxxx-xxxxx/xxxxxxx.xx xxxx xxxx.
+
+  xxxxx xxxx — xxxxxx xxxxxxxxxx
+
+  xxxx xxx xxxx xx xxxxx xxxx, xxxxx xxxxxxx xxxx xx xxx xxxx xxxx xx xxxx xxxxx xxxxxxx:
+    ===AGENTDECK_DONE=== status=ok summary=xxx
+  xxx xxxxxx=xxxx xx xxx xxxxx xxx xxxxxxxx xx; xxx xxx xxxxxxx xx xxx xxxxxxx.
+
+⏺ x'xx xxxxx xx xxxxxxx xxx xxxxxx xxxx xx xxx xxxx xxx xxxx xx.
+
+  xxxxxx x xxxxxxxxx
+
+⏺ xxxxx xxx xxxxx-xxxx xxxxx xxxxx (xxx xxxxxx xxxxx), xxx xxxxxxx xxx xxxxxxxx xxxxx-xxxx-xxxxxx.xx xxxx xxx.xxx xx xxxxxxxx.
+
+⏺ xxxxx(xxxxx-xxxx:xxxxx-xxxx)
+  ⎿  Successfully loaded skill
+
+  xxxx x xxxx
+
+⏺ xxxxxxx xx xxx xxxxx xxx xxx xxxxxx, xxx xxxxxxxx xxx xxxxxxxxx xxx xx xxxxxxxx.
+
+  Ran 2 shell commands
+
+⏺ xxxxxxxxxx xxx xxxxxxxxx xxx xx xxxxx xxxxxxxxx xxxxx x xxxxxxx xxx xxxx xxxx xxxxxx (xxxx-xxxxxxxxx) xxxxxx.
+
+⏺ x xxxxxxxxxx xxxxxx xxxxxxxx (↓ xx xxxxxx)
+   ├ xxx xxxxx xxxxxx xxxxxxxxx
+   └ xxx xxxxxx xxxxxx xxxx
+
+  Ran 1 shell command
+
+⏺ xxxxxxxxx xxx xx xxxx xxxxx xxx, xxxx xxx xxxx'x xxx xxxxxxx xxxxxx xxx xxxxxxx xxx xxx xxxxxx xxxxx, xxx xxxx-xxxx.
+
+  xxxxxxxxx xxxxx xxxx xxxx xxx xxx xxxx'x xxxxxxx xxxxxxxx xx xxxxxxxxxx
+  ⎿  $ S=/private/tmp/claude-501/-private-tmp-exec-status-audit/461f5aef-37a9-4a28-a639-4e2fb2e516ad/scratchpad; mkdir -p $S/raw; cd $S/raw
+     xxxx -x /xxxxxxx/xxx/xxxx-xxx/xxxxxxx xxxx-xxxxx -x -x '#{xxxxxxx_xxxx}' | xxxxx xxxx x; xx xxxx -x /xxxxxxx/xxx/xxxx-xxx/xxxxxxx xxxxxxx-xxxx -x -x "$x" -x -xx > "…
+
+✳ Moonwalking… (2m 11s · ↓ 3.8k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── status-audit ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/private/tmp/exec-status-audit/src | [Fable 5.1] ctx:9% in:92.7k out:2 5h:7% 7d:2%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+  ⏺ xxxx
+  ◯ Explore  Map local status detection                                                                                                                                           25s · ↓ 88.2k tokens
+  ◯ Explore  Map remote status path                                                                                                                                               18s · ↓ 48.8k tokens
+  ◯ Explore  Map hooks and notifier                                                                                                                                               12s · ↓ 32.0k tokens
+  ◯ general-purpose  Task 4
+  ◯ general-purpose  Task 5
+  ◯ general-purpose  Task 6
+  ◯ general-purpose  Task 7
+  ◯ general-purpose  Task 8
+  ◯ general-purpose  Task 9
+  ◯ general-purpose  Task 10
+  ◯ general-purpose  Task 11
+  ◯ general-purpose  Task 12
+  ◯ general-purpose  Task 13
+  ◯ general-purpose  Task 14
+  ◯ general-purpose  Task 15
+  ◯ general-purpose  Task 16
+  ◯ general-purpose  Task 17
+  ◯ general-purpose  Task 18

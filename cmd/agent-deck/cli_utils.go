@@ -916,6 +916,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "idle at prompt"
 	case session.SubstateInteractiveMenu:
 		return "awaiting menu choice"
+	case session.SubstateBackgroundWork:
+		return "idle at prompt, background shells alive"
 	case session.SubstateRunning:
 		return "working"
 	case session.SubstateHookLag:

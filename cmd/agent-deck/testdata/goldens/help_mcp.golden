@@ -1,0 +1,20 @@
+Usage: agent-deck mcp <command> [options]
+
+Manage MCP (Model Context Protocol) servers for sessions.
+
+Commands:
+  list                List all available MCPs from config.toml
+  attached [id]       Show MCPs attached to a session
+  attach <id> <mcp>   Attach an MCP to a session
+  detach <id> <mcp>   Detach an MCP from a session
+  server <cmd>        Manage HTTP MCP servers (start/stop/status)
+
+Examples:
+  agent-deck mcp list                        # List available MCPs
+  agent-deck mcp attached                    # Show MCPs for current session
+  agent-deck mcp attached my-project         # Show MCPs for specific session
+  agent-deck mcp attach my-project exa       # Attach exa to my-project (Codex uses global)
+  agent-deck mcp attach my-project exa --global     # Attach globally
+  agent-deck mcp detach my-project exa       # Detach exa from my-project
+  agent-deck mcp server status               # Show HTTP server status
+  agent-deck mcp server start slack          # Start HTTP server for slack MCP

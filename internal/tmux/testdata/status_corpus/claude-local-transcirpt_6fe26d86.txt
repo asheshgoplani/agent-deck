@@ -1,0 +1,50 @@
+⏺ xxx xxxxxxxx xx xxxx, xxx xxx xxxxxxxxxx xxxxxx xx xxxx xxxxxxxxxx xx xxx xxxxxxxxx xx xxx xxxxxxx. xx xx xxxx xxx xxxx xxxxxxxx xxxxxxx xxxxxx.
+
+  xxxxx xxxxx xxxxxxxxxxxxx, xxx xxxx xx xxxxx, xxxx xxx xxxxxxxxxxx xxxxxxxxxx xxxxxxxx xxxx xxxxx xxxx (xxxxx xx xxxxxx):
+
+  ┌──────────────────────────────┬────────────────┬─────────────────┬──────────────────────────┬────────────────────────────────────┐
+  │           Service            │ Price per hour │       WER       │    Speakers included     │        Works in MacWhisper         │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ ElevenLabs Scribe v2         │ $0.22          │ 2.2%            │ Yes                      │ Yes, built in, you already have it │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ Mistral Voxtral Transcribe 2 │ $0.18          │ 3.6%            │ Yes                      │ Probably, via Custom Provider      │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ AssemblyAI Universal-3 Pro   │ about $0.23    │ 3.1%            │ Yes                      │ No                                 │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ Speechmatics                 │ $0.13          │ 4.9%            │ Yes                      │ No                                 │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ OpenAI gpt-4o-transcribe     │ $0.36          │ 4.0%            │ Only the diarize variant │ Yes, built in                      │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ Deepgram Nova-3              │ $0.26          │ 5.2%            │ Yes                      │ Yes, built in                      │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ Groq Whisper Turbo           │ $0.04          │ 4.6%            │ No                       │ Yes, built in                      │
+  ├──────────────────────────────┼────────────────┼─────────────────┼──────────────────────────┼────────────────────────────────────┤
+  │ DeepInfra Qwen3-ASR          │ $0.03          │ not benchmarked │ No                       │ Yes, via Custom Provider           │
+  └──────────────────────────────┴────────────────┴─────────────────┴──────────────────────────┴────────────────────────────────────┘
+
+  xxxx xxxx xxxxx xxx xxx:
+
+  - xxxxxx xx xx xxx xxxx xxxxx xxxxx, xxxx xxxx. xxxxxx xxxxx xxxx xx xxx xxxxxxx, xxxxxxxx xxxxxxxx, xxx xxxxxxx xxxxx xxxx xxxx xxxxxxxxxx. xx xxx xxxxxx, xxxxxx xxxxx xx xxxxxxxx x
+    xxxxx xxxxx xxxxx xxxx xxxxxxx. xxx xxxxxxxxx xxxx xx xxxxxxxxxx xx xxx xxxxx xxxxxxxxxxxx, xxx xxx xxxxxxxxxxxxx xxx, xx xxxxx xxxx xxxx xxx xx xx xxx-xx-xxx-xx xxx xxxxxxx xxxxxx
+    xxxx x xxxx.
+  - xxxxxxx xxxxx xx xx xxxxxxxx xx xxx xxxxx. xxx xxxx xxxxxxx xxxxxxx xxxx xxxxxxxxxx xxxxxxx xxx xxxxxxx xxx xxxxxxxxxx, xxx xxxx xxx xxxx xxxxxxxx xxxxxxx xxxxx xxxxx xxxxxxx xxxx
+    xxxxxxxx.
+  - xxx xxxxx xxxxxx xxxxxx xxxx. xxxxxxxx xx xxx xxxxx-xxx xxx xx xxxx xxxx xxxx xxxxxxx xxxxxx, xx xxx xxxx xxx xxxxxxx xxxxx xxx xxxxxx xx xxxx x xxxxxxx xxxxxx xxxxxxx xx xxx xxxxx
+    xx xxx.
+
+  xxxxxxxxx xxxxx xx xxxxxxxxxx:
+
+  1. xxxxxxx xxxx xxxxx: xxxxxxxx xx, xxxxxxxx xxxx.
+  2. xxxxxxxxx xx xxxxx xxxxxxxx: xxxx xxxxxxxxxx xxxxxx xx xx xxx xxxxx xxxx.
+  3. xxxx xxxxxx xxxxxxx. xx xxxxx xxxx x xxx xxxxx xxx xxxx xxx xxxx xxxxxxxx.
+
+  xxx xxxxxx xx xxx xxxxxxx: xxx xxxxxxxxx xx xxxxxxx-xxxxxxxx, xxx xx xxxxxx xxxxxxxxx x xxxxxxxx xxxxxx xxxxx. xxxxxx xx xxx xxxxxxx xxxx xxxxx xxxxxx xxxxxx, xx xxx xxxxxx xx xx xxx
+  xx xxxx xxxxxx xxxxx xxxxxx xxxxxxx xx xx.
+
+✻ Brewed for 2m 57s · done 3:36 PM
+                                                                                                                                                  new task? /clear to save 111.7k tokens
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── transcirpt ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u | [Fable 5.1] ctx:11% in:110.1k out:1.1k                                                                                             /rc
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

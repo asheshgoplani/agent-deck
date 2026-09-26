@@ -1,0 +1,13 @@
+[
+  {
+    "name": "golden-remote",
+    "host": "golden@remote.invalid",
+    "agent_deck_path": "agent-deck",
+    "profile": "default",
+    "outdated": false,
+    "version_state": "unknown",
+    "last_poll_ms": null,
+    "last_poll_status": "unknown",
+    "last_poll_error": ""
+  }
+]

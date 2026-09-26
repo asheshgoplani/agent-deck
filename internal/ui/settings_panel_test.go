@@ -1130,7 +1130,9 @@ func TestSettingsPanel_ViewShowsUnboundMCPHotkeyHint(t *testing.T) {
 	setSettingsPanelHotkeyConfigForTest(t, "[hotkeys]\nmcp_manager = \"\"\n")
 
 	panel := NewSettingsPanel()
-	panel.SetSize(100, 80)
+	// Tall enough for the whole panel: its wrapped rows no longer overflow
+	// an 80-row screen, they scroll inside it.
+	panel.SetSize(100, 100)
 	panel.Show()
 	panel.cursor = int(SettingMaintenanceEnabled)
 

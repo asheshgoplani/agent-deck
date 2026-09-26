@@ -1,0 +1,35 @@
+        xx xxxxxx xxx xxxxxxx xxxxxx xxx.
+        x xxx xxxxxxxxxx xxx xx xxxxx xx xxxx xxxx. xxxx xxxx xx xxxxxxx.
+         xx xxxx xxx xxx xxxxxxxx x
+     … +xx xxxxx
+
+  xxxxxx xxxxxx:xxxxxxx:xxxxxxx, xxx x xxxxx xxxxxxx
+
+● The #502 review is finished and out. Verdict: needs changes, and not before worker-b's Android batch. The Safety Mode crash does not exist
+  xx xxxxxxx xx xxx xxxxxx (xx xxx xxxxx'x xxx xxxxxxx xxxxx, xxxxx xxxxxx xxx xx); xxx xxxxxxx xxxxxxx xx xxxxx xxx-xxxx, xxxxx xxxxx
+  xxxxx xxxxx xxxxxxx xx xxxxxx; xxx xxx "xxx-xxxx" xxxxxx xxxxxxx xxx xxxxxx xx xxxx xxxxxxx xxxxxx, xxxx x xxxxxxx xxxx xx xxxxx xxxx xxxx
+  xxx xxxxx xxxx, xx xxxx xxxxxx xxxx xx xxx xxxxxx xxxx xxxx xxxxx, xxx xx xxxxxxxxx xx xx xxxxx xxxx xxx xxxxxxx xxxxx. xxxxxx xxx xxx
+  xxx-xxxx xxxxx xxx xx /xxx/xxxxx/xxxx/xxxxx-xxx-xxxx/. xxxxxx xxx xxxxxxxx xxxx xxx xxxxxxx (xxxx xxx xxxxxxx-xxxx xxxx xxxxxx xxx
+  xxxxxxxx'x xxxxxx), xxx xxx xxxxx xxx xxxxx xx xx xxxxxxx xxxxx xx xxxx.
+
+  xxxxxxx xx xxxxxxx xx xxxx xxxxxxx xxx. xxxxx xxx xxx xxxx:
+
+  - xxxx xxxxx xxxx: xxx xxxxx xxx, xxx #xxx–#xxx xx xxxxx xxxx xxxx xxxxxxxxxxxx, xxxxxxxxx #xxx–#xxx xxxxx xxx xxx xxxxxx, xx #xxx xxxxx
+    xxx xxxxx.
+  - xxxx xxxxx: xxx xxxxx xxxxx; xxx xxxx xxxx xxxx xxxxxxx.
+  - xxxxxxxx: xx:xxx xxxx xxxx xxxx xxx xxx, xxxxx xx xxxx-xxxxx-xxxx.xx; xxxx xxx xxx xxxxx xx xxx xxxxxx xxxxxxx xxx xxxx xxxxxxxx'x xxxxx
+    xxxxx, xxx xxxx xx-xx-xxx xxx xxx xxx xxx.
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  x xxxxxx xxx xxxx xxxx xxxx, xx xxxxxxx xxxxx xxxxxx xxxxx (xxxx xxxxx x/x/x/xx xxxxxx xxx+xxxxxxxxx, xxx xxxx xxx-xxxxxx, xxx xxx
+  xxxxxx-xxxx, xxxxxxxxxx xxxxxx xxxxxx xxx+xx), #xxx xxxxxxxx (xxxxx xxxxxxx), xxxxxxxxxx xxxx xxxxx xxxxx xxx xx:xxx; xxxx: xxxxx xxxx,
+  xxxxx xxxxx, xxxxxxx xxxxx xxx xxxxxx
+
+✻ Brewed for 1m 12s · done 10:18 PM
+                                                                                                    ✔ Update installed · Restart to update
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── conductor-proj-a-worker-c ─
+❯ xx xxxxx xxx xxxxx xxx xxx
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [worker-c · semantic] u@host:/home/u/.local/share/agent-deck/conductor/worker-c | [Fable 5.1] ctx:49% in:487.3k out:679 5h:15% …
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+  ⧉  +6 more · mls-gate · mls-evidence · onboarding-findings · person-e-remaining · person-e-person-f-plan · status-0922 · /artifacts to see all

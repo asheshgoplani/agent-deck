@@ -1,0 +1,7 @@
+Usage: agent-deck remote add <name> <user@host> [options]
+
+Options:
+  --agent-deck-path string
+        Path to agent-deck on the remote (default: agent-deck)
+  --profile string
+        Remote profile to use (default: default)

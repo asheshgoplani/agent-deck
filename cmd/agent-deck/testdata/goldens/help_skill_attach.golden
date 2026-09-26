@@ -1,0 +1,5 @@
+Usage: agent-deck skill attach <session-id> <skill> [options]
+
+Attach a skill to the session project skills directory for the active runtime.
+
+Options:

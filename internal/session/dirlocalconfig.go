@@ -123,12 +123,25 @@ func DiscoverDirLocalConfigPaths(targetDir string) ([]string, error) {
 	// double-counted as dir-local. Exclude the legacy $HOME/.agent-deck/config.toml
 	// and — defensively, in case XDG-first resolution ever lands exactly on a
 	// candidate — whatever GetUserConfigPath() resolves to today.
-	var globalPaths []string
+	//
+	// Compared by file identity (os.SameFile), not by path string: a global
+	// config that is itself a symlink, or sits in a symlinked ~/.agent-deck
+	// (a dotfiles checkout, #2367), has a different resolved path than the
+	// candidate built from the resolved directory walk below.
+	var globalFiles []os.FileInfo
+	addGlobal := func(path string) {
+		if info, err := os.Stat(path); err == nil {
+			globalFiles = append(globalFiles, info)
+		}
+	}
 	if path, err := GetUserConfigPath(); err == nil {
-		globalPaths = append(globalPaths, resolveSymlinks(path))
+		addGlobal(path)
 	}
 	if legacyDir, err := agentpaths.LegacyDir(); err == nil {
-		globalPaths = append(globalPaths, resolveSymlinks(filepath.Join(legacyDir, UserConfigFileName)))
+		addGlobal(filepath.Join(legacyDir, UserConfigFileName))
+	}
+	isGlobal := func(info os.FileInfo) bool {
+		return slices.ContainsFunc(globalFiles, func(g os.FileInfo) bool { return os.SameFile(g, info) })
 	}
 
 	var home string
@@ -140,7 +153,7 @@ func DiscoverDirLocalConfigPaths(targetDir string) ([]string, error) {
 	var found []string
 	for dir := resolved; ; {
 		candidate := filepath.Join(dir, filepath.FromSlash(dirLocalConfigRelPath))
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && !slices.Contains(globalPaths, candidate) {
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && !isGlobal(info) {
 			found = append(found, candidate)
 		}
 

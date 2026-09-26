@@ -1,0 +1,59 @@
+
+u@host mru-demo-b % bash -c 'cd -- /tmp/mru-demo-b && for __d in /tmp/claude-501/mru-review-out; do case ":$PATH:" in *":$__d:"*) ;; *) [ -d "$__d" ] && __p="${__p:+$__p:}$__d";; esac;
+xxxx; [ -x "$__x" ] && xxxx="$__x:$xxxx"; xxxxxx xxxx; xxxxx __x __x; xxxxxxx -x xxxx >/xxx/xxxx x>&x || xxxxxx "%x\x" "$xxxx" > /xxx/xxxxxx-xxx/xxx-xxxxxx-xxxx/.xxxxx/xxxxx/xxxxx-xxxx/xxxxxxx/xxxxx-x
+xxxxxx/xxxxxxxx-xxx xxx xxx.xxxxxxxx x>/xxx/xxxx; xxxx'
+
+xxx xxxxxxx xxxxxxxxxxx xxxxx xx xxx xxx.
+xx xxxxxx xxxx xxxxxxx xx xxx xxx, xxxxxx xxx `xxxx -x /xxx/xxx`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$ --- Output from [mru-demo-a] ---
+xxxx: ---: xxxxxxx xxx xxxxx
+u@host mru-demo-a % bash -c 'cd -- /tmp/mru-demo-a && for __d in /tmp/claude-501/mru-review-out; do case ":$PATH:" in *":$__d:"*) ;; *) [ -d "$__d" ] && __p="${__p:+$__p:}$__d";; esac;
+xxxx; [ -x "$__x" ] && xxxx="$__x:$xxxx"; xxxxxx xxxx; xxxxx __x __x; xxxxxxx -x xxxx >/xxx/xxxx x>&x || xxxxxx "%x\x" "$xxxx" > /xxx/xxxxxx-xxx/xxx-xxxxxx-xxxx/.xxxxx/xxxxx/xxxxx-xxxx/xxxxxxx/xxxxx-x
+xxxxxx/xxxxxxxx-xxx xxx xxx.xxxxxxxx x>/xxx/xxxx; xxxx'
+
+xxx xxxxxxx xxxxxxxxxxx xxxxx xx xxx xxx.
+xx xxxxxx xxxx xxxxxxx xx xxx xxx, xxxxxx xxx `xxxx -x /xxx/xxx`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$
+--- xxx xxxxxx xxxx [xxx-xxxx-x] ---
+bash-3.2$ u@host mru-demo-a % bash -c 'cd -- /tmp/mru-demo-a && for __d in /tmp/claude-501/mru-review-out; do case ":$PATH:" in *":$__d:"*) ;; *) [ -d "$__d" ] && __p="${__p:+$__p:}$__d
+";; xxxx;
+xxxx; [ -x "$__x" ] && xxxx="$__x:$xxxx"; xxxxxx xxxx; xxxxx __x __x; xxxxxxx -x xxxx >/xxx/xxxx x>&x || xxxxxx "%x\x" "$xxxx" > /xxx/xxxxxx-xxx/xxx-xxxxxx-xxxx/.xxxxx/xxxxx/xxxxx-xxxx/xxxxxxx/xxxxx-x
+xxxxxx/xxxxxxxx-xxx xxx xxx.xxxxxxxx x>/xxx/xxxx; xxxx'
+
+xxx xxxxxxx xxxxxxxxxxx xxxxx xx xxx xxx.
+xx xxxxxx xxxx xxxxxxx xx xxx xxx, xxxxxx xxx `xxxx -x /xxx/xxx`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$
+--- xxx xxxxxx xxxx [xxx-xxxx-x] ---
+> xxxx; [ -x "$__x" ] && xxxx="$__x:$xxxx"; xxxxxx xxxx; xxxxx __x __x; xxxxxxx -x xxxx >/xxx/xxxx x>&x || xxxxxx "%x\x" "$xxxx" > /xxx/xxxxxx-xxx/xxx-xxxxxx-xxxx/.xxxxx/xxxxx/xxxxx-xxxx/xxxxxxx/xxxxx
+-x
+xxxxxx/xxxxxxxx-xxx xxx xxx.xxxxxxxx x>/xxx/xxxx; xxxx'
+
+xxx xxxxxxx xxxxxxxxxxx xxxxx xx xxx xxx.
+xx xxxxxx xxxx xxxxxxx xx xxx xxx, xxxxxx xxx `xxxx -x /xxx/xxx`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$
+--- xxx xxxxxx xxxx [xxx-xxxx-x] ---
+> xxxxxx/xxxxxxxx-xxx xxx xxx.xxxxxxxx x>/xxx/xxxx; xxxx'
+xxxx: x@xxxx: xxxxxxx xxx xxxxx
+
+xxx xxxxxxx xxxxxxxxxxx xxxxx xx xxx xxx.
+xx xxxxxx xxxx xxxxxxx xx xxx xxx, xxxxxx xxx `xxxx -x /xxx/xxx`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$
+--- xxx xxxxxx xxxx [xxx-xxxx-x] ---
+bash-3.2$
+bash-3.2$ The default interactive shell is now zsh.
+xx xxxxxx xxxx xxxxxxx xx xxx xxx, xxxxxx xxx `xxxx -x /xxx/xxx`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$
+--- xxx xxxxxx xxxx [xxx-xxxx-x] ---
+xxxx: xxx: xxxxxxx xxx xxxxx
+bash-3.2$ To update your account to use zsh, please run `chsh -s /bin/zsh`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$
+--- xxx xxxxxx xxxx [xxx-xxxx-x] ---
+xxxxxxxx xxxxx xxx xxxxxx.
+xxxxxxxx xxx xxxxxx:

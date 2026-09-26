@@ -1,0 +1,9 @@
+Groups:
+
+NAME                 SESSIONS   STATUS
+--------------------------------------------------
+My Sessions          2          
+Backend              4          
+  └── API            2          
+
+Total: 3 groups, 6 sessions

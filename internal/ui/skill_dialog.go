@@ -516,13 +516,21 @@ func (d *SkillDialog) View() string {
 	availableCol := d.renderColumn("Available ("+strconv.Itoa(len(d.available))+")", d.available, d.availableIdx, d.availableOff, rows, d.column == SkillColumnAvailable)
 	columns := lipgloss.JoinHorizontal(lipgloss.Top, attachedCol, "  ", availableCol)
 
-	hint := lipgloss.NewStyle().Foreground(ColorComment).Render("←→ column │ ↑↓ scroll │ Type jump │ Space move │ Enter apply │ Esc cancel")
-	if d.typeJumpBuf != "" && time.Now().Before(d.typeJumpUntil) {
-		hint += lipgloss.NewStyle().Foreground(ColorTextDim).Render("  (" + d.typeJumpBuf + ")")
-	}
-
 	dialogWidth := fitDialogWidth(86, 56, d.width)
 	titleWidth := dialogWidth - 4
+
+	// At most two hint rows, broken between items: only when even two rows
+	// are too narrow do Type jump, ↑↓ and ←→ drop out, so the hints never
+	// wrap mid-item ("Esc" / "cancel").
+	jumpSuffix := ""
+	if d.typeJumpBuf != "" && time.Now().Before(d.typeJumpUntil) {
+		jumpSuffix = "  (" + d.typeJumpBuf + ")"
+	}
+	hint := lipgloss.NewStyle().Foreground(ColorComment).Render(renderDialogFooterRows(titleWidth-lipgloss.Width(jumpSuffix), 2, " │ ",
+		[]string{"←→ column", "↑↓ scroll", "Type jump", "Space move", "Enter apply", "Esc cancel"}, 2, 1, 0))
+	if jumpSuffix != "" {
+		hint += lipgloss.NewStyle().Foreground(ColorTextDim).Render(jumpSuffix)
+	}
 
 	parts := []string{
 		DialogTitleStyle.Width(titleWidth).Render(title),
@@ -532,11 +540,19 @@ func (d *SkillDialog) View() string {
 		"",
 	}
 
+	headParts := len(parts)
+	body := columns
+	bodyFocus := -1
 	if len(d.attached) == 0 && len(d.available) == 0 {
-		parts = append(parts, d.renderEmptyStateHelp())
+		body = d.renderEmptyStateHelp()
 	} else {
-		parts = append(parts, columns)
+		// The selected row of the focused column (row 0 is its header).
+		bodyFocus = d.attachedIdx - d.attachedOff + 1
+		if d.column == SkillColumnAvailable {
+			bodyFocus = d.availableIdx - d.availableOff + 1
+		}
 	}
+	parts = append(parts, body)
 
 	if d.err != nil {
 		parts = append(parts, "", lipgloss.NewStyle().Foreground(ColorRed).Render("Error: "+d.err.Error()))
@@ -544,7 +560,17 @@ func (d *SkillDialog) View() string {
 	parts = append(parts, "", hint)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	dialog := DialogBoxStyle.Width(dialogWidth).Render(content)
+	// Split the joined rows into head / body / foot so the columns scroll
+	// inside the box on a short terminal, following the selection.
+	contentRows := strings.Split(content, "\n")
+	headRows := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, parts[:headParts]...))
+	bodyRows := lipgloss.Height(body)
+	dialog := renderFittedDialog(DialogBoxStyle.Width(dialogWidth), d.height, dialogSections{
+		head:  []string{strings.Join(contentRows[:headRows], "\n")},
+		body:  contentRows[headRows : headRows+bodyRows],
+		focus: bodyFocus,
+		foot:  []string{strings.Join(contentRows[headRows+bodyRows:], "\n")},
+	})
 
 	// Match MCP manager behavior: center modal in terminal viewport.
 	if d.width <= 0 || d.height <= 0 {

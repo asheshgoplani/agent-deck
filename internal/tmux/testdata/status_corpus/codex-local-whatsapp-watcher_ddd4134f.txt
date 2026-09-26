@@ -1,0 +1,130 @@
+• xxx xxx -x xxxxxxxxx=xxx x@xxxx 'xxx -x "xxxx,xxxxx" "$xxxx/.xxxxxx-xxxxx-xxxxxx/
+  │ projects/-home-owner--local-share-agent-deck-conductor-owner/79f4c6aa-a99c-4c14-9fad-6b613199ea5d.jsonl"' | python3 -c 'import json,sys; rows=[]
+  │ for line in sys.stdin:
+  │ … +7 lines
+  └ [{"xxxx": "xxxxxxxxx", "xxxxxxxxxxxxx": xxxx, "xxxxxxx": {"xxxxx": "xxxxxx-xxxxx-x-x", "xx": "xxx_xxxxxxxxxxxxxxxxxxxxxxxx", "xxxx": "xxxxxxx", "xxxx": "xxxxxxxxx", "xxxxxxx":
+    [{"xxxx": "xxxxxxxx", "xxxxxxxx": "", "xxxxxxxxx": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/xxx+xxxxxxxxxx/xxxxxxxx/
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+    "xxxxxxxxx_xxx": "xxx_xxxxxxxxx", "xxxxxxxxxx": [{"xxxxx_xxxxxx": xx, "xxxxxx_xxxxxx": xxx, "xxxxx_xxxx_xxxxx_xxxxxx": xxxxxx, "xxxxx_xxxxxxxx_xxxxx_xxxxxx": xxx, "xxxxx_xxxxxxxx":
+    {"xxxxxxxxx_xx_xxxxx_xxxxxx": x, "xxxxxxxxx_xx_xxxxx_xxxxxx": xxx}, "xxxx": "xxxxxxx"}], "xxxxx": "xxxxxxxx"}, "xxxxx_xxxxxxxxxxxxxxx": [], "xxxxxxxxxxx": xxxx}}]
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• xxxxxxx xx xxxx xxx xxxxxxxx.
+
+  - xxx xxx xxxxxxx xxxxxxxx xxxxx xxx xxxxx xx xxxxxxxx/xxxxxxxxx-xxxxxx.
+  - xxxxxx xx xxxxxxx xxxx xxx xxxxx; xxxxxxxx xxxx xxxxxxxx xxxxxxxxx.
+  - xxxxxxxxx xxxx xx_xxxxxx_xxxxx_xxxx_xxx xxx xxx xxxxxxx xxx xxxxxxxxx, xxx xxxxxxxxx, xxx xxxxxxxx xxxxxxxx xxxxxxxxxxxx xx: xxx.
+  - xxxx xxxxxxxx xxxxxxxx xxxxxx xxxxxxx-xxxx xxx xxxxxxxxxxx xx xxxxxxx.
+  - xxxxxxx xxx xx xxxxx-xxxxxx.xx, xxxxx-xxxxxx.xxxx, xxx xxxxxx.xx.
+
+  xxxxxx xxx xxxxxxx xx xxx xx xxx xxxxxxxxx xxx. xx xxxxx xxxxx, xxxxxxxx xxxxx, xxxxxxx, xxxxxx xxxxxxxxxxxxx, xxx xxxxxxxxxxxx xx xxxxxxxx; xxx xxxx xx xxxx xx% xxxx. xxxxxxx xxx
+  xxxxxxx xx xxx.
+
+
+› xxxxx xxx xxxx xxx xxxx xxxxxx xxx xxxxxx xxxxx xxxxxxxxx x
+
+
+■ {"xxxx":"xxxxx","xxxxxx":xxx,"xxxxx":{"xxxx":"xxxxxxxxxxxxxxxxxxxxx","xxxxxxx":"xxx 'xxx-x.x-xxx' xxxxx xx xxx xxxxxxxxx xxxx xxxxx xxxxx xxxx x xxxxxxx xxxxxxx."}}
+
+
+› xxx
+
+
+• xxx, x’x xxxx.
+
+
+› xxxx xxxx xx  xxxxxxx xxxxxxxx ?
+
+
+
+› xxxxx xxxxxxxx
+
+
+• x’x xxxxxxxx xxx xxxx xxxxxx, xxxxxxxx xxxx, xxxxxxx xxxxxxxxx, xxx xxxxxxxxxxxx xx xxxxxxxx/xxxxxxxxx-xxxxxx. xxxx xx xxxx-xxxx.
+
+• xxx xxxxxxxxx xxxxx xxx/$(xx -x)/xxx.xxxxxx.xxxxx-xxxx | xx '^\x*xxxxx =|^\x*xxx =|xxxx xxxx xxxx'
+  │ launchctl print gui/$(id -u)/com.owner.wacli-bridge | rg '^\s*state =|^\s*pid =|last exit code'
+  │ tail -8 /tmp/wacli-bridge.log
+  │ … +10 lines
+  └ xxxxxx xxxxxx: xxxxxxxxx-xxxxxx xxxxxxx
+    {"xxxxxxx":xxxx,"xxxx":{"xxxxxxxxxxxxx":xxxx,"xxxxxx_xxx":"xxxx@xxxxxxx.xxx","xxxxx":"xxx xxx xxx"},"xxxxx":xxxx}
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• x xxxxx x xxxx xxxxxxx xxxxxxx: xxx xxxxxx xxx xxxx xxx xxxxxxx, xxxxxxxx xx xxxxxxxxxxxxx, xxx xxx xxxxxxx xxxxx xxxx xxx xxx xxxxxxx xxx xxxxxx’x xxxxxx xxxxxxx xx xxxxxxx xxxxxx
+  xxxxxxx: xxxxxxxx. x xxxxxxx xx xx:xx xxx xxxxxxxxx xxx xxxxxxxxx, xxx xxx xxxxxxxx xxxxxx xxxxxxxxx xxxxxxxx xxxxxxxxx. x’x xxxxxxxxxxx xxx xxxxxxx xxxx-xxxx xxxxxxx xxxxxx xxx.
+
+• xxx xxxxx-xxxx --xxxxxxx
+  │ agent-deck remote --help
+  │ agent-deck remote exec --help 2>&1 || true
+  │ … +2 lines
+  └ xxxxx xxxx xx.xx.x
+    xxxxx: xxxxx-xxxx xxxxxx <xxxxxxx> [xxxxxxx]
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+
+    xxxxx: x xxxxxxx
+
+• xxx xxxxx-xxxx xxxxxx xxxx xxxxxxxx xxxx xxxxxxxxx-xxxxxx --xxxx
+  └ {
+      "xxxxxxx": "xxxxx-xxxxxx",
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+      "xxxxxxx": ""
+    }
+
+• xxx xxxxx --xxxx xxxxxxxx xxxx --xxxxx xxxx-xx-xxxxx:xx:xxx --xxxxx xx | xxxxxxx -x 'xxxxxx xxxx,xxx; xxxxxxx=xxxx.xxxx(xxx.xxxxx); xxxx=xxxxxxx.xxx("xxxx", xxxxxxx);
+  │ rows=rows.get("messages", rows) if isinstance(rows, dict) else rows
+  │ for row in rows:
+  │ … +1 lines
+  └ xxxx-xx-xxxxx:xx:xxx | xxxxxx / xxxxxx | xxxx xxxx xxxx
+    xxxx-xx-xxxxx:xx:xxx | xxxxxx / xxxxxx | xxxx
+    xxxx-xx-xxxxx:xx:xxx | xxxxx xxxxx xxxx / xxxx xxx xxxxxxx | (xxxxxxx)
+
+• xxx xxxxx --xxxx xxxxxxxx xxxx --xxxxx xxxx-xx-xxxxx:xx:xxx --xxxxx x | xxxxxxx -x 'xxxxxx xxxx,xxx; xxxxxxx=xxxx.xxxx(xxx.xxxxx); xxxx=xxxxxxx.xxx("xxxx", xxxxxxx);
+  │ rows=rows.get("messages", rows) if isinstance(rows, dict) else rows
+  │ for row in rows:
+  │ … +3 lines
+  └ {
+      "xxxxx": "xxxxxxxxxxxxxxxxxxxx",
+    … +x xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+      "xxxxxxxxx": ""
+    }
+
+
+› xxx xxx xxxxxxxxx xxxxxxx xxxx xxxxxx xxxx xxxxxxxx xx xxxx xxxxx xxxxx xx xx xxxx xx xxx xxxx xxxxxx
+
+
+• xx xx xxxxxxxxxx xx xxxx xx xxxxxx xxxxxxxx/xxxxxxxxx-xxxxxx, xxx xx xx xxxxxxxxx xxxxxxx xxxxxxx xxxxx xxxx xxxxxxx xxx xxxxxx xxxxxxx xxxxxx.
+
+  xxx xxx xx xx xxxxxx xxx xxxxxx xxxx xxxxxx xxxxxxxx … xx xxxxxx xxxx xxxxxxxx …, xxxxxx xxxx xxx xxxxxx, xxx xxxxxxx xxxx’x xxxxxx xx:xx xxxxx xxxxx xxxx xxxxxxx.
+
+  xxx x xxxxx xxxx xxx xxx?
+
+
+› xxxxxx xxxxxxxxxxxx xxxx: xx xxx xxxxxx xxxxx, xxxxxxxx xx xxxxxxx xxx xx xxx xxxxxx xxxxxxxx. xxxxxx xxxxxxx xxxxxx xxxxxx xx /xxxxx/x/.xxxxx/xxx/xxxxx-xxxx. xxxxxx xxxxxxx
+  xxxxx_xxxx, xxxxxxx xxxxxx xx xxx xxxxx xx_xxxxxxx_xxxxxx_xxxxxxxx. xx xxxxx xxxxxxx.
+
+
+■ You've hit your usage limit. To continue using Codex and get access to GPT-5.3-Codex, start a free trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th,
+xxxx x:xx xx.
+
+
+› xxx
+
+
+■ You've hit your usage limit. To continue using Codex and get access to GPT-5.3-Codex, start a free trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th,
+xxxx x:xx xx.
+
+• Model changed to gpt-5.6-luna medium
+
+
+› xx
+
+
+■ You've hit your usage limit. To continue using Codex and get access to GPT-5.3-Codex, start a free trial of Plus today (https://chatgpt.com/explore/plus), or try again at Oct 10th,
+xxxx x:xx xx.
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-luna · ~/.agent-deck/watcher/whatsapp · .agent-deck · main · Context 61% left · Context 39% used · monthly 0% left · 258K window

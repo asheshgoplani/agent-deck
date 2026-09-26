@@ -1,0 +1,15 @@
+ ╭────────────────────────────────────────────────────────╮ 
+ │                     Skills Manager                     │ 
+ │                                                        │ 
+ │  ──────────────── [POOL] ────────────────              │ 
+ │  Writes to: .agent-deck/skills.toml + .claude/skills   │ 
+ │  (project)                                             │ 
+ │                                                        │ 
+ │  ▲ more above                                          │ 
+ │    (empty)                                > skill-00   │ 
+ │  [pool]                                                │ 
+ │  ▼ more below                                          │ 
+ │                                                        │ 
+ │  ←→ column │ ↑↓ scroll │ Type jump                     │ 
+ │  Space move │ Enter apply │ Esc cancel                 │ 
+ ╰────────────────────────────────────────────────────────╯ 

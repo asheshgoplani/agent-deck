@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -20,6 +22,12 @@ func handleConfig(profile string, args []string) {
 	switch args[0] {
 	case "show":
 		handleConfigShow(profile, args[1:])
+	case "get":
+		handleConfigGet(args[1:])
+	case "set":
+		handleConfigSet(args[1:])
+	case "schema":
+		handleConfigSchema(args[1:])
 	case "help", "--help", "-h":
 		printConfigHelp()
 	default:
@@ -32,8 +40,17 @@ func handleConfig(profile string, args []string) {
 
 func printConfigHelp() {
 	fmt.Println("Usage: agent-deck config show --effective [path] [--json]")
+	fmt.Println("       agent-deck config get <key> [--json]")
+	fmt.Println("       agent-deck config set <key> <value> [--json]")
+	fmt.Println("       agent-deck config schema [--json]")
 	fmt.Println()
 	fmt.Println("Commands:")
+	fmt.Println("  get <key>                 Print one setting's effective value (its default when unset).")
+	fmt.Println("  set <key> <value>         Write one setting to config.toml with the TUI Settings writer;")
+	fmt.Println("                            prints the value read back. Lists are comma-separated.")
+	fmt.Println("  schema                    Every settable key: section, label, help, type, allowed values,")
+	fmt.Println("                            default, restart_required. The keys are the TUI Settings rows")
+	fmt.Println("                            plus recall.enabled, macapp.*, core.daemon (docs/macapp-core.md).")
 	fmt.Println("  show --effective [path]   Print merged [worktree] settings for path (default: cwd),")
 	fmt.Println("                            and which file supplied each value (default/global/dir-local).")
 	fmt.Println("                            Also known as `config explain` in the #2093 proposal.")
@@ -131,5 +148,106 @@ func handleConfigShow(_ string, args []string) {
 		for _, reason := range rejections[k] {
 			fmt.Printf("      rejected: %s\n", reason)
 		}
+	}
+}
+
+// configValueJSON is the --json shape of `config get` and `config set`.
+type configValueJSON struct {
+	Key             string `json:"key"`
+	Value           any    `json:"value"`
+	Type            string `json:"type"`
+	Default         any    `json:"default"`
+	RestartRequired bool   `json:"restart_required"`
+	Path            string `json:"path"`
+}
+
+func configKeyFlags(name string, args []string) (*flag.FlagSet, *bool) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		os.Exit(2)
+	}
+	return fs, jsonOutput
+}
+
+func printConfigValue(k session.ConfigKey, v any, jsonOutput bool) {
+	if jsonOutput {
+		path, _ := session.GetUserConfigPath()
+		var def any
+		for _, sk := range session.ConfigKeys() {
+			if sk.Key == k.Key {
+				def = sk.Default
+			}
+		}
+		b, _ := json.MarshalIndent(configValueJSON{Key: k.Key, Value: v, Type: k.Type, Default: def, RestartRequired: k.RestartRequired, Path: path}, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	if list, ok := v.([]string); ok {
+		fmt.Println(strings.Join(list, ","))
+		return
+	}
+	fmt.Println(v)
+}
+
+func handleConfigGet(args []string) {
+	fs, jsonOutput := configKeyFlags("config get", args)
+	out := NewCLIOutput(*jsonOutput, false)
+	if fs.NArg() != 1 {
+		out.Error("usage: agent-deck config get <key> [--json]", ErrCodeInvalidOperation)
+		os.Exit(2)
+	}
+	k, ok := session.LookupConfigKey(fs.Arg(0))
+	if !ok {
+		out.Error(fmt.Sprintf("unknown config key %q (see agent-deck config schema)", fs.Arg(0)), ErrCodeNotFound)
+		os.Exit(2)
+	}
+	session.ClearUserConfigCache()
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	printConfigValue(k, k.Get(cfg), *jsonOutput)
+}
+
+func handleConfigSet(args []string) {
+	fs, jsonOutput := configKeyFlags("config set", args)
+	out := NewCLIOutput(*jsonOutput, false)
+	if fs.NArg() != 2 {
+		out.Error("usage: agent-deck config set <key> <value> [--json]", ErrCodeInvalidOperation)
+		os.Exit(2)
+	}
+	k, v, err := session.SetConfigValue(fs.Arg(0), fs.Arg(1))
+	if err != nil {
+		code := ErrCodeInvalidOperation
+		if k.Key == "" {
+			code = ErrCodeNotFound
+		}
+		out.Error(err.Error(), code)
+		os.Exit(2)
+	}
+	printConfigValue(k, v, *jsonOutput)
+}
+
+func handleConfigSchema(args []string) {
+	_, jsonOutput := configKeyFlags("config schema", args)
+	keys := session.ConfigKeys()
+	if *jsonOutput {
+		b, _ := json.MarshalIndent(map[string]any{"keys": keys}, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	section := ""
+	for _, k := range keys {
+		if k.Section != section {
+			section = k.Section
+			fmt.Printf("\n[%s]\n", section)
+		}
+		fmt.Printf("  %-34s %-6s %s\n", k.Key, k.Type, k.Help)
 	}
 }

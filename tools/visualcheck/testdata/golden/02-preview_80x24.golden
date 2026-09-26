@@ -1,0 +1,24 @@
+ ⟨ ● │ ◐ │ ◐ ⟩  Agent Deck  11 sessions                                <version>
+  All    ● 1   ◐ 2   ○ 1   ■ 2   ✕ 5   !@#& filter • 0 all • % open • …
+SESSIONS                     │ PREVIEW
+──────────────────────────── │ ─────────────────────────────────────────────────
+1·▾ alpha (7) ● 1 ◐ 1        │ claude-i18n  ◐ waiting
+   ├─ ■ opencode-idle        │ 📁 /tmp/vc-<tmp>
+   ├─ ✕ claude-idle          │ ⏱ <age>
+   ├─ ◐ claude-waiting       │ 👁️ no viewers
+   └─ ■ claude-stopped       │  claude   beta
+    ▾ backend (3) ● 1        │ ────────────────── Claude ──────────────────
+     ├─ ✕ codex-idle         │ Status:  ● Connected
+     ├─ ● claude-running     │ Session: <uuid>
+     └─ ✕ claude-error       │ Model:   tool default
+2·▾ beta (4) ◐ 1             │ Fork:    f quick fork, F fork with options
+   ├─ ✕ gemini-idle          │
+   ├─ ✕ pi-idle              │ ────────────────── Output ──────────────────
+  ▶├─ ◐ claude-i18n          │ ⋮ 3 more lines above
+   └─ ○ shell-live           │ esc to interrupt
+  ▾ remotes/lab (0) · host … │ नमस्ते दुनिया 🚀🌟 यह परीक्षण है।
+                             │ ❯
+                             │
+                             │
+────────────────────────────────────────────────────────────────────────────────
+⏎ Attach n/N New R Restart T Fresh │   ↑↓ Nav / Search S Settings ? Help q Quit

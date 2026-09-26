@@ -74,6 +74,9 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 	case "codex":
 		return &RawPatterns{
 			BusyPatterns: []string{
+				// The live status line above the composer ("• Working (9m 41s •
+				// esc to interrupt)") is matched by codexLiveStatusLine, which is
+				// anchored to the composer so transcript text cannot trigger it.
 				"ctrl+c to interrupt",
 				"esc to interrupt",
 				"press esc to interrupt",
@@ -185,19 +188,30 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				// specific enough to NOT match the idle status bar or
 				// package-update banners.
 				//
-				// Deliberately NO line-leading "→" pattern: markdown
-				// nests/continues assistant prose with a bare arrow, and a
-				// finished answer stays on screen, so an idle session whose
-				// final message contained "    → ..." bullet lines matched
-				// busy forever (instance stuck "running"). Genuine pi
-				// subagent work is covered by the markers below and by the
-				// "Working" spinner detection.
-				"delegate_task",
+				// Deliberately NO line-leading "→" pattern and NO plain
+				// "delegate_task" string: a finished answer stays on screen,
+				// so an idle session whose final message had "    → ..."
+				// bullet lines or merely named delegate_task matched busy
+				// forever (instance stuck "running"). Neither pi nor
+				// pi-subagents prints "delegate_task"; a live subagent runs
+				// inside a turn, under pi's "── ⠴ Working ──" banner, which
+				// the spinner detection covers (real capture: corpus frame
+				// pi-local-subagent-working_747fe48a).
 				`re:(?m)^\[subagent\]`,
 				`re:(?m)^\[running\]`,
 			},
-			PromptPatterns: []string{`re:(?m)^\s*pi>\s*`},
-			SpinnerChars:   []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+			PromptPatterns: []string{
+				`re:(?m)^\s*pi>\s*`,
+				// pi's composer has no prompt glyph: the frame ends with the
+				// rule-bounded input box, a "~/path • title" line and the
+				// token/cost status line ("↑5.9k ↓77 R5.5k CH96.6% …", or with
+				// no cache fields on some providers: "↑2.2k ↓198 $0.017 …").
+				// That status line only renders with the composer, so it is
+				// the idle-prompt marker (busy is checked first, so a live pi
+				// spinner banner still wins).
+				`re:(?m)^↑[\d.]+[kMG]?\s+↓[\d.]+[kMG]?\s`,
+			},
+			SpinnerChars: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 		}
 	case "copilot":
 		// GitHub Copilot CLI (the standalone `copilot` binary, Issue #556).

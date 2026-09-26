@@ -1,0 +1,10 @@
+Usage: agent-deck group update <name> [options]
+
+Update group settings.
+
+Options:
+
+Examples:
+  agent-deck group update mobile --default-path /path/to/repo
+  agent-deck group update mobile --clear-default-path
+  agent-deck group update mobile --max-concurrent 2

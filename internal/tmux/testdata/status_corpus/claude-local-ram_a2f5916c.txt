@@ -1,0 +1,50 @@
+
+  Ran 1 shell command
+
+⏺ xxxxx xxxxxxxx xx xxxxxxx xx xxx xxxxxxxxxx. x'xx xxxxxx xxx xxxxx xxxxxxx xxxx xx xxxxxxxx.
+
+✻ Cooked for 2m 6s · done Monday, Sep 7 at 6:29 PM
+
+⏺ Background command "Empty Trash via Finder and wait until it is empty" completed (exit code 0)
+
+  Ran 1 shell command
+
+⏺ xxxx. xxx xxx xxxxxx xx xxxxxxx (xxxxx xxxxxxxx). xxx xxxxxxx xxx xxxx xx xxx xxxxxxxxxx xxxx, xxxxx xx xxx xxx xxx xxx xxxxxxxx.
+
+  ┌────────────┬────────┬────────┐
+  │            │ Before │ After  │
+  ├────────────┼────────┼────────┤
+  │ Free space │ 473 MB │ 161 GB │
+  ├────────────┼────────┼────────┤
+  │ Used       │ 100%   │ 82%    │
+  └────────────┴────────┴────────┘
+
+  xxxx x xxxxxxx (xxx xxxxxx xx xxxxxxxxx xxxxx, xxxxxxx xx xxxxx):
+  - xxxxx: xx xx, xxxxxxx.
+  - xxxxxx: xx xxxxx xxxxx-xxxx xxxx xxxxxxxxxx xxxx xxx xxxx xxx xxxx xxxxxx xxxxxx. xxx xxxxxx xx xxxxxx xxxx xxx xx xx xx xx. xxx xxxxxxxx xxxxx xxx xxxxxxxxxx xxxx xx xxx xxxxxxxxx
+    and still running.
+  - xx xxxxxxx xxxxx: xx xx. xxxxxxxx xxxxxx xx xxx xxxx xxxxxxx.
+  - xxxxxx xxxxxxxx xxxxx xxxxx /xxxxxxx/xxx/xxxxxxx: xx xx. x xxxxx xxxxxx xxx xxxx xxxxxx xx xxxxxx.
+  - xxxxxxxxx xxx xx xxxxx xxxxxx: xx xx.
+
+  xxxxx xxxxx, xxxx xxxxx xxxxxxx xxxx xxx xxxx xxxx xxxx. xxxx xxxx xx xxxxx:
+  - xxxxxxxxxxx xxxxx xxxxx-xxxx xxxxxxx: xx xx. xxxxx xx xx xx xx xx xxx xxxxxx: x xxxxxxxx xxxxxxxx xxxx xx xxx (xx xx), x xxxxxx xxxxxx xxxx xx xxx (x xx), xxx xx xxxxxxx xxx-xxxxx
+    xxxx (x xx). xxx xxxx xxx xxx xx xx xxxxxx xxx x xx xxxxxxxxxxx. x xxx xxx xxxx xxxx xxxx.
+  - xxxxxx xxxxxxx: xx xx xxxxxx xxx xxxxx xxxxxxx xxxxxxxx xxxx.
+  - xxxxxxxxxx xxx xxxxxxx: xx xx xx xxxxxx.
+  - xxxxx xxxx xxx xxxxxxxxxx: xx xx.
+  - xxx xxxxxx xxxxxx, xxxxxxxxx, xxx xxxxx-xxxx-xxxxxxxx: xx, xx, xxx xx xx.
+
+  xxx xxxx: xxx xxxxxxxx xxxxxxxxxx xxxxxxxxx xxxx xxx xxxxx xxx, xxxx xxxxxx xxxx xxx xxxx xxxx. xxx xxxxxx xxxxx xxxxxxxx-xxxxxxxxxx-x xx xxx xxxx xxxxxxxx xxxxxxx.
+
+✻ Baked for 14s · done Monday, Sep 7 at 6:33 PM
+
+⏺ Remote Control disconnected — Remote Control server rejected the request (HTTP 403) — run /remote-control to retry
+
+⏺ Remote Control disconnected — OAuth token refresh failed — run /login to re-authenticate
+                                                                                                                                                  ✔ Update installed · Restart to update
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ram ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u | [Fable 5.1] ctx:7% in:69.9k out:612
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

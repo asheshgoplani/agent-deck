@@ -1,0 +1,37 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                     ╭────────────────────────────────────────────────────────────╮
+                                                                     │                                                            │
+                                                                     │  🔍 Local Search (Agent Deck sessions)                     │
+                                                                     │                                                            │
+                                                                     │  ╭──────────────────────────────────────────────────╮      │
+                                                                     │  │ > Search sessions...                             │      │
+                                                                     │  ╰──────────────────────────────────────────────────╯      │
+                                                                     │    Tip: waiting / running / idle to filter by status       │
+                                                                     │                                                            │
+                                                                     │    › gemini-idle (gemini)  beta · gemini-idle              │
+                                                                     │      opencode-idle (opencode)  alpha · opencode-id…        │
+                                                                     │      codex-idle (codex)  alpha/backend · codex-idle        │
+                                                                     │      pi-idle (pi)  beta · pi-idle                          │
+                                                                     │      claude-idle (claude)  alpha · claude-idle             │
+                                                                     │      claude-waiting (claude)  alpha · claude-waiti…        │
+                                                                     │      claude-running (claude)  alpha/backend · clau…        │
+                                                                     │      claude-error (claude)  alpha/backend · claude…        │
+                                                                     │      claude-stopped (claude)  alpha · claude-stopp…        │
+                                                                     │      claude-i18n (claude)  beta · claude-i18n              │
+                                                                     │    11 results                                              │
+                                                                     │    [Enter] Select  [↑↓] Navigate                           │
+                                                                     │    [Tab] Global  [Esc] Cancel                              │
+                                                                     │                                                            │
+                                                                     ╰────────────────────────────────────────────────────────────╯

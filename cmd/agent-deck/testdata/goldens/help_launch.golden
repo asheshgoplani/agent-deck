@@ -1,0 +1,28 @@
+Usage: agent-deck launch [path] [options]
+
+Create, start, and optionally send a message to a new session in one step.
+Combines: add + session start + session send
+
+Arguments:
+  [path]    Project directory (default: group default_path, then global default_path,
+            then the group's most recent session path, then current directory)
+
+Options:
+
+Examples:
+  agent-deck launch . -c claude
+  agent-deck launch . -c codex --model gpt-5.5
+  agent-deck launch . -c claude --model claude-opus-5 --effort high
+  agent-deck launch . -c claude --skip-permissions --chrome --continue   # the dialog's Claude Options rows
+  agent-deck launch . -c gemini --yolo --sandbox
+  agent-deck launch . -c gemini --model gemini-3.1-pro-preview
+  agent-deck launch . -c claude -m "Explain this codebase"
+  agent-deck launch /path/to/project -t "My Agent" -c claude -g work
+  agent-deck launch . -c claude --mcp memory -m "Research topic X"
+  agent-deck launch . -c claude --channel plugin:telegram@user/repo -m "Listen for messages"
+  agent-deck launch . -c claude -m "Fix bug" --no-wait
+  agent-deck launch . -c claude --message-file task.md   # long prompt from file, no shell quoting
+  agent-deck launch . -c claude -m "Refactor X"   # auto-appends completion sentinel (see session children)
+  agent-deck launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
+  agent-deck launch . -g ard --no-parent -c claude -m "Run review"
+  agent-deck launch . -c claude -w feature/new -b -m "Start work"

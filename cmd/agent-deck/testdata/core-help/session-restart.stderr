@@ -1,0 +1,11 @@
+  -all
+    	Restart all active sessions
+  -env value
+    	Environment variable in KEY=VALUE format for the restarted process (can be repeated)
+  -force
+    	Restart even if the session is already healthy and fresh (bypasses issue #30 guard)
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output

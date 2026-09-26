@@ -127,8 +127,12 @@ func TestDismissConfigErrorView_CancelsViewModeAfterFirstAttach(t *testing.T) {
 	name := fmt.Sprintf("cfgerr-%d", os.Getpid())
 	sess, run := newSessionWithConfig(t, name, badTmuxConfig(t))
 
-	if got := display(t, run, name, paneModeFormat); got != "0|" {
-		t.Fatalf("pane should be clean before any client attaches, got %q", got)
+	// tmux 3.4+ defers config-error display until the first attach; tmux 3.3
+	// (the g14 test image) enters view-mode as soon as the session exists.
+	// Either is a valid starting point; the attach below must end in the
+	// config-error view-mode that DismissConfigErrorView has to cancel.
+	if got := display(t, run, name, paneModeFormat); got != "0|" && got != "1|view-mode" {
+		t.Fatalf("pane before any client attaches = %q, want clean or config-error view-mode", got)
 	}
 	attachClientPTY(t, sess)
 	// Reproduction of the g14 frame: the pane is now in view-mode and the

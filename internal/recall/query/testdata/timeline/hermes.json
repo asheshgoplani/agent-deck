@@ -1,0 +1,87 @@
+[
+  {
+    "seq": 1,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-08-14T08:13:32.2Z",
+    "text": "hi, the clock skew again",
+    "raw": {
+      "compacted": 0,
+      "content": "hi, the clock skew again",
+      "id": 1,
+      "role": "user",
+      "timestamp": 1786695212.2,
+      "tool_call_id": "",
+      "tool_calls": "",
+      "tool_name": ""
+    }
+  },
+  {
+    "seq": 2,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-08-14T08:13:33Z",
+    "text": "Let me look.",
+    "raw": {
+      "compacted": 0,
+      "content": "Let me look.",
+      "id": 2,
+      "role": "assistant",
+      "timestamp": 1786695213,
+      "tool_call_id": "",
+      "tool_calls": "[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"terminal\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]",
+      "tool_name": ""
+    }
+  },
+  {
+    "seq": 3,
+    "role": "assistant",
+    "kind": "bash",
+    "timestamp": "2026-08-14T08:13:33Z",
+    "tool_name": "terminal",
+    "text": "ls",
+    "raw": {
+      "function": {
+        "arguments": "{\"command\":\"ls\"}",
+        "name": "terminal"
+      },
+      "id": "call_1",
+      "type": "function"
+    }
+  },
+  {
+    "seq": 4,
+    "role": "tool",
+    "kind": "tool_result",
+    "timestamp": "2026-08-14T08:13:33.5Z",
+    "tool_name": "terminal",
+    "text": "Error: no such dir",
+    "raw": {
+      "compacted": 0,
+      "content": "Error: no such dir",
+      "id": 3,
+      "role": "tool",
+      "timestamp": 1786695213.5,
+      "tool_call_id": "call_1",
+      "tool_calls": "",
+      "tool_name": "terminal"
+    }
+  },
+  {
+    "seq": 5,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-08-14T08:13:36Z",
+    "text": "Hi! How can I help?",
+    "raw": {
+      "compacted": 0,
+      "content": "Hi! How can I help?",
+      "id": 4,
+      "role": "assistant",
+      "timestamp": 1786695216,
+      "tool_call_id": "",
+      "tool_calls": "",
+      "tool_name": ""
+    }
+  }
+]

@@ -63,6 +63,7 @@ func run() error {
 	seed := fs.Int64("seed", 2286, "deterministic fixture seed")
 	machine := fs.String("machine", "unspecified", "machine class")
 	revision := fs.String("revision", "unknown", "source revision")
+	scenario := fs.String("scenario", "mixed", "fleet scenario: mixed or mostly-stopped")
 	worker := fs.Bool("worker", false, "internal isolated worker")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
@@ -70,8 +71,11 @@ func run() error {
 	if *runs < 1 || *binary == "" || *harness == "" {
 		return fmt.Errorf("binary, ui-harness and positive runs are required")
 	}
+	if *scenario != "mixed" && *scenario != "mostly-stopped" {
+		return fmt.Errorf("unknown scenario %q", *scenario)
+	}
 	if *worker {
-		return work(*binary, *harness, *out, *sizes, *runs, *seed)
+		return work(*binary, *harness, *out, *sizes, *runs, *seed, *scenario)
 	}
 	bin, err := filepath.Abs(*binary)
 	if err != nil {
@@ -97,7 +101,7 @@ func run() error {
 		if e != nil || n < 1 {
 			return fmt.Errorf("invalid fleet size %q", size)
 		}
-		ms, e := isolated(ctx, self, realTmux, bin, ui, n, *runs, *seed)
+		ms, e := isolated(ctx, self, realTmux, bin, ui, n, *runs, *seed, *scenario)
 		if e != nil {
 			return e
 		}
@@ -118,7 +122,7 @@ func run() error {
 	fmt.Print(md.String())
 	return os.WriteFile(strings.TrimSuffix(*out, filepath.Ext(*out))+".md", []byte(md.String()), 0600)
 }
-func isolated(ctx context.Context, self, realTmux, binary, harness string, size, runs int, seed int64) (result []metric, err error) {
+func isolated(ctx context.Context, self, realTmux, binary, harness string, size, runs int, seed int64, scenario string) (result []metric, err error) {
 	root, err := os.MkdirTemp("", "adeck-bench-")
 	if err != nil {
 		return nil, err
@@ -193,7 +197,7 @@ printf '[{"id":"remote-fixture","title":"synthetic remote","tool":"shell","statu
 		fmt.Fprintf(os.Stderr, "fixture %d retained at %s; private server stopped\n", size, root)
 	}()
 	output := filepath.Join(root, "metrics.json")
-	c := exec.CommandContext(ctx, self, "-worker", "-binary", binary, "-ui-harness", harness, "-out", output, "-sizes", strconv.Itoa(size), "-runs", strconv.Itoa(runs), "-seed", strconv.FormatInt(seed, 10))
+	c := exec.CommandContext(ctx, self, "-worker", "-binary", binary, "-ui-harness", harness, "-out", output, "-sizes", strconv.Itoa(size), "-runs", strconv.Itoa(runs), "-seed", strconv.FormatInt(seed, 10), "-scenario", scenario)
 	bindChildLifetime(c)
 	c.Env = env
 	c.Stdout = os.Stderr
@@ -208,7 +212,7 @@ printf '[{"id":"remote-fixture","title":"synthetic remote","tool":"shell","statu
 	err = json.Unmarshal(data, &result)
 	return
 }
-func work(binary, harness, out, sizes string, runs int, seed int64) error {
+func work(binary, harness, out, sizes string, runs int, seed int64, scenario string) error {
 	size, err := strconv.Atoi(sizes)
 	if err != nil {
 		return err
@@ -223,13 +227,16 @@ func work(binary, harness, out, sizes string, runs int, seed int64) error {
 socket_name = %q
 [feedback]
 disabled = true
-[remotes.fast]
+`, socket)
+	if scenario == "mixed" {
+		config += `[remotes.fast]
 host = "bench-fast"
 [remotes.slow]
 host = "bench-slow"
 [remotes.auth]
 host = "bench-auth"
-`, socket)
+`
+	}
 	configDir, err := agentpaths.LegacyDir()
 	if err != nil {
 		return err
@@ -258,7 +265,15 @@ host = "bench-auth"
 	var shellID, shellName string
 	for i := 0; i < size; i++ {
 		tool := []string{"shell", "claude", "codex"}[i%3]
-		inst := session.NewInstanceWithGroupAndTool(fmt.Sprintf("bench-%04d", i), root, fmt.Sprintf("work/team-%d/project-%d", i%3, rng.Intn(10)), tool)
+		group := fmt.Sprintf("work/team-%d/project-%d", i%3, rng.Intn(10))
+		if scenario == "mostly-stopped" {
+			group = "stress"
+			tool = "claude"
+			if i < 6 {
+				tool = "shell"
+			}
+		}
+		inst := session.NewInstanceWithGroupAndTool(fmt.Sprintf("bench-%04d", i), root, group, tool)
 		inst.ID = fmt.Sprintf("bench-%d-%04d", seed, i)
 		inst.CreatedAt = time.Unix(1700000000+int64(i), 0)
 		if tool != "shell" {
@@ -275,6 +290,12 @@ host = "bench-auth"
 		if i%3 == 1 {
 			inst.Status = session.StatusRunning
 		}
+		if scenario == "mostly-stopped" {
+			inst.Status = session.StatusError
+			if i < 6 {
+				inst.Status = session.StatusWaiting
+			}
+		}
 		tm := inst.GetTmuxSession()
 		tm.Name = fmt.Sprintf("agentdeck_bench-%04d", i)
 		tm.SocketName = socket
@@ -284,12 +305,14 @@ host = "bench-auth"
 		if tool != "shell" {
 			args = append(args, inst.Command)
 		}
-		if _, err = command("tmux", args...); err != nil {
-			return err
-		}
-		if tool == "codex" {
-			if _, err = command("tmux", "set-environment", "-t", tm.Name, "CODEX_SESSION_ID", inst.CodexSessionID); err != nil {
+		if scenario != "mostly-stopped" || i < 6 {
+			if _, err = command("tmux", args...); err != nil {
 				return err
+			}
+			if tool == "codex" {
+				if _, err = command("tmux", "set-environment", "-t", tm.Name, "CODEX_SESSION_ID", inst.CodexSessionID); err != nil {
+					return err
+				}
 			}
 		}
 		if i == 0 {
@@ -301,10 +324,21 @@ host = "bench-auth"
 	if err = storage.Save(instances); err != nil {
 		return err
 	}
-	// Install only into the worker's throwaway Claude config so first-run
-	// consent cannot hide the fleet. Exercise the real watcher at startup.
+	// Install only into this worker's throwaway Claude config so a first-run
+	// prompt cannot hide the real TUI frame in either scenario.
 	if _, err = session.InjectClaudeHooks(session.GetClaudeConfigDir()); err != nil {
 		return err
+	}
+	if scenario == "mostly-stopped" {
+		values := map[string][]float64{}
+		for i := 0; i < runs; i++ {
+			frames, e := terminalKeyFrames(binary, 20)
+			if e != nil {
+				return e
+			}
+			values["tui_terminal_key_frame_ms"] = append(values["tui_terminal_key_frame_ms"], frames...)
+		}
+		return measureUIHarness(harness, root, size, runs, out, values)
 	}
 	values := map[string][]float64{}
 	groupTree := session.NewGroupTree(instances)
@@ -424,6 +458,10 @@ host = "bench-auth"
 			values[name+"_ssh_subprocesses"] = append(values[name+"_ssh_subprocesses"], float64(lines(filepath.Join(root, "ssh.log"))-beforeSSH))
 		}
 	}
+	return measureUIHarness(harness, root, size, runs, out, values)
+}
+
+func measureUIHarness(harness, root string, size, runs int, out string, values map[string][]float64) error {
 	for sample := 0; sample < runs; sample++ {
 		uiout := filepath.Join(root, fmt.Sprintf("ui-%d.json", sample))
 		c := exec.Command(harness, "-test.run", "^TestPerfFleetUIHarness$", "-test.timeout", "10m")
@@ -432,7 +470,7 @@ host = "bench-auth"
 		c.Env = append(os.Environ(), "AGENTDECK_BENCH_UI=1", "AGENTDECK_BENCH_UI_OUTPUT="+uiout, "AGENTDECK_BENCH_RUNS=1", "AGENTDECK_BENCH_SIZE="+strconv.Itoa(size))
 		c.Stdout = os.Stderr
 		c.Stderr = os.Stderr
-		if err = c.Run(); err != nil {
+		if err := c.Run(); err != nil {
 			return err
 		}
 		b, err := os.ReadFile(uiout)
@@ -545,6 +583,98 @@ func terminalFrame(binary string) (elapsed time.Duration, err error) {
 		readResult := <-received
 		return 0, fmt.Errorf("populated terminal frame: %w; %v", ctx.Err(), readResult)
 	}
+}
+
+// terminalKeyFrames measures actual TUI paints in a PTY while the fixture's
+// real tmux sessions are attached to the private socket. Each key must cause
+// another populated frame before its latency is recorded.
+func terminalKeyFrames(binary string, count int) ([]float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := exec.CommandContext(ctx, binary)
+	bindChildLifetime(c)
+	term, err := pty.StartWithSize(c, &pty.Winsize{Rows: 40, Cols: 120})
+	if err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+	defer func() { _ = term.Close(); _ = c.Process.Kill(); <-done }()
+	chunks := make(chan string, 128)
+	go func() {
+		defer close(chunks)
+		buf := make([]byte, 16384)
+		for {
+			n, e := term.Read(buf)
+			if n > 0 {
+				chunks <- string(buf[:n])
+			}
+			if e != nil {
+				return
+			}
+		}
+	}()
+	waitFrame := func() error {
+		var frame strings.Builder
+		var settled *time.Timer
+		var settledCh <-chan time.Time
+		defer func() {
+			if settled != nil {
+				settled.Stop()
+			}
+		}()
+		for {
+			select {
+			case chunk, ok := <-chunks:
+				if !ok {
+					return fmt.Errorf("TUI closed before a populated frame")
+				}
+				frame.WriteString(chunk)
+				if settled != nil || strings.Contains(frame.String(), "bench-0") {
+					if settled != nil {
+						settled.Stop()
+					}
+					settled = time.NewTimer(5 * time.Millisecond)
+					settledCh = settled.C
+				}
+			case <-settledCh:
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("TUI frame timeout: %w", ctx.Err())
+			}
+		}
+	}
+	if err := waitFrame(); err != nil {
+		return nil, err
+	}
+	values := make([]float64, 0, count)
+	for i := 0; i < count; i++ {
+		time.Sleep(20 * time.Millisecond)
+		// Drain any queued startup or background output before the next key.
+		for draining := true; draining; {
+			select {
+			case _, ok := <-chunks:
+				if !ok {
+					return nil, fmt.Errorf("TUI closed while draining output")
+				}
+			default:
+				draining = false
+			}
+		}
+		key := []byte("\x1b[B")
+		if i%2 == 1 {
+			key = []byte("\x1b[A")
+		}
+		started := time.Now()
+		if _, err := term.Write(key); err != nil {
+			return nil, err
+		}
+		if err := waitFrame(); err != nil {
+			return nil, err
+		}
+		values = append(values, float64(time.Since(started))/float64(time.Millisecond))
+	}
+	return values, nil
 }
 
 func seedOrphanHooks(size int) error {

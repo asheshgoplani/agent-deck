@@ -1,0 +1,50 @@
+
+✻ Waiting for 1 background agent to finish
+
+⏺ xxxxx "xxxxxxxx xxxxx x xxxxxx xxxx" xxxxxxxx · xxx
+
+  Ran 2 shell commands
+
+⏺ xxxxxxxxxx xxxxxxx xxxxxxxxx. xxx xxxxxxx xxx xxx xxxxxxxx xxx xxx xx xxxxxx xxxxxx xxxxxxxx xx xxxx'x xxxx xxx (xxx xxx xxx xx x xxxx).
+
+⏺ xxxxx xxxxxxx xx xxx xxxxxx/xxxx xxxxxxxx xxx xx xxx xxxx xxx. xx xxxxxx xxxx xxxxxx xxx xxx xxxxxxx xxxxx xxxx xx xxxxxxxx.
+
+✻ Churned for 24m 49s · done 12:33 AM
+
+⏺ Background command "cd /tmp/exec-core-slice5/work && TAIL=4000 /Users/u/.agent-deck/conductor/agent-deck/bin/g14-test.sh /tmp/exec-core-slice5/work/main -count=1 ./cmd/agent-deck/...
+./xxxxxxxx/xxxxxxx/... ./xxxxxxxx/xxxx/... ./xxxxxxxx/xxxxxxx/... ./xxxxxxxx/xxxxxxxxxx/... > /xxx/xxxx-xxxx-xxxxxx/xxxx/xxx-xxxx.xxx x>&x; xxxx -x "^\x*--- xxxx|^(xx|xxxx)\x|^xxxxx|xxxx="
+/xxx/xxxx-xxxx-xxxxxx/xxxx/xxx-xxxx.xxx" xxxxxxxxx (xxxx xxxx x)
+
+  Searched for 1 pattern
+
+⏺ xxxxxxxx xxx x xxx-xxxxxxxx xxxxxxxx xx xxxxxx/xxxx. xxx xxxxxxx xxx xxxx xxxxxxxx xxxx xxxx/xxxxxx xx xx xxxx.
+
+  Ran 1 shell command
+
+  Ran 1 shell command
+
+⏺ xxxxxxx xxxxxxx xxxxxxx xxxx x xxxxxxxxxxxx xxxxxx (xxx xxxx xx xxx xxxxxxxxxxx). xx xxxx xxx xxxx xxx xxxx xxxxx xxxxxxxx.
+
+⏺ xxx xxxx xxxxx xx xxxxx xxxxxxx xx xxx xxxx xxx. xxx xxxxxxx xxx xxxxx xxxxx xx.
+
+✻ Crunched for 17s · done 12:38 AM
+
+⏺ Background command "cd /tmp/exec-core-slice5/work/repo && TAIL=4000 /Users/u/.agent-deck/conductor/agent-deck/bin/g14-test.sh $PWD -count=1 ./internal/core/... ./internal/events/...
+./xxx/xxxxx-xxxx/... ./xxxxxxxx/xxxxxxx/... ./xxxxxxxx/xxxx/... ./xxxxxxxx/xxxxxxx/... ./xxxxxxxx/xxxxxxxxxx/... > /xxx/xxxx-xxxx-xxxxxx/xxxx/xxx-xxxx.xxx x>&x; xxxx -x "^\x*---
+xxxx|^(xx|xxxx)\x|^xxxxx|xxxx=" /xxx/xxxx-xxxx-xxxxxx/xxxx/xxx-xxxx.xxx" xxxxxxxxx (xxxx xxxx x)
+
+  Searched for 1 pattern
+
+⏺ xxx xxxx xxx xxx xxxx x xxxxxxxx xx xxxxxx/xxxx xxx xx xxx xxxx. xxxxxxx xxx xxxxxxx xxxx.
+
+⏺ xxxxxxx xx /xxx/xxxx-xxxx-xxxxxx/xxxx/xxxx && xxx xxxxxx …
+  ⎿  $ cd /tmp/exec-core-slice5/work/repo && git bundle verify /tmp/exec-core-slice5/branch.bundle 2>&1; git bundle list-heads /tmp/exec-core-slice5/branch.bundle
+
+· Calculating… (2m 5s · ↓ 2.2k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── core-slice5 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/private/tmp/exec-core-slice5/work/repo | [Opus 5.5] ctx:28% in:283.6k out:127 5h:6% 7d:2%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -50,7 +50,7 @@ printf '[]\n' > "$output"
 			if err := os.WriteFile(script, []byte(body), 0700); err != nil {
 				t.Fatal(err)
 			}
-			_, err := isolated(context.Background(), script, real, "unused", "unused", 10, 1, 1)
+			_, err := isolated(context.Background(), script, real, "unused", "unused", 10, 1, 1, "mixed")
 			if (err != nil) != failure {
 				t.Fatalf("failure=%v err=%v", failure, err)
 			}

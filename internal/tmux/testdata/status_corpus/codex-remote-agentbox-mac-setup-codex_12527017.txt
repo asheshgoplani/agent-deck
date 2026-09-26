@@ -1,0 +1,110 @@
+─ xxxxxx xxx xx xxx ─────────────────────────────────────────────────────────────────────────
+
+
+› xxxx xxxxxxxxxx xxxxxxxxxx xxxxxxx x
+
+
+• x’xx xxxx xxx xxxxxxxxx xxx xxxx xxxx xxx xxxxx, xxxx xx xxxxxxxx, xxx xxx xxxxxxxxx
+  xxxxxxx xxxxxx.
+
+• xxx xxxxxxx -x xxxxx-xxxx; xx -x 'xxxxxxxxx|xxxx|xxxxxxx' /xxx/xxxxx/xxxxxx/xxxxx.xx | xxxx
+  │ -25
+  └ /xxx/xxxxx/xxx/xxxxx-xxxx
+    x:# xxxxx xxxxx xxxxxxxxx xxxxx (xxxxxx)
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+    xxxx xxxxxxx `xxxxxxxxx-xxxxxx` xxx xxx xxxxxx xx xxxx. xxx xxx-xxxx xxxxx xx xxxxx'x
+    xxxxx xxxxxxx xxx xxx xxxxxx xxxx xxxxx xxx xx xxxxxx'x xxx xxxx; xxx xxx xx xxxxx.
+
+
+› xx xxxxxx xxxxxxxxx
+
+
+• xxx xxxxx-xxxx xxxxxxx xxxx --xxxx; xxxxx-xxxx xxxx
+  └ xxxxx: xxxxx-xxxx xxxxxxx xxxx <xx|xxxxx> <xxxxxxx> [xxxxxxx]
+
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+
+    xxxxx: xx xxxxxxxx
+
+• xxx xxx > xxxxxxxxx-xxxxxxx.xx <<'xxx'
+  │ owner explicitly asked this session to tell his conductor about the completed Mac audio
+  │ proof and new shared local iOS skill. This is a handoff of results, not authorization to
+  │ … +56 lines
+  └ ✓ xxxx xxxxxxx xx 'xxxxxxxxx-xxxxxx'
+
+
+› xxxxx xxxxxx xxxxxxxx xxxx xx xxxxxxxxxxxxxx xxx
+
+
+
+› xxxx xxx xxxxx xxxxx xxxxx xx xxxxx xxxxxxx xxxxxxxxxx xxxx xxxx xxxxxx xxxx xxxx xxxx
+  xxxxxxx xxx xxx xxx xxx  xxxxxxxxxxxx xxx xxxxx xxxxxxxxx xxxxxxxx xxxxxxx xxxxxx xxxxx
+  xxxxxxxx
+
+
+• x’xx xxx xxxx xxxx xxxxxxxxx xxx xxxxx’x xxxxxxxxx xxxx xxxxx xx xx, xxx xxx xxxx xx xxxx
+  xx xxx xxx xxxx xxxxx xx xxxxxxx xxxxx.
+
+• xxxxxx xxx xxxxxxxxxx xxxxxxxx · xxx > xxxxxxxxx-xxxxx-xxxx.xx <<'xxx'
+xxxxxx xxxx xxxx xxxx xxxxxxxxx-xxxxxx xxx xxxxxxxxx-xxxxx xxxx xxxxx xxxx xxxxxxxx, xxxxxx
+xx xx xxxxx xxx xxxxxxxxxx xxxxx, xxx xxx xx xx xxx xxxx xxxxxxxx xxxxx xx xxxxxxx xxxxx/xxxx
+xxxxxxx.
+xxxxxx xxxxx: /xxx/xxxxx/xxxx/xxx-xxxxx-xxxx/xxxxxx-xxxxxx/xxxxx-xxxxx-xxx/xxxxx.xx
+xxxxxxxxx xxx: /xxx/xxxxx/xxxx/xxx-xxxxx-xxxx/xxxxxx-xxxxxx/xxxxx-xxxxx-xxx.xxx
+xxxxx xxxxxxxx/xxxxxxxxxx xxxxxx: /xxx/xxxxx/xxxx/xxx-xxxxx-xxxx/xxxxx-xxxxxxx.xx
+xxxx xxxxxxx xx xxxxxx: /xxx/xxxxx/xxxx/xxx-xxxxx-xxxx/xxxxxxxxx-xxxxxxx.xx
+xx xxxxxxxx xxxxx xxxxxxxxx/xxxxxx xxxxx xxx xxxxxxxxxxxx xxxxxxxxxxxx, xxxxxxxx xxxxxxxxxx/
+xxxxxx xxxx xxxxx, xxx xxxxxxxxx, xxx xxxxxxx xxxxx/xxxxx/xxxxxxxxxx xxxxxxxx xxxxxx. xxxxxx
+xxxxxx xxx xxxxx xxxx xxx xxxxxxxxxxxxx xx xxxx xxxxxxxxxx xxxxxxxxx xxxxx xxx xxxxxxx xx xxx
+xxx xxxx xxxxxxxxxx xxxxx xxxxx xx xxxxxxx xxxxxxxxxxxx. xx xxxxxxxxxxx xxxx xxxxxxx xxxxxxx
+xxxxxxx; xx xxxx xxx xxxxxxxxx x xxx xxxxx, xxxxxxx, xxxxxxxxxx xxxxxx xx xxxxxxxxxx xxx.
+xxxxxxxx: xxx xxxxxx xxx xxxxxxx xxxxxxxx xxxxxxxxx xxxxxx xxxxx xxxxxxx xxx xxxxxxxx x
+xxxxxxxxx xxxxx xxxxxxxxxx xxx xxxx-xxxxxxx xxxxxxx. xxx xxxxxxx xxxxxx xxxxxx'x xxxxxx
+xxxxx. xxxxx xxxxxxxx xxxxx, xxxxxxxx xxxxx xxxxxxxxx xxx x xxxxx xxxxxxx-xxxxxxxx xxxxxx
+xxxxxxx xxxxxx xxxxxxxxxx. xxxxxxx xxxxxxxxx xxxx xxxxxxxxxx xxxxxxx. xxxxx xxxxxx-xxxxxx
+xxxxx xxxxx xxxxxxxx xxx xxxx xxxx xxxxxxxxx'x xxxxxxxx/xxxxxx/xxxxx/xxxx xxxx xxxxxxxx.
+xxxx xx xxxxxx x xxxxxxxx xxxxxxxxxxxx xxx xxxxxxx xx xxxxxx/xxx xx xx xxx xxxx xxxxxxxx
+xxxx. xx xxxx xxxxx xx xx xxxxxxx xxx xxxxxx xxxxxx xx.
+xxx
+xxxxx-xxxx xxxxxxx xxxx xxxxxxxxx-xxxxxx --xxxxxxx-xxxx /xxx/xxxxx/xxxx/xxx-xxxxx-xxxx/
+xxxxxxxxx-xxxxx-xxxx.xx --xx-xxxx
+xxxxx-xxxx xxxxxxx xxxx xxxxxxxxx-xxxxx --xxxxxxx-xxxx /xxx/xxxxx/xxxx/xxx-xxxxx-xxxx/
+xxxxxxxxx-xxxxx-xxxx.xx --xx-xxxx
+
+• xxx xxx > xxxxxxxxx-xxxxx-xxxx.xx <<'xxx'
+  │ owner asks that both conductor-owner and conductor-worker-c know about this resource,
+  │ record it in their own persistent notes, and use it on the next relevant local or staging
+  │ … +27 lines
+  └ xxxxx: xxxxxxx xxxxxxx 'xxxxxxxxx-xxxxxx' xxx xxx xxxxx xxxxxxxxx xxxxxxxxx: xxxxxxx
+    xxxxxxx xxx xxxx xxx xxxxxxxxxx xxx xxxxx xxxxxxxxx xxxxx xx xxxxxx (xxxxx #xxxx): xxx
+    … +x xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+    xxxxxxxxx
+    ✓ xxxx xxxxxxx xx 'xxxxxxxxx-xxxxx'
+
+• xxx xxxxx-xxxx xxxxxxx --xxxx; xxxxx-xxxx xxxxx --xxxx
+  └ xxxxx: xxxxx-xxxx xxxxxxx <xxxxxxx> [xxxxxxx]
+
+    … +xx xxxxx (xxxx + x xx xxxx xxxxxxxxxx)
+    xxxxxxxx xxxxxxxxx xxxxxxxxxxx xxxx — xxxxxxx xx, xx xxxxx xxxxxx
+    xxxxxx xx xxxx xxxxx xxxx x xxxx xxxxx xxxxxxx xxx xxxx xxxxxxxx.
+
+• xxx xxxxx-xxxx xxxxxxx xxxx xxxxxxxxx-xxxxxx 'xxxxxx xxxx xxx xx xxxxxx xxx xxx
+  │ proj-a-local-ios skill in your persistent notes and consult it on the next authorized
+  │ local/staging build verification. Read /srv/proj-a/work/mac-setup-0909/
+  │ … +2 lines
+  └ ✓ xxxx xxxxxxx xx 'xxxxxxxxx-xxxxxx'
+
+─────────────────────────────────────────────────────────────────────────────────────────────
+
+• xxxx—xxxx xxxx xxxx xxxxxxxxx xxx xxxxx’x xxxxxxxxx xxxxx xxx xxxxx xx, xxxx’x xxxxxxxx,
+  xxx xxxx xxxxxxx xxxxxxxx. xxxxx xxxx xx xxxx xx xx xxxxx xxxxx xxx xxx xx xxx xxx xxxx
+  xxxxx xx xxxxxxx xxxxx xxxxxxxxxxxx.
+
+─ xxxxxx xxx xx xxx ─────────────────────────────────────────────────────────────────────────
+
+
+› Ask Codex to do anything
+
+  xxx-x-xxxxx xxxxxxx · /xxx/xxxxx/xxxx/xxx-xxxxx-xxxx · xxxx [xxxxxxx]
+
+

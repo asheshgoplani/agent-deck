@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/session.start/v1/in",
+  "title": "session.start input",
+  "type": "object",
+  "properties": {
+    "message": {
+      "description": "Initial message to send once the agent is ready",
+      "type": "string"
+    },
+    "no_wait": {
+      "description": "Return once the process is spawned instead of waiting for the tool's session id",
+      "type": "boolean"
+    },
+    "profile": {
+      "description": "Profile whose store holds the session",
+      "type": "string"
+    },
+    "session": {
+      "description": "Session id, id prefix, title or path",
+      "type": "string"
+    },
+    "yolo": {
+      "description": "Enable YOLO mode for Gemini, Codex or Hermes sessions",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "profile",
+    "session"
+  ],
+  "additionalProperties": false
+}

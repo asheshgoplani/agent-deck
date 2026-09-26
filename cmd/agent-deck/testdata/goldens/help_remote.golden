@@ -1,0 +1,32 @@
+Usage: agent-deck remote <command> [options]
+
+Manage remote agent-deck instances.
+Run commands: agent-deck remote <name> <command> [arguments]
+  Use remote exec <name> <command> when a name matches a management command.
+  list/status/health, show/output/send, add/launch, session start/stop/restart/fork/archive/unarchive/set,
+  session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),
+  worktree list/info/cleanup, mcp list/attach, skill list/attached/attach/detach, group list/reorder
+
+Commands:
+  add <name> <user@host>    Add a remote agent-deck instance
+  remove <name>             Remove a remote
+  list                      List configured remotes
+  sessions [name] [--json] [--with-errors|--json-envelope]
+                            Fetch sessions from remote(s); --json is a bare array,
+                            --with-errors wraps it with per-remote failures
+  drain <name>              Pull completion/transition records from a remote
+                            into this machine's inbox (read-only on the remote)
+  attach <name> <session>   Attach to a remote session
+  rename <name> <session> <new-title>  Rename a remote session
+  update [name | --all]     Install/update agent-deck on remote(s)
+
+Examples:
+  agent-deck remote add dev user@dev-box
+  agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck
+  agent-deck remote list
+  agent-deck remote sessions dev --json
+  agent-deck remote drain dev       # pull finished/stalled reports from dev
+  agent-deck remote attach dev my-session
+  agent-deck remote rename dev my-session new-name
+  agent-deck remote update --all    # Update every remote older than this controller
+  agent-deck remote update dev      # Update specific remote
