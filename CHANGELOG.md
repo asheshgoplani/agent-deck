@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Anonymous usage data (opt-in).** On the first TUI start you will see one question asking whether to share anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names). It goes to PostHog's EU region a few times a day, never on the day you say yes, with IP addresses discarded. See exactly what would be sent with `agent-deck telemetry preview`; turn it off any time with `agent-deck telemetry off` or `DO_NOT_TRACK=1`. Details: TELEMETRY.md.
 - `agent-deck telemetry` gains `on`, `off`, `schema` (the full published allow-list, `--markdown` or `--json`) and `level full|basic`; `status` shows the level, local spool, upload schedule and daily cap; `preview` prints the exact PostHog request bodies. `AGENTDECK_TELEMETRY=log` writes would-be uploads locally and never sends. Settings gains a Privacy row and `agent-deck doctor` prints the telemetry state.
-- New config keys `[telemetry] level` and `[telemetry] posthog_key`; `[telemetry] endpoint` now defaults to `https://eu.i.posthog.com`. Builds without a project key record locally (with consent) and never upload.
+- New config keys `[telemetry] level` and `[telemetry] posthog_key` (the latter only for builds without a compiled-in key); `[telemetry] endpoint` now defaults to `https://eu.i.posthog.com`. Builds without a project key record locally (with consent) and never upload.
+- `[telemetry] endpoint` changed meaning: v1 stored the full receiver URL, v2 treats it as a base URL and POSTs to `<endpoint>/batch/`. A v1 self-hosted value is asked about again (consent is bound to the endpoint), but update it to the base URL.
 
 ### Changed
 

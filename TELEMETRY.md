@@ -42,7 +42,7 @@ More:   github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md
 
 Accepting works only when the whole question is visible (terminal at least 78×22); otherwise the dialog says so and only `n`, Esc and Ctrl-C act. Your answer is written to disk before anything is recorded. After a yes: `Sharing is on. Nothing is sent before tomorrow. Turn off: agent-deck telemetry off`. After a no: `Telemetry stays off. You will not be asked again. Change later: agent-deck telemetry on`.
 
-The question is never shown in CLI-only use, when stdin or stdout is not a terminal, in CI, in tests, inside an agent-deck session, in `web --no-tui`, over SSH on a remote, or when any off switch below is set. If you answered no to the earlier, smaller schema 1 question (which counted every key, even Enter, as no), you are asked once more, with the line `You said no to an earlier, smaller version of this question.`; a no to this question is final. Anyone who said yes to schema 1 is asked again too, because consent is bound to the schema and the destination.
+The question is never shown in CLI-only use, when stdin or stdout is not a terminal, in CI, in tests, inside an agent-deck session, under a coding agent (`CLAUDECODE`, `GEMINI_CLI`, `CURSOR_AGENT` or `CODEX_*` set), in `web --no-tui`, over SSH on a remote, or when any off switch below is set. If you answered no to the earlier, smaller schema 1 question (which counted every key, even Enter, as no), you are asked once more, with the line `You said no to an earlier, smaller version of this question.`; a no to this question is final. Anyone who said yes to schema 1 is asked again too, because consent is bound to the schema and the destination.
 
 `agent-deck telemetry on` asks the same question in a shell; there it takes an explicit `y` (Enter and end-of-input mean no). In the TUI, **Settings → Privacy → Usage data** shows the state; Enter turns it off immediately or opens the question.
 
@@ -52,7 +52,7 @@ Any of these, at any time:
 
 | Switch | Effect |
 |---|---|
-| `agent-deck telemetry off` | Records a no, deletes the install id, salt, local spool and counters. It waits for an upload already in flight (at most a few seconds); once it returns nothing further is sent. |
+| `agent-deck telemetry off` | Records a no, deletes the install id, salt, local spool and counters. It waits for an upload already in flight (at most 8 seconds); once it returns nothing further is sent. From the TUI Settings row it runs in the background, so the screen never freezes. |
 | `DO_NOT_TRACK=1` | Any truthy value turns everything off ([Console Do Not Track](https://consoledonottrack.com)). |
 | `AGENTDECK_TELEMETRY=0` | Any value other than `1`, `true`, `yes`, `on` or `log` turns everything off. None of these values turns telemetry on. |
 | `[telemetry] disabled = true` | In `config.toml`. An unreadable config also counts as off. |
