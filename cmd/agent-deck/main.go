@@ -346,7 +346,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: failed to resolve events profile: %v\n", err)
 		os.Exit(1)
 	}
-	defer events.CloseDefault()
+	defer func() { _ = events.CloseDefault() }()
 	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
 	// -p/--profile above). One-shot, non-persisted bypass of the worktree
 	// script consent gate for non-interactive callers (CI) that can't answer

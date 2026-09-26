@@ -127,16 +127,46 @@ func WarmBudget(t *testing.T, base time.Duration) time.Duration {
 
 func applyMultiplier(t *testing.T, measure time.Duration) time.Duration {
 	t.Helper()
+	return time.Duration(float64(measure) * budgetMultiplier(t))
+}
+
+// budgetMultiplier returns PERF_BUDGET_MULTIPLIER, or 1.0 when unset or
+// invalid.
+func budgetMultiplier(t *testing.T) float64 {
+	t.Helper()
 	raw := os.Getenv(PerfBudgetMultiplierEnv)
 	if raw == "" {
-		return measure
+		return 1
 	}
 	mult, err := strconv.ParseFloat(raw, 64)
 	if err != nil || mult <= 0 {
 		t.Logf("ignoring invalid %s=%q (using 1.0)", PerfBudgetMultiplierEnv, raw)
-		return measure
+		return 1
 	}
-	return time.Duration(float64(measure) * mult)
+	return mult
+}
+
+// RaceThroughputFactor is how much slower a throughput test is allowed to be
+// in a -race build. The race detector instruments every memory access and
+// channel operation (typically a 2x to 20x slowdown), and every CI gate runs
+// with -race; a local non-race run still enforces the unscaled floor.
+const RaceThroughputFactor = 5
+
+// ThroughputFloor returns the minimum rate (ops/s) a throughput test must
+// reach: base / PERF_BUDGET_MULTIPLIER, further divided by
+// RaceThroughputFactor in a -race build. The effective floor and its inputs
+// are logged so a scaled gate is never silent.
+func ThroughputFloor(t *testing.T, base float64) float64 {
+	t.Helper()
+	mult := budgetMultiplier(t)
+	race := 1.0
+	if RaceEnabled {
+		race = RaceThroughputFactor
+	}
+	floor := base / (mult * race)
+	t.Logf("throughput floor %.0f/s (base %.0f/s, %s=%g, race factor %g)",
+		floor, base, PerfBudgetMultiplierEnv, mult, race)
+	return floor
 }
 
 // TrimmedMean runs fn n=11 times (plus 1 warm-up), sorts the samples,

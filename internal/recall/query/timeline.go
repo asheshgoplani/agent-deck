@@ -85,7 +85,7 @@ func (s *Searcher) Timeline(ctx context.Context, ref string) (Timeline, error) {
 	if err != nil {
 		return Timeline{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	sess, err := resolveTimelineSession(ctx, tx, ref)
 	if err != nil {
 		return Timeline{}, err
@@ -257,7 +257,7 @@ func (s *Searcher) NativeSource(ctx context.Context, ref string) (harness, path 
 	if err != nil {
 		return "", "", SessionRow{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	sess, err = resolveTimelineSession(ctx, tx, ref)
 	if err != nil {
 		return "", "", SessionRow{}, err

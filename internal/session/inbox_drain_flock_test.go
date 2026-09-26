@@ -187,6 +187,16 @@ func TestInboxDrain_ConcurrentProducersLoseNothing(t *testing.T) {
 		}
 		close(done)
 	}()
+	// Registered after the helpers' cleanups, so it runs first: on an early
+	// t.Fatalf the helpers' own cmd.Wait must not run concurrently with the
+	// goroutine's Wait above (a data race in the test that makes the
+	// release gate abort instead of rerunning the failure).
+	t.Cleanup(func() {
+		for _, p := range producers {
+			_ = p.Process.Kill()
+		}
+		<-done
+	})
 	finished := false
 	for !finished || InboxHasPending(parent) {
 		select {
