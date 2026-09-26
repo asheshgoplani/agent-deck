@@ -56,9 +56,8 @@ func withAPIKey(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	rest := body[len(redactedBodyPrefix)-1:] // from the comma on
-	out := make([]byte, 0, len(`{"api_key":`)+len(k)+len(rest))
-	out = append(append(append(out, `{"api_key":`...), k...), rest...)
-	return out, nil
+	out := append([]byte(`{"api_key":`), k...)
+	return append(out, rest...), nil
 }
 
 // pendingEvent is one event ready to encode, with where it came from.

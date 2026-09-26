@@ -57,9 +57,10 @@ func appendSpool(line spoolLine) error {
 	// Retention is enforced here as well as in the uploader: a build with no
 	// project key never uploads, and its spool must still expire and stay
 	// under the cap.
-	if spoolNeedsTrim(path, nowFn()) {
+	now := nowFn()
+	if spoolNeedsTrim(path, now) {
 		if lines, err := readSpool(); err == nil {
-			_ = writeSpool(trimSpool(lines, nowFn()))
+			_ = writeSpool(trimSpool(lines, now))
 		}
 	}
 	// Hard guard, in case the trim above could not rewrite the file.
