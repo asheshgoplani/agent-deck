@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The web sidebar nests subgroups under their parent group in the same order as the TUI, nests sub-sessions under their parent session, and shares group collapse state with the TUI (#2347, thanks @dbeaudoin).
 - Moving a running session to another account slot from the Edit Session dialog no longer silently does nothing on the first try: a background status poll landing while the confirmation was open used to cancel the switch (#2344, thanks @scottyallen).
 - A Codex session whose pane still shows earlier text quoting "esc to interrupt" is no longer held busy over a live prompt; only a current Codex status or interrupt line counts as work in progress (#2351, thanks @p4p3r).
-- A remote with a large session fleet is no longer reported unreachable when its SSH ControlMaster runs out of channels: read-only commands refused a channel retry once over a dedicated connection (#2355, thanks @barjatiyasaurabh). <!-- 2365-PENDING -->
+- A remote with a large session fleet is no longer reported unreachable when its SSH ControlMaster runs out of channels: a read-only command refused a channel is retried once over a dedicated connection (#2355, thanks @barjatiyasaurabh).
 
 ### Internal
 
