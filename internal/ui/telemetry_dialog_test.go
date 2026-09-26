@@ -30,6 +30,7 @@ func telemetryDialogHarness(t *testing.T) dialogHarness {
 	os.Unsetenv(telemetry.EnvTelemetry) // set-but-empty is a hard off
 	t.Setenv(telemetry.EnvDoNotTrack, "")
 	t.Setenv("CI", "")
+	os.Unsetenv("CI") // set-but-empty counts as CI
 	for _, k := range []string{"AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID", "CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
 		t.Setenv(k, "")
 	}
@@ -262,7 +263,8 @@ func TestTelemetryDialogRefusesCodingAgents(t *testing.T) {
 	telemetryDialogHarness(t)
 	telemetry.SetTerminalForTest(t, true)
 	if !NewTelemetryDialog().canConsent() {
-		t.Fatal("a person at a terminal must be able to consent")
+		t.Fatalf("a person at a terminal must be able to consent (interactive=%v ci=%v agent=%v hard-off=%q log=%v)",
+			telemetry.Interactive(), telemetry.IsCI(), telemetry.AgentActor(), telemetry.HardDisableReason(), telemetry.LogMode())
 	}
 	for _, marker := range []string{"CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
 		t.Run(marker, func(t *testing.T) {
