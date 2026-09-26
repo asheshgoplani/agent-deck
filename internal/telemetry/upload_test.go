@@ -440,6 +440,50 @@ func TestDisableWaitsForInFlightUploadThenNothingIsSent(t *testing.T) {
 	}
 }
 
+// TestUploadHasOneOverallDeadline: a stalled endpoint holds the state lock
+// (and so `telemetry off`) for at most uploadDeadline, not 5 requests x 5 s.
+func TestUploadHasOneOverallDeadline(t *testing.T) {
+	c := env(t)
+	fake := newFakePostHog(t)
+	grant(t, c)
+	var lines []spoolLine
+	for i := 0; i < 2700; i++ {
+		h, w := 10, 6
+		lines = append(lines, spoolLine{E: "session.end", U: newUUID(), D: "2026-09-26", H: &h, W: &w, S: i + 1, V: "9.9.9",
+			A: "human", SF: "tui", L: "full", P: map[string]any{"tool": "claude", "end_kind": "stop"}})
+	}
+	if err := writeSpool(lines); err != nil {
+		t.Fatal(err)
+	}
+	prev := uploadDeadline
+	uploadDeadline = 300 * time.Millisecond
+	t.Cleanup(func() { uploadDeadline = prev })
+	fake.mu.Lock()
+	fake.block = make(chan struct{})
+	release := fake.block
+	fake.mu.Unlock()
+	t.Cleanup(func() { close(release) })
+	c.set(at(1, 9, 0))
+	start := time.Now()
+	r := MaybeUpload(t.Context())
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("upload held the lock for %v", d)
+	}
+	if r.Sent || fake.hits() != 1 {
+		t.Fatalf("%+v after %d request(s)", r, fake.hits())
+	}
+	disabled := make(chan error, 1)
+	go func() { disabled <- Disable("9.9.9", c.now()) }()
+	select {
+	case err := <-disabled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("disable still blocked after the upload deadline")
+	}
+}
+
 func TestRollupsAreRebuiltWithStableUUIDs(t *testing.T) {
 	c := env(t)
 	fake := newFakePostHog(t)

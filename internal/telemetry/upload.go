@@ -21,6 +21,10 @@ const (
 
 var retryBackoff = []time.Duration{5 * time.Minute, 30 * time.Minute, 2 * time.Hour}
 
+// uploadDeadline bounds a whole upload (every request of it), and so how
+// long `telemetry off` can wait for the state lock an upload holds.
+var uploadDeadline = 8 * time.Second
+
 // UploadResult describes what MaybeUpload did, for tests and `status`.
 type UploadResult struct {
 	Attempted bool
@@ -71,8 +75,9 @@ func uploadGate() string {
 
 // MaybeUpload is the one outbound path besides SendUninstall. It sends the
 // completed hours and days waiting in the spool, at most every 6 hours,
-// never on the consent day, and holds the state lock for the whole send so
-// `telemetry off` either waits for it or prevents it.
+// never on the consent day, and holds the state lock for the whole send
+// (at most uploadDeadline) so `telemetry off` either waits for it or
+// prevents it.
 func MaybeUpload(ctx context.Context) UploadResult {
 	if reason := uploadGate(); reason != "" {
 		return UploadResult{Reason: reason}
@@ -82,6 +87,8 @@ func MaybeUpload(ctx context.Context) UploadResult {
 		return UploadResult{Reason: err.Error()}
 	}
 	defer unlock()
+	ctx, cancel := context.WithTimeout(ctx, uploadDeadline)
+	defer cancel()
 	s := LoadState()
 	if ok, reason := Enabled(s); !ok {
 		return UploadResult{Reason: string(reason)}

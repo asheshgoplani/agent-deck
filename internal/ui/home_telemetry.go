@@ -131,16 +131,23 @@ func (h *Home) CloseTelemetry(kind telemetry.ExitKind) {
 	})
 }
 
+// telemetryDisabledMsg carries the result of turning telemetry off from
+// the Settings Privacy row.
+type telemetryDisabledMsg struct{ err error }
+
+// telemetryDisable is telemetry.Disable (a seam for tests).
+var telemetryDisable = telemetry.Disable
+
 // togglePrivacyFromSettings handles the Settings Privacy row: turning off is
 // immediate; turning on opens the same consent question as the first run.
+// Disable can wait for an in-flight upload's state lock, so it runs off the
+// TUI goroutine.
 func (h *Home) togglePrivacyFromSettings() tea.Cmd {
 	st := telemetry.LoadState()
 	if ok, _ := telemetry.Enabled(st); ok {
-		if err := telemetry.Disable(Version, time.Now()); err != nil {
-			h.err = err
-			h.errTime = time.Now()
+		return func() tea.Msg {
+			return telemetryDisabledMsg{err: telemetryDisable(Version, time.Now())}
 		}
-		return nil
 	}
 	if h.telemetryDialog != nil && h.telemetryDialog.ShowFromSettings(Version, st) {
 		h.telemetryDialog.SetSize(h.width, h.height)

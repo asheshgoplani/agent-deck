@@ -8979,6 +8979,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case telemetryGrantedMsg:
 		return h, h.telemetryGranted(msg)
 
+	case telemetryDisabledMsg:
+		if msg.err != nil {
+			h.err = msg.err
+			h.errTime = time.Now()
+		}
+		return h, nil
+
 	case modelsFetchedMsg:
 		if h.geminiModelDialog != nil && h.geminiModelDialog.IsVisible() {
 			h.geminiModelDialog.HandleModelsFetched(msg)
