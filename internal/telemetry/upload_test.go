@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -492,7 +491,9 @@ func TestUploadHasOneOverallDeadline(t *testing.T) {
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("upload held the lock for %v", d)
 	}
-	if r.Sent || fake.hits() != 1 {
+	// Under -race the spool preparation can use up the deadline before the
+	// first request; either way no further request may start.
+	if r.Sent || fake.hits() > 1 {
 		t.Fatalf("%+v after %d request(s)", r, fake.hits())
 	}
 	disabled := make(chan error, 1)
@@ -599,12 +600,9 @@ func TestShowLastKeepsExactBody(t *testing.T) {
 	fake.mu.Lock()
 	sent := fake.bodies[0]
 	fake.mu.Unlock()
-	var a, b any
-	_ = json.Unmarshal(sent, &a)
-	_ = json.Unmarshal(LoadState().LastPayload, &b)
-	ja, _ := json.Marshal(a)
-	jb, _ := json.Marshal(b)
-	if string(ja) != string(jb) {
-		t.Fatal("show-last differs from the acknowledged body")
+	// show-last is the acknowledged body with the project key redacted.
+	last, err := withAPIKey(LoadState().LastPayload)
+	if err != nil || string(last) != string(sent) {
+		t.Fatalf("show-last differs from the acknowledged body (%v)", err)
 	}
 }

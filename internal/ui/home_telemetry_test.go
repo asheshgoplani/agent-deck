@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"os"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestSettingsPrivacyOffNeverBlocksTheTUI: Disable may wait for an upload's
@@ -12,6 +14,7 @@ import (
 // calling it on the TUI goroutine.
 func TestSettingsPrivacyOffNeverBlocksTheTUI(t *testing.T) {
 	h := telemetryDialogHarness(t)
+	os.Unsetenv(telemetry.EnvTelemetry) // set-but-empty is a hard off
 	if err := telemetry.Grant(h.st, "9.9.9", time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -27,20 +30,20 @@ func TestSettingsPrivacyOffNeverBlocksTheTUI(t *testing.T) {
 	t.Cleanup(func() { telemetryDisable = prev })
 
 	home := &Home{}
-	returned := make(chan func() any, 1)
-	go func() {
-		cmd := home.togglePrivacyFromSettings()
-		returned <- func() any { return cmd() }
-	}()
-	var run func() any
+	returned := make(chan tea.Cmd, 1)
+	go func() { returned <- home.togglePrivacyFromSettings() }()
+	var cmd tea.Cmd
 	select {
-	case run = <-returned:
+	case cmd = <-returned:
 	case <-time.After(2 * time.Second):
 		close(release)
 		t.Fatal("turning telemetry off blocked the TUI goroutine")
 	}
 	close(release)
-	msg, ok := run().(telemetryDisabledMsg)
+	if cmd == nil {
+		t.Fatal("no command: telemetry was not on")
+	}
+	msg, ok := cmd().(telemetryDisabledMsg)
 	if !ok || msg.err != nil {
 		t.Fatalf("msg = %#v", msg)
 	}
