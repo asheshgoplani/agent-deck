@@ -215,7 +215,7 @@ func (c *frameConn) write(f Frame) error {
 	defer c.mu.Unlock()
 	if conn, ok := c.w.(net.Conn); ok {
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		defer conn.SetWriteDeadline(time.Time{})
+		defer func() { _ = conn.SetWriteDeadline(time.Time{}) }()
 	}
 	_, err = c.w.Write(line)
 	return err

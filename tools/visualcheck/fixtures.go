@@ -13,11 +13,11 @@ import (
 const visualCheckI18NReply = "नमस्ते दुनिया 🚀🌟 यह परीक्षण है।"
 
 // installFixtureTools writes the synthetic "claude" CLI used to reach every
-// session status headlessly. Other tools (gemini/opencode/codex/pi) are only
-// ever `add`ed without starting, so the gallery shows them at their natural
-// post-add StatusIdle without needing a fixture binary on PATH. "shell"
-// sessions run the sandboxed HOME's real /bin/sh, so it needs no fixture
-// either.
+// session status headlessly, plus the fixtureSSH stand-in. Other tools
+// (gemini/opencode/codex/pi) are only ever `add`ed without starting, so the
+// gallery shows them at their natural post-add StatusIdle without needing
+// a fixture binary on PATH. "shell" sessions run the sandboxed HOME's real
+// /bin/sh, so it needs no fixture either.
 //
 // This is a disposable interactive local process standing in for a model
 // client, not a real model client: it emits the same transcript shape and
@@ -76,5 +76,19 @@ while IFS= read -r line; do
 done
 `
 	script = strings.ReplaceAll(script, "REPLY_TEXT", visualCheckI18NReply)
-	return os.WriteFile(filepath.Join(s.root, "bin", "claude"), []byte(script), 0o700)
+	if err := os.WriteFile(filepath.Join(s.root, "bin", "claude"), []byte(script), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.root, "bin", "ssh"), []byte(fixtureSSH), 0o700)
 }
+
+// fixtureSSH shadows the real ssh on the sandbox PATH. The "lab" remote
+// (fixture@vc-lab.invalid) must be unreachable the same way on every
+// machine; the real ssh made that depend on the runner's resolver and
+// network (offline g14 container vs networked GitHub runner). It fails
+// every call immediately with ssh's own resolver error text and exit code,
+// which the poll classifies as "host down", without touching the network.
+const fixtureSSH = `#!/bin/sh
+printf 'ssh: Could not resolve hostname vc-lab.invalid: Name or service not known\n' >&2
+exit 255
+`

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -186,6 +187,10 @@ func TestBusProcessHelper(t *testing.T) {
 }
 
 func TestCLIStatsReadsProducerDropsAcrossProcesses(t *testing.T) {
+	// Resolve the real Go caches before HOME/XDG move into the TempDir; a
+	// build under the fake HOME would download a fresh module cache there
+	// (slow, and its read-only files break TempDir cleanup).
+	goCaches := realGoCacheEnv(t)
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
@@ -215,6 +220,7 @@ func TestCLIStatsReadsProducerDropsAcrossProcesses(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "agent-deck")
 	build := exec.Command("go", "build", "-buildvcs=false", "-o", binary, "./cmd/agent-deck")
 	build.Dir = filepath.Join("..", "..")
+	build.Env = append(os.Environ(), goCaches...)
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v\n%s", err, output)
 	}
@@ -244,6 +250,26 @@ func TestCLIStatsReadsProducerDropsAcrossProcesses(t *testing.T) {
 	if beta.Dir == dir || beta.Cursor != 0 || beta.Dropped != 0 {
 		t.Fatalf("beta observed alpha bus: %+v", beta)
 	}
+}
+
+// realGoCacheEnv returns GOPATH/GOMODCACHE/GOCACHE assignments for the
+// caller's real Go environment, for child builds run under a fake HOME.
+func realGoCacheEnv(t *testing.T) []string {
+	t.Helper()
+	vars := []string{"GOPATH", "GOMODCACHE", "GOCACHE"}
+	out, err := exec.Command("go", append([]string{"env"}, vars...)...).Output()
+	if err != nil {
+		t.Fatalf("go env: %v", err)
+	}
+	values := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(values) != len(vars) {
+		t.Fatalf("go env returned %d values, want %d: %q", len(values), len(vars), out)
+	}
+	env := make([]string, len(vars))
+	for i, name := range vars {
+		env[i] = name + "=" + values[i]
+	}
+	return env
 }
 
 func TestDefaultOwnerCloseDrainsOneShot(t *testing.T) {
@@ -514,8 +540,29 @@ func TestRestartThenRotateRetainsTrueSegmentRange(t *testing.T) {
 	}
 }
 
+// lockedBuffer is an io.Writer safe for the bus writer goroutine to log into
+// while the test goroutine reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
 func TestRuntimeWriteFailureDisablesWithoutCursorGap(t *testing.T) {
-	var warnings bytes.Buffer
+	// fail() sets the failed flag before slog.Warn returns, so the buffer is
+	// written by the writer goroutine concurrently with the reads below.
+	var warnings lockedBuffer
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&warnings, nil)))
 	defer slog.SetDefault(previousLogger)
@@ -540,8 +587,12 @@ func TestRuntimeWriteFailureDisablesWithoutCursorGap(t *testing.T) {
 	if !b.failed.Load() {
 		t.Error("bus did not disable on runtime failure")
 	}
+	const disabledWarning = "events: bus disabled after write failure"
+	for strings.Count(warnings.String(), disabledWarning) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	b.Publish("failed-again", "", nil)
-	if got := strings.Count(warnings.String(), "events: bus disabled after write failure"); got != 1 {
+	if got := strings.Count(warnings.String(), disabledWarning); got != 1 {
 		t.Errorf("runtime warnings = %d, want 1: %s", got, warnings.String())
 	}
 	if b.Cursor() != 0 {
@@ -860,9 +911,8 @@ func TestDisabledBusIsANoOp(t *testing.T) {
 
 	b := Default()
 	b.Publish("kind.noop", "sess", map[string]any{"x": 1})
-	if !b.Flush(50 * time.Millisecond) {
-		// disabled Flush returns false immediately; that's expected, not a hang
-	}
+	// A disabled Flush returns false immediately; that's expected, not a hang.
+	_ = b.Flush(50 * time.Millisecond)
 	stats := b.Stats()
 	if stats.Enabled {
 		t.Fatal("expected disabled bus")
