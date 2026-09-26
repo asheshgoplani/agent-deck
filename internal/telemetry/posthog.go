@@ -37,7 +37,7 @@ type phBatch struct {
 // redactedAPIKey stands in for the project key in every body agent-deck
 // builds, stores or prints (preview, show-last, log mode); only post()
 // swaps the real key in, for the request itself.
-const redactedAPIKey = "phc_redacted"
+const redactedAPIKey = "phc_redacted" //nolint:gosec // G101: a placeholder, not a credential
 
 // redactedBodyPrefix is how every encoded batch body starts.
 var redactedBodyPrefix = []byte(`{"api_key":"` + redactedAPIKey + `",`)
