@@ -65,6 +65,50 @@ func TestTrimSpoolExpiryAndOverflow(t *testing.T) {
 	}
 }
 
+// TestRecordEnforcesRetentionWithoutUploader: with no project key nothing
+// ever uploads, yet recording drops expired days and keeps the cap.
+func TestRecordEnforcesRetentionWithoutUploader(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	if Configured() {
+		t.Fatal("setup: a key is configured")
+	}
+	for d := 0; d <= spoolExpiryDays+1; d++ {
+		c.set(at(d, 10, 0))
+		SessionEnded(SessionEndInfo{Tool: "claude", Kind: EndStop})
+	}
+	lines := spoolLines(t)
+	cutoff := dayOf(at(spoolExpiryDays+1, 10, 0).AddDate(0, 0, -spoolExpiryDays))
+	for _, l := range lines {
+		if l.D < cutoff {
+			t.Fatalf("day %s is older than %d days and still spooled", l.D, spoolExpiryDays)
+		}
+	}
+	if len(lines) == 0 {
+		t.Fatal("the latest days were dropped too")
+	}
+
+	var big []spoolLine
+	for i := 0; i < 3000; i++ {
+		h, w := 9, 6
+		big = append(big, spoolLine{E: "session.end", U: newUUID(), D: dayOf(c.now()), H: &h, W: &w, S: i + 1, V: "9.9.9",
+			A: "human", SF: "tui", L: "full", P: map[string]any{"tool": "claude", "end_kind": "stop"}})
+	}
+	if err := writeSpool(big); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(spoolBytes(t)); n <= maxSpoolBytes {
+		t.Fatalf("setup: spool is only %d bytes", n)
+	}
+	SessionEnded(SessionEndInfo{Tool: "codex", Kind: EndStop})
+	if n := len(spoolBytes(t)); n > maxSpoolBytes {
+		t.Fatalf("spool is %d bytes after recording, over the %d cap", n, maxSpoolBytes)
+	}
+	if got := spoolLines(t); got[len(got)-1].P["tool"] != "codex" {
+		t.Fatal("the new event was not appended after the trim")
+	}
+}
+
 func TestSpoolLineOverOneKiBIsRefused(t *testing.T) {
 	env(t)
 	long := spoolLine{E: "session.end", U: newUUID(), D: "2026-09-26", V: "9.9.9", A: "human", SF: "tui", L: "full",

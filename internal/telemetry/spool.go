@@ -54,7 +54,15 @@ func appendSpool(line spoolLine) error {
 	if err != nil {
 		return err
 	}
-	// Hard guard; the uploader compacts back under maxSpoolBytes.
+	// Retention is enforced here as well as in the uploader: a build with no
+	// project key never uploads, and its spool must still expire and stay
+	// under the cap.
+	if spoolNeedsTrim(path, nowFn()) {
+		if lines, err := readSpool(); err == nil {
+			_ = writeSpool(trimSpool(lines, nowFn()))
+		}
+	}
+	// Hard guard, in case the trim above could not rewrite the file.
 	if fi, err := os.Stat(path); err == nil && fi.Size() >= 2*maxSpoolBytes {
 		return errors.New("telemetry: spool full")
 	}
@@ -68,6 +76,30 @@ func appendSpool(line spoolLine) error {
 		return werr
 	}
 	return cerr
+}
+
+// spoolNeedsTrim reports whether the spool is over the byte cap or its first
+// (oldest) line is past the expiry. Only the first line is read.
+func spoolNeedsTrim(path string, now time.Time) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err == nil && fi.Size() > maxSpoolBytes {
+		return true
+	}
+	first, err := bufio.NewReaderSize(f, maxLineBytes+1).ReadSlice('\n')
+	if err != nil && len(first) == 0 {
+		return false
+	}
+	var l struct {
+		D string `json:"d"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(first), &l) != nil {
+		return true // a torn or forged first line: the rewrite drops it
+	}
+	return l.D < dayOf(now.AddDate(0, 0, -spoolExpiryDays))
 }
 
 // readSpool returns every well-formed line; a torn or invalid line (for
