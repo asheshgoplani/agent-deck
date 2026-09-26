@@ -150,6 +150,14 @@ func TestWriteCostEvent_ContainmentAndTailWalk(t *testing.T) {
 // disabled index leave no trace.
 func TestRecallHookTrigger_QueuesAndIndexesOnlyThatFile(t *testing.T) {
 	initTestLogging(t)
+	// The 150 ms interactive budget also covers opening the profile's
+	// state.db; under -race on a loaded runner that can leave this file
+	// partly indexed (resumed by the next sweep, by design), which made the
+	// exact message counts below flaky. This test is about which file gets
+	// indexed, not about the budget.
+	previousDeadline := recallHookDeadline
+	recallHookDeadline = 30 * time.Second
+	t.Cleanup(func() { recallHookDeadline = previousDeadline })
 	home, personal, _ := hookHome(t, true)
 	if _, err := testcorpus.Generate(personal, testcorpus.Options{Files: 3, Seed: 5}); err != nil {
 		t.Fatal(err)
