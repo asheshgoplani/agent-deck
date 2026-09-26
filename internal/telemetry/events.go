@@ -341,8 +341,13 @@ type FleetCounts struct {
 }
 
 // TUIStarted records app.start for a TUI start, and the first_run milestone.
-func TUIStarted(fleet FleetCounts) {
+// alone reports that no other TUI was running (this one won the sampler
+// lock), so an unrecorded exit of the previous TUI means it crashed.
+func TUIStarted(fleet FleetCounts, alone bool) {
 	withState(func(s *State, now time.Time) bool {
+		if !alone {
+			s.TUIOpen = false
+		}
 		s.appStartLocked(fleet, now)
 		s.reach(stepFirstRun, "", "", now)
 		return true
@@ -431,13 +436,13 @@ func (s *State) countFeature(r *DailyRollup, f Feature, failed bool, now time.Ti
 }
 
 // SessionCreateInfo describes a newly created session. Tool is the raw tool
-// name (normalised here); SessionID is hashed with the local salt here.
+// name (normalised here); SessionID is hashed with the local salt here. The
+// published skills count is not reported yet (no call site knows it).
 type SessionCreateInfo struct {
 	Tool      string
 	Via       CreateVia
 	Worktree  bool
 	MCPs      int
-	Skills    int
 	InGroup   bool
 	Remote    bool
 	Parented  bool
@@ -448,17 +453,17 @@ type SessionCreateInfo struct {
 func SessionCreated(in SessionCreateInfo) {
 	record("session.create", map[string]any{
 		"tool": NormalizeTool(in.Tool), "via": string(in.Via), "worktree": in.Worktree,
-		"mcps": CountBucket(in.MCPs), "skills": CountBucket(in.Skills), "in_group": in.InGroup,
+		"mcps": CountBucket(in.MCPs), "in_group": in.InGroup,
 		"remote": in.Remote, "parented": in.Parented,
 	}, in.SessionID)
 }
 
-// SessionEndInfo describes a session ending.
+// SessionEndInfo describes a session ending. The published restarts count is
+// not reported yet (restarts are not tracked per session).
 type SessionEndInfo struct {
 	Tool      string
 	Kind      EndKind
 	Lifetime  time.Duration
-	Restarts  int
 	SessionID string
 }
 
@@ -466,7 +471,7 @@ type SessionEndInfo struct {
 func SessionEnded(in SessionEndInfo) {
 	record("session.end", map[string]any{
 		"tool": NormalizeTool(in.Tool), "end_kind": string(in.Kind),
-		"lifetime": DurBucket(in.Lifetime), "restarts": CountBucket(in.Restarts),
+		"lifetime": DurBucket(in.Lifetime),
 	}, in.SessionID)
 }
 

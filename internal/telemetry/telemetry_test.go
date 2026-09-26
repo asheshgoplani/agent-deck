@@ -311,7 +311,7 @@ func recordEveryEvent(t *testing.T, c *clock) {
 	t.Helper()
 	fleet := FleetCounts{Sessions: 5, Groups: 2, Profiles: 1, Conductors: 1}
 	AfterConsent(SourceTUIFirstRun, "none", Baseline{InstallMethod: "brew", TmuxOK: true, ToolsFound: ToolMask("claude", "codex"), HadConfig: true}, &fleet)
-	TUIStarted(fleet)
+	TUIStarted(fleet, false)
 	EnvSnapshot(EnvInfo{Terminal: "ghostty", TmuxMinor: "3.4", Shell: "zsh", InstallMethod: "brew", Color: "truecolor", ToolsInstalled: ToolMask("claude"), ConfigSections: ConfigSectionMask("claude", "tmux")})
 	SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaTUINew, Worktree: true, MCPs: 2, InGroup: true, SessionID: "sess-1"})
 	SessionCreated(SessionCreateInfo{Tool: "codex", Via: ViaCLIAdd, SessionID: "sess-2"})
@@ -571,7 +571,7 @@ func TestBasicLevelRecordsOnlyBasicEventsWithoutHours(t *testing.T) {
 		t.Fatal(err)
 	}
 	SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaTUINew, SessionID: "x"})
-	TUIStarted(FleetCounts{Sessions: 1})
+	TUIStarted(FleetCounts{Sessions: 1}, true)
 	FeatureUsed("fork", false)
 	lines := spoolLines(t)
 	if len(lines) != 1 || lines[0].E != "app.start" || lines[0].H != nil || lines[0].W != nil {

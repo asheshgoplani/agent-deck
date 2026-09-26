@@ -54,9 +54,10 @@ func (h *Home) telemetryFirstLoad() tea.Cmd {
 	h.tel.started = true
 	h.tel.startedAt = time.Now()
 	h.tel.sampler = telemetry.NewSampler()
+	alone := h.tel.sampler != nil
 	sum := h.telemetrySummary()
 	return func() tea.Msg {
-		telemetry.TUIStarted(session.TelemetryFleet(sum))
+		telemetry.TUIStarted(session.TelemetryFleet(sum), alone)
 		telemetry.EnvSnapshot(session.TelemetryEnv())
 		return nil
 	}
