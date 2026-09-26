@@ -160,6 +160,34 @@ func TestShouldPrompt(t *testing.T) {
 	}
 }
 
+// TestRegrantAfterEndpointChangeDropsOldSpool: events recorded under one
+// consent and destination never reach another one under a new install id.
+func TestRegrantAfterEndpointChangeDropsOldSpool(t *testing.T) {
+	c := env(t)
+	old := grant(t, c)
+	SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaTUINew, SessionID: "s1"})
+	if len(spoolLines(t)) == 0 {
+		t.Fatal("setup: nothing spooled")
+	}
+	fake := newFakePostHog(t) // a different endpoint: the old grant is stale
+	s := grant(t, c)
+	if s.InstallID == old.InstallID {
+		t.Fatal("a new endpoint must mint a new install id")
+	}
+	if n := len(spoolBytes(t)); n != 0 {
+		t.Fatalf("spool kept %d bytes across re-consent", n)
+	}
+	c.set(at(1, 9, 0))
+	MaybeUpload(t.Context())
+	for i := 0; i < fake.hits(); i++ {
+		for _, e := range fake.batch(t, i).Batch {
+			if e.Event == "session.create" {
+				t.Fatal("an event recorded under the old consent was uploaded")
+			}
+		}
+	}
+}
+
 func TestV1StateMigration(t *testing.T) {
 	c := env(t)
 	writeV1State(t, ConsentGranted)

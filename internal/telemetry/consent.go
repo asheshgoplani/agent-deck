@@ -82,11 +82,17 @@ func ShouldPrompt(s *State) bool {
 }
 
 // Grant records consent. A new install id and salt are created unless the
-// existing ones were granted for this exact endpoint and schema.
+// existing ones were granted for this exact endpoint and schema; a new
+// identity also deletes the spool, so events recorded under an earlier
+// consent or destination can never be sent under this one. Nothing records
+// into the spool meanwhile: the stale grant does not enable recording.
 func Grant(s *State, version string, now time.Time) error {
 	if !validInstallID(s.InstallID) || len(s.Salt) != 64 || s.ConsentEndpoint != Endpoint() || s.SchemaVersion != SchemaVersion {
 		id, salt, err := newIdentity()
 		if err != nil {
+			return err
+		}
+		if err := DeleteSpool(); err != nil {
 			return err
 		}
 		s.resetCollected()
