@@ -13,17 +13,17 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
-	"golang.org/x/term"
 )
 
 func handleTelemetry(args []string) {
-	interactive := telemetry.Interactive()
 	for _, arg := range args {
 		if arg == "--json" {
-			interactive = term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
+			// The question and answer use stdin and stderr; the same check
+			// decides whether the consent events that follow are recorded.
+			telemetry.UseStderrForTerminalCheck()
 		}
 	}
-	code := runTelemetry(args, Version, os.Stdin, os.Stdout, os.Stderr, interactive)
+	code := runTelemetry(args, Version, os.Stdin, os.Stdout, os.Stderr, telemetry.Interactive())
 	if code != 0 {
 		os.Exit(code)
 	}

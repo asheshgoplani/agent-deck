@@ -208,6 +208,21 @@ func TestWebEventsCarryTheWebSurface(t *testing.T) {
 	}
 }
 
+// TestJSONCommandsCheckStderrForTheTerminal: with --json stdout is piped
+// output, so the TTY check (which also gates recording the consent events)
+// must look at stderr.
+func TestJSONCommandsCheckStderrForTheTerminal(t *testing.T) {
+	prev := terminalOut
+	t.Cleanup(func() { terminalOut = prev })
+	if terminalOut != os.Stdout {
+		t.Fatal("default output check must be stdout")
+	}
+	UseStderrForTerminalCheck()
+	if terminalOut != os.Stderr {
+		t.Fatal("--json must check stderr")
+	}
+}
+
 func TestV1StateMigration(t *testing.T) {
 	c := env(t)
 	writeV1State(t, ConsentGranted)

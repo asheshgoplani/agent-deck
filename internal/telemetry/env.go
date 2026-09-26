@@ -137,9 +137,17 @@ func InsideSession() bool {
 	return false
 }
 
+// terminalOut is the output stream that must be a terminal, next to stdin.
+var terminalOut = os.Stdout
+
 var isTerminalFn = func() bool {
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(terminalOut.Fd()))
 }
+
+// UseStderrForTerminalCheck is for commands whose stdout is machine output
+// (--json): the person answers on stdin and reads stderr, so stderr, not
+// stdout, must be a terminal.
+func UseStderrForTerminalCheck() { terminalOut = os.Stderr }
 
 // AgentActor reports whether the person at this TTY is really an agent: the
 // process runs inside an agent-deck session or under a known coding agent.
