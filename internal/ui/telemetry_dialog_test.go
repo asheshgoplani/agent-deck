@@ -176,8 +176,8 @@ func TestTelemetryDialogCtrlCPostponesWithoutQuitting(t *testing.T) {
 	if h.d.IsVisible() || h.st.Consent != telemetry.ConsentUndecided || len(*h.saves) != 0 {
 		t.Fatal("Ctrl-C must close and leave the state undecided")
 	}
-	if !telemetry.ShouldPrompt(h.st) {
-		t.Fatal("a postponed question is asked again at the next start")
+	if h.st.DeclinedSchema != 0 || h.st.V1Declined() {
+		t.Fatal("a postponed question must not be recorded as answered")
 	}
 }
 

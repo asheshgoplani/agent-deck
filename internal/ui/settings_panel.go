@@ -1292,7 +1292,7 @@ func (s *SettingsPanel) View() string {
 	// PRIVACY
 	content.WriteString(sectionStyle.Render("PRIVACY"))
 	content.WriteString("\n")
-	line = "Usage data: " + s.privacyLabel + "  (Enter to change; details: agent-deck telemetry status)"
+	line = "Usage data: " + s.privacyLabel + "  (Enter to change)"
 	if s.cursor == int(SettingPrivacy) {
 		line = highlightStyle.Render(line)
 	}
