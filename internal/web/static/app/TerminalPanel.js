@@ -10,6 +10,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
+import { registerOsc52Handler } from './terminalClipboard.js'
 import { createTerminalLinkHandler } from './terminalLinks.js'
 
 // Mobile detection: pointer:coarse for touch devices
@@ -295,6 +296,11 @@ export function TerminalPanel() {
         signal: controller.signal,
       })
     }
+
+    // #2370: OSC 52 copies from the pane (tmux copy mode, Claude Code's
+    // selection) reach the browser clipboard. Writes only; see
+    // registerOsc52Handler. Disposed with the terminal.
+    registerOsc52Handler(terminal)
 
     terminal.writeln('Connecting to terminal...')
 
