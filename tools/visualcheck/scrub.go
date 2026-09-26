@@ -58,6 +58,12 @@ var scrubRules = []scrubRule{
 	// vc-<pid> portion itself is scrubbed. Consuming through to the next
 	// separator/pipe/ellipsis makes the replacement length-independent.
 	{"tmp-path", regexp.MustCompile(`/tmp/vc-[^\s│…]*[…]?`), "/tmp/vc-<tmp>"},
+	// An emoji with variation selector 16 (e.g. the preview's "👁️ no
+	// viewers") is one cell wide in some tmux builds and two in others
+	// (g14's container vs the GitHub runner), so the renderer pads it with
+	// one space or two. Collapse the run so the golden does not depend on
+	// the runner's wcwidth table.
+	{"vs16-emoji-padding", regexp.MustCompile("\uFE0F +"), "\uFE0F "},
 }
 
 func init() {
