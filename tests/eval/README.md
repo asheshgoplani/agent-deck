@@ -40,14 +40,15 @@ dialog directly because Go's internal-package rule blocks
 ## Running locally
 
 ```bash
-# Smoke tier — what CI runs per-PR. Budget: ~30-60s.
-GOTOOLCHAIN=go1.25.13 go test -tags eval_smoke \
-  ./tests/eval/... ./internal/ui/...
+# Smoke tier — what CI runs per-PR. Budget: ~30-60s. internal/ui is scoped
+# to its eval cases, so name every eval test there TestEval_*.
+GOTOOLCHAIN=go1.25.13 go test -tags eval_smoke ./tests/eval/...
+GOTOOLCHAIN=go1.25.13 go test -tags eval_smoke -run '^TestEval_' ./internal/ui/...
 
 # Full tier — runs at the release gate. Currently identical to smoke; will
 # grow as eval_full cases are added.
-GOTOOLCHAIN=go1.25.13 go test -tags 'eval_smoke eval_full' \
-  ./tests/eval/... ./internal/ui/...
+GOTOOLCHAIN=go1.25.13 go test -tags 'eval_smoke eval_full' ./tests/eval/...
+GOTOOLCHAIN=go1.25.13 go test -tags 'eval_smoke eval_full' -run '^TestEval_' ./internal/ui/...
 
 # Single case, verbose.
 GOTOOLCHAIN=go1.25.13 go test -tags eval_smoke -v \
