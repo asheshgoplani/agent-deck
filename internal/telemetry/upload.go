@@ -16,6 +16,7 @@ const (
 	rejectedDropDays   = 3
 	uninstallTimeout   = 2 * time.Second
 	logFileName        = "telemetry-log.ndjson"
+	maxLogBytes        = 4 << 20
 	lastPayloadMaxSize = 64 << 10
 )
 
@@ -302,12 +303,17 @@ func nextLocalDay(now time.Time) time.Time {
 }
 
 // appendLog writes a would-be upload body to telemetry-log.ndjson (log mode).
+// The file starts over once it would pass 4 MiB.
 func appendLog(body []byte) error {
 	path, err := siblingPath(logFileName)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	flags := os.O_CREATE | os.O_APPEND | os.O_WRONLY
+	if fi, err := os.Stat(path); err == nil && fi.Size()+int64(len(body))+1 > maxLogBytes {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, flags, 0600)
 	if err != nil {
 		return err
 	}

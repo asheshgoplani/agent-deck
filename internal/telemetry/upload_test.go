@@ -1,10 +1,12 @@
 package telemetry
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -400,6 +402,27 @@ func TestWithAPIKeyOnlyAcceptsRedactedBatches(t *testing.T) {
 	}
 	if _, err := withAPIKey([]byte(`{"batch":[]}`)); err == nil {
 		t.Fatal("a body without the placeholder must be refused")
+	}
+}
+
+func TestLogFileIsCapped(t *testing.T) {
+	env(t)
+	p, err := siblingPath(logFileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, bytes.Repeat([]byte("x"), maxLogBytes-10), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendLog([]byte(`{"e":"new"}`)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil || string(data) != "{\"e\":\"new\"}\n" {
+		t.Fatalf("log file not restarted at the cap: %d bytes, %v", len(data), err)
 	}
 }
 

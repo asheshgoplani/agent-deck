@@ -76,7 +76,7 @@ agent-deck telemetry level basic     # record less (see Levels); `level full` as
 
 The project key never appears in `preview`, `show-last` or log-mode output: those bodies carry `"api_key":"phc_redacted"`, and the key is inserted only into the request itself.
 
-**Log mode.** `AGENTDECK_TELEMETRY=log` never sends and never grants consent. With consent, events are recorded as usual and each upload writes its batch to `telemetry-log.ndjson` (next to `telemetry-state.json`) instead of POSTing it. Without consent, every event that would be recorded is written there (TUI) or to stderr (CLI), marked `"recorded":false`.
+**Log mode.** `AGENTDECK_TELEMETRY=log` never sends and never grants consent. With consent, events are recorded as usual and each upload writes its batch to `telemetry-log.ndjson` (next to `telemetry-state.json`, restarted once it would pass 4 MiB) instead of POSTing it. Without consent, every event that would be recorded is written there (TUI) or to stderr (CLI), marked `"recorded":false`.
 
 ## Levels
 
