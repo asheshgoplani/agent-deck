@@ -1,0 +1,10 @@
+Usage: agent-deck group show <name> [--resolved] [--json]
+
+Show a group's settings.
+
+Options:
+
+Examples:
+  agent-deck group show work
+  agent-deck group show work --resolved
+  agent-deck group show work --resolved --json

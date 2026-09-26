@@ -1,0 +1,22 @@
+Usage: agent-deck try <name> [options]
+
+Quick experiment: find or create a dated folder and start a session.
+
+Arguments:
+  <name>    Experiment name (fuzzy matched against existing experiments)
+
+Options:
+
+Examples:
+  agent-deck try redis-cache          # Create/find redis-cache experiment
+  agent-deck try rds                  # Fuzzy match 'redis-cache'
+  agent-deck try --list               # List all experiments
+  agent-deck try --list redis         # Fuzzy search experiments
+  agent-deck try myproject -c gemini  # Use Gemini instead of Claude
+  agent-deck try myproject --no-session  # Just create folder
+
+Config (<SANDBOX_HOME>/.config/agent-deck/config.toml):
+  [experiments]
+  directory = "~/src/tries"    # Base directory for experiments
+  date_prefix = true           # Add YYYY-MM-DD- prefix
+  default_tool = "claude"     # Default AI tool

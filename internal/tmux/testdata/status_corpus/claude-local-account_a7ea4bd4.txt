@@ -1,0 +1,130 @@
+      -xx)
+  ⎿  ───────────────────────────────────────────────────────────────────────────────────
+     ───────────────────────────────────────────────────────────────────────────────────
+     ──────────────────────────────────
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+❯ xxxxx xxxxx xxxx xxx xxxx x xxxxxx xxxxxxxxx xxxx xxxx xxxxxx xx x xx xxx xxxxxxxxxxx
+  xxxxxx xxxx xxxxxxx xxxx xxxx
+
+❯ xxxx x xxxxx xxx xx xx
+
+⏺ xxxx(xxx=$(xxxx xxxxxxx-xxxx -x xxxxxxxxx -x -x | xxxx -x
+      'xxxxx://xxxxxx.xxx/xxx/xxxxx/xxxxxxxxx[^ ]*' | xxxx -x)
+      xxxxxx '%x' "$xxx" | xxxxxx…)
+  ⎿  copied to clipboard (0 chars)
+
+⏺ xxxx(xxx=$(xxxx xxxxxxx-xxxx -x xxxxxxxxx -x | xxx '/^xxxxx:\/\/xxxxxx\.xxx/{x=x}
+      x&&xx{xxxxxx "%x",$x} x&&!xx{xxxx}')
+      xxxxxx '%x' "$xxx" | xxxxxx…)
+  ⎿  len=0  (copied to clipboard)
+
+⏺ xxxx(xxxx xxxxxxx-xxxx -x xxxxxxxxx -x | xxxx -x . | xxx -x 'x,xxx')
+  ⎿  1: ▐▛███▛█   Claude Code v2.1.278
+     2:▝▜██████▀  Fable 5 with medium effort · Claude Max
+     3:  ▝▝ ▝▝    /private/tmp/exec-macapp-codex
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xx xxxxxxx xxxx xxxxxxx — xxx xxxxxxx xxxxxxxxx xx. xxxxxx xx xx xxxx@xxxxxxx.xxx
+
+⏺ xxxx(xxxx xxxx-xxxx -x xxxxxxxxx xxxxx; xxxxx x; xxxx xxxx-xxxx -x xxxxxxxxx "/xxxx"; xxxxx
+      x; xxxx xxxx-xxxx -x xxxxxxxxx xxxxx; xxxxx x; xxxx xxxx-xxxxxxx -x xxxxx…)
+  ⎿  scratch session closed
+     xxxx xxx xxx: xxxx@xxxxxxx.xxx | xxxx@xxxxxxx.xxx'x xxxxxxxxxxxx | xx
+     xxxxx_xxxxxx_xxx_xx
+
+⏺ xxx xxxxxxxxx xxx xxxx xxxx xx xxxxxxxx xxxxxxxx.
+
+⏺ xxxx(~/.xxxxx-xxxx/xxxxxx/xxxx/xxxxxxx-xxxxxxx/xxxxxxx/xxxxx-xxxxx.xx xxx x>&x
+      xxxx…)
+  ⎿  personal: 5h 0.0% (resets in ? min) | 7d 100.0% (resets in 5574 min)
+     xxxx: xx x.x% (xxxxxx xx xx xxx) | xx xx.x% (xxxxxx xx xxx xxx)
+     xxxxxx: xx x.x% (xxxxxx xx xxx xxx) | xx xx.x% (xxxxxx xx xxxx xxx)
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxxx. xxx xx xxxxx xxxxx xxxxxxx xxxxxxxx xxx xx xxxx xxx xxxxxx xxx xxxxxxx.
+
+⏺ xxxx(xxx x xx ~/.xxxxx-xxxx/xxxxxxxx/*/xxxxx.xx; xx
+        xxxx "=== $(xxxxxxxx $(xxxxxxx $x)) ==="…)
+  ⎿  === _baseline_test ===
+     === _xxxxx_xxxx ===
+     === _xxxx_xxxxxx_xxxx ===
+     … +xx xxxxx (xxxx+x xx xxxxxx)
+
+  xxxxx x xxxxxxxx (xxxx+x xx xxxxxx)
+
+⏺ xxxx — xx'x xxxxx.
+
+  xxxxxx → xxxxx
+
+  ┌────────────┬────────────────────────────────┬────────────────────────────────────────┐
+  │  Account   │             Before             │                 After                  │
+  ├────────────┼────────────────────────────────┼────────────────────────────────────────┤
+  │ personal   │ user@example.com     │ unchanged — 7d 100% (exhausted, ~93h   │
+  │            │                                │ to reset)                              │
+  ├────────────┼────────────────────────────────┼────────────────────────────────────────┤
+  │ work       │ ❌ user@example.com       │ ✅ user@example.com — 7d 39%    │
+  │ (proj-d)     │                                │                                        │
+  ├────────────┼────────────────────────────────┼────────────────────────────────────────┤
+  │ proj-ai     │ user@example.com          │ unchanged — 7d 61%                     │
+  ├────────────┼────────────────────────────────┼────────────────────────────────────────┤
+  │ semproj-d    │ user@example.com │ unchanged — 7d 76%                     │
+  └────────────┴────────────────────────────────┴────────────────────────────────────────┘
+
+  xxx xxxx xxxxxxxxxxxx xxx xxx xxxxxxxx. xxx xxxxxxxxx xxxx xxxx xxxxxxxx xxx xxx xxxxx
+  xxxx, xxx xxxx xx xxx xxxxxxxx xx xx% xxxx.
+
+  xxxx x xxx
+
+  - xxxxxxxxx xx: ~/.xxxxxx-xxxx xxx ~/.xxxxxx-xxxxxx xxx xxxx-xxxxxxxxx xxxxxxxxxxx — xxxx
+    xxxxxxx xxxxxxx xxx xxxx. xxxx'x xxx xxxxx xxxxx xxxxxxx xxxxxxx xxxxxxx.
+  - xxxxxx xx xxx xxxxx xxxxx xx
+    ~/.xxxxxx-xxxx/.xxxxxxxxxxx.xxxx.xxx-xxxxxx-xxx-xxx xxx xxx.
+  - xxx /xxxxx xx x xxxxxxxxx xxxx xxxxxxx xxxxxxx xx ~/.xxxxxx-xxxx; xxxx xxxxxxx xxxxxxxxx
+    xxx xxxxx xxx xx xxxx xxxx xxxxxx xx xx xxxx@xxxxxxx.xxx xxxxxxx xxxxxxx xxxxxxx
+    xx.
+
+  xxxxxx — xxxxxxx xx xxxxxx
+
+  ~/.xxxxx-xxxx/xxxxxx.xxxx xxxxxxx xxxx xxxxxxx xxxx → ~/.xxxxxx-xxxx (xxxx xxx, xxxx
+  xxxxxxxxxx xx xxx xxx xxx). xxxxx xxx xxxxxxxxxxx xxxx xxxxxx xx xxx xxxxxxxxx, xxxxx xxx
+  xxxxxxx xx xxx xxxx xxxxxxx xxxxx xx xxxx xxxxxxxxxxxxx. xx xxxxxx xxxx xxxxxx.
+
+  xxx xxxx xxxxxxx xx xx xxxx: xxxxxxxxx-xxxxx-xxxx. xxxxxxxxxxx xxx xxxx xxxx xxxx xxx xxxx,
+  xx xx xxxxxxxx xx xxxx xx xxx xxxx xxxxxxx xx xxxxxx — xx xxxxxxx xxxxxxxx.
+
+  xxx xxxx xxxxx:
+  - ~/.xxxxxx-xxxxxxxx/ xx x xxxx xxxx — xxxxxxxxx xxxxxxxx xxxxxx, xx xxxxxxxxxxx,
+    xxxxxxxxxx xxxxxxx. x xxxx xx xxxxx; xxx'x xxxxx xxxxxxxx xx xx.
+  - x xxxxx xxx xxxxxxxxx xx xxxxxx, xxxxx xxx xxxxxxx-xxxxxxx xxxxx xxxxxx xxxxx xxx x
+    xxxxxxx xxxx xxx xxxxx xxx xxxx xxx xx xxxxxx xx xx — xxxxx xx xxxxxxx xxx xxxx xxx xxx
+    xx xxxx. xxxxx xxxxxx xxxx xxxxx xx xxx xxxxx xx xxx xxxx; xxx xxx xxxx.
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  xx-xxxxxx xx xx xxxx@xxxxxxx.xxx, xxx xxxx xxxxxxxx xxx xxxxxxxx, xx xxxxxx xxxxxxx
+  xxxxxx
+
+✻ Baked for 2m 4s · done 3:06 PM
+
+❯ xxxx xx xx xxxxxx xx xx  ?
+
+⏺ xxx. xxxxx xxx xxxxxxxx.
+
+  ~/.xxxxxx-xxxx xx xxx xxxxxx xx xx xxxx@xxxxxxx.xxx (xxx xxx xxxxxxx xxxx, xxxxxxxx
+  xxxx xxxxxx). x xxxxxxxxx xx xxx xxxx xxxxx xxx xxxxx: xxx xxxxxxxx xxxx xxxxx xxxxxxxxx,
+  xxx xxx xxxx xxxxx xxxxx xxx xxxxxxx xxxxxxxxx xxxxxxx xxx xxxx (xx%) xx xxxxxx (xx%) —
+  xxxx xxxx xxxxxxxxx xxxxxx, xxxxx xxx xxx xxxxx xxxxxxx.
+
+  xxxxxxx xxxx xxx xxx xx xx. xxx xxxxxxxx xx xxx xxxx xxxxxxx xxx xxxx xxxxxxxxxxxxx, xxx
+  xxxx xx xxxxxxxxx xxxx xxxxxxx xxxx xxx xxxx xxxxxxxx.
+
+✻ Churned for 5s · done 3:06 PM
+
+─────────────────────────────────────────────────────────────────────────────────── account ─
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/tmp/exec-macapp-codex | [Opus 5 (1M context)] ctx:7% in…
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+                                                     ✔ Update installed · Restart to update
+
+

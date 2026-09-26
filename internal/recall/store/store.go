@@ -351,6 +351,20 @@ func (s *Store) InitialBackfillStatus() (InitialBackfillStatus, error) {
 	if unreadable.String != "" {
 		status.UnreadableRoots = strings.Split(unreadable.String, "\n")
 	}
+	// A "done" marker written by pre-#2337 code has no roots_walked/
+	// roots_total meta rows at all (the fields didn't exist yet), which
+	// this query surfaces as both NullStrings being !Valid — distinct from
+	// a modern marker that legitimately finished with zero configured
+	// roots (roots_total would be the explicit string "0", Valid=true).
+	// Trusting that legacy "done" at face value is exactly the g14/sbbox
+	// symptom (roots=None/None forever "complete"): report it "pending"
+	// instead, once, so ShouldRunInitialBackfill lets the throttled pass
+	// re-walk every root and persist a real marker with roots_walked set;
+	// after that this branch is never hit again for this index.
+	if status.State == InitialBackfillDone && !walked.Valid && !total.Valid {
+		status.State = InitialBackfillPending
+		return status, nil
+	}
 	if status.State != "" {
 		return status, nil
 	}

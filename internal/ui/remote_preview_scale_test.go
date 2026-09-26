@@ -91,9 +91,11 @@ fields = ["version", "sessions_by_status", "harnesses", "accounts"]
 }
 
 // assertFrameFits fails when any rendered line is wider than width: the
-// structural guarantee behind item 1.
+// structural guarantee behind item 1, under both terminal width conventions
+// (#2334).
 func assertFrameFits(t *testing.T, frame string, width int) {
 	t.Helper()
+	assertNoOverwideRows(t, frame, width)
 	for i, line := range strings.Split(frame, "\n") {
 		if w := lipgloss.Width(line); w > width {
 			t.Errorf("line %d is %d wide, pane is %d: %q", i, w, width, line)

@@ -1,0 +1,11 @@
+Usage: agent-deck completion <bash|zsh|fish>
+
+Print a shell completion script for agent-deck's commands, subcommands,
+and resource names (sessions, remotes, profiles, groups, agents) to stdout.
+
+  Bash:  echo 'source <(agent-deck completion bash)' >> ~/.bashrc
+  Zsh:   echo 'source <(agent-deck completion zsh)' >> ~/.zshrc
+         (or save as a file named '_agent_deck' in a directory on $fpath)
+  Fish:  agent-deck completion fish > ~/.config/fish/completions/agent-deck.fish
+
+Open a new shell (or re-source the config file) afterwards.

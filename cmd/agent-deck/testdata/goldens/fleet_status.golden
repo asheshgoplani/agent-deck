@@ -1,0 +1,9 @@
+Fleet: 6 sessions — 0 alive, 3 down, 3 not running
+MASS DEATH detected (3 of 3 should-be-alive sessions are gone)
+
+Down sessions:
+  codex running                            status=running  group=my-sessions
+  gemini waiting                           status=waiting  group=backend
+  shell error                              status=error    group=backend
+
+Run `agent-deck fleet recover` to see the recovery plan, then add --yes to run it.

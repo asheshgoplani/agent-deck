@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestNewSearch(t *testing.T) {
@@ -94,6 +96,69 @@ func TestSearchView(t *testing.T) {
 	view = s.View()
 	if view == "" {
 		t.Error("View should not be empty when visible")
+	}
+}
+
+func TestSearchKeepsEleventhShellResultSelectable(t *testing.T) {
+	s := NewSearch()
+	s.SetSize(80, 24)
+	items := make([]*session.Instance, 0, 11)
+	for i := 0; i < 10; i++ {
+		items = append(items, &session.Instance{Title: fmt.Sprintf("agent-%d", i), Tool: "claude"})
+	}
+	shell := &session.Instance{Title: "shell-live", Tool: "shell", GroupPath: "ops", ProjectPath: "/work/terminal"}
+	items = append(items, shell)
+	s.SetItems(items)
+	s.Show()
+
+	first := stripAnsi(s.View())
+	if len(s.results) != 11 || !strings.Contains(first, "11 results") {
+		t.Fatalf("view lost a result: len=%d frame=%q", len(s.results), first)
+	}
+	for i := 0; i < 10; i++ {
+		s.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if s.Selected() != shell {
+		t.Fatal("eleventh shell result is not selectable")
+	}
+	last := stripAnsi(s.View())
+	if !strings.Contains(last, "shell-live (shell)") || !strings.Contains(last, "ops · terminal") {
+		t.Fatalf("shell identity missing from viewport: %q", last)
+	}
+
+	s.input.SetValue("shell")
+	s.updateResults()
+	if len(s.results) != 1 || s.Selected() != shell {
+		t.Fatal("shell query did not find shell session")
+	}
+}
+
+func TestSearchShowsGroupAndPathForSameName(t *testing.T) {
+	s := NewSearch()
+	s.SetSize(80, 24)
+	s.SetItems([]*session.Instance{
+		{Title: "same", Tool: "claude", GroupPath: "team-a", ProjectPath: "/work/alpha"},
+		{Title: "same", Tool: "claude", GroupPath: "team-b", ProjectPath: "/work/beta"},
+	})
+	s.Show()
+	view := stripAnsi(s.View())
+	for _, identity := range []string{"team-a · alpha", "team-b · beta"} {
+		if !strings.Contains(view, identity) {
+			t.Errorf("missing %q from search: %q", identity, view)
+		}
+	}
+}
+
+func TestSearchResultPreservesLongTitle(t *testing.T) {
+	item := &session.Instance{Title: "feature-authentication-session-and-more", Tool: "claude", GroupPath: "my-sessions", ProjectPath: "/work/agent-deck"}
+	got := stripAnsi(renderSearchResult(item, false, 54))
+	if !strings.Contains(got, item.Title) || cellWidth(got) > 54 {
+		t.Fatalf("title cut despite row budget: %q", got)
+	}
+	item.Title += "-with-a-long-suffix"
+	got = stripAnsi(renderSearchResult(item, false, 30))
+	if !strings.Contains(got, "…") || !strings.Contains(got, " (claude)") {
+		t.Fatalf("overlong title lost its distinguishing suffix: %q", got)
 	}
 }
 

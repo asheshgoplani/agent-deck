@@ -1,0 +1,23 @@
+    ╭──────────────────────────────────────────────────────────────────────╮
+    │                                                                      │
+    │                                                                      │
+    │    New Session                                                       │
+    │                                                                      │
+    │      in group: alpha                                                 │
+    │                                                                      │
+    │    ▶ Name:                                                           │
+    │      > session-name                                                  │
+    │                                                                      │
+    │      Command:                                                        │
+    │        shell     claude     gemini     opencode     codex            │
+    │        pi     copilot     crush     muse     cursor agent            │
+    │        hermes     deepseek     omp                                   │
+    │                                                                      │
+    │        Custom:                                                       │
+    │        > custom command                                              │
+    │                                                                      │
+    │      ↓ more fields                                                   │
+    │    Tab next │ ↑↓ navigate │ Enter next │ ^S create │ Esc cancel      │
+    │                                                                      │
+    │                                                                      │
+    ╰──────────────────────────────────────────────────────────────────────╯

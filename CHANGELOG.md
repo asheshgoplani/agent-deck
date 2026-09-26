@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.18] - 2026-09-26
+
+### Added
+
+- **Anonymous usage data (opt-in).** On the first TUI start you will see one question asking whether to share anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; numbers are rounded into ranges; never prompts, output, paths, titles, repo, host or user names). Nothing is recorded or sent unless you accept. It goes to PostHog's EU region a few times a day, never on the day you say yes, with IP addresses discarded. See exactly what would be sent with `agent-deck telemetry preview`; turn it off any time with `agent-deck telemetry off` or `DO_NOT_TRACK=1`. Details: TELEMETRY.md.
+- `agent-deck telemetry` gains `on`, `off`, `schema` (the full published allow-list, `--markdown` or `--json`) and `level full|basic`; `status` shows the level, local spool, upload schedule and daily cap; `preview` prints the exact PostHog request bodies. `AGENTDECK_TELEMETRY=log` writes would-be uploads locally and never sends. Settings gains a Privacy row and `agent-deck doctor` prints the telemetry state.
+- New config keys `[telemetry] level` and `[telemetry] posthog_key` (the latter only for builds without a compiled-in key); `[telemetry] endpoint` now defaults to `https://eu.i.posthog.com`. Builds without a project key record locally (with consent) and never upload.
+- `[telemetry] endpoint` changed meaning: v1 stored the full receiver URL, v2 treats it as a base URL and POSTs to `<endpoint>/batch/`. A v1 self-hosted value is asked about again (consent is bound to the endpoint), but update it to the base URL.
+- Release builds carry the project's PostHog key, compiled in from a repository secret; builds from source have none and never upload unless `[telemetry] posthog_key` or `AGENTDECK_POSTHOG_KEY` is set. `agent-deck telemetry status` shows where the key comes from (`Project key: compiled-in`, `environment`, `config` or `none`) without printing it.
+- `[worktree] checkout_git_config` passes `key=value` entries as `git -c` to the commands that create and check out a new worktree, for example `core.hooksPath=/dev/null` to skip a Git LFS post-checkout hook or `checkout.workers=8`. Nothing is written to the new worktree's config; global config only (#2366).
+- The web UI can move a session to another group: the Edit dialog has a group field, backed by `POST /api/sessions/{id}/move`, and resolves the target group the same way as `agent-deck group move`. A toast says when the new group's Claude config dir needs a restart to apply (#2368).
+
+### Changed
+
+- The consent question now has two buttons with **Share anonymous data** highlighted: Enter confirms the highlighted button, `y` shares, `n` or Esc declines (remembered), Ctrl-C asks again next time, and other keys are ignored. Everyone who answered the earlier schema 1 question is asked once more, because the schema changed (schema 1 counted every key, even Enter, as no).
+
+### Fixed
+
+- Copies made inside a session pane with OSC 52 (tmux copy mode with `set-clipboard on`, Claude Code's selection) now reach the browser clipboard in the web UI on any device, not only on the host. Only writes are honoured; a pane can never read the viewer's clipboard (#2370).
+- In the web terminal, Option-drag selects text even while the program in the pane captures the mouse, and a finished selection is copied to the clipboard (#2372, thanks @bautrey for #2373).
+- A global `~/.agent-deck/config.toml` reached through a symlink (the file or the whole directory, as a dotfiles checkout does) is no longer mistaken for a directory-local config, which made every worktree session fail with "invalid directory-local config" (#2367).
+- Hook events from a Codex sub-agent thread no longer drive the session's status when it is loaded at startup or read from cache (a rollout that gains its sub-agent metadata later is rechecked), and tmux teardown treats a failed kill as success only when tmux reports that exact session or server missing (#2374, thanks @jwiegley).
+
+## [1.16.17] - 2026-09-25
+
+### Fixed (status lights)
+
+- A Codex sub-agent finishing its turn no longer flips a working session to waiting or raises a false inbox event for its parent.
+- A deck started inside a private tmux server no longer reports live sessions on the default server as errors. When the current server cannot establish that a session exited, its last known status is kept.
+- The startup watchdog no longer respawns a healthy Claude pane: accepted hook events end the startup phase, and an overdue pane is checked for a live prompt or busy indicator before it expires (#2361, thanks @tarekrached for #2362 and #2364).
+- Session status lights across Claude, Codex and pi: Claude sessions sitting at the prompt with only background shells left are waiting (substate `background-work`) instead of running; Codex's `• Working (… • esc to interrupt)` line above the composer counts as running, but the same text inside Codex's own transcript does not; unsent drafts and pi's status line count as a prompt; an idle pi session whose last answer names `delegate_task` no longer reads running; stale remote rows, headers and the running pill no longer show a full-colour green (status-detection audit 2026-09-23).
+- **Remotes need this update too.** A remote row is the remote's own verdict, so a remote still on 1.16.16 or older keeps showing idle Claude sessions with background shells as running, whatever version the controller runs. Update the remotes (`agent-deck remote update --all`) to clear it.
+
+### Fixed
+
+- `session list --json` and remote listings no longer probe tmux once per stopped session. Stopped rows report `status_source: cached`; refreshed rows report `status_source: live`. A 300-session list improved from 3.2 s to 0.1 s on g14.
+- One-shot harness panes keep their output when the process exits immediately, so headless replies are not lost.
+- Dialogs for Edit, Settings, MCP, Skills, Local Search, Recall, Fork and first-run setup fit at 80x24 and 60x15. Tall dialog bodies scroll around the focused field while the title and wrapped key hints remain visible.
+- Narrow rows preserve complete session names, put generated names before task descriptions, fit fork badges and mark the selected group in the gutter.
+- The active filter, time range and view remain visible; selected rows keep the help footer; an empty filter says "No sessions match"; a stopped preview says "Process Exited".
+- Jump hints use the gutter, overlays are centred, the session switcher stays out of the preview, unreachable remotes show their reason first, and search and group numbers match the list. Local Search keeps its top border at every size.
+- The header tally, group preview and filter pills count every row the list draws, including starting and queued rows.
+- Tree connectors are computed from the final visible list, including nested sessions and window rows (#2363, thanks @AdamiecRadek).
+- Groups reorder among their siblings, so a root group can move past one that has subgroups (#2346, thanks @scottyallen).
+- Large session lists remain responsive: status readers do not block behind tmux probes, Codex ownership uses one tmux query, and periodic status work is bounded per tick while visible rows and fresh hook evidence refresh first.
+- The update banner no longer offers Ctrl+T while the background update is still running and would refuse the key. It now says what the run is doing (finishing the update, nudging remotes to update, or the remote sweep), and pressing Ctrl+T during the run queues the restart for when it ends (#2336).
+- The preview of a remote session now shows the account that session runs on, with its usage and when it was polled. When that is not known it says so plainly ("accounts not polled yet", or that the remote runs an older agent-deck). Pressing the context inspector key on a remote session shows a notice instead of doing nothing.
+- A shared session with two people attached no longer stays frozen at the size of someone who already left, which showed everyone a small box of dots. agent-deck's own background tmux client used to take the place the window follows; it now hands that place back to a person. Nobody's terminal is ever resized.
+- The deck now checks every rebuild for a duplicate group or session row and logs `duplicate_list_row` (throttled) when one appears. Set `AGENTDECK_DUMP_ROWS=<file>` to write every list row to that file for a bug report.
+- Devanagari and other complex-script text in the preview can no longer wrap a row and corrupt the deck (repeated header blocks, text spilling into the session list). The new opt-in `[tmux] indic_zero_width_marks = true` (tmux 3.6 or newer, off by default) makes tmux measure Indic vowel signs the way Claude Code does; turning it off removes exactly the entries agent-deck added (#2334).
+- `agent-deck update` no longer gives up on a slow connection after two minutes. The download now times out only when it stalls, resumes where it stopped on retry, shows progress in a terminal, and refuses an oversized download.
+- `install.sh` reads the latest version from `tag_name` again instead of picking up `eyes` from the release reactions, and the asset list in its failure message is correct (#2359).
+- Opening the MCP Manager on a tool that does not support it now shows a footer notice instead of doing nothing (#2358, thanks @karaaslanz).
+- The conductor bridge recreates a missing conductor with the agent from its `meta.json` (for example Codex) instead of Claude, and refuses to recreate it when that metadata is unusable (#2352, #2354, thanks @p4p3r). An unknown agent or a stray invalid byte in `meta.json` no longer hides the conductor from the rest of agent-deck; it is still listed and a warning goes to the log.
+- Terminal replies such as `?61;4;6;7c` no longer leak into the session prompt when you switch sessions quickly. Only one reply of each kind reaches tmux per attach (#2356).
+
+### Core (for the upcoming Mac app)
+
+- `recall timeline` / `recall follow` answer with typed rows read straight from the native Claude Code or Codex transcript, whatever the index or its deferral state: queued and absorbed mid-turn messages, hook and inbox injections, slash commands, turn footers, compaction, sub-agent sidechains, Codex `item_completed` and task lifecycle, stable native ids, `--since/--limit/--tail`, and a `--status` frame from a read-only pane capture. `--v1` keeps the previous shape. Still behind `[recall] enabled` (docs/recall-timeline.md).
+- `events follow` carries `session.status` (from/to/tmux_session/changed_at) and `session.turn` frames from every status owner behind `[macapp] status_events`, one frame per edge, filters with `--kind`/`--session`, and never prints `"data": null`; `events publish` accepts the `macapp.*` namespace behind `[macapp] plugins`; `events stats` counts per kind (docs/events.md).
+- `session send --queue` returns a `send_id` at once and a background worker delivers when the target is idle, at most once (a restarted worker never retypes), never silently: every send ends landed, failed or settled with a reason; `session send-status <id>` reports queued/typing/typed/submitted/landed/failed, `landed` only on transcript evidence, `failed` only when nothing was typed. `session send --image <path>` attaches images for Claude Code and Gemini (docs/macapp-core.md).
+- `session send` to a busy Claude Code session no longer waits for the turn to end and then reports a false "no evidence of delivery": Claude queues typed input, so the message is typed at once and verified within about a second (`delivered`, `queued` or `unknown`, never `failed` without positive evidence). Codex, Pi, shell and unknown harnesses keep the guarded path. A plain `session send --json` now returns in tens of milliseconds with a durable `send_id` and `verdict`, keeping the documented `success`/`delivery`/`submitted`/`confirmation` keys; queued sends get one transcript watcher each so a stuck first message never holds the rest (docs/macapp-core.md).
+- Codex sessions track their live rollout after the trust prompt, bound only to the session's own thread; `session show --json` gains `transcript_path` and `transcript_ids`. The double-send refusal stays on every Codex send; `--codex-composer-fallback` opts into the composer path only when the identity is provably unavailable.
+- New `harness list/status --json`, `limits --json` (behind `[macapp] plugins`) and `config get/set/schema --json`, and a favourites flag (`session set <id> favorite true`) (docs/macapp-core.md).
+- Recall timeline and follow commands expose ordered, typed native conversation events with a resumable cursor for local chat clients. Both remain behind `[recall] enabled`.
+- `session start`, `session stop`, `session restart`, `list` and `group list` now run through a typed command registry (`internal/core`). Their output is unchanged; `--json=envelope` prints a response envelope with a stable error code instead of the legacy JSON. See docs/core-registry.md. `AGENT_DECK_CORE_REGISTRY=0` switches back to the previous handlers.
+- Conductor heartbeats now wake only when a local child's waiting or error state or the conductor inbox changes, and unchanged ticks send nothing. Teardown and `heartbeat_enabled = false` stop the timer cleanly, also for a conductor whose `meta.json` names an agent this build does not know. Heartbeat tick and send failures are logged once until recovery, and a failed send is retried on the next tick (#2348).
+- `agent-deck update --check --json` now reports `auto_update_remotes` (the effective `[updates]` setting, on by default) next to `auto_install` and `auto_restart`, so a release gate can verify all three hands-off update settings from one command.
+
+### Added
+
+- **`agent-deck events follow --json [--after <cursor>]` streams a new durable event bus.** A new `internal/events` package taps `session.transition`/`session.finished`, `tmux.output`, and `watcher.event`/`watcher.health` into a profile-specific append log at `<data-dir>/bus/<profile>/` (see `docs/events.md`). Existing event, inbox, outbox and database writes remain in place. A bounded queue keeps producer calls asynchronous, while batched appends under a file lock give simultaneous processes unique cursors without syncing every tmux output line. `events stats --json` reads persisted drop counts across processes. A normal process shutdown drains accepted taps for up to two seconds; followers can resume from a retained cursor across restart and rotation.
+- `agent-deck daemon serve|status|stop` serves the command registry and the event bus on a 0600 unix socket in the profile runtime dir: framed JSON with a per-connection token, owner-uid peer check, single-owner lock with stale-socket takeover, and `subscribe` streaming `events follow` frames resumable after a cursor. Direct mode stays the default; `[core] daemon = true` sends `--json=envelope` requests to a live daemon and runs them in process when none answers. See docs/daemon-protocol.md.
+
+### Fixed
+
+- `session send` to a Codex session works again after its first turn and at a fresh composer. Codex 0.155's ephemeral title-generation thread fires the same turn-complete notify but never writes a rollout, and when it landed last it took over the session's identity, so every send failed with "current rollout generation is unavailable". A turn-end that names a thread without a rollout is now ignored: it no longer replaces the session's hook status or anchor, so a title completion that arrives mid-turn cannot release `session send --defer-if-busy` into the running turn. A fresh composer, whose rollout does not exist yet, is identified by the thread writer lock its live Codex process holds, so the first send no longer fails with "Codex session identity is unavailable". A Codex send now counts a new turn in its rollout as the submission, so `--json --wait` returns the exact accepted-turn receipt instead of "delivered, confirmation unknown".
+
 ## [1.16.16] - 2026-09-20
 
 ### Fixed

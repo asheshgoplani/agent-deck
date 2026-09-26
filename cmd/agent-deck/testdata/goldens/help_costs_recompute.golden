@@ -1,0 +1,5 @@
+Usage: agent-deck costs recompute [--dry-run]
+
+Recalculate cost_microdollars for every cost_events row using current
+pricing data (defaults + user overrides). Rows whose model is unknown to
+the pricer are left untouched. Idempotent.

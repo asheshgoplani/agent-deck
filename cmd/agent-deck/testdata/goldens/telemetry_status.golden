@@ -1,0 +1,14 @@
+Telemetry: OFF
+  Reason:        consent has not been given (default off)
+  Consent:       undecided
+  Install id:    -
+  Level:         full
+  Endpoint:      https://eu.i.posthog.com
+  Upload:        not configured (no PostHog project key; events stay local)
+  Project key:   none
+  Spool:         0 event(s), 0 bytes, oldest day -
+  Next upload:   -
+  Last upload:   -
+  Daily cap:     0/60 events, 0 dropped
+  State file:    <SANDBOX_HOME>/.local/share/agent-deck/telemetry-state.json
+  Docs:          https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md

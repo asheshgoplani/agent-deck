@@ -1007,12 +1007,12 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 
 ### Usage telemetry (opt-in, off by default)
 
-agent-deck can send one small anonymous usage report per day (random install id, version, OS/arch, feature counters) so the maintainer can see which features are used. **It is off until you explicitly say yes** in the one-time TUI prompt or with `agent-deck telemetry enable`; declining is remembered and nothing is ever sent or counted without consent. `AGENTDECK_TELEMETRY=0` or `DO_NOT_TRACK=1` hard-disable it regardless. Full details, the exact payload, and every control: [TELEMETRY.md](TELEMETRY.md).
+Anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names) is shared with the maintainer via PostHog EU **only after you say yes** to the one-time TUI question; `agent-deck telemetry preview` shows exactly what would be sent, and `agent-deck telemetry off` or `DO_NOT_TRACK=1` turns it off. Details and the full field list: [TELEMETRY.md](TELEMETRY.md).
 
 ```bash
-agent-deck telemetry status      # on/off and why
-agent-deck telemetry show-last   # the exact JSON that was last sent
-agent-deck telemetry disable     # off, install id deleted
+agent-deck telemetry status      # on/off, why, and what is waiting in the local spool
+agent-deck telemetry preview     # the exact request bodies the next upload would send
+agent-deck telemetry off         # off; install id and local data deleted
 ```
 
 ### Remote Instances
@@ -1047,7 +1047,9 @@ agent-deck remote list            # includes each remote's version, ↑ when beh
 
 By default the controller pushes its version to older remotes on its own: after `agent-deck update`, and in the background on startup (`[updates] auto_update_remotes = false` in `config.toml` opts out). The TUI shows `v1.15.0 ↑` on a remote header that is behind; `u` on that header updates it after a confirmation. A remote whose binary lives in a directory its user cannot write (a root-owned `/usr/local/bin`) is updated through passwordless `sudo -n` when the remote grants it; otherwise the update reports `install path <path> is not writable by <user>` and the fix: move the binary to `~/.local/bin` behind a symlink at the old path, or run the update with sudo. That symlink layout is supported by the deploy itself: the install path is resolved through symlinks on the remote first, the file behind the link is what gets replaced (owner and mode kept, sudo only if *that* directory is unwritable), a symlink is never overwritten by a regular file, and afterwards `command -v agent-deck` must resolve to the deployed file. If the remote's `$PATH` binary and `agent_deck_path` are different files, both are updated and the report says so.
 
-A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. `remote drain <name>` closes that gap by pulling — it reads the remote's records over the same SSH path (consuming nothing there) and writes them into the local inbox, safe to run on every heartbeat and safe to repeat.
+Unattended installs (the daily timer, and any long-running agent-deck's `check_interval` poll — default 90s) work the other way around: the controller *nudges* each remote to check for the release right now instead of pushing bytes to it, so remotes pull and verify themselves, same as `agent-deck update` on that host would (`[updates] sweep_remotes = true` restores the old push behavior). A remote too old to understand the nudge gets a blocking fallback update instead, so it still ends up current either way.
+
+A conductor that launches workers on another host does not get their completions for free: transition notifications are parent-linked, and a `parent_session_id` cannot point across machines. Run `agent-deck remote drain <name> --into <conductor-session-id>` to pull the remote's records over SSH into that conductor's local inbox. The remote records are not consumed, and repeated drains are deduplicated locally. A new inbox record wakes the heartbeat; the heartbeat does not pull remote records automatically.
 
 Remote polling runs in the background. A failed poll shows its reason (`auth failed`, `timeout`, `host down`, or `poll failed`) beside the remote. Authentication failures pause automatic polling across restarts until the remote configuration changes or you authenticate and run `agent-deck remote list --retry`. This clears cached poll state for all configured remotes without opening SSH; add `--check` for an explicit version check. The next TUI refresh resumes polling.
 

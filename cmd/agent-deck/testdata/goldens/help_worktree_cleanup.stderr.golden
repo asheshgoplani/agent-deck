@@ -1,0 +1,4 @@
+  -force
+    	Actually remove orphans (default is dry-run)
+  -json
+    	Output as JSON

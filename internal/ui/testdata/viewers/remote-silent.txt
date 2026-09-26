@@ -6,5 +6,6 @@ Remote:  lab
 Path:    /srv/app
 Tool:    claude
 Viewers: unknown (remote did not report viewers)
+accounts not polled yet
 
 Last response

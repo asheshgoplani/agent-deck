@@ -180,6 +180,8 @@ agent-deck recall status [--json]
 agent-deck recall sessions [--profile work] [--project PATH] [--since 30d] [--hint k=v] [--tag t] [--session ID] [--subagents] [--limit 20] [--json]
 agent-deck recall search "<q>" [same filters] [--role user|assistant] [--phrase] [--phrase-scan-limit 2000] [--limit 20] [--no-sweep] [--json]
 agent-deck recall show <session> [--tier card|excerpt|raw] [--turns 40] [--json]
+agent-deck recall timeline <session> --json
+agent-deck recall follow <session> --after <through_cursor> --jsonl
 agent-deck recall open <session> [--title T] [--dry-run] [--json]
 agent-deck recall gc [--keep-days 30] [--json]
 agent-deck recall rebuild [--force] [--json]
@@ -362,6 +364,17 @@ then lets one real throttled pass run, which re-verifies every
 already-ledgered source as unchanged (cheap: no bytes re-read) and
 persists a real marker so this fallback is never consulted again for that
 index.
+
+The same fallback covers a `done` marker written by pre-#2337 code, which
+predates `roots_walked`/`roots_total` and so wrote `state: done` with
+neither field ever set: `InitialBackfillStatus` reports that marker
+"pending" too, exactly once, rather than trusting a `done` state that never
+proved every root was walked (this is what a shared box upgraded across
+that release shows as `roots=None/None` in `recall status` forever, since a
+literal reading of `state: done` never re-verifies). A modern marker that
+legitimately finished with `roots_total: 0` (no roots configured) is
+unaffected — it has both fields explicitly recorded, just at zero — so only
+a marker missing the fields outright is re-run.
 
 `done` also requires every configured root to have been walked, not just
 `sessions_pending == 0`: root-level directory listing runs in full on

@@ -1,0 +1,5 @@
+No profiles under <SANDBOX_HOME>/.dsh/profiles
+The web and headless profiles auto-initialize on first use:
+  dsh --profile web
+  dsh --profile headless "say hi"
+Any other profile: dsh plugin --profile <name> add <package>

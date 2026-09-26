@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-deck/session.start/v1/out",
+  "title": "session.start output",
+  "type": "object",
+  "properties": {
+    "claude_session_id": {
+      "type": "string"
+    },
+    "group": {
+      "description": "Group path of the session",
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "max_concurrent": {
+      "description": "Group cap that queued the session",
+      "type": "integer"
+    },
+    "message": {
+      "description": "Initial message that was sent",
+      "type": "string"
+    },
+    "status": {
+      "description": "started or queued",
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "tmux": {
+      "description": "tmux session name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "group",
+    "id",
+    "status",
+    "title"
+  ],
+  "additionalProperties": false
+}

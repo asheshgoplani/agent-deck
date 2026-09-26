@@ -1,0 +1,5 @@
+Effective [worktree] settings for <SANDBOX_HOME>:
+
+  default_location  = subdirectory             (source: default)
+  path_template     = ""                       (source: default)
+  sparse_checkout   = ""                       (source: default)

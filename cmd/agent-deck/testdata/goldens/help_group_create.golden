@@ -1,0 +1,11 @@
+Usage: agent-deck group create <name> [options]
+
+Create a new group.
+
+Options:
+
+Examples:
+  agent-deck group create mobile
+  agent-deck group create ios --parent mobile
+  agent-deck group create backend --default-path ~/src/backend
+  agent-deck group create wide --max-concurrent 4

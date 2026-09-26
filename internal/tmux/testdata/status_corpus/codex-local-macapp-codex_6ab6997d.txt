@@ -1,0 +1,130 @@
+
+  xxx xxx xxxxxxxxxxxx xxxx (/xxx/xxxx-xxxxxx-xxxxx/xxxxxxxxxxxx-xxxx.xxxx) xxxxxxxx xxxxxx xx xxxxx xxx xxxxxx xxx xxxxxx xxx, xxxxxxxx xxxxx xxx xxx xxxxxxxxx, xxxxxxx xxxxxxx xxx/xxx
+  xxxxx, xxxxxxx xxxxxxxxxxx, xxx xxxxxxx xxxxx-xxxxxxxx xxxxxxxx. xxxxxxxx xxxxxxxx xxxxx “xxxxxxxxxx.”
+
+  xxx xxxxxxxxx xxxxxxxxx xxxx:
+
+  1. xxxxxxxx xxxxxx xxxxxx xxxxxxx: xx x xxx xx xxxxxxx, xxxxxxxxx xxxxxxxx xxxxxxxxxx xxxxxx xx xxxxxxxxxx. xxxxxxxxx xxxxxxxxx x xxxxxxxx xxxxxx, xxxxxxxx xx xxxxxx xxxxxxxxxx xxxxxx
+     xxxxxxx xx xxxxxxxxx, xxx xxxxxxx xxxxx xxxxxx xxxxx xxxxx xxxxxxxx.
+
+  2. xx xxx xxxxxxx xxxxx xxxxxxxxxx xxxxxx xxxxxxxxxxxx: xx xxxxx xxxxxxx xxxx xxxxxxxxx xxxxxxxx. xxxxxxxxx xxxxxxx “xxxxxxx xxxxxxx,” xxxxxxxx xxxxxxxxxxxxx xxxxx xxxxx xxxxxxxxx, xxx
+     xxxxx xxxxxxx xxxxxxxx xxxxxxxx xx xxxxxxxxxxx xxxxxxx.
+
+  xx xxx xxxxxx xxxxx xxx xxxxxxxxxx?
+
+  xxxxxx xxx xx xxx · xxxx xxx xx xx x:xx xx
+
+
+› xxxx xxxxxx  xxx xxx xxxxx xxx xxx x xxxxx ?  xx xx xxxxxxxxxxxx x x xxxx xxxxxx
+
+
+• x’xx xxxxxx xxxx xxxxxxxxxxxxxxx, xxxx xxxxx xxxxxxx xxx xxxx xx xxxxx xxx xxxxxxxxxxxxxx xx xxxxx xxx xxxxxxxxxx xxxxx.
+
+• xxxxxxxx
+  └ xxxxxx xxxxxx|xxxxxxxxxx|xxxxxxxxxx|xxxxxxxxxxx xxx|xx:|xxxxxx|xxxxxxxxx xx xxxxx-xxxx.xx
+
+• xxx xxxxxx xxxxx-xxxx.xx --xxxx=xxx --xx=xxxxx --xxxxxxxxxx --xxx --xxx-xxxxx=x --xxxxxxxx=xxxx-xxxxxxxx.xxxx --xxxxxx=xxxxx-xxxx.xxxx; xxxxxx xxxxxxxxxxxx-xxxx.xx --xxxx=xxx
+  │ --to=html5 --standalone --toc --toc-depth=2 --template=plan-template.html --output=VERIFICATION-PLAN.html; git -C src status --short; rg -n 'Readiness assessment|Uncertain remote
+  │ commands|Accepted failure-recovery' CODEX-PLAN.md VERIFICATION-PLAN.md
+  └ xxxxxxxxxxxx-xxxx.xx:xx:### xxxxxxxx xxxxxxx-xxxxxxxx xxxxxxxxx
+    xxxxx-xxxx.xx:xx:xx. **xxxxxxxxx xxxxxx xxxxxxxx:** xx xxx xxxxxxxxxxx xxxxxx xxxxxxxxxxxx, xxxx xxxxxxx xxxxxxx. xxxxxxxxx xxxxxxx xxxxxxxxxxxxx xxxxx xxxxx xxxxxxxxx xxxxxx
+    xxxxxxxx x xxxxx; xxxxx xxxxxxx xxxxxx xxxxxxxx xx xxxxxxxxxxx xxxxxxxxxx. xx xxx xxxxxx xxxxxx xx xxxxxxxxxx xxxxxxxx, xxxx xx xxxxxxxxxx xxxxxx xxxx xxxxx xxxxxxx.
+    xxxxx-xxxx.xx:xx:### xxxxxxxxx xxxxxxxxxx, xxxx-xx-xx
+
+
+› xxxxx x xxx xx xxxxx x xxxxx xxxxxxxx xx xxx xxxxx xx x xxxxxxx xxxxxx xx xxxx xxxx xxx
+
+
+• x’xx xxxxx xx xx xx xxxxxxxxxxxxxx xxxxxxx: xxxxxxx xxx xxxxxxxxxxxx xx xxxxxxxxxx, xxxxxxx xxxxx xxxxx xxxxxxxx xxx x xxx xx xxxxx xx xxxxx, xxx xxxx xxxxx xxxxx xxxxxxxxx xxxxxx
+  xxxxxx.
+
+• xxxxxxxx
+  └ xxxx xxxxxxxxxxxx-xxxx.xx, xxxxx-xxxx.xx
+
+• x xxxxxxx xxxx xxxxxxxxx. xx xxxx x xxxxxx xxxxxxx xxxx xxx x xxxxxxxx xxxxxxxxxxxx xxxxxxxx, xxx xxx xxx x xxxxx xxxxxxxxxxxxxx-xxxxx xxxxxxxxxxxxx.
+
+  xxx xxxxxxxxxxxx xxxx (/xxx/xxxx-xxxxxx-xxxxx/xxxxxxxxxxxx-xxxx.xxxx) xxxxxxxx xxxxxx xx:
+
+  - xxxxx xxx xxxxxx xxx xxxxxx xxx xx xxxx xxxxx xxx.
+  - xxxxxxxx xxxxx xxx xxx xxxxxxxxx xxxxxxx xxx xx.
+  - xxxxxx xxxxxxxxxxxxx xxx/xxx xxxxxxxxxxxxxxx xxxxxxx xxxxxx xxx xxxxx.
+  - xxxx xxxxxxxxxxx, xxxxxxxxxx xxxxxxx, xxxxxxx, xxxxxxxx xxxxxxx, xxx xxxxxxxxx xxxxxxx xxxxxxxx.
+  - xxxxxxx xxxxxxxxxxx xxx xxxxxx xxxxx-xxxxxxxx xxxxxxxx.
+  - xxxxxxxxxx xxxx xxxxxxxxxxxx xxx xxxxxxx xx xxx xxxxx xxxxx xx.
+
+  xxxx xxxx xxxxxx xxxxxx xxxxxxx xxx xxxxx xxxxxxx xx xxxxxxxxxxxxxx xxxxxx:
+
+  1. xxxxxxxxx xxxxx xxxxxx-xxxxx xxxxxxxx xxxx xxx xxxxxxxx xxx-xxxxx xxxxxxxx.
+  2. xxxxxxx xxxxx xxxxxxx, xxxxxxxxx, xxxxxxxx, xxx xxxxx xxxxxxxxx.
+  3. xxxxxxxx xxxxxx xxxxxxxx xxxxxxx, xxxxxxx-xxxxx xxxxxxxx, xxx xxxxxxx xxxxxxxx.
+  4. xxxxxxxx xxx xxxxxxxxxx xxxxxx xxxxxxxxx xxx xxxxxx xxxxxx xx xxx xxxxxxxx xxx/xxx xxxx xxxxxxxxxxxx.
+
+  xx xxxxxxxxxxxxxx: xxxxxx xxxx xxxxxxxxx xxxxxxxxxxxxx xxxx, xxxxxxx xxxxxxxxx xxxxxxx xxxxxxx xxxxxxx. xxxx xxxxx xxx xxxxx xxxxx-xxx-xxx xxxxx xxxx xxxxxxxx xxxxxxxxxx xxxxx.
+
+  xx xxx xxx xxxx xxxxx xx xxxxxx xxx. xxx xxxxxxxxx xxxxxxxx xxx xx xxxx xxxxx xx xxxxx, xxx xxxxxxxx xxxx xx xxxxxxx xxxx.
+
+  xxxxxx xxx xx xx · xxxx x:xx xx
+
+
+› xxx  xx xx xxx xxx xxxxxxxxxxx xxxxx xx x xxxxxx xx xx xx xxxx xxxxxxxxxxx xx xx xxx xxxx xx x xxxx xx xxx xxxxx xxx xx xx xxxxxxx xx xxxxx xx xx xxxx xxxxxxxxxx xxxx xxx xxxxxxx
+  xxxxxxxx xxxxxxxxx xx xxx xx xxx xxxxx xxxx xxxxxx xxx xx xxxxxxxx xxx ?
+
+
+• xxx, xxxx’x xxxxxxxx. xxx xxx xxx xx x xxxxxx xxxxxxxxx xx xxx xx xxxxx xxxx, xxxxx xxx xxxx xxxxxxxx xxx xxxxxxxxxxx xxxxx. x’xx xxxx xxxx xxx xxxxx xxx xxx x xxxxx xxxxxx-xxxxxxx
+  xxxxxxx xxxxxxxx xxxxxx xx xxx xxxx.
+
+• xxx xxxxxx xxxxx-xxxx.xx --xxxx=xxx --xx=xxxxx --xxxxxxxxxx --xxx --xxx-xxxxx=x --xxxxxxxx=xxxx-xxxxxxxx.xxxx --xxxxxx=xxxxx-xxxx.xxxx; xxxxxx xxxxxxxxxxxx-xxxx.xx --xxxx=xxx
+  │ --to=html5 --standalone --toc --toc-depth=2 --template=plan-template.html --output=VERIFICATION-PLAN.html
+  └ (no output)
+
+• xxx. xx xxxx xx x xxxxxx xxx xx xxx xx xxxxx xxxx, xxx x xxxxxxxx xxxxxxx xxxxxxx.
+
+  - xx xxxxxxxx xxxxxxxx xxxxxxx xxxxx xxxx’x xxxxxx xxx.
+  - xxxx xxxxxxxx xxxxx xxx xxx xxxxxxxx xxxxxx xxxxxxx xxxxxxxxx xx xxxxxxxxxxx xxxx.
+  - xxxxxxxxxxx xxxxxxx xxxx xxxxxxxxxxxx xxxx xxx xxx.
+  - xxxxxxx xxx xxx xxxxxx xxxxxxxx xxxxxxx.
+
+  xxx xxxxxxx xx xxx xxxxxxxx xx xxx xxxx (/xxx/xxxx-xxxxxx-xxxxx/xxxxx-xxxx.xxxx): xxxxxxxxxx xxxxxxx xx xxx xxxxx xxx, xxxx xxxx xxxxx xxx, xxxx x xxxxxxx xxxxxxx xxx xxxxxxx xxxxx
+  xxxxx xxx xxxxx xxxx xxxxxxxxxxxxx.
+
+  xxx xxxxxxxxx xxxxxx: xxxx xxxxxxxx xxxx xxx xxxxxx xxx xxxxxxxx. xxx xxxxxxx xxxx xxxxxxx xxxxx xxxxx xxxxx xxxx xxxxxxx xx xxxxxxxx xxx xxxx xxxxx xxxxxxxx xxxxxxx xxxxxx’x
+  xxxxxxxxxxxx.
+
+  xxxxxx xxxxxxx xxxx xxxxxxx xxxxxxxxxxxx, xxxxxxxx-xxxxxxx xxxxxxxxx, xxx, xxxxxxxxxxxxxxx, xxx xxxx xxxxxxxxx, xxxx xxxxxx xxx-xxxxxx xxxxxxxxxxxx.
+
+  xxxx x:xx xx
+
+
+› xxx xxx xxx xxxxxxxx x xxxx xxxxx x  xxxxx xxx xxxxx xxxx xxxxxxxxxxxx xx xx?
+
+
+• xxx, xx xxx xxxxx x xxxxxxx xxxxx xxxxxxxxxxx xxxxx. xx xxxxxx xxx xxxxx xxx xxxxxx xxx xx xxxxxxxx xxx.
+
+  xxx xxxxx xxxxx xxxxxx:
+
+  1. xxxxxxxx xxx xxx-xxxxx xxxxxxxxx xxx xxxxxx xxxxxxxxxxx xxxxxx-xxxxx xxxxxxxxxxxx.
+  2. xxxxxxxxx xxxxxxxx xxxxx-xxx xxx xxx xxxxxxx.
+  3. xxxxx xxx xxxxxx xxxxx, xxxxxxx xx xxxxxxxx xxxxx xxxx xxxxxxxx, xxx xxxxx xxxxxxxxx.
+  4. xxxxxx xxx/xxx xxxxxxxxxxxxxxx xxx xxxxxxx xxxxxxxx xxxxx xxxxxxxx.
+  5. xxx xxxxxx xxxx/xxxxxxx xxxxxxxxxxxxx xxxx xxx xxxxxx xxxxxxxx xx xxxxxxx.
+
+  xxxx xxxxx xxxx xxxxxxx xxxxxx xxx xxxxxxxxx, xxxxxx xxxxxxxxxx, xxx xxxxxxxx xxxxxx xxxxx xxxxxx xxxxxxxx.
+
+  xxx xxxxxxxxx xx xxxxxxx xxxxxx xx xxxxx xxxx xxx. xxxx xxxxxx, xxxxx xxxxxxx xxxxxxxxx, xxx xxxxxx xxxxxxxxxxxx xxxxxx xxxxxxx xxxxx xxxxxxx xxxxx. x xxxxx’x xxxxxxx xxxxxxxxxxxxxx;
+  xxxx xxxxx xxxxx xxxx xxxxxxxx xx-xxxxx.
+
+  xxxx x:xx xx
+
+• Model changed to gpt-6-sol medium
+
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/exec-macapp-codex · Context 78% left · Context 22% used · weekly 94% left · 258K window
+
+
+
+
+
+
+

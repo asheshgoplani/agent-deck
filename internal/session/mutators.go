@@ -53,6 +53,8 @@ const (
 	// clears the override (back to group/global resolution). See
 	// Instance.EffectiveContextLevel.
 	FieldContextLevel = "context-level"
+	// FieldFavorite marks a session as a favourite (true/false). Live.
+	FieldFavorite = "favorite"
 )
 
 var ValidMutableFields = []string{
@@ -80,6 +82,7 @@ var ValidMutableFields = []string{
 	FieldPin,
 	FieldModel,
 	FieldContextLevel,
+	FieldFavorite,
 }
 
 type FieldRestartPolicy int
@@ -496,6 +499,15 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		} else if aerr := inst.ApplyLaunchModel(trimmed); aerr != nil {
 			return oldValue, nil, &MutationError{Field: field, Msg: aerr.Error()}
 		}
+
+	case FieldFavorite:
+		oldValue = strconv.FormatBool(inst.Favorite)
+		fav, perr := strconv.ParseBool(strings.TrimSpace(value))
+		if perr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: fmt.Sprintf("invalid favorite %q — expected true or false", value)}
+		}
+		inst.favoriteCleared = inst.Favorite && !fav
+		inst.Favorite = fav
 
 	case FieldPin:
 		// pin-sessions: anchor the session to the top/bottom of its group,

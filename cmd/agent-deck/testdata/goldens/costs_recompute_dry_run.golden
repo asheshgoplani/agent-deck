@@ -1,0 +1,5 @@
+Recomputing cost_events (dry-run, no rows will be modified)...
+
+Results:
+  Would update: 0
+  Skipped:      0 (already correct or unknown model)

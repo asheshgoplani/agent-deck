@@ -1,0 +1,30 @@
+
+
+
+
+
+
+
+
+
+                                  ╭──────────────────────────────────────────────────╮
+                                  │                                                  │
+                                  │  Fork Session                                    │
+                                  │                                                  │
+                                  │  ▶ Name:                                         │
+                                  │    > probe (fork)                                │
+                                  │                                                  │
+                                  │    Group:                                        │
+                                  │    > alpha                                       │
+                                  │    [ ] Run in Docker sandbox                     │
+                                  │                                                  │
+                                  │  ─ Advanced Options ─                            │
+                                  │    [x] Skip permissions                          │
+                                  │    [ ] Auto mode                                 │
+                                  │    [ ] Chrome mode                               │
+                                  │    [ ] Teammate mode                             │
+                                  │                                                  │
+                                  │  Enter create │ Esc cancel                       │
+                                  │  Tab next │ s sandbox │ Space toggle             │
+                                  │                                                  │
+                                  ╰──────────────────────────────────────────────────╯

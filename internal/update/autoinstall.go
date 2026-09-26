@@ -2,7 +2,9 @@ package update
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"math/rand"
 	"os/exec"
 	"time"
 
@@ -51,6 +53,41 @@ func NextRecheck(last time.Time, failed bool) time.Time {
 	return last.Add(RecheckInterval)
 }
 
+// RecheckBackoffMax bounds the exponential backoff a poller applies after
+// repeated failures in a row (a GitHub outage, a flaky network), so a
+// process that has been failing for hours does not end up polling once a
+// day.
+const RecheckBackoffMax = 30 * time.Minute
+
+// backoffJitter is mockable by tests so the jittered delay is deterministic.
+var backoffJitter = rand.Int63n
+
+// NextRecheckAfterFailures is NextRecheck's counterpart for a caller that
+// tracks how many polls have failed in a row (rather than just the last
+// one): RecheckBackoff, doubled per additional consecutive failure and
+// capped at RecheckBackoffMax, plus up to 25% jitter so many processes that
+// started failing at the same moment (a GitHub outage) don't all retry in
+// lockstep. consecutive <= 0 is the same as NextRecheck(last, false).
+func NextRecheckAfterFailures(last time.Time, consecutive int) time.Time {
+	if last.IsZero() {
+		return time.Time{}
+	}
+	if consecutive <= 0 {
+		return last.Add(RecheckInterval)
+	}
+	d := RecheckBackoff
+	for i := 1; i < consecutive && d < RecheckBackoffMax; i++ {
+		d *= 2
+	}
+	if d > RecheckBackoffMax {
+		d = RecheckBackoffMax
+	}
+	jitterCeiling := int64(d)/4 + 1
+	// #nosec G404 -- schedule jitter, not security.
+	jitter := time.Duration(backoffJitter(jitterCeiling))
+	return last.Add(d + jitter)
+}
+
 // RunUnattendedInstall runs `<exe> update --unattended --trigger <trigger>`
 // and returns the tail of its combined output. That subcommand never
 // prompts, takes the cross-process install lock (so a concurrent timer run,
@@ -62,8 +99,12 @@ func RunUnattendedInstall(ctx context.Context, exe, trigger string) (string, err
 	cmd.Env = append(childenv.ForLaunch(""), TriggerEnv+"="+trigger)
 	cmd.Stdin = nil
 	tail := &TailBuffer{Max: unattendedOutputTail}
-	cmd.Stdout = tail
-	cmd.Stderr = tail
+	out := io.Writer(tail)
+	if p, ok := ctx.Value(progressCtxKey{}).(*UnattendedProgress); ok && p != nil {
+		out = io.MultiWriter(tail, p)
+	}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	err := cmd.Run()
 	return tail.String(), err
 }
@@ -126,10 +167,10 @@ type Installer struct {
 	// handled, when set, receives after every tick (tests).
 	handled chan struct{}
 
-	lastCheck  time.Time
-	lastFailed bool
-	attempts   map[string]time.Time
-	lastSkip   string
+	lastCheck           time.Time
+	consecutiveFailures int
+	attempts            map[string]time.Time
+	lastSkip            string
 }
 
 // Run blocks until ctx is done. It is safe to run on its own goroutine;
@@ -166,16 +207,17 @@ func (in *Installer) Run(ctx context.Context) {
 // tick is one ask: skip while the last check is still fresh (or backing
 // off), otherwise check and install when everything lines up.
 func (in *Installer) tick(ctx context.Context, now time.Time) {
-	if now.Before(NextRecheck(in.lastCheck, in.lastFailed)) {
+	if now.Before(NextRecheckAfterFailures(in.lastCheck, in.consecutiveFailures)) {
 		return
 	}
 	in.lastCheck = now
 	info, err := in.Check()
-	in.lastFailed = err != nil
 	if err != nil {
-		in.Log.Debug("headless_update_check_failed", slog.String("error", err.Error()))
+		in.consecutiveFailures++
+		in.Log.Debug("headless_update_check_failed", slog.String("error", err.Error()), slog.Int("consecutive_failures", in.consecutiveFailures))
 		return
 	}
+	in.consecutiveFailures = 0
 	if reason := in.skipReason(info, now); reason != "" {
 		if info != nil && info.Available && reason != in.lastSkip {
 			in.Log.Info("headless_auto_install_skipped", slog.String("latest", info.LatestVersion), slog.String("reason", reason))

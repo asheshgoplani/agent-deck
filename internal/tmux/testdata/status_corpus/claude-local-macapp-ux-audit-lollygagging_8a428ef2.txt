@@ -1,0 +1,50 @@
+
+
+⏺ Skill(agent-deck:agent-deck)
+  ⎿  Successfully loaded skill
+
+⏺ Reference material is in. Next I'll set up the workspace, launch my own test sessions (Claude, Codex, shell), and start a separate app instance with the test hook.
+
+  Ran 1 shell command
+
+❯ Added to your PROMPT.md: judge drag-and-drop of sessions (missing today) and note that the future plugin panel is a right-side third column; assess whether the current layout leaves room for it.
+
+⏺ Noted the two additions (drag-and-drop of sessions, and room for a right-side plugin column). I'll fold both into the audit.
+
+  Ran 4 shell commands
+
+⏺ My instance is pid 1383. Now I'll write a small hook helper, take a first state dump and snapshot, and keep reading the source.
+
+  Ran 2 shell commands
+
+❯ Appended to your PROMPT.md: judge Settings (should be a full Preferences window covering every agent-deck setting, explained) and the new-session flow (should be cmd-N, prefilled, one required
+  field). Rate the current ones against that.
+
+⏺ Noted: I'll also rate Settings against a full Preferences window and the New flow against cmd-N with one required field. Continuing with the source read and first screenshot.
+
+  Read 2 files, ran 10 shell commands
+
+❯ Continue end-to-end without pausing to acknowledge: source read, all screenshots light+dark, walkthroughs, RESULTS.md, DONE sentinel.
+
+  Read 2 files, ran 2 shell commands
+
+⏺ Important correction: my first launch stole keyboard focus, so the operator's typing landed in my instance. I'm relaunching it in the background (no focus) before capturing anything else.
+
+⏺ Running the first capture scenario across all main screens in light and dark · 11s
+  ⎿  $ cd /tmp/exec-macapp-ux-audit; cat > cap <<'EOF'
+     #!/bin/zsh
+     W=/tmp/exec-macapp-ux-audit; id=$(cat $W/windowid.txt)
+     screencapture -x -l $id $W/shots/$1.png; print -r -- "{\"op\":\"dump\",\"path\":\"$W/hook/state-$1.json\"}" >> $W/hook/hook.jsonl; echo captured $1
+     EOF
+     chmod +x cap
+     cat > scenario1.sh… (12s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✳ Lollygagging… (6m 17s · ↓ 24.7k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── macapp-ux-audit ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] user@host:/tmp/exec-macapp-ux-audit | [Fable 5.1] ctx:19% in:188.2k out:2.6k 5h:8% 7d:23%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

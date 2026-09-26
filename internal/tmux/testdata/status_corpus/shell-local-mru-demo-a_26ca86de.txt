@@ -1,0 +1,50 @@
+
+u@host src % bash -c 'cd -- /tmp/exec-fix-2058/src && for __d in /tmp/exec-fix-2058/src/out; do case ":$PATH:" in *":$__d:"*) ;; *) [ -d "$__d" ] && __p="${__p:+$__p:}$__d";; esac; done
+; [ -x "$__x" ] && xxxx="$__x:$xxxx"; xxxxxx xxxx; xxxxx __x __x; xxxxxxx -x xxxx >/xxx/xxxx x>&x || xxxxxx "%x\x" "$xxxx" > /xxx/xxxx-xxx-xxxx/xxxxxxx-xxxx/.xxxxx/xxxxx/xxxxx-xxxx/xxxxxxx/xxxxx-xxxxx
+xx/xxxxxxxx-xxx xxx xxx.xxxxxxxx x>/xxx/xxxx; xxxx'
+
+xxx xxxxxxx xxxxxxxxxxx xxxxx xx xxx xxx.
+xx xxxxxx xxxx xxxxxxx xx xxx xxx, xxxxxx xxx `xxxx -x /xxx/xxx`.
+xxx xxxx xxxxxxx, xxxxxx xxxxx xxxxx://xxxxxxx.xxxxx.xxx/xx/xxxxxxxx.
+bash-3.2$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

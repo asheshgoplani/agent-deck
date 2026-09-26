@@ -6,6 +6,7 @@ package ui
 // unit tests in the session package.
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +90,41 @@ func TestActiveTopWiringSplitsList(t *testing.T) {
 	}
 }
 
+func TestSplitGroupOnlyFirstHeaderKeepsNumber(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+	setOnlySessionRunning(t, home, "a1")
+	home.groupViewMode = session.GroupViewActiveTop
+	home.rebuildFlatItems()
+	var alpha []int
+	for i, item := range home.flatItems {
+		if item.Type == session.ItemTypeGroup && item.Path == "alpha" {
+			alpha = append(alpha, i)
+		}
+	}
+	if len(alpha) != 2 {
+		t.Fatalf("alpha header count = %d, want two sections", len(alpha))
+	}
+	if home.flatItems[alpha[0]].RootGroupNum == 0 || home.flatItems[alpha[1]].RootGroupNum != 0 {
+		t.Fatalf("split group numbers = %d, %d", home.flatItems[alpha[0]].RootGroupNum, home.flatItems[alpha[1]].RootGroupNum)
+	}
+	for i, item := range home.flatItems {
+		if item.RootGroupNum == 2 {
+			home.jumpToRootGroup(2)
+			if home.cursor != i {
+				t.Fatalf("key 2 landed on row %d, labelled row is %d", home.cursor, i)
+			}
+			break
+		}
+	}
+	for _, width := range []int{80, 120, 200} {
+		home.width = width
+		view := stripAnsi(home.renderSessionList(width, 30))
+		if !strings.Contains(view, "alpha (idle)") {
+			t.Errorf("%d columns: second group header lacks idle label", width)
+		}
+	}
+}
+
 func TestPopulatedTopWiringSinksEmptyGroup(t *testing.T) {
 	home, _ := buildTwoGroupHome(t)
 
@@ -96,6 +132,9 @@ func TestPopulatedTopWiringSinksEmptyGroup(t *testing.T) {
 	home.groupTree.CreateGroup("empties")
 	home.groupViewMode = session.GroupViewPopulatedTop
 	home.rebuildFlatItems()
+	if strings.Contains(stripAnsi(home.renderSessionList(120, 30)), "alpha (idle)") {
+		t.Fatal("populated-on-top duplicate group was labelled idle")
+	}
 
 	div := dividerIndex(home)
 	if div < 0 {

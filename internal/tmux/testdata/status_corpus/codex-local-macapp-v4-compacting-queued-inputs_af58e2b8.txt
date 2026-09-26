@@ -1,0 +1,50 @@
+      xx +    xxxxxxx: xxxxxx "xxxxxxxx"
+      xx +    }
+      xx +}
+      xx
+         ⋮
+    xxxx                      xxxxxx { xxxxxxxxxxxxxx.xxxxxx() } xxxxx: { xxxxx(xxxxxxxxxx: "xxxxxxx.xxxx") }.xxxxxxxxxxx(.xxxxx).xxxxxxxxxxxxxxx(xxxxxxx.xxxxxx).xxxx(xxxxxxxxxxxxxx ? "xxxx xxxxxxx" :
+           "xxxx xxxxxxx")
+    xxxx +                    xx xxx xxxxxxxx = xxxxx.xxxxxxxx { xxxxx(xxxxxxxxxx: xxxxxxxxxxxxx(xxxxxxxx.xxxx)).xxxx(.xxxxxx(xxxx: xx)).xxxxxxxxxxxxxxx(xxxxxxx.xxxxxx) }
+    xxxx                      xxxx(xxxxx.xxxxxxxx?.xxxxx ?? xxxxx.xxxxxxxxxxxxxx.xxx { "xxxxxxx/\($x.xxxx)" } ?? "xxxxxx x xxxxxxx").xxxx(.xxxxxxxx)
+         ⋮
+    xxxx                              .xxxxxxxx(xxxxx.xxxxxxxx?.xxxx != "xxxxxx")
+    xxxx +                        xx xxx xxxx = xxxxx.xxxxxxxx?.xxxx { xxxxx(xxxxxxxxxx: xxxxxxxxxxxxx(xxxx)).xxxx(.xxxxxxx).xxxxxxxxxxxxxxx(xxxxxxx.xxxxxx).xxxx("xx \(xxxx)") }
+    xxxx                          xxxxxxxxx("xxxxxxx", xxxx: $xxxxx.xxxxxxxx, xxxx: .xxxxxxxx).xxxxxxxxx(x...x).xxxxxxxxxxxxxx(.xxxxxxxxxxxxx).xxxxxxxx { xxxxx.xxxx() }
+         ⋮
+    xxxx              xxxx(xxxxx).xxxxxxxxxxxxxxx(xxxxx)
+    xxxx +            xxxxx(xxxxxxxxxx: xxxxxxxxxxxxx(xxxxxxx.xxxx)).xxxx(.xxxxxx(xxxx: xx)).xxxxxxxxxxxxxxx(xxxxxxx.xxx)
+    xxxx              xxxx(xxxxxxx.xxxxx).xxxxxxxxx(x)
+
+• xxxxxx xxxxxxxxxxxxxx/xxxxxxx/xxxxxxxxxxxxxx/xxx.xxxxx (+x -x)
+    xxx                      }
+    xxx -                    xx xxxx.xxxxxxxx == xxx, xxx xxxx = xxxxxxxx("--xxxxxx"), xxx xxxxx = xxxxx.xxxxx(xxxxx: { $x.xxxxx == xxxx || $x.xx == xxxx }) { xxxx.xxxxxx(xxxxx) }
+    xxx +                    xx xxxx.xxxxxxxx == xxx, xxx xxxx = xxxxxxxx("--xxxxxx") ?? xxxxxxxxxxxx.xxxxxxxx.xxxxxx(xxxxxx: "xxxxxxxxxxxxxxxxxxxxxx"),
+    xxx +                       xxx xxxxx = xxxxx.xxxxx(xxxxx: { $x.xxxxx == xxxx || $x.xx == xxxx }) { xxxx.xxxxxx(xxxxx) }
+    xxx                  }
+        ⋮
+    xxx          xxxxxxxx = xxxxxxx
+    xxx +        xxxxxxxxxxxx.xxxxxxxx.xxx(xxxxxxx.xx, xxxxxx: "xxxxxxxxxxxxxxxxxxxxxx")
+    xxx          xxx = "xxxxxxxxxxxx"
+
+• Compacting context (48s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+  └ xxxxxx xxxx xx xxxxxxxx.
+
+• Queued follow-up inputs
+  ↳ xxx xxxx xxxxxx (xxxxxxxx xx xxxxxx.xx, xxxxxxx 'xxxxxx, xx xxxxxxx'): xxx xxx xxxx xxxx xxxxxx xxx xxxx xxxxxxxxxx: xxxxxx <xx, xxxxx xxxxxxx xxxxxx <xxxxx xxxx xxxxx, xxxxxx xxxxxx xxxx xxxxxxx
+    xxxx xxxx <xx, xx xxxxxxxx xxx xxxxxx xxxx, xx xxxxx xxx, xxxxx xxxxxx; xxxxxxx xxx xxx x xxxxxx/xxxxx xxxx xxxxx xx xxxxxxx.xx. xxxx xxx xxxxxxx xxx xxxxxxx xx xx xxxx xxxxx.
+  ↳ xxx xxxx xxxxxx: xxxxxxx xxxxxx xxxxx. xxxx /xxxxxxx/xxx/xxxx-xxxxxx-xx/xxxxxx-xxxxxxx.xx (xxxxxxxxx, xxxx xxxxx, xxxxxxx, xxxxxx, xxxxxxxx, xxxx, xxxxxxxx) xxx xxxxx xx xx xxxx xxxxx; xxxxx+xxxx
+    xxxxxxxxxxx xx xxxxx xxxxxx xx xxxxxxx.xx.
+  ↳ xxxxx xx xxxxxx-xxxxxxx.xx (xxxxxxx xxxxxxxxx): xxxxxxx xxxxxx xxxxxxxxx xxx xxxxxx/xxxxx/xxxxxxx/xxxxx xxxxxxx (xxxx + xxxx + xxxxx xxxxxx), xxx xxxxxxx xxxxx (xxxxxx/xxxxx/xxxxxx/xx/xxx., xxx
+    xxx xxxxx xxxxx, xxxxxx xxxx xxx xxx xxxxxx) xx xxxxxxx xxxx, xxxxxxxxxxxx xxxxxx xxx xxxxxxxx xxxx xxx; xxxxxx xxxxx xxxx x xxxxxx xxxx xxx xxxxxx xxx. xxxxxxx xx xxxx xxxxx.
+  ↳ xxx xxxx xxxxxx (xxxxxx.xx xxxxxxx 'xxxxxxx xxxxxxxxxx'): xxxx xxxxx xxxx xxxxxx (xxxxxx, xxxxxx, xxxxx xxxxx, xxxx xxxxxxx, xxxx->xxxxxxxxx, xxxxxx xxxx, xxxxxxx xxxxxxx) xxxx x xxxxxxx xxxx xxx
+    + xx-xxx xxxxxxxxxxx xxxxx (xxx-xxx-x) xxxx xxx/xxx; xxxxx xxxxxx xxx xxxx xxxxxxx xx xxxxxxx.xx xxx xxxxx. xxxxx xxxxxxxx xxxxxx xxxxx+xxxx xxxxxxxxxxx, xxxxxxx xxxxx + xxxxxx/xxxxx.xx xxxx xxxx/
+    xxxx. xxxxxxx xx xxxx xxxxx xxxxxx xxx xxxxxxxx.
+  ↳ xxx xxxx xxxxxx (xxxxxx.xx xxxxxxx 'xxx xx xxx xxx xxxxx-xxxx'): xxx xxx xxxx xxx xxx xx xxxxxx ~/.xxxxx/xxx/xxxxx-xxxx-xx (x.xx.xx-xxx) xx xxxxxxx: xxxxx = xxxxxxx > xxxxx-xxxx-xx > xxxxx-xxxx >
+    xxxxxxxx > /xxx/xxxxx; xxxx xxxxxxxx xxxx + xxxxxxx xx xxxxxxx xxxxxx xxx xxxxxxxx; xxxxxxx x.xx.xx xxxx x xxxxxx + xxxxxx xxxxxx xx xxxxx; xxx xxx xxxx xxxxxxx (xxxxxx, xxxxxx xxxxxx, xxxxxx)
+    xxxxx xxxxxxx; xxxxxxx.xx xxxxx xxx xxxxxx xxx xxxxxxxxxx/xxxxxx.
+    shift + ← edit last queued message
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/exec-macapp-v4 · Context 22% left · Context 78% used · weekly 87% left · 258K window · Main [default]

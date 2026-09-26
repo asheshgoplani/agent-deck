@@ -693,6 +693,9 @@ func (d *EditSessionDialog) View() string {
 		Padding(2, 4).
 		Width(dialogWidth)
 
+	// The head (title, group, switch summary), one body section per field and
+	// the foot are kept apart so renderFittedDialog can scroll the fields on a
+	// short terminal while the title and the key hints stay on screen.
 	var content strings.Builder
 	if d.IsRemote() {
 		content.WriteString(titleStyle.Render("Edit Session on " + d.remoteName))
@@ -711,14 +714,17 @@ func (d *EditSessionDialog) View() string {
 		content.WriteString(dimStyle.Render("  " + clipEditDialogText(line, lineWidth)))
 	}
 	content.WriteString("\n\n")
+	sections := dialogSections{head: []string{strings.TrimSuffix(content.String(), "\n")}, focus: d.focusIndex}
 
 	for i, f := range d.fields {
 		focused := i == d.focusIndex
+		content.Reset()
 
 		if f.kind == editFieldCheckbox {
 			// renderCheckboxLine emits a single compact "▶ [x] Label\n" row,
 			// matching the New Session dialog's options panel.
 			content.WriteString(renderCheckboxLine(f.label, f.checked, focused))
+			sections.body = append(sections.body, strings.TrimSuffix(content.String(), "\n"))
 			continue
 		}
 
@@ -746,9 +752,10 @@ func (d *EditSessionDialog) View() string {
 				content.WriteString(renderToolPills(f.pillOptions, f.pillCursor))
 			}
 		}
-		content.WriteString("\n")
+		sections.body = append(sections.body, content.String())
 	}
 
+	content.Reset()
 	if d.validationErr != "" {
 		errStyle := lipgloss.NewStyle().Foreground(ColorRed).Bold(true)
 		content.WriteString("\n")
@@ -769,9 +776,16 @@ func (d *EditSessionDialog) View() string {
 		}
 		content.WriteString("\n")
 	}
-	content.WriteString(helpStyle.Render(clipEditDialogText(d.footerHint(compact), lineWidth)))
+	// The hint breaks between items onto a second row rather than cutting
+	// "Esc cancel" off at the box edge.
+	hint, sep := d.footerHint(compact), " │ "
+	if !strings.Contains(hint, sep) {
+		sep = " · "
+	}
+	content.WriteString(helpStyle.Render(renderDialogFooterRows(lineWidth, 2, sep, strings.Split(hint, sep))))
+	sections.foot = []string{content.String()}
 
-	dialog := dialogStyle.Render(content.String())
+	dialog := renderFittedDialog(dialogStyle, d.height, sections)
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)
 }
 

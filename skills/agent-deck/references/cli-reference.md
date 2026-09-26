@@ -154,12 +154,14 @@ agent-deck update --check --json       # {"current","latest","available","publis
 agent-deck update --version 1.7.3      # install a specific release (may downgrade)
 agent-deck update --unattended         # no prompts, no changelog, no stdin
 agent-deck update --unattended --trigger timer|tui|manual
+agent-deck update --check-now          # what a controller's nudge runs on this host
 agent-deck update --install-timer [--dry-run]
 agent-deck update --uninstall-timer [--dry-run]
 agent-deck update --timer-status
 ```
 
-- `--unattended` is what the daily timer and the TUI's `auto_install` run. It honours `[updates] auto_install` (off means "nothing installed", exit 0), never runs Homebrew (prints the `brew` command, exit 2), takes `<cache dir>/update.lock` so two runs never replace the binary at once (busy means exit 0), skips the remotes prompt, and exits 1 when the install or the macOS launchd hygiene failed. `--trigger` (default `$AGENTDECK_UPDATE_TRIGGER`, then `manual`) only tags the debug log lines.
+- `--unattended` is what the daily timer, the TUI's `auto_install`, and every long-running process's `check_interval` poll (see `[updates]` in the config reference) run. It honours `[updates] auto_install` (off means "nothing installed", exit 0), never runs Homebrew (prints the `brew` command, exit 2), takes `<cache dir>/update.lock` so two runs never replace the binary at once (busy means exit 0), skips the remotes prompt, and exits 1 when the install or the macOS launchd hygiene failed. `--trigger` (default `$AGENTDECK_UPDATE_TRIGGER`, then `manual`) only tags the debug log lines.
+- `--check-now` is the same unattended flow, run on a remote by a controller's nudge instead of by hand: a controller that just installed a release tells each configured remote to check right now, over the same SSH connection `remote list`/`remote update` use, backgrounded so the controller never waits on the remote's download and never sends it any bytes (see "Nudging remotes" in the config reference). A run started this way never nudges its own remotes in turn — the nudge does not fan out across hops.
 - `--install-timer` writes `~/Library/LaunchAgents/com.agentdeck.autoupdate.plist` (macOS, daily at 07:MM with a random minute, program `/bin/sh`) or `~/.config/systemd/user/agent-deck-autoupdate.{service,timer}` (Linux, `OnCalendar=daily`, `RandomizedDelaySec=1h`) and loads it. Installing over an existing timer replaces it; `--dry-run` prints the exact files and commands and executes nothing. The timer's output goes to `<log dir>/auto-update.log` on macOS and the journal on Linux.
 - On macOS every install (interactive, `--version`, the TUI prompt and `--unattended`) re-registers the `com.agentdeck.*` launch agents whose program is the replaced binary (`launchctl bootout` then `bootstrap`, then a `state = running` check for KeepAlive/RunAtLoad agents). Without this they crash-loop with `EX_CONFIG` (exit 78) because macOS ties a launch agent's identity to the file at its program path. If an agent does not come back the command exits 1 and prints the two `launchctl` commands to run by hand; the binary is already updated at that point.
 
@@ -407,6 +409,8 @@ agent-deck session send <id|title> --message-file <file|-> [--wait|--stream|--no
 ```
 
 Use `--message-file` for long or multiline messages, or `--message-file -` for stdin. Do not combine it with an inline message.
+
+`--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
 ```bash
 git diff | agent-deck session send my-project --message-file -

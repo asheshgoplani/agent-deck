@@ -8,6 +8,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
 )
@@ -28,7 +29,12 @@ func TestEmbeddedSettingRequiresRestartOfTransport(t *testing.T) {
 			if h.embeddedLayout != enabled {
 				t.Errorf("active layout changed without replacing startup transport: %v", h.embeddedLayout)
 			}
-			if !strings.Contains(h.settingsPanel.View(), "applies at next launch") {
+			// Compare without styling, box borders or whitespace: under a
+			// colour profile (forceTrueColorProfile, one-shot and global, set
+			// by whichever test file ran first) the panel wraps this line
+			// mid-word ("…(applies a" / "t next launch)"), and the test must
+			// not depend on file order.
+			if !strings.Contains(squashPanelText(h.settingsPanel.View()), "appliesatnextlaunch") {
 				t.Error("setting did not disclose next-launch behavior")
 			}
 			cfg, err := session.LoadUserConfig()
@@ -40,6 +46,12 @@ func TestEmbeddedSettingRequiresRestartOfTransport(t *testing.T) {
 			}
 		})
 	}
+}
+
+// squashPanelText reduces a rendered panel to its visible characters with
+// borders and all whitespace removed, so a phrase matches however it wraps.
+func squashPanelText(view string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(ansi.Strip(view), "│", " ")), "")
 }
 
 func TestEmbeddedBannerResizeKeepsPTYEmulatorAndMouseTogether(t *testing.T) {

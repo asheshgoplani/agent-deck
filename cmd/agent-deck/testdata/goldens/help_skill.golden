@@ -1,0 +1,19 @@
+Usage: agent-deck skill <command> [options]
+
+Manage project skills with project-level attach/detach and a global source registry.
+
+Commands:
+  list                  List discoverable skills from configured sources
+  attached [id]         Show skills attached to a session/project
+  attach <id> <skill>   Attach a skill to session project
+  detach <id> <skill>   Detach a skill from session project
+  source <cmd>          Manage global skill sources
+
+Examples:
+  agent-deck skill list
+  agent-deck skill attached my-project
+  agent-deck skill attach my-project web-design-guidelines
+  agent-deck skill attach my-project react --source pool --restart
+  agent-deck skill detach my-project web-design-guidelines
+  agent-deck skill source list
+  agent-deck skill source add team ~/src/team-skills

@@ -18,6 +18,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/asheshgoplani/agent-deck/internal/harness"
+
 	dark "github.com/thiagokokada/dark-mode-go"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
@@ -299,6 +301,42 @@ type UserConfig struct {
 
 	// Performance holds opt-in resource tuning for multi-instance setups.
 	Performance PerformanceSettings `toml:"performance,omitempty"`
+
+	// Core holds the one-core registry and daemon switches (docs/core-registry.md).
+	Core CoreSettings `toml:"core,omitempty"`
+
+	// Macapp holds the switches for the Mac app surface (docs/macapp-core.md).
+	Macapp MacappSettings `toml:"macapp,omitempty"`
+
+	// Harnesses overrides the core install/login table per harness
+	// ([harnesses.<name>] binary, install_command, login_command, docs_url).
+	Harnesses map[string]harness.Override `toml:"harnesses,omitempty"`
+}
+
+// MacappSettings is the [macapp] section. Everything is off by default.
+type MacappSettings struct {
+	// Plugins enables the plugin-facing commands: `limits --json` and the
+	// macapp.* namespace of `events publish`.
+	Plugins bool `toml:"plugins,omitempty"`
+
+	// TranscriptEvents makes the notify daemon publish a session.transcript
+	// bus frame whenever a live session's native transcript grows, so a
+	// client never stats transcript files itself.
+	TranscriptEvents bool `toml:"transcript_events,omitempty"`
+
+	// StatusEvents makes every status owner (TUI poller, notify daemon)
+	// publish session.status and session.turn bus frames when it writes a
+	// status transition to state.db.
+	StatusEvents bool `toml:"status_events,omitempty"`
+}
+
+// CoreSettings is the [core] section.
+type CoreSettings struct {
+	// Daemon routes --json=envelope requests of registry commands through the
+	// profile's `agent-deck daemon serve` when one answers; the CLI runs them
+	// in process when none does. Default false: direct mode, the socket is
+	// never dialled (docs/daemon-protocol.md).
+	Daemon bool `toml:"daemon,omitempty"`
 }
 
 // SelfHealSettings controls the self-heal supervision policy (SELF-HEAL-DESIGN.md
@@ -957,9 +995,18 @@ type TelemetrySettings struct {
 	// AGENTDECK_TELEMETRY=0. It cannot enable telemetry.
 	Disabled bool `toml:"disabled,omitempty"`
 
-	// Endpoint overrides the HTTPS receiver URL for self-hosting. Plain http
-	// is accepted only for localhost. Empty uses the compiled-in default.
+	// Endpoint overrides the receiver base URL (default PostHog Cloud EU,
+	// https://eu.i.posthog.com; uploads go to <endpoint>/batch/). Plain http
+	// is accepted only for localhost. Changing it requires fresh consent.
 	Endpoint string `toml:"endpoint,omitempty"`
+
+	// PostHogKey is the PostHog project API key (phc_...), used only by
+	// builds without a compiled-in key, after AGENTDECK_POSTHOG_KEY; with
+	// none, events stay in the local spool and nothing is uploaded.
+	PostHogKey string `toml:"posthog_key,omitempty"`
+
+	// Level is "full" (default) or "basic". Config can only lower the level.
+	Level string `toml:"level,omitempty"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -1385,13 +1432,59 @@ type UpdateSettings struct {
 	// Default: true (nil = true)
 	CheckEnabled *bool `toml:"check_enabled,omitempty"`
 
-	// CheckIntervalHours is how often to check for updates (in hours)
-	// Default: 24
+	// CheckIntervalHours is how often the startup remote sweep (see
+	// AutoUpdateRemotes/ShouldAutoUpdateRemotes) throttles itself, in hours.
+	// Default: 24. This is unrelated to CheckInterval below, which governs
+	// the near-event-driven GitHub poll every daemon/TUI runs.
 	CheckIntervalHours int `toml:"check_interval_hours,omitzero"`
+
+	// CheckInterval is how often every agent-deck daemon/TUI polls the
+	// GitHub releases endpoint for a new release, as a Go duration string
+	// (e.g. "90s", "2m"). The poll is a conditional GET (ETag /
+	// If-None-Match): a 304 (no new release) does not spend the caller's
+	// GitHub API rate limit, so a short interval is cheap. On error the
+	// caller backs off exponentially with jitter rather than retrying at
+	// this rate (see update.NextRecheck). Default: "90s".
+	CheckInterval string `toml:"check_interval,omitempty"`
+
+	// SweepRemotes pushes the controller's binary bytes to every configured
+	// remote after an unattended install, the way AutoUpdateRemotes always
+	// did before this setting existed. Default: false — remotes are instead
+	// nudged (a best-effort, byte-free "check now" over the same channel,
+	// falling back to `ssh <host> agent-deck update` for a remote that does
+	// not understand the nudge) and pull + verify themselves. `agent-deck
+	// remote update <host>` is unaffected either way: it always pulls onto
+	// the named remote by hand, regardless of this setting.
+	SweepRemotes *bool `toml:"sweep_remotes,omitempty"`
 
 	// NotifyInCLI shows update notification in CLI commands (not just TUI)
 	// Default: true (nil = true)
 	NotifyInCLI *bool `toml:"notify_in_cli,omitempty"`
+}
+
+// DefaultCheckInterval is how often a daemon/TUI polls GitHub for a new
+// release when [updates].check_interval is unset.
+const DefaultCheckInterval = 90 * time.Second
+
+// GetCheckInterval returns the configured poll interval, defaulting to
+// DefaultCheckInterval when unset or unparsable. Never returns a
+// non-positive duration.
+func (u UpdateSettings) GetCheckInterval() time.Duration {
+	if v := strings.TrimSpace(u.CheckInterval); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return DefaultCheckInterval
+}
+
+// GetSweepRemotes reports whether the controller pushes bytes to remotes
+// after an install, instead of nudging them to pull (default: false).
+func (u UpdateSettings) GetSweepRemotes() bool {
+	if u.SweepRemotes == nil {
+		return false
+	}
+	return *u.SweepRemotes
 }
 
 // GetCheckEnabled returns whether update checks are enabled (default: true).
@@ -2721,6 +2814,23 @@ type WorktreeSettings struct {
 	// to "always". See --allow-repo-scripts / AGENT_DECK_ALLOW_REPO_SCRIPTS
 	// for a one-shot, non-persisted bypass (CI).
 	RunRepoScripts string `toml:"run_repo_scripts,omitempty"`
+
+	// CheckoutGitConfig is a list of "key=value" git config entries passed as
+	// `git -c` to the commands that materialize a new worktree (#2366), e.g.
+	// ["core.hooksPath=/dev/null"] to skip post-checkout hooks, or
+	// ["checkout.workers=8"]. Applied only to that creation; nothing is
+	// written to the worktree's config. Global config only: a directory-local
+	// .agent-deck/config.toml cannot set it (its allowlist rejects the key).
+	CheckoutGitConfig []string `toml:"checkout_git_config,omitempty"`
+}
+
+// CreateOptions returns the git worktree-creation options these settings
+// select for a worktree created from sourceDir: sparse-checkout inheritance
+// and the checkout_git_config entries.
+func (w WorktreeSettings) CreateOptions(sourceDir string) git.WorktreeCreateOptions {
+	opts := git.SparseInheritOptions(w.InheritSparseCheckout(), sourceDir)
+	opts.GitConfig = w.CheckoutGitConfig
+	return opts
 }
 
 // ScriptConsentPolicy returns the parsed [worktree] run_repo_scripts value.
@@ -3180,6 +3290,15 @@ type TmuxSettings struct {
 	// creation and the separate EnableMouseMode() path used on reconnect.
 	// Default: true (nil = use default true, preserves pre-#730 behavior)
 	Mouse *bool `toml:"mouse,omitempty"`
+
+	// IndicZeroWidthMarks gives Indic spacing vowel signs (ा ि ी ो) zero width
+	// on the tmux server so glibc tmux (Linux packages) lays out Hindi,
+	// Bengali or Tamil text the way Claude Code does (#2334). It aligns
+	// Claude Code but misaligns Codex, the shell and vim for Indic text, it
+	// applies to the whole tmux server (the user's default one unless
+	// socket_name is set), and it needs tmux >= 3.6. Turning it back off
+	// removes exactly the entries agent-deck added. Default: false.
+	IndicZeroWidthMarks bool `toml:"indic_zero_width_marks,omitempty"`
 
 	// LaunchInUserScope starts new tmux servers via `systemd-run --user --scope`
 	// so the tmux server lives under the user's systemd manager instead of the
@@ -3814,6 +3933,9 @@ func LoadUserConfig() (*UserConfig, error) {
 
 	userConfigCacheMu.Lock()
 	defer userConfigCacheMu.Unlock()
+	// Every (re)load re-applies the [macapp] status_events gate, so an
+	// edited config.toml turns the session.status tap on or off live.
+	defer func() { applyStatusBusGate(userConfigCache) }()
 
 	// Re-check under write lock: another goroutine may have refreshed the
 	// cache to match currentMtime between our RLock drop and Lock acquire.
@@ -5162,8 +5284,12 @@ auto_install = true
 auto_restart = true
 # Enable update checks on startup (default: true)
 check_enabled = true
-# How often to check for updates in hours (default: 24)
-check_interval_hours = 24
+# How often to poll GitHub for a new release, e.g. "90s", "2m" (default: "90s").
+# Polls are conditional (ETag) so an unchanged answer (304) is nearly free.
+# check_interval = "90s"
+# Push the controller's binary onto every configured remote after an
+# install, instead of nudging remotes to pull it themselves (default: false)
+# sweep_remotes = true
 # Show update notification in CLI commands, not just TUI (default: true)
 notify_in_cli = true
 

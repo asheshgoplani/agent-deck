@@ -419,6 +419,27 @@ type WorktreeCreateOptions struct {
 	// normalized repository base root; see CaptureSparseCheckout for why.
 	// A non-sparse source leaves creation unchanged.
 	SparseSourceDir string
+	// GitConfig holds "key=value" entries from the global
+	// `[worktree] checkout_git_config` (#2366). Each is passed as `git -c` to
+	// the commands that materialize the new worktree (`worktree add` and the
+	// sparse checkout), e.g. "core.hooksPath=/dev/null" to skip checkout
+	// hooks. Nothing is persisted in the worktree's config.
+	GitConfig []string
+}
+
+// gitConfigArgs turns GitConfig entries into `-c key=value` arguments,
+// rejecting anything that is not a plain key=value pair so an entry can never
+// be read by git as an option or subcommand.
+func gitConfigArgs(entries []string) ([]string, error) {
+	var args []string
+	for _, e := range entries {
+		key, _, ok := strings.Cut(e, "=")
+		if !ok || strings.TrimSpace(key) == "" || strings.HasPrefix(key, "-") {
+			return nil, fmt.Errorf("invalid [worktree] checkout_git_config entry %q: want key=value", e)
+		}
+		args = append(args, "-c", e)
+	}
+	return args, nil
 }
 
 // SparseInheritOptions builds the options for inheriting sourceDir's
@@ -470,6 +491,7 @@ func CreateWorktreeWithOptions(repoDir, worktreePath, branchName string, opts Wo
 		worktreePath: worktreePath,
 		branchName:   branchName,
 		sparse:       sparse,
+		gitConfig:    opts.GitConfig,
 		failMsg:      "failed to create worktree",
 	}
 	switch resolution.Mode {
@@ -509,6 +531,8 @@ type worktreeAddSpec struct {
 	// sparse, when Enabled, switches creation to --no-checkout + pattern
 	// replay so the full tree is never materialized (#1708).
 	sparse SparseCheckoutState
+	// gitConfig is WorktreeCreateOptions.GitConfig.
+	gitConfig []string
 	// createdBranch records whether this invocation creates the branch, so a
 	// failed sparse replay can roll the branch back too.
 	createdBranch bool
@@ -525,7 +549,11 @@ type worktreeAddSpec struct {
 // semantics the with-state path uses (see CreateWorktreeWithStateAndSetup); the
 // caller therefore never observes a half-initialized worktree.
 func runWorktreeAdd(spec worktreeAddSpec) error {
-	args := []string{"-C", spec.repoDir, "worktree", "add"}
+	configArgs, err := gitConfigArgs(spec.gitConfig)
+	if err != nil {
+		return fmt.Errorf("%s: %w", spec.failMsg, err)
+	}
+	args := append(slices.Clone(configArgs), "-C", spec.repoDir, "worktree", "add")
 	if spec.sparse.Enabled {
 		// The whole point of #1708: patterns must be installed before the
 		// first materialization, not after a full checkout.
@@ -540,7 +568,7 @@ func runWorktreeAdd(spec worktreeAddSpec) error {
 	if !spec.sparse.Enabled {
 		return nil
 	}
-	applyErr := ApplySparseCheckout(spec.worktreePath, spec.sparse)
+	applyErr := ApplySparseCheckout(spec.worktreePath, spec.sparse, configArgs...)
 	if applyErr == nil {
 		return nil
 	}
@@ -610,6 +638,7 @@ func CreateWorktreeAtStartPointWithOptions(repoDir, worktreePath, branchName, st
 		branchName:    branchName,
 		args:          []string{"-b", branchName, worktreePath, startPoint},
 		sparse:        sparse,
+		gitConfig:     opts.GitConfig,
 		createdBranch: true,
 		failMsg:       "failed to create worktree at start point",
 	}); err != nil {

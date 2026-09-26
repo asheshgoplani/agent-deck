@@ -1,0 +1,28 @@
+Usage: agent-deck feedback
+
+Rate agent-deck and optionally leave a comment.
+
+How it works:
+  1. You are asked for a rating (1-5, n to never ask again, q to quit).
+  2. On a valid rating you may add a short comment.
+  3. BEFORE anything is sent, the CLI shows a disclosure block with:
+       - the public URL (https://github.com/asheshgoplani/agent-deck/discussions/600),
+       - that it posts via the `gh` CLI under your GitHub account,
+       - your GitHub username (as seen by `gh api user -q .login`),
+       - the exact body that will be posted.
+  4. You confirm with `y`. Default is N — pressing Enter declines.
+
+Failure mode:
+  If `gh` fails (not installed, not authenticated, network error), the
+  CLI prints an error and exits non-zero. There is NO silent clipboard
+  or browser fallback on this path — nothing is sent without consent.
+
+A private/anonymous feedback channel is being designed for a future
+release — track in https://github.com/asheshgoplani/agent-deck/issues/679.
+
+Prompt frequency (v1.7.41+):
+  The TUI auto-prompt appears after 7 launches or 3 days of use,
+  whichever comes later. If you dismiss it, we wait 14 days before
+  asking again. Maximum 3 prompts per version. Pressing `n` at any
+  step is a permanent opt-out. `agent-deck feedback` always works
+  on demand regardless of pacing.

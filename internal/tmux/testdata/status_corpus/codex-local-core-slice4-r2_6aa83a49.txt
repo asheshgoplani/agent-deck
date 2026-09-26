@@ -1,0 +1,130 @@
+     xx +        xx xxxxx.xxxx == "xxxxxxx" { xxxxxxxxxxxxx++ }
+     xx +        xx xxxxxx(xxx(xxxx)) == xxxx {
+     xx              xxxxxx()
+        ⋮
+     xx      }
+     xx -    xx xxx(xxxx) != xxx {
+     xx -        x.xxxxxx("xxx %x/xxx xxxxx-xxxxxxx xxxxxx", xxx(xxxx))
+     xx +    xx xxxxxxxxxxxxx != xxx {
+     xx +        x.xxxxxx("xxx %x/xxx xxxxx-xxxxxxx xxxxxx", xxxxxxxxxxxxx)
+    xxx      }
+     xx -    xxx x := xxxxxx(x); x <= xxx; x++ {
+    xxx +    xxx x := xxxxxx(x); x <= xxxx; x++ {
+    xxx          xx !xxxx[x] {
+
+• xxx xxxxx -x xxxxxxxx/xxxxxx/*.xx xxxxxxxx/xxxxxxx/xxxxxx.xx xxxxxxxx/xxxxxxx/xxxxxxxxxxxx.xx xxxxxxxx/xxxxxxx/xxxxxxxxxxxxxxxxxxx.xx xxx/xxxxx-xxxx/xxxx.xx xxx/xxxxx-xxxx/xxxxxxxxxx.xx && xx
+  │ build ./... && go vet ./...
+  └ (no output)
+
+• xxxxxx xxxx/xxxx/xxxxxxxx/xxxxxx/xxx.xx (+x -xx)
+     xx
+     xx -    // xxxxxxxxxxxxxxxxxxxx xxxxxx xxxxxxxxx xx xxxxxxxxxx xxx xxxxxxxxx xxxx
+     xx -    // xxxxx xxxx xxxxx (x.x. xxx xxxx %xxxxxx xxx xxxx): xx xxxx xxxx xxxx
+     xx -    // xxxxx x xxxxxxx, xxx xxxxx xx xxxxxxx.
+     xx +    // xxxxxxxxxxxxxxxxxxxx xxxxxxxx xxx xxxxx xxxxxxx xxxx xxxxxx xxx xxxxxxx.
+     xx      xxxxxxxxxxxxxxxxxxxx = xx * xxxx.xxxxxxxxxxx
+     xx -
+     xx -    // xxxxxxxxxxxxxxxxx xxxxxx xx xxxxx xxxxx xxxx xxxx xxxxxxxxx xxxxxx,
+     xx -    // xxxxxxxxxxx xx xxx xxxxxx, xx x xxxx xxxxx xxxxx'x xxxx x xxxx
+     xx -    // xxxxxxxx xxxxxx xxxxxxxxxx xxxxxxx xx.
+     xx -    xxxxxxxxxxxxxxxxx = xxx
+     xx  )
+        ⋮
+     xx
+     xx -    xxxxxxxxxxxxxx xxxxxx.xxxx
+     xx      xxxxxxxx       xxxxxx.xxxxxx
+        ⋮
+    xxx      }
+    xxx -    x.xxxxxxxxxxxxxx.xxxxx(xxxx)
+    xxx      xxxxxxxx := xxxx.xxx().xxx(xxxxxxx)
+        ⋮
+    xxx              xx !xx {
+    xxx -                x.xx.xxxx()
+    xxx -                x.xxxxxxxxxx()
+    xxx -                x.xx.xxxxxx()
+    xxx                  xxxxxx
+        ⋮
+    xxx              xxxxx()
+    xxx -            x.xx.xxxx()
+    xxx -            x.xxxxxxxxxx()
+    xxx -            x.xx.xxxxxx()
+    xxx              xxxxxx
+        ⋮
+    xxx      }
+    xxx -}
+    xxx -
+    xxx -// xxxxxxxxxx xxxxxx xxx xxxxxx xxxxxxx xxx xxxxxxxx xxx xxxxxx xxxxxxxxx xx
+    xxx -// xxx xxxx xxxxxxx xxxxxx. xxxxxx xxxxx x.xx, xxxxxx xx xxxxxxx/xxxxxxxx
+    xxx -// xxxxx xxxx xxxx xx xxxxxxx xxxxxxxxxx.
+    xxx -xxxx (x *xxx) xxxxxxxxxx() {
+    xxx -    xx x.xxxxxxxxxx == xxx {
+    xxx -        xxxxxx
+    xxx -    }
+    xxx -    xx xxx := x.xxxxxxxxxx.xxxx(); xxx != xxx {
+    xxx -        x.xxxx(xxx)
+    xxx -        xxxxxx
+    xxx -    }
+    xxx -    x.xxxxxx.xxxxx(x.xxxxxxx.xxxx())
+    xxx  }
+
+• xxxxxxxx
+  └ xxxx xxxxxx_xxxx.xx
+    xxxx xxxxxx_xxxx.xx
+    xxxx xxxxxx.xx
+    xxxx xxxxxx.xx
+    xxxxxx xxxx xxxxxxxx xx xxxxxxx
+
+• xxxxxx xxxx/xxxx/xxxxxxxx/xxxxxxx/xxxxxxxxxxx.xx (+xx -x)
+    xxx
+    xxx +xxxx xxxxxxxxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxx(x *xxxxxxx.x) {
+    xxx +    x.xxxxxx("xxxx", x.xxxxxxx())
+    xxx +    x.xxxxxx("xxx_xxxx_xxxx", xxxxxxxx.xxxx(x.xxxxxxx(), "xxxx"))
+    xxx +    x.xxxxxx("xxxxxxxxx_xxxxxx_xxx", "x")
+    xxx +    xxxxxx, _ := xxxxxxxxxxxxx(x, xxx)
+    xxx +    xx xxx := xxxxxx.xxxxx(); xxx != xxx { x.xxxxx(xxx) }
+    xxx +    xxxxxx.xxxx()
+    xxx +    xxxxx xxxxxx.xxxxxxxxxx(x,
+    xxx +        xxxxxx.xxxxxxxxxxxxxxxxx("xxxxxxxx/xxx.(*xx).xxxxxxxxxxxxxxxx"),
+    xxx +        xxxxxx.xxxxxxxxxxxxxxxxx("xxxxxxxx/xxx.(*xx).xxxxxxxxxxxxxxxxxx"),
+    xxx +        xxxxxx.xxxxxxxxxxxxxxxxx("xxxxxxx.xxx"),
+    xxx +        xxxxxx.xxxxxxxxxxxxxxxxx("xxxx.xxxxxxx_xxxxxxxx"),
+    xxx +        xxxxxx.xxxxxxxxxxxxxxxxx("xx.xxxxxxxxxx.xx/xxxxx/xxxx.(*xxxxxx).xxxxx"),
+    xxx +    )
+    xxx +}
+    xxx +
+    xxx  // xxxxxxxxxxxxxxxxx_xxxxxxxxxxxxxxxxxx xxxxxxxx xxxx xx xxxxx xxxx x xxxxxx
+
+• xxxxxx xxxx/xxxx/xxxxxxxx/xxxxxx/xxxxxxxx.xx (+xx -x)
+    xxx
+    xxx +xxxx xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(x *xxxxxxx.x) {
+    xxx +    xxx := x.xxxxxxx()
+    xxx +    x, xxx := xxxx(xxx)
+    xxx +    xx xxx != xxx { x.xxxxx(xxx) }
+    xxx +    xxxxxx := xxxxxxxx.xxxx(xxx, xxxxxxxxxxxxxxxxx)
+    xxx +    xxxxxxx := xxxxxxxx.xxxx(xxx, "xxxxx-xxxxxx")
+    xxx +    xx xxx := xx.xxxxxx(xxxxxx, xxxxxxx); xxx != xxx { x.xxxxx(xxx) }
+    xxx +    xx xxx := xx.xxxxx(xxxxxx, xxxxx); xxx != xxx { x.xxxxx(xxx) }
+    xxx +    x.xxxxxxx("xxxxxx", "", xxx)
+    xxx +    xxxxxxxx := xxxx.xxx().xxx(x*xxxx.xxxxxx)
+    xxx +    xxx !x.xxxxxx.xxxx() && xxxx.xxx().xxxxxx(xxxxxxxx) { xxxx.xxxxx(xxxx.xxxxxxxxxxx) }
+    xxx +    xx !x.xxxxxx.xxxx() { x.xxxxx("xxx xxx xxx xxxxxxx xx xxxxxxx xxxxxxx") }
+    xxx +    xx x.xxxxxx() != x { x.xxxxxx("xxxxxx xxxxxx xxxxxxxx xxxxxx %x", x.xxxxxx()) }
+    xxx +    xx xxx := xx.xxxxxx(xxxxxx, xxxxxx+".xxxxxxx"); xxx != xxx { x.xxxxx(xxx) }
+    xxx +    xx xxx := xx.xxxxxx(xxxxxxx, xxxxxx); xxx != xxx { x.xxxxx(xxx) }
+    xxx +    xx xxx := x.xxxxx(); xxx != xxx { x.xxxxx(xxx) }
+    xxx +    xx, xxx := xxxx(xxx)
+    xxx +    xx xxx != xxx { x.xxxxx(xxx) }
+    xxx +    xxxxx xx.xxxxx()
+    xxx +    xx.xxxxxxx("xxxxxxxxx", "", xxx)
+    xxx +    xx !xx.xxxxx(x*xxxx.xxxxxx) { x.xxxxx("xxxxxxxx xxxxx") }
+    xxx +    xx xx.xxxxxx() != x { x.xxxxxx("xxxxxxxxx xxxxxx = %x, xxxx x", xx.xxxxxx()) }
+    xxx +}
+    xxx +
+    xxx  xxxx xxxxxxxxxxx(x *xxxxxxx.x) *xxx {
+
+• Working (9m 41s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/exec-core-slice4-r2 · Context 64% left · Context 36% used · weekly 94% left · 258K window

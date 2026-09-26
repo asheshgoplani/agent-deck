@@ -27,10 +27,28 @@ printf '%s\n' "$*" >> "$CODEX_SCAN_LOG"
 if [ "$1" = -u ]; then shift; fi
 if [ "$1" = -L ]; then shift 2; fi
 case "$1" in
-list-sessions) printf '%s' "$CODEX_SCAN_NAMES" ;;
+list-sessions)
+ if [ "$CODEX_SCAN_FAIL" = 1 ]; then exit 1; fi
+ if [ "$CODEX_SCAN_EMPTY" = 1 ]; then
+  printf '%s' "$CODEX_SCAN_NAMES" | while IFS= read -r name; do printf '%s\t\n' "$name"; done
+ else
+  printf '%s' "$CODEX_SCAN_NAMES" | while IFS= read -r name; do
+   case "$name" in
+   *_unbound_*) printf '%s\t%s\n' "$name" "$CODEX_SCAN_GLOBAL" ;;
+   *) printf '%s\tid-%s\n' "$name" "$name" ;;
+   esac
+  done
+ fi ;;
 show-environment)
  if [ "$CODEX_SCAN_FAIL" = 1 ]; then exit 1; fi
+ if [ "$2" = -g ]; then
+  if [ -n "$CODEX_SCAN_GLOBAL" ]; then printf 'CODEX_SESSION_ID=%s\n' "$CODEX_SCAN_GLOBAL"; exit 0; fi
+  echo 'unknown variable: CODEX_SESSION_ID' >&2; exit 1
+ fi
  if [ "$CODEX_SCAN_EMPTY" = 1 ]; then exit 0; fi
+ case "$3" in
+ *_unbound_*) exit 0 ;;
+ esac
  printf 'CODEX_SESSION_ID=id-%s\n' "$3" ;;
 *) exit 1 ;;
 esac
@@ -68,8 +86,8 @@ func TestCodexExclusionScanLinear(t *testing.T) {
 	}
 	calls := strings.Split(strings.TrimSpace(string(data)), "\n")
 	t.Logf("%d concurrent instances: %d tmux calls, %s", n, len(calls), elapsed)
-	if len(calls) > n+1 {
-		t.Fatalf("exclusion scan made %d tmux calls; want at most %d (one list plus one environment read per session)", len(calls), n+1)
+	if len(calls) != 2 {
+		t.Fatalf("exclusion scan made %d tmux calls; want one batched list plus one global environment read", len(calls))
 	}
 }
 
@@ -122,8 +140,8 @@ func TestCodexExclusionPassPinsSnapshotAndRefreshes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 6 {
-		t.Fatalf("two scans: got %d calls, want 6", got)
+	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 4 {
+		t.Fatalf("two scans: got %d calls, want 4 (list plus global read each)", got)
 	}
 }
 
@@ -139,7 +157,7 @@ func TestCodexExclusionSocketsAndDuplicateOwners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(data), "-L first") != 3 || strings.Count(string(data), "-L second") != 3 {
+	if strings.Count(string(data), "-L first") != 2 || strings.Count(string(data), "-L second") != 2 {
 		t.Fatalf("socket routing: %s", data)
 	}
 	pass.bySocket["first"] = codexOwnershipSnapshot{claims: &codexOwnershipClaims{bySession: map[string]string{"agentdeck_scan_0": "shared", "agentdeck_scan_1": "shared"}}}
@@ -237,7 +255,7 @@ func TestCodexExclusionFailedPeerReadIsUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 2 {
+	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 1 {
 		t.Fatalf("failed pass re-probed: %d calls", got)
 	}
 }
@@ -263,5 +281,34 @@ func TestCodexExclusionAuthoritativeBindingAfterSnapshot(t *testing.T) {
 				t.Fatal("authoritative binding missing from pinned pass")
 			}
 		})
+	}
+}
+
+// The tmux server's global environment can carry CODEX_SESSION_ID when the
+// client that started it had one (a Codex tool shell). list-sessions formats
+// resolve unbound sessions to that value; the refresh must not treat it as a
+// binding, or the real owner is excluded from its own ID.
+func TestCodexExclusionIgnoresGlobalEnvironmentValue(t *testing.T) {
+	resetCodexOwnershipCache(t)
+	log := codexCountingTmux(t, 0)
+	t.Setenv("CODEX_SCAN_NAMES", "agentdeck_scan_0\nagentdeck_unbound_1\nagentdeck_unbound_2\n")
+	t.Setenv("CODEX_SCAN_GLOBAL", "leaked-id")
+	var pass StatusUpdatePass
+	owner := &Instance{tmuxSession: &tmux.Session{Name: "agentdeck_scan_0"}}
+	exclude := owner.codexExclusions(&pass)
+	if exclude == nil || exclude["leaked-id"] || exclude["id-agentdeck_scan_0"] {
+		t.Fatalf("global environment value leaked into exclusions: %v", exclude)
+	}
+	unbound := &Instance{tmuxSession: &tmux.Session{Name: "agentdeck_unbound_1"}}
+	if got := unbound.codexExclusions(&pass); !got["id-agentdeck_scan_0"] || got["leaked-id"] {
+		t.Fatalf("peer view wrong: %v", got)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One list, one global read, one per-session read per ambiguous row.
+	if got := len(strings.Split(strings.TrimSpace(string(data)), "\n")); got != 4 {
+		t.Fatalf("calls = %d, want 4:\n%s", got, data)
 	}
 }

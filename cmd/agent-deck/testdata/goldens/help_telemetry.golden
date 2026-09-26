@@ -1,0 +1,37 @@
+Usage: agent-deck telemetry <command> [--json]
+
+Opt-in, anonymous usage data. OFF until you say yes; nothing is recorded or
+sent before that. Full details and the field list: https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md
+
+Commands:
+  status            Consent, install id, level, spool size, upload schedule and result
+  on | enable       Show the question and require an interactive y (Enter is no)
+  off | disable     Turn off; delete the install id, local spool and counters
+  preview           Print the exact PostHog request bodies the next upload would send
+  show-last         Print the exact body of the last acknowledged upload request
+  reset-id          New random install id and salt; delete the spool and counters
+  schema            Print the full allow-list (--markdown default, --json)
+  level full|basic  Set the recording level (raising basic to full asks first)
+
+Flags:
+  --json      Machine-readable output for every command
+  --yes, -y   unsupported: consent must come from a person at a terminal
+
+Kill switches (win over stored consent, re-read on every run):
+  DO_NOT_TRACK=1                      hard off
+  AGENTDECK_TELEMETRY=0               hard off (any value but 1/true/yes/on/log; none of them enables)
+  AGENTDECK_TELEMETRY=log             never sends: logs would-be events/uploads locally instead
+  [telemetry] disabled = true         hard off, in config.toml
+  [telemetry] level = "basic"         record only app.start, usage.daily and env.snapshot
+  [telemetry] endpoint = URL          receiver base URL (default https://eu.i.posthog.com; re-asks consent)
+  [telemetry] posthog_key / AGENTDECK_POSTHOG_KEY   PostHog key, only for builds without a compiled-in one
+
+When data is sent:
+  Only from the interactive TUI, never on the day you said yes, then at most
+  every 6 hours: completed local hours of events and completed days of daily
+  counters, as PostHog /batch/ JSON. Never from CLI commands, CI, scripts,
+  tests or inside an agent-deck session (they only record locally, if at all).
+  The one exception is `agent-deck uninstall`, which sends one event at once.
+
+Never sent: prompts, output, titles, paths, repo, host or user names, commands,
+environment values, error messages, IP addresses (discarded by PostHog).

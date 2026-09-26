@@ -9,13 +9,19 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// DefaultEndpoint is undeployed; .invalid endpoints cause no network request.
-// Configure a receiver as described in TELEMETRY.md before collecting.
-const DefaultEndpoint = "https://telemetry.agent-deck.invalid/v1/ping"
+// DefaultEndpoint is PostHog Cloud EU. It is a config value
+// ([telemetry] endpoint) so a hostname we own can front it later without a
+// code change; consent binds to the endpoint, so changing it re-asks.
+// Nothing is uploaded without a project key (config.go).
+const DefaultEndpoint = "https://eu.i.posthog.com"
+
+// batchPath is PostHog's batch capture path, appended to the endpoint.
+const batchPath = "/batch/"
 
 // sendTimeout bounds the whole request: dial, TLS, write, response.
 const sendTimeout = 5 * time.Second
@@ -26,7 +32,7 @@ var endpoint = DefaultEndpoint
 
 // SetEndpoint overrides the endpoint (from config.toml).
 func SetEndpoint(u string) {
-	u = strings.TrimSpace(u)
+	u = strings.TrimRight(strings.TrimSpace(u), "/")
 	if u == "" {
 		u = DefaultEndpoint
 	}
@@ -35,6 +41,9 @@ func SetEndpoint(u string) {
 
 // Endpoint returns the effective endpoint.
 func Endpoint() string { return endpoint }
+
+// batchURL is where uploads are POSTed.
+func batchURL() string { return strings.TrimRight(endpoint, "/") + batchPath }
 
 // ValidateEndpoint enforces https, except plain http to a loopback host for
 // local testing of a self-hosted receiver.
@@ -66,7 +75,14 @@ func ValidateEndpoint(u string) error {
 	}
 }
 
-// httpClient never follows redirects and has a hard timeout.
+// endpointUndeployed reports a .invalid host, which never causes a request.
+func endpointUndeployed() bool {
+	parsed, err := url.Parse(endpoint)
+	return err != nil || strings.HasSuffix(parsed.Hostname(), ".invalid")
+}
+
+// httpClient never follows redirects, ignores proxy env, keeps no cookies
+// and has a hard timeout.
 var httpClient = &http.Client{
 	Timeout:   sendTimeout,
 	Transport: &http.Transport{Proxy: nil},
@@ -75,90 +91,41 @@ var httpClient = &http.Client{
 	},
 }
 
-var nowFn = time.Now
-
-// SendResult describes what MaybeSend did, for tests and for `status`.
-type SendResult struct {
-	Attempted bool
-	Sent      bool
-	Reason    string
+// postResult is the outcome of one request.
+type postResult struct {
+	status     int
+	retryAfter time.Duration
+	err        error
 }
 
-// MaybeSend is the single outbound path.
-func MaybeSend(ctx context.Context, version string) SendResult {
-	if HardDisabled() {
-		return SendResult{Reason: string(HardDisableReason())}
-	}
-	if !Interactive() {
-		return SendResult{Reason: "non-interactive context"}
-	}
-	if err := ValidateEndpoint(endpoint); err != nil {
-		return SendResult{Reason: err.Error()}
-	}
-
-	// Hold the cross-process lock through the bounded request. A completed
-	// disable cannot be overwritten or followed by an already-reserved send.
-	unlock, err := lockState()
+// post is the only function that talks to the network, and the only one that
+// sees the project key: body carries the redacted placeholder. The response
+// body is read up to 1 KiB and ignored.
+func post(ctx context.Context, body []byte, timeout time.Duration) postResult {
+	body, err := withAPIKey(body)
 	if err != nil {
-		return SendResult{Reason: err.Error()}
+		return postResult{err: err}
 	}
-	defer unlock()
-	s := LoadState()
-	if enabled, reason := Enabled(s); !enabled {
-		return SendResult{Reason: string(reason)}
-	}
-	if HardDisabled() || !Interactive() {
-		return SendResult{Reason: "disabled or non-interactive"}
-	}
-	parsed, _ := url.Parse(endpoint)
-	if strings.HasSuffix(parsed.Hostname(), ".invalid") {
-		return SendResult{Reason: "receiver is not deployed"}
-	}
-	now := nowFn()
-	today := dayOf(now)
-	if s.LastAttemptDay >= today {
-		return SendResult{Reason: "already attempted today"}
-	}
-	body, err := BuildPayload(s, version, now).Marshal()
-	if err != nil || len(body) > 2048 {
-		return SendResult{Reason: "invalid payload"}
-	}
-	s.LastAttemptDay = today
-	if err := saveStateLocked(s); err != nil {
-		return SendResult{Reason: err.Error()}
-	}
-	if HardDisabled() || !Interactive() {
-		return SendResult{Reason: "disabled before send"}
-	}
-	if err := post(ctx, body, safeVersion(version)); err != nil {
-		return SendResult{Attempted: true, Reason: err.Error()}
-	}
-	s.LastSentDay = today
-	s.LastPayload = body
-	s.Counters = nil
-	if err := saveStateLocked(s); err != nil {
-		return SendResult{Attempted: true, Sent: true, Reason: "sent; could not persist acknowledgement"}
-	}
-	return SendResult{Attempted: true, Sent: true}
-}
-
-func post(ctx context.Context, body []byte, version string) error {
-	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, batchURL(), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return postResult{err: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "agent-deck/"+version)
+	req.Header.Set("User-Agent", "agent-deck/"+safeVersion(processVersion))
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		return postResult{err: err}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("telemetry: endpoint returned %d", resp.StatusCode)
+	r := postResult{status: resp.StatusCode}
+	if secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil && secs > 0 {
+		r.retryAfter = time.Duration(secs) * time.Second
 	}
-	return nil
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		r.err = fmt.Errorf("telemetry: endpoint returned %d", resp.StatusCode)
+	}
+	return r
 }

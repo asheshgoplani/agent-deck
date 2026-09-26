@@ -1,0 +1,13 @@
+{
+  "path": "<SANDBOX_HOME>",
+  "worktree": {
+    "default_location": "subdirectory",
+    "path_template": "",
+    "sparse_checkout": ""
+  },
+  "sources": {
+    "default_location": "default",
+    "path_template": "default",
+    "sparse_checkout": "default"
+  }
+}

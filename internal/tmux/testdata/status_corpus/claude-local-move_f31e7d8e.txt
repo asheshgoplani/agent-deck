@@ -1,0 +1,50 @@
+
+  ⎿  1 skill available
+  ⎿  You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.
+     /xxxxx-xxxxxxx xx xxxxxx xxxx xxx’xx xxxxxxx xx.
+
+✻ Churned for 0s · done 1:41 PM
+
+❯ /xxxxx
+  ⎿  Set model to Opus 5 (1M context) and saved as your default for new sessions
+
+❯ xxxxx xxx xx x
+
+⏺ xxxxxxxx xxx xxxx xxx xxxx xxxxxxx xx xxx xxx xxx.
+
+⏺ xxxxx(xxxx-xx-xxxxxx)
+  ⎿  Successfully loaded skill
+
+  Ran 13 shell commands
+
+⏺ xxxxxxx xxx xx xx xx xxx xxx.
+
+  xxx xxxx
+
+  - xx xx xxxxx xx xxx xxxxxx xxxx, xxxx xxxxxx, xxx xxx xxxxxx, xxx xxxx xxxxxx xxxxxxxx xxx xxx xxxxxxxx xxxxx, xxx xxxxxxxx.
+  - xx xxx xxx xxxxxxx xxxxxx xxxxx'x xxxxxxxx xxxx. xxxxxx, xx xx xxx xxxxxxx xxxxxx xxxxxxx.
+  - xxx xxxxx xx xxxxx xxxxx, xx xxx xxx xxxxx xxx xxxx xxxxxx. x xxxxxx x xxxx xxx xx xxxx xxxxxxx.
+
+  xxx xxxxxxxx
+
+  - xxx xxx xxxxxxx xxxx xxx xxxx xxxxxx xxx xxxx. x xxxxxxx xxx xxxx xxxxxx, xxx xxxx xxx xxxxxxxx.
+  - xxxxx xxxx xxxxx xxx xxx xxxxx xxx. xxx xxxxxxx xxx xxx xx xxxxx xxx xxxx xxxxx xxxxxxx xx xxxx xxxx xxxxxx, xx x xxxxx xxxx xx xxxx xxxxx xxxxxxx.
+  - xxx xxxxx xxx xxx xx xxxxx xxxx x xxx xx xx. xx xxx xxx xxx, xx x xxxxxxx xx xxx xx xxxx xxxx xxxx xxx xxxx xxxxxxx, xxxxxx xxx xxxx.
+
+  xxx xxxx xxxxxxx xx xxxxxxx
+
+  - xxx xxxxxxx xxxxx xxxxxxxx xxxxxx xx xxx xxxxxxx xxxxx xx xxxx xxxx xxxxxx. xx xx xxxxx xxx xxx xxxxxx, xxx xxxxxxx xxxx.
+
+  xxx xxxxx xx xxxx
+
+  - xxx xxxxx xxxxxxx xxxx xx xxx xxxxx x xxxxx xx xxx xxxx xxxx. xxxx xxxxxxx xxxx xxxx xxxxx xx xxx xxxx xx xx.
+
+  xxxxxxx xxx xxx xx xx. xx xxx xxxx xxx xxxxxxx xxx xx xxx xxxx xx xxxx, xxx xxxx xxxxxx.
+
+✻ Crunched for 6m 9s · done 1:48 PM
+                                                                                                                                                    new task? /clear to save 152k tokens
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── move ─
+❯ xxxx xxxxxx
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u/.claude-semproj-d/projects/-Users-owner/memory | [Opus 5 (1M context)] ctx:15% in:150.7k out:1.0k
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

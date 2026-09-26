@@ -1,0 +1,27 @@
+Usage: agent-deck group <command> [options]
+
+Commands:
+  list              List all groups with session counts
+  show <name>       Show one group; --resolved adds the effective claude config (alias: info)
+  create <name>     Create a new group
+  update <name>     Update group settings
+  delete <name>     Delete a group (aliases: rm, remove)
+  move <id> <group> Move session to a different group
+  change <group> [<dest>] Reparent a group (empty dest = move to root)
+  reorder <name>    Reorder a group (--up, --down, --position N)
+
+Examples:
+  agent-deck group list
+  agent-deck group show work --resolved        # Verify the effective [groups."work".claude] config
+  agent-deck group create mobile
+  agent-deck group create ios --parent mobile
+  agent-deck group update mobile --default-path /path/to/repo
+  agent-deck group delete experiments
+  agent-deck group delete work --force
+  agent-deck group move my-project work/frontend
+  agent-deck group move my-project ""          # Move to root
+  agent-deck group change project1 work         # Move group 'project1' under 'work'
+  agent-deck group change work/project1          # Move 'work/project1' to root
+  agent-deck group reorder mobile --up
+  agent-deck group reorder mobile --down
+  agent-deck group reorder mobile --position 0

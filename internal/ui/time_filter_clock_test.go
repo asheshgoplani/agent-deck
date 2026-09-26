@@ -99,13 +99,13 @@ func TestTimeFilterClockExpiresAndPreservesSelection(t *testing.T) {
 	}
 }
 
-func TestTimeFilterClockExpiryClearsEmptyFilter(t *testing.T) {
+func TestTimeFilterClockExpiryClearsRestoredEmptyFilter(t *testing.T) {
 	for _, mode := range []session.TimeFilterMode{session.TimeFilterToday, session.TimeFilter3Days, session.TimeFilter7Days} {
 		t.Run(mode.Label(), func(t *testing.T) {
 			now := time.Now()
 			h := clockFilterHome(mode, []*session.Instance{clockLocal("only", now)}, nil)
 			clockFilterTick(h, now.AddDate(0, 0, 8))
-			require.Equal(t, session.TimeFilterAll, h.timeFilter, "last matching row expired; fallback must run")
+			require.Equal(t, session.TimeFilterAll, h.timeFilter, "restored filter falls back after last match expires")
 			require.Equal(t, []string{"only"}, clockVisibleIDs(h))
 		})
 	}
@@ -156,6 +156,7 @@ func TestTimeFilterClockCivilMidnight(t *testing.T) {
 			require.Equal(t, session.TimeFilterToday, h.timeFilter)
 			clockFilterTick(h, boundary)
 			require.Equal(t, session.TimeFilterAll, h.timeFilter)
+			require.Equal(t, []string{"today"}, clockVisibleIDs(h))
 		})
 	}
 }

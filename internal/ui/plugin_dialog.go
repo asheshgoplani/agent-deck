@@ -179,7 +179,7 @@ func (d *PluginDialog) View() string {
 				"See docs/rfc/PLUGIN_ATTACH.md §4.1",
 		))
 		body.WriteString("\n")
-		return panelBox(body.String(), width)
+		return centerInScreen(panelBox(body.String(), width), d.width, d.height)
 	}
 
 	for i, it := range d.items {
@@ -229,7 +229,7 @@ func (d *PluginDialog) View() string {
 		body.WriteString("\n")
 	}
 
-	return panelBox(body.String(), width)
+	return centerInScreen(panelBox(body.String(), width), d.width, d.height)
 }
 
 func panelBox(content string, width int) string {

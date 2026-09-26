@@ -19,26 +19,45 @@ const (
 	telemetryStepDeclined
 )
 
+// Button focus of the ask step.
+const (
+	telemetryFocusAccept = iota
+	telemetryFocusNo
+)
+
 // telemetryDismissMsg closes the dialog after the confirmation line.
 type telemetryDismissMsg struct{}
 
-// telemetrySentMsg carries the result of a background MaybeSend. It is
+// telemetryUploadMsg carries the result of a background MaybeUpload. It is
 // informational only; the TUI never surfaces it.
-type telemetrySentMsg struct{ result telemetry.SendResult }
+type telemetryUploadMsg struct{ result telemetry.UploadResult }
+
+// telemetryGrantedMsg tells the home model consent was durably granted, so
+// it can record the consent events (it knows the fleet) and start sampling.
+type telemetryGrantedMsg struct {
+	source   telemetry.ConsentSource
+	previous string
+}
 
 // TelemetryDialog is the one-time consent prompt for opt-in usage telemetry.
 //
-// Rules (docs/TELEMETRY-DESIGN.md section 4): it is shown only when
-// telemetry.ShouldPrompt says so; `y` grants, every other key declines and
-// is remembered; there is no timer that answers on the user's behalf, and
-// nothing is sent until the granted state has been written to disk.
+// Rules (docs/TELEMETRY-DESIGN.md): shown only when telemetry.ShouldPrompt
+// says so. Two buttons, Accept focused: Enter confirms the focused button,
+// y accepts, n or Esc declines (remembered), Ctrl-C closes and asks again at
+// the next TUI start. Every other key and pasted input is ignored, as is any
+// key in the first 750 ms. Accept works only when the whole question is
+// visible, and nothing is recorded until the grant is durably on disk.
 type TelemetryDialog struct {
 	visible    bool
 	step       telemetryStep
+	focus      int
 	width      int
 	height     int
 	version    string
 	state      *telemetry.State
+	previous   string
+	v1Declined bool
+	source     telemetry.ConsentSource
 	saveErr    error
 	shownAt    time.Time
 	endpoint   string
@@ -47,7 +66,6 @@ type TelemetryDialog struct {
 	// Seams for tests.
 	saveState    func(*telemetry.State) error
 	declineState func(*telemetry.State) error
-	sendCmd      func(version string) tea.Cmd
 	now          func() time.Time
 }
 
@@ -56,47 +74,68 @@ func NewTelemetryDialog() *TelemetryDialog {
 	return &TelemetryDialog{
 		saveState:    telemetry.SaveState,
 		declineState: func(s *telemetry.State) error { return telemetry.Disable(s.ConsentVersion, time.Now()) },
-		sendCmd:      telemetrySendCmd,
 		now:          time.Now,
-		canConsent:   func() bool { return telemetry.Interactive() && !telemetry.HardDisabled() },
+		canConsent: func() bool {
+			return telemetry.Interactive() && !telemetry.HardDisabled() && !telemetry.LogMode()
+		},
 	}
 }
 
 // telemetryKeyGrace is how long after the dialog appears keystrokes are
 // ignored, so a key queued during the splash or typed a moment before the
-// dialog landed cannot answer the question. A person reads for longer than
-// this; a stray key does not wait.
+// dialog landed cannot answer the question.
 const telemetryKeyGrace = 750 * time.Millisecond
 
-// telemetrySendCmd runs the single outbound path in the background.
-func telemetrySendCmd(version string) tea.Cmd {
+// telemetryUploadCmd runs the upload path in the background. MaybeUpload
+// re-reads consent and every gate itself, so this is a no-op for everyone
+// who has not said yes.
+func telemetryUploadCmd() tea.Cmd {
 	return func() tea.Msg {
-		return telemetrySentMsg{result: telemetry.MaybeSend(context.Background(), version)}
+		return telemetryUploadMsg{result: telemetry.MaybeUpload(context.Background())}
 	}
 }
 
 // IsVisible reports whether the dialog is on screen.
 func (d *TelemetryDialog) IsVisible() bool { return d.visible }
 
-// Show opens the prompt if, and only if, ShouldPrompt(state) is true.
+// Show opens the first-run prompt if, and only if, ShouldPrompt(state) is true.
 func (d *TelemetryDialog) Show(version string, st *telemetry.State) bool {
 	if !telemetry.ShouldPrompt(st) {
 		return false
 	}
+	d.open(version, st, telemetry.SourceTUIFirstRun)
+	return true
+}
+
+// ShowFromSettings opens the prompt from the Settings privacy row. It is
+// the same question with the same rules, for any state but granted.
+func (d *TelemetryDialog) ShowFromSettings(version string, st *telemetry.State) bool {
+	if st == nil || st.Consent == telemetry.ConsentGranted || !d.canConsent() || telemetry.ValidateEndpoint(telemetry.Endpoint()) != nil {
+		return false
+	}
+	d.open(version, st, telemetry.SourceTUISettings)
+	d.v1Declined = false
+	return true
+}
+
+func (d *TelemetryDialog) open(version string, st *telemetry.State, src telemetry.ConsentSource) {
 	d.visible = true
 	d.step = telemetryStepAsk
+	d.focus = telemetryFocusAccept
 	d.version = version
 	d.state = st
+	d.previous = st.Previous()
+	d.v1Declined = st.V1Declined()
+	d.source = src
 	d.saveErr = nil
 	d.shownAt = d.now()
 	d.endpoint = telemetry.Endpoint()
-	return true
 }
 
 // Hide closes the dialog.
 func (d *TelemetryDialog) Hide() { d.visible = false }
 
-// SetSize records the terminal size for centering.
+// SetSize records the terminal size for centering and the fit rule.
 func (d *TelemetryDialog) SetSize(width, height int) {
 	d.width = width
 	d.height = height
@@ -112,94 +151,136 @@ func (d *TelemetryDialog) Update(msg tea.KeyMsg) (*TelemetryDialog, tea.Cmd) {
 		d.Hide()
 		return d, nil
 	}
-	if d.now().Sub(d.shownAt) < telemetryKeyGrace {
-		// Too soon to be a considered answer: ignore, keep asking.
+	if d.now().Sub(d.shownAt) < telemetryKeyGrace || msg.Paste {
 		return d, nil
 	}
+	fits := d.fits()
 	switch msg.String() {
+	case "ctrl+c":
+		// Ask me later: state stays as it was; the TUI keeps running.
+		d.Hide()
+		return d, nil
+	case "n", "N", "esc":
+		return d, d.decline()
 	case "y", "Y":
-		if msg.Paste || !d.disclosureFits() || !d.canConsent() || d.endpoint != telemetry.Endpoint() {
+		if fits {
+			return d, d.accept()
+		}
+	case "enter":
+		if !fits {
 			return d, nil
 		}
-		if err := telemetry.Grant(d.state, d.version, d.now()); err != nil {
-			d.saveErr = err
-			d.step = telemetryStepDeclined
-			return d, telemetryDismissAfter()
+		if d.focus == telemetryFocusAccept {
+			return d, d.accept()
 		}
-		if err := d.saveState(d.state); err != nil {
-			// Consent that did not reach disk is not consent: stay off.
-			d.saveErr = err
-			d.state.Consent = telemetry.ConsentUndecided
-			d.state.InstallID = ""
-			d.step = telemetryStepDeclined
-			return d, telemetryDismissAfter()
+		return d, d.decline()
+	case "tab", "shift+tab", "left", "right", "h", "l":
+		if fits {
+			d.focus = 1 - d.focus
 		}
-		d.step = telemetryStepGranted
-		// Send only now, after the granted state is durably on disk.
-		return d, tea.Batch(d.sendCmd(d.version), telemetryDismissAfter())
-	default:
-		// n, Esc, q, Enter, anything: a remembered "no".
-		telemetry.Decline(d.state, d.version, d.now())
-		d.saveErr = d.declineState(d.state)
-		d.step = telemetryStepDeclined
-		return d, telemetryDismissAfter()
 	}
+	return d, nil
 }
 
-// The full disclosure and key choices must be visible before accepting yes.
-func (d *TelemetryDialog) disclosureFits() bool {
-	return d.width >= 106 && d.height >= 36 && len(d.endpoint) <= 95
+func (d *TelemetryDialog) accept() tea.Cmd {
+	if !d.canConsent() || d.endpoint != telemetry.Endpoint() {
+		return nil
+	}
+	if err := telemetry.Grant(d.state, d.version, d.now()); err != nil {
+		d.saveErr = err
+		d.step = telemetryStepDeclined
+		return telemetryDismissAfter()
+	}
+	if err := d.saveState(d.state); err != nil {
+		// Consent that did not reach disk is not consent: stay off.
+		d.saveErr = err
+		d.state.Consent = telemetry.ConsentUndecided
+		d.state.InstallID = ""
+		d.step = telemetryStepDeclined
+		return telemetryDismissAfter()
+	}
+	d.step = telemetryStepGranted
+	// Record only now, after the granted state is durably on disk.
+	granted := telemetryGrantedMsg{source: d.source, previous: d.previous}
+	return tea.Batch(func() tea.Msg { return granted }, telemetryDismissAfter())
+}
+
+func (d *TelemetryDialog) decline() tea.Cmd {
+	telemetry.Decline(d.state, d.version, d.now())
+	d.saveErr = d.declineState(d.state)
+	d.step = telemetryStepDeclined
+	return telemetryDismissAfter()
+}
+
+// fits reports whether the whole question and both buttons are visible.
+func (d *TelemetryDialog) fits() bool {
+	return d.width >= telemetry.PromptWidth && d.height >= telemetry.PromptHeight && telemetry.PromptFits(d.endpoint)
 }
 
 func telemetryDismissAfter() tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return telemetryDismissMsg{} })
 }
 
+// telemetryBoxWidth is the outer width of the question box (78 columns).
+const telemetryBoxWidth = telemetry.PromptWidth - 2
+
 // View renders the dialog, or "" when hidden.
 func (d *TelemetryDialog) View() string {
 	if !d.visible {
 		return ""
 	}
-	const dialogWidth = 100
-
 	titleStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 	textStyle := lipgloss.NewStyle().Foreground(ColorText)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 	greenStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
 
+	padV := 1
 	var content string
 	switch d.step {
 	case telemetryStepAsk:
-		if !d.disclosureFits() {
-			return "Telemetry is OFF.\nResize to 106 columns and 36 rows to read the consent question,\nor use agent-deck telemetry enable from your own shell.\n[n] Decline (remembered). No other key can enable here."
+		if !d.fits() {
+			return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center,
+				lipgloss.NewStyle().Width(min(d.width, telemetryBoxWidth)).Render(
+					telemetry.PromptTooSmall+"\n"+dimStyle.Render("n / Esc: no · Ctrl-C: ask me later")))
 		}
 		lines := strings.Split(telemetry.PromptText(d.endpoint), "\n")
-		title := titleStyle.Render(lines[0])
-		body := textStyle.Render(strings.Join(lines[1:], "\n"))
-		hint := dimStyle.Render(telemetry.PromptChoices)
-		content = lipgloss.JoinVertical(lipgloss.Left, title, body, "", hint)
+		parts := []string{titleStyle.Render(lines[0]), textStyle.Render(strings.Join(lines[1:], "\n")), ""}
+		if d.v1Declined {
+			parts = append(parts, dimStyle.Render(telemetry.PromptV1Declined), "")
+			padV = 0
+		}
+		parts = append(parts, d.buttons(), "", dimStyle.Render(" "+telemetry.PromptLegend))
+		content = lipgloss.JoinVertical(lipgloss.Left, parts...)
 	case telemetryStepGranted:
-		content = lipgloss.JoinVertical(lipgloss.Left,
-			greenStyle.Render("Thank you. Anonymous usage reports are on."),
-			textStyle.Render("Inspect: agent-deck telemetry show-last    Turn off: agent-deck telemetry disable"),
-		)
+		content = greenStyle.Render(telemetry.GrantedLine)
 	case telemetryStepDeclined:
-		msg := "Telemetry stays off. You will not be asked again."
+		msg := telemetry.DeclinedLine
 		if d.saveErr != nil {
 			msg = "Choice not saved (could not save your choice). Check: agent-deck telemetry status."
 		}
-		content = lipgloss.JoinVertical(lipgloss.Left,
-			textStyle.Render(msg),
-			dimStyle.Render("Change your mind later: agent-deck telemetry enable"),
-		)
+		content = textStyle.Render(msg)
 	}
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorAccent).
-		Padding(1, 2).
-		Width(dialogWidth).
+		Padding(padV, 2).
+		Width(telemetryBoxWidth).
 		Render(content)
 
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// buttons renders the two same-size buttons with the focus marker.
+func (d *TelemetryDialog) buttons() string {
+	on := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true).Reverse(true)
+	off := lipgloss.NewStyle().Foreground(ColorText)
+	render := func(label string, focused bool) string {
+		if focused {
+			return "▶ " + on.Render("[ "+label+" ]")
+		}
+		return "  " + off.Render("[ "+label+" ]")
+	}
+	return "       " + render(telemetry.PromptAccept, d.focus == telemetryFocusAccept) +
+		"        " + render(telemetry.PromptNo, d.focus == telemetryFocusNo)
 }

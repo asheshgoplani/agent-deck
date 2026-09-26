@@ -41,29 +41,34 @@ const (
 
 // Item represents a single item in the flattened group tree view
 type Item struct {
-	Type                ItemType
-	Group               *Group
-	Session             *Instance
-	RemoteSession       *RemoteSessionInfo // Set for ItemTypeRemoteSession/ItemTypeRemoteGroup
-	RemoteName          string             // Remote name for remote items
-	Level               int                // Indentation level (0 for root groups, 1 for sessions)
-	Path                string             // Group path for this item
-	IsLastInGroup       bool               // True if this is the last session in its group (for tree rendering)
-	RootGroupNum        int                // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
-	IsSubSession        bool               // True if this session has a parent session
-	IsLastSubSession    bool               // True if this is the last sub-session of its parent (for tree rendering)
-	ParentIsLastInGroup bool               // True if parent session is last top-level item (for tree line rendering)
-	IsWindow            bool               // True for ItemTypeWindow items
-	IsLastWindow        bool               // True if last window of parent session
-	WindowIndex         int                // Tmux window index (for ItemTypeWindow)
-	WindowID            string             // Stable tmux window id, e.g. "@12" (for ItemTypeWindow)
-	WindowName          string             // Tmux window name (for ItemTypeWindow)
-	WindowSessionID     string             // Parent session ID (for ItemTypeWindow)
-	WindowTool          string             // Detected tool in this window (claude, gemini, etc.)
-	CreatingID          string             // Non-empty for placeholder items (worktree creation in progress)
-	CreatingTitle       string             // Display title for creating placeholder
-	CreatingTool        string             // Tool for creating placeholder
-	DividerLabel        string             // Label shown on an ItemTypeDivider row (e.g. "idle / done")
+	Type          ItemType
+	Group         *Group
+	Session       *Instance
+	RemoteSession *RemoteSessionInfo // Set for ItemTypeRemoteSession/ItemTypeRemoteGroup
+	RemoteName    string             // Remote name for remote items
+	Level         int                // Indentation level (0 for root groups, 1 for sessions)
+	Path          string             // Group path for this item
+	// IsLastInGroup, IsLastSubSession and ParentIsLastInGroup are set here for
+	// cursor navigation but are TEMPORARY for the TUI: rebuildFlatItems calls
+	// RecomputeTreeConnectors on the final visible list (after archived/status
+	// filtering and view-mode partitioning), which recomputes all three from
+	// scratch. Do not trust these three fields' values here for tree rendering.
+	IsLastInGroup       bool   // True if this is the last session in its group (for tree rendering)
+	RootGroupNum        int    // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
+	IsSubSession        bool   // True if this session has a parent session
+	IsLastSubSession    bool   // True if this is the last sub-session of its parent (for tree rendering)
+	ParentIsLastInGroup bool   // True if parent session is last top-level item (for tree line rendering)
+	IsWindow            bool   // True for ItemTypeWindow items
+	IsLastWindow        bool   // True if last window of parent session
+	WindowIndex         int    // Tmux window index (for ItemTypeWindow)
+	WindowID            string // Stable tmux window id, e.g. "@12" (for ItemTypeWindow)
+	WindowName          string // Tmux window name (for ItemTypeWindow)
+	WindowSessionID     string // Parent session ID (for ItemTypeWindow)
+	WindowTool          string // Detected tool in this window (claude, gemini, etc.)
+	CreatingID          string // Non-empty for placeholder items (worktree creation in progress)
+	CreatingTitle       string // Display title for creating placeholder
+	CreatingTool        string // Tool for creating placeholder
+	DividerLabel        string // Label shown on an ItemTypeDivider row (e.g. "idle / done")
 }
 
 // IsCreatingPlaceholder reports whether this row is a still-creating session
@@ -823,38 +828,68 @@ func (t *GroupTree) CollapseGroup(path string) {
 
 // MoveGroupUp moves a group up in the order (only within siblings at same level)
 func (t *GroupTree) MoveGroupUp(path string) {
-	parentPath := getParentPath(path)
-
-	for i, g := range t.GroupList {
-		if g.Path == path && i > 0 {
-			// Only swap if previous item is a sibling (same parent)
-			prevParent := getParentPath(t.GroupList[i-1].Path)
-			if prevParent == parentPath {
-				t.GroupList[i], t.GroupList[i-1] = t.GroupList[i-1], t.GroupList[i]
-				t.GroupList[i].Order = i
-				t.GroupList[i-1].Order = i - 1
-			}
-			break
-		}
-	}
+	t.moveGroupAmongSiblings(path, -1)
 }
 
 // MoveGroupDown moves a group down in the order (only within siblings at same level)
 func (t *GroupTree) MoveGroupDown(path string) {
-	parentPath := getParentPath(path)
+	t.moveGroupAmongSiblings(path, 1)
+}
 
-	for i, g := range t.GroupList {
-		if g.Path == path && i < len(t.GroupList)-1 {
-			// Only swap if next item is a sibling (same parent)
-			nextParent := getParentPath(t.GroupList[i+1].Path)
-			if nextParent == parentPath {
-				t.GroupList[i], t.GroupList[i+1] = t.GroupList[i+1], t.GroupList[i]
-				t.GroupList[i].Order = i
-				t.GroupList[i+1].Order = i + 1
-			}
-			break
+// moveGroupAmongSiblings swaps a group with the sibling delta positions away in
+// display order (-1 = up, +1 = down).
+//
+// It works over the group's siblings rather than over adjacent GroupList entries.
+// GroupList is a flattened depth-first tree, so the slot next to a root group is
+// usually one of some group's subgroups, not the next root group: with "todolist"
+// (two date subgroups) sitting above "ai", the entry before "ai" is
+// "todolist/<date>", whose parent is "todolist" and not "". The old adjacency
+// check saw a non-sibling there and gave up, which made "ai" impossible to move
+// above "todolist" no matter how many times the key was pressed.
+func (t *GroupTree) moveGroupAmongSiblings(path string, delta int) {
+	if _, exists := t.Groups[path]; !exists {
+		return
+	}
+
+	// GroupList is already in display order, so filtering it by parent yields the
+	// siblings in the order they appear on screen.
+	parentPath := getParentPath(path)
+	siblings := make([]*Group, 0, len(t.GroupList))
+	idx := -1
+	for _, g := range t.GroupList {
+		if getParentPath(g.Path) != parentPath {
+			continue
+		}
+		if g.Path == path {
+			idx = len(siblings)
+		}
+		siblings = append(siblings, g)
+	}
+
+	target := idx + delta
+	if idx < 0 || target < 0 || target >= len(siblings) {
+		return
+	}
+
+	// Negative Order is a pin (conductor, and the Maestro group above it); every
+	// rebuildGroupList re-applies it, so a group swapped past a pin would just snap
+	// back on the next redraw. Refuse the move instead.
+	if siblings[idx].Order < 0 || siblings[target].Order < 0 {
+		return
+	}
+
+	// Normalize sibling Order to current display positions before swapping.
+	// Groups routinely share an Order value (anything created before ordering
+	// existed is Order 0) and are then tie-broken by name, so swapping the Order
+	// values as-is would be a no-op for the whole equal-Order block.
+	for i, g := range siblings {
+		if g.Order >= 0 {
+			g.Order = i
 		}
 	}
+	siblings[idx].Order, siblings[target].Order = siblings[target].Order, siblings[idx].Order
+
+	t.rebuildGroupList()
 }
 
 // MoveSessionUp moves a session up among its visual siblings: top-level
@@ -1083,6 +1118,28 @@ func (t *GroupTree) SetSessionOrder(inst *Instance, n int) {
 	for i, s := range group.Sessions {
 		s.Order = i
 	}
+}
+
+// ResolveMoveTargetGroup maps a user-supplied move target to a group path the
+// way `agent-deck group move` always has: "" and "root" mean the default
+// group; otherwise an exact match, then a case-insensitive match against the
+// existing groups, and failing both a new group via CreateGroup (which
+// sanitizes the name). Shared by the CLI and the web move endpoint (#2368) so
+// the same input lands a session in the same group from either surface.
+func (t *GroupTree) ResolveMoveTargetGroup(target string) string {
+	if target == "" || target == "root" || target == DefaultGroupPath {
+		return DefaultGroupPath
+	}
+	if _, ok := t.Groups[target]; ok {
+		return target
+	}
+	lower := strings.ToLower(target)
+	for path := range t.Groups {
+		if strings.ToLower(path) == lower {
+			return path
+		}
+	}
+	return t.CreateGroup(target).Path
 }
 
 // MoveSessionToGroup moves a session to a different group

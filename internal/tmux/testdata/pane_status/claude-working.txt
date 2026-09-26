@@ -1,0 +1,12 @@
+⏺ Pass the image-sending requirement to the worker
+  ⎿  $ cat >> PROMPT.md <<'EOF'
+     the composer must accept images…
+
+✢ Symbioting… (1m 34s · ↓ 3.7k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+                                                   ✘ Auto-update failed · Run claude doctor
+──────────────────────────────────────────────────────────────────────── worker ─
+❯ 
+─────────────────────────────────────────────────────────────────────────────────
+  [personal] user@host:/work/project | [Fable 5.1] ctx:5% in:52.4k out:376 5h:40% 7d:20%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

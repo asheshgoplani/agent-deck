@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
 // SettingType identifies which setting is being edited
@@ -54,10 +55,11 @@ const (
 	SettingVisibleTools
 	SettingEmbeddedTerminal
 	SettingSidebarDensity
+	SettingPrivacy
 )
 
 // Total number of navigable settings.
-const settingsCount = 38
+const settingsCount = 39
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -113,6 +115,8 @@ type SettingsPanel struct {
 	embeddedLayout         bool
 	sidebarDensity         int // index into sidebarDensityValues
 	pendingToolVisibility  bool
+	pendingPrivacy         bool   // Enter/Space on the Privacy row: home opens consent or turns it off
+	privacyLabel           string // "on (full)" / "off", read from telemetry state on Show
 
 	// Text input state
 	editingText bool
@@ -207,6 +211,7 @@ func (s *SettingsPanel) Show() {
 	s.scrollOffset = 0
 	s.editingText = false
 	s.needsRestart = false
+	s.privacyLabel = telemetryPrivacyLabel()
 
 	// Load current config
 	config, _ := session.LoadUserConfig()
@@ -604,10 +609,18 @@ func (s *SettingsPanel) Update(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd, bool) {
 		valueChanged = s.adjustValue(1)
 
 	case " ":
+		if SettingType(s.cursor) == SettingPrivacy {
+			s.pendingPrivacy = true
+			s.Hide()
+			break
+		}
 		valueChanged = s.toggleValue()
 
 	case "enter":
-		if s.isTextSetting() {
+		if SettingType(s.cursor) == SettingPrivacy {
+			s.pendingPrivacy = true
+			s.Hide()
+		} else if s.isTextSetting() {
 			s.startTextEdit()
 		} else if SettingType(s.cursor) == SettingVisibleTools {
 			s.pendingToolVisibility = true
@@ -626,6 +639,25 @@ func (s *SettingsPanel) ConsumeToolVisibilityRequest() bool {
 	}
 	s.pendingToolVisibility = false
 	return true
+}
+
+// ConsumePrivacyRequest reports whether the user activated the Privacy row
+// and clears the latch.
+func (s *SettingsPanel) ConsumePrivacyRequest() bool {
+	if !s.pendingPrivacy {
+		return false
+	}
+	s.pendingPrivacy = false
+	return true
+}
+
+// telemetryPrivacyLabel renders the Privacy row value from telemetry state.
+func telemetryPrivacyLabel() string {
+	st := telemetry.LoadState()
+	if ok, _ := telemetry.Enabled(st); ok {
+		return "on (" + string(telemetry.EffectiveLevel(st)) + ")"
+	}
+	return "off"
 }
 
 // adjustValue changes a radio or number value by delta
@@ -1257,6 +1289,15 @@ func (s *SettingsPanel) View() string {
 	content.WriteString(dimStyle.Render("    Lines per session in the embedded sidebar: 3 / 2 / 1 (1 keeps the tool marker)") + "\n")
 	content.WriteString(dimStyle.Render("    Auto: the most lines that still fit every open session on screen") + "\n\n")
 
+	// PRIVACY
+	content.WriteString(sectionStyle.Render("PRIVACY"))
+	content.WriteString("\n")
+	line = "Usage data: " + s.privacyLabel + "  (Enter to change)"
+	if s.cursor == int(SettingPrivacy) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1271,22 +1312,44 @@ func (s *SettingsPanel) View() string {
 	content.WriteString(dimStyle.Render(mcpHint))
 	content.WriteString("\n\n")
 
-	// Help bar
-	content.WriteString(dimStyle.Render("j/k Navigate  Space Toggle  h/l Adjust  Enter Edit  Esc Close"))
+	// Help bar, broken between hints (never mid-hint) when the box is
+	// narrower than the bar.
+	helpBar := dimStyle.Render(renderDialogFooterRows(dialogWidth-4, 2, "  ",
+		[]string{"j/k Navigate", "Space Toggle", "h/l Adjust", "Enter Edit", "Esc Close"}))
+	content.WriteString(helpBar)
 
 	// Apply scroll windowing if content overflows available terminal height.
 	// The dialog box adds 4 lines of chrome: border (top+bottom) + padding (top+bottom).
 	contentStr := content.String()
 	const dialogChrome = 4
 	availHeight := s.height - dialogChrome
-	if availHeight < 10 {
-		availHeight = 10
+	if availHeight < 5 {
+		availHeight = 5
 	}
 
-	contentLines := strings.Split(strings.TrimRight(contentStr, "\n"), "\n")
+	// Window the rows the box actually draws: a long line (the DEFAULT TOOL
+	// pills, the embedded-terminal hint) wraps inside the box, so counting
+	// source lines let the box grow past the screen and lose its top rows.
+	// rowOf maps a source line to its first drawn row.
+	sourceLines := strings.Split(strings.TrimRight(contentStr, "\n"), "\n")
+	wrapStyle := lipgloss.NewStyle().Width(dialogWidth - 4) // the box's Padding(1, 2)
+	rowOf := make([]int, len(sourceLines))
+	var contentLines []string
+	for i, line := range sourceLines {
+		rowOf[i] = len(contentLines)
+		contentLines = append(contentLines, strings.Split(wrapStyle.Render(line), "\n")...)
+	}
 	totalLines := len(contentLines)
 
 	if totalLines > availHeight && s.height > 0 {
+		// The help bar (the last source lines) is pinned below the window,
+		// so Esc stays on screen however far the settings scroll.
+		helpStart := rowOf[len(sourceLines)-lipgloss.Height(helpBar)]
+		helpRows := contentLines[helpStart:]
+		contentLines = contentLines[:helpStart]
+		totalLines = len(contentLines)
+		availHeight = max(availHeight-len(helpRows), 3)
+
 		// Map cursor index to content line number (based on the fixed layout above).
 		// Update this mapping if settings are added/removed/reordered.
 		cursorToLine := [settingsCount]int{
@@ -1328,8 +1391,9 @@ func (s *SettingsPanel) View() string {
 			64, // SettingVisibleTools
 			67, // SettingEmbeddedTerminal (INTERFACE section)
 			68, // SettingSidebarDensity
+			73, // SettingPrivacy (PRIVACY section)
 		}
-		cursorLine := cursorToLine[s.cursor]
+		cursorLine := rowOf[cursorToLine[s.cursor]]
 
 		// Ensure cursor is visible with 2 lines of context
 		if cursorLine-2 < s.scrollOffset {
@@ -1346,14 +1410,15 @@ func (s *SettingsPanel) View() string {
 			s.scrollOffset = maxOff
 		}
 		// When the cursor sits on the last navigable setting, scroll all the
-		// way to the bottom so the trailing info lines (MCP config-path hint +
-		// help bar) come into view and the "▼ more below" indicator clears.
+		// way to the bottom so the trailing info lines (MCP config-path hint)
+		// come into view and the "▼ more below" indicator clears.
 		// Scrolling is cursor-anchored, so without this the tail is
-		// unreachable (issue #1659). Never scroll past the cursor's context
-		// window, in case the tail ever grows taller than the viewport.
+		// unreachable (issue #1659). Never scroll the cursor's row out of
+		// view (it may sit right under "▲ more above"), in case the tail
+		// ever grows taller than the viewport.
 		if s.cursor == settingsCount-1 && s.scrollOffset < maxOff {
 			bottomOff := maxOff
-			if lim := cursorLine - 2; bottomOff > lim {
+			if lim := cursorLine - 1; bottomOff > lim {
 				bottomOff = lim
 			}
 			if s.scrollOffset < bottomOff {
@@ -1384,6 +1449,7 @@ func (s *SettingsPanel) View() string {
 		if showScrollDown {
 			scrolled.WriteString("\n" + dimStyle.Render("  ▼ more below"))
 		}
+		scrolled.WriteString("\n" + strings.Join(helpRows, "\n"))
 		contentStr = scrolled.String()
 	}
 

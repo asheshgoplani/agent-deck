@@ -899,19 +899,27 @@ func (m *MCPDialog) View() string {
 		errText = lipgloss.NewStyle().Foreground(ColorRed).Render("Error: " + m.err.Error())
 	}
 
-	// Hint with consistent styling
+	// Responsive dialog width
+	dialogWidth := fitDialogWidth(64, 50, m.width)
+	titleWidth := dialogWidth - 4
+
+	// Hint with consistent styling, on at most two rows broken between
+	// items instead of wrapping to a stray "│ Esc". Only when two rows are
+	// too narrow do Type jump and ←→ column drop out; Tab scope never does.
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
-	var hint string
-	switch {
-	case m.tool == "gemini" || session.IsCodexCompatible(m.tool):
-		hint = hintStyle.Render("←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")
-	case m.tool == "cursor":
-		hint = hintStyle.Render("Tab scope │ ←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")
-	default:
-		hint = hintStyle.Render("Tab scope │ ←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")
+	hintItems := []string{"Tab scope", "←→ column", "Type jump", "Space move", "Enter apply", "Esc cancel"}
+	hintDrop := []int{2, 1} // Type jump, ←→ column
+	if m.tool == "gemini" || session.IsCodexCompatible(m.tool) {
+		hintItems = hintItems[1:]
+		hintDrop = []int{1, 0} // Type jump, ←→ column
 	}
+	jumpSuffix := ""
 	if m.typeJumpBuf != "" && time.Now().Before(m.typeJumpUntil) {
-		hint += lipgloss.NewStyle().Foreground(ColorTextDim).Render("  (" + m.typeJumpBuf + ")")
+		jumpSuffix = "  (" + m.typeJumpBuf + ")"
+	}
+	hint := hintStyle.Render(renderDialogFooterRows(titleWidth-lipgloss.Width(jumpSuffix), 2, " │ ", hintItems, hintDrop...))
+	if jumpSuffix != "" {
+		hint += lipgloss.NewStyle().Foreground(ColorTextDim).Render(jumpSuffix)
 	}
 
 	// Legend for orphan MCPs
@@ -939,10 +947,6 @@ func (m *MCPDialog) View() string {
 	transportLegend := lipgloss.NewStyle().Foreground(ColorTextDim).Render(
 		"[S]=stdio  [H]=http  [E]=sse  ●=running  ○=external  ✗=stopped")
 
-	// Responsive dialog width
-	dialogWidth := fitDialogWidth(64, 50, m.width)
-	titleWidth := dialogWidth - 4
-
 	// Assemble dialog
 	titleStyle := DialogTitleStyle.Width(titleWidth)
 
@@ -967,11 +971,19 @@ func (m *MCPDialog) View() string {
 	}
 
 	// Show empty state help or columns
+	headParts := len(parts)
+	body := columns
+	bodyFocus := -1
 	if showEmptyHelp {
-		parts = append(parts, m.renderEmptyStateHelp())
+		body = m.renderEmptyStateHelp()
 	} else {
-		parts = append(parts, columns)
+		// The selected row of the focused column (row 0 is its header).
+		bodyFocus = attachedIdx + 1
+		if m.column == MCPColumnAvailable {
+			bodyFocus = availableIdx + 1
+		}
 	}
+	parts = append(parts, body)
 
 	if errText != "" {
 		parts = append(parts, "", errText)
@@ -984,7 +996,18 @@ func (m *MCPDialog) View() string {
 
 	dialogContent := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
-	dialog := DialogBoxStyle.Width(dialogWidth).Render(dialogContent)
+	// Split the joined rows into head / body / foot so a long MCP list
+	// scrolls inside the box on a short terminal, following the cursor.
+	rows := strings.Split(dialogContent, "\n")
+	headRows := lipgloss.Height(lipgloss.JoinVertical(lipgloss.Left, parts[:headParts]...))
+	bodyRows := lipgloss.Height(body)
+	sections := dialogSections{
+		head:  []string{strings.Join(rows[:headRows], "\n")},
+		body:  rows[headRows : headRows+bodyRows],
+		focus: bodyFocus,
+		foot:  []string{strings.Join(rows[headRows+bodyRows:], "\n")},
+	}
+	dialog := renderFittedDialog(DialogBoxStyle.Width(dialogWidth), m.height, sections)
 
 	// Center the dialog
 	return lipgloss.Place(
@@ -1014,7 +1037,7 @@ func (m *MCPDialog) renderEmptyStateHelp() string {
 		helpStyle.Render("  command = \"npx\""),
 		helpStyle.Render("  args = [\"-y\", \"@example/mcp\"]"),
 		"",
-		helpStyle.Render("Then press M again to see them here."),
+		helpStyle.Render(m.reopenHint()),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
@@ -1122,4 +1145,15 @@ func repeatStr(s string, n int) string {
 		result += s
 	}
 	return result
+}
+
+// reopenHint tells the user how to come back after editing the config. It
+// names the MCP Manager's actual key (default m; M is Move to group) and
+// follows a [hotkeys] override.
+func (m *MCPDialog) reopenHint() string {
+	key := actionHotkey(resolveHotkeys(session.GetHotkeyOverrides()), hotkeyMCPManager)
+	if key == "" {
+		return "Then reopen the MCP Manager to see them here."
+	}
+	return "Then press " + key + " again to see them here."
 }

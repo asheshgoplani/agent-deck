@@ -1,0 +1,9 @@
+Usage: agent-deck hermes-hooks <command>
+
+Manage Hermes Agent shell hook integration.
+
+Commands:
+  install      Install agent-deck Hermes hooks
+  uninstall    Remove agent-deck Hermes hooks
+  status       Show Hermes hooks install status
+  help         Show this help message

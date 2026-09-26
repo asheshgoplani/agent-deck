@@ -1,0 +1,16 @@
+Usage: agent-deck remote update [name | --all]
+
+Updates every remote that is older than this controller (<VERSION>) when no name is given.
+Exit status is 1 when any remote failed.
+
+Options:
+  --all
+        Update every configured remote that is older than this controller
+  --from-build string
+        Install release-layout archives from a local directory
+  --force
+        Allow reinstalling or downgrading
+  --dry-run
+        Verify artifacts and show destination paths without installing
+  --json
+        Output every result as JSON
