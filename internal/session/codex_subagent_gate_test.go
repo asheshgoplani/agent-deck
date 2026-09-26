@@ -100,6 +100,22 @@ func uniqueSID(t *testing.T) string {
 	return fmt.Sprintf("019f0000-0000-7000-8000-%012d", sidCounter)
 }
 
+func TestCodexThreadMetaIncompleteHeadIsRetried(t *testing.T) {
+	_, codexHome := newCodexGateInstance(t)
+	sid := uniqueSID(t)
+	path := seedCodexRolloutWithMeta(t, codexHome, sid, "subagent", uniqueSID(t), false)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if meta, ok := codexThreadMetaForSession(sid, codexHome); !ok || meta.ThreadSource != "" {
+		t.Fatalf("incomplete rollout should have no readable pedigree: %+v, ok=%t", meta, ok)
+	}
+	seedCodexRolloutWithMeta(t, codexHome, sid, "subagent", uniqueSID(t), false)
+	if meta, ok := codexThreadMetaForSession(sid, codexHome); !ok || meta.ThreadSource != "subagent" {
+		t.Fatalf("completed rollout pedigree was not reread: %+v, ok=%t", meta, ok)
+	}
+}
+
 func TestCodexHookRebind_RejectsSubagentThread(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 

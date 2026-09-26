@@ -6392,6 +6392,16 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		}
 	}
 
+	// Recheck cached evidence too: a rollout may acquire its subagent metadata
+	// after the hook was first read, or an older reader may have cached a
+	// foreign turn-end from a thread without a rollout.
+	if IsCodexCompatible(i.Tool) && i.hookSessionID != "" &&
+		(i.shouldRejectCodexSubagentRebind(i.hookSessionID) ||
+			i.shouldRejectCodexUnbackedTurnEnd(i.hookSessionID, i.hookEvent)) {
+		i.hookStatus, i.hookEvent, i.hookSessionID = "", "", ""
+		i.hookLastUpdate = time.Time{}
+	}
+
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
@@ -6914,11 +6924,13 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// A rejected candidate must never be read as evidence that the agent is
 	// interactive — see the disarm condition further down.
 	rejected := false
+	prevInvalidatingGen := i.codexInvalidatingGeneration
 	restoreHook := func() {
 		rejected = true
 		i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
 		i.codexStartedGeneration, i.codexCompletedGeneration = prevStartedGen, prevCompletedGen
 		i.codexStartedSessionID, i.codexCompletedSessionID = prevStartedSID, prevCompletedSID
+		i.codexInvalidatingGeneration = prevInvalidatingGen
 	}
 
 	// Detect whether this is genuinely new data (newer timestamp than last seen).

@@ -36,7 +36,9 @@ func (d *TransitionDaemon) maybeStartInitialRecallBackfill(ctx context.Context) 
 		return
 	}
 	d.recallBackfillStarted = true
+	d.recallBackfillWG.Add(1)
 	go func() {
+		defer d.recallBackfillWG.Done()
 		if runInitialRecallBackfill(ctx) {
 			return
 		}
