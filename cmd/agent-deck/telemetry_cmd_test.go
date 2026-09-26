@@ -19,11 +19,12 @@ func isolateTelemetryHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", home+"/data")
 	t.Setenv("XDG_CONFIG_HOME", home+"/config")
 	t.Setenv("XDG_CACHE_HOME", home+"/cache")
-	for _, k := range []string{telemetry.EnvTelemetry, telemetry.EnvDoNotTrack, telemetry.EnvPostHogKey, "CI", "GITHUB_ACTIONS", "AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID",
+	for _, k := range []string{telemetry.EnvTelemetry, telemetry.EnvDoNotTrack, telemetry.EnvPostHogKey, "AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID",
 		"CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
+	telemetry.ClearCIForTest(t)
 	telemetry.SetConfigDisabled(false)
 	telemetry.SetEndpoint("")
 }

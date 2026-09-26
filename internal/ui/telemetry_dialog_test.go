@@ -29,8 +29,7 @@ func telemetryDialogHarness(t *testing.T) dialogHarness {
 	t.Setenv(telemetry.EnvTelemetry, "")
 	os.Unsetenv(telemetry.EnvTelemetry) // set-but-empty is a hard off
 	t.Setenv(telemetry.EnvDoNotTrack, "")
-	t.Setenv("CI", "")
-	os.Unsetenv("CI") // set-but-empty counts as CI
+	telemetry.ClearCIForTest(t)
 	for _, k := range []string{"AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID", "CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"} {
 		t.Setenv(k, "")
 	}
