@@ -16,7 +16,7 @@
        │                                                                                    │       
        │      Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       
-       │      Examples: claude-opus-5, claude-sonnet-5, claude-haiku-4-5                    │       
+       │      Examples: claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5                  │       
        │                                                                                    │       
        │    ▶ Reasoning effort: ← Tool default →                                            │       
        │                                                                                    │       
