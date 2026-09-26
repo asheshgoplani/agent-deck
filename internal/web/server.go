@@ -70,6 +70,13 @@ var ErrUndoExpired = errors.New("undo window expired")
 // this to 404. See issue #1126.
 var ErrSessionNotFound = errors.New("session not found")
 
+// ErrGroupNotFound is returned by SessionMutator.SetGroupExpanded when the
+// path does not resolve to a group. The handler maps this to 404. A stale
+// browser tab can easily PATCH a group the TUI has since deleted, and a
+// silent no-op there would leave the sidebar asserting a collapse that was
+// never stored.
+var ErrGroupNotFound = errors.New("group not found")
+
 // ErrNotAWorktree is returned by SessionMutator.FinishWorktree when the
 // target session exists but is not in a git/jujutsu worktree (so there is
 // nothing to merge or clean up). The handler maps this to 400. See issue
@@ -152,6 +159,12 @@ type SessionMutator interface {
 	// Returns ErrSessionNotFound when the id doesn't resolve. See issue #2368.
 	MoveSessionToGroup(sessionID, groupPath string) (movedTo string, restartRequired bool, err error)
 	DeleteGroup(groupPath string) error
+	// SetGroupExpanded persists a group's collapsed/expanded state, the same
+	// flag the TUI writes on its Enter/Tab toggle (home.go saveGroupState ->
+	// Storage.SaveGroupsOnly). The web sidebar keeps its own collapse state,
+	// so without this the two views drift apart permanently. Returns
+	// ErrGroupNotFound when the path does not resolve to a group.
+	SetGroupExpanded(groupPath string, expanded bool) error
 	// FinishWorktree merges (or skips), removes the worktree, optionally
 	// deletes the source branch, kills the tmux session, and removes the
 	// session from storage. Mirrors the TUI W/shift+w hotkey and the

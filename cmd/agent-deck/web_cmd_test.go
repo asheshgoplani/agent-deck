@@ -32,8 +32,9 @@ func (noopMutator) UpdateSession(string, map[string]string) ([]string, bool, err
 func (noopMutator) CreateGroup(string, string) (string, error) {
 	return "", nil
 }
-func (noopMutator) RenameGroup(string, string) error { return nil }
-func (noopMutator) DeleteGroup(string) error         { return nil }
+func (noopMutator) RenameGroup(string, string) error    { return nil }
+func (noopMutator) SetGroupExpanded(string, bool) error { return nil }
+func (noopMutator) DeleteGroup(string) error            { return nil }
 func (noopMutator) MoveSessionToGroup(string, string) (string, bool, error) {
 	return "", false, nil
 }

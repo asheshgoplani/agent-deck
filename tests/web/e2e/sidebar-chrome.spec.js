@@ -11,11 +11,12 @@
 // Notes on intentionally-locked-in behavior (audited against Sidebar.js):
 //   - Group expand/collapse lives in uiState.groupExpandedSignal and DOES
 //     persist across reload (localStorage key `agentdeck.groupExpanded`).
-//   - The seeded `personal` group has Expanded:false, but the web never
-//     honors the server's `expanded` field — there is no API to write it
-//     back from the browser, so respecting it would leak TUI collapse
-//     one-way. Absent a stored entry every group renders open, so all 4
-//     seeded sessions are visible on a fresh load.
+//   - The seeded `personal` group has Expanded:false and the web DOES honor
+//     the server's `expanded` field: PATCH /api/groups/{path} {expanded}
+//     writes it back, so adopting it no longer leaks TUI collapse one-way.
+//     `personal` therefore renders collapsed on a fresh load, hiding
+//     `scratch`; gotoSidebar() expands it so all 4 seeded sessions are
+//     visible (see helpers/seededSidebar.js).
 //   - Column visibility persists via localStorage key `agentdeck.showCols`
 //     (uiState.js showColsSignal + persist()).
 //   - Sidebar width: state.js exports sidebarWidthSignal (localStorage key
@@ -28,6 +29,7 @@
 // keyboard-parity.spec.js / skills.spec.js).
 
 import { test, expect } from '@playwright/test'
+import { expandSeededCollapsedGroups } from '../helpers/seededSidebar.js'
 
 // Seed-derived expectations.
 const ALL_TITLES = ['agent-deck', 'frontend', 'innotrade-api', 'scratch']
@@ -35,6 +37,7 @@ const RUNNING_TITLES = ['frontend']
 const IDLE_TITLES = ['agent-deck', 'innotrade-api', 'scratch']
 
 async function gotoSidebar(page) {
+  await expandSeededCollapsedGroups(page)
   await page.goto('/')
   // Sidebar list takes the initial /api/menu fetch + render to populate.
   await expect(page.locator('.sess')).toHaveCount(ALL_TITLES.length, { timeout: 5000 })
@@ -111,28 +114,34 @@ test.describe('sidebar chrome', () => {
     const workHead = page.locator('[data-testid="group-head-work"]')
     const workChev = page.locator('[data-testid="group-chev-work"]')
 
-    // Collapse "work" → its 2 members (agent-deck, frontend) disappear.
-    // work/innotrade is a distinct group path, so innotrade-api stays.
+    // Collapse "work" → its own members (agent-deck, frontend) disappear AND
+    // so does the `work/innotrade` subtree, because visibility is a property
+    // of the whole ancestor chain, not just a group's own flag. This used to
+    // leave innotrade-api on screen under a header whose parent was collapsed
+    // — the web-side shape of issue #1878.
     await workChev.click()
     await expect(workHead.locator('.chev')).toHaveText('▸')
-    await expect(page.locator('.sess')).toHaveCount(2)
-    await expect(page.locator('.sess .tt')).toHaveText(['innotrade-api', 'scratch'])
+    await expect(page.locator('.sess')).toHaveCount(1)
+    await expect(page.locator('.sess .tt')).toHaveText(['scratch'])
+    await expect(page.locator('[data-testid="group-head-work/innotrade"]')).toHaveCount(0)
 
-    // Expand restores the members.
+    // Expand restores the members, and the subgroup with them.
     await workChev.click()
     await expect(workHead.locator('.chev')).toHaveText('▾')
     await expect(page.locator('.sess')).toHaveCount(ALL_TITLES.length)
 
-    // Collapse again, then reload: groupExpandedSignal persists to
-    // localStorage `agentdeck.groupExpanded`, so it stays collapsed.
+    // Collapse again, then reload. Collapse is now persisted server-side via
+    // PATCH /api/groups/{path} {expanded} as well as mirrored into
+    // localStorage `agentdeck.groupExpanded`, so it survives the reload from
+    // either source.
     await workChev.click()
-    await expect(page.locator('.sess')).toHaveCount(2)
+    await expect(page.locator('.sess')).toHaveCount(1)
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('agentdeck.groupExpanded')))
     expect(stored.work).toBe(false)
 
     await page.goto('/')
     await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▸', { timeout: 5000 })
-    await expect(page.locator('.sess')).toHaveCount(2)
+    await expect(page.locator('.sess')).toHaveCount(1)
   })
 
   // The chip set mirrors the five status buckets the group panel uses. A

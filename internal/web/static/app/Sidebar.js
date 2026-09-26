@@ -102,8 +102,23 @@ function doAction(action, s) {
   }
 }
 
-function SessionItem({ s, sel, rowKey, onSelect, showCols }) {
+// One indent step per level of GROUP nesting, consumed by the `--depth` var in
+// app.css. Sessions are indented to their own group's level, not one past it:
+// the step between a header and its sessions is already baked into .sess's
+// larger padding-left, so a deck with no subgroups renders exactly as it did
+// before and only real nesting shifts anything right. (The TUI spends a level
+// here instead — home.go:22273 indents a session by its Level — but it has no
+// per-row padding to lean on.)
+const indentVar = (levels) => `--depth:${Math.max(0, levels)}`
+
+function SessionItem({ s, sel, rowKey, onSelect, showCols, depth, groupDepth }) {
   const [exp, setExp] = useState(false)
+  // Nested UNDER ANOTHER SESSION, not merely inside a nested group — only that
+  // needs the continuation guide. s.isSubSession alone would be wrong: the
+  // server also flags orphans whose parent sits in a different group, and it
+  // emits those at top level (groups.go:749-773), where there is nothing above
+  // for a guide to connect to.
+  const indented = depth > groupDepth + 1
   const mcpCount = (s.mcps || []).length
   const skillCount = (s.skills || []).length
   const hasSubline =
@@ -112,8 +127,9 @@ function SessionItem({ s, sel, rowKey, onSelect, showCols }) {
     (showCols.sandbox && (s.sandbox || s.worktree)) ||
     showCols.lastSeen
   return html`
-    <div class=${`sess ${sel ? 'sel' : ''} ${s.kind} ${exp ? 'exp' : ''}`}
+    <div class=${`sess ${sel ? 'sel' : ''} ${s.kind} ${exp ? 'exp' : ''} ${indented ? 'sub' : ''}`}
          data-row-key=${rowKey}
+         style=${indentVar(depth - 1)}
          aria-selected=${!!sel}
          onClick=${() => onSelect(s.id)}>
       <span class="sig">${kindSigil(s.kind)}</span>
@@ -246,6 +262,7 @@ export function Sidebar() {
                  class=${`side-group-head ${r.group.kind || ''} ${selectedGroup === r.path ? 'sel' : ''}`}
                  data-testid=${`group-head-${r.path}`}
                  data-row-key=${r.key}
+                 style=${indentVar(r.depth)}
                  aria-selected=${selectedGroup === r.path}
                  onClick=${() => selectGroup(r.path)}>
               <button type="button" class="chev"
@@ -260,7 +277,8 @@ export function Sidebar() {
           `
           : html`
             <${SessionItem} key=${r.key} s=${r.session} sel=${selected === r.id}
-                            rowKey=${r.key} onSelect=${onSelect} showCols=${showCols}/>
+                            rowKey=${r.key} depth=${r.depth} groupDepth=${r.groupDepth}
+                            onSelect=${onSelect} showCols=${showCols}/>
           `,
         )}
         ${sessions.length === 0 && html`

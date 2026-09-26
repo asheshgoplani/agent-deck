@@ -99,10 +99,17 @@ effect(() => {
 // user does. Session-scoped, as before.
 export const sidebarFilterSignal = signal('')
 
-// Group collapse map: { [groupPath]: boolean }. Only explicitly-toggled groups
-// appear; an absent entry means open (the predicate Sidebar.js already used).
-// Persisted because the TUI persists collapse and no web API can write it
-// server-side. The server's own `expanded` is deliberately NOT honored —
-// nothing can write it back, so it would leak TUI collapse in one-way.
+// Group collapse map: { [groupPath]: false }. Only collapsed groups appear;
+// an absent entry means open (the predicate Sidebar.js already used).
+//
+// The SERVER is authoritative: dataModel.js reconcileGroupExpanded adopts
+// MenuGroup.Expanded from each menu snapshot, and toggleGroupOpen PATCHes
+// changes back, so the TUI and the browser now agree. (This used to be
+// local-only precisely because no endpoint could write it back — see
+// PATCH /api/groups/{path} and WebMutator.SetGroupExpanded.)
+//
+// localStorage is still worth keeping: it paints the right collapse state on
+// the very first frame, before the initial snapshot lands, and it remains the
+// only persistence on a read-only server, where toggleGroupOpen stays local.
 export const groupExpandedSignal = signal(loadJSON('agentdeck.groupExpanded', {}))
 persist(groupExpandedSignal, 'agentdeck.groupExpanded')

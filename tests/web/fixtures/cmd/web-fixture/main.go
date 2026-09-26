@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -397,12 +398,51 @@ func (s *fixtureStore) LoadMenuSnapshot() (*web.MenuSnapshot, error) {
 
 	items := make([]web.MenuItem, 0, len(s.groups)+len(s.sessions))
 	idx := 0
-	for _, g := range s.groups {
-		items = append(items, web.MenuItem{
-			Index: idx, Type: web.MenuItemTypeGroup, Path: g.Path, Group: g, Level: 0,
-		})
-		idx++
+	// Emit groups as a TREE WALK, the way the real server does
+	// (BuildMenuSnapshot over the hierarchically-sorted GroupTree.GroupList):
+	// every parent immediately ahead of its descendants, siblings ordered by
+	// Order with the path as tie-breaker.
+	//
+	// Ranging the map directly leaked Go's randomized iteration order into the
+	// payload. The client used to hide that by re-sorting on MenuGroup.Order,
+	// and no longer does — Order is only meaningful BETWEEN SIBLINGS, so a
+	// global sort by it interleaves unrelated subtrees. Sorting globally here
+	// would reproduce, in the fixture, exactly the bug the client just stopped
+	// committing.
+	childrenOf := make(map[string][]string, len(s.groups))
+	for path := range s.groups {
+		parent := ""
+		if i := strings.LastIndex(path, "/"); i != -1 {
+			parent = path[:i]
+		}
+		childrenOf[parent] = append(childrenOf[parent], path)
 	}
+	for parent := range childrenOf {
+		siblings := childrenOf[parent]
+		sort.Slice(siblings, func(i, j int) bool {
+			a, b := s.groups[siblings[i]], s.groups[siblings[j]]
+			if a.Order != b.Order {
+				return a.Order < b.Order
+			}
+			return siblings[i] < siblings[j]
+		})
+	}
+	var emitGroups func(parent string)
+	emitGroups = func(parent string) {
+		for _, path := range childrenOf[parent] {
+			g := s.groups[path]
+			items = append(items, web.MenuItem{
+				// Level is the path depth, as GetGroupLevel computes it
+				// server-side. It was hardcoded to 0, so a nested group
+				// claimed to be a root.
+				Index: idx, Type: web.MenuItemTypeGroup, Path: g.Path, Group: g,
+				Level: strings.Count(g.Path, "/"),
+			})
+			idx++
+			emitGroups(path)
+		}
+	}
+	emitGroups("")
 	active := 0
 	for _, id := range s.order {
 		sess, ok := s.sessions[id]
@@ -411,7 +451,11 @@ func (s *fixtureStore) LoadMenuSnapshot() (*web.MenuSnapshot, error) {
 		}
 		active++
 		items = append(items, web.MenuItem{
-			Index: idx, Type: web.MenuItemTypeSession, Session: sess, Level: 1,
+			// groupLevel + 1, matching GroupTree.Flatten. Hardcoding 1 meant a
+			// session in `work/innotrade` claimed the depth of a root-group
+			// session, so the fixture never exercised the nested payload.
+			Index: idx, Type: web.MenuItemTypeSession, Session: sess,
+			Level: strings.Count(sess.GroupPath, "/") + 1,
 		})
 		idx++
 	}
@@ -644,6 +688,17 @@ func (s *fixtureStore) RenameGroup(groupPath, newName string) error {
 		return fmt.Errorf("group %q not found", groupPath)
 	}
 	g.Name = newName
+	return nil
+}
+
+func (s *fixtureStore) SetGroupExpanded(groupPath string, expanded bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[groupPath]
+	if !ok {
+		return web.ErrGroupNotFound
+	}
+	g.Expanded = expanded
 	return nil
 }
 

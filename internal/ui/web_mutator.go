@@ -578,6 +578,75 @@ func (m *WebMutator) RenameGroup(groupPath, newName string) error {
 	return storage.SaveWithGroups(instances, m.h.groupTree)
 }
 
+// SetGroupExpanded persists a group's collapse state, so the web sidebar and
+// the TUI stop drifting apart.
+//
+// SCOPE: this reaches a TUI sharing this process immediately, because the flip
+// lands on the very GroupTree that TUI renders from. A SEPARATE TUI process on
+// the same profile (the `agent-deck web --no-tui` daemon deployment) is a
+// weaker story on two counts: SaveGroupsOnly deliberately skips Touch()
+// (storage.go:1152), so no StorageWatcher reload is scheduled; and when that
+// TUI does reload for any other reason it re-applies its own in-memory
+// Expanded over the freshly-loaded rows (home.go:7639-7656). Making the
+// cross-process direction reliable belongs in that reload branch, not here.
+//
+// Deliberately mirrors the TUI's own toggle path (home.go: ToggleGroup then
+// saveGroupState) rather than RenameGroup's: collapsing touches only group
+// metadata, so it uses SaveGroupsOnly and never rewrites the instance rows.
+// Expand/CollapseGroup do not cascade to children — visibility is derived by
+// walking the ancestor chain at render time (GroupTree.ancestorsExpanded) —
+// so a single-group write is the whole change.
+//
+// A derived group (one implied by a session's path but never stored) is
+// allowed here and becomes a real row on save: its storage snapshot carries
+// ensure:true, which is exactly what happens when the TUI collapses one.
+func (m *WebMutator) SetGroupExpanded(groupPath string, expanded bool) error {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	if m.h == nil {
+		return web.ErrGroupNotFound
+	}
+	// Resolve the tree ONCE. beginHeadlessTx's hydrate replaces h.groupTree
+	// wholesale (home.go:5153-5157), and in live-TUI mode the Tea loop can
+	// swap it on a reload, so re-reading the field between the lookup, the
+	// flip and the save could persist a tree that never saw the flip.
+	tree := m.h.groupTree
+	if tree == nil {
+		return web.ErrGroupNotFound
+	}
+	if _, ok := tree.Groups[groupPath]; !ok {
+		return web.ErrGroupNotFound
+	}
+	prior := tree.Groups[groupPath].Expanded
+	if expanded {
+		tree.ExpandGroup(groupPath)
+	} else {
+		tree.CollapseGroup(groupPath)
+	}
+
+	if m.h.storage == nil {
+		// Headless/no-persistence configuration: the in-memory flip above is
+		// all there is to do, and the next snapshot already reflects it.
+		return nil
+	}
+	if err := m.h.storage.SaveGroupsOnly(tree.ShallowCopyForSave()); err != nil {
+		// Roll the flip back. The handler turns this into a 500 and the client
+		// reverts its optimistic toggle, so leaving the tree flipped would have
+		// the very next snapshot publish a collapse state that was never
+		// stored — and a TUI sharing this process render it.
+		if g, ok := tree.Groups[groupPath]; ok {
+			g.Expanded = prior
+			tree.Expanded[groupPath] = prior
+		}
+		return err
+	}
+	return nil
+}
+
 // MoveSessionToGroup moves a session to another group with the same target
 // resolution as `agent-deck group move` (session.GroupTree.
 // ResolveMoveTargetGroup) and persists. Like the CLI and the TUI's M, nothing

@@ -656,6 +656,17 @@ func (s *parityStore) RenameGroup(groupPath, newName string) error {
 	return nil
 }
 
+func (s *parityStore) SetGroupExpanded(groupPath string, expanded bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[groupPath]
+	if !ok {
+		return ErrGroupNotFound
+	}
+	g.Expanded = expanded
+	return nil
+}
+
 // MoveSessionToGroup mirrors session.GroupTree.ResolveMoveTargetGroup on the
 // in-memory store: "" or "root" is the default group, then an exact match, a
 // case-insensitive match, and otherwise a new group.

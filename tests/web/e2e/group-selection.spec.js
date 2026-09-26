@@ -9,6 +9,7 @@
 //
 // Phone (<768px) skips: the sidebar is desktop/tablet-only.
 import { test, expect } from '@playwright/test'
+import { expandSeededCollapsedGroups } from '../helpers/seededSidebar.js'
 
 test.describe('group selection', () => {
   test.beforeEach(async ({ page, request, viewport }) => {
@@ -18,6 +19,9 @@ test.describe('group selection', () => {
     // Reset like every other suite does rather than inheriting whatever the
     // previously-run file left behind.
     await request.post('/__fixture/reset')
+    // `personal` is seeded collapsed and the sidebar now honors that, so open
+    // it before loading to get all four seeded rows on screen.
+    await expandSeededCollapsedGroups(page)
     await page.goto('/')
     await expect(page.locator('.sess')).toHaveCount(4, { timeout: 5000 })
   })
@@ -38,7 +42,10 @@ test.describe('group selection', () => {
     await page.locator('[data-testid="group-chev-work"]').click()
 
     await expect(head.locator('.chev')).toHaveText('▸')
-    await expect(page.locator('.sess')).toHaveCount(2)
+    // Only `scratch` survives: collapsing `work` hides its own members AND the
+    // whole `work/innotrade` subtree, since visibility depends on the entire
+    // ancestor chain rather than a group's own flag.
+    await expect(page.locator('.sess')).toHaveCount(1)
     await expect(head).not.toHaveClass(/\bsel\b/)
   })
 
@@ -55,11 +62,11 @@ test.describe('group selection', () => {
 
   test('collapse survives a reload', async ({ page }) => {
     await page.locator('[data-testid="group-chev-work"]').click()
-    await expect(page.locator('.sess')).toHaveCount(2)
+    await expect(page.locator('.sess')).toHaveCount(1)
 
     await page.goto('/')
     await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▸', { timeout: 5000 })
-    await expect(page.locator('.sess')).toHaveCount(2)
+    await expect(page.locator('.sess')).toHaveCount(1)
   })
 
   test('selecting a group shows its stats panel', async ({ page }) => {
@@ -168,7 +175,7 @@ test.describe('group selection', () => {
 
     await page.keyboard.press('ArrowLeft')
     await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▸')
-    await expect(page.locator('.sess')).toHaveCount(2)
+    await expect(page.locator('.sess')).toHaveCount(1)
 
     await page.keyboard.press('ArrowRight')
     await expect(page.locator('[data-testid="group-head-work"] .chev')).toHaveText('▾')

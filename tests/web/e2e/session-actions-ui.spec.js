@@ -33,6 +33,7 @@
 // as keyboard-parity.spec.js / skills.spec.js).
 
 import { test, expect } from '@playwright/test'
+import { expandSeededCollapsedGroups } from '../helpers/seededSidebar.js'
 
 // The app registers a service worker (sw.js) whose fetch handler takes over
 // page requests once active — that bypasses page.route(), which the
@@ -48,6 +49,8 @@ function rowFor(page, title) {
 }
 
 async function gotoSidebar(page) {
+  // `personal` is seeded collapsed; open it so SEEDED_COUNT rows are on screen.
+  await expandSeededCollapsedGroups(page)
   await page.goto('/')
   await expect(page.locator('.sess')).toHaveCount(SEEDED_COUNT, { timeout: 5000 })
 }
