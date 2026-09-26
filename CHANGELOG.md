@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Remote attaches over mosh (opt-in).** Interactive attaches to a remote (Enter in the TUI, the embedded terminal, Shift+Enter and `agent-deck remote attach`) can run over [mosh](https://mosh.org) instead of `ssh -tt`, so typing echoes locally on a high-latency link and the attach survives sleep and network changes. To enable it, set `transport = "mosh"` on the remote in `config.toml` (`[remotes.<name>]`), plus `mosh_server = "/path/to/mosh-server"` when `mosh-server` is not on the remote's non-login SSH PATH. Install `mosh` locally and `mosh-server` on the remote, and allow UDP 60000-61000 to reach it (Tailscale already does). When the remote cannot start `mosh-server`, the attach falls back to `ssh -tt`; listing, previews, sends and every other command stay on SSH. Details: docs/REMOTE-COMMANDS.md (#2375, thanks @c2keesey).
+- Claude Opus 5.5 (`claude-opus-5-5`, and `anthropic/claude-opus-5-5` for opencode) and GPT-6 (`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` for Codex) are in the model pickers (TUI and web) and `launch -capabilities`. `[claude] default_model = "claude-opus-5-5"` is now honored instead of silently dropped, and Codex sessions accept `--effort max` and `--effort ultra` instead of rejecting them at launch (#2387, thanks @na-bal).
 
 ### Fixed
 
