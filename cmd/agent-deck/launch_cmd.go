@@ -152,7 +152,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
-	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)")
+	effort := fs.String("effort", "", "Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)")
 	account := fs.String("account", "", "Named account slot (uses its per-tool config_dir; overrides AGENTDECK_ACCOUNT)")
 	// Parity with `add` and the New Session dialog: sandbox, YOLO and the
 	// Claude Options rows.

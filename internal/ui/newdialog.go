@@ -1421,15 +1421,15 @@ func (d *NewDialog) modelInputHint() string {
 	}
 	switch cmd := d.GetSelectedCommand(); {
 	case session.IsClaudeCompatible(cmd):
-		return "Examples: claude-opus-5, claude-sonnet-5, claude-haiku-4-5"
+		return "Examples: claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5"
 	case cmd == "gemini":
 		return "Examples: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro"
 	case cmd == "opencode":
-		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-opus-5"
+		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-opus-5-5"
 	case cmd == "omp":
 		return "Primary model; use OMP Options below for multi-model and role routing"
 	case session.IsCodexCompatible(cmd):
-		return "Examples: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5"
+		return "Examples: gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.5"
 	default:
 		return ""
 	}
