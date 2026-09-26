@@ -1,0 +1,9 @@
+• Codex draws this row while a turn runs:
+  • Working (9m 41s • esc to interrupt)
+  Nothing is running now.
+
+─ Worked for 12s ─────────────
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/x · Context 64% left · Context 36% used · weekly 94% left · 258K window

@@ -1,0 +1,5 @@
+• Press ctrl+c to interrupt a running turn; esc to interrupt also works.
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/x · Context 64% left · Context 36% used · weekly 94% left · 258K window

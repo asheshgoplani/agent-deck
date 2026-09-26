@@ -159,14 +159,14 @@ func paneShowsReadyPrompt(target AgentReadyChecker, tool string, gates PromptGat
 		return false
 	}
 	content := tmux.StripANSI(raw)
+	if gates.CodexPrompt || strings.EqualFold(tool, "codex") {
+		return tmux.NewPromptDetector("codex").HasPrompt(content)
+	}
 	if paneLooksBusy(content) {
 		return false
 	}
 	if gates.ClaudeComposer {
 		return HasCurrentComposerPrompt(content)
-	}
-	if gates.CodexPrompt {
-		return tmux.NewPromptDetector("codex").HasPrompt(content)
 	}
 	return tmux.NewPromptDetector(tool).HasPrompt(content)
 }

@@ -96,3 +96,23 @@ pi-synth-idle-delegate-task-prose	pi	waiting	SYNTHETIC (review r2 P1): idle comp
 pi-local-subagent-working_747fe48a	pi	active	REAL pi 0.85.1 + pi-subagents 0.51.0, captured 2026-09-23 from a live agent-deck pi session mid subagent_wait: async delegate run "running", step row "⠇ delegate · step 1/1", "── ⠴ Working ──" banner, "1 active agent" row; token/cost status line present while busy
 pi-local-idle-delegate-task-prose_747fe48a	pi	waiting	REAL pi 0.85.1, same session after the turn ended: finished answer names delegate_task in prose, token/cost composer (installed v1.16.16 reported this pane running)
 claude-local-macapp-ux-audit-lollygagging_8a428ef2	claude	active	REAL Claude Code (Fable 5.1) pane of macapp-ux-audit at the 2026-09-23 10:53-10:58 error-flip storm, mid tool call: "✳ Lollygagging… (6m 17s · ↓ 24.7k tokens)" over a running Bash block; the daemon published running -> error for it while a nested TUI on a foreign tmux server wrote error rows
+codex-busy-hollow-bullet	codex	active	SOURCE-DERIVED Codex 0.155: blink variant uses hollow bullet
+codex-busy-reduced-motion	codex	active	SOURCE-DERIVED Codex 0.155: reduced motion hides bullet
+codex-busy-truncated-hint	codex	active	SOURCE-DERIVED Codex 0.155: narrow pane truncates after interrupt hint
+codex-busy-remapped-ctrl-c	codex	active	SOURCE-DERIVED Codex 0.155: remapped ctrl + c interrupt hint
+codex-busy-guardian-parallel-snapshot	codex	active	SOURCE-DERIVED Codex 0.155 parallel approval snapshot: 2 detail rows
+codex-busy-guardian-four-more	codex	active	SOURCE-DERIVED Codex 0.155 parallel approval shape: 4 detail rows
+codex-busy-wrapped-details-panama	codex	active	SOURCE-DERIVED Codex 0.155 wrapped status detail shape
+codex-busy-compaction-bg-queued-w49	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-busy-compaction-bg-queued-w50	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-busy-compaction-bg-queued-w51	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-busy-compaction-bg-queued-w52	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-busy-guardian-heredoc-blank-detail	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-busy-hook-overflow-details	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-busy-reasoning-bg-queued-w80	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-busy-retry-details-blank-line	codex	active	SOURCE-DERIVED Codex 0.155 review r3 busy frame
+codex-idle-quoted-status-last-prose-line	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
+codex-idle-quoted-status-continuation	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
+codex-idle-quoted-prose-last-line	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
+codex-idle-historical-status-then-rule	codex	waiting	SOURCE-DERIVED quoted prose with idle composer
+codex-idle-ctrlc-prose	codex	waiting	SOURCE-DERIVED quoted prose with idle composer

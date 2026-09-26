@@ -1,0 +1,12 @@
+• Ran ls
+  └ a.go
+
+• Reconnecting... 2/5 (1m 02s • esc to interrupt)
+  └ Stream disconnected before completion: error decoding response body
+
+    Caused by: connection reset by peer…
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project

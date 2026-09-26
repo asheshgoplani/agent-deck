@@ -5587,12 +5587,19 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 			if !strings.Contains(lowerContent, lowerStr) {
 				continue
 			}
-			if strings.Contains(lowerStr, "interrupt") &&
-				!hasInterruptBusyContext(statusBarLines, lowerStr, spinnerChars) {
-				statusLog.Debug("busy_string_ignored_no_context",
-					slog.String("session", shortName),
-					slog.String("pattern", str))
-				continue
+			if strings.Contains(lowerStr, "interrupt") {
+				var hasContext bool
+				if strings.EqualFold(tool, "codex") {
+					hasContext = hasCodexInterruptBusyProvenanceLines(statusBarLines, lowerStr)
+				} else {
+					hasContext = hasInterruptBusyContext(statusBarLines, lowerStr, spinnerChars)
+				}
+				if !hasContext {
+					statusLog.Debug("busy_string_ignored_no_context",
+						slog.String("session", shortName),
+						slog.String("pattern", str))
+					continue
+				}
 			}
 			tracker.MarkBusy()
 			statusLog.Debug("busy_string_match", slog.String("session", shortName), slog.String("pattern", str))

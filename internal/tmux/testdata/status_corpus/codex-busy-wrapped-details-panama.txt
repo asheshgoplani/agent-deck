@@ -1,0 +1,8 @@
+• Compacting context (0s • esc to interrupt)
+  └ A man a plan a canal
+    panama
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project

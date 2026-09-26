@@ -1,0 +1,12 @@
+• Ran ls
+  └ a.go
+
+• Compacting context (4m 07s • esc to interrupt)…
+• Queued follow-up inputs
+  ↳ also update the changelog
+    shift + ← edit last queued message
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project

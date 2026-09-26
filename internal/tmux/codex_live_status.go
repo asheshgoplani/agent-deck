@@ -5,15 +5,15 @@ import (
 	"strings"
 )
 
-// codexStatusLineRe is the shape of Codex's live status line: a column-0
-// bullet, a label and the "(<elapsed> • esc to interrupt)" group
-// ("• Working (9m 41s • esc to interrupt)", "• Waiting for background
-// terminal (1h 06m 33s • esc to interrupt) · 1 background terminal running").
-var codexStatusLineRe = regexp.MustCompile(`^•\s+\S.*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)`)
+// Codex's live row has an optional spinner (solid, hollow or hidden), a
+// capitalised label and an elapsed-time interrupt hint. Narrow panes can
+// truncate the closing parenthesis after the hint, or cut the row just
+// after it (")…", ") …", ") ·…").
+var codexStatusLineRe = regexp.MustCompile(`^(?:[•◦]\s+)?\p{Lu}.*\((?:\d+[hms]\s*)+[•·]\s*(?:esc|ctrl ?\+ ?c) to interrupt(?:\)(?: · .*| ?·?…)?|…)$`)
 
 // codexLiveStatusLine reports whether a Codex frame shows the live status
-// line in its live slot: the last "•" block before the "› " composer, with
-// only blank lines and "  └ …" command lines between the two.
+// line in its live slot immediately before the "› " composer, with only
+// blank lines and status details between the two.
 //
 // Codex draws that line four to six rows above the bottom (composer and
 // model/context footer below it), so the plain "esc to interrupt" busy
@@ -42,13 +42,38 @@ func codexLiveStatusLine(content string) bool {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "  └ ") {
 			continue
 		}
+		if details := codexStatusDetailsStart(lines, i); details >= 0 {
+			i = details
+			continue
+		}
 		if header := codexQueuedInputsHeader(lines, i); header >= 0 {
 			i = header
 			continue
 		}
-		return codexStatusLineRe.MatchString(line)
+		return codexStatusLineRe.MatchString(strings.TrimRight(line, " \t"))
 	}
 	return false
+}
+
+// codexStatusDetailsStart finds the "  └ " row above wrapped detail rows.
+// Codex uses four spaces for every continuation of a status detail.
+func codexStatusDetailsStart(lines []string, end int) int {
+	for i := end; i >= 0; i-- {
+		line := lines[i]
+		switch {
+		case strings.HasPrefix(line, "  └ "):
+			if i < end {
+				return i
+			}
+			return -1
+		case strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "":
+		case strings.TrimSpace(line) == "" && i < end:
+			// An empty detail line renders as an indent-only row.
+		default:
+			return -1
+		}
+	}
+	return -1
 }
 
 const codexQueuedInputsTitle = "• Queued follow-up inputs"
