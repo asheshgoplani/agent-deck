@@ -148,3 +148,58 @@ func TestMuxFallbackGraceLeavesHalfTheDeadline2355(t *testing.T) {
 		t.Fatalf("2s deadline: grace=%s, want at most half", got)
 	}
 }
+
+// Mixed versions: a new controller behind a saturated master polling a remote
+// that predates --stats (v1.16.13 rejects the flag with Go's usage text). The
+// refusal retry must hand the old remote's rejection to the existing stats
+// fallback, learn the capability once, and never loop.
+func TestSSHReadOnlyMuxRefusalWithOldRemoteBinary2355(t *testing.T) {
+	setupSessionXDGPathEnv(t)
+	t.Setenv("AGENT_DECK_REMOTE_CHANNEL", "0")
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$SSH_CALL_LOG"
+case "$*" in
+  *ControlPath=none*--stats*)
+    printf 'flag provided but not defined: -stats\nUsage of list:\n  -all\n' >&2
+    exit 2 ;;
+  *ControlPath=none*)
+    printf '[{"id":"s1","title":"t","status":"waiting"}]'
+    exit 0 ;;
+esac
+printf 'mux_client_request_session: session request failed: Session open refused by peer\n' >&2
+exit 255
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_CALL_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	r := &SSHRunner{Host: "fixture.example", name: "old-remote", lastStderr: &lastStderrBox{}}
+
+	countCalls := func() int {
+		calls, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(calls), "\n")
+	}
+	sessions, stats, err := r.FetchSessions(context.Background())
+	if err != nil || len(sessions) != 1 || stats != nil {
+		t.Fatalf("first poll: sessions=%v stats=%+v err=%v", sessions, stats, err)
+	}
+	// --stats: shared refused + dedicated rejected; plain: shared refused + dedicated ok.
+	if n := countCalls(); n != 4 {
+		t.Fatalf("first poll made %d ssh calls, want 4", n)
+	}
+	if state, ok := LoadRemoteVersions()["old-remote"]; !ok || state.StatsSupported == nil || *state.StatsSupported {
+		t.Fatalf("stats capability not learned: %+v", state)
+	}
+	if _, _, err := r.FetchSessions(context.Background()); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if n := countCalls(); n != 6 {
+		t.Fatalf("second poll must skip --stats: total calls=%d, want 6", n)
+	}
+}
