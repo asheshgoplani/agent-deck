@@ -211,6 +211,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          AGENTDECK_POSTHOG_KEY: ${{ secrets.AGENTDECK_POSTHOG_KEY }}
 
       - name: Validate release assets
         timeout-minutes: 5

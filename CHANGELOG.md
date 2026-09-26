@@ -7,16 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.18] - 2026-09-26
+
 ### Added
 
-- **Anonymous usage data (opt-in).** On the first TUI start you will see one question asking whether to share anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names). It goes to PostHog's EU region a few times a day, never on the day you say yes, with IP addresses discarded. See exactly what would be sent with `agent-deck telemetry preview`; turn it off any time with `agent-deck telemetry off` or `DO_NOT_TRACK=1`. Details: TELEMETRY.md.
+- **Anonymous usage data (opt-in).** On the first TUI start you will see one question asking whether to share anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; numbers are rounded into ranges; never prompts, output, paths, titles, repo, host or user names). Nothing is recorded or sent unless you accept. It goes to PostHog's EU region a few times a day, never on the day you say yes, with IP addresses discarded. See exactly what would be sent with `agent-deck telemetry preview`; turn it off any time with `agent-deck telemetry off` or `DO_NOT_TRACK=1`. Details: TELEMETRY.md.
 - `agent-deck telemetry` gains `on`, `off`, `schema` (the full published allow-list, `--markdown` or `--json`) and `level full|basic`; `status` shows the level, local spool, upload schedule and daily cap; `preview` prints the exact PostHog request bodies. `AGENTDECK_TELEMETRY=log` writes would-be uploads locally and never sends. Settings gains a Privacy row and `agent-deck doctor` prints the telemetry state.
 - New config keys `[telemetry] level` and `[telemetry] posthog_key` (the latter only for builds without a compiled-in key); `[telemetry] endpoint` now defaults to `https://eu.i.posthog.com`. Builds without a project key record locally (with consent) and never upload.
 - `[telemetry] endpoint` changed meaning: v1 stored the full receiver URL, v2 treats it as a base URL and POSTs to `<endpoint>/batch/`. A v1 self-hosted value is asked about again (consent is bound to the endpoint), but update it to the base URL.
+- Release builds carry the project's PostHog key, compiled in from a repository secret; builds from source have none and never upload unless `[telemetry] posthog_key` or `AGENTDECK_POSTHOG_KEY` is set. `agent-deck telemetry status` shows where the key comes from (`Project key: compiled-in`, `environment`, `config` or `none`) without printing it.
+- `[worktree] checkout_git_config` passes `key=value` entries as `git -c` to the commands that create and check out a new worktree, for example `core.hooksPath=/dev/null` to skip a Git LFS post-checkout hook or `checkout.workers=8`. Nothing is written to the new worktree's config; global config only (#2366).
+- The web UI can move a session to another group: the Edit dialog has a group field, backed by `POST /api/sessions/{id}/move`, and resolves the target group the same way as `agent-deck group move`. A toast says when the new group's Claude config dir needs a restart to apply (#2368).
 
 ### Changed
 
-- The consent question now has two buttons with **Share anonymous data** highlighted: Enter confirms the highlighted button, `n` or Esc declines (remembered), Ctrl-C asks again next time, and other keys are ignored. Everyone who answered the earlier schema 1 question is asked once more, because the schema changed (schema 1 counted every key, even Enter, as no).
+- The consent question now has two buttons with **Share anonymous data** highlighted: Enter confirms the highlighted button, `y` shares, `n` or Esc declines (remembered), Ctrl-C asks again next time, and other keys are ignored. Everyone who answered the earlier schema 1 question is asked once more, because the schema changed (schema 1 counted every key, even Enter, as no).
+
+### Fixed
+
+- Copies made inside a session pane with OSC 52 (tmux copy mode with `set-clipboard on`, Claude Code's selection) now reach the browser clipboard in the web UI on any device, not only on the host. Only writes are honoured; a pane can never read the viewer's clipboard (#2370).
+- In the web terminal, Option-drag selects text even while the program in the pane captures the mouse, and a finished selection is copied to the clipboard (#2372, thanks @bautrey for #2373).
+- A global `~/.agent-deck/config.toml` reached through a symlink (the file or the whole directory, as a dotfiles checkout does) is no longer mistaken for a directory-local config, which made every worktree session fail with "invalid directory-local config" (#2367).
+- Hook events from a Codex sub-agent thread no longer drive the session's status when it is loaded at startup or read from cache (a rollout that gains its sub-agent metadata later is rechecked), and tmux teardown treats a failed kill as success only when tmux reports that exact session or server missing (#2374, thanks @jwiegley).
 
 ## [1.16.17] - 2026-09-25
 

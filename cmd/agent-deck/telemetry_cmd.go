@@ -40,6 +40,7 @@ type telemetryStatus struct {
 	Level          string               `json:"level"`
 	Endpoint       string               `json:"endpoint"`
 	Upload         string               `json:"upload"`
+	KeySource      string               `json:"key_source"`
 	LogMode        bool                 `json:"log_mode,omitempty"`
 	Spool          telemetry.SpoolStats `json:"spool"`
 	NextUpload     string               `json:"next_upload,omitempty"`
@@ -119,6 +120,7 @@ func buildTelemetryStatus(s *telemetry.State) telemetryStatus {
 		Level:          string(telemetry.EffectiveLevel(s)),
 		Endpoint:       telemetry.Endpoint(),
 		Upload:         "configured",
+		KeySource:      telemetry.PostHogKeySource(),
 		LogMode:        telemetry.LogMode(),
 		Spool:          telemetry.ReadSpoolStats(),
 		LastResult:     s.Upload.LastResult,
@@ -131,6 +133,9 @@ func buildTelemetryStatus(s *telemetry.State) telemetryStatus {
 		st.Upload = "log mode (never sent)"
 	case !telemetry.Configured():
 		st.Upload = "not configured (no PostHog project key; events stay local)"
+	}
+	if st.KeySource != telemetry.KeySourceNone && !telemetry.Configured() {
+		st.KeySource += " (malformed, ignored)"
 	}
 	if !s.Upload.NextTry.IsZero() {
 		st.NextUpload = s.Upload.NextTry.Local().Format(time.RFC3339)
@@ -176,13 +181,14 @@ func telemetryStatusCmd(out io.Writer, jsonOut bool) int {
   Level:         %s
   Endpoint:      %s
   Upload:        %s
+  Project key:   %s
   Spool:         %d event(s), %d bytes, oldest day %s
   Next upload:   %s
   Last upload:   %s
   Daily cap:     %s
   State file:    %s
   Docs:          %s
-`, state, orDash(st.Reason), st.Consent, orDash(st.InstallID), st.Level, st.Endpoint, st.Upload,
+`, state, orDash(st.Reason), st.Consent, orDash(st.InstallID), st.Level, st.Endpoint, st.Upload, st.KeySource,
 		st.Spool.Events, st.Spool.Bytes, orDash(st.Spool.OldestDay), orDash(st.NextUpload), last,
 		st.CapToday, st.StatePath, telemetry.DocsURL)
 	return 0

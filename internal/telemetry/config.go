@@ -9,10 +9,10 @@ import (
 // EnvPostHogKey overrides the PostHog project API key.
 const EnvPostHogKey = "AGENTDECK_POSTHOG_KEY"
 
-// defaultPostHogKey is the compiled-in project API key. It stays empty until
-// the maintainer's PostHog project exists (TELEMETRY.md, "Wiring the key");
-// with no key the client spools locally and never uploads. It can also be set
-// at build time with -ldflags "-X .../internal/telemetry.defaultPostHogKey=phc_...".
+// defaultPostHogKey is the compiled-in project API key. Release builds set it
+// with -ldflags "-X .../internal/telemetry.defaultPostHogKey=..." from the
+// AGENTDECK_POSTHOG_KEY repository secret (.goreleaser.yml); dev builds leave
+// it empty and, without an env or config key, spool locally and never upload.
 var defaultPostHogKey = ""
 
 var (
@@ -40,14 +40,36 @@ func SetConfigLevel(l string) {
 // uploads to another project. Builds without one (dogfooding) take
 // AGENTDECK_POSTHOG_KEY, then config.
 func PostHogKey() (string, bool) {
-	k := defaultPostHogKey
-	if k == "" {
-		k = strings.TrimSpace(os.Getenv(EnvPostHogKey))
-	}
-	if k == "" {
-		k = configKey
-	}
+	k, _ := postHogKeyWithSource()
 	return k, postHogKeyPattern.MatchString(k)
+}
+
+// PostHogKeySource names where the effective key comes from, never the key
+// itself: KeySourceCompiled, KeySourceEnv, KeySourceConfig or KeySourceNone.
+func PostHogKeySource() string {
+	_, src := postHogKeyWithSource()
+	return src
+}
+
+// Values of PostHogKeySource.
+const (
+	KeySourceCompiled = "compiled-in"
+	KeySourceEnv      = "environment"
+	KeySourceConfig   = "config"
+	KeySourceNone     = "none"
+)
+
+func postHogKeyWithSource() (string, string) {
+	if defaultPostHogKey != "" {
+		return defaultPostHogKey, KeySourceCompiled
+	}
+	if k := strings.TrimSpace(os.Getenv(EnvPostHogKey)); k != "" {
+		return k, KeySourceEnv
+	}
+	if configKey != "" {
+		return configKey, KeySourceConfig
+	}
+	return "", KeySourceNone
 }
 
 // Configured reports whether an upload destination exists (a valid key).
