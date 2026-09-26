@@ -97,11 +97,17 @@ func withState(fn func(s *State, now time.Time) bool) {
 
 // record validates and spools one event now.
 func record(name string, props map[string]any, sessionID string) {
-	recordAt(name, props, sessionID, time.Time{})
+	recordFrom(surface, name, props, sessionID, time.Time{})
 }
 
 // recordAt spools one event with its time fields taken from at (zero = now).
 func recordAt(name string, props map[string]any, sessionID string, at time.Time) {
+	recordFrom(surface, name, props, sessionID, at)
+}
+
+// recordFrom spools one event from surface sf, which differs from the
+// process surface for web requests served by a TUI process.
+func recordFrom(sf Surface, name string, props map[string]any, sessionID string, at time.Time) {
 	if !canRecord() {
 		return
 	}
@@ -121,7 +127,7 @@ func recordAt(name string, props map[string]any, sessionID string, at time.Time)
 		}
 		return
 	}
-	if s.spool(name, props, sessionID, at) {
+	if s.spoolFrom(sf, name, props, sessionID, at) {
 		_ = saveStateFast(s)
 	}
 }
@@ -129,6 +135,11 @@ func recordAt(name string, props map[string]any, sessionID string, at time.Time)
 // spool appends one validated event and its milestone side effects. It
 // reports whether state changed. Callers hold the state lock.
 func (s *State) spool(name string, props map[string]any, sessionID string, at time.Time) bool {
+	return s.spoolFrom(surface, name, props, sessionID, at)
+}
+
+// spoolFrom is spool for an event from surface sf.
+func (s *State) spoolFrom(sf Surface, name string, props map[string]any, sessionID string, at time.Time) bool {
 	def, ok := LookupEvent(name)
 	if !ok {
 		return false
@@ -152,7 +163,7 @@ func (s *State) spool(name string, props map[string]any, sessionID string, at ti
 		inc(&r.Dropped)
 		return true
 	}
-	if appendSpool(s.newLine(name, props, at, level)) != nil {
+	if appendSpool(s.newLine(name, props, at, level, sf)) != nil {
 		return true
 	}
 	r.Emitted++
@@ -160,11 +171,11 @@ func (s *State) spool(name string, props map[string]any, sessionID string, at ti
 	return true
 }
 
-func (s *State) newLine(name string, props map[string]any, at time.Time, level Level) spoolLine {
+func (s *State) newLine(name string, props map[string]any, at time.Time, level Level, sf Surface) spoolLine {
 	s.Seq++
 	l := spoolLine{
 		E: name, U: newUUID(), D: dayOf(at), S: s.Seq, V: safeVersion(processVersion),
-		A: actor(), SF: string(surface), L: string(level), P: props,
+		A: actor(), SF: string(sf), L: string(level), P: props,
 	}
 	if level == LevelFull {
 		h, w := at.Local().Hour(), int(at.Local().Weekday())
@@ -449,13 +460,19 @@ type SessionCreateInfo struct {
 	SessionID string
 }
 
-// SessionCreated records session.create and the creation milestones.
+// SessionCreated records session.create and the creation milestones. A
+// session created through the web UI is a web event, whatever process
+// served the request.
 func SessionCreated(in SessionCreateInfo) {
-	record("session.create", map[string]any{
+	sf := surface
+	if in.Via == ViaWeb {
+		sf = SurfaceWeb
+	}
+	recordFrom(sf, "session.create", map[string]any{
 		"tool": NormalizeTool(in.Tool), "via": string(in.Via), "worktree": in.Worktree,
 		"mcps": CountBucket(in.MCPs), "in_group": in.InGroup,
 		"remote": in.Remote, "parented": in.Parented,
-	}, in.SessionID)
+	}, in.SessionID, time.Time{})
 }
 
 // SessionEndInfo describes a session ending. The published restarts count is
@@ -465,14 +482,20 @@ type SessionEndInfo struct {
 	Kind      EndKind
 	Lifetime  time.Duration
 	SessionID string
+	// Surface overrides the process surface (SurfaceWeb for web requests).
+	Surface Surface
 }
 
 // SessionEnded records session.end.
 func SessionEnded(in SessionEndInfo) {
-	record("session.end", map[string]any{
+	sf := surface
+	if in.Surface != "" {
+		sf = in.Surface
+	}
+	recordFrom(sf, "session.end", map[string]any{
 		"tool": NormalizeTool(in.Tool), "end_kind": string(in.Kind),
 		"lifetime": DurBucket(in.Lifetime),
-	}, in.SessionID)
+	}, in.SessionID, time.Time{})
 }
 
 // SessionRunning marks the first_session_running milestone.

@@ -377,9 +377,8 @@ func SendUninstall(ctx context.Context, sessions int, lastTool, reason string) U
 	if Validate("uninstall", props) != nil {
 		return UploadResult{Reason: "invalid event"}
 	}
-	l := s.newLine("uninstall", props, now, EffectiveLevel(s))
 	// uninstall is always a CLI event
-	l.SF = string(SurfaceCLI)
+	l := s.newLine("uninstall", props, now, EffectiveLevel(s), SurfaceCLI)
 	body, err := json.Marshal(phBatch{APIKey: redactedAPIKey, Batch: []phEvent{s.toPostHog(l)}}) //nolint:gosec // G117: only the redacted placeholder; post() inserts the key
 	if err != nil {
 		return UploadResult{Reason: err.Error()}

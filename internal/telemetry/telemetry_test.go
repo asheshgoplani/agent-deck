@@ -188,6 +188,26 @@ func TestRegrantAfterEndpointChangeDropsOldSpool(t *testing.T) {
 	}
 }
 
+// TestWebEventsCarryTheWebSurface: a TUI process also serves the web UI;
+// sessions created or ended through it are surface=web.
+func TestWebEventsCarryTheWebSurface(t *testing.T) {
+	c := env(t) // process surface: tui
+	grant(t, c)
+	SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaWeb, SessionID: "w1"})
+	SessionEnded(SessionEndInfo{Tool: "claude", Kind: EndStop, SessionID: "w1", Surface: SurfaceWeb})
+	SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaTUINew, SessionID: "t1"})
+	want := []string{"web", "web", "tui"}
+	var got []string
+	for _, l := range spoolLines(t) {
+		if l.E == "session.create" || l.E == "session.end" {
+			got = append(got, l.SF)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("surfaces = %v, want %v", got, want)
+	}
+}
+
 func TestV1StateMigration(t *testing.T) {
 	c := env(t)
 	writeV1State(t, ConsentGranted)

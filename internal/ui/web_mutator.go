@@ -226,7 +226,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
 	}
-	inst.RecordTelemetryEnd(telemetry.EndDelete)
+	inst.RecordTelemetryEndFrom(telemetry.EndDelete, telemetry.SurfaceWeb)
 	m.pushUndo(inst)
 	return nil
 }
@@ -252,7 +252,7 @@ func (m *WebMutator) CloseSession(id string) error {
 	if err := inst.Kill(); err != nil {
 		return err
 	}
-	inst.RecordTelemetryEnd(telemetry.EndStop)
+	inst.RecordTelemetryEndFrom(telemetry.EndStop, telemetry.SurfaceWeb)
 	return nil
 }
 

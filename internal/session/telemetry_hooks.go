@@ -24,6 +24,12 @@ func (i *Instance) RecordTelemetryCreate(via telemetry.CreateVia) {
 
 // RecordTelemetryEnd records session.end (no-op without consent).
 func (i *Instance) RecordTelemetryEnd(kind telemetry.EndKind) {
+	i.RecordTelemetryEndFrom(kind, "")
+}
+
+// RecordTelemetryEndFrom records session.end from surface sf ("" = the
+// process surface), for web requests served by a TUI process.
+func (i *Instance) RecordTelemetryEndFrom(kind telemetry.EndKind, sf telemetry.Surface) {
 	var lifetime time.Duration
 	if !i.CreatedAt.IsZero() {
 		lifetime = time.Since(i.CreatedAt)
@@ -33,5 +39,6 @@ func (i *Instance) RecordTelemetryEnd(kind telemetry.EndKind) {
 		Kind:      kind,
 		Lifetime:  lifetime,
 		SessionID: i.ID,
+		Surface:   sf,
 	})
 }
