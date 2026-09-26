@@ -3166,13 +3166,19 @@ func handleSessionSend(profile string, args []string) {
 	// this branch so its own JSON result describes the actual transport.
 	asyncJSON := *jsonOutput && !*queueWorker && !*wait && !*stream && !*draft && !*deferIfBusy && !*noWait
 	// Opt-in telemetry: count the send by tool and length bucket only (no-op
-	// without consent). A send from inside a session is automation.
-	if !*queueWorker {
+	// without consent), once it was queued or delivered. A send from inside
+	// a session is automation; the queue worker's delivery was counted when
+	// the message was queued.
+	messageChars := utf8.RuneCountInString(message)
+	recordSent := func() {
+		if *queueWorker {
+			return
+		}
 		via := telemetry.SendCLI
 		if telemetry.InsideSession() {
 			via = telemetry.SendConductor
 		}
-		telemetry.MessageSent(inst.Tool, via, utf8.RuneCountInString(message), *queue)
+		telemetry.MessageSent(inst.Tool, via, messageChars, *queue)
 	}
 	if len(images) > 0 || *queue || asyncJSON {
 		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
@@ -3191,7 +3197,8 @@ func handleSessionSend(profile string, args []string) {
 				out.Error(err.Error(), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
-			queueSend(profile, storage, inst, message, copies, out)
+			queueSend(profile, storage, inst, message, copies, out) // exits on failure
+			recordSent()
 			return
 		}
 	}
@@ -3500,6 +3507,7 @@ func handleSessionSend(profile string, args []string) {
 		recordSendEvent(profile, inst.ID, sendDetail)
 		os.Exit(1)
 	}
+	recordSent()
 
 	// Self-heal Stage 1: stamp the "we talked to it" clock. A delivered send is
 	// exactly the event the idle_at_empty_prompt dwell is measured from — a

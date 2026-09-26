@@ -216,7 +216,6 @@ func (m *WebMutator) DeleteSession(id string) error {
 
 	// Kill the tmux session (ignore errors — may already be stopped)
 	_ = inst.Kill()
-	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
@@ -227,6 +226,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
 	}
+	inst.RecordTelemetryEnd(telemetry.EndDelete)
 	m.pushUndo(inst)
 	return nil
 }
@@ -249,8 +249,11 @@ func (m *WebMutator) CloseSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	if err := inst.Kill(); err != nil {
+		return err
+	}
 	inst.RecordTelemetryEnd(telemetry.EndStop)
-	return inst.Kill()
+	return nil
 }
 
 // ArchiveSession stops the session process and marks it archived so it

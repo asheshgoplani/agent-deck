@@ -3261,7 +3261,6 @@ func handleRemove(profile string, args []string) {
 	// Uses the synchronous variant so the SIGTERM→SIGKILL escalation finishes
 	// before this short-lived CLI exits — otherwise SIGHUP-immune claude
 	// processes survive as orphans (issue #59, v1.7.68).
-	inst.RecordTelemetryEnd(telemetry.EndDelete)
 	if err := inst.KillAndWait(); err != nil {
 		// Only warn if the session actually existed (ignore "not found" errors)
 		if inst.Exists() && !*jsonOutput {
@@ -3319,6 +3318,7 @@ func handleRemove(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
 	// Best-effort post-removal cleanup for transition-notifier state
 	// (issue #910). Failures are warned but do not block the rm — the
