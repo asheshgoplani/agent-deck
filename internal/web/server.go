@@ -143,6 +143,14 @@ type SessionMutator interface {
 	UpdateSession(sessionID string, updates map[string]string) (updatedFields []string, restartRequired bool, err error)
 	CreateGroup(name, parentPath string) (string, error)
 	RenameGroup(groupPath, newName string) error
+	// MoveSessionToGroup moves a session to another group with the
+	// `agent-deck group move` semantics (see session.GroupTree.
+	// ResolveMoveTargetGroup): "" or "root" is the default group, and a
+	// missing group is created. Returns the group path the session landed in
+	// and whether its resolved Claude config dir changed, which only takes
+	// effect on the next restart (no conversation migration, like the CLI).
+	// Returns ErrSessionNotFound when the id doesn't resolve. See issue #2368.
+	MoveSessionToGroup(sessionID, groupPath string) (movedTo string, restartRequired bool, err error)
 	DeleteGroup(groupPath string) error
 	// FinishWorktree merges (or skips), removes the worktree, optionally
 	// deletes the source branch, kills the tmux session, and removes the

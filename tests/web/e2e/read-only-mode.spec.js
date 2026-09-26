@@ -194,6 +194,15 @@ test.describe('read-only mode (webMutations=false)', () => {
     ).toHaveCount(0)
   })
 
+  test('direct POST /api/sessions/:id/move returns 403 and leaves the group alone (#2368)', async ({ request }) => {
+    const res = await request.post(`${base}/api/sessions/sess-004/move`, { data: { groupPath: 'work' } })
+    expect(res.status()).toBe(403)
+    expect((await res.json()).error?.code).toBe('MUTATIONS_DISABLED')
+    const list = await request.get(`${base}/api/sessions`)
+    const moved = (await list.json()).sessions.find(s => s.id === 'sess-004')
+    expect(moved.groupPath).toBe('personal')
+  })
+
   test('direct POST /api/sessions returns 403 MUTATIONS_DISABLED', async ({ request }) => {
     const res = await request.post(`${base}/api/sessions`, {
       data: { title: 'should-not-exist', tool: 'shell', projectPath: '/tmp/nope' },

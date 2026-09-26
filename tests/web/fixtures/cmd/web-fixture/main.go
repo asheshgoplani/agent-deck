@@ -657,6 +657,53 @@ func (s *fixtureStore) DeleteGroup(groupPath string) error {
 	return nil
 }
 
+// fixtureConfigDirGroup stands in for a group with its own
+// [groups."X".claude].config_dir: moving a claude session into or out of it
+// reports restartRequired, so e2e can cover the web UI's warning (#2368).
+const fixtureConfigDirGroup = "personal"
+
+// MoveSessionToGroup mirrors session.GroupTree.ResolveMoveTargetGroup on the
+// in-memory store (#2368): "" or "root" is the default group, then an exact
+// match, a case-insensitive match, and otherwise a new group.
+func (s *fixtureStore) MoveSessionToGroup(id, groupPath string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return "", false, web.ErrSessionNotFound
+	}
+	target := groupPath
+	switch {
+	case target == "" || target == "root":
+		target = session.DefaultGroupPath
+		if s.groups[target] == nil {
+			s.groups[target] = &web.MenuGroup{Name: session.DefaultGroupName, Path: target, Expanded: true, Order: len(s.groups)}
+		}
+	case s.groups[target] != nil:
+	default:
+		matched := false
+		for path := range s.groups {
+			if strings.EqualFold(path, target) {
+				target, matched = path, true
+				break
+			}
+		}
+		if !matched {
+			s.groups[target] = &web.MenuGroup{Name: target, Path: target, Expanded: true, Order: len(s.groups)}
+		}
+	}
+	if old := s.groups[sess.GroupPath]; old != nil && old.SessionCount > 0 {
+		old.SessionCount--
+	}
+	if g := s.groups[target]; g != nil {
+		g.SessionCount++
+	}
+	restartRequired := session.IsClaudeCompatible(sess.Tool) &&
+		(sess.GroupPath == fixtureConfigDirGroup) != (target == fixtureConfigDirGroup)
+	sess.GroupPath = target
+	return target, restartRequired, nil
+}
+
 // FinishWorktree implements web.SessionMutator for issue #1126. Without a
 // real git backend the fixture validates inputs the same way the live
 // path does (session exists, worktree fields populated) and then removes
