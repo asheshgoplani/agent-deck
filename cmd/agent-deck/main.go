@@ -2308,7 +2308,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 			// Sparse state is inherited from `path` (the directory the user
 			// pointed at), never from backend.RepoDir() — see #1708.
 			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch,
-				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
+				wtSettings.CreateOptions(path),
 				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				if isWorktreeAlreadyExistsError(err) {

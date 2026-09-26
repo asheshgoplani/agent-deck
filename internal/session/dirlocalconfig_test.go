@@ -657,3 +657,54 @@ func TestResolveWorktreeSettingsForDir_EmptyTemplateSingleFileNoOuter(t *testing
 		t.Errorf("sources[path_template] = %q, want %q", sources[WorktreeKeyPathTemplate], path)
 	}
 }
+
+// #2366: checkout_git_config injects git -c options into worktree creation,
+// so it is global-only; a dir-local file must not be able to set it.
+func TestResolveWorktreeSettingsForDir_RejectsCheckoutGitConfig(t *testing.T) {
+	home := setupDirLocalHome(t)
+	target := filepath.Join(home, "projects", "example", "main")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeDirLocalConfig(t, target, "[worktree]\ncheckout_git_config = [\"core.hooksPath=/dev/null\"]\n")
+
+	_, err := GetWorktreeSettingsForDir(target)
+	if err == nil || !strings.Contains(err.Error(), "worktree.checkout_git_config") {
+		t.Fatalf("err = %v, want the dir-local checkout_git_config key refused", err)
+	}
+}
+
+// #2366: the global value survives the dir-local merge and reaches the git
+// creation options alongside sparse inheritance.
+func TestWorktreeSettingsCreateOptions_CarriesGlobalCheckoutGitConfig(t *testing.T) {
+	home := setupDirLocalHome(t)
+	globalPath := filepath.Join(home, ".agent-deck", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	global := "[worktree]\nsparse_checkout = \"inherit\"\ncheckout_git_config = [\"core.hooksPath=/dev/null\", \"checkout.workers=8\"]\n"
+	if err := os.WriteFile(globalPath, []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	target := filepath.Join(home, "projects", "example", "main")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeDirLocalConfig(t, target, "[worktree]\nsparse_checkout = \"off\"\n")
+
+	settings, err := GetWorktreeSettingsForDir(target)
+	if err != nil {
+		t.Fatalf("GetWorktreeSettingsForDir: %v", err)
+	}
+	opts := settings.CreateOptions(target)
+	if opts.SparseSourceDir != "" {
+		t.Fatalf("SparseSourceDir = %q, want dir-local sparse_checkout=off to win", opts.SparseSourceDir)
+	}
+	want := []string{"core.hooksPath=/dev/null", "checkout.workers=8"}
+	if strings.Join(opts.GitConfig, "|") != strings.Join(want, "|") {
+		t.Fatalf("GitConfig = %v, want %v", opts.GitConfig, want)
+	}
+}

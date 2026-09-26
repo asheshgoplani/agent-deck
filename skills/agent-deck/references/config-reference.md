@@ -448,6 +448,7 @@ branch_prefix = "feature/"                           # Prefix for branch names (
 auto_cleanup = true                                  # Remove worktree when session is deleted
 setup_timeout_seconds = 60                           # Timeout for .agent-deck/worktree-setup.sh
 sparse_checkout = "off"                              # "inherit" to copy the source worktree's sparse checkout
+checkout_git_config = ["core.hooksPath=/dev/null"]   # git -c entries for the worktree checkout (global only)
 ```
 
 | Key | Type | Default | Description |
@@ -459,6 +460,7 @@ sparse_checkout = "off"                              # "inherit" to copy the sou
 | `auto_cleanup` | bool | `false` | Remove worktree directory when the session is deleted. |
 | `setup_timeout_seconds` | int | `60` | Max seconds for `.agent-deck/worktree-setup.sh` to run. Set to `0` for unlimited. |
 | `sparse_checkout` | string | `"off"` | Sparse-checkout inheritance (#1708). `"inherit"` captures the mode (cone / non-cone, sparse index) and patterns of the worktree you create the session from, creates the new worktree with `git worktree add --no-checkout`, and materializes it with those patterns, so a sparse monorepo never checks out the full tree first. `"off"` / unset / any other value keeps git's normal checkout. A non-sparse source is also left unchanged. `.worktreeinclude` and the setup script still run afterwards. Requires git 2.32+ (`sparse-checkout set --[no-]sparse-index`). |
+| `checkout_git_config` | string array | `[]` | `key=value` git config entries passed as `git -c` to the commands that create and check out a new worktree (`worktree add`, and the sparse checkout when `sparse_checkout = "inherit"`) (#2366). `"core.hooksPath=/dev/null"` skips `post-checkout` hooks (for example the Git LFS hook); `"checkout.workers=8"` tunes checkout. Applied to that creation only; nothing is written to the worktree's config. Entries that are not `key=value` fail worktree creation. Global config only. |
 
 ### Path template examples
 
@@ -512,7 +514,8 @@ path_template = "{repo-root}/../wt-{branch}"
 **Allowlisted keys.** Only `default_location`, `path_template`, and
 `sparse_checkout` are eligible for directory-local overrides — the same three
 settings that affect *where* a worktree lands. `auto_cleanup`,
-`branch_prefix`, `setup_timeout_seconds`, `run_repo_scripts`, and every other
+`branch_prefix`, `setup_timeout_seconds`, `run_repo_scripts`,
+`checkout_git_config`, and every other
 top-level section stay global-only, since a dir-local file can come from a
 checkout you don't fully trust. **Any other key or section is refused** with
 an error naming the file and the bad key, rather than being silently

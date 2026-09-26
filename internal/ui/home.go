@@ -15409,7 +15409,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				if wtSettingsErr != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("invalid directory-local config: %w", wtSettingsErr), tempID: tempID}
 				}
-				wtResult := session.CreateMultiRepoWorktreesWithOptions(allPaths, parentDir, worktreeBranch, wtSettings.SetupTimeout(), wtSettings.InheritSparseCheckout())
+				wtResult := session.CreateMultiRepoWorktreesWithOptions(allPaths, parentDir, worktreeBranch, wtSettings)
 				for _, w := range wtResult.Warnings {
 					uiLog.Warn("multi_repo_worktree", slog.String("detail", w))
 				}
@@ -15516,7 +15516,7 @@ func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDi
 		return nil, fmt.Errorf("invalid directory-local config: %w", settingsErr)
 	}
 	setupErr, err = vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch,
-		git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), sourceDir),
+		wtSettings.CreateOptions(sourceDir),
 		&buf, &buf, wtSettings.SetupTimeout())
 	if err != nil {
 		return nil, err
@@ -16120,15 +16120,16 @@ func defaultForkWithStateWorktreeDeps(sparseSourceDir string) forkWithStateWorkt
 	// closed on the same error. With no source dir there is nothing to
 	// inherit from, so SparseInheritOptions yields the same zero options
 	// either way and the lookup is skipped.
-	inheritSparse := false
+	wtSettings := session.GetWorktreeSettings()
 	if sparseSourceDir != "" {
-		if wtSettings, err := session.GetWorktreeSettingsForDir(sparseSourceDir); err != nil {
+		if local, err := session.GetWorktreeSettingsForDir(sparseSourceDir); err != nil {
 			uiLog.Warn("dir_local_config_invalid", slog.String("dir", sparseSourceDir), slog.String("error", err.Error()))
+			wtSettings.SparseCheckout = ""
 		} else {
-			inheritSparse = wtSettings.InheritSparseCheckout()
+			wtSettings = local
 		}
 	}
-	createOpts := git.SparseInheritOptions(inheritSparse, sparseSourceDir)
+	createOpts := wtSettings.CreateOptions(sparseSourceDir)
 	return forkWithStateWorktreeDeps{
 		statPath:                  os.Stat,
 		mkdirAll:                  os.MkdirAll,

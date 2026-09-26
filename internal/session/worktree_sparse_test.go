@@ -75,7 +75,7 @@ func TestCreateMultiRepoWorktreesWithOptions_InheritsSparsePerInputPath(t *testi
 	testGitCommit(t, plainRepo, "add heavy")
 
 	parentDir := t.TempDir()
-	result := CreateMultiRepoWorktreesWithOptions([]string{sparseWT, plainRepo}, parentDir, "multirepo-sparse", 0, true)
+	result := CreateMultiRepoWorktreesWithOptions([]string{sparseWT, plainRepo}, parentDir, "multirepo-sparse", WorktreeSettings{SparseCheckout: WorktreeSparseCheckoutInherit})
 
 	require.Empty(t, result.Warnings)
 	require.Len(t, result.MappedPaths, 2)
