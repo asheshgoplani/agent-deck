@@ -1,0 +1,50 @@
+
+
+✻ Cooked for 16s · done 10:17 PM · 1 shell still running
+
+❯ [xxxxx] xxxxx-xxxxxx-xxxx xx — xxxxxx.xx xxx xx #xxx: xxxxx xxxxxxx, xxx xxxxxx xxx xxxxx; xx xxxxxx xxxx xxxxx xx xxxxxxx xxx (xx'x xxx xxxxxxxxxx); xxxxxxx xxxxxxx xxx-xxxx; xx
+  xxxxx xxxxxx xxx (x xxxxxxx); xx xxxx xxxxxx + x xxxxxx xxx xx xx xxxx; xx-xxxx xxxxxx xxxxxxxx xxxx xx xxxxx xxx (/xxx/xxxxx/xxxx/xxxxx-xxx-xxxx/xxxxxx.xx)
+
+● Duplicate of the review note, already handled. Nothing for you.
+
+  ---
+  - xxxx xxx: xxxx xxxxx xxx xxxxx; xxx xxx xxxx xxxxxx-xxxxxxx xxxxxxx xxxxxxxx xx xxx xxxxxxx xxxxxxx xx xxxxxxx; xxxx xxxx xxx xxxx xxx xxxxxx xxxxx; xxx xxxx xx xxxxxx xxx xxx@
+    xxxxxxx xxxxxxxx
+  - xxxx xxxxxxxx: xxxx x xxxxxx xxx xxxxxxx xx-xxx xxxxxxx xxx xxxxxxxx xxxxx? xxx "xxxxxx xx" xx "xxxxx xx"
+  - xxxxxxx xx: xxxxxxxx'x xx xxxxxxxx xxxxxxx; xxxxx xx xxx xxx xxxxxxx
+
+✻ Worked for 3s · done 10:17 PM · 1 shell still running
+
+❯ [xxxxxxxxx-xxxxx-xxxxx]
+
+  xxxx xxxxxxxxx-xxxxx-xxxxx xx xxxxxxxxx-xxxxx-xxxxxx, xx xxxxxxxxx-xxxxx-xxxxxxxx. xx:xxx. xxxxxx xx xxxxx'x xx #xxx xx xxxxxxx: /xxx/xxxxx/xxxx/xxxxx-xxx-xxxx/xxxxxx.xx (xxxxxx xx
+  xxxxxx/ xxx xxxxx.xxxx, xxx-xxxx xxx xxxxx xxxxx.xx).
+
+  xxxxxxx: xxxxx xxxxxxx; xx xxx xxxxx xx xx xxxxxx, xxx xxx xxxxxx xxx xxxxxxx xxxxx.
+  - xxxxxx xxxx xxxxx: xxxx xxx xxxxx xx xxxxxxx xxx xxxxxx (xxxxxx xxxxxx-xx/xx). xx xxx #xxx'x xxx xxxx x/x xxxxxxxxxx, xxxxx xxxxxx xxx xx; xxx xx xxxx xxxx xxx xx. xxxxxxx
+  xxxxxxxx'x xxxxxxx xxxxxxx.
+  - xxxxxxx xxxxxxx: xxxxxxxxx xxx-xxxx. xxx xxxxxxx xxxxxxxx, xxx_xxxxx_xxxxxxx = xxxxxxxx.xx !== "xxx"; xxxxx xxxxx xxxxx xxxxxx-xxxxxx xxxxxxx xx xxx xx xxx xxxxxxx xxxx.
+  - "xxx-xxxx xxxxxx" xx xxx xxx-xxxx: xx xxxxx xxxxxx xxx, x xxxxxxx (xxxxx xxxx xxxxxx -> xxxxxxxx + xxxxx xxxx xxx xxxxxx; xxxxxx xxxxx xxxxx x x.xxx xxxxxx xxx xxxxx xxxxx xxxx xx
+  xxxx; xxxxxxxxxxx xxxxxxxxxx xxx xxxx; xxxxx xxxxxx xxxxxxxx). xxxx x xxx xxx /xxxxxxxxx/xxxxxxxxx/xxxxxxx xx xxxxx xxxx xxxxx xxx xxxxx xxxxxx xxxx, xxx xxx xxxxx xxxxxxx xxx
+  xxxxxxxxxx, xxxxxx xxxx xxxx xx xxx xxxxxxx xxxx.
+  - xxxxx: xx xxxx xxxxxx (xx xxxxx) + x xxxxxx xxxx xxx xx xxx xx xxxx; xx xxxxxx (xx) + xxxxxx xxxxx xxxxxx; xxx xx xxxx xxxx. xxx xxxxxxxx xx xxxx x xxx-xxxxx xxxxxxxx xxxxxx xx
+  xxxxxxxxxxx.xx.
+  - xxxxxx: xx xxxxxx, xx xxxxx xxxxxxxx, xxxxxx xxxxx xxxx xx xx xxx xxxxx'x xxx.
+    xxx xxxxxxxx'x xxxx, xxx xxxxx #xxx xxxxxxx xx xxxxxxx xxxx xxx xxxx xxxx xxx xxxxxxx: xxx/_xxxxxx.xxx xxxxx xxxxxxx/[xx]/xxxxx xxx xxxxxxxxxx xxxx xxxxxxx "xxxxxxxxx" xx
+  xxxxxxxxxxxxxxxxx, xxxxx xx xxxxxxx xxxxxxxx xx "xxxxx" (xxxxxxxxxxxxxxxxxxxxxxxx.xx:x). xxxxx x xxxx xxxx xx xxxxxxx xxxxx xxx xxxxx.
+    xxxxx'x xxxxx xx xxxxx'x xx xxxx; xxxxxxxx xx xxx.
+
+● Same review, with one addition: worker-c will send person-d the reply himself, so you don't need to. Nothing for you on this.
+
+  ---
+  - xxxx xxx: xxx xxx xxxx xxxxxx-xxxxxxx xxxxxxx xxxxxxxx xx xxx xxxxxxx xxxxxxx xx xxxxxxx; xxxx xxxx xxx xxxx xxx xxxxxx xxxxx; xxx xxxx xx xxxxxx xxx xxx@ xxxxxxx xxxxxxxx
+  - xxxx xxxxxxxx: xxxx x xxxxxx xxx xxxxxxx xx-xxx xxxxxxx xxx xxxxxxxx xxxxx? xxx "xxxxxx xx" xx "xxxxx xx"
+  - xxxxxxx xx: xxxxxxxx'x xx xxxxxxxx xxxxxxx; xxxxx xx xxx xxx xxxxxxx
+
+✻ Brewed for 3s · done 10:18 PM · 1 shell still running
+                                                                                                                                                  ✔ Update installed · Restart to update
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── conductor-proj-a-owner ─
+❯ xxxxx xx, xxxxx xxxxxxx xx xx xxx
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [owner · semantic] u@host:/home/u/.local/share/agent-deck/conductor/owner | [Fable 5.1] ctx:49% in:490.7k out:192 5h:5% 7d:28%
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents

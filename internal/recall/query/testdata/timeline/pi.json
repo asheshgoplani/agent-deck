@@ -1,0 +1,230 @@
+[
+  {
+    "seq": 1,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-08-23T22:51:45.235Z",
+    "raw": {
+      "cwd": "/private/tmp/phase2-exp",
+      "id": "01a030d2-a0d3-7790-a9af-3c633c68f25a",
+      "parentSession": "/Users/x/.pi/agent/sessions/--private-tmp-phase2-exp--/2026-08-23T22-51-30-693Z_01a030d2-6805-77ca-86fb-7d759f7258ac.jsonl",
+      "timestamp": "2026-08-23T22:51:45.235Z",
+      "type": "session",
+      "version": 3
+    }
+  },
+  {
+    "seq": 2,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-08-23T22:51:30.977Z",
+    "raw": {
+      "id": "b1d92e01",
+      "modelId": "gpt-5.6-sol",
+      "parentId": null,
+      "provider": "openai-codex",
+      "timestamp": "2026-08-23T22:51:30.977Z",
+      "type": "model_change"
+    }
+  },
+  {
+    "seq": 3,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-08-23T22:51:30.977Z",
+    "raw": {
+      "id": "7a87b875",
+      "parentId": "b1d92e01",
+      "thinkingLevel": "xhigh",
+      "timestamp": "2026-08-23T22:51:30.977Z",
+      "type": "thinking_level_change"
+    }
+  },
+  {
+    "seq": 4,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-08-23T22:51:45.300Z",
+    "text": "Evaluate Hermes as a harness",
+    "raw": {
+      "text": "Evaluate Hermes as a harness",
+      "type": "text"
+    }
+  },
+  {
+    "seq": 5,
+    "role": "assistant",
+    "kind": "other",
+    "timestamp": "2026-08-23T22:51:50.000Z",
+    "raw": {
+      "thinking": "zebra thoughts",
+      "type": "thinking"
+    }
+  },
+  {
+    "seq": 6,
+    "role": "assistant",
+    "kind": "message",
+    "timestamp": "2026-08-23T22:51:50.000Z",
+    "text": "Reading the README first.",
+    "raw": {
+      "text": "Reading the README first.",
+      "type": "text"
+    }
+  },
+  {
+    "seq": 7,
+    "role": "assistant",
+    "kind": "tool_call",
+    "timestamp": "2026-08-23T22:51:50.000Z",
+    "tool_name": "read",
+    "text": "/Users/x/README.md",
+    "raw": {
+      "arguments": {
+        "path": "/Users/x/README.md"
+      },
+      "id": "call_1",
+      "name": "read",
+      "type": "toolCall"
+    }
+  },
+  {
+    "seq": 8,
+    "role": "tool",
+    "kind": "tool_result",
+    "timestamp": "2026-08-23T22:51:51.250Z",
+    "tool_name": "read",
+    "text": "# README zebra result text",
+    "raw": {
+      "id": "m3",
+      "message": {
+        "content": [
+          {
+            "text": "# README zebra result text",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "role": "toolResult",
+        "timestamp": 1787005911250,
+        "toolCallId": "call_1",
+        "toolName": "read"
+      },
+      "parentId": "m2",
+      "timestamp": "2026-08-23T22:51:51.250Z",
+      "type": "message"
+    }
+  },
+  {
+    "seq": 9,
+    "role": "assistant",
+    "kind": "bash",
+    "timestamp": "2026-08-23T22:51:52.000Z",
+    "tool_name": "bash",
+    "text": "ls notes",
+    "raw": {
+      "arguments": {
+        "command": "ls notes"
+      },
+      "id": "call_2",
+      "name": "bash",
+      "type": "toolCall"
+    }
+  },
+  {
+    "seq": 10,
+    "role": "tool",
+    "kind": "tool_result",
+    "timestamp": "2026-08-23T22:51:52.500Z",
+    "tool_name": "bash",
+    "text": "ls: notes: No such file",
+    "raw": {
+      "id": "m5",
+      "message": {
+        "content": [
+          {
+            "text": "ls: notes: No such file",
+            "type": "text"
+          }
+        ],
+        "isError": true,
+        "role": "toolResult",
+        "toolCallId": "call_2",
+        "toolName": "bash"
+      },
+      "parentId": "m4",
+      "timestamp": "2026-08-23T22:51:52.500Z",
+      "type": "message"
+    }
+  },
+  {
+    "seq": 11,
+    "role": "system",
+    "kind": "system",
+    "timestamp": "2026-08-23T22:51:45.972Z",
+    "raw": {
+      "id": "db851eca",
+      "name": "hermes-eval",
+      "parentId": "m5",
+      "timestamp": "2026-08-23T22:51:45.972Z",
+      "type": "session_info"
+    }
+  },
+  {
+    "seq": 12,
+    "role": "system",
+    "kind": "subagent",
+    "timestamp": "2026-08-23T22:51:53.000Z",
+    "raw": {
+      "content": "zebra supervisor notice",
+      "customType": "subagent_supervisor_request",
+      "id": "c1",
+      "parentId": "m5",
+      "timestamp": "2026-08-23T22:51:53.000Z",
+      "type": "custom_message"
+    }
+  },
+  {
+    "seq": 13,
+    "role": "system",
+    "kind": "compaction",
+    "timestamp": "2026-08-23T22:52:00.000Z",
+    "text": "## Goal\nEvaluate Hermes",
+    "raw": {
+      "firstKeptEntryId": "m4",
+      "id": "fe32007a",
+      "parentId": "c1",
+      "summary": "## Goal\nEvaluate Hermes",
+      "timestamp": "2026-08-23T22:52:00.000Z",
+      "tokensBefore": 783927,
+      "type": "compaction"
+    }
+  },
+  {
+    "seq": 14,
+    "role": "user",
+    "kind": "message",
+    "timestamp": "2026-08-23T22:52:10.000Z",
+    "text": "plain string prompt",
+    "raw": {
+      "id": "m6",
+      "message": {
+        "content": "plain string prompt",
+        "role": "user"
+      },
+      "parentId": "fe32007a",
+      "timestamp": "2026-08-23T22:52:10.000Z",
+      "type": "message"
+    }
+  },
+  {
+    "seq": 15,
+    "role": "system",
+    "kind": "other",
+    "raw": {
+      "id": "f1",
+      "parentId": "m6",
+      "type": "future_record"
+    }
+  }
+]

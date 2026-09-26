@@ -1,0 +1,14 @@
+Usage: agent-deck session fork <id|title> [options]
+
+Fork a Claude, OpenCode, Pi, Codex, or Oh My Pi session with conversation context.
+
+Options:
+
+Examples:
+  agent-deck session fork my-project
+  agent-deck session fork my-project -t "my-fork"
+  agent-deck session fork my-project -t "my-fork" -g "experiments"
+  agent-deck session fork my-project -w fork/experiment
+  agent-deck session fork my-project -w fork/new-idea -b
+  agent-deck session fork my-project -w fork/wip -b --with-state
+  agent-deck session fork my-project -w fork/wip -b --with-state-and-gitignored

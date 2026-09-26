@@ -1,0 +1,146 @@
+# agent-deck fish completion
+# Install: agent-deck completion fish > ~/.config/fish/completions/agent-deck.fish
+
+function __agent_deck_toks
+    set -l toks (commandline -opc)
+    if [ (count $toks) -ge 3 ]; and contains -- $toks[2] -p --profile
+        set toks $toks[1] $toks[4..-1]
+    else if [ (count $toks) -ge 2 ]; and string match -q -- '-p=*' $toks[2]
+        set toks $toks[1] $toks[3..-1]
+    else if [ (count $toks) -ge 2 ]; and string match -q -- '--profile=*' $toks[2]
+        set toks $toks[1] $toks[3..-1]
+    end
+    for t in $toks
+        echo $t
+    end
+end
+
+function __agent_deck_profile_arg
+    set -l toks (commandline -opc)
+    if [ (count $toks) -ge 3 ]; and contains -- $toks[2] -p --profile
+        echo -p
+        echo $toks[3]
+    else if [ (count $toks) -ge 2 ]; and string match -q -- '-p=*' $toks[2]
+        echo -p
+        echo (string replace -r '^-p=' '' $toks[2])
+    else if [ (count $toks) -ge 2 ]; and string match -q -- '--profile=*' $toks[2]
+        echo -p
+        echo (string replace -r '^--profile=' '' $toks[2])
+    end
+end
+
+function __agent_deck_at
+    set -l toks (__agent_deck_toks)
+    if [ (count $toks) -ne $argv[3] ]
+        return 1
+    end
+    if [ -n "$argv[1]" ]; and [ "$toks[2]" != "$argv[1]" ]
+        return 1
+    end
+    if [ -n "$argv[2]" ]; and [ "$toks[3]" != "$argv[2]" ]
+        return 1
+    end
+    return 0
+end
+
+# Profile name right after a leading -p/--profile.
+complete -c agent-deck -f -n "test (count (commandline -opc)) -eq 2; and contains -- (commandline -opc)[2] -p --profile" -a "(agent-deck __complete profiles)"
+
+# Top-level commands.
+complete -c agent-deck -f -n "__agent_deck_at '' '' 1" -a "add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback creds-refresh telegram-doctor version help completion profile inbox session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek"
+
+# Subcommands.
+complete -c agent-deck -f -n "__agent_deck_at completion '' 2" -a "bash zsh fish"
+complete -c agent-deck -f -n "__agent_deck_at profile '' 2" -a "list create delete default"
+complete -c agent-deck -f -n "__agent_deck_at inbox '' 2" -a "drain"
+complete -c agent-deck -f -n "__agent_deck_at session '' 2" -a "start stop remove cleanup prune archive unarchive restart revive fork handoff attach focus show viewers current primer set-parent unset-parent update set-transition-notify set-title-lock set switch-account move send approve send-keys output children search"
+complete -c agent-deck -f -n "__agent_deck_at fleet '' 2" -a "status recover"
+complete -c agent-deck -f -n "__agent_deck_at mcp '' 2" -a "list attached attach detach server"
+complete -c agent-deck -f -n "__agent_deck_at plugin '' 2" -a "list attached attach detach"
+complete -c agent-deck -f -n "__agent_deck_at skill '' 2" -a "list attached attach detach source"
+complete -c agent-deck -f -n "__agent_deck_at group '' 2" -a "list show create update delete move change reorder"
+complete -c agent-deck -f -n "__agent_deck_at conductor '' 2" -a "setup teardown status list move migrate-dir"
+complete -c agent-deck -f -n "__agent_deck_at agents '' 2" -a "adopt list show"
+complete -c agent-deck -f -n "__agent_deck_at agent '' 2" -a "adopt list show"
+complete -c agent-deck -f -n "__agent_deck_at watcher '' 2" -a "import create start stop list status test routes install-skill"
+complete -c agent-deck -f -n "__agent_deck_at openclaw '' 2" -a "sync bridge status list send"
+complete -c agent-deck -f -n "__agent_deck_at oc '' 2" -a "sync bridge status list send"
+complete -c agent-deck -f -n "__agent_deck_at remote '' 2" -a "add remove list sessions drain attach rename update"
+complete -c agent-deck -f -n "__agent_deck_at worktree '' 2" -a "list info cleanup finish trust-scripts"
+complete -c agent-deck -f -n "__agent_deck_at wt '' 2" -a "list info cleanup finish trust-scripts"
+complete -c agent-deck -f -n "__agent_deck_at costs '' 2" -a "sync summary recompute"
+complete -c agent-deck -f -n "__agent_deck_at hooks '' 2" -a "install uninstall status"
+complete -c agent-deck -f -n "__agent_deck_at codex-hooks '' 2" -a "install uninstall status"
+complete -c agent-deck -f -n "__agent_deck_at gemini-hooks '' 2" -a "install uninstall status"
+complete -c agent-deck -f -n "__agent_deck_at hermes-hooks '' 2" -a "install uninstall status"
+complete -c agent-deck -f -n "__agent_deck_at cursor-hooks '' 2" -a "install uninstall status"
+complete -c agent-deck -f -n "__agent_deck_at tmux-hooks '' 2" -a "install uninstall status"
+complete -c agent-deck -f -n "__agent_deck_at pi-hooks '' 2" -a "install uninstall status"
+complete -c agent-deck -f -n "__agent_deck_at deepseek '' 2" -a "status profiles sessions"
+
+# Dynamic resource-name completion.
+complete -c agent-deck -f -n "__agent_deck_at agent show 3" -a "(agent-deck (__agent_deck_profile_arg) __complete agents)"
+complete -c agent-deck -f -n "__agent_deck_at agents show 3" -a "(agent-deck (__agent_deck_profile_arg) __complete agents)"
+complete -c agent-deck -f -n "__agent_deck_at conductor move 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at group change 3" -a "(agent-deck (__agent_deck_profile_arg) __complete groups)"
+complete -c agent-deck -f -n "__agent_deck_at group change 4" -a "(agent-deck (__agent_deck_profile_arg) __complete groups)"
+complete -c agent-deck -f -n "__agent_deck_at group delete 3" -a "(agent-deck (__agent_deck_profile_arg) __complete groups)"
+complete -c agent-deck -f -n "__agent_deck_at group move 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at group move 4" -a "(agent-deck (__agent_deck_profile_arg) __complete groups)"
+complete -c agent-deck -f -n "__agent_deck_at group reorder 3" -a "(agent-deck (__agent_deck_profile_arg) __complete groups)"
+complete -c agent-deck -f -n "__agent_deck_at group show 3" -a "(agent-deck (__agent_deck_profile_arg) __complete groups)"
+complete -c agent-deck -f -n "__agent_deck_at group update 3" -a "(agent-deck (__agent_deck_profile_arg) __complete groups)"
+complete -c agent-deck -f -n "__agent_deck_at mcp attach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at mcp attached 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at mcp detach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at mv '' 2" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at plugin attach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at plugin attached 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at plugin detach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at profile default 3" -a "(agent-deck (__agent_deck_profile_arg) __complete profiles)"
+complete -c agent-deck -f -n "__agent_deck_at profile delete 3" -a "(agent-deck (__agent_deck_profile_arg) __complete profiles)"
+complete -c agent-deck -f -n "__agent_deck_at remote attach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete remotes)"
+complete -c agent-deck -f -n "__agent_deck_at remote attach 4" -a "(agent-deck (__agent_deck_profile_arg) __complete remote-sessions (__agent_deck_toks)[-1])"
+complete -c agent-deck -f -n "__agent_deck_at remote remove 3" -a "(agent-deck (__agent_deck_profile_arg) __complete remotes)"
+complete -c agent-deck -f -n "__agent_deck_at remote rename 3" -a "(agent-deck (__agent_deck_profile_arg) __complete remotes)"
+complete -c agent-deck -f -n "__agent_deck_at remote rename 4" -a "(agent-deck (__agent_deck_profile_arg) __complete remote-sessions (__agent_deck_toks)[-1])"
+complete -c agent-deck -f -n "__agent_deck_at remote sessions 3" -a "(agent-deck (__agent_deck_profile_arg) __complete remotes)"
+complete -c agent-deck -f -n "__agent_deck_at remote update 3" -a "(agent-deck (__agent_deck_profile_arg) __complete remotes)"
+complete -c agent-deck -f -n "__agent_deck_at remove '' 2" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at rename '' 2" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at rm '' 2" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session approve 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session archive 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session attach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session children 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session focus 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session fork 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session handoff 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session move 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session output 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session primer 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session remove 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session restart 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session send 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session send-keys 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session set 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session set-parent 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session set-parent 4" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session set-title-lock 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session set-transition-notify 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session show 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session start 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session stop 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session switch-account 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session switch-account 4" -a "(agent-deck (__agent_deck_profile_arg) __complete profiles)"
+complete -c agent-deck -f -n "__agent_deck_at session unarchive 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session unset-parent 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session update 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at session viewers 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at skill attach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at skill attached 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at skill detach 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at worktree finish 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at worktree info 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at wt finish 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"
+complete -c agent-deck -f -n "__agent_deck_at wt info 3" -a "(agent-deck (__agent_deck_profile_arg) __complete sessions)"

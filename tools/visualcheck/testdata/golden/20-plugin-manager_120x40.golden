@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                        ╭──────────────────────────────────────────────────────────────────────╮
+                        │ Plugin Manager                                                       │
+                        │ space toggle · ↑/↓ move · enter apply · esc cancel                   │
+                        │                                                                      │
+                        │ No plugins in catalog. Add [plugins.<name>] tables to /tmp/vc-<tmp>       │
+                        │ <id>/.agent-deck/config.toml                                   │
+                        │ See docs/rfc/PLUGIN_ATTACH.md §4.1                                   │
+                        │                                                                      │
+                        ╰──────────────────────────────────────────────────────────────────────╯

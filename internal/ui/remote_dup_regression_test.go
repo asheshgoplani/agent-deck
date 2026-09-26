@@ -45,44 +45,8 @@ import (
 // exercise a non-Normal view mode are out of scope for this helper.
 func assertNoDuplicateRows(t *testing.T, items []session.Item) {
 	t.Helper()
-	groupSeen := make(map[string]bool, len(items))
-	sessionSeen := make(map[string]bool, len(items))
-	for i, it := range items {
-		switch it.Type {
-		case session.ItemTypeGroup:
-			if it.Group == nil {
-				continue
-			}
-			key := "local:" + it.Group.Path
-			if groupSeen[key] {
-				t.Fatalf("row %d: duplicate local group header for path %q", i, it.Group.Path)
-			}
-			groupSeen[key] = true
-		case session.ItemTypeRemoteGroup:
-			key := "remote:" + it.RemoteName + "\x00" + it.Path
-			if groupSeen[key] {
-				t.Fatalf("row %d: duplicate remote group header for remote %q path %q", i, it.RemoteName, it.Path)
-			}
-			groupSeen[key] = true
-		case session.ItemTypeSession:
-			if it.Session == nil || it.IsCreatingPlaceholder() {
-				continue
-			}
-			key := "local:" + it.Session.ID
-			if sessionSeen[key] {
-				t.Fatalf("row %d: duplicate local session row for id %q", i, it.Session.ID)
-			}
-			sessionSeen[key] = true
-		case session.ItemTypeRemoteSession:
-			if it.RemoteSession == nil {
-				continue
-			}
-			key := "remote:" + it.RemoteName + "\x00" + it.RemoteSession.ID
-			if sessionSeen[key] {
-				t.Fatalf("row %d: duplicate remote session row for remote %q id %q", i, it.RemoteName, it.RemoteSession.ID)
-			}
-			sessionSeen[key] = true
-		}
+	if i, id, dup := session.FirstDuplicateRow(items); dup {
+		t.Fatalf("row %d: duplicate row identity %q", i, strings.ReplaceAll(id, "\x00", " | "))
 	}
 }
 

@@ -1,0 +1,8 @@
+Usage: agent-deck skill source <command> [options]
+
+Manage global skill discovery sources.
+
+Commands:
+  list                  List configured sources
+  add <name> <path>     Add a source
+  remove <name>         Remove a source

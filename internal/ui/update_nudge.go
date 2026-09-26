@@ -6,6 +6,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // shouldRenderUpdateNudge reports whether the >5-releases-behind nudge
@@ -54,6 +55,9 @@ func (h *Home) renderUpdateBannerText() string {
 		return text + ": this one cannot update or restart itself, " + h.binaryOrphanReason + " "
 	}
 	if v := h.installedUpdateVersion(); v != "" {
+		if h.autoInstallInFlight != "" {
+			return h.updateRunBannerText(v)
+		}
 		if !h.autoRestartEnabled() {
 			return fmt.Sprintf(" ⬆ v%s installed, press %s to restart agent-deck ", v, h.restartDeckKeyLabel())
 		}
@@ -65,6 +69,66 @@ func (h *Home) renderUpdateBannerText() string {
 		return fmt.Sprintf(" ⬆ v%s installed, restarting when idle (%s now) ", v, h.restartDeckKeyLabel())
 	}
 	return h.renderUpdateNudgeText()
+}
+
+// updateRunBannerText is the banner while the newer build is on disk but
+// the unattended updater this TUI spawned is still running (remote phase or
+// launch agent re-registration). The restart key is not "now" in this
+// state: it queues the restart, so the text says what runs and when the
+// restart happens, with the remote progress when known, and picks the
+// longest variant that fits the terminal width.
+func (h *Home) updateRunBannerText(v string) string {
+	key := h.restartDeckKeyLabel()
+	what, short := h.updateRunPhase()
+	var variants []string
+	switch {
+	case h.restartQueued:
+		variants = []string{
+			fmt.Sprintf(" ⬆ v%s installed, restart queued: %s, then restarting ", v, what),
+			fmt.Sprintf(" ⬆ v%s installed, restart queued after %s ", v, short),
+			fmt.Sprintf(" ⬆ v%s installed, restart queued ", v),
+		}
+	case !h.autoRestartEnabled():
+		variants = []string{
+			fmt.Sprintf(" ⬆ v%s installed, %s, then press %s to restart ", v, what, key),
+			fmt.Sprintf(" ⬆ v%s installed, %s, then %s ", v, short, key),
+			fmt.Sprintf(" ⬆ v%s installed, then %s ", v, key),
+		}
+	default:
+		variants = []string{
+			fmt.Sprintf(" ⬆ v%s installed, %s, then restarting (%s queues it) ", v, what, key),
+			fmt.Sprintf(" ⬆ v%s installed, %s, then restarting ", v, what),
+			fmt.Sprintf(" ⬆ v%s installed, %s, then restart ", v, short),
+			fmt.Sprintf(" ⬆ v%s installed, restarting soon ", v),
+		}
+	}
+	for _, t := range variants {
+		if h.width <= 0 || lipgloss.Width(t) <= h.width {
+			return t
+		}
+	}
+	return variants[len(variants)-1]
+}
+
+// updateRunPhase names what the updater child is doing, in a long and a
+// short form, for the banner and the footer: "nudging 4 remotes" by
+// default, "finishing the remote sweep" only in the opt-in push model.
+func (h *Home) updateRunPhase() (long, short string) {
+	if h.autoInstallInFlight == pendingDrainKey {
+		return "re-registering launchd agents", "launchd agents"
+	}
+	mode, total := h.autoInstallProgress.Phase()
+	remotes := "remotes"
+	if total == 1 {
+		remotes = "remote"
+	}
+	switch mode {
+	case update.PhaseNudge:
+		return fmt.Sprintf("nudging %d %s to update", total, remotes), fmt.Sprintf("nudging %d %s", total, remotes)
+	case update.PhaseSweep:
+		return fmt.Sprintf("finishing the remote sweep (%d %s)", total, remotes), fmt.Sprintf("remote sweep %d", total)
+	}
+	return "finishing the update", "the update"
 }
 
 // handleUpdateNudgeDismiss is the key handler for Esc. It marks the

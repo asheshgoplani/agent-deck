@@ -1,0 +1,9 @@
+  -force
+    	With --to-profile: migrate even if a session is running
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -to-profile string
+    	Migrate every session in <group> to another profile's DB (issue #928)

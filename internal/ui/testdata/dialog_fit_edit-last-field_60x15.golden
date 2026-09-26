@@ -1,0 +1,15 @@
+ ╭────────────────────────────────────────────────────────╮ 
+ │    Edit Session                                        │ 
+ │      in group: devops                                  │ 
+ │      session: my-session                               │ 
+ │      Current: claude/default → claude/default          │ 
+ │      same-harness resume                               │ 
+ │    ▲ more above                                        │ 
+ │      [ ] Auto mode (restart, claude)                   │ 
+ │    ▶ Extra args (restart, claude) — space-separat…:    │ 
+ │      > --model opus                                    │ 
+ │                                                        │ 
+ │                                                        │ 
+ │    Type to edit │ Enter save                           │ 
+ │    Tab next │ Esc cancel                               │ 
+ ╰────────────────────────────────────────────────────────╯ 

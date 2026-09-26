@@ -35,6 +35,9 @@ func (noopMutator) CreateGroup(string, string) (string, error) {
 func (noopMutator) RenameGroup(string, string) error    { return nil }
 func (noopMutator) SetGroupExpanded(string, bool) error { return nil }
 func (noopMutator) DeleteGroup(string) error            { return nil }
+func (noopMutator) MoveSessionToGroup(string, string) (string, bool, error) {
+	return "", false, nil
+}
 func (noopMutator) FinishWorktree(string, web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
 	return web.WorktreeFinishResult{}, nil
 }

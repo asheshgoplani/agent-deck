@@ -1,0 +1,5 @@
+Usage: agent-deck session stop <id|title> [options]
+
+Stop/kill a session's process (tmux session remains).
+
+Options:

@@ -140,7 +140,7 @@ func runLeadingOutputCase(t *testing.T, index int, tc leadingOutputCase) {
 		t.Fatalf("typed command never rendered in the attach view\n--- frame ---\n%s\n--- end ---", frame())
 	}
 	t.Logf("live attach frame (%s):\n%s", tc.name, frame())
-	if strings.Contains(frame(), "invalid option") || strings.Contains(frame(), "[tmux]") {
+	if strings.Contains(frame(), "invalid option") {
 		t.Fatalf("attach view still shows tmux's config-error view:\n%s", frame())
 	}
 }

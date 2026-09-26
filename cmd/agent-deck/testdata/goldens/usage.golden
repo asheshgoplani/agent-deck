@@ -1,0 +1,3 @@
+No provider quota cached yet.
+Claude: wire `agent-deck usage ingest claude` into your statusLine.
+Z.ai:   run this inside a session whose ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN are set.

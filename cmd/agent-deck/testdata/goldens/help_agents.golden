@@ -1,0 +1,5 @@
+Usage: agent-deck agents [options]
+
+List adopted agents, grouped by machine.
+
+Options:

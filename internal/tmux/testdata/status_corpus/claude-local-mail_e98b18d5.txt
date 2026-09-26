@@ -1,0 +1,50 @@
+  ├───────────────────────────────────────────────┼─────────────────────────────┤
+  │ Same job with Claude Sonnet                   │ ~$1000+ and days of runtime │
+  ├───────────────────────────────────────────────┼─────────────────────────────┤
+  │ Runtime at ~200 ms per call, some parallelism │ a few hours                 │
+  └───────────────────────────────────────────────┴─────────────────────────────┘
+
+  xxxxxxx
+
+  - xx xx xxxxxxxx xxxx xxxxx xxx. xxxxxxx xxx xx xxxxx xxxxx xxx xxx xxxxxx.
+  - xxx xxxxx xx xxxxxxx xxxx xxxxx xxxxxxx xx x xxx xxxx xxx xxxxxxx. xxxx xxx xxxxxx, xxx
+    xxxxx xxxxx xxx xxxx xxx xxxxxxxxxx xxxxx. xxx xxxxxx xxxxxxx xxxxxxx xxxxxxx, xxxx xxxxx
+    xxxxx xx xxxxxx.
+  - xx xxxxxxxxxx, xx xxxx xxx xxxxx. xxxxxxx xxx xxxxxxxxx xxxxx xxxx x xxxxxx xxx, xxx xxxx
+    xxx xxx xxxxx xxxxx xxx xxxxx xx xxxxxxxxx.
+
+  xx xxx xxxx, xxx xxxx xxxx xx xx xxxx xxx xxxxxxxx xx xxxxxxxx.xx xxx x xxxx xxx xxxxxxx
+  xxxxxxxx xxxx xxxxxx xxxxx.
+
+✻ Baked for 27s · done 7:45 PM
+
+❯ x xx xxxx xxxx xx xxxxxxxxxxx xxxxxx xxxxxxxxxx xxxxxxx
+
+⏺ xxx xx xxxxx xxxxxxx xxxxxxxx xxx xxx xxxxxx xxxxxxxxx xx xxxxx xxxxxxxxxxx.
+
+  Ran 1 shell command
+
+⏺ xx, xxxxx xx xx xxxxxx xxxxxxxxx xx xxxxx xxxxxxxxxxx. xxxxxxxx xxxx xxxxxx x xxx xxx xxxx
+  xxxxxx xxx xxxxxxxxxx xxxx. xxxxxxx xx xxxxx xxxx xxxxxxxx xxxxx, xxxxxx, xx xxx xxx xx.
+
+  xxxx xx xxxx xxx xxxx xxxx xxxxxx. xxx xxxx xxxxxxx xxxxxx xx xxxx xxxx:
+
+  - xxxx xxxxxx xx ~/.xxxxx-xxxx/xxxxx-xxxx-xxxx/ xxxxxxx xxxxx xx xxxxx xxxx xxxx xxx xxx
+    xxx xxxxx xxxxxxxx xxx xxxxxx xxxxxxxxx.
+  - xxx xxxxx xxxxxxxxx xx xxxx xxxxxxx xxx xxx xxx xxxxxxx xxx xxxxx xxxxxx xxx xxxxxxx xx
+    xxxx.
+
+  xx xxx xxxxxxxx xxxxx xx: xxxx xxxx xxxx xxxx xxxx, xxxx xxx xxxxxxxx xxxx xx xxx xxxx x
+  xxxxx xxxxxxxx xxx, xxxxx xxx xxxxxxx xx x xxxxx xxxxxx xxxxx, xxxx xxxxx xxxxxx xxxxxxx
+  xxxxx. xxxxxxxx xxxxx xxxxx xx xxxx xx xx xxxxx, xx xxxx xxxx xxxx.
+
+  xx xxx xxxxx xxxx xxxx xxxxxx xxxxx xx x xxxxxx xxxxxxxxx xxxxxxx xxxxxx xxxx xxxxx xxxxx,
+  xxxx xxxxxxx xxxxxxx xxxxxx. xxxx xxxx, xxxx xxxxxx xxx.
+
+✻ Cooked for 15s · done 7:45 PM
+                                                     ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────────── mail ─
+❯ xx xxxx xxx xxxxxxxx xxx xx
+─────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u | [Fable 5.1] ctx:8% in:76.9k out:319 7d:…
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

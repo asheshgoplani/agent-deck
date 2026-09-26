@@ -165,6 +165,31 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 			},
 		},
 		{
+			name: "move_session",
+			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
+				const id = "sess-002"
+				body, _ := json.Marshal(map[string]string{"groupPath": "review"})
+				req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id+"/move", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				webFx.server.handleSessionByAction(w, req)
+				if w.Code != http.StatusOK {
+					t.Fatalf("web move: status=%d body=%s", w.Code, w.Body.String())
+				}
+				if _, _, err := directFx.store.MoveSessionToGroup(id, "review"); err != nil {
+					t.Fatalf("direct MoveSessionToGroup: %v", err)
+				}
+				snap, err := webFx.store.LoadMenuSnapshot()
+				if err != nil {
+					t.Fatalf("web snapshot: %v", err)
+				}
+				if got := findSessionByID(snap, id); got == nil || got.GroupPath != "review" {
+					t.Fatalf("web move: session not in review group: %+v", got)
+				}
+				return id
+			},
+		},
+		{
 			name: "archive_session",
 			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
 				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "", "")
@@ -640,6 +665,37 @@ func (s *parityStore) SetGroupExpanded(groupPath string, expanded bool) error {
 	}
 	g.Expanded = expanded
 	return nil
+}
+
+// MoveSessionToGroup mirrors session.GroupTree.ResolveMoveTargetGroup on the
+// in-memory store: "" or "root" is the default group, then an exact match, a
+// case-insensitive match, and otherwise a new group.
+func (s *parityStore) MoveSessionToGroup(id, groupPath string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return "", false, ErrSessionNotFound
+	}
+	target := groupPath
+	switch {
+	case target == "" || target == "root":
+		target = session.DefaultGroupPath
+	case s.groups[target] != nil:
+	default:
+		matched := false
+		for path := range s.groups {
+			if strings.EqualFold(path, target) {
+				target, matched = path, true
+				break
+			}
+		}
+		if !matched {
+			s.groups[target] = &MenuGroup{Name: target, Path: target, Order: len(s.groups)}
+		}
+	}
+	sess.GroupPath = target
+	return target, false, nil
 }
 
 // FinishWorktree is stubbed for parity tests; the worktree finish action

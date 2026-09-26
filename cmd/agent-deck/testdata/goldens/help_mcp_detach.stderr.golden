@@ -1,0 +1,9 @@
+  -global
+    	Remove from global config instead of local config (Codex always uses global)
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -restart
+    	Restart session to unload MCP immediately

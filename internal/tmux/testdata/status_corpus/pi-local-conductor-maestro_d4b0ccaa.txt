@@ -1,0 +1,111 @@
+ xxxxxxxxxx xxxxxxx xxxxxxx xxxxxxxx xx",
+ + xx       "xxxxxxxx": "xxxx xxxxx xxxxxx xxxxxxxx
+ xxxxxxxx x.x.x xxx xxx xxxxxx xxx xxxxx xxxxxx, xxx xx
+ xxxxxxx xxxx xx xxxx xxxxx xxx xxxxxxxxx",
+ + xx       "xxxxxxx": "xxxx-xx-xx"
+ + xx     },
+ + xx     {
+   xx       "xxxxxx": "xxxxxxxxx-xxxx / xxxxx / xxxxx
+ xxxxxxxx",
+   xx       "xxxxxx": "xxxxxxxx xxxxx xxxxx xxxxxxx
+ xxxxxxxx xxxxxx xxxxx xxxx xxxxxxxxxx xxxxxxx xxxxxxxxx xx
+ xxxxxxx xxx xxxxxx xxxxx xxx x xxxxxx xxxxxxxx xxxxx",
+   xx       "xxxx": "xxxxx xxxxxx xxxxxxxx xx xxx #xxx,
+ xxxxxxxxxxx xxxxxxxxxx xxx xxxxxxxx xxxx xxxxx, xxxxxx xx
+ xxxxx xxxxxxx, xxx xxx-xxxxxxx xxxxx; xxxxxx xxxxxxx
+ xxxxxx xxxx xxxxxxxx",
+   xx       "xxxxxxxx": "xxxx xxxxxxx #xxx xxxxxxx xxxxx
+ xxxxxxx xxxxxx-xxxxxxx xxxxxxx; xxxxxxx xxxxxxx xxxxxx
+ xxxxxxx xxxxxxx xxxxxxxx xxxxxx xx xxxxxxx xxxxxxx; xxxxx
+ xxxxx xxxxxxx xxxxxxx",
+      ...
+
+
+
+ $ tail -1
+ /xxxxx/x/.xxxxx-xxxx/xxxxxxxxx/xxxxxxx/xxxx-xxx.xx
+ (xxxxxxx xxxx)
+
+ ... (x xxxxxxx xxxxx, xxxx+x xx xxxxxx)
+ xx xxxxxxxx x xxxxxxxx xxxxxxxxx xxxxxxxx xxxxxx xxxxx
+ xxxx x xxxx xxxx xxxxxxx xxxxx xxxxxx'x xxxxxxx xxxxxx,
+ xxxxx, xx xxxxxxxx, xxxx xxxxxx xx. xx xxxxxxx. xxxx xxxx
+ xxx xxxxxxx xxx xxxxxxx xxxxx xxxxxx xxxxx xxx xxxxxxxxxx
+ xxxxxxx xxxxxxx/xxxxx xxxxxx.
+
+ Took 0.0s
+
+
+
+ xxxx ~/.xxxxx-xxxx/xxxxxxxxx/xxxxxxx/xxxx-xxx.xx
+
+       ...
+  xxxx - xxxx-xx-xx: xxxxxx xxxxxxxxxx xxxxxxxxx xxxxxxxxx
+ `xxxxxxxxx-xxxxx-xxxx` xxxx xxxx xxxxx xx xx xxxx xxxxxxx
+ xxxxxxxxx. xxxxxxxxx xxx
+ `xxxxxx/xxxxx-xxxx-xxxxxxxxx-xx-xx-xxxx-xx-xx.xxx`; xxxxxx
+ xxxxxxx xxxxxxxxx xxxxxx xxxxxxx xx xx xxxxxx-xxxx. xxxx
+ xxx xxxxxxxxx xxxxxxxx
+ `xxxxx-xxxxxxx/xxxxxxx/xxxxx-xxxxxxx.xx` xx xxxxxxx x
+ xxxx-xxxx xxxxxxxxx xxxxx-xxxx xxxxxxx xx xxxxxxx xxxxxx,
+ xxxx xxxxxxxxx xxxxxxx xxxxxxx. xxxxxxxxxxxxx xxxxxxxx xxx
+ xxxxxxxxx xx xx xxxxxxxx / xx xxxxxxx xxxxxxxx, xxxxxxxxxx
+ xxxx xxxxxxx xxxxxxx xxxxxx; xxxxxxxxx xxxxxx xxxxxxxx xx
+ `xxxxxxxxx-xxxxx-xxxx-xxxxx-xxx`; xxxxxx xxxxxxxx-xxxxxx
+ xxx xxxxxxxx… xxxxx xxxxxxx xxxxx xxxxxx; xxxxx xxxxxxxx
+ xxx xxxxxxxx xxxxxxxx xxxxxxx xxx xxxxx xx xx, xxx xxxxxx
+ xxx xx xxxxxxxx. xx xxxxxx xxxx/xxxxxxx/xxxxxxx/xxxxxxx.
+  xxxx - xxxx-xx-xx: xxxxxx xxxxxxxxx xxxxxxxx xxxxxxx
+ xxxxx/xxxxxx, xxxxxxxxx xxxxx xx xxxxxxxxxx, xxxx
+ xxxxxxxxxx xxxxxxxxxx x xxxxxxx-xxxxxx xxxxxxxxx xxx
+ xxxxxxxx xxxx xxx xxxxxxxxxxxxx. xxxxxxxxx xx xxxxxxxxx xx
+ xxxxxxxxx. xxxxxxxx xxxxx xxxxxxx xxxxxxxx xx xxxxxxxxxx
+ xxxx xxxxxxxx xxxxxxx xxxxx_xxxx xxx xxxxxx xxxxxx xxxxxxx
+ xxxxxxxxx xx xxxxxxxxx; xxxxxx xxxxxxxxx xxxxxxxx xx
+ attachable/responsive on Semproj-d and monitoring-only. One
+ xxxxxx xxx xxxxx + xxxx xxx xxxxx xxx xxxxxxx-xxxxxxx;
+ xxxxxx xxxxxx xx xxxxxxx xxxxx xxxx, xxxxx-xxxx xxxxx xx
+ xxxxxxxx/xxxxxxxxx-xxxxxx; xx xxxxxxxxx xxxxxxxx.
+ xxxxxxxx:
+ `xxxxxx/xxxxxxxx-xxxxxxx-xxxxxx-xxx-xxxxxx-xxxxxxxxx-xxxx-
+ xx-xx.xxx`.
+  xxxx - xxxx-xx-xx: xxxxx-xxxxxxxx xxxxx xxxxxxxx xxxxxx
+ xxxxxxx `[]` xxx xxxx x xxxxxxxx xx xxxx-xxxxxxxx xxxxxx.
+ xxx-xxxxxxxxxxx xxxxxxxxxx xxxxx xx xxx-xxxxx xxxx-xxxxxx
+ xxxxxx / xx xxxxxxx xxxx xxxx xxxxxxxxx, xxxxxxxxx xxx xxx
+ xxxxxxx/xxxxxxx/xx xxxxxxxxxxx. xxxxxxxxx xxxx xxx-xxxxxx
+ xxxxxx, xxxxx-xxxx xxxxxxx, xxx xx-xx-xx #xxxx/#xxxx
+ xxxxxxxxxxxx xx xxxxxxxxx xx xxxxxxxxx xxx
+ `xxxxxx/xxxx-xxxxxx-xxxxxx-xx-xxxx-xx-xx.xxx`; xxxxxxxx xx
+ xxxxx xxxxxxxxxx. xx xxxxxxx/xxxxx xxxxxxx xxx xx xxxxxxxx
+ xxxxxxxxx/xxxxxxxx.
+  xxxx - xxxx-xx-xx: xxxxxxx `xxxxxxxxxxx` xxxxxxxxxx.
+ xxxxxxx x xxxxx xxxxx xxxxxxxxxx, xxxxxxx xxxxxxx xx
+ xxxxxxx/xxxx. xx xxxxxxxx x xxxxxxxx xxxxxxxxx xxxxxxxx
+ xxxxxx xxxxx xxxx x xxxx xxxx xxxxxxx xxxxx xxxxxx'x
+ xxxxxxx xxxxxx, xxxxx, xx xxxxxxxx, xxxx xxxxxx xx. xx
+ xxxxxxx. xxxx xxxx xxx xxxxxxx xxx xxxxxxx xxxxx xxxxxx
+ xxxxx xxx xxxxxxxxxx xxxxxxx xxxxxxx/xxxxx xxxxxx.
+ +xxxx - xxxx-xx-xx: xxxxxxx xxxxx `xxxxx xxxxxx` xxxxx.
+ xxx xxxxxxxxx xxxxxxx xxxxxx xxx xxxxxxx, xx xxxxx xxxx
+ xxxxxxxxx xxxxxxx xx xxxxx xx xx xxx xxxxx xxxxxxxxx. xxxx
+ xxxxx xxxxxx xxxx xxxxxxxx xxxxxxxx'x xxxxxx-xxx-xxxxx
+ xxxxxx; xxx xxx xxxxxxxx, xxxxxxxxxxxxx xxxxxxxxxx, xxx
+ xxxx xxxxxxxxxx xxxxxxx xxxxxx xxxxxxxxxx/xxxxxxxx. xxx
+ xxx xxxxxxx xx xxxxxxxxx xxxxxxxx; xxxxxxxx xxxxx xxxx.
+
+
+ xxxxxxxxxxx xxxxxxx xxxxxx xxx xxxx xxxxx
+
+ xxxxxxx.
+ - xxx xxx xxxxxxx xxxxxx xxxxxx xxxxxxx xxx xxxxxxxxx
+   xxxxxx xxx xxxxxxx.
+ - x xxxx xx xxxxxxx xx xx xxxxxx xxxx xxx xxxxx xxxxxx.
+   xxxx “xxxxxx xxxxxxxx” xx xxx xxxx xx xxxxxxxx xxx
+   xxxxx.
+
+────────────────────────────────────────────────────────────
+xxxxxx
+────────────────────────────────────────────────────────────
+~/.agent-deck/conductor/maestro (main)
+↑14M ↓532k R208M CH99.7% $144.447 (sub) 52.2%/272k (auto)  g

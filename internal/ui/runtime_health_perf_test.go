@@ -110,7 +110,9 @@ esac
 	}
 	dir := filepath.Join(root, "health")
 	stop := health.Start(dir, "perf-test", filepath.Join(root, "hooks"), "test")
-	h.backgroundStatusUpdate()
+	for sweep := 0; sweep < 4; sweep++ {
+		h.backgroundStatusUpdate()
+	}
 	stop()
 	if codex {
 		data, err := os.ReadFile(filepath.Join(root, "calls"))

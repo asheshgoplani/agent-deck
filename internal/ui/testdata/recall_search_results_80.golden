@@ -16,10 +16,10 @@
   │     Fix flaky auth         ││ 👤 Review PR 2308 for the auth fix         │
   │     aaaaaaaa-0000-4000-…   ││ 🤖 Reading the diff. The root cause was    │
   │                            ││    clock skew.                             │
-  │ [↑↓] Select  [Enter] Open  ││ … 10 more; agent-deck recall show #41      │
-  │ [Tab] Local                ││                                            │
-  │ [ ] scroll preview   [Esc] ││                                            │
-  │ Cancel                     ││                                            │
+  │ [Enter] Open  [Tab] Local  ││ … 10 more; agent-deck recall show #41      │
+  │ [Esc] Cancel               ││                                            │
+  │                            ││                                            │
+  │                            ││                                            │
   │                            ││                                            │
   │                            ││                                            │
   │                            ││                                            │

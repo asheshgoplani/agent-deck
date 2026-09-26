@@ -1,0 +1,9 @@
+Usage: agent-deck group delete <name> [options]
+
+Delete a group.
+
+Options:
+
+Examples:
+  agent-deck group delete experiments
+  agent-deck group delete work --force   # Move sessions to parent

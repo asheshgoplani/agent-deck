@@ -1,2 +1,2 @@
 terminal_width=80 list_width=28
-   └─ ● a genuinely … shell
+   └─ ● a genuinely l… 👁️ 2

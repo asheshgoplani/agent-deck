@@ -1,0 +1,50 @@
+  xxx xxxx, xxxx xxxxxx:
+
+  - xxxxxx. xxx xxxxx xxxxx xx xxx xx xxxxx xxxx xxx xxxxxxx xxxxxx xx. xxxxxx xxx xxxxx xxxxxxxxxxx xxxx xxx xxxx. xx xxxxx xxx xxxxxxx xxxxxxxxxxx xxxx.
+  - xxxxxx. xxxx xxx xxx xxx, xxx xxxxx xxx xxxxxxxxxx, xxxx xxx xxxxxxxx xxxx. xxxxxxx xxx xxxxxxxx xxxxx xxxxx.
+
+  xx xx xxx xxxxxx xx xxx xxxx. xx xxxxxxx xx xxx xxxxxxxxxxx xxxxxx xx xxxxxxx, xx xxx xxxx xxxx xxxxx.
+
+  xxxx xx xxxxx xxxxxxx, xxxxxxxx xxxx
+
+  ┌───────────────────────────────────────────────────────┬─────────────────────────────────────────────────┬────────┐
+  │                         Item                          │                       Who                       │  Time  │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ The six facts for the application                     │ You, one message to me                          │ 5 min  │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ Employer confirmation, page 16                        │ Add payroll address to the draft, attach, send  │ 3 min  │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ Landlord sheet, page 14                               │ Add landlord address to the draft, attach, send │ 3 min  │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ Payslips June to August 2026                          │ Payroll portal, personal laptop                 │ 5 min  │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ STAWAG heating screenshot                             │ Your phone                                      │ 2 min  │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ Biometric photo                                       │ dm                                              │ 10 min │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ Paper original of the naturalisation test certificate │ Search at home                                  │ ?      │
+  ├───────────────────────────────────────────────────────┼─────────────────────────────────────────────────┼────────┤
+  │ Birth certificate translation                         │ Nayar, October item                             │ days   │
+  └───────────────────────────────────────────────────────┴─────────────────────────────────────────────────┴────────┘
+
+  xxxxxxxxxx xxxx xx xxxxxx xx xxx xxxx xx xxxxxxx xx xxxx xxxxxx. xxxxx'x xxxxx xxxxx xx xxxxxxx xxxx xxx xxxxxx xxxx xxxx, xxx xxxxxxx, xxx xxxxxxx, xxx xx xxxxxx, xx x xxxxxxx xxxxxx
+  xxxx xx xxxxx.
+
+  xxx xxx xxxxx xxx xxx xxxx xxxxx. xxx xxxxxxx xxxx xxx xxx x xxxxxx xxx xxxxxxxxxxx.
+
+✻ Baked for 1m 34s · done 1:23 PM
+
+❯ xxxxx xx xx xx x xx xxx xx xxxx xxxx xxxx xxxx  xxxxxxx xxxxxxxxx?
+
+⏺ xxxxxxx xxxxxxxx xxxxxxxx: "xxxxxx xxxxxxxxxxxxxxxx" (xxxxxxxxxx xxxx)
+  ⎿  You've hit your weekly limit · resets Sep 24 at 12pm (Europe/Berlin)
+     /xxxxx-xxxxxxx xx xxxxxx xxxx xxx’xx xxxxxxx xx.
+
+✻ Worked for 1s · done 9:26 PM
+                                                                                                                                                  new task? /clear to save 364.8k tokens
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Germany Immigration ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u | [Fable 5.1] ctx:36% in:363.1k out:802 5h:0% 7d:100%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+  ⧉  abh-25-sept

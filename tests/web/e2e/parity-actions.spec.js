@@ -27,8 +27,9 @@ const EXPECTED_ACTION_ROWS = 55
 // #1129 flipped the close/undelete rows but missed this decrement (9→7), so the
 // pin was stuck 2 high and the suite went red on every later PR. Re-baselined to
 // the true count: Restart fresh, Rename session, Move session to group, Edit
-// notes inline, Mark session unread.
-const EXPECTED_PROBEABLE_MISSING = 5
+// notes inline, Mark session unread. → 4 (#2368 POST /sessions/{id}/move,
+// "Move session to group" closed).
+const EXPECTED_PROBEABLE_MISSING = 4
 
 test.describe.configure({ mode: 'serial' })
 

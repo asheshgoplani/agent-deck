@@ -180,7 +180,7 @@ silently uses the default profile and the target is "not found".
 
 | Channel | Direction | Command | Guarantee |
 |---|---|---|---|
-| **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane (or, opt-in, Claude's own messaging socket). `--json` carries a stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) — read that, not the 11-value `delivery` diagnostic (`submitted`, `queued`, `delivered`, `unverified`, `queued_socket`, `line_too_long`, `menu_open`, `pane_gone`, `typed_not_submitted`, `no_evidence`, `send_failed`, `composer_blocked`, `socket_write_failed`). NOT durable: if the send fails or the sender dies, the message is gone. |
+| **send** | any → any live session | `session send <id> "msg"` | Best-effort keystrokes into the pane (or, opt-in, Claude's own messaging socket). `--json` carries a stable 3-way `confirmation` field (`confirmed`/`unknown`/`failed`) — read that, not the 11-value `delivery` diagnostic. Since 1.16.17 a plain `--json` send (no `--wait`/`--stream`/`--no-wait`/`--draft`/`--defer-if-busy`) returns at once with `send_id`, `verdict:"queued"`, `delivery:"queued"` and `confirmation:"unknown"`; a background worker types it (into a busy Claude immediately, other harnesses when idle) and `session send-status <send_id> --json` reports the verdict `delivered`/`queued`/`unknown` as evidence arrives (`submitted`, `queued`, `delivered`, `unverified`, `queued_socket`, `line_too_long`, `menu_open`, `pane_gone`, `typed_not_submitted`, `no_evidence`, `send_failed`, `composer_blocked`, `socket_write_failed`). NOT durable: if the send fails or the sender dies, the message is gone. |
 | **output** | read a session's last reply | `session output <id> -q` | Read-only transcript snapshot; non-consuming; `--pane` returns the tmux pane capture instead. Default text is ANSI-stripped and capped at `--max-tokens` (default 25000) with the full output kept on disk; `--json`/`-q`/`--copy` carry the full source. |
 | **children** | parent reads its child fleet | `session children --json`, `--follow [--until-done]` | Read-only; merges live status with the completion ledger; explicitly does NOT clear the inbox. |
 | **inbox drain** | child completions → parent | `inbox drain self --json` | THE durable channel: fsync'd append + WAL, at-least-once delivery with exactly-once effects (turn-fingerprint dedup), survives crashes and restarts. Last-wins PER CHILD: intermediate events are dropped by design. Single-profile only. Draining consumes. |
@@ -210,8 +210,9 @@ agent-deck -p <profile> session search "term" --json --limit 5           # subst
 
 ### What each channel guarantees, and what it does not
 
-- **`send` result is evidence-graded, not binary.** With `--json` read the `delivery`
+- **`send` result is evidence-graded, not binary.** With `--json --wait` (or `--no-wait`) read the `delivery`
   field: `submitted` / `unverified` / `typed_not_submitted` / `no_evidence` / `send_failed`.
+  A plain `--json` send is queued and answers `delivery:"queued"`; poll `session send-status <send_id> --json`.
   Exit 0 plus `delivery:"unverified"` is NOT proof the turn started (#1793: a boundary-sized
   Codex send can pass every check and never submit). Confirm with `session show --json`
   (status flips to running) or `output` when the answer matters.

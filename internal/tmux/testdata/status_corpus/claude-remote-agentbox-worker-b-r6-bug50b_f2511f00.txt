@@ -1,0 +1,49 @@
+    - xxxxx xxxxxxxxx xxxx xxxx xxxx xxxxxxx xxx.
+                                                                                                                                                                                 ✕
+    xxx xxxxxx xxxx xxxxxxxx xxx x xxxxxxxxxx xxx xxx xxx xx xxxxxxx xxxx xx xx xxxxx xxxx xx.
+
+  xxx-xx, xxx xxx xxxxx: xxxx xxx'x xxxxx. xxxxxxxx xxxxxx xx xxx xxxxxx xxx xxxxxx xxx xxxxxxxx
+  xxxxxxxxxx. xx xxx xx xxxxxx xxxxxxx xxx xxxxx xxxxx x xxx; xxx xxxxxxxx/xxxxxxxxx xxxx xxxx
+  "xxxxx xxxxxxx". xx xxx xx xxxxx xxxxxxx xx xxxxxxxxx, xxx xxx xxxxxxx xxxxx xxxxxxx xxx xxxx
+  xxxxx. xxx xxxxxxx'x xxxxx xxxx xxx xxxxx. x xxxx'x xxxx xxx xxxxxxx xxxxxx; xxx xxxxxx xxx
+  xxxxxxxxx xxxxxxx xxx xxxxxxx xxxx xx.
+
+  xxxxxx
+  - xxx xxx xxxxxx xxxx xx xxxx xxxxxxxx.
+  - xxxx xxxxxx xxxxx xx xxx xxx-xx xxxxxx.
+  - xx xxx xxx-xx xxxxxx xxxx xxx xxx xxxxxxx, xxxxxxxxxxxxxxxxxxxxxxxxxxx. xx'x xxxxxxxxx xxx
+    xxxxxx x/x xx xxx xxx. xxx xxxx xxx xxxx xxxxxx (xxxxxxx xxxxxxxxx), xxxxx xxxx xxxx xxxxxx
+    xxxxxx xxxx xx xxxxxxx xxxxxxxxxxx.
+  - xxxx xxxxxxx xxxxx xxx xxxxxxxxxxxxxxxxxxxxxxxx xxxxxx, xxxxxxx xxxxx xxx xxxx.
+  - xxxxxxx xxx xxxxxx.
+
+  xxxxxx xxx xxxxxxxx
+  - x xx xxxxxx xxxx xxxx xx.x xxxxxxx xxxx xxxxx. x xxxxxxx xxxx xx xx xxxxxxxxx xxxxxxxx xx xx,
+    xxxx xxxxxx/xxxxx xxxxxx xx xxxx xxx xxxxx. x xxxxx xxxxxxx xxx xxxx xxxxxx: xxxxxxx xxx xxxx,
+    xxxxxxxxxxx xx xxxxxxxxx.                                                                                                  xx xxxxxxx xxxx xxxxxxx
+  - xxx xxxxx-x xxxxxxxxx xxxxxxx xxxxxxxx xxxxx (xx:xx xxx xx:xx), xxxxx xxxx'x xxxxxx xx xx
+    xxxxxxx. x xxxxxxxx xxx xxxxx xxx xxxxxxxx xxxxxx.
+
+  xx xxxxxxxx xx xxxxxxx. xxx xxxxxxx xxxxx-xxxxx xxx (xxxxx x.x xx) xx xxxx xx xxxxx xxx xx-xxxx;
+  xxx xxxx xx xx% xxxx, xx xx xxx xx xxxxxxx xx xxx xxxxxx.
+
+  xxxxx xxx xx /xxx/xxxxx/xxxx/xxxxxxxx-xxxxxx/:
+  - xxx-xx-xxxxxx.xx
+  - xxx-xx-xxxxxx.xx
+  - xxx-xx-xxxxxx.xx
+  - xxx-xx-xx/xxxxxx/
+  - xxx-xx-xx/xxx/
+
+  ===AGENTDECK_DONE=== status=ok summary=xxx
+  xxxxxxx, xxxx, xxxx xxx xxxxxx; xxxxxx xxxx, xxxxxxx); xxx-xx xxxx xxxxx xxxxx (xx #xxx), xxxx
+  xxxxxx xxx xxxxxxxxxx xx xx.x xx x xxxxx; xxx-xx xxx/xxxxx xxx'x xxxxx xx xxxx (xxxx:xxxx xx
+  xxxxxx); xxxxx xxxxx xxxxxx xxx xxxxxxxxx xxxx-xxxx-xxxxx xxxx xxxxx xx xxx xxx-xx xxxxxx (x/x
+  xxxxxxxxxx), xx xxxx xxxxxxxx xx xxxxxxxx, xxxxxxx xx xxxxxxxx-xxxxxx/
+
+✻ Crunched for 1h 50m 16s · done 9:17 PM · 1 shell still running
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── worker-b-r6-bug50b ─
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏵⏵ bypass permissions on · PR #508 · 1 shell · ← for agents

@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                             ╭────────────────────────────────────────────────────────────╮                             
+                             │                                                            │                             
+                             │                                                            │                             
+                             │    Edit Session                                            │                             
+                             │                                                            │                             
+                             │      in group: devops                                      │                             
+                             │      session: my-session                                   │                             
+                             │      Current: claude/default → claude/default              │                             
+                             │      same-harness resume                                   │                             
+                             │                                                            │                             
+                             │    ▶ Title:                                                │                             
+                             │      > my-session                                          │                             
+                             │      Harness (choose destination first):                   │                             
+                             │        shell     claude     gemini     opencode            │                             
+                             │    codex     pi     copilot     crush     muse             │                             
+                             │    cursor agent     hermes     deepseek     omp            │                             
+                             │      Pin position:                                         │                             
+                             │        Off     Top     Bottom                              │                             
+                             │      [x] Skip permissions (restart, claude)                │                             
+                             │      [ ] Auto mode (restart, claude)                       │                             
+                             │      Extra args (restart, claude) — space-separated:       │                             
+                             │      > --model opus                                        │                             
+                             │                                                            │                             
+                             │                                                            │                             
+                             │    Type to edit │ Enter save │ Tab next │ Esc cancel       │                             
+                             │                                                            │                             
+                             │                                                            │                             
+                             ╰────────────────────────────────────────────────────────────╯                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

@@ -54,6 +54,45 @@ type Filter struct {
 	pendingEsc          bool
 	escapeSeenInDiscard bool
 	sequenceBuf         []byte
+
+	// usedReplyKind tracks, per reply category, whether a whitelisted DA/DSR
+	// reply has already been passed through to tmux while armed. See
+	// replyKind and the budget check in Consume.
+	usedReplyKind [replyKindCount]bool
+}
+
+// replyKind classifies a whitelisted DA/DSR CSI reply so at most one of each
+// kind is forwarded per quarantine window while armed (see Consume).
+type replyKind int
+
+const (
+	replyKindDA1 replyKind = iota // CSI ? ... c  (DA1 primary device attributes)
+	replyKindDA2                  // CSI > ... c  (DA2 secondary device attributes)
+	replyKindDSR                  // CSI ... n (device status report)
+	replyKindCPR                  // CSI ... R (cursor position report)
+	replyKindCount
+)
+
+// classifyReply returns the replyKind for a completed CSI sequence whose
+// final byte is a whitelisted DA/DSR reply byte. seq is the full sequence
+// including the leading ESC and '[' bytes.
+func classifyReply(seq []byte, final byte) replyKind {
+	if final == csiFinalDeviceStatusByte {
+		return replyKindDSR
+	}
+	if final == csiFinalCursorPositionByte {
+		return replyKindCPR
+	}
+	if len(seq) > 2 && seq[2] == '>' {
+		return replyKindDA2
+	}
+	return replyKindDA1
+}
+
+// ResetReplyBudget starts a new quarantine window without discarding parser
+// state for a reply split across reads.
+func (f *Filter) ResetReplyBudget() {
+	f.usedReplyKind = [replyKindCount]bool{}
 }
 
 // Active reports whether the filter is carrying parser state across read boundaries.
@@ -189,14 +228,39 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 				continue
 			}
 
-			// DA/DSR replies (final bytes c/n/R) must always pass through so
-			// tmux can negotiate modifyOtherKeys with the host terminal (see
-			// #738 regression from @Clean-Cole). Keyboard CSIs pass through
+			// DA/DSR replies (final bytes c/n/R) pass through so tmux can
+			// negotiate modifyOtherKeys with the host terminal (see #738
+			// regression from @Clean-Cole). Keyboard CSIs pass through
 			// unconditionally too. Only non-whitelisted CSIs are gated by
 			// armed.
 			if armed && !isKeyboardCSIFinalByte(b) && !isTmuxCapabilityReplyCSIFinalByte(b) {
 				f.resetSequenceState()
 				continue
+			}
+
+			// #2356: while armed (the post-attach/switch quarantine window),
+			// a DA/DSR reply addressed to the *previous* client's query can
+			// still be in flight over the network when the next attach
+			// starts. Because it is indistinguishable byte-for-byte from a
+			// fresh reply, tmux's own client consumes the first one it sees
+			// as the answer to its own query and has no outstanding request
+			// left for any further copy — which then falls through as
+			// literal keyboard input into the pane (issue #2356: stray DA1/
+			// DA2 text leaking into the session prompt on session switch).
+			// tmux negotiates at most one reply per kind (DA1, DA2, DSR, CPR) per
+			// client attach, so budget each kind to a single pass-through
+			// while armed; extra copies within the same quarantine window
+			// are almost certainly stale replies from a torn-down attach and
+			// are dropped rather than forwarded. Outside the quarantine
+			// window (armed=false) the original unconditional passthrough
+			// is preserved unchanged.
+			if armed && isTmuxCapabilityReplyCSIFinalByte(b) {
+				kind := classifyReply(f.sequenceBuf, b)
+				if f.usedReplyKind[kind] {
+					f.resetSequenceState()
+					continue
+				}
+				f.usedReplyKind[kind] = true
 			}
 
 			out = flushSequence(out, f.sequenceBuf)

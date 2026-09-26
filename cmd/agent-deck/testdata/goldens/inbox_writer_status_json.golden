@@ -1,0 +1,1 @@
+{"running":false,"last_heartbeat":"<TIMESTAMP>","detail":"no notify-daemon has ever stamped a heartbeat on this host — nothing is recording session transitions, so an empty drain says nothing about whether sessions finished. Start one with `agent-deck notify-daemon`."}

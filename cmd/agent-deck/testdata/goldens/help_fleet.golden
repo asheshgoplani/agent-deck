@@ -1,0 +1,16 @@
+Usage: agent-deck fleet <command> [options]
+
+Detect and recover from a fleet-wide session death (every managed
+pane gone at once: a killed tmux server, a host reboot, or an auth
+cascade that made the agents exit).
+
+Commands:
+  status     Report which sessions are down (read-only, never writes)
+  recover    Restart the down sessions sequentially, verifying each boot
+
+Examples:
+  agent-deck fleet status
+  agent-deck fleet recover                 # plan only (dry run)
+  agent-deck fleet recover --yes           # actually recover
+  agent-deck fleet recover --yes --spacing 8s --limit 10
+  agent-deck fleet recover --yes --group agent-deck

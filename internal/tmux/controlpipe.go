@@ -55,6 +55,11 @@ type ControlPipe struct {
 	// Event channel: fires when a window is added or closed
 	windowEvents chan struct{}
 
+	// Event channel: fires when a client attaches to, switches or detaches
+	// from a session on the server, this pipe's own attach included
+	// (latest_viewer.go)
+	clientEvents chan struct{}
+
 	// Command/response serialization
 	cmdMu      sync.Mutex
 	responseCh chan commandResponse
@@ -163,6 +168,7 @@ func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
 		stdout:       stdout,
 		outputEvents: make(chan struct{}, 64),
 		windowEvents: make(chan struct{}, 8),
+		clientEvents: make(chan struct{}, 1),
 		responseCh:   make(chan commandResponse, 1),
 		ready:        make(chan struct{}),
 		alive:        true,
@@ -247,6 +253,15 @@ func (cp *ControlPipe) reader() {
 				// Window created or closed — notify listeners
 				select {
 				case cp.windowEvents <- struct{}{}:
+				default:
+				}
+			} else if strings.HasPrefix(raw, "%client-detached ") ||
+				strings.HasPrefix(raw, "%client-session-changed ") ||
+				strings.HasPrefix(raw, "%session-changed ") {
+				// A client came or went: the window's latest slot may now
+				// be held by a control client (latest_viewer.go)
+				select {
+				case cp.clientEvents <- struct{}{}:
 				default:
 				}
 			} else if strings.HasPrefix(raw, "%begin ") {
@@ -376,6 +391,12 @@ func (cp *ControlPipe) OutputEvents() <-chan struct{} {
 // WindowEvents returns a channel that fires when a window is added or closed.
 func (cp *ControlPipe) WindowEvents() <-chan struct{} {
 	return cp.windowEvents
+}
+
+// ClientEvents returns a channel that fires when a client attaches to,
+// switches or detaches from a session on the server. Bursts are coalesced.
+func (cp *ControlPipe) ClientEvents() <-chan struct{} {
+	return cp.clientEvents
 }
 
 // LastOutputTime returns the time of the most recent %output event.

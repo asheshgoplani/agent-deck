@@ -1,0 +1,364 @@
+# agent-deck bash completion
+# Install: source <(agent-deck completion bash)
+
+_agent_deck_completion() {
+    local cur words cword start cmd sub arg_index kind
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    words=("${COMP_WORDS[@]}")
+    cword=$COMP_CWORD
+
+    # A leading -p/--profile shifts every position that follows. Complete the
+    # profile name itself right after it.
+    start=1
+    case "${words[1]}" in
+        -p|--profile)
+            if ((cword == 2)); then
+                local IFS=$'\n'
+                COMPREPLY=($(compgen -W "$(agent-deck __complete profiles 2>/dev/null)" -- "$cur"))
+                return 0
+            fi
+            start=3
+            ;;
+        -p=*|--profile=*)
+            start=2
+            ;;
+    esac
+
+    if ((cword < start)); then
+        return 0
+    fi
+    if ((cword == start)); then
+        COMPREPLY=($(compgen -W 'add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback creds-refresh telegram-doctor version help completion profile inbox session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek' -- "$cur"))
+        return 0
+    fi
+
+    cmd=${words[start]}
+    sub=""
+    arg_index=$((cword - start - 1))
+
+    case "$cmd" in
+        completion)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'bash zsh fish' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        profile)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'list create delete default' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        inbox)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W drain -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        session)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'start stop remove cleanup prune archive unarchive restart revive fork handoff attach focus show viewers current primer set-parent unset-parent update set-transition-notify set-title-lock set switch-account move send approve send-keys output children search' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        fleet)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'status recover' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        mcp)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'list attached attach detach server' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        plugin)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'list attached attach detach' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        skill)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'list attached attach detach source' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        group)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'list show create update delete move change reorder' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        conductor)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'setup teardown status list move migrate-dir' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        agents)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'adopt list show' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        agent)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'adopt list show' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        watcher)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'import create start stop list status test routes install-skill' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        openclaw)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'sync bridge status list send' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        oc)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'sync bridge status list send' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        remote)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'add remove list sessions drain attach rename update' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        worktree)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'list info cleanup finish trust-scripts' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        wt)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'list info cleanup finish trust-scripts' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        costs)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'sync summary recompute' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        hooks)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'install uninstall status' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        codex-hooks)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'install uninstall status' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        gemini-hooks)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'install uninstall status' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        hermes-hooks)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'install uninstall status' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        cursor-hooks)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'install uninstall status' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        tmux-hooks)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'install uninstall status' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        pi-hooks)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'install uninstall status' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        deepseek)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'status profiles sessions' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+    esac
+
+    kind=""
+    case "$cmd:$sub:$arg_index" in
+        agent:show:0) kind=agents ;;
+        agents:show:0) kind=agents ;;
+        conductor:move:0) kind=sessions ;;
+        group:change:0) kind=groups ;;
+        group:change:1) kind=groups ;;
+        group:delete:0) kind=groups ;;
+        group:move:0) kind=sessions ;;
+        group:move:1) kind=groups ;;
+        group:reorder:0) kind=groups ;;
+        group:show:0) kind=groups ;;
+        group:update:0) kind=groups ;;
+        mcp:attach:0) kind=sessions ;;
+        mcp:attached:0) kind=sessions ;;
+        mcp:detach:0) kind=sessions ;;
+        mv::0) kind=sessions ;;
+        plugin:attach:0) kind=sessions ;;
+        plugin:attached:0) kind=sessions ;;
+        plugin:detach:0) kind=sessions ;;
+        profile:default:0) kind=profiles ;;
+        profile:delete:0) kind=profiles ;;
+        remote:attach:0) kind=remotes ;;
+        remote:attach:1) kind=remote-sessions ;;
+        remote:remove:0) kind=remotes ;;
+        remote:rename:0) kind=remotes ;;
+        remote:rename:1) kind=remote-sessions ;;
+        remote:sessions:0) kind=remotes ;;
+        remote:update:0) kind=remotes ;;
+        remove::0) kind=sessions ;;
+        rename::0) kind=sessions ;;
+        rm::0) kind=sessions ;;
+        session:approve:0) kind=sessions ;;
+        session:archive:0) kind=sessions ;;
+        session:attach:0) kind=sessions ;;
+        session:children:0) kind=sessions ;;
+        session:focus:0) kind=sessions ;;
+        session:fork:0) kind=sessions ;;
+        session:handoff:0) kind=sessions ;;
+        session:move:0) kind=sessions ;;
+        session:output:0) kind=sessions ;;
+        session:primer:0) kind=sessions ;;
+        session:remove:0) kind=sessions ;;
+        session:restart:0) kind=sessions ;;
+        session:send:0) kind=sessions ;;
+        session:send-keys:0) kind=sessions ;;
+        session:set:0) kind=sessions ;;
+        session:set-parent:0) kind=sessions ;;
+        session:set-parent:1) kind=sessions ;;
+        session:set-title-lock:0) kind=sessions ;;
+        session:set-transition-notify:0) kind=sessions ;;
+        session:show:0) kind=sessions ;;
+        session:start:0) kind=sessions ;;
+        session:stop:0) kind=sessions ;;
+        session:switch-account:0) kind=sessions ;;
+        session:switch-account:1) kind=profiles ;;
+        session:unarchive:0) kind=sessions ;;
+        session:unset-parent:0) kind=sessions ;;
+        session:update:0) kind=sessions ;;
+        session:viewers:0) kind=sessions ;;
+        skill:attach:0) kind=sessions ;;
+        skill:attached:0) kind=sessions ;;
+        skill:detach:0) kind=sessions ;;
+        worktree:finish:0) kind=sessions ;;
+        worktree:info:0) kind=sessions ;;
+        wt:finish:0) kind=sessions ;;
+        wt:info:0) kind=sessions ;;
+    esac
+
+    if [[ -n $kind ]]; then
+        local -a profile_args=()
+        if ((start > 1)); then
+            if [[ ${words[1]} == -p || ${words[1]} == --profile ]]; then
+                profile_args=(-p "${words[2]}")
+            else
+                profile_args=(-p "${words[1]#*=}")
+            fi
+        fi
+        # remote-sessions scopes to the remote named in the preceding
+        # positional (`remote attach <remote> <session>`, `remote rename
+        # <remote> <session> <new-title>`) — forward it as an extra arg.
+        local -a extra_args=()
+        if [[ $kind == remote-sessions ]]; then
+            extra_args=("${words[start+1+arg_index]}")
+        fi
+        local -a names=()
+        local n
+        # Read line-by-line (not `names=($(...))`) so a candidate
+        # containing a glob character (*, ?, [) is kept literal instead
+        # of being pathname-expanded against files in cwd.
+        while IFS= read -r n; do
+            names+=("$n")
+        done < <(agent-deck "${profile_args[@]}" __complete "$kind" "${extra_args[@]}" 2>/dev/null)
+        # Candidates may contain spaces (session titles); compgen -W would
+        # re-split them on whitespace and lose the escaping bash needs to
+        # insert a multi-word completion as one argument, so filter and
+        # escape by hand instead of going through it.
+        COMPREPLY=()
+        for n in "${names[@]}"; do
+            if [[ $n == "$cur"* ]]; then
+                COMPREPLY+=("${n// /\\ }")
+            fi
+        done
+        return 0
+    fi
+}
+complete -o default -F _agent_deck_completion agent-deck

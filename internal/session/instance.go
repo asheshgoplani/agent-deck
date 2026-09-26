@@ -86,6 +86,7 @@ const (
 	SubstateRunning           = tmux.SubstateRunning
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateInteractiveMenu   = tmux.SubstateInteractiveMenu
+	SubstateBackgroundWork    = tmux.SubstateBackgroundWork
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
@@ -505,6 +506,14 @@ type Instance struct {
 	// for this many seconds. 0 = disabled (current behavior). Default is 0
 	// so existing sessions are unaffected on upgrade.
 	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
+
+	// Favorite marks the session as a favourite: `session set <id> favorite
+	// true|false`, shown in list/show JSON. Persisted in the tool_data extras
+	// zone (favorite_persist.go).
+	Favorite bool `json:"favorite,omitempty"`
+	// favoriteCleared is set when `session set favorite false` clears a
+	// favourite, so the save writes an explicit false (favorite_persist.go).
+	favoriteCleared bool
 
 	// IsForkAwaitingStart signals that this instance was produced by a
 	// fork builder and must run a pre-built fork command verbatim on the
@@ -1178,6 +1187,7 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
+	tmuxSess.SetIndicZeroWidthMarks(GetTmuxSettings().IndicZeroWidthMarks)
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
@@ -1265,6 +1275,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
+	tmuxSess.SetIndicZeroWidthMarks(GetTmuxSettings().IndicZeroWidthMarks)
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
@@ -5392,10 +5403,6 @@ func (i *Instance) Start() error {
 		go i.detectCopilotSessionAsync()
 	}
 
-	// Opt-in usage telemetry: counts only when the user has consented
-	// (no-op otherwise), tool name normalised to the built-in list.
-	telemetry.RecordSessionStarted(i.Tool)
-
 	return nil
 }
 
@@ -5725,8 +5732,6 @@ func (i *Instance) StartWithMessage(message string) error {
 		go i.detectCodexSessionAsync()
 	}
 
-	telemetry.RecordSessionStarted(i.Tool)
-
 	// Send message synchronously (CLI will wait). Codex may already carry the
 	// prompt as a launch argument, in which case there is nothing to type.
 	if message != "" && !promptEmbeddedInCommand {
@@ -5990,6 +5995,36 @@ func debounceFlipFromRunning(prev, derived Status, tmuxRaw, hookStatus string, p
 	return derived, false, false
 }
 
+// SeedLiveStatusPrior hands a fresh Instance the verdict an earlier pass of
+// the SAME long-lived process reached for it, so the running→waiting/error
+// debounce (debounceFlipFromRunning) can hold across passes. The notify
+// daemon reloads every Instance from storage on each pass; without this seam
+// each pass looked like a one-shot process (statusSampledLive false), the
+// hold never applied, and a single misread frame in a long turn became a
+// real running→waiting transition event (status-detection audit 2026-09-23).
+// A one-shot process must NOT call it: a persisted status is a guess, not an
+// observation. No-op for an empty status.
+func (i *Instance) SeedLiveStatusPrior(status Status, flipPending bool) {
+	if status == "" {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.Status = status
+	i.statusSampledLive = true
+	i.tmuxFlipFromRunningPending = flipPending
+}
+
+// LiveStatusPrior returns what SeedLiveStatusPrior needs on the next pass:
+// the status this process settled and whether a flip away from running is
+// pending confirmation. sampled is false when this process never settled a
+// verdict itself (nothing worth carrying).
+func (i *Instance) LiveStatusPrior() (status Status, flipPending bool, sampled bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.Status, i.tmuxFlipFromRunningPending, i.statusSampledLive
+}
+
 // shouldDebounceTmuxFlipForTool is deliberately narrower than HookStatusTool:
 // pi has hooks (#2222) but is excluded here on purpose, like shell and "".
 // The call site in updateStatus explains why.
@@ -6198,6 +6233,17 @@ func (i *Instance) UpdateStatus() error {
 	return i.updateStatus(nil, true)
 }
 
+// probeTmuxExists is called with i.mu held and returns with it held. tmux can
+// wait for a busy server, so status readers must not wait behind this probe.
+func (i *Instance) probeTmuxExists() (exists, current bool) {
+	s := i.tmuxSession
+	status := i.Status
+	i.mu.Unlock()
+	exists = s.Exists()
+	i.mu.Lock()
+	return exists, i.tmuxSession == s && (status == StatusStopped || i.Status != StatusStopped)
+}
+
 func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
@@ -6215,9 +6261,23 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 	// 1.5 seconds is enough for tmux to create the session (<100ms typically)
 	// Don't block status detection once tmux session exists
+	var exists bool
+	var checkedExists bool
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
-		if i.tmuxSession == nil || !i.tmuxSession.Exists() {
+		if i.tmuxSession == nil {
+			if i.Status != StatusRunning && i.Status != StatusIdle {
+				i.Status = StatusStarting
+			}
+			return nil
+		}
+		var current bool
+		exists, current = i.probeTmuxExists()
+		if !current {
+			return nil
+		}
+		checkedExists = true
+		if !exists {
 			if i.Status != StatusRunning && i.Status != StatusIdle {
 				i.Status = StatusStarting
 			}
@@ -6250,7 +6310,21 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 
 	// Check if tmux session exists
-	if !i.tmuxSession.Exists() {
+	if !checkedExists {
+		var current bool
+		exists, current = i.probeTmuxExists()
+		if !current {
+			return nil
+		}
+	}
+	if !exists {
+		if i.tmuxSession.AbsenceIsForeignServer() {
+			// This process runs inside another tmux server and its socket-less
+			// probe followed $TMUX there; the session is alive on the default
+			// server. No verdict: keep the last-known status rather than publish
+			// error for a session this process cannot see (rc 2026-09-23).
+			return nil
+		}
 		if i.neverStarted() {
 			// Added but never started: no tmux session was ever created, so an
 			// absent tmux is expected — classify as idle, not error (✕ → ○).
@@ -6294,7 +6368,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
 	if i.hookStatus == "" && HookStatusTool(i.Tool) {
-		if hs := readHookStatusFile(i.ID); hs != nil {
+		if hs := readHookStatusFile(i.ID); hs != nil && !i.codexHookFromForeignThread(hs) {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
@@ -6310,6 +6384,16 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				i.tmuxSession.ResetAcknowledged()
 			}
 		}
+	}
+
+	// Recheck cached evidence too: a rollout may acquire its subagent metadata
+	// after the hook was first read, or an older reader may have cached a
+	// foreign turn-end from a thread without a rollout.
+	if IsCodexCompatible(i.Tool) && i.hookSessionID != "" &&
+		(i.shouldRejectCodexSubagentRebind(i.hookSessionID) ||
+			i.shouldRejectCodexUnbackedTurnEnd(i.hookSessionID, i.hookEvent)) {
+		i.hookStatus, i.hookEvent, i.hookSessionID = "", "", ""
+		i.hookLastUpdate = time.Time{}
 	}
 
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
@@ -6360,14 +6444,15 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				i.Status = StatusWaiting
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
-				// ends, even while run_in_background shells or a background agent the
-				// turn is awaiting keep running. Treat the session as still running
-				// so it stays green and the daemon emits no premature "finished"
-				// notification; it settles to waiting (and notifies) once the
-				// background work completes — so "done" means foreground AND
-				// background. BackgroundWorkPending captures the pane (the fast path
-				// has no captured content), so release i.mu around it like the
-				// GetStatus call below, then re-check for a concurrent Kill().
+				// ends. If the turn ended by handing off to a background agent
+				// ("Waiting for N background agent to finish") Claude resumes on
+				// its own, so the session stays running. Background SHELLS left
+				// alive at the prompt do not count (tmux.claudeBackgroundWorkPending):
+				// the operator can act, the light is waiting and the substate says
+				// background-work. BackgroundWorkPending captures the pane (the
+				// fast path has no captured content), so release i.mu around it
+				// like the GetStatus call below, then re-check for a concurrent
+				// Kill().
 				bgWorkPending := false
 				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
 					i.mu.Unlock()
@@ -6829,10 +6914,17 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	prevHookStatus, prevHookEvent, prevHookLastUpdate := i.hookStatus, i.hookEvent, i.hookLastUpdate
 	prevStartedGen, prevCompletedGen := i.codexStartedGeneration, i.codexCompletedGeneration
 	prevStartedSID, prevCompletedSID := i.codexStartedSessionID, i.codexCompletedSessionID
+	// rejected tracks whether this event was rolled back by restoreHook below.
+	// A rejected candidate must never be read as evidence that the agent is
+	// interactive — see the disarm condition further down.
+	rejected := false
+	prevInvalidatingGen := i.codexInvalidatingGeneration
 	restoreHook := func() {
+		rejected = true
 		i.hookStatus, i.hookEvent, i.hookLastUpdate = prevHookStatus, prevHookEvent, prevHookLastUpdate
 		i.codexStartedGeneration, i.codexCompletedGeneration = prevStartedGen, prevCompletedGen
 		i.codexStartedSessionID, i.codexCompletedSessionID = prevStartedSID, prevCompletedSID
+		i.codexInvalidatingGeneration = prevInvalidatingGen
 	}
 
 	// Detect whether this is genuinely new data (newer timestamp than last seen).
@@ -6855,6 +6947,39 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			i.tmuxSession.ResetAcknowledged()
 		}
 	}
+
+	// A live lifecycle hook proves the agent became interactive. The hook fast
+	// path in UpdateStatus skips tmux.GetStatus, which is otherwise the only
+	// place the startup clock is cleared, so end the startup phase here or the
+	// first hook-quiet poll expires a healthy pane (#2361). Deferred so it only
+	// counts hooks that survive the ownership checks below: a rejected foreign
+	// ephemeral (rejected set true by restoreHook, above) must not disarm the
+	// watchdog. Registered after the Unlock defer, so it runs with i.mu still
+	// held.
+	//
+	// Not gated on isNewEvent: the COLD LOAD branch in updateStatus reads the
+	// SessionStart hook file straight off disk and stamps i.hookLastUpdate
+	// from it, outside this function, before the watcher ever calls
+	// UpdateHookStatus with that same event. When the watcher's feed arrives,
+	// its UpdatedAt equals what cold-load already recorded, so isNewEvent
+	// would be false and the disarm would never fire — the pane then gets
+	// killed by the startup watchdog despite a real hook on file. Re-feeding
+	// an already-accepted hook is harmless here: MarkInteractiveAt is
+	// idempotent (clearing an already-zero startupAt is a no-op) and
+	// generation-guarded (a timestamp older than the current pane's startupAt
+	// is ignored), and this is the only path that recovers from that
+	// cold-load race.
+	//
+	// agentdeck_spawn_seed (item #2) is excluded: it is a synthetic seed
+	// agent-deck itself writes when handing a pane to Hermes, not evidence
+	// that an agent became interactive, so it must not disarm the watchdog.
+	defer func() {
+		if i.tmuxSession != nil && !rejected && !isTerminalHookEvent(status.Event) &&
+			(status.Status == "running" || status.Status == "waiting") &&
+			status.Event != "agentdeck_spawn_seed" {
+			i.tmuxSession.MarkInteractiveAt(status.UpdatedAt)
+		}
+	}()
 
 	// Issue #1349 defense-in-depth #1: never bind a session id from a terminal
 	// hook event (e.g. SessionEnd). The status/event/ack bookkeeping above still
@@ -6967,6 +7092,11 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				clearRebind := !currentMtime.IsZero() && !candidateMtime.IsZero() &&
 					candidateMtime.Sub(currentMtime) >= clearRebindMtimeGrace
 				if !clearRebind {
+					// This rejection does not call restoreHook, so the event's
+					// status/event/hookLastUpdate stand — and so does the
+					// startup-watchdog disarm registered above: this is still
+					// a live hook from this instance's own session, just not
+					// one that wins the rebind.
 					_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 						InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 						Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
@@ -6988,7 +7118,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// binding. Restarting then resumes a finalized child thread, which
 		// refuses turn/start and error-loops the session. See
 		// codex_subagent_gate.go.
+		// Both rejections below also restore the pre-event hook fields: a
+		// rejected thread's turn-end is not this pane's turn-finished edge,
+		// and its "waiting" must not release `session send --defer-if-busy`
+		// into a main turn that is still running.
 		if i.shouldRejectCodexSubagentRebind(sessionID) {
+			restoreHook()
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
@@ -6999,6 +7134,15 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				slog.String("candidate", sessionID),
 				slog.String("event", status.Event),
 			)
+			return
+		}
+		if i.shouldRejectCodexUnbackedTurnEnd(sessionID, status.Event) {
+			restoreHook()
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.CodexSessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_turn_ended_without_rollout",
+			})
 			return
 		}
 		i.bindCodexSessionFromHook(sessionID, status.Event)
@@ -7096,6 +7240,32 @@ func (i *Instance) bindGeminiSessionFromHook(sessionID, hookEvent string) {
 
 // GetHookStatus returns the current hook-based status and its freshness.
 // Freshness window is tool-specific.
+// StatusEvidence is the externally fed evidence UpdateStatus turns into a
+// rendered status: the latest hook sample and the latest OpenCode SSE sample.
+// It changes only when a feed lands (UpdateHookStatus, UpdateOpenCodeSSEStatus)
+// and reverts when a feed is rejected, so a poller can compare two readings to
+// learn whether this instance has unapplied evidence.
+type StatusEvidence struct {
+	HookStatus string
+	HookEvent  string
+	HookAt     time.Time
+	SSEStatus  string
+	SSEAt      time.Time
+}
+
+// StatusEvidence returns the current evidence snapshot (read lock).
+func (i *Instance) StatusEvidence() StatusEvidence {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return StatusEvidence{
+		HookStatus: i.hookStatus,
+		HookEvent:  i.hookEvent,
+		HookAt:     i.hookLastUpdate,
+		SSEStatus:  i.sseStatus,
+		SSEAt:      i.sseLastUpdate,
+	}
+}
+
 func (i *Instance) GetHookStatus() (string, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -7761,6 +7931,7 @@ func (i *Instance) recreateTmuxSession() {
 	i.tmuxSession.InstanceID = i.ID
 	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	i.tmuxSession.SetMouse(GetTmuxSettings().GetMouse())
+	i.tmuxSession.SetIndicZeroWidthMarks(GetTmuxSettings().IndicZeroWidthMarks)
 	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	i.tmuxSession.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 }
@@ -8014,8 +8185,15 @@ func parseCodexLastAssistantMessage(lines []string, sessionID string) (*Response
 // LatestCodexTurnGeneration returns the newest durable turn-start identity in
 // the exact rollout bound to this instance. It never derives identity from
 // prompt or response content.
+//
+// A thread the pane's live Codex process owns but has not yet written a
+// rollout for (fresh composer, no turn started) has no turn generation yet, so
+// it reports "" without error, like an empty rollout.
 func (i *Instance) LatestCodexTurnGeneration() (string, error) {
 	path, err := i.codexRolloutPath()
+	if errors.Is(err, errNoExactContextArtifact) && i.LiveCodexThreadID() == i.CodexSessionID {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -9480,7 +9658,7 @@ func (i *Instance) killInternal(sync bool) error {
 // stamp generation from any prior spawn is already in the new caller's
 // pre-lock snapshot.
 func (i *Instance) Restart() error {
-	return i.restart(nil)
+	return i.restartRecorded(nil)
 }
 
 // RestartWithEnv restarts the session with one-shot environment overrides.
@@ -9492,7 +9670,16 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 			return fmt.Errorf("invalid environment variable name %q", key)
 		}
 	}
-	return i.restart(env)
+	return i.restartRecorded(env)
+}
+
+// restartRecorded restarts and records session.end(restart) on success.
+func (i *Instance) restartRecorded(env map[string]string) error {
+	err := i.restart(env)
+	if err == nil {
+		i.RecordTelemetryEnd(telemetry.EndRestart)
+	}
+	return err
 }
 
 func (i *Instance) restart(env map[string]string) error {

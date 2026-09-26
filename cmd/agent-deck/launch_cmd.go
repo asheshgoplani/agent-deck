@@ -11,6 +11,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
@@ -441,7 +442,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 			// Sparse state is inherited from `path` (the directory the user
 			// launched from), never from backend.RepoDir() — see #1708.
 			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch,
-				git.SparseInheritOptions(wtSettings.InheritSparseCheckout(), path),
+				wtSettings.CreateOptions(path),
 				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
@@ -882,6 +883,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 			os.Exit(1)
 		}
 	}
+	newInstance.RecordTelemetryCreate(telemetry.ViaCLILaunch)
 
 	// Capture session ID from tmux
 	newInstance.PostStartSync(3 * time.Second)

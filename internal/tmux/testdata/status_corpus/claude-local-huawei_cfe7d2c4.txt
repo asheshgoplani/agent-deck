@@ -1,0 +1,50 @@
+  xxxxx "xxxx" xxx xx xxxx xxx. xx xxx xxxxx xxxxxx xxxx xx xxxxxxxx, xxxx xxx xxxx xxxxx
+  xxxx xxxxx.
+
+  xxxxxxxxx, xxx xxxxxxxxx xxx xxx xxx xxx xx xxxxxxx xxx xxx xx xx xxxxx xx xx:
+
+  1. xxxxxx xxxxx xxxx xx xx xx, xxxxxxx xxxxxxxx, xxxxxxx xxx xxx xxx xxxx xx xxx xx.
+  2. xx xxx xx: xxxxxxxx, xxxxxx, xxxxx, xxxxxxx xxxxx. xxxxxx xxx xxx xxx xxx xxxx.
+  3. xxxxx xxx xxx xxxxx xxxx xxx xxxx x xxxxx, xx xxx xxx xxx xx xxxxxxxxxxx xxxxx x
+     xxxxxxxxxxx. xxx x xxxx xxxx xxxxx xxx xxx xxxxxx xxx xxx.
+  4. xxxx xx xx xxx xxxx xx xxx xxxxxxxxxxx xxx xxxx xxx xxxxxxx. xxxxx xx
+     xxxxxxxx.xxx-xxxxxxx.xxx xxxx xxx xxx xxxxxx xxx xxxxxxxx xxxxx.
+
+✻ Baked for 29s · done 11:32 PM
+
+❯ xxxx xxxxxx  xxxxx x xxxxx xx xxxxxx x xxxxxx xxxx xxxxxx xx xxxxxxx xxx xx xxxxx xxx xx
+  xxxx xxx xxxx xx xxxx x xxx xxxxx xxxxx xxxxx xx
+
+⏺ xxx. xxx xxxx xxxxxx xx xxxxx xxxxxxxxx, xxxx xxxxxx xx xxxx.
+
+  - xxxxxxxx xxxx xxxxx xx xxxxxxxx xxxx. xxxxx xxxxxxx xxxxx xx xxxxxx xxxx xxx xxxxxxxx
+    xxxxxxxx xxxx, xxxxx xxx xx xxxxxxxx xxxx xx xxx xxxxxxx xxx xxxxxxxx xx xxxx. xxx xxx
+    xxxx xx xxxxxx xx.
+  - xxx xxxxxxxx xxxxxxx xxx xxxxx, xxx xxx xxxxx. xxxxxxxxxxx xxxxxxx xxxxxxxxx "xxxxxxxx:
+    xxx" xx xxx xxxx xxxxxxx xxxxx xxxx xxxxxx xxx xxxxxx xx xxxxxx-xxxx xx xxxx. xxxx xxxx
+    xxx xxxxxx.
+  - xxx xxxx xxxxx xxxx xxx xxxx xxxxxxx xx xxx xxxx xxx xxxxxx, xxx xxxx xxxxx xx xxx
+    xxxxxx. xx xxxxxxxxxxx xxxxxx xx xxx xx xxxxxxx, xxx xxxxxx xxxx x xxx xxxxxx xxxxxxx xx
+    xxx xxxxx xxxx xxx xxx x xxxxx xxxxx xxxxxx xxx xxxx. xxxx xxxx xxxxxx.
+
+  xx xxx xxxx xxxxx: xxxx xxx xxx xx, xxxxxxxx, xxxx xxxx xxx xx xx xx xx xxxx, xxxx xxxx xx
+  xxxxxxxx.
+
+  xxx xxx xxxxxx: xxx xxxx xxxxxx xxxxxxx xx xxxxx'x xxxxxxxxxx xxxxxxxx xxx xxxx xxxx xx x
+  xxxxxx xxx xxx xxxxxx. xxx xxxx xxxxxxxxxxx xxxxxxx xxxx xx xxxx, xx xxxxx, xxx xxxxxxxxxxx
+  xxxxxx "xxxxxx xxxxxxx: xx", xx xxxx xxxxx xxxx. xx xxxx xxxx xx xxxxx xxxxxx, xxxx xxxxx
+  xxxx x xxxxx xxxxx xxx xxx xxxxx xxxxxxx xx.
+
+  xxxx xx xx xxxx xxx xxxxxxx xxxxx xx xxxxxxxxxxx xxx xx xx xxxx xxxxxxx xxx xxxx xxxxx
+  xxxxx xxxxx?
+
+✻ Brewed for 9s · done 11:32 PM
+
+● How is Claude doing this session? (optional)
+  1: Bad    2: Fine   3: Good   0: Dismiss
+                                                     new task? /clear to save 136.6k tokens
+──────────────────────────────────────────────────────────────────────────────────── huawei ─
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────
+  [semproj-d] u@host:/Users/u | [Fable 5.1] ctx:14% in:135.8k out:520
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

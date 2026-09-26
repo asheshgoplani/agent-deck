@@ -1,0 +1,2 @@
+Usage: agent-deck inbox writer-status [--json]
+Report whether a notify-daemon is recording transitions on this host.

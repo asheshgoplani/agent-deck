@@ -55,6 +55,8 @@ func handleConductor(profile string, args []string) {
 		handleConductorMove(profile, args[1:])
 	case "migrate-dir":
 		handleConductorMigrateDir(profile, args[1:])
+	case "heartbeat-tick":
+		handleConductorHeartbeatTick(profile, args[1:])
 	case "help", "--help", "-h":
 		printConductorHelp()
 	default:
@@ -865,7 +867,10 @@ func handleConductorTeardown(_ string, args []string) {
 		}
 
 		// Remove heartbeat timer
-		_ = session.UninstallHeartbeatDaemon(meta.Name)
+		if err := session.UninstallHeartbeatDaemon(meta.Name); err != nil {
+			fmt.Fprintf(os.Stderr, "Error disabling heartbeat for %s: %v\n", meta.Name, err)
+			os.Exit(1)
+		}
 
 		// Optionally remove directory and session
 		if *removeAll {
@@ -1483,6 +1488,7 @@ func printConductorHelp() {
 	fmt.Println("  list             List all configured conductors")
 	fmt.Println("  move <name>      Move a conductor to another profile (--to-profile)")
 	fmt.Println("  migrate-dir <path>  Relocate the conductor base dir (move homes + reconcile daemons)")
+	fmt.Println("  heartbeat-tick <name>  Print the delta-only heartbeat message (empty when nothing changed)")
 	fmt.Println("  help             Show this help")
 	fmt.Println()
 	fmt.Println("Examples:")

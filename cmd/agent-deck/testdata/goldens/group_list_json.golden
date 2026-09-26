@@ -1,0 +1,44 @@
+{
+  "groups": [
+    {
+      "name": "My Sessions",
+      "path": "my-sessions",
+      "session_count": 2,
+      "status": {
+        "running": 0,
+        "waiting": 0,
+        "idle": 0,
+        "error": 2,
+        "stopped": 0
+      }
+    },
+    {
+      "name": "Backend",
+      "path": "backend",
+      "session_count": 4,
+      "status": {
+        "running": 0,
+        "waiting": 0,
+        "idle": 0,
+        "error": 3,
+        "stopped": 1
+      },
+      "children": [
+        {
+          "name": "API",
+          "path": "backend/api",
+          "session_count": 2,
+          "status": {
+            "running": 0,
+            "waiting": 0,
+            "idle": 0,
+            "error": 1,
+            "stopped": 1
+          }
+        }
+      ]
+    }
+  ],
+  "total_groups": 3,
+  "total_sessions": 6
+}

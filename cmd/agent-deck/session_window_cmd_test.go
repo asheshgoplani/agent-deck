@@ -7,11 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
+
+// windowCloseSocketSeq numbers the private tmux socket of each
+// armWindowCloseSession call so no two tests in this binary share a server.
+var windowCloseSocketSeq atomic.Int64
 
 // armWindowCloseSession creates a real isolated tmux session with two named
 // windows and wraps it in a session.Instance, so closeSessionWindow (the CLI
@@ -24,15 +30,35 @@ func armWindowCloseSession(t *testing.T) (*session.Instance, string, string, str
 		t.Skip("tmux binary not on PATH; skipping")
 	}
 
-	socket := fmt.Sprintf("wcc%d", os.Getpid())
+	// One socket per test, never one per process: kill-server returns to its
+	// client before the server has released its listening socket, so on a
+	// shared name the next test's new-session could connect to the dying
+	// server and fail with "server exited unexpectedly" (v1.16.17 release
+	// run, TestCloseSessionWindow_KillsExtraWindow). Same fix as
+	// internal/ui armKillWindowHome.
+	socket := fmt.Sprintf("wcc%d-%d", os.Getpid(), windowCloseSocketSeq.Add(1))
 	target := "agentdeck_windowclose_cli"
-	if out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-x", "80", "-y", "24", "-s", target, "-n", "agent", "sleep", "300").CombinedOutput(); err != nil {
+	const serverStartRace = "server exited unexpectedly"
+	const maxAttempts = 3
+	var out []byte
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		out, err = exec.Command("tmux", "-L", socket, "new-session", "-d", "-x", "80", "-y", "24", "-s", target, "-n", "agent", "sleep", "300").CombinedOutput()
+		if err == nil || !strings.Contains(string(out), serverStartRace) {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	}
+	if err != nil {
+		if strings.Contains(string(out), serverStartRace) {
+			t.Skipf("tmux server could not start on a fresh socket after %d attempts (shared-runner tmux start race): %s", maxAttempts, out)
+		}
 		t.Fatalf("create tmux session: %v: %s", err, out)
 	}
 	t.Cleanup(func() {
 		_ = exec.Command("tmux", "-L", socket, "kill-server").Run()
 	})
-	out, err := exec.Command("tmux", "-L", socket, "new-window", "-d", "-P", "-F", "#{window_id}", "-t", target, "-n", "shell", "sleep", "300").CombinedOutput()
+	out, err = exec.Command("tmux", "-L", socket, "new-window", "-d", "-P", "-F", "#{window_id}", "-t", target, "-n", "shell", "sleep", "300").CombinedOutput()
 	if err != nil {
 		t.Fatalf("new-window: %v: %s", err, out)
 	}

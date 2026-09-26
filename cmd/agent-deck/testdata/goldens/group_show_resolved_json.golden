@@ -1,0 +1,17 @@
+{
+  "claude": {
+    "config_dir": "<SANDBOX_HOME>/.claude",
+    "config_dir_source": "default",
+    "env_file_exists": false,
+    "command": "claude",
+    "command_source": "default"
+  },
+  "default_path": "/repo/backend",
+  "default_path_source": "explicit",
+  "explicit_default_path": "/repo/backend",
+  "max_concurrent": 1,
+  "name": "Backend",
+  "path": "backend",
+  "sessions": 2,
+  "success": true
+}

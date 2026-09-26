@@ -224,6 +224,8 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 			}
 			s.notifyMenuChanged()
 			writeJSON(w, http.StatusOK, SessionActionResponse{SessionID: sessionID})
+		case "move":
+			s.handleSessionMove(w, r, sessionID)
 		case "unarchive":
 			if err := s.mutator.UnarchiveSession(sessionID); err != nil {
 				if strings.Contains(err.Error(), "not found") {
@@ -348,6 +350,32 @@ func (s *Server) handleSessionPatch(w http.ResponseWriter, r *http.Request, sess
 	writeJSON(w, http.StatusOK, UpdateSessionResponse{
 		SessionID:       sessionID,
 		UpdatedFields:   changed,
+		RestartRequired: restartRequired,
+	})
+}
+
+// handleSessionMove is POST /api/sessions/{id}/move (#2368): the web side of
+// the TUI's M and `agent-deck group move`. Mutation gates, rate limit and the
+// nil-mutator check have already run in handleSessionByAction.
+func (s *Server) handleSessionMove(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req MoveSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body")
+		return
+	}
+	movedTo, restartRequired, err := s.mutator.MoveSessionToGroup(sessionID, strings.TrimSpace(req.GroupPath))
+	if err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+		return
+	}
+	s.notifyMenuChanged()
+	writeJSON(w, http.StatusOK, MoveSessionResponse{
+		SessionID:       sessionID,
+		GroupPath:       movedTo,
 		RestartRequired: restartRequired,
 	})
 }

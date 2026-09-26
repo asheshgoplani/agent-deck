@@ -1,0 +1,51 @@
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /xxxxx/x
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review
+ xxxx'x xx xxxx xxxxxx xxxxx.
+
+ xxxxxx xxxx'xx xx xxxx xx xxxx, xxxx, xxx xxxxxxx xxxxx xxxx.
+
+ Security guide
+
+ ❯ xx, xxxx
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

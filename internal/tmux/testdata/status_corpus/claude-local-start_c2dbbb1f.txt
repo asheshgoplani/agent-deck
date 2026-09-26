@@ -1,0 +1,50 @@
+
+❯ xxx xxxxxxxxx xxx xxxx xx xx xxx xxxxxxxx
+
+⏺ x xxx xxx xxxxxxx xxxxxxx xxxxxxx xxxxxxx xxxxxxxxx. xxx xxxxxxxxx xx xxx "xxx xxxx" xxxxxxx—xxxxx xx xxx xx xxxxxxxx xxxxxxx xx, x'xx xxxxx xxx xxxx xxxxxxxxxxxx xxxxx. · xxxxxxxxxx
+
+  Ran 5 shell commands
+
+❯ xxxxxx x xxx xxx x xxxx xxx xx xxx xxxxx xxxxx xxx xxxxxx xxxxxxx xxx xxxxxxx xxxxx xxxxx xx xx xxx x x xxx xxxxxxxx xxxxxxxx xxx xxxxxxxxx xxxxxxx xxx
+
+  Ran 1 shell command
+
+❯ xxx  xxx xx xxxx xx xxx xx xx xx xxxx xxx xxx xxxx xxxxxxxxx xxxx xxxxx xxxxxxxxxx
+
+  Ran 1 shell command
+
+❯ xxx xxxxxxx xxx xxxxxxx xxxx xxxx xxxxxxx xxxx xxx xxxx xxx xxxx xxxxxxxxxx xxxxxxxx
+
+  Ran 2 shell commands
+
+⏺ xxxxx xxx xxxxx — xxxxxxx'x xxxx xxxxx xxx xxxxxx xxxxxxxxxxxx xxx xxx xxxxx xxxxxx xx xxxx xxxxxx'x xxxx xxxx. xxx x'xx xxxxxx xxx xxxxxxx xxxxxxxx xxx xxxxxxxx "xxx xxxx" xxxx xxx
+  xxxxxxxxxx. · xxxxxxxxxx
+
+  Ran 4 shell commands
+
+⏺ xxx xxxxxxxx. xxxx xx xxxx xxxxxxxx xxx xxxxx xxxxxx xxxxx.
+
+  xxx xxx xxxxxxxx xxxx xx xxxxx. xxxxx xxxxxxx xxx xxxx xxxxx xxx-xxxxx xxxxxx xxxxxxx xx (xx xxxxxxxx xxxx xxxxxx xxxx xxxxxx'x xxxx xxxx), xx xxxxx-xxxx xxxxx xxx xxx --xxxxxx xxxx
+  xxxx xxxxxxxxx. xx xxx xx xxxx, xxxxx x xxxxxxx xxx xxxxxxxx xxxxx'x xxxxxx xxx xx xxxxxxx, xxx xxxxxxx xxxxxxxxx xx xxxx xxxxx xxxx xx xx xxx xxxxxxx xxxxxxx, xxxxx xxxxx xxxxxxxxxxx
+  xxx xxx xxx xxxxx. xxxxxx: x xxxxx xxxxxxxxxxxx. xxx xxxxxxxx xx "xxxxxxx xxxx" xxx "xxxxxx-xxxxxxx" xxxxxxxx xx xx:xx xxx xx:xx, xxx "xxx xxxx" xxx xxxxxxx xx xx:xx:xx. xxxx xx xxxxx
+  xxxx xxxx xx xxxxxxxx. xxxx xxxx xxxx xxx xxxxxxx, xxx x xxxxxx xxx xxx xxxxxxx xxx xxxxxxxxx xxxx. xxx xxxxxxxxxx xxxx xxx xxxxx xxxx: xxx xxxxxxxxxxx xxxx xxxxx xx
+  ~/.xxxxxx/xxxxxxxx.
+
+  xxxx x xxx.
+  - xxxxxxxxx: xxxxxxxx xxx xxx xx xxxxxxxxxxxx xxx xxxxxxxx xx xxxxxxx. xxxxxxx xxxx xxxxxxx.
+  - xxxxxx-xxxxxxx: xxxxxxxx xxx xxxxxxxx xx xxxxxxx. xxxxxxx xx xx% xxxxxxx. x xxxx xxxx xx x xxxxxxx xx xxxx xxx "xxxxxxx xxxx" xxxxxxxxxx xxx xxx xxxxxx xxxxxx xxxx, xx xxxx xxx
+    xxxxxxx xxxxx xxx xxxxx xxxxxxx xxxxx.
+  - xxxxxxx xxxx: xxxxxxxx xxx xxxxxxxx xx xxxxxxx. xxxxxxx xxxx xxxxxxx.
+  - xxx xxxx: xxxxxxxxx xxxxx xxxxxxx xxxx xxx xxxxxxxxxx (xxxx /xxxxxxx/xxx, xxxx xx xxxxxx). xxxxxxx xx xx% xxxxxxx.
+  - xxxx xxxx xxx xxxxxxx xx xxxxxxx xx xxxxxxxx xxxxxxx.
+
+  xxxxxxxxxxxxxx. xxxx xxx xxxxxxxx xxxxx xxx xxxxxxxxxx xx xxxxxxx, xxx xxxxx xxxxxxxx xxxxxxx xxxx xxxxx xxx xxx xxxxxxxxxx xxxx xx ~/.xxxxxx xxxx xxxx xx xxxxx xxxx xxxxxxxxx. xxxx xx
+  xx xxx xxxx xx xx xxxxxxx xxx xxxx xx xxx xxxxxxxx xxxxx'x xxxxxxxxxxxxx xx xxx xxxx xx xxxx xxxxxx xxxxx.
+
+✻ Baked for 4m 53s · done Thursday, Sep 10 at 10:10 AM
+                                                                                                                                                  ✔ Update installed · Restart to update
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── start ─
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [personal] u@host:/Users/u | [Fable 5.1] ctx:11% in:114.0k out:546
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -10,6 +10,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -129,6 +130,7 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID,
 	if err := inst.Start(); err != nil {
 		return "", fmt.Errorf("start session: %w", err)
 	}
+	inst.RecordTelemetryCreate(telemetry.ViaWeb)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
@@ -224,6 +226,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
 	}
+	inst.RecordTelemetryEndFrom(telemetry.EndDelete, telemetry.SurfaceWeb)
 	m.pushUndo(inst)
 	return nil
 }
@@ -246,7 +249,11 @@ func (m *WebMutator) CloseSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	return inst.Kill()
+	if err := inst.Kill(); err != nil {
+		return err
+	}
+	inst.RecordTelemetryEndFrom(telemetry.EndStop, telemetry.SurfaceWeb)
+	return nil
 }
 
 // ArchiveSession stops the session process and marks it archived so it
@@ -407,6 +414,7 @@ func (m *WebMutator) ForkSession(id string) (string, error) {
 	if err := forked.Start(); err != nil {
 		return "", fmt.Errorf("start forked session: %w", err)
 	}
+	forked.RecordTelemetryCreate(telemetry.ViaWeb)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
@@ -637,6 +645,48 @@ func (m *WebMutator) SetGroupExpanded(groupPath string, expanded bool) error {
 		return err
 	}
 	return nil
+}
+
+// MoveSessionToGroup moves a session to another group with the same target
+// resolution as `agent-deck group move` (session.GroupTree.
+// ResolveMoveTargetGroup) and persists. Like the CLI and the TUI's M, nothing
+// is migrated: when the destination group resolves a different Claude config
+// dir, restartRequired reports that the session picks it up on its next
+// restart (#2368).
+func (m *WebMutator) MoveSessionToGroup(id, groupPath string) (string, bool, error) {
+	unlock, err := m.beginHeadlessTx()
+	if err != nil {
+		return "", false, err
+	}
+	defer unlock()
+
+	m.h.instancesMu.Lock()
+	inst := m.h.instanceByID[id]
+	if inst == nil {
+		m.h.instancesMu.Unlock()
+		return "", false, web.ErrSessionNotFound
+	}
+	// Seed the new-group default in case the target must be auto-created.
+	if cfg, _ := session.LoadUserConfig(); cfg != nil {
+		m.h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent
+	}
+	target := m.h.groupTree.ResolveMoveTargetGroup(groupPath)
+	restartRequired := session.IsClaudeCompatible(inst.Tool) &&
+		session.GetClaudeConfigDirForInstanceInGroup(inst, target) != session.GetClaudeConfigDirForInstance(inst)
+	m.h.groupTree.MoveSessionToGroup(inst, target)
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.Unlock()
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return "", false, fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+	if err := storage.SaveWithGroups(instances, m.h.groupTree); err != nil {
+		return "", false, fmt.Errorf("save session: %w", err)
+	}
+	return target, restartRequired, nil
 }
 
 // FinishWorktree merges (or skips), removes the worktree, optionally

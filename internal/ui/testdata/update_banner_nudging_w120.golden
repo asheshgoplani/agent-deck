@@ -1,0 +1,24 @@
+ ⟨ ○ │ ○ │ ○ ⟩  Agent Deck [_test]  no sessions                                                                  v0.0.0 
+  All    ● 0   ◐ 0   ○ 0   !@#& filter • 0 all • % open • ^ archived • t view • * time                                  
+ ⬆ v1.16.1 installed, nudging 4 remotes to update, then restarting (ctrl+t queues it)                                   
+SESSIONS                                   │ PREVIEW                                                                    
+────────────────────────────────────────── │ ───────────────────────────────────────────────────────────────────────────
+╭──────────────────────────────────╮       │                                                                            
+│                                  │       │                     ✦                                                      
+│                ⬡                 │       │                Ready to Go                                                 
+│         No Sessions Yet          │       │          Your workspace is set up                                          
+│  Get started by creating you...  │       │   • Press n to create your first session                                   
+│  • Press n to create a new s...  │       │     • Press i to import tmux sessions                                      
+│  • Press i to import existin...  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+│                                  │       │                                                                            
+╰──────────────────────────────────╯       │                                                                            
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Empty:  n/N  New/Quick  i  Import  g  Group     ↑↓ Nav │ +/- Move │ / Search │ G Global │ S Settings │ ? Help │ q Quit  

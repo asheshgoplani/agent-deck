@@ -1,0 +1,5 @@
+NAME            HOST                           PATH                 PROFILE    VERSION / LAST POLL
+------------------------------------------------------------------------------------
+golden-remote   golden@remote.invalid          agent-deck           default    - / unknown
+
+Total: 1 remotes (controller <VERSION>)

@@ -1,0 +1,12 @@
+Command:   dsh
+Resolved:  NOT FOUND on PATH
+           Install with: npm install -g @deepseek-ai/dsh
+DSH_HOME:  <SANDBOX_HOME>/.dsh  (does not exist yet; dsh creates it on first boot)
+Profile:   web  (mode: web)
+Resume:    off — restart re-boots the profile; dsh keeps its own
+           sessions under DSH_HOME, so nothing is lost. Set
+           [deepseek].resume_flag only for a profile whose app
+           documents one (neither shipped profile does).
+Fork:      not supported by dsh
+API key:   DEEPSEEK_API_KEY unset and no credentials file — dsh will
+           exit with MISSING_CREDENTIAL until one is provided

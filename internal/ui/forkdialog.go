@@ -766,30 +766,86 @@ func (d *ForkDialog) View() string {
 		errLine = "\n" + errStyle.Render("  ⚠ "+d.validationErr) + "\n"
 	}
 
-	helpText := "Enter create │ Esc cancel │ Tab next │ s sandbox │ Space toggle"
+	// At most two footer rows, broken between hints instead of mid-item
+	// ("s" / "sandbox"). Only when two rows are too narrow do the trailing
+	// hints drop out; Tab next, Enter and Esc never do.
+	helpItems, helpDrop := []string{"Enter create", "Esc cancel", "Tab next", "s sandbox", "Space toggle"}, []int{4, 3}
 	if d.currentFocus() == forkFocusBranch {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
-			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
+			helpItems, helpDrop = []string{"Type filter", "↑↓ navigate", "Enter select", "Esc close"}, []int{1, 0}
 		} else {
-			helpText = "^F branch search │ Enter create │ Esc cancel │ Tab next"
+			helpItems, helpDrop = []string{"^F branch search", "Enter create", "Esc cancel", "Tab next"}, nil
 		}
 	}
+	helpText := renderDialogFooterRows(dialogWidth-boxStyle.GetHorizontalPadding(), 2, " │ ", helpItems, helpDrop...)
 
-	content := titleStyle.Render("Fork Session") + "\n\n" +
-		nameLabel + "\n" +
+	optionsView := d.optionsPanel.View()
+	beforeOptions := nameLabel + "\n" +
 		"  " + d.nameInput.View() + "\n\n" +
 		groupLabel + "\n" +
 		"  " + d.groupInput.View() + "\n" +
 		conductorSection +
 		worktreeSection +
-		sandboxSection + "\n" +
-		d.optionsPanel.View() +
-		errLine + "\n" +
-		lipgloss.NewStyle().Foreground(ColorComment).
-			Render(helpText)
+		sandboxSection + "\n"
 
-	dialog := boxStyle.Render(content)
+	// One body element per row between the title and the key hints, so a
+	// short terminal scrolls the form around the focused row while the
+	// title and the hints stay on screen. Joined, the sections are exactly
+	// title + "\n\n" + form + "\n" + hints.
+	body := strings.Split(beforeOptions+optionsView+errLine, "\n")
+	dialog := renderFittedDialog(boxStyle, centeredDialogHeight(d.height), dialogSections{
+		head:  []string{titleStyle.Render("Fork Session"), ""},
+		body:  body,
+		focus: d.focusedRow(body, strings.Count(beforeOptions, "\n")),
+		foot:  []string{lipgloss.NewStyle().Foreground(ColorComment).Render(helpText)},
+	})
 
-	// Center the dialog on screen
-	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)
+	return centerInScreen(dialog, d.width, d.height)
+}
+
+// focusedRow is the row of the rendered form (split into rows) that holds
+// the focused field, so a scrolled dialog keeps it on screen. optionsRow is
+// the first row of the options panel.
+func (d *ForkDialog) focusedRow(rows []string, optionsRow int) int {
+	find := func(from int, match func(string) bool) int {
+		for i := from; i < len(rows); i++ {
+			if match(stripAnsi(rows[i])) {
+				return i
+			}
+		}
+		return 0
+	}
+	prefix := func(p string) func(string) bool {
+		return func(row string) bool { return strings.HasPrefix(row, p) }
+	}
+	marked := func(label string) func(string) bool {
+		return func(row string) bool { return strings.Contains(row, "▶") && strings.Contains(row, label) }
+	}
+	switch d.currentFocus() {
+	case forkFocusGroup:
+		return find(0, prefix("▶ Group:"))
+	case forkFocusConductor:
+		return find(0, prefix("▶ Conductor:")) + 1 + d.conductorCursor
+	case forkFocusBranch:
+		branchRow := find(0, prefix("▶ Branch:"))
+		if d.branchPicker != nil && d.branchPicker.IsVisible() && len(d.branchPicker.branches) > 0 {
+			selected := "▶ " + d.branchPicker.branches[d.branchPicker.cursor]
+			for i := branchRow + 1; i < len(rows); i++ {
+				if strings.Contains(stripAnsi(rows[i]), selected) {
+					return i
+				}
+			}
+		}
+		return branchRow
+	case forkFocusCarryState:
+		return find(0, marked("Carry parent state"))
+	case forkFocusGitignored:
+		return find(0, marked("Include gitignored"))
+	case forkFocusOptions:
+		if row := find(optionsRow, func(row string) bool { return strings.Contains(row, "▶") }); row >= optionsRow {
+			return row
+		}
+		return optionsRow
+	}
+	return 0
 }

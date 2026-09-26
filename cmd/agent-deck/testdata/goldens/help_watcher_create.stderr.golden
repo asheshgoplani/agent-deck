@@ -1,0 +1,10 @@
+  -name string
+    	Watcher name (required)
+  -port int
+    	Port for webhook adapter
+  -secret string
+    	DEPRECATED/insecure: use $GITHUB_WEBHOOK_SECRET or --secret-file
+  -secret-file string
+    	Path to a chmod-600 file holding the github HMAC secret
+  -topic string
+    	Topic for ntfy or slack adapter

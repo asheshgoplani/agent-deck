@@ -1,0 +1,48 @@
+
+  - It connects directly through Agent Deck’s public CLI.
+  - Your existing local and SSH sessions appear without importing or duplicating them.
+  - Operational changes stay synchronized with the TUI.
+  - Closing the app leaves sessions running.
+
+  The rollout is now explicit in the plan (/tmp/exec-macapp-codex/CODEX-PLAN.html): controlled testing on the build Mac, then your daily use, then a private preview for friends using
+  their own Agent Deck installations.
+
+  One important caveat: some features need new public CLI commands. The preview must clearly state which Agent Deck version it requires and must never silently replace anyone’s
+  installation.
+
+  Friend testing will include installation, existing-session discovery, SSH, synchronization, and safe uninstall, with simple bug-report instructions.
+
+  done 5:04 PM
+
+
+› sos did you sthignin w eare inint a  satte too start tehe develeoement of it?
+
+
+• Yes, we can start a bounded first development phase. We should not start the entire app in parallel yet.
+
+  The first phase should:
+
+  1. Finalize the CLI-first contracts and remove conflicting daemon-first instructions.
+  2. Establish isolated build-Mac and SSH testing.
+  3. Build the native shell, connect to existing Agent Deck sessions, and embed SwiftTerm.
+  4. Verify app/TUI synchronization and session survival after quitting.
+  5. Add Claude live/history conversations once the Recall contract is settled.
+
+  Each slice must include actual app execution, visual inspection, and evidence before being marked complete.
+
+  The direction is settled enough to begin this way. Full parity, other harness renderers, and friend distribution follow through their defined gates. I haven’t started implementation;
+  that still needs your explicit go-ahead.
+
+  done 9:29 PM
+
+• Model changed to gpt-6-sol medium
+
+
+• While a turn runs Codex draws (9m 41s • esc to interrupt) above the composer; the
+  detector keys on that shape. Nothing is running now.
+
+─ Worked for 12s ─────────────────────────
+
+› Ask Codex to do anything
+
+  gpt-6-sol · /private/tmp/exec-macapp-codex · Context 78% left · Context 22% used · weekly 92% left · 258K window

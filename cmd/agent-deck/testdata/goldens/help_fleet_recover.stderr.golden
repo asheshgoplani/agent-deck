@@ -1,0 +1,39 @@
+  -auth-halt-after int
+    	Halt after this many sessions boot into an auth failure (0 disables the auth breaker) (default 2)
+  -confirm-delay duration
+    	Delay between confirming probes (default 750ms)
+  -confirm-probes int
+    	Independent tmux probes that must agree a session is gone before it counts as down (default 2)
+  -dead-fraction float
+    	Share of should-be-alive sessions that must be down for a mass-death verdict (default 0.5)
+  -dry-run
+    	Force plan-only mode even with --yes
+  -group string
+    	Only consider sessions in this group path (and its descendants)
+  -group-by-credential
+    	Group auth-401-held sessions by which credential is dead and report one escalation per credential (opt-in, local-only; off by default the per-session view is unchanged)
+  -include-idle
+    	Also treat status=idle sessions as down (off by default: idle is also the status of a session that was never started)
+  -jitter float
+    	Random +/- fraction applied to each gap (0 disables) (default 0.2)
+  -json
+    	Output as JSON
+  -limit int
+    	Restart at most N sessions (0 = all)
+  -max-dead-boots int
+    	Halt after this many consecutive sessions restart and then die immediately (pane gone; 0 disables) (default 3)
+  -max-failures int
+    	Halt after this many consecutive failed restarts (default 3)
+  -min-dead int
+    	Minimum down sessions for the shape to be reported as a mass death (default 3)
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output
+  -spacing duration
+    	Gap between consecutive boots (0 disables spacing — not recommended) (default 5s)
+  -verify-poll duration
+    	Verification poll interval (default 500ms)
+  -verify-timeout duration
+    	How long to wait for one session to prove it booted (default 30s)
+  -yes
+    	Actually restart the down sessions (without this the command only prints the plan)

@@ -66,6 +66,22 @@ type UpdateSessionRequest struct {
 	AutoMode        *bool   `json:"autoMode,omitempty"`
 }
 
+// MoveSessionRequest is the body for POST /api/sessions/{id}/move (#2368).
+// GroupPath "" or "root" moves the session to the default group.
+type MoveSessionRequest struct {
+	GroupPath string `json:"groupPath"`
+}
+
+// MoveSessionResponse confirms a move. GroupPath is where the session landed
+// (after case-insensitive matching or group creation). RestartRequired is true
+// when the destination group resolves a different Claude config dir, which
+// the running session only picks up on its next restart.
+type MoveSessionResponse struct {
+	SessionID       string `json:"sessionId"`
+	GroupPath       string `json:"groupPath"`
+	RestartRequired bool   `json:"restartRequired"`
+}
+
 // UpdateSessionResponse confirms a PATCH succeeded. RestartRequired is true
 // when any updated field only takes effect on next launch (tool, extra-args,
 // plugins, skip-permissions, auto-mode). Clients use it to prompt before/after

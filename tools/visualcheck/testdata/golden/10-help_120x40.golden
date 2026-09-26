@@ -1,0 +1,39 @@
+
+                   ╭────────────────────────────────────────────────────────────────────────────────╮
+                   │                                                                                │
+                   │                                                                                │
+                   │  KEYBOARD SHORTCUTS                                                            │
+                   │                                                                                │
+                   │  QUICK START                                                                   │
+                   │    Enter          Attach to selected session                                   │
+                   │    R              Restart selected session                                     │
+                   │    Ctrl+Q         Detach from session                                          │
+                   │    ?              Open this help                                               │
+                   │                                                                                │
+                   │  NAVIGATION                                                                    │
+                   │    j / Down       Move down                                                    │
+                   │    k / Up         Move up                                                      │
+                   │    Ctrl+u/d       Half page up/down                                            │
+                   │    PgUp / PgDn    Half page up/down                                            │
+                   │    Ctrl+f/b       Full page up/down                                            │
+                   │    Home / End     Jump to first / last item                                    │
+                   │    G              Recall search (every conversation on this machine)           │
+                   │    h / Left       Collapse / parent                                            │
+                   │    l / Right      Expand / toggle                                              │
+                   │    1-9            Jump to root group                                           │
+                   │    Space          Jump mode                                                    │
+                   │    `              Alternate session (swap with the previous one, vim-style)    │
+                   │    alt+left       Walk back through recently used sessions                     │
+                   │    alt+right      Walk forward through recently used sessions                  │
+                   │    Enter          Attach to session / toggle group                             │
+                   │    Shift+Enter    Open session in new iTerm window (macOS)                     │
+                   │                                                                                │
+                   │  GROUP NAVIGATION (<version>)                                                    │
+                   │    Alt+j / Alt+k  Next / prev session in group                                 │
+                   │    Alt+1 - Alt+9  Jump to Nth session in group                                 │
+                   │    Alt+g / Alt+G  First / last in group                                        │
+                   │  ▼ more below                                                                  │
+                   │                                                                                │
+                   │  j/k scroll • any other key to close                                           │
+                   │                                                                                │
+                   ╰────────────────────────────────────────────────────────────────────────────────╯

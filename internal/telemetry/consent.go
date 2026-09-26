@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"errors"
 	"strings"
 	"time"
 )
@@ -8,97 +9,182 @@ import (
 // DocsURL is the user documentation linked from the consent prompt.
 const DocsURL = "https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md"
 
-// Shared CLI/TUI disclosure with the effective endpoint substituted.
-const promptTemplate = `Help improve agent-deck? (optional, off by default)
+// PromptWidth and PromptHeight are the smallest terminal that shows the
+// whole question; below it the TUI refuses to accept.
+const (
+	PromptWidth  = 78
+	PromptHeight = 22
+)
 
-agent-deck can send one small anonymous usage report per day so the
-maintainer can see which features are used. Nothing is sent unless you
-say yes here. A random id links reports until you reset it.
+// promptTemplateV2 is the shared CLI/TUI disclosure. {{where}} is the
+// destination line (PostHog EU for the default endpoint).
+const promptTemplateV2 = `Help improve agent-deck?
 
-What is sent:      a random install id, agent-deck version, OS and CPU
-                   type, and counts of features used (for example how
-                   many sessions were started per tool, whether remote
-                   or conductor commands were used, TUI vs CLI).
-What is never sent: session titles, prompts, file paths, commands,
-                   hostnames, usernames, or timestamps finer than the day.
-                   Receiver operators must disable IP/access logging.
-Where:             one HTTPS POST, at most once per day, to
-                   {{endpoint}}
-Turn off any time: agent-deck telemetry disable
-                   or set AGENTDECK_TELEMETRY=0 / DO_NOT_TRACK=1
-Preview the current payload: agent-deck telemetry preview
-Last acknowledged payload: agent-deck telemetry show-last
-Details: ` + DocsURL
+Share anonymous usage data with the agent-deck maintainer.
 
-// PromptChoices is the one-line key legend under the prompt.
-const PromptChoices = "[y] Yes, send anonymous usage reports    [n] No (remembered, you will not be asked again)"
+Sent:   tools and features you use, session counts and lengths,
+        the hour and weekday you are active, error types, fleet
+        size, version and OS. Numbers are rounded into ranges.
+        A random ID links your reports; reset it any time.
+Never:  prompts, output, titles, paths, repo, host or user names,
+        or anything you type. IP addresses are discarded.
+Where:  {{where}}
+Check:  agent-deck telemetry preview   (exactly what would be sent)
+Off:    agent-deck telemetry off   or   DO_NOT_TRACK=1
+More:   github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md`
 
-// PromptText renders the consent prompt for the given endpoint.
+// Button labels and the key legend of the TUI prompt.
+const (
+	PromptAccept = "Share anonymous data"
+	PromptNo     = "No thanks"
+	PromptLegend = "Enter: confirm highlighted · n / Esc: no · Ctrl-C: ask me later"
+	// PromptV1Declined is shown above the buttons for installs that declined
+	// the schema 1 prompt, which counted every key as no.
+	PromptV1Declined = "You said no to an earlier, smaller version of this question."
+	// PromptTooSmall replaces the question when the terminal is too small.
+	PromptTooSmall = "Telemetry is off. Enlarge the window to 78×22 to read the question, or run agent-deck telemetry on in a shell."
+
+	GrantedLine  = "Sharing is on. Nothing is sent before tomorrow. Turn off: agent-deck telemetry off"
+	DeclinedLine = "Telemetry stays off. You will not be asked again. Change later: agent-deck telemetry on"
+)
+
+// maxWhereWidth keeps the destination line inside the 78-column box.
+const maxWhereWidth = 62
+
+// PromptText renders the disclosure for an endpoint.
 func PromptText(endpoint string) string {
-	return strings.ReplaceAll(promptTemplate, "{{endpoint}}", endpoint)
+	return strings.ReplaceAll(promptTemplateV2, "{{where}}", whereLine(endpoint))
 }
 
-// ShouldPrompt reports whether the one-time consent prompt may be shown right now.
+func whereLine(endpoint string) string {
+	if strings.TrimRight(endpoint, "/") == DefaultEndpoint {
+		return "a few times a day to PostHog (EU). Kept for 1 year."
+	}
+	return "a few times a day to " + endpoint
+}
+
+// PromptFits reports whether the destination line fits the fixed-width box.
+func PromptFits(endpoint string) bool {
+	return len(whereLine(endpoint)) <= maxWhereWidth
+}
+
+// ShouldPrompt reports whether the one-time consent prompt may be shown now:
+// undecided, or declined once under schema 1; interactive; no hard off; not
+// in log mode (which never grants).
 func ShouldPrompt(s *State) bool {
-	if s == nil || s.Consent != ConsentUndecided {
+	if s == nil || !(s.Consent == ConsentUndecided || s.V1Declined()) {
 		return false
 	}
-	if HardDisabled() || ValidateEndpoint(Endpoint()) != nil {
+	if HardDisabled() || LogMode() || ValidateEndpoint(Endpoint()) != nil {
 		return false
 	}
 	return Interactive()
 }
 
-// Grant records consent.
+// Grant records consent. A new install id and salt are created unless the
+// existing ones were granted for this exact endpoint and schema; a new
+// identity also deletes the spool, so events recorded under an earlier
+// consent or destination can never be sent under this one. Nothing records
+// into the spool meanwhile: the stale grant does not enable recording.
 func Grant(s *State, version string, now time.Time) error {
-	if !validInstallID(s.InstallID) || s.ConsentEndpoint != Endpoint() || s.SchemaVersion != SchemaVersion {
-		s.Counters = nil
-		s.LastPayload = nil
-		s.LastSentDay = ""
-		id, err := newInstallID()
+	if !validInstallID(s.InstallID) || len(s.Salt) != 64 || s.ConsentEndpoint != Endpoint() || s.SchemaVersion != SchemaVersion {
+		id, salt, err := newIdentity()
 		if err != nil {
 			return err
 		}
-		s.InstallID = id
+		if err := DeleteSpool(); err != nil {
+			return err
+		}
+		s.resetCollected()
+		s.InstallID, s.Salt = id, salt
 	}
 	s.SchemaVersion = SchemaVersion
 	s.ConsentEndpoint = Endpoint()
 	s.Consent = ConsentGranted
 	s.ConsentVersion = version
 	s.ConsentDay = dayOf(now)
-	if s.Counters == nil {
-		s.Counters = map[string]int{}
+	if s.Level == "" {
+		s.Level = LevelFull
 	}
+	s.initFirstSeen(now)
 	return nil
 }
 
-// Decline records a refusal.
+// newIdentity returns a fresh random install id and HMAC salt.
+func newIdentity() (id, salt string, err error) {
+	if id, err = newInstallID(); err != nil {
+		return "", "", err
+	}
+	if salt, err = randomHex(32); err != nil {
+		return "", "", err
+	}
+	return id, salt, nil
+}
+
+// resetCollected forgets everything recorded under an install id.
+func (s *State) resetCollected() {
+	s.Counters = nil
+	s.LastPayload = nil
+	s.LastSentDay = ""
+	s.Seq = 0
+	s.Daily = nil
+	s.Upload = UploadState{}
+	s.Milestones = 0
+	s.Funnel = FunnelState{}
+	s.TUIOpen = false
+}
+
+// Decline records a refusal and forgets the id, salt and everything recorded.
+// The local first-seen facts stay (they never left the machine).
 func Decline(s *State, version string, now time.Time) {
 	s.SchemaVersion = SchemaVersion
+	s.DeclinedSchema = SchemaVersion
 	s.Consent = ConsentDeclined
 	s.ConsentVersion = version
 	s.ConsentDay = dayOf(now)
 	s.InstallID = ""
+	s.Salt = ""
 	s.ConsentEndpoint = ""
-	s.LastPayload = nil
-	s.LastSentDay = ""
-	s.Counters = nil
+	s.resetCollected()
 }
 
-// RotateInstallID replaces the install id with a fresh random one.
+// RotateInstallID replaces the install id and salt, and forgets the spool
+// and rollups recorded under the old id. Callers delete the spool.
 func RotateInstallID(s *State) error {
-	id, err := newInstallID()
+	id, salt, err := newIdentity()
 	if err != nil {
 		return err
 	}
-	s.InstallID = id
-	s.Counters = nil
+	s.InstallID, s.Salt = id, salt
+	s.Seq = 0
+	s.Daily = nil
 	s.LastPayload = nil
 	s.LastSentDay = ""
 	return nil
 }
 
-// Enabled reports whether a send is currently permitted by consent and the hard-disable switches, ignoring interactivity.
+// ResetID rotates the install id and deletes the spool, under the lock.
+func ResetID() (*State, error) {
+	unlock, err := lockState()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	s := LoadState()
+	if s.Consent != ConsentGranted {
+		return s, errors.New("telemetry: no install id exists because telemetry is not enabled")
+	}
+	if err := RotateInstallID(s); err != nil {
+		return nil, err
+	}
+	if err := DeleteSpool(); err != nil {
+		return nil, err
+	}
+	return s, saveStateLocked(s)
+}
+
+// Enabled reports whether recording is permitted by consent and the
+// hard-disable switches, ignoring interactivity.
 func Enabled(s *State) (bool, DisableReason) {
 	if r := HardDisableReason(); r != ReasonNone {
 		return false, r
@@ -108,7 +194,7 @@ func Enabled(s *State) (bool, DisableReason) {
 		if s.SchemaVersion != SchemaVersion || s.ConsentEndpoint != Endpoint() {
 			return false, DisableReason("endpoint or schema changed; interactive consent required")
 		}
-		if !validInstallID(s.InstallID) {
+		if !validInstallID(s.InstallID) || len(s.Salt) != 64 {
 			return false, DisableReason("invalid install id; interactive consent required")
 		}
 		return true, ReasonNone
@@ -119,8 +205,9 @@ func Enabled(s *State) (bool, DisableReason) {
 	}
 }
 
-// Disable commits a fresh refusal under the send lock. It may wait for an
-// in-flight request, but a completed disable is never a stale snapshot save.
+// Disable commits a fresh refusal and deletes the spool under the lock. It
+// may wait for an in-flight upload (at most uploadDeadline); once it returns,
+// nothing further is sent and the spool is gone.
 func Disable(version string, now time.Time) error {
 	unlock, err := lockState()
 	if err != nil {
@@ -129,5 +216,21 @@ func Disable(version string, now time.Time) error {
 	defer unlock()
 	s := LoadState()
 	Decline(s, version, now)
+	if err := DeleteSpool(); err != nil {
+		return err
+	}
 	return saveStateLocked(s)
+}
+
+// SetLevel stores the recording level. Raising basic to full is a consent
+// decision; callers must confirm it interactively first.
+func SetLevel(l Level) (*State, error) {
+	unlock, err := lockState()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	s := LoadState()
+	s.Level = l
+	return s, saveStateLocked(s)
 }

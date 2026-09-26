@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -37,6 +38,10 @@ type PipeManager struct {
 	// Connect and watchPipe consult it so background sessions are never
 	// connected or auto-reconnected. nil = legacy behaviour (want everything).
 	wantPipe func(sessionName string) bool
+
+	// sharedViewOverrides, when non-nil, makes Connect apply the shared-view
+	// size policy (ApplySharedViewSize) with these [tmux.options] overrides.
+	sharedViewOverrides func() map[string]string
 
 	// Reconnection tracking
 	reconnectMu  sync.Mutex
@@ -117,6 +122,13 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 	// processes that are never cleaned up (#595).
 	killStaleControlClients(sessionName, socketName)
 
+	pm.mu.RLock()
+	overrides := pm.sharedViewOverrides
+	pm.mu.RUnlock()
+	if overrides != nil {
+		ApplySharedViewSize(socketName, sessionName, overrides())
+	}
+
 	// Create new pipe (outside lock since it spawns a process)
 	pipe, err := NewControlPipe(sessionName, socketName)
 	if err != nil {
@@ -137,6 +149,9 @@ func (pm *PipeManager) Connect(sessionName, socketName string) error {
 
 	// Start output event forwarder
 	go pm.forwardOutputEvents(sessionName, pipe)
+
+	// Never leave the window following a control client (latest_viewer.go)
+	go pm.watchClientEvents(sessionName, pipe)
 
 	// Start reconnection watcher
 	go pm.watchPipe(sessionName, pipe)
@@ -359,6 +374,17 @@ func (pm *PipeManager) SetWindowChangeCallback(cb func()) {
 	pm.onWindowChange = cb
 }
 
+// SetSharedViewOverrides makes every Connect install the shared-view size
+// policy on the session first (ApplySharedViewSize, with fn's [tmux.options]
+// overrides), so a session born under an older policy (`largest`, rc.6's
+// `smallest`) converges on the current one as soon as a deck follows it,
+// without a restart and whoever attaches.
+func (pm *PipeManager) SetSharedViewOverrides(fn func() map[string]string) {
+	pm.mu.Lock()
+	pm.sharedViewOverrides = fn
+	pm.mu.Unlock()
+}
+
 // SetWantPipe installs the predicate that decides which sessions hold a live
 // pipe. Call once at startup before Connect. nil-safe: an unset predicate means
 // every session is wanted (legacy behaviour).
@@ -400,6 +426,12 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 			if !ok {
 				return
 			}
+			// Slice 4 (CORE-PLAN): additive tap onto the event bus. This is
+			// the hottest producer in the tree (fires on every tmux %output),
+			// so it deliberately does NOT call Flush — Publish's bounded
+			// queue + drop-with-counter is what keeps this path non-blocking
+			// under pressure (see internal/events).
+			events.PublishDefault("tmux.output", sessionName, nil)
 			if pm.onOutput != nil {
 				pm.onOutput(sessionName)
 			}
@@ -413,6 +445,35 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 		case <-pipe.Done():
 			return
 		}
+	}
+}
+
+// watchClientEvents runs HandLatestToViewer after each client event of pipe
+// (its own attach included), once the event has settled: a person who just
+// attached takes the latest slot only when their resize arrives, a moment
+// after tmux announces the attach, and must not be pre-empted in between.
+// Events arriving while it waits are folded into the same run.
+func (pm *PipeManager) watchClientEvents(sessionName string, pipe *ControlPipe) {
+	for {
+		select {
+		case <-pm.ctx.Done():
+			return
+		case <-pipe.Done():
+			return
+		case <-pipe.ClientEvents():
+		}
+		select {
+		case <-pm.ctx.Done():
+			return
+		case <-pipe.Done():
+			return
+		case <-time.After(latestSettle):
+		}
+		select {
+		case <-pipe.ClientEvents():
+		default:
+		}
+		HandLatestToViewer(pipe.socketName, sessionName)
 	}
 }
 

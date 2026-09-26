@@ -1,0 +1,14 @@
+  ╭─────────────────────╮╭───────────────────────────────╮
+  │ 🔍 Recall           ││ 📄 recall-hit-00              │
+  │ refreshing the      ││ claude  aaaaaaaa-000          │
+  │ index (bounded: 150 ││ 📁 /Users/x/proj              │
+  │ ms / 32 MB per      ││                               │
+  │ pass)...            ││ loading turns...              │
+  │ ╭─────────────────╮ ││                               │
+  │ │ > Search eve…   │ ││                               │
+  │ ╰─────────────────╯ ││                               │
+  │   › recall-hit-00   ││                               │
+  │ [Enter] Open        ││                               │
+  │ [Tab] Local         ││                               │
+  │ [Esc] Cancel        ││                               │
+  ╰─────────────────────╯╰───────────────────────────────╯

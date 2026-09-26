@@ -29,6 +29,7 @@ type fakeMutator struct {
 	createGroupFn      func(name, parentPath string) (string, error)
 	renameGroupFn      func(groupPath, newName string) error
 	setGroupExpandedFn func(groupPath string, expanded bool) error
+	moveSessionFn      func(id, groupPath string) (string, bool, error)
 	deleteGroupFn      func(groupPath string) error
 	finishWorktreeFn   func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
@@ -129,6 +130,13 @@ func (f *fakeMutator) SetGroupExpanded(groupPath string, expanded bool) error {
 		return fmt.Errorf("setGroupExpanded not configured")
 	}
 	return f.setGroupExpandedFn(groupPath, expanded)
+}
+
+func (f *fakeMutator) MoveSessionToGroup(id, groupPath string) (string, bool, error) {
+	if f.moveSessionFn == nil {
+		return "", false, fmt.Errorf("moveSession not configured")
+	}
+	return f.moveSessionFn(id, groupPath)
 }
 
 func (f *fakeMutator) DeleteGroup(groupPath string) error {

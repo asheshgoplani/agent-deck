@@ -119,8 +119,14 @@ const remoteRowStaleAge = remoteSessionsCacheSaveInterval
 // through the same "how old is this" path instead of two separate labels.
 func (h *Home) remoteRowAge(name string) (time.Duration, bool) {
 	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	return h.remoteRowAgeLocked(name)
+}
+
+// remoteRowAgeLocked is remoteRowAge for callers already holding
+// remoteSessionsMu.
+func (h *Home) remoteRowAgeLocked(name string) (time.Duration, bool) {
 	fetched, known := h.remoteFetchedAt[name]
-	h.remoteSessionsMu.RUnlock()
 	if !known || fetched.IsZero() {
 		return 0, false
 	}
