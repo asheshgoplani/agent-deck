@@ -1,10 +1,12 @@
 package telemetry
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"time"
@@ -30,6 +32,33 @@ type phEvent struct {
 type phBatch struct {
 	APIKey string    `json:"api_key"`
 	Batch  []phEvent `json:"batch"`
+}
+
+// redactedAPIKey stands in for the project key in every body agent-deck
+// builds, stores or prints (preview, show-last, log mode); only post()
+// swaps the real key in, for the request itself.
+const redactedAPIKey = "phc_redacted"
+
+// redactedBodyPrefix is how every encoded batch body starts.
+var redactedBodyPrefix = []byte(`{"api_key":"` + redactedAPIKey + `",`)
+
+// withAPIKey returns body with the placeholder replaced by the real key.
+func withAPIKey(body []byte) ([]byte, error) {
+	key, ok := PostHogKey()
+	if !ok {
+		return nil, errors.New("telemetry: no valid PostHog project key")
+	}
+	if !bytes.HasPrefix(body, redactedBodyPrefix) {
+		return nil, errors.New("telemetry: request body is not a redacted batch")
+	}
+	k, err := json.Marshal(key)
+	if err != nil {
+		return nil, err
+	}
+	rest := body[len(redactedBodyPrefix)-1:] // from the comma on
+	out := make([]byte, 0, len(`{"api_key":`)+len(k)+len(rest))
+	out = append(append(append(out, `{"api_key":`...), k...), rest...)
+	return out, nil
 }
 
 // pendingEvent is one event ready to encode, with where it came from.
@@ -115,7 +144,7 @@ func (s *State) pending(lines []spoolLine, now time.Time) []pendingEvent {
 }
 
 // chunk splits events into request bodies within the per-request limits.
-func chunk(key string, events []pendingEvent) ([][]byte, [][]pendingEvent) {
+func chunk(events []pendingEvent) ([][]byte, [][]pendingEvent) {
 	var bodies [][]byte
 	var groups [][]pendingEvent
 	var cur []pendingEvent
@@ -124,13 +153,13 @@ func chunk(key string, events []pendingEvent) ([][]byte, [][]pendingEvent) {
 		if len(cur) == 0 {
 			return
 		}
-		b := phBatch{APIKey: key}
+		b := phBatch{APIKey: redactedAPIKey}
 		for _, p := range cur {
 			if p.ev.Event != "" {
 				b.Batch = append(b.Batch, p.ev)
 			}
 		}
-		body, err := json.Marshal(b) //nolint:gosec // G117: the PostHog project key is a public write-only token by design (TELEMETRY.md)
+		body, err := json.Marshal(b) //nolint:gosec // G117: only the redacted placeholder; post() inserts the key
 		if err == nil {
 			bodies = append(bodies, body)
 			groups = append(groups, cur)

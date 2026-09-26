@@ -1,5 +1,5 @@
 {
-  "api_key": "phc_testkey0123456789abcdefXYZ",
+  "api_key": "phc_redacted",
   "batch": [
     {
       "event": "telemetry.consent",

@@ -353,6 +353,56 @@ func TestLogModeUploadWritesLocallyAndNeverConnects(t *testing.T) {
 	}
 }
 
+// TestProjectKeyNeverInLocalOutput: the key goes on the wire only; preview,
+// show-last (LastPayload) and the log-mode file carry the placeholder.
+func TestProjectKeyNeverInLocalOutput(t *testing.T) {
+	c := env(t)
+	fake := newFakePostHog(t)
+	grant(t, c)
+	SessionEnded(SessionEndInfo{Tool: "claude", Kind: EndStop})
+	c.set(at(1, 9, 0))
+	bodies, err := PreviewBatch()
+	if err != nil || len(bodies) == 0 {
+		t.Fatalf("preview: %d bodies, %v", len(bodies), err)
+	}
+	for _, b := range bodies {
+		if strings.Contains(string(b), testKey) || !strings.Contains(string(b), `"api_key":"`+redactedAPIKey+`"`) {
+			t.Fatalf("preview body exposes the key: %s", b)
+		}
+	}
+	if r := MaybeUpload(t.Context()); !r.Sent || fake.batch(t, 0).APIKey != testKey {
+		t.Fatalf("upload %+v: the request itself must carry the key", r)
+	}
+	last := string(LoadState().LastPayload)
+	if last == "" || strings.Contains(last, testKey) {
+		t.Fatalf("show-last payload exposes the key: %s", last)
+	}
+
+	SessionEnded(SessionEndInfo{Tool: "codex", Kind: EndStop})
+	t.Setenv(EnvTelemetry, "log")
+	c.set(at(2, 9, 0))
+	if r := MaybeUpload(t.Context()); !r.Sent {
+		t.Fatalf("log mode upload %+v", r)
+	}
+	p, _ := siblingPath(logFileName)
+	data, err := os.ReadFile(p)
+	if err != nil || len(data) == 0 || strings.Contains(string(data), testKey) {
+		t.Fatalf("log file exposes the key or is empty: %s %v", data, err)
+	}
+}
+
+func TestWithAPIKeyOnlyAcceptsRedactedBatches(t *testing.T) {
+	env(t)
+	t.Setenv(EnvPostHogKey, testKey)
+	got, err := withAPIKey([]byte(`{"api_key":"` + redactedAPIKey + `","batch":[]}`))
+	if err != nil || string(got) != `{"api_key":"`+testKey+`","batch":[]}` {
+		t.Fatalf("withAPIKey = %s, %v", got, err)
+	}
+	if _, err := withAPIKey([]byte(`{"batch":[]}`)); err == nil {
+		t.Fatal("a body without the placeholder must be refused")
+	}
+}
+
 func TestDisableWaitsForInFlightUploadThenNothingIsSent(t *testing.T) {
 	c := env(t)
 	fake := newFakePostHog(t)

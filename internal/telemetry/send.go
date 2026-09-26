@@ -98,9 +98,14 @@ type postResult struct {
 	err        error
 }
 
-// post is the only function that talks to the network. The response body is
-// read up to 1 KiB and ignored.
+// post is the only function that talks to the network, and the only one that
+// sees the project key: body carries the redacted placeholder. The response
+// body is read up to 1 KiB and ignored.
 func post(ctx context.Context, body []byte, timeout time.Duration) postResult {
+	body, err := withAPIKey(body)
+	if err != nil {
+		return postResult{err: err}
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, batchURL(), bytes.NewReader(body))

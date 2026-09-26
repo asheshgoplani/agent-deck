@@ -116,8 +116,7 @@ func MaybeUpload(ctx context.Context) UploadResult {
 		_ = saveStateLocked(s)
 		return UploadResult{Reason: "nothing to send"}
 	}
-	key, _ := PostHogKey()
-	bodies, groups := chunk(key, events)
+	bodies, groups := chunk(events)
 	if len(bodies) > maxBatchRequests {
 		bodies, groups = bodies[:maxBatchRequests], groups[:maxBatchRequests]
 	}
@@ -331,7 +330,8 @@ func logWouldRecord(name string, props map[string]any, at time.Time) {
 }
 
 // PreviewBatch returns the exact request bodies the next upload would send
-// now, without sending, changing state or creating an id.
+// now, with the project key redacted, without sending, changing state or
+// creating an id.
 func PreviewBatch() ([][]byte, error) {
 	s := LoadState()
 	if s.Consent != ConsentGranted || s.InstallID == "" {
@@ -342,8 +342,7 @@ func PreviewBatch() ([][]byte, error) {
 		return nil, err
 	}
 	now := nowFn()
-	key, _ := PostHogKey()
-	bodies, _ := chunk(key, s.pending(trimSpool(lines, now), now))
+	bodies, _ := chunk(s.pending(trimSpool(lines, now), now))
 	return bodies, nil
 }
 
@@ -366,9 +365,9 @@ func SendUninstall(ctx context.Context, sessions int, lastTool, reason string) U
 		return UploadResult{Reason: "invalid event"}
 	}
 	l := s.newLine("uninstall", props, now, EffectiveLevel(s))
-	l.SF = string(SurfaceCLI) // uninstall is always a CLI event
-	key, _ := PostHogKey()
-	body, err := json.Marshal(phBatch{APIKey: key, Batch: []phEvent{s.toPostHog(l)}}) //nolint:gosec // G117: the PostHog project key is a public write-only token by design (TELEMETRY.md)
+	// uninstall is always a CLI event
+	l.SF = string(SurfaceCLI)
+	body, err := json.Marshal(phBatch{APIKey: redactedAPIKey, Batch: []phEvent{s.toPostHog(l)}}) //nolint:gosec // G117: only the redacted placeholder; post() inserts the key
 	if err != nil {
 		return UploadResult{Reason: err.Error()}
 	}
