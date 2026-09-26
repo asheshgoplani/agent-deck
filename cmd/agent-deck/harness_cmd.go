@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/harness"
 	"github.com/asheshgoplani/agent-deck/internal/quota"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -53,7 +54,7 @@ func harnessVersion(path string, args []string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = append(os.Environ(), "NO_COLOR=1", "CI=1")
+	cmd.Env = append(childenv.ForLaunch(""), "NO_COLOR=1", "CI=1")
 	out, _ := cmd.CombinedOutput()
 	if m := versionRe.Find(out); m != nil {
 		return string(m)

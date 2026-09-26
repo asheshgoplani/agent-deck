@@ -9,11 +9,9 @@ import (
 	"time"
 )
 
-var debugNav = os.Getenv("VISUALCHECK_DEBUG_NAV") == "1"
-
 // visualCheckStep is one entry in the fixed key script every width is
 // driven through. run does the key presses, explicit waits, and calls
-// w.capture (or w.captureAdvisory) once per screen the step produces.
+// w.capture once per screen the step produces.
 type visualCheckStep struct {
 	name string
 	run  func(w *widthRun) error
@@ -201,6 +199,20 @@ func stepRemoteUnreachable(w *widthRun) error {
 	if err := w.moveCursorToText("remotes/lab", 40); err != nil {
 		return err
 	}
+	// The failed session poll and the separate `agent-deck version` check
+	// land independently; the preview shows "last checked never" until the
+	// second one does. Capturing on the poll result alone raced the version
+	// check (v1.16.17 release run: DIFF on GitHub runners, PASS on g14).
+	if err := w.waitFor(func() (bool, error) {
+		pane, err := w.pane()
+		if err != nil {
+			return false, err
+		}
+		return strings.Contains(pane, "Unreachable: host down") &&
+			!strings.Contains(pane, "(last checked never)"), nil
+	}, 15*time.Second); err != nil {
+		return fmt.Errorf("remote poll and version check never both settled: %w", err)
+	}
 	if err := waitScreen(w, 5*time.Second, "Unreachable: host down"); err != nil {
 		return err
 	}
@@ -269,7 +281,7 @@ func stepGroupView(w *widthRun) error {
 		return fmt.Errorf("launch group-scoped view: %w", err)
 	}
 	if os.Getenv("VISUALCHECK_KEEP_SANDBOX") != "1" {
-		defer w.s.exec("tmux", "kill-session", "-t", name)
+		defer func() { _, _ = w.s.exec("tmux", "kill-session", "-t", name) }()
 	}
 
 	if err := w.s.waitForPaneContains(name, "alpha", 8*time.Second); err != nil {
@@ -284,6 +296,23 @@ func stepGroupView(w *widthRun) error {
 		return !contains(pane, "beta"), nil
 	}); err != nil {
 		return err
+	}
+	// The golden has the cursor on the scope's first row (alpha). A fresh
+	// instance does not always open there (a release-gate run on g14 opened
+	// on backend), so put it there explicitly: Home, then wait for alpha's
+	// own preview.
+	if err := w.s.waitFor(5*time.Second, func() (bool, error) {
+		if _, err := w.s.exec("tmux", "send-keys", "-t", name, "Home"); err != nil {
+			return false, err
+		}
+		time.Sleep(80 * time.Millisecond)
+		pane, err := w.s.capturePane(name)
+		if err != nil {
+			return false, err
+		}
+		return strings.Contains(pane, "📁 alpha"), nil
+	}); err != nil {
+		return fmt.Errorf("group view cursor never reached alpha: %w", err)
 	}
 	var raw string
 	if err := w.s.waitFor(5*time.Second, func() (bool, error) {

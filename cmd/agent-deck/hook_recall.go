@@ -56,6 +56,10 @@ func recallHookTrigger(instanceID, event string, payload []byte) {
 	logCostDebug("recall hook sweep: %s parsed=%d deferred=%d msgs=%d %dms", path, res.Parsed, res.Deferred, res.Messages, res.ElapsedMS)
 }
 
+// recallHookDeadline is the hook sweep's time budget. A variable only so a
+// test can remove timing from an assertion about what gets indexed.
+var recallHookDeadline = ingest.InteractiveDeadline
+
 // recallSweepFile indexes one transcript under the interactive budget. It
 // returns store.ErrLocked without waiting when a sweep is running; the
 // queued line is then picked up by that sweep or the next.
@@ -82,7 +86,7 @@ func recallSweepFile(cfg *session.UserConfig, path string) (ingest.Result, error
 		Roots:          session.RecallRoots(),
 		TextTier:       cfg.Recall.GetTextTier(),
 		PerSourceBytes: int64(cfg.Recall.GetPerSourceMB()) << 20,
-		Budget:         reader.NewBudget(ingest.InteractiveDeadline, ingest.InteractiveBytes),
+		Budget:         reader.NewBudget(recallHookDeadline, ingest.InteractiveBytes),
 	}
 	// The profile's state.db supplies the deck id, hints and tags the card
 	// carries; without it the projection would blank them until the next
@@ -94,7 +98,7 @@ func recallSweepFile(cfg *session.UserConfig, path string) (ingest.Result, error
 		defer reg.Close()
 		opts.Registry = reg
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*ingest.InteractiveDeadline+time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*recallHookDeadline+time.Second)
 	defer cancel()
 	return ingest.New(st, opts).SweepFiles(ctx, []string{path})
 }

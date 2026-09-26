@@ -19,7 +19,7 @@ func TestNewIDIsSortableULID(t *testing.T) {
 	if !sort.StringsAreSorted(ids) {
 		t.Fatalf("ids do not sort by time: %v", ids)
 	}
-	if NewID(base) == NewID(base) {
+	if first, second := NewID(base), NewID(base); first == second {
 		t.Fatal("ids collide within one millisecond")
 	}
 }

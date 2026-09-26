@@ -70,7 +70,7 @@ func (c *Client) roundtrip(f Frame) (Frame, error) {
 		}
 	}
 	_ = c.c.SetDeadline(time.Now().Add(timeout))
-	defer c.c.SetDeadline(time.Time{})
+	defer func() { _ = c.c.SetDeadline(time.Time{}) }()
 	c.seq++
 	f.ID = strconv.Itoa(c.seq)
 	f.Token = c.token
