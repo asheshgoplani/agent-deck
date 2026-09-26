@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -85,35 +86,19 @@ func initTelemetrySettings() {
 	}
 	telemetry.SetConfigDisabled(cfg.Telemetry.Disabled)
 	telemetry.SetEndpoint(cfg.Telemetry.Endpoint)
+	telemetry.SetPostHogKey(cfg.Telemetry.PostHogKey)
+	telemetry.SetConfigLevel(cfg.Telemetry.Level)
 }
 
-// recordCLITelemetry bumps the opt-in usage counters for a CLI subcommand.
-// No-op unless the user has consented (telemetry.Record checks). Hook
-// handlers and daemons are excluded: they fire on every agent turn and
-// would swamp the human-driven counts.
-func recordCLITelemetry(subcommand string, rest []string) {
-	for _, a := range rest {
-		if a == "-h" || a == "--help" || a == "help" {
-			return
-		}
-	}
-	switch subcommand {
-	case "add", "list", "ls", "remove", "rm", "rename", "mv", "status", "profile", "update",
-		"session", "fleet", "mcp", "plugin", "skill", "mcp-proxy", "group", "try", "launch",
-		"accounts", "conductor", "agents", "agent", "telegram-doctor", "watcher", "openclaw", "oc",
-		"remote", "worktree", "wt", "costs", "usage", "web", "uninstall", "migrate-paths", "hooks", "recall",
-		"codex-hooks", "gemini-hooks", "hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "feedback", "creds-refresh",
-		"config":
-	default:
-		return
-	}
-	telemetry.Record(telemetry.CounterCLIInvocations)
-	switch subcommand {
-	case "remote":
-		telemetry.Record(telemetry.CounterRemoteUsed)
-	case "conductor":
-		telemetry.Record(telemetry.CounterConductorUsed)
+// telemetrySignalClose flushes the TUI's pending telemetry (activity hour,
+// app.exit) when a signal ends the process; set once the home model exists.
+var telemetrySignalClose atomic.Pointer[func(telemetry.ExitKind)]
 
+func setTelemetrySignalClose(fn func(telemetry.ExitKind)) { telemetrySignalClose.Store(&fn) }
+
+func closeTelemetryOnSignal() {
+	if fn := telemetrySignalClose.Load(); fn != nil {
+		(*fn)(telemetry.ExitSignal)
 	}
 }
 
@@ -338,6 +323,7 @@ func main() {
 	// check (printUpdateNotice, `update`, `version`). See the doc comment.
 	initUpdateSettings()
 	initTelemetrySettings()
+	telemetry.SetProcess(Version, telemetry.SurfaceCLI)
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
@@ -886,6 +872,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		closeTelemetryOnSignal()
 		stopHealth()
 		// Stop interval hooks and wait for their kill to land. Hook commands
 		// run in their own process groups — intentionally detached from the
@@ -1007,10 +994,11 @@ func main() {
 	// min-launches threshold for new users. Non-TUI subcommands (add, list,
 	// feedback, etc.) deliberately skip this so scripted usage doesn't
 	// inflate the counter.
-	// Opt-in usage telemetry: count the TUI launch (no-op without consent).
-	// Headless `web --no-tui` never boots the TUI and is not counted.
+	// Opt-in usage telemetry: from here on this process is the TUI (its
+	// app.start is recorded by the home model once the fleet is loaded).
+	// Headless `web --no-tui` never boots the TUI and records nothing here.
 	if !webHeadless {
-		telemetry.Record(telemetry.CounterTUILaunches)
+		telemetry.SetProcess(Version, telemetry.SurfaceTUI)
 	}
 
 	if fbSt, _ := feedback.LoadState(); fbSt != nil {
@@ -1023,6 +1011,7 @@ func main() {
 
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
+	setTelemetrySignalClose(homeModel.CloseTelemetry)
 	// --group / --select were already extracted and validated above, before
 	// the no-TTY gate; apply them to the model now that it exists.
 	if groupScope != "" {
@@ -1303,10 +1292,16 @@ func main() {
 	})
 
 	if _, err := p.Run(); err != nil {
+		homeModel.CloseTelemetry(telemetry.ExitPanic)
 		runEmbeddedTerminalCleanup()
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+	exitKind := telemetry.ExitQuit
+	if _, ok := homeModel.RestartTarget(); ok {
+		exitKind = telemetry.ExitUpdateRestart
+	}
+	homeModel.CloseTelemetry(exitKind)
 
 	// In-place restart (restart_deck hotkey or auto_restart): the TUI has
 	// flushed its state and restored the terminal, so replace this process
@@ -2666,6 +2661,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		newInstance.RecordTelemetryCreate(telemetry.ViaCLIAdd)
 		newInstance.PostStartSync(3 * time.Second)
 		if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to save session state: %v\n", err)
@@ -3265,6 +3261,7 @@ func handleRemove(profile string, args []string) {
 	// Uses the synchronous variant so the SIGTERM→SIGKILL escalation finishes
 	// before this short-lived CLI exits — otherwise SIGHUP-immune claude
 	// processes survive as orphans (issue #59, v1.7.68).
+	inst.RecordTelemetryEnd(telemetry.EndDelete)
 	if err := inst.KillAndWait(); err != nil {
 		// Only warn if the session actually existed (ignore "not found" errors)
 		if inst.Exists() && !*jsonOutput {
@@ -4129,22 +4126,31 @@ func handleUpdate(args []string) {
 	// Perform update (direct binary replacement or Homebrew upgrade)
 	fmt.Println()
 	warnIfLaunchctlUnavailable()
+	// Opt-in telemetry: the outcome of this manual update (no-op without consent).
+	updateFailed := func() {
+		telemetry.UpdateAttempted(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, telemetry.UpdateError, false)
+		telemetry.ErrorOccurred(telemetry.AreaUpdate, telemetry.KindOther, "")
+	}
 	if homebrewManaged {
 		if err := runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd); err != nil {
+			updateFailed()
 			fmt.Printf("Error installing update via Homebrew: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
 		release, err := update.FetchReleaseByTag(info.LatestVersion)
 		if err != nil {
+			updateFailed()
 			fmt.Printf("Error installing update: failed to fetch release info: %v\n", err)
 			os.Exit(1)
 		}
 		if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
+			updateFailed()
 			fmt.Printf("Error installing update: %v\n", err)
 			os.Exit(1)
 		}
 	}
+	telemetry.UpdateAttempted(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, telemetry.UpdateOK, false)
 
 	// Update bridge.py if conductor is installed
 	if err := update.UpdateBridgePy(); err != nil {
@@ -4850,6 +4856,9 @@ func handleUninstall(args []string) {
 		return
 	}
 
+	// Opt-in telemetry: the one synchronous send, only with consent.
+	maybeSendUninstallTelemetry(os.Stdin, os.Stdout, !*yes)
+
 	fmt.Println("Uninstalling...")
 	fmt.Println()
 
@@ -5071,6 +5080,7 @@ func isOuterTmuxWithoutOptIn() bool {
 
 func ensureTmuxInPathOrExit() {
 	if err := ensureTmuxInPath(); err != nil {
+		telemetry.ErrorOccurred(telemetry.AreaTmux, telemetry.KindTmuxMissing, "")
 		fmt.Fprintln(os.Stderr, "Error: tmux not found")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Agent Deck requires tmux. Install with:")

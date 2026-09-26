@@ -10,6 +10,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -129,6 +130,7 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID,
 	if err := inst.Start(); err != nil {
 		return "", fmt.Errorf("start session: %w", err)
 	}
+	inst.RecordTelemetryCreate(telemetry.ViaWeb)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
@@ -214,6 +216,7 @@ func (m *WebMutator) DeleteSession(id string) error {
 
 	// Kill the tmux session (ignore errors — may already be stopped)
 	_ = inst.Kill()
+	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
@@ -246,6 +249,7 @@ func (m *WebMutator) CloseSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	inst.RecordTelemetryEnd(telemetry.EndStop)
 	return inst.Kill()
 }
 
@@ -407,6 +411,7 @@ func (m *WebMutator) ForkSession(id string) (string, error) {
 	if err := forked.Start(); err != nil {
 		return "", fmt.Errorf("start forked session: %w", err)
 	}
+	forked.RecordTelemetryCreate(telemetry.ViaWeb)
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {

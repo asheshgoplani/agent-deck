@@ -1007,12 +1007,12 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 
 ### Usage telemetry (opt-in, off by default)
 
-agent-deck can send one small anonymous usage report per day (random install id, version, OS/arch, feature counters) so the maintainer can see which features are used. **It is off until you explicitly say yes** in the one-time TUI prompt or with `agent-deck telemetry enable`; declining is remembered and nothing is ever sent or counted without consent. `AGENTDECK_TELEMETRY=0` or `DO_NOT_TRACK=1` hard-disable it regardless. Full details, the exact payload, and every control: [TELEMETRY.md](TELEMETRY.md).
+Anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names) is shared with the maintainer via PostHog EU **only after you say yes** to the one-time TUI question; `agent-deck telemetry preview` shows exactly what would be sent, and `agent-deck telemetry off` or `DO_NOT_TRACK=1` turns it off. Details and the full field list: [TELEMETRY.md](TELEMETRY.md).
 
 ```bash
-agent-deck telemetry status      # on/off and why
-agent-deck telemetry show-last   # the exact JSON that was last sent
-agent-deck telemetry disable     # off, install id deleted
+agent-deck telemetry status      # on/off, why, and what is waiting in the local spool
+agent-deck telemetry preview     # the exact request bodies the next upload would send
+agent-deck telemetry off         # off; install id and local data deleted
 ```
 
 ### Remote Instances

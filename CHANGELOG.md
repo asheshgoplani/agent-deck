@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Anonymous usage data (opt-in).** On the first TUI start you will see one question asking whether to share anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names). It goes to PostHog's EU region a few times a day, never on the day you say yes, with IP addresses discarded. See exactly what would be sent with `agent-deck telemetry preview`; turn it off any time with `agent-deck telemetry off` or `DO_NOT_TRACK=1`. Details: TELEMETRY.md.
+- `agent-deck telemetry` gains `on`, `off`, `schema` (the full published allow-list, `--markdown` or `--json`) and `level full|basic`; `status` shows the level, local spool, upload schedule and daily cap; `preview` prints the exact PostHog request bodies. `AGENTDECK_TELEMETRY=log` writes would-be uploads locally and never sends. Settings gains a Privacy row and `agent-deck doctor` prints the telemetry state.
+- New config keys `[telemetry] level` and `[telemetry] posthog_key`; `[telemetry] endpoint` now defaults to `https://eu.i.posthog.com`. Builds without a project key record locally (with consent) and never upload.
+
+### Changed
+
+- The consent question now has two buttons with **Share anonymous data** highlighted: Enter confirms the highlighted button, `n` or Esc declines (remembered), Ctrl-C asks again next time, and other keys are ignored. Everyone who answered the earlier schema 1 question is asked once more, because the schema changed (schema 1 counted every key, even Enter, as no).
+
 ## [1.16.17] - 2026-09-25
 
 ### Fixed (status lights)

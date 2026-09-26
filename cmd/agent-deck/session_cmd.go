@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"al.essio.dev/pkg/shellescape"
 	"github.com/google/uuid"
@@ -24,6 +25,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
@@ -530,6 +532,7 @@ func handleSessionStop(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	inst.RecordTelemetryEnd(telemetry.EndStop)
 
 	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
 	// queued sibling is waiting, start the oldest one. Only one drain per
@@ -1446,6 +1449,7 @@ func handleSessionFork(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to start forked session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	forkedInst.RecordTelemetryCreate(telemetry.ViaCLIAdd)
 
 	// Capture forked session's new session ID
 	forkedInst.PostStartSync(3 * time.Second)
@@ -1533,10 +1537,12 @@ func handleSessionAttach(profile string, args []string) {
 	// Create context for attach
 	ctx := context.Background()
 
+	attachedAt := time.Now()
 	if err := tmuxSession.Attach(ctx, detachByte); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
 		os.Exit(1)
 	}
+	telemetry.Attached(inst.Tool, telemetry.AttachCLI, time.Since(attachedAt))
 }
 
 // errFocusNotFound signals that `session focus` was given an id absent from the
@@ -3159,6 +3165,15 @@ func handleSessionSend(profile string, args []string) {
 	// Machine callers get a durable id immediately. The worker opts out of
 	// this branch so its own JSON result describes the actual transport.
 	asyncJSON := *jsonOutput && !*queueWorker && !*wait && !*stream && !*draft && !*deferIfBusy && !*noWait
+	// Opt-in telemetry: count the send by tool and length bucket only (no-op
+	// without consent). A send from inside a session is automation.
+	if !*queueWorker {
+		via := telemetry.SendCLI
+		if telemetry.InsideSession() {
+			via = telemetry.SendConductor
+		}
+		telemetry.MessageSent(inst.Tool, via, utf8.RuneCountInString(message), *queue)
+	}
 	if len(images) > 0 || *queue || asyncJSON {
 		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
 			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)

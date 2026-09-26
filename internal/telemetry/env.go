@@ -3,6 +3,7 @@ package telemetry
 import (
 	"os"
 	"strings"
+	"testing"
 
 	"golang.org/x/term"
 )
@@ -17,6 +18,13 @@ const (
 
 // Session markers identify agent-driven contexts, which cannot prompt or send.
 var sessionMarkers = []string{"AGENTDECK_INSTANCE_ID", "AGENT_DECK_SESSION_ID"}
+
+// agentMarkers are set by coding agents in the commands they run. A fixed
+// list: the environment is never enumerated.
+var agentMarkers = []string{
+	"CLAUDECODE", "GEMINI_CLI", "CURSOR_AGENT",
+	"CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM",
+}
 
 var ciMarkers = []string{
 	"CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE",
@@ -40,10 +48,17 @@ func isTruthy(v string) bool {
 // isExplicitOn reports the only values of AGENTDECK_TELEMETRY that do NOT disable telemetry (they do not enable it either).
 func isExplicitOn(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
+	case "1", "true", "yes", "on", "log":
 		return true
 	}
 	return false
+}
+
+// LogMode reports AGENTDECK_TELEMETRY=log: nothing is ever sent and consent is
+// never granted; would-be uploads (with consent) or would-be events (without)
+// are written locally for inspection instead.
+func LogMode() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(EnvTelemetry)), "log")
 }
 
 // DisableReason explains why telemetry is off, for `telemetry status`.
@@ -51,7 +66,8 @@ type DisableReason string
 
 const (
 	ReasonNone         DisableReason = ""
-	ReasonEnvTelemetry DisableReason = "AGENTDECK_TELEMETRY is set (to a value other than 1/true/yes/on)"
+	ReasonEnvTelemetry DisableReason = "AGENTDECK_TELEMETRY is set (to a value other than 1/true/yes/on/log)"
+	ReasonTestBinary   DisableReason = "running inside a Go test binary"
 	ReasonEnvDNT       DisableReason = "DO_NOT_TRACK is set"
 	ReasonConfig       DisableReason = "[telemetry].disabled = true in config.toml"
 	ReasonConfigError  DisableReason = "config.toml could not be read, so telemetry is treated as disabled"
@@ -74,8 +90,14 @@ func SetConfigDisabled(disabled bool) {
 // SetConfigUnreadable marks config.toml as unparseable: the user may have written [telemetry].disabled = true there, so telemetry is treated as off.
 func SetConfigUnreadable() { configUnreadable = true }
 
+// testAllowed lifts the test-binary hard-off for one test (EnableForTest).
+var testAllowed bool
+
 // HardDisableReason returns the first hard-disable that applies, or ReasonNone.
 func HardDisableReason() DisableReason {
+	if testing.Testing() && !testAllowed {
+		return ReasonTestBinary
+	}
 	if v, ok := os.LookupEnv(EnvTelemetry); ok && !isExplicitOn(v) {
 		return ReasonEnvTelemetry
 	}
@@ -117,6 +139,27 @@ func InsideSession() bool {
 
 var isTerminalFn = func() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// AgentActor reports whether the person at this TTY is really an agent: the
+// process runs inside an agent-deck session or under a known coding agent.
+func AgentActor() bool {
+	if InsideSession() {
+		return true
+	}
+	for _, k := range agentMarkers {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// canRecord reports whether this process may record events at all: no hard
+// off, no CI, a terminal on stdin and stdout. Agents at a TTY are recorded
+// with actor=agent; they can never prompt or upload.
+func canRecord() bool {
+	return !HardDisabled() && !IsCI() && isTerminalFn()
 }
 
 // Interactive reports whether a human is plausibly at this terminal: stdin and stdout are TTYs, no CI marker is set, and the process is not inside an agent-deck session.
