@@ -315,12 +315,8 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 // command is read-only and the master has no channels left, retries once on a
 // dedicated connection.
 //
-// sshd caps concurrent channels per connection at MaxSessions (default 10).
-// agent-deck funnels every remote command through one ControlMaster per host,
-// so a host with a large session fleet can exhaust that cap; ssh then fails
-// the command with a channel-open refusal ("no more sessions", "open failed:
-// administratively prohibited") rather than a timeout, and the caller records
-// an unreachable/dead remote even though it is healthy (#2355).
+// sshd caps concurrent channels per connection at MaxSessions. When its
+// ControlMaster refuses a session, ssh reports that refusal on stderr (#2355).
 //
 // Only read-only verbs are retried. A refusal is not proof that nothing ran:
 // OpenSSH can fall back to a direct connection within the same invocation, so a
@@ -329,9 +325,81 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 // (errChannelInterrupted). The status poll's commands (list, costs summary,
 // group list) are all read-only, so this still covers the failure users see.
 func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string, readOnly bool) ([]byte, error) {
-	stdout, stderr, err := r.execSSH(ctx, r.sshBaseArgs(remoteCmd))
-	if err != nil && readOnly && isSSHChannelExhaustion(string(stderr)) {
-		out, retryStderr, retryErr := r.execSSH(ctx, dedicatedSSHArgs(r.Host, remoteCmd))
+	var stdout, stderr []byte
+	var err error
+	retried := false
+	if readOnly {
+		// OpenSSH may print the mux refusal, then try a fresh connection inside
+		// the same ssh process. That fallback can consume the whole deadline.
+		// Observe stderr while ssh runs so the dedicated attempt still has time.
+		sharedCtx, cancel := context.WithCancel(ctx)
+		type result struct {
+			stdout, stderr []byte
+			err            error
+		}
+		finished := make(chan result, 1)
+		refused := make(chan struct{}, 1)
+		go func() {
+			out, detail, runErr := r.execSSH(sharedCtx, r.sshBaseArgs(remoteCmd), refused)
+			finished <- result{out, detail, runErr}
+		}()
+		select {
+		case first := <-finished:
+			stdout, stderr, err = first.stdout, first.stderr, first.err
+		case <-refused:
+			if ctx.Err() != nil {
+				first := <-finished
+				stdout, stderr, err = first.stdout, first.stderr, first.err
+				break
+			}
+			retried = true
+			dedicatedCtx, dedicatedCancel := context.WithCancel(ctx)
+			dedicated := make(chan result, 1)
+			go func() {
+				out, detail, runErr := r.execSSH(dedicatedCtx, r.dedicatedSSHArgs(remoteCmd), nil)
+				dedicated <- result{out, detail, runErr}
+			}()
+			var retry result
+			sharedPending, dedicatedPending := true, true
+			recovered := false
+		recovery:
+			for sharedPending || dedicatedPending {
+				select {
+				case first := <-finished:
+					sharedPending = false
+					if first.err == nil {
+						dedicatedCancel()
+						if dedicatedPending {
+							<-dedicated
+						}
+						stdout, stderr, err = first.stdout, first.stderr, nil
+						recovered = true
+						break recovery
+					}
+				case retry = <-dedicated:
+					dedicatedPending = false
+					if retry.err == nil {
+						cancel()
+						if sharedPending {
+							<-finished
+						}
+						stdout, stderr, err = retry.stdout, retry.stderr, nil
+						recovered = true
+						break recovery
+					}
+				}
+			}
+			if !recovered {
+				stdout, stderr, err = retry.stdout, retry.stderr, retry.err
+			}
+			dedicatedCancel()
+		}
+		cancel()
+	} else {
+		stdout, stderr, err = r.execSSH(ctx, r.sshBaseArgs(remoteCmd), nil)
+	}
+	if !retried && err != nil && ctx.Err() == nil && readOnly && isSSHChannelExhaustion(string(stderr)) {
+		out, retryStderr, retryErr := r.execSSH(ctx, r.dedicatedSSHArgs(remoteCmd), nil)
 		if retryErr == nil {
 			r.logSSHStderr(ctx, retryStderr, false)
 			r.setLastStderr(retryStderr)
@@ -362,14 +430,30 @@ func (r *SSHRunner) runExec(ctx context.Context, remoteCmd string, readOnly bool
 }
 
 // execSSH runs one ssh invocation and returns stdout, stderr and the exit error.
-func (r *SSHRunner) execSSH(ctx context.Context, args []string) ([]byte, []byte, error) {
+func (r *SSHRunner) execSSH(ctx context.Context, args []string, refused chan<- struct{}) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.WaitDelay = sshWaitDelay
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
+	stderr := &sshStderrCapture{refused: refused}
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stderr = stderr
 	err := cmd.Run()
-	return stdout.Bytes(), stderr.Bytes(), err
+	return stdout.Bytes(), stderr.buf.Bytes(), err
+}
+
+type sshStderrCapture struct {
+	buf     bytes.Buffer
+	refused chan<- struct{}
+	emitted bool
+}
+
+func (s *sshStderrCapture) Write(p []byte) (int, error) {
+	n, err := s.buf.Write(p)
+	if !s.emitted && s.refused != nil && isSSHChannelExhaustion(s.buf.String()) {
+		s.emitted = true
+		s.refused <- struct{}{}
+	}
+	return n, err
 }
 
 // logSSHStderr records an ssh run's stderr at debug (success) or warn (failure).
@@ -383,37 +467,18 @@ func (r *SSHRunner) logSSHStderr(ctx context.Context, stderr []byte, failed bool
 	}
 }
 
-// dedicatedSSHArgs builds the argv for a one-shot connection that bypasses the
-// shared ControlMaster (ControlPath=none), so sshd's per-connection MaxSessions
-// cap cannot refuse it.
-func dedicatedSSHArgs(host, remoteCmd string) []string {
-	return []string{
-		"-o", "ControlPath=none",
-		"-o", "ConnectTimeout=10",
-		"-o", "BatchMode=yes",
-		host, remoteCmd,
-	}
+// dedicatedSSHArgs keeps the normal connection options and host config while
+// disabling reuse of the saturated ControlMaster for this one attempt.
+func (r *SSHRunner) dedicatedSSHArgs(remoteCmd string) []string {
+	return append([]string{"-o", "ControlPath=none"}, r.sshBaseArgs(remoteCmd)...)
 }
 
-// isSSHChannelExhaustion reports whether ssh's stderr describes a refused
-// session channel rather than a failed remote command.
-//
-// sshd logs MaxSessions exhaustion server-side as "no more sessions"
-// (session.c) and never sends that text to the client. What the client prints:
-//   - over a ControlMaster, the master answers MUX_S_FAILURE with "Session open
-//     refused by peer" (mux.c), so stderr carries "session open refused";
-//   - on a direct channel, the server sends reason SSH2_OPEN_CONNECT_FAILED
-//     with the default message "open failed" (serverloop.c), so stderr carries
-//     "open failed".
-//
-// "administratively prohibited" is deliberately NOT matched: a refused session
-// channel does not use that reason (it is for forwarding denials), so matching
-// it would retry on unrelated refusals.
+// isSSHChannelExhaustion recognizes the OpenSSH mux client's session-open
+// refusal. Generic "open failed" can describe forwarding or other channels;
+// "no more sessions" is an sshd log message, not proof in client stderr.
 func isSSHChannelExhaustion(stderr string) bool {
 	d := strings.ToLower(stderr)
-	return strings.Contains(d, "no more sessions") ||
-		strings.Contains(d, "open failed") ||
-		strings.Contains(d, "session open refused")
+	return strings.Contains(d, "mux_client_request_session: session request failed: session open refused by peer")
 }
 
 // lastStderrBox is lastStderr's storage: a pointer field on SSHRunner so

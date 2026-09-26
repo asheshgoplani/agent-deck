@@ -2,10 +2,12 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsSSHChannelExhaustion(t *testing.T) {
@@ -14,9 +16,10 @@ func TestIsSSHChannelExhaustion(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"sshd no more sessions", "channel 0: open failed: no more sessions", true},
+		{"sshd log text alone", "channel 0: open failed: no more sessions", false},
 		{"mux client refused", "mux_client_request_session: session request failed: Session open refused by peer", true},
-		{"direct channel refused", "channel 1: open failed: connect failed: open failed", true},
+		{"direct channel failure", "channel 1: open failed: connect failed: open failed", false},
+		{"unrelated open failure", "channel 2: open failed: administratively prohibited: open failed", false},
 		{"forwarding denial is not session exhaustion", "administratively prohibited: port forwarding not permitted", false},
 		{"ordinary remote failure", "Error: path does not exist", false},
 		{"timeout", "ssh: connect to host example.com port 22: Connection timed out", false},
@@ -44,7 +47,7 @@ case "$*" in
     exit 0
     ;;
 esac
-printf 'channel 0: open failed: no more sessions\n' >&2
+printf 'mux_client_request_session: session request failed: Session open refused by peer\n' >&2
 exit 255
 `
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
@@ -140,7 +143,7 @@ case "$*" in
     exit 7
     ;;
 esac
-printf 'channel 0: open failed: no more sessions\n' >&2
+printf 'mux_client_request_session: session request failed: Session open refused by peer\n' >&2
 exit 255
 `
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
@@ -163,5 +166,75 @@ exit 255
 	}
 	if calls := strings.Count(string(log), "\n"); calls != 2 {
 		t.Fatalf("expected a shared then a dedicated attempt, got %d ssh calls", calls)
+	}
+}
+
+func TestRunExecLeavesUnprovenFailuresUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name, stderr, status string
+	}{
+		{"timeout", "ssh: connect to host fixture port 22: Connection timed out", "timeout"},
+		{"unrelated channel", "channel 2: open failed: administratively prohibited: open failed", "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "calls")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSH_CALL_LOG\"\nprintf '%s\\n' \"$SSH_FAILURE\" >&2\nexit 255\n"
+			if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("SSH_CALL_LOG", logPath)
+			t.Setenv("SSH_FAILURE", tc.stderr)
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			r := &SSHRunner{Host: "fixture.example"}
+			_, err := r.runExec(context.Background(), "agent-deck list --json", true)
+			if err == nil || !strings.Contains(err.Error(), tc.stderr) {
+				t.Fatalf("original failure lost: %v", err)
+			}
+			if status, _ := remotePollError(err); status != tc.status {
+				t.Fatalf("classification=%q, want %q", status, tc.status)
+			}
+			calls, readErr := os.ReadFile(logPath)
+			if readErr != nil || strings.Count(string(calls), "\n") != 1 {
+				t.Fatalf("unproven failure must not retry: calls=%q readErr=%v", calls, readErr)
+			}
+		})
+	}
+}
+
+func TestRunExecDedicatedAttemptUsesOriginalDeadlineAndOptions(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$SSH_CALL_LOG"
+case "$*" in
+  *ControlPath=none*) sleep 1; printf '[]'; exit 0 ;;
+esac
+printf 'mux_client_request_session: session request failed: Session open refused by peer\n' >&2
+exit 255
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_CALL_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	r := &SSHRunner{Host: "fixture.example"}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := r.runExec(ctx, "agent-deck list --json", true)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error=%v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 750*time.Millisecond {
+		t.Fatalf("dedicated attempt exceeded original deadline: %s", elapsed)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[1], "ControlPath=none") || !strings.Contains(lines[1], "BatchMode=yes") || !strings.Contains(lines[1], "ConnectTimeout=10") {
+		t.Fatalf("dedicated args lost options: %q", calls)
 	}
 }
