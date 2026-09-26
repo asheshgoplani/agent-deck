@@ -360,6 +360,9 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 		"MODEL_ID_CATALOG",
 		"<label>MODEL ID</label>",
 		`<option value="">Tool default</option>`,
+		"gpt-6-astra",
+		"gpt-6-sol",
+		"gpt-6-luna",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
@@ -368,6 +371,7 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 		"gpt-5.4-mini",
 		"gpt-5.3-codex",
 		"o3-pro",
+		"claude-opus-5-5",
 		"claude-opus-5",
 		"claude-sonnet-5",
 		"claude-fable-5",
@@ -379,6 +383,7 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 		"gemini-3-flash-preview",
 		"gemini-2.5-flash-lite",
 		"openai/gpt-5.5",
+		"anthropic/claude-opus-5-5",
 		"anthropic/claude-opus-5",
 		"anthropic/claude-sonnet-5",
 		"anthropic/claude-fable-5",
@@ -407,6 +412,7 @@ func TestCreateSessionDialogUsesToolSpecificReasoningEffortCatalog(t *testing.T)
 		"minimal",
 		"xhigh",
 		"max",
+		"ultra",
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("CreateSessionDialog.js missing expected content %q", want)

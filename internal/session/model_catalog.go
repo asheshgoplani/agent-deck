@@ -5,6 +5,7 @@ func KnownModelIDsForTool(tool string) []string {
 	switch {
 	case IsClaudeCompatible(tool):
 		return []string{
+			"claude-opus-5-5",
 			"claude-opus-5",
 			"claude-sonnet-5",
 			"claude-fable-5-1",
@@ -36,6 +37,7 @@ func KnownModelIDsForTool(tool string) []string {
 			"openai/gpt-5.3-codex",
 			"openai/gpt-5",
 			"openai/o3",
+			"anthropic/claude-opus-5-5",
 			"anthropic/claude-opus-5",
 			"anthropic/claude-sonnet-5",
 			"anthropic/claude-fable-5-1",
@@ -47,6 +49,9 @@ func KnownModelIDsForTool(tool string) []string {
 		}
 	case IsCodexCompatible(tool):
 		return []string{
+			"gpt-6-astra",
+			"gpt-6-sol",
+			"gpt-6-luna",
 			"gpt-5.6-sol",
 			"gpt-5.6-terra",
 			"gpt-5.6-luna",

@@ -22,7 +22,7 @@
   -create-dir
     	Create the project directory when it does not exist
   -effort string
-    	Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh)
+    	Reasoning effort for this session (claude: low, medium, high, xhigh, max; codex: minimal, low, medium, high, xhigh, max, ultra)
   -extra-arg value
     	Extra claude CLI token (can specify multiple times); requires -c claude; persisted plaintext — no secrets
   -g string

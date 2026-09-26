@@ -27,11 +27,14 @@ const REASONING_EFFORT_CATALOG = {
     { value: 'medium', label: 'Medium' },
     { value: 'high', label: 'High' },
     { value: 'xhigh', label: 'Extra high' },
+    { value: 'max', label: 'Max' },
+    { value: 'ultra', label: 'Ultra' },
   ],
 }
 
 const MODEL_ID_CATALOG = {
   claude: [
+    { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
     { value: 'claude-opus-5', label: 'Claude Opus 5' },
     { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
     { value: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
@@ -43,6 +46,9 @@ const MODEL_ID_CATALOG = {
     { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 pinned' },
   ],
   codex: [
+    { value: 'gpt-6-astra', label: 'GPT-6 Astra' },
+    { value: 'gpt-6-sol', label: 'GPT-6 Sol' },
+    { value: 'gpt-6-luna', label: 'GPT-6 Luna' },
     { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
     { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
     { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
@@ -86,6 +92,7 @@ const MODEL_ID_CATALOG = {
     { value: 'openai/gpt-5.3-codex', label: 'OpenAI GPT-5.3 Codex' },
     { value: 'openai/gpt-5', label: 'OpenAI GPT-5' },
     { value: 'openai/o3', label: 'OpenAI o3' },
+    { value: 'anthropic/claude-opus-5-5', label: 'Anthropic Claude Opus 5.5' },
     { value: 'anthropic/claude-opus-5', label: 'Anthropic Claude Opus 5' },
     { value: 'anthropic/claude-sonnet-5', label: 'Anthropic Claude Sonnet 5' },
     { value: 'anthropic/claude-fable-5-1', label: 'Anthropic Claude Fable 5.1' },

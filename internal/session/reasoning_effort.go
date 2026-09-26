@@ -8,7 +8,7 @@ import (
 
 var (
 	claudeReasoningEfforts = []string{"low", "medium", "high", "xhigh", "max"}
-	codexReasoningEfforts  = []string{"minimal", "low", "medium", "high", "xhigh"}
+	codexReasoningEfforts  = []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 )
 
 // LaunchReasoningEffortsForTool returns the supported per-session effort

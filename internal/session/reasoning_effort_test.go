@@ -54,7 +54,8 @@ func TestApplyLaunchReasoningEffort_ValidatesPerToolValues(t *testing.T) {
 		effort string
 	}{
 		{tool: "claude", effort: "minimal"},
-		{tool: "codex", effort: "max"},
+		{tool: "claude", effort: "ultra"},
+		{tool: "codex", effort: "turbo"},
 		{tool: "shell", effort: "high"},
 	}
 	for _, tt := range tests {
@@ -71,7 +72,7 @@ func TestLaunchReasoningEffortsForTool(t *testing.T) {
 	if got := LaunchReasoningEffortsForTool("claude"); strings.Join(got, ",") != "low,medium,high,xhigh,max" {
 		t.Fatalf("Claude efforts = %v", got)
 	}
-	if got := LaunchReasoningEffortsForTool("codex"); strings.Join(got, ",") != "minimal,low,medium,high,xhigh" {
+	if got := LaunchReasoningEffortsForTool("codex"); strings.Join(got, ",") != "minimal,low,medium,high,xhigh,max,ultra" {
 		t.Fatalf("Codex efforts = %v", got)
 	}
 }

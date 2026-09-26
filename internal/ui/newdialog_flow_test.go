@@ -112,8 +112,8 @@ func TestNewSessionFlow_SpaceOpensModelListAndEnterPicks(t *testing.T) {
 	}
 	d = pressKey(d, tea.KeyDown)
 	d = pressKey(d, tea.KeyEnter)
-	if got := d.GetLaunchModelID(); got != "claude-opus-5" {
-		t.Fatalf("GetLaunchModelID() = %q, want claude-opus-5", got)
+	if got := d.GetLaunchModelID(); got != "claude-opus-5-5" {
+		t.Fatalf("GetLaunchModelID() = %q, want claude-opus-5-5", got)
 	}
 	if d.currentTarget() != focusReasoningEffort {
 		t.Fatalf("focus after picking a model = %v, want focusReasoningEffort", d.currentTarget())
