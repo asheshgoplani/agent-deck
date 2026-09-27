@@ -127,14 +127,17 @@ func (d *HookTrustDialog) View() string {
 		Render("It is new or changed since you last approved it. It runs as you, with your full environment.")
 
 	var facts strings.Builder
-	fmt.Fprintf(&facts, "repo     %s\n", id.RepoRoot)
-	fmt.Fprintf(&facts, "hook     %s\n", id.ScriptPath)
-	if id.ResolvedPath != id.ScriptPath {
-		fmt.Fprintf(&facts, "target   %s\n", id.ResolvedPath)
+	writeFact := func(label, value string) {
+		fmt.Fprintf(&facts, "%s%s\n", label, ansi.Truncate(git.SanitizeScriptLine(value), inner-len(label), "…"))
 	}
-	fmt.Fprintf(&facts, "command  %s\n", id.CommandLine())
-	fmt.Fprintf(&facts, "sha256   %s", id.SHA256)
-	factsBlock := lipgloss.NewStyle().Foreground(ColorText).Width(inner).MarginBottom(1).Render(facts.String())
+	writeFact("repo     ", id.RepoRoot)
+	writeFact("hook     ", id.ScriptPath)
+	if id.ResolvedPath != id.ScriptPath {
+		writeFact("target   ", id.ResolvedPath)
+	}
+	writeFact("command  ", id.CommandLine())
+	writeFact("sha256   ", id.SHA256)
+	factsBlock := lipgloss.NewStyle().Foreground(ColorText).Width(inner).MarginBottom(1).Render(strings.TrimSuffix(facts.String(), "\n"))
 
 	buttons := make([]string, 0, len(hookTrustChoices))
 	colors := []lipgloss.Color{ColorYellow, ColorRed, ColorAccent}
