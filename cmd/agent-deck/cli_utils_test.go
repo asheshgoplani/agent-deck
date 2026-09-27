@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -686,18 +688,25 @@ func TestShouldInheritParentGroup(t *testing.T) {
 	}
 }
 
-func TestErrorPayloadSizeHint_Bounded(t *testing.T) {
-	tests := map[int]int{
-		0:                       3,
-		5:                       8,
-		maxErrorPayloadHint - 3: maxErrorPayloadHint,
-		maxErrorPayloadHint:     maxErrorPayloadHint,
-		int(^uint(0) >> 1):      maxErrorPayloadHint,
-		-1:                      maxErrorPayloadHint,
+func TestErrorWithData_PreservesLargeExtraPayload(t *testing.T) {
+	const extraCount = 1025
+	extra := make(map[string]interface{}, extraCount)
+	for i := 0; i < extraCount; i++ {
+		extra[strconv.Itoa(i)] = i
 	}
-	for in, want := range tests {
-		if got := errorPayloadSizeHint(in); got != want {
-			t.Errorf("errorPayloadSizeHint(%d) = %d, want %d", in, got, want)
-		}
+	extra["success"] = true
+
+	output := captureStdout(t, func() {
+		NewCLIOutput(true, false).ErrorWithData("failed", "example", extra)
+	})
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(payload), extraCount+3; got != want {
+		t.Fatalf("payload fields = %d, want %d", got, want)
+	}
+	if payload["1024"] != float64(1024) || payload["success"] != false {
+		t.Fatalf("large payload lost its final field or reserved success value")
 	}
 }

@@ -633,28 +633,13 @@ func (c *CLIOutput) Error(message string, code string) {
 	c.ErrorWithData(message, code, nil)
 }
 
-// maxErrorPayloadHint caps the map size hint ErrorWithData pre-allocates. The
-// map still grows past it if extra is larger; the cap only keeps the hint
-// arithmetic bounded.
-const maxErrorPayloadHint = 1024
-
-// errorPayloadSizeHint returns the pre-allocation hint for an error payload
-// carrying extraLen extra fields plus the three reserved keys.
-func errorPayloadSizeHint(extraLen int) int {
-	const reserved = 3
-	if extraLen < 0 || extraLen > maxErrorPayloadHint-reserved {
-		return maxErrorPayloadHint
-	}
-	return extraLen + reserved
-}
-
 // ErrorWithData prints an error message or JSON error response with extra
 // machine-checkable fields merged into the JSON payload (e.g. the `delivery`
 // status of `session send`, issue #1413). The reserved success/error/code
 // keys always win over extra entries.
 func (c *CLIOutput) ErrorWithData(message string, code string, extra map[string]interface{}) {
 	if c.jsonMode {
-		payload := make(map[string]interface{}, errorPayloadSizeHint(len(extra)))
+		payload := make(map[string]interface{})
 		for k, v := range extra {
 			payload[k] = v
 		}

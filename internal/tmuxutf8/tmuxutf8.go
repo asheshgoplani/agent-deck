@@ -74,13 +74,13 @@ const MaxArgs = 1 << 20
 // pre-built command line twice cannot produce `tmux -u -u …`. It panics when
 // args holds MaxArgs or more elements.
 func Prepend(args []string) []string {
+	if len(args) >= MaxArgs {
+		panic("tmux argument list too large")
+	}
 	if len(args) > 0 && args[0] == Flag {
 		out := make([]string, len(args))
 		copy(out, args)
 		return out
-	}
-	if len(args) >= MaxArgs {
-		panic("tmux argument list too large")
 	}
 	out := make([]string, 0, len(args)+1)
 	out = append(out, Flag)

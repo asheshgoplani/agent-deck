@@ -143,3 +143,14 @@ func TestPrepend_RejectsOversizedArgv(t *testing.T) {
 	}()
 	tmuxutf8.Prepend(make([]string, tmuxutf8.MaxArgs))
 }
+
+func TestPrepend_RejectsOversizedPrefixedArgv(t *testing.T) {
+	args := make([]string, tmuxutf8.MaxArgs)
+	args[0] = tmuxutf8.Flag
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Prepend(-u, MaxArgs) did not panic")
+		}
+	}()
+	tmuxutf8.Prepend(args)
+}
