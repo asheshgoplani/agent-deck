@@ -702,15 +702,15 @@ func sweepForeignSymlinks(dest, source string) error {
 //     only token copy is not stranded behind a dangling symlink. The next
 //     start, once canonical exists, replaces it with the symlink.
 //
-// Why no mtime-promote (removed; see the OAuth root-cause memo and the
-// disassembly of Claude v2.1.159 in /tmp/oauth-fix/SUBSCRIPTION-FIX.md):
-// Anthropic OAuth uses single-use ROTATING refresh tokens, so a scratch copy's
-// mtime is NOT a "this token is newer/valid" signal. The previous code promoted
-// a strictly-newer scratch real-file to canonical, which could overwrite a good
-// canonical with a stale (or already-rotated-out) scratch token and fork a
-// second rotation chain — re-introducing the `invalid_grant` /login race for
-// every session sharing that profile. Claude re-reads .credentials.json on
-// expiry and serializes refreshes on a cross-process lock keyed by
+// Why no mtime-promote (removed; this matches Claude Code's own
+// realpath-keyed lock behavior): Anthropic OAuth uses single-use ROTATING
+// refresh tokens, so a scratch copy's mtime is NOT a "this token is
+// newer/valid" signal. The previous code promoted a strictly-newer scratch
+// real-file to canonical, which could overwrite a good canonical with a stale
+// (or already-rotated-out) scratch token and fork a second rotation chain —
+// re-introducing the `invalid_grant` /login race for every session sharing
+// that profile. Claude re-reads .credentials.json on expiry and serializes
+// refreshes on a cross-process lock keyed by
 // realpath(); collapsing every scratch to ONE canonical symlink is what makes
 // that lock actually serialize the workers. The load-bearing invariant is
 // therefore "the scratch credentials must always be a symlink to the one

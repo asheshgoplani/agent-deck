@@ -126,8 +126,8 @@ func TestMirrorProfileEntries_CorrectCredentialSymlink_LeftAlone(t *testing.T) {
 // (d) NO-PROMOTE (subscription OAuth fix): a scratch real-file even NEWER than
 // canonical (a diverged in-session /login, or an mtime-bumped stale copy) must
 // be force-replaced with a clean symlink to canonical, and canonical must NEVER
-// be overwritten. Binary disassembly of Claude v2.1.159 showed mtime is not a
-// valid-token signal for single-use rotating refresh tokens, so the old
+// be overwritten. Matching Claude Code's own realpath-keyed lock behavior, mtime
+// is not a valid-token signal for single-use rotating refresh tokens, so the old
 // mtime-promote could clobber a good canonical with a stale scratch token and
 // fork a second rotation chain. The single canonical token is the only source
 // of truth; in-session /login must be done in the canonical profile instead.

@@ -817,6 +817,19 @@ profile takes a resume flag — see [docs/tools/deepseek.md](docs/tools/deepseek
 
 Hide tools you don't use from the new-session picker with `[ui].hidden_tools` (applies to TUI and web; `shell` is always available).
 
+#### Vendor terms and logins
+
+**Claude Code.** Agent Deck runs the unmodified `claude` CLI with your own login and never reads, copies or reuses a login token to call Anthropic itself. Plan limits assume ordinary individual use, so for heavy many-session or unattended orchestration use an API key or a Team/Enterprise plan. For long-lived logins in sandboxes or on always-on hosts, create a token with Anthropic's own `claude setup-token` and pass it as `CLAUDE_CODE_OAUTH_TOKEN` through the existing `env_file` setting (a file containing `export CLAUDE_CODE_OAUTH_TOKEN=...`, mode 0600):
+
+```bash
+claude setup-token
+```
+
+```toml
+[claude]
+env_file = "~/.config/agent-deck/claude-token.env"
+```
+
 ### Cost Tracking Dashboard
 
 Track token usage and costs across all your AI agent sessions in real-time.

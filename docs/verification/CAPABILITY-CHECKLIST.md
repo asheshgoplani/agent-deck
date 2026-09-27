@@ -1,10 +1,10 @@
 # agent-deck Capability Verification Checklist
 
-Derived from `01-CAPABILITY-SPEC.md` — 229 capabilities, 403 capability×surface rows.
+Derived from `01-CAPABILITY-SPEC.md` — 227 capabilities, 399 capability×surface rows. CAP-CLI-041 and CAP-WATCH-013 (`creds-refresh`) were removed with the command; their IDs are retired.
 
 **Status legend:** `verified` · `broken` · `partial` · `untestable-locally` · `deferred` · `pending`.
 
-**Totals:** broken=1 · partial=43 · pending=115 · untestable-locally=29 · verified=215
+**Totals:** broken=1 · partial=43 · pending=115 · untestable-locally=27 · verified=213
 
 ## CAP-SESS (13 caps, 32 rows) — partial:2, pending:11, untestable-locally:1, verified:18
 
@@ -43,7 +43,7 @@ Derived from `01-CAPABILITY-SPEC.md` — 229 capabilities, 403 capability×surfa
 | CAP-SESS-011 | CLI |  | verified | 2026-06-11 | evidence/sess/ev-CAP-SESS-011-CLI.txt | Hard-killing the tmux session (simulating pane/agent death) flips status from idle to error on the next UpdateStatus pol |
 | CAP-SESS-013 | CLI |  | verified | 2026-06-11 | evidence/sess/ev-CAP-SESS-013-CLI.txt | Started grpsess1 with TELEGRAM_BOT_TOKEN=SECRET in parent env. tmux session env contains NO TELEGRAM var; child shell ex |
 
-## CAP-CLI (49 caps, 57 rows) — partial:9, pending:1, untestable-locally:5, verified:42
+## CAP-CLI (48 caps, 55 rows) — partial:9, pending:1, untestable-locally:4, verified:41
 
 | CAP-ID | Surface | Capability | Status | Verified | Evidence | Notes |
 |---|---|---|---|---|---|---|
@@ -88,7 +88,6 @@ Derived from `01-CAPABILITY-SPEC.md` — 229 capabilities, 403 capability×surfa
 | CAP-CLI-038 | CLI | run-task (one-shot worker completion wrapper) | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-038-CLI.txt | run-task --child <valid-id> -- echo TASKRAN runs the command verbatim (stdout passes through), exit 0; worker nonzero ex |
 | CAP-CLI-039 | CLI | inbox / inbox drain | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-039-CLI.txt | inbox drain resolves caller id from AGENTDECK_INSTANCE_ID (and explicit id), emits '[]' (never null) in --json and 'No p |
 | CAP-CLI-040 | CLI | costs sync/summary/recompute | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-040-CLI.txt | costs summary --json emits the RemoteCostSummary wire shape (cost_today/yesterday/this_week/last_week/this_month/last_mo |
-| CAP-CLI-041 | CLI | creds-refresh (OAuth keep-warm daemon) | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-041-CLI.txt | creds-refresh --once with no .credentials.json in default/specified dirs -> 'no profile config dir with a .credentials.j |
 | CAP-CLI-042 | CLI | openclaw / oc sync\|bridge\|status\|list\|send | partial | 2026-06-11 | evidence/cli/ev-CAP-CLI-042-CLI.txt | CLI front door verified: openclaw list/status and the 'oc' alias connect to the configured gateway (default ws 127.0.0.1 |
 | CAP-CLI-043 | CLI | remote add/remove/list/sessions/attach/rename/update | partial | 2026-06-11 | evidence/cli/ev-CAP-CLI-043-CLI.txt | add persists [remotes.<name>] to config.toml (host/agent_deck_path/profile) and the ssh CheckBinary probe failing only w |
 | CAP-CLI-044 | CLI | web (TUI+HTTP server, or headless --no-tui) | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-044-CLI.txt | Security gate: 'web --no-tui --listen 0.0.0.0:PORT' without --token is REFUSED (exit 1) with the exact RCE-surface messa |
@@ -102,7 +101,6 @@ Derived from `01-CAPABILITY-SPEC.md` — 229 capabilities, 403 capability×surfa
 | CAP-CLI-028 | daemon |  | untestable-locally | 2026-06-11 | evidence/cli/ev-CAP-CLI-028-CLI.txt | Heartbeat launchd/systemd daemon + bridge.py + transition-notifier as long-lived daemons require a real systemd/launchd  |
 | CAP-CLI-035 | daemon |  | untestable-locally | 2026-06-11 | evidence/cli/ev-CAP-CLI-035-CLI.txt | The daemon-side consumers (transition notifier reading these status files, DrainForStopHook stdout block injection) are  |
 | CAP-CLI-037 | daemon |  | untestable-locally | 2026-06-11 | evidence/cli/ev-CAP-CLI-037-CLI.txt | The long-lived daemon loop (SIGINT/SIGTERM context, watchBinaryVersion re-exec every 60s, #1214 stale-daemon recycle) is |
-| CAP-CLI-041 | daemon |  | untestable-locally | 2026-06-11 | evidence/cli/ev-CAP-CLI-041-CLI.txt | The actual OAuth refresh-token exchange against Anthropic, atomic rewrite under proper-lockfile, and the SIGINT/SIGTERM  |
 | CAP-CLI-044 | web |  | verified | 2026-06-11 | evidence/cli/ev-CAP-CLI-044-WEB.png | web --no-tui boots headless ('Headless mode: TUI disabled', 'Web server: http://127.0.0.1:8492'); GET /api/sessions retu |
 
 ## CAP-TUI (37 caps, 44 rows) — partial:7, pending:3, verified:34
@@ -390,7 +388,7 @@ Derived from `01-CAPABILITY-SPEC.md` — 229 capabilities, 403 capability×surfa
 | CAP-COND-010 | Filesystem |  | verified | 2026-06-11 | evidence/cond/ev-CAP-COND-010-templates.txt | Per-conductor instruction file rendered: alpha CLAUDE.md has {NAME}=alpha, {PROFILE}=default, {AGENT}=Claude Code substi |
 | CAP-COND-010 | internal |  | untestable-locally | 2026-06-11 | evidence/cond/ev-CAP-COND-010-templates.txt | ClearOnCompact runtime behavior (blocking claude auto-compaction and sending /clear via instructions) requires driving t |
 
-## CAP-WATCH (13 caps, 30 rows) — partial:4, pending:6, untestable-locally:2, verified:18
+## CAP-WATCH (12 caps, 28 rows) — partial:4, pending:6, untestable-locally:1, verified:17
 
 | CAP-ID | Surface | Capability | Status | Verified | Evidence | Notes |
 |---|---|---|---|---|---|---|
@@ -415,7 +413,6 @@ Derived from `01-CAPABILITY-SPEC.md` — 229 capabilities, 403 capability×surfa
 | CAP-WATCH-011 | TUI | Budget limits (warn/stop) | partial | 2026-06-11 | evidence/watch/ev-CAP-WATCH-011-CLI.txt | BudgetConfig [costs.budgets] daily/weekly/monthly (and per-group daily_limit) parses cleanly from config.toml; costs sum |
 | CAP-WATCH-012 | TUI | System stats collection + formatting | verified | 2026-06-11 | evidence/watch/ev-CAP-WATCH-TUI-home.txt | sysinfo Collector renders the tmux/header status segment: '⚙ 0% │ ⛁ 19.3G/62.5G │ ▪ 1543.6G/1831.7G' (CPU first-sample 0 |
 | CAP-WATCH-012 | WEB | System stats collection + formatting | pending |  |  |  |
-| CAP-WATCH-013 | CLI | Credential keep-warm refresh daemon (creds-refresh) | verified | 2026-06-11 | evidence/watch/ev-CAP-WATCH-013-CLI.txt | creds-refresh --once full lifecycle: (a) no .credentials.json dir -> error exit 1 (contract: only non-zero on no-config- |
 | CAP-WATCH-002 | CLI |  | verified | 2026-06-11 | evidence/watch/ev-CAP-WATCH-002-CLI.txt | github adapter create requires secret: via $GITHUB_WEBHOOK_SECRET env OR --secret-file (chmod 600); secret persisted to  |
 | CAP-WATCH-002 | daemon |  | partial | 2026-06-11 | evidence/watch/ev-CAP-WATCH-002-CLI.txt | WebhookAdapter and GitHubAdapter create+persist verified. ntfy/slack create OK. Gmail adapter: per contract v2 notes it  |
 | CAP-WATCH-005 | CLI |  | verified | 2026-06-11 | evidence/watch/ev-CAP-WATCH-005-CLI.txt | watcher test drives synthetic event through router: unrouted -> 'would go to triage'; routed -> resolves conductor/group |
@@ -423,7 +420,6 @@ Derived from `01-CAPABILITY-SPEC.md` — 229 capabilities, 403 capability×surfa
 | CAP-WATCH-008 | none |  | untestable-locally | 2026-06-11 | evidence/watch/ev-CAP-WATCH-007-CLI.txt | Cost parsers (gemini/openai/minimax) + CostPoller tmux capture-pane polling are DEAD CODE at runtime per spec (NewCostPo |
 | CAP-WATCH-009 | web |  | verified | 2026-06-11 | evidence/watch/ev-CAP-WATCH-009-WEB.txt | GET /api/costs/summary returns {today_usd,week_usd,month_usd,projected_usd,*_events} 200; /api/costs/daily -> [] 200; /a |
 | CAP-WATCH-012 | web |  | verified | 2026-06-11 | evidence/watch/ev-CAP-WATCH-012-WEB.txt | GET /api/system/stats -> 200 with cpu{usage_percent}, disk{total/used bytes+human, usage_percent}, load{load1/5/15 from  |
-| CAP-WATCH-013 | daemon |  | untestable-locally | 2026-06-11 | evidence/watch/ev-CAP-WATCH-013-CLI.txt | Daemon loop (Run() immediate tick + every 25m interval, systemd --user unit) and the real lock-dir contention against li |
 
 ## CAP-MISC (19 caps, 34 rows) — partial:3, pending:14, untestable-locally:6, verified:11
 

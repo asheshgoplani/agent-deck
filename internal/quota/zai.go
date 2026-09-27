@@ -48,9 +48,9 @@ const zaiAnthropicPathSuffix = "/api/anthropic"
 var maxZaiBodyBytes int64 = 256 << 10
 
 // DefaultZaiTimeout matches the repo's existing outbound norm (see
-// internal/credrefresh and internal/update, both 5-10s). This request is
-// user-triggered and never runs on a render path, so the ceiling only has to be
-// short enough that `agent-deck usage` stays interactive.
+// internal/update, 5-10s). This request is user-triggered and never runs on a
+// render path, so the ceiling only has to be short enough that
+// `agent-deck usage` stays interactive.
 const DefaultZaiTimeout = 10 * time.Second
 
 // zaiResponse is the monitor payload. Decoding is deliberately tolerant:

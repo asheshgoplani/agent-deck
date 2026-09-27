@@ -75,7 +75,6 @@ var excludedCommands = []excludedCommand{
 	{"notify-daemon", "starts a long-running daemon"},
 	{"run-task", "executes an arbitrary configured task"},
 	{"telegram-doctor", "contacts the Telegram API (network)"},
-	{"creds-refresh", "refreshes OAuth credentials (network)"},
 	{"feedback", "sends telemetry/feedback to a remote endpoint"},
 	{"debug-dump", "captures live PIDs/goroutine state into a ring-buffer dump; not byte-stable by design"},
 	{"recall", "unbounded scan of real Claude conversation transcripts on the host, outside the sandbox"},
@@ -255,7 +254,7 @@ func helpSpecs() []goldenSpec {
 		"hermes-hooks", "cursor-hooks", "tmux-hooks", "pi-hooks", "deepseek", "group",
 		"worktree", "usage", "recall", "web", "remote", "conductor", "agents", "agent",
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
-		"uninstall", "completion", "costs", "config", "inbox", "feedback", "creds-refresh",
+		"uninstall", "completion", "costs", "config", "inbox", "feedback",
 		"watcher", "openclaw", "system", "mcp-proxy", "hooks", "hook-handler", "codex-notify",
 		"notify-daemon", "run-task",
 	}

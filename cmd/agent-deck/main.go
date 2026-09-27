@@ -312,6 +312,19 @@ func configureEventProfile(profile string) error {
 	return nil
 }
 
+// credsRefreshRemovedIn is the release that removed the creds-refresh command.
+const credsRefreshRemovedIn = "v1.16.21"
+
+// printCredsRefreshRemoved answers a leftover `agent-deck creds-refresh`
+// invocation, typically an old systemd user unit. It exits 0 on purpose: that
+// unit has Restart=always, so a non-zero exit would crash-loop every 30 s.
+// The command is not in commandRegistry, so it stays out of help, completion
+// and remote-agent dispatch. Drop this stub two releases after
+// credsRefreshRemovedIn.
+func printCredsRefreshRemoved() {
+	fmt.Printf("creds-refresh was removed in %s. Disable any old unit with: systemctl --user disable --now agent-deck-creds-refresh. For long-lived logins use: claude setup-token (see README \"Vendor terms and logins\").\n", credsRefreshRemovedIn)
+}
+
 func main() {
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
@@ -327,6 +340,10 @@ func main() {
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
+	if len(args) > 0 && args[0] == "creds-refresh" {
+		printCredsRefreshRemoved()
+		return
+	}
 	applyProfileFlag(profile)
 	if err := configureEventProfile(profile); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to resolve events profile: %v\n", err)
@@ -595,9 +612,6 @@ func main() {
 			return
 		case "feedback":
 			handleFeedback(args[1:])
-			return
-		case "creds-refresh":
-			handleCredsRefresh(args[1:])
 			return
 		case "debug-dump":
 			if helpRequested(args[1:]) {
@@ -1451,7 +1465,7 @@ var commandRegistry = map[string]bool{
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
-	"run-task": true, "inbox": true, "feedback": true, "creds-refresh": true, "telemetry": true,
+	"run-task": true, "inbox": true, "feedback": true, "telemetry": true,
 	"debug-dump": true, "version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true, "completion": true,
 	"__complete": true,

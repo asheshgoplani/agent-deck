@@ -109,7 +109,9 @@ var (
 	onboardingSteps = append([]string{"none"}, milestoneNames[:6]...)
 )
 
-// FeatureValues is the feature enum (feature.daily).
+// FeatureValues is the feature enum (feature.daily). "creds_refresh" is
+// deprecated: the command was removed, but older clients still send it, so it
+// stays valid here.
 var FeatureValues = []string{
 	"fork", "restart", "restart_all", "rename", "move_group", "group_create", "search", "filter",
 	"worktree_create", "worktree_finish", "mcp_attach", "mcp_detach", "skill_attach", "plugin_install",

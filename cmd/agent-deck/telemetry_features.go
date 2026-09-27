@@ -73,7 +73,6 @@ var cliFeatures = map[string]cliFeature{
 	"deepseek":        {feature: "deepseek"},
 	"inbox":           {feature: "inbox_drain"},
 	"feedback":        {feature: "feedback"},
-	"creds-refresh":   {feature: "creds_refresh"},
 }
 
 // cliFeatureFor returns the feature a subcommand counts and whether the
