@@ -5924,33 +5924,39 @@ type freshOutputConfig struct {
 var freshOutputTestConfig *freshOutputConfig
 
 // waitForCodexTurnOutput bridges the ordering gap between Codex's completion
-// hook and the final rollout append. Content and timestamps are insufficient:
-// consecutive turns can legitimately emit identical replies, so only the
-// exact accepted thread:turn generation can satisfy this read.
-func waitForCodexTurnOutput(inst *session.Instance, generation string, _ time.Time) (*session.ResponseOutput, error) {
+// signal and the final rollout append. Content and timestamps are
+// insufficient: consecutive turns can legitimately emit identical replies, so
+// only the exact accepted thread:turn generation can satisfy this read.
+//
+// The status heuristic that precedes this read can report a long Codex turn
+// as finished while it is still running (a quiet pane during a long tool
+// call), so the read polls until the caller's --wait deadline rather than a
+// fixed flush window of its own (#2395). task_complete is only written when
+// the turn ends, so a running turn can never satisfy it early.
+func waitForCodexTurnOutput(inst *session.Instance, generation string, deadline time.Time) (*session.ResponseOutput, error) {
 	if inst == nil || generation == "" {
 		return nil, fmt.Errorf("accepted Codex turn identity is unavailable")
 	}
 	pollInterval := 250 * time.Millisecond
-	timeout := 5 * time.Second
 	if cfg := freshOutputTestConfig; cfg != nil {
 		pollInterval = cfg.pollInterval
-		timeout = cfg.timeout
 	}
-	deadline := time.Now().Add(timeout)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	for {
 		resp, err := inst.GetLastResponseBestEffort()
 		if err == nil && resp.CodexTurnGeneration == generation {
 			return resp, nil
 		}
 		lastErr = err
-		time.Sleep(pollInterval)
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(min(pollInterval, max(time.Until(deadline), time.Millisecond)))
 	}
 	if lastErr != nil {
-		return nil, fmt.Errorf("read Codex turn %s: %w", generation, lastErr)
+		return nil, fmt.Errorf("Codex turn %s did not complete within the --timeout budget: %w", generation, lastErr)
 	}
-	return nil, fmt.Errorf("Codex turn %s was not flushed before timeout", generation)
+	return nil, fmt.Errorf("Codex turn %s did not complete within the --timeout budget", generation)
 }
 
 // waitForFreshOutput polls the session's JSONL file until it contains an assistant
