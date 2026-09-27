@@ -3210,6 +3210,10 @@ func (i *Instance) DetectCodexSession() {
 func (i *Instance) resolveCodexDetectionCandidate(sessionID string, probeErr error) string {
 	sessionID = i.filterCodexProcessProbeCandidate(sessionID)
 	if sessionID == "" && probeErr == nil {
+		if threadID, live := i.liveCodexBootstrapEvidence(); live {
+			i.recordCodexOwnership(threadID)
+			return threadID
+		}
 		var pass StatusUpdatePass
 		// Warm evidence before serializing selection; no subprocess holds the
 		// bootstrap mutex, including asynchronous startup detection.
@@ -4172,6 +4176,17 @@ func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forcePr
 	// Only allow unscoped fallback when we don't have a known session ID yet.
 	allowUnscoped := envSessionID == "" && i.CodexSessionID == "" && i.CodexStartedAt > 0
 	if !i.shouldScanCodexSession(allowUnscoped) {
+		return missingProbeDep
+	}
+	if threadID, live := i.liveCodexBootstrapEvidence(); live {
+		if threadID != "" {
+			i.CodexSessionID = threadID
+			i.CodexDetectedAt = time.Now()
+			i.recordCodexOwnership(threadID)
+			if i.tmuxSession != nil && i.tmuxSession.Exists() {
+				_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", threadID)
+			}
+		}
 		return missingProbeDep
 	}
 

@@ -4278,10 +4278,10 @@ func (g *codexAcceptanceGuard) ResolveAccepted() error {
 
 // hydrateLegacyCodexIdentity repairs the narrow upgrade case where a live,
 // local Codex pane already owns an exact rollout but its database row predates
-// durable Codex identity tracking. The pane environment is the authority; disk
-// scans and terminal text are deliberately not identity sources here. Without
-// a pane identity, the one thread the pane's live Codex process holds open is
-// used instead: a fresh composer owns its thread before any rollout exists.
+// durable Codex identity tracking. The one thread the pane's live Codex
+// process holds open is the authority (a fresh composer owns its thread before
+// any rollout exists); without it, the pane environment is used. Disk scans and
+// terminal text are deliberately not identity sources here.
 func hydrateLegacyCodexIdentity(
 	inst *session.Instance,
 	peers []*session.Instance,
@@ -4300,9 +4300,11 @@ func hydrateLegacyCodexIdentity(
 
 	candidate := liveCodexSessionID(inst)
 	processOwned := false
-	if candidate == "" {
-		candidate = inst.LiveCodexThreadID()
-		processOwned = candidate != ""
+	// The thread the pane's live Codex process holds open outranks the pane
+	// value: panes from earlier builds can carry a disk-scan guess naming a
+	// sibling's rollout (#2394).
+	if live := inst.LiveCodexThreadID(); live != "" {
+		candidate, processOwned = live, true
 	}
 	if candidate == "" {
 		return errCodexIdentityUnavailable

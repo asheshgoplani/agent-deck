@@ -99,3 +99,21 @@ func (i *Instance) LiveCodexThreadID() string {
 	}
 	return owned
 }
+
+// liveCodexBootstrapEvidence reports what the pane's live Codex process says
+// about this instance's thread, for the bootstrap paths that would otherwise
+// guess from a disk scan. live is true when a Codex process runs in the pane:
+// then only the thread it holds open may bind ("" while it owns none yet, or
+// when the probe is incomplete or ambiguous). A disk scan at that point can
+// only find someone else's rollout, such as a sibling's in the same project,
+// since this process has not written one (#2394).
+func (i *Instance) liveCodexBootstrapEvidence() (threadID string, live bool) {
+	if i == nil || !IsCodexCompatible(i.Tool) || !i.CodexRolloutIsResolvableLocally() {
+		return "", false
+	}
+	pids, err := codexPaneProcessPIDs(i)
+	if err != nil || len(pids) == 0 {
+		return "", false
+	}
+	return i.filterCodexProcessProbeCandidate(i.LiveCodexThreadID()), true
+}
