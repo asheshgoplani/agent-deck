@@ -112,8 +112,11 @@ func (i *Instance) liveCodexBootstrapEvidence() (threadID string, live bool) {
 		return "", false
 	}
 	pids, err := codexPaneProcessPIDs(i)
-	if err != nil || len(pids) == 0 {
+	if len(pids) == 0 {
 		return "", false
+	}
+	if err != nil {
+		return "", true // Codex is live but the probe is incomplete: bind nothing
 	}
 	return i.filterCodexProcessProbeCandidate(i.LiveCodexThreadID()), true
 }

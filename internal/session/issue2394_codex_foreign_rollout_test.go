@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -61,6 +62,23 @@ func TestIssue2394_BootstrapScanDoesNotAdoptForeignRolloutWhileLiveProcessOwnsNo
 	inst.UpdateCodexSession(map[string]bool{})
 	if inst.CodexSessionID != "" {
 		t.Fatalf("bound a sibling's rollout %q while the live process owns no thread", inst.CodexSessionID)
+	}
+}
+
+// A probe that finds the pane's Codex process but also errors on another pane
+// PID (a short-lived child exiting mid-walk) is incomplete, not proof that no
+// Codex runs: the disk scan must not rebind a sibling's rollout.
+func TestIssue2394_BootstrapScanDoesNotAdoptForeignRolloutOnProbeError(t *testing.T) {
+	inst, codexHome := newUnboundCodexForBootstrap(t)
+	foreign := uniqueSID(t)
+	seedProjectRollout(t, codexHome, foreign, inst.ProjectPath)
+
+	stubCodexPaneProcessPIDs(t, []int{4242}, errors.New("codex process probe: inspect pid 4243: exit status 1"))
+	stubCodexPaneOpenPaths(t, []string{"/dev/null"}, nil)
+
+	inst.UpdateCodexSession(map[string]bool{})
+	if inst.CodexSessionID != "" {
+		t.Fatalf("bound a sibling's rollout %q after an incomplete process probe", inst.CodexSessionID)
 	}
 }
 
