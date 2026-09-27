@@ -47,14 +47,43 @@ type ModelProbeResult struct {
 
 // modelProber describes how to ask one CLI for its model list.
 type modelProber struct {
-	binary string
+	// name keys the memo, the cache file and log lines. It is a constant, so
+	// a tool name from a request never reaches a path or a log entry.
+	name   string
+	binary func() string
 	args   []string
 	parse  func([]byte) (*ModelProbeResult, error)
 }
 
-// modelProbers holds the tools that can answer. Keyed by tool kind.
-var modelProbers = map[string]modelProber{
-	"codex": {binary: "codex", args: []string{"debug", "models"}, parse: parseCodexDebugModels},
+var codexModelProber = modelProber{name: "codex", binary: codexProbeBinary, args: []string{"debug", "models"}, parse: parseCodexDebugModels}
+
+// modelProbers lists the tools that can answer.
+var modelProbers = []modelProber{codexModelProber}
+
+// modelProberFor returns the prober for a tool kind. A switch, not a map
+// lookup, so the returned prober never carries the caller's string.
+func modelProberFor(kind string) (modelProber, bool) {
+	switch kind {
+	case "codex":
+		return codexModelProber, true
+	}
+	return modelProber{}, false
+}
+
+// codexProbeBinary is the executable of the configured [codex] command, so
+// the catalog comes from the Codex that sessions actually launch. Leading
+// VAR=value assignments are skipped; an empty command means "codex".
+func codexProbeBinary() string {
+	for _, field := range strings.Fields(GetCodexCommand()) {
+		if isShellEnvAssignment(field) {
+			continue
+		}
+		if token := strings.Trim(field, `"'`); token != "" {
+			return token
+		}
+		break
+	}
+	return "codex"
 }
 
 const (
@@ -99,8 +128,9 @@ type modelProbeMemo struct {
 }
 
 var (
-	modelProbeMu    sync.Mutex
-	modelProbeMemos = map[string]*modelProbeMemo{}
+	modelProbeMu       sync.Mutex
+	modelProbeMemos    = map[string]*modelProbeMemo{}
+	modelProbeInFlight = map[string]bool{}
 )
 
 // ResetModelProbeMemo drops the in-memory probe results so the next lookup
@@ -110,6 +140,7 @@ func ResetModelProbeMemo() {
 	modelProbeMu.Lock()
 	defer modelProbeMu.Unlock()
 	modelProbeMemos = map[string]*modelProbeMemo{}
+	modelProbeInFlight = map[string]bool{}
 }
 
 // modelProbeEnabled reports whether probing is allowed in this process.
@@ -122,46 +153,64 @@ func modelProbeEnabled() bool {
 }
 
 // probedModelCatalog returns the probe result for a tool kind, or nil when the
-// tool has no prober, probing is off, or the probe failed.
+// tool has no prober, probing is off, or the probe failed. The CLI runs
+// outside the lock: while one caller probes, others get the previous result
+// (or nil, meaning the static catalog) instead of waiting on it.
 func probedModelCatalog(kind string) *ModelProbeResult {
-	prober, ok := modelProbers[kind]
+	prober, ok := modelProberFor(kind)
 	if !ok || !modelProbeEnabled() {
 		return nil
 	}
+	name := prober.name
 	now := time.Now()
 
 	modelProbeMu.Lock()
-	defer modelProbeMu.Unlock()
-	memo := modelProbeMemos[kind]
+	memo := modelProbeMemos[name]
 	if memo != nil && now.Sub(memo.checkedAt) < modelProbeRecheck {
+		modelProbeMu.Unlock()
 		return memo.result
 	}
+	if modelProbeInFlight[name] {
+		modelProbeMu.Unlock()
+		if memo != nil {
+			return memo.result
+		}
+		return nil
+	}
 
-	key, err := modelProbeBinaryKey(prober.binary)
+	key, err := modelProbeBinaryKey(prober.binary())
 	if err != nil {
 		// Not installed: remember the miss so we do not LookPath per keystroke.
-		modelProbeMemos[kind] = &modelProbeMemo{checkedAt: now}
+		modelProbeMemos[name] = &modelProbeMemo{checkedAt: now}
+		modelProbeMu.Unlock()
 		return nil
 	}
 	if memo != nil && memo.key == key && now.Sub(memo.probedAt) < modelProbeTTL {
 		memo.checkedAt = now
+		modelProbeMu.Unlock()
 		return memo.result
 	}
-	if cached := readModelProbeCache(kind, key, now); cached != nil {
-		modelProbeMemos[kind] = &modelProbeMemo{key: key, result: cached.Result, probedAt: cached.ProbedAt, checkedAt: now}
+	if cached := readModelProbeCache(name, key, now); cached != nil {
+		modelProbeMemos[name] = &modelProbeMemo{key: key, result: cached.Result, probedAt: cached.ProbedAt, checkedAt: now}
+		modelProbeMu.Unlock()
 		return cached.Result
 	}
+	modelProbeInFlight[name] = true
+	modelProbeMu.Unlock()
 
 	result, version, err := runModelProbe(prober, key.Path)
+
+	modelProbeMu.Lock()
+	delete(modelProbeInFlight, name)
+	// Failures are memoized in memory only, so the next process retries.
+	modelProbeMemos[name] = &modelProbeMemo{key: key, result: result, probedAt: now, checkedAt: now}
+	modelProbeMu.Unlock()
+
 	if err != nil {
-		logging.ForComponent(logging.CompSession).Debug("model_probe_failed",
-			"tool", kind, "path", key.Path, "error", err.Error())
-		// Failures are memoized in memory only, so the next process retries.
-		modelProbeMemos[kind] = &modelProbeMemo{key: key, probedAt: now, checkedAt: now}
+		logging.ForComponent(logging.CompSession).Debug("model_probe_failed", "tool", name, "error", err.Error())
 		return nil
 	}
-	modelProbeMemos[kind] = &modelProbeMemo{key: key, result: result, probedAt: now, checkedAt: now}
-	writeModelProbeCache(kind, &modelProbeCacheFile{
+	writeModelProbeCache(name, &modelProbeCacheFile{
 		Schema: modelProbeCacheSchema, Key: key, Version: version, ProbedAt: now, Result: result,
 	})
 	return result
@@ -351,8 +400,8 @@ func mergeOrdered(first, rest []string) []string {
 // open does not wait on them.
 func WarmModelCatalog() {
 	go func() {
-		for kind := range modelProbers {
-			probedModelCatalog(kind)
+		for _, prober := range modelProbers {
+			probedModelCatalog(prober.name)
 		}
 	}()
 }

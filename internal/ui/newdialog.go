@@ -894,6 +894,7 @@ func (d *NewDialog) ApplyHighlightedModelSuggestion() {
 		if suggestionIdx < len(d.modelSuggestions) {
 			d.modelInput.SetValue(d.modelSuggestions[suggestionIdx])
 			d.modelInput.SetCursor(len(d.modelInput.Value()))
+			d.dropUnsupportedReasoningEffort()
 		}
 		d.modelNavigated = true
 	}
@@ -1404,6 +1405,15 @@ func (d *NewDialog) reasoningEffortChoices() []string {
 	return append([]string{""}, session.LaunchReasoningEffortsForModel(d.toolKind(d.GetSelectedCommand()), model)...)
 }
 
+// dropUnsupportedReasoningEffort clears a selected effort the current tool and
+// model no longer accept, so a model change never submits an effort the
+// launch would reject (#2388). A still-valid selection is kept.
+func (d *NewDialog) dropUnsupportedReasoningEffort() {
+	if !slices.Contains(d.reasoningEffortChoices(), d.reasoningEffort) {
+		d.reasoningEffort = ""
+	}
+}
+
 func (d *NewDialog) remoteCatalogTool(name string) *session.RemoteCreationTool {
 	if d.remoteCatalog == nil {
 		return nil
@@ -1889,16 +1899,7 @@ func (d *NewDialog) updateToolOptions() {
 	d.modelSuggestionHidden = false
 	d.modelNavigated = false
 	d.filterModelSuggestions()
-	validEffort := d.reasoningEffort == ""
-	for _, effort := range session.LaunchReasoningEffortsForTool(cmd) {
-		if effort == d.reasoningEffort {
-			validEffort = true
-			break
-		}
-	}
-	if !validEffort {
-		d.reasoningEffort = ""
-	}
+	d.dropUnsupportedReasoningEffort()
 	switch {
 	case session.IsClaudeCompatible(cmd):
 		d.toolOptions = d.claudeOptions
@@ -2783,6 +2784,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.modelSuggestionCursor = 0
 			d.modelNavigated = false
 			d.filterModelSuggestions()
+			d.dropUnsupportedReasoningEffort()
 		}
 	case focusMultiRepo:
 		// When editing a multi-repo path, forward keystrokes to pathInput.

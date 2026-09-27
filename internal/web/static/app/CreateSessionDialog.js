@@ -69,7 +69,7 @@ export function CreateSessionDialog() {
       if (ctx.groupPath) payload.groupPath = ctx.groupPath
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
-      if (reasoningEffort) payload.reasoningEffort = reasoningEffort
+      if (effectiveEffort) payload.reasoningEffort = effectiveEffort
       await apiFetch('POST', '/api/sessions', payload)
       createSessionDialogSignal.value = null
     } catch (err) {
@@ -86,15 +86,6 @@ export function CreateSessionDialog() {
     setReasoningEffort('')
   }
 
-  // Changing the model drops an effort the new model does not accept.
-  function selectModel(nextModel) {
-    setModelId(nextModel)
-    const id = nextModel === CUSTOM_MODEL ? customModel.trim() : nextModel
-    if (reasoningEffort && !effortOptionsForTool(tool, id, modelCatalogSignal.value).some(e => e.value === reasoningEffort)) {
-      setReasoningEffort('')
-    }
-  }
-
   function selectedModelId() {
     if (modelId === CUSTOM_MODEL) return customModel.trim()
     return modelId || ''
@@ -104,6 +95,9 @@ export function CreateSessionDialog() {
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelOptionsForTool(tool, modelCatalogSignal.value)
   const reasoningEfforts = effortOptionsForTool(tool, selectedModelId(), modelCatalogSignal.value)
+  // The options change with the model (select or custom id) and with the
+  // settings hydration; an effort they no longer offer is never submitted.
+  const effectiveEffort = reasoningEfforts.some(e => e.value === reasoningEffort) ? reasoningEffort : ''
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
@@ -151,7 +145,7 @@ export function CreateSessionDialog() {
           ${modelIDs.length > 0 && html`
             <div class="field">
               <label>MODEL ID</label>
-              <select value=${modelId} onInput=${e => selectModel(e.target.value)}>
+              <select value=${modelId} onInput=${e => setModelId(e.target.value)}>
                 <option value="">Tool default</option>
                 ${modelIDs.map(m => html`
                   <option key=${m.value} value=${m.value}>${m.value} — ${m.label}</option>
@@ -169,7 +163,7 @@ export function CreateSessionDialog() {
           ${reasoningEfforts.length > 0 && html`
             <div class="field">
               <label>REASONING EFFORT</label>
-              <select value=${reasoningEffort} onInput=${e => setReasoningEffort(e.target.value)}>
+              <select value=${effectiveEffort} onInput=${e => setReasoningEffort(e.target.value)}>
                 <option value="">Tool default</option>
                 ${reasoningEfforts.map(effort => html`
                   <option key=${effort.value} value=${effort.value}>${effort.label} — ${effort.value}</option>

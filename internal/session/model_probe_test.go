@@ -325,3 +325,56 @@ func mustModelProbeCachePath(t *testing.T) string {
 	}
 	return path
 }
+
+func TestModelProbe_UsesConfiguredCodexCommand(t *testing.T) {
+	f := installFakeCodex(t, fakeCodexOK)
+	// Only a `codex-v2` binary answers; the plain `codex` stub is gone.
+	if err := os.Rename(filepath.Join(f.dir, "codex"), filepath.Join(f.dir, "codex-v2")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &UserConfig{}
+	cfg.Codex.Command = "CODEX_HOME=/tmp/codex-work codex-v2 --profile work"
+	t.Cleanup(resetUserConfigCache(t, cfg))
+
+	if got := codexProbeBinary(); got != "codex-v2" {
+		t.Fatalf("codexProbeBinary() = %q, want codex-v2", got)
+	}
+	if got := KnownModelIDsForTool("codex"); got[0] != "gpt-7-nova" {
+		t.Fatalf("probe did not use the configured command: %v", got)
+	}
+}
+
+func TestModelProbe_ConcurrentCallerDoesNotWait(t *testing.T) {
+	installFakeCodex(t, `sleep 1; cat "$FAKE_CODEX_FIXTURE"`)
+	prev := modelProbeTimeout
+	modelProbeTimeout = 5 * time.Second
+	t.Cleanup(func() { modelProbeTimeout = prev })
+
+	done := make(chan []string)
+	go func() { done <- KnownModelIDsForTool("codex") }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		modelProbeMu.Lock()
+		inFlight := modelProbeInFlight["codex"]
+		modelProbeMu.Unlock()
+		if inFlight {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("probe never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	start := time.Now()
+	got := KnownModelIDsForTool("codex")
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("second caller waited %s on the running probe", elapsed)
+	}
+	if !slices.Equal(got, staticModelIDsForTool("codex")) {
+		t.Fatalf("while probing, got %v, want the static catalog", got)
+	}
+	if first := <-done; first[0] != "gpt-7-nova" {
+		t.Fatalf("probing caller got %v", first)
+	}
+}

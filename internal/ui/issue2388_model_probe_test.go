@@ -79,3 +79,27 @@ func TestIssue2388_ProbeOffKeepsStaticDialog(t *testing.T) {
 		t.Fatalf("static order changed: %v", d.modelSuggestions)
 	}
 }
+
+// Changing the model drops a selected effort the new model does not accept,
+// and keeps one it does.
+func TestIssue2388_ModelChangeDropsUnsupportedEffort(t *testing.T) {
+	installIssue2388FakeCodex(t)
+
+	d := NewNewDialog()
+	d.SetDefaultTool("codex")
+	d.SetSize(100, 50)
+	d.Show()
+
+	d.reasoningEffort = "hyper"
+	d.modelInput.SetValue("gpt-7-nova")
+	d.dropUnsupportedReasoningEffort()
+	if d.reasoningEffort != "hyper" {
+		t.Fatalf("a supported effort was dropped: %q", d.reasoningEffort)
+	}
+
+	d.modelInput.SetValue("gpt-5.5")
+	d.dropUnsupportedReasoningEffort()
+	if d.reasoningEffort != "" {
+		t.Fatalf("effort = %q, want it cleared for a model without hyper", d.reasoningEffort)
+	}
+}
