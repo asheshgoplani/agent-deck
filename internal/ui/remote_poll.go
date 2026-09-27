@@ -50,11 +50,16 @@ func (h *Home) seedRemotePolls(remotes map[string]session.RemoteConfig) {
 	}
 }
 
+// remoteAuthBlocked holds auxiliary SSH probes (latency, preview) for as long
+// as the last poll failed authentication, even past RemoteAuthRetryBackoff:
+// only the session poll re-attempts the credential (beginRemotePoll), so a
+// broken key is tried once per backoff window rather than on every latency
+// tick. A successful poll or an explicit retry clears the status.
 func (h *Home) remoteAuthBlocked(name string, rc session.RemoteConfig) bool {
 	h.remoteSessionsMu.RLock()
 	defer h.remoteSessionsMu.RUnlock()
 	state := h.remotePolls[name]
-	return state.Matches(rc) && state.AuthBlocked(time.Now())
+	return state.Matches(rc) && state.LastPollStatus == "auth_failed"
 }
 
 func (h *Home) beginRemotePoll(name string, rc session.RemoteConfig) bool {

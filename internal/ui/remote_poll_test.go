@@ -273,11 +273,38 @@ func TestRemotePollExpiredAuthFailureRetries(t *testing.T) {
 	h.remoteSessionsMu.Lock()
 	h.remotePolls["dev"] = state(time.Now().Add(-(session.RemoteAuthRetryBackoff + time.Second)))
 	h.remoteSessionsMu.Unlock()
-	if h.remoteAuthBlocked("dev", rc) {
-		t.Fatal("an expired auth failure must not keep blocking")
+	if !h.remoteAuthBlocked("dev", rc) {
+		t.Fatal("only the poll may re-attempt an expired auth failure; auxiliary probes stay held")
 	}
 	if !h.beginRemotePoll("dev", rc) {
 		t.Fatal("an expired auth failure must allow the next poll")
+	}
+}
+
+// TestRemotePollExpiredAuthFailureHoldsLatencyProbe pins the retry budget: the
+// latency probe ticks every few seconds, so if it followed the backoff too, a
+// broken credential would be tried on every tick between the expiry and the
+// next session poll (up to remote_session_refresh_secs). Only the poll retries.
+func TestRemotePollExpiredAuthFailureHoldsLatencyProbe(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	rc := session.RemoteConfig{Host: "test@invalid"}
+	if err := session.SaveUserConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{"dev": rc}}); err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHomeWithItems(100, 30, nil)
+	defer h.cancel()
+	t.Setenv("PATH", t.TempDir())
+	h.remoteSessionsMu.Lock()
+	h.remotePolls = map[string]session.RemotePollState{"dev": {
+		Host: rc.Host, Profile: rc.GetProfile(), AgentDeckPath: rc.GetAgentDeckPath(),
+		LastPollStatus: "auth_failed", CheckedAt: time.Now().Add(-(session.RemoteAuthRetryBackoff + time.Second)),
+	}}
+	h.remoteSessionsMu.Unlock()
+	if msg := h.measureRemoteLatencies().(remoteLatenciesFetchedMsg); len(msg.latencies) != 0 {
+		t.Fatal("latency probe re-attempted an expired auth failure")
 	}
 }
 
