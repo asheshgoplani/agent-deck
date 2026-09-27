@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 )
 
 // TurnIdentity binds a submitted prompt to its durable Claude transcript
@@ -81,6 +83,18 @@ type turnMessage struct {
 // whitespace (a trailing newline, composer padding) is ignored.
 func normalizeTurnPrompt(text string) string {
 	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+}
+
+// promptMatches reports whether a user record's body is the sent prompt
+// (already normalized). Claude stores a long or multi-line paste wrapped in
+// a pasted-content block (#2399), so the unwrapped body counts too; the
+// whole text must still match.
+func promptMatches(body, want string) bool {
+	if normalizeTurnPrompt(body) == want {
+		return true
+	}
+	unwrapped, ok := query.UnwrapPastedContent(body)
+	return ok && normalizeTurnPrompt(unwrapped) == want
 }
 
 func humanPrompt(rec turnRecord) (string, bool) {
@@ -168,7 +182,7 @@ func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, err
 			continue
 		}
 		body, human := humanPrompt(rec)
-		if !human || normalizeTurnPrompt(body) != want || recordTooOld(rec, q.NotBefore) {
+		if !human || !promptMatches(body, want) || recordTooOld(rec, q.NotBefore) {
 			continue
 		}
 		if rec.UUID == "" {

@@ -82,7 +82,11 @@ func FindLanded(ctx context.Context, harness, path string, from int64, text stri
 func landedMatch(r *Row, want string) bool {
 	switch r.Kind {
 	case "user":
-		return normalizeLanded(r.Body) == want
+		if normalizeLanded(r.Body) == want {
+			return true
+		}
+		unwrapped, ok := UnwrapPastedContent(r.Body)
+		return ok && normalizeLanded(unwrapped) == want
 	case "command":
 		return strings.HasPrefix(want, "/") && normalizeLanded(r.Title) == want
 	}
@@ -93,4 +97,49 @@ func landedMatch(r *Row, want string) bool {
 // trimmed, with runs of whitespace folded.
 func normalizeLanded(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+const (
+	pastedContentOpen  = `<pasted_content id="`
+	pastedContentClose = `</pasted_content id="`
+)
+
+// UnwrapPastedContent returns text with every Claude pasted-content block
+// replaced by the text it wraps, and whether any block was found. Claude
+// Code (2.1.277 and later) stores a long or multi-line paste in the user
+// row as a block, not as the literal text (#2399, #2401):
+//
+//	\n\n<pasted_content id="4f2a">\n<pasted text>\n</pasted_content id="4f2a">\n
+//
+// so a message agent-deck pasted is only comparable once unwrapped. A block
+// without its matching closing tag is left as it is.
+func UnwrapPastedContent(text string) (string, bool) {
+	var b strings.Builder
+	rest, found := text, false
+	for {
+		i := strings.Index(rest, pastedContentOpen)
+		if i < 0 {
+			break
+		}
+		after := rest[i+len(pastedContentOpen):]
+		q := strings.Index(after, `">`)
+		if q < 0 || strings.ContainsAny(after[:q], "\"<>\n") {
+			break
+		}
+		closeTag := pastedContentClose + after[:q] + `">`
+		body := after[q+2:]
+		j := strings.Index(body, closeTag)
+		if j < 0 {
+			break
+		}
+		inner := strings.TrimSuffix(strings.TrimPrefix(body[:j], "\n"), "\n")
+		b.WriteString(rest[:i])
+		b.WriteString(inner)
+		rest, found = body[j+len(closeTag):], true
+	}
+	if !found {
+		return text, false
+	}
+	b.WriteString(rest)
+	return b.String(), true
 }
