@@ -48,9 +48,9 @@
 - [x] Rewrite into green commits and verify each commit on G14.
 - [x] Record overlap hunks, results, and a verified branch bundle.
 
-# sec/web-host-allowlist (private)
+# fix/web-host-allowlist
 
-- [x] Reproduce the reported HTTP and WebSocket responses in a disposable profile.
+- [x] Check HTTP and WebSocket responses for foreign Host names in a disposable profile.
 - [x] Implement the Host allowlist, config and CLI additions, and token cookie.
 - [x] Add regression coverage and documentation.
 - [x] Build and vet on the host; verify fixed live requests.

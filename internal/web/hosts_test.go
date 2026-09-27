@@ -24,7 +24,7 @@ func TestHostAllowlistCoversAllRoutes(t *testing.T) {
 		{"wrong_port", "127.0.0.1:8420", "proxy.example:80", []string{"proxy.example:443"}, 421},
 		{"wildcard_bind_not_wildcard_host", "0.0.0.0:8420", "evil.example:8420", nil, 421},
 		{"nonloopback_ip", "192.0.2.9:8420", "192.0.2.9:8420", nil, 200},
-		{"rebinding", "127.0.0.1:8420", "evil.example:8420", nil, 421},
+		{"foreign_name_on_loopback", "127.0.0.1:8420", "evil.example:8420", nil, 421},
 		{"substring", "127.0.0.1:8420", "localhost.evil.example:8420", nil, 421},
 		{"url", "127.0.0.1:8420", "http://localhost:8420", nil, 421},
 	}
@@ -113,7 +113,7 @@ func TestHostAllowlistRejectsMalformedAndForwardedAuthorities(t *testing.T) {
 	}
 }
 
-func TestRebindingReporterRequests(t *testing.T) {
+func TestForeignHostRequestsRejected(t *testing.T) {
 	s := NewServer(Config{ListenAddr: "127.0.0.1:8420"})
 	for _, path := range []string{"/api/sessions", "/ws/session/fake"} {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
