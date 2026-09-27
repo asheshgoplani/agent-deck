@@ -350,24 +350,26 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = events.CloseDefault() }()
-	// Extract global --allow-repo-scripts before subcommand dispatch (mirrors
-	// -p/--profile above). One-shot, non-persisted bypass of the worktree
-	// script consent gate for non-interactive callers (CI) that can't answer
-	// a prompt and would otherwise fail closed under the "prompt" default.
+	// Extract global --run-hooks (alias --allow-repo-scripts) and --trust
+	// before subcommand dispatch (mirrors -p/--profile above). One-shot run
+	// of unapproved worktree hooks for non-interactive callers (CI) that
+	// can't answer a prompt and would otherwise skip them under the "prompt"
+	// default; --trust additionally records the version that ran.
 	// Remote arguments belong to the server, including its script-consent flag.
 	if len(args) > 0 && args[0] == "remote" {
 		recordCLITelemetry(args[0], args[1:])
 		handleRemote(profile, args[1:])
 		return
 	}
-	allowRepoScripts, args2 := extractAllowRepoScriptsFlag(args)
+	allowRepoScripts, trustRepoScripts, args2 := extractAllowRepoScriptsFlag(args)
 	args = args2
 	if envVal := strings.TrimSpace(os.Getenv("AGENT_DECK_ALLOW_REPO_SCRIPTS")); envVal != "" {
 		allowRepoScripts = allowRepoScripts || envVal == "1" || strings.EqualFold(envVal, "true")
 	}
 	git.SetScriptConsentConfig(git.ScriptConsentConfig{
-		Policy:        session.GetWorktreeSettings().ScriptConsentPolicy(),
-		AllowOverride: allowRepoScripts,
+		Policy:          session.GetWorktreeSettings().ScriptConsentPolicy(),
+		AllowOverride:   allowRepoScripts,
+		PersistOverride: allowRepoScripts && trustRepoScripts,
 		// True here: every switch case below that can reach a worktree
 		// script (add/remove/worktree/session/etc.) `return`s before the
 		// TUI/web startup code further down, so it's still a real CLI
@@ -735,6 +737,7 @@ func main() {
 	git.SetScriptConsentConfig(git.ScriptConsentConfig{
 		Policy:                 session.GetWorktreeSettings().ScriptConsentPolicy(),
 		AllowOverride:          allowRepoScripts,
+		PersistOverride:        allowRepoScripts && trustRepoScripts,
 		AllowInteractivePrompt: false,
 	})
 
@@ -1297,6 +1300,10 @@ func main() {
 		)
 	}
 	p := tea.NewProgram(homeModel, programOptions...)
+	// Unapproved worktree hooks are asked about in a TUI dialog (the TUI owns
+	// the terminal, so the git layer cannot prompt on stdin here).
+	git.SetScriptConsentPrompter(ui.NewHookTrustPrompter(p.Send))
+	defer git.SetScriptConsentPrompter(nil)
 
 	// Start maintenance worker (background goroutine, respects config toggle)
 	maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
@@ -1520,25 +1527,43 @@ func extractProfileFlag(args []string) (string, []string) {
 	return profile, remaining
 }
 
-// extractAllowRepoScriptsFlag extracts --allow-repo-scripts from args,
-// returning whether it was present and the args with it removed. Mirrors
-// extractNoTuiFlag's boolean-flag scan (web_cmd.go): supports bare
-// --allow-repo-scripts and --allow-repo-scripts=true/false/1.
-func extractAllowRepoScriptsFlag(args []string) (bool, []string) {
-	allow := false
-	remaining := make([]string, 0, len(args))
+// extractAllowRepoScriptsFlag extracts --run-hooks (and its pre-1.16.22
+// spelling --allow-repo-scripts) plus --trust from args, returning whether
+// each was present and the args with them removed. Mirrors
+// extractNoTuiFlag's boolean-flag scan (web_cmd.go): supports the bare flag
+// and =true/false/1. --trust is only consumed when a run-hooks flag is
+// present, so it never steals a --trust meant for another subcommand.
+func extractAllowRepoScriptsFlag(args []string) (allow, trust bool, remaining []string) {
+	isRunHooks := func(a string) (bool, bool) {
+		for _, name := range []string{"--run-hooks", "--allow-repo-scripts"} {
+			if a == name {
+				return true, true
+			}
+			if v, ok := strings.CutPrefix(a, name+"="); ok {
+				return true, v == "true" || v == "1"
+			}
+		}
+		return false, false
+	}
+	present := false
 	for _, a := range args {
-		switch {
-		case a == "--allow-repo-scripts":
-			allow = true
-		case strings.HasPrefix(a, "--allow-repo-scripts="):
-			v := strings.TrimPrefix(a, "--allow-repo-scripts=")
-			allow = v == "true" || v == "1"
-		default:
-			remaining = append(remaining, a)
+		if ok, _ := isRunHooks(a); ok {
+			present = true
 		}
 	}
-	return allow, remaining
+	remaining = make([]string, 0, len(args))
+	for _, a := range args {
+		if ok, v := isRunHooks(a); ok {
+			allow = v
+			continue
+		}
+		if present && a == "--trust" {
+			trust = true
+			continue
+		}
+		remaining = append(remaining, a)
+	}
+	return allow, trust, remaining
 }
 
 // extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.
@@ -2328,7 +2353,8 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 				fmt.Fprintf(os.Stderr, "Error: failed to create worktree: %v\n", err)
 				os.Exit(1)
 			}
-			if setupErr != nil {
+			// A skipped (unapproved) hook already printed its notice above.
+			if setupErr != nil && !errors.Is(setupErr, git.ErrWorktreeScriptNotApproved) {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 

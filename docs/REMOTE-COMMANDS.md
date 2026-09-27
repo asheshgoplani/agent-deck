@@ -106,7 +106,7 @@ Fields the remote `add` cannot express are refused with a message in the dialog 
 
 Remote-management commands such as `remote list` and `remote remove lab` operate on your local configuration. New remote names cannot match those command names. For an existing conflicting name, use the explicit execution form, for example `remote exec remove list --json`; ambiguous shorthand refuses to act. Rename the conflicting entry in your configuration before using the matching management command.
 
-If a worktree operation needs an approved repository setup script, pass `--allow-repo-scripts` after the remote name. The server applies that explicit consent. Normal cleanup confirmation still applies to destructive cleanup.
+Repository worktree hooks on a remote follow the remote host's own `[worktree] run_repo_scripts` policy and approvals: an unapproved hook is skipped and the remote's one-line notice is shown. Approve it on that host with `agent-deck worktree trust-hooks <repo>`. If a worktree operation needs an approved repository setup script, pass `--allow-repo-scripts` after the remote name. The server applies that explicit consent. Normal cleanup confirmation still applies to destructive cleanup.
 
 ## Switching a remote session's account or harness
 

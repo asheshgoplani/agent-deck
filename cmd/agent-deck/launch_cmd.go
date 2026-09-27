@@ -450,7 +450,8 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 			}
 			ownedPath := worktreePath
 			cleanupSingleWorktree = func() error { return backend.RemoveWorktree(ownedPath, true) }
-			if setupErr != nil {
+			// A skipped (unapproved) hook already printed its notice above.
+			if setupErr != nil && !errors.Is(setupErr, git.ErrWorktreeScriptNotApproved) {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 		}

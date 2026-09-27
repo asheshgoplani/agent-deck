@@ -1409,7 +1409,8 @@ func handleSessionFork(profile string, args []string) {
 					os.Exit(1)
 				}
 			}
-			if setupErr != nil {
+			// A skipped (unapproved) hook already printed its notice above.
+			if setupErr != nil && !errors.Is(setupErr, git.ErrWorktreeScriptNotApproved) {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 		}

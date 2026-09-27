@@ -463,6 +463,7 @@ path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"  # Custom path (o
 branch_prefix = "feature/"                           # Prefix for branch names ("" to disable)
 auto_cleanup = true                                  # Remove worktree when session is deleted
 setup_timeout_seconds = 60                           # Timeout for .agent-deck/worktree-setup.sh
+run_repo_scripts = "prompt"                          # Worktree hooks: "prompt", "never" or "always" (risky)
 sparse_checkout = "off"                              # "inherit" to copy the source worktree's sparse checkout
 checkout_git_config = ["core.hooksPath=/dev/null"]   # git -c entries for the worktree checkout (global only)
 ```
@@ -475,6 +476,7 @@ checkout_git_config = ["core.hooksPath=/dev/null"]   # git -c entries for the wo
 | `branch_prefix` | string | `"feature/"` | Prefix prepended to branch names. Supports environment variable expansion (e.g., `"$USER/"`). Set to `""` to disable. Won't double-prepend if the branch already starts with the prefix. |
 | `auto_cleanup` | bool | `false` | Remove worktree directory when the session is deleted. |
 | `setup_timeout_seconds` | int | `60` | Max seconds for `.agent-deck/worktree-setup.sh` to run. Set to `0` for unlimited. |
+| `run_repo_scripts` | string | `"prompt"` | Whether the repository's `.agent-deck/worktree-setup.sh` / `worktree-destruction.sh` may run. `"prompt"`: a hook runs only once approved; the approval is bound to the script's sha256, resolved path and interpreter, and any change asks again (TUI dialog, terminal prompt, or `agent-deck worktree trust-hooks`; without a terminal the hook is skipped with a notice). `"never"`: hooks never run. `"always"`: every hook runs without asking, including in repositories you just cloned; use only if you own every repository you open. Unknown values mean `"prompt"`. Global config only. |
 | `sparse_checkout` | string | `"off"` | Sparse-checkout inheritance (#1708). `"inherit"` captures the mode (cone / non-cone, sparse index) and patterns of the worktree you create the session from, creates the new worktree with `git worktree add --no-checkout`, and materializes it with those patterns, so a sparse monorepo never checks out the full tree first. `"off"` / unset / any other value keeps git's normal checkout. A non-sparse source is also left unchanged. `.worktreeinclude` and the setup script still run afterwards. Requires git 2.32+ (`sparse-checkout set --[no-]sparse-index`). |
 | `checkout_git_config` | string array | `[]` | `key=value` git config entries passed as `git -c` to the commands that create and check out a new worktree (`worktree add`, and the sparse checkout when `sparse_checkout = "inherit"`) (#2366). `"core.hooksPath=/dev/null"` skips `post-checkout` hooks (for example the Git LFS hook); `"checkout.workers=8"` tunes checkout. Applied to that creation only; nothing is written to the worktree's config. Entries that are not `key=value` fail worktree creation. Global config only. |
 

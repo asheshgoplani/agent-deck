@@ -180,7 +180,7 @@ _agent_deck() {
         ;;
     worktree)
         if (( CURRENT == start + 1 )); then
-            subs=(list info cleanup finish trust-scripts)
+            subs=(list info cleanup finish trust-hooks)
             compadd -a subs
             return
         fi
@@ -189,7 +189,7 @@ _agent_deck() {
         ;;
     wt)
         if (( CURRENT == start + 1 )); then
-            subs=(list info cleanup finish trust-scripts)
+            subs=(list info cleanup finish trust-hooks)
             compadd -a subs
             return
         fi

@@ -92,8 +92,17 @@ func (m *WebMutator) beginHeadlessTx() (unlock func(), err error) {
 	return m.headlessTxMu.Unlock, nil
 }
 
+// suppressHookPromptForWeb keeps worktree hooks reached from a web request
+// fail-closed (skipped with a notice) instead of opening the TUI's hook
+// approval dialog for a request the local operator did not make. Work a
+// mutation defers past its return (a queued tea.Cmd) is not covered and may
+// still ask the local operator, which can only ever result in a local human
+// decision, never an unapproved run.
+func suppressHookPromptForWeb() (restore func()) { return git.SuppressScriptConsentPrompter() }
+
 // CreateSession creates and starts a new session, persisting it to storage.
 func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID, reasoningEffort string) (string, error) {
+	defer suppressHookPromptForWeb()()
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
 		return "", err
@@ -202,6 +211,7 @@ func (m *WebMutator) RestartSession(id string) error {
 // Before removal, the instance is pushed onto the web undo stack so a
 // subsequent UndoDelete (POST /api/sessions/undelete) can restore it.
 func (m *WebMutator) DeleteSession(id string) error {
+	defer suppressHookPromptForWeb()()
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
 		return err
@@ -394,6 +404,7 @@ func (m *WebMutator) pushUndo(inst *session.Instance) {
 
 // ForkSession forks an existing session using the proper tool-specific fork command.
 func (m *WebMutator) ForkSession(id string) (string, error) {
+	defer suppressHookPromptForWeb()()
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
 		return "", err
@@ -696,6 +707,7 @@ func (m *WebMutator) MoveSessionToGroup(id, groupPath string) (string, bool, err
 // orchestration is duplicated rather than refactored to keep the
 // fix minimally invasive (issue #1126).
 func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
+	defer suppressHookPromptForWeb()()
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
 		return web.WorktreeFinishResult{}, err

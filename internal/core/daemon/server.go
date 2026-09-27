@@ -37,15 +37,19 @@ type Options struct {
 	Version string
 	// Socket is reported in hello and status.
 	Socket string
+	// StreamIdleTimeout is how long a subscribed connection may go without
+	// a frame in either direction. Zero means one minute.
+	StreamIdleTimeout time.Duration
 }
 
 // Server speaks the daemon protocol (docs/daemon-protocol.md).
 type Server struct {
-	opts      Options
-	startedAt time.Time
-	calls     atomic.Uint64
-	conns     atomic.Int64
-	slots     chan struct{}
+	opts        Options
+	idleTimeout time.Duration
+	startedAt   time.Time
+	calls       atomic.Uint64
+	conns       atomic.Int64
+	slots       chan struct{}
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -56,7 +60,11 @@ const maxClients = 64
 
 // New returns a server for opts.
 func New(opts Options) *Server {
-	return &Server{opts: opts, startedAt: time.Now(), slots: make(chan struct{}, maxClients), stop: make(chan struct{})}
+	idle := opts.StreamIdleTimeout
+	if idle <= 0 {
+		idle = defaultStreamIdleTimeout
+	}
+	return &Server{opts: opts, idleTimeout: idle, startedAt: time.Now(), slots: make(chan struct{}, maxClients), stop: make(chan struct{})}
 }
 
 // Serve accepts connections on ln until ctx is cancelled or a client sends
@@ -131,6 +139,10 @@ func (s *Server) checkPeer(c net.Conn) error {
 }
 
 func (s *Server) handle(ctx context.Context, c net.Conn) {
+	// Deferred first so it runs last: cancel and Close below end the stream,
+	// and Serve's WaitGroup then covers it.
+	var streams sync.WaitGroup
+	defer streams.Wait()
 	defer c.Close()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -157,7 +169,7 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 	for {
 		readTimeout := frameReadTimeout
 		if subscribed {
-			readTimeout = streamIdleTimeout
+			readTimeout = s.idleTimeout
 		}
 		_ = c.SetReadDeadline(time.Now().Add(readTimeout))
 		f, err := fc.readStrict()
@@ -228,7 +240,11 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 			if fc.write(Frame{Type: TypeSubscribed, ID: f.ID, After: f.After}) != nil {
 				return
 			}
-			go s.stream(fc, f.ID, sub)
+			streams.Add(1)
+			go func() {
+				defer streams.Done()
+				s.stream(fc, f.ID, sub)
+			}()
 			continue
 		default:
 			reply = errorFrame(f.ID, CodeUnknownType, "unknown frame type %q", f.Type)
@@ -328,7 +344,7 @@ func (s *Server) stream(fc *frameConn, id string, sub *events.Subscription) {
 			return
 		}
 		if conn, ok := fc.w.(net.Conn); ok {
-			_ = conn.SetReadDeadline(time.Now().Add(streamIdleTimeout))
+			_ = conn.SetReadDeadline(time.Now().Add(s.idleTimeout))
 		}
 	}
 	if err := sub.Err(); err != nil {

@@ -417,7 +417,7 @@ Matches [Claude Code Desktop semantics](https://code.claude.com/docs/en/worktree
 #### Worktree Setup Script
 
 For imperative setup tasks (installing dependencies, running migrations, etc.), create a script at `.agent-deck/worktree-setup.sh`.
-Agent-deck runs it automatically after creating a worktree and processing `.worktreeinclude`.
+Once you have approved it (see [Approving worktree hooks](#approving-worktree-hooks)), agent-deck runs it after creating a worktree and processing `.worktreeinclude`.
 
 ```sh
 #!/bin/sh
@@ -428,19 +428,43 @@ The script receives two environment variables:
 - `AGENT_DECK_REPO_ROOT` — path to the main repository
 - `AGENT_DECK_WORKTREE_PATH` — path to the new worktree
 
-The script runs via `sh -e` with a 60-second timeout. If it fails, the worktree is still created — you'll see a warning but the session proceeds normally.
+It runs in the new worktree with your full environment. An executable script runs directly (its `#!` line picks the interpreter); a non-executable one runs via `sh -e`. Under the default approval policy, agent-deck runs a private copy of the approved bytes, so a hook changed while you answer the prompt cannot execute instead. Use the working directory and the two environment variables above to locate project files; the script's own `$0` path points to that temporary copy. The timeout is 60 seconds (`[worktree] setup_timeout_seconds`). If it fails or is skipped, the worktree is still created: you'll see a warning and the session proceeds normally.
 
 #### Worktree Destruction Script
 
 For imperative teardown tasks (stopping containers, removing volumes, releasing ports, etc.), create a script at `.agent-deck/worktree-destruction.sh`.
-Agent-deck runs it automatically *just before* removing a worktree, while the worktree still exists.
+Once approved, agent-deck runs it *just before* removing a worktree, while the worktree still exists.
 
 ```sh
 #!/bin/sh
 docker compose -p "$(basename "$AGENT_DECK_WORKTREE_PATH")" down
 ```
 
-It receives the same environment variables as the setup script (`AGENT_DECK_REPO_ROOT`, `AGENT_DECK_WORKTREE_PATH`) and runs with the same `sh -e` dispatch and 60-second timeout. If it fails, removal proceeds anyway — you'll see a warning. It does not run for sessions that reuse the main working tree (nothing is removed there).
+It receives the same environment variables as the setup script (`AGENT_DECK_REPO_ROOT`, `AGENT_DECK_WORKTREE_PATH`) and uses the same dispatch and a 60-second timeout. If it fails or is skipped, removal proceeds anyway and you'll see a warning. It does not run for sessions that reuse the main working tree (nothing is removed there).
+
+#### Approving worktree hooks
+
+These two hooks are code from the repository, and they run as you. Creating or removing a worktree does not by itself approve them, so a repository you just cloned cannot run anything on your machine until you say so.
+
+**What is approved.** An approval covers one hook (setup and destruction are separate) in one repository, and is bound to the script's exact bytes (sha256), its real location (symlinks resolved) and how it runs (directly via `#!`, or `sh -e`). Editing the script, retargeting a symlink or flipping its executable bit asks again. Approvals live in agent-deck's data directory (`~/.local/share/agent-deck/worktree-script-consent.json`), never in the repository.
+
+**When you are asked.** The first time a hook would run, and after any change:
+
+- **TUI:** a dialog shows the repository, the hook, the command that will run, its sha256 and up to the first 20 lines (with an omitted-line count when space is tight), with **Run once**, **Always trust this version** and **Skip** (the default).
+- **CLI on a terminal:** the same details, then `[o]nce, [a]lways trust this version, [N]o/skip`.
+- **CLI without a terminal** (scripts, CI, `remote`), and requests from the web UI: the hook is skipped with a one-line notice naming the command that approves it.
+
+**Approving ahead of time.**
+
+```bash
+agent-deck worktree trust-hooks .                          # show each hook, ask y/N
+agent-deck worktree trust-hooks . --hook setup --yes       # scripts: approve after reviewing
+agent-deck worktree trust-hooks . --revoke                 # forget the approvals
+agent-deck launch . -w feat -b --run-hooks                 # run unapproved hooks this once (prints sha256)
+agent-deck launch . -w feat -b --run-hooks --trust         # ...and remember that version
+```
+
+`[worktree] run_repo_scripts` sets the policy: `"prompt"` (default), `"never"` (hooks never run), or `"always"` (every hook runs without asking; only for machines where you own every repository you open, because any repository you create a worktree in can then run code as you). Remote hosts apply their own policy and approvals: run `trust-hooks` on the remote host.
 
 #### Bare repositories and worktrees
 

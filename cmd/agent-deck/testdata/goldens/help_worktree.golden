@@ -7,7 +7,8 @@ Commands:
   info <session>    Show worktree info for a session
   finish <session>  Merge branch, remove worktree, and delete session
   cleanup [--force] Find and remove orphaned worktrees/sessions
-  trust-scripts <repo-path>  Approve .agent-deck/worktree-*.sh for this repo
+  trust-hooks <repo> [--hook setup|destruction] [--yes] [--revoke]
+                    Review and approve .agent-deck/worktree-*.sh hooks for a repo
 
 Global Options:
   -p, --profile <name>   Use specific profile
@@ -22,5 +23,6 @@ Examples:
   agent-deck worktree finish "My Session" --into develop
   agent-deck worktree cleanup
   agent-deck worktree cleanup --force
-  agent-deck worktree trust-scripts .
-  agent-deck worktree trust-scripts . --revoke
+  agent-deck worktree trust-hooks .
+  agent-deck worktree trust-hooks . --hook setup --yes
+  agent-deck worktree trust-hooks . --revoke

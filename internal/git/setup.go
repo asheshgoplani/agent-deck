@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -180,11 +181,12 @@ func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io
 	if scriptPath == "" {
 		return nil
 	}
-	fmt.Fprintln(stderr, "Running worktree setup script...")
 	start := time.Now()
 	setupErr := GateAndRunWorktreeSetupScript(repoDir, worktreePath, stdout, stderr, setupTimeout)
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
-	if setupErr != nil {
+	if errors.Is(setupErr, ErrWorktreeScriptNotApproved) {
+		fmt.Fprintln(stderr, setupErr)
+	} else if setupErr != nil {
 		fmt.Fprintf(stderr, "Worktree setup script failed after %s: %v\n", elapsed, setupErr)
 	} else {
 		fmt.Fprintf(stderr, "Worktree setup script completed in %s\n", elapsed)
@@ -192,60 +194,71 @@ func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io
 	return setupErr
 }
 
-// GateAndRunWorktreeSetupScript finds, content-hashes, consent-gates, and —
+// GateAndRunWorktreeSetupScript finds, identifies, consent-gates, and —
 // only if permitted — runs .agent-deck/worktree-setup.sh. This is the single
 // entry point every caller (TUI, CLI, session layer) should use instead of
 // pairing FindWorktreeSetupScript with RunWorktreeSetupScript directly,
 // so the trust decision can never be bypassed by a new call site forgetting
 // the gate. Returns nil if no script exists. See scriptconsent.go.
 func GateAndRunWorktreeSetupScript(repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
-	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
-	if scriptPath == "" {
-		return nil
-	}
-	if handled, err := scriptConsentPolicyShortCircuit("setup", scriptPath); handled {
-		if err != nil {
-			return err
-		}
-		return RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
-	}
-	if !scriptMode.IsRegular() {
-		return fmt.Errorf("worktree setup script consent: %s is not a regular file (refusing to hash a symlink/FIFO/device target, which could hang indefinitely); point .agent-deck/worktree-setup.sh at a real file", scriptPath)
-	}
-	hash, err := hashScriptFile(scriptPath)
-	if err != nil {
-		return fmt.Errorf("worktree setup script: reading %s for consent check: %w", scriptPath, err)
-	}
-	if err := checkScriptConsent("setup", repoDir, scriptPath, hash, stderr); err != nil {
-		return err
-	}
-	return RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	return gateAndRunWorktreeScript("setup", repoDir, worktreePath, stdout, stderr, timeout)
 }
 
 // GateAndRunWorktreeDestructionScript mirrors GateAndRunWorktreeSetupScript
 // for .agent-deck/worktree-destruction.sh.
 func GateAndRunWorktreeDestructionScript(repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
-	scriptPath, scriptMode := FindWorktreeDestructionScript(repoDir)
-	if scriptPath == "" {
+	return gateAndRunWorktreeScript("destruction", repoDir, worktreePath, stdout, stderr, timeout)
+}
+
+// gateAndRunWorktreeScript is the shared body of the two gates. Under the
+// "prompt" policy the script's identity (bytes, resolved path, interpreter)
+// is computed before consent and the approved bytes are run from a private
+// copy. A path replacement while the user is deciding cannot change them.
+func gateAndRunWorktreeScript(kind, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	scriptPath := worktreeScriptPath(repoDir, kind)
+	info, err := os.Stat(scriptPath)
+	if err != nil {
 		return nil
 	}
-	if handled, err := scriptConsentPolicyShortCircuit("destruction", scriptPath); handled {
+	if handled, err := scriptConsentPolicyShortCircuit(kind, scriptPath); handled {
 		if err != nil {
 			return err
 		}
-		return RunWorktreeDestructionScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+		fmt.Fprintf(stderr, "Running worktree %s script...\n", kind)
+		return runWorktreeScript(kind, scriptPath, info.Mode(), repoDir, worktreePath, stdout, stderr, timeout)
 	}
-	if !scriptMode.IsRegular() {
-		return fmt.Errorf("worktree destruction script consent: %s is not a regular file (refusing to hash a symlink/FIFO/device target, which could hang indefinitely); point .agent-deck/worktree-destruction.sh at a real file", scriptPath)
-	}
-	hash, err := hashScriptFile(scriptPath)
+	id, err := inspectWorktreeScript(kind, repoDir, scriptPath, info.Mode())
 	if err != nil {
-		return fmt.Errorf("worktree destruction script: reading %s for consent check: %w", scriptPath, err)
-	}
-	if err := checkScriptConsent("destruction", repoDir, scriptPath, hash, stderr); err != nil {
 		return err
 	}
-	return RunWorktreeDestructionScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
+	if err := checkScriptConsent(id, stderr); err != nil {
+		return err
+	}
+	fmt.Fprintf(stderr, "Running worktree %s script...\n", kind)
+	return runApprovedWorktreeScript(id, repoDir, worktreePath, stdout, stderr, timeout)
+}
+
+// runApprovedWorktreeScript executes the bytes that were hashed for consent.
+// The temporary directory is private to this process; the script retains its
+// basename, cwd, environment and approved interpreter decision.
+func runApprovedWorktreeScript(id *WorktreeScriptIdentity, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	dir, err := os.MkdirTemp("", "agent-deck-worktree-hook-")
+	if err != nil {
+		return fmt.Errorf("stage approved worktree %s hook: %w", id.Kind, err)
+	}
+	scriptPath := filepath.Join(dir, filepath.Base(id.ScriptPath))
+	defer func() {
+		_ = os.Remove(scriptPath)
+		_ = os.Remove(dir)
+	}()
+	mode := os.FileMode(0o600)
+	if id.Interpreter == ScriptInterpreterExec {
+		mode = 0o700
+	}
+	if err := os.WriteFile(scriptPath, id.scriptBytes, mode); err != nil {
+		return fmt.Errorf("stage approved worktree %s hook: %w", id.Kind, err)
+	}
+	return runWorktreeScript(id.Kind, scriptPath, id.Mode, repoDir, worktreePath, stdout, stderr, timeout)
 }
 
 // DefaultWorktreeDestructionTimeout bounds how long
@@ -290,11 +303,12 @@ func RunWorktreeDestructionBeforeRemove(repoDir, worktreePath string, stdout, st
 	if scriptPath == "" {
 		return nil
 	}
-	fmt.Fprintln(stderr, "Running worktree destruction script...")
 	start := time.Now()
 	err := GateAndRunWorktreeDestructionScript(repoDir, worktreePath, stdout, stderr, timeout)
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
-	if err != nil {
+	if errors.Is(err, ErrWorktreeScriptNotApproved) {
+		fmt.Fprintln(stderr, err)
+	} else if err != nil {
 		fmt.Fprintf(stderr, "Worktree destruction script failed after %s: %v\n", elapsed, err)
 	} else {
 		fmt.Fprintf(stderr, "Worktree destruction script completed in %s\n", elapsed)
