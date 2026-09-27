@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Web test tooling: vitest bumped to 4.1.11.
+
 ### Fixed
 
 - The web server now only answers requests addressed to its own host names; set `[web] allowed_hosts` for reverse proxies. Thanks @bautrey.
