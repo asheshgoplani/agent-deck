@@ -118,6 +118,19 @@ func TestHookTrustDialog_FitsSmallTerminalWithLongPreview(t *testing.T) {
 	}
 }
 
+func TestHookTrustDialog_FitsSmallTerminalWithLongPath(t *testing.T) {
+	id := testHookIdentity()
+	id.RepoRoot = "/repos/" + strings.Repeat("deep/", 30)
+	id.ScriptPath = id.RepoRoot + ".agent-deck/worktree-setup.sh"
+	id.ResolvedPath = id.ScriptPath
+	d := NewHookTrustDialog()
+	d.SetSize(80, 24)
+	d.Show(id, make(chan git.ScriptConsentDecision, 1))
+	if got := lipgloss.Height(d.View()); got > 24 {
+		t.Fatalf("dialog with long repository path uses %d rows", got)
+	}
+}
+
 // TestHookTrustPrompter_RoundTrip: the prompter posts a request to the
 // program and returns the dialog's answer to the waiting worktree goroutine.
 func TestHookTrustPrompter_RoundTrip(t *testing.T) {
