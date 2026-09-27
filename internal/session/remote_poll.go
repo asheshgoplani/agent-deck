@@ -42,12 +42,17 @@ const RemoteAuthRetryBackoff = 2 * time.Minute
 // AuthBlocked reports whether this observation should still suppress the next
 // automatic poll. Only an auth failure observed within RemoteAuthRetryBackoff
 // holds; an older one is re-attemptable. A zero CheckedAt (a freshly seeded
-// state) never holds.
+// state) never holds, and neither does a future CheckedAt -- a backward wall
+// clock adjustment must not extend the hold past the backoff window.
 func (s RemotePollState) AuthBlocked(now time.Time) bool {
 	if s.LastPollStatus != "auth_failed" || s.CheckedAt.IsZero() {
 		return false
 	}
-	return now.Sub(s.CheckedAt) < RemoteAuthRetryBackoff
+	age := now.Sub(s.CheckedAt)
+	if age < 0 {
+		return false
+	}
+	return age < RemoteAuthRetryBackoff
 }
 
 // LoadRemotePolls reads locally cached observations without contacting SSH.

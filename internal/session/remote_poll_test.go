@@ -89,4 +89,7 @@ func TestRemotePollAuthBlockedWindow(t *testing.T) {
 	if (RemotePollState{LastPollStatus: "auth_failed"}).AuthBlocked(base) {
 		t.Fatal("a zero CheckedAt must not hold polling")
 	}
+	if (RemotePollState{LastPollStatus: "auth_failed", CheckedAt: base.Add(time.Hour)}).AuthBlocked(base) {
+		t.Fatal("a future CheckedAt (backward clock) must not hold polling")
+	}
 }
