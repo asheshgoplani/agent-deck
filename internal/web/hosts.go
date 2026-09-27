@@ -77,17 +77,24 @@ func parseHost(value string) (allowedHost, bool) {
 
 func (s *Server) allowHosts(next http.Handler) http.Handler {
 	allowed := []allowedHost{{"localhost", ""}, {"127.0.0.1", ""}, {"::1", ""}}
+	wildcardBind := false
 	if listen, ok := parseHost(s.cfg.ListenAddr); ok {
 		allowed = append(allowed, listen)
 		if ip, err := netip.ParseAddr(listen.name); err == nil && !ip.IsLoopback() {
-			if hostname, err := os.Hostname(); err == nil {
-				if host, ok := parseHost(hostname); ok {
-					allowed = append(allowed, allowedHost{host.name, ""})
-				}
-			}
+			allowed = appendMachineHostname(allowed)
 			if !ip.IsUnspecified() {
 				allowed = append(allowed, allowedHost{listen.name, ""})
+			} else {
+				wildcardBind = true
 			}
+		}
+	} else if host, _, err := net.SplitHostPort(s.cfg.ListenAddr); err == nil && host == "" {
+		wildcardBind = true
+		allowed = appendMachineHostname(allowed)
+	}
+	if wildcardBind {
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			allowed = appendLocalInterfaceIPs(allowed, addrs)
 		}
 	}
 	for _, extra := range s.cfg.AllowedHosts {
@@ -108,4 +115,26 @@ func (s *Server) allowHosts(next http.Handler) http.Handler {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		http.Error(w, "unrecognized Host; set [web] allowed_hosts or --allowed-host", http.StatusMisdirectedRequest)
 	})
+}
+
+func appendMachineHostname(allowed []allowedHost) []allowedHost {
+	if hostname, err := os.Hostname(); err == nil {
+		if host, ok := parseHost(hostname); ok {
+			return append(allowed, allowedHost{host.name, ""})
+		}
+	}
+	return allowed
+}
+
+func appendLocalInterfaceIPs(allowed []allowedHost, addrs []net.Addr) []allowedHost {
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || !ipNet.IP.IsGlobalUnicast() {
+			continue
+		}
+		if ip, ok := netip.AddrFromSlice(ipNet.IP); ok {
+			allowed = append(allowed, allowedHost{ip.Unmap().String(), ""})
+		}
+	}
+	return allowed
 }

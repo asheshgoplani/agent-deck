@@ -1102,7 +1102,8 @@ agent-deck web --token my-secret
 A valid tokened visit stores an HttpOnly, SameSite=Strict cookie, so refreshes
 continue to work with `--token-file`. The server accepts requests addressed to
 localhost, loopback IPs, its listen address, and its machine name when bound
-to a network interface. For a reverse proxy or Tailscale Serve hostname, add
+to a network interface. A wildcard bind also accepts the machine's current
+interface IPs. For a reverse proxy or Tailscale Serve hostname, add
 the exact name with `--allowed-host machine.tailnet.ts.net` (repeatable) or
 `[web] allowed_hosts`. An entry with a port permits only that port.
 
