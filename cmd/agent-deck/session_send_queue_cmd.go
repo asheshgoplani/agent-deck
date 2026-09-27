@@ -177,8 +177,13 @@ func recordFields(r *sendqueue.Record) map[string]interface{} {
 }
 
 // spawnSendWorker starts a detached worker for the target. A second worker
-// for the same target exits at once on the target lock.
+// for the same target exits at once on the target lock. sessionID comes from
+// storage or an on-disk queue record, so it is checked against the same
+// instance-id guard the hook handler uses before it reaches argv.
 func spawnSendWorker(profile, sessionID string) error {
+	if !validInstanceID.MatchString(sessionID) || strings.Contains(sessionID, "..") {
+		return fmt.Errorf("invalid session id %q", sessionID)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err

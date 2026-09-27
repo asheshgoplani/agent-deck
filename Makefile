@@ -7,6 +7,8 @@ LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
 # Tailwind v4 standalone CLI (PERF-01)
 TAILWIND_VERSION=v4.2.2
+# Keep in step with .github/workflows/golangci-lint.yml `version:`.
+GOLANGCI_LINT_VERSION=v2.14.0
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Keep local and CI builds on the version required by go.mod.
@@ -174,8 +176,7 @@ fmt:
 
 # Lint
 lint:
-	@which golangci-lint > /dev/null || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-	golangci-lint run
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
 
 # Run local CI checks (same as pre-push hook: lint + test + build in parallel)
 ci:
