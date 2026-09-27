@@ -4300,9 +4300,7 @@ func hydrateLegacyCodexIdentity(
 
 	candidate := liveCodexSessionID(inst)
 	processOwned := false
-	// The thread the pane's live Codex process holds open outranks the pane
-	// value: panes from earlier builds can carry a disk-scan guess naming a
-	// sibling's rollout (#2394).
+	// Panes from earlier builds can carry a disk-scan guess (#2394).
 	if live := inst.LiveCodexThreadID(); live != "" {
 		candidate, processOwned = live, true
 	}
