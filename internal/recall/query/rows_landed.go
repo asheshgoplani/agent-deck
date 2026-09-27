@@ -102,6 +102,7 @@ func normalizeLanded(s string) string {
 const (
 	pastedContentOpen  = `<pasted_content id="`
 	pastedContentClose = `</pasted_content id="`
+	pastedContentIDEnd = `">`
 )
 
 // UnwrapPastedContent returns text with every Claude pasted-content block
@@ -122,12 +123,12 @@ func UnwrapPastedContent(text string) (string, bool) {
 			break
 		}
 		after := rest[i+len(pastedContentOpen):]
-		q := strings.Index(after, `">`)
+		q := strings.Index(after, pastedContentIDEnd)
 		if q < 0 || strings.ContainsAny(after[:q], "\"<>\n") {
 			break
 		}
-		closeTag := pastedContentClose + after[:q] + `">`
-		body := after[q+2:]
+		closeTag := pastedContentClose + after[:q] + pastedContentIDEnd
+		body := after[q+len(pastedContentIDEnd):]
 		j := strings.Index(body, closeTag)
 		if j < 0 {
 			break
