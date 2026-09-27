@@ -144,6 +144,19 @@ type SettingsResponse struct {
 	// ConfirmLinkOpen reports whether every other host still confirms.
 	TrustedDomains  []string `json:"trustedDomains"`
 	ConfirmLinkOpen bool     `json:"confirmLinkOpen"`
+
+	// ModelCatalog carries the same model and effort lists the TUI dialog
+	// uses, keyed by picker tool name, so the web dialog shows models the
+	// installed CLI reports (#2388). Tools without a catalog are omitted and
+	// the dialog keeps its built-in list for them.
+	ModelCatalog map[string]ToolModelCatalog `json:"modelCatalog"`
+}
+
+// ToolModelCatalog is one tool's entry in SettingsResponse.ModelCatalog.
+type ToolModelCatalog struct {
+	Models           []string            `json:"models"`
+	ReasoningEfforts []string            `json:"reasoningEfforts"`
+	ModelEfforts     map[string][]string `json:"modelEfforts,omitempty"`
 }
 
 // ProfilesResponse is returned by GET /api/profiles.

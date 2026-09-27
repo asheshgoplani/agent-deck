@@ -69,16 +69,17 @@ func TestIssue1172_NoDefaultModelFallsBackToEmpty(t *testing.T) {
 	}
 }
 
-// Failure mode: a configured default that is NOT in the known catalog (typo,
-// stale pin, or alias like "opus") must degrade gracefully — no crash, and the
-// field falls back to empty rather than launching a bogus --model flag.
-func TestIssue1172_DefaultModelNotInCatalogGracefulFallback(t *testing.T) {
+// A configured default that is NOT in the known catalog (a model newer than
+// this build, or an alias like "opus") is prefilled, not dropped (#2388): the
+// catalog is a suggestion source, and silently launching on the tool default
+// hid the user's choice. A typo is then reported by the tool itself.
+func TestIssue1172_DefaultModelNotInCatalogPassesThrough(t *testing.T) {
 	d := showClaudeDialogWithConfig(t, &session.UserConfig{
 		Claude: session.ClaudeSettings{DefaultModel: "claude-made-up-9000"},
 	})
 
-	if got := d.GetLaunchModelID(); got != "" {
-		t.Fatalf("GetLaunchModelID() = %q, want empty for a non-catalog default (graceful fallback)", got)
+	if got := d.GetLaunchModelID(); got != "claude-made-up-9000" {
+		t.Fatalf("GetLaunchModelID() = %q, want the configured non-catalog default passed through", got)
 	}
 }
 

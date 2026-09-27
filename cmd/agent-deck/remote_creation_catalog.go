@@ -80,7 +80,13 @@ func buildCreationCatalog(profile string) (*session.RemoteCreationCatalog, error
 		} else if session.IsCodexCompatible(name) {
 			kind = "codex"
 		}
-		tool := session.RemoteCreationTool{Name: name, Kind: kind, Models: session.KnownModelIDsForTool(kind)}
+		tool := session.RemoteCreationTool{
+			Name:             name,
+			Kind:             kind,
+			Models:           session.KnownModelIDsForTool(kind),
+			ReasoningEfforts: session.LaunchReasoningEffortsForTool(kind),
+			ModelEfforts:     session.LaunchModelEffortsForTool(kind),
+		}
 		switch kind {
 		case "claude":
 			tool.DefaultModel = cfg.Claude.DefaultModel

@@ -1928,6 +1928,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// in this process can spawn a child (restart.go).
 	restartHandoff := consumeRestartEnv()
 	ctx, cancel := context.WithCancel(context.Background())
+	// Probe installed CLIs for their model lists off the UI goroutine so the
+	// first new-session dialog does not wait on it (#2388).
+	session.WarmModelCatalog()
 
 	var storageWarning string
 	storage, err := session.NewStorageWithProfile(profile)

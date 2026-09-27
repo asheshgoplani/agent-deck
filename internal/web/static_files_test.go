@@ -349,12 +349,23 @@ func TestTerminalPanelSelectsAndCopiesPastMouseCapture(t *testing.T) {
 	}
 }
 
-func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
-	data, err := embeddedStaticFiles.ReadFile("static/app/CreateSessionDialog.js")
-	if err != nil {
-		t.Fatalf("read CreateSessionDialog.js: %v", err)
+// createSessionDialogSources returns the dialog plus modelCatalog.js, where
+// its model and effort tables live since #2388.
+func createSessionDialogSources(t *testing.T) string {
+	t.Helper()
+	var body strings.Builder
+	for _, name := range []string{"static/app/CreateSessionDialog.js", "static/app/modelCatalog.js"} {
+		data, err := embeddedStaticFiles.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		body.Write(data)
 	}
-	body := string(data)
+	return body.String()
+}
+
+func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
+	body := createSessionDialogSources(t)
 
 	for _, want := range []string{
 		"MODEL_ID_CATALOG",
@@ -392,7 +403,7 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 		"Custom model ID",
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("CreateSessionDialog.js missing %q", want)
+			t.Fatalf("CreateSessionDialog.js + modelCatalog.js missing %q", want)
 		}
 	}
 	if strings.Contains(body, "<label>VERSION</label>") {
@@ -401,11 +412,7 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 }
 
 func TestCreateSessionDialogUsesToolSpecificReasoningEffortCatalog(t *testing.T) {
-	data, err := embeddedStaticFiles.ReadFile("static/app/CreateSessionDialog.js")
-	if err != nil {
-		t.Fatalf("read CreateSessionDialog.js: %v", err)
-	}
-	source := string(data)
+	source := createSessionDialogSources(t)
 	for _, want := range []string{
 		"REASONING EFFORT",
 		"reasoningEffort",
@@ -415,7 +422,7 @@ func TestCreateSessionDialogUsesToolSpecificReasoningEffortCatalog(t *testing.T)
 		"ultra",
 	} {
 		if !strings.Contains(source, want) {
-			t.Fatalf("CreateSessionDialog.js missing expected content %q", want)
+			t.Fatalf("CreateSessionDialog.js + modelCatalog.js missing expected content %q", want)
 		}
 	}
 }

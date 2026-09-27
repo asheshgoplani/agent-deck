@@ -172,12 +172,11 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectClaude(t *testing.T) {
 	}
 }
 
-// TestPreselectDefaultModel covers the catalog-membership gate in
-// preselectDefaultModel: a [claude] default_model is honored only when the ID
-// is in knownModelIDsForTool. An ID missing from the catalog is discarded
-// silently — no error, no log — so the session launches with no --model flag
-// at all. That is how a valid `default_model = "claude-opus-5"` became inert
-// while the catalog still stopped at 4.8.
+// TestPreselectDefaultModel covers preselectDefaultModel. The model catalog
+// is a suggestion source, not an allowlist (#2388): a configured
+// [claude] default_model is always prefilled, even when this build's catalog
+// does not know it (a model newer than the build, or an alias). Dropping it
+// silently used to launch the session on the tool default instead.
 func TestPreselectDefaultModel(t *testing.T) {
 	withModel := func(id string) *session.UserConfig {
 		cfg := &session.UserConfig{}
@@ -194,8 +193,8 @@ func TestPreselectDefaultModel(t *testing.T) {
 		{"in catalog is honored", withModel("claude-opus-5"), "claude", "claude-opus-5"},
 		{"newest Opus is honored", withModel("claude-opus-5-5"), "claude", "claude-opus-5-5"},
 		{"older in-catalog ID still honored", withModel("claude-opus-4-8"), "claude", "claude-opus-4-8"},
-		{"unknown ID degrades to unset", withModel("claude-opus-9"), "claude", ""},
-		{"bare alias is not a catalog ID", withModel("opus"), "claude", ""},
+		{"unknown ID passes through", withModel("claude-opus-9"), "claude", "claude-opus-9"},
+		{"bare alias passes through", withModel("opus"), "claude", "opus"},
 		{"surrounding whitespace tolerated", withModel("  claude-sonnet-5  "), "claude", "claude-sonnet-5"},
 		{"empty default is unset", withModel(""), "claude", ""},
 		{"nil config is safe", nil, "claude", ""},

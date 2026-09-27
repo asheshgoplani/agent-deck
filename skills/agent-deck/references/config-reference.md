@@ -12,6 +12,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[gemini] Section](#gemini-section)
 - [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
+- [[models] Section](#models-section)
 - [[copilot] Section](#copilot-section)
 - [[cursor] Section](#cursor-section)
 - [[hermes] Section](#hermes-section)
@@ -300,6 +301,21 @@ command = "codex"
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
 | `env_file` | string | `""` | A .env file sourced for Codex sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"codex"` | Override the binary/invocation. |
+
+## [models] Section
+
+Where the model and reasoning-effort suggestions come from (TUI and web new-session dialogs, `launch -capabilities --json`, `--effort` validation).
+
+```toml
+[models]
+probe = true   # Ask installed CLIs for their model lists (default)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, no prompt, about 1s timeout); Claude Code and Gemini have no local listing and use the built-in catalog. Results are cached per CLI binary for up to a day in `<cache dir>/model-probe/`. A missing CLI, timeout or unrecognized output falls back to the built-in catalog. `false` uses only the built-in catalog. |
+
+The lists are suggestions, not an allowlist: a `[claude] default_model` the catalog does not know is still prefilled in the new-session dialog (with a warning in the log), and `--model` passes any ID through.
 
 ## [copilot] Section
 

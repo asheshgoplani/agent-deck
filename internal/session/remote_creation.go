@@ -36,6 +36,12 @@ type RemoteCreationTool struct {
 	Kind         string   `json:"kind"`
 	Models       []string `json:"models"`
 	DefaultModel string   `json:"default_model"`
+	// ReasoningEfforts lists the accepted --effort values; empty when the
+	// tool has no native effort override.
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
+	// ModelEfforts narrows ReasoningEfforts per model when the installed CLI
+	// was probed (#2388). Absent means no per-model information.
+	ModelEfforts map[string][]string `json:"model_efforts,omitempty"`
 }
 
 type RemoteCreationConductor struct {

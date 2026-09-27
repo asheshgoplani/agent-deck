@@ -12,8 +12,67 @@ var (
 )
 
 // LaunchReasoningEffortsForTool returns the supported per-session effort
-// overrides in display order. An empty selection means the tool default.
+// overrides in display order. An empty selection means the tool default. The
+// static list comes first; efforts a probed CLI advertises for any of its
+// models and the static list lacks are appended (#2388).
 func LaunchReasoningEffortsForTool(tool string) []string {
+	static := staticReasoningEffortsForTool(tool)
+	if len(static) == 0 {
+		return nil
+	}
+	probed := probedModelCatalog(modelProbeKind(tool))
+	if probed == nil {
+		return static
+	}
+	efforts := static
+	for _, model := range probed.Models {
+		efforts = mergeOrdered(efforts, probed.Efforts[model])
+	}
+	return efforts
+}
+
+// LaunchReasoningEffortsForModel narrows the tool's efforts to the ones the
+// probed CLI advertises for model. An empty model, a model the probe does not
+// describe, or no probe at all yields the tool-wide list.
+func LaunchReasoningEffortsForModel(tool, model string) []string {
+	efforts := LaunchReasoningEffortsForTool(tool)
+	model = strings.TrimSpace(model)
+	if len(efforts) == 0 || model == "" {
+		return efforts
+	}
+	if probed := probedModelCatalog(modelProbeKind(tool)); probed != nil {
+		if perModel := probed.Efforts[model]; len(perModel) > 0 {
+			return append([]string(nil), perModel...)
+		}
+	}
+	return efforts
+}
+
+// LaunchModelEffortsForTool returns the per-model effort lists a probe
+// reported for the tool's listed models, or nil without a probe. UIs use it
+// to narrow the effort choices once a model is picked.
+func LaunchModelEffortsForTool(tool string) map[string][]string {
+	if len(staticReasoningEffortsForTool(tool)) == 0 {
+		return nil
+	}
+	probed := probedModelCatalog(modelProbeKind(tool))
+	if probed == nil {
+		return nil
+	}
+	// Only listed models: hidden ones still validate, but are not advertised.
+	out := map[string][]string{}
+	for _, model := range probed.Models {
+		if efforts := probed.Efforts[model]; len(efforts) > 0 {
+			out[model] = append([]string(nil), efforts...)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func staticReasoningEffortsForTool(tool string) []string {
 	var efforts []string
 	switch {
 	case IsClaudeCompatible(tool):
@@ -33,17 +92,28 @@ func SupportsLaunchReasoningEffort(tool string) bool {
 // ValidateLaunchReasoningEffort checks a user-supplied override without
 // mutating a session. Empty is always valid and means tool default.
 func ValidateLaunchReasoningEffort(tool, effort string) error {
+	return ValidateLaunchReasoningEffortForModel(tool, "", effort)
+}
+
+// ValidateLaunchReasoningEffortForModel is ValidateLaunchReasoningEffort with
+// the selected model taken into account: when the installed CLI was probed and
+// describes that model, only that model's efforts are accepted.
+func ValidateLaunchReasoningEffortForModel(tool, model, effort string) error {
 	effort = strings.TrimSpace(effort)
 	if effort == "" {
 		return nil
 	}
-	valid := LaunchReasoningEffortsForTool(tool)
+	valid := LaunchReasoningEffortsForModel(tool, model)
 	if len(valid) == 0 {
 		return fmt.Errorf("reasoning effort is not supported for tool %q", tool)
 	}
 	if !slices.Contains(valid, effort) {
+		subject := tool
+		if model = strings.TrimSpace(model); model != "" && !slices.Equal(valid, LaunchReasoningEffortsForTool(tool)) {
+			subject = fmt.Sprintf("%s model %s", tool, model)
+		}
 		return fmt.Errorf("invalid reasoning effort %q for %s (expected one of: %s)",
-			effort, tool, strings.Join(valid, ", "))
+			effort, subject, strings.Join(valid, ", "))
 	}
 	return nil
 }
@@ -78,7 +148,7 @@ func (i *Instance) ApplyLaunchReasoningEffort(effort string) error {
 	if len(valid) == 0 {
 		return fmt.Errorf("reasoning effort is not supported for tool %q", i.Tool)
 	}
-	if err := ValidateLaunchReasoningEffort(i.Tool, effort); err != nil {
+	if err := ValidateLaunchReasoningEffortForModel(i.Tool, i.LaunchModelID(), effort); err != nil {
 		return err
 	}
 

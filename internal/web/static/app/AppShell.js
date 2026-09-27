@@ -26,7 +26,7 @@ import {
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal, editSessionDialogSignal, toastHistoryOpenSignal,
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
-  hiddenToolsSignal, pickerToolsSignal,
+  hiddenToolsSignal, pickerToolsSignal, modelCatalogSignal,
   trustedDomainsSignal, confirmLinkOpenSignal,
 } from './state.js'
 import {
@@ -236,6 +236,9 @@ export function AppShell() {
         }
         if (Array.isArray(data.pickerTools) && data.pickerTools.length > 0) {
           pickerToolsSignal.value = data.pickerTools
+        }
+        if (data.modelCatalog && typeof data.modelCatalog === 'object' && !Array.isArray(data.modelCatalog)) {
+          modelCatalogSignal.value = data.modelCatalog
         }
         // Terminal link-open policy (issue #1682).
         if (Array.isArray(data.trustedDomains)) {

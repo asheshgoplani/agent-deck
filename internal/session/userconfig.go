@@ -174,6 +174,9 @@ type UserConfig struct {
 	// Codex defines Codex CLI integration settings
 	Codex CodexSettings `toml:"codex,omitempty"`
 
+	// Models controls how model and reasoning-effort suggestions are built (#2388)
+	Models ModelsSettings `toml:"models,omitempty"`
+
 	// Cursor defines Cursor Agent CLI integration settings (Issue #1672)
 	Cursor CursorSettings `toml:"cursor,omitempty"`
 
@@ -2410,6 +2413,22 @@ type OpenCodeSettings struct {
 	// OpenCode version predates the top-level --port flag or you don't want
 	// a localhost event server bound per session.
 	DisableSSEStatus bool `toml:"disable_sse_status,omitempty"`
+}
+
+// ModelsSettings controls the model catalog shown by the new-session dialogs,
+// `launch -capabilities` and reasoning-effort validation.
+type ModelsSettings struct {
+	// Probe asks installed CLIs that can list their own models (today:
+	// `codex debug models`) for their model and effort lists, cached per CLI
+	// binary, merged in front of the built-in catalog. Set false to use only
+	// the built-in catalog.
+	// Default: true
+	Probe *bool `toml:"probe,omitempty"`
+}
+
+// ProbeEnabled reports whether installed CLIs may be probed. Defaults to true.
+func (m ModelsSettings) ProbeEnabled() bool {
+	return m.Probe == nil || *m.Probe
 }
 
 // CodexSettings defines Codex CLI configuration

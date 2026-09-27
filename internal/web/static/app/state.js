@@ -172,6 +172,9 @@ export const visibleToolsSignal = signal([])
 export const toolFilterFallbackSignal = signal(false)
 export const hiddenToolsSignal = signal([])
 export const pickerToolsSignal = signal([])
+// Per-tool model and effort lists from /api/settings `modelCatalog` (#2388).
+// Empty until hydrated; the dialog then uses its built-in tables.
+export const modelCatalogSignal = signal({})
 
 // Web terminal link-open policy (issue #1682), hydrated from /api/settings.
 // trustedDomainsSignal holds the `[web].trusted_domains` hosts whose links

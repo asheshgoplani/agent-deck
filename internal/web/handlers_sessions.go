@@ -72,7 +72,7 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 			writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "mutations not available")
 			return
 		}
-		if err := session.ValidateLaunchReasoningEffort(req.Tool, req.ReasoningEffort); err != nil {
+		if err := session.ValidateLaunchReasoningEffortForModel(req.Tool, req.ModelID, req.ReasoningEffort); err != nil {
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 			return
 		}

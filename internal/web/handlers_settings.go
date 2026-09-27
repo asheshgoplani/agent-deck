@@ -40,7 +40,34 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		PickerTools:        session.PickerToolNames(),
 		TrustedDomains:     trustedDomains,
 		ConfirmLinkOpen:    s.cfg.confirmLinkOpen(),
+		ModelCatalog:       modelCatalogForPicker(session.PickerToolNames()),
 	})
+}
+
+// modelCatalogForPicker builds the web dialog's model and effort lists from
+// the session catalog, the same source the TUI dialog and `launch
+// -capabilities` read, so the three surfaces never disagree (#2388).
+func modelCatalogForPicker(tools []string) map[string]ToolModelCatalog {
+	catalog := map[string]ToolModelCatalog{}
+	for _, tool := range tools {
+		models := session.KnownModelIDsForTool(tool)
+		efforts := session.LaunchReasoningEffortsForTool(tool)
+		if len(models) == 0 && len(efforts) == 0 {
+			continue
+		}
+		if models == nil {
+			models = []string{}
+		}
+		if efforts == nil {
+			efforts = []string{}
+		}
+		catalog[tool] = ToolModelCatalog{
+			Models:           models,
+			ReasoningEfforts: efforts,
+			ModelEfforts:     session.LaunchModelEffortsForTool(tool),
+		}
+	}
+	return catalog
 }
 
 func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
