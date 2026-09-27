@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Status filter shortcuts keep the cursor on the selected session when it remains visible (#2412, thanks @cherninely).
 - `agent-deck web --push` works again: the web UI's Tweaks panel has a Notifications switch that asks for permission, subscribes the browser with the server's VAPID key, posts the subscription and keeps focus presence updated, so notifications arrive while the tab is in the background. The rewritten front end had dropped this flow. The switch is hidden when push is off or the browser lacks the Push API, and a denied permission is shown as blocked (#2413, thanks @jonmather).
 
 ## [1.16.20] - 2026-09-27
