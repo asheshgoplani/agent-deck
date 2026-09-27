@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Model and reasoning-effort lists come from the installed CLI where it can list them, so new models show up without waiting for an Agent Deck release. Codex is asked with `codex debug models` (no prompt, about 1s timeout, cached per Codex binary for up to a day, a failure retried after a minute); its models lead the TUI and web pickers and `launch -capabilities --json`, its efforts are accepted by `--effort`, and an effort the chosen model lacks is rejected at launch. Claude Code and Gemini keep the built-in list, which stays the fallback when a probe fails or you are offline. A `[claude] default_model` missing from the list is now prefilled with a warning instead of dropped. Turn the probe off with `[models] probe = false` (#2388, thanks @na-bal).
 
+### Fixed
+
+- Status filter shortcuts keep the cursor on the selected session when it remains visible (#2412, thanks @cherninely).
+
 ## [1.16.20] - 2026-09-27
 
 ### Added

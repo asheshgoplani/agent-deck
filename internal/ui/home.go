@@ -12990,43 +12990,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "0":
 		// Clear status filter (show all)
-		h.statusFilter = ""
-		h.keepEmptyFilter = true
-		h.rebuildFlatItems()
-		return h, nil
+		return h, h.changeStatusFilter("")
 
 	case "!", "shift+1":
 		// Filter to running sessions only
-		h.keepEmptyFilter = true
-		if h.statusFilter == session.StatusRunning {
-			h.statusFilter = "" // Toggle off
-		} else {
-			h.statusFilter = session.StatusRunning
-		}
-		h.rebuildFlatItems()
-		return h, nil
+		return h, h.changeStatusFilter(session.StatusRunning)
 
 	case "@", "shift+2":
 		// Filter to waiting sessions only
-		h.keepEmptyFilter = true
-		if h.statusFilter == session.StatusWaiting {
-			h.statusFilter = "" // Toggle off
-		} else {
-			h.statusFilter = session.StatusWaiting
-		}
-		h.rebuildFlatItems()
-		return h, nil
+		return h, h.changeStatusFilter(session.StatusWaiting)
 
 	case "#", "shift+3":
 		// Filter to idle sessions only
-		h.keepEmptyFilter = true
-		if h.statusFilter == session.StatusIdle {
-			h.statusFilter = "" // Toggle off
-		} else {
-			h.statusFilter = session.StatusIdle
-		}
-		h.rebuildFlatItems()
-		return h, nil
+		return h, h.changeStatusFilter(session.StatusIdle)
 
 	case CostDashboardKey, "shift+4":
 		// Cost dashboard (when cost tracking is active).
@@ -13040,38 +13016,29 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case FilterKeyError, "shift+7":
 		// Filter to error sessions only.
-		h.keepEmptyFilter = true
-		if h.statusFilter == session.StatusError {
-			h.statusFilter = "" // Toggle off
-		} else {
-			h.statusFilter = session.StatusError
-		}
-		h.rebuildFlatItems()
-		return h, nil
+		return h, h.changeStatusFilter(session.StatusError)
 
 	case FilterKeyActive, "shift+5":
 		// Filter to open sessions (excludes error/stopped)
-		h.keepEmptyFilter = true
-		if h.statusFilter == FilterModeActive {
-			h.statusFilter = "" // Toggle off
-		} else {
-			h.statusFilter = FilterModeActive
-		}
-		h.rebuildFlatItems()
-		return h, nil
+		return h, h.changeStatusFilter(FilterModeActive)
 
 	case FilterKeyArchived, "shift+6":
-		h.keepEmptyFilter = true
-		if h.statusFilter == FilterModeArchived {
-			h.statusFilter = ""
-		} else {
-			h.statusFilter = FilterModeArchived
-		}
-		h.rebuildFlatItems()
-		return h, nil
+		return h, h.changeStatusFilter(FilterModeArchived)
 	}
 
 	return h, nil
+}
+
+func (h *Home) changeStatusFilter(filter session.Status) tea.Cmd {
+	selectedBefore := h.captureSelectedItemIdentity()
+	h.keepEmptyFilter = true
+	if filter != "" && h.statusFilter == filter {
+		h.statusFilter = ""
+	} else {
+		h.statusFilter = filter
+	}
+	h.rebuildFlatItemsPreservingSelection(selectedBefore)
+	return h.fetchSelectedPreview()
 }
 
 func (h *Home) attachSelectedLegacy() tea.Cmd {
