@@ -25,6 +25,10 @@ var codexThreadWriterLockPathRE = regexp.MustCompile(`/thread-writer-locks/([0-9
 // open. A non-nil error means the list may be incomplete. Test seam.
 var codexPaneOpenPaths = (*Instance).openCodexProcessPaths
 
+// codexPaneProcessPIDs lists the pane's live Codex processes. A non-nil error
+// means the list may be incomplete. Test seam.
+var codexPaneProcessPIDs = (*Instance).collectCodexProcessCandidates
+
 func (i *Instance) openCodexProcessPaths() ([]string, error) {
 	pids, probeErr := i.collectCodexProcessCandidates()
 	var paths []string
