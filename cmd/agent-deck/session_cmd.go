@@ -5924,9 +5924,9 @@ type freshOutputConfig struct {
 var freshOutputTestConfig *freshOutputConfig
 
 // waitForCodexTurnOutput bridges the ordering gap between Codex's completion
-// signal and the final rollout append. Content and timestamps are
-// insufficient: consecutive turns can legitimately emit identical replies, so
-// only the exact accepted thread:turn generation can satisfy this read.
+// hook and the final rollout append. Content and timestamps are insufficient:
+// consecutive turns can legitimately emit identical replies, so only the
+// exact accepted thread:turn generation can satisfy this read.
 //
 // The status heuristic that precedes this read can report a long Codex turn
 // as finished while it is still running (a quiet pane during a long tool
