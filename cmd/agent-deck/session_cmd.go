@@ -526,6 +526,7 @@ func handleSessionStop(profile string, args []string) {
 	// during start (e.g., tool started late on slow WSL2 machines).
 	// Must happen before Kill() because tmux show-environment fails on dead sessions.
 	inst.SyncSessionIDsFromTmux()
+	adoptLiveCodexIdentity(storage, inst)
 
 	// Stop the session by killing the tmux session
 	if err := inst.Kill(); err != nil {
@@ -634,8 +635,13 @@ func handleSessionArchive(profile string, args []string) {
 	// populates. Late-discovered ids are dropped rather than saved via a
 	// non-targeted write that would reintroduce the archive-clobber race. The
 	// session's normal lifecycle already persists its tool ids.
+	//
+	// Codex is the exception: launch left its identity unpersisted, and the
+	// live process is the only evidence of it, so bind it with the targeted
+	// Codex write before the kill destroys that evidence (#2400).
 	killed := false
 	if inst.Exists() {
+		adoptLiveCodexIdentity(storage, inst)
 		if err := inst.Kill(); err != nil {
 			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -6268,6 +6274,10 @@ func handleSessionOutput(profile string, args []string) {
 		out.Print(emitted, jsonData)
 		return
 	}
+
+	// A Codex row launch left unbound reads its exact rollout once the live
+	// process names the thread, instead of falling back to pane text (#2396).
+	adoptLiveCodexIdentity(storage, inst)
 
 	// Get the last response (best-effort fallback for smoother CLI reads).
 	// Collision-checked (#1400): multiple live instances sharing one
