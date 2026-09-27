@@ -3800,8 +3800,9 @@ func handleSessionSend(profile string, args []string) {
 		if response.CodexTurnGeneration != "" {
 			sendData["codex_turn_generation"] = response.CodexTurnGeneration
 		}
-		// #2397: the turn this reply is bound to, in the conversation its
-		// user record carries.
+		// #2397: the turn this reply is bound to. Its user record's
+		// sessionId overrides the instance's claude_session_id set by
+		// sendSuccessData: it is the conversation the turn landed in.
 		if response.ClaudeTurnUUID != "" {
 			sendData["claude_turn_uuid"] = response.ClaudeTurnUUID
 			if response.SessionID != "" {
