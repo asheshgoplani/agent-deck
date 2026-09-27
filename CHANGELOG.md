@@ -7,18 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
-
-- The `creds-refresh` command and its keep-warm daemon are gone. It exchanged Claude Code refresh tokens with Anthropic's OAuth endpoint from a program other than Claude Code, which Anthropic's Claude Code terms do not permit. The credential symlink fix from the same change stays, so worker sessions still share one login through Claude Code's own lock. If you enabled the systemd unit, disable it with `systemctl --user disable --now agent-deck-creds-refresh`; until you do, `agent-deck creds-refresh` only prints that message and exits 0. For long-lived logins use `claude setup-token` and pass `CLAUDE_CODE_OAUTH_TOKEN` through `env_file` (README, "Vendor terms and logins").
+## [1.16.21] - 2026-09-27
 
 ### Added
 
 - Model and reasoning-effort lists come from the installed CLI where it can list them, so new models show up without waiting for an Agent Deck release. Codex is asked with `codex debug models` (no prompt, about 1s timeout, cached per Codex binary for up to a day, a failure retried after a minute); its models lead the TUI and web pickers and `launch -capabilities --json`, its efforts are accepted by `--effort`, and an effort the chosen model lacks is rejected at launch. Claude Code and Gemini keep the built-in list, which stays the fallback when a probe fails or you are offline. A `[claude] default_model` missing from the list is now prefilled with a warning instead of dropped. Turn the probe off with `[models] probe = false` (#2388, thanks @na-bal).
 
+### Removed
+
+- The `creds-refresh` command and its keep-warm daemon are gone. It exchanged Claude Code refresh tokens with Anthropic's OAuth endpoint from a program other than Claude Code, which Anthropic's Claude Code terms do not permit. The credential symlink fix from the same change stays, so worker sessions still share one login through Claude Code's own lock. If you enabled the systemd unit, disable it with `systemctl --user disable --now agent-deck-creds-refresh`; until you do, `agent-deck creds-refresh` only prints that message and exits 0. For long-lived logins use `claude setup-token` and pass `CLAUDE_CODE_OAUTH_TOKEN` through `env_file` (README, "Vendor terms and logins").
+
 ### Fixed
 
 - Status filter shortcuts keep the cursor on the selected session when it remains visible (#2412, thanks @cherninely).
 - `agent-deck web --push` works again: the web UI's Tweaks panel has a Notifications switch that asks for permission, subscribes the browser with the server's VAPID key, posts the subscription and keeps focus presence updated, so notifications arrive while the tab is in the background. The rewritten front end had dropped this flow. The switch is hidden when push is off or the browser lacks the Push API, and a denied permission is shown as blocked (#2413, thanks @jonmather).
+- A remote whose poll failed SSH authentication is no longer paused until someone runs `agent-deck remote list --retry`: the hold, which survived restarts, now lasts 2 minutes, after which the next poll tries once more. A transient failure, such as an ssh-agent that had not loaded its key yet at login, heals on its own, while a broken credential is tried at most once per 2 minutes. Latency and preview probes stay paused until a poll succeeds (#2410, thanks @barjatiyasaurabh).
+
+### Internal
+
+- CI and `make lint` pin golangci-lint to v2.14.0 instead of `latest`, and the send worker rejects a session id read from storage or an on-disk queue record that fails the instance id check before it spawns (#2411).
 
 ## [1.16.20] - 2026-09-27
 
