@@ -65,6 +65,10 @@ type Record struct {
 	TranscriptFrom int64  `json:"transcript_from,omitempty"`
 	LandedRowID    string `json:"landed_row_id,omitempty"`
 	LandedAt       string `json:"landed_at,omitempty"`
+	// ClaudeSessionID is the Claude conversation the send went to: the
+	// target's at queue time, then the delivering child's, then the
+	// transcript the row landed in (#2397). Empty for other tools.
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 	// Settled marks a typed/submitted send whose text was not found in the
 	// transcript within the watch window: it is never typed again.
 	Settled bool `json:"settled,omitempty"`

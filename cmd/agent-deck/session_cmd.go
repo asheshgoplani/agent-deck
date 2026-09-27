@@ -3800,6 +3800,14 @@ func handleSessionSend(profile string, args []string) {
 		if response.CodexTurnGeneration != "" {
 			sendData["codex_turn_generation"] = response.CodexTurnGeneration
 		}
+		// #2397: the turn this reply is bound to, in the conversation its
+		// user record carries.
+		if response.ClaudeTurnUUID != "" {
+			sendData["claude_turn_uuid"] = response.ClaudeTurnUUID
+			if response.SessionID != "" {
+				sendData["claude_session_id"] = response.SessionID
+			}
+		}
 		out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), sendData)
 	} else {
 		fmt.Println(response.Content)
@@ -4120,6 +4128,10 @@ func sendSuccessData(inst *session.Instance, message string, res sendDeliveryRes
 	}
 	for k, v := range res.jsonFields() {
 		data[k] = v
+	}
+	// #2397: name the native Claude conversation, as show/output do.
+	if session.IsClaudeCompatible(inst.Tool) && inst.ClaudeSessionID != "" {
+		data["claude_session_id"] = inst.ClaudeSessionID
 	}
 	if wait {
 		if outcome := socketWaitOutcome(res); outcome != "" {

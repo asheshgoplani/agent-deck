@@ -8013,6 +8013,7 @@ type ResponseOutput struct {
 	Timestamp           string `json:"timestamp,omitempty"`             // When the response was generated
 	SessionID           string `json:"session_id,omitempty"`            // Conversation session ID, if available
 	CodexTurnGeneration string `json:"codex_turn_generation,omitempty"` // Exact thread:turn identity, if retained
+	ClaudeTurnUUID      string `json:"claude_turn_uuid,omitempty"`      // Bound Claude user record, if retained
 }
 
 // GetLastResponse returns the last assistant response from the session
