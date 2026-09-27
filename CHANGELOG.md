@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.20] - 2026-09-27
+
+### Added
+
+<!-- 2408-PENDING -->
+- Model and reasoning-effort suggestions come from the installed CLI where it can list them: Codex is asked with `codex debug models` (nothing is billed), and the result is merged over the built-in catalog, which stays the fallback. Results are cached per CLI binary and re-probed after an upgrade or a day. `launch -capabilities --json` gains `reasoning_efforts` and `model_efforts`, and `[models] probe = false` restores the built-in catalog (#2388, thanks @na-bal).
+- `agent-deck session send --json` receipts and `session send-status --json` for Claude sessions carry `claude_session_id`, and `--json --wait` also carries `claude_turn_uuid`, the bound user record, so a send can be correlated without a separate output query (#2397, reported by @Abarsit).
+
+### Fixed
+
+- Recall indexes profile-scoped Codex configuration directories, including Codex-only profiles without a Claude account slot (#2398, reported by @Abarsit).
+- A Codex child launched without a message no longer binds a sibling's rollout from the same project: while Codex runs in the pane, only the thread it holds open is bound, so `session output` returns the requested session's conversation (#2394, reported by @Abarsit).
+- The live Codex identity is persisted at launch, output, stop and archive, so first-turn output is bound and an archived session keeps its `codex_session_id` and `transcript_path` (#2396, #2400, reported by @Abarsit).
+- `session send --wait` on a Codex session honours the caller's `--timeout` instead of an internal 5 s flush limit that reported a long turn as `completion=timeout` minutes early (#2395, reported by @Abarsit).
+- Long or multi-line follow-ups to Claude, stored by Claude Code 2.1.277+ as pasted-content rows, are now bound by `--wait` and confirmed by `session send-status`, so the waiter returns after completion instead of holding the full timeout (#2399, #2401, reported by @Abarsit).
+
 ## [1.16.19] - 2026-09-26
 
 ### Added
