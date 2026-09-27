@@ -741,7 +741,8 @@ func checkScriptConsent(id *WorktreeScriptIdentity, out io.Writer) error {
 		return nil
 	}
 
-	decision, asked := ScriptConsentSkip, false
+	var decision ScriptConsentDecision
+	var asked bool
 	if p := activeScriptConsentPrompter(); p != nil {
 		decision, asked = p(*id), true
 	} else {
