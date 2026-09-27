@@ -167,7 +167,7 @@ _agent_deck_completion() {
             ;;
         worktree)
             if ((cword == start + 1)); then
-                COMPREPLY=($(compgen -W 'list info cleanup finish trust-scripts' -- "$cur"))
+                COMPREPLY=($(compgen -W 'list info cleanup finish trust-hooks' -- "$cur"))
                 return 0
             fi
             sub=${words[start+1]}
@@ -175,7 +175,7 @@ _agent_deck_completion() {
             ;;
         wt)
             if ((cword == start + 1)); then
-                COMPREPLY=($(compgen -W 'list info cleanup finish trust-scripts' -- "$cur"))
+                COMPREPLY=($(compgen -W 'list info cleanup finish trust-hooks' -- "$cur"))
                 return 0
             fi
             sub=${words[start+1]}

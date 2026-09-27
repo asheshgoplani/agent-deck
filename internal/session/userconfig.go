@@ -2858,8 +2858,8 @@ type WorktreeSettings struct {
 	//   "always" → pre-gate behavior: run unconditionally, no prompt. Opt-in.
 	//   "never"  → never run these scripts, trusted or not.
 	// Unknown values are treated as "prompt" so a typo can never downgrade
-	// to "always". See --allow-repo-scripts / AGENT_DECK_ALLOW_REPO_SCRIPTS
-	// for a one-shot, non-persisted bypass (CI).
+	// to "always". See --run-hooks (--allow-repo-scripts) /
+	// AGENT_DECK_ALLOW_REPO_SCRIPTS for a one-shot, non-persisted run (CI).
 	RunRepoScripts string `toml:"run_repo_scripts,omitempty"`
 
 	// CheckoutGitConfig is a list of "key=value" git config entries passed as
@@ -5365,11 +5365,12 @@ auto_cleanup = true
 #   {branch}         -> sanitized (human-friendly, may collide)
 #   {branch-escaped} -> URL-escaped (collision-resistant, reversible)
 # path_template = "../worktrees/{repo-name}/{branch}"
-# Whether .agent-deck/worktree-setup.sh and worktree-destruction.sh may run
-# automatically: "prompt" (default, ask once per repo root + script content,
-# re-asks if the content changes), "always" (run unconditionally, pre-gate
-# behavior), or "never" (block them entirely). Non-interactive callers under
-# "prompt" fail closed instead of hanging; see --allow-repo-scripts for CI.
+# Whether .agent-deck/worktree-setup.sh and worktree-destruction.sh may run:
+# "prompt" (default: ask before a hook's first run and after it changes; the
+# approval covers its content, resolved path and interpreter), "never" (block
+# them), or "always" (run every hook without asking; risky unless you own every
+# repo you open). Without a terminal "prompt" skips the hook with a notice;
+# approve with "agent-deck worktree trust-hooks <repo>" or use --run-hooks.
 # run_repo_scripts = "prompt"
 
 # Default scope for MCP operations: "local", "global", or "user"

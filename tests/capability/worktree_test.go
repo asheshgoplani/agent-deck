@@ -64,17 +64,33 @@ func TestCapability_LaunchWTSetup(t *testing.T) {
 		t.Fatalf("write worktree setup script: %v", err)
 	}
 
+	// First use: the hook is not approved, so launch creates the worktree
+	// but skips the hook with a one-line notice naming the approve command.
+	out := c.run(t, "launch", repo, "-c", "echobot", "-t", "cap-launch-wt-unapproved", "-w", "capunapproved", "-b")
+	defer c.stopQuietly("cap-launch-wt-unapproved")
+	if !strings.Contains(out, "worktree trust-hooks") || !strings.Contains(out, "--hook setup") {
+		t.Fatalf("launch should name `agent-deck worktree trust-hooks <repo> --hook setup`, got:\n%s", out)
+	}
+	unapproved := c.worktreeInfo(t, "cap-launch-wt-unapproved")
+	if _, err := os.Stat(filepath.Join(unapproved.WorktreePath, "setup-marker.txt")); !os.IsNotExist(err) {
+		t.Fatalf("unapproved setup hook ran (stat err = %v)", err)
+	}
+
+	// trust-hooks refuses to approve without a terminal unless --yes.
+	if out, err := c.try("worktree", "trust-hooks", repo, "--hook", "setup"); err == nil || !strings.Contains(out, "--yes") {
+		t.Fatalf("trust-hooks without a TTY or --yes should refuse, err=%v out:\n%s", err, out)
+	}
+	out = c.run(t, "worktree", "trust-hooks", repo, "--hook", "setup", "--yes")
+	if !strings.Contains(out, "printf SETUP_OK") || !strings.Contains(out, "Trusted the setup hook") {
+		t.Fatalf("trust-hooks --yes should show the hook and trust it, got:\n%s", out)
+	}
+
 	token := "PINGLAUNCH-WORKTREE-SETUP"
-	// --allow-repo-scripts: the consent gate's "prompt" default fails
-	// closed with no TTY (this subprocess has none), by design — use the
-	// documented non-interactive bypass rather than a TTY the harness
-	// can't provide, same as any other CI/automation caller would.
 	c.run(t, "launch", repo,
 		"-c", "echobot",
 		"-t", "cap-launch-wt",
 		"-w", "caplaunch",
 		"-b",
-		"--allow-repo-scripts",
 		"-m", token,
 	)
 	defer c.stopQuietly("cap-launch-wt")
@@ -103,6 +119,34 @@ func TestCapability_LaunchWTSetup(t *testing.T) {
 	pane, ok := c.waitForPaneContains(t, "cap-launch-wt", want, 20*time.Second)
 	if !ok {
 		t.Fatalf("launch worktree setup did not deliver %q.\nlast pane:\n%s", want, pane)
+	}
+
+	// Editing the approved hook withdraws the approval.
+	if err := os.WriteFile(setupScript, []byte("printf CHANGED > setup-marker.txt\n"), 0o644); err != nil {
+		t.Fatalf("edit worktree setup script: %v", err)
+	}
+	out = c.run(t, "launch", repo, "-c", "echobot", "-t", "cap-launch-wt-changed", "-w", "capchanged", "-b")
+	defer c.stopQuietly("cap-launch-wt-changed")
+	if !strings.Contains(out, "changed since it was approved") {
+		t.Fatalf("launch after an edit should say the hook changed, got:\n%s", out)
+	}
+	changed := c.worktreeInfo(t, "cap-launch-wt-changed")
+	if _, err := os.Stat(filepath.Join(changed.WorktreePath, "setup-marker.txt")); !os.IsNotExist(err) {
+		t.Fatalf("edited setup hook ran without re-approval (stat err = %v)", err)
+	}
+
+	// --run-hooks runs it once, printing its identity, without trusting it.
+	out = c.run(t, "launch", repo, "-c", "echobot", "-t", "cap-launch-wt-runonce", "-w", "caprunonce", "-b", "--run-hooks")
+	defer c.stopQuietly("cap-launch-wt-runonce")
+	if !strings.Contains(out, "sha256:") {
+		t.Fatalf("--run-hooks should print the hook's sha256, got:\n%s", out)
+	}
+	runOnce := c.worktreeInfo(t, "cap-launch-wt-runonce")
+	if data, err := os.ReadFile(filepath.Join(runOnce.WorktreePath, "setup-marker.txt")); err != nil || strings.TrimSpace(string(data)) != "CHANGED" {
+		t.Fatalf("--run-hooks should run the edited hook, marker=%q err=%v", data, err)
+	}
+	if out, _ := c.try("worktree", "trust-hooks", repo, "--hook", "setup"); strings.Contains(out, "Already trusted") {
+		t.Fatalf("--run-hooks must not record trust, got:\n%s", out)
 	}
 }
 

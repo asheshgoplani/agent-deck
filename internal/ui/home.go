@@ -280,6 +280,7 @@ type Home struct {
 	groupDialog          *GroupDialog          // For creating/renaming groups
 	forkDialog           *ForkDialog           // For forking sessions
 	confirmDialog        *ConfirmDialog        // For confirming destructive actions
+	hookTrustDialog      *HookTrustDialog      // First-use / changed worktree hook approval
 	helpOverlay          *HelpOverlay          // For showing keyboard shortcuts
 	mcpDialog            *MCPDialog            // For managing MCPs
 	pluginDialog         *PluginDialog         // For managing per-session Claude Code plugins (RFC PLUGIN_ATTACH.md)
@@ -1972,6 +1973,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		groupDialog:               NewGroupDialog(),
 		forkDialog:                NewForkDialog(),
 		confirmDialog:             NewConfirmDialog(),
+		hookTrustDialog:           NewHookTrustDialog(),
 		helpOverlay:               NewHelpOverlay(),
 		mcpDialog:                 NewMCPDialog(),
 		pluginDialog:              NewPluginDialog(),
@@ -8777,6 +8779,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
+	case hookTrustRequestMsg:
+		// Only one prompter call is in flight at a time (NewHookTrustPrompter
+		// serializes), so the dialog is never already open here.
+		if h.hookTrustDialog == nil {
+			h.hookTrustDialog = NewHookTrustDialog()
+		}
+		h.hookTrustDialog.Show(msg.id, msg.reply)
+		h.hookTrustDialog.SetSize(h.width, h.height)
+		return h, nil
+
 	case MaintenanceCompleteMsg:
 		return h, func() tea.Msg {
 			return maintenanceCompleteMsg{result: msg.Result}
@@ -9929,6 +9941,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// that a hover highlight has outlived its mouse.
 		h.clearDividerHover()
 
+		// A worktree hook approval blocks a background operation; it takes
+		// every key until answered.
+		if h.hookTrustDialog.IsVisible() {
+			h.hookTrustDialog.HandleKey(msg)
+			return h, nil
+		}
+
 		// Handle jump mode input (before modals)
 		if h.jumpMode {
 			return h.handleJumpKey(msg)
@@ -11019,7 +11038,7 @@ func (h *Home) hasModalVisible() bool {
 		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
-		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
+		h.confirmDialog.IsVisible() || h.hookTrustDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.promptInputDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.codeBlockDialog.IsVisible() ||
 		h.sessionSwitcher.IsVisible() || h.scrollbackPager.IsVisible() || h.contextPager.IsVisible() ||
@@ -15541,6 +15560,10 @@ func formatSetupWarning(setupErr error) string {
 	if runes := []rune(msg); len(runes) > setupWarningMaxLen {
 		msg = string(runes[:setupWarningMaxLen]) + "…"
 	}
+	// A hook the consent gate skipped did not fail; its message says so.
+	if errors.Is(setupErr, git.ErrWorktreeScriptNotApproved) {
+		return msg
+	}
 	return "worktree setup script failed: " + msg
 }
 
@@ -18605,6 +18628,7 @@ func (h *Home) updateSizes() {
 	h.newDialog.SetSize(h.width, h.height)
 	h.groupDialog.SetSize(h.width, h.height)
 	h.confirmDialog.SetSize(h.width, h.height)
+	h.hookTrustDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
 	if h.sessionSwitcher != nil {
 		// Keep the switcher's viewport current so its standalone centered view
@@ -18675,6 +18699,11 @@ func (h *Home) renderFrame() string {
 					minTerminalWidth, minTerminalHeight,
 				)),
 		)
+	}
+
+	// A pending worktree hook approval is shown above everything else.
+	if h.hookTrustDialog.IsVisible() {
+		return h.hookTrustDialog.View()
 	}
 
 	// Show loading splash during initial session load

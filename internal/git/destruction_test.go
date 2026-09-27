@@ -26,9 +26,11 @@ func TestFindWorktreeDestructionScript(t *testing.T) {
 	}
 }
 
-// TestRemoveWorktree_RunsDestructionScript is the end-to-end check: the hook
-// fires before removal, in the worktree dir, with the env vars set.
+// TestRemoveWorktree_RunsDestructionScript is the end-to-end check: under
+// the default "prompt" policy the hook only fires once approved, and then
+// before removal, in the worktree dir, with the env vars set.
 func TestRemoveWorktree_RunsDestructionScript(t *testing.T) {
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt})
 	dir := t.TempDir()
 	createTestRepoForSetup(t, dir)
 
@@ -43,6 +45,25 @@ echo "$AGENT_DECK_REPO_ROOT|$AGENT_DECK_WORKTREE_PATH|$(pwd)" > "$AGENT_DECK_REP
 `
 	if err := os.WriteFile(filepath.Join(scriptDir, "worktree-destruction.sh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+	}
+
+	// Unapproved: removal proceeds, the hook does not run.
+	unapproved := filepath.Join(dir, ".worktrees", "unapproved")
+	if err := CreateWorktree(dir, unapproved, "unapproved"); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	if err := RemoveWorktree(dir, unapproved, true); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "destruction-ran")); !os.IsNotExist(err) {
+		t.Fatalf("unapproved destruction hook ran (stat err = %v)", err)
+	}
+	if _, err := os.Stat(unapproved); !os.IsNotExist(err) {
+		t.Errorf("expected unapproved worktree removed anyway, stat err = %v", err)
+	}
+
+	if _, err := TrustScript(dir, "destruction", filepath.Join(scriptDir, "worktree-destruction.sh")); err != nil {
+		t.Fatalf("trust destruction hook: %v", err)
 	}
 
 	worktreePath := filepath.Join(dir, ".worktrees", "doomed")

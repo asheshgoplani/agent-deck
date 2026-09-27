@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,8 +30,8 @@ func handleWorktree(profile string, args []string) {
 		handleWorktreeCleanup(profile, args[1:])
 	case "finish":
 		handleWorktreeFinish(profile, args[1:])
-	case "trust-scripts":
-		handleWorktreeTrustScripts(args[1:])
+	case "trust-hooks", "trust-scripts": // trust-scripts: pre-1.16.22 name
+		os.Exit(runWorktreeTrustHooks(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinStdoutIsTerminal()))
 	case "help", "-h", "--help":
 		printWorktreeUsage()
 	default:
@@ -51,7 +52,8 @@ func printWorktreeUsage() {
 	fmt.Println("  info <session>    Show worktree info for a session")
 	fmt.Println("  finish <session>  Merge branch, remove worktree, and delete session")
 	fmt.Println("  cleanup [--force] Find and remove orphaned worktrees/sessions")
-	fmt.Println("  trust-scripts <repo-path>  Approve .agent-deck/worktree-*.sh for this repo")
+	fmt.Println("  trust-hooks <repo> [--hook setup|destruction] [--yes] [--revoke]")
+	fmt.Println("                    Review and approve .agent-deck/worktree-*.sh hooks for a repo")
 	fmt.Println()
 	fmt.Println("Global Options:")
 	fmt.Println("  -p, --profile <name>   Use specific profile")
@@ -66,24 +68,17 @@ func printWorktreeUsage() {
 	fmt.Println("  agent-deck worktree finish \"My Session\" --into develop")
 	fmt.Println("  agent-deck worktree cleanup")
 	fmt.Println("  agent-deck worktree cleanup --force")
-	fmt.Println("  agent-deck worktree trust-scripts .")
-	fmt.Println("  agent-deck worktree trust-scripts . --revoke")
+	fmt.Println("  agent-deck worktree trust-hooks .")
+	fmt.Println("  agent-deck worktree trust-hooks . --hook setup --yes")
+	fmt.Println("  agent-deck worktree trust-hooks . --revoke")
 }
 
-// handleWorktreeTrustScripts pre-approves (or revokes approval for) the
-// .agent-deck/worktree-setup.sh and worktree-destruction.sh scripts found in
-// a repository, recording their current SHA-256 so [worktree]
-// run_repo_scripts = "prompt" (the default) never needs to ask interactively
-// for this exact content again. This is the intended way to grant consent
-// from a non-interactive context (CI approving a change ahead of time,
-// scripting) rather than relying on the terminal prompt or
-// --allow-repo-scripts.
 // partitionWorktreeTrustScriptsArgs splits args into flag tokens and
-// positional tokens so `agent-deck worktree trust-scripts` accepts a flag
+// positional tokens so `agent-deck worktree trust-hooks` accepts a flag
 // in any position relative to the repo-path positional.
 //
 // Go's stdlib flag.Parse stops consuming flags at the first non-flag
-// argument. Our own usage text prints "trust-scripts . --revoke" (repo path
+// argument. Our own usage text prints "trust-hooks . --revoke" (repo path
 // before the flag) — under a plain fs.Parse(args), "." is seen first,
 // parsing stops immediately, and "--revoke" is swallowed into the
 // positional args instead of being recognized, so *revoke stays false and
@@ -94,20 +89,24 @@ func printWorktreeUsage() {
 // A literal "--" is honored as the conventional end-of-flags marker
 // (matching flag.Parse's own behavior): everything after it is treated as
 // positional even if it starts with "-", so a repo path that itself begins
-// with a dash can still be passed via `trust-scripts --revoke -- -repo`.
-// This subcommand only ever declares boolean flags, so there is no case
-// where a flag's value (as opposed to the flag itself) needs to be
-// distinguished from a positional argument.
+// with a dash can still be passed via `trust-hooks --revoke -- -repo`.
+// --hook is the only value-taking flag; its separate value token (`--hook
+// setup`) stays with it.
 func partitionWorktreeTrustScriptsArgs(args []string) (flagArgs, positional []string) {
 	endOfFlags := false
+	takeValue := false
 	for _, a := range args {
 		switch {
+		case takeValue:
+			flagArgs = append(flagArgs, a)
+			takeValue = false
 		case endOfFlags:
 			positional = append(positional, a)
 		case a == "--":
 			endOfFlags = true
 		case strings.HasPrefix(a, "-") && a != "-":
 			flagArgs = append(flagArgs, a)
+			takeValue = a == "--hook" || a == "-hook"
 		default:
 			positional = append(positional, a)
 		}
@@ -115,75 +114,110 @@ func partitionWorktreeTrustScriptsArgs(args []string) (flagArgs, positional []st
 	return flagArgs, positional
 }
 
-func handleWorktreeTrustScripts(args []string) {
+// runWorktreeTrustHooks reviews and pre-approves (or revokes approval for)
+// a repository's .agent-deck/worktree-setup.sh and worktree-destruction.sh.
+// Each hook's identity (path, symlink target, interpreter, sha256, first
+// lines) is printed before it is trusted; on a terminal the user confirms
+// with y/N, otherwise --yes is required so a script cannot trust a hook
+// nobody looked at by accident. Returns the process exit code.
+func runWorktreeTrustHooks(args []string, in io.Reader, out, errOut io.Writer, interactive bool) int {
 	flagArgs, positional := partitionWorktreeTrustScriptsArgs(args)
 
-	fs := flag.NewFlagSet("worktree trust-scripts", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree trust-hooks", flag.ContinueOnError)
+	fs.SetOutput(errOut)
 	revoke := fs.Bool("revoke", false, "Remove previously stored trust instead of granting it")
-	_ = fs.Parse(flagArgs)
+	hook := fs.String("hook", "", "Only this hook: setup or destruction (default: both)")
+	yes := fs.Bool("yes", false, "Trust without asking (for scripts; the hook is still printed)")
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
 
 	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck worktree trust-scripts <repo-path> [--revoke]")
-		os.Exit(1)
+		fmt.Fprintln(errOut, "Usage: agent-deck worktree trust-hooks <repo-path> [--hook setup|destruction] [--yes] [--revoke]")
+		return 1
+	}
+	kinds := []string{"setup", "destruction"}
+	switch *hook {
+	case "":
+	case "setup", "destruction":
+		kinds = []string{*hook}
+	default:
+		fmt.Fprintf(errOut, "Error: --hook must be setup or destruction, got %q\n", *hook)
+		return 1
 	}
 
 	repoRoot, err := git.GetRepoRoot(positional[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s is not inside a git repository: %v\n", positional[0], err)
-		os.Exit(1)
+		fmt.Fprintf(errOut, "Error: %s is not inside a git repository: %v\n", positional[0], err)
+		return 1
 	}
 
-	kinds := []struct {
-		name string
-		find func(string) (string, os.FileMode)
-	}{
-		{"setup", git.FindWorktreeSetupScript},
-		{"destruction", git.FindWorktreeDestructionScript},
-	}
-
+	reader := bufio.NewReader(in)
 	found := 0
-	for _, k := range kinds {
-		scriptPath, _ := k.find(repoRoot)
+	for _, kind := range kinds {
 		if *revoke {
 			// Always attempt revocation, independent of whether the script
 			// still exists on disk right now — the trust store can hold an
 			// entry for a script that was since deleted or renamed, and
 			// that entry must still be removable via the CLI rather than
 			// becoming permanently stale.
-			existed, err := git.RevokeScriptConsent(repoRoot, k.name)
+			existed, err := git.RevokeScriptConsent(repoRoot, kind)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error revoking trust for %s script in %s: %v\n", k.name, repoRoot, err)
-				os.Exit(1)
+				fmt.Fprintf(errOut, "Error revoking trust for %s hook in %s: %v\n", kind, repoRoot, err)
+				return 1
 			}
 			if existed {
 				found++
-				if scriptPath != "" {
-					fmt.Printf("Revoked trust for %s script: %s\n", k.name, scriptPath)
-				} else {
-					fmt.Printf("Revoked trust for %s script (no longer present on disk) in %s\n", k.name, repoRoot)
-				}
+				fmt.Fprintf(out, "Revoked trust for the %s hook in %s\n", kind, repoRoot)
 			}
 			continue
 		}
-		if scriptPath == "" {
+
+		id, err := git.InspectWorktreeScript(repoRoot, kind)
+		if err != nil {
+			fmt.Fprintf(errOut, "Error reading %s hook: %v\n", kind, err)
+			return 1
+		}
+		if id == nil {
 			continue
 		}
 		found++
-		hash, err := git.TrustScript(repoRoot, k.name, scriptPath)
+		status, err := git.WorktreeScriptTrustStatus(id)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error trusting %s: %v\n", scriptPath, err)
-			os.Exit(1)
+			fmt.Fprintf(errOut, "Warning: could not read the hook trust store: %v\n", err)
 		}
-		fmt.Printf("Trusted %s script: %s (sha256:%s)\n", k.name, scriptPath, hash[:12])
+		fmt.Fprintf(out, "Worktree %s hook:\n%s", kind, git.DescribeWorktreeScript(*id))
+		if status == git.ScriptTrusted {
+			fmt.Fprintf(out, "Already trusted (sha256:%s).\n\n", id.ShortHash())
+			continue
+		}
+		if !*yes {
+			if !interactive {
+				fmt.Fprintf(errOut, "Error: not trusting the %s hook without confirmation: run this on a terminal, or pass --yes after reviewing it\n", kind)
+				return 1
+			}
+			fmt.Fprintf(out, "Trust this version of the %s hook? [y/N] ", kind)
+			line, _ := reader.ReadString('\n')
+			if answer := strings.ToLower(strings.TrimSpace(line)); answer != "y" && answer != "yes" {
+				fmt.Fprintf(out, "Not trusted.\n\n")
+				continue
+			}
+		}
+		if err := git.TrustWorktreeScript(id); err != nil {
+			fmt.Fprintf(errOut, "Error trusting %s: %v\n", id.ScriptPath, err)
+			return 1
+		}
+		fmt.Fprintf(out, "Trusted the %s hook (sha256:%s, %s).\n\n", kind, id.ShortHash(), id.Interpreter)
 	}
 
 	if found == 0 {
 		if *revoke {
-			fmt.Printf("No stored trust found for worktree setup/destruction scripts under %s\n", repoRoot)
+			fmt.Fprintf(out, "No stored trust found for worktree hooks under %s\n", repoRoot)
 		} else {
-			fmt.Printf("No .agent-deck/worktree-setup.sh or worktree-destruction.sh found under %s\n", repoRoot)
+			fmt.Fprintf(out, "No .agent-deck/worktree-setup.sh or worktree-destruction.sh found under %s\n", repoRoot)
 		}
 	}
+	return 0
 }
 
 // handleWorktreeList lists all worktrees with session associations

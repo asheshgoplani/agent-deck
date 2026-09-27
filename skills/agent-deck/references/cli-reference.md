@@ -749,6 +749,18 @@ agent-deck worktree cleanup [--force]
 
 Finds orphaned worktrees/sessions. Dry-run by default; `--force` performs the cleanup.
 
+### worktree trust-hooks
+
+```bash
+agent-deck worktree trust-hooks <repo> [--hook setup|destruction] [--yes] [--revoke]
+```
+
+Reviews and approves the repository's `.agent-deck/worktree-setup.sh` / `worktree-destruction.sh`. Each hook is printed first (path, symlink target, command, sha256, first 20 lines). On a terminal it asks y/N; without one it refuses unless `--yes` is given. `--hook` limits it to one hook; `--revoke` forgets the approvals. `trust-scripts` is the older name and still works.
+
+An approval is bound to the script's bytes, resolved path and interpreter (executable via `#!` vs `sh -e`); any change asks again. Unapproved hooks are skipped by `launch -w`, `add -w`, `worktree finish` and the other worktree commands when there is no terminal to ask on, with a one-line notice naming this command.
+
+Global flags for one invocation: `--run-hooks` (older name `--allow-repo-scripts`, env `AGENT_DECK_ALLOW_REPO_SCRIPTS=1`) runs unapproved hooks after printing their sha256 and records nothing; add `--trust` to record the version that ran.
+
 ## MCP Commands
 
 ### mcp list
