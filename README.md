@@ -428,7 +428,7 @@ The script receives two environment variables:
 - `AGENT_DECK_REPO_ROOT` — path to the main repository
 - `AGENT_DECK_WORKTREE_PATH` — path to the new worktree
 
-It runs in the new worktree with your full environment. An executable script runs directly (its `#!` line picks the interpreter); a non-executable one runs via `sh -e`. The timeout is 60 seconds (`[worktree] setup_timeout_seconds`). If it fails or is skipped, the worktree is still created: you'll see a warning and the session proceeds normally.
+It runs in the new worktree with your full environment. An executable script runs directly (its `#!` line picks the interpreter); a non-executable one runs via `sh -e`. Under the default approval policy, agent-deck runs a private copy of the approved bytes, so a hook changed while you answer the prompt cannot execute instead. Use the working directory and the two environment variables above to locate project files; the script's own `$0` path points to that temporary copy. The timeout is 60 seconds (`[worktree] setup_timeout_seconds`). If it fails or is skipped, the worktree is still created: you'll see a warning and the session proceeds normally.
 
 #### Worktree Destruction Script
 
@@ -450,7 +450,7 @@ These two hooks are code from the repository, and they run as you. Creating or r
 
 **When you are asked.** The first time a hook would run, and after any change:
 
-- **TUI:** a dialog shows the repository, the hook, the command that will run, its sha256 and the first 20 lines, with **Run once**, **Always trust this version** and **Skip** (the default).
+- **TUI:** a dialog shows the repository, the hook, the command that will run, its sha256 and up to the first 20 lines (with an omitted-line count when space is tight), with **Run once**, **Always trust this version** and **Skip** (the default).
 - **CLI on a terminal:** the same details, then `[o]nce, [a]lways trust this version, [N]o/skip`.
 - **CLI without a terminal** (scripts, CI, `remote`), and requests from the web UI: the hook is skipped with a one-line notice naming the command that approves it.
 

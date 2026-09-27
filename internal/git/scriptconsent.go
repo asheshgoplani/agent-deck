@@ -247,6 +247,10 @@ type WorktreeScriptIdentity struct {
 	// the terminal that displays it.
 	Preview    []string
 	TotalLines int
+	// scriptBytes are the same bytes used for SHA256 and the preview. The
+	// execution gate runs a private copy so a path replacement after consent
+	// cannot change what was approved.
+	scriptBytes []byte
 }
 
 // CommandLine renders the effective command for display.
@@ -303,11 +307,7 @@ func InspectWorktreeScript(repoDir, kind string) (*WorktreeScriptIdentity, error
 // inspectWorktreeScript hashes the script once and derives the rest of its
 // identity. The mode used for the interpreter decision comes from fstat on
 // the very descriptor that was hashed, and the gate dispatches with that
-// mode, so the approved interpreter and the executed interpreter agree.
-// The script is still executed by path afterwards, so a local writer racing
-// the gate could swap the bytes between hash and exec; closing that would
-// need fd-based execution and is out of scope (the repo, not a concurrent
-// local process, is the adversary here).
+// mode and a private copy of those bytes.
 func inspectWorktreeScript(kind, repoDir, scriptPath string, discoveredMode os.FileMode) (*WorktreeScriptIdentity, error) {
 	if !discoveredMode.IsRegular() {
 		return nil, fmt.Errorf("worktree %s script consent: %s is not a regular file (refusing to hash a symlink/FIFO/device target, which could hang indefinitely); point .agent-deck/worktree-%s.sh at a real file", kind, scriptPath, kind)
@@ -336,6 +336,7 @@ func inspectWorktreeScript(kind, repoDir, scriptPath string, discoveredMode os.F
 		SHA256:       hex.EncodeToString(sum[:]),
 		Preview:      preview,
 		TotalLines:   total,
+		scriptBytes:  data,
 	}, nil
 }
 

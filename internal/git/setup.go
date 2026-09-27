@@ -212,8 +212,8 @@ func GateAndRunWorktreeDestructionScript(repoDir, worktreePath string, stdout, s
 
 // gateAndRunWorktreeScript is the shared body of the two gates. Under the
 // "prompt" policy the script's identity (bytes, resolved path, interpreter)
-// is computed immediately before the spawn and the script is dispatched with
-// the mode that identity was computed from.
+// is computed before consent and the approved bytes are run from a private
+// copy. A path replacement while the user is deciding cannot change them.
 func gateAndRunWorktreeScript(kind, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
 	scriptPath := worktreeScriptPath(repoDir, kind)
 	info, err := os.Stat(scriptPath)
@@ -235,7 +235,30 @@ func gateAndRunWorktreeScript(kind, repoDir, worktreePath string, stdout, stderr
 		return err
 	}
 	fmt.Fprintf(stderr, "Running worktree %s script...\n", kind)
-	return runWorktreeScript(kind, id.ScriptPath, id.Mode, repoDir, worktreePath, stdout, stderr, timeout)
+	return runApprovedWorktreeScript(id, repoDir, worktreePath, stdout, stderr, timeout)
+}
+
+// runApprovedWorktreeScript executes the bytes that were hashed for consent.
+// The temporary directory is private to this process; the script retains its
+// basename, cwd, environment and approved interpreter decision.
+func runApprovedWorktreeScript(id *WorktreeScriptIdentity, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+	dir, err := os.MkdirTemp("", "agent-deck-worktree-hook-")
+	if err != nil {
+		return fmt.Errorf("stage approved worktree %s hook: %w", id.Kind, err)
+	}
+	scriptPath := filepath.Join(dir, filepath.Base(id.ScriptPath))
+	defer func() {
+		_ = os.Remove(scriptPath)
+		_ = os.Remove(dir)
+	}()
+	mode := os.FileMode(0o600)
+	if id.Interpreter == ScriptInterpreterExec {
+		mode = 0o700
+	}
+	if err := os.WriteFile(scriptPath, id.scriptBytes, mode); err != nil {
+		return fmt.Errorf("stage approved worktree %s hook: %w", id.Kind, err)
+	}
+	return runWorktreeScript(id.Kind, scriptPath, id.Mode, repoDir, worktreePath, stdout, stderr, timeout)
 }
 
 // DefaultWorktreeDestructionTimeout bounds how long

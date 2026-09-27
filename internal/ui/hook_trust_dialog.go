@@ -136,20 +136,6 @@ func (d *HookTrustDialog) View() string {
 	fmt.Fprintf(&facts, "sha256   %s", id.SHA256)
 	factsBlock := lipgloss.NewStyle().Foreground(ColorText).Width(inner).MarginBottom(1).Render(facts.String())
 
-	// Preview lines are already sanitized by the git layer; truncate to
-	// the box width instead of wrapping so line boundaries stay obvious.
-	var preview strings.Builder
-	for i, l := range id.Preview {
-		if i > 0 {
-			preview.WriteString("\n")
-		}
-		preview.WriteString(ansi.Truncate("│ "+l, inner, "…"))
-	}
-	if more := id.TotalLines - len(id.Preview); more > 0 {
-		fmt.Fprintf(&preview, "\n│ … %d more lines", more)
-	}
-	previewBlock := dim.Width(inner).Render(preview.String())
-
 	buttons := make([]string, 0, len(hookTrustChoices))
 	colors := []lipgloss.Color{ColorYellow, ColorRed, ColorAccent}
 	for i, c := range hookTrustChoices {
@@ -166,16 +152,35 @@ func (d *HookTrustDialog) View() string {
 	buttonRow := strings.Join(buttons, " ")
 	hint := dim.Render(glueHintGroups("o once · a always · s skip · ←/→ navigate · Enter select · Esc skip"))
 
-	content := lipgloss.JoinVertical(lipgloss.Left, title, intro, factsBlock, previewBlock, "", buttonRow, hint)
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorYellow).
-		Padding(1, 2).
-		Width(dialogWidth).
-		Render(content)
-
-	if d.width <= 0 || d.height <= 0 {
-		return box
+	// Reduce the preview until the choices and footer fit on the terminal.
+	// The omitted-line count remains visible, so a clipped preview is explicit.
+	for shown := len(id.Preview); shown >= 0; shown-- {
+		var preview strings.Builder
+		for i, l := range id.Preview[:shown] {
+			if i > 0 {
+				preview.WriteString("\n")
+			}
+			preview.WriteString(ansi.Truncate("│ "+l, inner, "…"))
+		}
+		if more := id.TotalLines - shown; more > 0 {
+			if shown > 0 {
+				preview.WriteString("\n")
+			}
+			fmt.Fprintf(&preview, "│ … %d more lines", more)
+		}
+		content := lipgloss.JoinVertical(lipgloss.Left, title, intro, factsBlock, dim.Width(inner).Render(preview.String()), "", buttonRow, hint)
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorYellow).
+			Padding(1, 2).
+			Width(dialogWidth).
+			Render(content)
+		if d.width <= 0 || d.height <= 0 {
+			return box
+		}
+		if lipgloss.Height(box) <= d.height || shown == 0 {
+			return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, box)
+		}
 	}
-	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, box)
+	return ""
 }
