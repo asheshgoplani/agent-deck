@@ -10,7 +10,7 @@ import (
 
 // Auto-memory location, reproduced from Claude Code's own resolver.
 //
-// The rule was read out of the shipped binary (2.1.220) rather than guessed,
+// The rule matches Claude Code 2.1.220's observed behavior rather than a guess,
 // because guessing it is what produced the defect this file exists to fix: the
 // panel priced a 130-byte stub at ~123 tokens and told the user to edit it,
 // while the file the session actually loads was 17,506 bytes of index sitting

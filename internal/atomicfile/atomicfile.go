@@ -7,10 +7,10 @@
 // preserved — a dotfiles-managed ~/.claude/settings.json stays a symlink.
 //
 // This is the OPPOSITE of the intentional behavior in
-// internal/credrefresh.atomicWriteFile, internal/session.atomicWriteFile
-// (worker_scratch.go), and internal/session.writeFileDurable (inbox.go), which
-// replace a symlink at the path with a regular file. Those helpers target
-// agent-deck's own internal state and must not be consolidated here.
+// internal/session.atomicWriteFile (worker_scratch.go) and
+// internal/session.writeFileDurable (inbox.go), which replace a symlink at
+// the path with a regular file. Those helpers target agent-deck's own internal
+// state and must not be consolidated here.
 //
 // The package imports only the standard library so any internal package can
 // depend on it without import cycles.

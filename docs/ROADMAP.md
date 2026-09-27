@@ -50,7 +50,7 @@ An item here is not a commitment or a queue position; it is a note that the idea
 - P3: Heartbeat's picker detector can be thrown off by option descriptions or wrapped lines, and the "esc to interrupt" spinner can mask an open picker underneath it; also a stray Python test class sits after the `__main__` guard in the bridge suite.
 - P2: The usage-ingest wrapper's bare-form statusLine strips an inherited `AGENTDECK_PROFILE` from the wrapped command's environment; pass the caller's environment through unchanged except agent-deck's own variables.
 - P3: The tmux window-policy hook has no config opt-out for installing the global after-new-window hook; add one, make uninstall also drop per-session options, make the ownership-signature match and accepted values consistent, and add `--json` parity to `tmux-hooks`.
-- P2: A round of small verification gaps to close: the creds-refresh dispatcher's help-vs-consent handling, a colour-wiring issue, a transcript check that should run before `-c`, help/retry/purge text for dead letters, and missing test coverage for a few already-fixed issues.
+- P2: A round of small verification gaps to close: a colour-wiring issue, a transcript check that should run before `-c`, help/retry/purge text for dead letters, and missing test coverage for a few already-fixed issues.
 - P2: The launch/send truncation guard counts wrapped display lines as separate message lines, so it can refuse a perfectly valid one-line prompt just because it wraps on screen; this is a regression from an earlier truncation fix and needs its own fix.
 - P2: A second round of verification gaps: the shell-tool fallback path on a poisoned server, re-applying dead-letter retry/purge/TUI consistently, applying requested workflow revisions to the structural-quality-gate PR, and a trailing-newline floor plus `session send --message-file` parity for the paste-marker guard.
 - P2: A bundle of small follow-ups worth doing together: making the health warning sustained-only, fixing the drain `--help` wording, adding `binary_version` to health, and adding a skills hint plus host line to the identity block.
@@ -71,7 +71,7 @@ An item here is not a commitment or a queue position; it is a note that the idea
 ## CI and repo
 
 - P3: Bring the bundled skills up to date with the current release and add skill-creator evals so they do not drift again.
-- P3: Add a CHANGELOG mention for the creds-refresh consent fix, a CI lint test for the Dependabot auto-merge workflow, and wire the structure-advisory lint test into an actual workflow job.
+- P3: Add a CI lint test for the Dependabot auto-merge workflow, and wire the structure-advisory lint test into an actual workflow job.
 - P2: The conductor bridge's Python test suite has failing tests when run locally (bridge path/proxy/attribution tests) because it assumes things about the local network/proxy/environment that are not always true; make the suite hermetic and add it to CI so it cannot silently rot.
 
 ## Security and signing

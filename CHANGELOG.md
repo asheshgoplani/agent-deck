@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The `creds-refresh` command and its keep-warm daemon are gone. It exchanged Claude Code refresh tokens with Anthropic's OAuth endpoint from a program other than Claude Code, which Anthropic's Claude Code terms do not permit. The credential symlink fix from the same change stays, so worker sessions still share one login through Claude Code's own lock. If you enabled the systemd unit, disable it with `systemctl --user disable --now agent-deck-creds-refresh`; until you do, `agent-deck creds-refresh` only prints that message and exits 0. For long-lived logins use `claude setup-token` and pass `CLAUDE_CODE_OAUTH_TOKEN` through `env_file` (README, "Vendor terms and logins").
+
 ### Added
 
 - Model and reasoning-effort lists come from the installed CLI where it can list them, so new models show up without waiting for an Agent Deck release. Codex is asked with `codex debug models` (no prompt, about 1s timeout, cached per Codex binary for up to a day, a failure retried after a minute); its models lead the TUI and web pickers and `launch -capabilities --json`, its efforts are accepted by `--effort`, and an effort the chosen model lacks is rejected at launch. Claude Code and Gemini keep the built-in list, which stays the fallback when a probe fails or you are offline. A `[claude] default_model` missing from the list is now prefilled with a warning instead of dropped. Turn the probe off with `[models] probe = false` (#2388, thanks @na-bal).

@@ -402,16 +402,6 @@
    "daemonish": false
   },
   {
-   "id": "CAP-CLI-041",
-   "area": "CLI",
-   "name": "creds-refresh (OAuth keep-warm daemon)",
-   "surfaces_raw": "daemon, CLI",
-   "surfaces": [
-    "CLI"
-   ],
-   "daemonish": true
-  },
-  {
    "id": "CAP-CLI-042",
    "area": "CLI",
    "name": "openclaw / oc sync|bridge|status|list|send",
@@ -2204,16 +2194,6 @@
    "daemonish": false
   },
   {
-   "id": "CAP-WATCH-013",
-   "area": "WATCH",
-   "name": "Credential keep-warm refresh daemon (creds-refresh)",
-   "surfaces_raw": "CLI, daemon",
-   "surfaces": [
-    "CLI"
-   ],
-   "daemonish": true
-  },
-  {
    "id": "CAP-MISC-001",
    "area": "MISC",
    "name": "Docker container lifecycle (sandbox sessions)",
@@ -2863,17 +2843,6 @@
    "evidence": "evidence/cli/ev-CAP-CLI-040-CLI.txt",
    "status": "verified",
    "notes": "costs summary --json emits the RemoteCostSummary wire shape (cost_today/yesterday/this_week/last_week/this_month/last_month/projected_microdollars + events_* keys); human summary prints Today/This wee"
-  },
-  {
-   "id": "CAP-CLI-041",
-   "area": "CLI",
-   "name": "creds-refresh (OAuth keep-warm daemon)",
-   "surface": "CLI",
-   "automated_test": "",
-   "user_verified": "2026-06-11",
-   "evidence": "evidence/cli/ev-CAP-CLI-041-CLI.txt",
-   "status": "verified",
-   "notes": "creds-refresh --once with no .credentials.json in default/specified dirs -> 'no profile config dir with a .credentials.json found' exit 1; with a fabricated future-expiry .credentials.json under --con"
   },
   {
    "id": "CAP-CLI-042",
@@ -5956,17 +5925,6 @@
    "notes": ""
   },
   {
-   "id": "CAP-WATCH-013",
-   "area": "WATCH",
-   "name": "Credential keep-warm refresh daemon (creds-refresh)",
-   "surface": "CLI",
-   "automated_test": "",
-   "user_verified": "2026-06-11",
-   "evidence": "evidence/watch/ev-CAP-WATCH-013-CLI.txt",
-   "status": "verified",
-   "notes": "creds-refresh --once full lifecycle: (a) no .credentials.json dir -> error exit 1 (contract: only non-zero on no-config-dirs); (b) FRESH token (expiry > threshold) -> 'skip (token not near expiry)' ex"
-  },
-  {
    "id": "CAP-MISC-001",
    "area": "MISC",
    "name": "Docker container lifecycle (sandbox sessions)",
@@ -6385,17 +6343,6 @@
    "notes": "The long-lived daemon loop (SIGINT/SIGTERM context, watchBinaryVersion re-exec every 60s, #1214 stale-daemon recycle) is a supervised long-running process; --once front door verified. Full version-mis"
   },
   {
-   "id": "CAP-CLI-041",
-   "area": "CLI",
-   "name": "",
-   "surface": "daemon",
-   "automated_test": "",
-   "user_verified": "2026-06-11",
-   "evidence": "evidence/cli/ev-CAP-CLI-041-CLI.txt",
-   "status": "untestable-locally",
-   "notes": "The actual OAuth refresh-token exchange against Anthropic, atomic rewrite under proper-lockfile, and the SIGINT/SIGTERM loop require real network + real credentials. --once front-door and dir-filterin"
-  },
-  {
    "id": "CAP-CLI-044",
    "area": "CLI",
    "name": "",
@@ -6757,17 +6704,6 @@
    "evidence": "evidence/watch/ev-CAP-WATCH-012-WEB.txt",
    "status": "verified",
    "notes": "GET /api/system/stats -> 200 with cpu{usage_percent}, disk{total/used bytes+human, usage_percent}, load{load1/5/15 from /proc/loadavg}, memory{total/used+usage_percent}, network{rx/tx bytes_per_sec+hu"
-  },
-  {
-   "id": "CAP-WATCH-013",
-   "area": "WATCH",
-   "name": "",
-   "surface": "daemon",
-   "automated_test": "",
-   "user_verified": "2026-06-11",
-   "evidence": "evidence/watch/ev-CAP-WATCH-013-CLI.txt",
-   "status": "untestable-locally",
-   "notes": "Daemon loop (Run() immediate tick + every 25m interval, systemd --user unit) and the real lock-dir contention against live Claude Code (~/.claude.lock proper-lockfile directory, 30s stale-steal) are n"
   },
   {
    "id": "CAP-MISC-003",

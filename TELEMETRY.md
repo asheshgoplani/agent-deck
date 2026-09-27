@@ -446,6 +446,8 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 <!-- schema:end -->
 
+The `creds_refresh` value of `feature.daily` is deprecated: the `creds-refresh` command was removed, so current builds never send it, but it stays in the allow-list so events from older clients still validate.
+
 ## What we cannot see, by design
 
 - The decline rate: a "no" sends nothing.

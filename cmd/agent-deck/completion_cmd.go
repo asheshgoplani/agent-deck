@@ -113,7 +113,6 @@ var completionTree = []completionNode{
 	{name: "uninstall"},
 	{name: "run-task"},
 	{name: "feedback"},
-	{name: "creds-refresh"},
 	{name: "telegram-doctor"},
 	{name: "version"},
 	{name: "help"},

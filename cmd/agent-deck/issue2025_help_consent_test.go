@@ -143,31 +143,14 @@ func TestIssue2025TrailingHelpIsReadOnly(t *testing.T) {
 		{"deepseek sessions", []string{"deepseek", "sessions", "--help"}},
 		{"remote add", []string{"remote", "add", "test", "example.invalid", "--help"}},
 		{"notify daemon", []string{"notify-daemon", "--help"}},
-		// normalizeArgs treats the token after an unknown non-boolean flag as
-		// that flag's value, so flag.Parse reports the unknown flag before it
-		// can provide built-in help. This exercises the explicit pre-parse guard.
-		{"creds refresh", []string{"creds-refresh", "--not-a-real-flag", "--help"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			home := t.TempDir()
-			configDir := filepath.Join(home, "creds")
-			if err := os.MkdirAll(configDir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(configDir, ".credentials.json"), []byte("{}"), 0o600); err != nil {
-				t.Fatal(err)
-			}
 			before := snapshotTree(t, home)
-			args := append([]string(nil), tt.args...)
-			for i := range args {
-				if args[i] == "CONFIG_DIR" {
-					args[i] = configDir
-				}
-			}
 
-			out, err := runIssue2025Helper(t, home, args)
+			out, err := runIssue2025Helper(t, home, tt.args)
 			if err != nil {
 				t.Fatalf("help request failed: %v\n%s", err, out)
 			}
