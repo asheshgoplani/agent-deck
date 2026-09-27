@@ -246,6 +246,85 @@ func TestModelProbe_CacheTTL(t *testing.T) {
 	}
 }
 
+// ageModelProbeMemo moves the codex memo into the past, as if d had passed.
+func ageModelProbeMemo(t *testing.T, d time.Duration) {
+	t.Helper()
+	modelProbeMu.Lock()
+	defer modelProbeMu.Unlock()
+	m := modelProbeMemos["codex"]
+	if m == nil {
+		t.Fatal("no codex memo to age")
+	}
+	m.checkedAt = m.checkedAt.Add(-d)
+	m.probedAt = m.probedAt.Add(-d)
+}
+
+// A failed probe (e.g. a cold-start timeout in the TUI's startup warm-up) is
+// remembered only briefly: within the backoff lookups stay cheap, after it the
+// probe runs again and picks up the recovered CLI.
+func TestModelProbe_FailureRetriedAfterBackoff(t *testing.T) {
+	f := installFakeCodex(t, `if [ -f "$FAKE_CODEX_OK" ]; then cat "$FAKE_CODEX_FIXTURE"; else exit 3; fi`)
+	okFlag := filepath.Join(f.dir, "ok")
+	t.Setenv("FAKE_CODEX_OK", okFlag)
+
+	if got := KnownModelIDsForTool("codex"); !slices.Equal(got, staticModelIDsForTool("codex")) {
+		t.Fatalf("first probe should fail to the static catalog, got %v", got)
+	}
+	if err := os.WriteFile(okFlag, nil, 0o644); err != nil { // CLI recovers
+		t.Fatal(err)
+	}
+
+	// Inside the backoff the failure is still memoized: no re-run per lookup.
+	ageModelProbeMemo(t, modelProbeFailureBackoff/2)
+	KnownModelIDsForTool("codex")
+	if n := f.probeCalls(t); n != 1 {
+		t.Fatalf("within the backoff: %d probe runs, want 1", n)
+	}
+
+	ageModelProbeMemo(t, modelProbeFailureBackoff)
+	if got := KnownModelIDsForTool("codex"); got[0] != "gpt-7-nova" {
+		t.Fatalf("after the backoff the recovered CLI should be probed, got %v", got)
+	}
+	if n := f.probeCalls(t); n != 2 {
+		t.Fatalf("after the backoff: %d probe runs, want 2", n)
+	}
+}
+
+// Review repro (#2408): one failed probe must not stick for the whole success
+// TTL in a long-lived process once the CLI answers again.
+func TestReviewRepro_FailedProbeStickyForTTL(t *testing.T) {
+	f := installFakeCodex(t, `if [ -f "$FAKE_CODEX_OK" ]; then cat "$FAKE_CODEX_FIXTURE"; else exit 3; fi`)
+	okFlag := filepath.Join(f.dir, "ok")
+	t.Setenv("FAKE_CODEX_OK", okFlag)
+
+	if got := KnownModelIDsForTool("codex"); got[0] == "gpt-7-nova" {
+		t.Fatal("setup: first probe should fail")
+	}
+	if err := os.WriteFile(okFlag, nil, 0o644); err != nil { // CLI recovers
+		t.Fatal(err)
+	}
+	ageModelProbeMemo(t, 10*time.Minute)
+
+	got := KnownModelIDsForTool("codex")
+	if got[0] != "gpt-7-nova" {
+		t.Fatalf("after the CLI recovered and 10 min passed, still static list (probe runs=%d)", f.probeCalls(t))
+	}
+}
+
+// A successful probe stays cached well past the failure backoff: only the
+// success TTL (or a binary change) re-probes.
+func TestModelProbe_SuccessKeptPastFailureBackoff(t *testing.T) {
+	f := installFakeCodex(t, fakeCodexOK)
+	KnownModelIDsForTool("codex")
+	ageModelProbeMemo(t, 10*time.Minute)
+	if got := KnownModelIDsForTool("codex"); got[0] != "gpt-7-nova" {
+		t.Fatalf("got %v, want the probed list", got)
+	}
+	if n := f.probeCalls(t); n != 1 {
+		t.Fatalf("%d probe runs, want 1 (success must stay cached)", n)
+	}
+}
+
 func TestModelProbe_DisabledByConfig(t *testing.T) {
 	f := installFakeCodex(t, fakeCodexOK)
 	off := false

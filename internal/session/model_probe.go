@@ -95,6 +95,11 @@ const (
 	// modelProbeTTL re-probes an unchanged binary once a day: `codex debug
 	// models` can refresh its catalog from the network without an upgrade.
 	modelProbeTTL = 24 * time.Hour
+	// modelProbeFailureBackoff is how long a failed probe is remembered. It is
+	// short because the TUI and web server are long-lived and warm the probe
+	// at startup, when a cold CLI is slowest: one timeout there must not hide
+	// the probed list for a day. The next lookup after it retries.
+	modelProbeFailureBackoff = time.Minute
 )
 
 // modelProbeTimeout bounds one probe run. A slow CLI must never block the
@@ -125,6 +130,15 @@ type modelProbeMemo struct {
 	result    *ModelProbeResult // nil when the probe failed
 	probedAt  time.Time
 	checkedAt time.Time
+}
+
+// ttl is how long the memo answers for an unchanged binary: a success is kept
+// for modelProbeTTL, a failure only for modelProbeFailureBackoff.
+func (m *modelProbeMemo) ttl() time.Duration {
+	if m.result == nil {
+		return modelProbeFailureBackoff
+	}
+	return modelProbeTTL
 }
 
 var (
@@ -185,7 +199,7 @@ func probedModelCatalog(kind string) *ModelProbeResult {
 		modelProbeMu.Unlock()
 		return nil
 	}
-	if memo != nil && memo.key == key && now.Sub(memo.probedAt) < modelProbeTTL {
+	if memo != nil && memo.key == key && now.Sub(memo.probedAt) < memo.ttl() {
 		memo.checkedAt = now
 		modelProbeMu.Unlock()
 		return memo.result
@@ -202,7 +216,8 @@ func probedModelCatalog(kind string) *ModelProbeResult {
 
 	modelProbeMu.Lock()
 	delete(modelProbeInFlight, name)
-	// Failures are memoized in memory only, so the next process retries.
+	// Failures are memoized in memory only and for modelProbeFailureBackoff,
+	// so a later lookup in this process (or the next process) retries.
 	modelProbeMemos[name] = &modelProbeMemo{key: key, result: result, probedAt: now, checkedAt: now}
 	modelProbeMu.Unlock()
 
