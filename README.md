@@ -1103,6 +1103,20 @@ unauthenticated remote-code-execution surface. MCP administration over the
 HTTP API is only available when a token is configured; without one those
 routes stay unavailable.
 
+Browser push notifications tell you when a session needs you while the tab is
+in the background:
+
+```bash
+agent-deck web --push
+```
+
+Then open the Tweaks panel (gear icon, top right) and turn on
+**Notifications**. The browser asks for permission once, subscribes with the
+server's VAPID key, and keeps the subscription across reloads; notifications
+only fire while the tab is unfocused. The switch is hidden when the server runs
+without `--push` or the browser has no Push API. Push needs a secure context:
+`http://127.0.0.1` or `localhost`, or HTTPS (for example Tailscale Serve).
+
 The browser UI includes the live Command Center, session terminal, costs, archive, and settings views. See [Command Center](docs/COMMAND-CENTER.md) for the fleet view; use `--read-only` when browser clients should not mutate sessions.
 
 ## Documentation

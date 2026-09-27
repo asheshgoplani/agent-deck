@@ -13,6 +13,7 @@ import {
   loadArchivedSessions,
 } from './state.js'
 import { addToast } from './Toast.js'
+import { initPush } from './push.js'
 
 // ---------- Auth token extraction ----------
 
@@ -341,5 +342,6 @@ if (root) {
   applyRouteSelection()
   loadMenu()
   registerServiceWorker()
+  initPush()
   render(html`<${App} />`, root)
 }

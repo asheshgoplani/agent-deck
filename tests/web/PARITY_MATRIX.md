@@ -77,9 +77,9 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | View costs dashboard | `internal/ui/home.go` (TUI only) | GET `/api/costs/summary` | N/A | `handlers_costs_test.go` | Sessions cost aggregation. **e2e parity: degraded-only** — fixture omits the SQLite cost store, so the e2e probe asserts the documented 503 `UNAVAILABLE` response. Happy-path (200 + payload) coverage is `parity-test-deferred` to PR-B fixture wiring. |
 | Cost export | N/A | GET `/api/costs/export` | N/A | `handlers_costs_test.go` | Web-only; CSV/JSON export. **e2e parity: degraded-only** (503 without cost store). Happy-path `parity-test-deferred` to PR-B. |
 | **PUSH NOTIFICATIONS** |
-| Subscribe to push | `internal/ui/home.go` (TUI none) | POST `/api/push/subscribe` | N/A | `handlers_push_test.go` | Web browser push only. **e2e parity: degraded-only** — fixture has no push service (no VAPID keys + subscription db), so the probe asserts 503 `PUSH_NOT_CONFIGURED`. Happy-path `parity-test-deferred` to PR-B. |
-| Unsubscribe push | `internal/ui/home.go` (TUI none) | POST `/api/push/unsubscribe` | N/A | `handlers_push_test.go` | Web browser push only. **e2e parity: degraded-only** (503 without push service). Happy-path `parity-test-deferred` to PR-B. |
-| Update push presence | `internal/ui/home.go` (TUI none) | POST `/api/push/presence` | N/A | `handlers_push_test.go` | Web browser focus tracking. **e2e parity: degraded-only** (503 without push service). Happy-path `parity-test-deferred` to PR-B. |
+| Subscribe to push | `internal/ui/home.go` (TUI none) | POST `/api/push/subscribe` | N/A | `handlers_push_test.go`, `tests/web/e2e/push-subscribe.spec.js` | Web browser push only. **e2e: covered** — Tweaks panel NOTIFICATIONS switch (`static/app/push.js`) requests permission, subscribes with the `/api/push/config` VAPID key, POSTs the subscription, re-sends it on reload, and handles denied permission (#2413). The spec fakes the browser push service and routes `/api/push/*`, since the fixture has no push service; the route's own 503 `PUSH_NOT_CONFIGURED` probe stays in `parity-actions.spec.js`. |
+| Unsubscribe push | `internal/ui/home.go` (TUI none) | POST `/api/push/unsubscribe` | N/A | `handlers_push_test.go`, `tests/web/e2e/push-subscribe.spec.js` | Web browser push only. **e2e: covered** — the NOTIFICATIONS switch turned off POSTs the endpoint and drops the browser subscription (`push-subscribe.spec.js`); 503 degraded probe in `parity-actions.spec.js`. |
+| Update push presence | `internal/ui/home.go` (TUI none) | POST `/api/push/presence` | N/A | `handlers_push_test.go`, `tests/web/e2e/push-subscribe.spec.js` | Web browser push only. **e2e: covered** — presence (`focused`) is POSTed on subscribe and on focus/blur/visibility changes (`push-subscribe.spec.js`); 503 degraded probe in `parity-actions.spec.js`. |
 
 ---
 
@@ -167,8 +167,9 @@ tiers:
 - **Degraded-only** (503 + documented error code): cost endpoints
   (`/api/costs/summary`, `/api/costs/export`) and push endpoints
   (`/api/push/{subscribe,unsubscribe,presence}`). The fixture binary
-  intentionally omits the SQLite cost store and the push service; happy-path
-  coverage requires fixture wiring deferred to PR-B.
+  intentionally omits the SQLite cost store and the push service. The push
+  client flow (subscribe, unsubscribe, presence) is covered separately by
+  `push-subscribe.spec.js`, which routes `/api/push/*` in the browser.
 - **MISSING-stays-missing** (regression guard, 404/405 expected): 15 of the
   30 MISSING actions have plausible URL patterns probed by
   `inferMissingProbe()` in `tests/web/helpers/parity-matrix.js`. The other

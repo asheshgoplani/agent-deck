@@ -1,10 +1,15 @@
-// TweaksPanel.js -- Floating panel for accent / density / right-rail toggles.
+// TweaksPanel.js -- Floating panel for accent / density / right-rail /
+// notification toggles.
 // Slides in over the bottom-right corner. Close with × or `?`.
 import { html } from 'htm/preact'
 import { Icon, ICONS } from './icons.js'
 import {
   tweaksOpenSignal, accentSignal, densitySignal, railSignal,
 } from './uiState.js'
+import {
+  pushConfigSignal, pushSubscribedSignal, pushBusySignal, pushPermissionSignal,
+} from './state.js'
+import { enablePush, disablePush } from './push.js'
 
 const SWATCHES = [
   { id: 'blue',   color: 'var(--tn-blue)' },
@@ -64,7 +69,35 @@ export function TweaksPanel() {
             </span>
           </div>
         </div>
+        ${pushConfigSignal.value && html`<${NotificationsRow}/>`}
       </div>
     </div>
   `
+}
+
+// Rendered only when the server runs with --push and the browser supports the
+// Push API (push.js leaves pushConfigSignal null otherwise).
+function NotificationsRow() {
+  const on = pushSubscribedSignal.value
+  return html`
+    <div>
+      <label>NOTIFICATIONS</label>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <div class=${`switch ${on ? 'on' : ''}`}
+             role="switch" aria-checked=${on} aria-label="Enable notifications"
+             data-testid="tweaks-push-switch"
+             onClick=${() => (on ? disablePush() : enablePush())}/>
+        <span data-testid="tweaks-push-status" style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);">
+          ${pushStatusLabel(on, pushBusySignal.value, pushPermissionSignal.value === 'denied')}
+        </span>
+      </div>
+    </div>
+  `
+}
+
+function pushStatusLabel(on, busy, denied) {
+  if (busy) return 'updating…'
+  if (on) return 'on when this tab is unfocused'
+  if (denied) return 'blocked in browser settings'
+  return 'off'
 }

@@ -136,6 +136,7 @@ export const pushConfigSignal = signal(null)        // null or { enabled, vapidP
 export const pushSubscribedSignal = signal(false)
 export const pushBusySignal = signal(false)
 export const pushEndpointSignal = signal('')
+export const pushPermissionSignal = signal('default') // Notification.permission
 
 // Info drawer open/close state (Phase 10: replaces showSettings local state in Topbar)
 export const infoDrawerOpenSignal = signal(false)

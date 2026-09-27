@@ -218,6 +218,7 @@ agent-deck web [options]
 | `--listen` | Listen address (default: `127.0.0.1:8420`) |
 | `--read-only` | Disable terminal input, stream output only |
 | `--token` | Require bearer token for API and WS access |
+| `--push` | Enable browser push notifications (turn them on in the web UI's Tweaks panel → Notifications) |
 | `--open` | Reserved placeholder (currently no-op) |
 
 ```bash
