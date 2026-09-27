@@ -199,6 +199,8 @@ func handleOpenClawBridge(args []string) {
 // --- status ---
 
 // remoteNewlineStripper removes line breaks from gateway-supplied strings.
+// Redundant with the IsControl filter in displayRemote; kept as its final step
+// so static analysis recognises displayRemote as an output sanitiser.
 var remoteNewlineStripper = strings.NewReplacer("\r", "", "\n", "")
 
 // displayRemote makes a string reported by the OpenClaw gateway safe to print
