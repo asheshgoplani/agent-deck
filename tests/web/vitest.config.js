@@ -11,10 +11,14 @@ const req = createRequire(import.meta.url)
 const aliasFor = (spec) => req.resolve(spec)
 
 export default defineConfig({
-  // Vite root stays at tests/web/ so node_modules resolution works for
-  // bare specifiers (preact, htm/preact, @preact/signals). The component
-  // sources live one directory up; fs.allow is widened to the repo root.
-  root: import.meta.dirname,
+  // Vite root is the repo root. Unit tests load component sources with
+  // relative dynamic imports ('../../../internal/web/...'). Vitest 4 resolves
+  // those against the root-relative URL of the test file, so a tests/web root
+  // clamps them to '/internal/...' and they fail to load. Bare specifiers
+  // (preact, htm/preact, @preact/signals) still resolve from tests/web via the
+  // alias map below; cacheDir stays under tests/web/node_modules.
+  root: repoRoot,
+  cacheDir: resolve(import.meta.dirname, 'node_modules', '.vite'),
   server: {
     fs: {
       allow: [repoRoot],
@@ -23,12 +27,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
-    setupFiles: ['./helpers/setup.js'],
-    include: ['unit/**/*.test.js'],
+    setupFiles: [resolve(import.meta.dirname, 'helpers', 'setup.js')],
+    include: ['tests/web/unit/**/*.test.js'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
-      reportsDirectory: './coverage',
+      reportsDirectory: resolve(import.meta.dirname, 'coverage'),
       include: [resolve(repoRoot, 'internal/web/static/app/**/*.js')],
       exclude: [
         resolve(repoRoot, 'internal/web/static/app/main.js'),
