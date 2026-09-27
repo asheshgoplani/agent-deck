@@ -4,7 +4,65 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 )
+
+func TestRecallRoots_ProfileCodexDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	globalCodex := filepath.Join(home, "codex-global")
+	personalCodex := filepath.Join(home, "codex-personal")
+	workCodex := filepath.Join(home, "codex-work")
+	workClaude := filepath.Join(home, "claude-work")
+	for _, dir := range []string{globalCodex, personalCodex, workCodex, workClaude} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(home, "codex-alias")
+	if err := os.Symlink(personalCodex, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &UserConfig{Profiles: map[string]ProfileSettings{
+		"personal": {Codex: ProfileCodexSettings{ConfigDir: personalCodex}},
+		"work": {
+			Claude: ProfileClaudeSettings{ConfigDir: workClaude},
+			Codex:  ProfileCodexSettings{ConfigDir: workCodex},
+		},
+	}}
+	cfg.Codex.ConfigDir = globalCodex
+	withConfig(t, cfg)
+	t.Setenv("CODEX_HOME", alias)
+
+	want := map[string]string{
+		reader.HarnessCodex + ":personal:" + personalCodex: "",
+		reader.HarnessCodex + ":work:" + workCodex:         "",
+		reader.HarnessCodex + "::" + globalCodex:           "",
+		reader.HarnessClaude + ":work:" + workClaude:       "",
+	}
+	codexCount := 0
+	for _, root := range RecallRoots() {
+		key := root.Harness + ":" + root.Profile + ":" + root.Dir
+		if _, ok := want[key]; ok {
+			want[key] = "seen"
+		}
+		if root.Harness == reader.HarnessCodex {
+			codexCount++
+		}
+	}
+	if codexCount != 3 {
+		t.Errorf("Codex roots = %d, want 3 (profiles and global, without alias)", codexCount)
+	}
+	for key, state := range want {
+		if state != "seen" {
+			t.Errorf("missing root %s", key)
+		}
+	}
+}
 
 func TestRecallClaudeRoots_ProfilesDedupeAndScratch(t *testing.T) {
 	home := t.TempDir()

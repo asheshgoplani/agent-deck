@@ -195,7 +195,12 @@ func RecallRoots() []reader.Root {
 		roots = append(roots, reader.Root{Harness: harness, Profile: profile, Dir: dir})
 	}
 	if cfg != nil {
-		for _, name := range ConfiguredAccountNames(cfg) {
+		profileNames := make([]string, 0, len(cfg.Profiles))
+		for name := range cfg.Profiles {
+			profileNames = append(profileNames, name)
+		}
+		sort.Strings(profileNames)
+		for _, name := range profileNames {
 			add(reader.HarnessCodex, name, cfg.GetProfileCodexConfigDir(name))
 		}
 		add(reader.HarnessCodex, "", cfg.Codex.ConfigDir)

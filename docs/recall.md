@@ -151,6 +151,11 @@ never opened. Sources are keyed on `(device, inode)` with the path as an
 attribute, so a transcript reachable through 189 scratch symlinks is one
 row, and each file carries the profile that owns its config dir.
 
+Codex roots include every `[profiles.<name>.codex].config_dir`, the global
+`[codex].config_dir`, `$CODEX_HOME`, and `~/.codex`. Existing directories
+are included once by resolved path, even when two settings refer to the
+same location. `recall status --json` lists these roots.
+
 From a transcript the reader keeps: user prompts and assistant text (each
 message body zstd-compressed and clipped to 8 KiB, the FTS index over the
 full text), every `tool_use` with its name, timestamp, the duration to its
