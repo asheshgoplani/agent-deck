@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardened a few input edges: oversized inputs to the send queue error payload and tmux argument builder are bounded before allocating, OpenClaw gateway details are printed without control characters, and conductor names are checked to be a single directory name before they are used as paths.
+
 ## [1.16.21] - 2026-09-27
 
 ### Added

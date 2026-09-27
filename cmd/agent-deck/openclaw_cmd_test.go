@@ -34,3 +34,19 @@ func TestBuildOpenClawBridgeCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestDisplayRemote_StripsControlCharacters(t *testing.T) {
+	tests := map[string]string{
+		"1.2.3":              "1.2.3",
+		"v1\r\nfake line":    "v1fake line",
+		"\x1b[31mred\x1b[0m": "[31mred[0m",
+		"a\u009b2Jb":         "a2Jb",
+		"tab\there\x07\x7f":  "tabhere",
+		"unicode ok \u2713":  "unicode ok \u2713",
+	}
+	for in, want := range tests {
+		if got := displayRemote(in); got != want {
+			t.Errorf("displayRemote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

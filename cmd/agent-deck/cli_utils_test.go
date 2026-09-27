@@ -685,3 +685,19 @@ func TestShouldInheritParentGroup(t *testing.T) {
 		})
 	}
 }
+
+func TestErrorPayloadSizeHint_Bounded(t *testing.T) {
+	tests := map[int]int{
+		0:                       3,
+		5:                       8,
+		maxErrorPayloadHint - 3: maxErrorPayloadHint,
+		maxErrorPayloadHint:     maxErrorPayloadHint,
+		int(^uint(0) >> 1):      maxErrorPayloadHint,
+		-1:                      maxErrorPayloadHint,
+	}
+	for in, want := range tests {
+		if got := errorPayloadSizeHint(in); got != want {
+			t.Errorf("errorPayloadSizeHint(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
