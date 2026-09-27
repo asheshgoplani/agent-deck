@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Hardened a few input edges: CLI JSON errors no longer preallocate from caller-supplied field counts, the tmux argument builder checks its size limit before copying either argument form, OpenClaw gateway details are printed without control characters, and conductor names are checked to be a single directory name before they are used as paths.
 
+### Internal
+
+- Two CI test flakes are gone. The daemon now waits for a subscription's stream goroutine before `Serve` returns, and its idle timeout is a per-server option instead of a package variable, so a test's cleanup no longer races a stream still running. `TestSessionStartQueuesWhenGroupAtCap` no longer depends on a tmux probe finishing within 2s on a loaded runner, and it uses a fresh profile per run.
+
 ## [1.16.21] - 2026-09-27
 
 ### Added

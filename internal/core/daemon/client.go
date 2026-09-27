@@ -28,7 +28,7 @@ const (
 	bulkRestartTimeout  = 5 * time.Minute
 )
 
-var streamIdleTimeout = time.Minute
+const defaultStreamIdleTimeout = time.Minute
 
 // Dial connects to the daemon socket and reads its hello.
 func Dial(ctx context.Context, socket string) (*Client, error) {
@@ -145,7 +145,7 @@ func (c *Client) Subscribe(after uint64) error {
 // --json` prints for it.
 func (c *Client) Next() (json.RawMessage, error) {
 	for {
-		_ = c.c.SetReadDeadline(time.Now().Add(streamIdleTimeout))
+		_ = c.c.SetReadDeadline(time.Now().Add(defaultStreamIdleTimeout))
 		f, err := c.fc.read()
 		if err != nil {
 			return nil, err

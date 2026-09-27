@@ -830,15 +830,12 @@ func TestEventsStreamResumesThroughSocket(t *testing.T) {
 }
 
 func TestEventsKeepSubscriptionAlivePastIdleDeadline(t *testing.T) {
-	previous := streamIdleTimeout
-	streamIdleTimeout = 500 * time.Millisecond
-	t.Cleanup(func() { streamIdleTimeout = previous })
 	bus, err := events.Open(filepath.Join(t.TempDir(), "bus"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer bus.Close()
-	ts := startServer(t, Options{Bus: bus})
+	ts := startServer(t, Options{Bus: bus, StreamIdleTimeout: 500 * time.Millisecond})
 	client, err := Dial(context.Background(), ts.paths.Socket)
 	if err != nil {
 		t.Fatal(err)

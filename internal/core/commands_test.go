@@ -90,12 +90,18 @@ func TestSessionStartUnknownSessionIsNotFound(t *testing.T) {
 }
 
 func TestSessionStartQueuesWhenGroupAtCap(t *testing.T) {
-	const profile = "_core_start_queue"
+	// Store writes merge rather than replace, so each run needs its own
+	// profile or -count>1 resolves "next" to an earlier run's row.
+	profile := fmt.Sprintf("_core_start_queue_%d", time.Now().UnixNano())
 	dir := t.TempDir()
 	running := session.NewInstanceWithGroup("busy", dir, "serial")
 	running.Status = session.StatusRunning
+	// "next" has never been started, so it has no tmux session. With one,
+	// session.start probes tmux first, and a probe slower than its 2s budget
+	// on a loaded runner counts as alive: "session 'next' is already running".
 	waiting := session.NewInstanceWithGroup("next", dir, "serial")
 	waiting.Status = session.StatusStopped
+	waiting.SetTmuxSessionForTest(nil)
 	seedStore(t, profile, []*session.GroupData{{Name: "serial", Path: "serial", MaxConcurrent: 1}}, running, waiting)
 
 	out, res := Invoke[SessionStartOut](context.Background(), testRegistry(t, Deps{}), IDSessionStart, SessionStartIn{Profile: profile, Session: "next"})
