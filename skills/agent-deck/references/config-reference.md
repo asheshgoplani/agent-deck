@@ -865,6 +865,7 @@ fields = ["version", "sessions_by_status", "load", "memory", "disk"]
 ```toml
 [web]
 mutations_enabled = true                      # Accept POST/PATCH/DELETE from the web UI
+allowed_hosts = ["machine.tailnet.ts.net"]    # Extra exact HTTP Host names for proxies
 trusted_domains = [                           # Links to these hosts open without a confirm
   "gitlab.mycorp.example",
   "gerrit.mycorp.example",
@@ -876,6 +877,7 @@ confirm_link_open = true                      # Confirm before opening any OTHER
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `mutations_enabled` | bool | `true` | When `false`, mutating endpoints (POST/PATCH/DELETE) return HTTP 403 and the web UI hides its write affordances. `--read-only` forces this off regardless of the config value. |
+| `allowed_hosts` | []string | `[]` | Extra exact HTTP Host names for reverse proxies or Tailscale Serve. Optional `:port` limits an entry to that port. Case-insensitive; no URLs, wildcards, or suffix matching. Repeat `--allowed-host` for temporary additions. Unknown Hosts receive HTTP 421, including WebSocket upgrades. |
 | `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
 | `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
 

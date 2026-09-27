@@ -35,6 +35,22 @@ func TestBuildWebServer_AllowsNonLoopbackWithToken(t *testing.T) {
 	}
 }
 
+func TestBuildWebServer_AllowedHostFlag(t *testing.T) {
+	srv, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:8420", "--allowed-host", "proxy.example:443", "--allowed-host", "machine.tailnet.ts.net"}, nil, noopMutator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"proxy.example:443", "machine.tailnet.ts.net:8420"} {
+		r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: got %d", host, w.Code)
+		}
+	}
+}
+
 func TestBuildWebServer_AllowsNonLoopbackWithTokenFile(t *testing.T) {
 	tokenPath := filepath.Join(t.TempDir(), "web-token")
 	if err := os.WriteFile(tokenPath, []byte("secret-from-file\n"), 0o600); err != nil {
@@ -52,6 +68,7 @@ func TestBuildWebServer_AllowsNonLoopbackWithTokenFile(t *testing.T) {
 	}
 
 	validReq := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
+	validReq.Host = "localhost"
 	validReq.Header.Set("Authorization", "Bearer secret-from-file")
 	validResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(validResponse, validReq)
@@ -60,6 +77,7 @@ func TestBuildWebServer_AllowsNonLoopbackWithTokenFile(t *testing.T) {
 	}
 
 	invalidReq := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
+	invalidReq.Host = "localhost"
 	invalidReq.Header.Set("Authorization", "Bearer wrong-token")
 	invalidResponse := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(invalidResponse, invalidReq)
@@ -122,6 +140,7 @@ func assertMCPManagerUnavailable(t *testing.T, srv interface {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
+	req.Host = "localhost"
 	response := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(response, req)
 	if response.Code != http.StatusServiceUnavailable {

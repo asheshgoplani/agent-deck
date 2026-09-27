@@ -30,7 +30,7 @@ func TestRemotesAPIListsConfiguredFleet(t *testing.T) {
 		Remotes: []session.RemoteFleetRemote{{Name: "build", Online: true, Sessions: []session.RemoteSessionInfo{{ID: "session-1", Title: "Build"}}}},
 		Counts:  session.RemoteFleetCounts{RemotesOnline: 1, Sessions: 1},
 	}}})
-	req := httptest.NewRequest(http.MethodGet, "/api/remotes", nil)
+	req := newLocalRequest(http.MethodGet, "/api/remotes", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -47,7 +47,7 @@ func TestRemotesAPIListsConfiguredFleet(t *testing.T) {
 
 func TestRemotesAPIRequiresAuthorization(t *testing.T) {
 	srv := NewServer(Config{Token: "secret", RemoteFleet: &fakeRemoteFleetLoader{}})
-	req := httptest.NewRequest(http.MethodGet, "/api/remotes", nil)
+	req := newLocalRequest(http.MethodGet, "/api/remotes", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -59,7 +59,7 @@ func TestRemotesAPIOnlyReadsSnapshot(t *testing.T) {
 	loader := &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{}}
 	srv := NewServer(Config{RemoteFleet: loader})
 	for range 12 {
-		req := httptest.NewRequest(http.MethodGet, "/api/remotes", nil)
+		req := newLocalRequest(http.MethodGet, "/api/remotes", nil)
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {

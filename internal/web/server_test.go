@@ -15,7 +15,7 @@ func TestHealthzEndpoint(t *testing.T) {
 		ReadOnly:   true,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := newLocalRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -37,7 +37,7 @@ func TestHealthzMethodNotAllowed(t *testing.T) {
 		ListenAddr: "127.0.0.1:0",
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	req := newLocalRequest(http.MethodPost, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -51,7 +51,7 @@ func TestIndexServed(t *testing.T) {
 		ListenAddr: "127.0.0.1:0",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := newLocalRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -79,7 +79,7 @@ func TestSessionRouteServed(t *testing.T) {
 		ListenAddr: "127.0.0.1:0",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/s/sess-123", nil)
+	req := newLocalRequest(http.MethodGet, "/s/sess-123", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -101,7 +101,7 @@ func TestStaticCSSServed(t *testing.T) {
 		ListenAddr: "127.0.0.1:0",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/static/styles.css", nil)
+	req := newLocalRequest(http.MethodGet, "/static/styles.css", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -119,7 +119,7 @@ func TestManifestServed(t *testing.T) {
 		ListenAddr: "127.0.0.1:0",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)
+	req := newLocalRequest(http.MethodGet, "/manifest.webmanifest", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -141,7 +141,7 @@ func TestServiceWorkerServed(t *testing.T) {
 		ListenAddr: "127.0.0.1:0",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	req := newLocalRequest(http.MethodGet, "/sw.js", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -174,7 +174,7 @@ func TestHealthzIncludesWebMutations(t *testing.T) {
 		ReadOnly:     true,
 		WebMutations: false,
 	})
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := newLocalRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -192,7 +192,7 @@ func TestHealthzIncludesWebMutations(t *testing.T) {
 
 func TestHealthzIncludesVersion(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := newLocalRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

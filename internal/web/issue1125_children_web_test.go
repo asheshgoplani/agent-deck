@@ -70,7 +70,7 @@ type childrenRespJSON struct {
 
 func getChildren(t *testing.T, srv *Server, sessionID string) (*httptest.ResponseRecorder, *childrenRespJSON) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID+"/children", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/"+sessionID+"/children", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -168,7 +168,7 @@ func TestSessionChildren_NonConductor_EmptyTreeNot404(t *testing.T) {
 func TestSessionChildren_UnknownSession_404(t *testing.T) {
 	srv := newChildrenTestServer(childrenFixtureSnapshot())
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/does-not-exist/children", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/does-not-exist/children", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -185,7 +185,7 @@ func TestSessionChildren_MethodNotAllowed(t *testing.T) {
 	srv := newChildrenTestServer(childrenFixtureSnapshot())
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
-		req := httptest.NewRequest(method, "/api/sessions/sess-cond/children", nil)
+		req := newLocalRequest(method, "/api/sessions/sess-cond/children", nil)
 		rr := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rr, req)
 		if rr.Code != http.StatusMethodNotAllowed {

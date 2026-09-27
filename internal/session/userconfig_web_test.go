@@ -87,6 +87,14 @@ mutations_enabled = true
 	}
 }
 
+func TestWebAllowedHosts_ReadsConfig(t *testing.T) {
+	withTempHomeAndConfig(t, "[web]\nallowed_hosts = [\"machine.tailnet.ts.net\", \"proxy.example:443\"]\n")
+	got := GetWebAllowedHosts()
+	if len(got) != 2 || got[0] != "machine.tailnet.ts.net" || got[1] != "proxy.example:443" {
+		t.Fatalf("GetWebAllowedHosts() = %v", got)
+	}
+}
+
 func TestWebTrustedDomains_ReadsAndNormalizes(t *testing.T) {
 	withTempHomeAndConfig(t, `
 [web]

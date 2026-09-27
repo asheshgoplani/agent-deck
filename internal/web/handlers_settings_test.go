@@ -17,7 +17,7 @@ func TestSettingsGET(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req := newLocalRequest(http.MethodGet, "/api/settings", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -48,7 +48,7 @@ func TestSettingsMethodNotAllowed(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/settings", nil)
+	req := newLocalRequest(http.MethodPost, "/api/settings", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -67,7 +67,7 @@ func TestSettingsUnauthorized(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req := newLocalRequest(http.MethodGet, "/api/settings", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -86,7 +86,7 @@ func TestSettingsWebMutationsTrue(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req := newLocalRequest(http.MethodGet, "/api/settings", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -105,7 +105,7 @@ func TestProfilesGET(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/profiles", nil)
+	req := newLocalRequest(http.MethodGet, "/api/profiles", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -130,7 +130,7 @@ func TestProfilesMethodNotAllowed(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/profiles", nil)
+	req := newLocalRequest(http.MethodPost, "/api/profiles", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -149,7 +149,7 @@ func TestProfilesUnauthorized(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/profiles", nil)
+	req := newLocalRequest(http.MethodGet, "/api/profiles", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -169,7 +169,7 @@ func TestSettingsLinkPolicy_DefaultsToConfirmOn(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "default"})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req := newLocalRequest(http.MethodGet, "/api/settings", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -198,7 +198,7 @@ func TestSettingsLinkPolicy_ServesConfiguredAllowlistAndToggle(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req := newLocalRequest(http.MethodGet, "/api/settings", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

@@ -100,7 +100,7 @@ func TestSkillsCatalogGET_Happy(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
+	req := newLocalRequest(http.MethodGet, "/api/skills", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -125,7 +125,7 @@ func TestSkillsCatalogGET_FailurePropagates(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.skills = &fakeSkillsService{catalogErr: errors.New("disk read failed")}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
+	req := newLocalRequest(http.MethodGet, "/api/skills", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -143,7 +143,7 @@ func TestSkillsCatalog_MethodNotAllowed(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.skills = &fakeSkillsService{}
 
-	req := httptest.NewRequest(http.MethodPut, "/api/skills", nil)
+	req := newLocalRequest(http.MethodPut, "/api/skills", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -159,7 +159,7 @@ func TestSkillsCatalogGET_EmptyReturnsArray(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.skills = &fakeSkillsService{catalog: nil}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/skills", nil)
+	req := newLocalRequest(http.MethodGet, "/api/skills", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -184,7 +184,7 @@ func TestSessionSkillsGET_Happy(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/skills", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/sess-1/skills", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -202,7 +202,7 @@ func TestSessionSkillsGET_SessionNotFound(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.skills = &fakeSkillsService{}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/missing/skills", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/missing/skills", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -217,7 +217,7 @@ func TestSessionSkillsGET_EmptyReturnsArray(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: menuWithSession("sess-2", "/tmp/empty", "claude")}
 	srv.skills = &fakeSkillsService{}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-2/skills", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/sess-2/skills", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -246,7 +246,7 @@ func TestSessionSkillsAttach_Happy(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -267,7 +267,7 @@ func TestSessionSkillsAttach_MutationsDisabled(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: menuWithSession("sess-1", "/tmp/proj", "claude")}
 	srv.skills = &fakeSkillsService{}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -282,7 +282,7 @@ func TestSessionSkillsAttach_UnsupportedTool(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: menuWithSession("sess-1", "/tmp/proj", "bash")}
 	srv.skills = &fakeSkillsService{}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -305,7 +305,7 @@ func TestSessionSkillsAttach_SourceQualifiedName(t *testing.T) {
 	}
 
 	// Source is passed via ?source= query (cannot be in path because of slashes).
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha?source=pool", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/skills/alpha?source=pool", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -331,7 +331,7 @@ func TestSessionSkillsDetach_Happy(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-1/skills/alpha", nil)
+	req := newLocalRequest(http.MethodDelete, "/api/sessions/sess-1/skills/alpha", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -353,7 +353,7 @@ func TestSessionSkillsDetach_NotAttached(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-1/skills/missing", nil)
+	req := newLocalRequest(http.MethodDelete, "/api/sessions/sess-1/skills/missing", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -369,7 +369,7 @@ func TestSessionSkillsDetach_EmptyName(t *testing.T) {
 	srv.skills = &fakeSkillsService{}
 
 	// Trailing slash but no name.
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-1/skills/", nil)
+	req := newLocalRequest(http.MethodDelete, "/api/sessions/sess-1/skills/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

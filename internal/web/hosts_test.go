@@ -1,0 +1,73 @@
+package web
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestHostAllowlistCoversAllRoutes(t *testing.T) {
+	cases := []struct {
+		name, listen, host string
+		extra              []string
+		want               int
+	}{
+		{"localhost", "127.0.0.1:8420", "LOCALHOST:8420", nil, 200},
+		{"ipv4", "127.0.0.1:8420", "127.0.0.1:8420", nil, 200},
+		{"ipv6", "[::1]:8420", "[::1]:8420", nil, 200},
+		{"loopback_other_port", "127.0.0.1:8420", "localhost:9000", nil, 200},
+		{"explicit_host", "127.0.0.1:8420", "machine.tailnet.ts.net:443", []string{"machine.tailnet.ts.net"}, 200},
+		{"explicit_port", "127.0.0.1:8420", "proxy.example:443", []string{"proxy.example:443"}, 200},
+		{"wrong_port", "127.0.0.1:8420", "proxy.example:80", []string{"proxy.example:443"}, 421},
+		{"wildcard_bind_not_wildcard_host", "0.0.0.0:8420", "evil.example:8420", nil, 421},
+		{"nonloopback_ip", "192.0.2.9:8420", "192.0.2.9:8420", nil, 200},
+		{"rebinding", "127.0.0.1:8420", "evil.example:8420", nil, 421},
+		{"substring", "127.0.0.1:8420", "localhost.evil.example:8420", nil, 421},
+		{"url", "127.0.0.1:8420", "http://localhost:8420", nil, 421},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(Config{ListenAddr: tc.listen, AllowedHosts: tc.extra})
+			for _, path := range []string{"/healthz", "/api/sessions", "/events/menu", "/static/app/main.js", "/api/push/config", "/ws/session/fake"} {
+				r := httptest.NewRequest(http.MethodGet, path, nil)
+				r.Host = tc.host
+				if path == "/events/menu" {
+					ctx, cancel := context.WithCancel(r.Context())
+					cancel()
+					r = r.WithContext(ctx)
+				}
+				if strings.HasPrefix(path, "/ws/") {
+					r.Header.Set("Origin", "http://"+tc.host)
+					r.Header.Set("Upgrade", "websocket")
+					r.Header.Set("Connection", "Upgrade")
+					r.Header.Set("Sec-WebSocket-Version", "13")
+					r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+				}
+				w := httptest.NewRecorder()
+				s.Handler().ServeHTTP(w, r)
+				if tc.want == 421 && w.Code != 421 {
+					t.Errorf("%s: got %d, want 421", path, w.Code)
+				}
+				if tc.want == 200 && w.Code == 421 {
+					t.Errorf("%s: allowed host rejected", path)
+				}
+			}
+		})
+	}
+}
+
+func TestRebindingReporterRequests(t *testing.T) {
+	s := NewServer(Config{ListenAddr: "127.0.0.1:8420"})
+	for _, path := range []string{"/api/sessions", "/ws/session/fake"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Host = "evil.example:8420"
+		r.Header.Set("Origin", "http://evil.example:8420")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusMisdirectedRequest {
+			t.Errorf("%s: got %d, want 421", path, w.Code)
+		}
+	}
+}

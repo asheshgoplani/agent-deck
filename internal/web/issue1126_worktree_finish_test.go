@@ -47,7 +47,7 @@ func TestWorktreeFinish_HappyPath(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"into":"main","keepBranch":false}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-42/worktree/finish", body)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-42/worktree/finish", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -88,7 +88,7 @@ func TestWorktreeFinish_EmptyBodyDefaults(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -110,7 +110,7 @@ func TestWorktreeFinish_MalformedJSON(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish",
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish",
 		strings.NewReader(`{not json`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -134,7 +134,7 @@ func TestWorktreeFinish_NotAWorktree(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -152,7 +152,7 @@ func TestWorktreeFinish_SessionNotFound(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/missing/worktree/finish", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/missing/worktree/finish", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -170,7 +170,7 @@ func TestWorktreeFinish_InternalError(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -183,7 +183,7 @@ func TestWorktreeFinish_NoMutatorWired(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -202,7 +202,7 @@ func TestWorktreeFinish_MutationsDisabled(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-1/worktree/finish", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -217,7 +217,7 @@ func TestWorktreeFinish_OnlyPOST(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-1/worktree/finish", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/sess-1/worktree/finish", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

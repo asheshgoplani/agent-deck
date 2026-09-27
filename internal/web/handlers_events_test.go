@@ -49,7 +49,7 @@ func TestMenuEventsUnauthorizedWhenTokenEnabled(t *testing.T) {
 		snapshot: &MenuSnapshot{Profile: "default"},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/events/menu", nil)
+	req := newLocalRequest(http.MethodGet, "/events/menu", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

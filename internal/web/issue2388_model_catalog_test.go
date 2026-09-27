@@ -68,7 +68,7 @@ func fetchSettingsModelCatalog(t *testing.T) map[string]ToolModelCatalog {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	srv.Handler().ServeHTTP(rr, newLocalRequest(http.MethodGet, "/api/settings", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET /api/settings = %d: %s", rr.Code, rr.Body.String())
 	}

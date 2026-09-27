@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The web server now only answers requests addressed to its own host names; set `[web] allowed_hosts` for reverse proxies. Thanks @bautrey.
+
 ## [1.16.21] - 2026-09-27
 
 ### Added

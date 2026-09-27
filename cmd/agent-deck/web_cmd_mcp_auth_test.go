@@ -60,6 +60,7 @@ const sameOrigin = "\x00same-origin"
 func serveMCPWithOrigin(t *testing.T, srv interface{ Handler() http.Handler }, ep mcpEndpoint, authHeader, origin string) int {
 	t.Helper()
 	req := httptest.NewRequest(ep.method, ep.path, nil)
+	req.Host = "localhost"
 	// POST/DELETE/PATCH pass through csrfProtect before reaching any handler,
 	// and that layer fails closed once a token is configured: a mutation with
 	// no Origin and no Referer is rejected with 403 before authorization is

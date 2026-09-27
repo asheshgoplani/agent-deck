@@ -47,3 +47,12 @@
 - [x] Regenerate and inspect the affected G14 frames.
 - [x] Rewrite into green commits and verify each commit on G14.
 - [x] Record overlap hunks, results, and a verified branch bundle.
+
+# sec/web-host-allowlist (private)
+
+- [x] Reproduce the reported HTTP and WebSocket responses in a disposable profile.
+- [x] Implement the Host allowlist, config and CLI additions, and token cookie.
+- [x] Add regression coverage and documentation.
+- [x] Build and vet on the host; verify fixed live requests.
+- [x] Complete the G14 race gate and inspect its exact result.
+- [x] Refresh the patch and final RESULTS.md receipt.

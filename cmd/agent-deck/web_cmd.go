@@ -34,6 +34,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 
 type webCommandOptions struct {
 	listenAddr       string
+	allowedHosts     stringValues
 	readOnly         bool
 	token            string
 	tokenFile        string
@@ -44,10 +45,19 @@ type webCommandOptions struct {
 	noTUI            bool
 }
 
+type stringValues []string
+
+func (v *stringValues) String() string { return strings.Join(*v, ", ") }
+func (v *stringValues) Set(s string) error {
+	*v = append(*v, s)
+	return nil
+}
+
 func parseWebCommandOptions(args []string) (webCommandOptions, error) {
 	var options webCommandOptions
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	fs.StringVar(&options.listenAddr, "listen", "127.0.0.1:8420", "Listen address for web server")
+	fs.Var(&options.allowedHosts, "allowed-host", "Additional exact HTTP Host (repeatable; optional :port)")
 	fs.BoolVar(&options.readOnly, "read-only", false, "Run in read-only mode (input disabled)")
 	fs.StringVar(&options.token, "token", "", "Bearer token for API/WS access")
 	fs.StringVar(&options.tokenFile, "token-file", "", "Read bearer token for API/WS access from a 0600 file (keeps the secret out of the process argv)")
@@ -145,6 +155,7 @@ func buildWebServerFromOptions(profile string, options webCommandOptions, menuDa
 	confirmLinkOpen := session.GetWebConfirmLinkOpen()
 	server := web.NewServer(web.Config{
 		ListenAddr:          options.listenAddr,
+		AllowedHosts:        append(session.GetWebAllowedHosts(), options.allowedHosts...),
 		Profile:             effectiveProfile,
 		ReadOnly:            options.readOnly,
 		WebMutations:        resolveMutationsEnabled(options.readOnly),

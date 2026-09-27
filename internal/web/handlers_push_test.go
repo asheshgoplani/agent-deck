@@ -67,7 +67,7 @@ func TestPushConfigEndpointDisabledWhenNoService(t *testing.T) {
 	})
 	srv.push = nil
 
-	req := httptest.NewRequest(http.MethodGet, "/api/push/config", nil)
+	req := newLocalRequest(http.MethodGet, "/api/push/config", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -93,7 +93,7 @@ func TestPushConfigEndpointEnabled(t *testing.T) {
 	}
 	srv.push = push
 
-	req := httptest.NewRequest(http.MethodGet, "/api/push/config", nil)
+	req := newLocalRequest(http.MethodGet, "/api/push/config", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -120,7 +120,7 @@ func TestPushSubscribeAndUnsubscribeEndpoints(t *testing.T) {
 	srv.push = push
 
 	subscribeBody := `{"endpoint":"https://push.example/sub-1","keys":{"p256dh":"key-a","auth":"key-b"}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(subscribeBody))
+	req := newLocalRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(subscribeBody))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -133,7 +133,7 @@ func TestPushSubscribeAndUnsubscribeEndpoints(t *testing.T) {
 	}
 
 	unsubscribeBody := `{"endpoint":"https://push.example/sub-1"}`
-	req2 := httptest.NewRequest(http.MethodPost, "/api/push/unsubscribe", strings.NewReader(unsubscribeBody))
+	req2 := newLocalRequest(http.MethodPost, "/api/push/unsubscribe", strings.NewReader(unsubscribeBody))
 	req2.Header.Set("Content-Type", "application/json")
 	rr2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr2, req2)
@@ -154,7 +154,7 @@ func TestPushPresenceEndpoint(t *testing.T) {
 	srv.push = push
 
 	subscribeBody := `{"endpoint":"https://push.example/sub-2","keys":{"p256dh":"key-a","auth":"key-b"}}`
-	req1 := httptest.NewRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(subscribeBody))
+	req1 := newLocalRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(subscribeBody))
 	req1.Header.Set("Content-Type", "application/json")
 	rr1 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr1, req1)
@@ -162,7 +162,7 @@ func TestPushPresenceEndpoint(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rr1.Code)
 	}
 
-	req2 := httptest.NewRequest(http.MethodPost, "/api/push/presence", strings.NewReader(`{"endpoint":"https://push.example/sub-2","focused":false}`))
+	req2 := newLocalRequest(http.MethodPost, "/api/push/presence", strings.NewReader(`{"endpoint":"https://push.example/sub-2","focused":false}`))
 	req2.Header.Set("Content-Type", "application/json")
 	rr2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr2, req2)
@@ -181,10 +181,10 @@ func TestPushSubscribeUnauthorizedWhenTokenEnabled(t *testing.T) {
 	})
 	srv.push = newFakePushService(true)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(`{}`))
+	req := newLocalRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(`{}`))
 	// Same-origin so the request clears CSRF (fail-closed when a token is set)
 	// and reaches the auth check — the behavior under test.
-	req.Header.Set("Origin", "http://example.com")
+	req.Header.Set("Origin", "http://localhost")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

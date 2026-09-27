@@ -83,7 +83,7 @@ func TestMenuSessionExposesAllEditableFields(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -199,7 +199,7 @@ func TestMenuSessionOmitsZeroValueFields(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -254,7 +254,7 @@ func TestMenuSessionGeminiYoloModePointerFalse(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {

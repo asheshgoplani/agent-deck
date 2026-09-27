@@ -18,12 +18,12 @@ import (
 // long-lived streaming loop (for { select { <-ctx.Done() ... } }). We give those
 // requests an already-cancelled context so the handler writes the initial
 // snapshot and returns immediately instead of blocking the test. The only thing
-// asserted for accepted cases is that the response is NOT 401.
+// asserted for accepted cases is that the stream starts with HTTP 200.
 
 // cancelledRequest builds a GET request whose context is already cancelled, so
 // an authorized SSE handler exits its stream loop right after the first emit.
 func cancelledRequest(target string) *http.Request {
-	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req := newLocalRequest(http.MethodGet, target, nil)
 	ctx, cancel := context.WithCancel(req.Context())
 	cancel()
 	return req.WithContext(ctx)
@@ -35,8 +35,8 @@ func TestSSE_QueryTokenAcceptedOnMenuEvents(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, cancelledRequest("/events/menu?token=secret"))
 
-	if rr.Code == http.StatusUnauthorized {
-		t.Fatalf("SSE /events/menu with query-string token should be authorized (not 401), got %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("SSE /events/menu with query-string token: got %d, want 200", rr.Code)
 	}
 }
 
@@ -46,8 +46,8 @@ func TestSSE_QueryTokenAcceptedOnCommandCenterEvents(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, cancelledRequest("/events/command-center?token=secret"))
 
-	if rr.Code == http.StatusUnauthorized {
-		t.Fatalf("SSE /events/command-center with query-string token should be authorized (not 401), got %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("SSE /events/command-center with query-string token: got %d, want 200", rr.Code)
 	}
 }
 
@@ -59,15 +59,15 @@ func TestSSE_HeaderTokenAcceptedOnMenuEvents(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
-	if rr.Code == http.StatusUnauthorized {
-		t.Fatalf("SSE /events/menu with a valid header token should be authorized (not 401), got %d", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("SSE /events/menu with a valid header token: got %d, want 200", rr.Code)
 	}
 }
 
 func TestSSE_BadQueryTokenRejectedOnMenuEvents(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/events/menu?token=wrong", nil)
+	req := newLocalRequest(http.MethodGet, "/events/menu?token=wrong", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -79,7 +79,7 @@ func TestSSE_BadQueryTokenRejectedOnMenuEvents(t *testing.T) {
 func TestSSE_MissingTokenRejectedOnMenuEvents(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/events/menu", nil)
+	req := newLocalRequest(http.MethodGet, "/events/menu", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -93,7 +93,7 @@ func TestSSE_MissingTokenRejectedOnMenuEvents(t *testing.T) {
 func TestSSE_CommandCenterJSONStaysHeaderOnly(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/command-center/status?token=secret", nil)
+	req := newLocalRequest(http.MethodGet, "/api/command-center/status?token=secret", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

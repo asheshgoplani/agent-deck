@@ -179,7 +179,7 @@ func TestMCPCatalog_HappyPath(t *testing.T) {
 	}
 	srv := newMCPTestServer(t, mgr, true)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
+	req := newLocalRequest(http.MethodGet, "/api/mcps", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -197,7 +197,7 @@ func TestMCPCatalog_HappyPath(t *testing.T) {
 
 func TestMCPCatalog_EmptyBoundary(t *testing.T) {
 	srv := newMCPTestServer(t, newFakeMCPManager(), true)
-	req := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
+	req := newLocalRequest(http.MethodGet, "/api/mcps", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -213,7 +213,7 @@ func TestMCPCatalog_NoManagerReturns503(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/mcps", nil)
+	req := newLocalRequest(http.MethodGet, "/api/mcps", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -231,7 +231,7 @@ func TestSessionMCPs_ListHappyPath(t *testing.T) {
 	}
 	srv := newMCPTestServer(t, mgr, true)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/sess-001/mcps", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/sess-001/mcps", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -249,7 +249,7 @@ func TestSessionMCPs_ListHappyPath(t *testing.T) {
 
 func TestSessionMCPs_ListUnknownSession_404(t *testing.T) {
 	srv := newMCPTestServer(t, newFakeMCPManager(), true)
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/does-not-exist/mcps", nil)
+	req := newLocalRequest(http.MethodGet, "/api/sessions/does-not-exist/mcps", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -264,7 +264,7 @@ func TestSessionMCPs_AttachHappyPath(t *testing.T) {
 	mgr := newFakeMCPManager()
 	srv := newMCPTestServer(t, mgr, true)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -285,7 +285,7 @@ func TestSessionMCPs_AttachExplicitScope(t *testing.T) {
 	srv := newMCPTestServer(t, mgr, true)
 
 	body := strings.NewReader(`{"scope":"global"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", body)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -301,7 +301,7 @@ func TestSessionMCPs_AttachExplicitScope(t *testing.T) {
 func TestSessionMCPs_AttachInvalidScope_400(t *testing.T) {
 	srv := newMCPTestServer(t, newFakeMCPManager(), true)
 	body := strings.NewReader(`{"scope":"bogus"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", body)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -316,7 +316,7 @@ func TestSessionMCPs_AttachManagerError_500(t *testing.T) {
 	mgr.attachErr = errors.New("disk full")
 	srv := newMCPTestServer(t, mgr, true)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -327,7 +327,7 @@ func TestSessionMCPs_AttachManagerError_500(t *testing.T) {
 
 func TestSessionMCPs_AttachMutationsDisabled_403(t *testing.T) {
 	srv := newMCPTestServer(t, newFakeMCPManager(), false)
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-001/mcps/exa", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -343,7 +343,7 @@ func TestSessionMCPs_DetachHappyPath(t *testing.T) {
 	mgr.attached["/srv/alpha"] = map[string][]string{"local": {"exa"}}
 	srv := newMCPTestServer(t, mgr, true)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-001/mcps/exa", nil)
+	req := newLocalRequest(http.MethodDelete, "/api/sessions/sess-001/mcps/exa", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -357,7 +357,7 @@ func TestSessionMCPs_DetachHappyPath(t *testing.T) {
 
 func TestSessionMCPs_DetachUnknownSession_404(t *testing.T) {
 	srv := newMCPTestServer(t, newFakeMCPManager(), true)
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/nope/mcps/exa", nil)
+	req := newLocalRequest(http.MethodDelete, "/api/sessions/nope/mcps/exa", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -374,7 +374,7 @@ func TestSessionMCPs_MoveHappyPath(t *testing.T) {
 	srv := newMCPTestServer(t, mgr, true)
 
 	body := strings.NewReader(`{"scope":"global"}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
+	req := newLocalRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -393,7 +393,7 @@ func TestSessionMCPs_MovePooledTrueToGlobal(t *testing.T) {
 	srv := newMCPTestServer(t, mgr, true)
 
 	body := strings.NewReader(`{"pooled":true}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
+	req := newLocalRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -409,7 +409,7 @@ func TestSessionMCPs_MovePooledTrueToGlobal(t *testing.T) {
 func TestSessionMCPs_MoveNoTargetScope_400(t *testing.T) {
 	srv := newMCPTestServer(t, newFakeMCPManager(), true)
 	body := strings.NewReader(`{}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
+	req := newLocalRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -422,7 +422,7 @@ func TestSessionMCPs_MoveNoTargetScope_400(t *testing.T) {
 func TestSessionMCPs_MoveNotAttached_404(t *testing.T) {
 	srv := newMCPTestServer(t, newFakeMCPManager(), true)
 	body := strings.NewReader(`{"scope":"global"}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
+	req := newLocalRequest(http.MethodPatch, "/api/sessions/sess-001/mcps/exa", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -439,7 +439,7 @@ func TestSessionMCPs_AttachUTF8Name(t *testing.T) {
 	srv := newMCPTestServer(t, mgr, true)
 
 	encoded := "mcp-%E2%9C%93" // mcp-✓
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-001/mcps/"+encoded, nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-001/mcps/"+encoded, nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -484,7 +484,7 @@ func TestMCPRoutesRefuseUnsupportedTool(t *testing.T) {
 		{"move", http.MethodPatch, "/api/sessions/sess-shell/mcps/exa"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req := newLocalRequest(tc.method, tc.path, nil)
 			rr := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(rr, req)
 
@@ -509,7 +509,7 @@ func TestMCPTargetCarriesTheSessionTool(t *testing.T) {
 	mgr := newFakeMCPManager()
 	srv := newMCPTestServer(t, mgr, true)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-002/mcps/exa", nil)
+	req := newLocalRequest(http.MethodPost, "/api/sessions/sess-002/mcps/exa", nil)
 	req.Header.Set("Origin", "http://"+req.Host)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -546,7 +546,7 @@ func TestAttachDefaultsToTheToolsOwnScope(t *testing.T) {
 			srv := newMCPTestServer(t, mgr, true)
 
 			// No body at all: the server must pick the scope, not the caller.
-			req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+tc.sessionID+"/mcps/exa", nil)
+			req := newLocalRequest(http.MethodPost, "/api/sessions/"+tc.sessionID+"/mcps/exa", nil)
 			req.Header.Set("Origin", "http://"+req.Host)
 			rr := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(rr, req)
@@ -584,7 +584,7 @@ func TestSessionMCPsResponseReportsScopesAndProject(t *testing.T) {
 		{"sess-002", "gemini", []string{"global"}},
 	} {
 		t.Run(tc.tool, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+tc.sessionID+"/mcps", nil)
+			req := newLocalRequest(http.MethodGet, "/api/sessions/"+tc.sessionID+"/mcps", nil)
 			rr := httptest.NewRecorder()
 			srv.Handler().ServeHTTP(rr, req)
 			if rr.Code != http.StatusOK {

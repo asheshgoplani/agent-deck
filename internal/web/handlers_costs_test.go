@@ -56,7 +56,7 @@ func TestCostsBatch(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 	srv.SetCostStore(store)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/costs/batch?ids=sess1,sess2", nil)
+	req := newLocalRequest(http.MethodGet, "/api/costs/batch?ids=sess1,sess2", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -86,7 +86,7 @@ func TestCostsBatchNoCostStore(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 	// Intentionally do NOT call SetCostStore — costStore remains nil
 
-	req := httptest.NewRequest(http.MethodGet, "/api/costs/batch?ids=sess1", nil)
+	req := newLocalRequest(http.MethodGet, "/api/costs/batch?ids=sess1", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -114,7 +114,7 @@ func TestCostsBatchUnauthorized(t *testing.T) {
 		Token:      "secret-token",
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/costs/batch?ids=sess1", nil)
+	req := newLocalRequest(http.MethodGet, "/api/costs/batch?ids=sess1", nil)
 	// No Authorization header
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -132,7 +132,7 @@ func TestCostsBatchEmptyIDs(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 	srv.SetCostStore(store)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/costs/batch?ids=", nil)
+	req := newLocalRequest(http.MethodGet, "/api/costs/batch?ids=", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -156,7 +156,7 @@ func TestCostsBatchMethodNotAllowed(t *testing.T) {
 
 	// PERF-I: POST is now allowed (JSON body form). PUT / DELETE / PATCH
 	// remain disallowed so the 405 path still has coverage.
-	req := httptest.NewRequest(http.MethodPut, "/api/costs/batch", nil)
+	req := newLocalRequest(http.MethodPut, "/api/costs/batch", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -185,7 +185,7 @@ func TestCostsBatchPOSTJSONBody(t *testing.T) {
 	srv.SetCostStore(store)
 
 	body := strings.NewReader(`{"ids":["sessA","sessB"]}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/costs/batch", body)
+	req := newLocalRequest(http.MethodPost, "/api/costs/batch", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -210,7 +210,7 @@ func TestCostsBatchPOSTInvalidBody(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 	srv.SetCostStore(store)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/costs/batch", strings.NewReader("not-json"))
+	req := newLocalRequest(http.MethodPost, "/api/costs/batch", strings.NewReader("not-json"))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)

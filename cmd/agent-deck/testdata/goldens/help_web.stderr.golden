@@ -1,3 +1,5 @@
+  -allowed-host value
+    	Additional exact HTTP Host (repeatable; optional :port)
   -insecure-bind
     	Allow binding a non-loopback address with no --token or --token-file (UNSAFE: exposes an unauthenticated RCE surface to the network)
   -listen string

@@ -22,7 +22,7 @@ func newMoveTestServer(mutations bool, mutator SessionMutator) *Server {
 }
 
 func postMove(srv *Server, id, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id+"/move", strings.NewReader(body))
+	req := newLocalRequest(http.MethodPost, "/api/sessions/"+id+"/move", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)

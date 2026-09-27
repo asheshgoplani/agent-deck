@@ -59,7 +59,7 @@ func TestCheckBindSecurity_NonLoopbackInsecureBindOverride_Allowed(t *testing.T)
 func TestWS_TokenSet_NoToken_Unauthorized(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "0.0.0.0:8420", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/ws/session/sess-1", nil)
+	req := newLocalRequest(http.MethodGet, "/ws/session/sess-1", nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 	rr := httptest.NewRecorder()
@@ -74,7 +74,7 @@ func TestMutation_TokenSet_NoToken_Unauthorized(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "0.0.0.0:8420", Token: "secret", WebMutations: true})
 
 	body := strings.NewReader(`{"title":"x","projectPath":"/tmp","tool":"shell"}`)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8420/api/sessions", body)
+	req := newLocalRequest(http.MethodPost, "http://127.0.0.1:8420/api/sessions", body)
 	// Same-origin so the request clears CSRF and reaches the auth check.
 	req.Header.Set("Origin", "http://127.0.0.1:8420")
 	rr := httptest.NewRecorder()

@@ -26,6 +26,7 @@ type Config struct {
 	ReadOnly     bool
 	WebMutations bool // When false, POST/PATCH/DELETE endpoints return 403
 	Token        string
+	AllowedHosts []string // Additional exact Host values, optionally including a port.
 	// InsecureBind explicitly acknowledges binding a non-loopback address
 	// with no auth token (an unauthenticated RCE surface). Without it the
 	// server refuses to start in that configuration. See bind.go / report #1.
@@ -296,7 +297,7 @@ func NewServer(cfg Config) *Server {
 	// themselves from their handlers_<feature>.go files; see routes.go.
 	s.mountFeatureRoutes(mux)
 
-	handler := s.trackInFlight(withRecover(s.csrfProtect(mux)))
+	handler := s.allowHosts(s.tokenCookie(s.trackInFlight(withRecover(s.csrfProtect(mux)))))
 
 	s.httpServer = &http.Server{
 		Addr:              cfg.ListenAddr,

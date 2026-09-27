@@ -11,7 +11,7 @@ import (
 
 func TestIndexCacheControl(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	if w.Code != 200 {
@@ -25,7 +25,7 @@ func TestIndexCacheControl(t *testing.T) {
 
 func TestIndexImportMap(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	body := w.Body.String()
@@ -47,7 +47,7 @@ func TestIndexImportMap(t *testing.T) {
 
 func TestIndexThemeInit(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	body := w.Body.String()
@@ -64,7 +64,7 @@ func TestIndexThemeInit(t *testing.T) {
 
 func TestIndexNoCDN(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	body := w.Body.String()
@@ -93,7 +93,7 @@ func TestVendorFilesServed(t *testing.T) {
 		// always false, making the canvas fallback inert. See the 404 gate
 		// in TestAddonCanvasDeleted below.
 	} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req := newLocalRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 		if w.Code != 200 {
@@ -284,7 +284,7 @@ func TestAddonCanvasDeleted(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
 
 	// Index must not reference addon-canvas.js
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	body := w.Body.String()
@@ -295,7 +295,7 @@ func TestAddonCanvasDeleted(t *testing.T) {
 	// Static file server must 404 on the deleted path
 	mux := http.NewServeMux()
 	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
-	req2 := httptest.NewRequest(http.MethodGet, "/static/vendor/addon-canvas.js", nil)
+	req2 := newLocalRequest(http.MethodGet, "/static/vendor/addon-canvas.js", nil)
 	w2 := httptest.NewRecorder()
 	mux.ServeHTTP(w2, req2)
 	if w2.Code != 404 {
@@ -305,7 +305,7 @@ func TestAddonCanvasDeleted(t *testing.T) {
 
 func TestIndexXtermCSS(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	body := w.Body.String()
@@ -316,7 +316,7 @@ func TestIndexXtermCSS(t *testing.T) {
 
 func TestIndexAppRoot(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	body := w.Body.String()
@@ -440,7 +440,7 @@ func TestCreateSessionDialogUsesToolSpecificReasoningEffortCatalog(t *testing.T)
 // regressed the cascade swap. See .planning/research/PITFALLS.md Pitfall #2.
 func TestNoTailwindPlayCDN(t *testing.T) {
 	s := NewServer(Config{Token: "test-token"})
-	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	req := newLocalRequest(http.MethodGet, "/?token=test-token", nil)
 	w := httptest.NewRecorder()
 	s.handleIndex(w, req)
 	body := w.Body.String()
@@ -457,7 +457,7 @@ func TestNoTailwindPlayCDN(t *testing.T) {
 	// The static file server should now 404 on /static/vendor/tailwind.js.
 	mux := http.NewServeMux()
 	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
-	req2 := httptest.NewRequest(http.MethodGet, "/static/vendor/tailwind.js", nil)
+	req2 := newLocalRequest(http.MethodGet, "/static/vendor/tailwind.js", nil)
 	w2 := httptest.NewRecorder()
 	mux.ServeHTTP(w2, req2)
 	if w2.Code != 404 {
@@ -471,7 +471,7 @@ func TestIndexServesGroupRoute(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 
 	for _, path := range []string{"/g/work", "/g/work%2Finnotrade"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req := newLocalRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rr, req)
 

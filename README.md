@@ -1099,6 +1099,13 @@ agent-deck web --token my-secret
 # then open: http://127.0.0.1:8420/?token=my-secret
 ```
 
+A valid tokened visit stores an HttpOnly, SameSite=Strict cookie, so refreshes
+continue to work with `--token-file`. The server accepts requests addressed to
+localhost, loopback IPs, its listen address, and its machine name when bound
+to a network interface. For a reverse proxy or Tailscale Serve hostname, add
+the exact name with `--allowed-host machine.tailnet.ts.net` (repeatable) or
+`[web] allowed_hosts`. An entry with a port permits only that port.
+
 For headless deployments, read the token from a file instead so it never
 appears in the process arguments, where any local user can read it from
 `/proc`. The file must be a regular file that is not group- or world-readable,

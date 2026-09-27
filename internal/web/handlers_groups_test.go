@@ -38,7 +38,7 @@ func TestGroupsCollectionGET(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/groups", nil)
+	req := newLocalRequest(http.MethodGet, "/api/groups", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -67,7 +67,7 @@ func TestGroupsCollectionPOSTCreatesGroup(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"name":"newgroup"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/groups", body)
+	req := newLocalRequest(http.MethodPost, "/api/groups", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -89,7 +89,7 @@ func TestGroupCreateMissingName(t *testing.T) {
 	srv.mutator = &fakeMutator{}
 
 	body := strings.NewReader(`{"parentPath":""}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/groups", body)
+	req := newLocalRequest(http.MethodPost, "/api/groups", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -113,7 +113,7 @@ func TestGroupRenamePATCHOK(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"name":"renamed"}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/groups/mygroup", body)
+	req := newLocalRequest(http.MethodPatch, "/api/groups/mygroup", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -133,7 +133,7 @@ func TestGroupDeleteOK(t *testing.T) {
 		deleteGroupFn: func(groupPath string) error { return nil },
 	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/groups/mygroup", nil)
+	req := newLocalRequest(http.MethodDelete, "/api/groups/mygroup", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -150,7 +150,7 @@ func TestGroupDeleteDefaultGroupReturns400(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{}
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/groups/my-sessions", nil)
+	req := newLocalRequest(http.MethodDelete, "/api/groups/my-sessions", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -184,7 +184,7 @@ func TestGroupPATCHExpandedPersists(t *testing.T) {
 		}
 
 		body := strings.NewReader(fmt.Sprintf(`{"expanded":%t}`, want))
-		req := httptest.NewRequest(http.MethodPatch, "/api/groups/stride/ws1", body)
+		req := newLocalRequest(http.MethodPatch, "/api/groups/stride/ws1", body)
 		req.Header.Set("Content-Type", "application/json")
 		rr := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rr, req)
@@ -217,7 +217,7 @@ func TestGroupPATCHRequiresNameOrExpanded(t *testing.T) {
 	srv.mutator = &fakeMutator{}
 
 	body := strings.NewReader(`{}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/groups/mygroup", body)
+	req := newLocalRequest(http.MethodPatch, "/api/groups/mygroup", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -243,7 +243,7 @@ func TestGroupPATCHExpandedUnknownGroupReturns404(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"expanded":false}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/groups/ghost", body)
+	req := newLocalRequest(http.MethodPatch, "/api/groups/ghost", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -270,7 +270,7 @@ func TestGroupPATCHRenameLeavesExpandedUntouched(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"name":"renamed"}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/groups/mygroup", body)
+	req := newLocalRequest(http.MethodPatch, "/api/groups/mygroup", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -296,7 +296,7 @@ func TestGroupPATCHAppliesExpandedBeforeRename(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"name":"renamed","expanded":false}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/groups/mygroup", body)
+	req := newLocalRequest(http.MethodPatch, "/api/groups/mygroup", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -324,7 +324,7 @@ func TestGroupPATCHRenameUnknownGroupReturns404(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"name":"renamed"}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/groups/ghost", body)
+	req := newLocalRequest(http.MethodPatch, "/api/groups/ghost", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -347,7 +347,7 @@ func TestGroupPATCHRenameRealErrorStays500(t *testing.T) {
 	}
 
 	body := strings.NewReader(`{"name":"renamed"}`)
-	req := httptest.NewRequest(http.MethodPatch, "/api/groups/mygroup", body)
+	req := newLocalRequest(http.MethodPatch, "/api/groups/mygroup", body)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)

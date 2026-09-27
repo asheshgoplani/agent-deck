@@ -964,6 +964,9 @@ func (u UISettings) GetRemoteLatencyRefreshSecs(fallbackSecs int) int {
 
 // WebSettings configures the `agent-deck web` HTTP server.
 type WebSettings struct {
+	// AllowedHosts adds exact HTTP Host names for reverse proxies and Serve.
+	// An entry may include a port; no port allows any port on that host.
+	AllowedHosts []string `toml:"allowed_hosts,omitempty"`
 	// MutationsEnabled controls whether POST/PATCH/DELETE endpoints accept
 	// requests. nil (omitted) defaults to true. Forced off by --read-only.
 	MutationsEnabled *bool `toml:"mutations_enabled,omitempty"`
@@ -4628,6 +4631,15 @@ func GetWebTrustedDomains() []string {
 		return nil
 	}
 	return NormalizeTrustedDomains(config.Web.TrustedDomains)
+}
+
+// GetWebAllowedHosts returns the configured Host allowlist additions.
+func GetWebAllowedHosts() []string {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return nil
+	}
+	return config.Web.AllowedHosts
 }
 
 // GetWebConfirmLinkOpen reports whether the web terminal confirms before

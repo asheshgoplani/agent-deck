@@ -6,10 +6,8 @@ import (
 	"strings"
 )
 
-// authorizeRequest authorizes an HTTP API request using the
-// Authorization: Bearer header ONLY. Report #5: the token is never accepted
-// from the query string here, because query-string secrets leak to access
-// logs, browser history, Referer, and reverse-proxy logs.
+// authorizeRequest accepts a bearer header or a cookie established by a
+// valid tokened visit. API query strings are never credentials.
 func (s *Server) authorizeRequest(r *http.Request) bool {
 	return s.authorize(r, false)
 }
@@ -50,8 +48,23 @@ func (s *Server) authorize(r *http.Request, allowQueryToken bool) bool {
 	if headerToken != "" && secureEqual(headerToken, s.cfg.Token) {
 		return true
 	}
+	if cookie, err := r.Cookie("agentdeck_token"); err == nil && secureEqual(cookie.Value, s.cfg.Token) {
+		return true
+	}
 
 	return false
+}
+
+func (s *Server) tokenCookie(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Token != "" && secureEqual(r.URL.Query().Get("token"), s.cfg.Token) {
+			http.SetCookie(w, &http.Cookie{
+				Name: "agentdeck_token", Value: s.cfg.Token, Path: "/",
+				HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
+			})
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func bearerToken(authHeader string) string {

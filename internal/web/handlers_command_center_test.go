@@ -173,7 +173,7 @@ func TestCommandCenterStatusEndpointJSON(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 	srv.menuData = &fakeMenuDataLoader{snapshot: ccTestMenu()}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/command-center/status", nil)
+	req := newLocalRequest(http.MethodGet, "/api/command-center/status", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -200,7 +200,7 @@ func TestCommandCenterEventsUnauthorizedWhenTokenEnabled(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Token: "secret-token"})
 	srv.menuData = &fakeMenuDataLoader{snapshot: ccTestMenu()}
 
-	req := httptest.NewRequest(http.MethodGet, "/events/command-center", nil)
+	req := newLocalRequest(http.MethodGet, "/events/command-center", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -267,7 +267,7 @@ func TestCommandCenterAskRejectsUnknownTarget(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: ccTestMenu()}
 
 	body := strings.NewReader(`{"target":"conductor-evil","text":"do bad things"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/command-center/ask", body)
+	req := newLocalRequest(http.MethodPost, "/api/command-center/ask", body)
 	req.Header.Set("Content-Type", "application/json")
 	// Same-origin so the CSRF gate (no token configured here) passes.
 	req.Header.Set("Origin", "http://"+req.Host)
@@ -287,7 +287,7 @@ func TestCommandCenterAskForbiddenWhenMutationsDisabled(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: ccTestMenu()}
 
 	body := strings.NewReader(`{"target":"maestro","text":"hi"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/command-center/ask", body)
+	req := newLocalRequest(http.MethodPost, "/api/command-center/ask", body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://"+req.Host)
 	rr := httptest.NewRecorder()
@@ -303,7 +303,7 @@ func TestCommandCenterAskRequiresText(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: ccTestMenu()}
 
 	body := strings.NewReader(`{"target":"maestro","text":"   "}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/command-center/ask", body)
+	req := newLocalRequest(http.MethodPost, "/api/command-center/ask", body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://"+req.Host)
 	rr := httptest.NewRecorder()

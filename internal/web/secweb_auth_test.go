@@ -14,7 +14,7 @@ import (
 func TestAuth_QueryTokenRejectedOnAPI(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/menu?token=secret", nil)
+	req := newLocalRequest(http.MethodGet, "/api/menu?token=secret", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -26,7 +26,7 @@ func TestAuth_QueryTokenRejectedOnAPI(t *testing.T) {
 func TestAuth_HeaderTokenAcceptedOnAPI(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/menu", nil)
+	req := newLocalRequest(http.MethodGet, "/api/menu", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -43,7 +43,7 @@ func TestAuth_QueryTokenAcceptedOnWS(t *testing.T) {
 	// authorization gate (browsers cannot set headers on the WS handshake).
 	// It then fails later for an unrelated reason (no real upgrade / unknown
 	// session) — so the one thing we assert is that it is NOT 401.
-	req := httptest.NewRequest(http.MethodGet, "/ws/session/sess-1?token=secret", nil)
+	req := newLocalRequest(http.MethodGet, "/ws/session/sess-1?token=secret", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -61,7 +61,7 @@ func TestCSRF_FailsClosedWhenTokenSet_NoOriginNoReferer(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "0.0.0.0:8420", Token: "secret", WebMutations: true})
 
 	body := strings.NewReader(`{"title":"x","projectPath":"/tmp","tool":"shell"}`)
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8420/api/sessions", body)
+	req := newLocalRequest(http.MethodPost, "http://127.0.0.1:8420/api/sessions", body)
 	req.Header.Set("Authorization", "Bearer secret") // authenticated, but no Origin/Referer
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -77,7 +77,7 @@ func TestCSRF_FailsClosedWhenTokenSet_NoOriginNoReferer(t *testing.T) {
 func TestHealthz_TokenSet_AnonymousMinimal(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "secret-profile", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := newLocalRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -98,7 +98,7 @@ func TestHealthz_TokenSet_AnonymousMinimal(t *testing.T) {
 func TestHealthz_TokenSet_AuthorizedFullDetail(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "p1", Token: "secret"})
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := newLocalRequest(http.MethodGet, "/healthz", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)

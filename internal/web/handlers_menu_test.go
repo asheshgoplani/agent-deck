@@ -60,7 +60,7 @@ func TestMenuEndpointSuccess(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/menu", nil)
+	req := newLocalRequest(http.MethodGet, "/api/menu", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -83,7 +83,7 @@ func TestMenuEndpointMethodNotAllowed(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/menu", nil)
+	req := newLocalRequest(http.MethodPost, "/api/menu", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -106,7 +106,7 @@ func TestMenuEndpointUnauthorizedWhenTokenEnabled(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/menu", nil)
+	req := newLocalRequest(http.MethodGet, "/api/menu", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -138,7 +138,7 @@ func TestMenuEndpointAuthorizedWithBearerToken(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/menu", nil)
+	req := newLocalRequest(http.MethodGet, "/api/menu", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -171,7 +171,7 @@ func TestSessionEndpointAuthorizedWithHeaderToken(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/session/sess-123", nil)
+	req := newLocalRequest(http.MethodGet, "/api/session/sess-123", nil)
 	req.Header.Set("Authorization", "Bearer secret-token")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -207,7 +207,7 @@ func TestSessionEndpointSuccess(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/session/sess-123", nil)
+	req := newLocalRequest(http.MethodGet, "/api/session/sess-123", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -243,7 +243,7 @@ func TestSessionEndpointNotFound(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/session/sess-missing", nil)
+	req := newLocalRequest(http.MethodGet, "/api/session/sess-missing", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -263,7 +263,7 @@ func TestSessionEndpointMissingID(t *testing.T) {
 		snapshot: &MenuSnapshot{Profile: "default"},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/session/", nil)
+	req := newLocalRequest(http.MethodGet, "/api/session/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -283,7 +283,7 @@ func TestMenuEndpointInternalError(t *testing.T) {
 		err: errors.New("storage failed"),
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/menu", nil)
+	req := newLocalRequest(http.MethodGet, "/api/menu", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
@@ -303,7 +303,7 @@ func TestSessionEndpointInternalError(t *testing.T) {
 		err: errors.New("storage failed"),
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/session/sess-1", nil)
+	req := newLocalRequest(http.MethodGet, "/api/session/sess-1", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
