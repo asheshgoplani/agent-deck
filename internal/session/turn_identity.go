@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 )
 
 // TurnIdentity binds a submitted prompt to its durable Claude transcript
@@ -18,6 +20,9 @@ type TurnIdentity struct {
 	UUID        string
 	Path        string
 	StartOffset int64
+	// SessionID is the sessionId Claude stamped on the user record: the
+	// native conversation the turn belongs to.
+	SessionID string
 }
 
 // TurnQuery describes the transcript record a send is looking for.
@@ -67,6 +72,7 @@ type turnRecord struct {
 	Type        string          `json:"type"`
 	Timestamp   string          `json:"timestamp"`
 	IsSidechain bool            `json:"isSidechain"`
+	SessionID   string          `json:"sessionId"`
 	Message     json.RawMessage `json:"message"`
 }
 
@@ -81,6 +87,18 @@ type turnMessage struct {
 // whitespace (a trailing newline, composer padding) is ignored.
 func normalizeTurnPrompt(text string) string {
 	return strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+}
+
+// promptMatches reports whether a user record's body is the sent prompt
+// (already normalized). Claude stores a long or multi-line paste wrapped in
+// a pasted-content block (#2399), so the unwrapped body counts too; the
+// whole text must still match.
+func promptMatches(body, want string) bool {
+	if normalizeTurnPrompt(body) == want {
+		return true
+	}
+	unwrapped, ok := query.UnwrapPastedContent(body)
+	return ok && normalizeTurnPrompt(unwrapped) == want
 }
 
 func humanPrompt(rec turnRecord) (string, bool) {
@@ -168,13 +186,13 @@ func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, err
 			continue
 		}
 		body, human := humanPrompt(rec)
-		if !human || normalizeTurnPrompt(body) != want || recordTooOld(rec, q.NotBefore) {
+		if !human || !promptMatches(body, want) || recordTooOld(rec, q.NotBefore) {
 			continue
 		}
 		if rec.UUID == "" {
 			return TurnIdentity{}, cursor, false, fmt.Errorf("submitted prompt has no transcript UUID; refusing to guess turn identity")
 		}
-		return TurnIdentity{UUID: rec.UUID, Path: q.Path, StartOffset: cursor}, cursor, true, nil
+		return TurnIdentity{UUID: rec.UUID, Path: q.Path, StartOffset: cursor, SessionID: rec.SessionID}, cursor, true, nil
 	}
 }
 
@@ -330,5 +348,5 @@ func readTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
 	if !ended && text.Len() == 0 {
 		return nil, false, nil
 	}
-	return &ResponseOutput{Tool: "claude", Role: "assistant", Content: strings.TrimSpace(text.String()), Timestamp: lastTS}, ended, nil
+	return &ResponseOutput{Tool: "claude", Role: "assistant", Content: strings.TrimSpace(text.String()), Timestamp: lastTS, SessionID: id.SessionID, ClaudeTurnUUID: id.UUID}, ended, nil
 }

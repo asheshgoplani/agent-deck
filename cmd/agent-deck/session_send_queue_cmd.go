@@ -129,6 +129,9 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 		CreatedAt: now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
 		Deadline: now.Add(sendqueue.DefaultRetryBudget).UTC().Format(time.RFC3339Nano),
 	}
+	if session.IsClaudeCompatible(inst.Tool) {
+		rec.ClaudeSessionID = inst.ClaudeSessionID
+	}
 	if !inst.Exists() {
 		rec.State, rec.Reason, rec.Verdict = sendqueue.StateFailed, "target not running", "unknown"
 	}
@@ -544,6 +547,9 @@ func applyChildResult(rec *sendqueue.Record, result map[string]interface{}, code
 	}
 	_ = set(func(r *sendqueue.Record) {
 		r.ChildPID = 0
+		if id, _ := result["claude_session_id"].(string); id != "" {
+			r.ClaudeSessionID = id
+		}
 		switch outcome {
 		case childSubmitted:
 			r.State, r.Reason, r.Verdict = sendqueue.StateSubmitted, "", "delivered"
@@ -613,6 +619,9 @@ func watchLanded(profile string, rec *sendqueue.Record, set func(func(*sendqueue
 			if id, ts, ok := query.FindLanded(context.Background(), harness, rec.TranscriptPath, rec.TranscriptFrom, rec.Message, sentAt); ok {
 				_ = set(func(r *sendqueue.Record) {
 					r.State, r.Reason, r.Verdict, r.LandedRowID, r.LandedAt = sendqueue.StateLanded, "", "delivered", id, ts
+					if sid := claudeSessionIDFromTranscript(harness, r.TranscriptPath); sid != "" {
+						r.ClaudeSessionID = sid
+					}
 				})
 				waitTurnStarted(profile, rec.SessionID, 5*time.Second)
 				return
@@ -626,6 +635,15 @@ func watchLanded(profile string, rec *sendqueue.Record, set func(func(*sendqueue
 		}
 		r.Settled = true
 	})
+}
+
+// claudeSessionIDFromTranscript is the Claude conversation a transcript
+// holds: Claude names each transcript <session id>.jsonl.
+func claudeSessionIDFromTranscript(harness, path string) string {
+	if harness != "claude" || filepath.Ext(path) != ".jsonl" {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(path), ".jsonl")
 }
 
 // sendChildWaitMax bounds how long a restarted worker waits for the child

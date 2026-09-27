@@ -526,6 +526,7 @@ func handleSessionStop(profile string, args []string) {
 	// during start (e.g., tool started late on slow WSL2 machines).
 	// Must happen before Kill() because tmux show-environment fails on dead sessions.
 	inst.SyncSessionIDsFromTmux()
+	adoptLiveCodexIdentity(storage, inst)
 
 	// Stop the session by killing the tmux session
 	if err := inst.Kill(); err != nil {
@@ -634,8 +635,13 @@ func handleSessionArchive(profile string, args []string) {
 	// populates. Late-discovered ids are dropped rather than saved via a
 	// non-targeted write that would reintroduce the archive-clobber race. The
 	// session's normal lifecycle already persists its tool ids.
+	//
+	// Codex is the exception: launch left its identity unpersisted, and the
+	// live process is the only evidence of it, so bind it with the targeted
+	// Codex write before the kill destroys that evidence (#2400).
 	killed := false
 	if inst.Exists() {
+		adoptLiveCodexIdentity(storage, inst)
 		if err := inst.Kill(); err != nil {
 			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -3767,7 +3773,7 @@ func handleSessionSend(profile string, args []string) {
 		// Codex additionally binds a structured --json --wait reply to its
 		// exact accepted turn generation rather than a freshness scan.
 		if structuredCodexWait {
-			response, responseErr = waitForCodexTurnOutput(inst, acceptedTurn.TurnGeneration)
+			response, responseErr = waitForCodexTurnOutput(inst, acceptedTurn.TurnGeneration, waitDeadline)
 		} else {
 			response, responseErr = waitForFreshOutput(inst, sentAt, instances)
 		}
@@ -3777,7 +3783,7 @@ func handleSessionSend(profile string, args []string) {
 			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
 				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
 					if structuredCodexWait {
-						response, responseErr = waitForCodexTurnOutput(freshInst, acceptedTurn.TurnGeneration)
+						response, responseErr = waitForCodexTurnOutput(freshInst, acceptedTurn.TurnGeneration, waitDeadline)
 					} else {
 						response, responseErr = waitForFreshOutput(freshInst, sentAt, freshInstances)
 					}
@@ -3799,6 +3805,15 @@ func handleSessionSend(profile string, args []string) {
 		sendData["content"] = response.Content
 		if response.CodexTurnGeneration != "" {
 			sendData["codex_turn_generation"] = response.CodexTurnGeneration
+		}
+		// #2397: the turn this reply is bound to. Its user record's
+		// sessionId overrides the instance's claude_session_id set by
+		// sendSuccessData: it is the conversation the turn landed in.
+		if response.ClaudeTurnUUID != "" {
+			sendData["claude_turn_uuid"] = response.ClaudeTurnUUID
+			if response.SessionID != "" {
+				sendData["claude_session_id"] = response.SessionID
+			}
 		}
 		out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), sendData)
 	} else {
@@ -4121,6 +4136,10 @@ func sendSuccessData(inst *session.Instance, message string, res sendDeliveryRes
 	for k, v := range res.jsonFields() {
 		data[k] = v
 	}
+	// #2397: name the native Claude conversation, as show/output do.
+	if session.IsClaudeCompatible(inst.Tool) && inst.ClaudeSessionID != "" {
+		data["claude_session_id"] = inst.ClaudeSessionID
+	}
 	if wait {
 		if outcome := socketWaitOutcome(res); outcome != "" {
 			data["wait_outcome"] = outcome
@@ -4278,10 +4297,10 @@ func (g *codexAcceptanceGuard) ResolveAccepted() error {
 
 // hydrateLegacyCodexIdentity repairs the narrow upgrade case where a live,
 // local Codex pane already owns an exact rollout but its database row predates
-// durable Codex identity tracking. The pane environment is the authority; disk
-// scans and terminal text are deliberately not identity sources here. Without
-// a pane identity, the one thread the pane's live Codex process holds open is
-// used instead: a fresh composer owns its thread before any rollout exists.
+// durable Codex identity tracking. The one thread the pane's live Codex
+// process holds open is the authority (a fresh composer owns its thread before
+// any rollout exists); without it, the pane environment is used. Disk scans and
+// terminal text are deliberately not identity sources here.
 func hydrateLegacyCodexIdentity(
 	inst *session.Instance,
 	peers []*session.Instance,
@@ -4300,9 +4319,9 @@ func hydrateLegacyCodexIdentity(
 
 	candidate := liveCodexSessionID(inst)
 	processOwned := false
-	if candidate == "" {
-		candidate = inst.LiveCodexThreadID()
-		processOwned = candidate != ""
+	// Panes from earlier builds can carry a disk-scan guess (#2394).
+	if live := inst.LiveCodexThreadID(); live != "" {
+		candidate, processOwned = live, true
 	}
 	if candidate == "" {
 		return errCodexIdentityUnavailable
@@ -5927,30 +5946,36 @@ var freshOutputTestConfig *freshOutputConfig
 // hook and the final rollout append. Content and timestamps are insufficient:
 // consecutive turns can legitimately emit identical replies, so only the
 // exact accepted thread:turn generation can satisfy this read.
-func waitForCodexTurnOutput(inst *session.Instance, generation string) (*session.ResponseOutput, error) {
+//
+// The status heuristic that precedes this read can report a long Codex turn
+// as finished while it is still running (a quiet pane during a long tool
+// call), so the read polls until the caller's --wait deadline rather than a
+// fixed flush window of its own (#2395). task_complete is only written when
+// the turn ends, so a running turn can never satisfy it early.
+func waitForCodexTurnOutput(inst *session.Instance, generation string, deadline time.Time) (*session.ResponseOutput, error) {
 	if inst == nil || generation == "" {
 		return nil, fmt.Errorf("accepted Codex turn identity is unavailable")
 	}
 	pollInterval := 250 * time.Millisecond
-	timeout := 5 * time.Second
 	if cfg := freshOutputTestConfig; cfg != nil {
 		pollInterval = cfg.pollInterval
-		timeout = cfg.timeout
 	}
-	deadline := time.Now().Add(timeout)
 	var lastErr error
-	for time.Now().Before(deadline) {
+	for {
 		resp, err := inst.GetLastResponseBestEffort()
 		if err == nil && resp.CodexTurnGeneration == generation {
 			return resp, nil
 		}
 		lastErr = err
-		time.Sleep(pollInterval)
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(min(pollInterval, max(time.Until(deadline), time.Millisecond)))
 	}
 	if lastErr != nil {
-		return nil, fmt.Errorf("read Codex turn %s: %w", generation, lastErr)
+		return nil, fmt.Errorf("Codex turn %s did not complete within the --timeout budget: %w", generation, lastErr)
 	}
-	return nil, fmt.Errorf("Codex turn %s was not flushed before timeout", generation)
+	return nil, fmt.Errorf("Codex turn %s did not complete within the --timeout budget", generation)
 }
 
 // waitForFreshOutput polls the session's JSONL file until it contains an assistant
@@ -6268,6 +6293,10 @@ func handleSessionOutput(profile string, args []string) {
 		out.Print(emitted, jsonData)
 		return
 	}
+
+	// A Codex row launch left unbound reads its exact rollout once the live
+	// process names the thread, instead of falling back to pane text (#2396).
+	adoptLiveCodexIdentity(storage, inst)
 
 	// Get the last response (best-effort fallback for smoother CLI reads).
 	// Collision-checked (#1400): multiple live instances sharing one

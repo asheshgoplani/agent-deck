@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Model and reasoning-effort lists come from the installed CLI where it can list them, so new models show up without waiting for an Agent Deck release. Codex is asked with `codex debug models` (no prompt, about 1s timeout, cached per Codex binary for up to a day); its models lead the TUI and web pickers and `launch -capabilities --json`, its efforts are accepted by `--effort`, and an effort the chosen model lacks is rejected at launch. Claude Code and Gemini keep the built-in list, which stays the fallback when a probe fails or you are offline. A `[claude] default_model` missing from the list is now prefilled with a warning instead of dropped. Turn the probe off with `[models] probe = false` (#2388, thanks @na-bal).
 
+## [1.16.20] - 2026-09-27
+
+### Added
+
+- `agent-deck session send --json` receipts and `session send-status --json` for Claude sessions carry `claude_session_id`, and `--json --wait` also carries `claude_turn_uuid`, the bound user record, so a send can be correlated without a separate output query (#2397, reported by @Abarsit).
+
+### Fixed
+
+- Recall indexes profile-scoped Codex configuration directories, including Codex-only profiles without a Claude account slot (#2398, reported by @Abarsit).
+- A Codex child launched without a message no longer binds a sibling's rollout from the same project: while Codex runs in the pane, only the thread it holds open is bound, so `session output` returns the requested session's conversation (#2394, reported by @Abarsit).
+- The live Codex identity is persisted at launch, output, stop and archive, so first-turn output is bound and an archived session keeps its `codex_session_id` and `transcript_path` (#2396, #2400, reported by @Abarsit).
+- `session send --wait` on a Codex session honours the caller's `--timeout` instead of an internal 5 s flush limit that reported a long turn as `completion=timeout` minutes early (#2395, reported by @Abarsit).
+- Long or multi-line follow-ups to Claude, stored by Claude Code 2.1.277+ as pasted-content rows, are now bound by `--wait` and confirmed by `session send-status`, so the waiter returns after completion instead of holding the full timeout (#2399, #2401, reported by @Abarsit).
+
 ## [1.16.19] - 2026-09-26
 
 ### Added

@@ -955,6 +955,12 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		}
 	}
 
+	// Codex: persist the thread the new process holds open. PostStartSync
+	// does not wait for Codex, and startup detection ends with this process,
+	// so without this the row stays unbound until a follow-up send (#2396,
+	// #2400).
+	persistLiveCodexIdentity(storage, newInstance, codexLaunchIdentityWait)
+
 	// Build output. v1.9.x issue #1031: surface the new session ID
 	// under an explicit `session_id` key so callers (conductor fleet
 	// spawn loops, shell scripts) don't have to fall back to diffing

@@ -25,6 +25,10 @@ var codexThreadWriterLockPathRE = regexp.MustCompile(`/thread-writer-locks/([0-9
 // open. A non-nil error means the list may be incomplete. Test seam.
 var codexPaneOpenPaths = (*Instance).openCodexProcessPaths
 
+// codexPaneProcessPIDs lists the pane's live Codex processes. A non-nil error
+// means the list may be incomplete. Test seam.
+var codexPaneProcessPIDs = (*Instance).collectCodexProcessCandidates
+
 func (i *Instance) openCodexProcessPaths() ([]string, error) {
 	pids, probeErr := i.collectCodexProcessCandidates()
 	var paths []string
@@ -94,4 +98,25 @@ func (i *Instance) LiveCodexThreadID() string {
 		owned = id
 	}
 	return owned
+}
+
+// liveCodexBootstrapEvidence reports what the pane's live Codex process says
+// about this instance's thread, for the bootstrap paths that would otherwise
+// guess from a disk scan. live is true when a Codex process runs in the pane:
+// then only the thread it holds open may bind ("" while it owns none yet, or
+// when the probe is incomplete or ambiguous). A disk scan at that point can
+// only find someone else's rollout, such as a sibling's in the same project,
+// since this process has not written one (#2394).
+func (i *Instance) liveCodexBootstrapEvidence() (threadID string, live bool) {
+	if i == nil || !IsCodexCompatible(i.Tool) || !i.CodexRolloutIsResolvableLocally() {
+		return "", false
+	}
+	pids, err := codexPaneProcessPIDs(i)
+	if len(pids) == 0 {
+		return "", false
+	}
+	if err != nil {
+		return "", true // Codex is live but the probe is incomplete: bind nothing
+	}
+	return i.filterCodexProcessProbeCandidate(i.LiveCodexThreadID()), true
 }
