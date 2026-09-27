@@ -639,7 +639,7 @@ func (c *CLIOutput) Error(message string, code string) {
 // keys always win over extra entries.
 func (c *CLIOutput) ErrorWithData(message string, code string, extra map[string]interface{}) {
 	if c.jsonMode {
-		payload := make(map[string]interface{}, len(extra)+3)
+		payload := make(map[string]interface{})
 		for k, v := range extra {
 			payload[k] = v
 		}

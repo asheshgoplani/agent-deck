@@ -128,3 +128,29 @@ func TestTmuxFactory_UTF8FlagPrecedesSocketSelector(t *testing.T) {
 		t.Fatalf("want argv to start with [tmux -u -L agent-deck]; got %v", args)
 	}
 }
+
+// TestPrepend_RejectsOversizedArgv: the len(args)+1 allocation is guarded by
+// MaxArgs, so an argv at the cap panics instead of allocating.
+func TestPrepend_RejectsOversizedArgv(t *testing.T) {
+	below := make([]string, tmuxutf8.MaxArgs-1)
+	if got := tmuxutf8.Prepend(below); len(got) != tmuxutf8.MaxArgs || got[0] != tmuxutf8.Flag {
+		t.Fatalf("Prepend(MaxArgs-1) len=%d, want %d with leading flag", len(got), tmuxutf8.MaxArgs)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Prepend(MaxArgs) did not panic")
+		}
+	}()
+	tmuxutf8.Prepend(make([]string, tmuxutf8.MaxArgs))
+}
+
+func TestPrepend_RejectsOversizedPrefixedArgv(t *testing.T) {
+	args := make([]string, tmuxutf8.MaxArgs)
+	args[0] = tmuxutf8.Flag
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Prepend(-u, MaxArgs) did not panic")
+		}
+	}()
+	tmuxutf8.Prepend(args)
+}

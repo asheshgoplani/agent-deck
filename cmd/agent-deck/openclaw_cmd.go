@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/openclaw"
@@ -197,6 +198,24 @@ func handleOpenClawBridge(args []string) {
 
 // --- status ---
 
+// remoteNewlineStripper removes line breaks from gateway-supplied strings.
+// Redundant with the IsControl filter in displayRemote; kept as its final step
+// so static analysis recognises displayRemote as an output sanitiser.
+var remoteNewlineStripper = strings.NewReplacer("\r", "", "\n", "")
+
+// displayRemote makes a string reported by the OpenClaw gateway safe to print
+// on one terminal line: every control character (ESC, C1 codes, CR, LF, ...)
+// is dropped.
+func displayRemote(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+	return remoteNewlineStripper.Replace(s)
+}
+
 func handleOpenClawStatus(args []string) {
 	cfg := loadOpenClawConfig()
 
@@ -211,12 +230,12 @@ func handleOpenClawStatus(args []string) {
 	defer client.Close()
 
 	hello := client.Hello()
-	fmt.Printf("Gateway: ONLINE (v%s, conn=%s)\n", hello.Server.Version, hello.Server.ConnID)
+	fmt.Printf("Gateway: ONLINE (v%s, conn=%s)\n", displayRemote(hello.Server.Version), displayRemote(hello.Server.ConnID))
 	fmt.Printf("Protocol: %d\n", hello.Protocol)
 	fmt.Printf("Uptime: %s\n", formatDuration(time.Duration(hello.Snapshot.UptimeMs)*time.Millisecond))
 
 	if hello.Snapshot.AuthMode != "" {
-		fmt.Printf("Auth: %s\n", hello.Snapshot.AuthMode)
+		fmt.Printf("Auth: %s\n", displayRemote(hello.Snapshot.AuthMode))
 	}
 
 	// Show channels — the response structure varies by gateway version,
@@ -283,9 +302,9 @@ func handleOpenClawStatus(args []string) {
 			if platform == "" {
 				platform = "?"
 			}
-			fmt.Printf("  %s/%s", mode, platform)
+			fmt.Printf("  %s/%s", displayRemote(mode), displayRemote(platform))
 			if p.Version != "" {
-				fmt.Printf(" v%s", p.Version)
+				fmt.Printf(" v%s", displayRemote(p.Version))
 			}
 			fmt.Println()
 		}

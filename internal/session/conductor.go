@@ -609,12 +609,31 @@ func ConductorDir() (string, error) {
 }
 
 // ConductorNameDir returns the directory for a named conductor (~/.agent-deck/conductor/<name>)
+//
+// The name must be a single path element: empty, ".", "..", and anything
+// containing a path separator are rejected so the result always stays inside
+// the conductor base dir. This is deliberately looser than
+// ValidateConductorName because ListConductors also resolves directory names
+// that already exist on disk.
 func ConductorNameDir(name string) (string, error) {
+	if err := validateConductorDirName(name); err != nil {
+		return "", err
+	}
 	base, err := ConductorDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(base, name), nil
+}
+
+// validateConductorDirName rejects names that are not a single, local path
+// element.
+func validateConductorDirName(name string) error {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\`) || !filepath.IsLocal(name) {
+		return fmt.Errorf("invalid conductor name %q: must be a single directory name", name)
+	}
+	return nil
 }
 
 // ConductorProfileDir returns the per-profile conductor directory.

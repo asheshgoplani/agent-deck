@@ -57,6 +57,12 @@ package tmuxutf8
 // appear before the subcommand, alongside -L/-S, not after it.
 const Flag = "-u"
 
+// MaxArgs caps the argv length Prepend accepts. A real tmux command line is a
+// handful of tokens, and the kernel's ARG_MAX rejects anything near this size
+// long before exec, so the cap only exists to keep the len(args)+1 allocation
+// below far away from integer overflow.
+const MaxArgs = 1 << 20
+
 // Prepend returns a fresh argv with Flag in front of args. It is the only
 // sanctioned way to add the flag, so `grep -r tmuxutf8` enumerates every tmux
 // command line in the codebase that is UTF-8 safe.
@@ -65,15 +71,16 @@ const Flag = "-u"
 // builders run on hot status-poll paths and share their input slices.
 //
 // Prepend is idempotent for an argv that already leads with Flag, so wrapping a
-// pre-built command line twice cannot produce `tmux -u -u …`.
+// pre-built command line twice cannot produce `tmux -u -u …`. It panics when
+// args holds MaxArgs or more elements.
 func Prepend(args []string) []string {
+	if len(args) >= MaxArgs {
+		panic("tmux argument list too large")
+	}
 	if len(args) > 0 && args[0] == Flag {
 		out := make([]string, len(args))
 		copy(out, args)
 		return out
-	}
-	if len(args) == int(^uint(0)>>1) {
-		panic("tmux argument list too large")
 	}
 	out := make([]string, 0, len(args)+1)
 	out = append(out, Flag)

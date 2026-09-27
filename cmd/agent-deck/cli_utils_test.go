@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -683,5 +685,28 @@ func TestShouldInheritParentGroup(t *testing.T) {
 				t.Fatalf("git worktree probe called = %v, want %v (lazy thunk must not run when steps 1-2 decide)", probed, tt.wantProbe)
 			}
 		})
+	}
+}
+
+func TestErrorWithData_PreservesLargeExtraPayload(t *testing.T) {
+	const extraCount = 1025
+	extra := make(map[string]interface{}, extraCount)
+	for i := 0; i < extraCount; i++ {
+		extra[strconv.Itoa(i)] = i
+	}
+	extra["success"] = true
+
+	output := captureStdout(t, func() {
+		NewCLIOutput(true, false).ErrorWithData("failed", "example", extra)
+	})
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(payload), extraCount+3; got != want {
+		t.Fatalf("payload fields = %d, want %d", got, want)
+	}
+	if payload["1024"] != float64(1024) || payload["success"] != false {
+		t.Fatalf("large payload lost its final field or reserved success value")
 	}
 }
