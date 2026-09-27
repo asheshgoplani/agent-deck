@@ -70,3 +70,23 @@ func TestRemotePollErrorClassification(t *testing.T) {
 		}
 	}
 }
+
+func TestRemotePollAuthBlockedWindow(t *testing.T) {
+	base := time.Date(2026, 9, 27, 6, 0, 0, 0, time.UTC)
+	auth := RemotePollState{LastPollStatus: "auth_failed", CheckedAt: base}
+	if !auth.AuthBlocked(base.Add(time.Minute)) {
+		t.Fatal("a fresh auth failure must hold the next poll")
+	}
+	if auth.AuthBlocked(base.Add(RemoteAuthRetryBackoff)) {
+		t.Fatal("an auth failure at the backoff boundary must be retryable")
+	}
+	if auth.AuthBlocked(base.Add(RemoteAuthRetryBackoff + time.Second)) {
+		t.Fatal("an expired auth failure must be retryable")
+	}
+	if (RemotePollState{LastPollStatus: "ok", CheckedAt: base}).AuthBlocked(base) {
+		t.Fatal("only auth failures hold polling")
+	}
+	if (RemotePollState{LastPollStatus: "auth_failed"}).AuthBlocked(base) {
+		t.Fatal("a zero CheckedAt must not hold polling")
+	}
+}

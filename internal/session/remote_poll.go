@@ -26,6 +26,30 @@ func (s RemotePollState) Matches(rc RemoteConfig) bool {
 	return s.Host == rc.Host && s.Profile == rc.GetProfile() && s.AgentDeckPath == rc.GetAgentDeckPath()
 }
 
+// RemoteAuthRetryBackoff bounds how long a cached auth failure keeps a remote
+// out of automatic polling. A single transient SSH auth failure -- most often
+// the desktop ssh-agent/GCR keyring not having loaded its key yet when the
+// notifier starts at session login -- used to pause that remote until a human
+// ran `agent-deck remote list --retry`; because the observation is persisted,
+// even a daemon/TUI restart re-hydrated the same block. The hold is now
+// time-bounded: once the observation is older than this window the next poll
+// is attempted, so the remote self-heals when the environment recovers
+// (keyring unlocked, agent restarted, network back). A host whose credentials
+// are genuinely broken simply re-fails once per window instead of being polled
+// on every tick.
+const RemoteAuthRetryBackoff = 2 * time.Minute
+
+// AuthBlocked reports whether this observation should still suppress the next
+// automatic poll. Only an auth failure observed within RemoteAuthRetryBackoff
+// holds; an older one is re-attemptable. A zero CheckedAt (a freshly seeded
+// state) never holds.
+func (s RemotePollState) AuthBlocked(now time.Time) bool {
+	if s.LastPollStatus != "auth_failed" || s.CheckedAt.IsZero() {
+		return false
+	}
+	return now.Sub(s.CheckedAt) < RemoteAuthRetryBackoff
+}
+
 // LoadRemotePolls reads locally cached observations without contacting SSH.
 // Writers replace the cache atomically, so readers need not wait on the writer
 // mutex or its cross-process claim lock.

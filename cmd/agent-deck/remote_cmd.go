@@ -1173,13 +1173,15 @@ func startRemoteAutoUpdate() {
 // on every restart.
 func runRemoteAutoUpdate(remotes map[string]session.RemoteConfig, target string) []session.RemoteUpdateResult {
 	log := logging.ForComponent(logging.CompSession)
-	// Authentication must not be retried by a startup sweep after a TUI poll
-	// paused it. Explicit remote checks and updates remain user-controlled.
+	// Authentication must not be retried by a startup sweep while a recent TUI
+	// poll auth failure is still fresh; after RemoteAuthRetryBackoff it is
+	// retryable again (see RemotePollState.AuthBlocked). Explicit remote checks
+	// and updates remain user-controlled.
 	polls := session.LoadRemotePolls()
 	eligible := make(map[string]session.RemoteConfig, len(remotes))
 	var skipped []session.RemoteUpdateResult
 	for name, rc := range remotes {
-		if state := polls[name]; state.Matches(rc) && state.LastPollStatus == "auth_failed" {
+		if state := polls[name]; state.Matches(rc) && state.AuthBlocked(time.Now()) {
 			skipped = append(skipped, session.RemoteUpdateResult{Name: name, Host: rc.Host, Outcome: session.RemoteUpdateOutcomeSkipped, Note: "auth failed; polling paused"})
 			log.Info("remote_auto_update_skipped", slog.String("remote", name), slog.String("reason", "auth failed"))
 			continue

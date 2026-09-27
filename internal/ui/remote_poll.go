@@ -54,14 +54,14 @@ func (h *Home) remoteAuthBlocked(name string, rc session.RemoteConfig) bool {
 	h.remoteSessionsMu.RLock()
 	defer h.remoteSessionsMu.RUnlock()
 	state := h.remotePolls[name]
-	return state.Matches(rc) && state.LastPollStatus == "auth_failed"
+	return state.Matches(rc) && state.AuthBlocked(time.Now())
 }
 
 func (h *Home) beginRemotePoll(name string, rc session.RemoteConfig) bool {
 	h.remoteSessionsMu.Lock()
 	defer h.remoteSessionsMu.Unlock()
 	state := h.remotePolls[name]
-	if h.ctx.Err() != nil || h.remotePollActive[name] || (state.Matches(rc) && state.LastPollStatus == "auth_failed") {
+	if h.ctx.Err() != nil || h.remotePollActive[name] || (state.Matches(rc) && state.AuthBlocked(time.Now())) {
 		return false
 	}
 	if h.remotePollActive == nil {

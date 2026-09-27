@@ -242,3 +242,72 @@ func TestRemotePollPersistedAuthBlocksStartupAuxiliaryProbes(t *testing.T) {
 		t.Fatalf("preview bypassed auth pause: %v", msg.err)
 	}
 }
+
+// TestRemotePollExpiredAuthFailureRetries pins the self-heal window: a cached
+// auth failure holds the next poll only while it is fresh. Once it is older
+// than RemoteAuthRetryBackoff the remote must be polled again, so a transient
+// session-login ssh-agent race cannot disable the host until a human clears it.
+func TestRemotePollExpiredAuthFailureRetries(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	h := newTestHomeWithItems(100, 30, nil)
+	defer h.cancel()
+	rc := session.RemoteConfig{Host: "test@invalid"}
+	state := func(checkedAt time.Time) session.RemotePollState {
+		return session.RemotePollState{
+			Host: rc.Host, Profile: rc.GetProfile(), AgentDeckPath: rc.GetAgentDeckPath(),
+			LastPollStatus: "auth_failed", CheckedAt: checkedAt,
+		}
+	}
+	h.remoteSessionsMu.Lock()
+	h.remotePolls = map[string]session.RemotePollState{"dev": state(time.Now())}
+	h.remoteSessionsMu.Unlock()
+	if !h.remoteAuthBlocked("dev", rc) {
+		t.Fatal("a fresh auth failure must hold the poll")
+	}
+	if h.beginRemotePoll("dev", rc) {
+		t.Fatal("a fresh auth failure must not start a poll")
+	}
+	h.remoteSessionsMu.Lock()
+	h.remotePolls["dev"] = state(time.Now().Add(-(session.RemoteAuthRetryBackoff + time.Second)))
+	h.remoteSessionsMu.Unlock()
+	if h.remoteAuthBlocked("dev", rc) {
+		t.Fatal("an expired auth failure must not keep blocking")
+	}
+	if !h.beginRemotePoll("dev", rc) {
+		t.Fatal("an expired auth failure must allow the next poll")
+	}
+}
+
+// TestRemotePollAuthBlockedRoundReleasesGuard guards the round accounting: an
+// auth-blocked remote answers its fetch immediately (no SSH), and that answer
+// must still count down the in-flight guard. Otherwise one blocked host would
+// leave the fleet fetch permanently "active" and starve every other remote.
+func TestRemotePollAuthBlockedRoundReleasesGuard(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	h := newTestHomeWithItems(100, 30, nil)
+	defer h.cancel()
+	rc := session.RemoteConfig{Host: "test@invalid"}
+	h.remoteSessionsMu.Lock()
+	h.remotePolls = map[string]session.RemotePollState{"dev": {
+		Host: rc.Host, Profile: rc.GetProfile(), AgentDeckPath: rc.GetAgentDeckPath(),
+		LastPollStatus: "auth_failed", CheckedAt: time.Now(),
+	}}
+	h.remoteSessionsMu.Unlock()
+	cmds := h.remoteFetchCmds(1, map[string]session.RemoteConfig{"dev": rc})
+	h.Update(remoteFetchRoundMsg{gen: 1, fetches: cmds})
+	for _, cmd := range cmds {
+		h.Update(cmd())
+	}
+	h.remoteSessionsMu.RLock()
+	active, outstanding := h.remotesFetchActive, h.remoteFetchOutstanding
+	h.remoteSessionsMu.RUnlock()
+	if active || outstanding != 0 {
+		t.Fatalf("auth-blocked round leaked the guard: active=%v outstanding=%d", active, outstanding)
+	}
+}
