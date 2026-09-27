@@ -934,7 +934,7 @@ func TestWaitForCodexTurnOutputWaitsForExactRepeatedReply(t *testing.T) {
 		writeDone <- err
 	}()
 	inst := &session.Instance{ID: "instance-1", Tool: "codex", CodexSessionID: "thread-1"}
-	response, err := waitForCodexTurnOutput(inst, "thread-1:turn-new")
+	response, err := waitForCodexTurnOutput(inst, "thread-1:turn-new", time.Now().Add(time.Second))
 	if writeErr := <-writeDone; writeErr != nil {
 		t.Fatal(writeErr)
 	}

@@ -3767,7 +3767,7 @@ func handleSessionSend(profile string, args []string) {
 		// Codex additionally binds a structured --json --wait reply to its
 		// exact accepted turn generation rather than a freshness scan.
 		if structuredCodexWait {
-			response, responseErr = waitForCodexTurnOutput(inst, acceptedTurn.TurnGeneration)
+			response, responseErr = waitForCodexTurnOutput(inst, acceptedTurn.TurnGeneration, waitDeadline)
 		} else {
 			response, responseErr = waitForFreshOutput(inst, sentAt, instances)
 		}
@@ -3777,7 +3777,7 @@ func handleSessionSend(profile string, args []string) {
 			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
 				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
 					if structuredCodexWait {
-						response, responseErr = waitForCodexTurnOutput(freshInst, acceptedTurn.TurnGeneration)
+						response, responseErr = waitForCodexTurnOutput(freshInst, acceptedTurn.TurnGeneration, waitDeadline)
 					} else {
 						response, responseErr = waitForFreshOutput(freshInst, sentAt, freshInstances)
 					}
@@ -5927,7 +5927,7 @@ var freshOutputTestConfig *freshOutputConfig
 // hook and the final rollout append. Content and timestamps are insufficient:
 // consecutive turns can legitimately emit identical replies, so only the
 // exact accepted thread:turn generation can satisfy this read.
-func waitForCodexTurnOutput(inst *session.Instance, generation string) (*session.ResponseOutput, error) {
+func waitForCodexTurnOutput(inst *session.Instance, generation string, _ time.Time) (*session.ResponseOutput, error) {
 	if inst == nil || generation == "" {
 		return nil, fmt.Errorf("accepted Codex turn identity is unavailable")
 	}
