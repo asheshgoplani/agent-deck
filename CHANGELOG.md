@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Web test tooling: vitest bumped to 4.1.11.
+
 ## [1.16.21] - 2026-09-27
 
 ### Added
