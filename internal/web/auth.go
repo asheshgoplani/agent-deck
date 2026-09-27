@@ -58,7 +58,7 @@ func (s *Server) authorize(r *http.Request, allowQueryToken bool) bool {
 func (s *Server) tokenCookie(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.Token != "" && secureEqual(r.URL.Query().Get("token"), s.cfg.Token) {
-			http.SetCookie(w, &http.Cookie{
+			http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Strict are set; Secure follows TLS so plain-HTTP localhost keeps working
 				Name: "agentdeck_token", Value: s.cfg.Token, Path: "/",
 				HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil,
 			})
