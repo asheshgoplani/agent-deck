@@ -308,6 +308,34 @@ func TestGate_Prompter_NotAskedWhenTrusted(t *testing.T) {
 	}
 }
 
+// Approval can take minutes in the TUI. A hook replaced while the dialog is
+// open must not turn the approved preview into different executed code.
+func TestGate_Prompter_ExecutesApprovedBytesAfterReplacement(t *testing.T) {
+	repoDir := t.TempDir()
+	marker := filepath.Join(repoDir, "ran.txt")
+	scriptPath := writeTestScript(t, repoDir, "worktree-setup.sh", markerScript(marker))
+	resetScriptConsentForTest(t, ScriptConsentConfig{Policy: ScriptConsentPrompt})
+	installPrompterForTest(t, func(id WorktreeScriptIdentity) ScriptConsentDecision {
+		if !strings.Contains(strings.Join(id.Preview, "\n"), "echo ran") {
+			t.Fatal("approved preview did not show the expected hook")
+		}
+		if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho swapped > \""+marker+"\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return ScriptConsentRunOnce
+	})
+	if err := GateAndRunWorktreeSetupScript(repoDir, repoDir, &bytes.Buffer{}, &bytes.Buffer{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ran\n" {
+		t.Fatalf("executed %q after approving the original hook", got)
+	}
+}
+
 // TestGate_Prompter_SuppressedForWeb: while suppressed (a web request is
 // being served), the gate fails closed instead of asking.
 func TestGate_Prompter_SuppressedForWeb(t *testing.T) {
