@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 )
@@ -92,6 +93,27 @@ func TestHookTrustDialog_View(t *testing.T) {
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestHookTrustDialog_FitsSmallTerminalWithLongPreview(t *testing.T) {
+	id := testHookIdentity()
+	id.Preview = make([]string, git.ScriptPreviewLines)
+	for i := range id.Preview {
+		id.Preview[i] = "echo review this line before approving"
+	}
+	id.TotalLines = len(id.Preview)
+	d := NewHookTrustDialog()
+	d.SetSize(80, 24)
+	d.Show(id, make(chan git.ScriptConsentDecision, 1))
+	view := d.View()
+	if got := lipgloss.Height(view); got > 24 {
+		t.Fatalf("dialog height = %d, exceeds 24 rows", got)
+	}
+	for _, want := range []string{"Run once", "Always trust this version", "Skip"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("dialog missing %q", want)
 		}
 	}
 }
