@@ -11,8 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-<!-- 2408-PENDING -->
-- Model and reasoning-effort suggestions come from the installed CLI where it can list them: Codex is asked with `codex debug models` (nothing is billed), and the result is merged over the built-in catalog, which stays the fallback. Results are cached per CLI binary and re-probed after an upgrade or a day. `launch -capabilities --json` gains `reasoning_efforts` and `model_efforts`, and `[models] probe = false` restores the built-in catalog (#2388, thanks @na-bal).
 - `agent-deck session send --json` receipts and `session send-status --json` for Claude sessions carry `claude_session_id`, and `--json --wait` also carries `claude_turn_uuid`, the bound user record, so a send can be correlated without a separate output query (#2397, reported by @Abarsit).
 
 ### Fixed
