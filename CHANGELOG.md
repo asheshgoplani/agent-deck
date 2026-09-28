@@ -7,19 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
+## [1.16.22] - 2026-09-28
 
-- Repository worktree hooks (`.agent-deck/worktree-setup.sh`, `.agent-deck/worktree-destruction.sh`) now need an approval that is bound to the whole script identity: its sha256, its resolved path (symlinks followed) and how it runs (directly via its `#!` line, or `sh -e`). The first run and every change now ask: the TUI shows a dialog with the repository, the hook, the command, the sha256 and the first 20 lines (Run once / Always trust this version / Skip); a terminal CLI shows the same and asks `[o]nce / [a]lways / [N]o`; with no terminal (scripts, CI, remote, web UI requests) the hook is skipped with a one-line notice naming `agent-deck worktree trust-hooks <repo> --hook setup|destruction`. `trust-hooks` (formerly `trust-scripts`, which still works) prints each hook before approving it, asks y/N on a terminal and needs `--yes` otherwise. `--run-hooks` (formerly `--allow-repo-scripts`, which still works) runs unapproved hooks once after printing their sha256; add `--trust` to record that version. `[worktree] run_repo_scripts = "always"` keeps the old run-without-asking behavior and is only safe if you own every repository you open. The README now says plainly that creating or removing a worktree does not approve its hooks. Thanks to @glmgbj233 for the report.
+- **Upgrading:** if you reach `agent-deck web` through a reverse proxy or Tailscale Serve, add its host name to `[web] allowed_hosts` before upgrading (or pass `--allowed-host`); otherwise the web UI answers it with 421.
 - **Upgrading:** approvals recorded by 1.16.21 and earlier did not include the interpreter or resolved path, so each hook you approved before is asked about once more on its next run. Hooks that ran under `"always"` are unaffected.
 
 ### Changed
 
+- The web server now only answers requests addressed to its own host names: localhost, loopback addresses, its listen address, its machine name when bound to a network interface, and on a wildcard bind the machine's current interface addresses. Add other names with `[web] allowed_hosts` or `--allowed-host` (repeatable; an entry with a port permits only that port). Any other host gets 421 with a hint naming both settings. A visit with `?token=` now stores an HttpOnly, SameSite=Strict cookie, so reloads keep working with `--token-file`. Thanks to @bautrey for the report.
+- Repository worktree hooks (`.agent-deck/worktree-setup.sh`, `.agent-deck/worktree-destruction.sh`) now need an approval that is bound to the whole script identity: its sha256, its resolved path (symlinks followed) and how it runs (directly via its `#!` line, or `sh -e`). The first run and every change now ask: the TUI shows a dialog with the repository, the hook, the command, the sha256 and the first 20 lines (Run once / Always trust this version / Skip); a terminal CLI shows the same and asks `[o]nce / [a]lways / [N]o`; with no terminal (scripts, CI, remote, web UI requests) the hook is skipped with a one-line notice naming `agent-deck worktree trust-hooks <repo> --hook setup|destruction`. `trust-hooks` (formerly `trust-scripts`, which still works) prints each hook before approving it, asks y/N on a terminal and needs `--yes` otherwise. `--run-hooks` (formerly `--allow-repo-scripts`, which still works) runs unapproved hooks once after printing their sha256; add `--trust` to record that version. `[worktree] run_repo_scripts = "always"` keeps the old run-without-asking behavior and is only safe if you own every repository you open. The README now says plainly that creating or removing a worktree does not approve its hooks. Thanks to @glmgbj233 for the report.
 - Web test tooling: vitest bumped to 4.1.11.
 
 ### Fixed
 
 - Hardened a few input edges: CLI JSON errors no longer preallocate from caller-supplied field counts, the tmux argument builder checks its size limit before copying either argument form, OpenClaw gateway details are printed without control characters, and conductor names are checked to be a single directory name before they are used as paths.
-- The web server now only answers requests addressed to its own host names; set `[web] allowed_hosts` for reverse proxies. Thanks @bautrey.
 
 ### Internal
 
