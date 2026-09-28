@@ -2,7 +2,7 @@
 
 A pipeline that lets an agent-deck conductor analyze its own past conversation transcripts to surface bugs, recurring patterns, capability discoveries, and improvement opportunities — then file the actionable ones as GitHub issues with privacy guards.
 
-This document is the deep-dive. The [SKILL.md "Self-Improvement"](../SKILL.md) section has the quick-start.
+This document is the deep-dive. The ["Self-Improvement" section of autonomy.md](autonomy.md#self-improvement) has the quick-start.
 
 ## What it produces
 
@@ -174,6 +174,6 @@ Subsequent runs on the same conductor are cheaper — manifest resume means only
 
 ## Related capabilities
 
-- [Conductor setup](../SKILL.md) for setting up the conductor home this analyzes
+- [Conductor setup](conductors.md) for setting up the conductor home this analyzes
 - [`launch-subagent.sh`](../scripts/launch-subagent.sh) for the spawning primitive
 - Per-conductor `state.json` / `LEARNINGS.md` / `task-log.md` survive Claude Code compaction and feed into the distiller's input

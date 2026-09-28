@@ -29,7 +29,7 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `Ctrl+f` / `Ctrl+b` | Full page up / down |
 | `Home` / `End` | Jump to first / last item |
 | `gg` | Jump to top |
-| `G` | Global search |
+| `G` | Recall search (see [Search & Filter](#search--filter)) |
 | `h` / `←` | Collapse group / go to parent |
 | `l` / `→` / `Tab` | Toggle expand/collapse group |
 | `1-9` | Jump to Nth root group |
@@ -137,7 +137,7 @@ its own mouse capture regardless.
 | Key | Action |
 |-----|--------|
 | `/` | Local search, fuzzy (**rebindable**) |
-| `G` | Global search (all Claude conversations) |
+| `G` | Recall search over every indexed conversation (Claude, Codex, pi, Gemini, OpenCode, Hermes); footer notice and local search when `[recall] enabled = false` |
 | `Tab` | Switch between local/global search |
 | `0` | Clear filter (show all) |
 | `!` / `Shift+1` | Filter: running only (toggle) |
@@ -167,6 +167,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Ctrl+Y` | Install the available update now (`install_update`; runs `agent-deck update` on the terminal, see [Updates](#updates)) |
 | `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
+| `Ctrl+E` | Open feedback dialog |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
 
 ### Worktree Shortcuts
