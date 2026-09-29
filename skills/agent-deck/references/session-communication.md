@@ -2,8 +2,6 @@
 
 How sessions message each other, collect child results, and what each channel guarantees.
 
-## Session-to-Session Communication (how sessions talk to each other)
-
 **Use when:** a session needs to message another session, a parent needs to collect child
 results, anyone asks "how do I notify the conductor", "did my child finish", "how do I read
 another session's answer", or a send seems to have vanished. Every command below was
@@ -11,7 +9,7 @@ verified against the installed binary (v1.16.11-rc.2). From any non-interactive 
 (cron, systemd, hooks) always pass `-p <profile>` explicitly, or session resolution
 silently uses the default profile and the target is "not found".
 
-### The channel map
+## The channel map
 
 | Channel | Direction | Command | Guarantee |
 |---|---|---|---|
@@ -24,7 +22,7 @@ silently uses the default profile and the target is "not found".
 | **heartbeat** | bridge → conductor | bridge-driven `send --wait -q` | Lossy by design: skipped while the conductor is busy, never queued; only fires when waiting>0 or error>0. |
 | **handoff** | Claude → Codex context copy | `session handoff <id> [--json --out file]` | One-shot read-only transcript copy (32k-char tail budget); no ongoing link afterwards. |
 
-### Verified commands
+## Verified commands
 
 ```bash
 agent-deck -p <profile> session send <id> "single line message"          # default: waits for readiness, verifies
@@ -43,7 +41,7 @@ agent-deck -p <profile> session handoff <id> --json                      # build
 agent-deck -p <profile> session search "term" --json --limit 5           # substring search across Claude transcripts
 ```
 
-### What each channel guarantees, and what it does not
+## What each channel guarantees, and what it does not
 
 - **`send` result is evidence-graded, not binary.** With `--json --wait` (or `--no-wait`) read the `delivery`
   field: `submitted` / `unverified` / `typed_not_submitted` / `no_evidence` / `send_failed`.
@@ -65,7 +63,7 @@ agent-deck -p <profile> session search "term" --json --limit 5           # subst
 - **Heartbeats are lossy on purpose** (skip while busy, never queued); the durable
   completions arrive via the inbox drain that every heartbeat starts with.
 
-### Pitfalls and workarounds
+## Pitfalls and workarounds
 
 - **Single-line only for positional messages.** Embedded newlines make `send` exit 1,
   and a backgrounded wrapper swallows the failure (silent loss). For multiline payloads
