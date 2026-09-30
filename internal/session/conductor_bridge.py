@@ -3323,6 +3323,132 @@ def _os_heartbeat_daemon_installed() -> bool:
     return False
 
 
+async def need_scan_cycle(
+    config: dict,
+    seen_needs: dict,
+    save_state,
+    telegram_bot=None, slack_app=None, slack_channel_id=None,
+    discord_bot=None, discord_channel_id=None,
+) -> None:
+    """One scan pass over all heartbeat-enabled conductors: read each one's
+    last response (read-only; the OS heartbeat drives the actual ticks) and
+    forward only never-before-seen NEED: lines. Mutates seen_needs and calls
+    save_state() after a confirmed delivery. Split out of the loop so tests
+    can drive a single pass (#2426)."""
+    tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
+    all_conductors = discover_conductors()
+    for conductor in select_heartbeat_conductors(all_conductors):
+        name = conductor.get("name", "")
+        profile = conductor.get("profile") or "default"
+        if not name:
+            continue
+        title = conductor_session_title(name)
+        try:
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                functools.partial(get_session_output, title, profile=profile),
+            )
+        except Exception as e:
+            log.error("NEED scan [%s]: output read failed: %s", name, e)
+            continue
+        if not response:
+            continue
+        current = {l.strip() for l in response.splitlines() if l.strip().startswith("NEED:")}
+        seen = seen_needs.setdefault(name, set())
+        fresh = sorted(current - seen)
+        if not fresh:
+            continue
+
+        prefix = f"[{name}] " if len(all_conductors) > 1 else ""
+        alert_msg = f"{prefix}Conductor alert:\n" + "\n".join(fresh)
+
+        delivered = False
+        if telegram_bot and tg_user_id:
+            try:
+                alert_html = md_to_tg_html(alert_msg)
+                for chunk in split_message(alert_html):
+                    await telegram_bot.send_message(tg_user_id, chunk, parse_mode="HTML")
+                delivered = True
+            except Exception as e:
+                log.error("Failed to send Telegram notification: %s", e)
+        if slack_app and slack_channel_id:
+            try:
+                await slack_app.client.chat_postMessage(channel=slack_channel_id, text=alert_msg)
+                delivered = True
+            except Exception as e:
+                log.error("Failed to send Slack notification: %s", e)
+        if discord_bot and discord_channel_id:
+            try:
+                channel = discord_bot.get_channel(discord_channel_id)
+                if channel:
+                    await send_discord_output(channel, alert_msg)
+                    delivered = True
+            except Exception as e:
+                log.error("Failed to send Discord notification: %s", e)
+
+        # Mark seen ONLY after a confirmed delivery: a failed channel must not
+        # swallow the alert — unseen lines retry next scan.
+        if delivered:
+            seen |= current
+            save_state()
+            log.info("NEED scan [%s]: forwarded %d NEED line(s)", name, len(fresh))
+        else:
+            log.error("NEED scan [%s]: %d NEED line(s) NOT delivered (no channel ok)", name, len(fresh))
+
+
+async def heartbeat_need_scan_loop(
+    config: dict, telegram_bot=None, slack_app=None, slack_channel_id=None,
+    discord_bot=None, discord_channel_id=None,
+):
+    """Scan-only NEED: forwarder for OS-heartbeat mode.
+
+    When systemd/launchd heartbeat timers drive the conductors, the bridge
+    must not send its own ticks (double-trigger). But NEED: -> channel
+    forwarding used to live in the send-loop's reply handling, so with OS
+    heartbeats installed (the default since conductor setup installs them)
+    NEED: lines never reached Slack/Telegram/Discord at all.
+
+    This loop sends nothing. On entry and then each interval it runs
+    need_scan_cycle: read-only output scans that forward only
+    never-before-seen NEED: lines. The seen-set persists to
+    need-scan-state.json (atomic write) so restarts never re-alert.
+    """
+    interval_seconds = max(1, config["heartbeat_interval"]) * 60
+
+    state_path = os.path.join(config.get("conductor_dir") or os.path.expanduser("~/.local/share/agent-deck/conductor"), "need-scan-state.json")
+    try:
+        with open(state_path) as sf:
+            _saved = json.load(sf)
+        seen_needs = {k: set(v) for k, v in _saved.get("seen_needs", {}).items()}
+    except Exception:
+        seen_needs = {}
+
+    def _save_scan_state():
+        try:
+            tmp = state_path + ".tmp"
+            with open(tmp, "w") as sf:
+                json.dump({"seen_needs": {k: sorted(v) for k, v in seen_needs.items()}}, sf)
+                sf.flush()
+                os.fsync(sf.fileno())
+            os.replace(tmp, state_path)
+        except Exception as e:
+            log.error("NEED scan: state save failed: %s", e)
+
+    log.info(
+        "NEED scan loop active (scan-only; OS heartbeat drives ticks; interval: %d min)",
+        config["heartbeat_interval"],
+    )
+
+    while True:
+        await need_scan_cycle(
+            config, seen_needs, _save_scan_state,
+            telegram_bot, slack_app, slack_channel_id,
+            discord_bot, discord_channel_id,
+        )
+        await asyncio.sleep(interval_seconds)
+
+
 async def heartbeat_loop(
     config: dict, telegram_bot=None, slack_app=None, slack_channel_id=None,
     discord_bot=None, discord_channel_id=None,
@@ -3334,7 +3460,11 @@ async def heartbeat_loop(
         return
 
     if _os_heartbeat_daemon_installed():
-        log.info("OS heartbeat daemon detected, bridge heartbeat loop disabled (avoiding double-trigger)")
+        log.info("OS heartbeat daemon detected; switching to scan-only NEED forwarding (no bridge ticks)")
+        await heartbeat_need_scan_loop(
+            config, telegram_bot, slack_app, slack_channel_id,
+            discord_bot, discord_channel_id,
+        )
         return
 
     interval_seconds = global_interval * 60
