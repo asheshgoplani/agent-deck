@@ -348,9 +348,9 @@ func TestResolveClaudeSocketTarget_TokenNeverAppearsInErrorStrings(t *testing.T)
 	sockPath := newLiveSocket(t)
 	livePid := os.Getpid()
 
-	orig := psLstart
-	t.Cleanup(func() { psLstart = orig })
-	psLstart = func(int) (string, error) { return "matches-the-record", nil }
+	orig := procStartOf
+	t.Cleanup(func() { procStartOf = orig })
+	procStartOf = func(int) (string, error) { return "matches-the-record", nil }
 
 	writeKeyFile(t, claudeDir, livePid, sockPath, secret, "does-not-match-the-record")
 
@@ -424,6 +424,21 @@ func TestResolveClaudeSocketTarget(t *testing.T) {
 		assertUnavailable(t, err, ReasonProcStartDrift)
 	})
 
+	t.Run("linux procStart is /proc starttime, not ps lstart (#2438)", func(t *testing.T) {
+		stat, err := os.ReadFile("/proc/self/stat")
+		if err != nil {
+			t.Skip("no /proc on this platform")
+		}
+		sockPath := newLiveSocket(t)
+		rec := ClaudeSocketRecord{
+			Pid: livePid, SessionID: "sid", MessagingSocketPath: sockPath, PeerProtocol: 1,
+			ProcStart: strings.Fields(string(stat))[21], // comm "send.test" has no spaces
+		}
+		if _, err := ResolveClaudeSocketTarget(rec, t.TempDir()); err != nil {
+			t.Fatalf("record carrying the /proc starttime should resolve, got: %v", err)
+		}
+	})
+
 	t.Run("key file 0644 (group/other bits) -> ReasonNoKey", func(t *testing.T) {
 		claudeDir := t.TempDir()
 		sockPath := newLiveSocket(t)
@@ -451,9 +466,9 @@ func TestResolveClaudeSocketTarget(t *testing.T) {
 		claudeDir := t.TempDir()
 		sockPath := newLiveSocket(t)
 
-		orig := psLstart
-		t.Cleanup(func() { psLstart = orig })
-		psLstart = func(pid int) (string, error) { return "matches-the-record", nil }
+		orig := procStartOf
+		t.Cleanup(func() { procStartOf = orig })
+		procStartOf = func(pid int) (string, error) { return "matches-the-record", nil }
 
 		writeKeyFile(t, claudeDir, livePid, sockPath, strings.Repeat("a", 32), "does-not-match-the-record")
 
@@ -593,5 +608,17 @@ func TestSelectClaudeSocketRecord(t *testing.T) {
 				t.Errorf("selected pid = %d, want %d", got.Pid, tc.wantPid)
 			}
 		})
+	}
+}
+
+func TestParseProcStatStartTime(t *testing.T) {
+	// comm containing ") " must not shift the field count.
+	line := "4242 (evil) name) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 3 0 19540001 1000 200\n"
+	got, err := parseProcStatStartTime([]byte(line))
+	if err != nil || got != "19540001" {
+		t.Fatalf("got %q, %v; want 19540001", got, err)
+	}
+	if _, err := parseProcStatStartTime([]byte("4242 (x) S 1 2")); err == nil {
+		t.Fatal("expected an error for a truncated stat line")
 	}
 }
