@@ -88,7 +88,9 @@ func probeOpenCodeBinaryMajorVersion(binary string) (int, bool) {
 // command the way the pane will: the spawn-path prelude's dirs ahead of this
 // process's PATH, then any leading PATH= assignment in the command itself
 // ($PATH in it expands to the PATH before it). Words are split quote-aware,
-// so a quoted path with spaces stays whole.
+// so a quoted path with spaces stays whole. An `env` wrapper is looked
+// through: `env [VAR=value...] opencode` runs opencode with those assignments
+// applied, PATH included.
 func (i *Instance) openCodeLaunchBinary() (string, bool) {
 	words, ok := shellwords.Split(GetToolCommand("opencode"))
 	if !ok {
@@ -99,20 +101,30 @@ func (i *Instance) openCodeLaunchBinary() (string, bool) {
 		pathEnv = strings.Join(append(dirs, pathEnv), string(os.PathListSeparator))
 	}
 	name := "opencode"
+	wrapped := false
 	for _, word := range words {
-		if !isShellEnvAssignment(word) {
-			name = word
-			break
+		if isShellEnvAssignment(word) {
+			if value, found := strings.CutPrefix(word, "PATH="); found {
+				before := pathEnv
+				pathEnv = os.Expand(value, func(v string) string {
+					if v == "PATH" {
+						return before
+					}
+					return os.Getenv(v)
+				})
+			}
+			continue
 		}
-		if value, found := strings.CutPrefix(word, "PATH="); found {
-			before := pathEnv
-			pathEnv = os.Expand(value, func(v string) string {
-				if v == "PATH" {
-					return before
-				}
-				return os.Getenv(v)
-			})
+		if !wrapped && filepath.Base(word) == "env" {
+			wrapped = true
+			continue
 		}
+		if wrapped && strings.HasPrefix(word, "-") {
+			// env options (-i, -u NAME, -S ...) change what follows; don't guess.
+			return "", false
+		}
+		name = word
+		break
 	}
 	return lookPathIn(name, pathEnv)
 }

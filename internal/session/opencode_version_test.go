@@ -201,6 +201,26 @@ func TestOpenCodeLaunchBinary_Resolution(t *testing.T) {
 		}
 	})
 
+	t.Run("env wrapper", func(t *testing.T) {
+		want := writeOpenCodeStub(t, t.TempDir(), "opencode v2.0.20")
+		t.Setenv("PATH", t.TempDir())
+		for _, command := range []string{
+			"env PATH=" + filepath.Dir(want) + ":$PATH opencode",
+			"PATH=" + filepath.Dir(want) + ":$PATH /usr/bin/env opencode",
+		} {
+			isolateOpenCodeConfig(t, command)
+			got, ok := (&Instance{Tool: "opencode"}).openCodeLaunchBinary()
+			if !ok || got != want {
+				t.Errorf("%s: openCodeLaunchBinary() = (%q, %v), want (%q, true)", command, got, ok, want)
+			}
+		}
+
+		isolateOpenCodeConfig(t, "env -u FOO opencode")
+		if got, ok := (&Instance{Tool: "opencode"}).openCodeLaunchBinary(); ok {
+			t.Errorf("env with options must stay unknown, got %q", got)
+		}
+	})
+
 	t.Run("spawn-path prelude dir", func(t *testing.T) {
 		isolateOpenCodeConfig(t, "opencode")
 		want := writeOpenCodeStub(t, filepath.Join(os.Getenv("HOME"), ".local", "bin"), "opencode v2.0.20")
