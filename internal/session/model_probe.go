@@ -71,10 +71,15 @@ func modelProberFor(kind string) (modelProber, bool) {
 }
 
 // codexProbeBinary is the executable of the configured [codex] command, so
-// the catalog comes from the Codex that sessions actually launch. Leading
-// VAR=value assignments are skipped; an empty command means "codex".
+// the catalog comes from the Codex that sessions actually launch.
 func codexProbeBinary() string {
-	for _, field := range strings.Fields(GetCodexCommand()) {
+	return commandProbeBinary(GetCodexCommand(), "codex")
+}
+
+// commandProbeBinary returns the executable of a configured tool command.
+// Leading VAR=value assignments are skipped; an empty command means fallback.
+func commandProbeBinary(command, fallback string) string {
+	for _, field := range strings.Fields(command) {
 		if isShellEnvAssignment(field) {
 			continue
 		}
@@ -83,7 +88,7 @@ func codexProbeBinary() string {
 		}
 		break
 	}
-	return "codex"
+	return fallback
 }
 
 const (
