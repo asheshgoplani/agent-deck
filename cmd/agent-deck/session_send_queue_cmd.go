@@ -188,6 +188,10 @@ func spawnSendWorker(profile, sessionID string) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G702 -- exe is this binary (os.Executable), argv is passed as
+	// separate arguments with no shell, and sessionID was checked against
+	// validInstanceID above. gosec's taint analysis does not treat that check
+	// as a sanitizer and reaches this call through unrelated flows (#2411).
 	cmd := exec.Command(exe, profileArgs(profile, "session", "send-worker", "--target", sessionID)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
