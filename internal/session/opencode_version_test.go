@@ -10,8 +10,55 @@ import (
 func pinOpenCodeMajorVersion(t *testing.T, major int, ok bool) {
 	t.Helper()
 	prev := probeOpenCodeMajorVersion
-	probeOpenCodeMajorVersion = func() (int, bool) { return major, ok }
+	probeOpenCodeMajorVersion = func(*Instance) (int, bool) { return major, ok }
 	t.Cleanup(func() { probeOpenCodeMajorVersion = prev })
+}
+
+// useInstalledOpenCodeProbe undoes TestMain's pin so a test exercises the real
+// resolve-and-probe path against the stub binaries it wrote.
+func useInstalledOpenCodeProbe(t *testing.T) {
+	t.Helper()
+	prev := probeOpenCodeMajorVersion
+	probeOpenCodeMajorVersion = probeInstalledOpenCodeMajorVersion
+	openCodeVersionMemo.Clear()
+	t.Cleanup(func() {
+		probeOpenCodeMajorVersion = prev
+		openCodeVersionMemo.Clear()
+	})
+}
+
+// writeOpenCodeStub writes an executable `opencode` into dir that prints
+// version and appends a line to dir/calls on every run.
+func writeOpenCodeStub(t *testing.T, dir, version string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir stub dir: %v", err)
+	}
+	path := filepath.Join(dir, "opencode")
+	stub := "#!/bin/sh\necho call >> '" + filepath.Join(dir, "calls") + "'\necho '" + version + "'\n"
+	if err := os.WriteFile(path, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write opencode stub: %v", err)
+	}
+	return path
+}
+
+// isolateOpenCodeConfig gives the test its own HOME with [opencode].command
+// set to command (literal TOML string), so no other test's config leaks in.
+func isolateOpenCodeConfig(t *testing.T, command string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("[opencode]\ncommand = '"+command+"'\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
 }
 
 // newOpenCodeResumeInstance is a resumed session carrying every flag that
@@ -108,26 +155,79 @@ func TestBuildOpenCodeCommand_RemoteKeepsV1Flags(t *testing.T) {
 	}
 }
 
-// TestProbeInstalledOpenCodeMajorVersion runs the real probe against a stub
-// binary and checks that a successful answer is memoised.
-func TestProbeInstalledOpenCodeMajorVersion(t *testing.T) {
-	dir := t.TempDir()
-	calls := filepath.Join(dir, "calls")
-	stub := "#!/bin/sh\necho call >> '" + calls + "'\necho 'opencode v2.0.20'\n"
-	if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte(stub), 0o755); err != nil {
-		t.Fatalf("write opencode stub: %v", err)
+// TestBuildOpenCodeCommand_ConfiguredPATHDecidesVersion: when the configured
+// command carries its own PATH=, the version that PATH resolves decides the
+// flags, not whichever opencode this process's PATH finds first.
+func TestBuildOpenCodeCommand_ConfiguredPATHDecidesVersion(t *testing.T) {
+	root := t.TempDir()
+	v1Dir, v2Dir := filepath.Join(root, "v1"), filepath.Join(root, "v2")
+	writeOpenCodeStub(t, v1Dir, "1.14.3")
+	writeOpenCodeStub(t, v2Dir, "opencode v2.0.20")
+
+	tests := []struct {
+		name        string
+		processDir  string
+		commandDir  string
+		wantV1Flags bool
+	}{
+		{name: "process finds 2.x, command runs 1.x", processDir: v2Dir, commandDir: v1Dir, wantV1Flags: true},
+		{name: "process finds 1.x, command runs 2.x", processDir: v1Dir, commandDir: v2Dir, wantV1Flags: false},
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateOpenCodeConfig(t, "PATH="+tt.commandDir+":$PATH opencode")
+			t.Setenv("PATH", tt.processDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			useInstalledOpenCodeProbe(t)
+
+			cmd := newOpenCodeResumeInstance(t).buildOpenCodeCommand("opencode")
+			if got := strings.Contains(cmd, " --port ") && strings.Contains(cmd, " -m openai/gpt-5.5"); got != tt.wantV1Flags {
+				t.Errorf("1.x flags present = %v, want %v: %q", got, tt.wantV1Flags, cmd)
+			}
+		})
+	}
+}
+
+// TestOpenCodeLaunchBinary_Resolution covers the launch-parity cases the probe
+// must follow: a quoted configured path with spaces, and a binary reachable
+// only through the spawn-path prelude's ~/.local/bin.
+func TestOpenCodeLaunchBinary_Resolution(t *testing.T) {
+	t.Run("quoted path with spaces", func(t *testing.T) {
+		want := writeOpenCodeStub(t, filepath.Join(t.TempDir(), "My Tools"), "opencode v2.0.20")
+		isolateOpenCodeConfig(t, `"`+want+`"`)
+
+		got, ok := (&Instance{Tool: "opencode"}).openCodeLaunchBinary()
+		if !ok || got != want {
+			t.Fatalf("openCodeLaunchBinary() = (%q, %v), want (%q, true)", got, ok, want)
+		}
+	})
+
+	t.Run("spawn-path prelude dir", func(t *testing.T) {
+		isolateOpenCodeConfig(t, "opencode")
+		want := writeOpenCodeStub(t, filepath.Join(os.Getenv("HOME"), ".local", "bin"), "opencode v2.0.20")
+		t.Setenv("PATH", t.TempDir())
+
+		got, ok := (&Instance{Tool: "opencode"}).openCodeLaunchBinary()
+		if !ok || got != want {
+			t.Fatalf("openCodeLaunchBinary() = (%q, %v), want (%q, true)", got, ok, want)
+		}
+	})
+}
+
+// TestProbeOpenCodeBinaryMajorVersion runs the real probe against a stub
+// binary and checks that a successful answer is memoised.
+func TestProbeOpenCodeBinaryMajorVersion(t *testing.T) {
+	dir := t.TempDir()
+	stub := writeOpenCodeStub(t, dir, "opencode v2.0.20")
 	openCodeVersionMemo.Clear()
 	t.Cleanup(openCodeVersionMemo.Clear)
 
 	for n := 0; n < 2; n++ {
-		major, ok := probeInstalledOpenCodeMajorVersion()
+		major, ok := probeOpenCodeBinaryMajorVersion(stub)
 		if major != 2 || !ok {
 			t.Fatalf("probe #%d = (%d, %v), want (2, true)", n+1, major, ok)
 		}
 	}
-	data, err := os.ReadFile(calls)
+	data, err := os.ReadFile(filepath.Join(dir, "calls"))
 	if err != nil {
 		t.Fatalf("read stub call log: %v", err)
 	}

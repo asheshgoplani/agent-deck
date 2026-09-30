@@ -267,7 +267,7 @@ func runTestMain(m *testing.M) int {
 	// "unknown" (the 1.x flag set) so a developer's own opencode never changes
 	// a test's command, and stub opencode binaries on PATH are never exec'd
 	// with --version. Version-specific tests set their own answer.
-	probeOpenCodeMajorVersion = func() (int, bool) { return 0, false }
+	probeOpenCodeMajorVersion = func(*Instance) (int, bool) { return 0, false }
 
 	// Force test profile to prevent production data corruption
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
