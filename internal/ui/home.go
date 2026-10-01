@@ -655,6 +655,10 @@ type Home struct {
 	activeFilterLabel    string                  // from config.toml [display] active_filter_label
 	activeFilterExcludes map[session.Status]bool // from config.toml [display] active_filter_excludes; default {error}
 
+	// hiddenToolBadge is default_tool when [display] hide_default_tool_badge
+	// is on: rows running it skip the tool badge. Empty means show every badge.
+	hiddenToolBadge string
+
 	// showSessionTimestamps gates the dim "Nm ago" badge on each session row.
 	// Cached here so all rows of a single frame see the same value even if
 	// the user toggles the setting mid-frame. Reloaded after the panel saves.
@@ -2071,6 +2075,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.defaultFilter = cfg.Display.GetDefaultFilter()
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
+		if cfg.Display.HideDefaultToolBadge {
+			h.hiddenToolBadge = cfg.DefaultTool
+		}
 		session.ConfigureTmuxDisplay(cfg.Display)
 		h.showSessionTimestamps = cfg.Display.ShowSessionTimestamps
 		h.showPaneTitles = cfg.Display.ShowPaneTitles
@@ -21862,7 +21869,7 @@ func (h *Home) renderSessionItem(
 	}
 
 	tool := toolStyle.Render(" " + instTool)
-	if listWidth > 0 && listWidth < 40 {
+	if (listWidth > 0 && listWidth < 40) || (h.hiddenToolBadge != "" && instTool == h.hiddenToolBadge) {
 		tool = ""
 	}
 
