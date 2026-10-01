@@ -655,6 +655,10 @@ type Home struct {
 	activeFilterLabel    string                  // from config.toml [display] active_filter_label
 	activeFilterExcludes map[session.Status]bool // from config.toml [display] active_filter_excludes; default {error}
 
+	// activeFilterHideStopped is set by a second % press when the exclude set
+	// keeps stopped sessions visible: Open then also hides stopped.
+	activeFilterHideStopped bool
+
 	// showSessionTimestamps gates the dim "Nm ago" badge on each session row.
 	// Cached here so all rows of a single frame see the same value even if
 	// the user toggles the setting mid-frame. Reloaded after the panel saves.
@@ -13051,9 +13055,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (h *Home) changeStatusFilter(filter session.Status) tea.Cmd {
 	selectedBefore := h.captureSelectedItemIdentity()
 	h.keepEmptyFilter = true
-	if filter != "" && h.statusFilter == filter {
+	// % cycles All -> Open -> Open+stopped hidden -> All when the configured
+	// exclude set keeps stopped sessions visible; otherwise it is a toggle.
+	hideStopped := filter == FilterModeActive && h.statusFilter == FilterModeActive &&
+		!h.activeFilterHideStopped && !h.activeFilterExcludes[session.StatusStopped]
+	h.activeFilterHideStopped = hideStopped
+	switch {
+	case hideStopped:
+		// stay on the active filter; the flag now hides stopped too
+	case filter != "" && h.statusFilter == filter:
 		h.statusFilter = ""
-	} else {
+	default:
 		h.statusFilter = filter
 	}
 	h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -18506,7 +18518,7 @@ func (h *Home) renderFilterBar() string {
 				Background(ColorTextDim).
 				Bold(true).
 				Padding(0, 1).Render(stoppedLabel))
-		} else if isActive && h.activeFilterExcludes[session.StatusStopped] {
+		} else if isActive && (h.activeFilterExcludes[session.StatusStopped] || h.activeFilterHideStopped) {
 			pills = append(pills, dimPillStyle.Render(stoppedLabel))
 		} else if stopped > 0 {
 			pills = append(pills, lipgloss.NewStyle().
@@ -25585,7 +25597,8 @@ func markGroupPathAndAncestors(groupsWithMatches map[string]bool, groupPath stri
 // status's statusBucket, the bucket its row glyph and the pill count show.
 func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 	if filter == FilterModeActive {
-		return !h.activeFilterExcludes[status] && !h.activeFilterExcludes[statusBucket(status)]
+		return !h.activeFilterExcludes[status] && !h.activeFilterExcludes[statusBucket(status)] &&
+			!(h.activeFilterHideStopped && statusBucket(status) == session.StatusStopped)
 	}
 	return statusBucket(status) == filter
 }
