@@ -7,8 +7,8 @@ import { useEffect, useMemo, useState } from 'preact/hooks'
 import { apiFetch } from '../api.js'
 import { menuModelSignal } from '../dataModel.js'
 import { selectSession } from '../state.js'
-import { activeTabSignal } from '../uiState.js'
-import { AnnotationLine } from '../annotations.js'
+import { activeTabSignal, fleetViewSignal } from '../uiState.js'
+import { AnnotationLine, KANBAN_COLUMNS, kanbanColumn, noteExcerpt, sessionAnnotation } from '../annotations.js'
 
 const EMPTY_REMOTE_COUNTS = {
   remotesOnline: 0, remotesOffline: 0, sessions: 0,
@@ -113,6 +113,61 @@ function GroupCard({ name, items, onSelect }) {
   `
 }
 
+// Within a column, sessions that want a human (process waiting) float up,
+// then running ones, then the rest; ties break on title.
+const PROCESS_RANK = { waiting: 0, running: 1, starting: 1, idle: 2, stopped: 3, error: 4 }
+const byAttention = (a, b) =>
+  (PROCESS_RANK[a.status] ?? 5) - (PROCESS_RANK[b.status] ?? 5) || a.title.localeCompare(b.title)
+
+// One kanban card: the session's goal and current state, written to be read
+// at normal zoom — full headline, a couple of lines of its note, and the
+// group as a badge so the workstream stays visible.
+function KanbanCard({ s, groupLabel, onSelect }) {
+  const ann = sessionAnnotation(s)
+  const note = noteExcerpt((s.hints || {}).note, 3)
+  return html`
+    <button class=${`kb-card ${s.status}`} data-testid="kanban-card" data-session-id=${s.id} onClick=${() => onSelect(s.id)}>
+      <div class="kb-top">
+        <span class=${`tdot ${s.status}`} title=${'process: ' + s.status}/>
+        <span class="kb-title">${s.title}</span>
+        ${ann.ticket && html`<span class="hint-ticket">${ann.ticket}</span>`}
+      </div>
+      ${ann.headline && html`<div class="kb-headline" data-testid="kanban-headline">${ann.headline}</div>`}
+      ${note && html`<div class="kb-note" data-testid="kanban-note">${note}</div>`}
+      <div class="kb-meta">
+        ${groupLabel && html`<span class="kb-group">${groupLabel}</span>`}
+        <span class="kb-proc">${s.status}</span>
+      </div>
+    </button>
+  `
+}
+
+function StatusKanban({ sessions, groupLabels, onSelect }) {
+  const buckets = {}
+  for (const s of sessions) (buckets[kanbanColumn(s)] ||= []).push(s)
+  const cols = KANBAN_COLUMNS.filter(c => c.always || (buckets[c.id] || []).length)
+  return html`
+    <div class="kanban" data-testid="fleet-kanban" style=${`--kb-cols:${cols.length}`}>
+      ${cols.map(c => {
+        const items = (buckets[c.id] || []).slice().sort(byAttention)
+        return html`
+          <div class=${`kb-col ${c.tone}`} key=${c.id} data-testid=${`kanban-col-${c.id}`}>
+            <div class="kb-col-head">
+              <span class="kb-col-name">${c.label}</span>
+              <span class="kb-col-count">${items.length}</span>
+            </div>
+            <div class="kb-stack">
+              ${items.length
+                ? items.map(s => html`<${KanbanCard} key=${s.id} s=${s} groupLabel=${groupLabels[s.group] || s.group} onSelect=${onSelect}/>`)
+                : html`<div class="kb-empty">—</div>`}
+            </div>
+          </div>
+        `
+      })}
+    </div>
+  `
+}
+
 export function FleetPane() {
   const { groups, byGroup, sessions } = menuModelSignal.value
   const [remoteFleet, setRemoteFleet] = useState(null)
@@ -166,6 +221,12 @@ export function FleetPane() {
     selectSession(id)
     activeTabSignal.value = 'terminal'
   }
+  const view = fleetViewSignal.value === 'groups' ? 'groups' : 'status'
+  // Leaf group name ("stride/ws1" -> "ws1"), as the group cards show it.
+  const groupLabels = useMemo(
+    () => Object.fromEntries(groups.map(g => [g.path, g.name || g.label])),
+    [groups],
+  )
 
   return html`
     <div class="fleet" data-testid="fleet-pane">
@@ -200,10 +261,18 @@ export function FleetPane() {
 
       <div class="fleet-section">
         <div class="fleet-section-head">
-          <span class="kicker">GROUPS</span>
+          <span class="kicker">${view === 'status' ? 'BY STATUS' : 'GROUPS'}</span>
           <span class="sub-kicker">${groups.length} group${groups.length === 1 ? '' : 's'} · ${sessions.length} ${remoteTotal > 0 ? 'local ' : ''}session${sessions.length === 1 ? '' : 's'}</span>
+          <div class="fleet-view-toggle" role="group" aria-label="Board layout">
+            ${[['status', 'Status'], ['groups', 'Groups']].map(([id, label]) => html`
+              <button key=${id} class=${view === id ? 'on' : ''} aria-pressed=${view === id}
+                      data-testid=${`fleet-view-${id}`} onClick=${() => { fleetViewSignal.value = id }}>${label}</button>
+            `)}
+          </div>
         </div>
-        ${groups.length === 0 || sessions.length === 0
+        ${sessions.length > 0 && view === 'status'
+          ? html`<${StatusKanban} sessions=${sessions} groupLabels=${groupLabels} onSelect=${onSelect}/>`
+          : groups.length === 0 || sessions.length === 0
           ? html`<div style="font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 16px;">
               No sessions yet. Use the sidebar to create one.
             </div>`

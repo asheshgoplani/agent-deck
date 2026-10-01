@@ -305,15 +305,17 @@ body[data-rail="hidden"] .rightrail { display: none; }
    then the headline taking whatever width is left. */
 .annot {
   display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; min-width: 0;
-  font-size: 11px; line-height: 1.35; color: var(--text-dim);
+  font-size: 12px; line-height: 1.4; color: var(--text);
 }
 .sess .annot { grid-column: 2 / -1; }
 /* The headline is a "goal · state · next" summary: give it its own line and
    let it wrap to two before ellipsizing, instead of a one-line stub. */
-.annot .hint-headline {
+.annot .hint-headline,
+.annot .hint-note {
   flex: 1 1 100%; min-width: 0; overflow: hidden;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
 }
+.annot .hint-note { -webkit-line-clamp: 2; font-size: 11.5px; color: var(--text-dim); }
 .tile .tile-annot { grid-column: 2 / -1; font-family: var(--sans, inherit); }
 .hint-status,
 .hint-ticket {
@@ -1290,3 +1292,49 @@ body[data-rail="hidden"] .rightrail { display: none; }
   color: var(--muted); border: 1px solid var(--border);
   border-radius: 3px; padding: 0 4px;
 }
+
+/* Fleet board: status kanban (default view) and the Status | Groups toggle. */
+.fleet-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.fleet-view-toggle button {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font-family: var(--mono); font-size: 11px; padding: 3px 10px;
+}
+.fleet-view-toggle button.on { background: var(--accent-soft); color: var(--text-hi); }
+.kanban {
+  display: grid; gap: 12px; align-items: start;
+  grid-template-columns: repeat(var(--kb-cols, 5), minmax(240px, 1fr));
+  overflow-x: auto; padding-bottom: 6px;
+}
+.kb-col { min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-top: 3px solid var(--muted); border-radius: 6px; }
+.kb-col.err  { border-top-color: var(--tn-red); }
+.kb-col.warn { border-top-color: var(--tn-yellow); }
+.kb-col.info { border-top-color: var(--tn-blue); }
+.kb-col.ok   { border-top-color: var(--tn-green); }
+.kb-col-head { display: flex; align-items: baseline; gap: 8px; padding: 9px 12px 7px; }
+.kb-col-name { font-size: 13px; font-weight: 600; color: var(--text-hi); }
+.kb-col-count { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-left: auto; }
+.kb-stack { display: flex; flex-direction: column; gap: 8px; padding: 0 8px 10px; }
+.kb-empty { color: var(--muted); font-size: 12px; padding: 4px 6px; }
+.kb-card {
+  display: flex; flex-direction: column; gap: 6px; text-align: left; cursor: pointer;
+  padding: 10px 12px; border-radius: 5px; background: var(--card); border: 1px solid var(--border);
+  color: var(--text); font: inherit; transition: border-color 120ms, background 120ms;
+}
+.kb-card:hover { border-color: var(--accent); background: var(--card-hi); }
+.kb-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.kb-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.kb-card .tdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.kb-card .tdot.running { background: var(--tn-green); box-shadow: 0 0 6px var(--tn-green); }
+.kb-card .tdot.waiting { background: var(--tn-yellow); box-shadow: 0 0 6px var(--tn-yellow); }
+.kb-card .tdot.error   { background: var(--tn-red); box-shadow: 0 0 6px var(--tn-red); }
+.kb-title { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text-hi); flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.kb-headline { font-size: 13.5px; line-height: 1.45; color: var(--text-hi); overflow-wrap: anywhere; }
+.kb-note { font-size: 12.5px; line-height: 1.45; color: var(--text-dim); overflow-wrap: anywhere;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.kb-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.kb-group, .kb-proc {
+  font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 3px;
+  border: 1px solid var(--border); color: var(--muted);
+}
+.kb-group { color: var(--tn-purple); border-color: rgba(187,154,247,0.35); }
+.kb-proc { margin-left: auto; border: 0; padding: 0; }

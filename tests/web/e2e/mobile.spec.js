@@ -40,6 +40,9 @@ test.describe('mobile phone layout', () => {
 
   test.beforeEach(async ({ page, request }) => {
     await request.post('/__fixture/reset')
+    // These specs cover the group-card grid; the board now defaults to the
+    // status kanban, so pin the Groups view (fleetViewSignal / agentdeck.fleetView).
+    await page.addInitScript(() => localStorage.setItem('agentdeck.fleetView', '"groups"'))
     await page.goto('/')
     await waitForPhoneMount(page)
   })

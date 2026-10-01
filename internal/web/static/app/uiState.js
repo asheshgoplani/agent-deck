@@ -75,6 +75,11 @@ export const showColsSignal = signal(loadJSON('agentdeck.showCols', {
 }))
 persist(showColsSignal, 'agentdeck.showCols')
 
+// Fleet board layout: 'status' (kanban by the semantic status hint, the
+// default) or 'groups' (the original one-card-per-group grid).
+export const fleetViewSignal = signal(loadJSON('agentdeck.fleetView', 'status'))
+persist(fleetViewSignal, 'agentdeck.fleetView')
+
 // Profile selector. Initialized to empty so cold loads don't flash a
 // hardcoded default before /api/profiles resolves. AppShell seeds this
 // from `current` on the first /api/profiles response; consumers

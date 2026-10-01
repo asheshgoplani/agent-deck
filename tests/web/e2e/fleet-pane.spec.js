@@ -22,8 +22,11 @@
 import { test, expect } from '@playwright/test'
 
 test.describe('fleet pane', () => {
-  test.beforeEach(async ({ request }) => {
+  test.beforeEach(async ({ page, request }) => {
     await request.post('/__fixture/reset')
+    // These specs cover the group-card grid; the board now defaults to the
+    // status kanban, so pin the Groups view (fleetViewSignal / agentdeck.fleetView).
+    await page.addInitScript(() => localStorage.setItem('agentdeck.fleetView', '"groups"'))
   })
 
   test('cold load lands on the Fleet tab', async ({ page }) => {
