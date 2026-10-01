@@ -308,6 +308,69 @@ func (s *StateDB) ListSessionTags(scopeKind, scopeID string) ([]SessionTag, erro
 	return out, rows.Err()
 }
 
+// InstanceAnnotations is every instance-scoped hint and live tag for one
+// session, as read in bulk by ListInstanceAnnotations.
+type InstanceAnnotations struct {
+	Hints map[string]string
+	Tags  []string
+}
+
+// ListInstanceAnnotations returns the hints and live tags of every
+// instance-scoped row, keyed by instance id. It is the bulk form of
+// ListSessionHints + ListSessionTags for surfaces that render the whole
+// fleet at once (the web menu), so they issue two queries instead of two
+// per session. Instances with neither hints nor tags are absent.
+func (s *StateDB) ListInstanceAnnotations() (map[string]*InstanceAnnotations, error) {
+	out := map[string]*InstanceAnnotations{}
+	get := func(id string) *InstanceAnnotations {
+		a := out[id]
+		if a == nil {
+			a = &InstanceAnnotations{}
+			out[id] = a
+		}
+		return a
+	}
+
+	hintRows, err := s.db.Query(`
+		SELECT scope_id, key, value FROM session_hints
+		 WHERE scope_kind = ? ORDER BY scope_id, key`, HintScopeInstance)
+	if err != nil {
+		return nil, err
+	}
+	defer hintRows.Close()
+	for hintRows.Next() {
+		var id, key, value string
+		if err := hintRows.Scan(&id, &key, &value); err != nil {
+			return nil, err
+		}
+		a := get(id)
+		if a.Hints == nil {
+			a.Hints = map[string]string{}
+		}
+		a.Hints[key] = value
+	}
+	if err := hintRows.Err(); err != nil {
+		return nil, err
+	}
+
+	tagRows, err := s.db.Query(`
+		SELECT scope_id, tag FROM session_tags
+		 WHERE scope_kind = ? AND deleted_at = 0 ORDER BY scope_id, seq, tag`, HintScopeInstance)
+	if err != nil {
+		return nil, err
+	}
+	defer tagRows.Close()
+	for tagRows.Next() {
+		var id, tag string
+		if err := tagRows.Scan(&id, &tag); err != nil {
+			return nil, err
+		}
+		a := get(id)
+		a.Tags = append(a.Tags, tag)
+	}
+	return out, tagRows.Err()
+}
+
 // UpsertSessionLink records that instance sessionID is (or was) the harness
 // conversation nativeID. With authoritative=true every other native id for
 // the same (session, harness) is demoted, so at most one row is current.

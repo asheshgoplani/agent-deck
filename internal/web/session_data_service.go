@@ -125,6 +125,13 @@ type MenuSession struct {
 	LatestPrompt string `json:"latestPrompt,omitempty"`
 	Notes        string `json:"notes,omitempty"`
 
+	// Hints and Tags are the session's recall annotations from state.db
+	// (`agent-deck session annotate`): open-keyed, e.g. headline, status,
+	// ticket, purpose. Filled by the GET handlers, not BuildMenuSnapshot —
+	// see snapshot_annotations.go.
+	Hints map[string]string `json:"hints,omitempty"`
+	Tags  []string          `json:"tags,omitempty"`
+
 	Color string `json:"color,omitempty"`
 
 	Command         string          `json:"command,omitempty"`

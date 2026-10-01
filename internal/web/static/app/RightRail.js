@@ -182,6 +182,12 @@ export function RightRail() {
               <div class="kv"><span class="k">path</span><span class="v" title=${session.path}>${session.path}</span></div>`}
             ${session.sandbox && html`<div class="kv"><span class="k">sandbox</span><span class="v warn">docker</span></div>`}
             ${session.worktree && html`<div class="kv"><span class="k">worktree</span><span class="v ok">yes</span></div>`}
+            ${Object.keys(session.hints || {}).sort().map(k => html`
+              <div class="kv hint" key=${'hint:' + k} data-testid=${`rail-hint-${k}`}>
+                <span class="k">${k}</span><span class="v" title=${session.hints[k]}>${session.hints[k]}</span>
+              </div>`)}
+            ${(session.tags || []).length > 0 && html`
+              <div class="kv hint" data-testid="rail-hint-tags"><span class="k">tags</span><span class="v">${session.tags.join(', ')}</span></div>`}
           </${Card}>
         `}
         ${panels.usage && html`

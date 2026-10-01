@@ -41,7 +41,30 @@ const SHOW_COL_OPTIONS = [
   { id: 'attach',   label: 'MCPs / skills' },
   { id: 'sandbox',  label: 'Docker / worktree' },
   { id: 'lastSeen', label: 'Last activity' },
+  { id: 'annotations', label: 'Goal / status hints' },
 ]
+
+// Colour for the semantic status hint (`session annotate --hint status=...`),
+// which says where the WORK is, as opposed to the process dot. Unknown values
+// still render, in the neutral chip.
+const HINT_STATUS_TONE = {
+  'needs-input': 'err',
+  'ready-for-review': 'warn',
+  'in-progress': 'info',
+  'done': 'ok',
+}
+
+// The card's annotation line: headline (falling back to the creation-time
+// purpose hint), status and ticket. Empty strings when unset.
+export function sessionAnnotation(s) {
+  const h = s.hints || {}
+  return {
+    headline: h.headline || h.purpose || '',
+    status: h.status || '',
+    statusTone: HINT_STATUS_TONE[h.status] || '',
+    ticket: h.ticket || '',
+  }
+}
 
 function doAction(action, s) {
   if (!mutationsEnabledSignal.value) {
@@ -121,6 +144,9 @@ function SessionItem({ s, sel, rowKey, onSelect, showCols, depth, groupDepth }) 
   const indented = depth > groupDepth + 1
   const mcpCount = (s.mcps || []).length
   const skillCount = (s.skills || []).length
+  // Persisted showCols from before this option existed lack the key; on by default.
+  const ann = showCols.annotations !== false ? sessionAnnotation(s) : null
+  const hasAnnotation = !!(ann && (ann.headline || ann.status || ann.ticket))
   const hasSubline =
     (showCols.branch && s.branch && s.branch !== '—') ||
     (showCols.attach && (mcpCount > 0 || skillCount > 0)) ||
@@ -144,6 +170,13 @@ function SessionItem({ s, sel, rowKey, onSelect, showCols, depth, groupDepth }) 
           ${exp ? '▾' : '▸'}
         </button>
       </div>
+      ${hasAnnotation && html`
+        <div class="annot" data-testid="session-annotation">
+          ${ann.status && html`<span class=${`hint-status ${ann.statusTone}`} data-testid="session-hint-status">${ann.status}</span>`}
+          ${ann.ticket && html`<span class="hint-ticket" data-testid="session-hint-ticket">${ann.ticket}</span>`}
+          ${ann.headline && html`<span class="hint-headline" title=${ann.headline} data-testid="session-hint-headline">${ann.headline}</span>`}
+        </div>
+      `}
       ${hasSubline && html`
         <div class="subline">
           ${showCols.branch && s.branch && s.branch !== '—' && html`<span class="trunc"><span class="b">git</span> ${s.branch}</span>`}

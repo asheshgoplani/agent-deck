@@ -39,6 +39,7 @@ func (s *Server) handleMenu(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
+	applySnapshotAnnotations(snapshot, s.annotationLoader)
 
 	writeJSON(w, http.StatusOK, snapshot)
 }
@@ -70,6 +71,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
+	applySnapshotAnnotations(snapshot, s.annotationLoader)
 
 	for _, item := range snapshot.Items {
 		if item.Type != MenuItemTypeSession || item.Session == nil {

@@ -42,6 +42,7 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 	// otherwise sessions stuck at error in the snapshot but waiting per
 	// the hook file surface as error on the web while CLI shows waiting.
 	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
+	applySnapshotAnnotations(snapshot, s.annotationLoader)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -76,6 +77,7 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 		// (otherwise the fingerprint matches pre-overlay state and the
 		// stream goes silent while the visible state still changes).
 		refreshSnapshotHookStatuses(nextSnapshot, s.hookStatusLoader)
+		applySnapshotAnnotations(nextSnapshot, s.annotationLoader)
 
 		nextFingerprint := menuSnapshotFingerprint(nextSnapshot)
 		if nextFingerprint == lastFingerprint {

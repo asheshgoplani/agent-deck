@@ -301,6 +301,27 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .sess .subline .att-count.skill { background: rgba(187,154,247,0.10); color: var(--tn-purple); }
 .sess .subline .att-count.warn  { background: rgba(224,175,104,0.14); color: var(--tn-yellow); }
 .sess .subline .b { color: var(--text-dim); }
+/* Recall annotation line (session annotate hints): status chip, ticket badge,
+   then the headline taking whatever width is left. */
+.sess .annot {
+  grid-column: 2 / -1;
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 11px; color: var(--text-dim);
+  overflow: hidden; white-space: nowrap;
+}
+.sess .annot .hint-headline { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sess .annot .hint-status,
+.sess .annot .hint-ticket {
+  flex: 0 0 auto;
+  font-family: var(--mono); font-size: 9.5px; line-height: 14px;
+  padding: 0 5px; border-radius: 2px;
+  background: rgba(120,124,153,0.14); color: var(--muted);
+}
+.sess .annot .hint-status.err  { background: rgba(247,118,142,0.14); color: var(--tn-red); }
+.sess .annot .hint-status.warn { background: rgba(224,175,104,0.14); color: var(--tn-yellow); }
+.sess .annot .hint-status.info { background: rgba(122,162,247,0.12); color: var(--tn-blue); }
+.sess .annot .hint-status.ok   { background: rgba(115,218,202,0.12); color: var(--tn-green); }
+.sess .annot .hint-ticket { border: 1px solid var(--border); background: transparent; color: var(--text-dim); }
 .sess .subline .atts { display: inline-flex; gap: 4px; }
 .sess .subline .att {
   padding: 0 5px; border-radius: 2px;

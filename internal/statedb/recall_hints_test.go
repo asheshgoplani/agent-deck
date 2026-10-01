@@ -326,3 +326,48 @@ func TestRecallChangedRefs_HintsTagsAndLinks(t *testing.T) {
 		t.Fatalf("future cutoff returned %v", refs)
 	}
 }
+
+// ListInstanceAnnotations is the bulk read the web menu uses: every
+// instance's hints and live tags in two queries, with removed tags and
+// harness-scoped rows left out.
+func TestListInstanceAnnotations_GroupsByInstance(t *testing.T) {
+	db := openTestDB(t)
+	seedInstance(t, db, "i1", nil)
+	seedInstance(t, db, "i2", nil)
+	seedInstance(t, db, "i3", nil)
+
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(db.SetSessionHint(HintScopeInstance, "i1", "headline", "ship the web cards", HintSourceAnnotate, ""))
+	must(db.SetSessionHint(HintScopeInstance, "i1", "status", "in-progress", HintSourceAnnotate, ""))
+	must(db.AddSessionTag(HintScopeInstance, "i1", "tooling", HintSourceAnnotate))
+	must(db.AddSessionTag(HintScopeInstance, "i1", "web", HintSourceAnnotate))
+	must(db.AddSessionTag(HintScopeInstance, "i2", "gone", HintSourceAnnotate))
+	if _, err := db.RemoveSessionTag(HintScopeInstance, "i2", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	must(db.SetSessionHint(HintScopeInstance, "i3", "ticket", "ENG-1", HintSourceAnnotate, ""))
+	must(db.SetSessionHint(HintScopeHarnessSession, "native-1", "ticket", "ENG-2", HintSourceDerived, ""))
+
+	got, err := db.ListInstanceAnnotations()
+	if err != nil {
+		t.Fatalf("ListInstanceAnnotations: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d instances %+v; want i1 and i3 only (i2 has only a removed tag, harness rows excluded)", len(got), got)
+	}
+	i1 := got["i1"]
+	if i1 == nil || i1.Hints["headline"] != "ship the web cards" || i1.Hints["status"] != "in-progress" {
+		t.Fatalf("i1 hints = %+v", i1)
+	}
+	if len(i1.Tags) != 2 || i1.Tags[0] != "tooling" || i1.Tags[1] != "web" {
+		t.Fatalf("i1 tags = %v; want [tooling web] in insertion order", i1.Tags)
+	}
+	if i3 := got["i3"]; i3 == nil || i3.Hints["ticket"] != "ENG-1" || len(i3.Tags) != 0 {
+		t.Fatalf("i3 = %+v; want ticket=ENG-1 and no tags", i3)
+	}
+}

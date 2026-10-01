@@ -73,6 +73,11 @@ export function projectSession(item) {
     worktreeBranch: s.worktreeBranch || '',
     lastAccessedAt: s.lastAccessedAt || '',
     createdAt: s.createdAt || '',
+    // Recall annotations from `agent-deck session annotate` (MenuSession.hints
+    // / .tags). Open-keyed; the sidebar reads headline|purpose, status and
+    // ticket, and the Overview card lists them all.
+    hints: s.hints || {},
+    tags: s.tags || [],
     sandbox: false,     // not exposed by API
     // Menu-snapshot sessions are active by definition (the server
     // archive-filters it); archivedByGroupSignal flips this for the archived
@@ -418,8 +423,11 @@ export function sessionMatches(s, filter, statuses) {
   // sessions vanished from the sidebar whenever any filter was active.
   if (statuses && statuses.length && !statuses.includes(statusBucket(s.status))) return false
   if (!filter) return true
+  // Hint values and tags are included so "/ needs-input" or "/ ENG-123"
+  // narrows the list to annotated sessions.
   const hay = (s.title || '') + ' ' + (s.group || '') + ' ' + (s.path || '') +
-              ' ' + (s.tool || '') + ' ' + (s.branch || '')
+              ' ' + (s.tool || '') + ' ' + (s.branch || '') +
+              ' ' + Object.values(s.hints || {}).join(' ') + ' ' + (s.tags || []).join(' ')
   return hay.toLowerCase().includes(filter)
 }
 

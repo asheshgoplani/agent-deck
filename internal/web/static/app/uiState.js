@@ -71,6 +71,7 @@ export const mobileTabSignal = signal('fleet')
 // Sidebar column show/hide menu state.
 export const showColsSignal = signal(loadJSON('agentdeck.showCols', {
   tool: true, cost: true, branch: false, attach: false, sandbox: false, lastSeen: false,
+  annotations: true,
 }))
 persist(showColsSignal, 'agentdeck.showCols')
 

@@ -34,6 +34,7 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 		// even when the TUI's inotify-driven snapshot has fallen out of date.
 		// See snapshot_hook_refresh.go for the rationale.
 		refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
+		applySnapshotAnnotations(snapshot, s.annotationLoader)
 		resp := sessionsListResponse{
 			Sessions: make([]*MenuSession, 0),
 			Groups:   make([]*MenuGroup, 0),
@@ -436,6 +437,7 @@ func (s *Server) handleArchivedSessions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
+	applySnapshotAnnotations(snapshot, s.annotationLoader)
 	resp := archivedSessionsResponse{
 		Sessions: make([]*MenuSession, 0),
 		Profile:  snapshot.Profile,

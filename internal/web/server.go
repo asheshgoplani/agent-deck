@@ -200,6 +200,11 @@ type Server struct {
 	// (which reads ~/.agent-deck/hooks/) but is injectable for tests.
 	hookStatusLoader func() map[string]*session.HookStatus
 
+	// annotationLoader returns recall hints/tags per instance for a
+	// profile (snapshot_annotations.go). Injectable for tests; nil disables.
+	annotationLoader annotationLoader
+	annotationReader *stateDBAnnotationReader
+
 	// inFlight counts requests inside a handler, excluding the event
 	// streams (see trackInFlight). It is what Idle reports for the
 	// headless self-restart.
@@ -230,7 +235,9 @@ func NewServer(cfg Config) *Server {
 		menuSubscribers:  make(map[chan struct{}]struct{}),
 		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
+		annotationReader: &stateDBAnnotationReader{},
 	}
+	s.annotationLoader = s.annotationReader.load
 	if s.remoteFleet == nil {
 		s.remoteFleet = session.NewRemoteFleetScanner()
 	}
@@ -352,6 +359,9 @@ func (s *Server) Start() error {
 	if s.hookWatcher != nil {
 		s.hookWatcher.Stop()
 		s.hookWatcher = nil
+	}
+	if s.annotationReader != nil {
+		s.annotationReader.close()
 	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		if s.cancelBase != nil {
