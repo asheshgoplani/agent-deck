@@ -1205,6 +1205,8 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .cc-md h3 { font-size: 14px; }
 .cc-md p { margin: 4px 0; }
 .cc-md ul, .cc-md ol { margin: 4px 0; padding-left: 18px; }
+.cc-md ul { list-style: disc; }
+.cc-md ol { list-style: decimal; }
 .cc-md li { margin: 1px 0; }
 .cc-md code { font-family: var(--mono); font-size: 11.5px; padding: 0 3px; border-radius: 2px; background: rgba(120,124,153,0.14); }
 .cc-md a { color: var(--accent); }
@@ -1345,3 +1347,36 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 .kb-group { color: var(--tn-purple); border-color: rgba(187,154,247,0.35); }
 .kb-proc { margin-left: auto; border: 0; padding: 0; flex: none; }
+
+/* Pinned conductor banner: the orchestrator sits above the stats and the
+   worker kanban, full width, styled apart from worker cards. */
+.conductor-banner {
+  border: 1px solid rgba(187,154,247,0.45); border-left: 4px solid var(--tn-purple);
+  border-radius: 8px; padding: 12px 16px;
+  background: linear-gradient(90deg, rgba(187,154,247,0.12), rgba(187,154,247,0.03) 60%), var(--panel-2);
+  box-shadow: 0 2px 14px rgba(0,0,0,0.25);
+}
+.cb-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.cb-kicker { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; color: var(--tn-purple); font-weight: 700; }
+.conductor-banner .tdot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.conductor-banner .tdot.running { background: var(--tn-green); box-shadow: 0 0 8px var(--tn-green); }
+.conductor-banner .tdot.waiting { background: var(--tn-yellow); box-shadow: 0 0 8px var(--tn-yellow); }
+.conductor-banner .tdot.error   { background: var(--tn-red); box-shadow: 0 0 8px var(--tn-red); }
+.cb-name {
+  border: 0; background: transparent; padding: 0; cursor: pointer;
+  font-family: var(--mono); font-size: 17px; font-weight: 700; color: var(--text-hi);
+}
+.cb-name:hover { color: var(--tn-purple); text-decoration: underline; }
+.cb-proc { font-family: var(--mono); font-size: 11.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+.cb-proc.running { color: var(--tn-green); border-color: rgba(115,218,202,0.5); }
+.cb-proc.waiting { color: var(--tn-yellow); border-color: rgba(224,175,104,0.5); }
+.cb-proc.error   { color: var(--tn-red); border-color: rgba(247,118,142,0.5); }
+.cb-headline { flex: 1 1 240px; min-width: 0; font-size: 13.5px; color: var(--text); }
+.cb-toggle {
+  margin-left: auto; border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  font-family: var(--mono); font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+}
+.cb-toggle:hover { color: var(--text-hi); border-color: var(--tn-purple); }
+.conductor-banner .cb-body { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(187,154,247,0.25); font-size: 13.5px; max-height: 45vh; overflow: auto; }
+.cb-empty { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.cb-empty code { font-family: var(--mono); font-size: 11.5px; }

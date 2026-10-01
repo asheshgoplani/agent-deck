@@ -30,6 +30,8 @@ const MENU = [
   sess('parked', 'waiting', undefined),
   sess('shipped', 'idle', { status: 'done' }),
   sess('broken', 'error', { status: 'in-progress' }),
+  { type: 'group', level: 0, group: { name: 'conductor', path: 'conductor', expanded: true, order: 1 } },
+  sess('brain-16', 'waiting', { note: '# Fleet Summary\n- **3** need you' }, 'conductor'),
 ]
 
 describe('kanbanColumn', () => {
@@ -95,6 +97,24 @@ describe('Fleet status kanban', () => {
     expect(card.querySelector('[data-testid="kanban-status"]').textContent).toBe('ready-for-review')
     expect(card.querySelector('[data-testid="kanban-ticket"]').textContent).toBe('BILL-590')
     expect(card.querySelector('.kb-group').textContent).toBe('scoping')
+  })
+
+  it('pins the conductor in a banner above the board, out of the kanban', async () => {
+    const { conductorBannerOpenSignal } = await import(uiStateModulePath)
+    conductorBannerOpenSignal.value = true
+    const { FleetPane } = await import(paneModulePath)
+    const c = mount(html`<${FleetPane}/>`)
+    const banner = c.querySelector('[data-testid="conductor-banner"]')
+    expect(banner.dataset.sessionId).toBe('brain-16')
+    expect(c.querySelector('[data-testid="fleet-pane"]').firstElementChild).toBe(banner)
+    expect(banner.querySelector('[data-testid="conductor-banner-status"]').textContent).toBe('waiting')
+    expect(banner.querySelector('[data-testid="conductor-banner-summary"] h3').textContent).toBe('Fleet Summary')
+    expect(c.querySelector('[data-testid="kanban-card"][data-session-id="brain-16"]')).toBeNull()
+
+    banner.querySelector('[data-testid="conductor-banner-toggle"]').click()
+    await new Promise(r => setTimeout(r, 0))
+    expect(c.querySelector('[data-testid="conductor-banner-summary"]')).toBeNull()
+    expect(c.querySelector('[data-testid="conductor-banner"]')).not.toBeNull()
   })
 
   it('switches to the group grid and back', async () => {

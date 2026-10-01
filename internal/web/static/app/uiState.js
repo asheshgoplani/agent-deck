@@ -80,6 +80,10 @@ persist(showColsSignal, 'agentdeck.showCols')
 export const fleetViewSignal = signal(loadJSON('agentdeck.fleetView', 'status'))
 persist(fleetViewSignal, 'agentdeck.fleetView')
 
+// Whether the pinned conductor banner shows its fleet summary (default open).
+export const conductorBannerOpenSignal = signal(loadJSON('agentdeck.conductorBannerOpen', true))
+persist(conductorBannerOpenSignal, 'agentdeck.conductorBannerOpen')
+
 // Profile selector. Initialized to empty so cold loads don't flash a
 // hardcoded default before /api/profiles resolves. AppShell seeds this
 // from `current` on the first /api/profiles response; consumers

@@ -7,7 +7,8 @@ import { useEffect, useMemo, useState } from 'preact/hooks'
 import { apiFetch } from '../api.js'
 import { menuModelSignal } from '../dataModel.js'
 import { selectSession } from '../state.js'
-import { activeTabSignal, fleetViewSignal } from '../uiState.js'
+import { activeTabSignal, fleetViewSignal, conductorBannerOpenSignal } from '../uiState.js'
+import { renderMarkdown } from '../miniMarkdown.js'
 import { AnnotationLine, KANBAN_COLUMNS, cardFields, kanbanColumn, noteExcerpt, sessionAnnotation } from '../annotations.js'
 
 const EMPTY_REMOTE_COUNTS = {
@@ -152,6 +153,38 @@ function KanbanCard({ s, groupLabel, onSelect }) {
   `
 }
 
+// Conductors orchestrate the fleet, so they are pinned above the board rather
+// than filed as a card in a status column or group.
+export const isConductorSession = (s) => s.kind === 'conductor' || !!(s.raw && s.raw.isConductor)
+
+// The pinned orchestrator banner: name + process status, its headline, and
+// (expanded by default) the markdown fleet summary it keeps in its `note`
+// (or `summary`) hint. Collapse state persists per browser.
+function ConductorBanner({ s, onSelect }) {
+  const open = conductorBannerOpenSignal.value
+  const h = s.hints || {}
+  const summary = h.summary || h.note || ''
+  const ann = sessionAnnotation(s)
+  return html`
+    <section class=${`conductor-banner ${s.status}`} data-testid="conductor-banner" data-session-id=${s.id}>
+      <div class="cb-head">
+        <span class="cb-kicker">CONDUCTOR</span>
+        <span class=${`tdot ${s.status}`} title=${'process: ' + s.status}/>
+        <button class="cb-name" title="Open conductor terminal" onClick=${() => onSelect(s.id)}>${s.title}</button>
+        <span class=${`cb-proc ${s.status}`} data-testid="conductor-banner-status">${s.status}</span>
+        ${ann.headline && html`<span class="cb-headline" title=${ann.headline}>${ann.headline}</span>`}
+        ${summary && html`
+          <button class="cb-toggle" aria-expanded=${open} data-testid="conductor-banner-toggle"
+                  onClick=${() => { conductorBannerOpenSignal.value = !open }}>
+            ${open ? 'Hide summary ▴' : 'Show summary ▾'}
+          </button>`}
+      </div>
+      ${summary && open && html`<div class="cb-body cc-md" data-testid="conductor-banner-summary">${renderMarkdown(summary)}</div>`}
+      ${!summary && html`<div class="cb-empty">No fleet summary yet: the conductor writes one with <code>agent-deck session annotate ${s.title} --note-stdin</code>.</div>`}
+    </section>
+  `
+}
+
 function StatusKanban({ sessions, groupLabels, onSelect }) {
   const buckets = {}
   for (const s of sessions) (buckets[kanbanColumn(s)] ||= []).push(s)
@@ -232,6 +265,8 @@ export function FleetPane() {
     activeTabSignal.value = 'terminal'
   }
   const view = fleetViewSignal.value === 'groups' ? 'groups' : 'status'
+  const conductors = sessions.filter(isConductorSession)
+  const workers = sessions.filter(s => !isConductorSession(s))
   // Leaf group name ("stride/ws1" -> "ws1"), as the group cards show it.
   const groupLabels = useMemo(
     () => Object.fromEntries(groups.map(g => [g.path, g.name || g.label])),
@@ -240,6 +275,7 @@ export function FleetPane() {
 
   return html`
     <div class="fleet" data-testid="fleet-pane">
+      ${conductors.map(s => html`<${ConductorBanner} key=${s.id} s=${s} onSelect=${onSelect}/>`)}
       <div class="fleet-stats">
         <div class="stat" data-testid="fleet-stat-running"><div class="lbl">RUNNING</div><div class="num running">${counts.running}</div></div>
         <div class="stat" data-testid="fleet-stat-waiting"><div class="lbl">WAITING</div><div class="num waiting">${counts.waiting}</div></div>
@@ -281,7 +317,7 @@ export function FleetPane() {
           </div>
         </div>
         ${sessions.length > 0 && view === 'status'
-          ? html`<${StatusKanban} sessions=${sessions} groupLabels=${groupLabels} onSelect=${onSelect}/>`
+          ? html`<${StatusKanban} sessions=${workers} groupLabels=${groupLabels} onSelect=${onSelect}/>`
           : groups.length === 0 || sessions.length === 0
           ? html`<div style="font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 16px;">
               No sessions yet. Use the sidebar to create one.
