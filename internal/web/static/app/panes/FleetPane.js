@@ -8,7 +8,7 @@ import { apiFetch } from '../api.js'
 import { menuModelSignal } from '../dataModel.js'
 import { selectSession } from '../state.js'
 import { activeTabSignal, fleetViewSignal } from '../uiState.js'
-import { AnnotationLine, KANBAN_COLUMNS, kanbanColumn, noteExcerpt, sessionAnnotation } from '../annotations.js'
+import { AnnotationLine, KANBAN_COLUMNS, cardFields, kanbanColumn, noteExcerpt, sessionAnnotation } from '../annotations.js'
 
 const EMPTY_REMOTE_COUNTS = {
   remotesOnline: 0, remotesOffline: 0, sessions: 0,
@@ -119,25 +119,35 @@ const PROCESS_RANK = { waiting: 0, running: 1, starting: 1, idle: 2, stopped: 3,
 const byAttention = (a, b) =>
   (PROCESS_RANK[a.status] ?? 5) - (PROCESS_RANK[b.status] ?? 5) || a.title.localeCompare(b.title)
 
-// One kanban card: the session's goal and current state, written to be read
-// at normal zoom — full headline, a couple of lines of its note, and the
-// group as a badge so the workstream stays visible.
+// One kanban card, written to be read at normal zoom: name, then status
+// chip · ticket · group, then the conductor's labeled Goal / Current state /
+// Decision needed. Sessions without those hints fall back to the full
+// headline plus a few lines of their note.
 function KanbanCard({ s, groupLabel, onSelect }) {
   const ann = sessionAnnotation(s)
-  const note = noteExcerpt((s.hints || {}).note, 3)
+  const fields = cardFields(s)
+  const note = fields.length ? '' : noteExcerpt((s.hints || {}).note, 3)
   return html`
     <button class=${`kb-card ${s.status}`} data-testid="kanban-card" data-session-id=${s.id} onClick=${() => onSelect(s.id)}>
       <div class="kb-top">
         <span class=${`tdot ${s.status}`} title=${'process: ' + s.status}/>
         <span class="kb-title">${s.title}</span>
-        ${ann.ticket && html`<span class="hint-ticket">${ann.ticket}</span>`}
-      </div>
-      ${ann.headline && html`<div class="kb-headline" data-testid="kanban-headline">${ann.headline}</div>`}
-      ${note && html`<div class="kb-note" data-testid="kanban-note">${note}</div>`}
-      <div class="kb-meta">
-        ${groupLabel && html`<span class="kb-group">${groupLabel}</span>`}
         <span class="kb-proc">${s.status}</span>
       </div>
+      <div class="kb-meta">
+        ${ann.status && html`<span class=${`hint-status ${ann.statusTone}`} data-testid="kanban-status">${ann.status}</span>`}
+        ${ann.ticket && html`<span class="hint-ticket" data-testid="kanban-ticket">${ann.ticket}</span>`}
+        ${groupLabel && html`<span class="kb-group">${groupLabel}</span>`}
+      </div>
+      ${fields.length
+        ? html`<dl class="kb-fields" data-testid="kanban-fields">
+            ${fields.map(f => html`
+              <div class=${`kb-field ${f.key}`} key=${f.key} data-testid=${`kanban-field-${f.key}`}>
+                <dt>${f.label}</dt><dd>${f.value}</dd>
+              </div>`)}
+          </dl>`
+        : ann.headline && html`<div class="kb-headline" data-testid="kanban-headline">${ann.headline}</div>`}
+      ${note && html`<div class="kb-note" data-testid="kanban-note">${note}</div>`}
     </button>
   `
 }

@@ -18,7 +18,7 @@ export const HINT_STATUS_TONE = {
 export function sessionAnnotation(s) {
   const h = s.hints || {}
   return {
-    headline: h.headline || h.purpose || '',
+    headline: h.headline || h.goal || h.purpose || '',
     status: h.status || '',
     statusTone: HINT_STATUS_TONE[h.status] || '',
     ticket: h.ticket || '',
@@ -75,4 +75,18 @@ export function noteExcerpt(note, maxLines = 2) {
     .filter(Boolean)
     .slice(0, maxLines)
     .join(' · ')
+}
+
+// Structured card body written by conductors: goal / state / decision hints
+// (`session annotate --hint goal=... --hint state=... --decision ...`). Empty
+// array when none are set, so callers fall back to the headline.
+export const CARD_FIELDS = [
+  { key: 'goal',     label: 'Goal' },
+  { key: 'state',    label: 'Current state' },
+  { key: 'decision', label: 'Decision needed' },
+]
+
+export function cardFields(s) {
+  const h = s.hints || {}
+  return CARD_FIELDS.filter(f => (h[f.key] || '').trim()).map(f => ({ ...f, value: h[f.key].trim() }))
 }

@@ -25,7 +25,7 @@ const sess = (id, status, hints, groupPath = 'scoping') => ({
 const MENU = [
   { type: 'group', level: 0, group: { name: 'scoping', path: 'scoping', expanded: true, order: 0 } },
   sess('asks', 'waiting', { status: 'needs-input', headline: 'FDP-2115 scoping · needs your call on rule scope', note: '## Open\n- **which** rules qualify?\n- second line\n- third\n- fourth' }),
-  sess('review', 'idle', { status: 'ready-for-review', ticket: 'BILL-590' }),
+  sess('review', 'idle', { status: 'ready-for-review', ticket: 'BILL-590', goal: 'Audit B&R error copy', state: '45 msgs reviewed, 4 central fixes', decision: 'Approve the 4 fixes?', headline: 'ignored when fields exist' }),
   sess('busy', 'running', {}),
   sess('parked', 'waiting', undefined),
   sess('shipped', 'idle', { status: 'done' }),
@@ -78,6 +78,22 @@ describe('Fleet status kanban', () => {
     const card = c.querySelector('[data-testid="kanban-card"][data-session-id="asks"]')
     expect(card.querySelector('[data-testid="kanban-headline"]').textContent).toBe('FDP-2115 scoping · needs your call on rule scope')
     expect(card.querySelector('[data-testid="kanban-note"]').textContent).toBe('Open · which rules qualify? · second line')
+    expect(card.querySelector('.kb-group').textContent).toBe('scoping')
+  })
+
+  it('renders Goal / Current state / Decision needed with chip, ticket and group', async () => {
+    const { FleetPane } = await import(paneModulePath)
+    const c = mount(html`<${FleetPane}/>`)
+    const card = c.querySelector('[data-testid="kanban-card"][data-session-id="review"]')
+    const fields = [...card.querySelectorAll('.kb-field')].map(f => [f.querySelector('dt').textContent, f.querySelector('dd').textContent])
+    expect(fields).toEqual([
+      ['Goal', 'Audit B&R error copy'],
+      ['Current state', '45 msgs reviewed, 4 central fixes'],
+      ['Decision needed', 'Approve the 4 fixes?'],
+    ])
+    expect(card.querySelector('[data-testid="kanban-headline"]')).toBeNull()
+    expect(card.querySelector('[data-testid="kanban-status"]').textContent).toBe('ready-for-review')
+    expect(card.querySelector('[data-testid="kanban-ticket"]').textContent).toBe('BILL-590')
     expect(card.querySelector('.kb-group').textContent).toBe('scoping')
   })
 
