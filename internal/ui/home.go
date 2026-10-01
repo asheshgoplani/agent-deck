@@ -6251,8 +6251,23 @@ func (h *Home) logWorker() {
 // should run UpdateStatus() on inst. Archived sessions are skipped: their tmux
 // pane is torn down and their row status is display-frozen, so a poll can only
 // spend a serialized tmux subprocess without changing anything the UI renders.
+//
+// Exception: an archived session that still claims a live status. Archiving a
+// session whose tmux is already gone skips Kill(), so it keeps its last stored
+// status; skipping it forever would count it as running in the header pills.
+// It is polled until UpdateStatus settles it on error/stopped, then skipped.
 func shouldPollStatusInLoop(inst *session.Instance) bool {
-	return inst != nil && !inst.IsArchived()
+	if inst == nil {
+		return false
+	}
+	if !inst.IsArchived() {
+		return true
+	}
+	switch inst.GetStatusThreadSafe() {
+	case session.StatusRunning, session.StatusWaiting, session.StatusIdle, session.StatusStarting:
+		return true
+	}
+	return false
 }
 
 const fullStatusBatchSize = 32

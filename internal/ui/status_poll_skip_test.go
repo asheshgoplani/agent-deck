@@ -29,3 +29,29 @@ func TestShouldPollStatusInLoop_SkipsArchived(t *testing.T) {
 		t.Fatalf("nil instance must not be polled")
 	}
 }
+
+// An archived session whose tmux was already gone when it was archived never
+// went through Kill() (the CLI archive path only kills a live session), so it
+// keeps its last stored live status. Skipping it forever froze that status,
+// and the header pill counted 28 long-dead archived sessions as running.
+// Archived rows still claiming a live status are polled until they settle on
+// error/stopped; settled ones stay skipped.
+func TestShouldPollStatusInLoop_ArchivedWithStaleLiveStatus(t *testing.T) {
+	archivedAt := time.Now().UTC()
+	for _, tc := range []struct {
+		status session.Status
+		want   bool
+	}{
+		{session.StatusRunning, true},
+		{session.StatusWaiting, true},
+		{session.StatusIdle, true},
+		{session.StatusStarting, true},
+		{session.StatusError, false},
+		{session.StatusStopped, false},
+	} {
+		inst := &session.Instance{ID: "x", Status: tc.status, ArchivedAt: archivedAt}
+		if got := shouldPollStatusInLoop(inst); got != tc.want {
+			t.Errorf("archived %s: shouldPollStatusInLoop = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
