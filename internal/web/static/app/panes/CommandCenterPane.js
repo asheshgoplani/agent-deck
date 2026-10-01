@@ -16,6 +16,8 @@ import { useState } from 'preact/hooks'
 import { commandCenterSignal, connectionSignal, mutationsEnabledSignal } from '../state.js'
 import { apiFetch } from '../api.js'
 import { addToast } from '../Toast.js'
+import { renderMarkdown } from '../miniMarkdown.js'
+import { sessionAnnotation } from '../annotations.js'
 
 const STATUS_DOT = {
   running: '🟢',
@@ -58,11 +60,31 @@ function DecisionCard({ decision, onComment }) {
 
 function SessionRow({ sess }) {
   const sub = sess.substate && SUBSTATE_LABEL[sess.substate]
+  const ann = sessionAnnotation({ hints: { headline: sess.headline, status: sess.hintStatus, ticket: sess.ticket } })
   return html`
     <div class="cc-srow" data-testid="cc-session" data-status=${sess.status}>
       <span class="cc-sd">${STATUS_DOT[sess.status] || '⚪'}</span>
       <span class="cc-stt" title=${sess.workingOn || sess.title}>${sess.title}</span>
       ${sub && html`<span class="cc-sub" title=${'honest-status: ' + sess.substate}>${sub}</span>`}
+      ${ann.status && html`<span class=${`hint-status ${ann.statusTone}`} data-testid="cc-hint-status">${ann.status}</span>`}
+      ${ann.ticket && html`<span class="hint-ticket">${ann.ticket}</span>`}
+    </div>
+    ${ann.headline && html`<div class="cc-shl" title=${ann.headline} data-testid="cc-headline">${ann.headline}</div>`}
+  `
+}
+
+// The conductor-maintained fleet summary: markdown from a conductor's `note`
+// hint or any session's `summary` hint (see CommandCenterSummary).
+function FleetSummaryPanel({ summaries }) {
+  if (!summaries.length) return null
+  return html`
+    <div class="cc-summary" data-testid="cc-fleet-summary">
+      ${summaries.map(s => html`
+        <div class="cc-summary-card" key=${s.sessionId}>
+          <div class="cc-summary-head">📋 Fleet summary <span class="cc-summary-src">· ${s.title}</span></div>
+          <div class="cc-md">${renderMarkdown(s.markdown)}</div>
+        </div>
+      `)}
     </div>
   `
 }
@@ -152,6 +174,7 @@ export function CommandCenterPane() {
   const decisions = Array.isArray(snap.decisionsWaiting) ? snap.decisionsWaiting : []
   const conductors = Array.isArray(snap.conductors) ? snap.conductors : []
   const totals = snap.totals || {}
+  const summaries = Array.isArray(snap.fleetSummaries) ? snap.fleetSummaries : []
 
   return html`
     <div class="cc" data-testid="command-center-pane">
@@ -164,6 +187,8 @@ export function CommandCenterPane() {
           ${totals.running || 0} running · ${totals.waiting || 0} waiting · ${totals.idle || 0} idle
         </span>
       </div>
+
+      <${FleetSummaryPanel} summaries=${summaries}/>
 
       <div class="cc-cols">
         <div class="cc-col">

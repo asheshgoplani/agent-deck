@@ -81,7 +81,7 @@ describe('session annotations', () => {
   })
 
   it('maps known status values to tones and leaves others neutral', async () => {
-    const { sessionAnnotation } = await import(sidebarModulePath)
+    const { sessionAnnotation } = await import('../../../internal/web/static/app/annotations.js')
     const tone = (status) => sessionAnnotation({ hints: { status } }).statusTone
     expect(tone('needs-input')).toBe('err')
     expect(tone('ready-for-review')).toBe('warn')

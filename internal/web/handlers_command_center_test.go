@@ -329,3 +329,64 @@ func TestResolveAskTarget(t *testing.T) {
 		t.Fatalf("disallowed target should return empty, got %q", got)
 	}
 }
+
+// Fleet summaries come from session annotations: a conductor's `note` (a
+// conductor-flagged session or one in the "conductor" group) or any session's
+// `summary`. Child rows carry their headline/status/ticket hints.
+func TestCommandCenterFleetSummariesAndChildHints(t *testing.T) {
+	menu := ccTestMenu()
+	menu.Items[0].Session.Hints = map[string]string{"note": "## Fleet\n- 1 running"}
+	menu.Items[1].Session.Hints = map[string]string{
+		"headline": "spawn race · bisecting · next: patch", "status": "in-progress", "ticket": "AD-1431",
+		"note": "a child note is not a fleet summary",
+	}
+	menu.Items = append(menu.Items,
+		MenuItem{Type: MenuItemTypeSession, Session: &MenuSession{
+			ID: "brain", Title: "brain-16", Status: "waiting", GroupPath: "conductor",
+			Hints: map[string]string{"note": "brain summary"},
+		}},
+		MenuItem{Type: MenuItemTypeSession, Session: &MenuSession{
+			ID: "plain", Title: "plain", Status: "idle", GroupPath: "agent-deck",
+			Hints: map[string]string{"summary": "explicit summary"},
+		}},
+	)
+	menu.Items[0].Session.Hints["headline"] = "release wave · 2 PRs open"
+	snap := buildCommandCenterSnapshot(menu, "personal", "", nil)
+
+	if wo := snap.Conductors[0].CurrentlyWorkingOn; wo != "release wave · 2 PRs open" {
+		t.Fatalf("conductor currentlyWorkingOn = %q; want its headline hint over the latest prompt", wo)
+	}
+
+	got := map[string]string{}
+	for _, s := range snap.FleetSummaries {
+		got[s.SessionID] = s.Markdown
+	}
+	want := map[string]string{"cond-ad": "## Fleet\n- 1 running", "brain": "brain summary", "plain": "explicit summary"}
+	if len(got) != len(want) {
+		t.Fatalf("fleet summaries = %+v; want %v", snap.FleetSummaries, want)
+	}
+	for id, md := range want {
+		if got[id] != md {
+			t.Fatalf("summary %s = %q; want %q", id, got[id], md)
+		}
+	}
+
+	var child *CommandCenterSession
+	for _, cd := range snap.Conductors {
+		for i := range cd.Sessions {
+			if cd.Sessions[i].ID == "child-1" {
+				child = &cd.Sessions[i]
+			}
+		}
+	}
+	if child == nil || child.Headline != "spawn race · bisecting · next: patch" || child.HintStatus != "in-progress" || child.Ticket != "AD-1431" {
+		t.Fatalf("child hints = %+v", child)
+	}
+
+	// A summary change must change the SSE fingerprint, or the panel goes stale.
+	before := commandCenterFingerprint(snap)
+	snap.FleetSummaries[0].Markdown += " (edited)"
+	if commandCenterFingerprint(snap) == before {
+		t.Fatal("fingerprint ignores fleet summary edits")
+	}
+}

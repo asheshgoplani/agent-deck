@@ -21,6 +21,7 @@ import {
 import { apiFetch } from './api.js'
 import { addToast } from './Toast.js'
 import { formatRelativeTime } from './timeFmt.js'
+import { AnnotationLine } from './annotations.js'
 
 // One chip per status bucket, in the same fixed order and with the same
 // glyphs the group stats panel and the TUI use (GROUP_STATUS_BUCKETS /
@@ -43,28 +44,6 @@ const SHOW_COL_OPTIONS = [
   { id: 'lastSeen', label: 'Last activity' },
   { id: 'annotations', label: 'Goal / status hints' },
 ]
-
-// Colour for the semantic status hint (`session annotate --hint status=...`),
-// which says where the WORK is, as opposed to the process dot. Unknown values
-// still render, in the neutral chip.
-const HINT_STATUS_TONE = {
-  'needs-input': 'err',
-  'ready-for-review': 'warn',
-  'in-progress': 'info',
-  'done': 'ok',
-}
-
-// The card's annotation line: headline (falling back to the creation-time
-// purpose hint), status and ticket. Empty strings when unset.
-export function sessionAnnotation(s) {
-  const h = s.hints || {}
-  return {
-    headline: h.headline || h.purpose || '',
-    status: h.status || '',
-    statusTone: HINT_STATUS_TONE[h.status] || '',
-    ticket: h.ticket || '',
-  }
-}
 
 function doAction(action, s) {
   if (!mutationsEnabledSignal.value) {
@@ -145,8 +124,7 @@ function SessionItem({ s, sel, rowKey, onSelect, showCols, depth, groupDepth }) 
   const mcpCount = (s.mcps || []).length
   const skillCount = (s.skills || []).length
   // Persisted showCols from before this option existed lack the key; on by default.
-  const ann = showCols.annotations !== false ? sessionAnnotation(s) : null
-  const hasAnnotation = !!(ann && (ann.headline || ann.status || ann.ticket))
+  const showAnnotation = showCols.annotations !== false
   const hasSubline =
     (showCols.branch && s.branch && s.branch !== '—') ||
     (showCols.attach && (mcpCount > 0 || skillCount > 0)) ||
@@ -170,13 +148,7 @@ function SessionItem({ s, sel, rowKey, onSelect, showCols, depth, groupDepth }) 
           ${exp ? '▾' : '▸'}
         </button>
       </div>
-      ${hasAnnotation && html`
-        <div class="annot" data-testid="session-annotation">
-          ${ann.status && html`<span class=${`hint-status ${ann.statusTone}`} data-testid="session-hint-status">${ann.status}</span>`}
-          ${ann.ticket && html`<span class="hint-ticket" data-testid="session-hint-ticket">${ann.ticket}</span>`}
-          ${ann.headline && html`<span class="hint-headline" title=${ann.headline} data-testid="session-hint-headline">${ann.headline}</span>`}
-        </div>
-      `}
+      ${showAnnotation && html`<${AnnotationLine} s=${s}/>`}
       ${hasSubline && html`
         <div class="subline">
           ${showCols.branch && s.branch && s.branch !== '—' && html`<span class="trunc"><span class="b">git</span> ${s.branch}</span>`}

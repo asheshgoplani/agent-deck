@@ -8,6 +8,7 @@ import { apiFetch } from '../api.js'
 import { menuModelSignal } from '../dataModel.js'
 import { selectSession } from '../state.js'
 import { activeTabSignal } from '../uiState.js'
+import { AnnotationLine } from '../annotations.js'
 
 const EMPTY_REMOTE_COUNTS = {
   remotesOnline: 0, remotesOffline: 0, sessions: 0,
@@ -98,6 +99,7 @@ function GroupCard({ name, items, onSelect }) {
             <span class=${`tdot ${s.status}`}/>
             <span class="tn">${s.title}</span>
             ${s.tool && html`<span class="ttool">${s.tool}</span>`}
+            <${AnnotationLine} s=${s} class="tile-annot"/>
           </button>
         `)}
       </div>

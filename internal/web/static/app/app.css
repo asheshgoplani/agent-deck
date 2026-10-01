@@ -303,25 +303,30 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .sess .subline .b { color: var(--text-dim); }
 /* Recall annotation line (session annotate hints): status chip, ticket badge,
    then the headline taking whatever width is left. */
-.sess .annot {
-  grid-column: 2 / -1;
-  display: flex; align-items: center; gap: 6px; min-width: 0;
-  font-size: 11px; color: var(--text-dim);
-  overflow: hidden; white-space: nowrap;
+.annot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 3px 6px; min-width: 0;
+  font-size: 11px; line-height: 1.35; color: var(--text-dim);
 }
-.sess .annot .hint-headline { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.sess .annot .hint-status,
-.sess .annot .hint-ticket {
+.sess .annot { grid-column: 2 / -1; }
+/* The headline is a "goal · state · next" summary: give it its own line and
+   let it wrap to two before ellipsizing, instead of a one-line stub. */
+.annot .hint-headline {
+  flex: 1 1 100%; min-width: 0; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.tile .tile-annot { grid-column: 2 / -1; font-family: var(--sans, inherit); }
+.hint-status,
+.hint-ticket {
   flex: 0 0 auto;
   font-family: var(--mono); font-size: 9.5px; line-height: 14px;
   padding: 0 5px; border-radius: 2px;
   background: rgba(120,124,153,0.14); color: var(--muted);
 }
-.sess .annot .hint-status.err  { background: rgba(247,118,142,0.14); color: var(--tn-red); }
-.sess .annot .hint-status.warn { background: rgba(224,175,104,0.14); color: var(--tn-yellow); }
-.sess .annot .hint-status.info { background: rgba(122,162,247,0.12); color: var(--tn-blue); }
-.sess .annot .hint-status.ok   { background: rgba(115,218,202,0.12); color: var(--tn-green); }
-.sess .annot .hint-ticket { border: 1px solid var(--border); background: transparent; color: var(--text-dim); }
+.hint-status.err  { background: rgba(247,118,142,0.14); color: var(--tn-red); }
+.hint-status.warn { background: rgba(224,175,104,0.14); color: var(--tn-yellow); }
+.hint-status.info { background: rgba(122,162,247,0.12); color: var(--tn-blue); }
+.hint-status.ok   { background: rgba(115,218,202,0.12); color: var(--tn-green); }
+.hint-ticket { border: 1px solid var(--border); background: transparent; color: var(--text-dim); }
 .sess .subline .atts { display: inline-flex; gap: 4px; }
 .sess .subline .att {
   padding: 0 5px; border-radius: 2px;
@@ -1188,6 +1193,20 @@ body[data-rail="hidden"] .rightrail { display: none; }
   border: 1px solid var(--tn-red); border-radius: 5px; padding: 0 5px;
   font-family: var(--mono);
 }
+/* Conductor-written fleet summary (markdown) above the two columns. */
+.cc-summary { display: grid; gap: 10px; margin-bottom: 16px; }
+.cc-summary-card { border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 6px; padding: 10px 14px; background: var(--panel-2); }
+.cc-summary-head { font-size: 12px; font-weight: 600; color: var(--text-hi); margin-bottom: 6px; }
+.cc-summary-src { font-weight: 400; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+.cc-md { font-size: 12.5px; color: var(--text); line-height: 1.5; }
+.cc-md h3, .cc-md h4, .cc-md h5 { margin: 8px 0 4px; color: var(--text-hi); font-size: 13px; }
+.cc-md h3 { font-size: 14px; }
+.cc-md p { margin: 4px 0; }
+.cc-md ul, .cc-md ol { margin: 4px 0; padding-left: 18px; }
+.cc-md li { margin: 1px 0; }
+.cc-md code { font-family: var(--mono); font-size: 11.5px; padding: 0 3px; border-radius: 2px; background: rgba(120,124,153,0.14); }
+.cc-md a { color: var(--accent); }
+.cc-shl { font-size: 11px; color: var(--muted); padding: 0 0 3px 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-sdone { font-size: 11px; color: var(--muted-2); padding: 3px 0; }
 
 /* two-way input bar */
