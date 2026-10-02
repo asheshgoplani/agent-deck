@@ -7,11 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.23] - 2026-10-02
+
+- **Upgrading:** `session switch-account` now keeps a target conversation copy that is newer than the source instead of refusing; pass `--archive-destination` to insist on the source copy as before.
+
+### Added
+
+- The TUI `%` filter gains a third step when `[display] active_filter_excludes` keeps stopped sessions visible: All, Open, Open with stopped also hidden. Configurations that already exclude stopped keep the two-step cycle (#2444, thanks @borng).
+- A collapsed, unselected group takes the colour of a tinted session inside it (`session set <id> color`), so a coloured session can be spotted without expanding the group; nested groups propagate the tint and untinted groups render exactly as before (#2439, thanks @AdamiecRadek).
+
 ### Fixed
 
-- Errors from closing files after writing (queues, logs, lock files, update plans) are now reported instead of ignored, so a failed flush is no longer silent.
-- Deliberately stopped sessions stay stopped through startup grace, concurrent refreshes, and notify-daemon polling. Restart detection requires an exact live tmux session, and starting an interactive shell clears its previous stopped state.
-- `session switch-account` (and the TUI account row) no longer resumes a stale conversation. Claude Code keys one working directory under up to three project directories (the path as typed, its macOS `/private` form and its realpath), and the switch used to look at one of them in one account: a copy under another key was invisible, so the switch could report "no conversation to migrate", fail its source preflight, or leave a day-old copy in the target for `claude --resume` to pick up. Every copy under every key in both accounts is now considered; the newest by last event wins (tie: longest), it is installed under every key the target could resume from, each copy it replaces is backed up next to it, and a newer target copy is kept rather than overwritten (`--archive-destination` still forces the source copy). The receipt names the chosen copy, and `--json` lists every candidate with its newest event, size and line count under `transcript`. Context export and handoff resolve the same set of keys.
+- `session switch-account` (and the TUI account row) no longer resumes a stale conversation. Claude Code keys one working directory under up to three project directories (the path as typed, its macOS `/private` form and its realpath), and the switch used to look at one of them in one account: a copy under another key was invisible, so the switch could report "no conversation to migrate", fail its source preflight, or leave a day-old copy in the target for `claude --resume` to pick up. Every copy under every key in both accounts is now considered; the newest by last event wins (tie: longest), it is installed under every key the target could resume from, each copy it replaces is backed up next to it, and a newer target copy is kept rather than overwritten (`--archive-destination` still forces the source copy). The receipt names the chosen copy, and `--json` lists every candidate with its newest event, size and line count under `transcript`. Context export and handoff resolve the same set of keys (#2454).
+- A deliberate `session stop` stays `stopped`. On Linux hosts running the notify daemon the session flipped to `error` about half a second after a successful stop: the status refresh classified the missing tmux session as an exit and the daemon persisted its pre-stop sample over the saved stop. The stop is now preserved across status probes, the startup grace window and daemon polls, the daemon writes status with an atomic conditional update and adopts the committed status when it loses the race, a stopped session is only revived after tmux confirms the exact session is alive, and starting an interactive shell from `stopped` clears the stopped state (#2453).
+- OpenCode 2.x sessions start again. OpenCode 2.x removed `--port`, `-m` and `--agent` from its root command, so every `opencode` session died about 260 ms after launch. The launch now asks the OpenCode binary for its version (1 s timeout, cached per binary) and omits those flags for 2.x; 1.x, SSH and sandbox launches are unchanged. A configured model or agent cannot be passed to 2.x and is reported in the log (#2433, thanks @kevtae).
+- With `send_transport = "auto"`, `session send` to a Claude session on Linux now uses the messaging socket instead of always falling back to tmux with `proc_start_mismatch`: Claude Code records `procStart` as the `/proc/<pid>/stat` start time on Linux and as `ps lstart` on macOS, and the resolver only compared against the latter (#2441, fixes #2438, thanks @imkarrer).
+- Archived sessions that still claimed a live status are re-polled until they settle, so the header and filter counts no longer report sessions as running that `list --json` reports as error (#2443, thanks @borng).
+- Errors from closing files after writing (send queue records, logs, lock files, update plans, watcher event logs) are now reported instead of ignored, so a failed flush is no longer silent (#2420).
 
 ## [1.16.22] - 2026-09-28
 
