@@ -37,6 +37,10 @@ type AccountSwitchResult struct {
 	// archived to before this switch installed the source's transcript in its
 	// place, or "" when no archive happened.
 	DestinationArchived string
+	// Transcript is the receipt of which conversation copy was chosen across
+	// both accounts and every project key, what was installed and what was
+	// backed up; nil for a fresh session.
+	Transcript *TranscriptChoice
 
 	// nativeResult is the executor-issued storage-CAS capability. It is kept
 	// private so compatibility callers cannot construct a result that commits
@@ -105,6 +109,7 @@ func SwitchAccount(cfg *UserConfig, inst *Instance, account string, opts Account
 		Restarted:           result.Restarted,
 		Warnings:            result.Warnings,
 		DestinationArchived: result.DestinationArchived,
+		Transcript:          result.Transcript,
 		nativeResult:        result,
 	}, err
 }

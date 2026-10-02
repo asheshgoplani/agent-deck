@@ -38,6 +38,14 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		fmt.Println("a running session is restarted so `claude --resume` continues the")
 		fmt.Println("conversation under the new account.")
 		fmt.Println()
+		fmt.Println("Claude Code may key one working directory under several project directories")
+		fmt.Println("(the path as typed, its macOS /private form, its realpath). Every copy of the")
+		fmt.Println("conversation under those keys in BOTH accounts is considered; the newest by")
+		fmt.Println("last event (tie: longest) wins, is installed under every key in the target,")
+		fmt.Println("and each copy it replaces is backed up next to it. A newer target copy is")
+		fmt.Println("kept, never overwritten. The receipt names the chosen copy; --json carries")
+		fmt.Println("every candidate under \"transcript\".")
+		fmt.Println()
 		fmt.Println("If the session has no recorded conversation id and the only candidate is the")
 		fmt.Println("newest transcript in its working directory (which may belong to another")
 		fmt.Println("session sharing that directory), the switch is refused instead of guessing:")
@@ -128,6 +136,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 			"new_account":          result.NewAccount,
 			"migrated_path":        result.MigratedPath,
 			"destination_archived": result.DestinationArchived,
+			"transcript":           result.Transcript,
 			"claude_session_id":    inst.ClaudeSessionID,
 			"restarted":            result.Restarted,
 		})

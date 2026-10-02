@@ -158,6 +158,7 @@ func handleSessionSwitch(profile string, args []string) {
 		"destination_path": result.DestinationPath, "destination_ready": result.DestinationReady,
 		"source_archived":      false,
 		"destination_archived": result.DestinationArchived,
+		"transcript":           result.Transcript,
 		"restarted":            result.Restarted, "loss_disclosure": result.LossDisclosure,
 	}
 	if *jsonOutput {
