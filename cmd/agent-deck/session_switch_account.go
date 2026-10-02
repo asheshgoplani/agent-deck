@@ -24,7 +24,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	noRestart := fs.Bool("no-restart", false, "Do not restart a running session after the switch")
-	archiveDestination := fs.Bool("archive-destination", false, "Archive a destination conversation that is newer or diverged instead of refusing")
+	archiveDestination := fs.Bool("archive-destination", false, "Install the source conversation even when the destination holds a newer or undated copy; the destination copy is archived next to it, never deleted")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session switch-account <id|title> <account> [options]")

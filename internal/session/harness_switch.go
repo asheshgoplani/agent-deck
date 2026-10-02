@@ -301,18 +301,21 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 	// account (typed cwd, /private alias, realpath). Consider every copy and
 	// resume from the newest; the pre-stop pass is a rollback snapshot, the
 	// post-stop pass below is authoritative.
+	// Either refusal below happens after the journal was written as
+	// "prepared", so it must be recorded as failed: an unresolved journal would
+	// block every later switch of this session.
 	sourceDir, err := switchSourceClaudeDir(cfg, inst)
 	if err != nil {
-		return nil, fmt.Errorf("exact source preflight failed: %w", err)
+		return switchFailedNative(journalPath, j, fmt.Errorf("exact source preflight failed: %w", err))
 	}
 	var sourcePath, sourceHash string
 	var warnings []string
 	choice, err := selectSwitchTranscript(inst, sourceDir, targetDir, opts.ArchiveDestination)
 	if err != nil {
-		if errors.Is(err, ErrSwitchDestinationDivergent) {
-			return nil, err
+		if !errors.Is(err, ErrSwitchDestinationDivergent) {
+			err = fmt.Errorf("exact source preflight failed: %w", err)
 		}
-		return nil, fmt.Errorf("exact source preflight failed: %w", err)
+		return switchFailedNative(journalPath, j, err)
 	}
 	if choice != nil {
 		sourcePath, sourceHash = choice.Chosen.Path, choice.Chosen.SHA256
@@ -598,14 +601,18 @@ func executeNativeCodexSwitch(cfg *UserConfig, inst *Instance, preview *SwitchPr
 	}
 	destination := filepath.Join(ExpandPath(targetHome), rel)
 	j.Destination = destination
-	archived, err := installStagedArtifact(stagePath, destination, sourceHash, opts.ArchiveDestination)
+	replaced, err := installStagedArtifact(stagePath, destination, sourceHash, opts.ArchiveDestination)
 	if err != nil {
 		if wasRunning {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
 		}
 		return switchFailedNative(journalPath, j, err)
 	}
-	j.DestinationArchived = archived
+	// A .bak- snapshot of an advanced prefix is retained but is not an
+	// archived destination; keep the Codex receipt as it was.
+	if strings.Contains(filepath.Base(replaced), ".pre-switch-") {
+		j.DestinationArchived = replaced
+	}
 	j.State = switchInstalled
 	if err := writeSwitchJournal(journalPath, j); err != nil {
 		if wasRunning {

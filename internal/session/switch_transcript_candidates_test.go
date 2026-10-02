@@ -359,3 +359,36 @@ func TestExportClaudeContext_FindsNewestCopyAcrossProjectKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, newestPath, export.Manifest.Artifact.Path)
 }
+
+// A refusal raised before the source is stopped must leave a failed journal,
+// not a "prepared" one: otherwise the next switch of the same session (to any
+// account) is refused as an unresolved prior operation.
+func TestSwitchTranscript_PreStopRefusalDoesNotBlockLaterSwitch(t *testing.T) {
+	f := newSwitchKeysFixture(t)
+	typedKey := f.keys[0]
+	source := transcriptBody(keysSID, octTwo, 3, "dated-source")
+	undated := `{"sessionId":"` + keysSID + `","type":"user","message":"no timestamp here"}` + "\n"
+	f.write(t, "personal", typedKey, keysSID, source)
+	f.write(t, "work", typedKey, keysSID, undated)
+
+	inst, storage := f.instance(t, keysSID)
+	_, err := SwitchAccount(f.cfg, inst, "work", AccountSwitchOptions{Storage: storage, NoRestart: true})
+	require.True(t, errors.Is(err, ErrSwitchDestinationDivergent), "got %v", err)
+
+	// A third account with no copy at all must now be reachable.
+	third := filepath.Join(f.home, ".claude-third")
+	require.NoError(t, os.MkdirAll(third, 0o700))
+	cfgPath := filepath.Join(f.home, ".agent-deck", "config.toml")
+	body, readErr := os.ReadFile(cfgPath)
+	require.NoError(t, readErr)
+	require.NoError(t, os.WriteFile(cfgPath, append(body, []byte("[profiles.third.claude]\nconfig_dir = \"~/.claude-third\"\n")...), 0o600))
+	ClearUserConfigCache()
+	cfg, loadErr := LoadUserConfig()
+	require.NoError(t, loadErr)
+
+	result, err := SwitchAccount(cfg, inst, "third", AccountSwitchOptions{Storage: storage, NoRestart: true})
+	require.NoError(t, err, "a pre-stop refusal must not leave an unresolved journal behind")
+	require.Equal(t, "third", inst.Account)
+	require.Equal(t, source, readFile(t, f.path("third", typedKey, keysSID)))
+	require.Equal(t, "source", result.Transcript.Chosen.Side)
+}
