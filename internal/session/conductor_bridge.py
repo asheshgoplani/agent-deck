@@ -522,6 +522,10 @@ def hook_driven_interactive(session: str, profile: str | None = None) -> tuple[b
     return status in _HOOK_INTERACTIVE_STATUSES, True
 
 
+# Prefix of the placeholder get_session_output returns when the CLI read fails.
+SESSION_OUTPUT_ERROR_PREFIX = "[Error getting output:"
+
+
 def get_session_output(session: str, profile: str | None = None) -> str:
     """Get the last response from a session.
 
@@ -538,7 +542,7 @@ def get_session_output_state(
     """Return response text and its exact Codex thread:turn identity."""
     result = run_cli("session", "output", session, "--json", profile=profile, timeout=30)
     if result.returncode != 0:
-        return f"[Error getting output: {result.stderr.strip()}]", ""
+        return f"{SESSION_OUTPUT_ERROR_PREFIX} {result.stderr.strip()}]", ""
     try:
         data = json.loads(result.stdout)
         return (
@@ -3323,85 +3327,165 @@ def _os_heartbeat_daemon_installed() -> bool:
     return False
 
 
+# Scan-only NEED forwarding state (issue #2426). Lives next to the conductors
+# so it follows AGENT_DECK_CONDUCTOR_DIR and the legacy ~/.agent-deck layout.
+NEED_SCAN_STATE_FILE = "need-scan-state.json"
+
+
+def load_need_scan_state(path: Path) -> dict:
+    """Read the persisted scan state: {conductor: {"reply": sha256 of the last
+    processed reply, "counts": filter_need_lines counts}}. Missing or corrupt
+    state starts empty."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        log.warning("NEED scan: ignoring unreadable state %s: %s", path, e)
+        return {}
+    conductors = data.get("conductors") if isinstance(data, dict) else None
+    if not isinstance(conductors, dict):
+        return {}
+    state: dict = {}
+    for name, entry in conductors.items():
+        if not isinstance(entry, dict):
+            continue
+        counts = entry.get("counts")
+        state[str(name)] = {
+            "reply": str(entry.get("reply") or ""),
+            "counts": {
+                str(line): n for line, n in counts.items() if isinstance(n, int)
+            } if isinstance(counts, dict) else {},
+        }
+    return state
+
+
+def save_need_scan_state(path: Path, state: dict) -> None:
+    """Atomically persist the scan state (tmp file, fsync, rename)."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"conductors": state}, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError as e:
+        log.error("NEED scan: state save failed (%s): %s", path, e)
+
+
 async def need_scan_cycle(
     config: dict,
-    seen_needs: dict,
+    need_state: dict,
     save_state,
     telegram_bot=None, slack_app=None, slack_channel_id=None,
     discord_bot=None, discord_channel_id=None,
 ) -> None:
-    """One scan pass over all heartbeat-enabled conductors: read each one's
-    last response (read-only; the OS heartbeat drives the actual ticks) and
-    forward only never-before-seen NEED: lines. Mutates seen_needs and calls
-    save_state() after a confirmed delivery. Split out of the loop so tests
-    can drive a single pass (#2426)."""
+    """One scan pass over all heartbeat-enabled conductors (issue #2426).
+
+    Read-only: it reads each conductor's last reply with get_session_output
+    and never sends to the conductor (the OS heartbeat drives the ticks).
+    A reply is processed once: a NEW reply goes through filter_need_lines
+    (#971), exactly like the in-process loop, so first sight forwards,
+    repeats escalate then retire, and counts keep only the lines present in
+    that reply (a NEED that disappears and later recurs alerts again). An
+    unchanged reply is skipped. need_state is updated only after the alert
+    was delivered to at least one channel (otherwise the reply is retried on
+    the next scan), and save_state() runs when anything changed.
+    """
     tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
     all_conductors = discover_conductors()
-    for conductor in select_heartbeat_conductors(all_conductors):
+    selected = select_heartbeat_conductors(all_conductors)
+    changed = False
+
+    # Forget conductors that are gone or no longer heartbeat-enabled so the
+    # state stays bounded.
+    active = {c.get("name", "") for c in selected}
+    for gone in [n for n in need_state if n not in active]:
+        del need_state[gone]
+        changed = True
+
+    loop = asyncio.get_running_loop()
+    for conductor in selected:
         name = conductor.get("name", "")
         profile = conductor.get("profile") or "default"
         if not name:
             continue
-        title = conductor_session_title(name)
         try:
-            loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
-                functools.partial(get_session_output, title, profile=profile),
+                functools.partial(
+                    get_session_output, conductor_session_title(name), profile=profile,
+                ),
             )
+            # A failed read is not a reply without NEED lines: keep the counts.
+            if not response or response.startswith(SESSION_OUTPUT_ERROR_PREFIX):
+                continue
+            reply_id = hashlib.sha256(response.encode("utf-8")).hexdigest()
+            entry = need_state.get(name) or {}
+            if entry.get("reply") == reply_id:
+                continue  # same reply as the last scan: already handled
+
+            need_filtered = filter_need_lines(response, entry.get("counts") or {})
+            lines = need_filtered["alerts"] + need_filtered["retired"]
+            if lines:
+                prefix = f"[{name}] " if len(all_conductors) > 1 else ""
+                alert_msg = f"{prefix}Conductor alert:\n" + "\n".join(lines)
+                if not await _deliver_need_alert(
+                    alert_msg, tg_user_id, telegram_bot, slack_app,
+                    slack_channel_id, discord_bot, discord_channel_id,
+                ):
+                    log.error(
+                        "NEED scan [%s]: %d NEED line(s) NOT delivered (no channel ok); retrying next scan",
+                        name, len(lines),
+                    )
+                    continue
+                log.info("NEED scan [%s]: forwarded %d NEED line(s)", name, len(lines))
+
+            need_state[name] = {"reply": reply_id, "counts": need_filtered["counts"]}
+            changed = True
         except Exception as e:
-            log.error("NEED scan [%s]: output read failed: %s", name, e)
-            continue
-        if not response:
-            continue
-        current = {l.strip() for l in response.splitlines() if l.strip().startswith("NEED:")}
-        seen = seen_needs.setdefault(name, set())
-        fresh = sorted(current - seen)
-        if not fresh:
-            continue
+            log.error("NEED scan [%s] error: %s", name, e)
 
-        prefix = f"[{name}] " if len(all_conductors) > 1 else ""
-        alert_msg = f"{prefix}Conductor alert:\n" + "\n".join(fresh)
+    if changed:
+        save_state()
 
-        delivered = False
-        if telegram_bot and tg_user_id:
-            try:
-                alert_html = md_to_tg_html(alert_msg)
-                for chunk in split_message(alert_html):
-                    await telegram_bot.send_message(tg_user_id, chunk, parse_mode="HTML")
+
+async def _deliver_need_alert(
+    alert_msg: str, tg_user_id, telegram_bot, slack_app, slack_channel_id,
+    discord_bot, discord_channel_id,
+) -> bool:
+    """Send a NEED alert to every configured channel; True if any accepted it."""
+    delivered = False
+    if telegram_bot and tg_user_id:
+        try:
+            alert_html = md_to_tg_html(alert_msg)
+            for chunk in split_message(alert_html):
+                await telegram_bot.send_message(tg_user_id, chunk, parse_mode="HTML")
+            delivered = True
+        except Exception as e:
+            log.error("Failed to send Telegram notification: %s", e)
+    if slack_app and slack_channel_id:
+        try:
+            await slack_app.client.chat_postMessage(channel=slack_channel_id, text=alert_msg)
+            delivered = True
+        except Exception as e:
+            log.error("Failed to send Slack notification: %s", e)
+    if discord_bot and discord_channel_id:
+        try:
+            channel = discord_bot.get_channel(discord_channel_id)
+            if channel:
+                await send_discord_output(channel, alert_msg)
                 delivered = True
-            except Exception as e:
-                log.error("Failed to send Telegram notification: %s", e)
-        if slack_app and slack_channel_id:
-            try:
-                await slack_app.client.chat_postMessage(channel=slack_channel_id, text=alert_msg)
-                delivered = True
-            except Exception as e:
-                log.error("Failed to send Slack notification: %s", e)
-        if discord_bot and discord_channel_id:
-            try:
-                channel = discord_bot.get_channel(discord_channel_id)
-                if channel:
-                    await send_discord_output(channel, alert_msg)
-                    delivered = True
-            except Exception as e:
-                log.error("Failed to send Discord notification: %s", e)
-
-        # Mark seen ONLY after a confirmed delivery: a failed channel must not
-        # swallow the alert — unseen lines retry next scan.
-        if delivered:
-            seen |= current
-            save_state()
-            log.info("NEED scan [%s]: forwarded %d NEED line(s)", name, len(fresh))
-        else:
-            log.error("NEED scan [%s]: %d NEED line(s) NOT delivered (no channel ok)", name, len(fresh))
+        except Exception as e:
+            log.error("Failed to send Discord notification: %s", e)
+    return delivered
 
 
 async def heartbeat_need_scan_loop(
     config: dict, telegram_bot=None, slack_app=None, slack_channel_id=None,
     discord_bot=None, discord_channel_id=None,
 ):
-    """Scan-only NEED: forwarder for OS-heartbeat mode.
+    """Scan-only NEED: forwarder for OS-heartbeat mode (issue #2426).
 
     When systemd/launchd heartbeat timers drive the conductors, the bridge
     must not send its own ticks (double-trigger). But NEED: -> channel
@@ -3409,44 +3493,37 @@ async def heartbeat_need_scan_loop(
     heartbeats installed (the default since conductor setup installs them)
     NEED: lines never reached Slack/Telegram/Discord at all.
 
-    This loop sends nothing. On entry and then each interval it runs
-    need_scan_cycle: read-only output scans that forward only
-    never-before-seen NEED: lines. The seen-set persists to
-    need-scan-state.json (atomic write) so restarts never re-alert.
+    This loop sends nothing. On entry and then every half heartbeat interval
+    it runs need_scan_cycle. get_session_output returns only the latest
+    reply and the OS timer is not phase-locked with this loop, so scanning
+    at half the interval narrows the window in which two replies land
+    between scans and the earlier one's NEED lines are never seen; unchanged
+    replies are skipped, so the extra scans cost one read per conductor.
+
+    State persists to CONDUCTOR_DIR/need-scan-state.json so a restart does
+    not re-alert. On the first start without that file, NEED lines in each
+    conductor's current reply are forwarded once (they were never forwarded
+    before, since OS-heartbeat mode dropped them).
     """
-    interval_seconds = max(1, config["heartbeat_interval"]) * 60
-
-    state_path = os.path.join(config.get("conductor_dir") or os.path.expanduser("~/.local/share/agent-deck/conductor"), "need-scan-state.json")
-    try:
-        with open(state_path) as sf:
-            _saved = json.load(sf)
-        seen_needs = {k: set(v) for k, v in _saved.get("seen_needs", {}).items()}
-    except Exception:
-        seen_needs = {}
-
-    def _save_scan_state():
-        try:
-            tmp = state_path + ".tmp"
-            with open(tmp, "w") as sf:
-                json.dump({"seen_needs": {k: sorted(v) for k, v in seen_needs.items()}}, sf)
-                sf.flush()
-                os.fsync(sf.fileno())
-            os.replace(tmp, state_path)
-        except Exception as e:
-            log.error("NEED scan: state save failed: %s", e)
+    scan_seconds = max(1, config["heartbeat_interval"]) * 60 // 2
+    state_path = CONDUCTOR_DIR / NEED_SCAN_STATE_FILE
+    need_state = load_need_scan_state(state_path)
 
     log.info(
-        "NEED scan loop active (scan-only; OS heartbeat drives ticks; interval: %d min)",
-        config["heartbeat_interval"],
+        "NEED scan loop active (scan-only; OS heartbeat drives ticks; scan every %d s)",
+        scan_seconds,
     )
 
     while True:
-        await need_scan_cycle(
-            config, seen_needs, _save_scan_state,
-            telegram_bot, slack_app, slack_channel_id,
-            discord_bot, discord_channel_id,
-        )
-        await asyncio.sleep(interval_seconds)
+        try:
+            await need_scan_cycle(
+                config, need_state, lambda: save_need_scan_state(state_path, need_state),
+                telegram_bot, slack_app, slack_channel_id,
+                discord_bot, discord_channel_id,
+            )
+        except Exception as e:
+            log.error("NEED scan cycle failed: %s", e)
+        await asyncio.sleep(scan_seconds)
 
 
 async def heartbeat_loop(
