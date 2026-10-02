@@ -2,6 +2,7 @@ package session
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -106,7 +107,7 @@ const DefaultReviveConfirmAfter = 3 * time.Second
 // cold-start rate limits when many sessions are errored simultaneously.
 func NewReviver() *Reviver {
 	return &Reviver{
-		TmuxExists:   defaultTmuxExists,
+		TmuxExists:   sweepTmuxExists(),
 		PipeAlive:    defaultPipeAlive,
 		ReviveAction: defaultReviveAction,
 		Stagger:      500 * time.Millisecond,
@@ -375,6 +376,32 @@ func instanceTmuxName(inst *Instance) string {
 // doesn't exist).
 func defaultTmuxExists(name, socketName string) bool {
 	return tmux.HasSessionOnSocket(socketName, name)
+}
+
+// sweepTmuxExists answers TmuxExists from one list-sessions per socket for the
+// life of a Reviver (one sweep). Probing has-session per instance forked ~500
+// tmux clients every 60s sweep at 492 sessions. A listing that fails is
+// indeterminate, so that socket falls back to the per-session probe.
+func sweepTmuxExists() func(name, socketName string) bool {
+	var mu sync.Mutex
+	listed := map[string]map[string]struct{}{}
+	return func(name, socketName string) bool {
+		mu.Lock()
+		names, ok := listed[socketName]
+		if !ok {
+			var err error
+			if names, err = tmux.ListSessionNamesOnSocket(socketName); err != nil {
+				names = nil
+			}
+			listed[socketName] = names
+		}
+		mu.Unlock()
+		if names == nil {
+			return defaultTmuxExists(name, socketName)
+		}
+		_, exists := names[name]
+		return exists
+	}
 }
 
 // defaultPipeAlive consults the global PipeManager. Returns false if the

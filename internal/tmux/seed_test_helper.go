@@ -1,6 +1,10 @@
 package tmux
 
 import (
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -103,4 +107,49 @@ func ExpirePaneInfoCacheForTest(t testing.TB) {
 		paneCacheTime = time.Time{}
 		paneCacheMu.Unlock()
 	})
+}
+
+// SeedSessionCacheForTest replaces the default-socket session listing with the
+// supplied names and marks it fresh; cleanup restores the zero state.
+func SeedSessionCacheForTest(t testing.TB, names ...string) {
+	t.Helper()
+	data := make(map[string]int64, len(names))
+	for _, n := range names {
+		data[n] = time.Now().Unix()
+	}
+	sessionCacheMu.Lock()
+	sessionCacheData = data
+	sessionCacheTime = time.Now()
+	sessionCacheMu.Unlock()
+	t.Cleanup(func() {
+		sessionCacheMu.Lock()
+		sessionCacheData = nil
+		sessionCacheTime = time.Time{}
+		sessionCacheMu.Unlock()
+	})
+}
+
+// StaleSocketForTest points TMUX_TMPDIR at a temp dir holding a socket file
+// with no listener and returns its name, so a tmux client on it gets "no
+// server running" (a missing socket file gives "error connecting" instead).
+func StaleSocketForTest(t testing.TB) string {
+	t.Helper()
+	tmp, err := os.MkdirTemp("", "adsock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+	dir := filepath.Join(tmp, fmt.Sprintf("tmux-%d", os.Getuid()))
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_TMPDIR", tmp)
+	name := "stale"
+	l, err := net.Listen("unix", filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	_ = l.Close()
+	return name
 }

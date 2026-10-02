@@ -337,6 +337,12 @@ func RefreshSessionCache() {
 	defer cancel()
 	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", tmuxFmt("#{session_name}", "#{window_activity}", "#{window_index}", "#{window_id}", "#{window_name}"))
 	output, err := commandOutput(cmd)
+	// "no server running" is an authoritative empty listing, not a failed
+	// one. Caching it as invalid sent every session's status check to its
+	// own has-session fork each pass (~37 forks/s with 492 dead rows).
+	if err != nil && ctx.Err() == nil && isEmptyTmuxServerResult(err) {
+		output, err = nil, nil
+	}
 	if err != nil {
 		sessionCacheMu.Lock()
 		sessionCacheData = nil
@@ -3247,6 +3253,25 @@ func (s *Session) Exists() bool {
 	return err == nil
 }
 
+// AbsentFromCache reports, without spawning a subprocess, that the current
+// session listing positively shows this session missing from the default
+// server and no PipeManager connection holds it. Exists() does not trust that
+// negative because it can transiently miss a LIVE session; a caller may only
+// use it to keep an already-dead session dead, where a miss just delays
+// noticing a revival until the next refresh.
+func (s *Session) AbsentFromCache() bool {
+	if strings.TrimSpace(s.SocketName) != DefaultSocketName() {
+		return false
+	}
+	if exists, cacheValid := sessionExistsFromCache(s.Name); !cacheValid || exists {
+		return false
+	}
+	if pm := GetPipeManager(); pm != nil && pm.IsConnected(s.Name) {
+		return false
+	}
+	return true
+}
+
 // ExistsCached is a cheap, non-blocking liveness check for hot periodic loops
 // that iterate over ALL sessions every tick (e.g. the background configure loop
 // and theme propagation). It NEVER spawns a subprocess on the calling
@@ -3324,6 +3349,11 @@ func (s *Session) IsPaneDead() bool {
 // pair to distinguish a clean exit (0) from a crash (non-zero) instead of
 // treating every terminated pane as an error.
 func (s *Session) PaneDeadExitStatus() (int, bool) {
+	// A session the listing shows absent has no pane to report on; skip the
+	// fork that would only fail.
+	if s.AbsentFromCache() {
+		return 0, false
+	}
 	// Bounded like IsPaneDead: this runs on the notify-daemon poll loop, so a
 	// wedged tmux server must not stall it.
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)

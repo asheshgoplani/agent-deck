@@ -6946,6 +6946,18 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		time.Since(i.lastErrorCheck) < errorRecheckInterval {
 		return nil // Skip - still in error/stopped, checked recently
 	}
+	// An error/stopped row whose session this tick's listing shows absent is
+	// answered without forking has-session + list-panes. With ~130 ghosts those
+	// two forks per row per 30s pushed whole status passes past the 250 ms
+	// health budget. A recheck of a confirmed ghost stays dead as is; a first
+	// sighting still runs the terminated-pane classification below.
+	if (i.Status == StatusError || i.Status == StatusStopped) && i.tmuxSession.AbsentFromCache() {
+		if !i.lastErrorCheck.IsZero() {
+			i.lastErrorCheck = time.Now()
+			return nil
+		}
+		exists, checkedExists = false, true
+	}
 
 	// Check if tmux session exists
 	if !checkedExists {
