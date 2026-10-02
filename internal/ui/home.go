@@ -364,7 +364,7 @@ type Home struct {
 	initialSelectDone   bool                   // Guard so preselection only fires once
 	previewMode         PreviewMode            // What to show in preview pane (both, output-only, analytics-only)
 	groupViewMode       session.GroupViewMode  // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
-	timeFilter          session.TimeFilterMode // Recency filter: all, today, 3 days, 7 days (cycled by hotkey '*')
+	timeFilter          session.TimeFilterMode // Recency filter: all, today, 3 days, 7 days, 30 days (cycled by hotkey '*')
 	sidebarMode         sidebarPresentation    // Session navigation: grouped (default) or flat
 	compactSidebar      bool                   // Narrow session rail; manual split resizing opts out
 	embeddedLayout      bool                   // Embedded terminal layout; false preserves classic interaction
@@ -12659,7 +12659,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "*":
-		// Cycle time-range filter: all → today → 3 days → 7 days → all.
+		// Cycle time-range filter: all → today → 3 days → 7 days → 30 days → all.
 		// Preserve the cursor's row identity across the rebuild, same as the
 		// 't' view-mode cycle above.
 		selectedBefore := h.captureSelectedItemIdentity()
@@ -25624,6 +25624,8 @@ func (h *Home) renderFilterBarHint() []string {
 				label = "3 days"
 			case session.TimeFilter7Days:
 				label = "7 days"
+			case session.TimeFilter30Days:
+				label = "30 days"
 			}
 		}
 		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+label))
@@ -25656,7 +25658,7 @@ func (h *Home) renderFilterBarHint() []string {
 		segs = append(segs, mark("t", false)+dim.Render(" view"))
 	}
 
-	// Time-range filter indicator (today / 3 days / 7 days), only when active.
+	// Time-range filter indicator (today / 3 days / 7 days / 30 days), only when active.
 	if h.timeFilter == session.TimeFilterAll {
 		segs = append(segs, mark(timeFilterKey, false)+dim.Render(" time"))
 	}

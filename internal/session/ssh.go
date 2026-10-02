@@ -2814,7 +2814,7 @@ type RemoteSessionInfo struct {
 	SubstateDetail string `json:"substate_detail,omitempty"`
 
 	// LastActivityAt is the remote session's Instance.DisplayLastActivityTime(),
-	// RFC3339Nano-formatted (fractional seconds kept: TimeFilterMode's 3/7-day
+	// RFC3339Nano-formatted (fractional seconds kept: TimeFilterMode's 3/7/30-day
 	// cutoffs are exact instants, and truncating to whole seconds could flip a
 	// session sitting right on one), so the local recency filter
 	// (session.TimeFilterMode) can apply to remote rows the same way it
