@@ -9,7 +9,7 @@ import { menuModelSignal } from '../dataModel.js'
 import { selectSession } from '../state.js'
 import { activeTabSignal, fleetViewSignal, conductorBannerOpenSignal } from '../uiState.js'
 import { renderMarkdown } from '../miniMarkdown.js'
-import { AnnotationLine, KANBAN_COLUMNS, cardFields, kanbanColumn, noteExcerpt, sessionAnnotation } from '../annotations.js'
+import { AnnotationLine, KANBAN_COLUMNS, cardFields, kanbanColumn, noteExcerpt, processHint, sessionAnnotation } from '../annotations.js'
 
 const EMPTY_REMOTE_COUNTS = {
   remotesOnline: 0, remotesOffline: 0, sessions: 0,
@@ -114,11 +114,10 @@ function GroupCard({ name, items, onSelect }) {
   `
 }
 
-// Within a column, sessions that want a human (process waiting) float up,
-// then running ones, then the rest; ties break on title.
-const PROCESS_RANK = { waiting: 0, running: 1, starting: 1, idle: 2, stopped: 3, error: 4 }
-const byAttention = (a, b) =>
-  (PROCESS_RANK[a.status] ?? 5) - (PROCESS_RANK[b.status] ?? 5) || a.title.localeCompare(b.title)
+// Within a column, most recently active first; ties break on title. Runtime
+// state does not rank cards: the column already says where the work is.
+const byRecency = (a, b) =>
+  String(b.lastAccessedAt || '').localeCompare(String(a.lastAccessedAt || '')) || a.title.localeCompare(b.title)
 
 // One kanban card, written to be read at normal zoom: name, then status
 // chip · ticket · group, then the conductor's labeled Goal / Current state /
@@ -126,14 +125,15 @@ const byAttention = (a, b) =>
 // headline plus a few lines of their note.
 function KanbanCard({ s, groupLabel, onSelect }) {
   const ann = sessionAnnotation(s)
+  const proc = processHint(s)
   const fields = cardFields(s)
   const note = fields.length ? '' : noteExcerpt((s.hints || {}).note, 3)
   return html`
-    <button class=${`kb-card ${s.status}`} data-testid="kanban-card" data-session-id=${s.id} onClick=${() => onSelect(s.id)}>
+    <button class="kb-card" data-testid="kanban-card" data-session-id=${s.id} onClick=${() => onSelect(s.id)}>
       <div class="kb-top">
-        <span class=${`tdot ${s.status}`} title=${'process: ' + s.status}/>
         <span class="kb-title">${s.title}</span>
-        <span class="kb-proc">${s.status}</span>
+        ${proc.warn && html`<span class=${`kb-proc-warn ${proc.severe ? 'severe' : ''}`} data-testid="kanban-proc-warn">${proc.warn}</span>`}
+        <span class=${`tdot ${s.status}`} title=${proc.title} aria-label=${proc.title} data-testid="kanban-proc-dot"/>
       </div>
       <div class="kb-meta">
         ${ann.status && html`<span class=${`hint-status ${ann.statusTone}`} data-testid="kanban-status">${ann.status}</span>`}
@@ -192,7 +192,7 @@ function StatusKanban({ sessions, groupLabels, onSelect }) {
   return html`
     <div class="kanban" data-testid="fleet-kanban" style=${`--kb-cols:${cols.length}`}>
       ${cols.map(c => {
-        const items = (buckets[c.id] || []).slice().sort(byAttention)
+        const items = (buckets[c.id] || []).slice().sort(byRecency)
         return html`
           <div class=${`kb-col ${c.tone}`} key=${c.id} data-testid=${`kanban-col-${c.id}`}>
             <div class="kb-col-head">
@@ -242,21 +242,9 @@ export function FleetPane() {
     }
   }, [])
 
-  const localCounts = useMemo(() => ({
-    running: sessions.filter(s => s.status === 'running').length,
-    waiting: sessions.filter(s => s.status === 'waiting').length,
-    error:   sessions.filter(s => s.status === 'error').length,
-    idle:    sessions.filter(s => s.status === 'idle').length,
-  }), [sessions])
   const remoteCounts = remoteFleet?.counts || EMPTY_REMOTE_COUNTS
   const remotes = Array.isArray(remoteFleet?.remotes) ? remoteFleet.remotes : []
   const remoteTotal = remoteCounts.remotesOnline + remoteCounts.remotesOffline
-  const counts = {
-    running: localCounts.running + remoteCounts.running,
-    waiting: localCounts.waiting + remoteCounts.waiting,
-    error: localCounts.error + remoteCounts.error,
-    idle: localCounts.idle + remoteCounts.idle,
-  }
   const sessionTotal = sessions.length + remoteCounts.sessions
   const totalCost = sessions.reduce((n, s) => n + (s.cost || 0), 0)
 
@@ -267,6 +255,12 @@ export function FleetPane() {
   const view = fleetViewSignal.value === 'groups' ? 'groups' : 'status'
   const conductors = sessions.filter(isConductorSession)
   const workers = sessions.filter(s => !isConductorSession(s))
+  // Tiles count exactly what the columns hold: workers by semantic status.
+  const statusCounts = useMemo(() => {
+    const n = {}
+    for (const s of workers) n[kanbanColumn(s)] = (n[kanbanColumn(s)] || 0) + 1
+    return n
+  }, [workers])
   // Leaf group name ("stride/ws1" -> "ws1"), as the group cards show it.
   const groupLabels = useMemo(
     () => Object.fromEntries(groups.map(g => [g.path, g.name || g.label])),
@@ -277,10 +271,10 @@ export function FleetPane() {
     <div class="fleet" data-testid="fleet-pane">
       ${conductors.map(s => html`<${ConductorBanner} key=${s.id} s=${s} onSelect=${onSelect}/>`)}
       <div class="fleet-stats">
-        <div class="stat" data-testid="fleet-stat-running"><div class="lbl">RUNNING</div><div class="num running">${counts.running}</div></div>
-        <div class="stat" data-testid="fleet-stat-waiting"><div class="lbl">WAITING</div><div class="num waiting">${counts.waiting}</div></div>
-        <div class="stat" data-testid="fleet-stat-error"><div class="lbl">ERROR</div><div class="num error">${counts.error}</div></div>
-        <div class="stat" data-testid="fleet-stat-idle"><div class="lbl">IDLE</div><div class="num idle">${counts.idle}</div></div>
+        ${KANBAN_COLUMNS.filter(c => c.always || statusCounts[c.id]).map(c => html`
+          <div key=${c.id} class=${`stat tone-${c.tone || 'none'}`} data-testid=${`fleet-stat-${c.id}`}>
+            <div class="lbl">${c.tile}</div><div class="num">${statusCounts[c.id] || 0}</div>
+          </div>`)}
         <div class="stat" data-testid="fleet-stat-cost"><div class="lbl">SPEND · TODAY</div><div class="num cost">$${totalCost.toFixed(2)}</div></div>
         <div class="stat" data-testid="fleet-stat-sessions">
           <div class="lbl">SESSIONS</div>

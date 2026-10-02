@@ -27,8 +27,9 @@ const MENU = [
   sess('asks', 'waiting', { status: 'needs-input', headline: 'FDP-2115 scoping · needs your call on rule scope', note: '## Open\n- **which** rules qualify?\n- second line\n- third\n- fourth' }),
   sess('review', 'idle', { status: 'ready-for-review', ticket: 'BILL-590', goal: 'Audit B&R error copy', state: '45 msgs reviewed, 4 central fixes', decision: 'Approve the 4 fixes?', headline: 'ignored when fields exist' }),
   sess('busy', 'running', {}),
-  sess('parked', 'waiting', undefined),
-  sess('shipped', 'idle', { status: 'done' }),
+  sess('untagged', 'waiting', undefined),
+  sess('shipped', 'error', { status: 'done' }),
+  sess('paused-one', 'running', { status: 'Paused' }),
   sess('broken', 'error', { status: 'in-progress' }),
   { type: 'group', level: 0, group: { name: 'conductor', path: 'conductor', expanded: true, order: 1 } },
   sess('brain-16', 'waiting', { note: '# Fleet Summary\n- **3** need you' }, 'conductor'),
@@ -38,10 +39,17 @@ describe('kanbanColumn', () => {
   it('uses the hint, lets a process error win, and falls back on process status', async () => {
     const { kanbanColumn } = await import(annotationsModulePath)
     expect(kanbanColumn({ status: 'waiting', hints: { status: 'needs-input' } })).toBe('needs-input')
-    expect(kanbanColumn({ status: 'error', hints: { status: 'done' } })).toBe('error')
-    expect(kanbanColumn({ status: 'running', hints: {} })).toBe('in-progress')
-    expect(kanbanColumn({ status: 'idle' })).toBe('waiting')
-    expect(kanbanColumn({ status: 'idle', hints: { status: 'blocked' } })).toBe('waiting')
+    // A set status always wins over runtime state.
+    expect(kanbanColumn({ status: 'error', hints: { status: 'done' } })).toBe('done')
+    expect(kanbanColumn({ status: 'running', hints: { status: 'parked' } })).toBe('parked')
+    // Aliases, case and separators.
+    expect(kanbanColumn({ status: 'idle', hints: { status: 'paused' } })).toBe('parked')
+    expect(kanbanColumn({ status: 'idle', hints: { status: 'Ready For_Review' } })).toBe('ready-for-review')
+    expect(kanbanColumn({ status: 'idle', hints: { status: 'blocked' } })).toBe('needs-input')
+    // No (or an unknown) status is untriaged, never runtime-derived.
+    expect(kanbanColumn({ status: 'running', hints: {} })).toBe('untriaged')
+    expect(kanbanColumn({ status: 'idle' })).toBe('untriaged')
+    expect(kanbanColumn({ status: 'idle', hints: { status: 'mystery' } })).toBe('untriaged')
   })
 
   it('excerpts markdown notes as plain text', async () => {
@@ -60,18 +68,41 @@ describe('Fleet status kanban', () => {
     fleetViewSignal.value = 'status'
   })
 
-  it('is the default view, with columns in order and cards in the right column', async () => {
+  it('is the default view, with semantic columns and tiles that agree', async () => {
     const { FleetPane } = await import(paneModulePath)
     const c = mount(html`<${FleetPane}/>`)
     const cols = [...c.querySelectorAll('[data-testid^="kanban-col-"]')].map(e => e.dataset.testid.replace('kanban-col-', ''))
-    expect(cols).toEqual(['needs-input', 'ready-for-review', 'in-progress', 'waiting', 'done', 'error'])
-    const idsIn = (col) => [...c.querySelectorAll(`[data-testid="kanban-col-${col}"] [data-testid="kanban-card"]`)].map(e => e.dataset.sessionId)
+    expect(cols).toEqual(['needs-input', 'ready-for-review', 'in-progress', 'parked', 'done', 'untriaged'])
+    const idsIn = (col) => [...c.querySelectorAll(`[data-testid="kanban-col-${col}"] [data-testid="kanban-card"]`)].map(e => e.dataset.sessionId).sort()
     expect(idsIn('needs-input')).toEqual(['asks'])
     expect(idsIn('ready-for-review')).toEqual(['review'])
-    expect(idsIn('in-progress')).toEqual(['busy'])
-    expect(idsIn('waiting')).toEqual(['parked'])
+    expect(idsIn('in-progress')).toEqual(['broken'])
+    expect(idsIn('parked')).toEqual(['paused-one'])
     expect(idsIn('done')).toEqual(['shipped'])
-    expect(idsIn('error')).toEqual(['broken'])
+    expect(idsIn('untriaged')).toEqual(['busy', 'untagged'])
+    expect(c.querySelector('[data-testid="kanban-col-error"]')).toBeNull()
+
+    // Tiles count the same buckets; no runtime tiles remain.
+    const tile = (id) => c.querySelector(`[data-testid="fleet-stat-${id}"] .num`)?.textContent
+    expect([tile('needs-input'), tile('ready-for-review'), tile('in-progress'), tile('parked'), tile('done'), tile('untriaged')])
+      .toEqual(['1', '1', '1', '1', '1', '2'])
+    for (const gone of ['running', 'waiting', 'error', 'idle']) {
+      expect(c.querySelector(`[data-testid="fleet-stat-${gone}"]`)).toBeNull()
+    }
+  })
+
+  it('shows runtime only as a secondary dot, with a quiet hint for a stopped parked/done session', async () => {
+    const { FleetPane } = await import(paneModulePath)
+    const c = mount(html`<${FleetPane}/>`)
+    const card = (id) => c.querySelector(`[data-testid="kanban-card"][data-session-id="${id}"]`)
+    expect(card('busy').querySelector('[data-testid="kanban-proc-dot"]').getAttribute('title')).toBe('process: running')
+    expect(card('busy').querySelector('[data-testid="kanban-proc-warn"]')).toBeNull()
+    const quiet = card('shipped').querySelector('[data-testid="kanban-proc-warn"]')
+    expect(quiet.textContent).toBe('process not running')
+    expect(quiet.classList.contains('severe')).toBe(false)
+    const loud = card('broken').querySelector('[data-testid="kanban-proc-warn"]')
+    expect(loud.textContent).toBe('process error')
+    expect(loud.classList.contains('severe')).toBe(true)
   })
 
   it('shows the full headline, a note excerpt and the group badge on the card', async () => {

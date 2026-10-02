@@ -1164,6 +1164,35 @@ without `--push` or the browser has no Push API. Push needs a secure context:
 
 The browser UI includes the live Command Center, session terminal, costs, archive, and settings views. See [Command Center](docs/COMMAND-CENTER.md) for the fleet view; use `--read-only` when browser clients should not mutate sessions.
 
+### Fleet board: semantic status
+
+The web UI's **Fleet** tab is a kanban of what each session's *work* is doing,
+taken from its `status` annotation. It is not grouped by whether the agent
+process is running. The stat tiles count the same columns. Runtime process
+state only appears as a small dot on each card (hover for `process: running`
+etc.).
+
+```bash
+agent-deck session annotate <id> --hint status=needs-input \
+  --hint goal="…" --hint state="…" --hint decision="…" --ticket ENG-123
+```
+
+| Column | `status` value | Also accepted |
+|---|---|---|
+| Needs input | `needs-input` | `needs-you`, `needs-human`, `blocked`, `waiting-on-you`, `waiting-for-input` |
+| Ready for review | `ready-for-review` | `review`, `in-review`, `needs-review` |
+| In progress | `in-progress` | `working`, `active`, `wip`, `in-flight` |
+| Parked | `parked` | `paused`, `on-hold`, `hold`, `waiting`, `deferred`, `backlog` |
+| Done | `done` | `complete`, `completed`, `finished`, `closed`, `merged`, `shipped` |
+| Untriaged | *(unset or any other value)* | |
+
+Values are case-insensitive, and spaces or underscores count as hyphens. A set
+status always wins over runtime state. A parked or done session whose process
+has stopped shows only a quiet "process not running" note. Cards show the
+`goal`, `state` and `decision` hints as **Goal / Current state / Decision
+needed**, falling back to `headline`. Conductor sessions are pinned above the
+board, and their `note` (or `summary`) hint is rendered there as markdown.
+
 ## Documentation
 
 **Onboarding** — five-minute walkthroughs for new users:

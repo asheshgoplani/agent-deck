@@ -3,26 +3,64 @@
 // Command Center.
 import { html } from 'htm/preact'
 
-// Colour for the semantic status hint (`session annotate --hint status=...`),
-// which says where the WORK is, as opposed to the process dot. Unknown values
-// still render, in the neutral chip.
+// The semantic status hint (`session annotate --hint status=...`) says where
+// the WORK is. It is the board's only grouping: runtime process state (the
+// tmux/agent running|waiting|idle|error) never decides a column or a tile.
+//
+// Accepted values: the five canonical ids below, or any alias. Matching is
+// case-insensitive and treats spaces/underscores as hyphens. Anything else
+// (or no status at all) is "untriaged".
+export const STATUS_ALIASES = {
+  'needs-input':      ['needs-you', 'needs-human', 'blocked', 'waiting-on-you', 'waiting-for-input'],
+  'ready-for-review': ['review', 'in-review', 'needs-review'],
+  'in-progress':      ['working', 'active', 'wip', 'in-flight'],
+  'parked':           ['paused', 'on-hold', 'hold', 'waiting', 'deferred', 'backlog'],
+  'done':             ['complete', 'completed', 'finished', 'closed', 'merged', 'shipped'],
+}
+const STATUS_LOOKUP = Object.fromEntries(
+  Object.entries(STATUS_ALIASES).flatMap(([id, aliases]) => [[id, id], ...aliases.map(a => [a, id])]),
+)
+
+// normalizeStatus maps a raw status hint to its canonical id, or '' when it
+// is unset or not one the board knows.
+export function normalizeStatus(raw) {
+  const key = String(raw || '').trim().toLowerCase().replace(/[\s_]+/g, '-')
+  return STATUS_LOOKUP[key] || ''
+}
+
+// Chip colour per canonical status. Parked is deliberately quiet.
 export const HINT_STATUS_TONE = {
   'needs-input': 'err',
   'ready-for-review': 'warn',
   'in-progress': 'info',
+  'parked': 'muted',
   'done': 'ok',
 }
 
-// The card's annotation line: headline (falling back to the creation-time
-// purpose hint), status and ticket. Empty strings when unset.
+// The card's annotation line: headline (falling back to goal, then the
+// creation-time purpose hint), status and ticket. `status` is the canonical
+// id when recognised, else the raw value (shown in a neutral chip).
 export function sessionAnnotation(s) {
   const h = s.hints || {}
+  const canon = normalizeStatus(h.status)
   return {
     headline: h.headline || h.goal || h.purpose || '',
-    status: h.status || '',
-    statusTone: HINT_STATUS_TONE[h.status] || '',
+    status: canon || (h.status || '').trim(),
+    statusTone: HINT_STATUS_TONE[canon] || '',
     ticket: h.ticket || '',
   }
+}
+
+// processHint is the secondary runtime indicator for a card: always a
+// tooltip, plus a short warning only when the process being down matters.
+// A parked/done session whose process stopped or errored is expected, so it
+// gets at most a quiet "process not running".
+export function processHint(s) {
+  const canon = normalizeStatus((s.hints || {}).status)
+  const down = s.status === 'error' || s.status === 'stopped'
+  let warn = ''
+  if (down) warn = (canon === 'parked' || canon === 'done' || s.status === 'stopped') ? 'process not running' : 'process error'
+  return { title: 'process: ' + (s.status || 'unknown'), warn, severe: warn === 'process error' }
 }
 
 // AnnotationLine renders status chip + ticket badge + headline for a session
@@ -42,28 +80,24 @@ export function AnnotationLine({ s, class: cls = '' }) {
   `
 }
 
-// Status-kanban columns for the Fleet board, in display order. `always`
-// columns render even when empty so the board keeps its shape; the fallback
-// column only appears when an unannotated session lands in it.
+// Status-kanban columns for the Fleet board, in display order; the stat
+// tiles use the same list (`tile` is the tile label). `always` columns render
+// even when empty so the board keeps its shape; Untriaged only appears when a
+// session has no recognised status.
 export const KANBAN_COLUMNS = [
-  { id: 'needs-input',      label: 'Needs Input',      tone: 'err',  always: true },
-  { id: 'ready-for-review', label: 'Ready for Review', tone: 'warn', always: true },
-  { id: 'in-progress',      label: 'In Progress',      tone: 'info', always: true },
-  { id: 'waiting',          label: 'Waiting · no status', tone: '',  always: false },
-  { id: 'done',             label: 'Done',             tone: 'ok',   always: true },
-  { id: 'error',            label: 'Error',            tone: 'err',  always: true },
+  { id: 'needs-input',      label: 'Needs input',      tile: 'NEEDS YOU',        tone: 'err',   always: true },
+  { id: 'ready-for-review', label: 'Ready for review', tile: 'READY FOR REVIEW', tone: 'warn',  always: true },
+  { id: 'in-progress',      label: 'In progress',      tile: 'IN PROGRESS',      tone: 'info',  always: true },
+  { id: 'parked',           label: 'Parked',           tile: 'PARKED',           tone: 'muted', always: true },
+  { id: 'done',             label: 'Done',             tile: 'DONE',             tone: 'ok',    always: true },
+  { id: 'untriaged',        label: 'Untriaged',        tile: 'UNTRIAGED',        tone: '',      always: false },
 ]
 
-// kanbanColumn places a session on the board. A process error wins (the
-// work cannot progress whatever the hint says); otherwise the semantic status
-// hint decides. Sessions without one fall back on their process status: a
-// running agent is in progress, anything else is parked in "Waiting".
+// kanbanColumn places a session on the board purely by its semantic status.
+// Runtime state is never consulted: a set status always wins, and a session
+// without a recognised one is untriaged.
 export function kanbanColumn(s) {
-  if (s.status === 'error') return 'error'
-  const hint = (s.hints || {}).status
-  if (hint && HINT_STATUS_TONE[hint]) return hint
-  if (s.status === 'running' || s.status === 'starting') return 'in-progress'
-  return 'waiting'
+  return normalizeStatus((s.hints || {}).status) || 'untriaged'
 }
 
 // noteExcerpt turns a (possibly markdown) note hint into a short plain-text

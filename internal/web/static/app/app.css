@@ -328,6 +328,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .hint-status.warn { background: rgba(224,175,104,0.14); color: var(--tn-yellow); }
 .hint-status.info { background: rgba(122,162,247,0.12); color: var(--tn-blue); }
 .hint-status.ok   { background: rgba(115,218,202,0.12); color: var(--tn-green); }
+.hint-status.muted { background: rgba(120,124,153,0.18); color: var(--text-dim); }
 .hint-ticket { border: 1px solid var(--border); background: transparent; color: var(--text-dim); }
 .sess .subline .atts { display: inline-flex; gap: 4px; }
 .sess .subline .att {
@@ -833,7 +834,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .fleet { flex: 1; min-height: 0; overflow: auto; padding: 18px 18px 80px; display: flex; flex-direction: column; gap: 22px; }
 
 .fleet-stats {
-  display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px;
 }
 .fleet-stats .stat {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -1346,7 +1347,8 @@ body[data-rail="hidden"] .rightrail { display: none; }
   border: 1px solid var(--border); color: var(--muted);
 }
 .kb-group { color: var(--tn-purple); border-color: rgba(187,154,247,0.35); }
-.kb-proc { margin-left: auto; border: 0; padding: 0; flex: none; }
+.kb-proc-warn { flex: none; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.kb-proc-warn.severe { color: var(--tn-red); }
 
 /* Pinned conductor banner: the orchestrator sits above the stats and the
    worker kanban, full width, styled apart from worker cards. */
@@ -1380,3 +1382,20 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .conductor-banner .cb-body { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(187,154,247,0.25); font-size: 13.5px; max-height: 45vh; overflow: auto; }
 .cb-empty { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .cb-empty code { font-family: var(--mono); font-size: 11.5px; }
+
+/* Semantic stat tiles: one per kanban column, coloured like its column.
+   Overrides the old positional (nth-child) runtime colours. */
+.fleet-stats .stat.tone-err::after   { background: var(--tn-red); }
+.fleet-stats .stat.tone-warn::after  { background: var(--tn-yellow); }
+.fleet-stats .stat.tone-info::after  { background: var(--tn-blue); }
+.fleet-stats .stat.tone-muted::after { background: var(--muted); }
+.fleet-stats .stat.tone-ok::after    { background: var(--tn-green); }
+.fleet-stats .stat.tone-none::after  { background: var(--border); }
+.fleet-stats .stat.tone-err .num  { color: var(--tn-red); }
+.fleet-stats .stat.tone-warn .num { color: var(--tn-yellow); }
+.fleet-stats .stat.tone-info .num { color: var(--tn-blue); }
+.fleet-stats .stat.tone-ok .num   { color: var(--tn-green); }
+.fleet-stats .stat.tone-muted .num { color: var(--text-dim); }
+.fleet-stats .stat[data-testid="fleet-stat-cost"]::after { background: var(--accent); }
+.fleet-stats .stat[data-testid="fleet-stat-sessions"]::after { background: var(--tn-cyan); }
+.kb-col.muted { border-top-color: var(--muted); }

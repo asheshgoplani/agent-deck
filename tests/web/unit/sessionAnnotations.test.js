@@ -87,7 +87,9 @@ describe('session annotations', () => {
     expect(tone('ready-for-review')).toBe('warn')
     expect(tone('in-progress')).toBe('info')
     expect(tone('done')).toBe('ok')
-    expect(tone('blocked')).toBe('')
+    expect(tone('parked')).toBe('muted')
+    expect(tone('blocked')).toBe('err') // alias of needs-input
+    expect(tone('something-else')).toBe('')
   })
 
   it('lets the sidebar filter match hint values and tags', async () => {

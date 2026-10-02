@@ -38,16 +38,17 @@ test.describe('fleet pane', () => {
     await expect(page.locator('.term-wrap')).toBeHidden()
   })
 
-  test('stat tiles show counts derived from the fixture seed', async ({ page }) => {
+  test('stat tiles count semantic status, not runtime state', async ({ page }) => {
     await page.goto('/')
     await expect(page.locator('[data-testid="fleet-pane"]')).toBeVisible({ timeout: 5000 })
-    // Seed: sess-002 running; sess-001/003/004 idle; nothing waiting/error.
+    // Seed: four sessions, none annotated with a status hint → all untriaged.
     // toHaveText retries, which absorbs the initial empty render before the
     // first SSE menu snapshot hydrates sessionsSignal.
-    await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
-    await expect(page.locator('[data-testid="fleet-stat-waiting"] .num')).toHaveText('0')
-    await expect(page.locator('[data-testid="fleet-stat-error"] .num')).toHaveText('0')
-    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('3')
+    await expect(page.locator('[data-testid="fleet-stat-untriaged"] .num')).toHaveText('4')
+    for (const id of ['needs-input', 'ready-for-review', 'in-progress', 'parked', 'done']) {
+      await expect(page.locator(`[data-testid="fleet-stat-${id}"] .num`)).toHaveText('0')
+    }
+    await expect(page.locator('[data-testid="fleet-stat-running"]')).toHaveCount(0)
     await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('4')
   })
 
@@ -94,13 +95,14 @@ test.describe('fleet pane', () => {
     await expect(page.locator('.work-head .cur')).toHaveText('innotrade-api')
   })
 
-  test('live update: status change is reflected in stat tiles within ~2s', async ({ page, request }) => {
+  test('live update: a runtime status change reaches the session tile within ~2s', async ({ page, request }) => {
     await page.goto('/')
     await expect(page.locator('[data-testid="fleet-pane"]')).toBeVisible({ timeout: 5000 })
 
+    // Runtime state no longer drives tiles; it is the per-session dot.
     // Pin the starting state so the post-mutation assertion can't false-pass.
-    await expect(page.locator('[data-testid="fleet-stat-waiting"] .num')).toHaveText('0')
-    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('3')
+    const dot = page.locator('[data-testid="fleet-session-tile"][data-session-id="sess-001"] .tdot')
+    await expect(dot).toHaveClass(/\bidle\b/)
 
     // Simulate a TUI-side transition through the fixture admin endpoint.
     // This bypasses the web mutator (no immediate SSE broadcast), so the
@@ -110,10 +112,9 @@ test.describe('fleet pane', () => {
     const res = await request.post('/__fixture/session/sess-001/status?to=waiting')
     expect(res.status()).toBe(204)
 
-    await expect(page.locator('[data-testid="fleet-stat-waiting"] .num')).toHaveText('1', { timeout: 4000 })
-    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('2')
-    // Untouched tiles stay put.
-    await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
+    await expect(dot).toHaveClass(/\bwaiting\b/, { timeout: 4000 })
+    // Semantic tiles are unaffected by a runtime change.
+    await expect(page.locator('[data-testid="fleet-stat-untriaged"] .num')).toHaveText('4')
     await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('4')
   })
 
