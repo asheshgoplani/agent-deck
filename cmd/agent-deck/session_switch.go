@@ -24,7 +24,7 @@ func handleSessionSwitch(profile string, args []string) {
 	maxBytes := fs.Int("max-bytes", session.DefaultHandoffMaxChars, "Maximum transferred context bytes for cross-harness handoff")
 	noStart := fs.Bool("no-start", false, "Create the distinct target without starting it")
 	confirmContextLoss := fs.Bool("confirm-context-loss", false, "Required for lossy cross-harness transfer after reviewing switch-preview")
-	archiveDestination := fs.Bool("archive-destination", false, "Archive a destination conversation that is newer or diverged instead of refusing")
+	archiveDestination := fs.Bool("archive-destination", false, "Install the source conversation even when the destination holds a newer or undated copy; the destination copy is archived next to it, never deleted")
 	jsonOutput := fs.Bool("json", false, "Output the switch result as JSON")
 
 	fs.Usage = func() {
@@ -158,6 +158,7 @@ func handleSessionSwitch(profile string, args []string) {
 		"destination_path": result.DestinationPath, "destination_ready": result.DestinationReady,
 		"source_archived":      false,
 		"destination_archived": result.DestinationArchived,
+		"transcript":           result.Transcript,
 		"restarted":            result.Restarted, "loss_disclosure": result.LossDisclosure,
 	}
 	if *jsonOutput {

@@ -117,35 +117,53 @@ func TestSwitchStaleDestination_OlderDestinationIsArchivedAutomatically(t *testi
 	require.Equal(t, string(source), string(installed), "the source transcript must now be installed at the destination")
 }
 
-// Defect 2b: a destination that is provably newer (or whose staleness cannot
-// be determined) must still be a bounded, recoverable refusal — never an
-// automatic overwrite — but it must carry ErrSwitchDestinationDivergent so a
-// caller can offer an explicit archive-and-retry action instead of a dead
-// end, and that retry must succeed.
-func TestSwitchStaleDestination_NewerDestinationRefusesThenArchivesOnRetry(t *testing.T) {
+// Defect 2b (revised 2026-10-02): a destination that is provably newer than
+// the source is the live conversation and wins: the switch proceeds, keeps
+// those bytes, and installs them under every project key; the older source
+// is never installed over it. Only a destination whose age cannot be read
+// (no timestamped events) is still a bounded refusal carrying
+// ErrSwitchDestinationDivergent, and ArchiveDestination remains the explicit
+// way to insist on the source copy.
+func TestSwitchStaleDestination_NewerDestinationWinsUndatedRefusesThenArchivesOnRetry(t *testing.T) {
 	cfg, home, project, restoreLifecycle := setupSwitchStaleDestinationFixture(t)
 	defer restoreLifecycle()
 	const sid = "11111111-2222-3333-4444-555555555555"
 	writeAccountTranscript(t, home, "personal", project, sid,
 		`{"sessionId":"`+sid+`","type":"user","timestamp":"2026-09-10T09:00:00.000Z","message":"older source"}`+"\n")
-	writeAccountTranscript(t, home, "seminno", project, sid,
-		`{"sessionId":"`+sid+`","type":"user","timestamp":"2026-09-17T13:14:00.000Z","message":"newer destination"}`+"\n")
+	newer := `{"sessionId":"` + sid + `","type":"user","timestamp":"2026-09-17T13:14:00.000Z","message":"newer destination"}` + "\n"
+	destPath := writeAccountTranscript(t, home, "seminno", project, sid, newer)
 
 	storage := newTestStorage(t)
 	inst := &Instance{ID: "switch-source", Title: "source", ProjectPath: project, GroupPath: "test", Tool: "claude", Command: "claude", Account: "personal", ClaudeSessionID: sid, Status: StatusStopped, CreatedAt: time.Now()}
 	require.NoError(t, storage.Save([]*Instance{inst}))
 
-	_, err := SwitchAccount(cfg, inst, "seminno", AccountSwitchOptions{Storage: storage, NoRestart: true})
-	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrSwitchDestinationDivergent), "a genuinely newer destination must stay a refusal, not silently overwrite")
-	require.Equal(t, "personal", inst.Account, "a refused switch must never leave the source mutated")
+	result, err := SwitchAccount(cfg, inst, "seminno", AccountSwitchOptions{Storage: storage, NoRestart: true})
+	require.NoError(t, err, "a newer destination is kept, not refused")
+	require.Equal(t, "seminno", inst.Account)
+	installed, readErr := os.ReadFile(destPath)
+	require.NoError(t, readErr)
+	require.Equal(t, newer, string(installed), "the newer destination bytes must survive untouched")
+	require.NotNil(t, result.Transcript)
+	require.Equal(t, "destination", result.Transcript.Chosen.Side)
+	require.Empty(t, result.DestinationArchived)
 
-	// The failed attempt above must not block a fresh explicit retry (defect 3
-	// covers this more directly; this exercises it through the public API).
-	result, err := SwitchAccount(cfg, inst, "seminno", AccountSwitchOptions{Storage: storage, NoRestart: true, ArchiveDestination: true})
+	// An undated destination copy cannot be compared and stays a refusal that
+	// a caller can resolve with an explicit archive-and-retry.
+	inst2 := &Instance{ID: "switch-source-2", Title: "source2", ProjectPath: filepath.Join(home, "project2"), GroupPath: "test", Tool: "claude", Command: "claude", Account: "personal", ClaudeSessionID: "22222222-2222-3333-4444-555555555555", Status: StatusStopped, CreatedAt: time.Now()}
+	require.NoError(t, storage.Save([]*Instance{inst, inst2}))
+	writeAccountTranscript(t, home, "personal", inst2.ProjectPath, inst2.ClaudeSessionID,
+		`{"sessionId":"`+inst2.ClaudeSessionID+`","type":"user","timestamp":"2026-09-17T13:14:00.000Z","message":"dated source"}`+"\n")
+	writeAccountTranscript(t, home, "seminno", inst2.ProjectPath, inst2.ClaudeSessionID,
+		`{"sessionId":"`+inst2.ClaudeSessionID+`","type":"user","message":"undated destination"}`+"\n")
+	_, err = SwitchAccount(cfg, inst2, "seminno", AccountSwitchOptions{Storage: storage, NoRestart: true})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrSwitchDestinationDivergent), "an undated differing destination must stay a refusal, not silently overwrite")
+	require.Equal(t, "personal", inst2.Account, "a refused switch must never leave the source mutated")
+
+	result, err = SwitchAccount(cfg, inst2, "seminno", AccountSwitchOptions{Storage: storage, NoRestart: true, ArchiveDestination: true})
 	require.NoError(t, err, "ArchiveDestination must make the retry succeed instead of a dead end")
 	require.NotEmpty(t, result.DestinationArchived)
-	require.Equal(t, "seminno", inst.Account)
+	require.Equal(t, "seminno", inst2.Account)
 }
 
 // Defect 3: a failed switch journal is history, not a permanent blocker. The

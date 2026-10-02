@@ -1,6 +1,8 @@
 package sendqueue
 
 import (
+	"errors"
+	"os"
 	"sort"
 	"testing"
 	"time"
@@ -78,6 +80,38 @@ func TestTryLockIsExclusivePerTarget(t *testing.T) {
 	}
 	l2.Release()
 	l3.Release()
+}
+
+// TestLockReleaseReportsCloseError: Release surfaces a failed close of the
+// lock file, and a second Release is a no-op.
+func TestLockReleaseReportsCloseError(t *testing.T) {
+	dir := t.TempDir()
+	l, ok, err := TryLock(dir, "sess-close")
+	if err != nil || !ok {
+		t.Fatalf("lock: %v %v", ok, err)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatalf("clean release: %v", err)
+	}
+	if err := l.Release(); err != nil {
+		t.Fatalf("second release: %v", err)
+	}
+
+	l, ok, err = TryLock(dir, "sess-close")
+	if err != nil || !ok {
+		t.Fatalf("relock: %v %v", ok, err)
+	}
+	// Close the descriptor behind the lock's back so its own close fails.
+	if err := l.f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Release(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("release after external close = %v, want os.ErrClosed", err)
+	}
+	var nilLock *Lock
+	if err := nilLock.Release(); err != nil {
+		t.Fatalf("nil release: %v", err)
+	}
 }
 
 // TestNextIDIsMonotonicWithinAMillisecond: callers in the same millisecond,

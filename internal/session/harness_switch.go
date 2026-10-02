@@ -65,6 +65,11 @@ type HarnessSwitchResult struct {
 	// moved to before this switch installed the source's transcript in its
 	// place, or "" when no archive happened.
 	DestinationArchived string
+	// Transcript records which copy of the conversation a native Claude
+	// switch resumed from, every copy it considered across both accounts and
+	// project keys, and what it installed or backed up. Nil when the session
+	// had no conversation or the switch was not a native Claude switch.
+	Transcript *TranscriptChoice
 	// nativeSource/nativeTarget are the exact durable mutation for the
 	// post-lifecycle registry CAS. They remain private so callers cannot forge
 	// a switch commit without ExecuteHarnessSwitch's journal binding.
@@ -129,6 +134,10 @@ type switchJournal struct {
 	// (before this field existed) remain readable; its zero value means "no
 	// archive happened", which is also correct for their operations.
 	DestinationArchived string `json:"destination_archived,omitempty"`
+	// Installed lists every destination path a native Claude switch wrote the
+	// chosen transcript to (one per project key the destination harness could
+	// resume from). Older journals lack it; Destination remains the primary.
+	Installed []string `json:"installed,omitempty"`
 }
 
 // ExecuteHarnessSwitch is the only mutating account/harness switch entry
@@ -288,13 +297,28 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		return nil, err
 	}
 
+	// The conversation may exist under several project keys in either
+	// account (typed cwd, /private alias, realpath). Consider every copy and
+	// resume from the newest; the pre-stop pass is a rollback snapshot, the
+	// post-stop pass below is authoritative.
+	// Either refusal below happens after the journal was written as
+	// "prepared", so it must be recorded as failed: an unresolved journal would
+	// block every later switch of this session.
+	sourceDir, err := switchSourceClaudeDir(cfg, inst)
+	if err != nil {
+		return switchFailedNative(journalPath, j, fmt.Errorf("exact source preflight failed: %w", err))
+	}
 	var sourcePath, sourceHash string
-	if inst.ClaudeSessionID != "" {
-		export, exportErr := ExportClaudeContext(inst, 0)
-		if exportErr != nil {
-			return nil, fmt.Errorf("exact source preflight failed: %w", exportErr)
+	var warnings []string
+	choice, err := selectSwitchTranscript(inst, sourceDir, targetDir, opts.ArchiveDestination)
+	if err != nil {
+		if !errors.Is(err, ErrSwitchDestinationDivergent) {
+			err = fmt.Errorf("exact source preflight failed: %w", err)
 		}
-		sourcePath, sourceHash = export.Manifest.Artifact.Path, export.Manifest.Artifact.SourceSHA256
+		return switchFailedNative(journalPath, j, err)
+	}
+	if choice != nil {
+		sourcePath, sourceHash = choice.Chosen.Path, choice.Chosen.SHA256
 	}
 	if sourcePath != "" {
 		j.SourcePath, j.SourceSHA256 = sourcePath, sourceHash
@@ -348,16 +372,16 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		}
 	}
 	// KillAndWait flushes the source and confirms the old pane is gone. The
-	// provisional pre-copy above is only a rollback snapshot: perform a second
-	// exact-ID export now and stage those final bytes before installing anything.
-	// A changed path/identity is a failure, never permission to fall back to an
-	// mtime scan.
+	// provisional pre-copy above is only a rollback snapshot: select and stage
+	// the final bytes now, before installing anything. A changed identity is a
+	// failure, never permission to fall back to an mtime scan.
 	if sourcePath != "" {
-		finalExport, exportErr := ExportClaudeContext(inst, 0)
-		if exportErr != nil {
-			return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("final source export failed: %w", exportErr))
+		finalChoice, selectErr := selectSwitchTranscript(inst, sourceDir, targetDir, opts.ArchiveDestination)
+		if selectErr != nil {
+			return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("final source export failed: %w", selectErr))
 		}
-		sourcePath, sourceHash = finalExport.Manifest.Artifact.Path, finalExport.Manifest.Artifact.SourceSHA256
+		choice = finalChoice
+		sourcePath, sourceHash = choice.Chosen.Path, choice.Chosen.SHA256
 		j.SourcePath, j.SourceSHA256 = sourcePath, sourceHash
 		stagePath := filepath.Join(j.StageDir, filepath.Base(sourcePath))
 		if err := os.Remove(stagePath); err != nil && !os.IsNotExist(err) {
@@ -383,21 +407,51 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 				return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
 			}
 		}
-		// Use the project directory selected by the exact exporter. This keeps
-		// EffectiveWorkingDir/ProjectPath canonicalization consistent with the
-		// resolver used to locate the source.
-		dst := filepath.Join(ExpandPath(targetDir), "projects", filepath.Base(filepath.Dir(sourcePath)), filepath.Base(sourcePath))
-		j.Destination = dst
-		archived, err := installStagedArtifact(stagePath, dst, sourceHash, opts.ArchiveDestination)
-		if err != nil {
-			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
-		}
-		j.DestinationArchived = archived
-		if info, statErr := os.Stat(stageSidecar); statErr == nil && info.IsDir() {
-			if err := installStagedDirectory(stageSidecar, filepath.Join(filepath.Dir(dst), inst.ClaudeSessionID)); err != nil {
-				return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
+		// Install the chosen copy under every project key the destination
+		// harness could resume from. selectSwitchTranscript already proved
+		// each differing destination copy older (or the caller passed
+		// --archive-destination), so the per-key install may replace freely;
+		// it still backs every replaced copy up and never deletes anything.
+		targetRoot := ExpandPath(targetDir)
+		var installed, backups []string
+		info, statErr := os.Stat(stageSidecar)
+		hasStageSidecar := statErr == nil && info.IsDir()
+		j.Destination = ""
+		for _, key := range claudeProjectKeyCandidates(inst.EffectiveWorkingDir()) {
+			dir, ok := claudeProjectDir(targetRoot, key)
+			if !ok {
+				continue
+			}
+			dst := filepath.Join(dir, inst.ClaudeSessionID+".jsonl")
+			if j.Destination == "" {
+				j.Destination = dst
+			}
+			have, hashErr := sha256File(dst)
+			alreadyIdentical := hashErr == nil && have == sourceHash
+			replaced, err := installStagedArtifact(stagePath, dst, sourceHash, true)
+			if err != nil {
+				return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("install under project key %s: %w", key, err))
+			}
+			if replaced != "" {
+				backups = append(backups, replaced)
+				if j.DestinationArchived == "" && strings.Contains(filepath.Base(replaced), ".pre-switch-") {
+					j.DestinationArchived = replaced
+				}
+			}
+			if !alreadyIdentical {
+				installed = append(installed, dst)
+			}
+			if hasStageSidecar {
+				if err := installStagedDirectory(stageSidecar, filepath.Join(dir, inst.ClaudeSessionID)); err != nil {
+					warnings = append(warnings, fmt.Sprintf("sidecar directory under project key %s left as is: %v", key, err))
+				}
 			}
 		}
+		if j.DestinationArchived == "" && len(backups) > 0 {
+			j.DestinationArchived = backups[0]
+		}
+		j.Installed = installed
+		choice.Installed, choice.BackedUp = installed, backups
 		j.State = switchInstalled
 		if err := writeSwitchJournal(journalPath, j); err != nil {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
@@ -412,11 +466,15 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		return nil, err
 	}
 
-	conversation := "conversation migrated; native destination readiness has not yet been asserted"
+	migrated := "conversation migrated"
+	if choice != nil {
+		migrated += ": " + choice.Summary()
+	}
+	conversation := migrated + "; native destination readiness has not yet been asserted"
 	if sourcePath == "" {
 		conversation = "no conversation to migrate (fresh session); target account committed; native destination readiness was not asserted"
 	}
-	result := nativeHarnessSwitchResult(&HarnessSwitchResult{Preview: preview, OldTool: inst.Tool, NewTool: inst.Tool, OldAccount: oldAccount, NewAccount: inst.Account, Continuity: "native", Conversation: conversation, SourceArtifactSHA256: sourceHash, DestinationPath: j.Destination, DestinationArchived: j.DestinationArchived, Committed: true, LossDisclosure: append([]string(nil), preview.Fidelity.Exclusions...)}, j.Source, j.Target)
+	result := nativeHarnessSwitchResult(&HarnessSwitchResult{Preview: preview, OldTool: inst.Tool, NewTool: inst.Tool, OldAccount: oldAccount, NewAccount: inst.Account, Continuity: "native", Conversation: conversation, SourceArtifactSHA256: sourceHash, DestinationPath: j.Destination, DestinationArchived: j.DestinationArchived, Transcript: choice, Warnings: warnings, Committed: true, LossDisclosure: append([]string(nil), preview.Fidelity.Exclusions...)}, j.Source, j.Target)
 	result.nativeJournalPath = journalPath
 	result.nativeStorageAcknowledgement = storageAcknowledged
 	if !opts.NoStart && wasRunning {
@@ -439,7 +497,7 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		// transaction, so keep readiness explicitly pending rather than
 		// inferring it from mutable fields or Start success.
 		result.Restarted = true
-		result.Conversation = "conversation migrated; target start requested; native destination readiness remains pending"
+		result.Conversation = migrated + "; target start requested; native destination readiness remains pending"
 	}
 	// The lifecycle journal remains committed until the caller's scoped storage
 	// CAS succeeds and completeNativeHarnessSwitchJournal durably acknowledges
@@ -543,14 +601,18 @@ func executeNativeCodexSwitch(cfg *UserConfig, inst *Instance, preview *SwitchPr
 	}
 	destination := filepath.Join(ExpandPath(targetHome), rel)
 	j.Destination = destination
-	archived, err := installStagedArtifact(stagePath, destination, sourceHash, opts.ArchiveDestination)
+	replaced, err := installStagedArtifact(stagePath, destination, sourceHash, opts.ArchiveDestination)
 	if err != nil {
 		if wasRunning {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
 		}
 		return switchFailedNative(journalPath, j, err)
 	}
-	j.DestinationArchived = archived
+	// A .bak- snapshot of an advanced prefix is retained but is not an
+	// archived destination; keep the Codex receipt as it was.
+	if strings.Contains(filepath.Base(replaced), ".pre-switch-") {
+		j.DestinationArchived = replaced
+	}
 	j.State = switchInstalled
 	if err := writeSwitchJournal(journalPath, j); err != nil {
 		if wasRunning {
@@ -946,7 +1008,9 @@ func installStagedDirectory(stage, destination string) error {
 // clobbering a destination conversation. An identical destination is already
 // installed. A shorter destination may be advanced only when it is a strict
 // byte prefix of the staged exact source; its own fsynced .bak- snapshot is
-// retained before an atomic replacement.
+// retained before an atomic replacement. The returned path names the copy of
+// whatever destination bytes were replaced (the .bak- snapshot or the
+// .pre-switch- archive), or "" when nothing was replaced.
 //
 // A destination that is not a strict prefix (a genuinely different history)
 // is not automatically an unrecoverable refusal: if its own newest event
@@ -1100,9 +1164,9 @@ func installStagedArtifact(stage, destination, expectedHash string, archiveDesti
 		if err == nil {
 			err = fmt.Errorf("destination hash mismatch after safe append install")
 		}
-		return "", err
+		return backup, err
 	}
-	return "", nil
+	return backup, nil
 }
 
 // destinationIsStaleByEvents compares the newest event timestamp recorded

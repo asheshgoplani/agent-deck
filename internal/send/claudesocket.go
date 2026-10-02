@@ -1,6 +1,7 @@
 package send
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -111,22 +112,48 @@ var peerTokenRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // Flagged to the maintainer in the PR body (discussion #2089 open question 3).
 const minPeerProtocol = 1
 
-// killCheck, psLstart and dialUnix are seams so tests can exercise resolver
+// killCheck, procStartOf and dialUnix are seams so tests can exercise resolver
 // and write-path branches without a real live process or a flaky real-socket
 // mid-write failure. Defaults are the real syscalls; see
 // claudesocket_test.go.
 var (
-	killCheck = func(pid int) error { return syscall.Kill(pid, 0) }
-	psLstart  = realPsLstart
-	dialUnix  = func(path string, timeout time.Duration) (net.Conn, error) {
+	killCheck   = func(pid int) error { return syscall.Kill(pid, 0) }
+	procStartOf = realProcStart
+	dialUnix    = func(path string, timeout time.Duration) (net.Conn, error) {
 		return net.DialTimeout("unix", path, timeout)
 	}
 )
 
+// realProcStart derives procStart the way Claude's own client does, so the
+// exact string comparison can match: /proc/<pid>/stat starttime where /proc
+// exists (Linux, #2438), otherwise `ps -o lstart=`.
+func realProcStart(pid int) (string, error) {
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		return parseProcStatStartTime(data)
+	}
+	return realPsLstart(pid)
+}
+
+// parseProcStatStartTime returns field 22 (starttime) of a /proc/<pid>/stat
+// line. comm can contain ')' and spaces, so fields are counted from after the
+// LAST ')', where state (field 3) sits at index 0.
+func parseProcStatStartTime(data []byte) (string, error) {
+	idx := bytes.LastIndexByte(data, ')')
+	if idx < 0 {
+		return "", fmt.Errorf("malformed /proc stat line")
+	}
+	fields := strings.Fields(string(data[idx+1:]))
+	const startTimeIndex = 19
+	if len(fields) <= startTimeIndex {
+		return "", fmt.Errorf("/proc stat line: too few fields")
+	}
+	return fields[startTimeIndex], nil
+}
+
 // realPsLstart runs `LC_ALL=C TZ=UTC ps -o lstart= -p <pid>`, trimmed. This
-// is the exact incantation Claude's own client uses to derive procStart
-// (verified against the 2.1.259 binary, offset 158,929,000): comparison is
-// exact string equality, so LC_ALL/TZ must match or the check silently
+// is the exact incantation Claude's own client uses to derive procStart on
+// macOS (verified against the 2.1.259 binary, offset 158,929,000): comparison
+// is exact string equality, so LC_ALL/TZ must match or the check silently
 // always fails (which fails safe, to tmux).
 func realPsLstart(pid int) (string, error) {
 	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int),
@@ -201,10 +228,10 @@ func ResolveClaudeSocketTarget(rec ClaudeSocketRecord, claudeDir string) (Claude
 		expectedProcStart = rec.ProcStartFt
 	}
 	if expectedProcStart != "" {
-		actual, err := psLstart(rec.Pid)
+		actual, err := procStartOf(rec.Pid)
 		if err != nil || actual != expectedProcStart {
 			return ClaudeSocketTarget{}, &Unavailable{Reason: ReasonProcStartDrift,
-				Err: fmt.Errorf("ps lstart mismatch or unreadable for pid %d", rec.Pid)}
+				Err: fmt.Errorf("procStart mismatch or unreadable for pid %d", rec.Pid)}
 		}
 	}
 

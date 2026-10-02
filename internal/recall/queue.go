@@ -38,7 +38,7 @@ const maxQueueBytes = 4 << 20
 // Enqueue appends one entry to the queue at path. It never creates
 // anything but the queue file and its directory, never blocks, and
 // returns an error only for the caller's log.
-func Enqueue(path string, e QueueEntry) error {
+func Enqueue(path string, e QueueEntry) (err error) {
 	if strings.TrimSpace(e.Path) == "" {
 		return errors.New("recall: enqueue: empty path")
 	}
@@ -56,7 +56,11 @@ func Enqueue(path string, e QueueEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	if info, err := f.Stat(); err == nil && info.Size() > maxQueueBytes {
 		return errors.New("recall: queue full; a sweep will drain it")
 	}

@@ -191,7 +191,7 @@ agent-deck session set <session> account <account>
 
 **How it works / guarantees:**
 
-- The conversation `.jsonl` is **copied** into `<target-config-dir>/projects/<encoded-path>/` — the old account keeps its copy; a conflicting file in the target is backed up as `.bak-<timestamp>` first. The session id does not change.
+- The conversation `.jsonl` is **copied** into `<target-config-dir>/projects/<encoded-path>/` for every project key Claude Code may use for the working directory (typed path, macOS `/private` form, realpath) — the old account keeps its copy. Every existing copy in both accounts is compared; the newest by last event wins (tie: longest), a newer target copy is kept rather than overwritten, and each replaced copy is backed up next to it (`.bak-<timestamp>` or `.pre-switch-<timestamp>`). The receipt says which copy was chosen (`--json`: `transcript`). The session id does not change.
 - `claude --resume` is a pure file lookup, so the restarted session continues with full history under the new account's auth.
 - Tools/MCPs/plugins and usage limits follow the **new** account; enable any needed plugins in the target profile (e.g. `CLAUDE_CONFIG_DIR=<dir> claude plugin enable telegram@claude-plugins-official` for channel owners).
 - A fresh session with no conversation yet switches cleanly (nothing to migrate).
