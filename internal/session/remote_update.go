@@ -347,7 +347,10 @@ func withRemoteVersionCacheLock(fn func()) error {
 	for {
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			f.Close()
+			if cerr := f.Close(); cerr != nil {
+				_ = os.Remove(lockPath)
+				return cerr
+			}
 			defer os.Remove(lockPath)
 			fn()
 			return nil

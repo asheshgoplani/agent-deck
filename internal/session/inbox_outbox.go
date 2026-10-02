@@ -358,7 +358,12 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			commsLog.Warn("dead_letter_missed_log_close_failed",
+				slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
+		}
+	}()
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		commsLog.Warn("dead_letter_missed_log_write_failed",
 			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
@@ -397,7 +402,7 @@ func writeDeadLetter(event TransitionNotificationEvent) (appended bool, err erro
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer closeFile(f, &err)
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return false, err
 	}

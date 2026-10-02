@@ -102,7 +102,7 @@ func runClipCmd(ctx context.Context, name string, args []string, text string) er
 
 // copyOSC52 copies text using the OSC 52 terminal escape sequence.
 // Inside tmux, wraps the sequence in a DCS passthrough.
-func copyOSC52(text string) error {
+func copyOSC52(text string) (err error) {
 	encoded := base64.StdEncoding.EncodeToString([]byte(text))
 	seq := generateOSC52(encoded, os.Getenv("TMUX") != "")
 
@@ -111,7 +111,11 @@ func copyOSC52(text string) error {
 	if err != nil {
 		return fmt.Errorf("cannot open /dev/tty: %w", err)
 	}
-	defer tty.Close()
+	defer func() {
+		if cerr := tty.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	_, err = tty.WriteString(seq)
 	return err

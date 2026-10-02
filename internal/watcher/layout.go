@@ -83,7 +83,7 @@ func ScaffoldWatcherLayout() error {
 	return nil
 }
 
-func writeIfAbsent(path string, content []byte) error {
+func writeIfAbsent(path string, content []byte) (err error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
@@ -91,7 +91,11 @@ func writeIfAbsent(path string, content []byte) error {
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	_, err = f.Write(content)
 	return err
 }

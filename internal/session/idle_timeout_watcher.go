@@ -56,7 +56,7 @@ func GetSessionLifecycleLogPath() string {
 }
 
 // WriteSessionLifecycleEvent appends a single JSONL row.
-func WriteSessionLifecycleEvent(ev SessionLifecycleEvent) error {
+func WriteSessionLifecycleEvent(ev SessionLifecycleEvent) (err error) {
 	if ev.Timestamp == 0 {
 		ev.Timestamp = time.Now().Unix()
 	}
@@ -79,7 +79,7 @@ func WriteSessionLifecycleEvent(ev SessionLifecycleEvent) error {
 	if err != nil {
 		return fmt.Errorf("open session lifecycle log: %w", err)
 	}
-	defer f.Close()
+	defer closeFile(f, &err)
 	if _, err := f.Write(line); err != nil {
 		return fmt.Errorf("write session lifecycle event: %w", err)
 	}
