@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Errors from closing files after writing (queues, logs, lock files, update plans) are now reported instead of ignored, so a failed flush is no longer silent.
+- Deliberately stopped sessions stay stopped through startup grace, concurrent refreshes, and notify-daemon polling. Restart detection requires an exact live tmux session, and starting an interactive shell clears its previous stopped state.
 - `session switch-account` (and the TUI account row) no longer resumes a stale conversation. Claude Code keys one working directory under up to three project directories (the path as typed, its macOS `/private` form and its realpath), and the switch used to look at one of them in one account: a copy under another key was invisible, so the switch could report "no conversation to migrate", fail its source preflight, or leave a day-old copy in the target for `claude --resume` to pick up. Every copy under every key in both accounts is now considered; the newest by last event wins (tie: longest), it is installed under every key the target could resume from, each copy it replaces is backed up next to it, and a newer target copy is kept rather than overwritten (`--archive-destination` still forces the source copy). The receipt names the chosen copy, and `--json` lists every candidate with its newest event, size and line count under `transcript`. Context export and handoff resolve the same set of keys.
 
 ## [1.16.22] - 2026-09-28
