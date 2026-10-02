@@ -1,6 +1,6 @@
 ---
 name: agent-deck
-description: agent-deck, the terminal session manager for AI coding agents. Use when the user mentions agent-deck or needs to create, start, message, read, fork, restart, or supervise agent-deck sessions; launch child sessions or consult another CLI through agent-deck; attach MCPs to a session; manage groups, profiles, accounts, or worktree sessions; set up conductors or watchers; configure config.toml; or troubleshoot agent-deck. Not for in-conversation subagents, plain git worktrees, or plain tmux.
+description: agent-deck, the terminal session manager for AI coding agents. Use when the user mentions "agent-deck", "session", "sub-agent", "MCP attach", or "git worktree", or needs to create, start, message, read, fork, restart, or supervise agent-deck sessions; launch child sessions or consult another CLI through agent-deck; attach MCPs to a session; manage groups, profiles, accounts, or worktree sessions; set up conductors or watchers; configure config.toml; or troubleshoot agent-deck. Not for in-conversation subagents, plain git worktrees, or plain tmux.
 metadata:
   compatibility: "claude, codex, opencode"
 ---

@@ -166,7 +166,7 @@ These were surfaced by mining real conductor transcripts (see [Self-Improvement]
 | `.mcp.json` plugin version pins go stale after plugin upgrade | After `/mcp` reload, rewrite `.mcp.json` from current plugin spec | [#960](https://github.com/asheshgoplani/agent-deck/issues/960) |
 | Cron heartbeat `NEED:` lines repeat unchanged for 12-21h with no auto-retire | After 3 repeats, change tactic — escalate explicitly or spawn a different worker | [#971](https://github.com/asheshgoplani/agent-deck/issues/971) |
 | `agent-deck launch -m "<rich text>"` short-flag parser misroutes — text after `-m` becomes positional `[path]` | Use long-form flags: `--message`, `--title`, `--group`, `--parent` | (filed in batch) |
-| CLI verb inconsistency: `session update --no-parent`, `group remove`, `launch -parent` all rejected | Correct verbs: `session unset-parent`, `group delete`, `launch` does not accept `-parent` (it's automatic) | [#974](https://github.com/asheshgoplani/agent-deck/issues/974) |
+| CLI verb inconsistency: `session update --no-parent`, `group remove` both rejected | Correct verbs: `session unset-parent`, `group delete`. `launch` links the calling session as parent automatically; `--parent <session>` (`-p`) is accepted as an explicit override and `--no-parent` opts out | [#974](https://github.com/asheshgoplani/agent-deck/issues/974) |
 
 See the [Self-Improvement](autonomy.md#self-improvement) section for how these were discovered and how to surface more from your own conductor's transcripts.
 
