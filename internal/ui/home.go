@@ -6255,8 +6255,23 @@ func (h *Home) logWorker() {
 // should run UpdateStatus() on inst. Archived sessions are skipped: their tmux
 // pane is torn down and their row status is display-frozen, so a poll can only
 // spend a serialized tmux subprocess without changing anything the UI renders.
+//
+// Exception: an archived session that still claims a live status. Archiving a
+// session whose tmux is already gone skips Kill(), so it keeps its last stored
+// status; skipping it forever would count it as running in the header pills.
+// It is polled until UpdateStatus settles it on error/stopped, then skipped.
 func shouldPollStatusInLoop(inst *session.Instance) bool {
-	return inst != nil && !inst.IsArchived()
+	if inst == nil {
+		return false
+	}
+	if !inst.IsArchived() {
+		return true
+	}
+	switch inst.GetStatusThreadSafe() {
+	case session.StatusRunning, session.StatusWaiting, session.StatusIdle, session.StatusStarting:
+		return true
+	}
+	return false
 }
 
 const fullStatusBatchSize = 32
@@ -21419,6 +21434,8 @@ type groupRenderStats struct {
 	sessionCount int
 	running      int
 	waiting      int
+	tinted       int
+	tint         string
 }
 
 func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map[string]groupRenderStats {
@@ -21450,11 +21467,21 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 		directSessions := 0
 		directRunning := 0
 		directWaiting := 0
+		directTinted := 0
+		directTint := ""
 		for _, sess := range g.Sessions {
 			if sess.IsArchived() != viewArchived {
 				continue
 			}
 			directSessions++
+			// Same field the session row paints (renderSessionItem), so a
+			// group name and its row can never disagree.
+			if sess.Color != "" {
+				directTinted++
+				if directTint == "" || sess.Color < directTint {
+					directTint = sess.Color
+				}
+			}
 			state, ok := snapshot[sess.ID]
 			status := sess.Status
 			if ok {
@@ -21476,6 +21503,12 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 			entry.sessionCount += directSessions
 			entry.running += directRunning
 			entry.waiting += directWaiting
+			entry.tinted += directTinted
+			// Smallest colour string wins: the walk runs over a map, so a
+			// fixed choice keeps the paint stable when colours differ.
+			if directTint != "" && (entry.tint == "" || directTint < entry.tint) {
+				entry.tint = directTint
+			}
 			stats[ancestor] = entry
 
 			idx := strings.LastIndex(ancestor, "/")
@@ -21604,6 +21637,12 @@ func (h *Home) renderGroupItem(
 
 	// Use precomputed recursive stats (group + descendants) for this render pass.
 	stats := groupStats[group.Path]
+	// A collapsed group hides the session whose name is tinted; carry the tint
+	// to the group name so the signal stays visible. Selected rows keep the
+	// selected style, expanded groups already show the tinted row.
+	if stats.tinted > 0 && !group.Expanded && !selected {
+		nameStyle = nameStyle.Foreground(lipgloss.Color(stats.tint))
+	}
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
 	if h.compactEmbeddedSidebar() {
 		prefix := ""
