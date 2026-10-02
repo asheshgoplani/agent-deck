@@ -7110,9 +7110,16 @@ func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 	// Claude/Codex may have exited via /q without writing a fresh "dead" hook.
 	// Force the attached session through the live tmux path before the list is
 	// redrawn so the status icon reflects a dead pane immediately.
-	inst.ClearHookStatus()
-	if h.hookWatcher != nil {
-		h.hookWatcher.ClearHookStatus(inst.ID)
+	//
+	// Only Claude/Codex (#2436): the other hook tools (pi, gemini, cursor,
+	// hermes) map their exit event to a "dead" hook, and they emit sparsely
+	// (pi only at turn boundaries), so wiping their hook here dropped them to
+	// pane heuristics on every attach/detach until the next hook event.
+	if tool := inst.GetToolThreadSafe(); session.IsClaudeCompatible(tool) || session.IsCodexCompatible(tool) {
+		inst.ClearHookStatus()
+		if h.hookWatcher != nil {
+			h.hookWatcher.ClearHookStatus(inst.ID)
+		}
 	}
 	inst.ForceNextStatusCheck()
 
