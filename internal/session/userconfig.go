@@ -116,6 +116,7 @@ type UserConfig struct {
 	// GroupSort controls the order of sessions within a group.
 	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
 	//   "actionable"           — issue #857 status→recency→Order surfacing.
+	//   "alphabetical"         — issue #2451 title A→Z (case-insensitive)→Order.
 	// Empty or unrecognized values normalize to "creation".
 	GroupSort string `toml:"group_sort,omitempty"`
 
@@ -1920,11 +1921,12 @@ func (c *UserConfig) GetPushTitle() bool {
 	return *c.PushTitle
 }
 
-// GetGroupSort returns the normalized within-group sort mode: "actionable" only
-// when explicitly set, otherwise "creation" (the default).
+// GetGroupSort returns the normalized within-group sort mode: "actionable" or
+// "alphabetical" only when explicitly set, otherwise "creation" (the default).
 func (c *UserConfig) GetGroupSort() string {
-	if c.GroupSort == "actionable" {
-		return "actionable"
+	switch c.GroupSort {
+	case "actionable", "alphabetical":
+		return c.GroupSort
 	}
 	return "creation"
 }

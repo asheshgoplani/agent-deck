@@ -156,8 +156,9 @@ func actionablePriority(s Status) int {
 //	-1 maestro      the fleet supervisor — a fixed point of reference that
 //	                surfaces above everything, including pin-top
 //	0  pin-top      fixed at the top, exempt from status/recency
-//	1  normal       the within-group sort (creation Order, or actionable
-//	                status → recency → Order — see group_sort config)
+//	1  normal       the within-group sort (creation Order, actionable
+//	                status → recency → Order, or alphabetical title → Order
+//	                — see group_sort config)
 //	2  pin-bottom   fixed at the bottom, exempt from status/recency
 func pinZone(inst *Instance) int {
 	if inst.IsMaestro() {
@@ -177,8 +178,8 @@ func pinZone(inst *Instance) int {
 // pin-bottom bands (pinZone), preserving the relative order of sessions within
 // each band. Unlike SortInstancesByActionable it never reorders by
 // status/recency, so it is safe to run on every render (Flatten): it moves only
-// pinned rows, leaving the load-time order (creation or actionable, per the
-// group_sort config) — and any live K/J manual order — of the normal band
+// pinned rows, leaving the load-time order (creation, actionable or
+// alphabetical, per the group_sort config) — and any live K/J manual order — of the normal band
 // untouched. This is what makes a pin edit take effect live instead of only
 // after a restart.
 func stablePinPartition(insts []*Instance) {
@@ -194,8 +195,8 @@ func stablePinPartition(insts []*Instance) {
 		if zi != 1 {
 			return insts[i].Order < insts[j].Order
 		}
-		// Normal (1) band is already sorted at load (creation Order, or actionable
-		// per group_sort); return false so SliceStable leaves its relative order
+		// Normal (1) band is already sorted at load (creation Order, actionable
+		// or alphabetical per group_sort); return false so SliceStable leaves its relative order
 		// untouched.
 		return false
 	})
@@ -210,6 +211,8 @@ func stablePinPartition(insts []*Instance) {
 //     K/J manual order unchanged.
 //   - "actionable" (issue #857): status→recency tiers apply before Order so
 //     the most recently actionable sessions surface first.
+//   - "alphabetical" (issue #2451): title A→Z, case-insensitive, before Order,
+//     so sessions with equal titles (ignoring case) keep their creation order.
 //
 // Pin-top and pin-bottom bands are always ordered by Order alone (fully fixed
 // — status and recency are ignored, so K/J reordering still works inside a
@@ -225,6 +228,14 @@ func stablePinPartition(insts []*Instance) {
 //     TestSessionOrderMigration)
 func SortInstancesByActionable(insts []*Instance) {
 	mode := currentGroupSortMode()
+	// Fold each title once rather than on every comparison.
+	var foldedTitle map[*Instance]string
+	if mode == "alphabetical" {
+		foldedTitle = make(map[*Instance]string, len(insts))
+		for _, inst := range insts {
+			foldedTitle[inst] = strings.ToLower(inst.Title)
+		}
+	}
 	sort.SliceStable(insts, func(i, j int) bool {
 		// The outermost key is the band: maestro (the fleet supervisor, a fixed
 		// point of reference that surfaces first regardless of status), then
@@ -239,9 +250,16 @@ func SortInstancesByActionable(insts []*Instance) {
 			return insts[i].Order < insts[j].Order
 		}
 		// Normal band. In actionable mode (issue #857) the status→recency tiers
-		// apply before Order; in creation mode (default) Order alone decides, so
+		// apply before Order; in alphabetical mode (issue #2451) the folded
+		// title does; in creation mode (default) Order alone decides, so
 		// sessions keep their creation order (or K/J manual order).
-		if mode == "actionable" {
+		switch mode {
+		case "alphabetical":
+			ti, tj := foldedTitle[insts[i]], foldedTitle[insts[j]]
+			if ti != tj {
+				return ti < tj
+			}
+		case "actionable":
 			pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
 			if pi != pj {
 				return pi < pj
@@ -255,17 +273,17 @@ func SortInstancesByActionable(insts []*Instance) {
 	})
 }
 
-// groupSortMode caches the active within-group sort mode ("creation" or
-// "actionable"). It is refreshed from LoadUserConfig on every config (re)load,
+// groupSortMode caches the active within-group sort mode ("creation",
+// "actionable" or "alphabetical"). It is refreshed from LoadUserConfig on every config (re)load,
 // so SortInstancesByActionable can read it without a disk hit and without
 // threading a parameter through the tree constructors. Defaults to "creation"
 // until SetGroupSortMode is first called.
 var groupSortMode atomic.Value // holds string
 
 // SetGroupSortMode updates the cached within-group sort mode. Any value other
-// than "actionable" normalizes to "creation".
+// than "actionable" or "alphabetical" normalizes to "creation".
 func SetGroupSortMode(mode string) {
-	if mode != "actionable" {
+	if mode != "actionable" && mode != "alphabetical" {
 		mode = "creation"
 	}
 	groupSortMode.Store(mode)
