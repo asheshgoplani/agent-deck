@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Errors from closing files after writing (queues, logs, lock files, update plans) are now reported instead of ignored, so a failed flush is no longer silent.
 - Deliberately stopped sessions stay stopped through startup grace, concurrent refreshes, and notify-daemon polling. Restart detection requires an exact live tmux session, and starting an interactive shell clears its previous stopped state.
 
 ## [1.16.22] - 2026-09-28

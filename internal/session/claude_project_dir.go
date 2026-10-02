@@ -156,7 +156,7 @@ func copyDirRecursive(src, dst string) error {
 	})
 }
 
-func copyFileWithPerm(src, dst string, perm os.FileMode) error {
+func copyFileWithPerm(src, dst string, perm os.FileMode) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -170,7 +170,7 @@ func copyFileWithPerm(src, dst string, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer closeFile(out, &err)
 
 	_, err = io.Copy(out, in)
 	return err

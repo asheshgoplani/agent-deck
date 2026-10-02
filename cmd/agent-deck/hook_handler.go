@@ -1102,7 +1102,11 @@ func logCostDebug(format string, args ...any) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			hookHandlerLog.Debug("cost_debug_log_close_failed", slog.String("error", err.Error()))
+		}
+	}()
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), msg)
 }

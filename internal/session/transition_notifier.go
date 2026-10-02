@@ -694,12 +694,21 @@ func (n *TransitionNotifier) logEvent(event TransitionNotificationEvent) {
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(n.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
+	if err := appendLogLine(n.logPath, line); err != nil {
+		commsLog.Debug("transition_notify_log_write_failed", slog.String("path", n.logPath), slog.String("error", err.Error()))
 	}
-	defer f.Close()
-	_, _ = f.Write(append(line, '\n'))
+}
+
+// appendLogLine appends line plus a newline to the log at path, reporting
+// open, write and close failures alike.
+func appendLogLine(path string, line []byte) (err error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer closeFile(f, &err)
+	_, err = f.Write(append(line, '\n'))
+	return err
 }
 
 func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason string) {
@@ -734,12 +743,9 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(n.missedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
+	if err := appendLogLine(n.missedPath, line); err != nil {
+		commsLog.Debug("transition_notify_missed_log_write_failed", slog.String("path", n.missedPath), slog.String("error", err.Error()))
 	}
-	defer f.Close()
-	_, _ = f.Write(append(line, '\n'))
 }
 
 // --- paths -------------------------------------------------------------------
@@ -815,10 +821,7 @@ func (n *TransitionNotifier) logOrphanOnce(event TransitionNotificationEvent, ch
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
+	if err := appendLogLine(path, line); err != nil {
+		commsLog.Debug("transition_notify_orphan_log_write_failed", slog.String("path", path), slog.String("error", err.Error()))
 	}
-	defer f.Close()
-	_, _ = f.Write(append(line, '\n'))
 }

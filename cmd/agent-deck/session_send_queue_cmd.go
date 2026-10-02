@@ -188,6 +188,10 @@ func spawnSendWorker(profile, sessionID string) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G702 -- exe is this binary (os.Executable), argv is passed as
+	// separate arguments with no shell, and sessionID was checked against
+	// validInstanceID above. gosec's taint analysis does not treat that check
+	// as a sanitizer and reaches this call through unrelated flows (#2411).
 	cmd := exec.Command(exe, profileArgs(profile, "session", "send-worker", "--target", sessionID)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -310,7 +314,7 @@ func handleSessionSendWorker(profile string, args []string) {
 			deliverQueuedAsync(profile, dir, rec)
 		}
 		startPendingWatchers(profile, dir, *target)
-		lock.Release()
+		releaseQueueLock(lock)
 		// A send queued while this worker was finishing: pick it up.
 		if nextPending(dir, *target) == nil {
 			return
@@ -355,12 +359,19 @@ func spawnSendWatcher(profile, sendID string) error {
 	return cmd.Process.Release()
 }
 
+// releaseQueueLock drops a worker lock, reporting a failed close.
+func releaseQueueLock(lock *sendqueue.Lock) {
+	if err := lock.Release(); err != nil {
+		fmt.Fprintln(os.Stderr, "agent-deck: release send queue lock:", err)
+	}
+}
+
 func watchQueuedSend(profile, dir, sendID string) {
 	lock, ok, err := sendqueue.TryLock(dir, "watch-"+sendID)
 	if err != nil || !ok {
 		return
 	}
-	defer lock.Release()
+	defer releaseQueueLock(lock)
 	rec, err := sendqueue.Load(dir, sendID)
 	if err != nil || rec.Final() || (rec.State != sendqueue.StateTyped && rec.State != sendqueue.StateSubmitted) {
 		return
@@ -738,12 +749,15 @@ func startChildSend(profile, id, message, resultPath string) (int, func() int, e
 	cmd := exec.Command(exe, profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")...)
 	cmd.Stdout = out
 	if err := cmd.Start(); err != nil {
-		out.Close()
-		return 0, nil, err
+		return 0, nil, errors.Join(err, out.Close())
 	}
 	wait := func() int {
 		err := cmd.Wait()
-		out.Close()
+		// The child wrote the result through its own descriptor; the next
+		// step reads the file, so a failed close here is only reported.
+		if cerr := out.Close(); cerr != nil {
+			fmt.Fprintln(os.Stderr, "agent-deck: close send result:", cerr)
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode()

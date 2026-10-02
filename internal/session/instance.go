@@ -2147,7 +2147,19 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 	// If baseCommand is just "opencode", handle specially
 	if baseCommand == "opencode" {
 		cmd := GetToolCommand("opencode")
-		extraFlags := i.buildOpenCodeExtraFlags() + i.buildOpenCodeSSEPortFlag()
+		var extraFlags string
+		if i.openCodeRejectsV1LaunchFlags() {
+			// 2.x exits on -m/--agent/--port (opencode_version.go). Without
+			// --port there is no SSE server, so status falls back to tmux.
+			if dropped := i.buildOpenCodeExtraFlags(); dropped != "" {
+				sessionLog.Warn("opencode_v2_launch_flags_dropped",
+					slog.String("instance_id", i.ID),
+					slog.String("flags", dropped))
+			}
+			i.setOpenCodePort(0)
+		} else {
+			extraFlags = i.buildOpenCodeExtraFlags() + i.buildOpenCodeSSEPortFlag()
+		}
 
 		// If we already have a session ID, use resume with -s flag.
 		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.

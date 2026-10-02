@@ -263,6 +263,12 @@ func runTestMain(m *testing.M) int {
 	// refusal itself is covered by tests that restore exec.LookPath.
 	lookPathHarness = func(command string) (string, error) { return "/usr/bin/" + command, nil }
 
+	// OpenCode launch flags depend on the installed major version. Pin
+	// "unknown" (the 1.x flag set) so a developer's own opencode never changes
+	// a test's command, and stub opencode binaries on PATH are never exec'd
+	// with --version. Version-specific tests set their own answer.
+	probeOpenCodeMajorVersion = func(*Instance) (int, bool) { return 0, false }
+
 	// Force test profile to prevent production data corruption
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
 	os.Setenv("AGENTDECK_PROFILE", "_test")

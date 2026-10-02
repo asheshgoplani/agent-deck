@@ -11,7 +11,7 @@ import (
 // Atomicity: O_APPEND on a single Write is POSIX-atomic for sizes <= PIPE_BUF (4096 on Linux, 512 on older BSD).
 // The engine writerLoop is single-goroutine per engine instance so per-watcher serialization is guaranteed today;
 // entries are truncated to <512 bytes by the caller (engine.go) so atomicity holds even if writerLoop becomes multi-goroutine.
-func AppendEventLog(name, entry string) error {
+func AppendEventLog(name, entry string) (err error) {
 	dir, err := WatcherDir(name)
 	if err != nil {
 		return err
@@ -24,7 +24,11 @@ func AppendEventLog(name, entry string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open task-log.md: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	_, err = f.WriteString(entry + "\n")
 	return err
 }

@@ -188,7 +188,7 @@ func Open(dir string) (*Bus, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: stat active segment: %w", err)
 	}

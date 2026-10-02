@@ -199,8 +199,11 @@ func AcquireUpdateLock(dir string, stale time.Duration) (release func(), busy bo
 	for attempt := 0; attempt < 2; attempt++ {
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err == nil {
-			fmt.Fprintf(f, "%d %s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
-			f.Close()
+			_, werr := fmt.Fprintf(f, "%d %s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
+			if werr = errors.Join(werr, f.Close()); werr != nil {
+				_ = os.Remove(path)
+				return nil, false, werr
+			}
 			return func() { _ = os.Remove(path) }, false, nil
 		}
 		if !os.IsExist(err) {
