@@ -198,7 +198,7 @@
       "pin": "",
       "project_path": "<SANDBOX_HOME>/shell-fixture-project",
       "sort_order": 0,
-      "status": "stopped",
+      "status": "idle",
       "title": "storage bytes shell",
       "title_locked": 0,
       "tmux_session": "ad-golden-sess-shell",

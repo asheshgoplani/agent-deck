@@ -224,8 +224,7 @@ func copyOneFile(src, dst string) error {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
+		return errors.Join(err, out.Close())
 	}
 	return out.Close()
 }

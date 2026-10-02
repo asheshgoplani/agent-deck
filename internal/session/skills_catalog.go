@@ -887,7 +887,7 @@ func ListMaterializedProjectSkills(projectPath string) ([]MaterializedProjectSki
 	return materialized, nil
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
@@ -907,7 +907,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer closeFile(dstFile, &err)
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return err
@@ -1536,7 +1536,7 @@ func (p *projectRoot) openSourceRootFor(resolved string) (*containedSource, erro
 // registered skill source root) to dstRel inside dstRoot, so neither side of
 // the copy can be redirected outside its root by a hostile path swap. A
 // symlinked source file is followed only within srcRoot; escapes error.
-func copyFileIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) error {
+func copyFileIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) (err error) {
 	srcFile, err := srcRoot.Open(srcRel)
 	if err != nil {
 		return err
@@ -1562,7 +1562,7 @@ func copyFileIntoRoot(dstRoot, srcRoot *os.Root, srcRel, dstRel string) error {
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	defer closeFile(dstFile, &err)
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		return err

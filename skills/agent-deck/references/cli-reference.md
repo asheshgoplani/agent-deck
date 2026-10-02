@@ -630,6 +630,8 @@ agent-deck session switch-account <session> <account>
 
 Moves a session — conversation included — to another configured Claude account: stops the session, migrates the Claude conversation file into the target account's config dir (copy-only, with a destination backup and size verification), sets the account, and restarts with `--resume`.
 
+Claude Code may key one working directory under several project directories (the path as typed, its macOS `/private` form, its realpath). Every copy of the conversation under those keys in both accounts is considered; the newest by last event wins (tie: longest), it is installed under every key in the target, each copy it replaces is backed up next to it, and a newer target copy is never overwritten (`--archive-destination` forces the source copy). The receipt names the chosen copy; `--json` carries every candidate with its newest event, size and line count under `transcript`, plus `installed` and `backed_up` paths.
+
 ```bash
 agent-deck session switch-account "My Project" work
 ```

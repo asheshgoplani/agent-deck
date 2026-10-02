@@ -1348,6 +1348,32 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 	return err
 }
 
+// WriteStatusIfCurrent applies a sampled verdict only while the stored status
+// still matches the value observed before sampling. A concurrent deliberate
+// stop must not be overwritten by an older daemon probe.
+func (s *StateDB) WriteStatusIfCurrent(id, expected, status, tool string) (bool, error) {
+	observe := loadStatusChangeObserver()
+	var tmuxName string
+	var applied bool
+	err := withBusyRetry(func() error {
+		applied = false
+		if observe != nil {
+			_ = s.db.QueryRow(`SELECT tmux_session FROM instances WHERE id = ?`, id).Scan(&tmuxName)
+		}
+		res, err := s.db.Exec(writeStatusSQL+` AND status = ?`, status, tool, status, id, expected)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		applied = n > 0
+		return err
+	})
+	if err == nil && applied && expected != status && observe != nil {
+		observe(StatusChange{DBPath: s.path, ID: id, TmuxSession: tmuxName, From: expected, To: status, Tool: tool, At: time.Now()})
+	}
+	return applied, err
+}
+
 // afterStatusRead is a test seam between WriteStatus's read of the prior
 // status and its update, where a second writer can interleave.
 var afterStatusRead func()

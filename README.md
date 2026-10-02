@@ -274,7 +274,7 @@ For a new one-shot session, use `agent-deck launch . -c claude --account <name>`
 Run `agent-deck accounts` (or `agent-deck accounts --json`) to list named slots
 configured under `[profiles.<name>.claude].config_dir`.
 
-`agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too.
+`agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too. Claude Code may key one working directory under several project directories (the path as typed, its macOS `/private` form, its realpath); every copy of the conversation under those keys in both accounts is considered, the newest by last event wins (tie: longest), it is installed under every key in the target, each copy it replaces is backed up next to it, and a newer target copy is never overwritten. The receipt names the chosen copy; `--json` lists every candidate under `transcript`.
 
 The TUI exposes the same two moments. The **New Session** dialog's Claude options
 carry an `Account` row (`←`/`→` or `Space` to cycle, `inherit` = today's

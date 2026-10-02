@@ -91,9 +91,12 @@ func (s *NDJSONSink) Append(e Event) error {
 	if err != nil {
 		return fmt.Errorf("selfheal: open audit file: %w", err)
 	}
-	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("selfheal: append audit line: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("selfheal: close audit file: %w", err)
 	}
 	return nil
 }

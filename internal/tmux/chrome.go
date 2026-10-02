@@ -145,7 +145,11 @@ func EmitITermBadgeViaTty(title string, configEnabled bool) {
 		dbg.logf("  decision: skip (open /dev/tty failed: %v)", err)
 		return
 	}
-	defer tty.Close()
+	defer func() {
+		if err := tty.Close(); err != nil {
+			dbg.logf("  close /dev/tty failed: %v", err)
+		}
+	}()
 	payload := formatITermBadgeOSCViaTmux(title)
 	n, werr := io.WriteString(tty, payload)
 	dbg.logf("  decision: wrote %d/%d bytes to /dev/tty err=%v", n, len(payload), werr)

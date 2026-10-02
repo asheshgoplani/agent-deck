@@ -116,7 +116,7 @@ func NewID(now time.Time) string {
 // NextID returns a new id that sorts after every id NextID handed out
 // before in dir, even for callers in the same millisecond or with a clock
 // that stepped back: send order is id order.
-func NextID(dir string, now time.Time) (string, error) {
+func NextID(dir string, now time.Time) (_ string, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -124,7 +124,11 @@ func NextID(dir string, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return "", err
 	}
@@ -292,7 +296,7 @@ func TryLock(dir, sessionID string) (*Lock, bool, error) {
 		return nil, false, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, false, nil
 		}
@@ -301,11 +305,14 @@ func TryLock(dir, sessionID string) (*Lock, bool, error) {
 	return &Lock{f: f}, true, nil
 }
 
-// Release drops the lock.
-func (l *Lock) Release() {
-	if l != nil && l.f != nil {
-		_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
-		l.f.Close()
-		l.f = nil
+// Release drops the lock and reports a failure to close the lock file.
+// Releasing a nil or already released lock is a no-op.
+func (l *Lock) Release() error {
+	if l == nil || l.f == nil {
+		return nil
 	}
+	_ = syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
+	err := l.f.Close()
+	l.f = nil
+	return err
 }
