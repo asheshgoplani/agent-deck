@@ -147,7 +147,7 @@ its own mouse capture regardless.
 | `%` | Filter: open only, hides errors (toggle) |
 | `^` | Filter: view archived sessions (toggle) |
 | `t` | Cycle group view: active-on-top / populated-on-top (**rebindable**) |
-| `*` | Cycle time filter: today / 3 days / 7 days / all (**rebindable**) |
+| `*` | Cycle time filter: today / 3 days / 7 days / 30 days / all (**rebindable**) |
 
 Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 

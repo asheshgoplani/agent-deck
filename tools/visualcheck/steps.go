@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // visualCheckStep is one entry in the fixed key script every width is
@@ -88,11 +90,7 @@ func stepStateVisibility(w *widthRun) error {
 				return err
 			}
 		case "*", "t":
-			remaining := 3 // four time-filter modes
-			if state.key == "t" {
-				remaining = 2 // three view modes
-			}
-			for i := 0; i < remaining; i++ {
+			for i := 0; i < cycleRestorePresses(state.key); i++ {
 				if err := w.send(state.key); err != nil {
 					return err
 				}
@@ -114,6 +112,20 @@ func stepStateVisibility(w *widthRun) error {
 	}
 	w.capture("20-stopped-preview")
 	return nil
+}
+
+// cycleRestorePresses is how many further presses of a cycling hotkey
+// return the TUI to its default mode after the one press that captured the
+// frame. It derives from the mode counts so adding a mode cannot leave the
+// mode engaged for every later frame.
+func cycleRestorePresses(key string) int {
+	switch key {
+	case "*":
+		return session.TimeFilterModeCount - 1
+	case "t":
+		return session.GroupViewModeCount - 1
+	}
+	return 0
 }
 
 func stepList(w *widthRun) error {
