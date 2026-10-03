@@ -145,6 +145,9 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	// stable for a given (capped) summary. The injected reason only ever shows a
 	// one-line summary anyway, so the truncated prefix is sufficient signal.
 	event.DoneSummary = capDoneSummary(event.DoneSummary)
+	// Issue #2469: the carried child text has a hard ceiling too, whatever
+	// the producer's configured cap was.
+	event.Text = CapTurnText(event.Text, MaxTurnTextBytes)
 	if event.TurnFingerprint == "" {
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
@@ -622,6 +625,17 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 			slog.String("parent", parentID), slog.String("turn", event.TurnFingerprint))
 		return true, false, ""
 	}
+	// Issue #2469, design principle 1: only the tiers listed in [inbox]
+	// wake_on (default: urgent) wake the parent. An info record stays durably
+	// queued and rides the parent's next turn or the info digest; it is never
+	// lost, it just does not buy a turn of its own.
+	if !ResolveInboxConfig(parent.Title).WakesFor(event.Tier) {
+		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsSuppressed++ })
+		commsLog.Debug("wake_nudge_skipped_tier",
+			slog.String("parent", parentID), slog.String("tier", event.Tier), slog.String("turn", event.TurnFingerprint))
+		return true, false, ""
+	}
+	_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsUrgent++ })
 	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
 	// to drain it immediately instead of on its next ~14-min heartbeat. This is
 	// the event-driven trigger — fired the moment the completion is committed,

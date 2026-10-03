@@ -155,10 +155,13 @@ func TestIssue1142_DifferentStatus_EmitsEachTime(t *testing.T) {
 		}
 	}
 
+	// Issue #2469: waiting and idle are one attention class when the turn
+	// signal is unchanged, so waiting->idle->waiting with the same hash is
+	// one turn. Flips into and out of error still emit each time.
 	got := countEmitted(n, events)
-	if got != len(statuses) {
-		t.Fatalf("issue #1142: expected %d emits for %d distinct statuses, got %d",
-			len(statuses), len(statuses), got)
+	if want := 3; got != want {
+		t.Fatalf("issue #1142/#2469: expected %d emits (waiting, error, waiting; idle folded), got %d",
+			want, got)
 	}
 }
 

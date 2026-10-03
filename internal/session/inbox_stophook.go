@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
@@ -153,10 +154,31 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 		return StopHookDecision{}, false, nil
 	}
 
+	reason := FormatCompletionsForInjection(events)
+	_ = BumpInboxStats(instanceID, func(s *InboxStats) {
+		s.Drains++
+		s.RecordsDelivered += int64(len(events))
+		s.BytesInjected += int64(len(reason))
+		s.LastUrgentLatencyMS = urgentLatencyMS(events, time.Now())
+	})
 	return StopHookDecision{
 		Decision: "block",
-		Reason:   FormatCompletionsForInjection(events),
+		Reason:   reason,
 	}, true, nil
+}
+
+// urgentLatencyMS returns the age of the newest urgent record in ms, or 0.
+func urgentLatencyMS(events []TransitionNotificationEvent, now time.Time) int64 {
+	var newest time.Time
+	for _, ev := range events {
+		if ev.IsUrgent() && ev.Timestamp.After(newest) {
+			newest = ev.Timestamp
+		}
+	}
+	if newest.IsZero() {
+		return 0
+	}
+	return now.Sub(newest).Milliseconds()
 }
 
 // FormatCompletionsForInjection renders drained completions as the human-
@@ -174,13 +196,31 @@ func FormatCompletionsForInjection(events []TransitionNotificationEvent) string 
 			title = ev.ChildSessionID
 		}
 		line := fmt.Sprintf("- %s (%s): %s", title, ev.ChildSessionID, status)
+		if ev.Tier != "" {
+			line = fmt.Sprintf("- [%s] %s (%s): %s", ev.Tier, title, ev.ChildSessionID, status)
+		}
 		if ev.Kind == transitionKindFinished && ev.DoneSummary != "" {
 			line += " — " + ev.DoneSummary
 		}
 		b.WriteString(line)
 		b.WriteByte('\n')
+		// Issue #2469, design principle 2: the record carries the child's new
+		// text so the parent acts on it instead of re-reading the child.
+		if text := strings.TrimSpace(ev.Text); text != "" && text != strings.TrimSpace(ev.DoneSummary) {
+			b.WriteString(indentLines(text, "    "))
+			b.WriteByte('\n')
+		}
 	}
 	return b.String()
+}
+
+// indentLines prefixes every line of text with indent.
+func indentLines(text, indent string) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		lines[i] = indent + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ResetStopBlockBudget clears an instance's consecutive-block counter. Used by

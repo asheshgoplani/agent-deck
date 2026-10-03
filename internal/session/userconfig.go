@@ -126,6 +126,11 @@ type UserConfig struct {
 	// available, falling back to tmux keystrokes otherwise. Discussion #2089.
 	SendTransport string `toml:"send_transport,omitempty"`
 
+	// Inbox tunes what reaches a parent session and when (issue #2469):
+	// which tiers wake it, how much child text a record carries, the info
+	// digest window. See InboxConfig.
+	Inbox InboxConfig `toml:"inbox,omitempty"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps,omitempty"`
@@ -1270,6 +1275,8 @@ type ConductorOverrides struct {
 	Hermes ConductorHermesSettings `toml:"hermes,omitempty"`
 	// DeepSeek defines DeepSeek Harness overrides for a specific conductor.
 	DeepSeek ConductorDeepSeekSettings `toml:"deepseek,omitempty"`
+	// Inbox overrides [inbox] for this conductor (issue #2469).
+	Inbox *InboxConfig `toml:"inbox,omitempty"`
 }
 
 // ConductorDeepSeekSettings defines conductor-specific DeepSeek Harness

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A child's finished turn is now classified from its transcript before anything reaches the parent (#2469). The notify-daemon used to key a turn on the transcript file size, so every background sub-agent or background Bash completion inside a child (a `<task-notification>` turn) looked like a new turn and woke the parent with a text-less record: one conductor was woken 161 times in 160 minutes with nothing to act on. Each turn now gets exactly one record, tiered `urgent` (completion sentinel, error, a question, or new text in a turn a human or a `session send` started) or `info` (new text in a turn a background task, a system injection or the child's own inbox/heartbeat prompt started); a turn whose text and state did not change is counted as noise and never recorded. Records carry the child's new text (`text`, capped by `[inbox] max_text_bytes`, default 600 B), its hash, the trigger and the turn uuid, so the parent acts on the record instead of re-reading the child; `inbox drain` prints the text in both modes and the Stop-hook block includes it. Only `urgent` records wake an idle parent (`[inbox] wake_on`, default `["urgent"]`); `info` records stay durably queued and ride the parent's next turn. A sentinel turn is one `finished` record instead of a transition record plus a finished record. Every recorded turn is also appended to a per-child journal under `runtime/turn-journal/` (bounded by `[inbox] journal_keep`, default 256 lines). Records from older producers carry no tier and keep today's behaviour.
+
+### Added
+
+- `agent-deck inbox stats [--json] [--all] [<session-id>|self]` reports a parent's communication counters: records by tier, turns suppressed as noise or duplicates, wakeups fired and withheld, records delivered, bytes injected and the last urgent latency (#2469).
+- `[inbox]` config section (`wake_on`, `max_text_bytes`, `info_digest_minutes`, `question_wakes`, `journal_keep`) with a per-conductor override under `[conductors.<name>.inbox]` (#2469).
+
 ## [1.16.23] - 2026-10-02
 
 - **Upgrading:** `session switch-account` now keeps a target conversation copy that is newer than the source instead of refusing; pass `--archive-destination` to insist on the source copy as before.
