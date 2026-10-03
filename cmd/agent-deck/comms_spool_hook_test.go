@@ -59,7 +59,7 @@ func TestHookHandler_ClaudeFixturesSpoolBothEdges(t *testing.T) {
 	if stop.TranscriptPath != "" {
 		t.Fatalf("a transcript path outside the Claude roots must not be forwarded: %q", stop.TranscriptPath)
 	}
-	if stop.Cwd != "/tmp/w" || stop.TSignal == 0 {
+	if stop.Cwd != "/tmp" || stop.TSignal == 0 {
 		t.Fatalf("Stop metadata: %+v", stop)
 	}
 }

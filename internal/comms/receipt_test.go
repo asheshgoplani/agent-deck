@@ -158,7 +158,7 @@ func TestRetentionKeepsPendingAndReportsGaps(t *testing.T) {
 }
 
 func TestRecordCarriesSchemaVersionStoreAndEpoch(t *testing.T) {
-	dir := t.TempDir()
+	dir := t.TempDir() + "/ledger"
 	l, err := OpenDir("p", dir)
 	if err != nil {
 		t.Fatal(err)

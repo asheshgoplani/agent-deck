@@ -329,6 +329,9 @@ func TestPrivateBusCreatesOwnerOnlyFiles(t *testing.T) {
 }
 
 func TestCommitShortWriteIsRolledBackAndReported(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
 	dir := t.TempDir()
 	b, err := OpenAt(dir, Options{})
 	if err != nil {
@@ -338,24 +341,27 @@ func TestCommitShortWriteIsRolledBackAndReported(t *testing.T) {
 	if _, err := b.Commit("k", "s", nil); err != nil {
 		t.Fatal(err)
 	}
-	// Replace the active file handle with a read-only one: the append fails,
-	// the cursor does not advance, the bus reports the failure.
-	b.mu.Lock()
-	_ = b.activeFile.Close()
-	ro, err := os.Open(filepath.Join(dir, activeSegmentName))
-	if err != nil {
+	// The active file becomes unwritable (a disk or permission fault): the
+	// append fails, the cursor does not advance, the bus reports it and
+	// stays disabled until reopened.
+	active := filepath.Join(dir, activeSegmentName)
+	if err := os.Chmod(active, 0o400); err != nil {
 		t.Fatal(err)
 	}
-	b.activeFile = ro
-	b.mu.Unlock()
 	if _, err := b.Commit("k", "s", nil); err == nil {
-		t.Fatal("commit on a read-only handle reported success")
+		t.Fatal("commit on an unwritable active file reported success")
 	}
 	if b.Cursor() != 1 {
 		t.Fatalf("cursor advanced past a failed append: %d", b.Cursor())
 	}
+	if err := os.Chmod(active, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := b.Commit("k", "s", nil); err == nil {
 		t.Fatal("bus must stay disabled after a write failure until reopened")
+	}
+	if lines := readLines(t, active); len(lines) != 1 {
+		t.Fatalf("a failed commit left bytes behind: %d lines", len(lines))
 	}
 	b2, err := OpenAt(dir, Options{})
 	if err != nil {

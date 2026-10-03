@@ -137,8 +137,8 @@ func (c *ConsumerState) Ack(cursor events.Cursor) error {
 	if i < len(c.Acked) && c.Acked[i] == cursor {
 		return nil
 	}
-	if len(c.Acked) >= MaxSparseAcks {
-		return ErrAckWindow
+	if len(c.Acked) >= MaxSparseAcks && cursor != c.Watermark+1 {
+		return ErrAckWindow // the stuck record (watermark + 1) is always accepted
 	}
 	c.Acked = append(c.Acked, 0)
 	copy(c.Acked[i+1:], c.Acked[i:])
