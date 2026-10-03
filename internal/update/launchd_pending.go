@@ -30,6 +30,11 @@ const (
 	// come back (bootstrap never accepted, or not verified running); it is
 	// unloaded until a run gets it back.
 	PendingReasonBootstrapFailed = "bootstrap failed"
+	// PendingReasonDisabled: the agent is on launchd's disabled list, so
+	// no run re-registers it. Never written to the marker: `update --check`
+	// reports an entry an older run left with it (MarkDisabledPending),
+	// and the next run drops that entry.
+	PendingReasonDisabled = "disabled"
 )
 
 // PendingAgent is one launch agent a run left for a later one: which
@@ -42,6 +47,9 @@ type PendingAgent struct {
 	// Attempts counts the runs that tried to re-register it and failed.
 	Attempts  int    `json:"attempts,omitempty"`
 	LastError string `json:"last_error,omitempty"`
+	// Disabled is set by MarkDisabledPending when launchd has the agent on
+	// its disabled list; never stored in the marker.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // pendingRebootstrap is the on-disk shape of the marker. Labels is what
@@ -173,6 +181,8 @@ func DescribePendingAgent(p PendingAgent) string {
 		return s + "; every update run retries it"
 	case PendingReasonInsideService:
 		return fmt.Sprintf("%s: deferred since %s, the updater ran inside it; the next update run outside it re-registers it", p.Label, since)
+	case PendingReasonDisabled:
+		return fmt.Sprintf("%s: disabled in launchd, left alone; the next update run drops it from this list", p.Label)
 	}
 	return fmt.Sprintf("%s: pending since %s", p.Label, since)
 }
@@ -204,6 +214,16 @@ func notePendingFailure(path, label string, cause error, now time.Time) error {
 
 func removePendingRebootstrap(path, label string) error {
 	return editPendingRebootstrap(path, label, func(*PendingAgent, bool) bool { return false })
+}
+
+// dropPendingRebootstrap removes label from the marker and reports whether
+// it was there.
+func dropPendingRebootstrap(path, label string) (dropped bool, err error) {
+	err = editPendingRebootstrap(path, label, func(_ *PendingAgent, found bool) bool {
+		dropped = found
+		return false
+	})
+	return dropped, err
 }
 
 // editPendingRebootstrap rewrites the marker with label's record passed
@@ -250,7 +270,8 @@ func editPendingRebootstrap(path, label string, edit func(p *PendingAgent, found
 // DrainPendingRebootstrap re-registers every agent the marker names whose
 // service this process is not inside, clearing each one from the marker as
 // it comes back. A label whose plist is gone is dropped from the marker and
-// reported in Skipped. Not darwin, or no marker: nothing to do.
+// reported in Skipped; one launchd has disabled is dropped and reported in
+// Disabled. Not darwin, or no marker: nothing to do.
 func DrainPendingRebootstrap(opts RebootstrapOptions) (RebootstrapResult, error) {
 	res := RebootstrapResult{Skipped: map[string]string{}}
 	if err := opts.fill(); err != nil {
@@ -264,6 +285,7 @@ func DrainPendingRebootstrap(opts RebootstrapOptions) (RebootstrapResult, error)
 		return res, err
 	}
 	opts.Logger.Info("launchagent_pending_drain", slog.Any("labels", labels), slog.String("pending", opts.PendingPath))
+	disabled := &launchdDisabled{opts: opts}
 	for _, label := range labels {
 		if insideLaunchdService(opts.ServiceLabel, label) {
 			opts.Logger.Info("launchagent_pending_kept", slog.String("label", label), slog.String("reason", "this process runs inside it"))
@@ -275,6 +297,10 @@ func DrainPendingRebootstrap(opts RebootstrapOptions) (RebootstrapResult, error)
 			res.Skipped[label] = err.Error()
 			opts.Logger.Warn("launchagent_pending_dropped", slog.String("label", label), slog.String("err", err.Error()))
 			_ = removePendingRebootstrap(opts.PendingPath, label)
+			continue
+		}
+		if disabled.has(label) {
+			leaveDisabled(opts, label, &res)
 			continue
 		}
 		if err := rebootstrapOne(opts, agent); err != nil {
@@ -303,4 +329,26 @@ func loadPendingAgent(dir, label string) (LaunchAgent, error) {
 	}
 	agent.Path = path
 	return agent, nil
+}
+
+// MarkDisabledPending flags every agent in agents that launchd has on its
+// disabled list (Disabled, reason PendingReasonDisabled), so `update
+// --check` says so instead of "bootstrap failed"; the next run drops such
+// an entry. Nothing pending, or not darwin: agents unchanged and launchctl
+// is not asked.
+func MarkDisabledPending(agents []PendingAgent, opts RebootstrapOptions) []PendingAgent {
+	if len(agents) == 0 {
+		return agents
+	}
+	if err := opts.fill(); err != nil || opts.GOOS != "darwin" {
+		return agents
+	}
+	disabled := readDisabledLabels(opts)
+	for i := range agents {
+		if disabled[agents[i].Label] {
+			agents[i].Disabled = true
+			agents[i].Reason = PendingReasonDisabled
+		}
+	}
+	return agents
 }

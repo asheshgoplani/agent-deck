@@ -4073,7 +4073,7 @@ func handleUpdate(args []string) {
 			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
 		}
 		onDisk := onDiskVersion()
-		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), update.ListPendingRebootstrap())); err != nil {
+		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), pendingLaunchAgentsForCheck())); err != nil {
 			exit(1)
 		}
 		exit(0)
