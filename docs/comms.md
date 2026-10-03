@@ -160,6 +160,26 @@ Frozen now in `internal/comms/receipt.go` with fixtures under
   as an `error` record addressed to itself) and is never silently
   restarted at the newest segment.
 
+Four rules from the MonoCode relay comparison are part of this contract:
+
+1. **Request id receipts.** A send carries the caller's request id (`req`);
+   its receipt is the `send` record, committed before the action. A retry
+   with the same id gets the stored record (`ErrDuplicate` + record,
+   `Ledger.Lookup`), never a second delivery. Ledger: now; `session send`
+   wiring: P2.
+2. **Bounded reads.** At most N recent records, a per-message byte cap, a
+   cursor for older ones, tool noise never stored. `ReadAfter(limit)`: now;
+   `msg read --last N --max-bytes`: P2.
+3. **Combined idle wake with rollback and a cap.** One wake carrying every
+   pending record when the parent is idle; a failed parent turn returns the
+   records to pending (`failed` receipt, `Retry`); at most `MaxAutoWakes`
+   (20) automatic wakes per parent without a human or own turn in between.
+   P2.
+4. **Protocol-stream producers.** Where agent-deck launches the harness, an
+   adapter may read its protocol stream (stream-json, app-server, ACP, pi
+   rpc, OpenCode SSE) instead of hooks and spool the same edges. P3 or
+   later, per harness, with the fixture rule of every producer.
+
 ## Recovery at every boundary
 
 | Boundary | Crash or failure | Outcome |

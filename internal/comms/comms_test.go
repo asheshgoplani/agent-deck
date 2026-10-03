@@ -284,3 +284,32 @@ func TestRemoteFirstExportImportIsIdempotentPerOrigin(t *testing.T) {
 }
 
 func r2time() time.Time { return time.UnixMilli(1_700_000_000_000) }
+
+func TestSendRetryWithTheSameRequestIDReturnsTheStoredReceipt(t *testing.T) {
+	l, err := OpenDir("p", t.TempDir()+"/ledger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	send := Record{Kind: KindSend, From: "conductor", To: []string{"child"}, Req: "req-42", Key: SendKey("conductor", "req-42"), Text: "do the thing", State: StateQueued}
+	first, cursor, err := l.Commit(send)
+	if err != nil || cursor != 1 || first.V != SchemaVersion {
+		t.Fatalf("first send: %+v %d %v", first, cursor, err)
+	}
+	// The receipt exists before any action is taken: a retry returns it.
+	again, c2, err := l.Commit(Record{Kind: KindSend, From: "conductor", To: []string{"child"}, Req: "req-42", Key: SendKey("conductor", "req-42"), Text: "do the thing"})
+	if !errors.Is(err, ErrDuplicate) || c2 != 0 || again.ID != first.ID || again.TRecord != first.TRecord {
+		t.Fatalf("retry: %+v %d %v", again, c2, err)
+	}
+	if got, ok := l.Lookup(SendKey("conductor", "req-42")); !ok || got.ID != first.ID {
+		t.Fatalf("Lookup: %+v %v", got, ok)
+	}
+	if _, ok := l.Lookup(SendKey("conductor", "req-43")); ok {
+		t.Fatal("unknown request id found")
+	}
+	bus, _ := OpenReaderDir(l.bus.Stats().Dir)
+	defer bus.Close()
+	if recs, _, _ := ReadAfter(bus, 0, 0); len(recs) != 1 {
+		t.Fatalf("a retried send must not add a record: %d", len(recs))
+	}
+}

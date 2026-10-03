@@ -93,6 +93,7 @@ type Record struct {
 	Summary   string `json:"summary,omitempty"` // completion sentinel summary
 	Err       string `json:"err,omitempty"`     // error text for KindError
 	Seq       int64  `json:"seq,omitempty"`     // per-From sequence
+	Req       string `json:"req,omitempty"`     // caller request id of a send: the receipt is this record, written before the action
 	ReplyTo   string `json:"reply_to,omitempty"`
 	Via       string `json:"via,omitempty"`   // tmux | socket | ssh | telegram | hook
 	State     string `json:"state,omitempty"` // State* constants
@@ -152,6 +153,11 @@ func TextHash(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])[:16]
 }
+
+// SendKey is the idempotency key of a send with a caller request id: a
+// retry with the same id finds the stored receipt (the send record) instead
+// of causing a second delivery.
+func SendKey(from, req string) string { return Key(KindSend, from, req) }
 
 // Key returns the idempotency key for a record a producer may observe more
 // than once: "<kind>:<from>:<sha256/16 of the parts>". The daemon drops a

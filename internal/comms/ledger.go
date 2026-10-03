@@ -52,7 +52,7 @@ type Ledger struct {
 	bus     *events.Bus
 
 	mu     sync.Mutex
-	keys   map[string]struct{}
+	keys   map[string]Record // dedup key -> the record committed under it (the stored receipt)
 	order  []string
 	seq    map[string]int64
 	last   map[string]Record // newest turn record per From (the tier rule's "previous turn")
@@ -154,7 +154,7 @@ func OpenDir(profile, dir string) (*Ledger, error) {
 		_ = bus.Close()
 		return nil, err
 	}
-	l := &Ledger{profile: profile, bus: bus, keys: map[string]struct{}{}, seq: map[string]int64{},
+	l := &Ledger{profile: profile, bus: bus, keys: map[string]Record{}, seq: map[string]int64{},
 		last: map[string]Record{}, status: map[string]Record{}, store: store}
 	l.warm()
 	return l, nil
@@ -199,7 +199,7 @@ func (l *Ledger) warm() {
 func (l *Ledger) remember(r Record) {
 	if key := r.DedupKey(); key != "" {
 		if _, dup := l.keys[key]; !dup {
-			l.keys[key] = struct{}{}
+			l.keys[key] = r
 			l.order = append(l.order, key)
 			if len(l.order) > recentKeys {
 				delete(l.keys, l.order[0])
@@ -243,8 +243,21 @@ func (l *Ledger) LastTurn(from string) (Record, bool) {
 }
 
 // ErrDuplicate is returned by Commit when the record's key was committed
-// within the idempotency window.
+// within the idempotency window. The record returned with it is the one
+// already committed (the stored receipt), so a retried send with the same
+// request id gets its receipt back and never a second delivery.
 var ErrDuplicate = errors.New("comms: duplicate key")
+
+// Lookup returns the record committed under key within the window.
+func (l *Ledger) Lookup(key string) (Record, bool) {
+	if l == nil {
+		return Record{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.keys[key]
+	return r, ok
+}
 
 // Commit stamps the record (id, t_record, hash, bytes, latency, seq) and
 // appends it synchronously. A record whose Key was already committed within
@@ -269,8 +282,8 @@ func (l *Ledger) Commit(r Record) (Record, events.Cursor, error) {
 		return r, 0, errors.New("comms: ledger closed")
 	}
 	if key := r.DedupKey(); key != "" {
-		if _, dup := l.keys[key]; dup {
-			return r, 0, ErrDuplicate
+		if stored, dup := l.keys[key]; dup {
+			return stored, 0, ErrDuplicate
 		}
 	}
 	if r.Profile == "" {

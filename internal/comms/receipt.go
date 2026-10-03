@@ -9,6 +9,29 @@ import (
 )
 
 // Consumer contract (docs/comms.md "Consumers, receipts and retention").
+//
+// Four rules folded in from the MonoCode relay comparison
+// (docs/monocode-comms-20261003.md in the conductor's repo):
+//
+//  1. Every send carries a caller request id (Record.Req) and its receipt
+//     is the `send` record itself, committed (durable) BEFORE the action is
+//     taken; a retry with the same id gets ErrDuplicate with the stored
+//     record and never causes a second delivery (Ledger.Commit, SendKey).
+//     In the ledger now (G3/G6); `session send` writes it in P2.
+//  2. Reads of a session are bounded: at most N recent records, a per
+//     message byte cap (CapText), a cursor for older ones (ReadAfter with a
+//     limit, Exported.Cursor), tool noise never stored (records carry the
+//     final text only). ReadAfter is here; `msg read --last N` is P2.
+//  3. Delivery to an idle parent is one combined wake carrying every pending
+//     record (Digest); each record's attempt moves to `attempted` and, if
+//     the parent's turn fails, back to pending by a `failed` receipt and a
+//     Retry; automatic wakes per parent are capped (MaxAutoWakes) and a
+//     parent past the cap waits for a human or its own next turn. P2.
+//  4. Where agent-deck launches the harness itself, a producer may read the
+//     harness's own protocol stream (Claude stream-json, Codex app-server,
+//     ACP, pi rpc, OpenCode SSE) instead of hooks; it spools the same
+//     CommsSpoolEntry edges, so the ledger does not care which. P3 or later,
+//     per harness, with the same fixture rule as any producer.
 // Frozen in P0 so the P2 consumers, the P3 transport and a later workflow
 // runner build on one shape: a receipt per (message, recipient, consumer
 // generation, attempt) with evidence states that only move forward, and a
@@ -97,6 +120,11 @@ func (r Receipt) Retry(at int64) Receipt {
 	return Receipt{MessageID: r.MessageID, Recipient: r.Recipient, Generation: r.Generation,
 		Attempt: r.Attempt + 1, State: ReceiptDurable, At: at}
 }
+
+// MaxAutoWakes caps the automatic wakes a parent gets without a human or a
+// turn of its own in between (rule 3); the P2 wake path enforces it and
+// records the pause as an `error` record addressed to the parent.
+const MaxAutoWakes = 20
 
 // MaxSparseAcks bounds the sparse acknowledgement set: a consumer that
 // acknowledges records far ahead of a stuck one is told to deal with the
