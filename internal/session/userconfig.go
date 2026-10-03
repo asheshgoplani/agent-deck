@@ -3805,8 +3805,9 @@ type DisplaySettings struct {
 	ActiveFilterExcludes []string `toml:"active_filter_excludes,omitempty"`
 
 	// HideDefaultToolBadge drops the session row's tool badge when the
-	// session runs default_tool, so only sessions on another tool are
-	// labelled. Default: false (every row shows its tool).
+	// session runs default_tool (claude when default_tool is unset), so only
+	// sessions on another tool are labelled. Default: false (every row shows
+	// its tool).
 	HideDefaultToolBadge bool `toml:"hide_default_tool_badge,omitempty"`
 
 	// IncludeCwdPrefix controls whether the terminal/pane title is prefixed
