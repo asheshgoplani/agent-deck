@@ -524,9 +524,17 @@ func systemdTimestamp(v string) string {
 		return ""
 	}
 	for _, layout := range []string{"Mon 2006-01-02 15:04:05 MST", "Mon 2006-01-02 15:04:05.000000 MST"} {
-		if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
-			return t.UTC().Format(time.RFC3339)
+		t, err := time.ParseInLocation(layout, v, time.Local)
+		if err != nil {
+			continue
 		}
+		// An abbreviation that is neither UTC nor known to the local zone
+		// parses with offset 0 (Go cannot know its offset): keep the raw
+		// text rather than report a wrong instant.
+		if name, offset := t.Zone(); offset == 0 && name != "UTC" && name != "GMT" {
+			return v
+		}
+		return t.UTC().Format(time.RFC3339)
 	}
 	return v
 }

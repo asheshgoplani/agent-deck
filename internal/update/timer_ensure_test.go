@@ -404,6 +404,10 @@ func TestSystemdTimestamp(t *testing.T) {
 	assert.Equal(t, "", systemdTimestamp("n/a"))
 	assert.Equal(t, "", systemdTimestamp(""))
 	assert.Equal(t, "in 3h", systemdTimestamp("in 3h"), "unparsable text is kept, not dropped")
+	// #2472 review nit: an abbreviation the local zone does not know must
+	// not be read as UTC.
+	foreign := "Sat 2026-10-03 22:59:12 ZZT"
+	assert.Equal(t, foreign, systemdTimestamp(foreign), "an unknown zone is kept raw, never read as offset 0")
 }
 
 func readFile(t *testing.T, p string) string {
