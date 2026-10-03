@@ -145,15 +145,19 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 }
 
 // SubstateDetail returns free-text detail for the substate ClassifySubstate
-// would return for content, or "" when there is none. Today only the codex
-// usage-limit banner carries one: the retry time the banner prints ("try
-// again at Oct 10th, 2026 8:03 AM").
+// would return for content, or "" when there is none: the retry time the
+// codex usage-limit banner prints, or the background task name and progress
+// for Claude sessions running background workflows/tasks.
 func (d *PromptDetector) SubstateDetail(content string) string {
-	if d.tool != "codex" {
-		return ""
-	}
-	if kind, detail := scanCodexErrorBanner(content); kind == codexBannerUsageLimit {
-		return detail
+	switch d.tool {
+	case "codex":
+		if kind, detail := scanCodexErrorBanner(content); kind == codexBannerUsageLimit {
+			return detail
+		}
+	case "claude":
+		if detail := claudeBackgroundWorkDetail(content); detail != "" {
+			return detail
+		}
 	}
 	return ""
 }
@@ -195,6 +199,13 @@ func (d *PromptDetector) classifyClaudeSubstate(content string) Substate {
 	//    match.
 	if hasModelUnavailableNoop(content) {
 		return SubstateModelUnavailable
+	}
+
+	// Active background work (running workflow, in-flight background task or
+	// awaited agent). While this work is in flight the session is running
+	// with substate background-work, even though it sits at an empty prompt.
+	if claudeBackgroundWorkPending(content) {
+		return SubstateBackgroundWork
 	}
 
 	// 4/5. Sitting at the input prompt with no busy/error signal. hasClaudePrompt

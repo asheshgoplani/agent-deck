@@ -1242,8 +1242,9 @@ type Session struct {
 	// UpdateStatus has no captured pane content, so it must capture separately to
 	// check for in-flight background shells/agents; this bounds that to one
 	// capture per bgWorkCacheTTL while a session sits at the prompt.
-	bgWorkPending   bool
-	bgWorkCheckedAt time.Time
+	bgWorkPending       bool
+	bgWorkCheckedAt     time.Time
+	backgroundWorkProbe func() (bool, string)
 
 	// Simple state tracking (hash-based)
 	stateTracker *StateTracker
@@ -1260,6 +1261,7 @@ type Session struct {
 	// lastSubstateDetail is free-text detail for lastSubstate when the
 	// classifier captured one (the codex usage-limit retry time); "" otherwise.
 	lastSubstateDetail string
+	lastBackgroundTaskName string
 
 	// completedTurnIdle / completedTurnSampledAt: the completed-turn verdict
 	// (finished Claude turn at an idle prompt) of the last classified pane
@@ -5422,10 +5424,57 @@ func (s *Session) BackgroundWorkPending() bool {
 	pending := claudeBackgroundWorkPending(trimClaudeTrailingRoster(StripANSI(rawContent)))
 
 	s.mu.Lock()
+	if !pending && s.backgroundWorkProbe != nil {
+		probePending, _ := s.backgroundWorkProbe()
+		if probePending {
+			pending = true
+		}
+	}
 	s.bgWorkPending = pending
 	s.bgWorkCheckedAt = time.Now()
 	s.mu.Unlock()
 	return pending
+}
+
+// SetBackgroundWorkProbe registers an optional probe callback (e.g. from session.Instance)
+// to check transcript records for in-flight background workflows or tasks.
+func (s *Session) SetBackgroundWorkProbe(fn func() (bool, string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.backgroundWorkProbe = fn
+}
+
+// BackgroundTaskName returns the name of the in-flight background task or workflow,
+// or "" if none.
+func (s *Session) BackgroundTaskName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isClaudeTool() {
+		return ""
+	}
+	if s.lastBackgroundTaskName != "" {
+		return s.lastBackgroundTaskName
+	}
+	if s.lastContent != "" {
+		if name := claudeBackgroundTaskName(s.lastContent); name != "" {
+			return name
+		}
+	}
+	if s.backgroundWorkProbe != nil {
+		if _, detail := s.backgroundWorkProbe(); detail != "" {
+			parts := strings.Fields(detail)
+			if len(parts) > 0 {
+				return parts[0]
+			}
+		}
+	}
+	if s.lastSubstateDetail != "" {
+		parts := strings.Fields(s.lastSubstateDetail)
+		if len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return ""
 }
 
 // markBackgroundWorkActiveLocked applies the "keep green while background work is
@@ -5434,7 +5483,17 @@ func (s *Session) BackgroundWorkPending() bool {
 // fired (caller should return "active"). Accepts raw or stripped content
 // (StripANSI is idempotent). Must be called with s.mu held.
 func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64, shortName string) bool {
-	if !s.isClaudeTool() || !claudeBackgroundWorkPending(StripANSI(content)) {
+	if !s.isClaudeTool() {
+		return false
+	}
+	pending := claudeBackgroundWorkPending(StripANSI(content))
+	if !pending && s.backgroundWorkProbe != nil {
+		probePending, _ := s.backgroundWorkProbe()
+		if probePending {
+			pending = true
+		}
+	}
+	if !pending {
 		return false
 	}
 	s.stateTracker.lastChangeTime = time.Now()
@@ -5789,6 +5848,9 @@ func (s *Session) GetSubstate() Substate {
 func (s *Session) classifyFrameLocked(content string) Substate {
 	s.lastSubstate = s.classifySubstate(content)
 	s.lastSubstateDetail = s.substateDetailLocked(content)
+	if s.isClaudeTool() {
+		s.lastBackgroundTaskName = claudeBackgroundTaskName(content)
+	}
 	s.recordCompletedTurnSampleLocked(content)
 	return s.lastSubstate
 }
@@ -5799,7 +5861,14 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 func (s *Session) CachedSubstateDetail() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lastSubstateDetail
+	if s.lastSubstateDetail != "" {
+		return s.lastSubstateDetail
+	}
+	if s.lastSubstate == SubstateBackgroundWork && s.backgroundWorkProbe != nil {
+		_, detail := s.backgroundWorkProbe()
+		return detail
+	}
+	return ""
 }
 
 // CachedSubstate returns the last substate computed by GetStatus/GetSubstate

@@ -1936,6 +1936,9 @@ func handleSessionShow(profile string, args []string) {
 	if detail := inst.SubstateDetail(); detail != "" {
 		jsonData["substate_detail"] = detail
 	}
+	if taskName := inst.BackgroundTaskName(); taskName != "" {
+		jsonData["task_name"] = taskName
+	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
 	addEffortJSON(jsonData, inst)
