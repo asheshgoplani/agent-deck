@@ -324,22 +324,13 @@ func validateStartupQueryCapacity(profile, group, parent, path string, noParent,
 	if selectedGroup == "" {
 		selectedGroup = session.GroupPathForProject(path)
 	}
-	var parentInst *session.Instance
-	if parent != "" {
-		var message string
-		parentInst, message, _ = ResolveSession(parent, instances)
-		if parentInst == nil {
-			return fmt.Errorf("%s", message)
+	parentInst, _, _, parentErr := selectLaunchParent(parent, noParent, launchNestUnderParent(), instances)
+	if parentErr != nil {
+		var lpe *launchParentError
+		if errors.As(parentErr, &lpe) && lpe.UnresolvedID != "" {
+			return fmt.Errorf("automatic parent %q could not be resolved; use --no-parent", lpe.UnresolvedID)
 		}
-	} else if !noParent {
-		var unresolved string
-		parentInst, unresolved = resolveAutoParentInstanceChecked(instances)
-		if unresolved != "" {
-			return fmt.Errorf("automatic parent %q could not be resolved; use --no-parent", unresolved)
-		}
-	}
-	if parentInst != nil && parentInst.IsSubSession() {
-		return fmt.Errorf("cannot create sub-session of a sub-session (single level only)")
+		return parentErr
 	}
 	if parentInst != nil && group == "" && (inheritGroup || selectedGroup == "") {
 		selectedGroup = parentInst.GroupPath

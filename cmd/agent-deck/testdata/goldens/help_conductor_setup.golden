@@ -9,6 +9,7 @@ Arguments:
 Options:
   -agent string
         Conductor agent runtime: claude, codex, hermes, or pi (default "claude")
+        A re-run without -agent keeps the conductor's current agent
   -description string
         Description for this conductor
   -heartbeat

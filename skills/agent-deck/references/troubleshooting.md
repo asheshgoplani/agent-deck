@@ -424,6 +424,7 @@ Use this template:
 - Test any suggested fixes
 - Update issue with results
 - Join [Discord](https://discord.gg/e4xSs6NBN8) for quick help and community support
+- Run `agent-deck feedback` to submit a rating and optional comment
 
 ## Recovery
 

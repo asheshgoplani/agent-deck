@@ -243,6 +243,7 @@ func TestRebootstrapLaunchAgents_SelectsOnlyOurBinary(t *testing.T) {
 	assert.NotContains(t, res.Skipped, "com.example.other", "foreign labels are ignored entirely")
 
 	assert.Equal(t, []string{
+		"launchctl print-disabled gui/501",
 		"launchctl bootout gui/501/com.agentdeck.transition-notifier",
 		"launchctl bootstrap gui/501 " + filepath.Join(agents, "com.agentdeck.transition-notifier.plist"),
 		"launchctl print gui/501/com.agentdeck.transition-notifier",
@@ -278,7 +279,7 @@ func TestRebootstrapLaunchAgents_MatchesThroughSymlink(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"com.agentdeck.web"}, res.Restarted)
-	assert.Equal(t, "launchctl bootout gui/7/com.agentdeck.web", r.joined()[0])
+	assert.Equal(t, []string{"launchctl print-disabled gui/7", "launchctl bootout gui/7/com.agentdeck.web"}, r.joined()[:2])
 }
 
 func TestRebootstrapLaunchAgents_FailsWhenAgentNeverRuns(t *testing.T) {
@@ -309,7 +310,7 @@ func TestRebootstrapLaunchAgents_FailsWhenAgentNeverRuns(t *testing.T) {
 	assert.Contains(t, err.Error(), "run: launchctl bootout gui/501/com.agentdeck.transition-notifier; launchctl bootstrap gui/501 "+plist)
 	assert.Contains(t, out.String(), "✗ com.agentdeck.transition-notifier")
 	assert.Equal(t, 40, polls, "10s budget in 500ms steps, twice: the second round re-bootstraps from the plist")
-	assert.Len(t, r.calls, 2*(3+20), "per round: bootout, bootstrap, first print, then one print per poll")
+	assert.Len(t, r.calls, 1+2*(3+20), "the disabled list once, then per round: bootout, bootstrap, first print, then one print per poll")
 }
 
 func TestRebootstrapLaunchAgents_BootstrapRetriesThenFails(t *testing.T) {
@@ -355,7 +356,7 @@ func TestRebootstrapLaunchAgents_BootoutHardFailureStops(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Operation not permitted")
-	assert.Len(t, r.calls, 1, "no bootstrap after a hard bootout failure")
+	assert.Equal(t, []string{"launchctl print-disabled gui/501", "launchctl bootout gui/501/com.agentdeck.web"}, r.joined(), "no bootstrap after a hard bootout failure")
 }
 
 func TestRebootstrapLaunchAgents_NoopOffDarwin(t *testing.T) {

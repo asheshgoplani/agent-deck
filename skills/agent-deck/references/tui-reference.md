@@ -29,7 +29,7 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `Ctrl+f` / `Ctrl+b` | Full page up / down |
 | `Home` / `End` | Jump to first / last item |
 | `gg` | Jump to top |
-| `G` | Global search |
+| `G` | Recall search (see [Search & Filter](#search--filter)) |
 | `h` / `←` | Collapse group / go to parent |
 | `l` / `→` / `Tab` | Toggle expand/collapse group |
 | `1-9` | Jump to Nth root group |
@@ -90,7 +90,7 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `W` | Finish worktree — merge + cleanup (**rebindable**) |
 | `w` | Watcher panel (**rebindable**) |
 
-For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. A remote host header shows `v1.15.0 ↑` after its count when the remote runs an older agent-deck than this controller (the version is asked once per hour per remote on the session poll); `u` on that header opens "Update remote <name> from v<old> to v<new>?" and runs the same verified deploy as `agent-deck remote update <name>`. Remote-session reorder keys move only within the current remote group; the order is saved on the viewing machine, while remote group headers remain name-sorted.
+For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. A remote host header shows `v1.15.0 ↑` after its count when the remote runs an older agent-deck than this controller (the version is asked once per hour per remote on the session poll); `u` on that header opens "Update remote <name> from v<old> to v<new>?" and runs the same verified deploy as `agent-deck remote update <name>`. A remote session whose parent (for example its conductor) is in the same remote group is shown one level under it, as local sub-sessions are; with the parent absent it is shown flat. Remote-session reorder keys move only within the current remote group (a child only among its parent's children); the order is saved on the viewing machine, while remote group headers remain name-sorted.
 
 ### Copy & Text Selection
 
@@ -137,7 +137,7 @@ its own mouse capture regardless.
 | Key | Action |
 |-----|--------|
 | `/` | Local search, fuzzy (**rebindable**) |
-| `G` | Global search (all Claude conversations) |
+| `G` | Recall search over every indexed conversation (Claude, Codex, pi, Gemini, OpenCode, Hermes); footer notice and local search when `[recall] enabled = false` |
 | `Tab` | Switch between local/global search |
 | `0` | Clear filter (show all) |
 | `!` / `Shift+1` | Filter: running only (toggle) |
@@ -147,7 +147,7 @@ its own mouse capture regardless.
 | `%` | Filter: open only, hides errors (toggle) |
 | `^` | Filter: view archived sessions (toggle) |
 | `t` | Cycle group view: active-on-top / populated-on-top (**rebindable**) |
-| `*` | Cycle time filter: today / 3 days / 7 days / all (**rebindable**) |
+| `*` | Cycle time filter: today / 3 days / 7 days / 30 days / all (**rebindable**) |
 
 Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 
@@ -167,6 +167,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Ctrl+Y` | Install the available update now (`install_update`; runs `agent-deck update` on the terminal, see [Updates](#updates)) |
 | `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
+| `Ctrl+E` | Open feedback dialog |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
 
 ### Worktree Shortcuts

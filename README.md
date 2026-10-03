@@ -708,7 +708,7 @@ Suppression only affects dispatch — the parent link itself is unchanged. Defer
 
 **Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
 
-**Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session via `--channels plugin:telegram@claude-plugins-official` and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/SKILL.md#telegram-conductor-topology-v1722).
+**Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session via `--channels plugin:telegram@claude-plugins-official` and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/references/gotchas.md#telegram-conductor-topology-v1722).
 
 **Permission prompts during automation**: if a conductor keeps pausing on permission requests, set `[claude].allow_dangerous_mode = true` (or `dangerous_mode = true`) in `$XDG_CONFIG_HOME/agent-deck/config.toml`, then run `agent-deck session restart conductor-<name>`. See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#conductor-keeps-asking-for-permissions).
 
@@ -1243,15 +1243,17 @@ Then ask: *"How do I set up MCP pooling?"*
 **Option 2: OpenCode** (has built-in Claude skill compatibility)
 ```bash
 # Create skill directory
-mkdir -p ~/.claude/skills/agent-deck/references
+mkdir -p ~/.claude/skills/agent-deck/references ~/.claude/skills/agent-deck/recall
 
 # Download skill and references
 curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/SKILL.md \
   > ~/.claude/skills/agent-deck/SKILL.md
-for f in cli-reference config-reference tui-reference troubleshooting; do
+for f in cli-reference config-reference tui-reference troubleshooting capabilities session-communication sub-agents conductors session-workflows autonomy gotchas goal sandbox self-improvement; do
   curl -sL "https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/references/${f}.md" \
     > ~/.claude/skills/agent-deck/references/${f}.md
 done
+curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/recall/SKILL.md \
+  > ~/.claude/skills/agent-deck/recall/SKILL.md
 ```
 OpenCode will auto-discover the skill from `~/.claude/skills/`.
 
@@ -1269,7 +1271,7 @@ Agent Deck checks for updates automatically.
 - Unattended: `[updates] auto_install` is on by default, so the TUI installs an available update without asking (and restarts itself when `auto_restart` is on). For machines where the TUI is not open every day, `agent-deck update --install-timer` adds a daily run (launchd on macOS, systemd user timer on Linux); `--timer-status` and `--uninstall-timer` manage it and `--dry-run` shows what would be written. Set `auto_install = false` in [config.toml](skills/agent-deck/references/config-reference.md) to go back to installing by hand.
 - Optional: set `auto_update = true` for a Y/n prompt before the TUI opens.
 - Scripts, tests and CI: the automatic install and restart never fire under `go test`, with `CI=true`, with `AGENTDECK_SKIP_UPDATE_CHECK=1`, or when the TUI has no terminal; set the variable in any script that drives `agent-deck` and must not be interrupted by a release.
-- macOS note: launchd agents that run the agent-deck binary (`notify-daemon`, `web --no-tui`) crash-loop with `EX_CONFIG` after the binary is replaced, because macOS ties their identity to the file. Every install re-registers the `com.agentdeck.*` agents automatically (retrying the bootstrap with backoff, and once more from the plist when the agent is registered but not running) and prints the `launchctl bootout`/`bootstrap` commands if one does not come back. An updater that runs inside one of those services (the web daemon's own unattended run) never boots that service out: it is left in `<cache dir>/launchd-rebootstrap-pending.json` for the next update run outside it (the timer, or the TUI's). The same marker remembers an agent that was booted out but never accepted back by launchd (with the attempts so far); every update run retries it until it is running again, and `agent-deck update --check` (`--json`: `pending_launch_agents`) shows what is still waiting.
+- macOS note: launchd agents that run the agent-deck binary (`notify-daemon`, `web --no-tui`) crash-loop with `EX_CONFIG` after the binary is replaced, because macOS ties their identity to the file. Every install re-registers the `com.agentdeck.*` agents automatically (retrying the bootstrap with backoff, and once more from the plist when the agent is registered but not running) and prints the `launchctl bootout`/`bootstrap` commands if one does not come back. An updater that runs inside one of those services (the web daemon's own unattended run) never boots that service out: it is left in `<cache dir>/launchd-rebootstrap-pending.json` for the next update run outside it (the timer, or the TUI's). The same marker remembers an agent that was booted out but never accepted back by launchd (with the attempts so far); every update run retries it until it is running again, and `agent-deck update --check` (`--json`: `pending_launch_agents`) shows what is still waiting. An agent on launchd's disabled list (`launchctl print-disabled gui/<uid>`, for example after `launchctl disable`) is left alone: no bootout, no bootstrap, one line naming the `launchctl enable` command that brings it back, and it is never kept in the marker (an older entry for it is dropped; `--check` shows such an entry as `disabled`).
 - Audit trail: every unattended run writes `<cache dir>/update.log` (append-only) as well as `debug.log`, each line with the trigger, pid, ppid, launchd service and binary version. Every open TUI writes `<cache dir>/tui/<pid>.json`; `agent-deck update --check` lists TUIs still running an older image than the binary on disk and why they have not restarted (`--json`: `running_tuis`), and a TUI that has waited two hours logs `tui_restart_overdue` with the reason and says so in its banner.
 
 ## FAQ

@@ -37,6 +37,9 @@ const (
 	hintKeyOutcome  = "outcome"
 	hintKeyNote     = "note"
 	hintKeyParent   = "parent"
+	// hintKeyLaunchedBy names the sub-session that issued a launch the
+	// [launch] nest_under_parent rule linked under that sub-session's parent.
+	hintKeyLaunchedBy = "launched-by"
 )
 
 // hintEdits is the parsed mutation set shared by `add`, `launch` and

@@ -41,7 +41,7 @@ If the prior receipt made NO claim about external mutable state (PRs, releases, 
 
 **Why this exists:** Same-session reviewers and metronome wakes both fail by re-asserting last-cycle's confidence without re-deriving truth. The 2026-05-18 incident (PR #885 over-claim + ux-rethink false-positive + goal-framework metronome wakes) was the third independent recurrence; priority 0 bakes the fix into the contract.
 
-See the [Trust-but-Verify section](../../../SKILL.md#trust-but-verify) of the agent-deck skill for the full pattern and the claim→verifier mapping.
+See the [Trust-but-Verify section](../../../references/autonomy.md#trust-but-verify) of the agent-deck skill for the full pattern and the claim→verifier mapping.
 
 ### 1. Recall context
 

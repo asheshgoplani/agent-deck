@@ -159,6 +159,7 @@ func TestRebootstrapLaunchAgents_DefersOwnService(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"com.agentdeck.web"}, res2.Restarted)
 	assert.Equal(t, []string{
+		"launchctl print-disabled gui/501",
 		"launchctl bootout gui/501/com.agentdeck.web",
 		"launchctl bootstrap gui/501 " + plist,
 		"launchctl print gui/501/com.agentdeck.web",

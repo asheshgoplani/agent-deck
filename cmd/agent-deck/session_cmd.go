@@ -5385,6 +5385,7 @@ func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalB
 func newSendObserver(tool, message string, baseline sendArrivalBaseline, claudeLike, hookBusyBeforeSend bool) *send.Observer {
 	obs := send.NewObserver(tool, message, send.PaneCapture{Raw: baseline.raw, OK: baseline.paneOK})
 	obs.ClaudeLike = claudeLike
+	obs.CodexLike = session.IsCodexCompatible(tool)
 	obs.BusyBeforeSend = hookBusyBeforeSend
 	return obs
 }

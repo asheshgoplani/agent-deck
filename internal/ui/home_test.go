@@ -1135,6 +1135,7 @@ func TestHandleMainKeyCyclesTimeFilter(t *testing.T) {
 		session.TimeFilterToday,
 		session.TimeFilter3Days,
 		session.TimeFilter7Days,
+		session.TimeFilter30Days,
 		session.TimeFilterAll,
 	}
 	for i, want := range wantCycle {

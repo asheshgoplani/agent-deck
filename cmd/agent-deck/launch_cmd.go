@@ -484,31 +484,17 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	inheritParentGroup := shouldInheritParentGroup(explicitGroupProvided, *inheritGroup, func() bool {
 		return git.IsLinkedWorktree(path)
 	})
-	var parentInstance *session.Instance
-	if sessionParent != "" {
-		var errMsg string
-		parentInstance, errMsg, _ = ResolveSession(sessionParent, instances)
-		if parentInstance == nil {
-			out.Error(errMsg, ErrCodeNotFound)
-			os.Exit(1)
-		}
-		if parentInstance.IsSubSession() {
-			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
+	parentInstance, launchedBy, parentNote, parentErr := selectLaunchParent(sessionParent, *noParent, launchNestUnderParent(), instances)
+	if parentErr != nil {
+		message, code := launchParentErrorParts(parentErr)
+		out.Error(message, code)
+		os.Exit(1)
+	}
+	if parentNote != "" {
+		fmt.Fprintln(os.Stderr, parentNote)
+	}
+	if parentInstance != nil {
 		sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
-	} else if !*noParent {
-		var unresolvedParent string
-		parentInstance, unresolvedParent = resolveAutoParentInstanceChecked(instances)
-		if parentInstance == nil && unresolvedParent != "" {
-			out.Error(fmt.Sprintf("automatic parent %q could not be resolved; use --parent with a valid session or --no-parent for an intentional top-level session", unresolvedParent), ErrCodeNotFound)
-			os.Exit(1)
-		}
-		if parentInstance != nil && !parentInstance.IsSubSession() {
-			sessionGroup = resolveGroupSelection(sessionGroup, cwdDerivedGroup, parentInstance.GroupPath, explicitGroupProvided, inheritParentGroup)
-		} else {
-			parentInstance = nil
-		}
 	}
 
 	// Default title to folder name
@@ -764,6 +750,9 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	autoHints := map[string]string{hintKeyPurpose: firstLineClipped(initialMessage, derivedPurposeLimit)}
 	if parentInstance != nil {
 		autoHints[hintKeyParent] = parentInstance.ID
+	}
+	if launchedBy != nil {
+		autoHints[hintKeyLaunchedBy] = launchedBy.ID
 	}
 	sessionHints, sessionTags := applyCreationHints(storage, newInstance, creationHints, autoHints)
 

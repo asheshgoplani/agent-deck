@@ -63,6 +63,9 @@ type RebootstrapResult struct {
 	// Deferred lists labels left for a later run because this process runs
 	// inside them (see RebootstrapOptions.ServiceLabel).
 	Deferred []string
+	// Disabled lists labels left alone because they are on the gui
+	// domain's disabled list (`launchctl print-disabled`).
+	Disabled []string
 	// Skipped maps label (or file name when unparsable) to the reason.
 	Skipped map[string]string
 }
@@ -190,6 +193,7 @@ func RebootstrapLaunchAgents(opts RebootstrapOptions) (RebootstrapResult, error)
 
 	exeRaw := opts.ExePath
 	exeReal := resolveOrSelf(exeRaw)
+	disabled := &launchdDisabled{opts: opts}
 
 	for _, path := range entries {
 		data, err := os.ReadFile(path)
@@ -220,7 +224,7 @@ func RebootstrapLaunchAgents(opts RebootstrapOptions) (RebootstrapResult, error)
 			continue
 		}
 
-		if err := rebootstrapAgent(opts, agent, &res); err != nil {
+		if err := rebootstrapAgent(opts, agent, disabled, &res); err != nil {
 			return res, err
 		}
 	}
@@ -229,11 +233,16 @@ func RebootstrapLaunchAgents(opts RebootstrapOptions) (RebootstrapResult, error)
 
 // rebootstrapAgent restarts one agent and records the outcome in res: a
 // label this process runs inside is deferred to the pending marker instead
-// of booted out (see RebootstrapOptions.ServiceLabel).
-func rebootstrapAgent(opts RebootstrapOptions, agent LaunchAgent, res *RebootstrapResult) error {
+// of booted out (see RebootstrapOptions.ServiceLabel), and a label launchd
+// has disabled is left alone (see leaveDisabled).
+func rebootstrapAgent(opts RebootstrapOptions, agent LaunchAgent, disabled *launchdDisabled, res *RebootstrapResult) error {
 	if insideLaunchdService(opts.ServiceLabel, agent.Label) {
 		deferOwnService(opts, agent)
 		res.Deferred = append(res.Deferred, agent.Label)
+		return nil
+	}
+	if disabled.has(agent.Label) {
+		leaveDisabled(opts, agent.Label, res)
 		return nil
 	}
 	if err := rebootstrapOne(opts, agent); err != nil {
@@ -263,6 +272,83 @@ func deferOwnService(opts RebootstrapOptions, agent LaunchAgent) {
 	}
 	opts.Logger.Warn("launchagent_self_deferred", attrs...)
 	fmt.Fprintf(opts.Out, "  ⏸ %s: deferred, this updater runs inside it (the next update run re-registers it; by hand: %s)\n", agent.Label, strings.Join(repair, "; "))
+}
+
+// launchdDisabled answers whether a label is on the gui domain's disabled
+// list. It reads `launchctl print-disabled gui/<uid>` at most once per
+// run, and only once an agent is about to be booted out and bootstrapped.
+type launchdDisabled struct {
+	opts   RebootstrapOptions
+	read   bool
+	labels map[string]bool
+}
+
+func (d *launchdDisabled) has(label string) bool {
+	if !d.read {
+		d.read = true
+		d.labels = readDisabledLabels(d.opts)
+	}
+	return d.labels[label]
+}
+
+// readDisabledLabels runs `launchctl print-disabled gui/<uid>`. A failure
+// is logged and reads as "nothing disabled": the hygiene then does what it
+// did before it consulted the list.
+func readDisabledLabels(opts RebootstrapOptions) map[string]bool {
+	argv := []string{"launchctl", "print-disabled", launchctlDomain(opts.UID)}
+	out, err := opts.Runner.Run(argv...)
+	if err != nil {
+		opts.Logger.Warn("launchctl_print_disabled_failed", slog.String("cmd", ShellQuote(argv)), slog.Int("exit", exitCode(err)), slog.String("out", strings.TrimSpace(out)))
+		return nil
+	}
+	return parseDisabledLabels(out)
+}
+
+// parseDisabledLabels extracts the labels marked disabled in the
+// "disabled services" block of `launchctl print-disabled` output:
+// `"label" => disabled`, or `"label" => true` on older macOS.
+func parseDisabledLabels(out string) map[string]bool {
+	labels := map[string]bool{}
+	inBlock := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasSuffix(line, "= {"):
+			inBlock = strings.HasPrefix(line, "disabled services")
+		case line == "}":
+			inBlock = false
+		case inBlock:
+			label, state, ok := strings.Cut(line, "=>")
+			if !ok {
+				continue
+			}
+			label = strings.Trim(strings.TrimSpace(label), `"`)
+			state = strings.TrimSpace(state)
+			if label != "" && (state == "disabled" || state == "true") {
+				labels[label] = true
+			}
+		}
+	}
+	return labels
+}
+
+// leaveDisabled leaves an agent on launchd's disabled list alone and says
+// so in one line. launchd refuses to bootstrap a disabled label (exit 5,
+// "Input/output error") on every attempt, so booting it out, retrying it
+// or keeping it in the pending marker only repeats that failure after
+// every update (#2457). An entry an earlier run left for it is dropped.
+func leaveDisabled(opts RebootstrapOptions, label string, res *RebootstrapResult) {
+	res.Disabled = append(res.Disabled, label)
+	enable := ShellQuote([]string{"launchctl", "enable", launchctlTarget(opts.UID, label)})
+	opts.Logger.Info("launchagent_skipped", slog.String("label", label), slog.String("reason", "disabled in launchd"))
+	fmt.Fprintf(opts.Out, "  ⊘ %s is disabled in launchd; left alone; `%s` to bring it back\n", label, enable)
+	dropped, err := dropPendingRebootstrap(opts.PendingPath, label)
+	switch {
+	case err != nil:
+		opts.Logger.Warn("launchagent_pending_clear_failed", slog.String("label", label), slog.String("err", err.Error()))
+	case dropped:
+		opts.Logger.Info("launchagent_pending_dropped", slog.String("label", label), slog.String("reason", PendingReasonDisabled))
+	}
 }
 
 // repairCommands are the shell lines that re-register agent by hand.

@@ -116,6 +116,7 @@ type UserConfig struct {
 	// GroupSort controls the order of sessions within a group.
 	//   "creation"   (default) — fixed creation order; honors K/J manual reorder.
 	//   "actionable"           — issue #857 status→recency→Order surfacing.
+	//   "alphabetical"         — issue #2451 title A→Z (case-insensitive)→Order.
 	// Empty or unrecognized values normalize to "creation".
 	GroupSort string `toml:"group_sort,omitempty"`
 
@@ -1781,6 +1782,15 @@ type LaunchSettings struct {
 	// precedence is global < group < session. See
 	// Instance.EffectiveContextLevel.
 	ContextLevel string `toml:"context_level,omitempty"`
+
+	// NestUnderParent opts in to one-hop nesting for `launch` and `add` run
+	// from inside a sub-session without --parent: the new session is linked
+	// under the sub-session's own parent, takes its group by the same rules
+	// as any child of that parent, and a one-line note goes to stderr. false
+	// (the default) keeps the caller's
+	// sub-session out of it: the new session starts top-level in the
+	// folder-derived group, with no parent link and no note.
+	NestUnderParent bool `toml:"nest_under_parent,omitempty"`
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting
@@ -1920,11 +1930,12 @@ func (c *UserConfig) GetPushTitle() bool {
 	return *c.PushTitle
 }
 
-// GetGroupSort returns the normalized within-group sort mode: "actionable" only
-// when explicitly set, otherwise "creation" (the default).
+// GetGroupSort returns the normalized within-group sort mode: "actionable" or
+// "alphabetical" only when explicitly set, otherwise "creation" (the default).
 func (c *UserConfig) GetGroupSort() string {
-	if c.GroupSort == "actionable" {
-		return "actionable"
+	switch c.GroupSort {
+	case "actionable", "alphabetical":
+		return c.GroupSort
 	}
 	return "creation"
 }

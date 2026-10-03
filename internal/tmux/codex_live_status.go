@@ -99,3 +99,14 @@ func codexQueuedInputsHeader(lines []string, end int) int {
 	}
 	return -1
 }
+
+// CodexTurnRunning reports whether an ANSI-stripped Codex frame shows a turn
+// in progress: the live status row above the composer ("• Working (6s • esc
+// to interrupt)" and its hollow-bullet, reduced-motion, truncated and
+// remapped-key variants), or the legacy standalone interrupt hint. It is the
+// same busy gate PromptDetector("codex").HasPrompt applies, exported for the
+// send path's submission check (issue #2424).
+func CodexTurnRunning(content string) bool {
+	return codexLiveStatusLine(content) ||
+		hasCodexInterruptBusyProvenance(content, codexInterruptPhrases...)
+}

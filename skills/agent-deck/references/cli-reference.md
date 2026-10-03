@@ -69,7 +69,7 @@ agent-deck add -t "Quick" -c claude --attach .   # create → start → drop int
 ```
 
 Notes:
-- Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed.
+- Parent auto-link is enabled by default when `AGENT_DECK_SESSION_ID` is present and neither `--parent` nor `--no-parent` is passed. When the calling session is itself a sub-session, the new session starts top-level by default; set `[launch] nest_under_parent = true` to link it under the caller's parent instead (applies to `add` and `launch`, see config-reference.md).
 - `--attach` does create → start → attach in one step. Without an interactive terminal (or with `--json`) it exits non-zero with a clear error, leaving the session created and started so you can attach later.
 - `--parent` and `--no-parent` are mutually exclusive.
 - Explicit `-g/--group` overrides inherited parent group.
@@ -430,7 +430,7 @@ Default behavior:
 **Read `confirmation`, not the human text.** `--json` carries a stable 3-way `confirmation` field (`confirmed` / `unknown` / `failed`) — that is the contract to branch on. `delivery` is a separate, finer-grained diagnostic string (13 possible values, listed below) for logging and debugging, not for scripted decisions: several `delivery` values map to `confirmation: "unknown"` (still exit 0 — a real, non-failed outcome), and only a handful map to `confirmation: "failed"`.
 
 Delivery verdict (`--json` also carries `delivery` and a machine-checkable `submitted` boolean):
-- `submitted` (exit 0, `submitted: true`, `confirmation: "confirmed"`): positive evidence the target accepted the message and began its turn.
+- `submitted` (exit 0, `submitted: true`, `confirmation: "confirmed"`): positive evidence the target accepted the message and began its turn. On a Codex target this includes Codex's own pane acknowledgement: the message left the composer and now sits in the transcript as a `›` cell with Codex output below it, or Codex's live status row (`• Working (6s • esc to interrupt)` and its variants) is running while the body is on screen outside the composer and outside the queued follow-up inputs. A lane that was already working counts the same, because the composer no longer holds the message. A body still in Codex's composer after every check stays `typed_not_submitted`, and one parked in the queued follow-up inputs stays `delivered`.
 - `queued` (exit 0, `submitted: false`, `confirmation: "unknown"`): Claude targets only. The target was mid-turn per its hook-driven status before the send, the body newly arrived in its pane, and Claude's composer showed its own "Press up to edit queued messages" placeholder (the composer element itself, not those words anywhere in the pane). Claude takes it up when the current turn ends. Do not resend. `submitted` on a Claude target is confirmed by the message's own record appearing in the transcript, or by the hook status flipping from idle to running once the body has landed.
 - `queued_socket` (exit 0, `submitted: false`, `acknowledged: false`): written to the target's Claude Code messaging socket (opt-in `send_transport = "auto"`) after identity verification; Claude's inbox sends no ack, so this means only "the bytes were written", not that the turn started.
 - `delivered` (exit 0, `submitted: false`, `confirmation: "unknown"`) — the message body reached the target and Enter was sent, but the tool exposes no submission signal (a shell, an unknown tool) or its signal didn't arrive in the window; this is the honest "delivered-unconfirmed" outcome, not a failure.
@@ -909,6 +909,7 @@ agent-deck conductor list [--profile <name>]
 ```
 
 - `setup` creates `~/.agent-deck/conductor/<name>/` plus `meta.json` and registers `conductor-<name>` session in the selected profile.
+- Re-running `setup <name>` without `--agent` keeps the conductor's existing agent (new conductors default to `claude`); pass `--agent` explicitly to switch. On a switch, the previous agent's instructions file (`CLAUDE.md` / `AGENTS.md` / `HERMES.md`) is deleted only if it still matches the generated template; an edited file is renamed to `<file>.bak-<timestamp>`.
 - `setup` also installs shared `~/.agent-deck/conductor/CLAUDE.md` (or symlink via `--shared-claude-md`).
 - Heartbeat timers run per conductor (default every 15 minutes) and can be disabled with `--no-heartbeat`.
 - Heartbeat sends use non-blocking `session send --no-wait -q` to avoid timeout churn when sessions are busy.
@@ -1008,7 +1009,7 @@ Fetches active sessions from all remotes, or from a specific remote if `name` is
 
 To also see fetch failures in JSON, add `--with-errors` (or the equivalent `--json-envelope`, which implies `--json`): the output becomes `{"sessions": [...], "errors": [{"name", "host", "error"}]}` and the command exits `1` if any remote failed. This envelope is always opt-in, so the plain `--json` shape stays stable for existing scripts.
 
-In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
+In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
 
 ### remote drain
 
@@ -1095,6 +1096,8 @@ agent-deck health [--json] [--since <dur>]
 ```
 
 Reads local runtime health for the selected profile: no data leaves the host. Reports per-process (TUI, notify-daemon, web) samples — CPU%, RSS, open FDs, goroutines, hook files, status-pass latency, session count, tmux calls, session-list DB latency — against the fixed performance budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`). `--since <dur>` sets the history window (default `1h`; positive Go duration, e.g. `30m`). `--json` emits the same data machine-readably.
+
+Open FDs are counted natively for the sampling process itself (`/proc/self/fd` on Linux, `proc_pidinfo` on macOS; no `lsof`). Each sample's `open_fds_support` is `sampled` when `open_fds` holds a count, or `unsupported` on a platform with no native count; `open_fds` stays `null` then, and the text report prints the descriptor budget as unsupported (flagged once) instead of a budget it cannot check. The same value appears as `budgets.open_fds_support`.
 
 ```bash
 agent-deck health --json --since 1h
