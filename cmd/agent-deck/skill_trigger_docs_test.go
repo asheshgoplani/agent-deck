@@ -50,13 +50,12 @@ func TestAgentDeckSkillDescriptionKeepsTriggerTerms(t *testing.T) {
 	}
 }
 
-// launch accepts --parent/-p as an explicit override of the automatic parent
-// (cmd/agent-deck/launch_cmd.go); the skill must not claim otherwise.
-func TestAgentDeckSkillDoesNotDenyLaunchParentFlag(t *testing.T) {
-	t.Parallel()
-
+// skillDocsOmit walks the agent-deck skill's markdown files and reports every
+// line that contains one of the stale claims, keyed to the reason it is wrong.
+// When only is non-empty, a line is checked only if it also contains only.
+func skillDocsOmit(t *testing.T, only string, stale map[string]string) {
+	t.Helper()
 	root := filepath.Join("..", "..", "skills", "agent-deck")
-	stale := "`launch` does not accept `-parent`"
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -68,12 +67,46 @@ func TestAgentDeckSkillDoesNotDenyLaunchParentFlag(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(content), stale) {
-			t.Errorf("%s claims %s, but launch accepts --parent/-p as an explicit override", path, stale)
+		for i, line := range strings.Split(string(content), "\n") {
+			if only != "" && !strings.Contains(line, only) {
+				continue
+			}
+			for claim, why := range stale {
+				if strings.Contains(line, claim) {
+					t.Errorf("%s:%d claims %q, but %s", path, i+1, claim, why)
+				}
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
 	}
+}
+
+// launch accepts --parent/-p as an explicit override of the automatic parent
+// (cmd/agent-deck/launch_cmd.go); the skill must not claim otherwise.
+func TestAgentDeckSkillDoesNotDenyLaunchParentFlag(t *testing.T) {
+	t.Parallel()
+
+	skillDocsOmit(t, "", map[string]string{
+		"`launch` does not accept `-parent`": "launch accepts --parent/-p as an explicit override",
+	})
+}
+
+// Issue #974 made `session update <id> --no-parent` an alias for
+// `session unset-parent` (resolveSessionUpdateAlias) and `group remove` an
+// alias for `group delete` (groupVerbCanonical); the skill must not tell
+// agents that these working commands are rejected, nor that a sub-agent
+// cannot be un-parented in place.
+func TestAgentDeckSkillDoesNotDenyIssue974Aliases(t *testing.T) {
+	t.Parallel()
+
+	skillDocsOmit(t, "issues/974", map[string]string{
+		"both rejected": "#974 made session update --no-parent and group remove accepted aliases",
+		"all rejected":  "#974 made session update --no-parent and group remove accepted aliases",
+	})
+	skillDocsOmit(t, "", map[string]string{
+		"no in-place un-parent": "`session unset-parent <session>` removes the parent link in place",
+	})
 }

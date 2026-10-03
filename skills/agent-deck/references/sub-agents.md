@@ -190,6 +190,6 @@ agent-deck list --json | jq '.[] | select(.title=="conductor-foo") | .parent_ses
 - Transition events for the new session's children flow to the caller instead of the new peer
 - Event routing and heartbeat parent-linkage puts it under the caller's tree in the TUI
 
-**Fix for an already-created sub-agent:** stop + remove the session, re-launch with `-no-parent`. There is no in-place un-parent flag.
+**Fix for an already-created sub-agent:** `agent-deck session unset-parent <session>` (alias: `session update <session> --no-parent`) removes the link in place and clears the stored parent project path, so the `--add-dir` grant is gone after the next `session restart`. To start completely clean instead, stop + remove the session and re-launch with `-no-parent`.
 
 **Note on the launch-subagent.sh script:** that script is specifically designed to create sub-agents (the name says so). It does NOT support `-no-parent`. For peer sessions, skip the script and invoke `agent-deck launch -no-parent` directly.
