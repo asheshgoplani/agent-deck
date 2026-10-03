@@ -916,6 +916,23 @@ agent-deck conductor list [--profile <name>]
 - Bridge daemon is installed only when Telegram and/or Slack is configured in `[conductor]`.
 - Transition notifier daemon (`agent-deck notify-daemon`) is installed by setup and sends event nudges on `running -> waiting|error|idle` transitions (parent first, then conductor fallback).
 
+### notify / outbox / tier-filter - What reaches the human (#2469)
+
+```bash
+agent-deck conductor notify --tier urgent|info [--conductor <name>] [--json] "<text>"   # or --message-file FILE
+agent-deck conductor outbox [--json] [--conductor <name>] [--all] [--ack <id>...]
+agent-deck conductor tier-filter --json [--conductor <name>] [--reply-id <id>] < reply.txt
+agent-deck conductor tier-filter --json [--conductor <name>] --ack <reply-id>
+```
+
+| Command | Description |
+|---------|-------------|
+| `notify` | Queue one item for the human in the durable outbox `runtime/human-outbox/<conductor>.jsonl` (`{id, ts, tier, text, th, acked}`, text capped at 4000 B). The same text within 24 h is one record. Use it from any turn (wake-nudge, Stop-block): replies outside a heartbeat are not forwarded. Urgent never dedups into info: an `info` item with the same text still pending is upgraded to `urgent`, one already delivered gets a new `urgent` record. |
+| `outbox` | List unacked items (`--all` adds delivered ones), or `--ack` ids once delivered; acking twice is a no-op. The bridge polls this every 5 s, forwards each `urgent` item at once as its own `[<name>] <text>` message (at most 10 per poll) and acks it only after a channel accepted it; queued `info` leaves as separate digest messages of at most 20 items. A chunk Telegram cannot parse as HTML is resent as plain text. Unacked items expire after 72 h, and at most 200 items are kept per conductor (acked first, then info, then urgent are dropped). |
+| `tier-filter` | Apply the tier rules to a conductor reply on stdin: `NEED:` / `[urgent]` / `URGENT:` lines go to `send_now` (escalated once as `STILL BLOCKED (N cycles, no reply)` on cycle `[conductor] need_retire_cycles`, then dropped; counts persist in `<conductor>.need.json`), `[info]` / `INFO:` lines are queued, `[STATUS]` and prose stay local. Output `{"send_now":[...],"queued":n,"digest_due":bool,"digest":[...]}`; `digest` holds the unacked info items when `[conductor] human_digest_minutes` passed since the last digest, or whenever there is something to send now. `--reply-id <id>` names a reply the caller delivers itself (the bridge passes the reply's hash, or a fresh id per heartbeat tick): its retire counts stay pending until `--ack <id>` confirms a channel accepted the message, so an undelivered reply (stale token, platform outage), retried or followed by new replies, never advances a line toward `STILL BLOCKED` or the drop. A reply with nothing to send commits at once; an ack for a superseded or already-acked id is a no-op (`{"conductor":...,"reply_id":...,"committed":false}`). Without `--reply-id` the counts commit at once. The outbox and the ledger are owner-only (directory `0700`, files `0600`). |
+
+Without `--conductor`, the name comes from the calling session's title (`conductor-<name>`, via `AGENTDECK_INSTANCE_ID`).
+
 ## Inbox Commands
 
 ### peek - Show pending records without consuming

@@ -57,6 +57,12 @@ func handleConductor(profile string, args []string) {
 		handleConductorMigrateDir(profile, args[1:])
 	case "heartbeat-tick":
 		handleConductorHeartbeatTick(profile, args[1:])
+	case "notify":
+		handleConductorNotify(profile, args[1:])
+	case "outbox":
+		handleConductorOutbox(profile, args[1:])
+	case "tier-filter":
+		handleConductorTierFilter(profile, args[1:])
 	case "help", "--help", "-h":
 		printConductorHelp()
 	default:
@@ -1528,6 +1534,9 @@ func printConductorHelp() {
 	fmt.Println("  move <name>      Move a conductor to another profile (--to-profile)")
 	fmt.Println("  migrate-dir <path>  Relocate the conductor base dir (move homes + reconcile daemons)")
 	fmt.Println("  heartbeat-tick <name>  Print the delta-only heartbeat message (empty when nothing changed)")
+	fmt.Println("  notify --tier urgent|info \"<text>\"  Queue a message for the human (bridge forwards urgent now, info as a digest)")
+	fmt.Println("  outbox [--json] [--ack <id>...]       List or ack the items queued for the human")
+	fmt.Println("  tier-filter --json < reply             Apply the human tier rules to a conductor reply")
 	fmt.Println("  help             Show this help")
 	fmt.Println()
 	fmt.Println("Examples:")
