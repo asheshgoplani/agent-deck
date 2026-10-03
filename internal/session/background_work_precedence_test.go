@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,8 +19,14 @@ import (
 // the same hook session (sess-610) the other hook-lag fixtures use.
 func writeHookWaitingEvent(t *testing.T, instanceID, event string) {
 	t.Helper()
+	writeHookWaitingEventAged(t, instanceID, event, time.Second)
+}
+
+// writeHookWaitingEventAged is writeHookWaitingEvent for an event age old.
+func writeHookWaitingEventAged(t *testing.T, instanceID, event string, age time.Duration) {
+	t.Helper()
 	body := fmt.Sprintf(`{"status":"waiting","session_id":"sess-610","event":%q,"ts":%d}`,
-		event, time.Now().Add(-time.Second).Unix())
+		event, time.Now().Add(-age).Unix())
 	if err := os.WriteFile(filepath.Join(GetHooksDir(), instanceID+".json"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write hook: %v", err)
 	}
@@ -77,8 +84,9 @@ func TestBackgroundWork2473_MenuOutranksWorkOnHookPath(t *testing.T) {
 	}
 }
 
-// Hook event alone: a PermissionRequest is never held running even when the
-// frame does not (yet) show the dialog.
+// Hook event alone: a fresh PermissionRequest (inside blockingHookGrace) is
+// not held running even when the frame does not show the dialog yet: the
+// synchronous hook fires just before Claude draws it.
 func TestBackgroundWork2473_PermissionRequestEventIsNeverHeld(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
@@ -174,6 +182,136 @@ func TestHookEventBlocksTurn(t *testing.T) {
 	} {
 		if got := hookEventBlocksTurn(event); got != want {
 			t.Errorf("hookEventBlocksTurn(%q) = %v, want %v", event, got, want)
+		}
+	}
+}
+
+// Issue #2473 review round 3: a launch turn that ends with a prose question
+// ("Would you like me to ...?") opens no menu. The workflow is in flight, so
+// both the Stop-hook path and the tmux path read running/background-work.
+func TestBackgroundWork2473_ProseQuestionKeepsWorkflowRunning(t *testing.T) {
+	would := loadPaneFixture(t, "workflow-prose-question.txt")
+	frames := map[string]string{
+		"would-you-like": would,
+		"do-you-want": strings.Replace(would, "Would you like me to run the test suite while it finishes?",
+			"Do you want me to open a PR once both agents report back?", 1),
+	}
+	for name, frame := range frames {
+		t.Run(name+"/Stop hook", func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
+			inst, cleanup := startHookLagInstance(t, "bg-prose", frame)
+			defer cleanup()
+			pendingWorkflowTranscript(t, inst)
+			writeHookWaitingEvent(t, inst.ID, "Stop")
+			status, sub := cliPass(t, inst)
+			if status != StatusRunning || sub != SubstateBackgroundWork {
+				t.Fatalf("prose question + workflow (Stop hook) = %q/%q (detail %q), want running/background-work",
+					status, sub, inst.SubstateDetail())
+			}
+			if got := inst.SubstateDetail(); got != "workflow probe-two-agents 1/2 · 22s" {
+				t.Fatalf("substate detail = %q", got)
+			}
+		})
+		t.Run(name+"/tmux path", func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
+			inst, cleanup := startPaneInstance(t, "claude", "claude-bgprose-2473", frame)
+			defer cleanup()
+			pendingWorkflowTranscript(t, inst)
+			fresh := reloadAs(t, "_test-2473-bgprose", inst, StatusWaiting)
+			if status, sub := cliPass(t, fresh); status != StatusRunning || sub != SubstateBackgroundWork {
+				t.Fatalf("prose question + workflow (tmux path) = %q/%q (detail %q), want running/background-work",
+					status, sub, fresh.SubstateDetail())
+			}
+		})
+	}
+}
+
+// The daemon over the same prose-question frame: the launch turn's Stop is
+// held while the workflow runs, so no inbox record is written (round 2 wrote
+// a premature running -> waiting record because the frame read as a menu).
+func TestBackgroundWork2473_DaemonWritesNoRecordUnderProseQuestion(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
+	pane, cleanup := startHookLagInstance(t, "bg-prose-daemon", loadPaneFixture(t, "workflow-prose-question.txt"))
+	defer cleanup()
+	pendingWorkflowTranscript(t, pane)
+	writeHookWaitingEvent(t, pane.ID, "Stop")
+	if status, _ := cliPass(t, pane); status != StatusRunning {
+		t.Errorf("prose question + workflow = %q, want running", status)
+	}
+
+	// The daemon's child row reads this pane (cached frame verdicts only; the
+	// daemon never captures) and its own transcript with the launch pending.
+	f := newTurnTestFixture(t)
+	f.child.tmuxSession = pane.tmuxSession
+	f.appendTurn(t, fxHuman("u0", "run the follow-on workflow"))
+	f.appendTurn(t, fxWorkflowLaunch("wqphbmkuj", "comms-followon-round3")...)
+	f.appendTurn(t, fxAssistantText("a0", "Launched comms-followon-round3. Would you like me to run the test suite while it finishes?"), fxTurnDuration(1))
+
+	running := map[string]string{f.child.ID: "running", f.parent.ID: "waiting"}
+	stop := map[string]hookTransitionCandidate{f.child.ID: {ToStatus: "waiting", Timestamp: time.Now(), Event: "Stop"}}
+	for i := 0; i < 5; i++ {
+		f.d.recordTerminalTurns("default", f.byID, running, nil)
+		f.d.emitHookTransitionCandidates("default", f.byID, running, running, stop)
+	}
+	if got := f.inboxRecords(t); len(got) != 0 {
+		t.Fatalf("records written while the workflow runs under a prose question: %+v", got)
+	}
+}
+
+// Issue #2473 review round 3: a blocking hook event older than
+// blockingHookGrace no longer decides on its own. Claude fires no hook when
+// a permission dialog is dismissed with Esc, so the file keeps saying
+// waiting/PermissionRequest while the workflow runs and no menu is drawn: the
+// frame decides. With the menu still open it stays waiting.
+func TestBackgroundWork2473_StaleBlockingHookFollowsTheFrame(t *testing.T) {
+	escaped := strings.Replace(loadPaneFixture(t, "workflow-running.txt"),
+		"✻ Waiting for 1 dynamic workflow to finish",
+		"⏺ Bash(git push origin main)\n  ⎿  Interrupted · What should Claude do instead?", 1)
+	cases := []struct {
+		name, frame, event string
+		status             Status
+		sub                Substate
+	}{
+		{"PermissionRequest, dialog dismissed", escaped, "PermissionRequest", StatusRunning, SubstateBackgroundWork},
+		{"Notification, dialog dismissed", escaped, "Notification", StatusRunning, SubstateBackgroundWork},
+		{"PermissionRequest, dialog still open", loadPaneFixture(t, "workflow-permission-menu.txt"), "PermissionRequest", StatusWaiting, SubstateInteractiveMenu},
+		{"Notification, question still open", loadPaneFixture(t, "workflow-ask-question.txt"), "Notification", StatusWaiting, SubstateInteractiveMenu},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
+			inst, cleanup := startHookLagInstance(t, "bg-stale-block", c.frame)
+			defer cleanup()
+			pendingWorkflowTranscript(t, inst)
+			writeHookWaitingEventAged(t, inst.ID, c.event, 20*time.Second)
+			if status, sub := cliPass(t, inst); status != c.status || sub != c.sub {
+				t.Fatalf("%s 20s old = %q/%q (detail %q), want %q/%q",
+					c.event, status, sub, inst.SubstateDetail(), c.status, c.sub)
+			}
+		})
+	}
+}
+
+func TestBlockingHookInGrace(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		event string
+		age   time.Duration
+		want  bool
+	}{
+		{"PermissionRequest", time.Second, true},
+		{"Notification", blockingHookGrace - time.Second, true},
+		{"PermissionRequest", blockingHookGrace, false},
+		{"PermissionRequest", 20 * time.Second, false},
+		{"Stop", time.Second, false},
+	}
+	for _, c := range cases {
+		if got := blockingHookInGrace(c.event, now.Add(-c.age), now); got != c.want {
+			t.Errorf("blockingHookInGrace(%q, %s old) = %v, want %v", c.event, c.age, got, c.want)
 		}
 	}
 }

@@ -6517,13 +6517,18 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				// so release i.mu around both like the GetStatus call below,
 				// then re-check for a concurrent Kill().
 				//
-				// A menu or an error outranks the work: a PermissionRequest /
-				// Notification(permission_prompt|elicitation_dialog) hook, or a
-				// frame showing an open menu, an error banner or the
-				// model-unavailable no-op, stays waiting (the turn is blocked on
-				// the operator, or cannot progress) while a workflow runs.
+				// A menu or an error outranks the work: a frame showing an open
+				// menu, an error banner or the model-unavailable no-op stays
+				// waiting (the turn is blocked on the operator, or cannot
+				// progress) while a workflow runs. A PermissionRequest /
+				// Notification(permission_prompt|elicitation_dialog) hook stays
+				// waiting unprobed only for blockingHookGrace, the moment before
+				// the dialog is drawn; after that the frame decides, because a
+				// dialog dismissed with Esc fires no further hook and the stale
+				// event must not hold a running workflow at waiting.
 				var work tmux.BackgroundWork
-				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) && !hookEventBlocksTurn(i.hookEvent) {
+				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) &&
+					!blockingHookInGrace(i.hookEvent, i.hookLastUpdate, time.Now()) {
 					hookAt := i.hookLastUpdate
 					i.mu.Unlock()
 					if pane, blocked := i.tmuxSession.BackgroundWorkSince(hookAt); !blocked {

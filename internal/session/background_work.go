@@ -510,14 +510,29 @@ func reconcileBackgroundSubstate(sub Substate, status Status, bgActive bool) Sub
 // hookEventBlocksTurn reports whether a waiting hook event is a menu the
 // operator must answer (a PermissionRequest, or a Notification the hook
 // handler only writes for permission_prompt / elicitation_dialog) rather than
-// a Stop. Background work never holds such a turn running (issue #2473): the
-// child is blocked on input and its parent must hear about it.
+// a Stop. The daemon always emits such an event (issue #2473): the child is
+// blocked on input and its parent must hear about it. The status merge holds
+// it at waiting only while the frame shows the menu or for blockingHookGrace.
 func hookEventBlocksTurn(event string) bool {
 	switch strings.ToLower(strings.TrimSpace(event)) {
 	case "permissionrequest", "notification":
 		return true
 	}
 	return false
+}
+
+// blockingHookGrace is how long a blocking hook event (hookEventBlocksTurn)
+// holds a session at waiting without looking at the pane. The synchronous
+// PermissionRequest hook fires just before Claude draws the dialog, so the
+// first frame after it can still show the bare prompt and the workflow row;
+// past the grace the frame shows the menu (blocked, waiting) or it was
+// dismissed (Esc fires no Stop), and the background-work probe decides.
+const blockingHookGrace = 5 * time.Second
+
+// blockingHookInGrace reports whether a blocking hook event is young enough
+// to hold the session at waiting without probing the pane (issue #2473).
+func blockingHookInGrace(event string, at, now time.Time) bool {
+	return hookEventBlocksTurn(event) && now.Sub(at) < blockingHookGrace
 }
 
 // backgroundWorkOutrankedBySubstate reports whether the session's last pane
