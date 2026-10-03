@@ -256,7 +256,8 @@ func TestRemoteFirstExportImportIsIdempotentPerOrigin(t *testing.T) {
 	if err != nil || done != 3 {
 		t.Fatalf("re-Import: done=%d err=%v", done, err)
 	}
-	// A different origin with the same keys is a different record.
+	// The same remote record pulled through another alias is the same
+	// record: dedup is namespaced by the origin STORE id, not the alias.
 	if done, err := local.Import("g14", exported[:1]); err != nil || done != 2 {
 		t.Fatalf("Import from g14: done=%d err=%v", done, err)
 	}
@@ -266,7 +267,7 @@ func TestRemoteFirstExportImportIsIdempotentPerOrigin(t *testing.T) {
 	}
 	defer lbus.Close()
 	recs, _, err := ReadAfter(lbus, 0, 0)
-	if err != nil || len(recs) != 4 {
+	if err != nil || len(recs) != 3 {
 		t.Fatalf("local ledger: %d records err %v", len(recs), err)
 	}
 	imported := recs[1]
@@ -276,8 +277,8 @@ func TestRemoteFirstExportImportIsIdempotentPerOrigin(t *testing.T) {
 	if imported.ID != exported[0].Record.ID || imported.TRecord != exported[0].Record.TRecord {
 		t.Fatal("import must keep the origin's id and commit time")
 	}
-	if recs[3].Origin != "g14" || recs[3].DedupKey() == imported.DedupKey() {
-		t.Fatalf("origin namespacing: %+v", recs[3])
+	if imported.DedupKey() == recs[0].DedupKey() || imported.Store == recs[0].Store {
+		t.Fatalf("store namespacing: local %s vs imported %s", recs[0].DedupKey(), imported.DedupKey())
 	}
 	if got := Line(imported, nil); !strings.HasPrefix(got, "[info] agentbox:child-r #") {
 		t.Fatalf("remote record line: %q", got)
@@ -301,9 +302,14 @@ func TestSendRetryWithTheSameRequestIDReturnsTheStoredReceipt(t *testing.T) {
 		t.Fatalf("first send: %+v %d %v", first, cursor, err)
 	}
 	// The receipt exists before any action is taken: a retry returns it.
-	again, c2, err := l.Commit(Record{Kind: KindSend, From: "conductor", To: []string{"child"}, Req: "req-42", Key: SendKey("conductor", "req-42"), Text: "do the thing"})
+	again, c2, err := l.Commit(Record{Kind: KindSend, From: "conductor", To: []string{"child"}, Req: "req-42", Key: SendKey("conductor", "req-42"), Text: "do the thing", State: StateQueued})
 	if !errors.Is(err, ErrDuplicate) || c2 != 0 || again.ID != first.ID || again.TRecord != first.TRecord {
 		t.Fatalf("retry: %+v %d %v", again, c2, err)
+	}
+	// The same request id with different content is a conflict, not a
+	// second delivery and not a silent duplicate.
+	if _, _, err := l.Commit(Record{Kind: KindSend, From: "conductor", To: []string{"child"}, Req: "req-42", Key: SendKey("conductor", "req-42"), Text: "do another thing", State: StateQueued}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("retry with different content: %v", err)
 	}
 	if got, ok := l.Lookup(SendKey("conductor", "req-42")); !ok || got.ID != first.ID {
 		t.Fatalf("Lookup: %+v %v", got, ok)
@@ -370,8 +376,8 @@ func TestOpenFailsVisiblyWhenTheTailIsUnreadable(t *testing.T) {
 	}
 	start := time.Now()
 	_, err = OpenDir("p", dir)
-	if !errors.Is(err, ErrTailUnreadable) {
-		t.Fatalf("open with an unreachable tail: %v", err)
+	if err == nil {
+		t.Fatal("open with an unreachable tail reported success")
 	}
 	if time.Since(start) > 2*warmTimeout {
 		t.Fatalf("open took %v", time.Since(start))

@@ -177,7 +177,7 @@ func TestRecordCarriesSchemaVersionStoreAndEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l2.Close()
-	if l2.Store() != store {
+	if l2.Store().ID != store.ID || l2.Store().Epoch != store.Epoch {
 		t.Fatalf("store identity changed across reopen: %+v vs %+v", l2.Store(), store)
 	}
 	// An imported record keeps the origin's store and epoch.

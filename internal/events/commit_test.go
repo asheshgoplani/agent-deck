@@ -341,7 +341,6 @@ func TestLedgerBusKeepsACorruptLineAndEveryLaterFrame(t *testing.T) {
 			}
 		}
 		cancel()
-		_ = r.Close()
 		want := []Cursor{1, 2, 3, 4}
 		want = append(want[:idx], want[idx+1:]...)
 		if len(seen) != 3 || seen[0] != want[0] || seen[1] != want[1] || seen[2] != want[2] {
@@ -350,6 +349,7 @@ func TestLedgerBusKeepsACorruptLineAndEveryLaterFrame(t *testing.T) {
 		if st := r.Stats(); st.Cursor != 4 {
 			t.Fatalf("corrupt line %d: follower stats cursor %d", idx, st.Cursor)
 		}
+		_ = r.Close()
 		_ = b2.Close()
 	}
 }

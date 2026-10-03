@@ -37,8 +37,28 @@ func newCommsFixture(t *testing.T) *commsFixture {
 	shell.Status = StatusWaiting
 	f.byID[codex.ID] = codex
 	f.byID[shell.ID] = shell
+	saveCommsFixtureInstances(t, codex, shell)
 	t.Cleanup(f.d.closeCommsLedgers)
 	return &commsFixture{turnTestFixture: f, codex: codex, shell: shell}
+}
+
+// saveCommsFixtureInstances registers extra children in the profile store so
+// the notifier can resolve their parent (the inbox path drops an unknown
+// child as dropped_no_target).
+func saveCommsFixtureInstances(t *testing.T, extra ...*Instance) {
+	t.Helper()
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Save(append(instances, extra...)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *commsFixture) ledgerRecords(t *testing.T) []comms.Record {
@@ -567,6 +587,7 @@ func TestCommsIngest_StatusOnlyChildInboxPathUnchangedUnderLedgerFailure(t *test
 	gem.ParentSessionID = f.parent.ID
 	gem.Status = StatusWaiting
 	f.byID[gem.ID] = gem
+	saveCommsFixtureInstances(t, gem)
 	if f.d.commsLedgerFor("default") == nil {
 		t.Fatal("ledger did not open")
 	}
@@ -732,7 +753,7 @@ func TestCommsIngest_SameTextClaudeBacklogIsThreeRecords(t *testing.T) {
 // transcript identity, trigger and the sentinel at its end.
 func TestCommsIngest_LongClaudeReplyStillMatchesItsTranscriptTurn(t *testing.T) {
 	f := newCommsFixture(t)
-	long := strings.Repeat("progress line\n", 300) + "===AGENTDECK_DONE=== status=ok summary=all green"
+	long := strings.Repeat("progress line\n", 1400) + "===AGENTDECK_DONE=== status=ok summary=all green"
 	if len(long) <= commsSpoolTextBytes {
 		t.Fatalf("fixture must exceed the spool cap, got %d", len(long))
 	}
