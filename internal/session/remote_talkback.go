@@ -230,8 +230,13 @@ func readExportJournals(since time.Time) ([]exportJournal, error) {
 //     carries the same completion);
 //   - _unowned records appended since the cursor's position, except a
 //     journaled turn the journal already delivers (same seq, same transcript
-//     turn). A turn the journal no longer holds (trimmed past the cursor, or
-//     a failed journal append) ships from here.
+//     turn, same stale flag). A turn the journal no longer holds (trimmed
+//     past the cursor, or a failed journal append) ships from here, and so
+//     does the producer's own record of a turn the render could not judge.
+//
+// A journal line is a record only when the producer committed one: a repeat
+// its notifier dropped as a duplicate (see renderJournalTurns) still holds a
+// journal line but never ships.
 //
 // Only activity within remoteTalkbackHorizon is read or named in the next
 // cursor; a removed session's journal goes with it (rm sweep), so the cursor
@@ -254,6 +259,15 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	if err != nil {
 		return RemoteExport{}, fmt.Errorf("export: unreadable inbox %s: %w", UnownedInboxID, err)
 	}
+	// The producer's committed transitions per child, in commit order: they
+	// seed the duplicate walk at a journal's first retained line.
+	committed := map[string][]TransitionNotificationEvent{}
+	for _, ev := range unowned {
+		if ev.Kind != transitionKindFinished {
+			child := strings.TrimSpace(ev.ChildSessionID)
+			committed[child] = append(committed[child], ev)
+		}
+	}
 	noteTS := func(ts time.Time) {
 		if ts.After(next.TS) {
 			next.TS = ts
@@ -261,8 +275,10 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	}
 	// delivered[child] holds the turn identity of every journal line this
 	// cursor has received or this batch ships, by seq: an _unowned copy of
-	// that same turn is redundant, any other one is news. journalDone holds
-	// the completions those lines carry, so their ledger mirror stays home.
+	// that same record is redundant, any other one is news (a different turn,
+	// or a stale repeat the render judged differently from the producer).
+	// journalDone holds the completions those lines carry, so their ledger
+	// mirror stays home.
 	delivered := map[string]map[int64]string{}
 	journalDone := map[string]bool{}
 	var out []TransitionNotificationEvent
@@ -271,7 +287,7 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		last := lines[len(lines)-1].Seq
 		next.Seqs[child] = last
 		since, known := cursor.Seqs[child]
-		rendered := renderJournalTurns(lines)
+		rendered, dropped := renderJournalTurns(lines, lastCommittedBefore(committed[child], lines[0].TS))
 		fresh := !known || last < since
 		start := 0
 		if fresh {
@@ -287,13 +303,16 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		seen := map[int64]string{}
 		for i := start; i < len(lines); i++ {
 			l := lines[i]
+			if dropped[i] {
+				continue // the producer's notifier dropped it: never a record
+			}
 			if l.Seq > since {
 				if fresh && l.TS.Before(horizon) {
 					continue // the receiver would only answer AlreadyPresent
 				}
 				out = append(out, rendered[i])
 			}
-			seen[l.Seq] = journalTurnKey(l.Seq, l.UUID, l.TextHash)
+			seen[l.Seq] = journalTurnKey(rendered[i])
 			if rendered[i].Kind == transitionKindFinished {
 				journalDone[completionKey(rendered[i])] = true
 			}
@@ -334,10 +353,11 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		noteTS(ev.Timestamp)
 		// The journal delivers its own turns. Everything else crosses from
 		// here: a flip the producer could not classify (Seq 0), a turn the
-		// journal trimmed or never got (failed append), and a turn whose
-		// identity differs from the journal line of the same seq.
+		// journal trimmed or never got (failed append), and a record that
+		// differs from the journal line of the same seq (another turn, or a
+		// stale repeat the render could not see as one).
 		if key, ok := delivered[strings.TrimSpace(ev.ChildSessionID)][ev.Seq]; ok && ev.Seq > 0 &&
-			key == journalTurnKey(ev.Seq, ev.TurnUUID, ev.TextHash) {
+			key == journalTurnKey(ev) {
 			continue
 		}
 		out = append(out, ev)
@@ -367,10 +387,12 @@ func unownedMark(ev TransitionNotificationEvent) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// journalTurnKey is a journaled turn's identity as both the journal line and
-// the producer's record of it carry it: seq plus the transcript turn.
-func journalTurnKey(seq int64, uuid, textHash string) string {
-	return strconv.FormatInt(seq, 10) + "|" + uuid + "|" + textHash
+// journalTurnKey is a journaled turn's identity as both the journal render
+// and the producer's record of it carry it: seq, the transcript turn and
+// whether it was committed as a stale repeat (#2184), which keys it on its
+// emit instant instead of the turn.
+func journalTurnKey(ev TransitionNotificationEvent) string {
+	return strconv.FormatInt(ev.Seq, 10) + "|" + ev.TurnUUID + "|" + ev.TextHash + "|" + strconv.FormatBool(ev.OutputHashStale)
 }
 
 // completionKey matches a completion across its journal line and its ledger
@@ -388,23 +410,74 @@ func ledgerMark(ev TransitionNotificationEvent) string {
 	return ev.Timestamp.UTC().Format(time.RFC3339Nano) + "#" + EventFingerprint(ev)[:16]
 }
 
-// renderJournalTurns renders a child's retained journal lines as records.
-// A transition line whose turn signal repeats the previous line's is a turn
-// the transcript could not tell apart (issue #2184): the producer flagged it
-// OutputHashStale and keyed it on its emit instant, so it renders the same
-// way instead of collapsing into the previous turn.
-func renderJournalTurns(lines []TurnJournalEntry) []TransitionNotificationEvent {
-	out := make([]TransitionNotificationEvent, len(lines))
+// committedTurn is the producer notifier's memory of a child's last
+// committed transition (transitionNotifyRecord): its target status, its turn
+// signal and its stamp in unix seconds. isDuplicate compares a new flip with
+// it.
+type committedTurn struct {
+	to  string
+	sig string
+	at  int64
+}
+
+// lastCommittedBefore is the notifier's memory just before a journal's first
+// retained line, recovered from the producer's own _unowned records of that
+// child (commit order): the last transition committed before it. Nil when
+// there is none, e.g. a child with a local parent on the remote.
+func lastCommittedBefore(records []TransitionNotificationEvent, before time.Time) *committedTurn {
+	var last *committedTurn
+	for _, ev := range records {
+		if !ev.Timestamp.Before(before) {
+			continue
+		}
+		last = &committedTurn{
+			to:  ev.ToStatus,
+			sig: TurnFacts{UUID: ev.TurnUUID, TextHash: ev.TextHash}.Signal(),
+			at:  ev.Timestamp.Unix(),
+		}
+	}
+	return last
+}
+
+// renderJournalTurns renders a child's retained journal lines as the records
+// the producer committed for them, replaying its notifier from last (the
+// commit before lines[0], or nil). A transition line whose turn signal repeats
+// the last committed one:
+//
+//   - within defaultOutputHashDedupTTL and the same attention class was
+//     dropped by isDuplicate (the snapshot edge of a flip recordTerminalTurns
+//     already emitted journals a forced-urgent repeat line, issue #2469), so
+//     dropped[i] is set: it was never a record and must not cross, or one
+//     turn would arrive twice and an info turn would wake as urgent;
+//   - otherwise was committed OutputHashStale (issue #2184) and keyed on its
+//     emit instant, so it renders the same way instead of collapsing into the
+//     previous turn.
+//
+// A completion line goes through NotifyFinished, which neither dedups nor
+// updates that memory.
+func renderJournalTurns(lines []TurnJournalEntry, last *committedTurn) (out []TransitionNotificationEvent, dropped []bool) {
+	out = make([]TransitionNotificationEvent, len(lines))
+	dropped = make([]bool, len(lines))
+	ttl := int64(defaultOutputHashDedupTTL.Seconds())
 	for i, l := range lines {
+		if l.DoneStatus != "" {
+			out[i] = journalTurnEvent(l, false)
+			continue
+		}
+		sig := TurnFacts{UUID: l.UUID, TextHash: l.TextHash}.Signal()
 		stale := false
-		if i > 0 && l.DoneStatus == "" {
-			sig := TurnFacts{UUID: l.UUID, TextHash: l.TextHash}.Signal()
-			prev := TurnFacts{UUID: lines[i-1].UUID, TextHash: lines[i-1].TextHash}.Signal()
-			stale = sig != "" && sig == prev
+		if last != nil && sig != "" && sig == last.sig {
+			if attentionClass(last.to) == attentionClass(l.Status) && l.TS.Unix()-last.at <= ttl {
+				dropped[i] = true
+				out[i] = journalTurnEvent(l, false)
+				continue
+			}
+			stale = true
 		}
 		out[i] = journalTurnEvent(l, stale)
+		last = &committedTurn{to: l.Status, sig: sig, at: l.TS.Unix()}
 	}
-	return out
+	return out, dropped
 }
 
 // journalTurnEvent renders one journaled turn as the record the producer
