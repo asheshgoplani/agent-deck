@@ -430,7 +430,7 @@ Default behavior:
 **Read `confirmation`, not the human text.** `--json` carries a stable 3-way `confirmation` field (`confirmed` / `unknown` / `failed`) — that is the contract to branch on. `delivery` is a separate, finer-grained diagnostic string (13 possible values, listed below) for logging and debugging, not for scripted decisions: several `delivery` values map to `confirmation: "unknown"` (still exit 0 — a real, non-failed outcome), and only a handful map to `confirmation: "failed"`.
 
 Delivery verdict (`--json` also carries `delivery` and a machine-checkable `submitted` boolean):
-- `submitted` (exit 0, `submitted: true`, `confirmation: "confirmed"`): positive evidence the target accepted the message and began its turn.
+- `submitted` (exit 0, `submitted: true`, `confirmation: "confirmed"`): positive evidence the target accepted the message and began its turn. On a Codex target this includes Codex's own pane acknowledgement: the message left the composer and now sits in the transcript as a `›` cell with Codex output below it, or Codex's live status row (`• Working (6s • esc to interrupt)` and its variants) is running while the body is on screen outside the composer and outside the queued follow-up inputs. A lane that was already working counts the same, because the composer no longer holds the message. A body still in Codex's composer after every check stays `typed_not_submitted`, and one parked in the queued follow-up inputs stays `delivered`.
 - `queued` (exit 0, `submitted: false`, `confirmation: "unknown"`): Claude targets only. The target was mid-turn per its hook-driven status before the send, the body newly arrived in its pane, and Claude's composer showed its own "Press up to edit queued messages" placeholder (the composer element itself, not those words anywhere in the pane). Claude takes it up when the current turn ends. Do not resend. `submitted` on a Claude target is confirmed by the message's own record appearing in the transcript, or by the hook status flipping from idle to running once the body has landed.
 - `queued_socket` (exit 0, `submitted: false`, `acknowledged: false`): written to the target's Claude Code messaging socket (opt-in `send_transport = "auto"`) after identity verification; Claude's inbox sends no ack, so this means only "the bytes were written", not that the turn started.
 - `delivered` (exit 0, `submitted: false`, `confirmation: "unknown"`) — the message body reached the target and Enter was sent, but the tool exposes no submission signal (a shell, an unknown tool) or its signal didn't arrive in the window; this is the honest "delivered-unconfirmed" outcome, not a failure.
@@ -629,6 +629,8 @@ agent-deck session switch-account <session> <account>
 ```
 
 Moves a session — conversation included — to another configured Claude account: stops the session, migrates the Claude conversation file into the target account's config dir (copy-only, with a destination backup and size verification), sets the account, and restarts with `--resume`.
+
+Claude Code may key one working directory under several project directories (the path as typed, its macOS `/private` form, its realpath). Every copy of the conversation under those keys in both accounts is considered; the newest by last event wins (tie: longest), it is installed under every key in the target, each copy it replaces is backed up next to it, and a newer target copy is never overwritten (`--archive-destination` forces the source copy). The receipt names the chosen copy; `--json` carries every candidate with its newest event, size and line count under `transcript`, plus `installed` and `backed_up` paths.
 
 ```bash
 agent-deck session switch-account "My Project" work
@@ -1006,7 +1008,7 @@ Fetches active sessions from all remotes, or from a specific remote if `name` is
 
 To also see fetch failures in JSON, add `--with-errors` (or the equivalent `--json-envelope`, which implies `--json`): the output becomes `{"sessions": [...], "errors": [{"name", "host", "error"}]}` and the command exits `1` if any remote failed. This envelope is always opt-in, so the plain `--json` shape stays stable for existing scripts.
 
-In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
+In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
 
 ### remote drain
 
@@ -1093,6 +1095,8 @@ agent-deck health [--json] [--since <dur>]
 ```
 
 Reads local runtime health for the selected profile: no data leaves the host. Reports per-process (TUI, notify-daemon, web) samples — CPU%, RSS, open FDs, goroutines, hook files, status-pass latency, session count, tmux calls, session-list DB latency — against the fixed performance budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`). `--since <dur>` sets the history window (default `1h`; positive Go duration, e.g. `30m`). `--json` emits the same data machine-readably.
+
+Open FDs are counted natively for the sampling process itself (`/proc/self/fd` on Linux, `proc_pidinfo` on macOS; no `lsof`). Each sample's `open_fds_support` is `sampled` when `open_fds` holds a count, or `unsupported` on a platform with no native count; `open_fds` stays `null` then, and the text report prints the descriptor budget as unsupported (flagged once) instead of a budget it cannot check. The same value appears as `budgets.open_fds_support`.
 
 ```bash
 agent-deck health --json --since 1h

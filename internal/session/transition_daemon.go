@@ -532,7 +532,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		nextPriors := make(map[string]liveStatusPrior, len(instances))
 		for _, inst := range instances {
 			previousStatus := normalizeStatusString(string(inst.Status))
-			if prior, ok := priors[inst.ID]; ok {
+			// A persisted stop supersedes this daemon's older live sample. Keep
+			// it intact so UpdateStatus can distinguish an intentional stop
+			// from a vanished running pane, while still detecting a live restart.
+			if prior, ok := priors[inst.ID]; ok && inst.Status != StatusStopped {
 				inst.SeedLiveStatusPrior(prior.status, prior.flipPending)
 			}
 			if passBudgetSpent || time.Since(passStart) > syncPassBudget {
@@ -555,13 +558,30 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 				continue
 			}
 			status := normalizeStatusString(string(inst.GetStatusThreadSafe()))
+			if db != nil && status != previousStatus {
+				applied, err := db.WriteStatusIfCurrent(inst.ID, previousStatus, status, inst.Tool)
+				if err != nil || !applied {
+					// Another writer may have stopped the session while this
+					// probe ran. Publish the committed verdict, not our stale
+					// sample, and drop its debounce prior and substate.
+					statuses[inst.ID] = previousStatus
+					if err == nil {
+						if rows, readErr := db.ReadAllStatuses(); readErr == nil {
+							if row, ok := rows[inst.ID]; ok {
+								statuses[inst.ID] = normalizeStatusString(row.Status)
+							}
+						}
+					}
+					inst.mu.Lock()
+					inst.Status = Status(statuses[inst.ID])
+					inst.mu.Unlock()
+					continue
+				}
+			}
 			statuses[inst.ID] = status
 			substates[inst.ID] = string(inst.CachedSubstate())
 			if st, pending, sampled := inst.LiveStatusPrior(); sampled {
 				nextPriors[inst.ID] = liveStatusPrior{status: st, flipPending: pending}
-			}
-			if db != nil && status != previousStatus {
-				_ = db.WriteStatus(inst.ID, status, inst.Tool)
 			}
 		}
 		d.livePrior[profile] = nextPriors

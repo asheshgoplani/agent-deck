@@ -20,6 +20,8 @@ func (h *Home) recordTimeFilterExpiry(activity, now time.Time) {
 		expiry = activity.Add(3*24*time.Hour + time.Nanosecond)
 	case session.TimeFilter7Days:
 		expiry = activity.Add(7*24*time.Hour + time.Nanosecond)
+	case session.TimeFilter30Days:
+		expiry = activity.Add(30*24*time.Hour + time.Nanosecond)
 	default:
 		return
 	}

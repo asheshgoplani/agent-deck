@@ -364,7 +364,7 @@ type Home struct {
 	initialSelectDone   bool                   // Guard so preselection only fires once
 	previewMode         PreviewMode            // What to show in preview pane (both, output-only, analytics-only)
 	groupViewMode       session.GroupViewMode  // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
-	timeFilter          session.TimeFilterMode // Recency filter: all, today, 3 days, 7 days (cycled by hotkey '*')
+	timeFilter          session.TimeFilterMode // Recency filter: all, today, 3 days, 7 days, 30 days (cycled by hotkey '*')
 	sidebarMode         sidebarPresentation    // Session navigation: grouped (default) or flat
 	compactSidebar      bool                   // Narrow session rail; manual split resizing opts out
 	embeddedLayout      bool                   // Embedded terminal layout; false preserves classic interaction
@@ -654,6 +654,10 @@ type Home struct {
 	defaultFilter        string                  // from config.toml [display] default_filter
 	activeFilterLabel    string                  // from config.toml [display] active_filter_label
 	activeFilterExcludes map[session.Status]bool // from config.toml [display] active_filter_excludes; default {error}
+
+	// activeFilterHideStopped is set by a second % press when the exclude set
+	// keeps stopped sessions visible: Open then also hides stopped.
+	activeFilterHideStopped bool
 
 	// hiddenToolBadge is default_tool when [display] hide_default_tool_badge
 	// is on: rows running it skip the tool badge. Empty means show every badge.
@@ -6258,8 +6262,23 @@ func (h *Home) logWorker() {
 // should run UpdateStatus() on inst. Archived sessions are skipped: their tmux
 // pane is torn down and their row status is display-frozen, so a poll can only
 // spend a serialized tmux subprocess without changing anything the UI renders.
+//
+// Exception: an archived session that still claims a live status. Archiving a
+// session whose tmux is already gone skips Kill(), so it keeps its last stored
+// status; skipping it forever would count it as running in the header pills.
+// It is polled until UpdateStatus settles it on error/stopped, then skipped.
 func shouldPollStatusInLoop(inst *session.Instance) bool {
-	return inst != nil && !inst.IsArchived()
+	if inst == nil {
+		return false
+	}
+	if !inst.IsArchived() {
+		return true
+	}
+	switch inst.GetStatusThreadSafe() {
+	case session.StatusRunning, session.StatusWaiting, session.StatusIdle, session.StatusStarting:
+		return true
+	}
+	return false
 }
 
 const fullStatusBatchSize = 32
@@ -7098,9 +7117,16 @@ func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 	// Claude/Codex may have exited via /q without writing a fresh "dead" hook.
 	// Force the attached session through the live tmux path before the list is
 	// redrawn so the status icon reflects a dead pane immediately.
-	inst.ClearHookStatus()
-	if h.hookWatcher != nil {
-		h.hookWatcher.ClearHookStatus(inst.ID)
+	//
+	// Only Claude/Codex (#2436): the other hook tools (pi, gemini, cursor,
+	// hermes) map their exit event to a "dead" hook, and they emit sparsely
+	// (pi only at turn boundaries), so wiping their hook here dropped them to
+	// pane heuristics on every attach/detach until the next hook event.
+	if tool := inst.GetToolThreadSafe(); session.IsClaudeCompatible(tool) || session.IsCodexCompatible(tool) {
+		inst.ClearHookStatus()
+		if h.hookWatcher != nil {
+			h.hookWatcher.ClearHookStatus(inst.ID)
+		}
 	}
 	inst.ForceNextStatusCheck()
 
@@ -12666,7 +12692,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, h.fetchSelectedPreview()
 
 	case "*":
-		// Cycle time-range filter: all → today → 3 days → 7 days → all.
+		// Cycle time-range filter: all → today → 3 days → 7 days → 30 days → all.
 		// Preserve the cursor's row identity across the rebuild, same as the
 		// 't' view-mode cycle above.
 		selectedBefore := h.captureSelectedItemIdentity()
@@ -13058,9 +13084,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (h *Home) changeStatusFilter(filter session.Status) tea.Cmd {
 	selectedBefore := h.captureSelectedItemIdentity()
 	h.keepEmptyFilter = true
-	if filter != "" && h.statusFilter == filter {
+	// % cycles All -> Open -> Open+stopped hidden -> All when the configured
+	// exclude set keeps stopped sessions visible; otherwise it is a toggle.
+	hideStopped := filter == FilterModeActive && h.statusFilter == FilterModeActive &&
+		!h.activeFilterHideStopped && !h.activeFilterExcludes[session.StatusStopped]
+	h.activeFilterHideStopped = hideStopped
+	switch {
+	case hideStopped:
+		// stay on the active filter; the flag now hides stopped too
+	case filter != "" && h.statusFilter == filter:
 		h.statusFilter = ""
-	} else {
+	default:
 		h.statusFilter = filter
 	}
 	h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -18106,9 +18140,29 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) tea.Cmd {
 		return nil
 	}
 
-	target := pos + delta
-	if target < 0 || target >= len(current) {
-		h.setError(fmt.Errorf("'%s' is already %s in its group on %s", moved.Title, edge, item.RemoteName))
+	// #2450: a conductor's children render under it, so a row swaps with its
+	// nearest on-screen sibling: a top-level row with the next top-level row
+	// (a parent's children travel with it), a child with the next child of
+	// the same parent. Swapping with whatever the bucket lists next to it
+	// would often leave the screen unchanged.
+	targetID, ok := h.adjacentRemoteSibling(item, delta)
+	if !ok {
+		scope := "in its group"
+		if item.IsSubSession {
+			scope = "under its parent"
+		}
+		h.setError(fmt.Errorf("'%s' is already %s %s on %s", moved.Title, edge, scope, item.RemoteName))
+		return nil
+	}
+	target := -1
+	for i, id := range current {
+		if id == targetID {
+			target = i
+			break
+		}
+	}
+	if target < 0 {
+		h.setError(fmt.Errorf("cannot move '%s' %s: the row next to it is no longer listed on %s", moved.Title, direction, item.RemoteName))
 		return nil
 	}
 	current[pos], current[target] = current[target], current[pos]
@@ -18130,6 +18184,45 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) tea.Cmd {
 		h.setError(fmt.Errorf("moved '%s' %s, but the order could not be saved and will not survive a restart: %w", moved.Title, direction, err))
 	}
 	return nil
+}
+
+// adjacentRemoteSibling returns the ID of the nearest remote session row on
+// screen, in direction delta, that shares the moved row's group bucket and
+// nesting level: another top-level row for a top-level row, another child of
+// the same parent for a child (#2450). ok is false when there is none, i.e.
+// the row is already first or last among its siblings.
+func (h *Home) adjacentRemoteSibling(item session.Item, delta int) (id string, ok bool) {
+	siblingKey := func(it session.Item) string {
+		if it.IsSubSession && it.RemoteSession != nil {
+			return it.RemoteSession.ParentSessionID
+		}
+		return ""
+	}
+	sameRow := func(it session.Item) bool {
+		return it.Type == session.ItemTypeRemoteSession && it.RemoteSession != nil &&
+			it.RemoteName == item.RemoteName && it.Path == item.Path
+	}
+	from := -1
+	for i, it := range h.flatItems {
+		if sameRow(it) && it.RemoteSession.ID == item.RemoteSession.ID {
+			from = i
+			break
+		}
+	}
+	if from < 0 {
+		return "", false
+	}
+	key := siblingKey(h.flatItems[from])
+	for i := from + delta; i >= 0 && i < len(h.flatItems); i += delta {
+		it := h.flatItems[i]
+		if !sameRow(it) {
+			return "", false // left the bucket: a header or another group
+		}
+		if siblingKey(it) == key {
+			return it.RemoteSession.ID, true
+		}
+	}
+	return "", false
 }
 
 // reorderRemoteGroup forwards shift+up/down on a remote group header to the
@@ -18513,7 +18606,7 @@ func (h *Home) renderFilterBar() string {
 				Background(ColorTextDim).
 				Bold(true).
 				Padding(0, 1).Render(stoppedLabel))
-		} else if isActive && h.activeFilterExcludes[session.StatusStopped] {
+		} else if isActive && (h.activeFilterExcludes[session.StatusStopped] || h.activeFilterHideStopped) {
 			pills = append(pills, dimPillStyle.Render(stoppedLabel))
 		} else if stopped > 0 {
 			pills = append(pills, lipgloss.NewStyle().
@@ -21414,6 +21507,8 @@ type groupRenderStats struct {
 	sessionCount int
 	running      int
 	waiting      int
+	tinted       int
+	tint         string
 }
 
 func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map[string]groupRenderStats {
@@ -21445,11 +21540,21 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 		directSessions := 0
 		directRunning := 0
 		directWaiting := 0
+		directTinted := 0
+		directTint := ""
 		for _, sess := range g.Sessions {
 			if sess.IsArchived() != viewArchived {
 				continue
 			}
 			directSessions++
+			// Same field the session row paints (renderSessionItem), so a
+			// group name and its row can never disagree.
+			if sess.Color != "" {
+				directTinted++
+				if directTint == "" || sess.Color < directTint {
+					directTint = sess.Color
+				}
+			}
 			state, ok := snapshot[sess.ID]
 			status := sess.Status
 			if ok {
@@ -21471,6 +21576,12 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 			entry.sessionCount += directSessions
 			entry.running += directRunning
 			entry.waiting += directWaiting
+			entry.tinted += directTinted
+			// Smallest colour string wins: the walk runs over a map, so a
+			// fixed choice keeps the paint stable when colours differ.
+			if directTint != "" && (entry.tint == "" || directTint < entry.tint) {
+				entry.tint = directTint
+			}
 			stats[ancestor] = entry
 
 			idx := strings.LastIndex(ancestor, "/")
@@ -21599,6 +21710,12 @@ func (h *Home) renderGroupItem(
 
 	// Use precomputed recursive stats (group + descendants) for this render pass.
 	stats := groupStats[group.Path]
+	// A collapsed group hides the session whose name is tinted; carry the tint
+	// to the group name so the signal stays visible. Selected rows keep the
+	// selected style, expanded groups already show the tinted row.
+	if stats.tinted > 0 && !group.Expanded && !selected {
+		nameStyle = nameStyle.Foreground(lipgloss.Color(stats.tint))
+	}
 	countStr := countStyle.Render(fmt.Sprintf(" (%d)", stats.sessionCount))
 	if h.compactEmbeddedSidebar() {
 		prefix := ""
@@ -22668,7 +22785,13 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	treeConnector := "├─"
-	if item.IsLastInGroup {
+	if item.IsSubSession {
+		// #2450: a conductor's child closes its parent's subtree, not the
+		// group, so it reads its own last-child flag.
+		if item.IsLastSubSession {
+			treeConnector = "└─"
+		}
+	} else if item.IsLastInGroup {
 		treeConnector = "└─"
 	}
 
@@ -24258,10 +24381,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			// background beyond the pane's truncation point. See #579.
 			safeLine = stripDisplayErasingEscapes(safeLine)
 
-			// In light theme, remap captured ANSI background colors to the
-			// current preview surface instead of stripping them completely.
-			// This preserves the soft highlighted blocks used by tools like
-			// Codex without letting dark background bands bleed through.
+			// In light theme, remap captured dark ANSI background colors to
+			// the current preview surface instead of stripping them. Dark
+			// bands (e.g. Codex, #322) stop bleeding through, and light
+			// backgrounds a tool already draws pass through unchanged (#2449).
 			if isLightTheme {
 				safeLine = remapANSIBackground(safeLine, previewSurfaceANSI())
 			}
@@ -24524,15 +24647,18 @@ func previewSurfaceANSI() string {
 	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
 }
 
-// remapANSIBackground replaces ANSI background color sequences with the
+// remapANSIBackground replaces dark ANSI background color sequences with the
 // provided replacement while preserving all other ANSI sequences (foreground
-// colors, bold, italic, underline). Used in light theme so captured terminal
-// output keeps soft highlighted regions instead of dropping them entirely.
+// colors, bold, italic, underline) and light backgrounds. Used in light theme
+// so dark bands from captured terminal output (#322) do not bleed through,
+// while a tool's own light backgrounds survive unchanged (#2449).
 func remapANSIBackground(s, replacement string) string {
-	if replacement == "" {
-		return ansiBackgroundRE.ReplaceAllString(s, "")
-	}
-	return ansiBackgroundRE.ReplaceAllString(s, replacement)
+	return ansiBackgroundRE.ReplaceAllStringFunc(s, func(seq string) string {
+		if !isDarkANSIBackground(seq) {
+			return seq
+		}
+		return replacement
+	})
 }
 
 // truncatePath shortens a path to fit within maxLen display width.
@@ -25592,7 +25718,8 @@ func markGroupPathAndAncestors(groupsWithMatches map[string]bool, groupPath stri
 // status's statusBucket, the bucket its row glyph and the pill count show.
 func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 	if filter == FilterModeActive {
-		return !h.activeFilterExcludes[status] && !h.activeFilterExcludes[statusBucket(status)]
+		return !h.activeFilterExcludes[status] && !h.activeFilterExcludes[statusBucket(status)] &&
+			!(h.activeFilterHideStopped && statusBucket(status) == session.StatusStopped)
 	}
 	return statusBucket(status) == filter
 }
@@ -25631,6 +25758,8 @@ func (h *Home) renderFilterBarHint() []string {
 				label = "3 days"
 			case session.TimeFilter7Days:
 				label = "7 days"
+			case session.TimeFilter30Days:
+				label = "30 days"
 			}
 		}
 		segs = append(segs, mark(timeFilterKey, true)+dim.Render(" "+label))
@@ -25663,7 +25792,7 @@ func (h *Home) renderFilterBarHint() []string {
 		segs = append(segs, mark("t", false)+dim.Render(" view"))
 	}
 
-	// Time-range filter indicator (today / 3 days / 7 days), only when active.
+	// Time-range filter indicator (today / 3 days / 7 days / 30 days), only when active.
 	if h.timeFilter == session.TimeFilterAll {
 		segs = append(segs, mark(timeFilterKey, false)+dim.Render(" time"))
 	}

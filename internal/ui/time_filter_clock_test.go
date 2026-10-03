@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,7 +49,7 @@ func clockVisibleIDs(h *Home) []string {
 }
 
 func TestTimeFilterClockExpiresAndPreservesSelection(t *testing.T) {
-	for _, mode := range []session.TimeFilterMode{session.TimeFilterToday, session.TimeFilter3Days, session.TimeFilter7Days} {
+	for _, mode := range []session.TimeFilterMode{session.TimeFilterToday, session.TimeFilter3Days, session.TimeFilter7Days, session.TimeFilter30Days} {
 		for _, remote := range []bool{false, true} {
 			name := mode.Label() + "/local"
 			if remote {
@@ -58,8 +60,11 @@ func TestTimeFilterClockExpiresAndPreservesSelection(t *testing.T) {
 				activity, boundary := now, time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 				if mode != session.TimeFilterToday {
 					days := 3
-					if mode == session.TimeFilter7Days {
+					switch mode {
+					case session.TimeFilter7Days:
 						days = 7
+					case session.TimeFilter30Days:
+						days = 30
 					}
 					activity = now.Add(-time.Duration(days)*24*time.Hour + time.Hour)
 					boundary = activity.Add(time.Duration(days) * 24 * time.Hour)
@@ -100,11 +105,11 @@ func TestTimeFilterClockExpiresAndPreservesSelection(t *testing.T) {
 }
 
 func TestTimeFilterClockExpiryClearsRestoredEmptyFilter(t *testing.T) {
-	for _, mode := range []session.TimeFilterMode{session.TimeFilterToday, session.TimeFilter3Days, session.TimeFilter7Days} {
+	for _, mode := range []session.TimeFilterMode{session.TimeFilterToday, session.TimeFilter3Days, session.TimeFilter7Days, session.TimeFilter30Days} {
 		t.Run(mode.Label(), func(t *testing.T) {
 			now := time.Now()
 			h := clockFilterHome(mode, []*session.Instance{clockLocal("only", now)}, nil)
-			clockFilterTick(h, now.AddDate(0, 0, 8))
+			clockFilterTick(h, now.AddDate(0, 0, 31))
 			require.Equal(t, session.TimeFilterAll, h.timeFilter, "restored filter falls back after last match expires")
 			require.Equal(t, []string{"only"}, clockVisibleIDs(h))
 		})
@@ -195,5 +200,21 @@ func TestTimeFilterClockEligibilityAndRebuildReschedule(t *testing.T) {
 			h.rebuildFlatItemsAt(now)
 			require.True(t, h.nextTimeFilterExpiry.IsZero())
 		})
+	}
+}
+
+func TestTimeFilterHintShortensLabelWhenNarrow(t *testing.T) {
+	for _, tt := range []struct {
+		mode  session.TimeFilterMode
+		width int
+		want  string
+	}{
+		{session.TimeFilter30Days, 120, " Last 30 days"},
+		{session.TimeFilter30Days, 80, " 30 days"},
+		{session.TimeFilter7Days, 80, " 7 days"},
+	} {
+		h := &Home{width: tt.width, timeFilter: tt.mode}
+		hint := ansi.Strip(h.renderFilterBarHint()[0])
+		require.True(t, strings.HasSuffix(hint, tt.want), "width %d: hint %q, want suffix %q", tt.width, hint, tt.want)
 	}
 }

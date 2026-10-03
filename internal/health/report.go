@@ -29,6 +29,10 @@ type Budgets struct {
 	OpenFDs             int     `json:"open_fds_exclusive"`
 	TmuxCallsPerSession int     `json:"tmux_calls_per_session"`
 	RemotePollMS        float64 `json:"remote_poll_ms_exclusive"`
+	// OpenFDsSupport is OpenFDsSampled when any sample in the window counted
+	// descriptors, and OpenFDsUnsupported when none could because the
+	// platform has no native count, so the descriptor budget is unchecked.
+	OpenFDsSupport string `json:"open_fds_support,omitempty"`
 }
 type Summary struct {
 	Budgets   Budgets         `json:"budgets"`
@@ -60,6 +64,8 @@ type UntrackedTmuxSession struct {
 	AgeSeconds  float64 `json:"age_seconds"`
 	PaneCommand string  `json:"pane_command,omitempty"`
 }
+
+const openFDsUnsupportedFlag = "open_fds unsupported on this platform: descriptor budget is not checked"
 
 func numeric(s Sample) map[string]float64 {
 	m := map[string]float64{}
@@ -100,7 +106,7 @@ func numeric(s Sample) map[string]float64 {
 // final line. Missing and corrupt data are explicitly reported as unknown.
 func Report(dir string, since time.Duration) (Summary, error) {
 	now := time.Now().UTC()
-	result := Summary{Budgets: Budgets{float64(StatusPassBudget / time.Millisecond), DescriptorBudget, 2, float64(RemotePollBudget / time.Millisecond)}, Version: 1, Since: now.Add(-since), Processes: []ProcessReport{}, Flags: []string{}}
+	result := Summary{Budgets: Budgets{StatusPassMS: float64(StatusPassBudget / time.Millisecond), OpenFDs: DescriptorBudget, TmuxCallsPerSession: 2, RemotePollMS: float64(RemotePollBudget / time.Millisecond)}, Version: 1, Since: now.Add(-since), Processes: []ProcessReport{}, Flags: []string{}}
 	if since <= 0 {
 		return result, fmt.Errorf("since must be a positive duration")
 	}
@@ -156,6 +162,7 @@ func Report(dir string, since time.Duration) (Summary, error) {
 	if incomplete {
 		result.Flags = append(result.Flags, "some health data is unknown: incomplete or corrupt samples")
 	}
+	sampledFDs, unsupportedFDs := false, false
 	keys := make([]string, 0, len(grouped))
 	for key := range grouped {
 		keys = append(keys, key)
@@ -178,6 +185,8 @@ func Report(dir string, since time.Duration) (Summary, error) {
 			if s.OpenFDs != nil && *s.OpenFDs >= DescriptorBudget {
 				add("descriptor count exceeds 512 budget")
 			}
+			sampledFDs = sampledFDs || s.OpenFDs != nil
+			unsupportedFDs = unsupportedFDs || s.OpenFDsSupport == OpenFDsUnsupported
 			if s.Sessions != nil && s.TmuxCalls != nil && *s.TmuxCalls > int64(2*(*s.Sessions)) {
 				add("tmux calls exceed twice the session count")
 			}
@@ -213,12 +222,22 @@ func Report(dir string, since time.Duration) (Summary, error) {
 	if len(result.Processes) == 0 {
 		result.Flags = append(result.Flags, "runtime health unknown: no samples in requested period")
 	}
+	if sampledFDs {
+		result.Budgets.OpenFDsSupport = OpenFDsSampled
+	} else if unsupportedFDs {
+		result.Budgets.OpenFDsSupport = OpenFDsUnsupported
+		result.Flags = append(result.Flags, openFDsUnsupportedFlag)
+	}
 	return result, nil
 }
 func Format(s Summary) string {
 	var b strings.Builder
 	b.WriteString("Runtime health\n")
-	fmt.Fprintf(&b, "  Budgets: status pass <%.0f ms; descriptors <%d; tmux calls <=%d per session; remote poll <%.0f ms\n", s.Budgets.StatusPassMS, s.Budgets.OpenFDs, s.Budgets.TmuxCallsPerSession, s.Budgets.RemotePollMS)
+	descriptors := fmt.Sprintf("descriptors <%d", s.Budgets.OpenFDs)
+	if s.Budgets.OpenFDsSupport == OpenFDsUnsupported {
+		descriptors = "descriptors unsupported on this platform"
+	}
+	fmt.Fprintf(&b, "  Budgets: status pass <%.0f ms; %s; tmux calls <=%d per session; remote poll <%.0f ms\n", s.Budgets.StatusPassMS, descriptors, s.Budgets.TmuxCallsPerSession, s.Budgets.RemotePollMS)
 	for _, flag := range s.Flags {
 		fmt.Fprintf(&b, "  %s\n", flag)
 	}
@@ -250,6 +269,8 @@ func Format(s Summary) string {
 					value = fmt.Sprintf("%.2f", v)
 				}
 				fmt.Fprintf(&b, "    %s latest: %s; min/p50/max: %.2f / %.2f / %.2f\n", strconv.QuoteToASCII(name), value, d.Min, d.P50, d.Max)
+			} else if name == "open_fds" && p.Latest.OpenFDsSupport == OpenFDsUnsupported {
+				fmt.Fprintf(&b, "    %s: unsupported on this platform\n", strconv.QuoteToASCII(name))
 			} else {
 				fmt.Fprintf(&b, "    %s: unknown\n", strconv.QuoteToASCII(name))
 			}

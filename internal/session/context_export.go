@@ -151,15 +151,18 @@ func exportClaudeContext(inst *Instance, maxBytes int, portable bool) (*ContextE
 	if !inst.TranscriptIsResolvableLocally() {
 		return nil, fmt.Errorf("session %q is remote; transcript is not locally readable", inst.Title)
 	}
-	path, err := canonicalClaudeExactTranscriptPath(inst)
+	// The transcript may sit under any of the project keys Claude Code uses
+	// for this working directory (typed, /private alias, realpath); export the
+	// newest copy rather than failing when the typed key is empty.
+	copies, err := claudeExactTranscriptCopies(inst)
 	if err != nil {
 		return nil, err
 	}
-	path, err = uniqueRegularArtifact([]string{path}, inst.ClaudeSessionID+".jsonl")
-	if err != nil {
-		return nil, err
+	chosen, ok := chooseNewestTranscript(copies)
+	if !ok {
+		return nil, fmt.Errorf("%w for %s", errNoExactContextArtifact, inst.ClaudeSessionID+".jsonl")
 	}
-	return exportContextArtifact(path, ContextSourceIdentity{
+	return exportContextArtifact(chosen.Path, ContextSourceIdentity{
 		InstanceID: inst.ID, Tool: inst.Tool, SessionID: inst.ClaudeSessionID, Account: inst.Account, ProjectPath: inst.ProjectPath, WorkingDir: inst.EffectiveWorkingDir(), Title: inst.Title, GroupPath: inst.GroupPath,
 	}, "claude-jsonl", "native", maxBytes, inst.ClaudeSessionID, portable)
 }
@@ -245,24 +248,9 @@ func canonicalClaudeExactTranscriptPath(inst *Instance) (string, error) {
 	if err := validateExactSessionID(inst.ClaudeSessionID); err != nil {
 		return "", fmt.Errorf("invalid Claude source identity: %w", err)
 	}
-	dir := strings.TrimSpace(GetClaudeConfigDirForInstance(inst))
-	if inst.Account != "" {
-		cfg, err := LoadUserConfig()
-		if err != nil {
-			return "", fmt.Errorf("load source Claude account %q: %w", inst.Account, err)
-		}
-		accountDir := ""
-		if cfg != nil {
-			accountDir = strings.TrimSpace(cfg.GetProfileClaudeConfigDir(inst.Account))
-		}
-		if accountDir == "" {
-			return "", fmt.Errorf("source Claude account %q has no configured config_dir", inst.Account)
-		}
-		dir = accountDir
-	}
-	dir = ExpandPath(dir)
-	if dir == "" {
-		return "", fmt.Errorf("source Claude config dir is empty")
+	dir, err := switchSourceClaudeDir(nil, inst)
+	if err != nil {
+		return "", err
 	}
 	workingDir := strings.TrimSpace(inst.EffectiveWorkingDir())
 	if workingDir == "" {
@@ -279,15 +267,25 @@ func canonicalClaudeExactTranscriptPath(inst *Instance) (string, error) {
 	return path, nil
 }
 
-// claudeExactTranscriptCandidates is retained for preview callers. It exposes
-// at most the canonical account-bound path; it never searches another account
-// or the raw ProjectPath as a fallback.
-func claudeExactTranscriptCandidates(inst *Instance) []string {
-	path, err := canonicalClaudeExactTranscriptPath(inst)
-	if err != nil {
-		return nil
+// claudeExactTranscriptCopies lists every on-disk copy of inst's exact
+// conversation in its own account dir, one per project key Claude Code may
+// have used for the working directory. It never searches another account.
+func claudeExactTranscriptCopies(inst *Instance) ([]TranscriptCandidate, error) {
+	if inst == nil {
+		return nil, fmt.Errorf("Claude source instance is nil")
 	}
-	return []string{path}
+	if err := validateExactSessionID(inst.ClaudeSessionID); err != nil {
+		return nil, fmt.Errorf("invalid Claude source identity: %w", err)
+	}
+	dir, err := switchSourceClaudeDir(nil, inst)
+	if err != nil {
+		return nil, err
+	}
+	keys := claudeProjectKeyCandidates(inst.EffectiveWorkingDir())
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("source Claude effective working directory is empty")
+	}
+	return claudeTranscriptCopies(dir, keys, inst.ClaudeSessionID, "source")
 }
 
 func validateExactSessionID(sessionID string) error {

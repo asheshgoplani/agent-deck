@@ -390,7 +390,11 @@ func PreviewSwitchWithMaxBytesAndSnapshot(cfg *UserConfig, inst *Instance, targe
 	if capability == CapabilityNativeResume && preview.SourceSessionID != "" {
 		var artifactErr error
 		if IsClaudeCompatible(inst.Tool) {
-			_, artifactErr = uniqueRegularArtifact(claudeExactTranscriptCandidates(inst), preview.SourceSessionID+".jsonl")
+			var copies []TranscriptCandidate
+			copies, artifactErr = claudeExactTranscriptCopies(inst)
+			if artifactErr == nil && len(copies) == 0 {
+				artifactErr = fmt.Errorf("%w for %s", errNoExactContextArtifact, preview.SourceSessionID+".jsonl")
+			}
 		} else if IsCodexCompatible(inst.Tool) {
 			var matches []string
 			matches, artifactErr = exactCodexRolloutMatches(preview.SourceSessionID, inst.getCodexHomeDir())

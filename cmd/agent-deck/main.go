@@ -44,7 +44,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.16.22" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.23" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -4073,7 +4073,7 @@ func handleUpdate(args []string) {
 			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
 		}
 		onDisk := onDiskVersion()
-		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), update.ListPendingRebootstrap())); err != nil {
+		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), pendingLaunchAgentsForCheck())); err != nil {
 			exit(1)
 		}
 		exit(0)

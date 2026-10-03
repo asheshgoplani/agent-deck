@@ -1055,13 +1055,9 @@ func FormatChangelogForDisplay(entries []ChangelogEntry) string {
 			if strings.HasPrefix(line, "### ") {
 				section := strings.TrimPrefix(line, "### ")
 				sb.WriteString(fmt.Sprintf("\n  [%s]\n", section))
-			} else if strings.HasPrefix(line, "- ") {
-				sb.WriteString(fmt.Sprintf("  %s\n", line))
-			} else if strings.HasPrefix(line, "  ") {
-				// Nested content
-				sb.WriteString(fmt.Sprintf("  %s\n", line))
 			} else {
-				// Preserve unrecognized non-empty lines (e.g. plain text paragraphs)
+				// Bullets, nested content and plain text paragraphs are all
+				// kept, indented one level.
 				sb.WriteString(fmt.Sprintf("  %s\n", line))
 			}
 		}

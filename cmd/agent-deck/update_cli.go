@@ -446,7 +446,7 @@ func rebootstrapLaunchAgentsAfterInstall(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if len(res.Restarted) == 0 {
+	if len(res.Restarted) == 0 && len(res.Disabled) == 0 {
 		fmt.Println("  (none run this binary)")
 	}
 	return nil
@@ -548,10 +548,16 @@ func initUpdateCommandLogging() func() {
 	return initDaemonLogging()
 }
 
+// pendingLaunchAgentsForCheck is the pending marker as `update --check`
+// reports it: an agent launchd has disabled is flagged as such (#2457).
+func pendingLaunchAgentsForCheck() []update.PendingAgent {
+	return update.MarkDisabledPending(update.ListPendingRebootstrap(), update.RebootstrapOptions{})
+}
+
 // printPendingLaunchAgents lists the launch agents still waiting to be
 // re-registered, one line each, for `update --check`.
 func printPendingLaunchAgents() {
-	pending := update.ListPendingRebootstrap()
+	pending := pendingLaunchAgentsForCheck()
 	if len(pending) == 0 {
 		return
 	}

@@ -2814,7 +2814,7 @@ type RemoteSessionInfo struct {
 	SubstateDetail string `json:"substate_detail,omitempty"`
 
 	// LastActivityAt is the remote session's Instance.DisplayLastActivityTime(),
-	// RFC3339Nano-formatted (fractional seconds kept: TimeFilterMode's 3/7-day
+	// RFC3339Nano-formatted (fractional seconds kept: TimeFilterMode's 3/7/30-day
 	// cutoffs are exact instants, and truncating to whole seconds could flip a
 	// session sitting right on one), so the local recency filter
 	// (session.TimeFilterMode) can apply to remote rows the same way it
@@ -2829,6 +2829,14 @@ type RemoteSessionInfo struct {
 	// than 1.16.11, or tmux could not be asked there); an empty list means
 	// nobody. See ViewerList.
 	Viewers *[]tmux.Viewer `json:"viewers,omitempty"`
+
+	// ParentSessionID is the remote session's parent (its conductor), as
+	// `list --json` on the remote reports it, so the controller can nest a
+	// conductor's children under it the way the remote's own TUI does
+	// (#2450). It is an ID on the remote, never a local one. A top-level
+	// session, or a remote too old to send the key, decodes to "" and the
+	// row renders flat.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`

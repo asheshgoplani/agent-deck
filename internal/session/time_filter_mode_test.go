@@ -31,6 +31,10 @@ func TestTimeFilterModeMatches(t *testing.T) {
 		{"7days matches exactly 7*24h ago", TimeFilter7Days, now.Add(-7 * 24 * time.Hour), true},
 		{"7days excludes just past 7*24h ago", TimeFilter7Days, now.Add(-7*24*time.Hour - time.Second), false},
 		{"7days excludes 30 days ago", TimeFilter7Days, now.AddDate(0, 0, -30), false},
+
+		{"30days matches 20 days ago", TimeFilter30Days, now.AddDate(0, 0, -20), true},
+		{"30days matches exactly 30*24h ago", TimeFilter30Days, now.Add(-30 * 24 * time.Hour), true},
+		{"30days excludes just past 30*24h ago", TimeFilter30Days, now.Add(-30*24*time.Hour - time.Second), false},
 	}
 
 	for _, tt := range tests {
@@ -51,6 +55,7 @@ func TestTimeFilterModeLabel(t *testing.T) {
 		{TimeFilterToday, "Today"},
 		{TimeFilter3Days, "Last 3 days"},
 		{TimeFilter7Days, "Last 7 days"},
+		{TimeFilter30Days, "Last 30 days"},
 	}
 	for _, tt := range tests {
 		if got := tt.mode.Label(); got != tt.want {
@@ -72,7 +77,7 @@ func TestTimeFilterModeCycle(t *testing.T) {
 	if mode != TimeFilterAll {
 		t.Errorf("cycling %d times should return to TimeFilterAll, got %v", TimeFilterModeCount, mode)
 	}
-	want := []TimeFilterMode{TimeFilterAll, TimeFilterToday, TimeFilter3Days, TimeFilter7Days}
+	want := []TimeFilterMode{TimeFilterAll, TimeFilterToday, TimeFilter3Days, TimeFilter7Days, TimeFilter30Days}
 	if len(seen) != len(want) {
 		t.Fatalf("cycle produced %d distinct steps, want %d", len(seen), len(want))
 	}

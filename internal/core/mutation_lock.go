@@ -39,7 +39,11 @@ func RunWithMutationLock(ctx context.Context, reg *Registry, id, profile string,
 	if err != nil {
 		return &Result{ID: id, Err: Errorf(CodeStorage, "open mutation lock: %v", err)}
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-deck: close mutation lock:", err)
+		}
+	}()
 	for {
 		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {

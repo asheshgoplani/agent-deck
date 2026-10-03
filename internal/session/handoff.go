@@ -140,11 +140,17 @@ func claudeTranscriptPathIn(configDir string, inst *Instance, sessionID string) 
 // source data is an error; it must never borrow a matching ID from another
 // account.
 func locateExactHandoffTranscript(inst *Instance) (string, error) {
-	path, err := canonicalClaudeExactTranscriptPath(inst)
+	// The conversation may sit under any project key Claude Code uses for the
+	// working directory; hand off the newest copy.
+	copies, err := claudeExactTranscriptCopies(inst)
 	if err != nil {
 		return "", err
 	}
-	return uniqueRegularArtifact([]string{path}, inst.ClaudeSessionID+".jsonl")
+	chosen, ok := chooseNewestTranscript(copies)
+	if !ok {
+		return "", fmt.Errorf("%w for %s", errNoExactContextArtifact, inst.ClaudeSessionID+".jsonl")
+	}
+	return chosen.Path, nil
 }
 
 // locateHandoffTranscript remains the historical best-effort resolver used by

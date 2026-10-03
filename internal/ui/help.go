@@ -428,7 +428,7 @@ func (h *HelpOverlay) View() string {
 				{"/running", "Filter running"},
 				{"/idle", "Filter idle"},
 				{groupViewKey, "Cycle view: active-on-top / populated-on-top"},
-				{timeFilterKey, "Cycle time filter: today / 3 days / 7 days / all"},
+				{timeFilterKey, "Cycle time filter: today / 3 / 7 / 30 days / all"},
 			},
 		},
 		{

@@ -57,7 +57,8 @@ type DeliveryEvidence struct {
 	Tool string
 	// TurnStarted is any positive submission signal: turn advancement in the
 	// harness transcript, an idle-to-active transition, the hook edge, the
-	// composer held-then-cleared, or shell progress (see ShellProgressed).
+	// composer held-then-cleared, shell progress (see ShellProgressed), or
+	// Codex's own pane acknowledgement (see codexTookMessage).
 	TurnStarted bool
 	// BodyArrived is a NEW copy of the body (or a new composer paste marker)
 	// observed in the pane after the send.
@@ -266,6 +267,9 @@ type Observer struct {
 	// final-frame checks (composer, interactive menu).
 	Tool       string
 	ClaudeLike bool
+	// CodexLike enables Codex's own pane evidence that it took the message
+	// (issue #2424, codexTookMessage).
+	CodexLike bool
 	// BusyBeforeSend is the hook-driven busy reading taken before the send.
 	// A composer that held the body and then cleared is submission on an
 	// idle target; on a target already mid-turn it only means the input
@@ -282,6 +286,10 @@ type Observer struct {
 	// the send (a foreign draft the guard let through); then a composer
 	// showing it afterwards is not this send's doing.
 	baselineHeld bool
+	// baselineCodexCells: transcript cells already carrying the body before
+	// the send (codexTranscriptCopies), so an earlier identical message is
+	// never read as this one.
+	baselineCodexCells int
 
 	ev      DeliveryEvidence
 	last    string
@@ -300,6 +308,7 @@ func NewObserver(tool, message string, baseline PaneCapture) *Observer {
 		o.baselineOK = true
 		o.baselineCount, o.baselineMarkers = o.counts(baseline.Raw)
 		o.baselineHeld = HasUnsentComposerPrompt(tmux.StripANSI(baseline.Raw), message)
+		o.baselineCodexCells = codexTranscriptCopies(tmux.StripANSI(baseline.Raw), o.token)
 	}
 	return o
 }
@@ -341,6 +350,15 @@ func (o *Observer) Observe(c PaneCapture) {
 	// A shell that has taken the line and moved on has submitted it.
 	if o.ev.BodyArrived && !o.ev.TurnStarted && IsShellLikeTool(o.Tool) && ShellProgressed(c.Raw, o.message) {
 		o.ev.TurnStarted = true
+	}
+	// Codex took the message: it left the composer for the transcript, or
+	// Codex is running a turn with the body out of its composer (#2424).
+	// Only measured against a baseline, like every other arrival signal.
+	if !o.ev.TurnStarted && o.CodexLike && o.baselineOK {
+		n, _ := o.counts(c.Raw)
+		if codexTookMessage(tmux.StripANSI(c.Raw), o.token, n, o.baselineCount, o.baselineCodexCells) {
+			o.ev.TurnStarted = true
+		}
 	}
 	if !o.held && o.hasComposer() && o.composerHolds(c.Raw) {
 		o.held = true
