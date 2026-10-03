@@ -1295,12 +1295,25 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 
 /* Fleet board: status kanban (opt-in view) and the Status | Groups toggle. */
-/* The negative margin keeps the section head as tall as its one-line text,
-   so adding the toggle does not push the default group grid down. */
-.fleet-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin: -4px 0; }
+/* The toggle sits between the kicker and the right-aligned sub-kicker, so
+   neither moves. Its 22px box with -6px margins leaves a 10px margin box,
+   shorter than the kicker line: the head keeps its height with any font and
+   the group grid below stays where it was. */
+.fleet-board-head { container-type: inline-size; }
+.fleet-view-toggle {
+  display: inline-flex; flex: none; box-sizing: border-box; height: 22px; margin: -6px 0;
+  border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+}
 .fleet-view-toggle button {
   border: 0; background: transparent; color: var(--muted); cursor: pointer;
-  font-family: var(--mono); font-size: 11px; padding: 3px 10px;
+  font-family: var(--mono); font-size: 11px; line-height: 16px; padding: 2px 10px;
+}
+/* A board too narrow to fit kicker, toggle and sub-kicker on one line (about
+   320px; tablet width with the rail open) keeps the head as it was instead
+   of wrapping the sub-kicker onto extra lines. The toggle stays while Status
+   is on, so a viewer can always switch back. */
+@container (max-width: 339px) {
+  .fleet-view-toggle:not(.on-status) { display: none; }
 }
 .fleet-view-toggle button.on { background: var(--accent-soft); color: var(--text-hi); }
 .kanban {

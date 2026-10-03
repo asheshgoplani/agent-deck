@@ -21,6 +21,14 @@
 
 import { test, expect } from '@playwright/test'
 
+// The tablet project's open right rail leaves the board too narrow for the
+// Status | Groups toggle (app.css @container rule); hiding the rail makes room.
+async function showBoardToggle(page) {
+  const toggle = page.locator('[data-testid="fleet-view-status"]')
+  if (!(await toggle.isVisible())) await page.getByRole('button', { name: 'Toggle right rail' }).click()
+  await expect(toggle).toBeVisible()
+}
+
 test.describe('fleet pane', () => {
   test.beforeEach(async ({ request }) => {
     await request.post('/__fixture/reset')
@@ -133,6 +141,44 @@ test.describe('fleet pane', () => {
     await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
   })
 
+  // The toggle sits between the GROUPS kicker and the right-aligned
+  // sub-kicker without growing the head, so the default board looks as it
+  // did before the toggle: the sub-kicker stays flush right on one line and
+  // the group grid does not move (visual-baselines.spec.js home.png).
+  test('the Status | Groups toggle keeps the section head height and the sub-kicker in place', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+    const g = await page.evaluate(() => {
+      const head = document.querySelector('[data-testid="fleet-view-groups"]').closest('.fleet-section-head')
+      const box = el => el.getBoundingClientRect()
+      const toggle = head.querySelector('.fleet-view-toggle')
+      return {
+        head: box(head), kicker: box(head.querySelector('.kicker')), sub: box(head.querySelector('.sub-kicker')),
+        padBottom: parseFloat(getComputedStyle(head).paddingBottom),
+        toggle: toggle && getComputedStyle(toggle).display !== 'none' ? box(toggle) : null,
+      }
+    })
+    expect(g.head.height).toBeLessThanOrEqual(Math.max(g.kicker.height, g.sub.height) + g.padBottom + 0.5)
+    expect(Math.abs(g.head.right - g.sub.right)).toBeLessThan(0.5)
+    if (g.toggle) {
+      expect(g.toggle.left).toBeGreaterThan(g.kicker.right)
+      expect(g.toggle.right).toBeLessThan(g.sub.left)
+    }
+  })
+
+  // At tablet width the open right rail leaves the board about 150px wide:
+  // no room for the toggle beside the kicker and sub-kicker, so it steps
+  // aside until the board is wider.
+  test('a board too narrow for the toggle hides it until the rail is closed', async ({ page }) => {
+    await page.setViewportSize({ width: 820, height: 1180 })
+    await page.goto('/')
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+    await expect(page.locator('body')).toHaveAttribute('data-rail', 'visible')
+    await expect(page.locator('[data-testid="fleet-view-status"]')).toBeHidden()
+    await page.getByRole('button', { name: 'Toggle right rail' }).click()
+    await expect(page.locator('[data-testid="fleet-view-status"]')).toBeVisible()
+  })
+
   // The Fleet board's layout is a per-browser choice (agentdeck.fleetView).
   // A viewer who never touched the Status | Groups toggle keeps the group
   // grid; the semantic-status kanban is opt-in.
@@ -151,6 +197,7 @@ test.describe('fleet pane', () => {
   test('Status view is opt-in: kanban, semantic tiles and conductor banner, persisted across reloads', async ({ page }) => {
     await page.goto('/')
     await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+    await showBoardToggle(page)
     await page.locator('[data-testid="fleet-view-status"]').click()
 
     // Seed: sess-001 is a conductor (pinned in the banner, out of the

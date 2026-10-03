@@ -55,6 +55,29 @@ describe('Fleet board default view', () => {
     expect([tile('running'), tile('waiting'), tile('error'), tile('idle')]).toEqual(['1', '1', '0', '1'])
   })
 
+  // The toggle goes between the kicker and the right-aligned sub-kicker so
+  // neither moves; app.css hides it on a narrow board unless Status is on,
+  // which needs the on-status class.
+  it('puts the toggle between the kicker and the sub-kicker, marked while Status is on', async () => {
+    const { fleetViewSignal } = await import(uiStateModulePath)
+    const { sessionsSignal, sessionCostsSignal } = await import(stateModulePath)
+    sessionCostsSignal.value = {}
+    sessionsSignal.value = [
+      { type: 'group', level: 0, group: { name: 'work', path: 'work', expanded: true, order: 0 } },
+      sess('a', 'running', {}),
+    ]
+    const { FleetPane } = await import(paneModulePath)
+    const c = mount(html`<${FleetPane}/>`)
+    await new Promise(r => setTimeout(r, 0))
+    const head = c.querySelector('[data-testid="fleet-view-groups"]').closest('.fleet-section-head')
+    expect([...head.children].map(el => el.className)).toEqual(['kicker', 'fleet-view-toggle', 'sub-kicker'])
+
+    fleetViewSignal.value = 'status'
+    await new Promise(r => setTimeout(r, 50))
+    expect(c.querySelector('[data-testid="fleet-view-status"]').getAttribute('aria-pressed')).toBe('true')
+    expect(c.querySelector('.fleet-view-toggle').classList.contains('on-status')).toBe(true)
+  })
+
   it('keeps a viewer who opted into the status kanban there', async () => {
     localStorage.setItem('agentdeck.fleetView', '"status"')
     const { fleetViewSignal } = await import(uiStateModulePath)

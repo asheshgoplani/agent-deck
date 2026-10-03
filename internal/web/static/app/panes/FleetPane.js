@@ -226,15 +226,15 @@ export function FleetPane() {
       `}
 
       <div class="fleet-section">
-        <div class="fleet-section-head">
+        <div class="fleet-section-head fleet-board-head">
           <span class="kicker">${view === 'status' ? 'BY STATUS' : 'GROUPS'}</span>
-          <span class="sub-kicker">${groups.length} group${groups.length === 1 ? '' : 's'} · ${sessions.length} ${remoteTotal > 0 ? 'local ' : ''}session${sessions.length === 1 ? '' : 's'}</span>
-          ${sessions.length > 0 && html`<div class="fleet-view-toggle" role="group" aria-label="Board layout">
+          ${sessions.length > 0 && html`<div class=${`fleet-view-toggle${view === 'status' ? ' on-status' : ''}`} role="group" aria-label="Board layout">
             ${[['status', 'Status'], ['groups', 'Groups']].map(([id, label]) => html`
               <button key=${id} class=${view === id ? 'on' : ''} aria-pressed=${view === id}
                       data-testid=${`fleet-view-${id}`} onClick=${() => { fleetViewSignal.value = id }}>${label}</button>
             `)}
           </div>`}
+          <span class="sub-kicker">${groups.length} group${groups.length === 1 ? '' : 's'} · ${sessions.length} ${remoteTotal > 0 ? 'local ' : ''}session${sessions.length === 1 ? '' : 's'}</span>
         </div>
         ${view === 'status'
           ? board && html`<${board.StatusKanban} sessions=${workers} groupLabels=${groupLabels} onSelect=${onSelect}/>`
