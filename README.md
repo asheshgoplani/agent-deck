@@ -1210,15 +1210,17 @@ Then ask: *"How do I set up MCP pooling?"*
 **Option 2: OpenCode** (has built-in Claude skill compatibility)
 ```bash
 # Create skill directory
-mkdir -p ~/.claude/skills/agent-deck/references
+mkdir -p ~/.claude/skills/agent-deck/references ~/.claude/skills/agent-deck/recall
 
 # Download skill and references
 curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/SKILL.md \
   > ~/.claude/skills/agent-deck/SKILL.md
-for f in cli-reference config-reference tui-reference troubleshooting capabilities session-communication sub-agents conductors session-workflows autonomy gotchas; do
+for f in cli-reference config-reference tui-reference troubleshooting capabilities session-communication sub-agents conductors session-workflows autonomy gotchas goal sandbox self-improvement; do
   curl -sL "https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/references/${f}.md" \
     > ~/.claude/skills/agent-deck/references/${f}.md
 done
+curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/recall/SKILL.md \
+  > ~/.claude/skills/agent-deck/recall/SKILL.md
 ```
 OpenCode will auto-discover the skill from `~/.claude/skills/`.
 
