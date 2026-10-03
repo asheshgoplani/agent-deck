@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Prompt-time inbox delivery (issue #2469, design principle 2). The wake
@@ -113,7 +114,32 @@ func NudgeHeadline(ev TransitionNotificationEvent) string {
 	if detail != "" {
 		head += " — " + CapTurnText(detail, 160)
 	}
-	return head + " · details are in this turn's context"
+	// The headline is TYPED into the parent's pane. Child text (and, for a
+	// pulled record, text a remote host chose) must never carry a newline or
+	// a control sequence that could submit or alter more than this one line.
+	return printableOneLine(head) + " · details are in this turn's context"
+}
+
+// printableOneLine replaces every control character (including CR/LF, tab,
+// escape and DEL) with a space and collapses runs of spaces.
+func printableOneLine(s string) string {
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || !unicode.IsPrint(r) && !unicode.IsSpace(r) {
+			r = ' '
+		}
+		if r == ' ' {
+			if lastSpace {
+				continue
+			}
+			lastSpace = true
+		} else {
+			lastSpace = false
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // DigestNudgeMessage is the wake for info that waited past the digest window.

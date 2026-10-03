@@ -200,3 +200,15 @@ func TestIssue2469_PromptInjectionStaysUnderBudget(t *testing.T) {
 		t.Fatal("overflow note missing")
 	}
 }
+
+func TestIssue2469_NudgeHeadlineIsOnePrintableLine(t *testing.T) {
+	ev := TransitionNotificationEvent{ChildTitle: "evil\ntitle", ChildSessionID: "r1", ToStatus: "waiting", Tier: TurnTierUrgent,
+		Text: "first line\x1b[2J\r\nrm -rf /\nsecond"}
+	got := NudgeHeadline(ev)
+	if strings.ContainsAny(got, "\n\r\x1b\t") {
+		t.Fatalf("headline carries control characters: %q", got)
+	}
+	if !strings.Contains(got, "first line") || strings.Contains(got, "rm -rf") {
+		t.Fatalf("headline must carry only the first line of the text: %q", got)
+	}
+}
