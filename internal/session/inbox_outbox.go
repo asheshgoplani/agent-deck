@@ -524,15 +524,18 @@ func countNonblankInboxRecords(path string) (int, error) {
 // rather than dead-letter). A nil parent with transient=false means the event is
 // terminally undeliverable (orphan, removed child, self-pointing conductor,
 // no-notify) and should be dead-lettered.
-func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificationEvent) (parent *Instance, transient bool, reason string) {
+//
+// sender is the session a tagged send's reply must also reach (see
+// replySenderFor); nil unless a parent resolved.
+func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificationEvent) (parent, sender *Instance, transient bool, reason string) {
 	storage, err := NewStorageWithProfile(event.Profile)
 	if err != nil {
-		return nil, true, ""
+		return nil, nil, true, ""
 	}
 	defer storage.Close()
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
-		return nil, true, ""
+		return nil, nil, true, ""
 	}
 	byID := make(map[string]*Instance, len(instances))
 	for _, inst := range instances {
@@ -543,36 +546,54 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 	if child == nil {
 		// Child removed between commit/observe and resolve — terminal, but the
 		// operator should know a completion was dropped (audit B5).
-		return nil, false, deadLetterReasonChildMissing
+		return nil, nil, false, deadLetterReasonChildMissing
 	}
 	if child.NoTransitionNotify {
-		return nil, false, deadLetterReasonNoNotify
+		return nil, nil, false, deadLetterReasonNoNotify
 	}
 	// Top-level conductor self-suppress (issue #824 cause B): the root is not
 	// an orphan, drop silently.
 	if strings.TrimSpace(child.ParentSessionID) == "" && isConductorSessionTitle(child.Title) {
-		return nil, false, deadLetterReasonSelfConductor
+		return nil, nil, false, deadLetterReasonSelfConductor
 	}
 	// Orphan-on-creation guard (issue #805 cause A): log one WARN per orphan.
 	if strings.TrimSpace(child.ParentSessionID) == "" {
 		n.logOrphanOnce(event, child.ID)
-		return nil, false, deadLetterReasonOrphan
+		return nil, nil, false, deadLetterReasonOrphan
 	}
 	if strings.TrimSpace(child.ParentSessionID) == child.ID && isConductorSessionTitle(child.Title) {
-		return nil, false, deadLetterReasonSelfConductor
+		return nil, nil, false, deadLetterReasonSelfConductor
 	}
 	// Parent referenced but not present in this profile's registry: removed
 	// mid-flight, or the child's parent lives in a DIFFERENT profile (we only
 	// load event.Profile's registry). Either way it's terminal — but distinguish
 	// it so the operator isn't left guessing (audit B5).
 	if byID[strings.TrimSpace(child.ParentSessionID)] == nil {
-		return nil, false, deadLetterReasonParentMissing
+		return nil, nil, false, deadLetterReasonParentMissing
 	}
 	parent = resolveParentNotificationTarget(child, byID)
 	if parent == nil {
-		return nil, false, deadLetterReasonUnresolvable
+		return nil, nil, false, deadLetterReasonUnresolvable
 	}
-	return parent, false, ""
+	return parent, replySenderFor(event, child, parent, byID), false, ""
+}
+
+// replySenderFor resolves the sender of the tagged send that started this
+// turn (comms redesign PR5): a session still in the registry that is not the
+// child itself (a self-send), its parent or the resolved notification
+// target (those already hold the record, so no duplicate). An unknown or
+// removed sender gets nothing; the parent's copy is the record of the turn.
+func replySenderFor(event TransitionNotificationEvent, child, parent *Instance, byID map[string]*Instance) *Instance {
+	from := strings.TrimSpace(event.FromID)
+	if event.Trigger != TurnTriggerSend || from == "" {
+		return nil
+	}
+	sender := byID[from]
+	if sender == nil || sender.ID == child.ID || sender.ID == parent.ID ||
+		sender.ID == strings.TrimSpace(child.ParentSessionID) {
+		return nil
+	}
+	return sender
 }
 
 // commitEventToInbox is the unified producer entry point: it resolves the
@@ -581,7 +602,7 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 // retryable error (storage/fs) occurred. committed=false, transient=false means
 // terminally undeliverable — the caller dead-letters.
 func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEvent) (committed bool, transient bool, reason string) {
-	parent, t, reason := n.resolveParentIDForInbox(event)
+	parent, sender, t, reason := n.resolveParentIDForInbox(event)
 	if t {
 		return false, true, ""
 	}
@@ -623,6 +644,7 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	}
 	n.clearCommitBackpressure(event.ChildSessionID)
 	n.logEvent(event)
+	n.commitReplyToSender(sender, event)
 	// A turn the parent's consumed-turn ledger already holds is dropped by its
 	// next drain, so waking it would cost one empty "[INBOX]" turn for nothing
 	// (issue #2240, notify-daemon restart re-delivery). The record itself is left
@@ -651,6 +673,31 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	// because this same record is still drained on the parent's next turn.
 	n.fireWakeNudge(parent, event)
 	return true, false, ""
+}
+
+// commitReplyToSender commits a second copy of a turn that answered a tagged
+// send to the sender's own inbox (comms redesign PR5): TargetKind "reply",
+// always urgent, so the session that asked is woken and its prompt-time
+// drain injects the answer. The parent's copy is already durable, so this
+// copy is best-effort: a failure is logged, never retried into a duplicate.
+func (n *TransitionNotifier) commitReplyToSender(sender *Instance, event TransitionNotificationEvent) {
+	if sender == nil {
+		return
+	}
+	event.TargetSessionID = sender.ID
+	event.TargetKind = "reply"
+	event.Tier = TurnTierUrgent
+	if err := CommitToInbox(sender.ID, event); err != nil {
+		commsLog.Warn("reply_commit_failed",
+			slog.String("sender", sender.ID), slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
+		return
+	}
+	n.logEvent(event)
+	if turnAlreadyConsumed(sender.ID, event.TurnFingerprint) {
+		return
+	}
+	_ = BumpInboxStats(sender.ID, func(s *InboxStats) { s.WakeupsUrgent++ })
+	n.fireWakeNudge(sender, event)
 }
 
 // noteCommitBackpressure logs a saturated parent inbox ONCE per child. The

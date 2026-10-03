@@ -1,0 +1,236 @@
+package session
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+// Comms redesign PR5: a `session send` from inside a session carries a
+// "[agent-deck from:<id>]" envelope; the receiver's reply turn is committed
+// to its parent as before AND, when the sender is someone else (a sibling),
+// to the sender's inbox as an urgent "reply" record that wakes it.
+
+type pr5Fixture struct {
+	*turnTestFixture
+	woken map[string]int // target id -> wake sends
+	kinds map[string]string
+}
+
+func newPR5Fixture(t *testing.T, extra ...*Instance) *pr5Fixture {
+	t.Helper()
+	f := &pr5Fixture{turnTestFixture: newTurnTestFixture(t), woken: map[string]int{}, kinds: map[string]string{}}
+	f.saveRegistry(t, extra...)
+	// Production gate for the target kind, status forced idle: proves the
+	// gate itself (not a test stub) lets a non-conductor reply target wake.
+	withNoopStatusProbe(t)
+	f.d.notifier.wake = &wakeNudgeWiring{
+		nudger: NewWakeNudger(0),
+		now:    time.Now,
+		isIdle: func(p *Instance, kind string) bool {
+			f.kinds[p.ID] = kind
+			return parentIsNudgeableIdle(p, kind)
+		},
+		send: func(p *Instance, _, _ string) error { f.woken[p.ID]++; return nil },
+	}
+	return f
+}
+
+// saveRegistry rewrites the registry as parent + child + extra.
+func (f *pr5Fixture) saveRegistry(t *testing.T, extra ...*Instance) {
+	t.Helper()
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	defer storage.Close()
+	all := append([]*Instance{f.parent, f.child}, extra...)
+	if err := storage.SaveWithGroups(all, nil); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+	f.byID = map[string]*Instance{}
+	for _, inst := range all {
+		f.byID[inst.ID] = inst
+	}
+}
+
+func (f *pr5Fixture) removeFromRegistry(t *testing.T, id string) {
+	t.Helper()
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("storage: %v", err)
+	}
+	defer storage.Close()
+	if err := storage.DeleteInstance(id); err != nil {
+		t.Fatalf("DeleteInstance: %v", err)
+	}
+	delete(f.byID, id)
+}
+
+func (f *pr5Fixture) runTaggedTurn(t *testing.T, fromID string) {
+	t.Helper()
+	f.appendTurn(t, fxHuman("u0", SendEnvelope(fromID)+"\nwhich port does the API use?"), fxAssistantText("a0", "The API listens on 8443."))
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+}
+
+func pr5Sibling(project string) *Instance {
+	sib := NewInstanceWithTool("api-worker", project, "claude")
+	sib.ID = "sibling-pr5"
+	sib.ParentSessionID = "parent-2469"
+	sib.Status = StatusIdle
+	return sib
+}
+
+func TestPR5_SiblingReplyIsCommittedUrgentToSenderAndToParent(t *testing.T) {
+	f := newPR5Fixture(t)
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+
+	f.runTaggedTurn(t, sib.ID)
+
+	parentRecs := f.inboxRecords(t)
+	if len(parentRecs) != 1 || parentRecs[0].Trigger != TurnTriggerSend || parentRecs[0].FromID != sib.ID ||
+		parentRecs[0].TargetKind != "parent" || parentRecs[0].Tier != TurnTierUrgent {
+		t.Fatalf("parent must keep exactly its own copy: %+v", parentRecs)
+	}
+	replies, err := ReadInboxEvents(sib.ID)
+	if err != nil {
+		t.Fatalf("ReadInboxEvents(sender): %v", err)
+	}
+	if len(replies) != 1 {
+		t.Fatalf("sender must get exactly one reply record, got %d: %+v", len(replies), replies)
+	}
+	r := replies[0]
+	if r.TargetKind != "reply" || r.Tier != TurnTierUrgent || r.TargetSessionID != sib.ID ||
+		r.ChildSessionID != f.child.ID || r.Text != "The API listens on 8443." {
+		t.Fatalf("reply record: %+v", r)
+	}
+	if f.woken[sib.ID] != 1 || f.kinds[sib.ID] != "reply" {
+		t.Fatalf("the non-conductor sender must be woken once as a reply target: woken=%v kinds=%v", f.woken, f.kinds)
+	}
+	if f.woken[f.parent.ID] != 1 {
+		t.Fatalf("the parent keeps its urgent wake: woken=%v", f.woken)
+	}
+
+	// The reply drains into the sender's next turn, labelled as a reply.
+	text, _, err := DrainForPrompt(sib.ID)
+	if err != nil || !strings.Contains(text, "- [urgent] reply from="+f.child.ID+" board-zero: waiting\n    The API listens on 8443.") {
+		t.Fatalf("sender prompt drain: err=%v\n%s", err, text)
+	}
+}
+
+func TestPR5_UnknownOrRemovedSenderCommitsOnlyToParent(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove bool
+	}{{"unknown", false}, {"removed", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPR5Fixture(t)
+			from := "ghost-session"
+			if tc.remove {
+				sib := pr5Sibling(f.child.ProjectPath)
+				f.saveRegistry(t, sib)
+				f.removeFromRegistry(t, sib.ID) // the sender was removed before the reply landed
+				from = sib.ID
+			}
+			f.runTaggedTurn(t, from)
+
+			if got := f.inboxRecords(t); len(got) != 1 || got[0].FromID != from {
+				t.Fatalf("parent copy: %+v", got)
+			}
+			if InboxHasPending(from) {
+				t.Fatalf("a sender not in the registry must get nothing")
+			}
+			if len(f.woken) != 1 || f.woken[f.parent.ID] != 1 {
+				t.Fatalf("only the parent is woken: %v", f.woken)
+			}
+		})
+	}
+}
+
+func TestPR5_SenderIsParentCommitsOnce(t *testing.T) {
+	f := newPR5Fixture(t)
+	f.runTaggedTurn(t, f.parent.ID)
+
+	got := f.inboxRecords(t)
+	if len(got) != 1 || got[0].TargetKind != "parent" || got[0].FromID != f.parent.ID {
+		t.Fatalf("a send from the parent is ONE record in the parent inbox: %+v", got)
+	}
+	if f.woken[f.parent.ID] != 1 || len(f.woken) != 1 {
+		t.Fatalf("one wake, to the parent: %v", f.woken)
+	}
+}
+
+func TestPR5_SelfSendIsNotRoutedBackToTheChild(t *testing.T) {
+	f := newPR5Fixture(t)
+	f.runTaggedTurn(t, f.child.ID)
+	if InboxHasPending(f.child.ID) {
+		t.Fatal("a turn started by the child's own tagged send must not land in its own inbox")
+	}
+	if got := f.inboxRecords(t); len(got) != 1 {
+		t.Fatalf("parent copy: %+v", got)
+	}
+}
+
+func TestPR5_NudgeGateAcceptsNonConductorReplyTarget(t *testing.T) {
+	withNoopStatusProbe(t)
+	worker := &Instance{ID: "w", Title: "api-worker", Status: StatusIdle}
+	if !parentIsNudgeableIdle(worker, "reply") {
+		t.Fatal("an idle non-conductor reply target must be nudgeable")
+	}
+	if parentIsNudgeableIdle(worker, "parent") {
+		t.Fatal("a non-conductor parent target stays un-nudgeable")
+	}
+	busy := &Instance{ID: "w", Title: "api-worker", Status: StatusRunning}
+	if parentIsNudgeableIdle(busy, "reply") {
+		t.Fatal("a busy reply target must not be nudged (its Stop/prompt drain delivers)")
+	}
+}
+
+func TestPR5_EnvelopeRoundTripsThroughClassifier(t *testing.T) {
+	if got := SendEnvelope(" abc-123 "); got != "[agent-deck from:abc-123]" {
+		t.Fatalf("envelope: %q", got)
+	}
+	rec := transcriptTurnRecord{Type: "user"}
+	rec.Message.Content = []byte(`"` + SendEnvelope("abc-123") + `\nhello"`)
+	trigger, from := classifyTrigger(rec)
+	if trigger != TurnTriggerSend || from != "abc-123" {
+		t.Fatalf("classifier: %q %q", trigger, from)
+	}
+	if !HasSendEnvelope("  "+SendEnvelope("x")+"\nhi") || HasSendEnvelope("hi [agent-deck from:x]") {
+		t.Fatal("HasSendEnvelope must match a leading envelope only")
+	}
+}
+
+func TestPR5_ReplyRecordRendering(t *testing.T) {
+	ev := TransitionNotificationEvent{ChildSessionID: "c9", ChildTitle: "api", ToStatus: "waiting", Tier: TurnTierUrgent, TargetKind: "reply", Text: "8443"}
+	if got := FormatInboxRecords([]TransitionNotificationEvent{ev}, "h"); got != "h\n- [urgent] reply from=c9 api: waiting\n    8443\n" {
+		t.Fatalf("FormatInboxRecords: %q", got)
+	}
+	if got := NudgeHeadline(ev); !strings.HasPrefix(got, "[INBOX] reply · api (c9): waiting — 8443") {
+		t.Fatalf("NudgeHeadline: %q", got)
+	}
+	ev.TargetKind = "parent"
+	if got := FormatInboxRecords([]TransitionNotificationEvent{ev}, "h"); strings.Contains(got, "reply") {
+		t.Fatalf("parent copy must render as before: %q", got)
+	}
+}
+
+func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
+	inst := &Instance{ID: "id-1", Title: "t", Tool: "claude"}
+	if !strings.Contains(inst.BuildIdentityPrompt(), "Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.") {
+		t.Fatal("identity prompt must explain the envelope")
+	}
+}
+
+func TestPR5_TagSendsConfigDefaultsOn(t *testing.T) {
+	var nilCfg *UserConfig
+	off := false
+	if !nilCfg.GetTagSends() || !(&UserConfig{}).GetTagSends() {
+		t.Fatal("tag_sends defaults to true")
+	}
+	if (&UserConfig{Send: SendSettings{TagSends: &off}}).GetTagSends() {
+		t.Fatal("tag_sends = false must turn tagging off")
+	}
+}

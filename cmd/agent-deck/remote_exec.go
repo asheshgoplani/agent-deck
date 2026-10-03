@@ -180,7 +180,7 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	// The recall booleans (phrase, subagents, no-sweep, cards, full, raw,
 	// yes) are listed too, so a forwarded recall verb can never have one
 	// of them mis-shifted as value-taking.
-	boolOptions := " json quiet q no-wait wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts run-hooks phrase subagents no-sweep cards full raw yes "
+	boolOptions := " json quiet q no-wait no-tag wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts run-hooks phrase subagents no-sweep cards full raw yes "
 	// Creation booleans come from the same registered parser as capabilities.
 	// Otherwise a new boolean can swallow --message-file as its apparent value.
 	if args[0] == "launch" {

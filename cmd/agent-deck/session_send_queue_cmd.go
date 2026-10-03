@@ -114,7 +114,7 @@ func publishSendState(profile string, r *sendqueue.Record) {
 
 // queueSend records the send and hands it to the target's worker. It never
 // types anything itself; it returns at once.
-func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, out *CLIOutput) {
+func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, tagged bool, out *CLIOutput) {
 	now := time.Now()
 	dir := sendQueueDir(storage)
 	status := "unknown"
@@ -149,7 +149,9 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 		// this target starts a worker again.
 		fmt.Fprintf(os.Stderr, "Warning: could not start the delivery worker yet: %v\n", err)
 	}
-	out.Success(fmt.Sprintf("Queued %s for '%s' (%s)", rec.SendID, inst.Title, status), queuedSendFields(rec))
+	fields := queuedSendFields(rec)
+	fields["tagged"] = tagged
+	out.Success(fmt.Sprintf("Queued %s for '%s' (%s)", rec.SendID, inst.Title, status), fields)
 }
 
 // queuedSendFields is the immediate --json reply for a queued send: the

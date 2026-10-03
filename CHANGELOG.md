@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Replies route back to the session that asked (comms redesign PR5). A `session send` from inside an agent-deck session to a Claude target now starts with one `[agent-deck from:<sender-id>]` line (`[send] tag_sends`, default `true`; `--no-tag` per send; never on a human shell, `--draft`, a bare slash command, a heartbeat or a send to oneself), and `--json` reports `tagged`. The receiver's reply turn is classified as a send instead of a human prompt, and when the sender is not the receiver's parent (a sibling or peer) the record is also committed to the sender's inbox as an urgent `reply` record that wakes the sender even when it is not a conductor; its next turn receives the reply through the prompt-time drain (`- [urgent] reply from=<child id> ...`). The parent keeps its own copy; an unknown or removed sender gets nothing. The session identity block explains the envelope.
+
 ## [1.16.24] - 2026-10-03
 
 - **Upgrading:** the agent-deck skill is now split into a short `SKILL.md` plus `references/` files. If you installed it with the README's curl loop rather than the plugin, re-run the loop so the new reference files are present (#2429).

@@ -33,6 +33,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[recall] Section](#recall-section)
 - [[notifications] Section](#notifications-section)
 - [[inbox] Section](#inbox-section)
+- [[send] Section](#send-section)
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
@@ -1002,6 +1003,19 @@ wake_on = ["urgent", "info"]     # restores a wake per recorded turn for this co
 | `journal_keep` | int | `256` | Lines kept per child in the turn journal (`agent-deck inbox stats` reads the counters, the journal is the per-turn history). |
 
 Measure the effect with `agent-deck inbox stats self` (or `--all`): records by tier, turns suppressed as noise or duplicates, wakeups fired and withheld, bytes injected.
+
+## [send] Section
+
+Tunes `agent-deck session send` (comms redesign PR5).
+
+```toml
+[send]
+tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tag_sends` | bool | `true` | A `session send` from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one `[agent-deck from:<sender-id>]` line, so the receiver's reply is classified as a send and, when the sender is not the receiver's parent, committed to the sender's inbox as an urgent `reply` record that wakes it. `false` turns tagging off for every send (`--no-tag` does it per send). Human shells, `--draft`, bare slash commands, heartbeats, sends to oneself and non-Claude targets are never tagged. |
 
 ## [health] Section
 

@@ -212,6 +212,7 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\n## agent-deck CLI (flags go BEFORE positional arguments)\n")
 	b.WriteString("- `agent-deck session current --json` — this session's full, current metadata from the database (source of truth; the snapshot above may be renamed or re-parented later)\n")
 	b.WriteString("- `agent-deck session send <id-or-title> \"message\"` — message another session (`--message-file FILE` for long text)\n")
+	b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.\n")
 	b.WriteString("- `agent-deck session output <id-or-title>` — read another session's last response\n")
 	b.WriteString("- `agent-deck launch <path> -t \"Title\" -c claude --message \"prompt\"` — spawn a child session linked to you as its parent (`-no-parent` for a peer)\n")
 	b.WriteString("- `agent-deck session children --json` — live status and asserted completions of your children\n")

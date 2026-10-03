@@ -75,7 +75,7 @@ func TestIssue1225_CommitFiresWakeNudgeToParent(t *testing.T) {
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(0),
 		now:    func() time.Time { return time.Unix(1000, 0) },
-		isIdle: func(p *Instance) bool { return true },
+		isIdle: func(p *Instance, _ string) bool { return true },
 		send: func(p *Instance, profile, _ string) error {
 			mu.Lock()
 			sentTo = append(sentTo, p.ID)
@@ -103,7 +103,7 @@ func TestIssue1225_CommitDoesNotNudgeBusyParent(t *testing.T) {
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(0),
 		now:    func() time.Time { return time.Unix(1000, 0) },
-		isIdle: func(p *Instance) bool { return false },
+		isIdle: func(p *Instance, _ string) bool { return false },
 		send:   func(p *Instance, profile, _ string) error { sent++; return nil },
 	}
 	res := n.NotifyFinished(event)
@@ -124,7 +124,7 @@ func TestIssue1225_RapidCommitsDebounceToOneNudge(t *testing.T) {
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(time.Minute),
 		now:    func() time.Time { return time.Unix(2000, 0) },
-		isIdle: func(p *Instance) bool { return true },
+		isIdle: func(p *Instance, _ string) bool { return true },
 		send:   func(p *Instance, profile, _ string) error { sent++; return nil },
 	}
 	n.NotifyFinished(event)
@@ -141,7 +141,7 @@ func TestIssue1225_NudgeSendErrorIsHarmless(t *testing.T) {
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(0),
 		now:    func() time.Time { return time.Unix(3000, 0) },
-		isIdle: func(p *Instance) bool { return true },
+		isIdle: func(p *Instance, _ string) bool { return true },
 		send:   func(p *Instance, profile, _ string) error { return errors.New("pane gone") },
 	}
 	res := n.NotifyFinished(event)
@@ -165,13 +165,13 @@ func TestIssue1225_DefaultWiringUsesConductorIdleGate(t *testing.T) {
 	if w == nil || w.nudger == nil || w.now == nil || w.isIdle == nil || w.send == nil {
 		t.Fatalf("default wiring must populate every hook, got %+v", w)
 	}
-	if !w.isIdle(&Instance{ID: "c", Title: "conductor-x", Status: StatusIdle}) {
+	if !w.isIdle(&Instance{ID: "c", Title: "conductor-x", Status: StatusIdle}, "parent") {
 		t.Fatal("default wiring must nudge an idle conductor")
 	}
-	if w.isIdle(&Instance{ID: "c", Title: "conductor-x", Status: StatusRunning}) {
+	if w.isIdle(&Instance{ID: "c", Title: "conductor-x", Status: StatusRunning}, "parent") {
 		t.Fatal("default wiring must NOT nudge a busy conductor (send-keys would only queue)")
 	}
-	if w.isIdle(&Instance{ID: "l", Title: "worker", Status: StatusIdle}) {
+	if w.isIdle(&Instance{ID: "l", Title: "worker", Status: StatusIdle}, "parent") {
 		t.Fatal("default wiring must NOT nudge a non-conductor leaf (no inbox drain → noise)")
 	}
 }
@@ -193,7 +193,7 @@ func TestIssue1225_ParentIsNudgeableIdle(t *testing.T) {
 	}
 	for _, c := range cases {
 		p := &Instance{ID: "p", Title: c.title, Status: c.status}
-		if got := parentIsNudgeableIdle(p); got != c.want {
+		if got := parentIsNudgeableIdle(p, "parent"); got != c.want {
 			t.Errorf("parentIsNudgeableIdle(title=%q,status=%q)=%v, want %v", c.title, c.status, got, c.want)
 		}
 	}
@@ -227,7 +227,7 @@ func TestWakeNudge_IdleGateUsesFreshStatus(t *testing.T) {
 		return nil
 	}))
 	stale := &Instance{ID: "p", Title: "conductor-x", Status: StatusRunning}
-	if !parentIsNudgeableIdle(stale) {
+	if !parentIsNudgeableIdle(stale, "parent") {
 		t.Fatal("a stale running row must not withhold the wake when the fresh probe says idle")
 	}
 
@@ -237,7 +237,7 @@ func TestWakeNudge_IdleGateUsesFreshStatus(t *testing.T) {
 		return nil
 	}))
 	busy := &Instance{ID: "p", Title: "conductor-x", Status: StatusIdle}
-	if parentIsNudgeableIdle(busy) {
+	if parentIsNudgeableIdle(busy, "parent") {
 		t.Fatal("a stale idle row must not send a nudge into a pane the fresh probe reports mid-turn")
 	}
 
@@ -251,7 +251,7 @@ func TestWakeNudge_IdleGateUsesFreshStatus(t *testing.T) {
 	}))
 	hung := &Instance{ID: "p", Title: "conductor-x", Status: StatusIdle}
 	start := time.Now()
-	if parentIsNudgeableIdle(hung) {
+	if parentIsNudgeableIdle(hung, "parent") {
 		t.Fatal("a probe that overruns the budget must not report idle")
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
