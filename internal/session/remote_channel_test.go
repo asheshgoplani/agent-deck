@@ -29,6 +29,8 @@ type fakeAgentT struct {
 	mute atomic.Bool
 	// pings counts ping requests received.
 	pings atomic.Int64
+	// denied counts requests refused for a verb the real agent denies.
+	denied atomic.Int64
 	// hung receives the id of every "hang" request, which never gets a
 	// reply; hangOn names one more verb that hangs the same way ("" for
 	// none), so a real read-only or mutating verb can be left unanswered.
@@ -107,6 +109,10 @@ func newFakeAgent(t *testing.T, ready, refuseWatch bool) *fakeAgentT {
 			}
 			hangOn, _ := a.hangOn.Load().(string)
 			switch {
+			case RemoteAgentDeniesVerb(req.Args[0]):
+				// The real agent refuses these (remoteAgentArgsAllowed).
+				a.denied.Add(1)
+				write(remoteChannelReply{ID: req.ID, Code: 2, Error: "verb not allowed over the channel"})
 			case req.Args[0] == "hang" || (hangOn != "" && req.Args[0] == hangOn):
 				a.hung <- req.ID
 			case req.Args[0] == "fail":

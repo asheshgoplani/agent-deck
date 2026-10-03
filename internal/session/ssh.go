@@ -2989,10 +2989,31 @@ func (r *SSHRunner) MeasureLatency(ctx context.Context) (time.Duration, error) {
 // transport.
 const latencyProbeCommand = "true"
 
-// The persistent agent rejects line breaks. Select one-shot SSH before sending
-// such arguments so multiline startup queries are delivered once without a
-// failed mutation or an unsafe retry.
+// remoteAgentDeniedVerbs are the verbs the remote agent (#2174) never runs
+// through the persistent channel: they need a terminal, or must not be
+// reachable from a remote TUI at all. The agent refuses them with code 2,
+// so the client sends them over a plain exec instead (#2472: the update
+// timer read and heal are `update` verbs).
+var remoteAgentDeniedVerbs = map[string]bool{
+	"remote-agent": true, "web": true, "uninstall": true, "update": true,
+}
+
+// RemoteAgentDeniesVerb reports whether the remote agent refuses verb over
+// the persistent channel. The agent and the client share this one list.
+func RemoteAgentDeniesVerb(verb string) bool {
+	return remoteAgentDeniedVerbs[verb]
+}
+
+// remoteChannelArgsSafe reports whether args may go over the persistent
+// channel. A verb the agent refuses goes over exec from the start: the
+// refusal is not a transport failure, so run would otherwise return it
+// without trying exec. The agent also rejects line breaks; such arguments
+// go over one-shot SSH so multiline startup queries are delivered once
+// without a failed mutation or an unsafe retry.
 func remoteChannelArgsSafe(args []string) bool {
+	if len(args) > 0 && RemoteAgentDeniesVerb(args[0]) {
+		return false
+	}
 	for _, arg := range args {
 		if strings.ContainsAny(arg, "\n\r") {
 			return false
