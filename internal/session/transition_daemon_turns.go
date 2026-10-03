@@ -51,6 +51,13 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	if classified && facts.Pending {
 		return event, false
 	}
+	if classified && facts.UUID == "" && facts.TextHash == "" {
+		// No turn identity (an interrupted turn, a reply with no text): the
+		// noise rule cannot recognise it next poll, so journaling it would add
+		// one line per observation. Treat it as unclassified: legacy signal,
+		// the notifier's dedup is the bound.
+		classified = false
+	}
 	event.LastOutputHash = transitionEventOutputHash(inst)
 	statsParent := statsParentFor(inst)
 

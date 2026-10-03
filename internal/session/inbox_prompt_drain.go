@@ -224,8 +224,22 @@ func formatInboxRecordsBudgeted(events []TransitionNotificationEvent, header str
 		}
 	}
 	out := FormatInboxRecords(withText, header)
-	if len(overflow) > 0 {
-		out += FormatInboxRecords(overflow, fmt.Sprintf("%d more record(s), text omitted for size (read the child with `agent-deck session output <id> -q` if needed):", len(overflow)))
+	if len(overflow) == 0 {
+		return out
 	}
-	return out
+	// The overflow list itself must fit: list as many one-liners as the
+	// remaining budget allows and summarise the rest by count.
+	listed := 0
+	for listed < len(overflow) {
+		candidate := FormatInboxRecords(overflow[:listed+1], "")
+		if len(out)+len(candidate)+200 > budget {
+			break
+		}
+		listed++
+	}
+	tail := FormatInboxRecords(overflow[:listed], fmt.Sprintf("%d more record(s), text omitted for size (read the child with `agent-deck session output <id> -q` if needed):", len(overflow)))
+	if listed < len(overflow) {
+		tail += fmt.Sprintf("… and %d further record(s) not listed; they are consumed, see `agent-deck inbox stats self`.\n", len(overflow)-listed)
+	}
+	return out + tail
 }

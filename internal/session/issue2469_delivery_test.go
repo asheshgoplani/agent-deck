@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -162,5 +163,28 @@ func TestIssue2469_FleetBlockUnchangedSkips(t *testing.T) {
 	}
 	if FleetBlockUnchanged("p", "[agent-deck fleet] 2 children: 0 running, 2 waiting, 0 done") {
 		t.Fatal("changed counts are new")
+	}
+}
+
+func TestIssue2469_PromptInjectionStaysUnderBudget(t *testing.T) {
+	var events []TransitionNotificationEvent
+	for i := 0; i < 120; i++ {
+		tier := TurnTierInfo
+		if i%5 == 0 {
+			tier = TurnTierUrgent
+		}
+		events = append(events, TransitionNotificationEvent{ChildSessionID: fmt.Sprintf("c%03d", i), ChildTitle: "child", ToStatus: "waiting", Tier: tier, Text: strings.Repeat("x", 500)})
+	}
+	out := formatInboxRecordsBudgeted(events, "[agent-deck inbox] header", promptContextBudgetBytes)
+	if len(out) > promptContextBudgetBytes+200 {
+		t.Fatalf("injection %d bytes exceeds the budget", len(out))
+	}
+	for i := 0; i < 120; i += 5 {
+		if !strings.Contains(out, fmt.Sprintf("(c%03d): waiting\n    xxxx", i)) {
+			t.Fatalf("urgent record c%03d lost its text", i)
+		}
+	}
+	if !strings.Contains(out, "more record(s), text omitted") {
+		t.Fatal("overflow note missing")
 	}
 }
