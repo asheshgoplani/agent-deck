@@ -22,9 +22,10 @@ const (
 // ClassifyPaneFrame runs the pane-tail detectors of GetStatus over one frame
 // for the given tool and returns the frame-only verdict, in GetStatus order:
 // model-unavailable no-op → error banner → busy indicator → background work
-// → prompt indicator. It is the scoring oracle for the golden pane corpus
-// (testdata/status_corpus) and shares every helper with GetStatus, so a
-// detector change is scored against real frames before it ships.
+// (never over an open menu or an error, issue #2473) → prompt indicator. It
+// is the scoring oracle for the golden pane corpus (testdata/status_corpus)
+// and shares every helper with GetStatus, so a detector change is scored
+// against real frames before it ships.
 func ClassifyPaneFrame(tool, content string) FrameVerdict {
 	s := &Session{DisplayName: "frame", detectedTool: strings.ToLower(strings.TrimSpace(tool))}
 	s.mu.Lock()
@@ -64,15 +65,18 @@ func ClassifyPaneFrame(tool, content string) FrameVerdict {
 //
 // Before the trim it records the frame's background work (issue #2473) in
 // s.lastBackgroundWork: the workflow progress row is drawn under the footer
-// with a roster glyph, so only the untrimmed frame still shows it. Caller
-// holds s.mu.
+// with a roster glyph, so only the untrimmed frame still shows it. After the
+// trim it records whether the frame shows an open menu or an error that
+// outranks that work (s.lastBackgroundBlocked). Caller holds s.mu.
 func (s *Session) prepareFrame(content string) string {
 	if !s.isClaudeTool() {
-		s.lastBackgroundWork = BackgroundWork{}
+		s.lastBackgroundWork, s.lastBackgroundBlocked = BackgroundWork{}, false
 		return content
 	}
 	s.lastBackgroundWork = ParseClaudeBackgroundWork(content)
-	return trimClaudeTrailingRoster(content)
+	trimmed := trimClaudeTrailingRoster(content)
+	s.lastBackgroundBlocked = s.backgroundWorkOutrankedLocked(trimmed)
+	return trimmed
 }
 
 // claudeFooterRe matches the mode line under Claude's input box, the last line

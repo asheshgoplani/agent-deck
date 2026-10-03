@@ -471,6 +471,9 @@ func backgroundWorkHoldsTurn(inst *Instance) bool {
 	if inst == nil {
 		return false
 	}
+	if backgroundWorkOutrankedBySubstate(inst.GetTmuxSession()) {
+		return false
+	}
 	if inst.BackgroundWork().InFlight() {
 		return true
 	}
@@ -502,4 +505,35 @@ func reconcileBackgroundSubstate(sub Substate, status Status, bgActive bool) Sub
 		return SubstateIdleAtEmptyPrompt
 	}
 	return sub
+}
+
+// hookEventBlocksTurn reports whether a waiting hook event is a menu the
+// operator must answer (a PermissionRequest, or a Notification the hook
+// handler only writes for permission_prompt / elicitation_dialog) rather than
+// a Stop. Background work never holds such a turn running (issue #2473): the
+// child is blocked on input and its parent must hear about it.
+func hookEventBlocksTurn(event string) bool {
+	switch strings.ToLower(strings.TrimSpace(event)) {
+	case "permissionrequest", "notification":
+		return true
+	}
+	return false
+}
+
+// backgroundWorkOutrankedBySubstate reports whether the session's last pane
+// frame shows something background work must not override: an open menu, an
+// error banner or the model-unavailable no-op (tmux backgroundWorkOutranked),
+// or a cached substate naming one. Never captures.
+func backgroundWorkOutrankedBySubstate(ts *tmux.Session) bool {
+	if ts == nil {
+		return false
+	}
+	if ts.CachedBackgroundWorkBlocked() {
+		return true
+	}
+	switch ts.CachedSubstate() {
+	case tmux.SubstateInteractiveMenu, tmux.SubstateAuth401, tmux.SubstateModelUnavailable, tmux.SubstateUsageLimit:
+		return true
+	}
+	return false
 }

@@ -34,6 +34,9 @@ const (
 type hookTransitionCandidate struct {
 	ToStatus  string
 	Timestamp time.Time
+	// Event is the hook event behind the candidate (Stop, PermissionRequest,
+	// Notification, ...). Empty for candidates built without one.
+	Event string
 }
 
 type TransitionDaemon struct {
@@ -1317,8 +1320,11 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		// is not a finished turn. The merged status keeps such a session
 		// running; the hook file alone must not emit running -> waiting for
 		// it. The real edge is emitted when the work reports back and the
-		// session settles (snapshot path, trigger "task").
-		if normalizeStatusString(current[id]) == string(StatusRunning) && backgroundWorkHoldsTurn(inst) {
+		// session settles (snapshot path, trigger "task"). A permission
+		// request or elicitation is never held: the child is blocked on
+		// input while the work runs, and the parent must be told.
+		if !hookEventBlocksTurn(candidate.Event) &&
+			normalizeStatusString(current[id]) == string(StatusRunning) && backgroundWorkHoldsTurn(inst) {
 			continue
 		}
 
@@ -1392,20 +1398,20 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 	case "claude":
 		// SessionStart is intentionally excluded (initial prompt isn't task completion).
 		if event == "stop" || event == "permissionrequest" || event == "notification" {
-			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
 		}
 	case "codex":
 		if isCodexTerminalHookEvent(event) {
-			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
 		}
 	case "cursor":
 		// sessionStart is intentionally excluded (initial prompt isn't task completion).
 		if event == "stop" {
-			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
 		}
 	case "hermes":
 		if event == "post_llm_call" || event == "postllmcall" || event == "onsessionend" || event == "on_session_end" {
-			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt}, true
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
 		}
 	}
 	return hookTransitionCandidate{}, false

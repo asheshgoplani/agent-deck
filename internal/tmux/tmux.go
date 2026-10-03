@@ -1243,6 +1243,7 @@ type Session struct {
 	// check for in-flight background work; this bounds that to one capture per
 	// bgWorkCacheTTL while a session sits at the prompt.
 	bgWork          BackgroundWork
+	bgWorkBlocked   bool
 	bgWorkCheckedAt time.Time
 
 	// lastBackgroundWork is the background work (issue #2473) the last
@@ -1251,6 +1252,10 @@ type Session struct {
 	// it). Set by prepareFrame; read by the status and substate decisions on
 	// the same frame.
 	lastBackgroundWork BackgroundWork
+	// lastBackgroundBlocked records that the same frame shows something that
+	// outranks background work (an open menu, an error banner, the
+	// model-unavailable no-op): see backgroundWorkOutrankedLocked.
+	lastBackgroundBlocked bool
 
 	// Simple state tracking (hash-based)
 	stateTracker *StateTracker
@@ -5024,13 +5029,6 @@ func (s *Session) GetStatus() (string, error) {
 			statusLog.Debug("still_busy", slog.String("session", shortName))
 			return "active", nil
 		}
-		// Background work still in flight keeps the session green on a poll
-		// that saw no new pane activity too (issue #2473): without this a
-		// workflow whose row stopped redrawing for one tick would drop to
-		// waiting here.
-		if captureErr == nil && s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
-			return "active", nil
-		}
 		// Error banner takes precedence over prompt detection (#1400).
 		if captureErr == nil && s.hasErrorBannerIndicator(content) {
 			s.resetPromptNoBusyHoldLocked()
@@ -5038,6 +5036,13 @@ func (s *Session) GetStatus() (string, error) {
 			s.startupAt = time.Time{}
 			statusLog.Debug("error_banner_recheck", slog.String("session", shortName))
 			return "error", nil
+		}
+		// Background work still in flight keeps the session green on a poll
+		// that saw no new pane activity too (issue #2473): without this a
+		// workflow whose row stopped redrawing for one tick would drop to
+		// waiting here. Checked after the error banner, like the main path.
+		if captureErr == nil && s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
+			return "active", nil
 		}
 		if captureErr == nil && s.hasPromptIndicator(content) {
 			// Not busy, but prompt visible. Transition to waiting/idle.
@@ -5415,7 +5420,8 @@ const bgWorkCacheTTL = 3 * time.Second
 // BackgroundWorkPending reports whether a Claude session at the prompt still has
 // background work in flight. See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
-	return s.BackgroundWorkSince(time.Time{}).InFlight()
+	work, blocked := s.BackgroundWorkSince(time.Time{})
+	return work.InFlight() && !blocked
 }
 
 // BackgroundWorkSince returns the background work (issue #2473) a Claude
@@ -5427,19 +5433,22 @@ func (s *Session) BackgroundWorkPending() bool {
 // notBefore is not reused: the caller passes the hook event time, so a Stop
 // that lands after the last probe (the background work just reported back)
 // is judged on a fresh frame, not on a verdict taken while the work still ran.
-// Returns the zero value for non-Claude sessions. Safe to call WITHOUT holding
-// s.mu (acquires it internally; releases it for the slow capture).
-func (s *Session) BackgroundWorkSince(notBefore time.Time) BackgroundWork {
+// blocked reports that the same frame shows something that outranks the work
+// (an open menu or an error, see backgroundWorkOutrankedLocked): the caller
+// must not promote the session to running for it. Returns the zero value for
+// non-Claude sessions. Safe to call WITHOUT holding s.mu (acquires it
+// internally; releases it for the slow capture).
+func (s *Session) BackgroundWorkSince(notBefore time.Time) (work BackgroundWork, blocked bool) {
 	s.mu.Lock()
 	if !s.isClaudeTool() {
 		s.mu.Unlock()
-		return BackgroundWork{}
+		return BackgroundWork{}, false
 	}
 	if !s.bgWorkCheckedAt.IsZero() && time.Since(s.bgWorkCheckedAt) < bgWorkCacheTTL &&
 		!s.bgWorkCheckedAt.Before(notBefore) {
-		work := s.bgWork
+		work, blocked = s.bgWork, s.bgWorkBlocked
 		s.mu.Unlock()
-		return work
+		return work, blocked
 	}
 	s.mu.Unlock()
 
@@ -5450,18 +5459,20 @@ func (s *Session) BackgroundWorkSince(notBefore time.Time) BackgroundWork {
 		// waiting hook fire a premature completion. Keep the previous value and
 		// leave bgWorkCheckedAt unchanged so the next call re-captures.
 		s.mu.Lock()
-		work := s.bgWork
+		work, blocked = s.bgWork, s.bgWorkBlocked
 		s.mu.Unlock()
-		return work
+		return work, blocked
 	}
-	work := ParseClaudeBackgroundWork(StripANSI(rawContent))
+	stripped := StripANSI(rawContent)
+	work = ParseClaudeBackgroundWork(stripped)
 
 	s.mu.Lock()
-	s.bgWork = work
+	blocked = s.backgroundWorkOutrankedLocked(trimClaudeTrailingRoster(stripped))
+	s.bgWork, s.bgWorkBlocked = work, blocked
 	s.bgWorkCheckedAt = time.Now()
-	s.lastBackgroundWork = work
+	s.lastBackgroundWork, s.lastBackgroundBlocked = work, blocked
 	s.mu.Unlock()
-	return work
+	return work, blocked
 }
 
 // CachedBackgroundWork returns the background work the last classified pane
@@ -5472,18 +5483,46 @@ func (s *Session) CachedBackgroundWork() BackgroundWork {
 	return s.lastBackgroundWork
 }
 
+// CachedBackgroundWorkBlocked reports whether the last classified or probed
+// pane frame shows something that outranks background work (an open menu or
+// an error, see backgroundWorkOutrankedLocked), WITHOUT capturing the pane.
+func (s *Session) CachedBackgroundWorkBlocked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastBackgroundBlocked
+}
+
+// backgroundWorkOutrankedLocked reports whether a (stripped, roster-trimmed)
+// Claude frame shows something background work must never turn green: an
+// open selection menu (the turn is blocked on the operator; the same rule as
+// claudeMenuOutranksBusy, #2185), a terminal error banner (auth-401, dead
+// connection, #1400) or the model-unavailable no-op. Such a frame keeps its
+// waiting / error verdict while a workflow keeps running under it (issue
+// #2473). Caller holds s.mu.
+func (s *Session) backgroundWorkOutrankedLocked(content string) bool {
+	return hasOpenInteractiveMenu(content) || s.hasErrorBannerIndicator(content) || hasModelUnavailableNoop(content)
+}
+
 // markBackgroundWorkActiveLocked applies the "keep green while background work is
 // in flight" state update when a Claude session is at the prompt but work it
 // started is still running: a workflow, background agents, run_in_background
 // shells or a Monitor (issue #2473). Returns true when it fired (caller should
 // return "active"). The verdict comes from the frame prepareFrame recorded
 // (the untrimmed frame) or, failing that, from content itself (raw or
-// stripped; StripANSI is idempotent). Must be called with s.mu held.
+// stripped; StripANSI is idempotent). Never fires on a frame that shows an
+// open menu or an error (backgroundWorkOutrankedLocked). Must be called with
+// s.mu held.
 func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64, shortName string) bool {
 	if !s.isClaudeTool() {
 		return false
 	}
-	if !s.lastBackgroundWork.InFlight() && !claudeBackgroundWorkPending(StripANSI(content)) {
+	stripped := StripANSI(content)
+	if !s.lastBackgroundWork.InFlight() && !claudeBackgroundWorkPending(stripped) {
+		return false
+	}
+	// An open menu or an error outranks background work: the frame stays
+	// waiting / error even while a workflow row is drawn under it.
+	if s.backgroundWorkOutrankedLocked(stripped) {
 		return false
 	}
 	s.ensureStateTrackerLocked()
@@ -5846,7 +5885,7 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	// otherwise at the prompt. prepareFrame read it from the untrimmed frame,
 	// which still carries the workflow row the roster trim removes. A live
 	// foreground cue (running), an error, or an open menu keeps its verdict.
-	if s.isClaudeTool() && s.lastBackgroundWork.InFlight() {
+	if s.isClaudeTool() && s.lastBackgroundWork.InFlight() && !s.lastBackgroundBlocked {
 		switch s.lastSubstate {
 		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork:
 			s.lastSubstate = SubstateBackgroundWork

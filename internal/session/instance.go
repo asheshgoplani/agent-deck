@@ -6516,11 +6516,19 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				// hook event is not reused) and the transcript scan reads disk,
 				// so release i.mu around both like the GetStatus call below,
 				// then re-check for a concurrent Kill().
+				//
+				// A menu or an error outranks the work: a PermissionRequest /
+				// Notification(permission_prompt|elicitation_dialog) hook, or a
+				// frame showing an open menu, an error banner or the
+				// model-unavailable no-op, stays waiting (the turn is blocked on
+				// the operator, or cannot progress) while a workflow runs.
 				var work tmux.BackgroundWork
-				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
+				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) && !hookEventBlocksTurn(i.hookEvent) {
 					hookAt := i.hookLastUpdate
 					i.mu.Unlock()
-					work = i.probeBackgroundWork(i.tmuxSession.BackgroundWorkSince(hookAt))
+					if pane, blocked := i.tmuxSession.BackgroundWorkSince(hookAt); !blocked {
+						work = i.probeBackgroundWork(pane)
+					}
 					i.mu.Lock()
 					if i.Status == StatusStopped {
 						return nil
@@ -6743,8 +6751,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// already "active" from tmux; the transcript can veto a stale workflow row
 	// there, and can hold a waiting/idle pane running while the footer is
 	// briefly not visible (redraw, resize).
+	// A frame that shows an open menu or an error is never promoted: the menu
+	// blocks the turn on the operator (#2185) and the error means no progress.
 	i.bgWorkActive = false
-	if IsClaudeCompatible(i.Tool) && (status == "active" || status == "waiting" || status == "idle") {
+	if IsClaudeCompatible(i.Tool) && (status == "active" || status == "waiting" || status == "idle") &&
+		!backgroundWorkOutrankedBySubstate(i.tmuxSession) {
 		pane := i.tmuxSession.CachedBackgroundWork()
 		fromBackground := status != "active" ||
 			(pane.InFlight() && i.tmuxSession.CachedSubstate() == tmux.SubstateBackgroundWork)
