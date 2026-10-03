@@ -334,7 +334,7 @@ func TestIssue2469PR3_IngestedUrgentRecordWakesOnce(t *testing.T) {
 		return &wakeNudgeWiring{
 			nudger: NewWakeNudger(0),
 			now:    time.Now,
-			isIdle: func(*Instance) bool { return true },
+			isIdle: func(*Instance, string) bool { return true },
 			send: func(_ *Instance, _ string, msg string) error {
 				mu.Lock()
 				defer mu.Unlock()
