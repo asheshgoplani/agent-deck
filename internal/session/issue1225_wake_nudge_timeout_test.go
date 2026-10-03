@@ -62,7 +62,7 @@ func TestIssue1225_WakeNudgeSendCommandShape(t *testing.T) {
 	if err := sendWakeNudgeNoWait("myprofile", "parent-y", wakeNudgeMessage); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	want := []string{"-p", "myprofile", "session", "send", "parent-y", wakeNudgeMessage, "--no-wait", "-q"}
+	want := []string{"-p", "myprofile", "session", "send", "parent-y", wakeNudgeMessage, "--no-wait", "--no-tag", "-q"}
 	if len(gotArgs) != len(want) {
 		t.Fatalf("args = %v, want %v", gotArgs, want)
 	}

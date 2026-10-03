@@ -676,6 +676,10 @@ func printInboxEventLines(stdout io.Writer, events []session.TransitionNotificat
 		if ev.Tier != "" {
 			fmt.Fprintf(stdout, " tier=%s trigger=%s", ev.Tier, ev.Trigger)
 		}
+		// Comms redesign PR5: a reply to the drainer's own tagged send.
+		if ev.TargetKind == session.InboxTargetKindReply {
+			fmt.Fprintf(stdout, " reply from=%s", ev.ChildSessionID)
+		}
 		fmt.Fprintln(stdout)
 		// Issue #2469: the record carries the child's text so the reader
 		// (a conductor's heartbeat drain) does not re-read the child.

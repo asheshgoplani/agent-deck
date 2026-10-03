@@ -76,6 +76,18 @@ const (
 // recognises it today so a tagged send is never mistaken for background noise.
 const sendEnvelopePrefix = "[agent-deck from:"
 
+// SendEnvelope is the one-line tag `session send` puts above a message sent
+// from inside an agent-deck session.
+func SendEnvelope(senderID string) string {
+	return sendEnvelopePrefix + strings.TrimSpace(senderID) + "]"
+}
+
+// HasSendEnvelope reports whether message already starts with an envelope
+// (a forwarded or re-sent message), so it is never tagged twice.
+func HasSendEnvelope(message string) bool {
+	return strings.HasPrefix(strings.TrimSpace(message), sendEnvelopePrefix)
+}
+
 // TurnFacts is everything the producer needs to tier a child's finished turn.
 type TurnFacts struct {
 	// UUID is the transcript uuid of the assistant record that carries the

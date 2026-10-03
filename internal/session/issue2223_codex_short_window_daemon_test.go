@@ -83,7 +83,7 @@ func TestIssue2223_CodexTwoCompletionsWithinShortWindowBothDelivered(t *testing.
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
-		isIdle: func(*Instance) bool { return true },
+		isIdle: func(*Instance, string) bool { return true },
 		send:   func(*Instance, string, string) error { return nil },
 	}
 

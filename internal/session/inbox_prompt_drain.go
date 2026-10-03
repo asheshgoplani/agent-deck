@@ -137,6 +137,9 @@ func NudgeHeadline(ev TransitionNotificationEvent) string {
 	if tier == "" {
 		tier = TurnTierUrgent
 	}
+	if ev.TargetKind == InboxTargetKindReply {
+		tier = InboxTargetKindReply
+	}
 	head := fmt.Sprintf("[INBOX] %s · %s (%s): %s", tier, title, ev.ChildSessionID, status)
 	detail := strings.TrimSpace(ev.DoneSummary)
 	if detail == "" {
