@@ -131,6 +131,10 @@ type UserConfig struct {
 	// digest window. See InboxConfig.
 	Inbox InboxConfig `toml:"inbox,omitempty"`
 
+	// Comms is the [comms] section: the one switch of the Comms Ledger
+	// (docs/comms.md). Off by default while the ledger is canaried.
+	Comms CommsSettings `toml:"comms,omitempty"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps,omitempty"`
@@ -320,6 +324,16 @@ type UserConfig struct {
 	// Harnesses overrides the core install/login table per harness
 	// ([harnesses.<name>] binary, install_command, login_command, docs_url).
 	Harnesses map[string]harness.Override `toml:"harnesses,omitempty"`
+}
+
+// CommsSettings is the [comms] section.
+type CommsSettings struct {
+	// Ledger turns the Comms Ledger on: the hooks agent-deck installs spool
+	// the text they receive, the notify daemon commits one record per turn
+	// to <data>/comms/<profile>/, and `agent-deck msg` reads it. Off: no
+	// spool file is written and no ledger directory is created. The old
+	// inbox, turn journal and inbox stats keep working either way.
+	Ledger bool `toml:"ledger,omitempty"`
 }
 
 // MacappSettings is the [macapp] section. Everything is off by default.

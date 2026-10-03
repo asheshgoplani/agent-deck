@@ -65,6 +65,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		// Legacy signal, no text: emit as before. The notifier's dedup is the
 		// only improvement available without a transcript.
 		_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.RecordsLegacy++ })
+		d.commsStatusRecord(profile, inst, to, event.Timestamp)
 		return d.notifier.NotifyTransition(event), true
 	}
 

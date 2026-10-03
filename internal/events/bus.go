@@ -61,6 +61,13 @@ type Bus struct {
 	retainSegs   int
 
 	enabled bool
+	// readOnly marks a follower bus (Options.ReadOnly): no writer, no
+	// appends. retention is the optional age bound on sealed segments.
+	readOnly  bool
+	retention time.Duration
+	// lastEventID is the event id of the newest frame appended by this Bus,
+	// so Commit can report the frame it wrote.
+	lastEventID string
 
 	queue          chan queuedFrame
 	closeCh        chan struct{}
@@ -337,6 +344,10 @@ func (b *Bus) Publish(kind, sessionID string, data any) {
 	if b == nil || !b.enabled || b.closed.Load() || b.failed.Load() {
 		return
 	}
+	if b.readOnly {
+		b.dropped.Add(1)
+		return
+	}
 	raw, err := marshalData(data)
 	if err != nil {
 		return
@@ -608,6 +619,7 @@ func (b *Bus) appendFrameLocked(qf queuedFrame) error {
 		return fmt.Errorf("events: append: %w", err)
 	}
 	b.cursor = next
+	b.lastEventID = f.EventID
 	b.activeBytes += int64(n)
 	b.activeFrames++
 	b.written.Add(1)
@@ -672,10 +684,11 @@ func (b *Bus) compactLocked() {
 	if err != nil {
 		return
 	}
-	if len(sealed) <= b.retainSegs {
-		return
+	var toRemove []sealedSegment
+	if len(sealed) > b.retainSegs {
+		toRemove = append(toRemove, sealed[:len(sealed)-b.retainSegs]...)
 	}
-	toRemove := sealed[:len(sealed)-b.retainSegs]
+	toRemove = append(toRemove, b.expiredSegments(sealed, time.Now())...)
 	for _, s := range toRemove {
 		_ = os.Remove(s.path)
 	}

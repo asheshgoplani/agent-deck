@@ -33,6 +33,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[recall] Section](#recall-section)
 - [[notifications] Section](#notifications-section)
 - [[inbox] Section](#inbox-section)
+- [[comms] Section](#comms-section)
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
@@ -1002,6 +1003,19 @@ wake_on = ["urgent", "info"]     # restores a wake per recorded turn for this co
 | `journal_keep` | int | `256` | Lines kept per child in the turn journal (`agent-deck inbox stats` reads the counters, the journal is the per-turn history). |
 
 Measure the effect with `agent-deck inbox stats self` (or `--all`): records by tier, turns suppressed as noise or duplicates, wakeups fired and withheld, bytes injected.
+
+## [comms] Section
+
+The Comms Ledger (docs/comms.md): one append-only message log per profile, written only by the notify-daemon, fed by the hooks agent-deck already installs. Off by default while it is canaried; with it on, every finished child turn of every harness (Claude, Codex, Gemini, Cursor, pi, Hermes, OpenCode) lands as one record with the child's text next to the `[inbox]` record, and `agent-deck events follow --bus comms` streams them. Nothing else changes.
+
+```toml
+[comms]
+ledger = true   # default false
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ledger` | bool | `false` | Spool hook text to `runtime/comms/spool/` and let the notify-daemon commit records to `comms/<profile>/`. `false`: no spool file, no ledger directory. |
 
 ## [health] Section
 

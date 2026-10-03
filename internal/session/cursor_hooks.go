@@ -30,6 +30,9 @@ var cursorHookEventNames = []string{
 	"preToolUse",
 	"postToolUse",
 	"stop",
+	// afterAgentResponse carries the agent's final text (stop carries only a
+	// status); the Comms Ledger producer reads it (docs/comms.md).
+	"afterAgentResponse",
 }
 
 // InjectCursorHooks injects agent-deck hook entries into ~/.cursor/hooks.json.

@@ -94,6 +94,9 @@ removed. A `Subscribe(after)` older than every retained segment returns
 
 ```go
 Open(dir string) (*Bus, error)
+OpenAt(dir string, opts Options) (*Bus, error)     // Options{RetainSegments, RetentionDays, MaxSegmentBytes, ReadOnly}
+(*Bus) Commit(kind, sessionID string, data any) (Frame, error) // synchronous: fsynced under writer.lock before it returns
+(*Bus) ReadOnly() bool
 Default() *Bus                                   // process-wide, lazily opened
 PublishDefault(kind, sessionID string, data any)  // bounded, no disk on producer path
 PublishProfile(profile, kind, sessionID string, data any) // per-profile transition tap
@@ -107,12 +110,22 @@ OpenProfile(profile string) *Bus                  // component owned
 CloseDefault() error                              // CLI/TUI shutdown
 ```
 
+`OpenAt` is `Open` with knobs a second log needs. `Commit` is the
+synchronous primitive for a record whose loss a consumer could not detect
+(the comms ledger, docs/comms.md): it appends and fsyncs under the
+cross-process lock and returns the cursor it was assigned; `Publish` keeps
+its never-blocks, may-drop contract. `Options.RetentionDays` removes a
+sealed segment once its mtime is older than the window, independently of
+the segment-count bound. `Options.ReadOnly` opens a follower: no writer
+goroutine, no tail repair, `Commit` returns `ErrReadOnly`, `Publish` counts
+a drop; the directory must already exist (`ErrNoBus` otherwise).
+
 ## CLI
 
 | Command | Output |
 |---|---|
-| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>]` | NDJSON frames, oldest first, streams live until killed. `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. |
-| `agent-deck events stats --json` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap, kinds: {kind: retained count}}`. |
+| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events\|comms]` | NDJSON frames, oldest first, streams live until killed. `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. `--bus comms` follows the comms ledger (read-only; docs/comms.md). |
+| `agent-deck events stats --json [--bus events\|comms]` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap, kinds: {kind: retained count}}`. |
 | `agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> \| --data-file <path\|->] [--json]` | Publishes one frame and waits (≤ 2 s) until it is committed; prints `{ok, kind, session_id, cursor, profile}`. Only the `macapp.*` namespace, only with `[macapp] plugins = true` (exit 2 otherwise). `--session` defaults to `$AGENTDECK_INSTANCE_ID`. |
 
 `cursor` and `dropped` reflect the profile across processes. `published`,

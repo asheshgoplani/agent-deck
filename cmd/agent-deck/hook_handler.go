@@ -52,6 +52,79 @@ type hookPayload struct {
 	// false. A missing field must NOT be read as "fresh user turn" (which would
 	// reset the loop guard every Stop); resolveStopHookActive fails safe to true.
 	StopHookActive *bool `json:"stop_hook_active"`
+
+	// Comms Ledger producer fields (docs/comms.md): the text each harness
+	// already puts on the wire, forwarded to the daemon's spool instead of
+	// discarded. Unknown to a harness that does not send them.
+	TranscriptPath       string `json:"transcript_path"`
+	TurnID               string `json:"turn_id"`
+	LastAssistantMessage string `json:"last_assistant_message"` // Claude Stop
+	Prompt               string `json:"prompt"`                 // Claude UserPromptSubmit, Gemini BeforeAgent/AfterAgent, Cursor beforeSubmitPrompt, pi
+	PromptResponse       string `json:"prompt_response"`        // Gemini AfterAgent
+	Text                 string `json:"text"`                   // Cursor afterAgentResponse, pi agent_settled
+	AssistantResponse    string `json:"assistant_response"`     // Hermes post_llm_call
+	UserMessage          string `json:"user_message"`           // Hermes pre_llm_call / post_llm_call
+}
+
+// commsSpoolEdge maps a hook event to the comms spool edge it carries and
+// the harness it came from. Empty edge: nothing to spool for this event.
+// The harness is read off the event vocabulary first (Gemini, Hermes and
+// Cursor names are distinct), then the payload source (pi), else Claude.
+func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
+	switch normalizeHookEventKey(p.HookEventName) {
+	case "userpromptsubmit":
+		return "claude", session.CommsEdgePromptStart, "", p.Prompt
+	case "stop":
+		if p.ConversationID != "" && p.LastAssistantMessage == "" {
+			return "", "", "", "" // Cursor stop carries only a status; afterAgentResponse has the text
+		}
+		return "claude", session.CommsEdgeTurnEnd, p.LastAssistantMessage, ""
+	case "beforeagent":
+		return "gemini", session.CommsEdgePromptStart, "", p.Prompt
+	case "afteragent":
+		return "gemini", session.CommsEdgeTurnEnd, p.PromptResponse, p.Prompt
+	case "beforesubmitprompt":
+		return "cursor", session.CommsEdgePromptStart, "", p.Prompt
+	case "afteragentresponse":
+		return "cursor", session.CommsEdgeTurnEnd, p.Text, ""
+	case "prellmcall":
+		return "hermes", session.CommsEdgePromptStart, "", p.UserMessage
+	case "postllmcall":
+		return "hermes", session.CommsEdgeTurnEnd, p.AssistantResponse, p.UserMessage
+	case "input":
+		return "pi", session.CommsEdgePromptStart, "", p.Prompt
+	case "agentsettled":
+		return "pi", session.CommsEdgeTurnEnd, p.Text, ""
+	}
+	return "", "", "", ""
+}
+
+// spoolCommsFromHook forwards the hook's text to the daemon's spool when
+// the ledger is on. It never writes the ledger itself (the #824 rule), never
+// blocks on anything but one small file write, and never fails the hook.
+func spoolCommsFromHook(instanceID string, p hookPayload) {
+	harness, edge, text, prompt := commsSpoolEdge(p)
+	if edge == "" || !session.CommsLedgerEnabled() {
+		return
+	}
+	sessionID := strings.TrimSpace(p.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(p.ConversationID)
+	}
+	transcript := ""
+	if harness == "claude" {
+		if clean, ok := session.ValidateTranscriptPath(p.TranscriptPath); ok {
+			transcript = clean
+		}
+	}
+	if err := session.WriteCommsSpool(session.CommsSpoolEntry{
+		Harness: harness, Event: p.HookEventName, Edge: edge, Instance: instanceID,
+		SessionID: sessionID, TurnID: strings.TrimSpace(p.TurnID), Text: text, Prompt: prompt,
+		TranscriptPath: transcript, Cwd: strings.TrimSpace(p.Cwd), TSignal: time.Now().UnixMilli(),
+	}); err != nil {
+		hookHandlerLog.Warn("comms_spool_write_failed",
+			slog.String("instance", instanceID), slog.String("event", p.HookEventName), slog.String("error", err.Error()))
+	}
 }
 
 // resolveStopHookActive fails safe (audit B8): an absent stop_hook_active is
@@ -228,6 +301,11 @@ func handleHookHandler() {
 		warnProjectDirMissingOnce(instanceID, payload.Cwd)
 		return
 	}
+
+	// Comms Ledger: spool the text this event carries before the status
+	// mapping, since text-only events (Cursor afterAgentResponse, pi
+	// agent_settled, pi input) map to no status and return below.
+	spoolCommsFromHook(instanceID, payload)
 
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)

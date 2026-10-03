@@ -1,0 +1,362 @@
+package comms
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/events"
+)
+
+const (
+	ledgerDirName = "comms"
+	// DefaultRetentionDays bounds how long sealed ledger segments are kept.
+	DefaultRetentionDays = 90
+	// retainSegments is generous on purpose: with 8 MiB segments and ~100
+	// KB/h for a busy child, the age bound (not the count) is what prunes.
+	retainSegments = 1024
+	// recentKeys bounds the in-memory idempotency window per writer. A
+	// producer re-observes a turn within seconds (hook re-fires, polls),
+	// not thousands of records later.
+	recentKeys = 4096
+)
+
+// Dir returns "<data>/comms/<profile>", the ledger directory for a profile.
+// The profile is validated as a single local path element.
+func Dir(profile string) (string, error) {
+	if profile == "" {
+		profile = "default"
+	}
+	if !filepath.IsLocal(profile) || filepath.Base(profile) != profile {
+		return "", fmt.Errorf("comms: invalid profile %q", profile)
+	}
+	root, err := agentpaths.EffectiveDataPath(ledgerDirName, ledgerDirName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, profile), nil
+}
+
+// Ledger is the writer handle the notify daemon holds: one per profile. It
+// wraps the events bus with the record schema, the idempotency window and
+// the per-From sequence.
+type Ledger struct {
+	profile string
+	bus     *events.Bus
+
+	mu     sync.Mutex
+	keys   map[string]struct{}
+	order  []string
+	seq    map[string]int64
+	last   map[string]Record // newest turn record per From (the tier rule's "previous turn")
+	closed bool
+}
+
+// Open opens (creating) the profile's ledger for writing. Only the daemon
+// calls this. Open scans the retained tail once so idempotency and per-From
+// sequences survive a daemon restart.
+func Open(profile string) (*Ledger, error) {
+	dir, err := Dir(profile)
+	if err != nil {
+		return nil, err
+	}
+	return OpenDir(profile, dir)
+}
+
+// OpenDir is Open at an explicit directory (tests).
+func OpenDir(profile, dir string) (*Ledger, error) {
+	bus, err := events.OpenAt(dir, events.Options{RetentionDays: DefaultRetentionDays, RetainSegments: retainSegments})
+	if err != nil {
+		return nil, err
+	}
+	l := &Ledger{profile: profile, bus: bus, keys: map[string]struct{}{}, seq: map[string]int64{}, last: map[string]Record{}}
+	l.warm()
+	return l, nil
+}
+
+// warm reloads the idempotency window and sequences from the newest frames.
+func (l *Ledger) warm() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	last := l.bus.Cursor()
+	if last == 0 {
+		return
+	}
+	after := events.Cursor(0)
+	if uint64(last) > recentKeys {
+		after = last - recentKeys
+	}
+	sub, err := l.bus.Subscribe(ctx, after)
+	if err != nil {
+		return
+	}
+	for f := range sub.Frames() {
+		var r Record
+		if json.Unmarshal(f.Data, &r) == nil {
+			l.remember(r)
+		}
+		if f.Cursor >= last {
+			cancel()
+			break
+		}
+	}
+}
+
+func (l *Ledger) remember(r Record) {
+	if key := r.DedupKey(); key != "" {
+		if _, dup := l.keys[key]; !dup {
+			l.keys[key] = struct{}{}
+			l.order = append(l.order, key)
+			if len(l.order) > recentKeys {
+				delete(l.keys, l.order[0])
+				l.order = l.order[1:]
+			}
+		}
+	}
+	if r.Seq > l.seq[r.From] {
+		l.seq[r.From] = r.Seq
+	}
+	if r.Kind == KindTurn {
+		l.last[r.From] = r
+	}
+}
+
+// LastTurn returns the newest turn record committed for from, if any is
+// within the warm window. The daemon tiers a new turn against it.
+func (l *Ledger) LastTurn(from string) (Record, bool) {
+	if l == nil {
+		return Record{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.last[from]
+	return r, ok
+}
+
+// ErrDuplicate is returned by Commit when the record's key was committed
+// within the idempotency window.
+var ErrDuplicate = errors.New("comms: duplicate key")
+
+// Commit stamps the record (id, t_record, hash, bytes, latency, seq) and
+// appends it synchronously. A record whose Key was already committed within
+// the window returns ErrDuplicate and is not appended. The committed record
+// (with the cursor it was assigned) is returned.
+func (l *Ledger) Commit(r Record) (Record, events.Cursor, error) {
+	if l == nil || l.bus == nil {
+		return r, 0, errors.New("comms: ledger not open")
+	}
+	if r.Kind == "" || r.From == "" {
+		return r, 0, errors.New("comms: record needs kind and from")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return r, 0, errors.New("comms: ledger closed")
+	}
+	if key := r.DedupKey(); key != "" {
+		if _, dup := l.keys[key]; dup {
+			return r, 0, ErrDuplicate
+		}
+	}
+	if r.Profile == "" {
+		r.Profile = l.profile
+	}
+	if r.Host == "" {
+		r.Host = localHost()
+	}
+	if r.Seq == 0 && r.Origin == "" {
+		r.Seq = l.seq[r.From] + 1 // an imported record keeps the origin's sequence
+	}
+	r.Stamp(time.Now())
+	f, err := l.bus.Commit(r.Kind, r.From, r)
+	if err != nil {
+		return r, 0, err
+	}
+	l.remember(r)
+	return r, f.Cursor, nil
+}
+
+// Cursor returns the ledger's last committed cursor.
+func (l *Ledger) Cursor() events.Cursor {
+	if l == nil || l.bus == nil {
+		return 0
+	}
+	return l.bus.Cursor()
+}
+
+// Close releases the writer.
+func (l *Ledger) Close() error {
+	if l == nil || l.bus == nil {
+		return nil
+	}
+	l.mu.Lock()
+	l.closed = true
+	l.mu.Unlock()
+	return l.bus.Close()
+}
+
+// OpenReader opens the profile's ledger read-only (followers, `msg`,
+// `events follow --bus comms`). ErrNoLedger when nothing was written yet.
+func OpenReader(profile string) (*events.Bus, error) {
+	dir, err := Dir(profile)
+	if err != nil {
+		return nil, err
+	}
+	return OpenReaderDir(dir)
+}
+
+// ErrNoLedger means the profile has no ledger directory: the daemon never
+// wrote one (is [comms] ledger on?).
+var ErrNoLedger = errors.New("comms: no ledger for this profile yet (is [comms] ledger = true and the notify daemon running?)")
+
+// OpenReaderDir is OpenReader at an explicit directory.
+func OpenReaderDir(dir string) (*events.Bus, error) {
+	bus, err := events.OpenAt(dir, events.Options{ReadOnly: true})
+	if errors.Is(err, events.ErrNoBus) {
+		return nil, ErrNoLedger
+	}
+	return bus, err
+}
+
+// Decode parses a ledger frame back into its record.
+func Decode(f events.Frame) (Record, error) {
+	var r Record
+	if len(f.Data) == 0 {
+		return r, errors.New("comms: frame has no data")
+	}
+	if err := json.Unmarshal(f.Data, &r); err != nil {
+		return r, err
+	}
+	return r, nil
+}
+
+// ReadAfter returns every record with cursor > after, oldest first, plus
+// the last cursor read. It stops at the end of the retained log (it does not
+// follow). ErrCursorTooOld surfaces unchanged so a consumer can reset.
+func ReadAfter(bus *events.Bus, after events.Cursor, limit int) ([]Record, events.Cursor, error) {
+	if bus == nil {
+		return nil, after, errors.New("comms: no ledger")
+	}
+	end := bus.Stats().Cursor
+	if end <= after {
+		return nil, after, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, err := bus.Subscribe(ctx, after)
+	if err != nil {
+		return nil, after, err
+	}
+	var out []Record
+	last := after
+	for f := range sub.Frames() {
+		if r, err := Decode(f); err == nil {
+			out = append(out, r)
+		}
+		last = f.Cursor
+		if f.Cursor >= end || (limit > 0 && len(out) >= limit) {
+			cancel()
+			break // frames already buffered past the limit are not ours to take
+		}
+	}
+	if err := sub.Err(); err != nil {
+		return out, last, err
+	}
+	return out, last, nil
+}
+
+// Exported is one record with its cursor on the ledger it was read from:
+// the unit `msg export` ships to another host and Import commits.
+type Exported struct {
+	Cursor events.Cursor `json:"cursor"`
+	Record Record        `json:"record"`
+}
+
+// Export returns records with cursor > after as Exported pairs, oldest
+// first, bounded by limit (0 = all retained). It is ReadAfter with the
+// cursors kept, for the remote path: the puller advances its cursor for
+// this origin only to a cursor it committed.
+func Export(bus *events.Bus, after events.Cursor, limit int) ([]Exported, error) {
+	if bus == nil {
+		return nil, errors.New("comms: no ledger")
+	}
+	end := bus.Stats().Cursor
+	if end <= after {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, err := bus.Subscribe(ctx, after)
+	if err != nil {
+		return nil, err
+	}
+	var out []Exported
+	for f := range sub.Frames() {
+		if r, err := Decode(f); err == nil {
+			out = append(out, Exported{Cursor: f.Cursor, Record: r})
+		}
+		if f.Cursor >= end || (limit > 0 && len(out) >= limit) {
+			cancel()
+			break
+		}
+	}
+	return out, sub.Err()
+}
+
+// Import commits records exported from another host's ledger under the
+// given origin (the configured remote name). Each record keeps its id, key,
+// host and timestamps; Origin and SrcCursor are stamped here. Idempotent:
+// a record already committed for this origin is skipped. It returns the
+// highest source cursor that is now durable locally (every exported record
+// up to it was committed or was a duplicate), which is what the puller
+// stores as its cursor for this origin; on an error the cursor stops just
+// before the failed record so the next pull retries from it.
+func (l *Ledger) Import(origin string, exported []Exported) (events.Cursor, error) {
+	if strings.TrimSpace(origin) == "" {
+		return 0, errors.New("comms: import needs an origin")
+	}
+	var done events.Cursor
+	for _, e := range exported {
+		r := e.Record
+		r.Origin = origin
+		r.SrcCursor = uint64(e.Cursor)
+		if r.Key == "" {
+			// A keyless record still needs a stable identity across pulls.
+			r.Key = Key(r.Kind, r.From, r.ID)
+		}
+		if _, _, err := l.Commit(r); err != nil && !errors.Is(err, ErrDuplicate) {
+			return done, err
+		}
+		done = e.Cursor
+	}
+	return done, nil
+}
+
+// localHost is the short hostname stamped on locally produced records.
+func localHost() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	if i := strings.IndexByte(h, '.'); i > 0 {
+		h = h[:i]
+	}
+	return h
+}
+
+// Exists reports whether the profile has a ledger directory.
+func Exists(profile string) bool {
+	dir, err := Dir(profile)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(dir)
+	return err == nil
+}

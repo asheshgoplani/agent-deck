@@ -95,7 +95,11 @@ func (b *Bus) refreshLocked() error {
 	if b.activeFile != nil {
 		_ = b.activeFile.Close()
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	flags := os.O_CREATE | os.O_RDWR | os.O_APPEND
+	if b.readOnly {
+		flags = os.O_RDONLY // a follower never creates or appends
+	}
+	f, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
 		b.activeFile = nil
 		return err
