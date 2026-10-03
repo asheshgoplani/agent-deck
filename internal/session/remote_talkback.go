@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,31 +25,78 @@ import (
 // durably landed (inserted or already present), so a failed write refetches
 // the batch and the inbox dedup absorbs the overlap.
 
-// RemoteCursor is the drain position against one remote: per child the newest
-// turn-journal seq already received, and TS, the newest ledger / unowned
-// record already received from children that have no journal. On the wire it
-// is one flat JSON object: {"<child_id>": <seq>, "_ts": "<RFC3339>"}.
+// RemoteCursor is the drain position against one remote. On the wire it is
+// one flat JSON object:
+//
+//	{"<child_id>": <seq>, "_ts": "<RFC3339>",
+//	 "_ledger": {"<child_id>": "<RFC3339>"}, "_unowned": {"n": 12, "last": "<mark>"}}
+//
+// The parts:
+//
+//   - Seqs: per child, the newest turn-journal seq already received.
+//   - Ledger: per child, the FinishedAt of the completion-ledger entry already
+//     received. The ledger is one last-wins file per child, so "differs from
+//     what I hold" is exact, and it does not depend on producers stamping
+//     records in write order (they do not: a completion is stamped with the
+//     hook's UpdatedAt, a worker writes from another process, clocks step).
+//   - Unowned: how many _unowned records were already examined, plus a mark of
+//     the last one. The file is append-only, so the records past N are new; a
+//     rewrite (operator purge) breaks the mark and the export starts over.
+//   - TS: the newest ledger / unowned stamp received. Informational only; no
+//     filter depends on it.
+//   - Legacy marks a cursor saved after a drain of a remote that predates
+//     --after: it carries no position, it only keeps the conductor enrolled for
+//     scheduled talkback.
+//
+// Unknown "_"-prefixed keys are ignored, so a later producer can add metadata.
 type RemoteCursor struct {
-	Seqs map[string]int64
-	TS   time.Time
+	Seqs    map[string]int64
+	TS      time.Time
+	Ledger  map[string]time.Time
+	Unowned RemoteUnownedMark
+	Legacy  bool
 }
 
-const remoteCursorTSKey = "_ts"
+// RemoteUnownedMark is the _unowned position: N records examined, Last the
+// mark of record N-1.
+type RemoteUnownedMark struct {
+	N    int    `json:"n"`
+	Last string `json:"last,omitempty"`
+}
+
+const (
+	remoteCursorTSKey      = "_ts"
+	remoteCursorLedgerKey  = "_ledger"
+	remoteCursorUnownedKey = "_unowned"
+	remoteCursorLegacyKey  = "_legacy"
+)
 
 // MarshalJSON writes the flat wire form.
 func (c RemoteCursor) MarshalJSON() ([]byte, error) {
-	m := make(map[string]any, len(c.Seqs)+1)
+	m := make(map[string]any, len(c.Seqs)+4)
 	for k, v := range c.Seqs {
 		m[k] = v
 	}
 	if !c.TS.IsZero() {
 		m[remoteCursorTSKey] = c.TS.UTC().Format(time.RFC3339Nano)
 	}
+	if len(c.Ledger) > 0 {
+		ledger := make(map[string]string, len(c.Ledger))
+		for k, v := range c.Ledger {
+			ledger[k] = v.UTC().Format(time.RFC3339Nano)
+		}
+		m[remoteCursorLedgerKey] = ledger
+	}
+	if c.Unowned.N > 0 {
+		m[remoteCursorUnownedKey] = c.Unowned
+	}
+	if c.Legacy {
+		m[remoteCursorLegacyKey] = true
+	}
 	return json.Marshal(m)
 }
 
-// UnmarshalJSON reads the flat wire form. Unknown "_"-prefixed keys are
-// ignored so a later producer can add metadata without breaking this reader.
+// UnmarshalJSON reads the flat wire form.
 func (c *RemoteCursor) UnmarshalJSON(b []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
@@ -54,18 +104,34 @@ func (c *RemoteCursor) UnmarshalJSON(b []byte) error {
 	}
 	out := RemoteCursor{Seqs: map[string]int64{}}
 	for k, v := range raw {
-		if k == remoteCursorTSKey {
+		switch k {
+		case remoteCursorTSKey:
 			var s string
 			if err := json.Unmarshal(v, &s); err != nil {
-				return fmt.Errorf("cursor %s: %w", remoteCursorTSKey, err)
+				return fmt.Errorf("cursor %s: %w", k, err)
 			}
 			if s != "" {
 				ts, err := time.Parse(time.RFC3339Nano, s)
 				if err != nil {
-					return fmt.Errorf("cursor %s: %w", remoteCursorTSKey, err)
+					return fmt.Errorf("cursor %s: %w", k, err)
 				}
 				out.TS = ts
 			}
+			continue
+		case remoteCursorLedgerKey:
+			var m map[string]time.Time
+			if err := json.Unmarshal(v, &m); err != nil {
+				return fmt.Errorf("cursor %s: %w", k, err)
+			}
+			out.Ledger = m
+			continue
+		case remoteCursorUnownedKey:
+			if err := json.Unmarshal(v, &out.Unowned); err != nil {
+				return fmt.Errorf("cursor %s: %w", k, err)
+			}
+			continue
+		case remoteCursorLegacyKey:
+			_ = json.Unmarshal(v, &out.Legacy)
 			continue
 		}
 		var seq int64
@@ -111,10 +177,11 @@ const remoteExportNewChildLines = 64
 //   - turn-journal lines newer than the cursor's seq for each child (a child
 //     the cursor does not know, or whose journal restarted below the cursor,
 //     ships its last 64 lines);
-//   - completion-ledger entries newer than the cursor's _ts (skipped when a
-//     journal line of this batch already carries the same completion), and
-//     for children with NO journal (older producers, non-transcript tools)
-//     their _unowned transitions newer than _ts.
+//   - completion-ledger entries that differ from the entry the cursor holds
+//     for that child (skipped when a journal line of this batch already
+//     carries the same completion);
+//   - _unowned records appended since the cursor's position, except the
+//     journaled turns (Seq > 0) of a child whose journal ships them.
 //
 // Other parents' inboxes are never exported here: the drain's --into parent
 // decides where records land. The no_notify opt-out filter applies as in
@@ -174,29 +241,44 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	for _, ev := range out {
 		shipped[ev.TurnFingerprint] = true
 	}
+	noteTS := func(ts time.Time) {
+		if ts.After(next.TS) {
+			next.TS = ts
+		}
+	}
+	if len(ledger) > 0 {
+		next.Ledger = make(map[string]time.Time, len(ledger))
+	}
 	for _, ev := range ledger {
+		child := ev.ChildSessionID
+		next.Ledger[child] = ev.Timestamp
+		if held, ok := cursor.Ledger[child]; ok && held.Equal(ev.Timestamp) {
+			continue // this entry already crossed
+		}
+		noteTS(ev.Timestamp)
 		// A journaled child's completion normally rides its journal line (same
 		// turn fingerprint); the ledger copy still ships when it is the only
 		// record of it, e.g. a run-task exit without a sentinel.
-		// Either way it counts as received, so _ts moves past it.
-		if !ev.Timestamp.After(cursor.TS) {
-			continue
-		}
-		if ev.Timestamp.After(next.TS) {
-			next.TS = ev.Timestamp
-		}
 		if !shipped[ev.TurnFingerprint] {
 			out = append(out, ev)
 		}
 	}
-	for _, ev := range unowned {
-		if journaled[strings.TrimSpace(ev.ChildSessionID)] || !ev.Timestamp.After(cursor.TS) {
+	start := 0
+	if n := cursor.Unowned.N; n > 0 && n <= len(unowned) && unownedMark(unowned[n-1]) == cursor.Unowned.Last {
+		start = n
+	}
+	if len(unowned) > 0 {
+		next.Unowned = RemoteUnownedMark{N: len(unowned), Last: unownedMark(unowned[len(unowned)-1])}
+	}
+	for _, ev := range unowned[start:] {
+		noteTS(ev.Timestamp)
+		// A journaled turn (Seq > 0) rides the journal. A transition the
+		// producer could not classify has no journal line even when the
+		// child has a journal, so it still ships from here.
+		if ev.Seq > 0 && journaled[strings.TrimSpace(ev.ChildSessionID)] {
 			continue
 		}
 		out = append(out, ev)
-		if ev.Timestamp.After(next.TS) {
-			next.TS = ev.Timestamp
-		}
 	}
 
 	out = dedupByEventFingerprint(out)
@@ -214,6 +296,13 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		out = []TransitionNotificationEvent{}
 	}
 	return RemoteExport{Records: out, CursorNext: next}, nil
+}
+
+// unownedMark identifies one _unowned record for the cursor's position check:
+// its logical identity plus its stamp, hashed to a fixed size.
+func unownedMark(ev TransitionNotificationEvent) string {
+	sum := sha256.Sum256([]byte(EventFingerprint(ev) + "@" + strconv.FormatInt(ev.Timestamp.UnixNano(), 10)))
+	return hex.EncodeToString(sum[:8])
 }
 
 // journalTurnEvent renders one journaled turn as the record the producer
@@ -288,13 +377,24 @@ func LoadRemoteCursor(remote, parent string) (RemoteCursor, bool, error) {
 	return f.Cursor, true, nil
 }
 
-// SaveRemoteCursor persists a cursor durably (temp file, fsync, rename).
+// SaveRemoteCursor persists a cursor durably (temp file, fsync, rename) under
+// a file lock: a CLI drain and the daemon's scheduled drain of the same
+// (remote, parent) must not interleave on the shared temp file.
 func SaveRemoteCursor(remote, parent string, c RemoteCursor) error {
 	data, err := json.MarshalIndent(RemoteCursorFile{Remote: remote, Parent: parent, UpdatedAt: time.Now().UTC(), Cursor: c}, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeFileDurable(RemoteCursorPath(remote, parent), append(data, '\n'), 0o644)
+	path := RemoteCursorPath(remote, parent)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	lock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
+	if err != nil {
+		return fmt.Errorf("lock cursor %s: %w", filepath.Base(path), err)
+	}
+	defer lock.Release()
+	return writeFileDurable(path, append(data, '\n'), 0o644)
 }
 
 // ListRemoteCursors returns every saved cursor, or those of one remote,
@@ -451,7 +551,7 @@ func SSHTalkbackDeps(name string, rc RemoteConfig) RemoteTalkbackDeps {
 // tier wakes it. Shared by `remote drain` and the notify-daemon scheduler.
 func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps RemoteTalkbackDeps) (RemoteTalkbackResult, error) {
 	var res RemoteTalkbackResult
-	cursor, _, cerr := LoadRemoteCursor(remote, targetID)
+	cursor, cursorFound, cerr := LoadRemoteCursor(remote, targetID)
 	if cerr != nil {
 		// A corrupt cursor only costs a larger refetch; dedup absorbs it.
 		commsLog.Warn("remote_cursor_unreadable", "remote", remote, "parent", targetID, "error", cerr.Error())
@@ -494,16 +594,25 @@ func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps Remote
 
 	ingest, err := IngestRemoteRecords(remote, targetID, records)
 	res.RemoteIngestResult = ingest
+	// Records inserted before a later write failed are fresh now and only
+	// AlreadyPresent on the retry, so they wake now or never.
+	res.Woke = wakeForRemoteRecords(targetID, ingest.Fresh, deps)
 	if err != nil {
 		return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageIngest, Err: err}
 	}
-	if !res.Legacy && ingest.Unknown == 0 {
+	switch {
+	case !res.Legacy && ingest.Unknown == 0:
 		if err := SaveRemoteCursor(remote, targetID, next); err != nil {
 			return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageIngest, Err: fmt.Errorf("save cursor: %w", err)}
 		}
 		res.CursorAfter = &next
+	case res.Legacy && !cursorFound:
+		// No position to keep, but the file keeps this conductor enrolled
+		// for scheduled talkback once it consumes the ingested records.
+		if err := SaveRemoteCursor(remote, targetID, RemoteCursor{Legacy: true}); err != nil {
+			commsLog.Warn("remote_cursor_legacy_mark_failed", "remote", remote, "parent", targetID, "error", err.Error())
+		}
 	}
-	res.Woke = wakeForRemoteRecords(targetID, ingest.Fresh, deps)
 	return res, nil
 }
 

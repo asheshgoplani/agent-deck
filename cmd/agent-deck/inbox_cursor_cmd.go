@@ -13,7 +13,8 @@ import (
 
 // runInboxCursor prints the incremental remote-talkback cursors this machine
 // holds: per (remote, conductor) the newest turn-journal seq received per
-// remote child and the newest ledger timestamp. Read-only.
+// remote child, the ledger entry received per child and the _unowned
+// position. Read-only.
 func runInboxCursor(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("inbox cursor", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the cursors as a JSON array")
@@ -47,8 +48,13 @@ func runInboxCursor(stdout io.Writer, args []string) error {
 		if !c.Cursor.TS.IsZero() {
 			ts = c.Cursor.TS.Format(time.RFC3339)
 		}
-		fmt.Fprintf(stdout, "%s → %s  updated %s  ledger_ts %s  children %d\n",
-			c.Remote, c.Parent, c.UpdatedAt.Format(time.RFC3339), ts, len(c.Cursor.Seqs))
+		if c.Cursor.Legacy {
+			fmt.Fprintf(stdout, "%s → %s  updated %s  legacy remote (full export, no position)\n",
+				c.Remote, c.Parent, c.UpdatedAt.Format(time.RFC3339))
+			continue
+		}
+		fmt.Fprintf(stdout, "%s → %s  updated %s  newest %s  children %d  ledger %d  unowned %d\n",
+			c.Remote, c.Parent, c.UpdatedAt.Format(time.RFC3339), ts, len(c.Cursor.Seqs), len(c.Cursor.Ledger), c.Cursor.Unowned.N)
 		children := make([]string, 0, len(c.Cursor.Seqs))
 		for child := range c.Cursor.Seqs {
 			children = append(children, child)

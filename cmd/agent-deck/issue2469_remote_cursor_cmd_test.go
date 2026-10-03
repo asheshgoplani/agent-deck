@@ -93,8 +93,8 @@ func TestIssue2469PR3_RemoteDrainOldRemoteFallsBackToFullExport(t *testing.T) {
 	if *calls != 1 || string(out["legacy_export"]) != "true" || out["cursor_after"] != nil || string(out["written"]) != "1" {
 		t.Fatalf("fallback wrong: calls=%d out=%s", *calls, stdout.String())
 	}
-	if _, found, _ := session.LoadRemoteCursor("boxb", conductor); found {
-		t.Fatal("a legacy drain must not save a cursor")
+	if c, found, _ := session.LoadRemoteCursor("boxb", conductor); !found || !c.Legacy || len(c.Seqs) != 0 {
+		t.Fatalf("a legacy drain saves only the position-less _legacy enrollment marker: %+v found=%v", c, found)
 	}
 }
 

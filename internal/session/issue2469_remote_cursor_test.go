@@ -299,8 +299,8 @@ func TestIssue2469PR3_OldRemoteFallsBackToFullExport(t *testing.T) {
 	if !res.Legacy || res.Written != 1 || res.CursorAfter != nil {
 		t.Fatalf("want a legacy drain with no cursor: %+v", res)
 	}
-	if _, found, _ := LoadRemoteCursor("boxb", "conductor-old"); found {
-		t.Fatal("a legacy drain must not invent a cursor")
+	if c, found, _ := LoadRemoteCursor("boxb", "conductor-old"); !found || !c.Legacy || len(c.Seqs) != 0 || len(c.Ledger) != 0 {
+		t.Fatalf("a legacy drain keeps a position-less _legacy cursor (enrollment only): %+v found=%v", c, found)
 	}
 	if len(calls) != 3 {
 		t.Fatalf("want --after attempt, full export, writer probe; got %v", calls)
