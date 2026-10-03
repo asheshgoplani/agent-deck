@@ -684,12 +684,13 @@ func (b *Bus) compactLocked() {
 	if err != nil {
 		return
 	}
-	var toRemove []sealedSegment
-	if len(sealed) > b.retainSegs {
-		toRemove = append(toRemove, sealed[:len(sealed)-b.retainSegs]...)
+	// Drop the oldest beyond the count bound, then any kept one past the
+	// age bound.
+	excess := max(len(sealed)-b.retainSegs, 0)
+	for _, s := range sealed[:excess] {
+		_ = os.Remove(s.path)
 	}
-	toRemove = append(toRemove, b.expiredSegments(sealed, time.Now())...)
-	for _, s := range toRemove {
+	for _, s := range b.expiredSegments(sealed[excess:], time.Now()) {
 		_ = os.Remove(s.path)
 	}
 }

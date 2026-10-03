@@ -42,16 +42,8 @@ func Line(r Record, names Names) string {
 	switch {
 	case r.Done != "":
 		tag = "done " + r.Done
-	case r.Kind == KindError:
-		tag = "error"
-	case r.Kind == KindStatus:
-		tag = "status"
-	case r.Kind == KindSend:
-		tag = "send"
-	case r.Kind == KindWake:
-		tag = "wake"
-	case r.Kind == KindHuman:
-		tag = "human"
+	case r.Kind == KindError, r.Kind == KindStatus, r.Kind == KindSend, r.Kind == KindWake, r.Kind == KindHuman:
+		tag = r.Kind
 	case r.Tier != "":
 		tag = r.Tier
 	default:

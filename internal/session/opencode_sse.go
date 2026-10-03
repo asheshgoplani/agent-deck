@@ -334,8 +334,7 @@ func (w *OpenCodeSSEWatcher) spoolIdleTurn(ctx context.Context, instanceID, base
 	if err := w.getJSON(ctx, base+"/session/"+root+"/message", &messages); err != nil || len(messages) == 0 {
 		return
 	}
-	var assistant, prompt string
-	var messageID string
+	var assistant, prompt, messageID string
 	for i := len(messages) - 1; i >= 0; i-- {
 		m := messages[i]
 		switch m.Info.Role {
@@ -357,10 +356,11 @@ func (w *OpenCodeSSEWatcher) spoolIdleTurn(ctx context.Context, instanceID, base
 	if assistant == "" {
 		return
 	}
+	spooledKey := root + "/" + messageID
 	w.mu.Lock()
-	dup := w.lastSpooled[instanceID] == root+"/"+messageID
+	dup := w.lastSpooled[instanceID] == spooledKey
 	if !dup {
-		w.lastSpooled[instanceID] = root + "/" + messageID
+		w.lastSpooled[instanceID] = spooledKey
 	}
 	spool := w.spool
 	w.mu.Unlock()

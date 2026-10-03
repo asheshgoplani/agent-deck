@@ -35,7 +35,7 @@ func handleEvents(profile string, args []string) {
 	case "follow":
 		handleEventsFollow(profile, args[1:])
 	case "stats":
-		handleEventsStats(profile, args[1:])
+		handleEventsStats(args[1:])
 	case "publish":
 		handleEventsPublish(profile, args[1:])
 	default:
@@ -225,7 +225,7 @@ func handleEventsPublish(profile string, args []string) {
 }
 
 // handleEventsStats implements `agent-deck events stats [--json] [--bus events|comms]`.
-func handleEventsStats(_ string, args []string) {
+func handleEventsStats(args []string) {
 	fs := flag.NewFlagSet("agent-deck events stats", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "print stats as JSON")
 	busFlag := fs.String("bus", "events", busFlagHelp)

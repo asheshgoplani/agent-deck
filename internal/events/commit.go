@@ -143,7 +143,8 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 		return Frame{}, err
 	}
 	if err := b.activeFile.Sync(); err != nil {
-		b.fail(fmt.Errorf("events: sync: %w", err))
+		err = fmt.Errorf("events: sync: %w", err)
+		b.fail(err)
 		return Frame{}, err
 	}
 	// A committed frame counts as accepted and written, so Flush (which waits

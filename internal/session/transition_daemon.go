@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 	"github.com/asheshgoplani/agent-deck/internal/health"
 )

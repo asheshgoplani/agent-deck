@@ -231,45 +231,19 @@ func Decode(f events.Frame) (Record, error) {
 	if len(f.Data) == 0 {
 		return r, errors.New("comms: frame has no data")
 	}
-	if err := json.Unmarshal(f.Data, &r); err != nil {
-		return r, err
-	}
-	return r, nil
+	err := json.Unmarshal(f.Data, &r)
+	return r, err
 }
 
 // ReadAfter returns every record with cursor > after, oldest first, plus
 // the last cursor read. It stops at the end of the retained log (it does not
 // follow). ErrCursorTooOld surfaces unchanged so a consumer can reset.
 func ReadAfter(bus *events.Bus, after events.Cursor, limit int) ([]Record, events.Cursor, error) {
-	if bus == nil {
-		return nil, after, errors.New("comms: no ledger")
-	}
-	end := bus.Stats().Cursor
-	if end <= after {
-		return nil, after, nil
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	sub, err := bus.Subscribe(ctx, after)
-	if err != nil {
-		return nil, after, err
-	}
 	var out []Record
-	last := after
-	for f := range sub.Frames() {
-		if r, err := Decode(f); err == nil {
-			out = append(out, r)
-		}
-		last = f.Cursor
-		if f.Cursor >= end || (limit > 0 && len(out) >= limit) {
-			cancel()
-			break // frames already buffered past the limit are not ours to take
-		}
-	}
-	if err := sub.Err(); err != nil {
-		return out, last, err
-	}
-	return out, last, nil
+	last, err := scan(bus, after, limit, func(_ events.Cursor, r Record) {
+		out = append(out, r)
+	})
+	return out, last, err
 }
 
 // Exported is one record with its cursor on the ledger it was read from:
@@ -284,30 +258,44 @@ type Exported struct {
 // cursors kept, for the remote path: the puller advances its cursor for
 // this origin only to a cursor it committed.
 func Export(bus *events.Bus, after events.Cursor, limit int) ([]Exported, error) {
+	var out []Exported
+	_, err := scan(bus, after, limit, func(c events.Cursor, r Record) {
+		out = append(out, Exported{Cursor: c, Record: r})
+	})
+	return out, err
+}
+
+// scan hands every decodable record with cursor > after to visit, oldest
+// first, until the end of the retained log or limit records (0 = no limit).
+// It returns the last cursor read (after when nothing was read). A frame
+// that does not decode is skipped but still advances the cursor.
+func scan(bus *events.Bus, after events.Cursor, limit int, visit func(events.Cursor, Record)) (events.Cursor, error) {
 	if bus == nil {
-		return nil, errors.New("comms: no ledger")
+		return after, errors.New("comms: no ledger")
 	}
 	end := bus.Stats().Cursor
 	if end <= after {
-		return nil, nil
+		return after, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sub, err := bus.Subscribe(ctx, after)
 	if err != nil {
-		return nil, err
+		return after, err
 	}
-	var out []Exported
+	last := after
+	n := 0
 	for f := range sub.Frames() {
 		if r, err := Decode(f); err == nil {
-			out = append(out, Exported{Cursor: f.Cursor, Record: r})
+			visit(f.Cursor, r)
+			n++
 		}
-		if f.Cursor >= end || (limit > 0 && len(out) >= limit) {
-			cancel()
-			break
+		last = f.Cursor
+		if f.Cursor >= end || (limit > 0 && n >= limit) {
+			break // frames already buffered past the limit are not ours to take
 		}
 	}
-	return out, sub.Err()
+	return last, sub.Err()
 }
 
 // Import commits records exported from another host's ledger under the

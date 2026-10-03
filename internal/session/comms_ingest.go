@@ -24,14 +24,20 @@ import (
 // daemon never saw is trigger unknown and tiers urgent. Noise is committed
 // too (tier noise) so dedup and noise share are countable from the ledger.
 
-// commsStatusTools lists harnesses that have a text producer: a status-only
-// record is committed only for the rest (plain shell, custom --cmd).
+// commsHasTextProducer reports whether a harness spools turn text: a
+// status-only record is committed only for the rest (plain shell, custom
+// --cmd).
 func commsHasTextProducer(tool string) bool {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "opencode", "pi", "omp":
 		return true
 	}
 	return HookStatusTool(tool)
+}
+
+// commsToolName is the harness name stamped on a record's Tool field.
+func commsToolName(inst *Instance) string {
+	return strings.ToLower(strings.TrimSpace(inst.Tool))
 }
 
 // commsLedgerFor returns the open ledger for a profile, opening it on first
@@ -97,9 +103,9 @@ func (d *TransitionDaemon) ingestCommsSpool(profile string, byID map[string]*Ins
 			}
 		}
 	}
-	if time.Since(d.lastCommsPrune) > time.Hour {
-		d.lastCommsPrune = time.Now()
-		PruneCommsSpool(time.Now())
+	if now := time.Now(); now.Sub(d.lastCommsPrune) > time.Hour {
+		d.lastCommsPrune = now
+		PruneCommsSpool(now)
 	}
 }
 
@@ -108,12 +114,11 @@ func (d *TransitionDaemon) ingestCommsSpool(profile string, byID map[string]*Ins
 // prompt edge remembered) and false when the commit failed transiently so
 // the next poll retries the same file.
 func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, inst *Instance, e CommsSpoolEntry) bool {
-	switch e.Edge {
-	case CommsEdgePromptStart:
+	if e.Edge == CommsEdgePromptStart {
 		d.commsPrompts[inst.ID] = e
 		return true
-	case CommsEdgeTurnEnd:
-	default:
+	}
+	if e.Edge != CommsEdgeTurnEnd {
 		return true
 	}
 
@@ -122,7 +127,7 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		From:    inst.ID,
 		To:      []string{statsParentFor(inst)},
 		Profile: profile,
-		Tool:    strings.ToLower(strings.TrimSpace(inst.Tool)),
+		Tool:    commsToolName(inst),
 		TSignal: e.TSignal,
 	}
 	cfg := ResolveInboxConfig("")
@@ -217,15 +222,16 @@ func (d *TransitionDaemon) commsStatusRecord(profile string, inst *Instance, to 
 	if l == nil {
 		return
 	}
+	state := normalizeStatusString(to)
 	rec := comms.Record{
 		Kind:    comms.KindStatus,
 		From:    inst.ID,
 		To:      []string{statsParentFor(inst)},
 		Profile: profile,
-		Tool:    strings.ToLower(strings.TrimSpace(inst.Tool)),
-		State:   normalizeStatusString(to),
+		Tool:    commsToolName(inst),
+		State:   state,
 		TSignal: at.UnixMilli(),
-		Key:     comms.Key(comms.KindStatus, inst.ID, normalizeStatusString(to), transitionEventOutputHash(inst), at.Truncate(shortWindowDedupSeconds*time.Second).String()),
+		Key:     comms.Key(comms.KindStatus, inst.ID, state, transitionEventOutputHash(inst), at.Truncate(shortWindowDedupSeconds*time.Second).String()),
 	}
 	if _, _, err := l.Commit(rec); err != nil && !errors.Is(err, comms.ErrDuplicate) {
 		commsLog.Warn("comms_status_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))

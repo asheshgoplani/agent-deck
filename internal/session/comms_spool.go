@@ -35,10 +35,11 @@ const (
 	CommsEdgePromptStart = "prompt_start"
 )
 
-// Spool caps. Text is capped generously here (the daemon applies the record
-// cap); the prompt only needs its prefix for trigger classification.
+// Spool caps. Text is capped at the record ceiling here (the daemon applies
+// the configured record cap); the prompt only needs its prefix for trigger
+// classification.
 const (
-	commsSpoolTextBytes   = 4096
+	commsSpoolTextBytes   = comms.MaxTextBytes
 	commsSpoolPromptBytes = 1024
 	commsSpoolMaxAge      = 24 * time.Hour
 	commsSpoolMaxFiles    = 512 // per instance; a daemon that never drains must not fill the disk
@@ -109,7 +110,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		e.TSignal = time.Now().UnixMilli()
 	}
 	e.Text = comms.CapText(strings.TrimSpace(e.Text), commsSpoolTextBytes)
-	e.Prompt = capPromptPrefix(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
+	e.Prompt = comms.CapText(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
 	if e.Edge == CommsEdgeTurnEnd && e.Text == "" && e.Harness != "opencode" {
 		// Nothing to carry: the status edge is already in the hook file. An
 		// empty turn would only become a text-less record.
@@ -119,7 +120,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if n := countSpoolFiles(dir); n >= commsSpoolMaxFiles {
+	if countSpoolFiles(dir) >= commsSpoolMaxFiles {
 		return errors.New("comms spool: instance spool full; is the notify daemon running?")
 	}
 	data, err := json.Marshal(e)
@@ -127,15 +128,6 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		return err
 	}
 	return writeFileDurable(filepath.Join(dir, comms.NewID(time.UnixMilli(e.TSignal))+".json"), data, 0o600)
-}
-
-// capPromptPrefix keeps the prompt's first max bytes on a rune boundary,
-// without a clip marker: the daemon only reads its prefix.
-func capPromptPrefix(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return comms.CapText(s, max)
 }
 
 func countSpoolFiles(dir string) int {
