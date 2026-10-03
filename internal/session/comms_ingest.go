@@ -204,6 +204,24 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		facts.Question = false
 	}
 
+	// Identity, most stable first: the transcript uuid, the harness turn id,
+	// else the spool entry itself (its file name is minted once by the
+	// producer and survives a retry), so two turns with the same text are
+	// two records and one entry observed twice is one. The tier rule reads
+	// the identity as the turn uuid: a distinct turn that repeats the last
+	// answer is news when a human or a send started it, noise only for a
+	// background trigger.
+	identity := facts.UUID
+	if identity == "" {
+		identity = e.TurnID
+	}
+	if identity == "" {
+		identity = e.SessionID + "|" + facts.TextHash + "|" + e.ID()
+	}
+	if facts.UUID == "" {
+		facts.UUID = identity
+	}
+
 	var prev *TurnJournalEntry
 	if last, ok := l.LastTurn(inst.ID); ok {
 		prev = &TurnJournalEntry{Status: string(StatusWaiting), Tier: last.Tier, TextHash: last.TH, DoneStatus: last.Done, DoneSummary: last.Summary}
@@ -219,17 +237,6 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	if facts.FromID != "" {
 		rec.ReplyTo = facts.FromID
 		rec.To = append(rec.To, facts.FromID)
-	}
-	// Identity, most stable first: the transcript uuid, the harness turn id,
-	// else the spool entry itself (its file name is minted once by the
-	// producer and survives a retry), so two turns with the same text are
-	// two records and one entry observed twice is one.
-	identity := facts.UUID
-	if identity == "" {
-		identity = e.TurnID
-	}
-	if identity == "" {
-		identity = e.SessionID + "|" + facts.TextHash + "|" + e.ID()
 	}
 	if classified {
 		rec.Key = comms.Key(comms.KindTurn, inst.ID, identity)
