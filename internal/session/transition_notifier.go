@@ -328,6 +328,19 @@ func isConductorSessionTitle(title string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(title)), "conductor-")
 }
 
+// isSelfSuppressedConductor reports whether inst is a top-level conductor: no
+// parent (or itself as parent) and a conductor-* title. The producer drops its
+// transitions on purpose (self_conductor, issue #824 cause B), so they reach
+// no inbox and no export may ship them. A parentless session without a
+// conductor title is an orphan, not this.
+func isSelfSuppressedConductor(inst *Instance) bool {
+	if inst == nil {
+		return false
+	}
+	parent := strings.TrimSpace(inst.ParentSessionID)
+	return (parent == "" || parent == inst.ID) && isConductorSessionTitle(inst.Title)
+}
+
 // instanceAcceptsTransitionEvents is the centralized per-session predicate used
 // at NEW-emission (transition_daemon.go) to decide whether a session is
 // currently accepting transition events. All "is this session currently

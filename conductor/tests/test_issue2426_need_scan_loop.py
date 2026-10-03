@@ -230,8 +230,10 @@ class TestNeedScanCycleForwards2426:
         slack_app = _slack_app()
         calls = []
 
-        def fake_run_cli(*args, profile=None, timeout=120):
+        def fake_run_cli(*args, profile=None, timeout=120, input_text=None):
             calls.append(args)
+            if args[:2] == ("conductor", "tier-filter"):
+                return subprocess.CompletedProcess(["agent-deck"], 1, "", "old binary")
             return subprocess.CompletedProcess(
                 ["agent-deck"], 0, json.dumps({"content": NEED}), "",
             )
@@ -247,7 +249,8 @@ class TestNeedScanCycleForwards2426:
 
         slack_app.client.chat_postMessage.assert_awaited_once()
         assert calls
-        assert all(c[:2] == ("session", "output") for c in calls)
+        # Reads the reply and tiers it locally (#2469); never `session send`.
+        assert all(c[:2] in (("session", "output"), ("conductor", "tier-filter")) for c in calls)
 
 
 def _load_bridge_process(module_name):

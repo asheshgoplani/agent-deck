@@ -641,7 +641,9 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 	// via the SSE feed as the fleet moves); -p <profile> so it works headless.
 	// Bound the child with a context timeout so a stalled `session send` (e.g.
 	// a wedged tmux) can't pile up orphaned processes if many asks fire.
-	args := []string{"-p", s.cfg.Profile, "session", "send", resolved, msg, "--no-wait"}
+	// --no-tag: an operator's command-center message is not a send from
+	// whatever session the web server happened to be started in.
+	args := []string{"-p", s.cfg.Profile, "session", "send", resolved, msg, "--no-wait", "--no-tag"}
 	cmdCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, exe, args...)

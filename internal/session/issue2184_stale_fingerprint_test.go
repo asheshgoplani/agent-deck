@@ -31,7 +31,7 @@ func newStaleHashNotifierFixture(t *testing.T) (*TransitionNotifier, string, fun
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
-		isIdle: func(*Instance) bool { return true },
+		isIdle: func(*Instance, string) bool { return true },
 		send:   func(*Instance, string, string) error { sent++; return nil },
 	}
 	build := func(hash string, at time.Time) TransitionNotificationEvent {
@@ -245,8 +245,10 @@ func TestIssue2184_DaemonDeliversSecondTurnWithUnchangedTranscriptSignal(t *test
 	if err != nil || len(delivered) != 1 {
 		t.Fatalf("second drain must deliver the new completion: delivered=%d err=%v", len(delivered), err)
 	}
-	if n := f.nudges(); n != 2 {
-		t.Fatalf("expected a nudge per delivered turn (2), got %d", n)
+	// The first turn is a plain reply (info, no wake); the stale-signal
+	// re-flip is forced urgent, so exactly one wake in total.
+	if n := f.nudges(); n != 1 {
+		t.Fatalf("expected one nudge (the stale-flagged turn), got %d", n)
 	}
 }
 
@@ -276,8 +278,8 @@ func TestIssue2184_RestartSeedingUnchangedWithStableTranscriptSignal(t *testing.
 	if got := readInboxLines(t, f.parent.ID); len(got) != 0 {
 		t.Fatalf("restart re-committed an already-notified turn: %+v", got)
 	}
-	if n := f.nudges(); n != 1 {
-		t.Fatalf("restart fired a phantom wake-nudge: total nudges %d, want 1", n)
+	if n := f.nudges(); n != 0 {
+		t.Fatalf("restart fired a phantom wake-nudge: total nudges %d, want 0 (a plain reply is info)", n)
 	}
 
 	// A waiting->idle flip while the daemon was down with the transcript

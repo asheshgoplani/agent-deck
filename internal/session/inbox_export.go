@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Issue #1948 — the REMOTE-SIDE READ of the cross-machine pull.
@@ -141,40 +142,100 @@ func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionN
 	}
 	profiles := map[string]struct{}{}
 	for _, ev := range events {
-		if p := strings.TrimSpace(ev.Profile); p != "" {
-			profiles[p] = struct{}{}
-		}
+		profiles[ev.Profile] = struct{}{}
 	}
+	reg, err := loadExportRegistry(profiles)
+	if err != nil {
+		return nil, err
+	}
+	return reg.dropOptedOut(events), nil
+}
 
-	suppressed := map[string]bool{} // "<profile>\x00<child>" -> true
+// exportRegistry is the export's view of the registries its records name,
+// keyed by exportRegistryKey(profile, child).
+type exportRegistry struct {
+	optedOut      map[string]bool   // instanceAcceptsTransitionEvents is false
+	selfConductor map[string]bool   // isSelfSuppressedConductor (self_conductor)
+	localParent   map[string]bool   // its parent is in the same registry
+	titles        map[string]string // for journal records that carry no title
+}
+
+func exportRegistryKey(profile, child string) string {
+	return strings.TrimSpace(profile) + "\x00" + strings.TrimSpace(child)
+}
+
+// loadExportRegistry reads each named profile's registry once. A blank profile
+// is skipped: nothing can be proven about its children, so they are kept.
+func loadExportRegistry(profiles map[string]struct{}) (exportRegistry, error) {
+	reg := exportRegistry{optedOut: map[string]bool{}, selfConductor: map[string]bool{},
+		localParent: map[string]bool{}, titles: map[string]string{}}
 	for profile := range profiles {
+		profile = strings.TrimSpace(profile)
+		if profile == "" {
+			continue
+		}
 		storage, err := NewStorageWithProfile(profile)
 		if err != nil {
 			// The registry is unavailable, so suppression is UNKNOWN. Failing is
 			// the honest answer: silently exporting could override an opt-out,
 			// and silently dropping could hide a completion.
-			return nil, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
+			return exportRegistry{}, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
 		}
 		instances, _, err := storage.LoadWithGroups()
 		storage.Close()
 		if err != nil {
-			return nil, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
+			return exportRegistry{}, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
+		}
+		byID := make(map[string]*Instance, len(instances))
+		for _, inst := range instances {
+			byID[inst.ID] = inst
 		}
 		for _, inst := range instances {
-			if !instanceAcceptsTransitionEvents(inst) {
-				suppressed[profile+"\x00"+inst.ID] = true
+			key := exportRegistryKey(profile, inst.ID)
+			if resolveParentNotificationTarget(inst, byID) != nil {
+				reg.localParent[key] = true
 			}
+			if !instanceAcceptsTransitionEvents(inst) {
+				reg.optedOut[key] = true
+			}
+			if isSelfSuppressedConductor(inst) {
+				reg.selfConductor[key] = true
+			}
+			reg.titles[key] = inst.Title
 		}
 	}
+	return reg, nil
+}
 
+// dropOptedOut removes the records of opted-out children and fills in a
+// missing child title from the registry.
+func (r exportRegistry) dropOptedOut(events []TransitionNotificationEvent) []TransitionNotificationEvent {
 	out := make([]TransitionNotificationEvent, 0, len(events))
 	for _, ev := range events {
-		if suppressed[strings.TrimSpace(ev.Profile)+"\x00"+strings.TrimSpace(ev.ChildSessionID)] {
+		key := exportRegistryKey(ev.Profile, ev.ChildSessionID)
+		if r.optedOut[key] {
 			continue
+		}
+		if ev.ChildTitle == "" {
+			ev.ChildTitle = r.titles[key]
 		}
 		out = append(out, ev)
 	}
-	return out, nil
+	return out
+}
+
+// dropLocallyParented removes the records of children whose parent is on
+// this host: they belong to that parent, not to a conductor draining the host
+// from elsewhere. Used by the cursor export only; the legacy full export keeps
+// shipping them.
+func (r exportRegistry) dropLocallyParented(events []TransitionNotificationEvent) []TransitionNotificationEvent {
+	out := make([]TransitionNotificationEvent, 0, len(events))
+	for _, ev := range events {
+		if !r.localParent[exportRegistryKey(ev.Profile, ev.ChildSessionID)] {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // exportLedgerRecords reads the completion ledger and synthesizes one finished
@@ -187,6 +248,12 @@ func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionN
 // unreachable host as empty. The export is small and rarely-failing; when it
 // does fail the operator gets the file name.
 func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
+	return exportLedgerRecordsSince(time.Time{})
+}
+
+// exportLedgerRecordsSince is exportLedgerRecords limited to entries written
+// at or after since (file mtime, then the entry's own stamp); zero means all.
+func exportLedgerRecordsSince(since time.Time) ([]TransitionNotificationEvent, error) {
 	dir, err := CompletionLedgerDir()
 	if err != nil {
 		return nil, err
@@ -204,6 +271,11 @@ func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
+		if !since.IsZero() {
+			if info, err := e.Info(); err == nil && info.ModTime().Before(since) {
+				continue
+			}
+		}
 		path := filepath.Join(dir, e.Name())
 		entry, err := readLedgerFile(path)
 		if err != nil {
@@ -213,6 +285,9 @@ func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
 				continue
 			}
 			return nil, fmt.Errorf("export: unreadable completion ledger entry %s: %w", e.Name(), err)
+		}
+		if !since.IsZero() && entry.FinishedAt.Before(since) {
+			continue
 		}
 		out = append(out, completionLedgerEvent(entry))
 	}

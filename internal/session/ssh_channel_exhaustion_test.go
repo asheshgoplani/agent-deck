@@ -63,7 +63,7 @@ func TestRunExecRetriesOnChannelExhaustion(t *testing.T) {
 	writeFakeSSH(t, dir, logPath)
 
 	r := &SSHRunner{Host: "host-a.example.com"}
-	out, err := r.runExec(context.Background(), "agent-deck list --json", true)
+	out, err := r.runExec(context.Background(), "agent-deck list --json", nil, true)
 	if err != nil {
 		t.Fatalf("runExec returned error: %v", err)
 	}
@@ -102,7 +102,7 @@ exit 1
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	r := &SSHRunner{Host: "host-a.example.com"}
-	if _, err := r.runExec(context.Background(), "agent-deck list --json", true); err == nil {
+	if _, err := r.runExec(context.Background(), "agent-deck list --json", nil, true); err == nil {
 		t.Fatal("expected an error for an ordinary remote failure")
 	}
 	log, err := os.ReadFile(logPath)
@@ -154,7 +154,7 @@ exit 255
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	r := &SSHRunner{Host: "host-a.example.com"}
-	_, err := r.runExec(context.Background(), "agent-deck list --json", true)
+	_, err := r.runExec(context.Background(), "agent-deck list --json", nil, true)
 	if err == nil {
 		t.Fatal("expected an error when both attempts fail")
 	}
@@ -188,7 +188,7 @@ func TestRunExecLeavesUnprovenFailuresUnknown(t *testing.T) {
 			t.Setenv("SSH_FAILURE", tc.stderr)
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			r := &SSHRunner{Host: "fixture.example"}
-			_, err := r.runExec(context.Background(), "agent-deck list --json", true)
+			_, err := r.runExec(context.Background(), "agent-deck list --json", nil, true)
 			if err == nil || !strings.Contains(err.Error(), tc.stderr) {
 				t.Fatalf("original failure lost: %v", err)
 			}
@@ -223,7 +223,7 @@ exit 255
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	_, err := r.runExec(ctx, "agent-deck list --json", true)
+	_, err := r.runExec(ctx, "agent-deck list --json", nil, true)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("deadline error=%v", err)
 	}

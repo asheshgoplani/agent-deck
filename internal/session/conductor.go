@@ -88,6 +88,16 @@ type ConductorSettings struct {
 	// nil/absent = disabled (preserves pre-*int behavior), 0 = disabled, >0 = configured
 	HeartbeatInterval *int `toml:"heartbeat_interval,omitempty"`
 
+	// HumanDigestMinutes is the longest a queued info item for the human
+	// waits before the bridge flushes all of them as one digest message
+	// (issue #2469). nil = 30; 0 = flush on every bridge poll.
+	HumanDigestMinutes *int `toml:"human_digest_minutes,omitempty"`
+
+	// NeedRetireCycles is the heartbeat cycle on which an unanswered urgent
+	// line (NEED:, [urgent], URGENT:) is escalated once as STILL BLOCKED and
+	// then dropped (issue #971). <= 0 = 3.
+	NeedRetireCycles int `toml:"need_retire_cycles,omitzero"`
+
 	// Profiles is the list of agent-deck profiles to manage
 	// Kept for backward compat but ignored after migration to meta.json-based discovery
 	Profiles []string `toml:"profiles,omitempty"`
@@ -484,6 +494,23 @@ func (c *ConductorSettings) GetHeartbeatInterval() int {
 		return 15
 	}
 	return *c.HeartbeatInterval
+}
+
+// GetHumanDigestMinutes returns the human digest window in minutes
+// (default 30; 0 or negative = no batching).
+func (c *ConductorSettings) GetHumanDigestMinutes() int {
+	if c.HumanDigestMinutes == nil {
+		return 30
+	}
+	return max(*c.HumanDigestMinutes, 0)
+}
+
+// GetNeedRetireCycles returns the urgent-line retire threshold (default 3).
+func (c *ConductorSettings) GetNeedRetireCycles() int {
+	if c.NeedRetireCycles <= 0 {
+		return NeedRetireCyclesDefault
+	}
+	return c.NeedRetireCycles
 }
 
 // GetHeartbeatIdleMinutes returns the heartbeat idle threshold in minutes.

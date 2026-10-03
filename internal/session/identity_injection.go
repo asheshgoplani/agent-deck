@@ -212,6 +212,13 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\n## agent-deck CLI (flags go BEFORE positional arguments)\n")
 	b.WriteString("- `agent-deck session current --json` — this session's full, current metadata from the database (source of truth; the snapshot above may be renamed or re-parented later)\n")
 	b.WriteString("- `agent-deck session send <id-or-title> \"message\"` — message another session (`--message-file FILE` for long text)\n")
+	if i.NoTransitionNotify {
+		// This session's turns are never reported, so an answer reaches
+		// nobody unless it is sent back explicitly.
+		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`.\n")
+	} else {
+		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.\n")
+	}
 	b.WriteString("- `agent-deck session output <id-or-title>` — read another session's last response\n")
 	b.WriteString("- `agent-deck launch <path> -t \"Title\" -c claude --message \"prompt\"` — spawn a child session linked to you as its parent (`-no-parent` for a peer)\n")
 	b.WriteString("- `agent-deck session children --json` — live status and asserted completions of your children\n")
@@ -222,10 +229,22 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\n## Completion sentinel\n")
 	b.WriteString("When a task you were given by a parent is fully done, end your final message with exactly one line:\n")
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
-	b.WriteString("agent-deck forwards it to your parent as a [DONE] event; without it the parent only sees that you are waiting.\n")
+	b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
+	b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
 	b.WriteString("\nThis block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n")
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
+}
+
+// IdentityCarriesSentinel reports whether this session's injected identity
+// block includes the completion-sentinel section, so a launch message does
+// not need to repeat it: claude-family tools at context level "full".
+func (i *Instance) IdentityCarriesSentinel() bool {
+	if i == nil || !IsClaudeCompatible(i.Tool) || !i.identityInjectionEnabled() {
+		return false
+	}
+	level, _ := i.EffectiveContextLevel()
+	return level == ContextLevelFull
 }
 
 // BuildPrimerPrompt renders the "primer" context-level block: session

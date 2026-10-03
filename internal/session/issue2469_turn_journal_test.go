@@ -62,7 +62,7 @@ func newTurnTestFixture(t *testing.T) *turnTestFixture {
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
-		isIdle: func(*Instance) bool { return true },
+		isIdle: func(*Instance, string) bool { return true },
 		send:   func(*Instance, string, string) error { sends++; return nil },
 	}
 	d := &TransitionDaemon{
@@ -104,13 +104,13 @@ func TestIssue2469_BackgroundTurnsAreOneInfoRecordAndNeverWake(t *testing.T) {
 	f.appendTurn(t, fxHuman("u0", "run the board"), fxAssistantText("a0", "Starting 13 lanes."))
 	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
 
-	// The human-triggered first turn: one urgent record, one wake.
+	// The human-triggered first turn is a plain reply: one info record, no wake.
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
-	if got := f.inboxRecords(t); len(got) != 1 || got[0].Tier != TurnTierUrgent || got[0].Text != "Starting 13 lanes." {
+	if got := f.inboxRecords(t); len(got) != 1 || got[0].Tier != TurnTierInfo || got[0].Text != "Starting 13 lanes." {
 		t.Fatalf("first turn: %+v", got)
 	}
-	if *f.sends != 1 {
-		t.Fatalf("urgent turn must wake once, sends=%d", *f.sends)
+	if *f.sends != 0 {
+		t.Fatalf("a reply without a question must not wake, sends=%d", *f.sends)
 	}
 
 	// A background agent finishes: task-notification turn with new progress text.
@@ -137,12 +137,12 @@ func TestIssue2469_BackgroundTurnsAreOneInfoRecordAndNeverWake(t *testing.T) {
 	if rec.Text != "Lane C merged; verifier running." || rec.TextHash == "" || rec.TurnUUID != "a2" {
 		t.Fatalf("record must carry the child's text: %+v", rec)
 	}
-	if *f.sends != 1 {
+	if *f.sends != 0 {
 		t.Fatalf("info must never wake the parent, sends=%d", *f.sends)
 	}
 
 	st, _ := ReadInboxStats(f.parent.ID)
-	if st.RecordsInfo != 1 || st.RecordsUrgent != 1 || st.NoiseSuppressed+st.DedupSuppressed < 15 || st.WakeupsSuppressed != 1 || st.WakeupsUrgent != 1 {
+	if st.RecordsInfo != 2 || st.RecordsUrgent != 0 || st.NoiseSuppressed+st.DedupSuppressed < 15 || st.WakeupsSuppressed != 2 || st.WakeupsUrgent != 0 {
 		t.Fatalf("stats: %+v", st)
 	}
 
@@ -248,11 +248,11 @@ func TestIssue2469_IdenticalReplyToNewHumanTurnIsDelivered(t *testing.T) {
 	f.appendTurn(t, fxHuman("u1", "run them again"), fxAssistantText("a1", "All 42 tests pass."))
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
 	got := f.inboxRecords(t)
-	if len(got) != 2 || got[1].TurnUUID != "a1" || got[1].Tier != TurnTierUrgent {
-		t.Fatalf("identical reply to a new human turn must be a new urgent record: %+v", got)
+	if len(got) != 2 || got[1].TurnUUID != "a1" || got[1].Tier != TurnTierInfo {
+		t.Fatalf("identical reply to a new human turn must be a new (info) record: %+v", got)
 	}
-	if *f.sends != 2 {
-		t.Fatalf("both answers wake, sends=%d", *f.sends)
+	if *f.sends != 0 {
+		t.Fatalf("plain replies never wake, sends=%d", *f.sends)
 	}
 	// The same words in a new BACKGROUND turn are still deduped as noise.
 	f.appendTurn(t, fxTaskNotification("u2"), fxAssistantText("a2", "All 42 tests pass."))
@@ -300,5 +300,41 @@ func TestIssue2469_TransientCommitFailureIsRetried(t *testing.T) {
 	got := f.inboxRecords(t)
 	if len(got) != 1 || got[0].TurnUUID != "a0" {
 		t.Fatalf("the turn must be delivered once the inbox has room: %+v", got)
+	}
+}
+
+// A plain reply to the parent's own tagged send is info: one record, no wake,
+// delivered by the prompt-time drain on the parent's next turn.
+func TestIssue2469_PlainReplyToParentSendIsInfoAndInjectedNextPrompt(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxHuman("u0", "[agent-deck from:parent-2469] status?"), fxAssistantText("a0", "Round 2 report saved, waiting for Docker."))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	got := f.inboxRecords(t)
+	if len(got) != 1 || got[0].Tier != TurnTierInfo || got[0].Trigger != TurnTriggerSend {
+		t.Fatalf("plain reply must be one info record: %+v", got)
+	}
+	if *f.sends != 0 {
+		t.Fatalf("a plain reply must not wake, sends=%d", *f.sends)
+	}
+	text, events, err := DrainForPrompt(f.parent.ID)
+	if err != nil || len(events) != 1 || !strings.Contains(text, "Round 2 report saved, waiting for Docker.") {
+		t.Fatalf("the next prompt must carry the reply: err=%v events=%d text=%q", err, len(events), text)
+	}
+}
+
+// An urgent turn still wakes: the conductor ruling narrows urgent, it does
+// not remove it.
+func TestIssue2469_QuestionToParentStillWakes(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxHuman("u0", "[agent-deck from:parent-2469] proceed"), fxAssistantText("a0", "Two options remain.\nNEED: merge or hold?"))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	got := f.inboxRecords(t)
+	if len(got) != 1 || got[0].Tier != TurnTierUrgent || !got[0].Question {
+		t.Fatalf("question must be an urgent record: %+v", got)
+	}
+	if *f.sends != 1 {
+		t.Fatalf("question must wake once, sends=%d", *f.sends)
 	}
 }

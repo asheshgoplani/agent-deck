@@ -3,8 +3,12 @@
 # constants evaluated from the tagged source, rendered with the renderer,
 # which is unchanged since before v1.9.60).
 #
-# Two prior generations shipped, both recognised by
+# Three prior generations shipped, all recognised by
 # conductorInstructionsGenerations:
+#   generation v1.16.24 (blob ddc29b5f...; shared template only: the #2469
+#     human tier changed only the shared heartbeat reply format, so the
+#     per-name templates v1.16.24 wrote are byte-identical to the current ones
+#     and need no migration, see TestShippedV11624PerNameTemplatesAreCurrent)
 #   generation 0: v1.11.0-v1.16.10 (single blob aabca8af...)
 #   generation 1: v1.10.9-v1.10.11 (single blob f0435464...; per-name
 #     templates are byte-identical to generation 0 because #1814 only
@@ -64,3 +68,6 @@ v1.10.10	f0435464827ceace23ff00a6202223e8a2fa0309	hermes	shared	09569410e1d581f0
 v1.10.11	f0435464827ceace23ff00a6202223e8a2fa0309	claude	shared	f85cfe2c9d26fe7a3472cbf74e60b056ba31e6fdbf708c4c7f1f5ace321624fa
 v1.10.11	f0435464827ceace23ff00a6202223e8a2fa0309	codex	shared	d39bf4a2ecd30365aa2dac21972d6f53f35da68a667ef5a209b352424a7bf1f7
 v1.10.11	f0435464827ceace23ff00a6202223e8a2fa0309	hermes	shared	09569410e1d581f0c387e45bf7d343123138b062d64688dd93642c99dc3ad981
+v1.16.24	ddc29b5f48ef7e2e92a228931b26745eb4e9b2c1	claude	shared	743f7bb2a0e5e29a7f4e3bbbe04ac42ad5940ba99b0329985d5525557f8929dd
+v1.16.24	ddc29b5f48ef7e2e92a228931b26745eb4e9b2c1	codex	shared	743f7bb2a0e5e29a7f4e3bbbe04ac42ad5940ba99b0329985d5525557f8929dd
+v1.16.24	ddc29b5f48ef7e2e92a228931b26745eb4e9b2c1	hermes	shared	743f7bb2a0e5e29a7f4e3bbbe04ac42ad5940ba99b0329985d5525557f8929dd

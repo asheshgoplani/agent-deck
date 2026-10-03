@@ -1,2 +1,7 @@
-Usage: agent-deck inbox export [--json]
+Usage: agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]
 Print this host's completion/transition records without consuming them.
+--after (requires --json) returns only what the cursor does not hold yet:
+turn-journal lines past each child's seq, changed completion-ledger entries
+and _unowned records past its read position, as
+{"records":[...],"cursor_next":{...}}; --with-writer adds "writer".
+The cursor is the cursor_next of the previous call; "-" reads it from stdin.

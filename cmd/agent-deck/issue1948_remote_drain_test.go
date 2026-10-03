@@ -53,6 +53,15 @@ func drainTestHome(t *testing.T) {
 		return session.WriterStatus{Running: true}, nil
 	}
 	t.Cleanup(func() { remoteWriterProbe = oldProbe })
+	// These tests pin the full-export contract: the incremental path answers
+	// "unsupported" (an old remote) so the stub fetcher is what is drained,
+	// and the wake is a no-op so no test execs a real `session send`.
+	oldCursor, oldWake := remoteCursorFetch, remoteDrainWake
+	remoteCursorFetch = func(context.Context, string, session.RemoteConfig, session.RemoteCursor) (session.RemoteExport, error) {
+		return session.RemoteExport{}, session.ErrRemoteCursorUnsupported
+	}
+	remoteDrainWake = func(*session.Instance, string, session.TransitionNotificationEvent) {}
+	t.Cleanup(func() { remoteCursorFetch, remoteDrainWake = oldCursor, oldWake })
 }
 
 // registerDrainTarget keeps these remote-drain integration tests aligned with
