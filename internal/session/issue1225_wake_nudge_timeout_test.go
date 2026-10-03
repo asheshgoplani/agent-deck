@@ -24,7 +24,7 @@ func TestIssue1225_WakeNudgeSendHasTimeout(t *testing.T) {
 		return nil
 	}
 
-	if err := sendWakeNudgeNoWait("", "parent-x"); err != nil {
+	if err := sendWakeNudgeNoWait("", "parent-x", wakeNudgeMessage); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	if !hadDeadline {
@@ -59,7 +59,7 @@ func TestIssue1225_WakeNudgeSendCommandShape(t *testing.T) {
 		return nil
 	}
 
-	if err := sendWakeNudgeNoWait("myprofile", "parent-y"); err != nil {
+	if err := sendWakeNudgeNoWait("myprofile", "parent-y", wakeNudgeMessage); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	want := []string{"-p", "myprofile", "session", "send", "parent-y", wakeNudgeMessage, "--no-wait", "-q"}

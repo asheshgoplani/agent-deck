@@ -918,6 +918,14 @@ agent-deck conductor list [--profile <name>]
 
 ## Inbox Commands
 
+### peek - Show pending records without consuming
+
+```bash
+agent-deck inbox peek [--json] [<session-id>|self]
+```
+
+Read-only view of the parent's pending records, rendered as the prompt-time drain injects them (`[tier] title (id): status` plus the child's text). Nothing is consumed or marked.
+
 ### stats - Communication counters per parent
 
 ```bash

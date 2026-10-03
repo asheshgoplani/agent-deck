@@ -108,6 +108,14 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	if !InboxHasPending(instanceID) {
 		return StopHookDecision{}, false, nil
 	}
+	// Issue #2469, design principle 4: a busy parent is interrupted at its
+	// turn boundary only for urgent records. Info records stay queued and are
+	// injected by the prompt-time drain of the next turn the parent takes
+	// anyway (or by the info digest). When an urgent record is present the
+	// whole queue is drained so the info rides along in the same block.
+	if !InboxHasUrgentPending(instanceID) {
+		return StopHookDecision{}, false, nil
+	}
 
 	stopBlockMu.Lock()
 	defer stopBlockMu.Unlock()
@@ -184,8 +192,16 @@ func urgentLatencyMS(events []TransitionNotificationEvent, now time.Time) int64 
 // FormatCompletionsForInjection renders drained completions as the human-
 // readable reason injected into the conductor's next turn.
 func FormatCompletionsForInjection(events []TransitionNotificationEvent) string {
+	return FormatInboxRecords(events, "Child session(s) completed while you were busy — handle each:")
+}
+
+// FormatInboxRecords renders records under a caller-chosen header line; one
+// renderer for the Stop block, the prompt-time drain and `inbox peek`, so a
+// record reads the same wherever the parent meets it.
+func FormatInboxRecords(events []TransitionNotificationEvent, header string) string {
 	var b strings.Builder
-	b.WriteString("Child session(s) completed while you were busy — handle each:\n")
+	b.WriteString(header)
+	b.WriteByte('\n')
 	for _, ev := range events {
 		status := ev.ToStatus
 		if ev.Kind == transitionKindFinished && ev.DoneStatus != "" {

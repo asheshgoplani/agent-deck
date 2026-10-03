@@ -35,7 +35,8 @@ agent-deck -p <profile> session output <id> -q                           # read 
 agent-deck -p <profile> session output <id> --pane                       # pane capture, ANSI stripped + capped (fallback when transcript read refuses)
 agent-deck -p <profile> session children --json                          # child fleet snapshot + parent id
 agent-deck -p <profile> session children --follow --until-done           # JSONL event stream, exits when all children terminal
-agent-deck -p <profile> inbox drain self --json                          # FIRST step of every heartbeat; consumes exactly-once
+agent-deck -p <profile> inbox drain self --json                          # heartbeat fallback; your UserPromptSubmit hook already drains into [agent-deck inbox] context at every turn start
+agent-deck -p <profile> inbox peek self                                  # look without consuming
 agent-deck -p <profile> session show <id> --json                         # has parent_session_id + substate (list --json does NOT)
 agent-deck -p <profile> session handoff <id> --json                      # build cross-tool handoff prompt, read-only
 agent-deck -p <profile> session search "term" --json --limit 5           # substring search across Claude transcripts

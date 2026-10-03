@@ -305,10 +305,24 @@ func handleHookHandler() {
 	// injected as additionalContext. State, not events — complements the #1225
 	// Stop-edge drain below, which delivers queued deltas. No-op for sessions
 	// without children; AGENTDECK_NO_CHILDREN_CONTEXT=1 opts a session out.
-	if ctxEvent := claudeContextEventName(payload.HookEventName); ctxEvent != "" &&
-		os.Getenv("AGENTDECK_NO_CHILDREN_CONTEXT") != "1" {
-		if summary := buildChildrenContextSummary(instanceID); summary != "" {
-			if out := childrenContextJSON(ctxEvent, summary); out != "" {
+	//
+	// Issue #2469: the same hook first drains the parent's durable inbox and
+	// injects the records (text included) as additionalContext, so the turn
+	// a wake nudge, a heartbeat or a human started already carries every
+	// pending child record and the model acts with zero tool calls. The
+	// fleet snapshot follows, as a one-line delta emitted only when changed.
+	if ctxEvent := claudeContextEventName(payload.HookEventName); ctxEvent != "" {
+		var parts []string
+		if drained, _, derr := session.DrainForPrompt(instanceID); derr == nil && drained != "" {
+			parts = append(parts, drained)
+		}
+		if os.Getenv("AGENTDECK_NO_CHILDREN_CONTEXT") != "1" {
+			if summary := buildChildrenContextSummary(instanceID, normalizeHookEventKey(payload.HookEventName) == "sessionstart"); summary != "" {
+				parts = append(parts, summary)
+			}
+		}
+		if len(parts) > 0 {
+			if out := childrenContextJSON(ctxEvent, strings.Join(parts, "\n")); out != "" {
 				fmt.Println(out)
 			}
 		}

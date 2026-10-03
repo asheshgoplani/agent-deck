@@ -32,7 +32,7 @@ func newStaleHashNotifierFixture(t *testing.T) (*TransitionNotifier, string, fun
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
 		isIdle: func(*Instance) bool { return true },
-		send:   func(*Instance, string) error { sent++; return nil },
+		send:   func(*Instance, string, string) error { sent++; return nil },
 	}
 	build := func(hash string, at time.Time) TransitionNotificationEvent {
 		return TransitionNotificationEvent{

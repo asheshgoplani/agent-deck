@@ -250,7 +250,12 @@ func agentDeckHookObject(cfg claudeHookEventConfig, existing string) jsonObject 
 // hookEventConfigs defines which Claude Code events we subscribe to and their matcher patterns.
 var hookEventConfigs = []claudeHookEventConfig{
 	{Event: "SessionStart", Async: true},
-	{Event: "UserPromptSubmit", Async: true},
+	// Issue #2469: UserPromptSubmit is SYNCHRONOUS so the hook's
+	// additionalContext (the prompt-time inbox drain and the fleet delta)
+	// lands in the turn that is starting, not the next one. The drain
+	// fast-returns for every session with an empty inbox (two stats), so the
+	// flip costs a leaf session only the hook process itself.
+	{Event: "UserPromptSubmit", Async: false},
 	// Issue #1225/#1226 ACTIVATION: Stop is SYNCHRONOUS so Claude Code reads the
 	// {decision:"block",reason} the hook emits to inject busy-parent completions.
 	// Audit B12 (global-flip risk) is mitigated by RUNTIME scope, not a per-session

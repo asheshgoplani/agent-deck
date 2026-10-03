@@ -646,9 +646,42 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	}
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
 	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.wakeForInfoDigests(profile, byID, statuses)
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
+}
+
+// wakeForInfoDigests wakes an idle parent once when info records have waited
+// past [inbox] info_digest_minutes (issue #2469, design principle 4). One
+// non-consuming inbox read per parent per pass; parents are few.
+func (d *TransitionDaemon) wakeForInfoDigests(profile string, byID map[string]*Instance, statuses map[string]string) {
+	parents := map[string]bool{}
+	for _, inst := range byID {
+		if inst != nil && inst.ParentSessionID != "" {
+			parents[inst.ParentSessionID] = true
+		}
+	}
+	now := time.Now()
+	for parentID := range parents {
+		parent := byID[parentID]
+		if parent == nil {
+			continue
+		}
+		cfg := ResolveInboxConfig(parent.Title)
+		window := time.Duration(cfg.GetInfoDigestMinutes()) * time.Minute
+		due, records, children := DigestDue(parentID, window, now)
+		if !due {
+			continue
+		}
+		if st := normalizeStatusString(statuses[parentID]); st != string(StatusIdle) && st != string(StatusWaiting) {
+			continue
+		}
+		if d.notifier.fireDigestNudge(parent, profile, DigestNudgeMessage(records, children)) {
+			markDigestWake(parentID, now)
+			_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsDigest++ })
+		}
+	}
 }
 
 // journalStatusChanges appends one status event per instance whose observed

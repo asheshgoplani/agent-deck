@@ -26,7 +26,7 @@ func TestWakeNudge_SendKeysTimeoutIsBenignDrop(t *testing.T) {
 		nudger: NewWakeNudger(0),
 		now:    func() time.Time { return time.Unix(4000, 0) },
 		isIdle: func(p *Instance) bool { return true },
-		send:   func(p *Instance, profile string) error { return timeoutErr },
+		send:   func(p *Instance, profile, _ string) error { return timeoutErr },
 	}
 
 	res := n.NotifyFinished(event)

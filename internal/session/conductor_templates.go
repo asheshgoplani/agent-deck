@@ -143,9 +143,16 @@ This pulls any child completions that landed in your durable outbox while you we
 busy (issue #1225/#1226). Delivery is pull, not push: a child that finished mid-turn
 committed its completion to ` + "`" + `~/.agent-deck/inboxes/<your-id>.jsonl` + "`" + ` rather than typing
 into your pane. The drain marks records consumed (exactly-once effects) and prints
-them; act on each before composing your status. Your Stop hook drains the same queue
-automatically at each turn boundary, so this heartbeat drain is the idle-conductor
-fallback — together they guarantee no completion is missed whether you are busy or idle.
+them; act on each before composing your status. Your hooks drain the same queue
+automatically: at the start of every turn (records appear in your context under
+` + "`" + `[agent-deck inbox]` + "`" + `) and at each turn boundary for urgent records, so this heartbeat
+drain is the fallback — together they guarantee no completion is missed.
+
+Records are tiered and carry the child's own text (issue #2469): ` + "`" + `urgent` + "`" + ` (a completion
+sentinel, an error, a question, or a reply to something you or a human sent) wakes you;
+` + "`" + `info` + "`" + ` (progress in a turn a background task started) waits for your next turn or a
+digest. Act on the text in the record. Do NOT run ` + "`" + `session output` + "`" + ` on a child whose
+record you already have unless the text is clipped and you need the rest.
 
 For child work still in flight, wait with one blocking ` + "`" + `agent-deck -p <PROFILE> session children --follow --until-done` + "`" + ` call. Do not spend turns repeatedly calling ` + "`" + `list --json` + "`" + ` or ` + "`" + `session children --json` + "`" + `.
 

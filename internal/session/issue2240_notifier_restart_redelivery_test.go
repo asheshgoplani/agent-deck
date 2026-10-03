@@ -103,7 +103,7 @@ func (f *restartFixture) newDaemon() *TransitionDaemon {
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
 		isIdle: func(*Instance) bool { return true },
-		send: func(*Instance, string) error {
+		send: func(*Instance, string, string) error {
 			f.mu.Lock()
 			f.nudge++
 			f.mu.Unlock()
@@ -294,7 +294,7 @@ func TestCommit_NoWakeNudgeForAlreadyConsumedTurn(t *testing.T) {
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
 		isIdle: func(*Instance) bool { return true },
-		send:   func(*Instance, string) error { sent++; return nil },
+		send:   func(*Instance, string, string) error { sent++; return nil },
 	}
 
 	if res := n.NotifyFinished(event); res.DeliveryResult != transitionDeliveryCommitted {
