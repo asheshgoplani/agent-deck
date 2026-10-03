@@ -34,6 +34,8 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[notifications] Section](#notifications-section)
 - [[inbox] Section](#inbox-section)
 - [[comms] Section](#comms-section)
+- [[send] Section](#send-section)
+- [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
@@ -657,11 +659,15 @@ Conductor (meta-agent orchestration) settings. The `[conductor]` block also carr
 ```toml
 [conductor]
 dir = ""   # Override the base conductor directory (default: <data-dir>/conductor)
+human_digest_minutes = 30   # info items for the human leave as one digest at most this often
+need_retire_cycles = 3      # unanswered urgent line: escalated once on this cycle, then dropped
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `dir` | string | `""` | Base directory for conductor homes (`meta.json`, `CLAUDE.md`, heartbeat scripts). Empty uses the default resolution: `$XDG_DATA_HOME/agent-deck/conductor` with a legacy `~/.agent-deck/conductor` fallback. Tilde and `$VAR` are expanded. |
+| `human_digest_minutes` | int | `30` | Conductor to human (#2469): queued `info` items (`conductor notify --tier info`, `[info]` reply lines) are sent by the bridge as ONE digest once this many minutes passed since the last digest (or since the oldest item, before the first), or earlier right after the next urgent message (always as its own message, at most 20 items each). `0` sends them on the next bridge poll. |
+| `need_retire_cycles` | int | `3` | An unanswered `NEED:` / `[urgent]` / `URGENT:` heartbeat line is forwarded on cycles 1..N-1, replaced once on cycle N by `STILL BLOCKED (N cycles, no reply): <line>`, then dropped until it disappears from a reply. A cycle counts only once the bridge delivered that reply (`tier-filter --ack`), so a channel outage never retires a line unseen. Counts persist on disk (`runtime/human-outbox/<conductor>.need.json`). |
 
 > **Note:** Each conductor's `heartbeat.sh` honors `[conductor].dir` and self-heals — when you change `dir`, the script content is auto-refreshed by the migration that runs on the next `agent-deck conductor list` / `status` / `setup` / `teardown`. The surface that goes **stale** is the daemon, not the script: the launchd heartbeat plist (and the Linux systemd unit) bakes absolute script/log paths at install time and is regenerated only by `agent-deck conductor setup`. After changing `dir`, re-run `agent-deck conductor setup <name>` per conductor to regenerate and reload the daemon. (A `conductor migrate-dir` helper to automate this is planned.) A `conductor list`/`status` after a dir change will flag a stale heartbeat daemon in its `[migrated]` output.
 
@@ -1011,11 +1017,28 @@ The Comms Ledger (docs/comms.md): one append-only message log per profile, writt
 ```toml
 [comms]
 ledger = true   # default false
+## [send] Section
+
+Tunes `agent-deck session send` (comms redesign PR5).
+
+```toml
+[send]
+tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
+## [remotes.<name>] Talkback
+
+Remotes are added with `agent-deck remote add <name> <user@host>`; this key makes the notify-daemon pull a remote's child records on its own instead of waiting for a conductor to run `agent-deck remote drain`.
+
+```toml
+[remotes.boxb]
+host = "worker@box-b"
+talkback_interval_secs = 30   # 0 / unset = off
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `ledger` | bool | `false` | Spool hook text to `runtime/comms/spool/` and let the notify-daemon commit records to `comms/<profile>/`. `false`: no spool file, no ledger directory. |
+| `tag_sends` | bool | `true` | A `session send` from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one `[agent-deck from:<sender-id>]` line, so the receiver's reply is classified as a send and, when the sender is not the receiver's parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). `false` turns tagging off for every send (`--no-tag` does it per send). Human shells, senders that are not Claude-compatible sessions, `--draft`, bare slash commands, heartbeats, sends to oneself and non-Claude targets are never tagged. |
+| `talkback_interval_secs` | int | `0` (off) | Every N seconds the notify-daemon runs the same incremental drain as `agent-deck remote drain <name> --into <conductor>` for every local `conductor-*` session enrolled with that remote (it has a cursor for it, i.e. it drained it once, or it holds a pending record from it). 30 is a good value. The drain runs off the poll loop, bounded at 60 s, and a remote with a drain in flight is skipped. A failure backs off from 1 min to 10 min; after 3 consecutive failures each enrolled conductor gets ONE urgent record (`remote <name>: talkback failing for N min: <last error>`), and a success clears the streak. An ingested urgent record wakes an idle conductor exactly like a local one; info records ride its next turn. |
 
 ## [health] Section
 

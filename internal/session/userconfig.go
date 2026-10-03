@@ -126,6 +126,9 @@ type UserConfig struct {
 	// available, falling back to tmux keystrokes otherwise. Discussion #2089.
 	SendTransport string `toml:"send_transport,omitempty"`
 
+	// Send tunes `agent-deck session send` ([send] section). See SendSettings.
+	Send SendSettings `toml:"send,omitempty"`
+
 	// Inbox tunes what reaches a parent session and when (issue #2469):
 	// which tiers wake it, how much child text a record carries, the info
 	// digest window. See InboxConfig.
@@ -1092,6 +1095,13 @@ type RemoteConfig struct {
 	// hosts where it is not on the non-login SSH PATH (e.g.
 	// "/opt/homebrew/bin/mosh-server"). Empty uses mosh's default.
 	MoshServer string `toml:"mosh_server,omitempty"`
+
+	// TalkbackIntervalSecs makes the notify-daemon pull this remote's child
+	// records into every enrolled local conductor's inbox on its own, every
+	// N seconds (0 = off, the default; 30 is a good value). A conductor is
+	// enrolled once it has drained the remote (`remote drain`), which leaves a
+	// cursor behind.
+	TalkbackIntervalSecs int `toml:"talkback_interval_secs,omitempty"`
 }
 
 // Remote attach transports accepted by RemoteConfig.Transport.
@@ -1985,6 +1995,23 @@ func (c *UserConfig) GetSendTransport() string {
 		return "auto"
 	}
 	return "tmux"
+}
+
+// SendSettings is the [send] section.
+type SendSettings struct {
+	// TagSends prefixes a send made from inside an agent-deck session with
+	// one "[agent-deck from:<sender-id>]" line so the receiver's reply is
+	// routed back to the sender (comms redesign PR5). Default true (nil).
+	TagSends *bool `toml:"tag_sends,omitempty"`
+}
+
+// GetTagSends reports whether `session send` tags agent-originated sends.
+// Default true; only an explicit tag_sends = false turns it off.
+func (c *UserConfig) GetTagSends() bool {
+	if c == nil || c.Send.TagSends == nil {
+		return true
+	}
+	return *c.Send.TagSends
 }
 
 // ClaudeSettings defines Claude Code configuration

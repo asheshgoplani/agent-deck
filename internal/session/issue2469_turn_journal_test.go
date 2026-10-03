@@ -62,7 +62,7 @@ func newTurnTestFixture(t *testing.T) *turnTestFixture {
 	n.wake = &wakeNudgeWiring{
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
-		isIdle: func(*Instance) bool { return true },
+		isIdle: func(*Instance, string) bool { return true },
 		send:   func(*Instance, string, string) error { sends++; return nil },
 	}
 	d := &TransitionDaemon{

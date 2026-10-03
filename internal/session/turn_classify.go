@@ -76,6 +76,18 @@ const (
 // recognises it today so a tagged send is never mistaken for background noise.
 const sendEnvelopePrefix = "[agent-deck from:"
 
+// SendEnvelope is the one-line tag `session send` puts above a message sent
+// from inside an agent-deck session.
+func SendEnvelope(senderID string) string {
+	return sendEnvelopePrefix + strings.TrimSpace(senderID) + "]"
+}
+
+// HasSendEnvelope reports whether message already starts with an envelope
+// (a forwarded or re-sent message), so it is never tagged twice.
+func HasSendEnvelope(message string) bool {
+	return strings.HasPrefix(strings.TrimSpace(message), sendEnvelopePrefix)
+}
+
 // TurnFacts is everything the producer needs to tier a child's finished turn.
 type TurnFacts struct {
 	// UUID is the transcript uuid of the assistant record that carries the
@@ -268,7 +280,12 @@ func turnTextHash(text string) string {
 // the clip. max <= 0 means DefaultTurnTextBytes; MaxTurnTextBytes is the hard
 // ceiling so no record ever grows past the inbox line scanner's comfort zone.
 func CapTurnText(text string, max int) string {
-	max = clampTurnTextBytes(max)
+	return capTextBytes(text, clampTurnTextBytes(max))
+}
+
+// capTextBytes truncates text to at most max bytes on a rune boundary,
+// marking the clip. No defaults or ceilings: callers apply their own.
+func capTextBytes(text string, max int) string {
 	if len(text) <= max {
 		return text
 	}

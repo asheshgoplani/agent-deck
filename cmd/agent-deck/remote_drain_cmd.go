@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -72,6 +73,39 @@ var remoteWriterProbe = func(ctx context.Context, rc session.RemoteConfig, name 
 	return runner.FetchWriterStatus(ctx)
 }
 
+// remoteCursorFetch is the incremental ssh read (`inbox export --after`). It
+// answers session.ErrRemoteCursorUnsupported for a remote too old for it, and
+// the drain falls back to the full export through the fetcher argument.
+var remoteCursorFetch = func(ctx context.Context, name string, rc session.RemoteConfig, cursor session.RemoteCursor) (session.RemoteExport, error) {
+	session.CleanStaleSSHSockets()
+	return session.NewSSHRunner(name, rc).FetchRecordsAfter(ctx, cursor)
+}
+
+// remoteDrainWake wakes the receiving conductor for an ingested record of a
+// waking tier, through the same gate and headline as a local record.
+var remoteDrainWake = session.WakeParentForRecord
+
+// lookupSessionAnyProfile finds a session by exact id in any profile, for
+// the wake after a drain. Nil when it is not registered.
+func lookupSessionAnyProfile(id string) (*session.Instance, string) {
+	profiles, err := session.ListProfiles()
+	if err != nil {
+		return nil, ""
+	}
+	for _, profile := range profiles {
+		_, instances, _, err := loadSessionData(profile)
+		if err != nil {
+			continue
+		}
+		for _, inst := range instances {
+			if inst.ID == id {
+				return inst, profile
+			}
+		}
+	}
+	return nil, ""
+}
+
 func handleRemoteDrain(args []string) {
 	if code := runRemoteDrain(os.Stdout, os.Stderr, args, fetchRemoteRecordsOverSSH); code != 0 {
 		os.Exit(code)
@@ -132,6 +166,15 @@ type remoteDrainResult struct {
 	// fails the drain before a result can be emitted.
 	Writer  *session.WriterStatus                 `json:"writer,omitempty"`
 	Records []session.TransitionNotificationEvent `json:"records"`
+	// Incremental talkback: the cursor sent with --after and the one saved
+	// after the batch landed (equal when the cursor was pinned). Absent when
+	// the remote only speaks the full export (legacy_export).
+	CursorBefore *session.RemoteCursor `json:"cursor_before,omitempty"`
+	CursorAfter  *session.RemoteCursor `json:"cursor_after,omitempty"`
+	LegacyExport bool                  `json:"legacy_export,omitempty"`
+	// Woke reports that an ingested record of a waking tier nudged the
+	// receiving conductor (once per drain).
+	Woke bool `json:"woke,omitempty"`
 }
 
 func printRemoteDrainUsage(w io.Writer) {
@@ -140,6 +183,11 @@ func printRemoteDrainUsage(w io.Writer) {
 	fmt.Fprintln(w, "Pull completion and transition records from a remote agent-deck instance")
 	fmt.Fprintln(w, "into this machine's inbox. The remote is read-only: nothing there is")
 	fmt.Fprintln(w, "consumed, so draining twice — or from two conductors — is safe.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Each (remote, conductor) keeps a cursor (`agent-deck inbox cursor`), so a")
+	fmt.Fprintln(w, "drain ships only what is new; it advances only once every record landed.")
+	fmt.Fprintln(w, "An ingested urgent record wakes the conductor like a local one. Set")
+	fmt.Fprintln(w, "[remotes.<name>] talkback_interval_secs to let the notify-daemon drain on its own.")
 }
 
 func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordFetcher) (exitCode int) {
@@ -195,44 +243,57 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		return inboxExitCode(err)
 	}
 
-	records, err := fetch(context.Background(), name, rc)
-
-	// Probe after the fetch. Its success is part of the drain transaction: the
-	// export and writer status are separate SSH calls, so a missing answer here
-	// can mean the host stalled after returning a partial export.
-	var writer *session.WriterStatus
-	ws, writerProbeErr := remoteWriterProbe(context.Background(), rc, name)
-	if writerProbeErr == nil {
-		writer = &ws
-	}
+	ctx := context.Background()
+	res, err := session.RunRemoteTalkback(ctx, name, targetID, session.RemoteTalkbackDeps{
+		FetchAfter: func(ctx context.Context, cursor session.RemoteCursor) (session.RemoteExport, error) {
+			return remoteCursorFetch(ctx, name, rc, cursor)
+		},
+		FetchAll: func(ctx context.Context) ([]session.TransitionNotificationEvent, error) {
+			return fetch(ctx, name, rc)
+		},
+		WriterProbe: func(ctx context.Context) (session.WriterStatus, error) {
+			return remoteWriterProbe(ctx, rc, name)
+		},
+		Parent: func() (*session.Instance, string) { return lookupSessionAnyProfile(targetID) },
+		Wake:   remoteDrainWake,
+	})
 	if err != nil {
-		fmt.Fprintf(stderr, "Error: remote '%s' (%s) could not be drained: %v\n", name, rc.Host, err)
-		// True for both shapes of failure: a host that never answered, and a
-		// host that answered "I cannot read my own records" (review P2c). The
-		// underlying error above says which.
-		fmt.Fprintln(stderr, "Nothing was pulled. This is a FAILED drain, NOT an empty inbox.")
-		return drainExitUnreachable
+		var te *session.RemoteTalkbackError
+		if !errors.As(err, &te) {
+			te = &session.RemoteTalkbackError{Stage: session.RemoteTalkbackStageFetch, Err: err}
+		}
+		switch te.Stage {
+		case session.RemoteTalkbackStageWriter:
+			fmt.Fprintf(stderr, "UNVERIFIED: remote '%s' (%s) writer-status probe failed after records were fetched.\n", name, rc.Host)
+			fmt.Fprintf(stderr, "Probe failure: %v\n", te.Err)
+			fmt.Fprintln(stderr, "The remote may have stalled mid-drain; no fetched record was classified as finished or written locally.")
+			return drainExitUnreachable
+		case session.RemoteTalkbackStageStalled:
+			fmt.Fprintf(stderr, "STALLED: remote '%s' (%s) is not recording session transitions.\n", name, rc.Host)
+			fmt.Fprintf(stderr, "%s\n", te.Writer.Detail)
+			fmt.Fprintln(stderr, "No fetched record was classified as finished or written locally.")
+			return drainExitUnreachable
+		case session.RemoteTalkbackStageIngest:
+			fmt.Fprintf(stderr, "Error: writing to local inbox %s: %v\n", targetID, te.Err)
+			if !res.Legacy {
+				fmt.Fprintln(stderr, "The cursor was not advanced; the next drain refetches this batch.")
+			}
+			return 1
+		default:
+			fmt.Fprintf(stderr, "Error: remote '%s' (%s) could not be drained: %v\n", name, rc.Host, te.Err)
+			// True for both shapes of failure: a host that never answered, and a
+			// host that answered "I cannot read my own records" (review P2c). The
+			// underlying error above says which.
+			fmt.Fprintln(stderr, "Nothing was pulled. This is a FAILED drain, NOT an empty inbox.")
+			return drainExitUnreachable
+		}
 	}
-	if writerProbeErr != nil {
-		fmt.Fprintf(stderr, "UNVERIFIED: remote '%s' (%s) writer-status probe failed after records were fetched.\n", name, rc.Host)
-		fmt.Fprintf(stderr, "Probe failure: %v\n", writerProbeErr)
-		fmt.Fprintln(stderr, "The remote may have stalled mid-drain; no fetched record was classified as finished or written locally.")
-		return drainExitUnreachable
-	}
-	if writer != nil && !writer.Running {
-		fmt.Fprintf(stderr, "STALLED: remote '%s' (%s) is not recording session transitions.\n", name, rc.Host)
-		fmt.Fprintf(stderr, "%s\n", writer.Detail)
-		fmt.Fprintln(stderr, "No fetched record was classified as finished or written locally.")
-		return drainExitUnreachable
-	}
-
-	records, fresh, written, duplicates, unknown, restoreDetected, err := ingestRemoteRecords(name, targetID, records)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: writing to local inbox %s: %v\n", targetID, err)
-		return 1
-	}
-	if restoreDetected {
+	records, fresh, written, duplicates, unknown, writer := res.Stored, res.Fresh, res.Written, res.Duplicates, res.Unknown, res.Writer
+	if res.RestoreDetected {
 		fmt.Fprintf(stderr, "Warning: detected consumed-ledger restore for inbox %s; forgotten window-inside records are unknown, never new.\n", targetID)
+	}
+	if !res.Legacy && unknown > 0 {
+		fmt.Fprintf(stderr, "Cursor not advanced: %d record(s) could not be confirmed as landed; the next drain refetches them.\n", unknown)
 	}
 
 	if *asJSON {
@@ -249,6 +310,10 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 			Unknown:         unknown,
 			Writer:          writer,
 			Records:         records,
+			CursorBefore:    res.CursorBefore,
+			CursorAfter:     res.CursorAfter,
+			LegacyExport:    res.Legacy,
+			Woke:            res.Woke,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -298,58 +363,6 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		fmt.Fprintf(stdout, "  %d record(s) fetched, nothing new — all already present.\n", len(records))
 	}
 	return 0
-}
-
-// ingestRemoteRecords writes the pulled records into the local inbox, stamping
-// each with the remote it came from, and returns the records AS STORED so the
-// report shows what actually landed. The dedup decision covers both pending
-// inbox fingerprints and the durable consumed-turn ledger; this only counts
-// the answers.
-// fresh carries the records that were ACTUALLY committed by this call, separate
-// from stored (everything fetched). The display needs the distinction: a drain
-// that commits nothing was re-printing the entire backlog as though it had just
-// arrived, which reads like new work on every heartbeat.
-func ingestRemoteRecords(remoteName, targetID string, records []session.TransitionNotificationEvent) (
-	stored, fresh []session.TransitionNotificationEvent, written, duplicates, unknown int, restoreDetected bool, err error) {
-	stored = make([]session.TransitionNotificationEvent, 0, len(records))
-	for _, ev := range records {
-		ev.SourceRemote = remoteName
-		// Review round 2 (blocking): a child id is caller-chosen and only unique
-		// on the host that minted it, so two hosts running the same named task
-		// mint the same id. Everything downstream keys identity on the child id
-		// — collapseTurnRetries, TurnFingerprint, EventFingerprint, the sweeps — so
-		// unscoped ids make one host's record silently destroy the other's while
-		// the drain reports "1 new". Namespacing here fixes all of them at once,
-		// in the repo's existing `<remote>:<session>` spelling.
-		ev.ChildSessionID = session.RemoteScopedChildID(remoteName, ev.ChildSessionID)
-		// The remote derived its TurnFingerprint from the UNSCOPED id, so it
-		// carries the same collision into the consumed-turn ledger. Re-derive it
-		// from the scoped record.
-		ev.TurnFingerprint = session.TurnFingerprint(ev)
-		// The record now belongs to THIS conductor's inbox; the remote's own
-		// target id is meaningless on this machine.
-		ev.TargetSessionID = targetID
-		ev.TargetKind = "parent"
-		stored = append(stored, ev)
-
-		presence, werr := session.WriteInboxEventIfUnseen(targetID, ev)
-		if werr != nil {
-			return stored, fresh, written, duplicates, unknown, restoreDetected, werr
-		}
-		switch presence {
-		case session.InboxEventInserted:
-			written++
-			fresh = append(fresh, ev)
-		case session.InboxEventAlreadyPresent:
-			duplicates++
-		case session.InboxEventPresenceUnknownAfterLedgerRestore:
-			unknown++
-			restoreDetected = true
-		default:
-			unknown++
-		}
-	}
-	return stored, fresh, written, duplicates, unknown, restoreDetected, nil
 }
 
 // lookupRemoteFor resolves what the user typed to a configured remote: the
