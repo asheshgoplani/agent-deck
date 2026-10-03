@@ -2404,6 +2404,12 @@ func remoteVerbReadOnly(args []string) bool {
 		return second == "export" || second == "writer-status"
 	case "session":
 		return second == "show" || second == "output" || second == "pane"
+	case "update":
+		// The timer status is a read; the timer install/heal is not, but
+		// it is idempotent (an active current timer is left alone), so a
+		// second run after a refused or interrupted first one is harmless
+		// (#2472). Any other update verb installs a binary: never retried.
+		return second == "--timer-status" || second == "--install-timer" || second == "--ensure-timer"
 	case "recall":
 		// Every forwarded recall verb reads the remote's index; export is
 		// a read too (the write happens on the puller).

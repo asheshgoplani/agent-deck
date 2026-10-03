@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 // versionCheckInterval is how often the always-on daemon re-reads the on-disk
@@ -94,6 +96,10 @@ func handleNotifyDaemon(args []string) {
 	// process to poll, not just the ones with a UI. Same installer, same
 	// gates (auto_install, suppression, Homebrew) as `web --no-tui` uses.
 	startHeadlessAutoInstall(ctx)
+
+	// The update timer heals the way the hooks do (#2472): once per daemon
+	// start, off the start path, gated by [updates] manage_timer.
+	go healUpdateTimerAtDaemonStart(logging.ForComponent(logging.CompNotif))
 
 	if err := daemon.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "notify-daemon error: %v\n", err)
@@ -214,6 +220,26 @@ func parseAgentDeckVersion(s string) string {
 		}
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// daemonEnsureUpdateTimer is the daemon's timer heal; a seam so tests never
+// touch the host's launchd or systemd.
+var daemonEnsureUpdateTimer = session.AutoEnsureUpdateTimer
+
+// healUpdateTimerAtDaemonStart installs or heals this host's update timer
+// once (a missing, inactive or legacy timer; see update.EnsureTimer) and
+// logs one line with the outcome. Best-effort: the daemon runs regardless.
+func healUpdateTimerAtDaemonStart(log *slog.Logger) update.TimerEnsureResult {
+	res, err := daemonEnsureUpdateTimer(log)
+	switch {
+	case err != nil:
+		log.Warn("update_timer_heal_failed", "action", res.Action, "error", err.Error())
+	case res.Changed():
+		log.Info("update_timer_healed", "action", res.Action, "kind", res.Status.Kind, "line", res.Line())
+	default:
+		log.Info("update_timer_heal_skipped", "action", res.Action, "reason", res.Reason)
+	}
+	return res
 }
 
 // healClaudeHooksAtDaemonStart runs session.HealClaudeHooks for the daemon's

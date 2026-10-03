@@ -331,6 +331,9 @@ func TestRunTimerCommand_InstallStatusUninstall(t *testing.T) {
 		"launchctl bootout gui/501/com.agentdeck.autoupdate",
 		"launchctl bootstrap gui/501 " + cfg.PlistPath(),
 		"launchctl print gui/501/com.agentdeck.autoupdate",
+		// #2472: the result reports the timer's state after the install
+		// (a read, like the verify step before it).
+		"launchctl print gui/501/com.agentdeck.autoupdate",
 	}, r.calls)
 	out.Reset()
 

@@ -1522,6 +1522,15 @@ type UpdateSettings struct {
 	// the named remote by hand, regardless of this setting.
 	SweepRemotes *bool `toml:"sweep_remotes,omitempty"`
 
+	// ManageTimer lets agent-deck install and heal its own update timer
+	// (launchd on macOS, systemd --user on Linux) without a separate
+	// `update --install-timer`: `update --unattended`, the TUI's periodic
+	// check, the notify daemon at start and `remote update` install it
+	// where none is active and migrate a hand-made agentdeck-autoupdate
+	// pair (#2472). Default: true (nil = true); set false to manage the
+	// timer by hand.
+	ManageTimer *bool `toml:"manage_timer,omitempty"`
+
 	// NotifyInCLI shows update notification in CLI commands (not just TUI)
 	// Default: true (nil = true)
 	NotifyInCLI *bool `toml:"notify_in_cli,omitempty"`
@@ -1550,6 +1559,15 @@ func (u UpdateSettings) GetSweepRemotes() bool {
 		return false
 	}
 	return *u.SweepRemotes
+}
+
+// GetManageTimer reports whether agent-deck installs and heals its own
+// update timer (default: true).
+func (u UpdateSettings) GetManageTimer() bool {
+	if u.ManageTimer == nil {
+		return true
+	}
+	return *u.ManageTimer
 }
 
 // GetCheckEnabled returns whether update checks are enabled (default: true).
@@ -5413,6 +5431,10 @@ check_enabled = true
 # Push the controller's binary onto every configured remote after an
 # install, instead of nudging remotes to pull it themselves (default: false)
 # sweep_remotes = true
+# Install and heal the update timer automatically (unattended runs, the TUI,
+# the notify daemon, remote update); false leaves it to --install-timer
+# (default: true)
+# manage_timer = false
 # Show update notification in CLI commands, not just TUI (default: true)
 notify_in_cli = true
 
