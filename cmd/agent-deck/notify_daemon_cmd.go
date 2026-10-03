@@ -83,23 +83,7 @@ func handleNotifyDaemon(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// STEP 1 (issue #1214): never run stale code. The transition-notifier unit
-	// is Restart=always, so cleanly exiting on a binary upgrade guarantees the
-	// supervisor brings the daemon back on the current binary — the 20-day
-	// stale window becomes impossible. RuntimeMaxSec in the unit file is the
-	// belt-and-suspenders backstop for environments without this watcher.
-	go watchBinaryVersion(ctx, cancel)
-
-	// A headless machine running only notify-daemon (no `web --no-tui`, no
-	// open TUI) previously had nothing polling GitHub between runs of the
-	// daily update timer: near-event-driven updates need every long-running
-	// process to poll, not just the ones with a UI. Same installer, same
-	// gates (auto_install, suppression, Homebrew) as `web --no-tui` uses.
-	startHeadlessAutoInstall(ctx)
-
-	// The update timer heals the way the hooks do (#2472): once per daemon
-	// start, off the start path, gated by [updates] manage_timer.
-	go healUpdateTimerAtDaemonStart(logging.ForComponent(logging.CompNotif))
+	realNotifyDaemonStart().begin(ctx, cancel)
 
 	if err := daemon.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "notify-daemon error: %v\n", err)
@@ -220,6 +204,46 @@ func parseAgentDeckVersion(s string) string {
 		}
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// notifyDaemonStart is the background work the long-running daemon starts
+// before its run loop. A seam so tests can drive the real start sequence
+// with fakes and prove what it starts, and how often.
+type notifyDaemonStart struct {
+	watchVersion        func(ctx context.Context, cancel context.CancelFunc)
+	headlessAutoInstall func(ctx context.Context)
+	healUpdateTimer     func()
+}
+
+func realNotifyDaemonStart() notifyDaemonStart {
+	return notifyDaemonStart{
+		watchVersion:        watchBinaryVersion,
+		headlessAutoInstall: startHeadlessAutoInstall,
+		healUpdateTimer: func() {
+			healUpdateTimerAtDaemonStart(logging.ForComponent(logging.CompNotif))
+		},
+	}
+}
+
+// begin starts the daemon's background work; it is called once per start.
+func (s notifyDaemonStart) begin(ctx context.Context, cancel context.CancelFunc) {
+	// STEP 1 (issue #1214): never run stale code. The transition-notifier unit
+	// is Restart=always, so cleanly exiting on a binary upgrade guarantees the
+	// supervisor brings the daemon back on the current binary — the 20-day
+	// stale window becomes impossible. RuntimeMaxSec in the unit file is the
+	// belt-and-suspenders backstop for environments without this watcher.
+	go s.watchVersion(ctx, cancel)
+
+	// A headless machine running only notify-daemon (no `web --no-tui`, no
+	// open TUI) previously had nothing polling GitHub between runs of the
+	// daily update timer: near-event-driven updates need every long-running
+	// process to poll, not just the ones with a UI. Same installer, same
+	// gates (auto_install, suppression, Homebrew) as `web --no-tui` uses.
+	s.headlessAutoInstall(ctx)
+
+	// The update timer heals the way the hooks do (#2472): once per daemon
+	// start, off the start path, gated by [updates] manage_timer.
+	go s.healUpdateTimer()
 }
 
 // daemonEnsureUpdateTimer is the daemon's timer heal; a seam so tests never
