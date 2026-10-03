@@ -28,11 +28,19 @@ func DrainForPrompt(instanceID string) (string, []TransitionNotificationEvent, e
 	if strings.TrimSpace(instanceID) == "" || !InboxHasPending(instanceID) {
 		return "", nil, nil
 	}
-	events, err := DrainInboxForParent(instanceID)
+	var left int
+	events, err := DrainInboxForParentWhere(instanceID, func(pending []TransitionNotificationEvent) []TransitionNotificationEvent {
+		take := selectRecordsForBudget(pending, promptContextBudgetBytes)
+		left = len(pending) - len(take)
+		return take
+	})
 	if err != nil || len(events) == 0 {
 		return "", nil, err
 	}
-	text := formatInboxRecordsBudgeted(events, fmt.Sprintf("%s %s pending from your children — act on each (the text is the child's own words; do not re-read the child unless you need more):", inboxContextHeader, countByTier(events)), promptContextBudgetBytes)
+	text := FormatInboxRecords(events, fmt.Sprintf("%s %s pending from your children — act on each (the text is the child's own words; do not re-read the child unless you need more):", inboxContextHeader, countByTier(events)))
+	if left > 0 {
+		text += fmt.Sprintf("%d more record(s) are still queued and arrive on your next turn (or now with `agent-deck inbox drain self --json`).\n", left)
+	}
 	_ = BumpInboxStats(instanceID, func(s *InboxStats) {
 		s.Drains++
 		s.RecordsDelivered += int64(len(events))
@@ -42,6 +50,29 @@ func DrainForPrompt(instanceID string) (string, []TransitionNotificationEvent, e
 		}
 	})
 	return text, events, nil
+}
+
+// selectRecordsForBudget picks the records whose full rendering fits the
+// byte budget: urgent records first (oldest first), then info, each with its
+// text. Records that do not fit are NOT consumed; they stay queued for the
+// next turn, so nothing is ever consumed without being shown.
+func selectRecordsForBudget(pending []TransitionNotificationEvent, budget int) []TransitionNotificationEvent {
+	used := 200 // header + the "more queued" line
+	var take []TransitionNotificationEvent
+	for _, wantUrgent := range []bool{true, false} {
+		for _, ev := range pending {
+			if ev.IsUrgent() != wantUrgent {
+				continue
+			}
+			one := len(FormatInboxRecords([]TransitionNotificationEvent{ev}, ""))
+			if used+one > budget {
+				continue
+			}
+			used += one
+			take = append(take, ev)
+		}
+	}
+	return take
 }
 
 // countByTier renders "2 urgent, 3 info" style counts for a header.
@@ -221,51 +252,5 @@ func DigestDue(parentID string, window time.Duration, now time.Time) (due bool, 
 
 // promptContextBudgetBytes keeps the injected block under Claude Code's
 // additionalContext limit (10,000 characters; past it the model sees only a
-// preview). Records beyond the budget are listed as one-liners without text,
-// so delivery degrades to "re-read that child" instead of to a truncated blob.
+// preview). Records beyond the budget stay queued for the next turn.
 const promptContextBudgetBytes = 9000
-
-func formatInboxRecordsBudgeted(events []TransitionNotificationEvent, header string, budget int) string {
-	full := FormatInboxRecords(events, header)
-	if len(full) <= budget {
-		return full
-	}
-	// Urgent records keep their text first; info records are trimmed first.
-	var withText, overflow []TransitionNotificationEvent
-	used := len(header) + 1
-	for _, pass := range [][]bool{{true}, {false}} {
-		for _, ev := range events {
-			if ev.IsUrgent() != pass[0] {
-				continue
-			}
-			one := FormatInboxRecords([]TransitionNotificationEvent{ev}, "")
-			if used+len(one) <= budget {
-				withText = append(withText, ev)
-				used += len(one)
-			} else {
-				stripped := ev
-				stripped.Text = ""
-				overflow = append(overflow, stripped)
-			}
-		}
-	}
-	out := FormatInboxRecords(withText, header)
-	if len(overflow) == 0 {
-		return out
-	}
-	// The overflow list itself must fit: list as many one-liners as the
-	// remaining budget allows and summarise the rest by count.
-	listed := 0
-	for listed < len(overflow) {
-		candidate := FormatInboxRecords(overflow[:listed+1], "")
-		if len(out)+len(candidate)+200 > budget {
-			break
-		}
-		listed++
-	}
-	tail := FormatInboxRecords(overflow[:listed], fmt.Sprintf("%d more record(s), text omitted for size (read the child with `agent-deck session output <id> -q` if needed):", len(overflow)))
-	if listed < len(overflow) {
-		tail += fmt.Sprintf("… and %d further record(s) not listed; they are consumed, see `agent-deck inbox stats self`.\n", len(overflow)-listed)
-	}
-	return out + tail
-}

@@ -166,38 +166,64 @@ func TestIssue2469_FleetBlockUnchangedSkips(t *testing.T) {
 	}
 }
 
-func TestIssue2469_PromptInjectionStaysUnderBudget(t *testing.T) {
-	var events []TransitionNotificationEvent
+func TestIssue2469_PromptInjectionStaysUnderBudgetAndConsumesOnlyWhatItShows(t *testing.T) {
+	reviewTestHome(t, "default")
+	parent := "parent-budget"
 	for i := 0; i < 120; i++ {
 		tier := TurnTierInfo
 		if i%5 == 0 {
 			tier = TurnTierUrgent
 		}
-		events = append(events, TransitionNotificationEvent{ChildSessionID: fmt.Sprintf("c%03d", i), ChildTitle: "child", ToStatus: "waiting", Tier: tier, Text: strings.Repeat("x", 500)})
+		commitTestRecord(t, parent, TransitionNotificationEvent{ChildSessionID: fmt.Sprintf("c%03d", i), ChildTitle: "child", Tier: tier, Text: strings.Repeat("x", 500), LastOutputHash: fmt.Sprintf("turn:%d", i)})
 	}
-	out := formatInboxRecordsBudgeted(events, "[agent-deck inbox] header", promptContextBudgetBytes)
-	if len(out) > promptContextBudgetBytes+200 {
-		t.Fatalf("injection %d bytes exceeds the budget", len(out))
-	}
-	// Urgent records keep their text first, in order, until the budget is
-	// spent; 24 x ~560 B cannot all fit in 9,000 B, so assert the prefix.
-	kept := 0
-	for i := 0; i < 120; i += 5 {
-		if strings.Contains(out, fmt.Sprintf("(c%03d): waiting\n    xxxx", i)) {
-			if kept != i/5 {
-				t.Fatalf("urgent texts must be kept in order; c%03d kept after a gap", i)
-			}
-			kept++
+	var shown []TransitionNotificationEvent
+	rounds := 0
+	for rounds < 20 {
+		text, events, err := DrainForPrompt(parent)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
 		}
+		if text == "" {
+			break
+		}
+		rounds++
+		if len(text) > promptContextBudgetBytes+200 {
+			t.Fatalf("round %d injection %d bytes exceeds the budget", rounds, len(text))
+		}
+		for _, ev := range events {
+			if !strings.Contains(text, fmt.Sprintf("(%s): waiting\n    xxxx", ev.ChildSessionID)) {
+				t.Fatalf("round %d consumed %s without showing its text", rounds, ev.ChildSessionID)
+			}
+		}
+		if rounds == 1 {
+			// 24 urgent x ~560 B exceed the budget, so the whole first round
+			// must be urgent records.
+			for i, ev := range events {
+				if !ev.IsUrgent() {
+					t.Fatalf("urgent records must be delivered first; position %d was %+v", i, ev)
+				}
+			}
+			if !strings.Contains(text, "more record(s) are still queued") {
+				t.Fatal("first round must say more is queued")
+			}
+		}
+		shown = append(shown, events...)
 	}
-	if kept < 10 {
-		t.Fatalf("too few urgent records kept their text: %d", kept)
+	if len(shown) != 120 {
+		t.Fatalf("every record must eventually be delivered exactly once: %d over %d rounds", len(shown), rounds)
 	}
-	if strings.Count(out, "    xxxx") != kept {
-		t.Fatalf("an info record kept text while urgent ones were trimmed")
+	if rounds < 2 {
+		t.Fatal("120 x 500 B cannot fit one 9 KB injection")
 	}
-	if !strings.Contains(out, "more record(s), text omitted") {
-		t.Fatal("overflow note missing")
+	seen := map[string]bool{}
+	for _, ev := range shown {
+		if seen[ev.ChildSessionID] {
+			t.Fatalf("record %s delivered twice", ev.ChildSessionID)
+		}
+		seen[ev.ChildSessionID] = true
+	}
+	if InboxHasPending(parent) {
+		t.Fatal("inbox must be empty at the end")
 	}
 }
 
