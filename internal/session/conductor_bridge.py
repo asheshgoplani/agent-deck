@@ -1822,6 +1822,12 @@ def filter_need_lines(
 # while the outbox file is unchanged (retries a failed send / a pending digest).
 HUMAN_OUTBOX_POLL_SECONDS = 5
 HUMAN_OUTBOX_IDLE_POLL_SECONDS = 60
+# Urgent outbox items go out one message each, at most this many per poll;
+# a digest message carries at most this many info items / characters, so one
+# message the platform refuses holds back only itself.
+HUMAN_OUTBOX_MAX_URGENT_PER_POLL = 10
+HUMAN_DIGEST_MAX_ITEMS = 20
+HUMAN_DIGEST_MAX_CHARS = 3500
 
 
 # One sender of outbox items per conductor at a time: the outbox loop and the
@@ -1851,7 +1857,7 @@ def tier_filter_reply(
     """Route a conductor reply through `agent-deck conductor tier-filter`.
 
     Returns {"lines": urgent lines to send now, "digest": info items due to
-    ride along (ack their ids after delivery), "counts": filter_need_lines
+    go out after the urgent lines (ack their ids after delivery), "counts": filter_need_lines
     counts, "reply_id": the id to ack once the lines were delivered, None on
     the fallback}. The in-process filter_need_lines always runs so its counts
     stay current; its lines are used only when the CLI call fails (old binary,
@@ -1893,15 +1899,19 @@ def format_human_digest(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def human_alert_message(prefix: str, lines: list[str], digest: list[dict]) -> str:
-    """Heartbeat alert text: urgent lines, then any due info digest."""
-    parts = []
-    if lines:
-        parts.append(f"{prefix}Conductor alert:\n" + "\n".join(lines))
-    if digest:
-        block = format_human_digest(digest)
-        parts.append(block if lines else f"{prefix}{block}")
-    return "\n\n".join(parts)
+def human_digest_batches(items: list[dict]) -> list[list[dict]]:
+    """Split info items into digest messages of at most HUMAN_DIGEST_MAX_ITEMS
+    items and about HUMAN_DIGEST_MAX_CHARS characters (one item always fits)."""
+    batches: list[list[dict]] = []
+    size = 0
+    for item in items:
+        n = len(str(item.get("text", ""))) + 3
+        if not batches or len(batches[-1]) >= HUMAN_DIGEST_MAX_ITEMS or size + n > HUMAN_DIGEST_MAX_CHARS:
+            batches.append([])
+            size = 0
+        batches[-1].append(item)
+        size += n
+    return batches
 
 
 def ack_human_outbox(name: str, profile: str | None, ids: list[str]) -> bool:
@@ -1934,48 +1944,45 @@ def heartbeat_reply_id(name: str, response: str) -> str:
     return hashlib.sha256(f"{name}\0{time.time_ns()}\0{response}".encode("utf-8")).hexdigest()
 
 
+async def send_human_digest(loop, name: str, profile: str | None, items: list[dict], prefix: str, deliver) -> bool:
+    """Send queued info items as digest messages (human_digest_batches), each
+    acked after a channel accepted it. True when every batch was delivered."""
+    ok = True
+    for batch in human_digest_batches([i for i in items if isinstance(i, dict) and i.get("id")]):
+        if not await deliver(f"{prefix}{format_human_digest(batch)}"):
+            log.error("Human digest [%s]: %d item(s) NOT delivered; kept queued", name, len(batch))
+            ok = False
+            continue
+        await loop.run_in_executor(None, functools.partial(
+            ack_human_outbox, name, profile, [str(i["id"]) for i in batch],
+        ))
+    return ok
+
+
 async def deliver_tiered_reply(loop, name: str, profile: str | None, filtered: dict, prefix: str, deliver) -> bool:
-    """Send one tier_filter_reply result: its urgent lines plus any due digest.
+    """Send one tier_filter_reply result: its urgent lines, then any due digest
+    as separate message(s), so a digest the platform refuses never holds back
+    the alert (and the reverse).
 
     deliver(text) -> bool sends to every channel. Only after a channel
-    accepted the message are the digest items acked and the reply's retire
-    counts committed. Returns True when delivered or when there was nothing to
-    send, False when no channel accepted it (nothing acked: retry later).
+    accepted a message are its digest items acked or the reply's retire counts
+    committed. Returns whether the urgent lines were delivered (the digest's
+    result when there are none), True when there was nothing to send; False
+    means retry later.
     """
     lines, digest = filtered["lines"], filtered["digest"]
-    if not lines and not digest:
-        return True
-    if not await deliver(human_alert_message(prefix, lines, digest)):
-        return False
+    delivered = True
+    if lines:
+        delivered = await deliver(f"{prefix}Conductor alert:\n" + "\n".join(lines))
+        if delivered and filtered.get("reply_id"):
+            await loop.run_in_executor(None, functools.partial(
+                ack_tier_filter_reply, name, profile, filtered["reply_id"],
+            ))
     if digest:
-        await loop.run_in_executor(None, functools.partial(
-            ack_human_outbox, name, profile, [str(d["id"]) for d in digest],
-        ))
-    if lines and filtered.get("reply_id"):
-        await loop.run_in_executor(None, functools.partial(
-            ack_tier_filter_reply, name, profile, filtered["reply_id"],
-        ))
-    return True
-
-
-def build_human_outbox_message(name: str, items: list[dict], digest_due: bool) -> tuple[str, list[str]]:
-    """Compose one message from unacked outbox items.
-
-    Every urgent item goes out now as "[<name>] <text>"; queued info rides
-    along as a digest when there is an urgent send or the digest is due.
-    Returns (message, ids to ack after delivery); ("", []) when nothing goes.
-    """
-    urgent = [i for i in items if i.get("tier") == "urgent" and i.get("id")]
-    info = [i for i in items if i.get("tier") == "info" and i.get("id")]
-    parts = [f"[{name}] {str(i.get('text', '')).strip()}" for i in urgent]
-    sent = list(urgent)
-    if info and (urgent or digest_due):
-        block = format_human_digest(info)
-        parts.append(block if urgent else f"[{name}] {block}")
-        sent += info
-    if not parts:
-        return "", []
-    return "\n\n".join(parts), [str(i["id"]) for i in sent]
+        digest_ok = await send_human_digest(loop, name, profile, digest, prefix, deliver)
+        if not lines:
+            delivered = digest_ok
+    return delivered
 
 
 def _human_outbox_signature(name: str):
@@ -2018,30 +2025,44 @@ async def human_outbox_cycle(
 
 
 async def _human_outbox_send(loop, name: str, profile: str, deliver) -> None:
-    """List, send and ack one conductor's outbox (caller holds its send lock)."""
+    """List, send and ack one conductor's outbox (caller holds its send lock).
+
+    Each urgent item is its own "[<name>] <text>" message, acked right after a
+    channel accepted it, so an item the platform refuses never holds back the
+    others. Queued info leaves as digest message(s) when an urgent item went
+    out this poll or the digest window is due.
+    """
     items = _cli_json_value(await loop.run_in_executor(None, functools.partial(
         run_cli, "conductor", "outbox", "--json", "--conductor", name,
         profile=profile, timeout=30,
     )))
     if not isinstance(items, list) or not items:
         return
-    digest_due = False
-    if not any(i.get("tier") == "urgent" for i in items if isinstance(i, dict)):
+    items = [i for i in items if isinstance(i, dict) and i.get("id")]
+    urgent = [i for i in items if i.get("tier") == "urgent"]
+    info = [i for i in items if i.get("tier") == "info"]
+    sent = 0
+    for item in urgent[:HUMAN_OUTBOX_MAX_URGENT_PER_POLL]:
+        if not await deliver(f"[{name}] {str(item.get('text', '')).strip()}"):
+            log.error("Human outbox [%s]: item %s NOT delivered; kept queued", name, item["id"])
+            continue
+        await loop.run_in_executor(None, functools.partial(
+            ack_human_outbox, name, profile, [str(item["id"])],
+        ))
+        sent += 1
+    if sent:
+        log.info("Human outbox [%s]: delivered %d urgent item(s)", name, sent)
+    if not info:
+        return
+    digest_due = sent > 0
+    if not digest_due:
         tf = _cli_json_value(await loop.run_in_executor(None, functools.partial(
             run_cli, "conductor", "tier-filter", "--json", "--conductor", name,
             profile=profile, timeout=30, input_text="",
         )))
         digest_due = isinstance(tf, dict) and bool(tf.get("digest_due"))
-    msg, ids = build_human_outbox_message(
-        name, [i for i in items if isinstance(i, dict)], digest_due,
-    )
-    if not msg:
-        return
-    if not await deliver(msg):
-        log.error("Human outbox [%s]: %d item(s) NOT delivered; kept queued", name, len(ids))
-        return
-    await loop.run_in_executor(None, functools.partial(ack_human_outbox, name, profile, ids))
-    log.info("Human outbox [%s]: delivered %d item(s)", name, len(ids))
+    if digest_due:
+        await send_human_digest(loop, name, profile, info, f"[{name}] ", deliver)
 
 
 async def human_outbox_loop(
@@ -2119,6 +2140,35 @@ def md_to_tg_html(text: str) -> str:
         text = text.replace(f"\x00CODE{i}\x00", f"<code>{_html.escape(code, quote=False)}</code>")
 
     return text
+
+
+def _is_tg_parse_error(exc: Exception) -> bool:
+    """Telegram refused the HTML itself ("can't parse entities: Unmatched end
+    tag ..."), not the delivery: the same text as plain text will go through."""
+    msg = str(exc).lower()
+    return "parse entities" in msg or "can't find end tag" in msg or "unsupported start tag" in msg
+
+
+def tg_html_to_plain(chunk: str) -> str:
+    """The plain text of an md_to_tg_html chunk (its tags dropped, unescaped)."""
+    import html as _html
+
+    return _html.unescape(re.sub(r"</?(?:b|i|code)>", "", chunk))
+
+
+async def send_telegram_html(bot, chat_id, text: str) -> None:
+    """Send text as Telegram HTML (md_to_tg_html, split_message). A chunk
+    Telegram cannot parse (md_to_tg_html can mis-nest tags, e.g. for
+    '**all *.go** files and *.ts') is resent as plain text instead of failing
+    the whole send, which would keep a durable alert queued forever."""
+    for chunk in split_message(md_to_tg_html(text)):
+        try:
+            await bot.send_message(chat_id, chunk, parse_mode="HTML")
+        except Exception as e:  # noqa: BLE001 - only a parse error is retried
+            if not _is_tg_parse_error(e):
+                raise
+            log.warning("Telegram refused HTML (%s); resending the chunk as plain text", e)
+            await bot.send_message(chat_id, tg_html_to_plain(chunk), parse_mode=None)
 
 
 # ---------------------------------------------------------------------------
@@ -3737,9 +3787,7 @@ async def _deliver_need_alert(
     delivered = False
     if telegram_bot and tg_user_id:
         try:
-            alert_html = md_to_tg_html(alert_msg)
-            for chunk in split_message(alert_html):
-                await telegram_bot.send_message(tg_user_id, chunk, parse_mode="HTML")
+            await send_telegram_html(telegram_bot, tg_user_id, alert_msg)
             delivered = True
         except Exception as e:
             log.error("Failed to send Telegram notification: %s", e)
@@ -4084,7 +4132,7 @@ async def heartbeat_loop(
                 # threshold so the user isn't trained to ignore heartbeats.
                 # Tier the reply (issue #2469): urgent lines now (NEED retire
                 # #971, counts on disk via `conductor tier-filter`), info into
-                # the human outbox, a due digest rides along. Falls back to the
+                # the human outbox, a due digest follows as its own message. Falls back to the
                 # in-process filter_need_lines when the CLI call fails.
                 # The retire counts (on disk, and the in-memory fallback)
                 # advance only for a delivered reply.

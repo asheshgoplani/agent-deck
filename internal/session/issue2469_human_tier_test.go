@@ -438,3 +438,81 @@ func TestIssue2469_UrgentAfterInfoSameTextIsUpgraded(t *testing.T) {
 		t.Fatal("a second urgent with the same text dedups again")
 	}
 }
+
+// Review r3 (unbounded growth): nothing acks a deck-only conductor's outbox,
+// so undelivered items must age out and the file must stay capped, on the
+// append path itself, not only on an ack rewrite.
+func TestIssue2469_UnackedOutboxIsBounded(t *testing.T) {
+	humanTierHome(t, "")
+	now := time.Now()
+	old := now.Add(-humanOutboxUnackedRetention - time.Hour)
+	if err := withHumanOutboxLock("ops", func() error {
+		for i := 0; i < 50; i++ {
+			rec := HumanOutboxRecord{ID: fmt.Sprintf("old%d", i), TS: old, Tier: TurnTierInfo, Text: fmt.Sprintf("old %d", i), TextHash: turnTextHash(fmt.Sprintf("old %d", i))}
+			if err := appendJSONLine(HumanOutboxPath("ops"), rec); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _, err := AppendHumanOutbox("ops", TurnTierUrgent, "prod is down")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := ListHumanOutbox("ops", true)
+	if len(pending) != 1 || pending[0].ID != fresh.ID {
+		t.Fatalf("an append must prune unacked items older than %v: %d pending", humanOutboxUnackedRetention, len(pending))
+	}
+
+	// The cap: a chatty conductor never keeps more than humanOutboxMaxItems,
+	// and info goes before urgent when the cap bites.
+	for i := 0; i < humanOutboxMaxItems+20; i++ {
+		if _, err := appendHumanOutboxLockedForTest("ops", TurnTierInfo, fmt.Sprintf("progress %d", i), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, _ := ListHumanOutbox("ops", false)
+	if len(all) != humanOutboxMaxItems {
+		t.Fatalf("outbox holds %d items, want the cap %d", len(all), humanOutboxMaxItems)
+	}
+	if all[0].ID != fresh.ID || all[len(all)-1].Text != fmt.Sprintf("progress %d", humanOutboxMaxItems+19) {
+		t.Fatalf("the cap must drop the oldest info, keeping the urgent item and the newest info: first=%+v last=%+v", all[0], all[len(all)-1])
+	}
+}
+
+// An ack rewrite also drops unacked items past the retention window.
+func TestIssue2469_AckRewritePrunesStaleUnacked(t *testing.T) {
+	humanTierHome(t, "")
+	now := time.Now()
+	stale := HumanOutboxRecord{ID: "stale", TS: now.Add(-humanOutboxUnackedRetention - time.Minute), Tier: TurnTierUrgent, Text: "stale", TextHash: turnTextHash("stale")}
+	keep, _, _ := AppendHumanOutbox("ops", TurnTierInfo, "keep me")
+	ack, _, _ := AppendHumanOutbox("ops", TurnTierUrgent, "ack me")
+	// Written raw, as an old binary or a long-gone append would have left it.
+	if err := withHumanOutboxLock("ops", func() error { return appendJSONLine(HumanOutboxPath("ops"), stale) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AckHumanOutbox("ops", []string{ack.ID}); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := ListHumanOutbox("ops", false)
+	for _, r := range all {
+		if r.ID == "stale" {
+			t.Fatalf("ack rewrite kept an unacked item past retention: %+v", all)
+		}
+	}
+	if len(all) != 2 || all[0].ID != keep.ID {
+		t.Fatalf("fresh items survive the rewrite: %+v", all)
+	}
+}
+
+func appendHumanOutboxLockedForTest(conductor, tier, text string, now time.Time) (HumanOutboxRecord, error) {
+	var rec HumanOutboxRecord
+	err := withHumanOutboxLock(conductor, func() error {
+		var lerr error
+		rec, _, lerr = appendHumanOutboxLocked(conductor, tier, text, now)
+		return lerr
+	})
+	return rec, err
+}

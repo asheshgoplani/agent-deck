@@ -18,7 +18,8 @@ import (
 // lands in a durable per-conductor outbox the bridge polls: urgent items are
 // forwarded at once and acked only after the platform accepted them; info
 // items wait and leave as one digest at most every [conductor]
-// human_digest_minutes, or ride along with the next urgent message. The same
+// human_digest_minutes, or right after the next urgent message (always as
+// their own digest message, so one refused message never blocks another). The same
 // file records each digest flush so the window survives a bridge restart.
 //
 // Layout under <data>/runtime/human-outbox/:
@@ -48,6 +49,13 @@ const (
 	// humanOutboxDedupWindow: the same text twice within it is one record.
 	humanOutboxDedupWindow = 24 * time.Hour
 	humanDigestMarkerTier  = "digest"
+	// Retention for news nobody delivered (no bridge, no channel, a refused
+	// send): an unacked item older than this is pruned, and at most
+	// humanOutboxMaxItems records are kept per conductor, so a deck-only
+	// conductor that calls notify from every turn cannot grow the file (or
+	// the per-append dedup read) without bound.
+	humanOutboxUnackedRetention = 72 * time.Hour
+	humanOutboxMaxItems         = 200
 	// The outbox holds what a conductor tells the human: owner-only.
 	humanOutboxDirMode  = 0o700
 	humanOutboxFileMode = 0o600
@@ -164,7 +172,51 @@ func appendHumanOutboxLocked(conductor, tier, text string, now time.Time) (Human
 		return existing[i], true, rewriteHumanOutboxLocked(conductor, existing, lastHumanDigestFlush(existing), now)
 	}
 	rec := HumanOutboxRecord{ID: GenerateID(), TS: now, Tier: tier, Text: text, TextHash: th}
+	all := append(existing, rec)
+	if kept, dropped := pruneHumanOutbox(all, now); dropped > 0 {
+		return rec, true, rewriteHumanOutboxLocked(conductor, kept, lastHumanDigestFlush(existing), now)
+	}
 	return rec, true, appendJSONLine(HumanOutboxPath(conductor), rec)
+}
+
+// pruneHumanOutbox returns the item records (never digest markers) worth
+// keeping at now, oldest first, and how many items it dropped: acked items
+// past the dedup window, unacked ones past humanOutboxUnackedRetention, and,
+// beyond humanOutboxMaxItems, the oldest acked items first, then the oldest
+// info, then the oldest urgent.
+func pruneHumanOutbox(all []HumanOutboxRecord, now time.Time) (kept []HumanOutboxRecord, dropped int) {
+	for _, r := range all {
+		if r.Tier == humanDigestMarkerTier {
+			continue
+		}
+		age := now.Sub(r.TS)
+		if (r.Acked && age >= humanOutboxDedupWindow) || (!r.Acked && age >= humanOutboxUnackedRetention) {
+			dropped++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	for _, drop := range []func(HumanOutboxRecord) bool{
+		func(r HumanOutboxRecord) bool { return r.Acked },
+		func(r HumanOutboxRecord) bool { return r.Tier != TurnTierUrgent },
+		func(HumanOutboxRecord) bool { return true },
+	} {
+		excess := len(kept) - humanOutboxMaxItems
+		if excess <= 0 {
+			break
+		}
+		next := kept[:0:0]
+		for _, r := range kept {
+			if excess > 0 && drop(r) {
+				excess--
+				dropped++
+				continue
+			}
+			next = append(next, r)
+		}
+		kept = next
+	}
+	return kept, dropped
 }
 
 // appendJSONLine appends one JSON line with O_APPEND + fsync.
@@ -214,7 +266,7 @@ func filterHumanOutbox(all []HumanOutboxRecord, unackedOnly bool) []HumanOutboxR
 // AckHumanOutbox marks ids delivered and returns how many were newly acked;
 // acking an id twice (or an unknown id) is a no-op. Acking any info item
 // records a digest flush, which restarts the human_digest_minutes window.
-// The rewrite also prunes acked items older than the dedup window.
+// The rewrite also prunes (see pruneHumanOutbox).
 func AckHumanOutbox(conductor string, ids []string) (int, error) {
 	want := map[string]bool{}
 	for _, id := range ids {
@@ -252,14 +304,12 @@ func AckHumanOutbox(conductor string, ids []string) (int, error) {
 	return acked, err
 }
 
-// rewriteHumanOutboxLocked replaces the outbox file with all, dropping acked
-// items older than the dedup window and keeping one digest-flush marker.
+// rewriteHumanOutboxLocked replaces the outbox file with all, pruned as in
+// pruneHumanOutbox, and one digest-flush marker.
 func rewriteHumanOutboxLocked(conductor string, all []HumanOutboxRecord, lastFlush, now time.Time) error {
 	var buf bytes.Buffer
-	for _, r := range all {
-		if r.Tier == humanDigestMarkerTier || (r.Acked && now.Sub(r.TS) >= humanOutboxDedupWindow) {
-			continue
-		}
+	kept, _ := pruneHumanOutbox(all, now)
+	for _, r := range kept {
 		writeJSONLine(&buf, r)
 	}
 	if !lastFlush.IsZero() {

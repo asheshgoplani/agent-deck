@@ -108,24 +108,17 @@ class TestTierFilterReply2469:
         assert out["lines"] == [f"STILL BLOCKED (3 cycles, no reply): {NEED}"]
 
 
-class TestHumanOutboxMessage2469:
-    def test_urgent_now_info_waits(self):
-        items = [
-            {"id": "u1", "tier": "urgent", "text": "prod is down"},
-            {"id": "i1", "tier": "info", "text": "lane C merged"},
-        ]
-        msg, ids = bridge.build_human_outbox_message("ops", items[1:], digest_due=False)
-        assert (msg, ids) == ("", [])
-        msg, ids = bridge.build_human_outbox_message("ops", items, digest_due=False)
-        assert msg.startswith("[ops] prod is down")
-        assert "Digest (1 update):\n- lane C merged" in msg  # rides with the urgent
-        assert ids == ["u1", "i1"]
+class TestHumanDigestBatches2469:
+    def test_batches_cap_items_and_size(self):
+        items = [{"id": f"i{n}", "tier": "info", "text": "x"} for n in range(bridge.HUMAN_DIGEST_MAX_ITEMS + 1)]
+        batches = bridge.human_digest_batches(items)
+        assert [len(b) for b in batches] == [bridge.HUMAN_DIGEST_MAX_ITEMS, 1]
+        big = [{"id": f"b{n}", "tier": "info", "text": "y" * 3000} for n in range(3)]
+        assert [len(b) for b in bridge.human_digest_batches(big)] == [1, 1, 1]
 
-    def test_digest_alone_when_due(self):
+    def test_digest_format(self):
         items = [{"id": "i1", "tier": "info", "text": "a"}, {"id": "i2", "tier": "info", "text": "b"}]
-        msg, ids = bridge.build_human_outbox_message("ops", items, digest_due=True)
-        assert msg == "[ops] Digest (2 updates):\n- a\n- b"
-        assert ids == ["i1", "i2"]
+        assert bridge.format_human_digest(items) == "Digest (2 updates):\n- a\n- b"
 
 
 class TestHumanOutboxCycle2469:
@@ -153,6 +146,16 @@ class TestHumanOutboxCycle2469:
         cli = FakeCLI(items=[{"id": "u1", "tier": "urgent", "text": "prod down"}])
         self._cycle(cli, delivered=False)
         assert cli.acked == []
+
+    def test_urgent_items_go_one_message_each_and_info_follows(self):
+        cli = FakeCLI(items=[
+            {"id": "u1", "tier": "urgent", "text": "prod is down"},
+            {"id": "i1", "tier": "info", "text": "lane C merged"},
+            {"id": "u2", "tier": "urgent", "text": "need a key"},
+        ])
+        sent = self._cycle(cli)
+        assert sent == ["[ops] prod is down", "[ops] need a key", "[ops] Digest (1 update):\n- lane C merged"]
+        assert cli.acked == ["u1", "u2", "i1"]
 
     def test_info_held_until_digest_due(self):
         items = [{"id": "i1", "tier": "info", "text": "progress"}]
@@ -188,8 +191,9 @@ class TestNeedScanUsesTierFilter2469:
                 {"heartbeat_interval": 15, "telegram": {"configured": False, "user_id": None}},
                 {}, lambda: None, slack_app=slack_app, slack_channel_id="C1",
             ))
-        text = slack_app.client.chat_postMessage.await_args.kwargs["text"]
-        assert text == "Conductor alert:\n" + NEED + "\n\nDigest (1 update):\n- docs merged"
+        texts = [c.kwargs["text"] for c in slack_app.client.chat_postMessage.await_args_list]
+        # The digest is its own message: one the platform refuses never holds back the alert.
+        assert texts == ["Conductor alert:\n" + NEED, "Digest (1 update):\n- docs merged"]
         assert cli.acked == ["i9"]
 
 
@@ -389,6 +393,120 @@ class TestOneSenderPerConductor2469:
              mock.patch.object(bridge, "_human_outbox_signature", return_value=(1, 1)), \
              mock.patch.object(bridge, "run_cli", cli):
             _run(both())
-        assert len(sent) == 2, sent
+        assert len(sent) == 3, sent  # the alert, the urgent item, one digest
         assert sum(t.count("lane C merged") for t in sent) == 1, sent
         assert all(i["acked"] for i in cli.items)
+
+
+# ---------------------------------------------------------------------------
+# Review r3 (HIGH): one message Telegram refuses must not block the queue.
+# ---------------------------------------------------------------------------
+
+UNBALANCED = "ran tests for **all *.go** files and *.ts"
+
+
+class StrictTelegram:
+    """A fake Bot that rejects HTML whose b/i/code tags are not properly
+    nested, the way Telegram answers "can't parse entities"."""
+
+    def __init__(self):
+        self.messages: list[tuple[str, object]] = []
+
+    async def send_message(self, chat_id, text, parse_mode=None):
+        if parse_mode == "HTML":
+            stack = []
+            for m in __import__("re").finditer(r"<(/?)(b|i|code)>", text):
+                if not m.group(1):
+                    stack.append(m.group(2))
+                elif not stack or stack.pop() != m.group(2):
+                    raise RuntimeError(
+                        "Telegram server says - Bad Request: can't parse entities: "
+                        "Unmatched end tag at byte offset 18")
+            if stack:
+                raise RuntimeError("Bad Request: can't parse entities: Can't find end tag corresponding to start tag")
+        self.messages.append((text, parse_mode))
+
+
+class TestRefusedMessageNeverBlocks2469:
+    def test_unbalanced_markdown_reaches_telegram_as_plain_text(self):
+        assert bridge.md_to_tg_html(UNBALANCED).count("</b>") == 1  # mis-nested HTML
+        bot = StrictTelegram()
+        ok = _run(bridge._deliver_need_alert(UNBALANCED, 42, bot, None, None, None, None))
+        assert ok is True
+        assert bot.messages == [("ran tests for all .go files and .ts", None)]
+
+    def test_other_telegram_errors_still_fail_the_send(self):
+        bot = mock.MagicMock()
+        bot.send_message = mock.AsyncMock(side_effect=RuntimeError("Forbidden: bot was blocked by the user"))
+        assert _run(bridge._deliver_need_alert("NEED: x", 42, bot, None, None, None, None)) is False
+        assert bot.send_message.await_count == 1
+
+    def test_need_alert_with_unbalanced_digest_reaches_a_telegram_only_human(self):
+        """E3: an info item queued with markdown Telegram cannot parse rode
+        along with every NEED alert and blocked it forever."""
+        bot = StrictTelegram()
+        cli = StatefulCLI([{"id": "i1", "tier": "info", "text": UNBALANCED}])
+        config = {"heartbeat_interval": 15, "telegram": {"configured": True, "user_id": 42}}
+        with mock.patch.object(bridge, "discover_conductors", return_value=OPS), \
+             mock.patch.object(bridge, "get_session_output", return_value=NEED), \
+             mock.patch.object(bridge, "run_cli", cli):
+            _run(bridge.need_scan_cycle(config, {}, lambda: None, telegram_bot=bot))
+        texts = [t for t, _ in bot.messages]
+        assert texts[0] == "Conductor alert:\n" + bridge.md_to_tg_html(NEED)
+        assert texts[1] == "Digest (1 update):\n- " + bridge.tg_html_to_plain(bridge.md_to_tg_html(UNBALANCED))
+        assert all(i["acked"] for i in cli.items)
+
+    def test_refused_outbox_item_does_not_hold_back_the_next(self):
+        """E4: an urgent item no channel accepts must not keep the next urgent
+        item (prod is down) from reaching the human."""
+        cli = FakeCLI(items=[
+            {"id": "u1", "tier": "urgent", "text": "this one is refused"},
+            {"id": "u2", "tier": "urgent", "text": "prod database is down, need your call"},
+        ])
+        sent: list[str] = []
+
+        async def deliver(text):
+            if "refused" in text:
+                return False
+            sent.append(text)
+            return True
+
+        with mock.patch.object(bridge, "run_cli", cli), \
+             mock.patch.object(bridge, "_human_outbox_signature", return_value=(1, 1)):
+            _run(bridge.human_outbox_cycle([{"name": "ops", "profile": "default"}], {}, deliver, now=1.0))
+        assert sent == ["[ops] prod database is down, need your call"]
+        assert cli.acked == ["u2"]
+
+    def test_unbalanced_outbox_items_reach_telegram_end_to_end(self):
+        bot = StrictTelegram()
+        cli = StatefulCLI([
+            {"id": "u1", "tier": "urgent", "text": UNBALANCED},
+            {"id": "u2", "tier": "urgent", "text": "prod database is down, need your call"},
+        ])
+
+        async def deliver(text):
+            return await bridge._deliver_need_alert(text, 42, bot, None, None, None, None)
+
+        with mock.patch.object(bridge, "run_cli", cli), \
+             mock.patch.object(bridge, "_human_outbox_signature", return_value=(1, 1)):
+            _run(bridge.human_outbox_cycle([{"name": "ops", "profile": "default"}], {}, deliver, now=1.0))
+        assert [m for m, _ in bot.messages] == [
+            "[ops] ran tests for all .go files and .ts",
+            "[ops] prod database is down, need your call",
+        ]
+        assert all(i["acked"] for i in cli.items)
+
+    def test_urgent_items_per_poll_are_capped(self):
+        items = [{"id": f"u{n}", "tier": "urgent", "text": f"alert {n}"}
+                 for n in range(bridge.HUMAN_OUTBOX_MAX_URGENT_PER_POLL + 3)]
+        cli = FakeCLI(items=items)
+        sent: list[str] = []
+
+        async def deliver(text):
+            sent.append(text)
+            return True
+
+        with mock.patch.object(bridge, "run_cli", cli), \
+             mock.patch.object(bridge, "_human_outbox_signature", return_value=(1, 1)):
+            _run(bridge.human_outbox_cycle([{"name": "ops", "profile": "default"}], {}, deliver, now=1.0))
+        assert len(sent) == bridge.HUMAN_OUTBOX_MAX_URGENT_PER_POLL
