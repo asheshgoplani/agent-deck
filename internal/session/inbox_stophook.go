@@ -215,11 +215,13 @@ func FormatInboxRecords(events []TransitionNotificationEvent, header string) str
 		if ev.Tier != "" {
 			tierTag = "[" + ev.Tier + "] "
 		}
-		line := fmt.Sprintf("- %s%s (%s): %s", tierTag, title, ev.ChildSessionID, status)
-		// Comms redesign PR5: a reply to this session's own tagged send,
-		// not a child's turn.
-		if ev.TargetKind == "reply" {
+		var line string
+		if ev.TargetKind == InboxTargetKindReply {
+			// Comms redesign PR5: a reply to this session's own tagged send,
+			// not a child's turn.
 			line = fmt.Sprintf("- [%s] reply from=%s %s: %s", ev.Tier, ev.ChildSessionID, title, status)
+		} else {
+			line = fmt.Sprintf("- %s%s (%s): %s", tierTag, title, ev.ChildSessionID, status)
 		}
 		if ev.Kind == transitionKindFinished && ev.DoneSummary != "" {
 			line += " — " + ev.DoneSummary

@@ -610,8 +610,13 @@ func replySenderFor(event TransitionNotificationEvent, child, parent *Instance, 
 		return nil
 	}
 	sender := byID[from]
-	if sender == nil || !IsClaudeCompatible(sender.Tool) || sender.ID == child.ID ||
-		sender.ID == strings.TrimSpace(child.ParentSessionID) || (parent != nil && sender.ID == parent.ID) {
+	if sender == nil || !IsClaudeCompatible(sender.Tool) {
+		return nil
+	}
+	alreadyHoldsRecord := sender.ID == child.ID ||
+		sender.ID == strings.TrimSpace(child.ParentSessionID) ||
+		(parent != nil && sender.ID == parent.ID)
+	if alreadyHoldsRecord {
 		return nil
 	}
 	return sender
@@ -631,36 +636,12 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	// target fields onto event.
 	reply := event
 	if parent == nil {
-		// Missing and non-live parents do not make the event disposable. Persist
-		// it in the reserved, drainable unowned ledger. Deliberate suppression
-		// and a removed child remain terminal drops.
-		if isUnownedReason(reason) {
-			event.DeadLetterReason = reason
-			written, err := recordUnownedTransition(event)
-			if err != nil {
-				// The turn is retried, but the asker's answer does not
-				// wait on the unowned ledger.
-				n.commitReplyToSender(sender, reply)
-				return false, true, ""
-			}
-			if written {
-				event.TargetKind = "unowned"
-				event.DeliveryResult = transitionDeliveryCommitted
-				n.logEvent(event)
-			}
-			// Keep the existing operator-visible forensic copy/missed-log for
-			// non-benign terminal reasons. The durable delivery result remains a
-			// success because _unowned is now the actionable copy.
-			n.terminalDrop(event, reason)
-			n.commitReplyToSender(sender, reply)
-			// Preserve the reason in the result so completion replay can distinguish
-			// this discovery copy from an ackable parent-inbox commit.
-			return true, false, reason
-		}
-		// No parent to hold the turn (a top-level conductor, a peer): the
-		// session that asked still gets its answer.
+		committed, transient, reason = n.commitParentlessEvent(event, reason)
+		// No parent holds the turn (a top-level conductor, a peer, an unowned
+		// or retried record): the session that asked still gets its answer,
+		// without waiting on the unowned ledger.
 		n.commitReplyToSender(sender, reply)
-		return false, false, reason
+		return committed, transient, reason
 	}
 	parentID := parent.ID
 	event.TargetSessionID = parentID
@@ -711,6 +692,38 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	return true, false, ""
 }
 
+// InboxTargetKindReply is the TargetKind of a record that answers the
+// receiving session's own tagged send (comms redesign PR5), as opposed to a
+// child's turn delivered to its "parent".
+const InboxTargetKindReply = "reply"
+
+// commitParentlessEvent handles a turn whose child has no resolvable parent.
+// Missing and non-live parents do not make the event disposable: it is
+// persisted in the reserved, drainable unowned ledger. Deliberate suppression
+// and a removed child remain terminal drops.
+func (n *TransitionNotifier) commitParentlessEvent(event TransitionNotificationEvent, reason string) (committed, transient bool, resultReason string) {
+	if !isUnownedReason(reason) {
+		return false, false, reason
+	}
+	event.DeadLetterReason = reason
+	written, err := recordUnownedTransition(event)
+	if err != nil {
+		return false, true, ""
+	}
+	if written {
+		event.TargetKind = "unowned"
+		event.DeliveryResult = transitionDeliveryCommitted
+		n.logEvent(event)
+	}
+	// Keep the existing operator-visible forensic copy/missed-log for
+	// non-benign terminal reasons. The durable delivery result remains a
+	// success because _unowned is now the actionable copy.
+	n.terminalDrop(event, reason)
+	// Preserve the reason in the result so completion replay can distinguish
+	// this discovery copy from an ackable parent-inbox commit.
+	return true, false, reason
+}
+
 // parentWakeEvent is the event the parent's wake gate sees. A turn that
 // answers the parent's OWN tagged send is a reply to it (comms redesign PR5):
 // the parent asked, so it is woken as a reply target whatever its title, as
@@ -720,7 +733,7 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 func parentWakeEvent(event TransitionNotificationEvent, parent *Instance) TransitionNotificationEvent {
 	if event.Trigger == TurnTriggerSend && parent != nil &&
 		strings.TrimSpace(event.FromID) == parent.ID && IsClaudeCompatible(parent.Tool) {
-		event.TargetKind = "reply"
+		event.TargetKind = InboxTargetKindReply
 	}
 	return event
 }
@@ -745,7 +758,7 @@ func (n *TransitionNotifier) commitReplyToSender(sender *Instance, event Transit
 		return
 	}
 	event.TargetSessionID = sender.ID
-	event.TargetKind = "reply"
+	event.TargetKind = InboxTargetKindReply
 	event.Tier = TurnTierUrgent
 	event.DeliveryResult = transitionDeliveryCommitted
 	event.DeadLetterReason = ""

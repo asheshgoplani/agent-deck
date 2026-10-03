@@ -114,8 +114,8 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 // tagged send the child just answered (a sibling sender, or the child's own
 // parent when it asked; see parentWakeEvent): it asked, so it is woken
 // whatever its title, but only when it is Claude-compatible (its prompt-time
-// drain injects the reply). A send-keys into a RUNNING pane only queues the keystroke
-// (issue #36326) — the exact failure the pull model was built to avoid — so a
+// drain injects the reply). A send-keys into a RUNNING pane only queues the
+// keystroke (issue #36326) — the exact failure the pull model was built to avoid — so a
 // busy conductor is left to drain at its own turn boundary.
 //
 // The status is re-probed here, under the daemon's probe budget, through the
@@ -126,17 +126,7 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 // completion waited for the next heartbeat. A probe that overruns the budget
 // counts as not idle (the record still drains on the parent's next turn).
 func parentIsNudgeableIdle(parent *Instance, targetKind string) bool {
-	if parent == nil {
-		return false
-	}
-	if targetKind == "reply" {
-		// The wake is typed into the pane and carries the child's text: only
-		// a Claude-compatible pane drains it at prompt time, and a shell
-		// would execute it.
-		if !IsClaudeCompatible(parent.Tool) {
-			return false
-		}
-	} else if !isConductorSessionTitle(parent.Title) {
+	if parent == nil || !isWakeTarget(parent, targetKind) {
 		return false
 	}
 	if refreshStatusBounded(parent, statusProbeBudget) {
@@ -148,6 +138,17 @@ func parentIsNudgeableIdle(parent *Instance, targetKind string) bool {
 	default:
 		return false
 	}
+}
+
+// isWakeTarget reports whether target may be woken at all for a record of
+// targetKind. A reply wake is typed into the pane and carries the child's
+// text: only a Claude-compatible pane drains it at prompt time, and a shell
+// would execute it. Any other record wakes only a conductor.
+func isWakeTarget(target *Instance, targetKind string) bool {
+	if targetKind == InboxTargetKindReply {
+		return IsClaudeCompatible(target.Tool)
+	}
+	return isConductorSessionTitle(target.Title)
 }
 
 // sendWakeNudge fires one best-effort wake into the parent conductor's pane and

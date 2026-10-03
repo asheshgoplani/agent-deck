@@ -623,7 +623,7 @@ func printInboxEventLines(stdout io.Writer, events []session.TransitionNotificat
 			fmt.Fprintf(stdout, " tier=%s trigger=%s", ev.Tier, ev.Trigger)
 		}
 		// Comms redesign PR5: a reply to the drainer's own tagged send.
-		if ev.TargetKind == "reply" {
+		if ev.TargetKind == session.InboxTargetKindReply {
 			fmt.Fprintf(stdout, " reply from=%s", ev.ChildSessionID)
 		}
 		fmt.Fprintln(stdout)

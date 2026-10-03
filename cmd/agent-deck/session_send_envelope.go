@@ -65,8 +65,11 @@ func sendSenderID() string {
 // sendSenderTool is the tool of the calling session as the target's registry
 // knows it; "" when the sender is not in it (another profile, removed).
 func sendSenderTool(senderID string, instances []*session.Instance) string {
+	if senderID == "" {
+		return ""
+	}
 	for _, inst := range instances {
-		if inst != nil && senderID != "" && inst.ID == senderID {
+		if inst != nil && inst.ID == senderID {
 			return inst.Tool
 		}
 	}
