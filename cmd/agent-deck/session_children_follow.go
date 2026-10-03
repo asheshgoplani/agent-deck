@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // childRow is one child in `session children` output — shared by the one-shot
@@ -18,6 +19,9 @@ type childRow struct {
 	DoneStatus  string `json:"done_status,omitempty"`
 	DoneSummary string `json:"done_summary,omitempty"`
 	DoneAt      string `json:"done_at,omitempty"`
+	// BackgroundWork is the in-flight background work keeping the child
+	// running (issue #2473); omitted otherwise. Not part of the --follow diff.
+	BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
 }
 
 // followEvent is one JSONL line on the --follow stream. Consumers key off
@@ -86,7 +90,7 @@ func buildChildRows(kids []*session.Instance, sampling childRowsSampling) []chil
 		if sampling == sampleChildPanes {
 			_ = k.Substate() // before Status: see buildListJSON
 		}
-		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status)}
+		row := childRow{ID: k.ID, Title: k.Title, Status: StatusString(k.Status), BackgroundWork: k.BackgroundWorkJSON()}
 		if e, ok := session.ReadLedgerEntry(k.ID); ok {
 			row.DoneStatus = e.Status
 			row.DoneSummary = e.Summary

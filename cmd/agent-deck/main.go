@@ -3021,6 +3021,11 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		// pointer so "nobody" ([]) and "unknown" (absent: tmux could not be
 		// asked, or a build predating the field) stay distinct.
 		Viewers *[]tmux.Viewer `json:"viewers,omitempty"`
+
+		// BackgroundWork is the in-flight background work behind substate
+		// background-work (issue #2473): kind, task, step/steps, elapsed,
+		// source. Omitted when nothing is in flight.
+		BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
 	viewers := session.ViewersByTmuxSession(context.Background(), instances)
@@ -3053,6 +3058,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			StatusSource:      "live",
 			Substate:          substate,
 			SubstateDetail:    inst.SubstateDetail(),
+			BackgroundWork:    inst.BackgroundWorkJSON(),
 			Profile:           profileName,
 			CreatedAt:         inst.CreatedAt,
 			SSHHost:           inst.SSHHost,
@@ -3628,6 +3634,9 @@ func handleStatus(profile string, args []string) {
 			// usage-limit retry time). Same omitempty contract.
 			SubstateDetail string `json:"substate_detail,omitempty"`
 			Path           string `json:"path"`
+
+			// BackgroundWork: see buildListJSON (issue #2473).
+			BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
 		}
 		type statusJSON struct {
 			Waiting  int                 `json:"waiting"`
@@ -3659,6 +3668,7 @@ func handleStatus(profile string, args []string) {
 					Status:         StatusString(inst.Status),
 					Substate:       substate,
 					SubstateDetail: inst.SubstateDetail(),
+					BackgroundWork: inst.BackgroundWorkJSON(),
 					Path:           inst.ProjectPath,
 				}
 				if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
@@ -3694,6 +3704,9 @@ func handleStatus(profile string, args []string) {
 				}
 				suffix := ""
 				if lbl := SubstateLabel(inst.Substate()); lbl != "" {
+					if work := inst.BackgroundWork(); work.InFlight() {
+						lbl += ": " + work.Summary() // issue #2473
+					}
 					suffix = "  [" + lbl + "]"
 				}
 				fmt.Printf("  %s %-16s %-10s %-22s %s%s\n", symbol, inst.Title, inst.Tool, truncate(modelStatusDisplay(inst), 22), path, suffix)

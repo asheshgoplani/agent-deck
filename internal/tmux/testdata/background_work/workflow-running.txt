@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.288
+▝▜██████▀  Opus 5.5 (1M context) · Claude Pro
+ ▝▝   ▝▝   /tmp/probe-proj
+
+
+❯ Use the Workflow tool to run a tiny workflow named probe-two-agents with two agents in parallel; each agent must run the shell command "sleep 60" via Bash
+  and then return the word done. Do not wait for it; just launch it.
+
+⏺ Skill(workflow-authoring)
+  ⎿  Successfully loaded skill
+
+⏺ Workflow(Two parallel agents each run sleep 60 via Bash and return done)
+  ⎿  Running in background · /workflows to monitor and save · medium size (/config)
+
+⏺ I started the probe-two-agents workflow in the background as task wqphbmkuj (run ID wf_3c9075b9-05e). It runs two agents in parallel, and each one runs sleep
+  60 through Bash and then returns done.
+
+  It should take a little over a minute. You can watch it with /workflows, and I'll get a notification when it completes.
+
+✻ Waiting for 1 dynamic workflow to finish
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [p] u@host:/tmp/probe-proj
+  ⏵⏵ bypass permissions on · 1 shell, 1 monitor · ← for agents
+
+  ◯ probe-two-agents  ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱  1/2 · 22s · ↓ 73.3k tokens

@@ -1,0 +1,42 @@
+
+ ▐▛███▛█   Claude Code v2.1.288
+▝▜██████▀  Opus 5.5 (1M context) · Claude Pro
+ ▝▝   ▝▝   /tmp/probe-proj
+
+
+❯ Use the Workflow tool to run a tiny workflow named probe-two-agents with two agents in parallel; each agent must run the shell command "sleep 60" via Bash
+  and then return the word done. Do not wait for it; just launch it.
+
+⏺ Skill(workflow-authoring)
+  ⎿  Successfully loaded skill
+
+⏺ Workflow(Two parallel agents each run sleep 60 via Bash and return done)
+  ⎿  ✔ Completed in 1m 44s · 2 agents · 74.4k tokens
+
+⏺ I started the probe-two-agents workflow in the background as task wqphbmkuj (run ID wf_3c9075b9-05e). It runs two agents in parallel, and each one runs sleep
+  60 through Bash and then returns done.
+
+  It should take a little over a minute. You can watch it with /workflows, and I'll get a notification when it completes.
+
+✻ Waiting for 1 dynamic workflow to finish
+
+⏺ Dynamic workflow "Two parallel agents each run sleep 60 via Bash and return done" completed · 1m 44s
+
+⏺ The probe-two-agents workflow finished without errors, and both agents returned done.
+
+  - Time: it took about 104 seconds in total, which is longer than the 60-second sleep, so the agents ran at the same time rather than one after the other. The
+    extra ~44 seconds went on agent startup and model calls.
+  - Tokens: the two agents used about 74k tokens between them.
+  - Tool calls: they made 9 tool calls in total, where 2 would have been enough. I didn't look at the per-agent log (journal.jsonl in the run's transcript
+    directory) to see why.
+
+✻ Cooked for 1m 55s · done 11:40 AM
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [p] u@host:/tmp/probe-proj
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+  ◯ probe-two-agents  ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  2/2 · 1m44s · ↓ 74.4k tokens

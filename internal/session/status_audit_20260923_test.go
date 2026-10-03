@@ -79,7 +79,11 @@ const claudeDoneWithBackgroundShells = "  ===AGENTDECK_DONE=== status=ok summary
 	"\n" +
 	"  ⏵⏵ bypass permissions on · PR #508 · 1 shell · ← for agents\n"
 
-func TestAudit_ClaudeBackgroundShellsAtPromptIsWaiting(t *testing.T) {
+// Issue #2473 reversed this audit verdict: a shell still running is work in
+// flight, so the session is running with substate background-work. (Before
+// #2473 this test was TestAudit_ClaudeBackgroundShellsAtPromptIsWaiting and
+// expected waiting.)
+func TestAudit_ClaudeBackgroundShellsAtPromptIsRunning(t *testing.T) {
 	inst, cleanup := startPaneInstance(t, "claude", "claude-bgshell", claudeDoneWithBackgroundShells)
 	defer cleanup()
 	storage, err := NewStorageWithProfile("_test-audit-claude-bgshell")
@@ -89,8 +93,8 @@ func TestAudit_ClaudeBackgroundShellsAtPromptIsWaiting(t *testing.T) {
 	defer storage.Close()
 	fresh := persistAndReload(t, storage, inst, StatusRunning)
 	status, sub := cliPass(t, fresh)
-	if status != StatusWaiting {
-		t.Fatalf("fresh process = %q, want waiting: the turn is done and the prompt is idle", status)
+	if status != StatusRunning {
+		t.Fatalf("fresh process = %q, want running: the footer shows a shell still running (#2473)", status)
 	}
 	if sub != SubstateBackgroundWork {
 		t.Fatalf("substate = %q, want %q", sub, SubstateBackgroundWork)

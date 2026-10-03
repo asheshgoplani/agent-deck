@@ -708,6 +708,19 @@ type Instance struct {
 	// the hook-lag record alone (no capture of its own), so a busy frame the
 	// same pass captures afterwards can revert it (review round 3 P2-3).
 	hookLagFlipped bool
+
+	// Background work (issue #2473, background_work.go). bgWork is the last
+	// merged pane+transcript verdict; bgWorkActive marks a running status that
+	// exists BECAUSE of it (the foreground turn ended); bgWorkPaneSeenAt is
+	// the last time the pane itself showed the work (the transcript-only hold
+	// counts from it). bgTranscript* cache the transcript path per Claude
+	// session id.
+	bgWork           tmux.BackgroundWork
+	bgWorkActive     bool
+	bgWorkPaneSeenAt time.Time
+	bgTranscriptSID  string
+	bgTranscriptPath string
+	bgTranscriptAt   time.Time
 	// hookLagDB is the profile database this instance was loaded from, so a
 	// CLI process (which registers no global StateDB) can persist the record
 	// to the row it read. Nil for instances not loaded from storage.
@@ -6450,6 +6463,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	if HookStatusTool(i.Tool) && i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		i.hookLagFlipped = false
+		i.bgWorkActive = false
 		if i.hookStatus != "running" {
 			// The hook moved on (Stop landed, or a new lifecycle event): any
 			// lag observed under the old running event is over.
@@ -6491,27 +6505,34 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				i.Status = StatusWaiting
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
-				// ends. If the turn ended by handing off to a background agent
-				// ("Waiting for N background agent to finish") Claude resumes on
-				// its own, so the session stays running. Background SHELLS left
-				// alive at the prompt do not count (tmux.claudeBackgroundWorkPending):
-				// the operator can act, the light is waiting and the substate says
-				// background-work. BackgroundWorkPending captures the pane (the
-				// fast path has no captured content), so release i.mu around it
-				// like the GetStatus call below, then re-check for a concurrent
-				// Kill().
-				bgWorkPending := false
+				// ends, including the turn that launched a Workflow, background
+				// agents, run_in_background shells or a Monitor. Issue #2473: a
+				// running workflow means a running session, so this "waiting"
+				// never overrides a pane or transcript that proves background
+				// work in flight (background_work.go has the merge rule); the
+				// session stays running with substate background-work until the
+				// work reports back. BackgroundWorkSince captures the pane (the
+				// fast path has no captured content; a probe older than this
+				// hook event is not reused) and the transcript scan reads disk,
+				// so release i.mu around both like the GetStatus call below,
+				// then re-check for a concurrent Kill().
+				var work tmux.BackgroundWork
 				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
+					hookAt := i.hookLastUpdate
 					i.mu.Unlock()
-					bgWorkPending = i.tmuxSession.BackgroundWorkPending()
+					work = i.probeBackgroundWork(i.tmuxSession.BackgroundWorkSince(hookAt))
 					i.mu.Lock()
 					if i.Status == StatusStopped {
 						return nil
 					}
 				}
 				switch {
-				case bgWorkPending:
+				case work.InFlight():
 					i.Status = StatusRunning
+					i.bgWorkActive = true
+					// Output produced while the work ran is unseen: when it
+					// ends the session is waiting, not idle.
+					i.tmuxSession.ResetAcknowledged()
 				case i.tmuxSession != nil && i.tmuxSession.IsAcknowledged():
 					// Check acknowledgment: orange (waiting) vs gray (idle).
 					// Acknowledge() is called when user attaches to a session.
@@ -6715,6 +6736,42 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 	if i.Status == StatusRunning {
 		i.invalidateCodexCompletionOnRunning()
+	}
+
+	// Issue #2473: merge the transcript into the pane verdict for background
+	// work (background_work.go). A pane at the prompt with work in flight is
+	// already "active" from tmux; the transcript can veto a stale workflow row
+	// there, and can hold a waiting/idle pane running while the footer is
+	// briefly not visible (redraw, resize).
+	i.bgWorkActive = false
+	if IsClaudeCompatible(i.Tool) && (status == "active" || status == "waiting" || status == "idle") {
+		pane := i.tmuxSession.CachedBackgroundWork()
+		fromBackground := status != "active" ||
+			(pane.InFlight() && i.tmuxSession.CachedSubstate() == tmux.SubstateBackgroundWork)
+		if fromBackground {
+			i.mu.Unlock()
+			work := i.probeBackgroundWork(pane)
+			i.mu.Lock()
+			if i.Status == StatusStopped {
+				return nil
+			}
+			switch {
+			case work.InFlight():
+				if status != "active" {
+					i.tmuxSession.ResetAcknowledged()
+				}
+				i.Status = StatusRunning
+				i.bgWorkActive = true
+			case status == "active":
+				// The only thing keeping the pane green was a workflow row the
+				// transcript proves finished.
+				if i.tmuxSession.IsAcknowledged() {
+					i.Status = StatusIdle
+				} else {
+					i.Status = StatusWaiting
+				}
+			}
+		}
 	}
 
 	// Reconcile the auth hold with this sample. Runs after the status mapping so
@@ -11449,13 +11506,21 @@ func (i *Instance) Substate() Substate {
 }
 
 // SubstateDetail returns free-text detail for the substate the last
-// classification produced (today: the codex usage-limit retry time), or "".
+// classification produced (the codex usage-limit retry time; for
+// background-work the in-flight task, e.g. "workflow comms-followon-round3
+// 3/5 · 18m32s"), or "".
 // Call after Substate/CachedSubstate; it reads the cached value and never
 // captures the pane.
 func (i *Instance) SubstateDetail() string {
+	if work := i.BackgroundWork(); work.InFlight() {
+		return work.Summary()
+	}
 	tmuxSess := i.GetTmuxSession()
 	if tmuxSess == nil {
 		return ""
+	}
+	if tmuxSess.CachedSubstate() == tmux.SubstateBackgroundWork && i.GetStatusThreadSafe() != StatusRunning {
+		return "" // a vetoed stale workflow row (see reconcileBackgroundSubstate)
 	}
 	return tmuxSess.CachedSubstateDetail()
 }

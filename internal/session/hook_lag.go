@@ -303,8 +303,9 @@ func (i *Instance) persistHookLag() {
 func (i *Instance) reconcileSubstate(sub Substate) Substate {
 	i.mu.Lock()
 	status, lagged := i.Status, i.hookLag.observed(i.hookLastUpdate)
+	bgActive := i.bgWorkActive
 	i.mu.Unlock()
-	return reconcileSubstateWithStatus(status, sub, lagged)
+	return reconcileBackgroundSubstate(reconcileSubstateWithStatus(status, sub, lagged), status, bgActive)
 }
 
 // reconcileSubstateWithStatus closes the contradictory pair at the accessor:

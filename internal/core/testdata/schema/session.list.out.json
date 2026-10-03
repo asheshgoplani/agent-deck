@@ -64,6 +64,10 @@
           "type": "string",
           "format": "date-time"
         },
+        "background_work": {
+          "$ref": "#/$defs/tmux.BackgroundWork",
+          "description": "live; in-flight background work (workflow, agent, bash, monitor) behind substate background-work"
+        },
         "channels": {
           "description": "live",
           "type": "array",
@@ -192,6 +196,30 @@
         "title",
         "tool"
       ],
+      "additionalProperties": false
+    },
+    "tmux.BackgroundWork": {
+      "type": "object",
+      "properties": {
+        "elapsed": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "step": {
+          "type": "integer"
+        },
+        "steps": {
+          "type": "integer"
+        },
+        "task": {
+          "type": "string"
+        }
+      },
       "additionalProperties": false
     },
     "tmux.Viewer": {

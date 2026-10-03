@@ -1312,6 +1312,16 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 			continue
 		}
 
+		// Issue #2473: a Stop hook that ended the turn by handing off to
+		// background work (a Workflow, background agents, shells, a Monitor)
+		// is not a finished turn. The merged status keeps such a session
+		// running; the hook file alone must not emit running -> waiting for
+		// it. The real edge is emitted when the work reports back and the
+		// session settles (snapshot path, trigger "task").
+		if normalizeStatusString(current[id]) == string(StatusRunning) && backgroundWorkHoldsTurn(inst) {
+			continue
+		}
+
 		to := normalizeStatusString(candidate.ToStatus)
 		// A live TUI heartbeat routes `current` through DB status rows. A TUI
 		// that holds the heartbeat without refreshing its rows (orphaned tab,

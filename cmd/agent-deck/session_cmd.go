@@ -1936,6 +1936,11 @@ func handleSessionShow(profile string, args []string) {
 	if detail := inst.SubstateDetail(); detail != "" {
 		jsonData["substate_detail"] = detail
 	}
+	// Issue #2473: the in-flight background work behind substate
+	// background-work, structured (kind, task, step/steps, elapsed, source).
+	if work := inst.BackgroundWorkJSON(); work != nil {
+		jsonData["background_work"] = work
+	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)
 	addEffortJSON(jsonData, inst)

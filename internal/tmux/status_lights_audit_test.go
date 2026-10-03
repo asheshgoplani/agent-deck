@@ -539,11 +539,16 @@ func TestAudit_B_CompletedTurnAtIdlePrompt(t *testing.T) {
 			}
 		})
 	}
-	// Background shells left alive do not keep the turn open (status-detection
-	// audit 2026-09-23): the turn IS finished, the operator can act, and a
-	// hook still saying running over this frame is lagging.
+	// The "N shells still running" text on a completion line is printed once
+	// and goes stale; on its own it does not keep the turn open.
 	if !d.CompletedTurnAtIdlePrompt("✻ Churned for 6m 24s · done 4:36 PM · 2 shells still running\n❯ ") {
-		t.Fatal("a finished turn with background shells alive is still a finished turn")
+		t.Fatal("a completion line alone (no live footer counter) is a finished turn")
+	}
+	// Issue #2473: the live footer counter is work in flight, so the turn is
+	// NOT finished and a hook still saying running over it is not lagging.
+	// (Before #2473 background shells never kept the turn open.)
+	if d.CompletedTurnAtIdlePrompt("✻ Churned for 6m 24s · done 4:36 PM · 2 shells still running\n────\n❯ \n────\n  ⏵⏵ bypass permissions on · 2 shells · ← for agents") {
+		t.Fatal("a live shell counter in the footer keeps the turn open (#2473)")
 	}
 	if NewPromptDetector("codex").CompletedTurnAtIdlePrompt(auditCompletedTurnPane) {
 		t.Fatal("the completed-turn shape is Claude's; other tools stay false")

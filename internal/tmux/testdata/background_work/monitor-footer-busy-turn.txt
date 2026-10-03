@@ -1,0 +1,50 @@
+
+
+⏺ Dynamic workflow "Two parallel agents each run sleep 60 via Bash and return done" completed · 1m 44s
+
+⏺ The probe-two-agents workflow finished without errors, and both agents returned done.
+
+  - Time: it took about 104 seconds in total, which is longer than the 60-second sleep, so the agents ran at the same time rather than one after the other. The
+    extra ~44 seconds went on agent startup and model calls.
+  - Tokens: the two agents used about 74k tokens between them.
+  - Tool calls: they made 9 tool calls in total, where 2 would have been enough. I didn't look at the per-agent log (journal.jsonl in the run's transcript
+    directory) to see why.
+
+✻ Cooked for 1m 55s · done 11:40 AM · 1 monitor still running
+
+❯ Now do two things and do not wait for either: (1) start a background agent with the Agent tool (run_in_background true, description "probe sleeper agent")
+  whose job is to run "sleep 45" via Bash and return done; (2) run the shell command "sleep 50" with the Bash tool using run_in_background true. Then end your
+  turn immediately.
+
+⏺ Agent(probe sleeper agent)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Ran 1 shell command
+
+⏺ Both are running in the background:
+  1. The agent "probe sleeper agent" is running sleep 45. The Agent tool has no run_in_background option because it always runs agents in the background.
+  2. sleep 50 is running as background shell task bjawg0ioa.
+
+✻ Waiting for 1 background agent to finish
+
+⏺ Agent "probe sleeper agent" finished · 16s
+
+⏺ The probe sleeper agent hasn't returned done yet. Instead of running sleep 45 directly, it ran it as a background command, so it stopped early with "I'm
+  waiting for the background sleep 45 to finish". It may pick up again and report back when that sleep ends. The separate sleep 50 shell task is still running.
+
+✻ Churned for 22s · done 11:41 AM · 1 monitor still running
+
+⏺ Background command "Sleep for 50 seconds in background" completed (exit code 0)
+
+⏺ The background sleep 50 finished cleanly (exit code 0). The probe sleeper agent still hasn't sent its final done. Its sleep 45 should be over by now, so I'm
+
+✢ Recombobulating… (2s · ↓ 168 tokens · thinking)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [p] u@host:/tmp/probe-proj
+  ⏵⏵ bypass permissions on · 1 monitor · ← for agents
+
+  ⏺ main
+  ◯ general-purpose  probe sleeper agent                                                                                                  53s · ↓ 35.9k tokens

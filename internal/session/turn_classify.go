@@ -330,7 +330,9 @@ func ClassifyTurnTier(facts TurnFacts, status string, prev *TurnJournalEntry) st
 
 // turnFactsCache memoises the transcript scan per path on (size, mtime), so
 // the daemon pays one stat per child per poll in steady state and one tail
-// read per real turn. Shared by every daemon pass in the process.
+// read per real turn. Shared by every daemon pass in the process. One tail
+// read feeds both readers of the tail: the turn classifier (Facts) and the
+// background-work scan the status merge uses (Background, issue #2473).
 type turnFactsCache struct {
 	mu      sync.Mutex
 	entries map[string]turnFactsCacheEntry
@@ -341,45 +343,73 @@ type turnFactsCacheEntry struct {
 	mtime time.Time
 	facts TurnFacts
 	err   error
+	bg    transcriptBackgroundScan
 }
 
 var turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
 
-// Facts returns the classification of the transcript at path, re-scanning
-// only when the file changed. A Pending result is not cached so the next
-// poll retries once the assistant record lands.
-func (c *turnFactsCache) Facts(path string) (TurnFacts, error) {
+// load returns the cache entry for path, reading the transcript tail only when
+// the file changed since the last read.
+func (c *turnFactsCache) load(path string) (turnFactsCacheEntry, error) {
 	if path == "" {
-		return TurnFacts{}, os.ErrNotExist
+		return turnFactsCacheEntry{}, os.ErrNotExist
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return TurnFacts{}, err
+		return turnFactsCacheEntry{}, err
 	}
 	c.mu.Lock()
 	entry, ok := c.entries[path]
 	c.mu.Unlock()
 	if ok && entry.size == info.Size() && entry.mtime.Equal(info.ModTime()) {
-		return entry.facts, entry.err
+		return entry, nil
 	}
-	facts, err := ScanTranscriptTurn(path)
-	if err == nil && facts.Pending {
-		// A reply that never flushes (interrupted turn, a prompt with no
-		// assistant text) must not park the child: past the flush-race window
-		// the turn is treated as unclassifiable (legacy signal, trigger
-		// unknown) rather than pending.
-		if time.Since(info.ModTime()) <= turnFlushRaceWindow {
-			return facts, nil
-		}
-		facts = TurnFacts{Trigger: TurnTriggerUnknown}
+	entry = turnFactsCacheEntry{size: info.Size(), mtime: info.ModTime()}
+	lines, err := TranscriptTailLines(path, turnScanTailLines)
+	if err != nil {
+		entry.err = err
+	} else {
+		entry.facts = classifyTranscriptTail(lines)
+		entry.bg = scanTranscriptBackground(lines)
 	}
 	c.mu.Lock()
 	if len(c.entries) > 4096 {
 		c.entries = map[string]turnFactsCacheEntry{}
 	}
-	c.entries[path] = turnFactsCacheEntry{size: info.Size(), mtime: info.ModTime(), facts: facts, err: err}
+	c.entries[path] = entry
 	c.mu.Unlock()
-	return facts, err
+	return entry, nil
+}
+
+// Facts returns the classification of the transcript at path, re-scanning
+// only when the file changed. A Pending result stays pending only within the
+// flush-race window of the file's last write.
+func (c *turnFactsCache) Facts(path string) (TurnFacts, error) {
+	entry, err := c.load(path)
+	if err != nil {
+		return TurnFacts{}, err
+	}
+	if entry.err == nil && entry.facts.Pending {
+		// A reply that never flushes (interrupted turn, a prompt with no
+		// assistant text) must not park the child: past the flush-race window
+		// the turn is treated as unclassifiable (legacy signal, trigger
+		// unknown) rather than pending.
+		if time.Since(entry.mtime) <= turnFlushRaceWindow {
+			return entry.facts, nil
+		}
+		return TurnFacts{Trigger: TurnTriggerUnknown}, nil
+	}
+	return entry.facts, entry.err
+}
+
+// Background returns the background-work scan of the transcript at path
+// (see scanTranscriptBackground), sharing Facts' tail read and cache.
+func (c *turnFactsCache) Background(path string) (transcriptBackgroundScan, error) {
+	entry, err := c.load(path)
+	if err != nil {
+		return transcriptBackgroundScan{}, err
+	}
+	return entry.bg, entry.err
 }
 
 // instanceTurnFacts classifies the instance's current turn from its Claude

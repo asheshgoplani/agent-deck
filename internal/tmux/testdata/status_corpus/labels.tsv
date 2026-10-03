@@ -25,7 +25,7 @@ claude-local-move_f31e7d8e	claude	waiting	idle prompt with unsent draft
 claude-local-netx-messgae_6d5c8547	claude	waiting	idle prompt
 claude-local-oss-grants-research_73942337	claude	waiting	Fable limit notice then idle prompt
 claude-local-ram_a2f5916c	claude	waiting	Remote Control disconnected notices, idle prompt
-claude-local-review-2348-r2_43b89855	claude	waiting	turn done, 1 shell still running, unsent draft (false green in deck)
+claude-local-review-2348-r2_43b89855	claude	active	turn done, 1 shell still running, unsent draft (false green in deck); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
 claude-local-search_af74237b	claude	waiting	idle prompt with unsent draft
 claude-local-sessions_81cde3d6	claude	waiting	idle prompt
 claude-local-sponsor_246e5639	claude	waiting	idle prompt
@@ -43,18 +43,18 @@ claude-local-verify-dup-row_3388c7b4	claude	active	spinner ✢ Deliberating… (
 claude-local-verify-next-f13a4459_129c46d5	claude	active	spinner ✳ Pondering… (5m 11s), 1 shell in footer
 claude-local-voice_7d609c90	claude	waiting	fresh session idle prompt
 claude-local-vps_81905d51	claude	waiting	idle prompt with unsent draft
-claude-local-whatsapp-watcher_71e154e9	claude	waiting	turn done, 1 monitor still running, unsent draft
+claude-local-whatsapp-watcher_71e154e9	claude	active	turn done, 1 monitor still running, unsent draft; relabelled active by #2473: live shell/monitor counter in the footer is work in flight
 claude-local-write_7d7c258c	claude	waiting	idle prompt
 claude-derived-status-audit-18-agent-rows	claude	active	spinner with 18 sub-agent rows below the footer (derived from the 3-row frame)
-claude-remote-agentbox-conductor-proj-a-owner_b203faa8	claude	waiting	turn done, 1 shell still running, unsent draft (shown green on controller)
-claude-remote-agentbox-conductor-proj-a-worker-b_fc50c8f5	claude	waiting	turn done, 1 shell still running (shown green on controller)
+claude-remote-agentbox-conductor-proj-a-owner_b203faa8	claude	active	turn done, 1 shell still running, unsent draft (shown green on controller); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
+claude-remote-agentbox-conductor-proj-a-worker-b_fc50c8f5	claude	active	turn done, 1 shell still running (shown green on controller); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
 claude-remote-agentbox-conductor-proj-a-worker-c_75759d78	claude	waiting	turn done, unsent draft
 claude-remote-agentbox-LEDGER-proj-a_fd8d422e	claude	waiting	interactive menu
-claude-remote-agentbox-worker-b-r6-bug07_b3bb8b90	claude	waiting	DONE sentinel printed, 2 shells still running (shown green on controller)
-claude-remote-agentbox-worker-b-r6-bug50b_f2511f00	claude	waiting	DONE sentinel printed, 1 shell still running (shown green on controller)
-claude-remote-agentbox-worker-b-tutorial-redirect_59ff68f2	claude	waiting	DONE sentinel printed, 1 shell still running (shown green on controller)
-claude-remote-agentbox-worker-c-mls-central-list_91138284	claude	waiting	DONE sentinel printed, 2 shells still running, unsent draft (shown green on controller)
-claude-remote-proj-dbox-conductor-proj-d-worker-c_afd81d46	claude	waiting	turn done, 1 shell still running (shown green on controller)
+claude-remote-agentbox-worker-b-r6-bug07_b3bb8b90	claude	active	DONE sentinel printed, 2 shells still running (shown green on controller); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
+claude-remote-agentbox-worker-b-r6-bug50b_f2511f00	claude	active	DONE sentinel printed, 1 shell still running (shown green on controller); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
+claude-remote-agentbox-worker-b-tutorial-redirect_59ff68f2	claude	active	DONE sentinel printed, 1 shell still running (shown green on controller); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
+claude-remote-agentbox-worker-c-mls-central-list_91138284	claude	active	DONE sentinel printed, 2 shells still running, unsent draft (shown green on controller); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
+claude-remote-proj-dbox-conductor-proj-d-worker-c_afd81d46	claude	active	turn done, 1 shell still running (shown green on controller); relabelled active by #2473: live shell/monitor counter in the footer is work in flight
 claude-remote-sbbox-bank_ea9dbf8d	claude	waiting	interactive menu
 codex-local-chain-context-row-acceptance_6e60a98c	codex	waiting	idle composer, weekly-limit warnings above
 codex-local-chain-verified-4bb16d15_29a23a54	codex	waiting	idle composer

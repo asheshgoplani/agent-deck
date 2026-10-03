@@ -78,6 +78,10 @@ type SessionRow struct {
 	ResolvedCodexHome string         `json:"resolved_codex_home,omitempty"`
 	LastActivityAt    string         `json:"last_activity_at,omitempty" doc:"live"`
 	Viewers           *[]tmux.Viewer `json:"viewers,omitempty" doc:"live; absent when tmux could not be asked"`
+
+	// BackgroundWork is the in-flight background work behind substate
+	// background-work (issue #2473).
+	BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty" doc:"live; in-flight background work (workflow, agent, bash, monitor) behind substate background-work"`
 }
 
 func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) {
@@ -166,6 +170,7 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		}
 		row.Substate = substate
 		row.SubstateDetail = inst.SubstateDetail()
+		row.BackgroundWork = inst.BackgroundWorkJSON()
 		row.Channels = inst.Channels
 		row.ExtraArgs = inst.ExtraArgs
 		row.Color = inst.Color

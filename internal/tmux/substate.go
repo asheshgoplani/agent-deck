@@ -37,11 +37,14 @@ const (
 	// answer (#2185).
 	SubstateInteractiveMenu Substate = "interactive-menu"
 
-	// SubstateBackgroundWork marks a Claude session sitting at its input
-	// prompt with run_in_background shells or a Monitor still alive ("N
-	// shells still running" / "· N shells ·" in the footer). The turn is
-	// done and the session is waiting for input; the shells are context, not
-	// activity. See background_work.go for why this is not "running".
+	// SubstateBackgroundWork marks a Claude session whose foreground turn is
+	// over (empty prompt, Stop hook fired) while work it started is still in
+	// flight: a Workflow ("◯ name ▰▰▱ 3/5 · 18m32s" under the footer), background
+	// agents ("Waiting for N background agents to finish"), run_in_background
+	// shells or Monitors ("· 2 shells, 1 monitor ·" in the footer), or the
+	// same evidence in the transcript. Pairs with status "running" (issue
+	// #2473: a running workflow means a running session); the session settles
+	// to waiting only once nothing is in flight. See background_work.go.
 	SubstateBackgroundWork Substate = "background-work"
 
 	// SubstateModelUnavailable marks the Fable-down no-op loop: the model
@@ -128,8 +131,10 @@ const crunchedNoopMarker = "Crunched for 0s"
 //     is on screen. Checked before idle-at-empty-prompt: both conditions make
 //     hasClaudePrompt true, but a menu awaiting a choice is blocked-on-input,
 //     not idle (#2185).
-//  5. idle-at-empty-prompt — sitting at the prompt with nothing happening.
-//  6. none      — no distinct refinement.
+//  5. background-work — at the prompt, but a workflow / background agent /
+//     shell / monitor started by the session is still in flight (#2473).
+//  6. idle-at-empty-prompt — sitting at the prompt with nothing happening.
+//  7. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
 	// The gate is explicit per tool: each arm reads only renderings captured
 	// from that tool. A tool without an arm stays SubstateNone — unknown is
@@ -145,10 +150,17 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 }
 
 // SubstateDetail returns free-text detail for the substate ClassifySubstate
-// would return for content, or "" when there is none. Today only the codex
-// usage-limit banner carries one: the retry time the banner prints ("try
-// again at Oct 10th, 2026 8:03 AM").
+// would return for content, or "" when there is none: the retry time the codex
+// usage-limit banner prints ("try again at Oct 10th, 2026 8:03 AM"), and for a
+// Claude background-work frame the in-flight work ("workflow
+// comms-followon-round3 3/5 · 18m32s", issue #2473).
 func (d *PromptDetector) SubstateDetail(content string) string {
+	if d.tool == "claude" {
+		if d.classifyClaudeSubstate(content) == SubstateBackgroundWork {
+			return ParseClaudeBackgroundWork(content).Summary()
+		}
+		return ""
+	}
 	if d.tool != "codex" {
 		return ""
 	}
@@ -206,7 +218,7 @@ func (d *PromptDetector) classifyClaudeSubstate(content string) Substate {
 		if hasOpenInteractiveMenu(content) {
 			return SubstateInteractiveMenu
 		}
-		if claudeBackgroundShellsPending(content) {
+		if claudeBackgroundWorkPending(content) {
 			return SubstateBackgroundWork
 		}
 		return SubstateIdleAtEmptyPrompt

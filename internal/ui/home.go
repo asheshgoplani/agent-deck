@@ -23385,6 +23385,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString(statusBadge)
 	b.WriteString("\n")
 
+	// Issue #2473: a session running because of background work (a Workflow,
+	// background agents, shells, a Monitor) at an empty prompt says what is
+	// running, right under the status. In-memory read; no capture.
+	if line := backgroundWorkLine(selected.BackgroundWork()); line != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(ColorGreen).Render(truncateVisible(line, width-4)))
+		b.WriteString("\n")
+	}
+
 	// Auth hold banner. A session whose agent exited on a 401 shows a bare
 	// "error" status that no amount of restarting will clear, and during a
 	// fleet-wide credential failure that reads as unexplained mass death (the
