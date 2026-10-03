@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude session running a background Workflow, background agents, `run_in_background` shells or a Monitor at an empty prompt is now `running` with substate `background-work`, instead of `idle` / `waiting` (a running workflow means a running session). The detector reads the current footers (the workflow row `○ name ▰▰▱ 3/5 · 18m32s` drawn under the footer, `Waiting for N dynamic workflows / background agents to finish`, the live `· 2 shells, 1 monitor ·` counter) from the frame before the roster trim, and the transcript (pending Workflow / Agent / Bash / Monitor launches and Claude Code's `pendingWorkflowCount` / `pendingBackgroundAgentCount`) holds the verdict through a redraw for up to 3 minutes and vetoes a workflow row whose task already reported back. The Stop hook's `waiting` no longer overrides that evidence, so no `running -> waiting` inbox record is written while the work runs; when it ends the session settles to `waiting` (then `idle` once acknowledged) with one record, trigger `task`. `session show --json`, `list --json`, `status --json -v` and `session children --json` carry a `background_work` object (`kind`, `task`, `step`, `steps`, `elapsed`, `source`) and a human `substate_detail`; the TUI preview shows `background: <task> n/m · elapsed`. This reverses the 2026-09-23 audit ruling that shells left at the prompt are waiting, and a stale `Waiting for 1 background agent` line further up a finished pane no longer keeps it green (#2473).
+
 ## [1.16.24] - 2026-10-03
 
 - **Upgrading:** the agent-deck skill is now split into a short `SKILL.md` plus `references/` files. If you installed it with the README's curl loop rather than the plugin, re-run the loop so the new reference files are present (#2429).

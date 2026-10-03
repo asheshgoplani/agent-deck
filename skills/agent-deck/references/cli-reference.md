@@ -310,6 +310,17 @@ Auto-detects current session if no ID provided.
 - Claude/Gemini session ID
 - Attached MCPs (local, global, project)
 - tmux session name
+- `substate` / `substate_detail` (omitted when none). Substate `background-work` (Claude) means the foreground turn ended but a Workflow, background agents, shells or a Monitor are still in flight: status is `running`, `substate_detail` reads e.g. `workflow comms-followon-round3 3/5 · 18m32s`, and a `background_work` object carries the structure:
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | `workflow`, `agent`, `bash` or `monitor` |
+| `task` | workflow name, agent / command description, or a count such as `2 shells, 1 monitor` |
+| `step`, `steps` | workflow progress n/m (omitted for other kinds) |
+| `elapsed` | workflow elapsed time as Claude renders it (`18m32s`) |
+| `source` | `pane`, `transcript` or `pane+transcript`: which evidence proved the work in flight |
+
+`list --json`, `status --json -v` and `session children --json` carry the same `background_work` object (omitted when nothing is in flight). When the work reports back the session settles to `waiting` (then `idle` once acknowledged) within one poll (#2473).
 
 ### session current
 

@@ -35,29 +35,48 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 2. Pane title carries a Braille spinner → `active` (every tool, no capture).
 3. Capture the visible pane (no scrollback). Claude frames drop the agent
    roster and artifact rows drawn under the footer (`prepareFrame`, also in
-   `GetSubstate` and the Stop-hook `BackgroundWorkPending`), so a turn handed
-   to many background agents keeps its `Waiting for N background agents`
-   line inside the 20-line background-work window, and the prompt (8) and
-   menu (15) windows see the input box.
+   `GetSubstate` and the Stop-hook `BackgroundWorkSince`), so the prompt (8)
+   and menu (15) windows see the input box. Before the trim, `prepareFrame`
+   records the frame's background work (`tmux.ParseClaudeBackgroundWork`):
+   the workflow row under the footer is drawn with a roster glyph and the
+   trim would remove it.
 4. Model-unavailable no-op → `error`; tool error banner → `error`.
 5. Open Claude menu at the tail with no live busy cue near it → not busy.
 6. Busy indicator (tool patterns over the last 25 lines, spinner scan, 6 s
    spinner grace) → `active`.
-7. Claude awaiting a background agent → `active`.
+7. Claude background work in flight → `active` (issue #2473): a workflow row
+   short of its last step (`○ name ▰▰▱ 3/5 · 18m32s`; a finished row stays at
+   n/n), `Waiting for N background agents / dynamic workflows to finish` as
+   the last turn line above the input box (an older one further up is
+   history), or the live `· N shells, M monitors ·` counter on the footer.
 8. Prompt indicator → `waiting` (or `idle` once the operator attached).
 9. Otherwise history: `starting` inside the 2 min startup window, else the
    previous stable status / `waiting`.
 
-Instance layer on top: a fresh hook verdict short-circuits the pane; the
-hook-lag rule flips a stale `running` hook to `waiting` after two completed
-turn samples; a purely pane-derived flip away from running is held for one
+Instance layer on top: a fresh hook verdict short-circuits the pane, except
+that a `waiting` hook (the Stop that ends every foreground turn) never
+overrides background work in flight: the pane (captured for the hook path,
+never reusing a probe older than the hook event) OR the transcript (pending
+Workflow / background Agent / background Bash / Monitor launch with no
+terminal `<task-notification>` yet, or Claude Code's `pendingWorkflowCount`
+/ `pendingBackgroundAgentCount` on the last `turn_duration`) keeps the
+session `running` with substate `background-work`. Transcript-only evidence
+holds for 3 minutes after its newest sighting (redraws, resizes, a capture
+that missed the footer); a workflow row whose task already reported back is
+vetoed. The same merge runs on the tmux path, and the notify daemon's hook
+candidate path skips a Stop that handed off to background work, so no
+`running -> waiting` record is written until the work ends (session/
+background_work.go). The hook-lag rule flips a stale `running` hook to
+`waiting` after two completed turn samples; a purely pane-derived flip away from running is held for one
 sample (`debounceFlipFromRunning`) when this process saw running itself;
 Codex completion evidence bypasses that hold.
 
 ## Substates (additive, never change the colour except model-unavailable)
 
 `running`, `idle-at-empty-prompt`, `interactive-menu`, `background-work`
-(Claude at the prompt with `N shells still running` / `· N shells ·`),
+(Claude at the prompt with a workflow, background agents, shells or a monitor
+still in flight; pairs with `running`, detail in `substate_detail` and the
+`background_work` JSON object),
 `auth-401`, `usage-limit`, `model-unavailable`, `unknown-exit`, `hook-lag`.
 
 ## Who computes, how often, what persists
