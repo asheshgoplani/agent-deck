@@ -2,7 +2,8 @@
 // Ports createTerminalUI, connectWS, installTerminalTouchScroll from app.js
 import { html } from 'htm/preact'
 import { useEffect, useRef, useCallback, useState } from 'preact/hooks'
-import { selectedIdSignal, authTokenSignal, wsStateSignal, readOnlySignal } from './state.js'
+import { effect } from '@preact/signals'
+import { selectedIdSignal, sessionsSignal, authTokenSignal, wsStateSignal, readOnlySignal } from './state.js'
 import { apiFetch } from './api.js'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -12,6 +13,7 @@ import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
 import { registerOsc52Handler } from './terminalClipboard.js'
 import { createTerminalLinkHandler } from './terminalLinks.js'
+import { observeSession, shouldReattach, sessionStartedSignal, noteSessionStarted } from './terminalReconnect.js'
 
 // Mobile detection: pointer:coarse for touch devices
 function isMobileDevice() {
@@ -436,6 +438,26 @@ export function TerminalPanel() {
     }
   }, [sessionId, reconnectKey, cleanup])
 
+  // #2432: a terminal halted by TMUX_SESSION_NOT_FOUND reattaches by itself
+  // once its session runs again, however it was started: the banner, the
+  // header or sidebar Start/Restart (noteSessionStarted), or the CLI/TUI
+  // (the SSE status turning live). Same rebuild as the banner's Restart:
+  // clear the banner and bump reconnectKey.
+  useEffect(() => {
+    if (!sessionId) return
+    let prev = null
+    return effect(() => {
+      const next = observeSession(sessionsSignal.value, sessionStartedSignal.value, sessionId, prev)
+      const ctx = ctxRef.current
+      const halted = !!ctx && ctx.sessionId === sessionId && !ctx.wsReconnectEnabled && !ctx.reattachQueued
+      if (prev && shouldReattach(prev, next, halted)) {
+        ctx.reattachQueued = true // one rebuild per halt; the new ctx starts clear
+        setFatalError(null)
+        setReconnectKey((k) => k + 1)
+      }
+      prev = next
+    })
+  }, [sessionId])
 
   if (!sessionId) {
     return html`<${EmptyStateDashboard} />`
@@ -449,13 +471,10 @@ export function TerminalPanel() {
   async function handleFatalRestart() {
     try {
       await apiFetch('POST', '/api/sessions/' + sessionId + '/restart')
-      setFatalError(null)
-      // #782 (codex review): bumping reconnectKey forces the main effect
-      // to tear down the disabled-reconnect ctx and rebuild a fresh
-      // terminal + WebSocket. Without this, ctx.wsReconnectEnabled stays
-      // false from the prior TMUX_SESSION_NOT_FOUND and the terminal
-      // never reattaches to the freshly-restarted tmux session.
-      setReconnectKey((k) => k + 1)
+      // #782 (codex review) / #2432: the reattach effect above clears the
+      // banner and bumps reconnectKey, rebuilding the terminal + WebSocket
+      // that the TMUX_SESSION_NOT_FOUND halt left with reconnect disabled.
+      noteSessionStarted(sessionId)
     } catch (_e) {
       // Errors surface via the global toast layer; leave the banner up.
     }
@@ -479,6 +498,9 @@ export function TerminalPanel() {
         <div role="alert"
              style=${{
                position: 'absolute', inset: '12px 12px auto 12px',
+               // #2432: above xterm's layers (link canvas, scrollbar at 11),
+               // which otherwise take the clicks meant for Restart.
+               zIndex: 20,
                border: '1px solid rgba(247,118,142,0.4)',
                background: 'rgba(22,22,30,0.95)',
                borderRadius: 'var(--radius-lg)',

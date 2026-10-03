@@ -42,6 +42,7 @@ import { KeyboardShortcuts } from './KeyboardShortcuts.js'
 import { apiFetch, authHeaders } from './api.js'
 import { shortcutsOverlaySignal } from './state.js'
 import { installViewportInsets } from './viewportInsets.js'
+import { noteSessionStarted } from './terminalReconnect.js'
 
 function WorkHead() {
   const { sessions, groups } = menuModelSignal.value
@@ -77,7 +78,9 @@ function WorkHead() {
   const action = (verb) => {
     if (!canMutate) return
     if (verb === 'fork') return apiFetch('POST', `/api/sessions/${session.id}/fork`, { title: session.title + '-fork' }).catch(() => {})
-    return apiFetch('POST', `/api/sessions/${session.id}/${verb}`).catch(() => {})
+    return apiFetch('POST', `/api/sessions/${session.id}/${verb}`)
+      .then(() => { if (verb === 'start' || verb === 'restart') noteSessionStarted(session.id) })
+      .catch(() => {})
   }
 
   return html`

@@ -21,6 +21,7 @@ import {
 import { apiFetch } from './api.js'
 import { addToast } from './Toast.js'
 import { formatRelativeTime } from './timeFmt.js'
+import { noteSessionStarted } from './terminalReconnect.js'
 
 // One chip per status bucket, in the same fixed order and with the same
 // glyphs the group stats panel and the TUI use (GROUP_STATUS_BUCKETS /
@@ -49,9 +50,9 @@ function doAction(action, s) {
     return
   }
   const id = s.id
-  if (action === 'start')   return apiFetch('POST', `/api/sessions/${id}/start`).catch(() => {})
+  if (action === 'start')   return apiFetch('POST', `/api/sessions/${id}/start`).then(() => noteSessionStarted(id)).catch(() => {})
   if (action === 'stop')    return apiFetch('POST', `/api/sessions/${id}/stop`).catch(() => {})
-  if (action === 'restart') return apiFetch('POST', `/api/sessions/${id}/restart`).catch(() => {})
+  if (action === 'restart') return apiFetch('POST', `/api/sessions/${id}/restart`).then(() => noteSessionStarted(id)).catch(() => {})
   if (action === 'fork')    return apiFetch('POST', `/api/sessions/${id}/fork`, { title: s.title + '-fork' }).catch(() => {})
   if (action === 'archive') {
     confirmDialogSignal.value = {
