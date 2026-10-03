@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -115,7 +117,8 @@ func TestStateDBAnnotationReader_ReadsProfileStateDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := &stateDBAnnotationReader{}
+	clock := &fakeClock{t: time.Unix(1_800_000_000, 0)}
+	r := &stateDBAnnotationReader{now: clock.now}
 	defer r.close()
 	got, err := r.load("annot-test")
 	if err != nil {
@@ -125,12 +128,108 @@ func TestStateDBAnnotationReader_ReadsProfileStateDB(t *testing.T) {
 		t.Fatalf("annotations = %+v", got)
 	}
 
-	// A later write is visible on the cached handle without reopening.
+	// A later write is visible on the cached handle without reopening, once
+	// the shared read has aged out.
 	if err := rw.SetSessionHint(statedb.HintScopeInstance, "inst-1", "status", "done", statedb.HintSourceAnnotate, ""); err != nil {
 		t.Fatal(err)
 	}
+	clock.advance(2 * annotationCacheTTL)
 	got, err = r.load("annot-test")
 	if err != nil || got["inst-1"].Hints["status"] != "done" {
 		t.Fatalf("after update: %+v, %v", got, err)
+	}
+}
+
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// writeAnnotatedStateDB creates a migrated state.db at path holding one
+// instance hint, then closes it (checkpointing the WAL into the file).
+func writeAnnotatedStateDB(t *testing.T, path, id, status string) {
+	t.Helper()
+	rw, err := statedb.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.SetSessionHint(statedb.HintScopeInstance, id, "status", status, statedb.HintSourceAnnotate, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Every SSE client polls every menuEventsPollInterval; reads inside the cache
+// window share one bulk query instead of each re-scanning the tables.
+func TestStateDBAnnotationReader_SharesReadWithinTTL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := session.GetDBPathForProfile("annot-ttl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAnnotatedStateDB(t, path, "inst-1", "in-progress")
+
+	clock := &fakeClock{t: time.Unix(1_800_000_000, 0)}
+	r := &stateDBAnnotationReader{now: clock.now}
+	defer r.close()
+	if got, err := r.load("annot-ttl"); err != nil || got["inst-1"].Hints["status"] != "in-progress" {
+		t.Fatalf("first load: %+v, %v", got, err)
+	}
+
+	rw, err := statedb.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rw.Close()
+	if err := rw.SetSessionHint(statedb.HintScopeInstance, "inst-1", "status", "done", statedb.HintSourceAnnotate, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.advance(annotationCacheTTL / 2)
+	if got, err := r.load("annot-ttl"); err != nil || got["inst-1"].Hints["status"] != "in-progress" {
+		t.Fatalf("load inside the cache window must reuse the shared read: %+v, %v", got, err)
+	}
+	clock.advance(annotationCacheTTL)
+	if got, err := r.load("annot-ttl"); err != nil || got["inst-1"].Hints["status"] != "done" {
+		t.Fatalf("load after the cache window must re-read: %+v, %v", got, err)
+	}
+}
+
+// A state.db replaced on disk (profile restore or migration writing a new
+// file over the path) must be picked up: the cached read-only handle still
+// points at the old, unlinked file.
+func TestStateDBAnnotationReader_ReopensReplacedStateDB(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := session.GetDBPathForProfile("annot-replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAnnotatedStateDB(t, path, "inst-1", "in-progress")
+
+	clock := &fakeClock{t: time.Unix(1_800_000_000, 0)}
+	r := &stateDBAnnotationReader{now: clock.now}
+	defer r.close()
+	if got, err := r.load("annot-replace"); err != nil || got["inst-1"].Hints["status"] != "in-progress" {
+		t.Fatalf("first load: %+v, %v", got, err)
+	}
+
+	replacement := path + ".restore"
+	writeAnnotatedStateDB(t, replacement, "inst-2", "needs-input")
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.advance(2 * annotationCacheTTL)
+	got, err := r.load("annot-replace")
+	if err != nil {
+		t.Fatalf("load after replace: %v", err)
+	}
+	if got["inst-2"] == nil || got["inst-2"].Hints["status"] != "needs-input" || got["inst-1"] != nil {
+		t.Fatalf("reader kept serving the replaced state.db: %+v", got)
 	}
 }

@@ -2,7 +2,9 @@ package web
 
 import (
 	"log/slog"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -53,15 +55,31 @@ func applySnapshotAnnotations(snapshot *MenuSnapshot, loader annotationLoader) {
 	}
 }
 
+// annotationCacheTTL is how long one bulk read is shared between callers.
+// Every SSE menu stream re-applies annotations each menuEventsPollInterval,
+// so without it N open tabs would run N identical scans per poll.
+const annotationCacheTTL = time.Second
+
 // stateDBAnnotationReader keeps one read-only handle on the profile's
 // state.db and reuses it across requests. The handle is query_only, so the
 // web server never writes to a database the TUI and CLI also own.
+//
+// The file is re-stat'ed before each read: a state.db replaced on disk
+// (profile restore or migration writing a new file over the path) gets a
+// fresh handle instead of the cached one still reading the old file.
 type stateDBAnnotationReader struct {
 	mu   sync.Mutex
 	path string
 	db   *statedb.StateDB
+	fi   os.FileInfo // state.db as it was when db was opened
+	now  func() time.Time
+
+	cached   map[string]*statedb.InstanceAnnotations
+	cachedAt time.Time
 }
 
+// load returns the bulk annotations for profile. The returned map is shared
+// between callers inside the cache window and must not be mutated.
 func (r *stateDBAnnotationReader) load(profile string) (map[string]*statedb.InstanceAnnotations, error) {
 	path, err := session.GetDBPathForProfile(profile)
 	if err != nil {
@@ -69,25 +87,44 @@ func (r *stateDBAnnotationReader) load(profile string) (map[string]*statedb.Inst
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.db == nil || r.path != path {
-		if r.db != nil {
-			_ = r.db.Close()
-			r.db = nil
-		}
+	now := time.Now
+	if r.now != nil {
+		now = r.now
+	}
+	t := now()
+	if r.db != nil && r.path == path && r.cached != nil && t.Sub(r.cachedAt) < annotationCacheTTL {
+		return r.cached, nil
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		r.closeLocked()
+		return nil, err
+	}
+	if r.db == nil || r.path != path || !os.SameFile(r.fi, fi) || !r.fi.ModTime().Equal(fi.ModTime()) {
+		r.closeLocked()
 		db, err := statedb.OpenReadOnlyLive(path)
 		if err != nil {
 			return nil, err
 		}
-		r.db, r.path = db, path
+		r.db, r.path, r.fi = db, path, fi
 	}
-	return r.db.ListInstanceAnnotations()
+	byID, err := r.db.ListInstanceAnnotations()
+	if err != nil {
+		return nil, err
+	}
+	r.cached, r.cachedAt = byID, t
+	return byID, nil
+}
+
+func (r *stateDBAnnotationReader) closeLocked() {
+	if r.db != nil {
+		_ = r.db.Close()
+	}
+	r.db, r.fi, r.cached = nil, nil, nil
 }
 
 func (r *stateDBAnnotationReader) close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.db != nil {
-		_ = r.db.Close()
-		r.db = nil
-	}
+	r.closeLocked()
 }
