@@ -1368,6 +1368,40 @@ func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotifi
 	return records, nil
 }
 
+// FetchRecordsAfter is the incremental talkback read: one round trip returns
+// the records newer than cursor, the next cursor and the remote writer's
+// status (`inbox export --json --after <cursor> --with-writer`). A remote
+// whose binary predates --after rejects the flag; that answer is
+// ErrRemoteCursorUnsupported so the caller falls back to the full export.
+func (r *SSHRunner) FetchRecordsAfter(ctx context.Context, cursor RemoteCursor) (RemoteExport, error) {
+	arg, err := json.Marshal(cursor)
+	if err != nil {
+		return RemoteExport{}, err
+	}
+	output, err := r.Run(ctx, "inbox", "export", "--json", "--after", string(arg), "--with-writer")
+	if err != nil {
+		if strings.Contains(err.Error(), "flag provided but not defined") {
+			return RemoteExport{}, fmt.Errorf("%w: %s", ErrRemoteCursorUnsupported, firstLineOf([]byte(err.Error())))
+		}
+		return RemoteExport{}, err
+	}
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 {
+		return RemoteExport{}, fmt.Errorf("remote returned no output at all for the incremental export; this is a failed read, not an empty host")
+	}
+	if trimmed[0] != '{' {
+		return RemoteExport{}, fmt.Errorf("remote did not return an export object: %s", firstLineOf(trimmed))
+	}
+	var exp RemoteExport
+	if err := json.Unmarshal(trimmed, &exp); err != nil {
+		return RemoteExport{}, fmt.Errorf("failed to parse remote export: %w", err)
+	}
+	if exp.CursorNext.Seqs == nil {
+		exp.CursorNext.Seqs = map[string]int64{}
+	}
+	return exp, nil
+}
+
 // FetchWriterStatus asks the remote whether anything is recording transitions
 // there. It is a SEPARATE call rather than a field on the export, so a remote
 // too old to know the command is an error: after records have been fetched, a

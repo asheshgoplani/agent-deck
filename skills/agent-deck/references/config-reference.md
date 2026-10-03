@@ -33,6 +33,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[recall] Section](#recall-section)
 - [[notifications] Section](#notifications-section)
 - [[inbox] Section](#inbox-section)
+- [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
@@ -1002,6 +1003,20 @@ wake_on = ["urgent", "info"]     # restores a wake per recorded turn for this co
 | `journal_keep` | int | `256` | Lines kept per child in the turn journal (`agent-deck inbox stats` reads the counters, the journal is the per-turn history). |
 
 Measure the effect with `agent-deck inbox stats self` (or `--all`): records by tier, turns suppressed as noise or duplicates, wakeups fired and withheld, bytes injected.
+
+## [remotes.<name>] Talkback
+
+Remotes are added with `agent-deck remote add <name> <user@host>`; this key makes the notify-daemon pull a remote's child records on its own instead of waiting for a conductor to run `agent-deck remote drain`.
+
+```toml
+[remotes.boxb]
+host = "worker@box-b"
+talkback_interval_secs = 30   # 0 / unset = off
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `talkback_interval_secs` | int | `0` (off) | Every N seconds the notify-daemon runs the same incremental drain as `agent-deck remote drain <name> --into <conductor>` for every local `conductor-*` session enrolled with that remote (it has a cursor for it, i.e. it drained it once, or it holds a pending record from it). 30 is a good value. The drain runs off the poll loop, bounded at 60 s, and a remote with a drain in flight is skipped. A failure backs off from 1 min to 10 min; after 3 consecutive failures each enrolled conductor gets ONE urgent record (`remote <name>: talkback failing for N min: <last error>`), and a success clears the streak. An ingested urgent record wakes an idle conductor exactly like a local one; info records ride its next turn. |
 
 ## [health] Section
 

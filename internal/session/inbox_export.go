@@ -147,6 +147,7 @@ func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionN
 	}
 
 	suppressed := map[string]bool{} // "<profile>\x00<child>" -> true
+	titles := map[string]string{}   // same key -> registry title, for journal records that carry none
 	for profile := range profiles {
 		storage, err := NewStorageWithProfile(profile)
 		if err != nil {
@@ -164,13 +165,18 @@ func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionN
 			if !instanceAcceptsTransitionEvents(inst) {
 				suppressed[profile+"\x00"+inst.ID] = true
 			}
+			titles[profile+"\x00"+inst.ID] = inst.Title
 		}
 	}
 
 	out := make([]TransitionNotificationEvent, 0, len(events))
 	for _, ev := range events {
-		if suppressed[strings.TrimSpace(ev.Profile)+"\x00"+strings.TrimSpace(ev.ChildSessionID)] {
+		key := strings.TrimSpace(ev.Profile) + "\x00" + strings.TrimSpace(ev.ChildSessionID)
+		if suppressed[key] {
 			continue
+		}
+		if ev.ChildTitle == "" {
+			ev.ChildTitle = titles[key]
 		}
 		out = append(out, ev)
 	}

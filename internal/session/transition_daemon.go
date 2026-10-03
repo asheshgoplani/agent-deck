@@ -142,6 +142,11 @@ type TransitionDaemon struct {
 	recallBackfillStarted bool
 	// Join the worker before tests replace its shared configuration.
 	recallBackfillWG sync.WaitGroup
+
+	// remoteTalkback schedules the incremental remote drains for remotes
+	// with talkback_interval_secs (transition_daemon_remote.go). Lazily
+	// created by the Run loop.
+	remoteTalkback *remoteTalkbackScheduler
 }
 
 func NewTransitionDaemon() *TransitionDaemon {
@@ -180,6 +185,7 @@ func (d *TransitionDaemon) Run(ctx context.Context) error {
 
 	// Prime baseline once, then run adaptive loop.
 	interval := d.SyncOnce(ctx)
+	d.tickRemoteTalkback(ctx)
 	if interval <= 0 {
 		interval = notifyPollSlow
 	}
@@ -191,6 +197,7 @@ func (d *TransitionDaemon) Run(ctx context.Context) error {
 		case <-time.After(interval):
 			d.maybeStartInitialRecallBackfill(ctx)
 			interval = d.SyncOnce(ctx)
+			d.tickRemoteTalkback(ctx)
 			if interval <= 0 {
 				interval = notifyPollSlow
 			}

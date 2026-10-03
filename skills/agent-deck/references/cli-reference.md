@@ -1044,7 +1044,7 @@ Transition notifications are parent-linked, and a `parent_session_id` cannot poi
 | Flag | Description |
 | --- | --- |
 | `--into <session-id>` | Local session whose inbox receives the records (default: the calling session, same resolution as `inbox drain self`) |
-| `--json` | Emit `{remote, host, target_session_id, fetched, written, duplicates, records}` for a conductor heartbeat |
+| `--json` | Emit `{remote, host, target_session_id, fetched, written, duplicates, unknown, writer, records, cursor_before, cursor_after, legacy_export, woke}` for a conductor heartbeat. `cursor_before`/`cursor_after` are the cursor sent and the one saved (equal when it was pinned); both are absent and `legacy_export` is `true` when the remote only speaks the full export. `woke` is `true` when an ingested record woke the conductor. |
 
 - **What it returns.** Completions (from the completion ledger) *and* transitions — including the waiting/error/idle flips of sessions that have no parent on the remote host, which is the normal state for a worker whose conductor is on another machine. Those are kept in a reserved `_unowned` ledger beside the per-parent inboxes; a quota-stalled remote session shows up in a drain because of it. Sessions that opted out with `--no-transition-notify` are never exported.
 - **Read-only on the remote.** It runs the remote's `agent-deck inbox export`, which consumes, truncates and marks nothing. Two conductors draining the same host both receive the records, and the host's own conductor still drains its inbox normally.
@@ -1052,6 +1052,9 @@ Transition notifications are parent-linked, and a `parent_session_id` cannot poi
 - **Records are stored under `<remote>:<child-id>`.** A child id is only unique on the host that minted it — `run-task --child <ID>` takes any string — so two hosts running the same named task would otherwise produce records that destroy each other in the conductor's inbox (every identity rule downstream keys on the child id). The stored id names its host, in the same `<remote>:<session>` spelling the TUI uses for remote sessions.
 - **Honest about failure.** Exit `0` = drained (a reachable remote with nothing pending says so explicitly), `2` = unknown remote / none configured, `3` = the remote could not be reached *or could not read its own records*. Neither an ssh failure nor an unreadable record file on the remote ever reads as "nothing to report".
 - The remote must run a build that has `inbox export`; an older one is reported as a version error pointing at `agent-deck remote update`.
+- **Incremental by cursor.** Each (remote, conductor) pair keeps a cursor in `runtime/remote-cursors/<remote>.<conductor>.json` (`agent-deck inbox cursor`): the newest turn-journal seq received per remote child plus the timestamp of the newest ledger record. The drain sends it as `inbox export --json --after <cursor> --with-writer`, so the remote answers only what is new, and export and writer status share one SSH round trip. The cursor advances only when every record of the batch was inserted or already present; a failed or unconfirmed write pins it, the next drain refetches the batch and the dedup absorbs the overlap. Other parents' inboxes on the remote are not shipped in this mode. A remote too old for `--after` (it rejects the flag) gets today's full export and no cursor is saved.
+- **Wakes like a local record.** Ingested records keep the tier the remote classified. If any fresh record has a tier in the conductor's `[inbox] wake_on` (default `urgent`), the idle conductor gets one wake per drain naming the newest one, through the same gate and headline as a local record. Info records never wake.
+- **Scheduled.** `[remotes.<name>] talkback_interval_secs` makes the notify-daemon run this drain on its own for every enrolled conductor (see config-reference.md).
 
 Narrowing a drain to one conductor's children (`--parent <conductor-id>@<host>`) is deferred; it is sugar over this pull.
 
@@ -1131,11 +1134,15 @@ agent-deck health --json --since 1h
 agent-deck inbox <session-id>                          # summary for a session's inbox
 agent-deck inbox drain [--json] <session-id>            # consume pending completion events
 agent-deck inbox export [--json]                        # read-only: this host's records, nothing consumed
+agent-deck inbox export --json --after '<cursor>' [--with-writer]  # read-only: only records newer than the cursor
+agent-deck inbox cursor [--json] [<remote>]             # the remote-talkback cursors this machine keeps
 agent-deck inbox dead-letter list|show [--json]         # inspect physical dead-letter / unowned-ledger records
 agent-deck inbox writer-status [--json]                 # is a notify-daemon actually recording transitions here?
 ```
 
 `drain` preserves distinct turns per child and dedups re-delivery via `turn_fingerprint`; run it first on every heartbeat — reading clears the inbox. `export` is what `remote drain` runs over SSH to pull one host's records into another without consuming anything locally. `dead-letter list`/`dead-letter show` inspect records that failed to route, with raw bytes preserved for diagnosis — there is currently no `retry` or `purge` subcommand for dead-letter records (both are explicitly rejected by the CLI; a record must be handled by other means, e.g. fixing the underlying routing issue and re-draining). `writer-status` answers "is anything watching?" — without it, an empty `export` can't be told apart from a host where no notify-daemon has ever run.
+
+`export --after '<cursor>'` (requires `--json`) is the incremental form `remote drain` uses. The cursor is `{"<child_id>": <seq>, "_ts": "<RFC3339>"}`; the reply is `{"records": [...], "cursor_next": {...}}` plus `"writer": {...}` with `--with-writer`. It returns turn-journal lines with seq above the cursor for each child (a child the cursor does not know ships its last 64 lines), completion-ledger records newer than `_ts`, and `_unowned` transitions newer than `_ts` for children with no journal. Without `--after` the output stays the bare JSON array. `cursor` lists the saved cursors (`remote`, `parent`, `updated_at`, `cursor`); text mode prints one line per cursor and one per child seq.
 
 ## Codex Hook Commands
 

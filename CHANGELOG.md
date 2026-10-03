@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agent-deck remote drain` is now incremental and wakes the conductor (#2469). Each (remote, conductor) pair keeps a cursor (newest turn-journal seq per remote child plus the newest ledger timestamp) and sends it as `inbox export --json --after <cursor> --with-writer`, so a drain ships only what is new instead of the remote's whole ledger and every inbox, and export plus writer status take one SSH round trip. The cursor advances only when every record of the batch landed; a failed or unconfirmed write pins it and the next drain refetches. A remote too old for `--after` gets the full export as before. Ingested records keep their tier, and an urgent one wakes an idle conductor like a local record. `--json` gains `cursor_before`, `cursor_after`, `legacy_export` and `woke`; `agent-deck inbox cursor [--json] [<remote>]` lists the cursors. New `[remotes.<name>] talkback_interval_secs` (default 0 = off) makes the notify-daemon run the drain on its own for every enrolled conductor, with backoff from 1 to 10 min and ONE urgent record after 3 consecutive failures so a dead link is news, not silence.
+
 ## [1.16.24] - 2026-10-03
 
 - **Upgrading:** the agent-deck skill is now split into a short `SKILL.md` plus `references/` files. If you installed it with the README's curl loop rather than the plugin, re-run the loop so the new reference files are present (#2429).

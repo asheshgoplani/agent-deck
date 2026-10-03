@@ -55,7 +55,8 @@ func handleInbox(profile string, args []string) {
 func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
-	fmt.Fprintln(w, "       agent-deck inbox export [--json]")
+	fmt.Fprintln(w, "       agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]")
+	fmt.Fprintln(w, "       agent-deck inbox cursor [--json] [<remote>]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox peek [--json] [<session-id>|self]")
 	fmt.Fprintln(w, "       agent-deck inbox stats [--json] [--all] [<session-id>|self]")
@@ -76,8 +77,11 @@ func printInboxUsage(w io.Writer) {
 }
 
 func printInboxExportUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: agent-deck inbox export [--json]")
+	fmt.Fprintln(w, "Usage: agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]")
 	fmt.Fprintln(w, "Print this host's completion/transition records without consuming them.")
+	fmt.Fprintln(w, "--after returns only turn-journal lines and ledger records newer than the")
+	fmt.Fprintln(w, "cursor ({\"<child>\": <seq>, \"_ts\": \"<RFC3339>\"}) as")
+	fmt.Fprintln(w, "{\"records\":[...],\"cursor_next\":{...}}; --with-writer adds \"writer\".")
 }
 
 func printInboxWriterStatusUsage(w io.Writer) {
@@ -196,6 +200,9 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	}
 	if len(args) > 0 && args[0] == "writer-status" {
 		return runInboxWriterStatus(stdout, args[1:])
+	}
+	if len(args) > 0 && args[0] == "cursor" {
+		return runInboxCursor(stdout, args[1:])
 	}
 	if len(args) > 0 && args[0] == "stats" {
 		return runInboxStats(stdout, args[1:], explicitProfile)
@@ -526,6 +533,8 @@ func resolveSelfSessionID() (string, error) {
 func runInboxExport(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("inbox export", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the records as a JSON array")
+	after := fs.String("after", "", "incremental export: only records newer than this cursor JSON (wrapped with cursor_next)")
+	withWriter := fs.Bool("with-writer", false, "with --after: include the writer status in the reply")
 	fs.Usage = func() { printInboxExportUsage(stdout) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
@@ -533,6 +542,29 @@ func runInboxExport(stdout io.Writer, args []string) error {
 	if fs.NArg() != 0 {
 		fs.Usage()
 		return fmt.Errorf("inbox export takes no positional arguments")
+	}
+	afterSet := false
+	fs.Visit(func(f *flag.Flag) { afterSet = afterSet || f.Name == "after" })
+	if afterSet {
+		if !*asJSON {
+			return fmt.Errorf("inbox export --after requires --json")
+		}
+		cursor, err := session.ParseRemoteCursor(*after)
+		if err != nil {
+			return err
+		}
+		exp, err := session.ExportRecordsAfter(cursor)
+		if err != nil {
+			return fmt.Errorf("export inbox records: %w", err)
+		}
+		if *withWriter {
+			ws := session.ReadWriterStatus()
+			exp.Writer = &ws
+		}
+		return json.NewEncoder(stdout).Encode(exp)
+	}
+	if *withWriter {
+		return fmt.Errorf("inbox export --with-writer requires --after")
 	}
 
 	records, err := session.ExportPendingRecords()

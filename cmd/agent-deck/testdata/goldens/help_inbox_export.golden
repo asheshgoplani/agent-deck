@@ -1,2 +1,5 @@
-Usage: agent-deck inbox export [--json]
+Usage: agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]
 Print this host's completion/transition records without consuming them.
+--after returns only turn-journal lines and ledger records newer than the
+cursor ({"<child>": <seq>, "_ts": "<RFC3339>"}) as
+{"records":[...],"cursor_next":{...}}; --with-writer adds "writer".

@@ -1078,6 +1078,13 @@ type RemoteConfig struct {
 	// hosts where it is not on the non-login SSH PATH (e.g.
 	// "/opt/homebrew/bin/mosh-server"). Empty uses mosh's default.
 	MoshServer string `toml:"mosh_server,omitempty"`
+
+	// TalkbackIntervalSecs makes the notify-daemon pull this remote's child
+	// records into every enrolled local conductor's inbox on its own, every
+	// N seconds (0 = off, the default; 30 is a good value). A conductor is
+	// enrolled once it has drained the remote (`remote drain`), which leaves a
+	// cursor behind.
+	TalkbackIntervalSecs int `toml:"talkback_interval_secs,omitempty"`
 }
 
 // Remote attach transports accepted by RemoteConfig.Transport.
