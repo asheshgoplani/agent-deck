@@ -105,6 +105,11 @@ func AppendTurnJournal(entry TurnJournalEntry, keep int) (TurnJournalEntry, erro
 	if err != nil {
 		return entry, err
 	}
+	// A crash mid-append leaves a torn last line; starting this line on a
+	// fresh row keeps the torn one skippable instead of fusing the two.
+	if !fileEndsWithNewline(path) {
+		line = append([]byte{'\n'}, line...)
+	}
 	if _, err := f.Write(line); err != nil {
 		_ = f.Close()
 		return entry, err
@@ -340,4 +345,22 @@ func ResolveInboxConfig(parentTitle string) InboxConfig {
 		}
 	}
 	return out
+}
+
+// fileEndsWithNewline reports whether path is empty, missing, or ends in \n.
+func fileEndsWithNewline(path string) bool {
+	f, err := os.Open(path) // #nosec G304 -- sanitized id under the data dir
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return true
+	}
+	var b [1]byte
+	if _, err := f.ReadAt(b[:], info.Size()-1); err != nil {
+		return true
+	}
+	return b[0] == '\n'
 }

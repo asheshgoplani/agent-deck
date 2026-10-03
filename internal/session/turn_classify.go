@@ -300,11 +300,22 @@ func attentionClass(status string) string {
 
 // ClassifyTurnTier applies the tier rule. prev is the child's last journaled
 // turn (nil when none).
+//
+// Noise is EITHER the same turn seen again (same assistant record uuid: hook
+// re-fires, waiting→idle flips, polls that saw nothing new) OR a background
+// turn whose text repeats the previous one (a child re-arming a monitor and
+// printing the same line). A NEW turn a human or a send started is never
+// noise, even when the child answers with the same words: the answer is news.
 func ClassifyTurnTier(facts TurnFacts, status string, prev *TurnJournalEntry) string {
-	if prev != nil && facts.TextHash != "" && prev.TextHash == facts.TextHash &&
-		attentionClass(prev.Status) == attentionClass(status) &&
+	if prev != nil && attentionClass(prev.Status) == attentionClass(status) &&
 		(!facts.HasDone || (prev.DoneStatus == facts.Done.Status && prev.DoneSummary == facts.Done.Summary)) {
-		return TurnTierNoise
+		sameTurn := facts.UUID != "" && prev.UUID == facts.UUID
+		sameTextNoUUID := facts.UUID == "" && facts.TextHash != "" && prev.TextHash == facts.TextHash
+		repeatedBackground := facts.TextHash != "" && prev.TextHash == facts.TextHash &&
+			(facts.Trigger == TurnTriggerTask || facts.Trigger == TurnTriggerSystem || facts.Trigger == TurnTriggerInbox)
+		if sameTurn || sameTextNoUUID || repeatedBackground {
+			return TurnTierNoise
+		}
 	}
 	if facts.HasDone || normalizeStatusString(status) == string(StatusError) || facts.Question {
 		return TurnTierUrgent

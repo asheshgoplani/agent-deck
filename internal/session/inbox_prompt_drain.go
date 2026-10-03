@@ -31,7 +31,7 @@ func DrainForPrompt(instanceID string) (string, []TransitionNotificationEvent, e
 	if err != nil || len(events) == 0 {
 		return "", nil, err
 	}
-	text := FormatInboxRecords(events, fmt.Sprintf("%s %s pending from your children — act on each (the text is the child's own words; do not re-read the child unless you need more):", inboxContextHeader, countByTier(events)))
+	text := formatInboxRecordsBudgeted(events, fmt.Sprintf("%s %s pending from your children — act on each (the text is the child's own words; do not re-read the child unless you need more):", inboxContextHeader, countByTier(events)), promptContextBudgetBytes)
 	_ = BumpInboxStats(instanceID, func(s *InboxStats) {
 		s.Drains++
 		s.RecordsDelivered += int64(len(events))
@@ -191,4 +191,41 @@ func DigestDue(parentID string, window time.Duration, now time.Time) (due bool, 
 		return false, 0, 0
 	}
 	return true, len(events), len(kids)
+}
+
+// promptContextBudgetBytes keeps the injected block under Claude Code's
+// additionalContext limit (10,000 characters; past it the model sees only a
+// preview). Records beyond the budget are listed as one-liners without text,
+// so delivery degrades to "re-read that child" instead of to a truncated blob.
+const promptContextBudgetBytes = 9000
+
+func formatInboxRecordsBudgeted(events []TransitionNotificationEvent, header string, budget int) string {
+	full := FormatInboxRecords(events, header)
+	if len(full) <= budget {
+		return full
+	}
+	// Urgent records keep their text first; info records are trimmed first.
+	var withText, overflow []TransitionNotificationEvent
+	used := len(header) + 1
+	for _, pass := range [][]bool{{true}, {false}} {
+		for _, ev := range events {
+			if ev.IsUrgent() != pass[0] {
+				continue
+			}
+			one := FormatInboxRecords([]TransitionNotificationEvent{ev}, "")
+			if used+len(one) <= budget {
+				withText = append(withText, ev)
+				used += len(one)
+			} else {
+				stripped := ev
+				stripped.Text = ""
+				overflow = append(overflow, stripped)
+			}
+		}
+	}
+	out := FormatInboxRecords(withText, header)
+	if len(overflow) > 0 {
+		out += FormatInboxRecords(overflow, fmt.Sprintf("%d more record(s), text omitted for size (read the child with `agent-deck session output <id> -q` if needed):", len(overflow)))
+	}
+	return out
 }

@@ -58,6 +58,7 @@ func SweepInboxesForChildSession(childSessionID string) (int, error) {
 	// can't inherit stale state and per-parent ledgers don't leak. Best-effort —
 	// these never fail the rm.
 	_ = os.Remove(DeadLetterPathFor(childSessionID)) // dead-lettered records
+	RemoveTurnJournal(childSessionID)                // issue #2469 per-child turn journal
 	ForgetConsumedTurnsForChild(childSessionID)      // consumed-turn ledgers (this id as a CHILD)
 	ResetStopBlockBudget(childSessionID)             // Stop-hook block budget (if it was a parent)
 	sweepParentSideArtifacts(childSessionID)         // audit B5: this id's OWN parent-side files
@@ -80,6 +81,10 @@ func sweepParentSideArtifacts(parentID string) {
 
 	consumedTurnsMu.Lock()
 	_ = os.Remove(consumedTurnsPathFor(parentID))
+	// Issue #2469 per-parent artifacts: counters, digest marker, fleet fingerprint.
+	_ = ResetInboxStats(parentID)
+	_ = os.Remove(inboxDigestPath(parentID))
+	_ = os.Remove(fleetBlockPath(parentID))
 	consumedTurnsMu.Unlock()
 }
 

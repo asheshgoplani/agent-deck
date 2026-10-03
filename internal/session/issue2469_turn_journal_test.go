@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,5 +235,70 @@ func TestIssue2469_StopBlockCarriesText(t *testing.T) {
 	}
 	if !strings.Contains(out, "- lead (c2): waiting\n") {
 		t.Fatalf("legacy line changed:\n%s", out)
+	}
+}
+
+// Review round 1 (reviews/pr-comms-verify1.md) F1: a NEW turn a human started
+// whose reply repeats the previous reply word for word is news, not noise.
+func TestIssue2469_IdenticalReplyToNewHumanTurnIsDelivered(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxHuman("u0", "run tests"), fxAssistantText("a0", "All 42 tests pass."))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	f.appendTurn(t, fxHuman("u1", "run them again"), fxAssistantText("a1", "All 42 tests pass."))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	got := f.inboxRecords(t)
+	if len(got) != 2 || got[1].TurnUUID != "a1" || got[1].Tier != TurnTierUrgent {
+		t.Fatalf("identical reply to a new human turn must be a new urgent record: %+v", got)
+	}
+	if *f.sends != 2 {
+		t.Fatalf("both answers wake, sends=%d", *f.sends)
+	}
+	// The same words in a new BACKGROUND turn are still deduped as noise.
+	f.appendTurn(t, fxTaskNotification("u2"), fxAssistantText("a2", "All 42 tests pass."))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	if got := f.inboxRecords(t); len(got) != 2 {
+		t.Fatalf("repeated background text is noise: %+v", got)
+	}
+}
+
+// F2: a later sentinel turn that repeats an earlier completion's status and
+// summary is a distinct turn and must survive the consumed-turn ledger.
+func TestIssue2469_RepeatedDoneSummaryOnNewTurnIsDelivered(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxHuman("u0", "ship"), fxAssistantText("a0", "Shipped.\n===AGENTDECK_DONE=== status=ok summary=shipped"))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	if drained, err := DrainInboxForParent(f.parent.ID); err != nil || len(drained) != 1 {
+		t.Fatalf("first drain: %d %v", len(drained), err)
+	}
+	f.appendTurn(t, fxHuman("u1", "ship again"), fxAssistantText("a1", "Shipped.\n===AGENTDECK_DONE=== status=ok summary=shipped"))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	drained, err := DrainInboxForParent(f.parent.ID)
+	if err != nil || len(drained) != 1 || drained[0].TurnUUID != "a1" {
+		t.Fatalf("second completion with the same summary must be delivered: %d %v %+v", len(drained), err, drained)
+	}
+}
+
+// F3: a commit that fails transiently (here the per-child pending cap) is
+// retried on the next poll instead of being journaled as already seen.
+func TestIssue2469_TransientCommitFailureIsRetried(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	for i := 0; i < maxPendingTurnsPerChild; i++ {
+		commitTestRecord(t, f.parent.ID, TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: "board", Tier: TurnTierInfo, Text: "p", LastOutputHash: fmt.Sprintf("turn:fill-%d", i)})
+	}
+	f.appendTurn(t, fxHuman("u0", "status?"), fxAssistantText("a0", "Blocked on CI."))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	if LastTurnJournalEntry(f.child.ID) != nil {
+		t.Fatal("a failed commit must not be journaled")
+	}
+	if _, err := DrainInboxForParent(f.parent.ID); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	got := f.inboxRecords(t)
+	if len(got) != 1 || got[0].TurnUUID != "a0" {
+		t.Fatalf("the turn must be delivered once the inbox has room: %+v", got)
 	}
 }

@@ -30,7 +30,9 @@ import (
 // notifier then flags it OutputHashStale as before. Hook re-fires and
 // recorded-turn re-scans observe no flip and are subject to the noise rule.
 //
-// The returned bool is false only for a pending turn.
+// The returned bool is false for a pending turn and for a transiently failed
+// commit; in both cases the caller leaves its bookkeeping untouched so the
+// next poll retries.
 func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[string]*Instance, from, to string, ts time.Time, observedFlip bool) (TransitionNotificationEvent, bool) {
 	event := TransitionNotificationEvent{
 		ChildSessionID: inst.ID,
@@ -98,20 +100,40 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		entry.DoneStatus = facts.Done.Status
 		entry.DoneSummary = facts.Done.Summary
 	}
-	stored, err := AppendTurnJournal(entry, cfg.GetJournalKeep())
-	if err != nil {
-		commsLog.Warn("turn_journal_append_failed",
-			slog.String("child", inst.ID), slog.String("error", err.Error()))
-	}
-
 	event.Tier = tier
 	event.Trigger = facts.Trigger
 	event.TurnUUID = facts.UUID
 	event.TextHash = facts.TextHash
 	event.Text = text
 	event.Question = facts.Question
-	event.Seq = stored.Seq
 	event.FromID = facts.FromID
+	// The journal seq is assigned on append; stamp the record with the seq it
+	// WILL get so a reader can line the two up (appends are serialised per
+	// child in this single daemon goroutine).
+	if prev != nil {
+		event.Seq = prev.Seq + 1
+	} else {
+		event.Seq = 1
+	}
+
+	// Commit first, journal second. A transiently failed commit (storage
+	// hiccup, the per-child pending cap) must NOT leave a journal line, or the
+	// next poll would read this turn as already seen and never retry it.
+	var result TransitionNotificationEvent
+	if facts.HasDone {
+		event.DoneStatus = facts.Done.Status
+		event.DoneSummary = facts.Done.Summary
+		result = d.notifier.NotifyFinished(event)
+	} else {
+		result = d.notifier.NotifyTransition(event)
+	}
+	if result.DeliveryResult == transitionDeliveryFailed {
+		return result, false
+	}
+	if _, err := AppendTurnJournal(entry, cfg.GetJournalKeep()); err != nil {
+		commsLog.Warn("turn_journal_append_failed",
+			slog.String("child", inst.ID), slog.String("error", err.Error()))
+	}
 	_ = BumpInboxStats(statsParent, func(s *InboxStats) {
 		if tier == TurnTierUrgent {
 			s.RecordsUrgent++
@@ -120,15 +142,10 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		}
 		s.TextBytes += int64(len(text))
 	})
-
 	if facts.HasDone {
-		event.DoneStatus = facts.Done.Status
-		event.DoneSummary = facts.Done.Summary
-		result := d.notifier.NotifyFinished(event)
 		d.noteDoneEmitted(profile, inst, facts.Done, event.Timestamp)
-		return result, true
 	}
-	return d.notifier.NotifyTransition(event), true
+	return result, true
 }
 
 // noteDoneEmitted records that emitTurn already delivered this completion so

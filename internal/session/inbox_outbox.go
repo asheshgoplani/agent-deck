@@ -116,6 +116,14 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 	switch {
 	case e.Kind == transitionKindFinished:
 		signal = "finished|" + strings.ToLower(strings.TrimSpace(e.DoneStatus)) + "|" + strings.TrimSpace(e.DoneSummary)
+		// Issue #2469: a sentinel turn is one record, so a later turn that
+		// repeats an earlier completion's status and summary must not collide
+		// with the consumed one. The turn signal (turn:<uuid>) tells them
+		// apart; records from the hook-file path carry none and keep the
+		// legacy key.
+		if hash := strings.TrimSpace(e.LastOutputHash); hash != "" {
+			signal += "|" + hash
+		}
 	case e.OutputHashStale:
 		signal = "flip|" + flip + "|" + emitInstantSignal(e.Timestamp)
 	case strings.TrimSpace(e.LastOutputHash) != "":

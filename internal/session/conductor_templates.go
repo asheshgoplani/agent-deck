@@ -6,6 +6,24 @@ import "strings"
 // generated template. Installers compare its fully rendered form byte-for-byte
 // before migrating, so any user customization is preserved.
 func previousConductorInstructionsTemplate(template string) string {
+	// Issue #2469 (comms redesign): the heartbeat section gained the
+	// prompt-time drain wording and the record tiers paragraph. Revert them so
+	// a conductor written by v1.16.23 and earlier is recognised as generated.
+	template = strings.Replace(template,
+		`Your hooks drain the same queue
+automatically when your agent supports hooks (Claude Code): at the start of every turn
+(records appear in your context under `+"`"+`[agent-deck inbox]`+"`"+`) and at each turn boundary
+for urgent records, so this heartbeat drain is the fallback — together they guarantee no
+completion is missed. Agents without hooks (Codex, Hermes) get the records only from this drain.
+
+Records are tiered and carry the child's own text (issue #2469): `+"`"+`urgent`+"`"+` (a completion
+sentinel, an error, a question, or a reply to something you or a human sent) wakes you;
+`+"`"+`info`+"`"+` (progress in a turn a background task started) waits for your next turn or a
+digest. Act on the text in the record. Do NOT run `+"`"+`session output`+"`"+` on a child whose
+record you already have unless the text is clipped and you need the rest.`,
+		`Your Stop hook drains the same queue
+automatically at each turn boundary, so this heartbeat drain is the idle-conductor
+fallback — together they guarantee no completion is missed whether you are busy or idle.`, 1)
 	template = strings.Replace(template,
 		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | **Always triage with this compact count summary first:** `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`,
 		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | Get counts: `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`, 1)
@@ -144,9 +162,10 @@ busy (issue #1225/#1226). Delivery is pull, not push: a child that finished mid-
 committed its completion to ` + "`" + `~/.agent-deck/inboxes/<your-id>.jsonl` + "`" + ` rather than typing
 into your pane. The drain marks records consumed (exactly-once effects) and prints
 them; act on each before composing your status. Your hooks drain the same queue
-automatically: at the start of every turn (records appear in your context under
-` + "`" + `[agent-deck inbox]` + "`" + `) and at each turn boundary for urgent records, so this heartbeat
-drain is the fallback — together they guarantee no completion is missed.
+automatically when your agent supports hooks (Claude Code): at the start of every turn
+(records appear in your context under ` + "`" + `[agent-deck inbox]` + "`" + `) and at each turn boundary
+for urgent records, so this heartbeat drain is the fallback — together they guarantee no
+completion is missed. Agents without hooks (Codex, Hermes) get the records only from this drain.
 
 Records are tiered and carry the child's own text (issue #2469): ` + "`" + `urgent` + "`" + ` (a completion
 sentinel, an error, a question, or a reply to something you or a human sent) wakes you;
