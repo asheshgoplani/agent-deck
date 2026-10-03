@@ -4382,16 +4382,11 @@ func (s *Session) DetectTool() string {
 		return tool
 	}
 
-	// Everything below is a promotion-only signal. tmux reports the pane's
-	// foreground process, which is frequently a child the agent spawned for a
-	// tool call (see AnalyzePaneTitle), and pane content routinely names other
-	// tools in ordinary conversation. Neither signal can tell "a different
-	// runtime is in charge now" apart from "the same runtime is running a
-	// subprocess", so they may only give a runtime identity to a session that
-	// has none yet ("" or "shell"). They never replace one that was already
-	// recognized. Cross-runtime switching needs a durable process-root identity
-	// rather than a single foreground sample (#1718). ForceDetectTool clears the
-	// previous detection, so an explicit re-detect still runs the full sequence.
+	// The foreground command is a promotion-only signal: tmux may report a
+	// child the agent spawned for a tool call (see AnalyzePaneTitle), rather
+	// than a different runtime taking over. Never replace a recognized runtime
+	// with a single foreground sample. Cross-runtime switching needs a durable
+	// process-root identity (#1718). ForceDetectTool clears the previous detection.
 	s.mu.Lock()
 	if previous := s.detectedTool; previous != "" && previous != "shell" {
 		s.toolDetectedAt = time.Now()
@@ -4400,9 +4395,8 @@ func (s *Session) DetectTool() string {
 	}
 	s.mu.Unlock()
 
-	// A session created as "shell" can later launch a supported tool. Prefer the
-	// pane's current command over terminal content so conversation text that
-	// mentions another tool cannot rewrite the running tool's identity.
+	// A session created as "shell" can later launch a supported tool. Only
+	// promote it when the pane's current command identifies that tool.
 	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
 		if tool := detectToolFromCommand(paneInfo.CurrentCommand); tool != "" {
 			s.mu.Lock()
@@ -4413,26 +4407,16 @@ func (s *Session) DetectTool() string {
 		}
 	}
 
-	// Fallback to content detection
-	content, err := s.CapturePane()
-	if err != nil {
-		s.mu.Lock()
-		s.detectedTool = "shell"
-		s.toolDetectedAt = time.Now()
-		s.mu.Unlock()
-		return "shell"
-	}
-
-	// Strip ANSI codes for accurate matching
-	cleanContent := StripANSI(content)
-
-	detectedTool := detectToolFromContent(cleanContent)
-
+	// Screen text is not evidence of process identity. Shell output, editor
+	// buffers, and agent conversations can all contain another tool's banner
+	// or vendor name. In particular, an agent inside a Neovim terminal leaves
+	// nvim as tmux's foreground command. Failing closed to shell is safer than
+	// persisting an unrelated tool and using its launch/resume logic next time.
 	s.mu.Lock()
-	s.detectedTool = detectedTool
+	s.detectedTool = "shell"
 	s.toolDetectedAt = time.Now()
 	s.mu.Unlock()
-	return detectedTool
+	return "shell"
 }
 
 // ForceDetectTool forces a re-detection of the tool, ignoring cache
