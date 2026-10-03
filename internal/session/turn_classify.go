@@ -33,9 +33,10 @@ import (
 //	         with its text; never wakes on its own (rides the parent's next
 //	         turn or the info digest).
 //
-// Every path fails toward "louder, not lossy": an unreadable transcript or an
-// unknown trigger classifies as urgent on new text, which is today's
-// behaviour minus the duplicate re-fires.
+// An unreadable transcript takes the legacy path (no text, urgent on a new
+// signal), which is today's behaviour minus the duplicate re-fires; a readable
+// transcript with an unknown trigger is info unless it carries a sentinel, an
+// error or a question.
 
 // Turn tiers and triggers carried on TransitionNotificationEvent and the
 // per-child turn journal.
@@ -244,21 +245,32 @@ func classifyTrigger(rec transcriptTurnRecord) (trigger, fromID string) {
 }
 
 // textAsksParent reports a parent-facing question: a NEED:/QUESTION:/ASK: line
-// or a final line ending in "?".
+// (markdown emphasis and bullet prefixes ignored), or one of the last two
+// non-empty lines ending in "?" (closing punctuation and emphasis ignored, so
+// "…?)" and "…?**" count, and a question followed by a one-line sign-off is
+// still a question).
 func textAsksParent(text string) bool {
-	last := ""
+	var tail []string
 	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		last = line
-		upper := strings.ToUpper(line)
-		if strings.HasPrefix(upper, "NEED:") || strings.HasPrefix(upper, "QUESTION:") || strings.HasPrefix(upper, "ASK:") {
+		marker := strings.ToUpper(strings.TrimLeft(line, "-*>#•· \t_`"))
+		if strings.HasPrefix(marker, "NEED:") || strings.HasPrefix(marker, "QUESTION:") || strings.HasPrefix(marker, "ASK:") {
+			return true
+		}
+		tail = append(tail, line)
+		if len(tail) > 2 {
+			tail = tail[1:]
+		}
+	}
+	for _, line := range tail {
+		if strings.HasSuffix(strings.TrimRight(line, "*_`)]\"' "), "?") {
 			return true
 		}
 	}
-	return strings.HasSuffix(last, "?")
+	return false
 }
 
 func turnTextHash(text string) string {

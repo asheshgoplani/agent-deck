@@ -64,10 +64,6 @@ func preSubstateGuidanceConductorInstructionsTemplate(template string) string {
 		`| `+"`"+`error`+"`"+` (red) | Session crashed or missing | Try `+"`"+`session restart`+"`"+`. If that fails, escalate. |`, 1)
 }
 
-// preHumanTierConductorInstructionsTemplate reconstructs what v1.16.24
-// shipped: the current template minus the #2469 human-tier reply format
-// ([urgent]/[info] markers, conductor notify). Per-name templates never
-// carried it, so this is a no-op for them.
 // preStrictUrgentRuleConductorInstructionsTemplate restores the urgent-tier
 // sentence v1.16.24 shipped ("or a reply to something you or a human sent").
 func preStrictUrgentRuleConductorInstructionsTemplate(template string) string {
@@ -76,6 +72,10 @@ func preStrictUrgentRuleConductorInstructionsTemplate(template string) string {
 		`sentinel, an error, a question, or a reply to something you or a human sent) wakes you;`, 1)
 }
 
+// preHumanTierConductorInstructionsTemplate reconstructs what v1.16.24
+// shipped: the current template minus the #2469 human-tier reply format
+// ([urgent]/[info] markers, conductor notify). Per-name templates never
+// carried it, so this is a no-op for them.
 func preHumanTierConductorInstructionsTemplate(template string) string {
 	return strings.Replace(template, conductorHeartbeatReplyDoc, conductorHeartbeatReplyDocV0, 1)
 }
@@ -107,13 +107,14 @@ func conductorInstructionsGenerations(template string) []string {
 	var gens []string
 	// The urgent-tier wording changed after v1.16.24 (replies to a send are
 	// info now); a file carrying the previous sentence is still generated.
-	if prevRule := preStrictUrgentRuleConductorInstructionsTemplate(template); prevRule != template {
+	// Chain: current -> the pre-strict-rule wording (unreleased main builds)
+	// -> exactly what v1.16.24 shipped. The intermediate "new sentence with the
+	// old reply format" was never released, so it is not a generation.
+	prevRule := preStrictUrgentRuleConductorInstructionsTemplate(template)
+	if prevRule != template {
 		gens = append(gens, prevRule)
-		if v11624 := preHumanTierConductorInstructionsTemplate(prevRule); v11624 != prevRule {
-			gens = append(gens, v11624)
-		}
 	}
-	if v11624 := preHumanTierConductorInstructionsTemplate(template); v11624 != template {
+	if v11624 := preHumanTierConductorInstructionsTemplate(prevRule); v11624 != prevRule {
 		gens = append(gens, v11624)
 	}
 	previous := previousConductorInstructionsTemplate(template)

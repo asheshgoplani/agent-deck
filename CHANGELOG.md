@@ -10,9 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - An `urgent` inbox record is now exactly a completion sentinel, an error status, or an explicit question to the parent; a plain reply to something the parent or a human sent is `info` and no longer wakes the parent (four progress notes and acknowledgements cost a conductor wake each on 2026-10-03). The parent reads info at its next turn or in the digest; a sender that used `--wait` already has the reply. The conductor template's tier sentence is updated and registered as a template generation (#2469).
-
-### Changed
-
 - A child launched with the identity block (claude at context level `full`, the default) no longer gets the completion-sentinel instruction appended to its launch message as well; the identity block already carries it, and now says what the parent actually receives (one urgent record with the status and summary) instead of a `[DONE]` event. With `--no-identity`, a `primer`/`none` context level or another tool, `--assert-done` still appends it (#2469).
 
 ### Added

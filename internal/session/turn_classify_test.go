@@ -232,6 +232,34 @@ func TestClassifyTrigger_PrefixFallbacksAndEnvelope(t *testing.T) {
 	}
 }
 
+func TestTextAsksParent_TolerantForms(t *testing.T) {
+	yes := []string{
+		"**NEED:** a ruling on the budget",
+		"- NEED: merge or hold",
+		"> QUESTION: which port",
+		"Which port should the API use?\nThanks.",
+		"Should I open 8080 too?)",
+		"**Do you want the digest daily?**",
+		"ask: proceed with the freeze",
+	}
+	no := []string{
+		"All 42 tests pass.",
+		"Was it flaky? Re-ran, green now.\nMerged.\nDone.",
+		"The need: field is documented.",
+		"Round 2 report saved, waiting for Docker.",
+	}
+	for _, s := range yes {
+		if !textAsksParent(s) {
+			t.Errorf("must read as a question: %q", s)
+		}
+	}
+	for _, s := range no {
+		if textAsksParent(s) {
+			t.Errorf("must not read as a question: %q", s)
+		}
+	}
+}
+
 func TestCapTurnText(t *testing.T) {
 	long := strings.Repeat("é", 400) // 800 bytes
 	got := CapTurnText(long, 100)

@@ -303,6 +303,26 @@ func TestIssue2469_TransientCommitFailureIsRetried(t *testing.T) {
 	}
 }
 
+// A plain reply to the parent's own tagged send is info: one record, no wake,
+// delivered by the prompt-time drain on the parent's next turn.
+func TestIssue2469_PlainReplyToParentSendIsInfoAndInjectedNextPrompt(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxHuman("u0", "[agent-deck from:parent-2469] status?"), fxAssistantText("a0", "Round 2 report saved, waiting for Docker."))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	got := f.inboxRecords(t)
+	if len(got) != 1 || got[0].Tier != TurnTierInfo || got[0].Trigger != TurnTriggerSend {
+		t.Fatalf("plain reply must be one info record: %+v", got)
+	}
+	if *f.sends != 0 {
+		t.Fatalf("a plain reply must not wake, sends=%d", *f.sends)
+	}
+	text, events, err := DrainForPrompt(f.parent.ID)
+	if err != nil || len(events) != 1 || !strings.Contains(text, "Round 2 report saved, waiting for Docker.") {
+		t.Fatalf("the next prompt must carry the reply: err=%v events=%d text=%q", err, len(events), text)
+	}
+}
+
 // An urgent turn still wakes: the conductor ruling narrows urgent, it does
 // not remove it.
 func TestIssue2469_QuestionToParentStillWakes(t *testing.T) {
