@@ -439,9 +439,10 @@ func TierFilterReply(conductor, replyID, reply string, now time.Time) (sendNow [
 				}
 				n := prev[line] + 1
 				counts[line] = n
-				if n < threshold {
+				switch {
+				case n < threshold:
 					sendNow = append(sendNow, line)
-				} else if n == threshold {
+				case n == threshold:
 					sendNow = append(sendNow, fmt.Sprintf("STILL BLOCKED (%d cycles, no reply): %s", threshold, line))
 				}
 			}

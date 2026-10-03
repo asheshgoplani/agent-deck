@@ -223,28 +223,32 @@ func runConductorTierFilter(stdout io.Writer, stdin io.Reader, args []string, pr
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(*ackID) != "" {
-		return runConductorTierFilterAck(stdout, name, strings.TrimSpace(*ackID), *asJSON)
+	if ack := strings.TrimSpace(*ackID); ack != "" {
+		return runConductorTierFilterAck(stdout, name, ack, *asJSON)
 	}
 	reply, err := io.ReadAll(io.LimitReader(stdin, 4<<20))
 	if err != nil {
 		return fmt.Errorf("read reply: %w", err)
 	}
 	now := time.Now()
-	res := tierFilterResult{Conductor: name, SendNow: []string{}, Digest: []session.HumanOutboxRecord{}}
 	sendNow, queued, err := session.TierFilterReply(name, *replyID, string(reply), now)
 	if err != nil {
 		return err
 	}
-	res.SendNow = append(res.SendNow, sendNow...)
-	res.Queued = queued
 	settings := session.GetConductorSettings()
 	due, items, err := session.HumanDigest(name, now, settings.GetHumanDigestMinutes(), len(sendNow) > 0)
 	if err != nil {
 		return err
 	}
+	// Empty slices, not nil, so the JSON always carries [] rather than null.
+	res := tierFilterResult{
+		Conductor: name,
+		SendNow:   append([]string{}, sendNow...),
+		Queued:    queued,
+		DigestDue: due,
+		Digest:    []session.HumanOutboxRecord{},
+	}
 	if due {
-		res.DigestDue = true
 		res.Digest = append(res.Digest, items...)
 	}
 	if *asJSON {

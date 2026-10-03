@@ -1856,10 +1856,10 @@ def tier_filter_reply(
 ) -> dict:
     """Route a conductor reply through `agent-deck conductor tier-filter`.
 
-    Returns {"lines": urgent lines to send now, "digest": info items due to
-    go out after the urgent lines (ack their ids after delivery), "counts": filter_need_lines
-    counts, "reply_id": the id to ack once the lines were delivered, None on
-    the fallback}. The in-process filter_need_lines always runs so its counts
+    Returns {"lines": urgent lines to send now, "digest": info items due to go
+    out after the urgent lines (ack their ids after delivery), "counts":
+    filter_need_lines counts, "reply_id": the id to ack once the lines were
+    delivered, None on the fallback}. The in-process filter_need_lines always runs so its counts
     stay current; its lines are used only when the CLI call fails (old binary,
     missing CLI), which keeps today's NEED forwarding as the fallback.
     reply_id: the CLI keeps this reply's retire counts pending until
@@ -1936,6 +1936,20 @@ def ack_tier_filter_reply(name: str, profile: str | None, reply_id: str) -> bool
     if not ok:
         log.error("tier-filter [%s]: ack of reply %s failed; its NEED lines will repeat", name, reply_id[:12])
     return ok
+
+
+def need_alert_deliverer(
+    tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+):
+    """deliver(text) -> bool that sends text to every configured channel
+    (_deliver_need_alert): True when at least one accepted it."""
+    async def deliver(text: str) -> bool:
+        return await _deliver_need_alert(
+            text, tg_user_id, telegram_bot, slack_app,
+            slack_channel_id, discord_bot, discord_channel_id,
+        )
+
+    return deliver
 
 
 def heartbeat_reply_id(name: str, response: str) -> str:
@@ -2071,12 +2085,9 @@ async def human_outbox_loop(
 ):
     """Forward what conductors queued for the human, every 5 s (issue #2469)."""
     poll_state: dict = {}
-
-    async def deliver(text: str) -> bool:
-        return await _deliver_need_alert(
-            text, tg_user_id, telegram_bot, slack_app, slack_channel_id,
-            discord_bot, discord_channel_id,
-        )
+    deliver = need_alert_deliverer(
+        tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+    )
 
     log.info("Human outbox loop started (poll every %d s)", HUMAN_OUTBOX_POLL_SECONDS)
     while True:
@@ -3717,12 +3728,9 @@ async def need_scan_cycle(
     all_conductors = discover_conductors()
     selected = select_heartbeat_conductors(all_conductors)
     changed = False
-
-    async def deliver(text: str) -> bool:
-        return await _deliver_need_alert(
-            text, tg_user_id, telegram_bot, slack_app,
-            slack_channel_id, discord_bot, discord_channel_id,
-        )
+    deliver = need_alert_deliverer(
+        tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+    )
 
     # Forget conductors that are gone or no longer heartbeat-enabled so the
     # state stays bounded.
@@ -3873,12 +3881,9 @@ async def heartbeat_loop(
 
     interval_seconds = global_interval * 60
     tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
-
-    async def deliver_alert(text: str) -> bool:
-        return await _deliver_need_alert(
-            text, tg_user_id, telegram_bot, slack_app,
-            slack_channel_id, discord_bot, discord_channel_id,
-        )
+    deliver_alert = need_alert_deliverer(
+        tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+    )
 
     # Per-conductor NEED: dedup state for issue #971 — tracks consecutive
     # identical NEED lines so we can escalate-once-then-drop instead of
@@ -4127,14 +4132,11 @@ async def heartbeat_loop(
                     name, response[:200],
                 )
 
-                # Dedup repeating NEED: lines (issue #971). Forward only
-                # fresh + escalation lines; drop verbatim repeats past
-                # threshold so the user isn't trained to ignore heartbeats.
-                # Tier the reply (issue #2469): urgent lines now (NEED retire
-                # #971, counts on disk via `conductor tier-filter`), info into
-                # the human outbox, a due digest follows as its own message. Falls back to the
-                # in-process filter_need_lines when the CLI call fails.
-                # The retire counts (on disk, and the in-memory fallback)
+                # Tier the reply (issue #2469): urgent lines now, with repeating
+                # NEED lines escalated once then retired (#971, counts on disk
+                # via `conductor tier-filter`), info into the human outbox, a due
+                # digest as its own message. Falls back to the in-process
+                # filter_need_lines when the CLI call fails. The retire counts
                 # advance only for a delivered reply.
                 prev_counts = need_state_by_conductor.get(name, {})
                 async with _human_send_lock(name):
