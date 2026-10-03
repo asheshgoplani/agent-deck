@@ -23,7 +23,10 @@ func TestInjectCursorHooks_Fresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read hooks.json: %v", err)
 	}
-	var cfg cursorHooksConfig
+	var cfg struct {
+		Version int                          `json:"version"`
+		Hooks   map[string][]json.RawMessage `json:"hooks"`
+	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("parse hooks.json: %v", err)
 	}
@@ -34,6 +37,90 @@ func TestInjectCursorHooks_Fresh(t *testing.T) {
 		if !cursorEventHasAgentDeckHook(cfg.Hooks[event]) {
 			t.Fatalf("event %s missing agent-deck hook", event)
 		}
+	}
+	if _, ok := cfg.Hooks[cursorCommsHookEvent]; ok {
+		t.Fatalf("%s installed with the ledger off", cursorCommsHookEvent)
+	}
+}
+
+// Comms Ledger (docs/comms.md): with the ledger off an install made by an
+// older agent-deck is left byte for byte; with it on, afterAgentResponse is
+// added and every user field on every hook survives the rewrite.
+func TestInjectCursorHooks_LedgerGatesAfterAgentResponseAndKeepsUserFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	orig := `{
+  "version": 1,
+  "customTopLevel": {"keep": true},
+  "hooks": {
+    "sessionStart": [{"command": "agent-deck hook-handler"}],
+    "sessionEnd": [{"command": "agent-deck hook-handler"}],
+    "beforeSubmitPrompt": [{"command": "agent-deck hook-handler"}],
+    "preToolUse": [{"command": "agent-deck hook-handler"}],
+    "postToolUse": [{"command": "agent-deck hook-handler"}],
+    "stop": [{"command": "./my-stop.sh", "timeout": 30, "loop_limit": 3, "failClosed": true}, {"command": "agent-deck hook-handler"}],
+    "afterAgentThought": [{"type": "prompt", "prompt": "summarise"}]
+  }
+}`
+	path := filepath.Join(tmpDir, "hooks.json")
+	if err := os.WriteFile(path, []byte(orig), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(SetCommsLedgerForTest(false))
+	if !CheckCursorHooksInstalled(tmpDir) {
+		t.Fatal("a pre-ledger install must count as installed with the ledger off")
+	}
+	installed, err := InjectCursorHooks(tmpDir)
+	if err != nil || installed {
+		t.Fatalf("ledger off: installed=%v err=%v, want no-op", installed, err)
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != orig {
+		t.Fatalf("ledger off rewrote hooks.json:\n%s", after)
+	}
+
+	restore := SetCommsLedgerForTest(true)
+	defer restore()
+	if CheckCursorHooksInstalled(tmpDir) {
+		t.Fatal("ledger on: the comms event is missing, so not installed")
+	}
+	installed, err = InjectCursorHooks(tmpDir)
+	if err != nil || !installed {
+		t.Fatalf("ledger on: installed=%v err=%v", installed, err)
+	}
+	after, _ = os.ReadFile(path)
+	text := string(after)
+	for _, want := range []string{`"timeout": 30`, `"loop_limit": 3`, `"failClosed": true`, `"type": "prompt"`, `"prompt": "summarise"`, `"customTopLevel"`, `"./my-stop.sh"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("user field %s lost:\n%s", want, text)
+		}
+	}
+	f, _, err := readCursorHooksFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cursorEventHasAgentDeckHook(f.hooks[cursorCommsHookEvent]) || len(f.hooks["stop"]) != 2 {
+		t.Fatalf("ledger on install: %s", text)
+	}
+	if !CheckCursorHooksInstalled(tmpDir) {
+		t.Fatal("not installed after the ledger-on install")
+	}
+	if again, _ := InjectCursorHooks(tmpDir); again {
+		t.Fatal("second ledger-on install must be a no-op")
+	}
+
+	// Uninstall strips the comms event too, whatever the switch says now.
+	restore()
+	removed, err := RemoveCursorHooks(tmpDir)
+	if err != nil || !removed {
+		t.Fatalf("remove: removed=%v err=%v", removed, err)
+	}
+	f, _, _ = readCursorHooksFile(path)
+	if _, ok := f.hooks[cursorCommsHookEvent]; ok {
+		t.Fatal("afterAgentResponse survived uninstall")
+	}
+	if len(f.hooks["stop"]) != 1 || cursorEntryCommand(f.hooks["stop"][0]) != "./my-stop.sh" {
+		t.Fatalf("user stop hook lost on uninstall: %v", f.hooks["stop"])
 	}
 }
 

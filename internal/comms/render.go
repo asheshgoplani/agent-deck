@@ -65,7 +65,7 @@ func Line(r Record, names Names) string {
 	case r.Kind == KindStatus && body == "":
 		body = r.State
 	}
-	body = strings.Join(strings.Fields(body), " ")
+	body = strings.Join(strings.Fields(stripControl(body)), " ")
 	if r.Q {
 		tag += " ?"
 	}
@@ -74,6 +74,20 @@ func Line(r Record, names Names) string {
 		line += ": " + body
 	}
 	return line
+}
+
+// stripControl drops C0/C1 control characters (keeping whitespace, which
+// Fields folds) so a line typed into a pane carries no escape sequences.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r == ' ' {
+			return r
+		}
+		if r < 0x20 || (r >= 0x7f && r < 0xa0) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Digest renders several records as the block a consumer injects at prompt

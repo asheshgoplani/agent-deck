@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -206,7 +207,7 @@ func TestCommsIngest_UnknownInstancesAreLeftForTheirProfile(t *testing.T) {
 
 func TestCommsIngest_ShellToolGetsAStatusRecordOnce(t *testing.T) {
 	f := newCommsFixture(t)
-	at := time.Now()
+	at := time.Now().Truncate(shortWindowDedupSeconds * time.Second) // start of a dedup bucket
 	f.d.commsStatusRecord("default", f.shell, "waiting", at)
 	f.d.commsStatusRecord("default", f.shell, "waiting", at.Add(time.Second)) // same window: duplicate
 	f.d.commsStatusRecord("default", f.codex, "waiting", at)                  // codex has a text producer: no status record
@@ -222,15 +223,21 @@ func TestCommsIngest_ShellToolGetsAStatusRecordOnce(t *testing.T) {
 func TestCommsIngest_RecordsSurviveADaemonRestart(t *testing.T) {
 	f := newCommsFixture(t)
 	spoolTurn(t, CommsSpoolEntry{Harness: "gemini", Event: "AfterAgent", Instance: f.codex.ID, Text: "one", Prompt: "hi"})
+	entries, _ := ReadCommsSpool(f.codex.ID)
+	replay, _ := os.ReadFile(entries[0].path)
 	f.d.ingestCommsSpool("default", f.byID)
 	f.d.closeCommsLedgers()
 	if len(f.d.ledgers) != 0 {
 		t.Fatal("ledgers not released")
 	}
-	// A fresh daemon: same key is still a duplicate, sequence continues.
+	// A fresh daemon: the SAME spool entry observed again (a retry after a
+	// crash between commit and remove) is still a duplicate; the sequence
+	// continues.
 	d2 := &TransitionDaemon{}
 	t.Cleanup(d2.closeCommsLedgers)
-	spoolTurn(t, CommsSpoolEntry{Harness: "gemini", Event: "AfterAgent", Instance: f.codex.ID, Text: "one", Prompt: "hi"})
+	if err := os.WriteFile(entries[0].path, replay, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	spoolTurn(t, CommsSpoolEntry{Harness: "gemini", Event: "AfterAgent", Instance: f.codex.ID, Text: "two", Prompt: "hi again"})
 	d2.ingestCommsSpool("default", f.byID)
 	recs := f.ledgerRecords(t)
@@ -243,5 +250,111 @@ func TestCommsIngest_RecordsSurviveADaemonRestart(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Fatalf("spool left: %s", strings.Join(names, ","))
+	}
+}
+
+func TestCommsIngest_ClaudeBacklogKeepsEveryTurnsOwnText(t *testing.T) {
+	f := newCommsFixture(t)
+	// Three turns finished while the daemon was down: three Stop entries, one
+	// transcript whose tail describes only the last one.
+	f.appendTurn(t, fxHuman("u1", "a"), fxAssistantText("a1", "T1 done."))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "T1 done.", TranscriptPath: f.transcript, TSignal: 1})
+	f.appendTurn(t, fxHuman("u2", "b"), fxAssistantText("a2", "T2 done."))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "T2 done.", TranscriptPath: f.transcript, TSignal: 2})
+	f.appendTurn(t, fxHuman("u3", "c"), fxAssistantText("a3", "T3 done."))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "T3 done.", TranscriptPath: f.transcript, TSignal: 3})
+
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 3 || recs[0].Text != "T1 done." || recs[1].Text != "T2 done." || recs[2].Text != "T3 done." {
+		t.Fatalf("backlog records: %+v", recs)
+	}
+	// Only the turn the tail still describes is uuid-keyed and classified;
+	// the older two carry their own text with the prompt-derived trigger.
+	if recs[2].Key != comms.Key(comms.KindTurn, f.child.ID, "a3") || recs[2].Trigger != TurnTriggerHuman {
+		t.Fatalf("tail turn: %+v", recs[2])
+	}
+	if recs[0].Key == comms.Key(comms.KindTurn, f.child.ID, "a3") || recs[0].Trigger != TurnTriggerUnknown {
+		t.Fatalf("backlog turn: %+v", recs[0])
+	}
+}
+
+func TestCommsIngest_SameTextDifferentTurnsAreTwoRecords(t *testing.T) {
+	f := newCommsFixture(t)
+	// Gemini has no turn id: two "Done." turns must not collapse.
+	spoolTurn(t, CommsSpoolEntry{Harness: "gemini", Event: "AfterAgent", Instance: f.codex.ID, SessionID: "g1", Text: "Done.", Prompt: "do a"})
+	spoolTurn(t, CommsSpoolEntry{Harness: "gemini", Event: "AfterAgent", Instance: f.codex.ID, SessionID: "g1", Text: "Done.", Prompt: "do b"})
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 2 || recs[0].Key == recs[1].Key {
+		t.Fatalf("same-text turns: %+v", recs)
+	}
+	// A new human turn with the same answer is news (urgent), not noise.
+	if recs[1].Tier != comms.TierUrgent {
+		t.Fatalf("second human-triggered turn: %+v", recs[1])
+	}
+}
+
+func TestCommsIngest_FailedCommitIsRetriedWithItsTrigger(t *testing.T) {
+	f := newCommsFixture(t)
+	// Open the ledger, then break its directory so the commit fails.
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "x", Edge: CommsEdgePromptStart, Instance: f.codex.ID, Prompt: "[agent-deck from:" + f.parent.ID + "] go"})
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, TurnID: "t1", Text: "reply"})
+	l := f.d.commsLedgerFor("default")
+	if l == nil {
+		t.Fatal("ledger did not open")
+	}
+	dir, _ := comms.Dir("default")
+	active := filepath.Join(dir, "active.ndjson")
+	if err := os.Chmod(active, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
+	f.d.ingestCommsSpool("default", f.byID)
+	if entries, _ := ReadCommsSpool(f.codex.ID); len(entries) != 1 {
+		t.Fatalf("failed commit must keep the turn entry: %+v", entries)
+	}
+	if _, open := f.d.ledgers["default"]; open {
+		t.Fatal("a failed ledger must be dropped so the next pass reopens it")
+	}
+	if err := os.Chmod(active, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 1 || recs[0].Trigger != TurnTriggerSend || recs[0].ReplyTo != f.parent.ID {
+		t.Fatalf("retried turn lost its trigger: %+v", recs)
+	}
+	if entries, _ := ReadCommsSpool(f.codex.ID); len(entries) != 0 {
+		t.Fatalf("spool not drained after the retry: %+v", entries)
+	}
+}
+
+func TestCommsIngest_UsesTheParentConductorsInboxConfig(t *testing.T) {
+	f := newCommsFixture(t)
+	f.parent.Title = "conductor-quiet"
+	off := false
+	inboxConfigOverride = nil
+	ClearUserConfigCache()
+	cfgDir := filepath.Join(os.Getenv("HOME"), ".config", "agent-deck")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("[conductors.quiet]\n[conductors.quiet.inbox]\nquestion_wakes = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	if got := ResolveInboxConfig(f.parent.Title); got.GetQuestionWakes() != off {
+		t.Fatalf("config seam: question_wakes=%v", got.GetQuestionWakes())
+	}
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "x", Edge: CommsEdgePromptStart, Instance: f.codex.ID, Prompt: "[HEARTBEAT] news?"})
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, TurnID: "t1", Text: "Should I continue?"})
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 1 || recs[0].Q || recs[0].Tier != comms.TierInfo {
+		t.Fatalf("question with question_wakes=false for the parent conductor: %+v", recs)
 	}
 }

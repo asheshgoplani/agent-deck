@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,8 +23,9 @@ import (
 // and the notify daemon ingests the spool on its poll loop, classifies, and
 // commits one ledger record per turn. The spool is a transit area, not a
 // store: a file is removed as soon as its record is committed, and an entry
-// a daemon never picked up (an old daemon that predates the ledger, a
-// removed session) is pruned after commsSpoolMaxAge.
+// a daemon never picked up (the switch turned off, a removed session) is
+// pruned by this daemon after commsSpoolMaxAge; the per-instance file cap
+// bounds the spool under a daemon old enough not to know it at all.
 
 // Spool edges.
 const (
@@ -43,6 +45,9 @@ const (
 	commsSpoolPromptBytes = 1024
 	commsSpoolMaxAge      = 24 * time.Hour
 	commsSpoolMaxFiles    = 512 // per instance; a daemon that never drains must not fill the disk
+	commsSpoolIDBytes     = 256 // harness, event, session and turn ids
+	commsSpoolCwdBytes    = 4096
+	commsSpoolMaxBytes    = 64 << 10 // an entry over this is not ours: skipped and removed on read
 )
 
 // CommsSpoolEntry is one spooled edge. Field names match the ledger record
@@ -62,6 +67,16 @@ type CommsSpoolEntry struct {
 
 	// path is where the entry sits on disk (set by ReadCommsSpool).
 	path string
+}
+
+// ID is the entry's spool id (the ULID file name), "" before it is written.
+// It is minted once by the producer, so it identifies this observation
+// across daemon retries.
+func (e CommsSpoolEntry) ID() string {
+	if e.path == "" {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(e.path), ".json")
 }
 
 // commsLedgerOverride is a test seam: when set it replaces the config read.
@@ -111,6 +126,12 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	}
 	e.Text = comms.CapText(strings.TrimSpace(e.Text), commsSpoolTextBytes)
 	e.Prompt = comms.CapText(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
+	e.Harness = capBytes(e.Harness, commsSpoolIDBytes)
+	e.Event = capBytes(e.Event, commsSpoolIDBytes)
+	e.SessionID = capBytes(e.SessionID, commsSpoolIDBytes)
+	e.TurnID = capBytes(e.TurnID, commsSpoolIDBytes)
+	e.TranscriptPath = capBytes(e.TranscriptPath, commsSpoolCwdBytes)
+	e.Cwd = capBytes(e.Cwd, commsSpoolCwdBytes)
 	if e.Edge == CommsEdgeTurnEnd && e.Text == "" && e.Harness != "opencode" {
 		// Nothing to carry: the status edge is already in the hook file. An
 		// empty turn would only become a text-less record.
@@ -128,6 +149,14 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		return err
 	}
 	return writeFileDurable(filepath.Join(dir, comms.NewID(time.UnixMilli(e.TSignal))+".json"), data, 0o600)
+}
+
+// capBytes truncates s to max bytes (identifiers and paths; no marker).
+func capBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 func countSpoolFiles(dir string) int {
@@ -166,6 +195,13 @@ func ReadCommsSpool(instanceID string) ([]CommsSpoolEntry, error) {
 	out := make([]CommsSpoolEntry, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err != nil || info.Size() > commsSpoolMaxBytes {
+			if err == nil {
+				commsLog.Warn("comms_spool_entry_oversized", slog.String("path", path), slog.Int64("bytes", info.Size()))
+				_ = os.Remove(path)
+			}
+			continue
+		}
 		data, err := os.ReadFile(path) // #nosec G304 -- sanitized id under the data dir
 		if err != nil {
 			continue

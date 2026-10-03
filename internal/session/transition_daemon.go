@@ -123,9 +123,11 @@ type TransitionDaemon struct {
 	// open failed), the last prompt-start edge seen per child (the trigger
 	// of its next turn), and the last spool prune. Single-threaded, like
 	// the maps above.
-	ledgers        map[string]*comms.Ledger
-	commsPrompts   map[string]CommsSpoolEntry
-	lastCommsPrune time.Time
+	ledgers          map[string]*comms.Ledger
+	ledgerLocks      map[string]*os.File
+	ledgerOpenFailed map[string]time.Time
+	commsPrompts     map[string]CommsSpoolEntry
+	lastCommsPrune   time.Time
 
 	// journalWriters holds the per-profile writer for the session event
 	// journal, resolved once per profile for the daemon's lifetime and nil

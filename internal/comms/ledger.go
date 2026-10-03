@@ -70,8 +70,12 @@ func Open(profile string) (*Ledger, error) {
 	return OpenDir(profile, dir)
 }
 
-// OpenDir is Open at an explicit directory (tests).
+// OpenDir is Open at an explicit directory. The directory is created owner
+// only: it holds assistant text.
 func OpenDir(profile, dir string) (*Ledger, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
 	bus, err := events.OpenAt(dir, events.Options{RetentionDays: DefaultRetentionDays, RetainSegments: retainSegments})
 	if err != nil {
 		return nil, err
@@ -93,19 +97,27 @@ func (l *Ledger) warm() {
 	if uint64(last) > recentKeys {
 		after = last - recentKeys
 	}
-	sub, err := l.bus.Subscribe(ctx, after)
-	if err != nil {
-		return
-	}
-	for f := range sub.Frames() {
-		var r Record
-		if json.Unmarshal(f.Data, &r) == nil {
-			l.remember(r)
+	for attempt := 0; attempt < 2; attempt++ {
+		sub, err := l.bus.Subscribe(ctx, after)
+		if err != nil {
+			return
 		}
-		if f.Cursor >= last {
-			cancel()
-			break
+		for f := range sub.Frames() {
+			var r Record
+			if json.Unmarshal(f.Data, &r) == nil {
+				l.remember(r)
+			}
+			if f.Cursor >= last {
+				cancel()
+				break
+			}
 		}
+		if !errors.Is(sub.Err(), events.ErrCursorTooOld) {
+			return
+		}
+		// Compaction removed the start of the window: warm from the oldest
+		// retained frame instead of restoring nothing.
+		after = 0
 	}
 }
 
@@ -148,6 +160,12 @@ var ErrDuplicate = errors.New("comms: duplicate key")
 // appends it synchronously. A record whose Key was already committed within
 // the window returns ErrDuplicate and is not appended. The committed record
 // (with the cursor it was assigned) is returned.
+//
+// Seq counts a From's records as this writer has seen them: it is restored
+// from the warm window (the newest recentKeys frames) at open, so it is
+// monotonic across restarts for any From active in that window and restarts
+// at 1 for a From silent for longer. Ordering is the bus cursor and the id;
+// seq is a per-sender counter for readers, not an identity.
 func (l *Ledger) Commit(r Record) (Record, events.Cursor, error) {
 	if l == nil || l.bus == nil {
 		return r, 0, errors.New("comms: ledger not open")
@@ -313,8 +331,12 @@ func (l *Ledger) Import(origin string, exported []Exported) (events.Cursor, erro
 	var done events.Cursor
 	for _, e := range exported {
 		r := e.Record
-		r.Origin = origin
-		r.SrcCursor = uint64(e.Cursor)
+		if r.Origin == "" {
+			// A record that was itself imported on the origin keeps its first
+			// origin; the hop is not the source.
+			r.Origin = origin
+			r.SrcCursor = uint64(e.Cursor)
+		}
 		if r.Key == "" {
 			// A keyless record still needs a stable identity across pulls.
 			r.Key = Key(r.Kind, r.From, r.ID)

@@ -150,6 +150,10 @@ func handleCodexNotify() {
 	if instanceID == "" {
 		return
 	}
+	// Same guard as hook-handler: the id names files under the data dir.
+	if !validInstanceID.MatchString(instanceID) || strings.Contains(instanceID, "..") {
+		return
+	}
 
 	eventArg := ""
 	var data []byte

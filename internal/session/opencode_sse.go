@@ -27,6 +27,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -331,7 +332,11 @@ func (m openCodeMessage) text() string {
 func (w *OpenCodeSSEWatcher) spoolIdleTurn(ctx context.Context, instanceID, base, sessionID string) {
 	root := w.openCodeRootSession(ctx, base, sessionID)
 	var messages []openCodeMessage
-	if err := w.getJSON(ctx, base+"/session/"+root+"/message", &messages); err != nil || len(messages) == 0 {
+	if err := w.getJSON(ctx, base+"/session/"+root+"/message", &messages); err != nil {
+		sessionLog.Debug("opencode_comms_fetch_failed", slog.String("instance", instanceID), slog.String("error", err.Error()))
+		return
+	}
+	if len(messages) == 0 {
 		return
 	}
 	var assistant, prompt, messageID string
@@ -406,8 +411,13 @@ func (w *OpenCodeSSEWatcher) getJSON(ctx context.Context, url string, out any) e
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("opencode: %s: %s", url, resp.Status)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	// A session history can be large; the producer only needs its tail, but
+	// the API returns the whole list, so bound what is decoded.
+	return json.NewDecoder(io.LimitReader(resp.Body, openCodeMaxBodyBytes)).Decode(out)
 }
+
+// openCodeMaxBodyBytes bounds one history fetch (4 MiB).
+const openCodeMaxBodyBytes = 4 << 20
 
 // seedSnapshot loads the /session/status snapshot into busy. Returns false if
 // the snapshot could not be fetched or parsed.

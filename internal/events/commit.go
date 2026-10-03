@@ -81,8 +81,13 @@ func openReadOnly(dir string, opts Options) (*Bus, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("events: %s is not a directory", dir)
 	}
-	lockFile, err := os.OpenFile(filepath.Join(dir, "writer.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	// A follower never creates anything: the writer made writer.lock when it
+	// opened the log, and flock works on a read-only descriptor.
+	lockFile, err := os.Open(filepath.Join(dir, "writer.lock"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNoBus
+		}
 		return nil, fmt.Errorf("events: open writer lock: %w", err)
 	}
 	b := &Bus{

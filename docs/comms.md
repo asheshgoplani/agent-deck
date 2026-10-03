@@ -102,11 +102,30 @@ else `human`; no prompt seen is `unknown` and tiers urgent), the text gives
 the hash, the sentinel and the question. The tier rule is
 `ClassifyTurnTier` from #2469 against the child's previous ledger turn.
 
-Not in P1 (notes): Codex gets no new `hooks.json` installer (the budget
-allows only the hooks already installed; `notify` carries the text). Pi
-turns without an `agent_settled` (older pi) are status only. OpenCode text
-needs a session launched with `--port` and a running TUI (the SSE watcher
-lives there); without one it is status only.
+Not in P1 (notes):
+
+- Codex gets no new `hooks.json` installer (the budget allows only the
+  hooks already installed; `notify` carries the text).
+- Pi: the extension file is re-versioned (v3), so `pi-hooks status` reports
+  drift on an existing install until `pi-hooks install` (or the next
+  launch) rewrites it; v2 installs keep working, status only. The two new
+  handlers (`input`, `agent_settled`) are not awaited, so a prompt never
+  waits on the hook process.
+- OpenCode text needs a session launched with `--port` and a running TUI
+  (the SSE watcher lives there). A text producer that spools nothing for a
+  turn (OpenCode without a port, pi v2, a Hermes install without the
+  extended vocabulary) leaves no ledger record for that turn: the inbox
+  record is the status edge, as before.
+- Cursor: `afterAgentResponse` is added to hooks.json only with the ledger
+  on; the install is lossless (user hook fields and unknown keys are kept).
+- Dropped from the research row, for later: a `tools/replay2469` run
+  against the ledger, Cursor transcript roots in `ValidateTranscriptPath`,
+  and fswatch on the spool (the daemon polls; its interval is seconds).
+- Claude classification and the inbox differ only where the inbox path
+  sees something the spool does not carry: a flip into the error status and
+  an observed running->waiting flip with a stale transcript (both urgent
+  in the inbox). A spool backlog is classified entry by entry: the
+  transcript tail is used only for the turn it still describes.
 
 ## Reading it
 

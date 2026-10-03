@@ -98,16 +98,16 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("session_shutdown", () => emit("session_shutdown"));
 
-  // Comms Ledger producer: no status change, text only.
+  // Comms Ledger producer: no status change, text only. These are NOT
+  // awaited: a prompt must never wait on a hook process, and the handler
+  // exits at once when the ledger is off.
   pi.on("input", (event) => {
     const prompt = String((event as { text?: unknown }).text ?? "").trim();
-    if (!prompt) return;
-    return emit("input", { prompt: prompt.slice(0, 1024) });
+    if (prompt) void emit("input", { prompt: prompt.slice(0, 1024) });
   });
   pi.on("agent_settled", () => {
     const text = lastAssistantText;
     lastAssistantText = "";
-    if (!text) return;
-    return emit("agent_settled", { text });
+    if (text) void emit("agent_settled", { text });
   });
 }
