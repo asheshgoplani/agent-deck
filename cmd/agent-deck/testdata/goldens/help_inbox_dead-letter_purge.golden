@@ -2,6 +2,8 @@ Usage: agent-deck inbox <session-id>
        agent-deck inbox drain [--json] <session-id>
        agent-deck inbox export [--json]
        agent-deck inbox writer-status [--json]
+       agent-deck inbox peek [--json] [<session-id>|self]
+       agent-deck inbox stats [--json] [--all] [<session-id>|self]
        agent-deck inbox dead-letter <list|show|retry|purge>
 
 Drain pending completion events from the parent's durable outbox.

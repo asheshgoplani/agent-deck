@@ -135,7 +135,10 @@ func TestAudit_B_HookLagFlipThenLateStopIsOneTransitionOneDone(t *testing.T) {
 			transitions++
 		}
 	}
-	if transitions != 1 || dones != 1 {
-		t.Fatalf("parent inbox: %d transitions, %d [DONE] for one turn (want 1 and 1); events: %+v", transitions, dones, events)
+	// Issue #2469: a sentinel turn is ONE record. The [DONE] record carries
+	// the status; a separate "waiting" transition for the same turn would be
+	// a second wake with nothing new in it.
+	if transitions != 0 || dones != 1 {
+		t.Fatalf("parent inbox: %d transitions, %d [DONE] for one turn (want 0 and 1); events: %+v", transitions, dones, events)
 	}
 }

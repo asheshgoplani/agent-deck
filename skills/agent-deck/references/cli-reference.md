@@ -918,6 +918,26 @@ agent-deck conductor list [--profile <name>]
 
 ## Inbox Commands
 
+### peek - Show pending records without consuming
+
+```bash
+agent-deck inbox peek [--json] [<session-id>|self]
+```
+
+Read-only view of the parent's pending records, rendered as the prompt-time drain injects them (`[tier] title (id): status` plus the child's text). Nothing is consumed or marked.
+
+### stats - Communication counters per parent
+
+```bash
+agent-deck inbox stats [--json] [<session-id>|self]
+agent-deck inbox stats [--json] --all
+agent-deck inbox stats --reset <session-id>
+```
+
+Read-only counters (#2469) kept per parent under `runtime/inbox-stats/`: records by tier (`records_urgent`, `records_info`, `records_legacy`), turns suppressed (`noise_suppressed`, `dedup_suppressed`), wakeups (`wakeups_urgent`, `wakeups_digest`, `wakeups_suppressed`), delivery (`drains`, `records_delivered`, `bytes_injected`, `text_bytes`) and `last_urgent_latency_ms`. The text form adds the signal ratio (recorded turns over observed turns). Nothing is consumed.
+
+Every record drained with `inbox drain` now carries `tier`, `trigger`, `text` (the child's new text, capped), `text_hash`, `turn_uuid`, `question` and `seq`; the text form prints the text indented under the record line.
+
 ### dead-letter - Inspect and resolve terminal delivery failures
 
 ```bash

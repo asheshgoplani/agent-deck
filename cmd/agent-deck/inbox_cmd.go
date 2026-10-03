@@ -57,6 +57,8 @@ func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox export [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
+	fmt.Fprintln(w, "       agent-deck inbox peek [--json] [<session-id>|self]")
+	fmt.Fprintln(w, "       agent-deck inbox stats [--json] [--all] [<session-id>|self]")
 	fmt.Fprintln(w, "       agent-deck inbox dead-letter <list|show|retry|purge>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Drain pending completion events from the parent's durable outbox.")
@@ -194,6 +196,12 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 	}
 	if len(args) > 0 && args[0] == "writer-status" {
 		return runInboxWriterStatus(stdout, args[1:])
+	}
+	if len(args) > 0 && args[0] == "stats" {
+		return runInboxStats(stdout, args[1:], explicitProfile)
+	}
+	if len(args) > 0 && args[0] == "peek" {
+		return runInboxPeek(stdout, args[1:], explicitProfile)
 	}
 
 	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
@@ -611,6 +619,16 @@ func printInboxEventLines(stdout io.Writer, events []session.TransitionNotificat
 		if ev.SourceRemote != "" {
 			fmt.Fprintf(stdout, " remote=%s", ev.SourceRemote)
 		}
+		if ev.Tier != "" {
+			fmt.Fprintf(stdout, " tier=%s trigger=%s", ev.Tier, ev.Trigger)
+		}
 		fmt.Fprintln(stdout)
+		// Issue #2469: the record carries the child's text so the reader
+		// (a conductor's heartbeat drain) does not re-read the child.
+		if text := strings.TrimSpace(ev.Text); text != "" {
+			for _, line := range strings.Split(text, "\n") {
+				fmt.Fprintf(stdout, "    %s\n", line)
+			}
+		}
 	}
 }

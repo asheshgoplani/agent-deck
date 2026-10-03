@@ -118,6 +118,31 @@ type TransitionNotificationEvent struct {
 	// Flows to the dead-letter record and the operator-visible missed-log line so
 	// a misconfiguration is distinguishable from a benign suppression.
 	DeadLetterReason string `json:"dead_letter_reason,omitempty"`
+
+	// Turn tiering (issue #2469). All omitempty: a record from an older
+	// producer has none of them and is treated as urgent by consumers.
+	//
+	// Tier is urgent|info (noise never becomes a record). Trigger names what
+	// started the child's turn (human|send|task|system|inbox|unknown). Text
+	// is the child's new final assistant text, capped at [inbox]
+	// max_text_bytes, so the parent acts on the record instead of re-reading
+	// the child. TextHash identifies the text; TurnUUID the transcript record.
+	// Question marks a parent-facing question. Seq is the child's turn-journal
+	// sequence for this turn, FromID the sender of a tagged send.
+	Tier     string `json:"tier,omitempty"`
+	Trigger  string `json:"trigger,omitempty"`
+	TurnUUID string `json:"turn_uuid,omitempty"`
+	TextHash string `json:"text_hash,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Question bool   `json:"question,omitempty"`
+	Seq      int64  `json:"seq,omitempty"`
+	FromID   string `json:"from_id,omitempty"`
+}
+
+// IsUrgent reports whether a consumer must wake for this record: an explicit
+// urgent tier, or a legacy record with no tier at all.
+func (e TransitionNotificationEvent) IsUrgent() bool {
+	return e.Tier == "" || e.Tier == TurnTierUrgent
 }
 
 // transitionKindFinished marks a TransitionNotificationEvent as a worker-
@@ -503,8 +528,12 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 		return true
 	}
 
+	// Issue #2469: waiting and idle are one attention class. A turn signal
+	// that identifies the turn (turn:<uuid> / text:<hash>) already proves the
+	// child said nothing new, so a waiting→idle flip with the same signal is
+	// the same turn, not a second record.
 	if event.LastOutputHash != "" &&
-		record.To == event.ToStatus &&
+		attentionClass(record.To) == attentionClass(event.ToStatus) &&
 		record.OutputHash == event.LastOutputHash &&
 		elapsed <= int64(n.outputHashTTL().Seconds()) {
 		return true
@@ -572,6 +601,15 @@ func transitionEventOutputHash(inst *Instance) string {
 func transitionContentSignal(inst *Instance) string {
 	if signal := codexTurnSignal(inst); signal != "" {
 		return signal
+	}
+	// Issue #2469: identify the TURN (the assistant record that finished it),
+	// not the file size, so background task notifications and hook re-fires
+	// that grow the transcript without a new reply do not look like new turns.
+	// Falls through to the size signal when the tail cannot be classified.
+	if facts, ok := instanceTurnFacts(inst); ok && !facts.Pending {
+		if signal := facts.Signal(); signal != "" {
+			return signal
+		}
 	}
 	path := inst.GetJSONLPath()
 	if path == "" {

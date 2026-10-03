@@ -76,7 +76,7 @@ func TestIssue1225_CommitFiresWakeNudgeToParent(t *testing.T) {
 		nudger: NewWakeNudger(0),
 		now:    func() time.Time { return time.Unix(1000, 0) },
 		isIdle: func(p *Instance) bool { return true },
-		send: func(p *Instance, profile string) error {
+		send: func(p *Instance, profile, _ string) error {
 			mu.Lock()
 			sentTo = append(sentTo, p.ID)
 			mu.Unlock()
@@ -104,7 +104,7 @@ func TestIssue1225_CommitDoesNotNudgeBusyParent(t *testing.T) {
 		nudger: NewWakeNudger(0),
 		now:    func() time.Time { return time.Unix(1000, 0) },
 		isIdle: func(p *Instance) bool { return false },
-		send:   func(p *Instance, profile string) error { sent++; return nil },
+		send:   func(p *Instance, profile, _ string) error { sent++; return nil },
 	}
 	res := n.NotifyFinished(event)
 	if res.DeliveryResult != transitionDeliveryCommitted {
@@ -125,7 +125,7 @@ func TestIssue1225_RapidCommitsDebounceToOneNudge(t *testing.T) {
 		nudger: NewWakeNudger(time.Minute),
 		now:    func() time.Time { return time.Unix(2000, 0) },
 		isIdle: func(p *Instance) bool { return true },
-		send:   func(p *Instance, profile string) error { sent++; return nil },
+		send:   func(p *Instance, profile, _ string) error { sent++; return nil },
 	}
 	n.NotifyFinished(event)
 	n.NotifyFinished(event) // within the debounce window → suppressed
@@ -142,7 +142,7 @@ func TestIssue1225_NudgeSendErrorIsHarmless(t *testing.T) {
 		nudger: NewWakeNudger(0),
 		now:    func() time.Time { return time.Unix(3000, 0) },
 		isIdle: func(p *Instance) bool { return true },
-		send:   func(p *Instance, profile string) error { return errors.New("pane gone") },
+		send:   func(p *Instance, profile, _ string) error { return errors.New("pane gone") },
 	}
 	res := n.NotifyFinished(event)
 	if res.DeliveryResult != transitionDeliveryCommitted {

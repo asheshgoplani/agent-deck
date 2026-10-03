@@ -579,3 +579,72 @@ func ForgetConsumedTurnsForChild(childSessionID string) {
 		}
 	}
 }
+
+// DrainInboxForParentWhere is DrainInboxForParent for a consumer with a
+// delivery budget (issue #2469: the prompt-time injection has a size cap).
+// After staging, retry-collapse and consumed-ledger dedup, choose receives
+// the records that are genuinely pending, oldest first, and returns the
+// subset to deliver now; every other pending record is written back to the
+// inbox, unconsumed, so it is delivered by a later drain. Nothing is marked
+// consumed unless it is returned to the caller.
+//
+// Crash safety: the kept records are re-queued BEFORE the chosen ones are
+// finalized. A crash in between leaves them both in the WAL and in the
+// inbox; the next drain's union collapses the duplicate by turn fingerprint.
+func DrainInboxForParentWhere(parentID string, choose func(pending []TransitionNotificationEvent) []TransitionNotificationEvent) ([]TransitionNotificationEvent, error) {
+	if strings.TrimSpace(parentID) == "" {
+		return nil, errors.New("inbox drain: empty parent session id")
+	}
+	if choose == nil {
+		return DrainInboxForParent(parentID)
+	}
+	fileLock, err := acquireInboxLock(parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer fileLock.Release()
+
+	staged, err := stageInboxDrainLocked(parentID)
+	if err != nil {
+		return nil, err
+	}
+	if len(staged) == 0 {
+		return nil, nil
+	}
+
+	consumedTurnsMu.Lock()
+	consumed := loadConsumedTurnsLocked(parentID)
+	consumedTurnsMu.Unlock()
+	var pending []TransitionNotificationEvent
+	for _, ev := range collapseTurnRetries(staged) {
+		if _, seen := consumed[turnFingerprintOf(ev)]; !seen {
+			pending = append(pending, ev)
+		}
+	}
+	take := choose(pending)
+	taken := make(map[string]bool, len(take))
+	for _, ev := range take {
+		taken[turnFingerprintOf(ev)] = true
+	}
+	inboxWriteMu.Lock()
+	for _, ev := range pending {
+		if taken[turnFingerprintOf(ev)] {
+			continue
+		}
+		if err := appendInboxLineLocked(InboxPathFor(parentID), ev); err != nil {
+			inboxWriteMu.Unlock()
+			// Re-queue failed: leave the WAL in place (nothing consumed yet) so
+			// the next drain re-delivers everything.
+			return nil, err
+		}
+	}
+	inboxWriteMu.Unlock()
+	return finalizeInboxDrain(parentID, take)
+}
+
+func turnFingerprintOf(ev TransitionNotificationEvent) string {
+	if ev.TurnFingerprint != "" {
+		return ev.TurnFingerprint
+	}
+	return TurnFingerprint(ev)
+}

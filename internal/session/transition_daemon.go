@@ -638,28 +638,50 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
-		event := TransitionNotificationEvent{
-			ChildSessionID: id,
-			ChildTitle:     inst.Title,
-			Profile:        profile,
-			FromStatus:     from,
-			ToStatus:       to,
-			Timestamp:      time.Now(),
-			LastOutputHash: transitionEventOutputHash(inst),
-			// Honest Status v2 observability hook: stamp the additive substate so
-			// the emitted transition event is structured + substate-bearing. Use
-			// the CACHED value (no pane capture) — the daemon's own status poll
-			// just refreshed it, and an extra capture per transition would make
-			// this hot path heavier than the transcript-stat dedup signal above.
-			Substate: string(inst.CachedSubstate()),
-		}
-		_ = d.notifier.NotifyTransition(event)
+		// Issue #2469: every emission path goes through emitTurn, which
+		// classifies the turn from the transcript and journals it once. A
+		// pending (unflushed) turn is picked up by recordTerminalTurns on the
+		// next poll, so skipping the edge here loses nothing.
+		_, _ = d.emitTurn(profile, inst, byID, from, to, time.Now(), true)
 	}
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
 	d.emitDoneSignals(profile, byID, hookStatuses)
+	d.wakeForInfoDigests(profile, byID, statuses)
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
+}
+
+// wakeForInfoDigests wakes an idle parent once when info records have waited
+// past [inbox] info_digest_minutes (issue #2469, design principle 4). One
+// non-consuming inbox read per parent per pass; parents are few.
+func (d *TransitionDaemon) wakeForInfoDigests(profile string, byID map[string]*Instance, statuses map[string]string) {
+	parents := map[string]bool{}
+	for _, inst := range byID {
+		if inst != nil && inst.ParentSessionID != "" {
+			parents[inst.ParentSessionID] = true
+		}
+	}
+	now := time.Now()
+	for parentID := range parents {
+		parent := byID[parentID]
+		if parent == nil {
+			continue
+		}
+		cfg := ResolveInboxConfig(parent.Title)
+		window := time.Duration(cfg.GetInfoDigestMinutes()) * time.Minute
+		due, records, children := DigestDue(parentID, window, now)
+		if !due {
+			continue
+		}
+		if st := normalizeStatusString(statuses[parentID]); st != string(StatusIdle) && st != string(StatusWaiting) {
+			continue
+		}
+		if d.notifier.fireDigestNudge(parent, profile, DigestNudgeMessage(records, children)) {
+			markDigestWake(parentID, now)
+			_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsDigest++ })
+		}
+	}
 }
 
 // journalStatusChanges appends one status event per instance whose observed
@@ -906,29 +928,25 @@ func (d *TransitionDaemon) recordTerminalTurns(
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
-		// Commit the dedup key only after the observation is eligible. A registry
-		// row can appear before its tmux session, and notification settings can be
-		// enabled while a turn remains parked; neither temporary rejection may
-		// permanently suppress that unchanged turn.
-		seen[id] = key
-
 		// FromStatus is stamped `running` rather than the observed previous
 		// status, matching what emitHookTransitionCandidates already does for
 		// turns too fast to observe: a turn that reached a terminal status ran,
 		// whether or not any poll caught it doing so. It also makes the
 		// fingerprint identical to the snapshot loop's for the same turn, which
 		// is what lets the inbox collapse the pair.
-		event := TransitionNotificationEvent{
-			ChildSessionID: id,
-			ChildTitle:     inst.Title,
-			Profile:        profile,
-			FromStatus:     string(StatusRunning),
-			ToStatus:       to,
-			Timestamp:      time.Now(),
-			LastOutputHash: signal,
-			Substate:       string(inst.CachedSubstate()),
+		//
+		// Issue #2469: emitTurn classifies and journals the turn. A pending
+		// turn (assistant record not flushed yet) leaves the key uncommitted so
+		// this exact observation retries next poll instead of being recorded
+		// under the size signal and then again under the turn signal.
+		if _, ok := d.emitTurn(profile, inst, byID, string(StatusRunning), to, time.Now(), false); !ok {
+			continue
 		}
-		_ = d.notifier.NotifyTransition(event)
+		// Commit the dedup key only after the observation is eligible. A registry
+		// row can appear before its tmux session, and notification settings can be
+		// enabled while a turn remains parked; neither temporary rejection may
+		// permanently suppress that unchanged turn.
+		seen[id] = key
 	}
 
 	// Instances that disappeared (stopped, removed) must not keep an entry, or a
@@ -964,7 +982,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			continue
 		}
 		if prev, ok := d.lastDone[profile][id]; ok && prev == sig {
-			continue // already emitted this exact completion
+			continue // already emitted this exact completion (here or by emitTurn)
 		}
 
 		inst := byID[id]
@@ -1327,16 +1345,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		// for an interactive agent, so omitting it would miss most alerts.
 		d.notifyDesktop(profile, inst, to)
 
-		event := TransitionNotificationEvent{
-			ChildSessionID: id,
-			ChildTitle:     inst.Title,
-			Profile:        profile,
-			FromStatus:     string(StatusRunning),
-			ToStatus:       to,
-			Timestamp:      candidate.Timestamp,
-			LastOutputHash: transitionEventOutputHash(inst),
-		}
-		_ = d.notifier.NotifyTransition(event)
+		_, _ = d.emitTurn(profile, inst, byID, string(StatusRunning), to, candidate.Timestamp, false)
 	}
 }
 

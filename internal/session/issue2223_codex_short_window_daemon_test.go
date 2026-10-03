@@ -84,7 +84,7 @@ func TestIssue2223_CodexTwoCompletionsWithinShortWindowBothDelivered(t *testing.
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
 		isIdle: func(*Instance) bool { return true },
-		send:   func(*Instance, string) error { return nil },
+		send:   func(*Instance, string, string) error { return nil },
 	}
 
 	t0 := now.Add(-4 * time.Hour)

@@ -67,7 +67,10 @@ func formatChildrenContext(rows []childRow) string {
 	running := 0
 	for _, r := range rows {
 		switch {
-		case r.DoneStatus != "":
+		// Issue #2469: a child that asserted done but is RUNNING again is
+		// running; the ledger is last-wins and never deleted, so without
+		// the status check an old completion was re-listed on every prompt.
+		case r.DoneStatus != "" && r.Status != "running":
 			done = append(done, r)
 		case r.Status == "waiting":
 			waiting = append(waiting, r)
@@ -116,7 +119,25 @@ func formatChildrenContext(rows []childRow) string {
 // buildChildrenContextSummary loads the caller's children and renders the
 // snapshot, or "" when the session has none (or anything fails — the hook
 // must never break a turn over supervision sugar).
-func buildChildrenContextSummary(instanceID string) string {
+//
+// Issue #2469, design principle 5: the snapshot is injected only when it
+// changed since the last injection for this parent (fingerprint under
+// runtime/fleet-block/), except on SessionStart, which always gets the full
+// picture. An unchanged snapshot costs the parent nothing and is counted.
+func buildChildrenContextSummary(instanceID string, force bool) string {
+	summary := renderChildrenContextSummary(instanceID)
+	if summary == "" {
+		return ""
+	}
+	if !force && session.FleetBlockUnchanged(instanceID, summary) {
+		_ = session.BumpInboxStats(instanceID, func(s *session.InboxStats) { s.FleetBlockSkips++ })
+		return ""
+	}
+	_ = session.BumpInboxStats(instanceID, func(s *session.InboxStats) { s.BytesInjected += int64(len(summary)) })
+	return summary
+}
+
+func renderChildrenContextSummary(instanceID string) string {
 	// #1790/#1822: pass "" straight through to loadSessionData/
 	// NewStorageWithProfile rather than pre-resolving via GetEffectiveProfile
 	// here. Pre-resolving would hand NewStorageWithProfile an already-concrete

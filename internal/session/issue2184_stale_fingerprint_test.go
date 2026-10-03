@@ -32,7 +32,7 @@ func newStaleHashNotifierFixture(t *testing.T) (*TransitionNotifier, string, fun
 		nudger: NewWakeNudger(0),
 		now:    time.Now,
 		isIdle: func(*Instance) bool { return true },
-		send:   func(*Instance, string) error { sent++; return nil },
+		send:   func(*Instance, string, string) error { sent++; return nil },
 	}
 	build := func(hash string, at time.Time) TransitionNotificationEvent {
 		return TransitionNotificationEvent{
@@ -213,7 +213,7 @@ func attachTranscript(t *testing.T, f *restartFixture, body string) string {
 // stale-flagged record, delivered by the drain, and nudged.
 func TestIssue2184_DaemonDeliversSecondTurnWithUnchangedTranscriptSignal(t *testing.T) {
 	f := newRestartFixture(t, "running")
-	attachTranscript(t, f, "{\"type\":\"user\"}\n")
+	attachTranscript(t, f, "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n")
 
 	d := f.newDaemon()
 	d.syncProfile(f.profile)
@@ -255,7 +255,7 @@ func TestIssue2184_DaemonDeliversSecondTurnWithUnchangedTranscriptSignal(t *test
 // not turn the restart into a re-notification.
 func TestIssue2184_RestartSeedingUnchangedWithStableTranscriptSignal(t *testing.T) {
 	f := newRestartFixture(t, "running")
-	attachTranscript(t, f, "{\"type\":\"user\"}\n")
+	attachTranscript(t, f, "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n")
 
 	d1 := f.newDaemon()
 	d1.syncProfile(f.profile)
@@ -280,13 +280,18 @@ func TestIssue2184_RestartSeedingUnchangedWithStableTranscriptSignal(t *testing.
 		t.Fatalf("restart fired a phantom wake-nudge: total nudges %d, want 1", n)
 	}
 
-	// A turn that completed while the daemon was down (transcript grew) is
-	// still notified once after the restart, exactly as before.
+	// A waiting->idle flip while the daemon was down with the transcript
+	// untouched is the same turn settling, not news (issue #2469): no record,
+	// counted as noise. A turn whose transcript grew is covered by
+	// TestIssue2469_BackgroundTurnsAreOneInfoRecordAndNeverWake.
 	f.setChildStatus(t, "idle")
 	d3 := f.newDaemon()
 	d3.syncProfile(f.profile)
 	d3.syncProfile(f.profile)
-	if got := readInboxLines(t, f.parent.ID); len(got) != 1 || got[0].ToStatus != "idle" {
-		t.Fatalf("status change during downtime must be notified once, got %+v", got)
+	if got := readInboxLines(t, f.parent.ID); len(got) != 0 {
+		t.Fatalf("waiting->idle with unchanged text must not be recorded, got %+v", got)
+	}
+	if st, _ := ReadInboxStats(f.parent.ID); st.NoiseSuppressed+st.DedupSuppressed == 0 {
+		t.Fatalf("the suppressed flip must be counted in stats: %+v", st)
 	}
 }
