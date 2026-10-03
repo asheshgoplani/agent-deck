@@ -448,13 +448,15 @@ func TestPR5_ParentThatAskedIsWokenForTheReply(t *testing.T) {
 			f.parent.Tool = tc.tool
 			f.saveRegistry(t)
 
+			// A reply that asks back is urgent; a plain answer would be info
+			// and wake nobody (conductor ruling 2026-10-03).
+			const reply = "The API listens on 8443.\nNEED: should 8080 stay open too?"
+			prompt := "which port does the API use?"
 			if tc.tagged {
-				f.runTaggedTurn(t, f.parent.ID)
-			} else {
-				// A reply that asks back is urgent; a plain answer would be info and wake nobody.
-				f.appendTurn(t, fxHuman("u0", "which port does the API use?"), fxAssistantText("a0", "The API listens on 8443.\nNEED: should 8080 stay open too?"))
-				f.pollTurns(t)
+				prompt = SendEnvelope(f.parent.ID) + "\n" + prompt
 			}
+			f.appendTurn(t, fxHuman("u0", prompt), fxAssistantText("a0", reply))
+			f.pollTurns(t)
 
 			got := f.inboxRecords(t)
 			if len(got) != 1 || got[0].TargetKind != "parent" || got[0].Tier != TurnTierUrgent {
