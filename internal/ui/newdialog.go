@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -3495,7 +3496,12 @@ func (d *NewDialog) View() string {
 		}
 	}
 
-	// Wrap in dialog box
+	// Wrap in dialog box. In light theme, keep the surface fill uniform:
+	// every inline segment and textinput part resets SGR state, which would
+	// otherwise let the terminal background show through the box (#2449).
+	if currentTheme == ThemeLight {
+		viewported = fillSurfaceAfterResets(viewported, surfaceBackgroundSGR())
+	}
 	dialog := dialogStyle.Render(viewported)
 
 	// Center the dialog
@@ -3534,6 +3540,38 @@ func (d *NewDialog) View() string {
 	}
 
 	return placed
+}
+
+// sgrResetRE matches an SGR sequence that resets every attribute, the form
+// lipgloss and the bubbles textinput end each styled segment with.
+var sgrResetRE = regexp.MustCompile(`\x1b\[0*m`)
+
+// surfaceBackgroundSGR returns the SGR sequence that sets ColorSurface as the
+// background in the active colour profile, or "" when colours are disabled.
+func surfaceBackgroundSGR() string {
+	c := lipgloss.ColorProfile().Color(string(ColorSurface))
+	if c == nil {
+		return ""
+	}
+	seq := c.Sequence(true)
+	if seq == "" {
+		return ""
+	}
+	return "\x1b[" + seq + "m"
+}
+
+// fillSurfaceAfterResets re-establishes the surface background after every
+// SGR reset in s. lipgloss v1 applies a box's Background only up to the first
+// reset emitted by inner content, so without this each styled label, pill,
+// placeholder or cursor punches a hole through to the terminal background
+// for the rest of its line (#2449).
+func fillSurfaceAfterResets(s, surface string) string {
+	if surface == "" {
+		return s
+	}
+	return sgrResetRE.ReplaceAllStringFunc(s, func(reset string) string {
+		return reset + surface
+	})
 }
 
 // renderSuggestionsDropdown renders the path suggestions as a standalone block

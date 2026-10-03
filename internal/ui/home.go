@@ -24302,10 +24302,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			// background beyond the pane's truncation point. See #579.
 			safeLine = stripDisplayErasingEscapes(safeLine)
 
-			// In light theme, remap captured ANSI background colors to the
-			// current preview surface instead of stripping them completely.
-			// This preserves the soft highlighted blocks used by tools like
-			// Codex without letting dark background bands bleed through.
+			// In light theme, remap captured dark ANSI background colors to
+			// the current preview surface instead of stripping them. Dark
+			// bands (e.g. Codex, #322) stop bleeding through, and light
+			// backgrounds a tool already draws pass through unchanged (#2449).
 			if isLightTheme {
 				safeLine = remapANSIBackground(safeLine, previewSurfaceANSI())
 			}
@@ -24568,15 +24568,18 @@ func previewSurfaceANSI() string {
 	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", r, g, b)
 }
 
-// remapANSIBackground replaces ANSI background color sequences with the
+// remapANSIBackground replaces dark ANSI background color sequences with the
 // provided replacement while preserving all other ANSI sequences (foreground
-// colors, bold, italic, underline). Used in light theme so captured terminal
-// output keeps soft highlighted regions instead of dropping them entirely.
+// colors, bold, italic, underline) and light backgrounds. Used in light theme
+// so dark bands from captured terminal output (#322) do not bleed through,
+// while a tool's own light backgrounds survive unchanged (#2449).
 func remapANSIBackground(s, replacement string) string {
-	if replacement == "" {
-		return ansiBackgroundRE.ReplaceAllString(s, "")
-	}
-	return ansiBackgroundRE.ReplaceAllString(s, replacement)
+	return ansiBackgroundRE.ReplaceAllStringFunc(s, func(seq string) string {
+		if !isDarkANSIBackground(seq) {
+			return seq
+		}
+		return replacement
+	})
 }
 
 // truncatePath shortens a path to fit within maxLen display width.
