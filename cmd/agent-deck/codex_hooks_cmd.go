@@ -150,10 +150,6 @@ func handleCodexNotify() {
 	if instanceID == "" {
 		return
 	}
-	// Same guard as hook-handler: the id names files under the data dir.
-	if !validInstanceID.MatchString(instanceID) || strings.Contains(instanceID, "..") {
-		return
-	}
 
 	eventArg := ""
 	var data []byte
@@ -238,6 +234,11 @@ type codexNotifyText struct {
 // prompt that started the turn, which gives the daemon the trigger.
 func spoolCommsFromCodexNotify(instanceID, sessionID, turnID, event string, data []byte) {
 	if _, completed := codexTurnEdge(event); !completed || len(data) == 0 || !session.CommsLedgerEnabled() {
+		return
+	}
+	// Same guard as hook-handler: the id names a directory under the spool.
+	// The status file path above keeps its historical filepath.Base rule.
+	if !validInstanceID.MatchString(instanceID) || strings.Contains(instanceID, "..") {
 		return
 	}
 	var t codexNotifyText

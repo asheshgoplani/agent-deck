@@ -233,7 +233,7 @@ func handleEventsStats(args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events stats [--json] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 

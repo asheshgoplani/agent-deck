@@ -58,14 +58,15 @@ const (
 	// ReceiptFailed is terminal for one attempt; a new attempt starts over
 	// from ReceiptDurable.
 	ReceiptFailed = "failed"
-	// ReceiptUnknown: the adapter cannot observe landing (a typed line into
-	// a harness with no prompt-start hook). Preserved as such, never
-	// promoted by a timeout.
+	// ReceiptUnknown: the attempt was made but the adapter cannot observe
+	// landing (a typed line into a harness with no prompt-start hook).
+	// Reached from attempted (or a retry's attempted); it leaves only on
+	// positive landing evidence (context_observed, application_acked),
+	// never on a timeout and never to transport_accepted.
 	ReceiptUnknown = "unknown"
 )
 
 var receiptRank = map[string]int{
-	ReceiptUnknown:           0,
 	ReceiptDurable:           1,
 	ReceiptAttempted:         2,
 	ReceiptTransportAccepted: 3,
@@ -94,10 +95,21 @@ var ErrReceiptRegress = errors.New("comms: receipt state cannot move to weaker e
 
 // Advance returns the receipt moved to state at the given time. Within an
 // attempt evidence only strengthens; ReceiptFailed is allowed from any
-// state and ends the attempt; ReceiptUnknown is allowed only as the first
-// state of an attempt.
+// state and ends the attempt; ReceiptUnknown is allowed from attempted
+// only, and from unknown only context_observed, application_acked or
+// failed follow.
 func (r Receipt) Advance(state string, at int64) (Receipt, error) {
 	if state == ReceiptFailed {
+		r.State, r.At = state, at
+		return r, nil
+	}
+	if r.State == ReceiptFailed {
+		return r, errors.New("comms: attempt already failed; start a new attempt")
+	}
+	if state == ReceiptUnknown {
+		if r.State != ReceiptAttempted {
+			return r, errors.New("comms: unknown is reachable only from attempted")
+		}
 		r.State, r.At = state, at
 		return r, nil
 	}
@@ -105,10 +117,14 @@ func (r Receipt) Advance(state string, at int64) (Receipt, error) {
 	if !ok {
 		return r, fmt.Errorf("comms: unknown receipt state %q", state)
 	}
-	if r.State == ReceiptFailed {
-		return r, errors.New("comms: attempt already failed; start a new attempt")
+	if r.State == ReceiptUnknown {
+		if state != ReceiptContextObserved && state != ReceiptApplicationAcked {
+			return r, ErrReceiptRegress // a timeout or a transport report is not landing evidence
+		}
+		r.State, r.At = state, at
+		return r, nil
 	}
-	if r.State != "" && rank <= receiptRank[r.State] && !(state == ReceiptUnknown && r.State == "") {
+	if r.State != "" && rank <= receiptRank[r.State] {
 		return r, ErrReceiptRegress
 	}
 	r.State, r.At = state, at
@@ -175,8 +191,19 @@ func (c *ConsumerState) Ack(cursor events.Cursor) error {
 	return nil
 }
 
-// normalize moves the contiguous prefix of Acked into the watermark.
+// normalize sorts and dedups the sparse set, drops entries at or below the
+// watermark (stale after a load or a merge) and moves the contiguous prefix
+// into the watermark.
 func (c *ConsumerState) normalize() {
+	sort.Slice(c.Acked, func(i, j int) bool { return c.Acked[i] < c.Acked[j] })
+	kept := c.Acked[:0]
+	for i, a := range c.Acked {
+		if a <= c.Watermark || (i > 0 && a == c.Acked[i-1]) {
+			continue
+		}
+		kept = append(kept, a)
+	}
+	c.Acked = kept
 	for len(c.Acked) > 0 && c.Acked[0] == c.Watermark+1 {
 		c.Watermark = c.Acked[0]
 		c.Acked = c.Acked[1:]
@@ -185,6 +212,10 @@ func (c *ConsumerState) normalize() {
 		c.Acked = nil
 	}
 }
+
+// Normalize repairs a state read from disk (sorts, dedups, drops stale
+// acks, folds the contiguous prefix). Call it after loading.
+func (c *ConsumerState) Normalize() { c.normalize() }
 
 // IsAcked reports whether a cursor is acknowledged.
 func (c ConsumerState) IsAcked(cursor events.Cursor) bool {

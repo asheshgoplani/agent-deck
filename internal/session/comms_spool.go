@@ -12,15 +12,16 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
 )
 
-// Comms Ledger producer side (docs/comms.md). A hook process (Claude Stop,
-// Gemini AfterAgent, Cursor afterAgentResponse, Hermes post_llm_call, the pi
-// extension, codex-notify) and the OpenCode SSE watcher never write the
-// ledger: the daemon is its only writer (the #824 duplicate-writer race). They
-// spool one small JSON file per observed edge under
+// Comms Ledger producer side (docs/comms.md). A producer (Claude's
+// hook-handler, codex-notify, and the daemon's own status edges) never
+// writes the ledger: the daemon is its only writer (the #824
+// duplicate-writer race). They spool one small JSON file per observed edge
+// under
 // <data>/runtime/comms/spool/<instance>/<ulid>.json (tmp + fsync + rename),
 // and the notify daemon ingests the spool on its poll loop, classifies, and
 // commits one ledger record per turn. The spool is a transit area, not a
@@ -37,13 +38,18 @@ const (
 	// daemon can derive the turn's trigger for harnesses without a readable
 	// transcript (a send envelope, an inbox/heartbeat prompt, a human).
 	CommsEdgePromptStart = "prompt_start"
+	// CommsEdgeStatus is a status-only edge the daemon spools for a tool
+	// with no text producer (From -> State with the output signal in TH).
+	CommsEdgeStatus = "status"
 )
 
-// Spool caps. Text is capped at the record ceiling here (the daemon applies
-// the configured record cap); the prompt only needs its prefix for trigger
-// classification.
+// Spool caps. Text is capped well above the record ceiling (the daemon
+// applies the configured record cap at commit) so the end of a long reply,
+// where a completion sentinel or a question sits, is still in the spool;
+// the full-text hash is carried separately. The prompt only needs its
+// prefix for trigger classification.
 const (
-	commsSpoolTextBytes   = comms.MaxTextBytes
+	commsSpoolTextBytes   = 16 << 10
 	commsSpoolPromptBytes = 1024
 	commsSpoolMaxAge      = 24 * time.Hour
 	commsSpoolMaxFiles    = 512 // per instance; a daemon that never drains must not fill the disk
@@ -55,10 +61,12 @@ const (
 // CommsSpoolEntry is one spooled edge. Field names match the ledger record
 // where the meaning is the same.
 type CommsSpoolEntry struct {
-	Harness        string `json:"harness"`  // claude | codex | gemini | cursor | pi | hermes | opencode
-	Event          string `json:"event"`    // raw hook event name
-	Edge           string `json:"edge"`     // CommsEdge* constants
-	Instance       string `json:"instance"` // agent-deck session id
+	Harness        string `json:"harness"`         // claude | codex | gemini | cursor | pi | hermes | opencode
+	Event          string `json:"event"`           // raw hook event name
+	Edge           string `json:"edge"`            // CommsEdge* constants
+	Instance       string `json:"instance"`        // agent-deck session id
+	From           string `json:"from,omitempty"`  // status edge: the status left
+	State          string `json:"state,omitempty"` // status edge: the status entered
 	SessionID      string `json:"session_id,omitempty"`
 	TurnID         string `json:"turn_id,omitempty"`
 	Text           string `json:"text,omitempty"`   // assistant text (turn_end), capped
@@ -121,17 +129,17 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	if e.Instance == "" {
 		return errors.New("comms spool: empty instance id")
 	}
-	if e.Edge != CommsEdgeTurnEnd && e.Edge != CommsEdgePromptStart {
+	if e.Edge != CommsEdgeTurnEnd && e.Edge != CommsEdgePromptStart && e.Edge != CommsEdgeStatus {
 		return errors.New("comms spool: unknown edge " + e.Edge)
 	}
 	if e.TSignal == 0 {
 		e.TSignal = time.Now().UnixMilli()
 	}
 	full := strings.TrimSpace(e.Text)
-	if full != "" {
+	if full != "" && e.Edge == CommsEdgeTurnEnd {
 		e.TH = turnTextHash(full) // the daemon matches this against the transcript turn
 	}
-	e.Text = comms.CapText(full, commsSpoolTextBytes)
+	e.Text = capBytes(full, commsSpoolTextBytes)
 	e.Prompt = comms.CapText(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
 	e.Harness = capBytes(e.Harness, commsSpoolIDBytes)
 	e.Event = capBytes(e.Event, commsSpoolIDBytes)
@@ -139,7 +147,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	e.TurnID = capBytes(e.TurnID, commsSpoolIDBytes)
 	e.TranscriptPath = capBytes(e.TranscriptPath, commsSpoolCwdBytes)
 	e.Cwd = capBytes(e.Cwd, commsSpoolCwdBytes)
-	if e.Edge == CommsEdgeTurnEnd && e.Text == "" && e.Harness != "opencode" {
+	if e.Edge == CommsEdgeTurnEnd && e.Text == "" {
 		// Nothing to carry: the status edge is already in the hook file. An
 		// empty turn would only become a text-less record.
 		return nil
@@ -149,6 +157,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		return err
 	}
 	if countSpoolFiles(dir) >= commsSpoolMaxFiles {
+		commsLog.Warn("comms_spool_full", slog.String("instance", e.Instance), slog.Int("cap", commsSpoolMaxFiles))
 		return errors.New("comms spool: instance spool full; is the notify daemon running?")
 	}
 	data, err := json.Marshal(e)
@@ -158,12 +167,17 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	return writeFileDurable(filepath.Join(dir, comms.NewID(time.UnixMilli(e.TSignal))+".json"), data, 0o600)
 }
 
-// capBytes truncates s to max bytes (identifiers and paths; no marker).
+// capBytes truncates s to max bytes on a rune boundary, with no marker
+// (identifiers, paths and spool text, whose full hash travels separately).
 func capBytes(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max]
+	keep := max
+	for keep > 0 && !utf8.RuneStart(s[keep]) {
+		keep--
+	}
+	return s[:keep]
 }
 
 func countSpoolFiles(dir string) int {
@@ -222,7 +236,8 @@ func ReadCommsSpool(instanceID string) ([]CommsSpoolEntry, error) {
 // without reading past the size bound. A symlink, a directory or an
 // oversized file is not ours: it is removed and logged.
 func readSpoolFile(path string) ([]byte, bool) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	// O_NONBLOCK: a FIFO planted in the spool must not block the daemon.
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.EMLINK) {
 			commsLog.Warn("comms_spool_entry_rejected", slog.String("path", path), slog.String("reason", "symlink"))
@@ -237,7 +252,12 @@ func readSpoolFile(path string) ([]byte, bool) {
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil {
+		return nil, false
+	}
+	if !info.Mode().IsRegular() {
+		commsLog.Warn("comms_spool_entry_rejected", slog.String("path", path), slog.String("reason", "not a regular file"))
+		_ = os.Remove(path)
 		return nil, false
 	}
 	if info.Size() > commsSpoolMaxBytes {
@@ -259,6 +279,19 @@ func RemoveCommsSpoolEntry(e CommsSpoolEntry) {
 	}
 }
 
+// QuarantineCommsSpoolEntry moves an entry whose identity conflicts with a
+// committed record to <spool>/conflict/<instance>/ for a human to look at.
+func QuarantineCommsSpoolEntry(e CommsSpoolEntry) {
+	if e.path == "" {
+		return
+	}
+	dir := filepath.Join(CommsSpoolDir(), "conflict", sanitizeInboxName(e.Instance))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	_ = os.Rename(e.path, filepath.Join(dir, filepath.Base(e.path)))
+}
+
 // ListCommsSpoolInstances returns the instance ids with a spool directory.
 func ListCommsSpoolInstances() []string {
 	entries, err := os.ReadDir(CommsSpoolDir())
@@ -276,9 +309,10 @@ func ListCommsSpoolInstances() []string {
 }
 
 // PruneCommsSpool removes entries older than commsSpoolMaxAge and empty
-// instance directories. It bounds the spool when no daemon drains it: an
-// older daemon that predates the ledger, or a child whose session was
-// removed before its last edge was ingested.
+// instance directories. Called only while the ledger is OFF (nothing will
+// ever consume the spool then); every expiry is logged. With the ledger on
+// an entry stays until it commits and the per-instance cap bounds an
+// outage.
 func PruneCommsSpool(now time.Time) {
 	root := CommsSpoolDir()
 	dirs, err := os.ReadDir(root)
@@ -286,7 +320,7 @@ func PruneCommsSpool(now time.Time) {
 		return
 	}
 	for _, d := range dirs {
-		if !d.IsDir() {
+		if !d.IsDir() || d.Name() == "conflict" {
 			continue
 		}
 		dir := filepath.Join(root, d.Name())
@@ -301,6 +335,7 @@ func PruneCommsSpool(now time.Time) {
 				continue
 			}
 			if now.Sub(info.ModTime()) > commsSpoolMaxAge {
+				commsLog.Warn("comms_spool_expired", slog.String("instance", d.Name()), slog.String("entry", f.Name()))
 				_ = os.Remove(filepath.Join(dir, f.Name()))
 				continue
 			}

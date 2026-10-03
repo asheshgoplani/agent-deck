@@ -1012,7 +1012,7 @@ Measure the effect with `agent-deck inbox stats self` (or `--all`): records by t
 
 ## [comms] Section
 
-The Comms Ledger (docs/comms.md): one append-only message log per profile, written only by the notify-daemon, fed by the hooks agent-deck already installs. Off by default while it is canaried; with it on, every finished child turn of every harness (Claude, Codex, Gemini, Cursor, pi, Hermes, OpenCode) lands as one record with the child's text next to the `[inbox]` record, and `agent-deck events follow --bus comms` streams them. Nothing else changes.
+The Comms Ledger (docs/comms.md): one append-only message log per profile, written only by the notify-daemon, fed by the hooks agent-deck already installs. Off by default while it is canaried; with it on, every finished turn of a Claude or Codex child lands as one record with the child's text next to the `[inbox]` record, every other harness (Gemini, Cursor, pi, Hermes, OpenCode, shell) records its status edges only in this phase, and `agent-deck events follow --bus comms` streams them. Nothing else changes.
 
 ```toml
 [comms]

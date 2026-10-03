@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,17 @@ const (
 	// producer re-observes a turn within seconds (hook re-fires, polls),
 	// not thousands of records later.
 	recentKeys = 4096
+	// DefaultMaxBytes bounds one profile's ledger on disk (sealed segments
+	// plus the active file). Past it Commit returns events.ErrQuota: the
+	// spool keeps the entries (bounded by its own cap), the daemon logs the
+	// overload, and nothing is silently dropped.
+	DefaultMaxBytes = 2 << 30
+	// warmTimeout bounds the dedup rebuild at open. A tail the reader cannot
+	// reach (a malformed last frame) makes Open fail visibly instead of
+	// starting with a partial window or hanging the daemon's poll loop.
+	warmTimeout = 10 * time.Second
+	// scanTimeout bounds one ReadAfter / Export pass the same way.
+	scanTimeout = 10 * time.Second
 )
 
 // Dir returns "<data>/comms/<profile>", the ledger directory for a profile.
@@ -70,7 +82,14 @@ type StoreIdentity struct {
 	ID      string `json:"id"`
 	Epoch   int64  `json:"epoch"`
 	Created int64  `json:"created"` // Unix ms
+	// HWM is the highest cursor this ledger has held, persisted at close and
+	// every hwmEvery commits. A ledger that opens with a cursor below it was
+	// restored from an older copy: the epoch is bumped so consumer states
+	// from before the restore are recognised as stale.
+	HWM uint64 `json:"hwm,omitempty"`
 }
+
+const hwmEvery = 256
 
 const storeFileName = "store.json"
 
@@ -90,34 +109,40 @@ func loadOrCreateStoreIdentity(dir string) (StoreIdentity, error) {
 	}
 	now := time.Now()
 	id := StoreIdentity{ID: NewID(now), Epoch: 1, Created: now.UnixMilli()}
-	data, err = json.Marshal(id)
+	return id, writeStoreIdentity(dir, id)
+}
+
+// writeStoreIdentity persists store.json durably (tmp, fsync, rename, dir sync).
+func writeStoreIdentity(dir string, id StoreIdentity) error {
+	path := filepath.Join(dir, storeFileName)
+	data, err := json.Marshal(id)
 	if err != nil {
-		return StoreIdentity{}, err
+		return err
 	}
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
-		return StoreIdentity{}, err
+		return err
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		return StoreIdentity{}, err
+		return err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return StoreIdentity{}, err
+		return err
 	}
 	if err := f.Close(); err != nil {
-		return StoreIdentity{}, err
+		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		return StoreIdentity{}, err
+		return err
 	}
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()
 		_ = d.Close()
 	}
-	return id, nil
+	return nil
 }
 
 // Store returns the ledger's identity.
@@ -145,7 +170,8 @@ func OpenDir(profile, dir string) (*Ledger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	bus, err := events.OpenAt(dir, events.Options{RetentionDays: DefaultRetentionDays, RetainSegments: retainSegments, Private: true})
+	bus, err := events.OpenAt(dir, events.Options{RetentionDays: DefaultRetentionDays, RetainSegments: retainSegments,
+		Private: true, KeepCorrupt: true, MaxBytes: DefaultMaxBytes})
 	if err != nil {
 		return nil, err
 	}
@@ -154,46 +180,74 @@ func OpenDir(profile, dir string) (*Ledger, error) {
 		_ = bus.Close()
 		return nil, err
 	}
+	if cursor := uint64(bus.Cursor()); cursor < store.HWM {
+		// The log is shorter than this store has been: restored from an
+		// older copy. New epoch, so stale consumer states are rejected.
+		store.Epoch++
+		store.HWM = cursor
+		if err := writeStoreIdentity(dir, store); err != nil {
+			_ = bus.Close()
+			return nil, err
+		}
+		slog.Warn("comms_store_restored", "dir", dir, "epoch", store.Epoch, "cursor", cursor)
+	}
 	l := &Ledger{profile: profile, bus: bus, keys: map[string]Record{}, seq: map[string]int64{},
 		last: map[string]Record{}, status: map[string]Record{}, store: store}
-	l.warm()
+	if err := l.warm(); err != nil {
+		_ = bus.Close()
+		return nil, err
+	}
 	return l, nil
 }
 
+// ErrTailUnreadable is returned by OpenDir when the dedup rebuild could not
+// reach the ledger's last cursor within warmTimeout: the tail needs repair
+// and the daemon must not write with a partial idempotency window.
+var ErrTailUnreadable = errors.New("comms: ledger tail unreadable; dedup window could not be rebuilt")
+
 // warm reloads the idempotency window and sequences from the newest frames.
-func (l *Ledger) warm() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+// Bounded: it stops at the last cursor or at warmTimeout, and the second
+// outcome is an error.
+func (l *Ledger) warm() error {
 	last := l.bus.Cursor()
 	if last == 0 {
-		return
+		return nil
 	}
 	after := events.Cursor(0)
 	if uint64(last) > recentKeys {
 		after = last - recentKeys
 	}
 	for attempt := 0; attempt < 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), warmTimeout)
 		sub, err := l.bus.Subscribe(ctx, after)
 		if err != nil {
-			return
+			cancel()
+			return err
 		}
+		reached := events.Cursor(0)
 		for f := range sub.Frames() {
 			var r Record
 			if json.Unmarshal(f.Data, &r) == nil {
 				l.remember(r)
 			}
+			reached = f.Cursor
 			if f.Cursor >= last {
-				cancel()
 				break
 			}
 		}
-		if !errors.Is(sub.Err(), events.ErrCursorTooOld) {
-			return
+		cancel()
+		if reached >= last {
+			return nil
 		}
-		// Compaction removed the start of the window: warm from the oldest
-		// retained frame instead of restoring nothing.
-		after = 0
+		if errors.Is(sub.Err(), events.ErrCursorTooOld) && after != 0 {
+			// Compaction removed the start of the window: warm from the
+			// oldest retained frame instead of restoring nothing.
+			after = 0
+			continue
+		}
+		return ErrTailUnreadable
 	}
+	return ErrTailUnreadable
 }
 
 func (l *Ledger) remember(r Record) {
@@ -243,10 +297,17 @@ func (l *Ledger) LastTurn(from string) (Record, bool) {
 }
 
 // ErrDuplicate is returned by Commit when the record's key was committed
-// within the idempotency window. The record returned with it is the one
-// already committed (the stored receipt), so a retried send with the same
-// request id gets its receipt back and never a second delivery.
+// within the idempotency window with the same content. The record returned
+// with it is the one already committed (the stored receipt), so a retried
+// send with the same request id gets its receipt back and never a second
+// delivery.
 var ErrDuplicate = errors.New("comms: duplicate key")
+
+// ErrConflict is returned by Commit when the record's key was committed
+// within the window with DIFFERENT content: a producer reused an identity
+// for something else. The stored record is returned with it; the caller
+// keeps its input aside (the spool's conflict directory) and logs it.
+var ErrConflict = errors.New("comms: same key, different content")
 
 // Lookup returns the record committed under key within the window.
 func (l *Ledger) Lookup(key string) (Record, bool) {
@@ -283,12 +344,19 @@ func (l *Ledger) Commit(r Record) (Record, events.Cursor, error) {
 	}
 	if key := r.DedupKey(); key != "" {
 		if stored, dup := l.keys[key]; dup {
+			if stored.ContentHash() != r.ContentHash() {
+				return stored, 0, ErrConflict
+			}
 			return stored, 0, ErrDuplicate
 		}
 	}
 	if r.Profile == "" {
 		r.Profile = l.profile
 	}
+	if r.ToProfile == "" {
+		r.ToProfile = l.profile
+	}
+	r.ToStore = l.store.ID
 	if r.Host == "" {
 		r.Host = localHost()
 	}
@@ -306,7 +374,22 @@ func (l *Ledger) Commit(r Record) (Record, events.Cursor, error) {
 		return r, 0, err
 	}
 	l.remember(r)
+	if uint64(f.Cursor)%hwmEvery == 0 {
+		l.persistHWM(uint64(f.Cursor))
+	}
 	return r, f.Cursor, nil
+}
+
+// persistHWM records the high-water cursor in store.json (best effort; a
+// failure only delays restore detection to the next mark).
+func (l *Ledger) persistHWM(cursor uint64) {
+	if cursor <= l.store.HWM {
+		return
+	}
+	l.store.HWM = cursor
+	if dir := l.bus.Stats().Dir; dir != "" {
+		_ = writeStoreIdentity(dir, l.store)
+	}
 }
 
 // Cursor returns the ledger's last committed cursor.
@@ -324,6 +407,7 @@ func (l *Ledger) Close() error {
 	}
 	l.mu.Lock()
 	l.closed = true
+	l.persistHWM(uint64(l.bus.Cursor()))
 	l.mu.Unlock()
 	return l.bus.Close()
 }
@@ -403,7 +487,9 @@ func scan(bus *events.Bus, after events.Cursor, limit int, visit func(events.Cur
 	if end <= after {
 		return after, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	// Bounded: a tail the reader cannot reach (a malformed last frame) ends
+	// the pass with ErrTailUnreadable instead of waiting forever.
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 	sub, err := bus.Subscribe(ctx, after)
 	if err != nil {
@@ -411,6 +497,7 @@ func scan(bus *events.Bus, after events.Cursor, limit int, visit func(events.Cur
 	}
 	last := after
 	n := 0
+	done := false
 	for f := range sub.Frames() {
 		if r, err := Decode(f); err == nil {
 			visit(f.Cursor, r)
@@ -418,10 +505,17 @@ func scan(bus *events.Bus, after events.Cursor, limit int, visit func(events.Cur
 		}
 		last = f.Cursor
 		if f.Cursor >= end || (limit > 0 && n >= limit) {
+			done = true
 			break // frames already buffered past the limit are not ours to take
 		}
 	}
-	return last, sub.Err()
+	if err := sub.Err(); err != nil {
+		return last, err
+	}
+	if !done {
+		return last, ErrTailUnreadable
+	}
+	return last, nil
 }
 
 // Import commits records exported from another host's ledger under the
@@ -439,6 +533,12 @@ func (l *Ledger) Import(origin string, exported []Exported) (events.Cursor, erro
 	var done events.Cursor
 	for _, e := range exported {
 		r := e.Record
+		if r.Store != "" && r.Store == l.store.ID {
+			// Our own record coming back through another host: an echo,
+			// not news. Treated as durable so the puller's cursor moves on.
+			done = e.Cursor
+			continue
+		}
 		if r.Origin == "" {
 			// A record that was itself imported on the origin keeps its first
 			// origin; the hop is not the source.

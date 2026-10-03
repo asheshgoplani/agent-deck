@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
-	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // `events follow|stats --bus comms` opens the comms ledger read-only and
@@ -42,5 +41,4 @@ func TestOpenBusForRead(t *testing.T) {
 	if kinds, err := bus.KindCounts(); err != nil || kinds[comms.KindTurn] != 1 {
 		t.Fatalf("stats kinds: %v err %v", kinds, err)
 	}
-	_ = session.CommsLedgerEnabled() // the flag never gates reading
 }

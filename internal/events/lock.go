@@ -27,9 +27,49 @@ func (b *Bus) unlockDisk() {
 	b.ioMu.Unlock()
 }
 
-// activeBounds reads only the first and last line. Open repairs an incomplete
-// tail before calling this; a locked writer never exposes a partial line.
-func activeBounds(path string) (first, last Cursor, size int64, err error) {
+// activeBounds returns the cursors of the first and last frame of the
+// active file. On a bus that keeps malformed lines in place it skips them
+// (lenientBounds); otherwise it reads only the first and last line. Open
+// repairs an incomplete tail before calling this; a locked writer never
+// exposes a partial line.
+func (b *Bus) activeBounds(path string) (first, last Cursor, size int64, err error) {
+	if b != nil && b.keepCorrupt {
+		return lenientBounds(path)
+	}
+	return strictBounds(path)
+}
+
+// lenientBounds scans the whole file for the first and last parseable
+// frame; a file with none is reported as empty.
+func lenientBounds(path string) (first, last Cursor, size int64, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	size = int64(len(data))
+	if size == 0 {
+		return 0, 0, 0, nil
+	}
+	if data[len(data)-1] != '\n' {
+		return 0, 0, size, fmt.Errorf("events: incomplete active tail")
+	}
+	for _, ln := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if ln == "" {
+			continue
+		}
+		f, perr := ParseFrameLine([]byte(ln))
+		if perr != nil {
+			continue
+		}
+		if first == 0 {
+			first = f.Cursor
+		}
+		last = f.Cursor
+	}
+	return first, last, size, nil
+}
+
+func strictBounds(path string) (first, last Cursor, size int64, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, 0, 0, err
@@ -88,7 +128,7 @@ func activeBounds(path string) (first, last Cursor, size int64, err error) {
 
 func (b *Bus) refreshLocked() error {
 	path := filepath.Join(b.dir, activeSegmentName)
-	first, last, size, err := activeBounds(path)
+	first, last, size, err := b.activeBounds(path)
 	if err != nil {
 		return err
 	}
@@ -155,15 +195,16 @@ func readCursorCheckpoint(dir string) (Cursor, error) {
 	return Cursor(value), err
 }
 
-func writeCursorCheckpoint(dir string, cursor Cursor, mode os.FileMode) error {
-	return writeSmallFileDurable(dir, "cursor.tmp."+strconv.Itoa(os.Getpid()), cursorFileName,
-		[]byte(strconv.FormatUint(uint64(cursor), 10)+"\n"), mode)
+func writeCursorCheckpoint(dir string, cursor Cursor, mode os.FileMode, durable bool) error {
+	return writeSmallFile(dir, "cursor.tmp."+strconv.Itoa(os.Getpid()), cursorFileName,
+		[]byte(strconv.FormatUint(uint64(cursor), 10)+"\n"), mode, durable)
 }
 
-// writeSmallFileDurable writes data to a temp file, fsyncs it, renames it
-// over name and fsyncs the directory, so the checkpoint is on disk before
-// anything relies on it.
-func writeSmallFileDurable(dir, tmpName, name string, data []byte, mode os.FileMode) error {
+// writeSmallFile writes data to a temp file and renames it over name. With
+// durable it also fsyncs the file before the rename and the directory
+// after, so the checkpoint is on disk before anything relies on it; without
+// it the write is the rename-only form the status bus always used.
+func writeSmallFile(dir, tmpName, name string, data []byte, mode os.FileMode, durable bool) error {
 	tmp := filepath.Join(dir, tmpName)
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
@@ -174,10 +215,12 @@ func writeSmallFileDurable(dir, tmpName, name string, data []byte, mode os.FileM
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return err
+	if durable {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+			return err
+		}
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmp)
@@ -187,7 +230,9 @@ func writeSmallFileDurable(dir, tmpName, name string, data []byte, mode os.FileM
 		_ = os.Remove(tmp)
 		return err
 	}
-	fsyncDirBestEffort(dir)
+	if durable {
+		fsyncDirBestEffort(dir)
+	}
 	return nil
 }
 
@@ -211,8 +256,8 @@ func (b *Bus) persistDropsLocked() error {
 	if err != nil {
 		return err
 	}
-	if err := writeSmallFileDurable(b.dir, "drops.tmp."+strconv.Itoa(os.Getpid()), dropsFileName,
-		[]byte(strconv.FormatUint(previous+current-b.persistedDrops, 10)+"\n"), b.fileMode); err != nil {
+	if err := writeSmallFile(b.dir, "drops.tmp."+strconv.Itoa(os.Getpid()), dropsFileName,
+		[]byte(strconv.FormatUint(previous+current-b.persistedDrops, 10)+"\n"), b.fileMode, b.durable()); err != nil {
 		return err
 	}
 	b.persistedDrops = current

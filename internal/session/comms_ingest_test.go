@@ -55,6 +55,23 @@ func (f *commsFixture) ledgerRecords(t *testing.T) []comms.Record {
 	return recs
 }
 
+// fileModesEnforced reports whether a 0400 file really refuses O_RDWR here
+// (false for a root that keeps CAP_DAC_OVERRIDE; Docker with --cap-drop ALL
+// enforces modes even as root). The disk-fault tests need the refusal.
+func fileModesEnforced(t *testing.T) bool {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "probe")
+	if err := os.WriteFile(p, []byte("x"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	if err == nil {
+		_ = f.Close()
+		return false
+	}
+	return true
+}
+
 func spoolTurn(t *testing.T, e CommsSpoolEntry) {
 	t.Helper()
 	if e.Edge == "" {
@@ -82,8 +99,8 @@ func TestCommsIngest_ClaudeTurnMatchesTheInboxClassification(t *testing.T) {
 		r.Trigger != TurnTriggerHuman || r.Text != "Starting 13 lanes." || r.Profile != "default" || r.Seq != 1 {
 		t.Fatalf("claude record: %+v", r)
 	}
-	if len(r.To) != 1 || r.To[0] != f.parent.ID {
-		t.Fatalf("to: %v", r.To)
+	if len(r.To) != 1 || r.To[0] != f.parent.ID || r.ToProfile != "default" || r.ToStore == "" || r.ToStore != r.Store {
+		t.Fatalf("addressing: to=%v to_profile=%s to_store=%s store=%s", r.To, r.ToProfile, r.ToStore, r.Store)
 	}
 	if r.Key != comms.Key(comms.KindTurn, f.child.ID, "a0") {
 		t.Fatalf("key must be the transcript uuid: %s", r.Key)
@@ -126,8 +143,8 @@ func TestCommsIngest_CodexTurnTakesTriggerFromThePromptEdge(t *testing.T) {
 	if r.Tool != "codex" || r.Trigger != TurnTriggerSend || r.ReplyTo != f.parent.ID || r.Tier != comms.TierUrgent || r.Text != "Done: tests green." {
 		t.Fatalf("codex send reply: %+v", r)
 	}
-	if r.Key != comms.Key(comms.KindTurn, f.codex.ID, "codex", "turn-1") {
-		t.Fatalf("codex key must use the turn id: %s", r.Key)
+	if r.Key != comms.Key(comms.KindTurn, f.codex.ID, "codex", "thread-1:turn-1") {
+		t.Fatalf("codex key must use the thread and turn id: %s", r.Key)
 	}
 
 	// A prompt-start edge followed by a turn end (Gemini-style pairing).
@@ -185,7 +202,7 @@ func TestCommsIngest_OffByDefaultWritesNothing(t *testing.T) {
 	restore := SetCommsLedgerForTest(false)
 	defer restore()
 	f.d.ingestCommsSpool("default", f.byID)
-	f.d.commsStatusRecord("default", f.shell, "waiting", time.Now())
+	f.d.commsStatusEdge(f.shell, "running", "waiting", time.Now())
 	if comms.Exists("default") {
 		t.Fatal("ledger directory created with [comms] ledger off")
 	}
@@ -208,16 +225,20 @@ func TestCommsIngest_UnknownInstancesAreLeftForTheirProfile(t *testing.T) {
 
 func TestCommsIngest_ShellToolGetsAStatusRecordOnce(t *testing.T) {
 	f := newCommsFixture(t)
-	at := time.Now().Truncate(shortWindowDedupSeconds * time.Second) // start of a dedup bucket
-	f.d.commsStatusRecord("default", f.shell, "waiting", at)
-	f.d.commsStatusRecord("default", f.shell, "waiting", at.Add(time.Second)) // same window: duplicate
-	f.d.commsStatusRecord("default", f.codex, "waiting", at)                  // codex has a text producer: no status record
+	at := time.Now()
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at)
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at.Add(time.Second)) // same edge, same (empty) signal, inside 90 s
+	f.d.commsStatusEdge(f.codex, "running", "waiting", at)                  // codex has a text producer: no status edge
+	f.d.ingestCommsSpool("default", f.byID)
 	recs := f.ledgerRecords(t)
-	if len(recs) != 1 || recs[0].Kind != comms.KindStatus || recs[0].From != f.shell.ID || recs[0].State != "waiting" || recs[0].Tool != "shell" {
+	if len(recs) != 1 || recs[0].Kind != comms.KindStatus || recs[0].From != f.shell.ID || recs[0].State != "waiting" || recs[0].Tool != "shell" || recs[0].Ref != "running" {
 		t.Fatalf("status records: %+v", recs)
 	}
 	if !recs[0].IsUrgent() {
 		t.Fatal("a status-only record has no tier and must count as urgent")
+	}
+	if entries, _ := ReadCommsSpool(f.shell.ID); len(entries) != 0 {
+		t.Fatalf("status spool not drained: %+v", entries)
 	}
 }
 
@@ -310,12 +331,12 @@ func TestCommsIngest_FailedCommitIsRetriedWithItsTrigger(t *testing.T) {
 	if err := os.Chmod(active, 0o400); err != nil {
 		t.Fatal(err)
 	}
-	if os.Getuid() == 0 {
-		t.Skip("root ignores file modes")
+	if !fileModesEnforced(t) {
+		t.Skip("file modes not enforced in this environment")
 	}
 	f.d.ingestCommsSpool("default", f.byID)
-	if entries, _ := ReadCommsSpool(f.codex.ID); len(entries) != 1 {
-		t.Fatalf("failed commit must keep the turn entry: %+v", entries)
+	if entries, _ := ReadCommsSpool(f.codex.ID); len(entries) != 2 {
+		t.Fatalf("failed commit must keep the prompt and the turn entry: %+v", entries)
 	}
 	if _, open := f.d.ledgers["default"]; open {
 		t.Fatal("a failed ledger must be dropped so the next pass reopens it")
@@ -323,7 +344,18 @@ func TestCommsIngest_FailedCommitIsRetriedWithItsTrigger(t *testing.T) {
 	if err := os.Chmod(active, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Still inside the retry backoff: nothing happens this pass.
 	f.d.ingestCommsSpool("default", f.byID)
+	if recs := f.ledgerRecords(t); len(recs) != 0 {
+		t.Fatalf("committed inside the backoff: %+v", recs)
+	}
+	// A NEW daemon object (restart) past the backoff: the prompt edge is
+	// still on disk, so the retried turn keeps its trigger.
+	d2 := &TransitionDaemon{}
+	t.Cleanup(d2.closeCommsLedgers)
+	f.d.closeCommsLedgers()
+	d2.ingestCommsSpool("default", f.byID)
+	f.d = d2
 	recs := f.ledgerRecords(t)
 	if len(recs) != 1 || recs[0].Trigger != TurnTriggerSend || recs[0].ReplyTo != f.parent.ID {
 		t.Fatalf("retried turn lost its trigger: %+v", recs)
@@ -424,8 +456,8 @@ func TestCommsIngest_LedgerDiskFailureNeverTouchesTheInboxPath(t *testing.T) {
 	}
 	dir, _ := comms.Dir("default")
 	active := filepath.Join(dir, "active.ndjson")
-	if os.Getuid() == 0 {
-		t.Skip("root ignores file modes")
+	if !fileModesEnforced(t) {
+		t.Skip("file modes not enforced in this environment")
 	}
 	if err := os.Chmod(active, 0o400); err != nil {
 		t.Fatal(err)
@@ -493,26 +525,167 @@ func TestCommsIngest_InboxParityWithTheLedgerOn(t *testing.T) {
 	}
 }
 
-// G2: status edges are collapsed only by the inbox's content rule (same
-// state, same output signal, within the TTL), never by a time bucket.
+// G2 / G4: status edges are collapsed only by the inbox's content rule
+// (same from->to edge; a non-empty output signal within the 2 h TTL, an
+// empty one within the 90 s short window), never by a time bucket.
 func TestCommsIngest_StatusEdgesCollapseByContentNotTime(t *testing.T) {
 	f := newCommsFixture(t)
-	at := time.Now()
-	f.d.commsStatusRecord("default", f.shell, "waiting", at)
-	f.d.commsStatusRecord("default", f.shell, "waiting", at.Add(5*time.Minute)) // same edge, different bucket: one record
-	f.d.commsStatusRecord("default", f.shell, "error", at.Add(5*time.Minute))   // a different state: a record
-	f.d.commsStatusRecord("default", f.shell, "waiting", at.Add(6*time.Minute)) // back to waiting: a record (last was error)
+	at := time.Now().Add(-time.Hour)
+	// A shell child has no output signal: the 90 s rule applies.
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at)
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at.Add(5*time.Minute))
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at.Add(30*time.Minute))
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at.Add(30*time.Minute+10*time.Second)) // inside 90 s: folded
+	f.d.commsStatusEdge(f.shell, "waiting", "error", at.Add(31*time.Minute))                  // a different edge
+	f.d.ingestCommsSpool("default", f.byID)
 	recs := f.ledgerRecords(t)
-	if len(recs) != 3 || recs[0].State != "waiting" || recs[1].State != "error" || recs[2].State != "waiting" {
+	if len(recs) != 4 || recs[0].State != "waiting" || recs[1].State != "waiting" || recs[2].State != "waiting" || recs[3].State != "error" || recs[3].Ref != "waiting" {
 		t.Fatalf("status records: %+v", recs)
 	}
-	// Gemini has no text producer in P1: status-only.
+	// Gemini has no text producer in P1: status-only, same rule.
 	gem := NewInstanceWithTool("gem", t.TempDir(), "gemini")
 	gem.ID = "gem-1"
 	gem.ParentSessionID = f.parent.ID
-	f.d.commsStatusRecord("default", gem, "waiting", at)
-	if recs := f.ledgerRecords(t); len(recs) != 4 || recs[3].Tool != "gemini" {
+	f.byID[gem.ID] = gem
+	f.d.commsStatusEdge(gem, "running", "waiting", at)
+	f.d.ingestCommsSpool("default", f.byID)
+	if recs := f.ledgerRecords(t); len(recs) != 5 || recs[4].Tool != "gemini" {
 		t.Fatalf("gemini status record: %+v", recs)
+	}
+}
+
+// G4: with the ledger on, a status-only child's inbox record and wake are
+// unchanged even when the ledger disk is broken; the edge waits in the
+// spool. Driven through emitTurn's legacy branch, the production wiring.
+func TestCommsIngest_StatusOnlyChildInboxPathUnchangedUnderLedgerFailure(t *testing.T) {
+	f := newCommsFixture(t)
+	if !fileModesEnforced(t) {
+		t.Skip("file modes not enforced in this environment")
+	}
+	gem := NewInstanceWithTool("gem", t.TempDir(), "gemini")
+	gem.ID = "gem-2"
+	gem.ParentSessionID = f.parent.ID
+	gem.Status = StatusWaiting
+	f.byID[gem.ID] = gem
+	if f.d.commsLedgerFor("default") == nil {
+		t.Fatal("ledger did not open")
+	}
+	dir, _ := comms.Dir("default")
+	active := filepath.Join(dir, "active.ndjson")
+	if err := os.Chmod(active, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(active, 0o600) })
+	result, ok := f.d.emitTurn("default", gem, f.byID, "running", "waiting", time.Now(), true)
+	if !ok || result.DeliveryResult == transitionDeliveryFailed {
+		t.Fatalf("inbox path under ledger failure: ok=%v result=%+v", ok, result)
+	}
+	inbox := f.inboxRecords(t)
+	if len(inbox) != 1 || inbox[0].ChildSessionID != gem.ID || *f.sends != 1 {
+		t.Fatalf("inbox record / wake changed: %+v sends=%d", inbox, *f.sends)
+	}
+	f.d.ingestCommsSpool("default", f.byID)
+	if entries, _ := ReadCommsSpool(gem.ID); len(entries) != 1 || entries[0].Edge != CommsEdgeStatus {
+		t.Fatalf("status edge must wait in the spool: %+v", entries)
+	}
+	if recs := f.ledgerRecords(t); len(recs) != 0 {
+		t.Fatalf("ledger wrote through a read-only file: %+v", recs)
+	}
+}
+
+// G3 / G5: same identity with different content is a conflict: quarantined,
+// never a second record and never silently dropped.
+func TestCommsIngest_ConflictingIdentityIsQuarantined(t *testing.T) {
+	f := newCommsFixture(t)
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, SessionID: "th", TurnID: "t1", Text: "first answer", Prompt: "ask"})
+	f.d.ingestCommsSpool("default", f.byID)
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, SessionID: "th", TurnID: "t1", Text: "a different answer", Prompt: "ask"})
+	f.d.ingestCommsSpool("default", f.byID)
+	if recs := f.ledgerRecords(t); len(recs) != 1 || recs[0].Text != "first answer" {
+		t.Fatalf("conflict produced a record: %+v", recs)
+	}
+	if entries, _ := ReadCommsSpool(f.codex.ID); len(entries) != 0 {
+		t.Fatalf("conflicting entry left in the spool: %+v", entries)
+	}
+	q, _ := os.ReadDir(filepath.Join(CommsSpoolDir(), "conflict", f.codex.ID))
+	if len(q) != 1 {
+		t.Fatalf("conflicting entry not quarantined: %v", q)
+	}
+}
+
+// G4: the production wiring. A Claude child, a Codex child and a shell
+// child go through the inbox path and the ledger ingest with the switch on;
+// the inbox records are what they were, the ledger holds one record per
+// edge, and shutdown releases the ledger and its lock.
+func TestCommsIngest_ProductionWiringAndShutdown(t *testing.T) {
+	f := newCommsFixture(t)
+	f.appendTurn(t, fxHuman("u0", "go"), fxAssistantText("a0", "Claude done."))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Claude done.", TranscriptPath: f.transcript})
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, SessionID: "th", TurnID: "t9", Text: "Codex done.", Prompt: "go"})
+	statuses := map[string]string{f.child.ID: "waiting", f.codex.ID: "waiting", f.shell.ID: "waiting", f.parent.ID: "waiting"}
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil) // inbox path for all three
+	f.d.ingestCommsSpool("default", f.byID)                   // ledger path
+	inbox := f.inboxRecords(t)
+	if len(inbox) != 3 {
+		t.Fatalf("inbox records: %+v", inbox)
+	}
+	recs := f.ledgerRecords(t)
+	kinds := map[string]int{}
+	for _, r := range recs {
+		kinds[r.Kind+":"+r.Tool]++
+	}
+	if len(recs) != 3 || kinds["turn:claude"] != 1 || kinds["turn:codex"] != 1 || kinds["status:shell"] != 1 {
+		t.Fatalf("ledger records: %v %+v", kinds, recs)
+	}
+	dir, _ := comms.Dir("default")
+	f.d.shutdown()
+	if len(f.d.ledgers) != 0 {
+		t.Fatal("shutdown left a ledger open")
+	}
+	d2 := &TransitionDaemon{}
+	t.Cleanup(d2.closeCommsLedgers)
+	if d2.commsLedgerFor("default") == nil {
+		t.Fatalf("daemon.lock not released at shutdown (%s)", dir)
+	}
+}
+
+// Two same-text Claude turns less than the old 5 s skew apart are two
+// records: only the tail turn takes the transcript identity.
+func TestCommsIngest_SameTextTurnsSecondsApartStayDistinct(t *testing.T) {
+	f := newCommsFixture(t)
+	base := time.Now().Add(-time.Minute)
+	f.appendTurn(t, fxHuman("u1", "a"), fxAssistantTextAt("a1", "ok", base))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "ok", TranscriptPath: f.transcript, TSignal: base.UnixMilli() + 50})
+	f.appendTurn(t, fxHuman("u2", "b"), fxAssistantTextAt("a2", "ok", base.Add(3*time.Second)))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "ok", TranscriptPath: f.transcript, TSignal: base.Add(3*time.Second).UnixMilli() + 50})
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 2 || recs[1].Key != comms.Key(comms.KindTurn, f.child.ID, "a2") || recs[0].Key == recs[1].Key {
+		t.Fatalf("turns 3 s apart: %+v", recs)
+	}
+}
+
+// A long Codex reply keeps its sentinel and question on the hook path and
+// its record hash is the full-text hash.
+func TestCommsIngest_LongCodexReplyKeepsSentinelQuestionAndFullHash(t *testing.T) {
+	f := newCommsFixture(t)
+	long := strings.Repeat("progress line\n", 200) + "===AGENTDECK_DONE=== status=ok summary=all green"
+	if len(long) <= MaxTurnTextBytes {
+		t.Fatal("fixture must exceed the record cap")
+	}
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, SessionID: "th", TurnID: "t1", Text: long, Prompt: "[HEARTBEAT] news?"})
+	question := strings.Repeat("detail\n", 400) + "Should I continue with plan B?"
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, SessionID: "th", TurnID: "t2", Text: question, Prompt: "[HEARTBEAT] news?"})
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 2 {
+		t.Fatalf("records: %d", len(recs))
+	}
+	if recs[0].Done != "ok" || recs[0].Summary != "all green" || recs[0].TH != turnTextHash(long) || recs[0].Tier != comms.TierUrgent || len(recs[0].Text) > MaxTurnTextBytes {
+		t.Fatalf("long sentinel reply: %+v", recs[0])
+	}
+	if !recs[1].Q || recs[1].TH != turnTextHash(question) || recs[1].Tier != comms.TierUrgent {
+		t.Fatalf("long question reply: %+v", recs[1])
 	}
 }
 

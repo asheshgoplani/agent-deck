@@ -78,7 +78,7 @@ func (b *Bus) listAllSegments() ([]segRef, error) {
 
 	activePath := b.dir + string(os.PathSeparator) + activeSegmentName
 	if _, err := os.Stat(activePath); err == nil {
-		activeStart, _, _, err := activeBounds(activePath)
+		activeStart, _, _, err := b.activeBounds(activePath)
 		if err != nil {
 			return nil, err
 		}

@@ -134,12 +134,12 @@ func (f TurnFacts) Signal() string {
 // Code 2.1.x stamps on user records; the content prefixes are the fallback
 // for builds that omit them.
 type transcriptTurnRecord struct {
-	Type        string `json:"type"`
-	UUID        string `json:"uuid"`
-	Timestamp   string `json:"timestamp"`
-	IsSidechain bool   `json:"isSidechain"`
-	IsMeta      bool   `json:"isMeta"`
-	TurnOrigin  string `json:"turnOrigin"`
+	Type        string          `json:"type"`
+	UUID        string          `json:"uuid"`
+	Timestamp   json.RawMessage `json:"timestamp"` // decoded leniently: a non-string value never drops the record
+	IsSidechain bool            `json:"isSidechain"`
+	IsMeta      bool            `json:"isMeta"`
+	TurnOrigin  string          `json:"turnOrigin"`
 	Origin      struct {
 		Kind string `json:"kind"`
 	} `json:"origin"`
@@ -198,8 +198,9 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 			}
 			foundAssistant = true
 			facts.UUID = rec.UUID
-			if rec.Timestamp != "" {
-				facts.At, _ = time.Parse(time.RFC3339Nano, rec.Timestamp)
+			var ts string
+			if json.Unmarshal(rec.Timestamp, &ts) == nil && ts != "" {
+				facts.At, _ = time.Parse(time.RFC3339Nano, ts)
 			}
 			facts.Text = text
 			facts.TextHash = turnTextHash(text)

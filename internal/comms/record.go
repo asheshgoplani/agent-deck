@@ -71,13 +71,18 @@ type Record struct {
 	Key     string   `json:"key,omitempty"`     // idempotency key (producer-stable)
 	Kind    string   `json:"kind"`              // Kind* constants
 	From    string   `json:"from"`              // session id (or human:<name>)
-	To      []string `json:"to,omitempty"`      // consumers this is addressed to
-	Profile string   `json:"profile,omitempty"` // owning profile
-	Tool    string   `json:"tool,omitempty"`    // harness of From (claude, codex, ...)
-	Host    string   `json:"host,omitempty"`    // hostname that produced the record (every host, so cross-host readers can name it)
-	Store   string   `json:"store,omitempty"`   // id of the ledger the record was first committed to (stable across host renames)
-	Epoch   int64    `json:"epoch,omitempty"`   // that ledger's epoch (bumped when its history is reset or restored)
-	Origin  string   `json:"origin,omitempty"`  // configured remote name when the record was pulled from another host's ledger
+	To      []string `json:"to,omitempty"`      // consumer session ids this is addressed to
+	Profile string   `json:"profile,omitempty"` // source profile (the producer's)
+	// ToProfile and ToStore name the destination: the profile the consumers
+	// in To live in and the id of the ledger that holds the record for them
+	// (the local ledger at ingest; the same as Store for a local record).
+	ToProfile string `json:"to_profile,omitempty"`
+	ToStore   string `json:"to_store,omitempty"`
+	Tool      string `json:"tool,omitempty"`   // harness of From (claude, codex, ...)
+	Host      string `json:"host,omitempty"`   // display only: the short hostname at commit time (mutable; never an identity)
+	Store     string `json:"store,omitempty"`  // identity: id of the ledger the record was first committed to (stable across host renames)
+	Epoch     int64  `json:"epoch,omitempty"`  // that ledger's epoch (bumped when its history is reset or restored)
+	Origin    string `json:"origin,omitempty"` // configured remote name when the record was pulled from another host's ledger
 	// SrcCursor is the record's cursor on the origin ledger (remote-first,
 	// docs/comms.md): the importer advances its (remote, consumer) cursor to
 	// the highest SrcCursor it committed, and a re-pull is idempotent on
@@ -107,8 +112,9 @@ type Record struct {
 }
 
 // DedupKey is what the idempotency window is keyed on: the producer's key
-// namespaced by origin, so two hosts' children can never collide and a
-// re-pulled remote record is still dropped.
+// namespaced by the ORIGIN STORE ID for a pulled record (the remote alias
+// is display only and may be renamed), so two hosts' children can never
+// collide and a re-pulled remote record is still dropped.
 func (r Record) DedupKey() string {
 	if r.Key == "" {
 		return ""
@@ -116,7 +122,18 @@ func (r Record) DedupKey() string {
 	if r.Origin == "" {
 		return r.Key
 	}
-	return r.Origin + "|" + r.Key
+	return r.Store + "|" + r.Key
+}
+
+// ContentHash identifies what a record says, independent of when it was
+// committed: a second commit under the same key with a different content
+// hash is a conflict, not a duplicate.
+func (r Record) ContentHash() string {
+	text := r.TH
+	if text == "" {
+		text = TextHash(r.Text)
+	}
+	return TextHash(strings.Join([]string{r.Kind, r.From, strings.Join(r.To, ","), text, r.State, r.Done, r.Summary, r.Err}, "\x00"))
 }
 
 // IsUrgent reports whether a consumer must wake for this record: an urgent

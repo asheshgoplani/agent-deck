@@ -42,8 +42,9 @@ record's `from`; the record is the frame's `data`:
 | `seq`, `reply_to`, `via`, `state`, `ref` | per-`from` sequence; sender of the prompt; transport; delivery state; related record id |
 | `t_signal`, `t_record`, `t_pushed`, `t_seen`, `latency_ms` | the harness signal, the commit, the push, the consumer's prompt; signal to commit in ms |
 
-Noise is stored too (tier `noise`, never delivered) so dedup and noise share
-are countable from the ledger alone.
+A repeated background answer is stored too (tier `noise`, never delivered)
+so the noise share is countable from the ledger alone; a re-observed turn
+(same key) is not stored at all, it is a duplicate.
 
 ### Remote first
 
@@ -98,8 +99,9 @@ record is unchanged. Their text producers are specified in the test
 matrix and land one at a time, each with its own fixture and lab evidence.
 
 Classification in the daemon: a Claude child is classified from its
-transcript tail exactly as the inbox record is (same uuid, trigger, tier,
-sentinel), so the two stores agree. Every other harness is classified from
+transcript tail as the inbox record is (same uuid, trigger, tier,
+sentinel) while the tail still describes the spooled turn; the two
+inbox-only inputs listed under "Not in P1" are the known differences. Every other harness is classified from
 what its hook carried: the prompt gives the trigger (a `[agent-deck from:]`
 envelope is `send`, `[INBOX`/`[HEARTBEAT]`/`[agent-deck msg]` is `inbox`,
 else `human`; no prompt seen is `unknown` and tiers urgent), the text gives
@@ -130,11 +132,27 @@ entry id when a harness has neither), `host`, and `store` + `epoch`: the id
 of the ledger it was first committed to and that ledger's epoch
 (`<ledger>/store.json`, minted once; a reset or a restore bumps the epoch).
 Imported records keep all of these and add `origin` and `src_cursor`.
-Dedup is on `origin + key` within a window of the newest 4096 records,
-restored at open; two distinct turns with identical text are two records,
-one turn observed a hundred times is one. A text-less `status` edge is
-collapsed only by the inbox's own content rule (same state and output
-signal within the 2 h TTL), never by a time bucket.
+Dedup is on `key` (namespaced by the origin **store id** for a pulled
+record; the remote alias and `host` are display only) within a window of
+the newest 4096 records, rebuilt at open (open fails visibly,
+`ErrTailUnreadable`, if that rebuild cannot reach the last cursor, so the
+daemon never writes with a partial window). Two distinct turns with
+identical text are two records; one turn observed a hundred times is one;
+the same key with different content is a conflict (`ErrConflict`): the
+spool entry is moved to `spool/conflict/<instance>/` and logged, never
+committed as a second record. `seq` is a per-sender counter restored from
+that window: monotonic across restarts for a sender active in the newest
+4096 records, restarting at 1 after a longer silence (ordering is the
+cursor and the id). A text-less `status` edge is collapsed only by the
+inbox's own content rule (same from->to edge with the same non-empty output
+signal within the 2 h TTL, or within the 90 s short window when the signal
+is empty), never by a time bucket.
+
+Restore detection: `store.json` keeps the ledger's high-water cursor
+(persisted at close and every 256 commits). A ledger that opens with a
+cursor below it was restored from an older copy: the epoch is bumped and
+logged (`comms_store_restored`), and consumer states from the old epoch are
+rejected until rebuilt.
 
 ## Consumers, receipts and retention (contract, built in P2)
 
@@ -153,20 +171,30 @@ Frozen now in `internal/comms/receipt.go` with fixtures under
   `generation`. Pending = every record above the watermark not in the
   sparse set, so an urgent record acknowledged ahead never hides an
   earlier info record. A state from another epoch is rejected and rebuilt.
-- **Retention**: audit retention is `RetentionDays` (90); pending-delivery
-  retention is `RetainFrom(consumers)` (one above the lowest watermark); a
-  segment is compacted only when both allow it. A consumer whose watermark
-  falls below the oldest retained cursor gets an explicit `Gap` (recorded
-  as an `error` record addressed to itself) and is never silently
-  restarted at the newest segment.
+- **Retention and quota**: today compaction is by count (1024 sealed
+  segments) and age (`RetentionDays`, 90); P2 adds `RetainFrom(consumers)`
+  (one above the lowest watermark) as a third input so a pending record is
+  never compacted. The ledger is bounded at `DefaultMaxBytes` (2 GiB per
+  profile): past it `Commit` returns `events.ErrQuota`, the spool keeps its
+  entries (bounded by the per-instance cap of 512), the daemon logs the
+  overload once per minute, and nothing is silently dropped. A consumer
+  whose watermark falls below the oldest retained cursor gets an explicit
+  `Gap` (recorded as an `error` record addressed to itself) and is never
+  silently restarted at the newest segment.
+- **Pending indexes** (P2): the per-consumer state file and the 32-byte
+  pending flag are caches rebuilt from the ledger by a scan from the
+  consumer's watermark; a crash between a commit and a flag update is
+  repaired by that scan, never by trusting the flag.
 
 Four rules from the MonoCode relay comparison are part of this contract:
 
 1. **Request id receipts.** A send carries the caller's request id (`req`);
    its receipt is the `send` record, committed before the action. A retry
-   with the same id gets the stored record (`ErrDuplicate` + record,
-   `Ledger.Lookup`), never a second delivery. Ledger: now; `session send`
-   wiring: P2.
+   with the same id and the same content gets the stored record
+   (`ErrDuplicate` + record, `Ledger.Lookup`), never a second delivery; a
+   retry with the same id and different content is a conflict. The window
+   is the newest 4096 records (a retry weeks later is a new send). Ledger:
+   now; `session send` wiring: P2.
 2. **Bounded reads.** At most N recent records, a per-message byte cap, a
    cursor for older ones, tool noise never stored. `ReadAfter(limit)`: now;
    `msg read --last N --max-bytes`: P2.
@@ -185,13 +213,16 @@ Four rules from the MonoCode relay comparison are part of this contract:
 | Boundary | Crash or failure | Outcome |
 |---|---|---|
 | hook -> spool | crash before the rename | a `.tmp` file, never read as an entry; the turn is in the transcript (Claude) or lost to the ledger only (status edge still in the inbox) |
-| spool -> daemon | daemon down or switch off | entries wait (per-instance cap 512, pruned after 24 h); the inbox path is untouched |
-| daemon ingest | commit fails (disk) | the entry and every later one stay, the ledger is closed and reopened next pass; the inbox record and wake already happened |
+| spool -> daemon | daemon down, or the ledger cannot open | entries wait (per-instance cap 512; never pruned while the switch is on); the inbox path is untouched |
+| spool -> daemon | switch off | entries no daemon will consume are pruned after 24 h, each expiry logged |
+| daemon ingest | commit fails (disk, quota) | the entry, its prompt edge and every later one stay, the ledger is closed and reopened after a 1 min backoff; the inbox record and wake already happened (status edges are spooled after the inbox record is committed, never before) |
+| daemon ingest | same key, different content | the entry is quarantined under `spool/conflict/` and logged |
 | daemon ingest | crash after commit, before the spool file is removed | the entry is replayed and dropped as a duplicate of its key |
 | ledger file | torn tail | truncated at open; mid-history corruption is left in place, logged, and skipped by readers |
 | ledger dir | rotation or checkpoint | file fsync, atomic rename, directory fsync |
 | two daemons | second process | cannot take `daemon.lock`; it reads, never writes or ingests |
-| store restore | restored from backup | same `store` id, `epoch` must be bumped by the operator; consumer states from the old epoch are rejected |
+| ledger open | the dedup window cannot be rebuilt to the last cursor (unreadable tail) | open fails with `ErrTailUnreadable`, retried after 1 min; the inbox path is untouched |
+| store restore | restored from an older copy | detected at open from the high-water mark: the epoch is bumped and logged; consumer states from the old epoch are rejected |
 
 The inbox and the turn journal keep their issue #2469 order (commit, then
 journal); the ledger ingest runs after both and reads neither.
@@ -204,8 +235,13 @@ agent-deck events stats --bus comms --json
 ```
 
 The follower opens the ledger read-only (`events.Options{ReadOnly: true}`):
-no writer goroutine, no tail repair, `Commit` refused. P2 adds `agent-deck
-msg read|peek|ack|stats|export` with per-consumer cursor files.
+no writer goroutine, no tail repair, `Commit` refused. Durability boundary:
+a frame is committed when `Commit` returns its cursor (bytes and fsync
+done, or rolled back on failure); a follower tailing the file can read a
+line in the instant between the write and its fsync, so P2 consumers read
+through the ledger API bounded by the committed cursor, not by tailing.
+P2 adds `agent-deck msg read|peek|ack|stats|export` with per-consumer state
+files.
 
 ## Surface
 

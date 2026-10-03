@@ -19,18 +19,23 @@ import (
 // nothing that reaches a parent today changes while [comms] ledger is on.
 //
 // Classification: a Claude child is classified from its transcript tail
-// (cached per file state) exactly as the inbox path classifies it, when the
-// tail still describes the spooled turn (same text hash); a backlog entry
-// for an older turn is classified from the text its hook carried instead.
-// The two stores then agree on identity, trigger and tier for every turn,
-// except for what only the inbox path sees: a flip into the error status
-// and an observed running->waiting flip with a stale transcript, both of
-// which the inbox tiers urgent. Every other harness is classified from
-// what its hook carried: the prompt that started the turn (a send envelope,
-// an inbox or heartbeat prompt, a human) gives the trigger, the text gives
-// the hash, the sentinel and the question flag; a turn whose prompt the
-// daemon never saw is trigger unknown and tiers urgent. Noise is committed
-// too (tier noise) so dedup and noise share are countable from the ledger.
+// (cached per file state) as the inbox path classifies it, when the tail
+// still describes the spooled turn (same full-text hash, not signalled
+// before the tail record); a backlog entry for an older turn is classified
+// from the text its hook carried instead. The two stores then agree on
+// identity, trigger and tier for every turn, except for what only the inbox
+// path sees: a flip into the error status and an observed running->waiting
+// flip with a stale transcript, both of which the inbox tiers urgent. Codex
+// is classified from what its notify carried: the prompt that started the
+// turn (a send envelope, an inbox or heartbeat prompt, a human) gives the
+// trigger, the text gives the hash, the sentinel and the question flag; a
+// turn whose prompt the daemon never saw is trigger unknown and tiers
+// urgent. A repeated background answer is committed with tier noise so
+// dedup and noise share are countable from the ledger.
+//
+// Every other harness is status-only in P1: the legacy branch of emitTurn
+// spools a status edge AFTER the inbox record is committed, and the next
+// pass commits it with the inbox's own content rule.
 
 // commsHasTextProducer reports whether a harness spools turn text. P1
 // enables Claude (hook-handler) and Codex (codex-notify); every other
@@ -44,16 +49,24 @@ func commsToolName(inst *Instance) string {
 	return strings.ToLower(strings.TrimSpace(inst.Tool))
 }
 
-// commsOpenRetry is how long a failed ledger open is remembered before the
-// next pass tries again.
+// commsOpenRetry is how long a failed ledger open or commit is remembered
+// before the next pass tries again, so a broken disk costs one attempt per
+// minute, not one per poll.
 const commsOpenRetry = time.Minute
+
+// commsTailSkew is how much earlier than the transcript record's own
+// timestamp a spool entry may be signalled and still be that turn (clock
+// granularity between the harness and the hook). Shorter than the daemon's
+// poll interval so two same-text turns seconds apart stay distinct.
+const commsTailSkew = time.Second
 
 // commsLedgerFor returns the open ledger for a profile, opening it on first
 // use. The open takes a non-blocking exclusive lock on <ledger>/daemon.lock
 // so a second daemon process (`notify-daemon --once` next to the service)
 // never becomes a second ingester of the same spool. nil when the ledger
 // cannot be opened or is owned by another process; retried after
-// commsOpenRetry.
+// commsOpenRetry. The open is bounded: the dedup rebuild fails visibly
+// (comms.ErrTailUnreadable) instead of holding the poll loop.
 func (d *TransitionDaemon) commsLedgerFor(profile string) *comms.Ledger {
 	if d.ledgers == nil {
 		d.ledgers = map[string]*comms.Ledger{}
@@ -89,6 +102,7 @@ func openCommsLedgerOwned(profile string) (*comms.Ledger, *os.File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, nil, err
 	}
+	_ = os.Chmod(dir, 0o700)
 	lock, err := os.OpenFile(filepath.Join(dir, "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, nil, err
@@ -105,8 +119,8 @@ func openCommsLedgerOwned(profile string) (*comms.Ledger, *os.File, error) {
 	return l, lock, nil
 }
 
-// dropCommsLedger closes a profile's ledger after a write failure so the
-// next pass reopens it: the events bus disables itself after a failed
+// dropCommsLedger closes a profile's ledger after a write failure and
+// starts the retry backoff: the events bus disables itself after a failed
 // append, and a reopen is the only way back.
 func (d *TransitionDaemon) dropCommsLedger(profile string) {
 	if l := d.ledgers[profile]; l != nil {
@@ -117,6 +131,10 @@ func (d *TransitionDaemon) dropCommsLedger(profile string) {
 		_ = lock.Close()
 	}
 	delete(d.ledgerLocks, profile)
+	if d.ledgerOpenFailed == nil {
+		d.ledgerOpenFailed = map[string]time.Time{}
+	}
+	d.ledgerOpenFailed[profile] = time.Now()
 }
 
 // closeCommsLedgers releases every open ledger (daemon shutdown).
@@ -124,21 +142,23 @@ func (d *TransitionDaemon) closeCommsLedgers() {
 	for profile := range d.ledgers {
 		d.dropCommsLedger(profile)
 	}
+	d.ledgerOpenFailed = nil
 }
 
 // ingestCommsSpool drains the spool for every child of this profile. It runs
 // only with [comms] ledger on; with it off the daemon never creates the
-// ledger directory. Entries for instances this profile does not know are
-// left for the owning profile's pass; the prune bounds leftovers.
+// ledger directory and only prunes entries no daemon will ever consume.
+// Entries for instances this profile does not know are left for the owning
+// profile's pass.
 func (d *TransitionDaemon) ingestCommsSpool(profile string, byID map[string]*Instance) {
-	// The prune runs whatever the switch says: a spool left by a child whose
-	// daemon had the ledger on (or by a newer child binary) must not grow
-	// under a daemon that never drains it.
-	if now := time.Now(); now.Sub(d.lastCommsPrune) > time.Hour {
-		d.lastCommsPrune = now
-		PruneCommsSpool(now)
-	}
 	if !CommsLedgerEnabled() {
+		// Switch off: nothing will consume the spool, so age it out (each
+		// expiry logged). With the switch on an entry is kept until it
+		// commits; the per-instance cap bounds an outage.
+		if now := time.Now(); now.Sub(d.lastCommsPrune) > time.Hour {
+			d.lastCommsPrune = now
+			PruneCommsSpool(now)
+		}
 		return
 	}
 	instances := ListCommsSpoolInstances()
@@ -164,25 +184,36 @@ func (d *TransitionDaemon) ingestCommsSpool(profile string, byID map[string]*Ins
 		for _, e := range entries {
 			if !d.ingestCommsEntry(l, profile, inst, byID, e) {
 				// A failed commit keeps this entry AND everything after it
-				// in order for the next pass; the ledger is reopened then.
+				// in order for the next pass; the ledger is reopened then,
+				// after the backoff.
 				d.dropCommsLedger(profile)
 				return
 			}
-			RemoveCommsSpoolEntry(e)
 		}
 	}
 }
 
-// ingestCommsEntry turns one spooled edge into at most one ledger record.
-// It returns true when the entry is consumed (committed, a duplicate, or a
-// prompt edge remembered) and false when the commit failed transiently so
-// the next poll retries the same file.
+// ingestCommsEntry turns one spooled edge into at most one ledger record
+// and removes the entry once it is durable. It returns false when the
+// commit failed transiently so the next pass retries the same file.
+//
+// A prompt edge is remembered, not removed: it is removed together with the
+// turn that consumes it, so a restart between the two still knows the
+// trigger. A newer prompt edge for the same child replaces (and removes) an
+// older one that no turn consumed.
 func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, inst *Instance, byID map[string]*Instance, e CommsSpoolEntry) bool {
-	if e.Edge == CommsEdgePromptStart {
+	switch e.Edge {
+	case CommsEdgePromptStart:
+		if prev, ok := d.commsPrompts[inst.ID]; ok && prev.path != e.path {
+			RemoveCommsSpoolEntry(prev)
+		}
 		d.commsPrompts[inst.ID] = e
 		return true
-	}
-	if e.Edge != CommsEdgeTurnEnd {
+	case CommsEdgeStatus:
+		return d.commitCommsStatus(l, profile, inst, e)
+	case CommsEdgeTurnEnd:
+	default:
+		RemoveCommsSpoolEntry(e)
 		return true
 	}
 
@@ -195,21 +226,22 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		TSignal: e.TSignal,
 	}
 	cfg := ResolveInboxConfig(parentTitleFor(inst, byID))
-	facts, classified := commsTurnFacts(inst, e, d.commsPrompts[inst.ID])
+	prompt := d.commsPrompts[inst.ID]
+	facts, classified := commsTurnFacts(inst, e, prompt)
 	if !cfg.GetQuestionWakes() {
 		facts.Question = false
 	}
 
-	// Identity, most stable first: the transcript uuid, the harness turn id,
-	// else the spool entry itself (its file name is minted once by the
-	// producer and survives a retry), so two turns with the same text are
-	// two records and one entry observed twice is one. The tier rule reads
-	// the identity as the turn uuid: a distinct turn that repeats the last
-	// answer is news when a human or a send started it, noise only for a
-	// background trigger.
+	// Identity, most stable first: the transcript uuid, the harness thread
+	// and turn id, else the spool entry itself (its file name is minted once
+	// by the producer and survives a retry), so two turns with the same text
+	// are two records and one entry observed twice is one. The tier rule
+	// reads the identity as the turn uuid: a distinct turn that repeats the
+	// last answer is news when a human or a send started it, noise only for
+	// a background trigger.
 	identity := facts.UUID
-	if identity == "" {
-		identity = e.TurnID
+	if identity == "" && e.TurnID != "" {
+		identity = e.SessionID + ":" + e.TurnID
 	}
 	if identity == "" {
 		identity = e.SessionID + "|" + facts.TextHash + "|" + e.ID()
@@ -241,25 +273,32 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	}
 
 	_, cursor, err := l.Commit(rec)
-	if err != nil && !errors.Is(err, comms.ErrDuplicate) {
+	switch {
+	case err == nil:
+		commsLog.Debug("comms_turn_committed", slog.String("child", inst.ID), slog.String("tool", rec.Tool),
+			slog.String("tier", rec.Tier), slog.String("trigger", rec.Trigger), slog.Uint64("cursor", uint64(cursor)))
+	case errors.Is(err, comms.ErrDuplicate):
+	case errors.Is(err, comms.ErrConflict):
+		// Same identity, different content: a producer bug or a replayed
+		// entry from another turn. Kept aside for a human, never consumed
+		// as the first record and never retried as a new one.
+		commsLog.Warn("comms_conflict", slog.String("child", inst.ID), slog.String("key", rec.Key), slog.String("entry", e.ID()))
+		QuarantineCommsSpoolEntry(e)
+		return true
+	default:
 		commsLog.Warn("comms_turn_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
 		return false
 	}
-	// The prompt edge is consumed by the turn it started, once that turn is
-	// durable; a later turn with no new prompt edge is unknown, not a repeat
-	// of the old trigger.
-	delete(d.commsPrompts, inst.ID)
-	if err == nil {
-		commsLog.Debug("comms_turn_committed", slog.String("child", inst.ID), slog.String("tool", rec.Tool),
-			slog.String("tier", rec.Tier), slog.String("trigger", rec.Trigger), slog.Uint64("cursor", uint64(cursor)))
+	// The turn is durable (or already was): the entry and the prompt edge
+	// it consumed can go. A later turn with no new prompt edge is unknown,
+	// not a repeat of the old trigger.
+	RemoveCommsSpoolEntry(e)
+	if prompt.path != "" {
+		RemoveCommsSpoolEntry(prompt)
 	}
+	delete(d.commsPrompts, inst.ID)
 	return true
 }
-
-// commsTailSkew is how much earlier than the transcript record's own
-// timestamp a spool entry may be signalled and still be that turn (clock
-// granularity between the harness and the hook).
-const commsTailSkew = 5 * time.Second
 
 // commsTurnFacts reduces a spooled turn to the facts the tier rule needs.
 // classified is true when the Claude transcript classifier produced them
@@ -268,7 +307,10 @@ const commsTailSkew = 5 * time.Second
 // transcript tail is used only while it still describes the spooled turn:
 // the hash of the full text the hook saw must equal the tail's, and the
 // entry must not predate the tail record (a backlog of same-text turns
-// takes the hook path, each with its own identity).
+// takes the hook path, each with its own identity). On the hook path the
+// hash is the full-text hash the producer spooled, and the sentinel and
+// question are read from the spooled text (capped at commsSpoolTextBytes,
+// which keeps the end of any ordinary reply).
 func commsTurnFacts(inst *Instance, e CommsSpoolEntry, prompt CommsSpoolEntry) (TurnFacts, bool) {
 	text := strings.TrimSpace(e.Text)
 	if IsClaudeCompatible(inst.Tool) {
@@ -283,7 +325,10 @@ func commsTurnFacts(inst *Instance, e CommsSpoolEntry, prompt CommsSpoolEntry) (
 			}
 		}
 	}
-	facts := TurnFacts{Text: text, TextHash: turnTextHash(text)}
+	facts := TurnFacts{Text: text, TextHash: e.TH}
+	if facts.TextHash == "" {
+		facts.TextHash = turnTextHash(text)
+	}
 	facts.Question = textAsksParent(text)
 	facts.Done, facts.HasDone = ScanDoneSentinel(text)
 	trigger := e.Prompt
@@ -305,7 +350,7 @@ func commsTailDescribes(facts TurnFacts, e CommsSpoolEntry, text string) bool {
 			return false
 		}
 	case text != "":
-		if turnTextHash(CapTurnText(facts.Text, commsSpoolTextBytes)) != turnTextHash(text) {
+		if turnTextHash(capBytes(strings.TrimSpace(facts.Text), commsSpoolTextBytes)) != turnTextHash(text) {
 			return false
 		}
 	}
@@ -315,27 +360,42 @@ func commsTailDescribes(facts TurnFacts, e CommsSpoolEntry, text string) bool {
 	return true
 }
 
-// commsStatusRecord commits a status-only record for a tool with no text
-// producer (plain shell, a custom --cmd), so the ledger still shows the edge
-// the inbox's legacy record carries. Called from the legacy branch of
-// emitTurn; a no-op with the ledger off or for tools that spool text.
-func (d *TransitionDaemon) commsStatusRecord(profile string, inst *Instance, to string, at time.Time) {
+// commsStatusEdge spools a status-only edge for a tool with no text
+// producer (plain shell, a custom --cmd, and every harness whose producer
+// is not enabled in P1), so the ledger still shows the edge the inbox's
+// legacy record carries. Called from the legacy branch of emitTurn AFTER
+// the inbox record is committed; the spool keeps the edge retryable and
+// the daemon never opens the ledger on the inbox path. A no-op with the
+// ledger off or for tools that spool text.
+func (d *TransitionDaemon) commsStatusEdge(inst *Instance, from, to string, at time.Time) {
 	if inst == nil || !CommsLedgerEnabled() || commsHasTextProducer(inst.Tool) {
 		return
 	}
-	l := d.commsLedgerFor(profile)
-	if l == nil {
-		return
+	if err := WriteCommsSpool(CommsSpoolEntry{
+		Harness: commsToolName(inst), Event: "status", Edge: CommsEdgeStatus, Instance: inst.ID,
+		From: normalizeStatusString(from), State: normalizeStatusString(to), TH: transitionEventOutputHash(inst),
+		TSignal: at.UnixMilli(),
+	}); err != nil {
+		commsLog.Warn("comms_status_spool_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
 	}
-	state := normalizeStatusString(to)
-	signal := transitionEventOutputHash(inst)
-	// A status edge has no message identity. The only collapse is the
-	// inbox's own content rule (issue #1142): the same state with the same
-	// output signal, re-observed within the dedup TTL, is one edge. Two
-	// distinct edges are never folded by a time bucket.
-	if last, ok := l.LastStatus(inst.ID); ok && last.State == state && last.TH == signal &&
-		at.UnixMilli()-last.TRecord < defaultOutputHashDedupTTL.Milliseconds() {
-		return
+}
+
+// commitCommsStatus commits a spooled status edge. A status edge has no
+// message identity; the only collapse is the inbox's own rule (issues #1142
+// and #824): the same from->to edge re-observed with the same non-empty
+// output signal within the 2 h TTL, or, when either signal is empty, within
+// the 90 s short window. Two distinct edges are never folded by a time
+// bucket.
+func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, inst *Instance, e CommsSpoolEntry) bool {
+	if last, ok := l.LastStatus(inst.ID); ok && last.State == e.State && last.Ref == e.From {
+		window := defaultOutputHashDedupTTL
+		if last.TH == "" || e.TH == "" {
+			window = shortWindowDedupSeconds * time.Second
+		}
+		if last.TH == e.TH && e.TSignal-last.TSignal < window.Milliseconds() {
+			RemoveCommsSpoolEntry(e)
+			return true
+		}
 	}
 	rec := comms.Record{
 		Kind:    comms.KindStatus,
@@ -343,12 +403,15 @@ func (d *TransitionDaemon) commsStatusRecord(profile string, inst *Instance, to 
 		To:      []string{statsParentFor(inst)},
 		Profile: profile,
 		Tool:    commsToolName(inst),
-		State:   state,
-		TH:      signal, // the output signal the edge was observed with
-		TSignal: at.UnixMilli(),
+		State:   e.State,
+		Ref:     e.From, // the status the edge left
+		TH:      e.TH,   // the output signal the edge was observed with
+		TSignal: e.TSignal,
 	}
 	if _, _, err := l.Commit(rec); err != nil && !errors.Is(err, comms.ErrDuplicate) {
 		commsLog.Warn("comms_status_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
-		d.dropCommsLedger(profile)
+		return false
 	}
+	RemoveCommsSpoolEntry(e)
+	return true
 }

@@ -110,7 +110,13 @@ OpenProfile(profile string) *Bus                  // component owned
 CloseDefault() error                              // CLI/TUI shutdown
 ```
 
-`OpenAt` is `Open` with knobs a second log needs. `Commit` is the
+`OpenAt` is `Open` with knobs a second log needs. The status bus itself is
+unchanged: its recovery still truncates from the first malformed line, its
+checkpoint and drops files are still rename-only, and `Publish` keeps its
+contract. `Options.KeepCorrupt` (recovery leaves a malformed line in place
+and readers skip it), `Options.Private` (0600 files, 0700 directory, fsynced
+checkpoints and directory writes) and `Options.MaxBytes` (`ErrQuota`) are
+taken only by the comms ledger. `Commit` is the
 synchronous primitive for a record whose loss a consumer could not detect
 (the comms ledger, docs/comms.md): it appends and fsyncs under the
 cross-process lock and returns the cursor it was assigned; `Publish` keeps

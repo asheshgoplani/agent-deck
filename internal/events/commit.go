@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -22,6 +23,14 @@ type Options struct {
 	// MaxSegmentBytes rotates the active segment past this size (default
 	// 8 MiB).
 	MaxSegmentBytes int64
+	// KeepCorrupt makes recovery leave a malformed line inside committed
+	// history in place (logged, skipped by readers) instead of truncating
+	// from it, so a corruption event never erases later messages. Only a
+	// ledger wants this; the status bus keeps its truncating recovery.
+	KeepCorrupt bool
+	// MaxBytes bounds the retained log (sealed segments plus the active
+	// file); Commit returns ErrQuota once it would be exceeded. 0 = none.
+	MaxBytes int64
 	// Private creates every file the bus writes with mode 0o600 (and the
 	// directory 0o700) instead of the status bus's 0o644/0o755: for a log
 	// that holds assistant text.
@@ -41,6 +50,16 @@ var ErrReadOnly = errors.New("events: bus is read-only")
 // not exist: nothing has ever been written there.
 var ErrNoBus = errors.New("events: no log at this path")
 
+// ErrQuota is returned by Commit when the log is at Options.MaxBytes. The
+// frame is not written; the caller keeps its source (a spool entry) and
+// reports the overload.
+var ErrQuota = errors.New("events: log quota exceeded")
+
+// commitFault is a test seam: when set it is called at the named stage of
+// Commit ("before-append", "before-sync") and may corrupt the bus state
+// or return an error to inject a fault. nil in production.
+var commitFault func(stage string, b *Bus) error
+
 // OpenAt opens the durable bus rooted at dir with explicit options. It is
 // Open plus the knobs a second log (the comms ledger) needs: time-based
 // retention, and a read-only mode for followers.
@@ -48,18 +67,17 @@ func OpenAt(dir string, opts Options) (*Bus, error) {
 	if opts.ReadOnly {
 		return openReadOnly(dir, opts)
 	}
-	if !opts.Private {
-		b, err := Open(dir)
-		if err != nil {
-			return nil, err
-		}
-		b.applyOptions(opts)
-		return b, nil
+	mode, dirMode := os.FileMode(0o644), os.FileMode(0o755)
+	if opts.Private {
+		mode, dirMode = 0o600, 0o700
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return nil, fmt.Errorf("events: create bus dir: %w", err)
 	}
-	b, err := openWith(dir, 0o600)
+	if opts.Private {
+		_ = os.Chmod(dir, dirMode) // an existing directory keeps its mode otherwise
+	}
+	b, err := openWith(dir, mode, opts.KeepCorrupt)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +96,9 @@ func (b *Bus) applyOptions(opts Options) {
 	}
 	if opts.MaxSegmentBytes > 0 {
 		b.maxSegBytes = opts.MaxSegmentBytes
+	}
+	if opts.MaxBytes > 0 {
+		b.maxBytes = opts.MaxBytes
 	}
 }
 
@@ -112,6 +133,7 @@ func openReadOnly(dir string, opts Options) (*Bus, error) {
 		retainSegs:   defaultRetainSegs,
 		enabled:      true,
 		readOnly:     true,
+		keepCorrupt:  opts.KeepCorrupt,
 		fileMode:     0o644,
 		lockFile:     lockFile,
 		closeCh:      make(chan struct{}),
@@ -159,12 +181,37 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 		b.fail(err)
 		return Frame{}, err
 	}
+	if b.maxBytes > 0 && b.totalBytes+int64(len(raw))+96 > b.maxBytes {
+		return Frame{}, ErrQuota
+	}
+	if commitFault != nil {
+		if err := commitFault("before-append", b); err != nil {
+			b.fail(err)
+			return Frame{}, err
+		}
+	}
+	// Snapshot so a failed append or sync can be rolled back: the frame is
+	// committed only once its bytes AND their fsync succeeded.
+	before := b.activeBytes
+	beforeCursor, beforeEventID, beforeFrames, beforeTotal := b.cursor, b.lastEventID, b.activeFrames, b.totalBytes
 	if err := b.appendFrameLocked(qf); err != nil {
 		b.fail(err)
 		return Frame{}, err
 	}
-	if err := b.activeFile.Sync(); err != nil {
-		err = fmt.Errorf("events: sync: %w", err)
+	syncErr := error(nil)
+	if commitFault != nil {
+		syncErr = commitFault("before-sync", b)
+	}
+	if syncErr == nil {
+		syncErr = b.activeFile.Sync()
+	}
+	if syncErr != nil {
+		err := fmt.Errorf("events: sync: %w", syncErr)
+		if terr := b.activeFile.Truncate(before); terr != nil {
+			err = fmt.Errorf("%v; rollback failed: %w", err, terr)
+		}
+		b.cursor, b.lastEventID, b.activeBytes, b.activeFrames, b.totalBytes = beforeCursor, beforeEventID, before, beforeFrames, beforeTotal
+		b.written.Add(^uint64(0)) // undo the append's count
 		b.fail(err)
 		return Frame{}, err
 	}
@@ -174,10 +221,13 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 	b.enqueued.Add(1)
 	b.published.Add(1)
 	b.synced.Store(b.written.Load())
-	if b.activeFrames == 1 {
+	if b.activeFrames == 1 && b.durable() {
 		// First frame of a fresh active file: the file's directory entry
 		// must be durable too, not only its bytes.
-		fsyncDirBestEffort(b.dir)
+		if err := fsyncDir(b.dir); err != nil {
+			b.fail(fmt.Errorf("events: sync dir: %w", err))
+			return Frame{}, err
+		}
 	}
 	committed := Frame{Cursor: b.cursor, EventID: b.lastEventID, TS: qf.ts.UnixMilli(), Kind: kind, SessionID: sessionID, Data: raw}
 	if b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames {
@@ -205,4 +255,19 @@ func (b *Bus) expiredSegments(sealed []sealedSegment, now time.Time) []sealedSeg
 		}
 	}
 	return out
+}
+
+// fsyncDir syncs a directory and reports the error (Commit's first frame of
+// a fresh file). Filesystems that refuse directory fsync return EINVAL or
+// ENOTSUP, which is treated as "not needed here", not as a failure.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+		return err
+	}
+	return nil
 }

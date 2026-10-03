@@ -2,6 +2,7 @@ package comms
 
 import (
 	"errors"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -98,8 +99,11 @@ func TestLedgerCommitStampsSequencesAndDedupsByKey(t *testing.T) {
 	if c1 != 1 || r1.ID == "" || r1.Seq != 1 || r1.Profile != "p" || r1.Bytes != 3 || r1.TH == "" {
 		t.Fatalf("first commit %+v cursor %d", r1, c1)
 	}
-	if _, _, err := l.Commit(Record{Kind: KindTurn, From: "child", Key: Key(KindTurn, "child", "u1"), Text: "one again"}); !errors.Is(err, ErrDuplicate) {
+	if _, _, err := l.Commit(Record{Kind: KindTurn, From: "child", Key: Key(KindTurn, "child", "u1"), Text: "one", Tool: "codex"}); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("duplicate key accepted: %v", err)
+	}
+	if stored, _, err := l.Commit(Record{Kind: KindTurn, From: "child", Key: Key(KindTurn, "child", "u1"), Text: "one again"}); !errors.Is(err, ErrConflict) || stored.ID != r1.ID {
+		t.Fatalf("same key, different content must be a conflict with the stored record: %+v %v", stored, err)
 	}
 	r2, c2, err := l.Commit(Record{Kind: KindTurn, From: "child", Key: Key(KindTurn, "child", "u2"), Text: "two"})
 	if err != nil {
@@ -121,7 +125,7 @@ func TestLedgerCommitStampsSequencesAndDedupsByKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l2.Close()
-	if _, _, err := l2.Commit(Record{Kind: KindTurn, From: "child", Key: Key(KindTurn, "child", "u2"), Text: "two again"}); !errors.Is(err, ErrDuplicate) {
+	if _, _, err := l2.Commit(Record{Kind: KindTurn, From: "child", Key: Key(KindTurn, "child", "u2"), Text: "two"}); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("key window lost across reopen: %v", err)
 	}
 	r3, c3, err := l2.Commit(Record{Kind: KindSend, From: "child", Text: "three"})
@@ -311,5 +315,115 @@ func TestSendRetryWithTheSameRequestIDReturnsTheStoredReceipt(t *testing.T) {
 	defer bus.Close()
 	if recs, _, _ := ReadAfter(bus, 0, 0); len(recs) != 1 {
 		t.Fatalf("a retried send must not add a record: %d", len(recs))
+	}
+}
+
+func TestRestoreFromOlderCopyBumpsTheEpoch(t *testing.T) {
+	dir := t.TempDir() + "/ledger"
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, _, err := l.Commit(Record{Kind: KindTurn, From: "c", Text: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := l.Store()
+	_ = l.Close() // persists hwm=3
+	// "Restore from backup": the log holds only the first line again.
+	data, _ := os.ReadFile(dir + "/active.ndjson")
+	first := strings.SplitAfter(string(data), "\n")[0]
+	if err := os.WriteFile(dir+"/active.ndjson", []byte(first), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	if l2.Store().ID != store.ID || l2.Store().Epoch != store.Epoch+1 {
+		t.Fatalf("restore not detected: %+v -> %+v", store, l2.Store())
+	}
+	if err := (ConsumerState{Store: store.ID, Epoch: store.Epoch}).Check(l2.Store()); err != ErrEpoch {
+		t.Fatalf("a pre-restore consumer state must be rejected: %v", err)
+	}
+}
+
+func TestOpenFailsVisiblyWhenTheTailIsUnreadable(t *testing.T) {
+	dir := t.TempDir() + "/ledger"
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := l.Commit(Record{Kind: KindTurn, From: "c", Text: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = l.Close()
+	// cursor.state says 5 but the log only reaches 2: a reader can never
+	// reach the writer's cursor. Open must return promptly with an error,
+	// not hang the daemon.
+	if err := os.WriteFile(dir+"/cursor.state", []byte("5\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = OpenDir("p", dir)
+	if !errors.Is(err, ErrTailUnreadable) {
+		t.Fatalf("open with an unreachable tail: %v", err)
+	}
+	if time.Since(start) > 2*warmTimeout {
+		t.Fatalf("open took %v", time.Since(start))
+	}
+}
+
+func TestQuotaIsAnExplicitOutcome(t *testing.T) {
+	dir := t.TempDir() + "/ledger"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bus, err := events.OpenAt(dir, events.Options{Private: true, MaxBytes: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	var got error
+	n := 0
+	for i := 0; i < 50 && got == nil; i++ {
+		_, got = bus.Commit("turn", "c", map[string]string{"text": "0123456789"})
+		if got == nil {
+			n++
+		}
+	}
+	if !errors.Is(got, events.ErrQuota) || n == 0 || n >= 50 {
+		t.Fatalf("quota: committed %d, err %v", n, got)
+	}
+	if st := bus.Stats(); st.Cursor != events.Cursor(n) {
+		t.Fatalf("a refused frame must not advance the cursor: %d vs %d", st.Cursor, n)
+	}
+}
+
+func TestImportDropsOurOwnEchoAndKeepsOriginStore(t *testing.T) {
+	dir := t.TempDir() + "/ledger"
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	mine, _, err := l.Commit(Record{Kind: KindTurn, From: "c", Key: "k1", Text: "mine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo := mine // our record coming back from another host
+	echo.Origin = "box"
+	done, err := l.Import("box", []Exported{{Cursor: 7, Record: echo}})
+	if err != nil || done != 7 {
+		t.Fatalf("echo import: %d %v", done, err)
+	}
+	bus, _ := OpenReaderDir(dir)
+	defer bus.Close()
+	if recs, _, _ := ReadAfter(bus, 0, 0); len(recs) != 1 {
+		t.Fatalf("echo was re-imported: %d records", len(recs))
 	}
 }

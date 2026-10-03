@@ -145,11 +145,15 @@ func TestCodexNotify_FixtureSpoolsLastAssistantMessageOnce(t *testing.T) {
 		t.Fatalf("Codex turn produced more than one spool entry: %+v", entries)
 	}
 
-	// An invalid instance id never reaches the spool.
+	// An invalid instance id never reaches the spool: no new spool
+	// directory appears anywhere, and the only instance spooled is ours.
 	t.Setenv("AGENTDECK_INSTANCE_ID", "../x")
 	os.Args = []string{"agent-deck", "codex-notify", fixture(t, "codex_notify_v1.json")}
 	handleCodexNotify()
-	if _, err := os.Stat(filepath.Join(session.CommsSpoolDir(), "..", "x")); err == nil {
-		t.Fatal("traversal id reached the spool")
+	if got := session.ListCommsSpoolInstances(); len(got) != 1 || got[0] != "inst-codex" {
+		t.Fatalf("traversal id reached the spool: %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(session.CommsSpoolDir()), "x")); err == nil {
+		t.Fatal("traversal id escaped the spool root")
 	}
 }

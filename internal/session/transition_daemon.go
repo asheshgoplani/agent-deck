@@ -119,10 +119,11 @@ type TransitionDaemon struct {
 	// Accessed only from the single-threaded Run loop, like lastProbeStall.
 	lastDesktopNotify map[string]string
 
-	// Comms Ledger (docs/comms.md): one open ledger per profile (nil once an
-	// open failed), the last prompt-start edge seen per child (the trigger
-	// of its next turn), and the last spool prune. Single-threaded, like
-	// the maps above.
+	// Comms Ledger (docs/comms.md): one open ledger per profile with its
+	// daemon.lock handle, the time of the last failed open or commit per
+	// profile (retry backoff), the last prompt-start edge seen per child
+	// (the trigger of its next turn), and the last spool prune. Single-
+	// threaded, like the maps above.
 	ledgers          map[string]*comms.Ledger
 	ledgerLocks      map[string]*os.File
 	ledgerOpenFailed map[string]time.Time
