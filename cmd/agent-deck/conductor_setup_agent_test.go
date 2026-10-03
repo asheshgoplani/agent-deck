@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,5 +147,86 @@ func TestConductorSetup_BareRerunRefusesUnknownStoredAgent_Issue2434(t *testing.
 	}
 	if agent, err := resolveConductorSetupAgent(fs, name); err != nil || agent != session.ConductorAgentCodex {
 		t.Fatalf("explicit --agent codex over unknown stored agent = (%q, %v), want (codex, nil)", agent, err)
+	}
+}
+
+// cliConductorDir finds the conductor directory the binary created under
+// home, wherever the data-path resolution put it.
+func cliConductorDir(t *testing.T, home, name string) string {
+	t.Helper()
+	var found string
+	_ = filepath.Walk(home, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.IsDir() && filepath.Base(p) == name && filepath.Base(filepath.Dir(p)) == "conductor" {
+			found = p
+		}
+		return nil
+	})
+	if found == "" {
+		t.Fatalf("conductor dir for %q not found under %s", name, home)
+	}
+	return found
+}
+
+func cliConductorMetaAgent(t *testing.T, dir string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		Agent string `json:"agent"`
+	}
+	if err := json.Unmarshal(b, &meta); err != nil {
+		t.Fatalf("parse meta.json: %v", err)
+	}
+	return meta.Agent
+}
+
+func runConductorSetupCLI(t *testing.T, home string, args ...string) {
+	t.Helper()
+	full := append([]string{"conductor", "setup"}, args...)
+	full = append(full, "--json", "--no-heartbeat")
+	stdout, stderr, code := runAgentDeck(t, home, full...)
+	if code != 0 {
+		t.Fatalf("agent-deck %s: exit %d\nstdout: %s\nstderr: %s", strings.Join(full, " "), code, stdout, stderr)
+	}
+}
+
+// Issue #2434 through the real binary, so the test covers handleConductorSetup
+// itself and not just the resolver: a bare re-run keeps a pi conductor on pi
+// with its AGENTS.md untouched, and an explicit --agent claude still switches.
+func TestConductorSetupCLI_BareRerunKeepsAgent_Issue2434(t *testing.T) {
+	home := t.TempDir()
+	const name = "pi-ops"
+
+	runConductorSetupCLI(t, home, name, "--agent", "pi")
+	dir := cliConductorDir(t, home, name)
+	if got := cliConductorMetaAgent(t, dir); got != session.ConductorAgentPi {
+		t.Fatalf("meta agent after pi setup = %q, want pi", got)
+	}
+	agentsPath := filepath.Join(dir, "AGENTS.md")
+	before, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("AGENTS.md missing after pi setup: %v", err)
+	}
+
+	runConductorSetupCLI(t, home, name)
+	if got := cliConductorMetaAgent(t, dir); got != session.ConductorAgentPi {
+		t.Errorf("meta agent after bare re-run = %q, want pi", got)
+	}
+	after, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("AGENTS.md deleted by bare re-run: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("AGENTS.md changed by bare re-run")
+	}
+
+	runConductorSetupCLI(t, home, name, "--agent", "claude")
+	if got := cliConductorMetaAgent(t, dir); got != session.ConductorAgentClaude {
+		t.Errorf("meta agent after explicit --agent claude = %q, want claude", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err != nil {
+		t.Errorf("CLAUDE.md missing after explicit switch to claude: %v", err)
 	}
 }
