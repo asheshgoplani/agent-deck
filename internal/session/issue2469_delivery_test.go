@@ -179,10 +179,22 @@ func TestIssue2469_PromptInjectionStaysUnderBudget(t *testing.T) {
 	if len(out) > promptContextBudgetBytes+200 {
 		t.Fatalf("injection %d bytes exceeds the budget", len(out))
 	}
+	// Urgent records keep their text first, in order, until the budget is
+	// spent; 24 x ~560 B cannot all fit in 9,000 B, so assert the prefix.
+	kept := 0
 	for i := 0; i < 120; i += 5 {
-		if !strings.Contains(out, fmt.Sprintf("(c%03d): waiting\n    xxxx", i)) {
-			t.Fatalf("urgent record c%03d lost its text", i)
+		if strings.Contains(out, fmt.Sprintf("(c%03d): waiting\n    xxxx", i)) {
+			if kept != i/5 {
+				t.Fatalf("urgent texts must be kept in order; c%03d kept after a gap", i)
+			}
+			kept++
 		}
+	}
+	if kept < 10 {
+		t.Fatalf("too few urgent records kept their text: %d", kept)
+	}
+	if strings.Count(out, "    xxxx") != kept {
+		t.Fatalf("an info record kept text while urgent ones were trimmed")
 	}
 	if !strings.Contains(out, "more record(s), text omitted") {
 		t.Fatal("overflow note missing")
