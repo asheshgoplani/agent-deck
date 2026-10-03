@@ -641,7 +641,7 @@ func runTimerEnsure(cfg update.TimerConfig, r update.Runner, auto bool, opts tim
 			}
 			return 0
 		}
-		verb := map[string]string{update.TimerActionMigrated: "migrate", update.TimerActionLoaded: "load"}[plan.Result.Action]
+		verb := map[string]string{update.TimerActionMigrated: "migrate", update.TimerActionLoaded: "load", update.TimerActionStopped: "stop the legacy timer beside"}[plan.Result.Action]
 		if verb == "" {
 			verb = "install"
 		}

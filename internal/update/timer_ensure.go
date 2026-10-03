@@ -41,6 +41,10 @@ const (
 	// loaded again without rewriting it (automatic mode: launchd
 	// bootstrap, systemd enable --now).
 	TimerActionLoaded = "loaded"
+	// TimerActionStopped: a legacy timer in a directory this user cannot
+	// write was stopped and left in place (Note says where). Nothing was
+	// migrated: an admin's enable can bring it back at the next login.
+	TimerActionStopped = "stopped"
 	// TimerActionSkipped: nothing could or may be done here; Reason says
 	// why (no systemd user session, unpinnable build, manage_timer off).
 	TimerActionSkipped = "skipped"
@@ -70,7 +74,7 @@ type TimerEnsureResult struct {
 // Changed reports whether the run installed, migrated or loaded anything.
 func (r TimerEnsureResult) Changed() bool {
 	switch r.Action {
-	case TimerActionInstalled, TimerActionMigrated, TimerActionLoaded:
+	case TimerActionInstalled, TimerActionMigrated, TimerActionLoaded, TimerActionStopped:
 		return true
 	}
 	return false
@@ -92,6 +96,8 @@ func (r TimerEnsureResult) line() string {
 			return "migrated legacy service " + r.Migrated + " -> " + SystemdTimerTimer
 		}
 		return "migrated legacy timer " + r.Migrated + " -> " + SystemdTimerTimer
+	case TimerActionStopped:
+		return "stopped legacy timer " + LegacySystemdTimerTimer + "; " + SystemdTimerTimer + " runs the updates"
 	case TimerActionInstalled:
 		return fmt.Sprintf("installed update timer (%s): %s", r.Status.Kind, r.Status.Path)
 	case TimerActionLoaded:
@@ -212,8 +218,15 @@ func planEnsureSystemd(c TimerConfig, r Runner, auto bool) TimerEnsurePlan {
 		p.Steps = append(p.Steps, steps...)
 		p.Result.Backups = append(p.Result.Backups, backups...)
 		p.Result.Note = note
-		if len(steps) > 0 {
+		switch {
+		case len(steps) == 0:
+		case note == "":
 			p.Result.Action, p.Result.Migrated = TimerActionMigrated, st.LegacyUnit
+		case canonical == TimerActionNone:
+			// Only stopped: its files stay where they are, so this is
+			// not a migration (an install or load in the same run keeps
+			// its own action; the note says the legacy timer stopped).
+			p.Result.Action = TimerActionStopped
 		}
 	}
 	return p

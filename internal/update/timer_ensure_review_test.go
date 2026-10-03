@@ -142,6 +142,13 @@ func TestEnsureTimer_LegacyInReadOnlyDirIsLeftInPlaceWithoutFailing(t *testing.T
 	assert.Contains(t, res.Note, "not writable")
 	assert.Contains(t, res.Note, "stopped it")
 	assert.Contains(t, res.Line(), dir)
+	// Only stopped, not moved: the result must not claim a migration
+	// (#2472 review round 2, finding 2).
+	assert.Equal(t, TimerActionStopped, res.Action)
+	assert.Empty(t, res.Migrated)
+	assert.True(t, res.Changed())
+	assert.True(t, strings.HasPrefix(res.Line(), "stopped legacy timer "+LegacySystemdTimerTimer), res.Line())
+	assert.NotContains(t, res.Line(), "migrated")
 
 	// Stopped: later runs change nothing and do not fail.
 	for i := 0; i < 2; i++ {

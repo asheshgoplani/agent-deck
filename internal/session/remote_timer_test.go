@@ -95,6 +95,11 @@ func TestInstallUpdateTimer_NewOldAndFailingRemote(t *testing.T) {
 	if err != nil || !inst.Legacy || !strings.Contains(inst.Summary(), "predates timer migration") {
 		t.Fatalf("old remote: %+v, %v", inst, err)
 	}
+	// Its own install leaves a legacy timer running beside the new one, so
+	// the line says how to fix that (#2472 review round 2, finding 3).
+	if !strings.Contains(inst.Summary(), "update the remote's agent-deck first (agent-deck remote update)") {
+		t.Fatalf("old remote summary lacks the update hint: %q", inst.Summary())
+	}
 
 	// A new remote whose install failed answers JSON with an error and a
 	// non-zero exit: the error is the remote's, not the ssh exit status.

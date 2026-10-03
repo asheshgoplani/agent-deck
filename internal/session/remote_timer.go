@@ -41,10 +41,15 @@ type RemoteTimerInstall struct {
 	Output string `json:"output,omitempty"`
 }
 
+// legacyBinaryHint follows a Legacy summary: an old binary's own install
+// leaves a hand-made legacy timer running beside the new one, which only
+// a current binary migrates.
+const legacyBinaryHint = "; update the remote's agent-deck first (agent-deck remote update) so it can retire a hand-made legacy timer"
+
 // Summary is the one-line report for the CLI and the update note.
 func (i RemoteTimerInstall) Summary() string {
 	if i.Legacy {
-		return "remote binary predates timer migration: " + i.Output
+		return "remote binary predates timer migration: " + i.Output + legacyBinaryHint
 	}
 	return i.Line()
 }
