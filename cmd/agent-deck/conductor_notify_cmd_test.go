@@ -170,20 +170,53 @@ func TestIssue2469_TierFilterCLI(t *testing.T) {
 	}
 }
 
-// --reply-id: the bridge's scan re-filters a reply whose send failed; the
-// retries must keep returning the line instead of retiring it.
+// --reply-id: the bridge's scan re-filters a reply whose send failed, and an
+// outage spans several distinct heartbeat replies. Until --ack confirms a
+// delivery, every one of them must keep returning the plain line.
 func TestIssue2469_TierFilterCLIReplyIDRetry(t *testing.T) {
 	withTempHomeAndConfig(t, "")
 	const need = "NEED: api-fix - staging or prod?"
-	for attempt := 1; attempt <= 4; attempt++ {
+	filter := func(id string) []string {
+		t.Helper()
 		var out bytes.Buffer
-		args := []string{"--json", "--conductor", "ops", "--reply-id", "abc123"}
-		if err := runConductorTierFilter(&out, strings.NewReader(need), args, ""); err != nil {
+		args := []string{"--json", "--conductor", "ops", "--reply-id", id}
+		if err := runConductorTierFilter(&out, strings.NewReader("[STATUS] "+id+"\n"+need), args, ""); err != nil {
 			t.Fatal(err)
 		}
 		var res tierFilterResult
-		if err := json.Unmarshal(out.Bytes(), &res); err != nil || len(res.SendNow) != 1 || res.SendNow[0] != need {
-			t.Fatalf("attempt %d: %q (err=%v)", attempt, out.String(), err)
+		if err := json.Unmarshal(out.Bytes(), &res); err != nil {
+			t.Fatalf("%s: %q (err=%v)", id, out.String(), err)
 		}
+		return res.SendNow
+	}
+	ack := func(id string) bool {
+		t.Helper()
+		var out bytes.Buffer
+		if err := runConductorTierFilter(&out, strings.NewReader("ignored"), []string{"--json", "--conductor", "ops", "--ack", id}, ""); err != nil {
+			t.Fatal(err)
+		}
+		var res struct {
+			ReplyID   string `json:"reply_id"`
+			Committed bool   `json:"committed"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &res); err != nil || res.ReplyID != id {
+			t.Fatalf("--ack %s: %q (err=%v)", id, out.String(), err)
+		}
+		return res.Committed
+	}
+	for _, id := range []string{"abc", "abc", "def", "ghi", "jkl"} { // failed sends, no ack
+		if got := filter(id); len(got) != 1 || got[0] != need {
+			t.Fatalf("undelivered %s: %q, want the plain NEED line", id, got)
+		}
+	}
+	if !ack("jkl") || ack("jkl") || ack("abc") {
+		t.Fatal("--ack commits the pending reply once; a repeat or a superseded id is a no-op")
+	}
+	if got := filter("mno"); len(got) != 1 || got[0] != need {
+		t.Fatalf("cycle 2: %q", got)
+	}
+	ack("mno")
+	if got := filter("pqr"); len(got) != 1 || !strings.HasPrefix(got[0], "STILL BLOCKED (3 cycles") {
+		t.Fatalf("cycle 3 after two deliveries: %q", got)
 	}
 }

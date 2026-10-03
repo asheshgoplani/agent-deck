@@ -54,6 +54,7 @@ class FakeCLI:
         self.ack_ok = ack_ok
         self.calls: list[tuple] = []
         self.acked: list[str] = []
+        self.reply_acks: list[str] = []
 
     def __call__(self, *args, profile=None, timeout=120, input_text=None):
         self.calls.append(args)
@@ -65,9 +66,17 @@ class FakeCLI:
             return _ok({"acked": len(ids)})
         if args[:2] == ("conductor", "outbox"):
             return _ok(self.items)
+        if args[:2] == ("conductor", "tier-filter") and "--ack" in args:
+            self.reply_acks.append(args[args.index("--ack") + 1])
+            return _ok({"committed": True})
         if args[:2] == ("conductor", "tier-filter"):
             return _ok(self.tier_filter) if self.tier_filter is not None else _fail()
         return _fail()
+
+    def filter_reply_ids(self) -> list[str]:
+        """The --reply-id of every tier-filter (not --ack) call, in order."""
+        return [c[c.index("--reply-id") + 1] for c in self.calls
+                if c[:2] == ("conductor", "tier-filter") and "--ack" not in c and "--reply-id" in c]
 
 
 def _run(coro):
@@ -190,8 +199,9 @@ OPS = [{"name": "ops", "profile": "default", "heartbeat_enabled": True}]
 
 class TestNeedScanRetryIsOneCycle2469:
     def test_failed_sends_retry_with_the_same_reply_id(self):
-        """Every retry of one reply carries the same --reply-id, so the Go
-        ledger recomputes instead of advancing toward STILL BLOCKED/drop."""
+        """Every retry of one reply carries the same --reply-id, and only the
+        delivered attempt is acked, so the Go ledger never advances toward
+        STILL BLOCKED/drop for an undelivered send."""
         slack_app = mock.MagicMock()
         slack_app.client.chat_postMessage = mock.AsyncMock(side_effect=RuntimeError("slack down"))
         cli = FakeCLI(tier_filter={"send_now": [NEED], "queued": 0, "digest_due": False, "digest": []})
@@ -207,17 +217,121 @@ class TestNeedScanRetryIsOneCycle2469:
             _run(bridge.need_scan_cycle(SCAN_CONFIG, state, lambda: None,
                                         slack_app=slack_app, slack_channel_id="C1"))
         rid = hashlib.sha256(NEED.encode("utf-8")).hexdigest()
-        tf_calls = [c for c in cli.calls if c[:2] == ("conductor", "tier-filter")]
-        assert len(tf_calls) == 4
-        assert all(c[c.index("--reply-id") + 1] == rid for c in tf_calls)
+        assert cli.filter_reply_ids() == [rid] * 4
         assert slack_app.client.chat_postMessage.await_args.kwargs["text"] == "Conductor alert:\n" + NEED
         assert state["ops"]["reply"] == rid
+        # Only the delivered attempt commits the retire count.
+        assert cli.reply_acks == [rid]
 
-    def test_heartbeat_path_sends_no_reply_id(self):
-        cli = FakeCLI(tier_filter={"send_now": [], "queued": 0, "digest_due": False, "digest": []})
+    def test_heartbeat_reply_ids_are_fresh_per_tick(self):
+        assert bridge.heartbeat_reply_id("ops", NEED) != bridge.heartbeat_reply_id("ops", NEED)
+
+
+class TestRetireAdvancesOnlyWhenDelivered2469:
+    """Review r2 #1: across an outage every heartbeat is a NEW reply. The
+    bridge must commit a reply's retire counts (tier-filter --ack) only after
+    a channel accepted it, never for an undelivered one."""
+
+    def test_scan_acks_only_the_delivered_reply_across_distinct_replies(self):
+        replies = [f"[STATUS] heartbeat {n}\n{NEED}" for n in range(1, 5)]
+        slack_app = mock.MagicMock()
+        slack_app.client.chat_postMessage = mock.AsyncMock(side_effect=RuntimeError("invalid_auth"))
+        cli = FakeCLI(tier_filter={"send_now": [NEED], "queued": 0, "digest_due": False, "digest": []})
+        state: dict = {}
+        with mock.patch.object(bridge, "discover_conductors", return_value=OPS), \
+             mock.patch.object(bridge, "get_session_output", side_effect=replies), \
+             mock.patch.object(bridge, "run_cli", cli):
+            for n in range(4):
+                if n == 3:
+                    slack_app.client.chat_postMessage = mock.AsyncMock()  # token fixed
+                _run(bridge.need_scan_cycle(SCAN_CONFIG, state, lambda: None,
+                                            slack_app=slack_app, slack_channel_id="C1"))
+                if n < 3:
+                    assert cli.reply_acks == [] and state == {}, (n, cli.reply_acks, state)
+        rids = [hashlib.sha256(r.encode("utf-8")).hexdigest() for r in replies]
+        assert cli.filter_reply_ids() == rids
+        assert cli.reply_acks == [rids[3]]
+        assert slack_app.client.chat_postMessage.await_args.kwargs["text"] == "Conductor alert:\n" + NEED
+
+    def test_deliver_tiered_reply_acks_after_delivery_only(self):
+        filtered = {"lines": [NEED], "digest": [{"id": "i1", "text": "x"}], "counts": {}, "reply_id": "r1"}
+
+        async def go(ok):
+            async def deliver(_text):
+                return ok
+            return await bridge.deliver_tiered_reply(
+                asyncio.get_running_loop(), "ops", "default", filtered, "", deliver)
+
+        cli = FakeCLI()
         with mock.patch.object(bridge, "run_cli", cli):
-            bridge.tier_filter_reply("ops", "default", NEED, {})
-        assert "--reply-id" not in cli.calls[0]
+            assert _run(go(False)) is False
+            assert cli.calls == []  # nothing acked for a failed send
+            assert _run(go(True)) is True
+        assert cli.acked == ["i1"] and cli.reply_acks == ["r1"]
+
+        # Fallback result (CLI unavailable): no reply id, nothing to commit.
+        cli = FakeCLI()
+        with mock.patch.object(bridge, "run_cli", cli):
+            filtered = dict(filtered, digest=[], reply_id=None)
+            assert _run(go(True)) is True
+        assert cli.calls == []
+
+    def test_heartbeat_tick_acks_only_delivered_replies(self, monkeypatch, tmp_path):
+        """Drive the bridge-tick heartbeat_loop: two ticks while Slack is
+        down, then one that lands. Each tick filters under a fresh reply id,
+        and only the delivered tick's id is acked."""
+
+        class _Stop(Exception):
+            pass
+
+        ticks = iter([1, 2, 3])
+        tick_no = {"n": 0}
+        real_sleep = asyncio.sleep
+
+        async def fake_sleep(_seconds):
+            try:
+                tick_no["n"] = next(ticks)
+            except StopIteration:
+                raise _Stop()
+            await real_sleep(0)
+
+        def sessions(_profile):  # a new waiting session each tick: never "unchanged"
+            return [{"title": f"w{tick_no['n']}", "status": "waiting", "group": "ops", "path": "/p"}]
+
+        async def running(_name, _profile):
+            return True
+
+        posts: list[str] = []
+
+        async def post(channel, text):
+            posts.append(text)
+            if tick_no["n"] < 3:
+                raise RuntimeError("invalid_auth")
+
+        slack_app = mock.MagicMock()
+        slack_app.client.chat_postMessage = mock.AsyncMock(side_effect=post)
+        cli = FakeCLI(tier_filter={"send_now": [NEED], "queued": 0, "digest_due": False, "digest": []})
+        monkeypatch.setattr(bridge, "CONDUCTOR_DIR", tmp_path)
+        monkeypatch.setattr(bridge, "resolve_data_dir", lambda *_m: tmp_path)
+        monkeypatch.setattr(bridge, "_os_heartbeat_daemon_installed", lambda: False)
+        monkeypatch.setattr(bridge.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(bridge, "discover_conductors", lambda: [{"name": "ops", "profile": "default"}])
+        monkeypatch.setattr(bridge, "get_sessions_list", sessions)
+        monkeypatch.setattr(bridge, "invoke_hook", lambda *_a, **_k: None)
+        monkeypatch.setattr(bridge, "ensure_conductor_running", running)
+        monkeypatch.setattr(bridge, "get_session_status", lambda *_a, **_k: "idle")
+        monkeypatch.setattr(bridge, "hook_driven_interactive", lambda *_a, **_k: (False, True))
+        monkeypatch.setattr(bridge, "capture_pane", lambda *_a, **_k: "")
+        monkeypatch.setattr(bridge, "send_to_conductor", lambda *_a, **_k: (True, "[STATUS] x\n" + NEED, None))
+        monkeypatch.setattr(bridge, "run_cli", cli)
+        with pytest.raises(_Stop):
+            _run(bridge.heartbeat_loop(
+                {"heartbeat_interval": 1, "telegram": {"configured": False}},
+                slack_app=slack_app, slack_channel_id="C1",
+            ))
+        rids = cli.filter_reply_ids()
+        assert len(posts) == 3 and len(rids) == 3 and len(set(rids)) == 3, (posts, rids)
+        assert cli.reply_acks == [rids[2]]
 
 
 class StatefulCLI:

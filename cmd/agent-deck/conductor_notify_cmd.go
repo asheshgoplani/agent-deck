@@ -205,11 +205,14 @@ func runConductorTierFilter(stdout io.Writer, stdin io.Reader, args []string, pr
 	fs := flag.NewFlagSet("conductor tier-filter", flag.ContinueOnError)
 	conductor := fs.String("conductor", "", "conductor name (default: the conductor running this command)")
 	asJSON := fs.Bool("json", false, "emit JSON")
-	replyID := fs.String("reply-id", "", "id of this reply; re-filtering the same id (a retried send) does not advance the retire count")
+	replyID := fs.String("reply-id", "", "id of this reply; its retire counts stay pending until --ack <id> confirms delivery")
+	ackID := fs.String("ack", "", "confirm the reply filtered under this --reply-id reached the human (commits its retire counts; reads no stdin)")
 	fs.Usage = func() {
 		fmt.Fprintln(stdout, "Usage: agent-deck conductor tier-filter [--json] [--conductor <name>] [--reply-id <id>] < reply.txt")
+		fmt.Fprintln(stdout, "       agent-deck conductor tier-filter [--json] [--conductor <name>] --ack <reply-id>")
 		fmt.Fprintln(stdout, "Apply the human tier rules to a conductor reply on stdin: urgent lines to send now")
 		fmt.Fprintln(stdout, "(retired after [conductor] need_retire_cycles), info lines queued, digest when due.")
+		fmt.Fprintln(stdout, "With --reply-id the retire count advances only once --ack confirms the send.")
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 	}
@@ -219,6 +222,9 @@ func runConductorTierFilter(stdout io.Writer, stdin io.Reader, args []string, pr
 	name, err := resolveHumanConductor(*conductor, profile)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(*ackID) != "" {
+		return runConductorTierFilterAck(stdout, name, strings.TrimSpace(*ackID), *asJSON)
 	}
 	reply, err := io.ReadAll(io.LimitReader(stdin, 4<<20))
 	if err != nil {
@@ -248,5 +254,20 @@ func runConductorTierFilter(stdout io.Writer, stdin io.Reader, args []string, pr
 		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintf(stdout, "send_now=%d queued=%d digest_due=%t digest=%d\n", len(res.SendNow), res.Queued, res.DigestDue, len(res.Digest))
+	return nil
+}
+
+// runConductorTierFilterAck commits the retire counts of a delivered reply.
+// Acking an id that is not the pending one (already acked, or superseded by a
+// later reply) succeeds and reports committed=false.
+func runConductorTierFilterAck(stdout io.Writer, name, replyID string, asJSON bool) error {
+	committed, err := session.AckTierFilterReply(name, replyID, time.Now())
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return json.NewEncoder(stdout).Encode(map[string]any{"conductor": name, "reply_id": replyID, "committed": committed})
+	}
+	fmt.Fprintf(stdout, "reply %s committed=%t for %s\n", replyID, committed, name)
 	return nil
 }

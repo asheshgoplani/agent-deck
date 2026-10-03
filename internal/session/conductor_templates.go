@@ -24,7 +24,7 @@ record you already have unless the text is clipped and you need the rest.`,
 		`Your Stop hook drains the same queue
 automatically at each turn boundary, so this heartbeat drain is the idle-conductor
 fallback — together they guarantee no completion is missed whether you are busy or idle.`, 1)
-	template = strings.Replace(template, conductorHeartbeatReplyDoc, conductorHeartbeatReplyDocV0, 1)
+	template = preHumanTierConductorInstructionsTemplate(template)
 	template = strings.Replace(template,
 		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | **Always triage with this compact count summary first:** `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`,
 		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | Get counts: `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`, 1)
@@ -64,9 +64,17 @@ func preSubstateGuidanceConductorInstructionsTemplate(template string) string {
 		`| `+"`"+`error`+"`"+` (red) | Session crashed or missing | Try `+"`"+`session restart`+"`"+`. If that fails, escalate. |`, 1)
 }
 
+// preHumanTierConductorInstructionsTemplate reconstructs what v1.16.24
+// shipped: the current template minus the #2469 human-tier reply format
+// ([urgent]/[info] markers, conductor notify). Per-name templates never
+// carried it, so this is a no-op for them.
+func preHumanTierConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template, conductorHeartbeatReplyDoc, conductorHeartbeatReplyDocV0, 1)
+}
+
 // conductorHeartbeatReplyDoc is the tail of the heartbeat reply-format
 // example as of #2469 (urgent/info markers, conductor notify);
-// conductorHeartbeatReplyDocV0 is the wording v1.11.0-v1.16.23 shipped.
+// conductorHeartbeatReplyDocV0 is the wording v1.11.0-v1.16.24 shipped.
 const (
 	conductorHeartbeatReplyDoc   = "[info] docs-lane merged its PR\n```\n\nYour response is parsed by tier: `NEED:` / `[urgent]` lines reach the user now (retired after 3 unanswered cycles), `[info]` lines are batched into a digest, everything else (`[STATUS]`, `AUTO:`) stays local.\n\nOutside a heartbeat (a wake-nudge or Stop-block turn) nothing you write reaches the user, so for a decision the user must act on now run `agent-deck conductor notify --tier urgent \"<one line>\"`, and `--tier info \"<one line>\"` for progress worth a digest. At most one urgent per decision."
 	conductorHeartbeatReplyDocV0 = "```\n\nYour response is parsed: if it contains `NEED:` lines, those get forwarded to the user (via remote channels if configured, or visible in the TUI/task-log)."
@@ -81,14 +89,19 @@ const (
 //
 // Verified against fixtures rendered from the actual shipped source
 // (testdata/conductor_templates_shipped.tsv): this reconstructs the
+// v1.16.24 generation (only the heartbeat reply format differs), the
 // v1.11.0-v1.16.10 generation and the v1.10.9-v1.10.11 generation. It does
 // NOT reconstruct v1.9.73 or v1.9.70, which shipped further template
 // changes (Codex `session approve` docs, the local-first rewrite) that are
 // not reverted here; a conductor instructions file last written by one of
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
+	var gens []string
+	if v11624 := preHumanTierConductorInstructionsTemplate(template); v11624 != template {
+		gens = append(gens, v11624)
+	}
 	previous := previousConductorInstructionsTemplate(template)
-	gens := []string{previous}
+	gens = append(gens, previous)
 	if older := preSubstateGuidanceConductorInstructionsTemplate(previous); older != previous {
 		gens = append(gens, older)
 	}

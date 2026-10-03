@@ -24,8 +24,9 @@ import (
 // Layout under <data>/runtime/human-outbox/:
 //
 //	<conductor>.jsonl      outbox records + digest-flush markers
-//	<conductor>.need.json  urgent-line retire counts (replaces the bridge's
-//	                       in-memory filter_need_lines counters)
+//	<conductor>.need.json  urgent-line retire counts as of the last delivered
+//	                       reply, plus the pending (sent, unacked) one; replaces
+//	                       the bridge's in-memory filter_need_lines counters
 //	<conductor>.lock       cross-process lock (notify, bridge ack, tier-filter)
 
 // HumanOutboxRecord is one item for the human. Tier is "urgent" or "info";
@@ -47,6 +48,9 @@ const (
 	// humanOutboxDedupWindow: the same text twice within it is one record.
 	humanOutboxDedupWindow = 24 * time.Hour
 	humanDigestMarkerTier  = "digest"
+	// The outbox holds what a conductor tells the human: owner-only.
+	humanOutboxDirMode  = 0o700
+	humanOutboxFileMode = 0o600
 )
 
 var humanOutboxMu sync.Mutex
@@ -78,11 +82,11 @@ func withHumanOutboxLock(conductor string, fn func() error) error {
 	humanOutboxMu.Lock()
 	defer humanOutboxMu.Unlock()
 	dir := HumanOutboxDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, humanOutboxDirMode); err != nil {
 		return err
 	}
 	lockPath := filepath.Join(dir, sanitizeInboxName(conductor)+".lock")
-	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- sanitized name under the data dir
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, humanOutboxFileMode) // #nosec G304 -- sanitized name under the data dir
 	if err != nil {
 		return err
 	}
@@ -169,7 +173,7 @@ func appendJSONLine(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644) // #nosec G304 -- sanitized name under the data dir
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, humanOutboxFileMode) // #nosec G304 -- sanitized name under the data dir
 	if err != nil {
 		return err
 	}
@@ -261,7 +265,7 @@ func rewriteHumanOutboxLocked(conductor string, all []HumanOutboxRecord, lastFlu
 	if !lastFlush.IsZero() {
 		writeJSONLine(&buf, HumanOutboxRecord{ID: "digest", TS: lastFlush, Tier: humanDigestMarkerTier, Acked: true})
 	}
-	return writeFileDurable(HumanOutboxPath(conductor), buf.Bytes(), 0o644)
+	return writeFileDurable(HumanOutboxPath(conductor), buf.Bytes(), humanOutboxFileMode)
 }
 
 func writeJSONLine(buf *bytes.Buffer, v any) {
@@ -344,11 +348,16 @@ func TierFilter(conductor, reply string, now time.Time) (sendNow []string, queue
 	return TierFilterReply(conductor, "", reply, now)
 }
 
-// TierFilterReply is TierFilter for a caller that may retry the same reply
-// (the bridge's OS-heartbeat scan re-sends a reply whose delivery failed).
-// A non-empty replyID equal to the one the ledger last saw recomputes from the
-// counts that call started with, so N failed sends of one reply are still one
-// retire cycle; an empty replyID makes every call a new cycle (heartbeats).
+// TierFilterReply is TierFilter for a caller that delivers the result
+// itself (the bridge). With a non-empty replyID the computed counts stay
+// pending until AckTierFilterReply(replyID) confirms the platform accepted
+// the message, so a failed send, of this reply or of any later one, never
+// advances the retire count: every reply is counted from the counts of the
+// last delivered one. A reply with nothing to send needs no delivery and
+// commits at once (this is how a vanished line resets its count). Re-filtering
+// the last delivered reply (a bridge that restarted before saving its own
+// state) recomputes from the counts that reply started with. An empty replyID
+// commits at once, like TierFilter.
 func TierFilterReply(conductor, replyID, reply string, now time.Time) (sendNow []string, queued int, err error) {
 	if strings.TrimSpace(reply) == "" {
 		return nil, 0, nil
@@ -359,7 +368,7 @@ func TierFilterReply(conductor, replyID, reply string, now time.Time) (sendNow [
 		ledger := loadHumanNeedLedger(conductor)
 		prev := ledger.Counts
 		if replyID != "" && replyID == ledger.ReplyID {
-			prev = ledger.Base // a retry of the same reply: not a new cycle
+			prev = ledger.Base // the last delivered reply again: not a new cycle
 		}
 		counts := map[string]int{}
 		for _, raw := range strings.Split(reply, "\n") {
@@ -387,27 +396,74 @@ func TierFilterReply(conductor, replyID, reply string, now time.Time) (sendNow [
 				}
 			}
 		}
-		next := humanNeedLedger{Counts: counts, UpdatedAt: now}
-		if replyID != "" {
-			next.ReplyID, next.Base = replyID, prev
+		if replyID == "" || len(sendNow) == 0 {
+			ledger.commit(replyID, prev, counts)
+		} else {
+			ledger.Pending = &humanNeedPending{ReplyID: replyID, Base: prev, Counts: counts}
 		}
-		data, merr := json.Marshal(next)
-		if merr != nil {
-			return merr
-		}
-		return writeFileDurable(humanNeedLedgerPath(conductor), data, 0o644)
+		ledger.UpdatedAt = now
+		return saveHumanNeedLedger(conductor, ledger)
 	})
 	return sendNow, queued, err
 }
 
-// humanNeedLedger is <conductor>.need.json: the retire counts after the last
-// reply, plus that reply's id and the counts it started from (Base) so a retry
-// of the same reply recomputes instead of advancing.
+// AckTierFilterReply confirms that the reply TierFilterReply computed under
+// replyID reached the human, committing its retire counts. It reports whether
+// this call committed them: an ack for any other id (a reply superseded by a
+// later one, or already acked) is a no-op.
+func AckTierFilterReply(conductor, replyID string, now time.Time) (committed bool, err error) {
+	replyID = strings.TrimSpace(replyID)
+	if replyID == "" {
+		return false, errors.New("tier-filter ack: empty reply id")
+	}
+	err = withHumanOutboxLock(conductor, func() error {
+		ledger := loadHumanNeedLedger(conductor)
+		p := ledger.Pending
+		if p == nil || p.ReplyID != replyID {
+			return nil
+		}
+		ledger.commit(p.ReplyID, p.Base, p.Counts)
+		ledger.UpdatedAt = now
+		committed = true
+		return saveHumanNeedLedger(conductor, ledger)
+	})
+	return committed, err
+}
+
+// humanNeedLedger is <conductor>.need.json: the retire counts as of the last
+// delivered reply, that reply's id and the counts it started from (Base, so
+// re-filtering it recomputes), and the newest computed but not yet delivered
+// reply (Pending).
 type humanNeedLedger struct {
-	Counts    map[string]int `json:"counts"`
-	ReplyID   string         `json:"reply_id,omitempty"`
-	Base      map[string]int `json:"base,omitempty"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	Counts    map[string]int    `json:"counts"`
+	ReplyID   string            `json:"reply_id,omitempty"`
+	Base      map[string]int    `json:"base,omitempty"`
+	Pending   *humanNeedPending `json:"pending,omitempty"`
+	UpdatedAt time.Time         `json:"updated_at"`
+}
+
+// humanNeedPending is a filtered reply awaiting AckTierFilterReply.
+type humanNeedPending struct {
+	ReplyID string         `json:"reply_id"`
+	Base    map[string]int `json:"base,omitempty"`
+	Counts  map[string]int `json:"counts"`
+}
+
+// commit makes counts the delivered state and drops any pending reply: a
+// later reply supersedes an undelivered earlier one.
+func (l *humanNeedLedger) commit(replyID string, base, counts map[string]int) {
+	l.Counts, l.ReplyID, l.Base, l.Pending = counts, replyID, nil, nil
+	if replyID != "" {
+		l.Base = base
+	}
+}
+
+func saveHumanNeedLedger(conductor string, ledger humanNeedLedger) error {
+	data, err := json.Marshal(ledger)
+	if err != nil {
+		return err
+	}
+	return writeFileDurable(humanNeedLedgerPath(conductor), data, humanOutboxFileMode)
 }
 
 func loadHumanNeedLedger(conductor string) humanNeedLedger {

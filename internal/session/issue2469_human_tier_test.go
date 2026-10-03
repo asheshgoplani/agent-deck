@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -245,6 +246,25 @@ func TestIssue2469_IdentityCarriesSentinel(t *testing.T) {
 	}
 }
 
+// mustTierFilterReply filters reply under id and returns what to send.
+func mustTierFilterReply(t *testing.T, id, reply string) []string {
+	t.Helper()
+	send, _, err := TierFilterReply("ops", id, reply, time.Now())
+	if err != nil {
+		t.Fatalf("TierFilterReply(%s): %v", id, err)
+	}
+	return send
+}
+
+func mustAckTierFilterReply(t *testing.T, id string) bool {
+	t.Helper()
+	committed, err := AckTierFilterReply("ops", id, time.Now())
+	if err != nil {
+		t.Fatalf("AckTierFilterReply(%s): %v", id, err)
+	}
+	return committed
+}
+
 // The OS-heartbeat scan retries a reply whose delivery failed. Each retry
 // must not count as a retire cycle, or a NEED line is retired (or first seen
 // as STILL BLOCKED) without ever reaching the human.
@@ -252,36 +272,137 @@ func TestIssue2469_RetriedReplyDoesNotAdvanceRetire(t *testing.T) {
 	humanTierHome(t, "")
 	const need = "NEED: api-fix - staging or prod?"
 	reply := "[STATUS] 1 needs you.\n" + need
-	now := time.Now()
-	filter := func(id string) []string {
-		t.Helper()
-		send, _, err := TierFilterReply("ops", id, reply, now)
-		if err != nil {
-			t.Fatalf("TierFilterReply: %v", err)
-		}
-		return send
-	}
 	for attempt := 1; attempt <= 5; attempt++ { // 4 failed sends, then the one that lands
-		if send := filter("r1"); !reflect.DeepEqual(send, []string{need}) {
+		if send := mustTierFilterReply(t, "r1", reply); !reflect.DeepEqual(send, []string{need}) {
 			t.Fatalf("attempt %d of the same reply: got %q, want the NEED line", attempt, send)
 		}
 	}
-	if counts := loadHumanNeedLedger("ops").Counts; counts[need] != 1 {
-		t.Fatalf("retries of one reply are one cycle, ledger=%v", counts)
+	if counts := loadHumanNeedLedger("ops").Counts; counts[need] != 0 {
+		t.Fatalf("nothing acked yet: the delivered counts must not move, ledger=%v", counts)
 	}
-	// New replies still advance and retire as before, retries included.
-	if send := filter("r2"); !reflect.DeepEqual(send, []string{need}) {
+	if !mustAckTierFilterReply(t, "r1") || loadHumanNeedLedger("ops").Counts[need] != 1 {
+		t.Fatalf("the delivered reply is one cycle, ledger=%v", loadHumanNeedLedger("ops").Counts)
+	}
+	// New replies still advance and retire as before, each once delivered.
+	if send := mustTierFilterReply(t, "r2", reply); !reflect.DeepEqual(send, []string{need}) {
 		t.Fatalf("cycle 2: %q", send)
 	}
+	mustAckTierFilterReply(t, "r2")
 	still := []string{"STILL BLOCKED (3 cycles, no reply): " + need}
 	for i := 0; i < 2; i++ {
-		if send := filter("r3"); !reflect.DeepEqual(send, still) {
+		if send := mustTierFilterReply(t, "r3", reply); !reflect.DeepEqual(send, still) {
 			t.Fatalf("cycle 3 (try %d): %q", i+1, send)
 		}
 	}
-	if send := filter("r4"); send != nil {
+	mustAckTierFilterReply(t, "r3")
+	if send := mustTierFilterReply(t, "r4", reply); send != nil {
 		t.Fatalf("cycle 4 must drop the line, got %q", send)
 	}
+}
+
+// Review r2 #1: in OS-heartbeat mode every heartbeat is a NEW reply that
+// repeats a standing NEED line. While the channel is down (stale token,
+// invalid_auth, no network) none of them is delivered, so none may advance the
+// retire count: the first reply that does get through must carry the plain
+// NEED line, never STILL BLOCKED and never nothing.
+func TestIssue2469_FailedDistinctRepliesDoNotAdvanceRetire(t *testing.T) {
+	for _, failed := range []int{2, 3, 6} {
+		t.Run(fmt.Sprintf("%d failed heartbeats", failed), func(t *testing.T) {
+			humanTierHome(t, "")
+			const need = "NEED: api-fix - staging or prod?"
+			reply := func(n int) string {
+				return fmt.Sprintf("[STATUS] heartbeat %d\n%s", n, need)
+			}
+			for n := 1; n <= failed; n++ { // sent, platform refused, never acked
+				if send := mustTierFilterReply(t, fmt.Sprintf("rid-%d", n), reply(n)); !reflect.DeepEqual(send, []string{need}) {
+					t.Fatalf("failed heartbeat %d: %q, want the plain NEED line", n, send)
+				}
+			}
+			// A late ack for a superseded reply is ignored.
+			if mustAckTierFilterReply(t, "rid-1") {
+				t.Fatal("ack of a superseded reply must not commit its counts")
+			}
+			fixed := fmt.Sprintf("rid-%d", failed+1)
+			if send := mustTierFilterReply(t, fixed, reply(failed+1)); !reflect.DeepEqual(send, []string{need}) {
+				t.Fatalf("first delivered heartbeat after the outage: %q, want the plain NEED line", send)
+			}
+			if !mustAckTierFilterReply(t, fixed) || mustAckTierFilterReply(t, fixed) {
+				t.Fatal("the delivered reply commits exactly once")
+			}
+			if c := loadHumanNeedLedger("ops").Counts[need]; c != 1 {
+				t.Fatalf("one delivery is one cycle, got %d", c)
+			}
+		})
+	}
+}
+
+// A reply with nothing to send needs no delivery, so it commits at once: a
+// vanished line resets even while the channel is down, and the bridge
+// restarting before it saved its state re-filters the last delivered reply
+// from the counts that reply started with.
+func TestIssue2469_TierFilterReplyCommitRules(t *testing.T) {
+	humanTierHome(t, "")
+	const need = "NEED: api-fix - staging or prod?"
+	mustTierFilterReply(t, "a", need)
+	mustAckTierFilterReply(t, "a")
+	mustTierFilterReply(t, "b", need) // cycle 2, delivery fails
+	if send := mustTierFilterReply(t, "c", "[STATUS] All clear."); send != nil {
+		t.Fatalf("status-only reply sent %q", send)
+	}
+	if l := loadHumanNeedLedger("ops"); len(l.Counts) != 0 || l.Pending != nil {
+		t.Fatalf("a reply without the line resets the count and drops the undelivered one: %+v", l)
+	}
+	if mustAckTierFilterReply(t, "b") {
+		t.Fatal("an ack for a reply superseded by a nothing-to-send reply must be ignored")
+	}
+
+	mustTierFilterReply(t, "d", need)
+	mustAckTierFilterReply(t, "d")
+	mustTierFilterReply(t, "e", need)
+	mustAckTierFilterReply(t, "e")
+	// Replaying e (bridge restarted before saving that it handled e): the
+	// same message again, still cycle 2, not cycle 3.
+	if send := mustTierFilterReply(t, "e", need); !reflect.DeepEqual(send, []string{need}) {
+		t.Fatalf("replay of the delivered reply: %q", send)
+	}
+	mustAckTierFilterReply(t, "e")
+	if c := loadHumanNeedLedger("ops").Counts[need]; c != 2 {
+		t.Fatalf("replay must not advance, got %d", c)
+	}
+	if _, err := AckTierFilterReply("ops", " ", time.Now()); err == nil {
+		t.Fatal("an empty reply id must be rejected")
+	}
+}
+
+// The outbox and the retire ledger hold what a conductor tells the human:
+// owner-only directory and files.
+func TestIssue2469_HumanOutboxIsOwnerOnly(t *testing.T) {
+	humanTierHome(t, "")
+	if _, _, err := AppendHumanOutbox("ops", TurnTierUrgent, "prod is down"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := TierFilterReply("ops", "r1", "NEED: x", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	assertMode := func(path string, want os.FileMode) {
+		t.Helper()
+		st, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := st.Mode().Perm(); got != want {
+			t.Fatalf("%s mode %o, want %o", filepath.Base(path), got, want)
+		}
+	}
+	assertMode(HumanOutboxDir(), 0o700)
+	assertMode(HumanOutboxPath("ops"), 0o600)
+	assertMode(humanNeedLedgerPath("ops"), 0o600)
+	// The rewrite path (ack) keeps the file owner-only.
+	items, _ := ListHumanOutbox("ops", true)
+	if _, err := AckHumanOutbox("ops", []string{items[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(HumanOutboxPath("ops"), 0o600)
 }
 
 // Urgent never dedups into info: the same text queued as info first must not

@@ -1852,14 +1852,20 @@ def tier_filter_reply(
 
     Returns {"lines": urgent lines to send now, "digest": info items due to
     ride along (ack their ids after delivery), "counts": filter_need_lines
-    counts}. The in-process filter_need_lines always runs so its counts stay
-    current; its lines are used only when the CLI call fails (old binary,
+    counts, "reply_id": the id to ack once the lines were delivered, None on
+    the fallback}. The in-process filter_need_lines always runs so its counts
+    stay current; its lines are used only when the CLI call fails (old binary,
     missing CLI), which keeps today's NEED forwarding as the fallback.
-    reply_id marks a reply the caller may retry after a failed send: the CLI
-    then recomputes instead of counting the retry as another retire cycle.
+    reply_id: the CLI keeps this reply's retire counts pending until
+    ack_tier_filter_reply(reply_id) confirms a channel accepted the message,
+    so an undelivered reply (a stale token, a platform outage) never advances
+    a NEED line toward STILL BLOCKED or retirement.
     """
     local = filter_need_lines(response, prev_counts, threshold)
-    out = {"lines": local["alerts"] + local["retired"], "digest": [], "counts": local["counts"]}
+    out = {
+        "lines": local["alerts"] + local["retired"], "digest": [],
+        "counts": local["counts"], "reply_id": None,
+    }
     args = ["conductor", "tier-filter", "--json", "--conductor", name]
     if reply_id:
         args += ["--reply-id", reply_id]
@@ -1874,6 +1880,7 @@ def tier_filter_reply(
         log.warning("tier-filter [%s]: CLI unavailable, using in-process NEED filter", name)
         return out
     out["lines"] = [str(line) for line in data["send_now"]]
+    out["reply_id"] = reply_id or None
     if data.get("digest_due") and isinstance(data.get("digest"), list):
         out["digest"] = [d for d in data["digest"] if isinstance(d, dict) and d.get("id")]
     return out
@@ -1908,6 +1915,47 @@ def ack_human_outbox(name: str, profile: str | None, ids: list[str]) -> bool:
     if not ok:
         log.error("Human outbox [%s]: ack of %d item(s) failed; they will be resent", name, len(ids))
     return ok
+
+
+def ack_tier_filter_reply(name: str, profile: str | None, reply_id: str) -> bool:
+    """Commit a delivered reply's NEED retire counts; True when the CLI took it."""
+    ok = run_cli(
+        "conductor", "tier-filter", "--json", "--conductor", name, "--ack", reply_id,
+        profile=profile, timeout=30,
+    ).returncode == 0
+    if not ok:
+        log.error("tier-filter [%s]: ack of reply %s failed; its NEED lines will repeat", name, reply_id[:12])
+    return ok
+
+
+def heartbeat_reply_id(name: str, response: str) -> str:
+    """A fresh id for one bridge-tick heartbeat reply (two ticks may return
+    the same text, and each delivered one is its own retire cycle)."""
+    return hashlib.sha256(f"{name}\0{time.time_ns()}\0{response}".encode("utf-8")).hexdigest()
+
+
+async def deliver_tiered_reply(loop, name: str, profile: str | None, filtered: dict, prefix: str, deliver) -> bool:
+    """Send one tier_filter_reply result: its urgent lines plus any due digest.
+
+    deliver(text) -> bool sends to every channel. Only after a channel
+    accepted the message are the digest items acked and the reply's retire
+    counts committed. Returns True when delivered or when there was nothing to
+    send, False when no channel accepted it (nothing acked: retry later).
+    """
+    lines, digest = filtered["lines"], filtered["digest"]
+    if not lines and not digest:
+        return True
+    if not await deliver(human_alert_message(prefix, lines, digest)):
+        return False
+    if digest:
+        await loop.run_in_executor(None, functools.partial(
+            ack_human_outbox, name, profile, [str(d["id"]) for d in digest],
+        ))
+    if lines and filtered.get("reply_id"):
+        await loop.run_in_executor(None, functools.partial(
+            ack_tier_filter_reply, name, profile, filtered["reply_id"],
+        ))
+    return True
 
 
 def build_human_outbox_message(name: str, items: list[dict], digest_due: bool) -> tuple[str, list[str]]:
@@ -3620,6 +3668,12 @@ async def need_scan_cycle(
     selected = select_heartbeat_conductors(all_conductors)
     changed = False
 
+    async def deliver(text: str) -> bool:
+        return await _deliver_need_alert(
+            text, tg_user_id, telegram_bot, slack_app,
+            slack_channel_id, discord_bot, discord_channel_id,
+        )
+
     # Forget conductors that are gone or no longer heartbeat-enabled so the
     # state stays bounded.
     active = {c.get("name", "") for c in selected}
@@ -3649,28 +3703,22 @@ async def need_scan_cycle(
                 continue  # same reply as the last scan: already handled
 
             async with _human_send_lock(name):
-                # reply_id: a retry after a failed send is not another cycle.
+                # reply_id: the retire counts advance only once this reply is
+                # delivered and acked, never for a failed send or a retry.
                 filtered = await loop.run_in_executor(None, functools.partial(
                     tier_filter_reply, name, profile, response, entry.get("counts") or {},
                     config.get("need_retire_cycles", NEED_RETIRE_THRESHOLD), reply_id,
                 ))
-                lines, digest = filtered["lines"], filtered["digest"]
-                if lines or digest:
-                    prefix = f"[{name}] " if len(all_conductors) > 1 else ""
-                    alert_msg = human_alert_message(prefix, lines, digest)
-                    if not await _deliver_need_alert(
-                        alert_msg, tg_user_id, telegram_bot, slack_app,
-                        slack_channel_id, discord_bot, discord_channel_id,
-                    ):
-                        log.error(
-                            "NEED scan [%s]: %d NEED line(s) NOT delivered (no channel ok); retrying next scan",
-                            name, len(lines),
-                        )
-                        continue
+                lines = filtered["lines"]
+                prefix = f"[{name}] " if len(all_conductors) > 1 else ""
+                if not await deliver_tiered_reply(loop, name, profile, filtered, prefix, deliver):
+                    log.error(
+                        "NEED scan [%s]: %d NEED line(s) NOT delivered (no channel ok); retrying next scan",
+                        name, len(lines),
+                    )
+                    continue
+                if lines:
                     log.info("NEED scan [%s]: forwarded %d NEED line(s)", name, len(lines))
-                    await loop.run_in_executor(None, functools.partial(
-                        ack_human_outbox, name, profile, [str(d["id"]) for d in digest],
-                    ))
 
             need_state[name] = {"reply": reply_id, "counts": filtered["counts"]}
             changed = True
@@ -3777,6 +3825,12 @@ async def heartbeat_loop(
 
     interval_seconds = global_interval * 60
     tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
+
+    async def deliver_alert(text: str) -> bool:
+        return await _deliver_need_alert(
+            text, tg_user_id, telegram_bot, slack_app,
+            slack_channel_id, discord_bot, discord_channel_id,
+        )
 
     # Per-conductor NEED: dedup state for issue #971 — tracks consecutive
     # identical NEED lines so we can escalate-once-then-drop instead of
@@ -4032,30 +4086,21 @@ async def heartbeat_loop(
                 # #971, counts on disk via `conductor tier-filter`), info into
                 # the human outbox, a due digest rides along. Falls back to the
                 # in-process filter_need_lines when the CLI call fails.
+                # The retire counts (on disk, and the in-memory fallback)
+                # advance only for a delivered reply.
                 prev_counts = need_state_by_conductor.get(name, {})
                 async with _human_send_lock(name):
                     filtered = await loop.run_in_executor(None, functools.partial(
                         tier_filter_reply, name, profile, response, prev_counts,
                         config.get("need_retire_cycles", NEED_RETIRE_THRESHOLD),
+                        heartbeat_reply_id(name, response),
                     ))
-                    need_state_by_conductor[name] = filtered["counts"]
-
-                    forwarded_need_lines = filtered["lines"]
-                    digest = filtered["digest"]
-                    has_alerts = bool(forwarded_need_lines)
-                    if has_alerts or digest:
-                        prefix = (
-                            f"[{name}] " if len(all_conductors) > 1 else ""
-                        )
-                        alert_msg = human_alert_message(prefix, forwarded_need_lines, digest)
-                        if await _deliver_need_alert(
-                            alert_msg, tg_user_id, telegram_bot, slack_app,
-                            slack_channel_id, discord_bot, discord_channel_id,
-                        ):
-                            # Digest items stay queued until a channel accepted them.
-                            await loop.run_in_executor(None, functools.partial(
-                                ack_human_outbox, name, profile, [str(d["id"]) for d in digest],
-                            ))
+                    has_alerts = bool(filtered["lines"])
+                    prefix = f"[{name}] " if len(all_conductors) > 1 else ""
+                    if await deliver_tiered_reply(loop, name, profile, filtered, prefix, deliver_alert):
+                        need_state_by_conductor[name] = filtered["counts"]
+                    else:
+                        log.error("Heartbeat [%s]: alert NOT delivered (no channel ok)", name)
 
                 # Run post-heartbeat hook (non-gating)
                 invoke_hook(profile, "post-heartbeat", {
