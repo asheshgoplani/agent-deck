@@ -187,8 +187,9 @@ const remoteTalkbackHorizon = consumedTurnsTTL
 
 // exportJournal is one child's retained turn journal, as the export read it.
 type exportJournal struct {
-	child string
-	lines []TurnJournalEntry
+	child   string
+	profile string
+	lines   []TurnJournalEntry
 }
 
 // readExportJournals reads every turn journal written at or after since.
@@ -215,7 +216,8 @@ func readExportJournals(since time.Time) ([]exportJournal, error) {
 		if len(lines) == 0 || strings.TrimSpace(lines[len(lines)-1].Child) == "" {
 			continue
 		}
-		out = append(out, exportJournal{child: lines[len(lines)-1].Child, lines: lines})
+		tail := lines[len(lines)-1]
+		out = append(out, exportJournal{child: tail.Child, profile: tail.Profile, lines: lines})
 	}
 	return out, nil
 }
@@ -242,7 +244,10 @@ func readExportJournals(since time.Time) ([]exportJournal, error) {
 // cursor; a removed session's journal goes with it (rm sweep), so the cursor
 // tracks the live fleet, not history. Other parents' inboxes are never
 // exported here: the drain's --into parent decides where records land. The
-// no_notify opt-out filter applies as in ExportPendingRecords.
+// no_notify opt-out filter applies as in ExportPendingRecords, and a top-level
+// conductor's own journal never ships: the producer drops its turns on
+// purpose (self_conductor), so the legacy export never carries them either.
+// Its seq still enters the cursor, so a later reparent ships only new turns.
 func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	horizon := time.Now().Add(-remoteTalkbackHorizon)
 	next := RemoteCursor{Seqs: map[string]int64{}, TS: cursor.TS}
@@ -258,6 +263,20 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	unowned, err := ReadInboxEvents(UnownedInboxID)
 	if err != nil {
 		return RemoteExport{}, fmt.Errorf("export: unreadable inbox %s: %w", UnownedInboxID, err)
+	}
+	profiles := map[string]struct{}{}
+	for _, j := range journals {
+		profiles[j.profile] = struct{}{}
+	}
+	for _, ev := range ledger {
+		profiles[ev.Profile] = struct{}{}
+	}
+	for _, ev := range unowned {
+		profiles[ev.Profile] = struct{}{}
+	}
+	reg, err := loadExportRegistry(profiles)
+	if err != nil {
+		return RemoteExport{}, err
 	}
 	// The producer's committed transitions per child, in commit order: they
 	// seed the duplicate walk at a journal's first retained line.
@@ -286,6 +305,9 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		child, lines := j.child, j.lines
 		last := lines[len(lines)-1].Seq
 		next.Seqs[child] = last
+		if reg.selfConductor[exportRegistryKey(j.profile, child)] {
+			continue // self_conductor: the producer committed none of these
+		}
 		since, known := cursor.Seqs[child]
 		rendered, dropped := renderJournalTurns(lines, lastCommittedBefore(committed[child], lines[0].TS))
 		fresh := !known || last < since
@@ -363,11 +385,7 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		out = append(out, ev)
 	}
 
-	out = dedupByEventFingerprint(out)
-	out, err = dropSuppressedChildren(out)
-	if err != nil {
-		return RemoteExport{}, err
-	}
+	out = reg.dropOptedOut(dedupByEventFingerprint(out))
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].Timestamp.Equal(out[j].Timestamp) {
 			return out[i].Timestamp.Before(out[j].Timestamp)

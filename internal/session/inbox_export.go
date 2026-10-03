@@ -142,46 +142,77 @@ func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionN
 	}
 	profiles := map[string]struct{}{}
 	for _, ev := range events {
-		if p := strings.TrimSpace(ev.Profile); p != "" {
-			profiles[p] = struct{}{}
-		}
+		profiles[ev.Profile] = struct{}{}
 	}
+	reg, err := loadExportRegistry(profiles)
+	if err != nil {
+		return nil, err
+	}
+	return reg.dropOptedOut(events), nil
+}
 
-	suppressed := map[string]bool{} // "<profile>\x00<child>" -> true
-	titles := map[string]string{}   // same key -> registry title, for journal records that carry none
+// exportRegistry is the export's view of the registries its records name,
+// keyed by exportRegistryKey(profile, child).
+type exportRegistry struct {
+	optedOut      map[string]bool   // instanceAcceptsTransitionEvents is false
+	selfConductor map[string]bool   // isSelfSuppressedConductor (self_conductor)
+	titles        map[string]string // for journal records that carry no title
+}
+
+func exportRegistryKey(profile, child string) string {
+	return strings.TrimSpace(profile) + "\x00" + strings.TrimSpace(child)
+}
+
+// loadExportRegistry reads each named profile's registry once. A blank profile
+// is skipped: nothing can be proven about its children, so they are kept.
+func loadExportRegistry(profiles map[string]struct{}) (exportRegistry, error) {
+	reg := exportRegistry{optedOut: map[string]bool{}, selfConductor: map[string]bool{}, titles: map[string]string{}}
 	for profile := range profiles {
+		profile = strings.TrimSpace(profile)
+		if profile == "" {
+			continue
+		}
 		storage, err := NewStorageWithProfile(profile)
 		if err != nil {
 			// The registry is unavailable, so suppression is UNKNOWN. Failing is
 			// the honest answer: silently exporting could override an opt-out,
 			// and silently dropping could hide a completion.
-			return nil, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
+			return exportRegistry{}, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
 		}
 		instances, _, err := storage.LoadWithGroups()
 		storage.Close()
 		if err != nil {
-			return nil, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
+			return exportRegistry{}, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
 		}
 		for _, inst := range instances {
+			key := exportRegistryKey(profile, inst.ID)
 			if !instanceAcceptsTransitionEvents(inst) {
-				suppressed[profile+"\x00"+inst.ID] = true
+				reg.optedOut[key] = true
 			}
-			titles[profile+"\x00"+inst.ID] = inst.Title
+			if isSelfSuppressedConductor(inst) {
+				reg.selfConductor[key] = true
+			}
+			reg.titles[key] = inst.Title
 		}
 	}
+	return reg, nil
+}
 
+// dropOptedOut removes the records of opted-out children and fills in a
+// missing child title from the registry.
+func (r exportRegistry) dropOptedOut(events []TransitionNotificationEvent) []TransitionNotificationEvent {
 	out := make([]TransitionNotificationEvent, 0, len(events))
 	for _, ev := range events {
-		key := strings.TrimSpace(ev.Profile) + "\x00" + strings.TrimSpace(ev.ChildSessionID)
-		if suppressed[key] {
+		key := exportRegistryKey(ev.Profile, ev.ChildSessionID)
+		if r.optedOut[key] {
 			continue
 		}
 		if ev.ChildTitle == "" {
-			ev.ChildTitle = titles[key]
+			ev.ChildTitle = r.titles[key]
 		}
 		out = append(out, ev)
 	}
-	return out, nil
+	return out
 }
 
 // exportLedgerRecords reads the completion ledger and synthesizes one finished

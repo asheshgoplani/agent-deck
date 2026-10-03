@@ -548,18 +548,15 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 	if child.NoTransitionNotify {
 		return nil, false, deadLetterReasonNoNotify
 	}
-	// Top-level conductor self-suppress (issue #824 cause B): the root is not
-	// an orphan, drop silently.
-	if strings.TrimSpace(child.ParentSessionID) == "" && isConductorSessionTitle(child.Title) {
+	// Top-level (or self-pointing) conductor self-suppress (issue #824 cause
+	// B): the root is not an orphan, drop silently.
+	if isSelfSuppressedConductor(child) {
 		return nil, false, deadLetterReasonSelfConductor
 	}
 	// Orphan-on-creation guard (issue #805 cause A): log one WARN per orphan.
 	if strings.TrimSpace(child.ParentSessionID) == "" {
 		n.logOrphanOnce(event, child.ID)
 		return nil, false, deadLetterReasonOrphan
-	}
-	if strings.TrimSpace(child.ParentSessionID) == child.ID && isConductorSessionTitle(child.Title) {
-		return nil, false, deadLetterReasonSelfConductor
 	}
 	// Parent referenced but not present in this profile's registry: removed
 	// mid-flight, or the child's parent lives in a DIFFERENT profile (we only
