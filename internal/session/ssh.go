@@ -1387,11 +1387,11 @@ func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotifi
 // predates --after rejects the flag; that answer is
 // ErrRemoteCursorUnsupported so the caller falls back to the full export.
 func (r *SSHRunner) FetchRecordsAfter(ctx context.Context, cursor RemoteCursor) (RemoteExport, error) {
-	arg, err := json.Marshal(cursor)
+	payload, err := json.Marshal(cursor)
 	if err != nil {
 		return RemoteExport{}, err
 	}
-	output, err := r.runWithStdin(ctx, arg, "inbox", "export", "--json", "--after", "-", "--with-writer")
+	output, err := r.runWithStdin(ctx, payload, "inbox", "export", "--json", "--after", "-", "--with-writer")
 	if err != nil {
 		if strings.Contains(err.Error(), "flag provided but not defined") {
 			return RemoteExport{}, fmt.Errorf("%w: %s", ErrRemoteCursorUnsupported, firstLineOf([]byte(err.Error())))

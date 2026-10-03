@@ -5,7 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -44,23 +45,18 @@ func runInboxCursor(stdout io.Writer, args []string) error {
 		return nil
 	}
 	for _, c := range cursors {
-		ts := "-"
-		if !c.Cursor.TS.IsZero() {
-			ts = c.Cursor.TS.Format(time.RFC3339)
-		}
 		if c.Cursor.Legacy {
 			fmt.Fprintf(stdout, "%s → %s  updated %s  legacy remote (full export, no position)\n",
 				c.Remote, c.Parent, c.UpdatedAt.Format(time.RFC3339))
 			continue
 		}
+		ts := "-"
+		if !c.Cursor.TS.IsZero() {
+			ts = c.Cursor.TS.Format(time.RFC3339)
+		}
 		fmt.Fprintf(stdout, "%s → %s  updated %s  newest %s  children %d  ledger %d  unowned %d\n",
 			c.Remote, c.Parent, c.UpdatedAt.Format(time.RFC3339), ts, len(c.Cursor.Seqs), len(c.Cursor.Ledger), c.Cursor.Unowned.N)
-		children := make([]string, 0, len(c.Cursor.Seqs))
-		for child := range c.Cursor.Seqs {
-			children = append(children, child)
-		}
-		sort.Strings(children)
-		for _, child := range children {
+		for _, child := range slices.Sorted(maps.Keys(c.Cursor.Seqs)) {
 			fmt.Fprintf(stdout, "    %s  seq %d\n", child, c.Cursor.Seqs[child])
 		}
 	}

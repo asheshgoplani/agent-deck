@@ -106,7 +106,7 @@ func (c *RemoteCursor) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
-	out := RemoteCursor{Seqs: map[string]int64{}}
+	out := emptyRemoteCursor()
 	for k, v := range raw {
 		switch k {
 		case remoteCursorTSKey:
@@ -121,43 +121,45 @@ func (c *RemoteCursor) UnmarshalJSON(b []byte) error {
 				}
 				out.TS = ts
 			}
-			continue
 		case remoteCursorLedgerKey:
 			var m map[string]string
 			if err := json.Unmarshal(v, &m); err != nil {
 				return fmt.Errorf("cursor %s: %w", k, err)
 			}
 			out.Ledger = m
-			continue
 		case remoteCursorUnownedKey:
 			if err := json.Unmarshal(v, &out.Unowned); err != nil {
 				return fmt.Errorf("cursor %s: %w", k, err)
 			}
-			continue
 		case remoteCursorLegacyKey:
 			_ = json.Unmarshal(v, &out.Legacy)
-			continue
-		}
-		var seq int64
-		if err := json.Unmarshal(v, &seq); err != nil {
-			if strings.HasPrefix(k, "_") {
-				continue
+		default:
+			var seq int64
+			if err := json.Unmarshal(v, &seq); err != nil {
+				if strings.HasPrefix(k, "_") {
+					continue
+				}
+				return fmt.Errorf("cursor seq for %q: %w", k, err)
 			}
-			return fmt.Errorf("cursor seq for %q: %w", k, err)
+			out.Seqs[k] = seq
 		}
-		out.Seqs[k] = seq
 	}
 	*c = out
 	return nil
 }
 
+// emptyRemoteCursor is the "from scratch" position, with a non-nil Seqs map.
+func emptyRemoteCursor() RemoteCursor {
+	return RemoteCursor{Seqs: map[string]int64{}}
+}
+
 // ParseRemoteCursor parses the --after argument (or the stdin it names).
 // Empty means "from scratch".
 func ParseRemoteCursor(s string) (RemoteCursor, error) {
-	var c RemoteCursor
 	if strings.TrimSpace(s) == "" {
-		return RemoteCursor{Seqs: map[string]int64{}}, nil
+		return emptyRemoteCursor(), nil
 	}
+	var c RemoteCursor
 	if err := json.Unmarshal([]byte(s), &c); err != nil {
 		return RemoteCursor{}, fmt.Errorf("invalid cursor: %w", err)
 	}
@@ -572,15 +574,15 @@ func RemoteCursorPath(remote, parent string) string {
 // LoadRemoteCursor returns the saved cursor; found is false when none exists.
 func LoadRemoteCursor(remote, parent string) (RemoteCursor, bool, error) {
 	data, err := os.ReadFile(RemoteCursorPath(remote, parent))
+	if errors.Is(err, fs.ErrNotExist) {
+		return emptyRemoteCursor(), false, nil
+	}
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return RemoteCursor{Seqs: map[string]int64{}}, false, nil
-		}
-		return RemoteCursor{Seqs: map[string]int64{}}, false, err
+		return emptyRemoteCursor(), false, err
 	}
 	var f RemoteCursorFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return RemoteCursor{Seqs: map[string]int64{}}, false, err
+		return emptyRemoteCursor(), false, err
 	}
 	if f.Cursor.Seqs == nil {
 		f.Cursor.Seqs = map[string]int64{}
