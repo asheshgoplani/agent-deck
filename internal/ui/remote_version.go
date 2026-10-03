@@ -62,6 +62,20 @@ type remoteTimerChecker interface {
 	FetchTimerStatus(ctx context.Context) update.TimerStatus
 }
 
+// fetchRemoteTimer reads a remote's update timer under its own bound, so a
+// slow version probe never starves it. ok is false when the bound ran out:
+// that answer says nothing about the timer, and keeping the reading already
+// cached beats replacing it with "unknown".
+func fetchRemoteTimer(parent context.Context, checker remoteTimerChecker, timeout time.Duration) (update.TimerStatus, bool) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	st := checker.FetchTimerStatus(ctx)
+	if ctx.Err() != nil {
+		return update.TimerStatus{}, false
+	}
+	return st, true
+}
+
 // remoteTimerPreviewLine is the preview panel's update-timer line, "" when
 // the timer was never read (#2472).
 func remoteTimerPreviewLine(st *update.TimerStatus) string {

@@ -4888,8 +4888,9 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 			// (#2472), so the preview says whether it depends on this
 			// controller's nudge alone.
 			if timerChecker, ok := runner.(remoteTimerChecker); ok && found {
-				st := timerChecker.FetchTimerStatus(versionCtx)
-				state.Timer, state.TimerCheckedAt = &st, time.Now()
+				if st, ok := fetchRemoteTimer(h.ctx, timerChecker, rc.GetCommandTimeout()); ok {
+					state.Timer, state.TimerCheckedAt = &st, time.Now()
+				}
 			}
 			msg.versions = map[string]session.RemoteVersionState{name: state}
 		}()

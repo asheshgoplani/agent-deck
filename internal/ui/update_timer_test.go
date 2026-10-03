@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -100,5 +101,61 @@ func TestRemoteTimerPreviewLine(t *testing.T) {
 	state.Timer = nil
 	if lines := remotePreviewFieldLines(state, "1.16.25", nil, remoteHostStatsResult{}, false, []string{session.PreviewFieldVersion}, time.Now(), previewLayout{}); len(lines) != 1 {
 		t.Fatalf("preview lines without a timer = %q", lines)
+	}
+}
+
+// slowVersionRemote spends its whole command bound on the version probe and
+// answers the timer query only while its own context is live.
+type slowVersionRemote struct {
+	stubFetchRunner
+	timerBlocks bool
+}
+
+func (s slowVersionRemote) CheckBinary(ctx context.Context) (string, bool) {
+	<-ctx.Done()
+	return "1.16.25", true
+}
+
+func (s slowVersionRemote) FetchTimerStatus(ctx context.Context) update.TimerStatus {
+	if s.timerBlocks {
+		<-ctx.Done()
+	}
+	if ctx.Err() != nil {
+		return update.TimerStatus{Kind: update.TimerKindUnknown, Note: "timer status unavailable: " + ctx.Err().Error()}
+	}
+	return update.TimerStatus{Kind: update.TimerKindSystemd, Installed: true, Active: true}
+}
+
+// #2472 review nit: the TUI's timer read has its own bound, so a version
+// probe that uses up its time neither starves it nor turns a good cached
+// timer into "unknown"; a timer read that itself runs out records nothing.
+func TestFetchOneRemote_TimerReadHasItsOwnBound(t *testing.T) {
+	rc := session.RemoteConfig{Host: "a@slow", CommandTimeoutSeconds: 1}
+	for _, tc := range []struct {
+		name        string
+		timerBlocks bool
+		wantKind    string
+	}{
+		{"slow version probe", false, update.TimerKindSystemd},
+		{"timer read runs out", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHomeWithItems(100, 30, nil)
+			defer h.cancel()
+			h.newRemoteFetchRunner = func(name string, _ session.RemoteConfig) remoteFetchRunner {
+				return slowVersionRemote{stubFetchRunner: stubFetchRunner{name: name}, timerBlocks: tc.timerBlocks}
+			}
+			msg := h.fetchOneRemote(0, "slow", rc, []string{"slow"})
+			state, ok := msg.versions["slow"]
+			if !ok {
+				t.Fatal("the version check did not run")
+			}
+			switch {
+			case tc.wantKind == "" && state.Timer != nil:
+				t.Fatalf("a timer read that ran out must record nothing, got %+v", *state.Timer)
+			case tc.wantKind != "" && (state.Timer == nil || state.Timer.Kind != tc.wantKind):
+				t.Fatalf("timer = %+v, want kind %s", state.Timer, tc.wantKind)
+			}
+		})
 	}
 }
