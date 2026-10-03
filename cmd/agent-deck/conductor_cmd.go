@@ -127,10 +127,43 @@ func parseConductorSetupArgs(fs *flag.FlagSet, args []string) (string, []string,
 
 func yesAnswer(s string) bool { return s == "y" || s == "yes" }
 
+// resolveConductorSetupAgent picks the agent `conductor setup` runs with. An
+// explicit --agent always wins: that is how a conductor switches runtimes.
+// Without one, an existing conductor keeps the agent stored in its meta.json,
+// so a bare re-run (the documented way to add channels later) does not reset
+// it to the claude default and then clean up its instructions file as a stale
+// sibling (#2434). A brand-new conductor gets the flag default. When the stored
+// meta cannot be trusted (unreadable, or an agent this build does not know) a
+// bare re-run refuses rather than guessing, since a wrong guess is the same
+// clobber.
+func resolveConductorSetupAgent(fs *flag.FlagSet, name string) (string, error) {
+	requested := fs.Lookup("agent").Value.String()
+	explicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "agent" {
+			explicit = true
+		}
+	})
+	if explicit {
+		return requested, nil
+	}
+	existing, err := session.LoadConductorMeta(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return requested, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("cannot read the existing agent of conductor %q (%v); pass --agent explicitly", name, err)
+	}
+	if existing.Warning != "" {
+		return "", fmt.Errorf("conductor %q uses agent %q, which this build does not recognize; pass --agent explicitly", name, existing.Agent)
+	}
+	return existing.GetAgent(), nil
+}
+
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
-	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude, codex, hermes, or pi)")
+	fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude, codex, hermes, or pi); a re-run without it keeps the conductor's current agent")
 	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up (the /clear only arms on an established context window: AGENTDECK_CONTEXT_WINDOW or a harness-reported size)")
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
@@ -160,6 +193,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("Options:")
 		fmt.Println("  -agent string")
 		fmt.Println("        Conductor agent runtime: claude, codex, hermes, or pi (default \"claude\")")
+		fmt.Println("        A re-run without -agent keeps the conductor's current agent")
 		fmt.Println("  -description string")
 		fmt.Println("        Description for this conductor")
 		fmt.Println("  -heartbeat")
@@ -221,7 +255,12 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	spec, err := session.GetConductorAgentSpec(*agent)
+	resolvedAgent, err := resolveConductorSetupAgent(fs, name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	spec, err := session.GetConductorAgentSpec(resolvedAgent)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

@@ -115,6 +115,9 @@ Format is freeform markdown; each entry is timestamped.
 # Create
 agent-deck conductor setup <name> [--description "..."] [--agent claude|codex|hermes|pi] \
     [--heartbeat|--no-heartbeat] [--instructions-md path] [--policy-md path]
+# Re-running setup without --agent keeps the conductor's current agent.
+# Switching agents with --agent deletes the old agent's instructions file only
+# if it is untouched; an edited one is kept as <file>.bak-<timestamp>.
 
 # Observe
 agent-deck conductor list

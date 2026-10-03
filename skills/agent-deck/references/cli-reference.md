@@ -909,6 +909,7 @@ agent-deck conductor list [--profile <name>]
 ```
 
 - `setup` creates `~/.agent-deck/conductor/<name>/` plus `meta.json` and registers `conductor-<name>` session in the selected profile.
+- Re-running `setup <name>` without `--agent` keeps the conductor's existing agent (new conductors default to `claude`); pass `--agent` explicitly to switch. On a switch, the previous agent's instructions file (`CLAUDE.md` / `AGENTS.md` / `HERMES.md`) is deleted only if it still matches the generated template; an edited file is renamed to `<file>.bak-<timestamp>`.
 - `setup` also installs shared `~/.agent-deck/conductor/CLAUDE.md` (or symlink via `--shared-claude-md`).
 - Heartbeat timers run per conductor (default every 15 minutes) and can be disabled with `--no-heartbeat`.
 - Heartbeat sends use non-blocking `session send --no-wait -q` to avoid timeout churn when sessions are busy.
