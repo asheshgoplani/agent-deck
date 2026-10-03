@@ -18126,9 +18126,29 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) tea.Cmd {
 		return nil
 	}
 
-	target := pos + delta
-	if target < 0 || target >= len(current) {
-		h.setError(fmt.Errorf("'%s' is already %s in its group on %s", moved.Title, edge, item.RemoteName))
+	// #2450: a conductor's children render under it, so a row swaps with its
+	// nearest on-screen sibling: a top-level row with the next top-level row
+	// (a parent's children travel with it), a child with the next child of
+	// the same parent. Swapping with whatever the bucket lists next to it
+	// would often leave the screen unchanged.
+	targetID, ok := h.adjacentRemoteSibling(item, delta)
+	if !ok {
+		scope := "in its group"
+		if item.IsSubSession {
+			scope = "under its parent"
+		}
+		h.setError(fmt.Errorf("'%s' is already %s %s on %s", moved.Title, edge, scope, item.RemoteName))
+		return nil
+	}
+	target := -1
+	for i, id := range current {
+		if id == targetID {
+			target = i
+			break
+		}
+	}
+	if target < 0 {
+		h.setError(fmt.Errorf("cannot move '%s' %s: the row next to it is no longer listed on %s", moved.Title, direction, item.RemoteName))
 		return nil
 	}
 	current[pos], current[target] = current[target], current[pos]
@@ -18150,6 +18170,45 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) tea.Cmd {
 		h.setError(fmt.Errorf("moved '%s' %s, but the order could not be saved and will not survive a restart: %w", moved.Title, direction, err))
 	}
 	return nil
+}
+
+// adjacentRemoteSibling returns the ID of the nearest remote session row on
+// screen, in direction delta, that shares the moved row's group bucket and
+// nesting level: another top-level row for a top-level row, another child of
+// the same parent for a child (#2450). ok is false when there is none, i.e.
+// the row is already first or last among its siblings.
+func (h *Home) adjacentRemoteSibling(item session.Item, delta int) (id string, ok bool) {
+	siblingKey := func(it session.Item) string {
+		if it.IsSubSession && it.RemoteSession != nil {
+			return it.RemoteSession.ParentSessionID
+		}
+		return ""
+	}
+	sameRow := func(it session.Item) bool {
+		return it.Type == session.ItemTypeRemoteSession && it.RemoteSession != nil &&
+			it.RemoteName == item.RemoteName && it.Path == item.Path
+	}
+	from := -1
+	for i, it := range h.flatItems {
+		if sameRow(it) && it.RemoteSession.ID == item.RemoteSession.ID {
+			from = i
+			break
+		}
+	}
+	if from < 0 {
+		return "", false
+	}
+	key := siblingKey(h.flatItems[from])
+	for i := from + delta; i >= 0 && i < len(h.flatItems); i += delta {
+		it := h.flatItems[i]
+		if !sameRow(it) {
+			return "", false // left the bucket: a header or another group
+		}
+		if siblingKey(it) == key {
+			return it.RemoteSession.ID, true
+		}
+	}
+	return "", false
 }
 
 // reorderRemoteGroup forwards shift+up/down on a remote group header to the
@@ -22712,7 +22771,13 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	treeConnector := "├─"
-	if item.IsLastInGroup {
+	if item.IsSubSession {
+		// #2450: a conductor's child closes its parent's subtree, not the
+		// group, so it reads its own last-child flag.
+		if item.IsLastSubSession {
+			treeConnector = "└─"
+		}
+	} else if item.IsLastInGroup {
 		treeConnector = "└─"
 	}
 

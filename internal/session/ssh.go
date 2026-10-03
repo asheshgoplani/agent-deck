@@ -2830,6 +2830,14 @@ type RemoteSessionInfo struct {
 	// nobody. See ViewerList.
 	Viewers *[]tmux.Viewer `json:"viewers,omitempty"`
 
+	// ParentSessionID is the remote session's parent (its conductor), as
+	// `list --json` on the remote reports it, so the controller can nest a
+	// conductor's children under it the way the remote's own TUI does
+	// (#2450). It is an ID on the remote, never a local one. A top-level
+	// session, or a remote too old to send the key, decodes to "" and the
+	// row renders flat.
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
 }
