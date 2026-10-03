@@ -395,8 +395,9 @@ func TestBackgroundWork2473_DaemonWritesNoRecordWhileWorkflowRuns(t *testing.T) 
 }
 
 // The shared conductor template names background-work, and a conductor file
-// v1.16.24 wrote (before the sentence existed) is still recognised as
-// generated and migrated to it.
+// written before the sentence existed (main builds after #2478; v1.16.24
+// itself is pinned by TestShippedConductorTemplatesAreRecognizedAsGenerated)
+// is still recognised as generated and migrated to it.
 func TestBackgroundWork2473_ConductorTemplateMigratesV1624(t *testing.T) {
 	if !strings.Contains(conductorSharedClaudeMDTemplate, conductorBackgroundWorkGuidance) {
 		t.Fatal("shared conductor template lacks the background-work guidance")
@@ -452,5 +453,52 @@ func TestBackgroundWork2473_JSONShape(t *testing.T) {
 	inst.mu.Unlock()
 	if inst.BackgroundWorkJSON() != nil {
 		t.Fatal("background_work present on a foreground-running session")
+	}
+}
+
+// The one record written when a workflow ends follows the #2478 urgent rule:
+// a plain summary is info (it never wakes the parent), and only a completion
+// sentinel or an explicit question to the parent is urgent. Background work
+// changes WHEN the record is written, never its tier.
+func TestBackgroundWork2473_WorkflowEndRecordFollowsUrgentRule(t *testing.T) {
+	cases := []struct {
+		name, text, tier string
+	}{
+		{"plain summary", "comms-followon-round3 finished: 5/5 lanes merged.", TurnTierInfo},
+		{"question to the parent", "comms-followon-round3 finished: 4/5 lanes merged.\nShould I retry lane 3 or skip it?", TurnTierUrgent},
+		{"completion sentinel", "All lanes merged.\n===AGENTDECK_DONE=== status=ok summary=5/5 merged", TurnTierUrgent},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newTurnTestFixture(t)
+			f.appendTurn(t, fxHuman("u0", "run the follow-on workflow"))
+			f.appendTurn(t, fxWorkflowLaunch("wqphbmkuj", "comms-followon-round3")...)
+			f.appendTurn(t, fxAssistantText("a0", "Launched comms-followon-round3 in the background."), fxTurnDuration(1))
+			running := map[string]string{f.child.ID: "running", f.parent.ID: "waiting"}
+			stop := map[string]hookTransitionCandidate{f.child.ID: {ToStatus: "waiting", Timestamp: time.Now()}}
+			for i := 0; i < 3; i++ {
+				f.d.recordTerminalTurns("default", f.byID, running, nil)
+				f.d.emitHookTransitionCandidates("default", f.byID, running, running, stop)
+			}
+			if got := f.inboxRecords(t); len(got) != 0 {
+				t.Fatalf("records written while the workflow runs: %+v", got)
+			}
+
+			f.appendTurn(t, fxWorkflowNotification("u1", "wqphbmkuj"), fxAssistantText("a1", c.text), fxTurnDuration(0))
+			waiting := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+			stop = map[string]hookTransitionCandidate{f.child.ID: {ToStatus: "waiting", Timestamp: time.Now()}}
+			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+			for i := 0; i < 3; i++ {
+				f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+				f.d.emitHookTransitionCandidates("default", f.byID, running, waiting, stop)
+			}
+			got := f.inboxRecords(t)
+			if len(got) != 1 {
+				t.Fatalf("want exactly one record when the workflow ends, got %d: %+v", len(got), got)
+			}
+			if got[0].Trigger != TurnTriggerTask || got[0].Tier != c.tier {
+				t.Fatalf("record trigger/tier = %q/%q, want %q/%q (%+v)", got[0].Trigger, got[0].Tier, TurnTriggerTask, c.tier, got[0])
+			}
+		})
 	}
 }

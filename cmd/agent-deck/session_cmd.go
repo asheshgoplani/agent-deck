@@ -1807,6 +1807,30 @@ func handleSessionViewers(profile string, args []string) {
 }
 
 // handleSessionShow shows session details
+// sessionShowStatusFields is the status pass `session show` makes and the
+// status keys it reports: status, substate, substate_detail and
+// background_work (issue #2473). It warms the tmux pane-title cache and loads
+// the hook status so the result matches the TUI and /api/menu (issue #610),
+// updates the status, then reads the substate (the pass's pane capture, which
+// can settle the status under hook lag, session/hook_lag.go). Optional keys
+// are omitted when empty so existing consumers see byte-stable output.
+func sessionShowStatusFields(inst *session.Instance) map[string]interface{} {
+	session.RefreshInstancesForCLIStatus([]*session.Instance{inst})
+	_ = inst.UpdateStatus()
+	substate := string(inst.Substate())
+	fields := map[string]interface{}{"status": StatusString(inst.Status)}
+	if substate != "" {
+		fields["substate"] = substate
+	}
+	if detail := inst.SubstateDetail(); detail != "" {
+		fields["substate_detail"] = detail
+	}
+	if work := inst.BackgroundWorkJSON(); work != nil {
+		fields["background_work"] = work
+	}
+	return fields
+}
+
 func handleSessionShow(profile string, args []string) {
 	fs := flag.NewFlagSet("session show", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -1876,13 +1900,7 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 
-	// Warm tmux pane-title cache + load hook status so `session show --json`
-	// reports the same Status the TUI and /api/menu do (issue #610).
-	session.RefreshInstancesForCLIStatus([]*session.Instance{inst})
-	// Update status, then the substate read (the pass's pane capture, which
-	// can settle the status under hook lag — session/hook_lag.go).
-	_ = inst.UpdateStatus()
-	substate := string(inst.Substate())
+	statusFields := sessionShowStatusFields(inst)
 
 	// #2080: surface the raw hook-driven status and its freshness alongside
 	// the derived "status" field. `--defer-if-busy` and the send verification
@@ -1910,7 +1928,6 @@ func handleSessionShow(profile string, args []string) {
 		"id":                   inst.ID,
 		"title":                inst.Title,
 		"profile":              profile,
-		"status":               StatusString(inst.Status),
 		"path":                 inst.ProjectPath,
 		"group":                inst.GroupPath,
 		"order":                groupTree.SessionPosition(inst),
@@ -1928,18 +1945,8 @@ func handleSessionShow(profile string, args []string) {
 		"hook_status":       hookStatus,
 		"hook_status_fresh": hookStatusFresh,
 	}
-	// Honest Status v2: additive substate refinement (omit when none so the
-	// existing keys stay byte-stable for consumers that don't expect it).
-	if substate != "" {
-		jsonData["substate"] = substate
-	}
-	if detail := inst.SubstateDetail(); detail != "" {
-		jsonData["substate_detail"] = detail
-	}
-	// Issue #2473: the in-flight background work behind substate
-	// background-work, structured (kind, task, step/steps, elapsed, source).
-	if work := inst.BackgroundWorkJSON(); work != nil {
-		jsonData["background_work"] = work
+	for k, v := range statusFields {
+		jsonData[k] = v
 	}
 	modelInfo := inst.LaunchModelInfo()
 	addModelInfoJSON(jsonData, modelInfo)

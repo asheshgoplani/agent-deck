@@ -82,10 +82,18 @@ model-unavailable no-op is never promoted to `running`, and a
 hook holds `waiting` without looking at the pane for its first 5 s (the
 dialog is drawn just after the hook fires); after that the frame decides,
 because a dialog dismissed with Esc fires no further hook. The daemon still
-emits that event's `waiting` record (the child is blocked on input). The hook-lag rule flips a stale `running` hook to
-`waiting` after two completed turn samples; a purely pane-derived flip away from running is held for one
-sample (`debounceFlipFromRunning`) when this process saw running itself;
-Codex completion evidence bypasses that hold.
+emits that event's `waiting` record (the child is blocked on input). The
+record written when the work ends keeps its tier under the urgent rule: a
+plain summary is `info`; only a sentinel, an error or a question to the
+parent is `urgent`. The whole lifecycle (launch, running / background-work
+with task and n/m on every poll, the notification turn, `waiting` on the
+first poll after it, `idle` once acknowledged) is pinned end to end by
+`TestAcceptance2473_SmallWorkflowLifecycle` (cmd/agent-deck) through the
+`session show --json` and `list --json` code paths. The hook-lag rule flips
+a stale `running` hook to `waiting` after two completed turn samples; a
+purely pane-derived flip away from running is held for one sample
+(`debounceFlipFromRunning`) when this process saw running itself; Codex
+completion evidence bypasses that hold.
 
 ## Substates (additive, never change the colour except model-unavailable)
 
