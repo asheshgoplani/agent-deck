@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -105,6 +106,24 @@ type BackgroundWork struct {
 	// Source is "pane", "transcript" or "pane+transcript": which evidence
 	// proved the work in flight.
 	Source string `json:"source,omitempty"`
+}
+
+// MarshalJSON keeps "step" whenever the work has steps: a workflow at 0/5
+// reads {"step":0,"steps":5}, not a bare "steps". Other kinds omit both.
+func (b BackgroundWork) MarshalJSON() ([]byte, error) {
+	var step *int
+	if b.Steps > 0 {
+		n := b.Step
+		step = &n
+	}
+	return json.Marshal(struct {
+		Kind    string `json:"kind,omitempty"`
+		Task    string `json:"task,omitempty"`
+		Step    *int   `json:"step,omitempty"`
+		Steps   int    `json:"steps,omitempty"`
+		Elapsed string `json:"elapsed,omitempty"`
+		Source  string `json:"source,omitempty"`
+	}{b.Kind, b.Task, step, b.Steps, b.Elapsed, b.Source})
 }
 
 // InFlight reports whether b describes work still running.
