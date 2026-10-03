@@ -1,6 +1,9 @@
 package tmux
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Substate is an ADDITIVE refinement of the coarse session status (Honest
 // Status v2). It never changes the canonical status string ("running",
@@ -235,14 +238,21 @@ func (d *PromptDetector) classifyClaudeSubstate(content string) Substate {
 // just not idle. Kept separate from permissionPrompts so this list only
 // needs to be unambiguous, not exhaustive — a marker missing here degrades to
 // the pre-existing idle-at-empty-prompt label rather than a false positive.
+//
+// Every entry is menu chrome (a key hint or an option label) that Claude's
+// prose never prints at the tail of a reply. The question lines a dialog
+// opens with ("Do you want to proceed?", "Would you like …") are NOT here:
+// Claude often ends a reply with exactly such a question in prose, and a
+// prose question is not an open menu (issue #2473: it must not hold a running
+// workflow at waiting). They count only beside a selected option, see
+// interactiveMenuQuestions.
 var interactiveMenuMarkers = []string{
 	"Use arrow keys to navigate",
 	"Press Enter to select",
 	"Tab/Arrow keys to navigate",
 	"Enter to select",
+	"Esc to cancel",
 	"No, and tell Claude what to do differently",
-	"Do you want",
-	"Would you like",
 	"Allow once",
 	"Allow always",
 	// First-run trust dialog ("❯ No, exit / Yes, I trust this folder"), which
@@ -254,6 +264,20 @@ var interactiveMenuMarkers = []string{
 	"How is Claude doing this session",
 	"0: Dismiss",
 }
+
+// interactiveMenuQuestions are the question lines a permission dialog opens
+// with. On their own they are prose; they mark an open menu only when a
+// selected numbered option ("❯ 1. Yes", menuOptionCursorRe) follows them.
+var interactiveMenuQuestions = []string{
+	"do you want",
+	"would you like",
+}
+
+// menuOptionCursorRe matches the selection cursor on a numbered menu option
+// ("❯ 1. Yes", "│ ❯ 2. No"). The cursor is what makes it a menu: a numbered
+// list in Claude's prose carries no "❯", and the empty input prompt carries
+// no number.
+var menuOptionCursorRe = regexp.MustCompile(`^[\s│]*❯\s*\d+\.\s+\S`)
 
 // codexInteractiveMenuMarkers are the footer strings codex renders under an
 // open picker (model switch on rate limit, approval choices). Captured from
@@ -276,12 +300,26 @@ func hasCodexInteractiveMenu(content string) bool {
 
 // hasOpenInteractiveMenu reports whether the pane shows an open selection
 // menu awaiting the operator's choice, scoped to the recent tail so a stale
-// menu scrolled out of view does not keep matching forever.
+// menu scrolled out of view does not keep matching forever. Menu chrome
+// (interactiveMenuMarkers) counts on its own; a dialog question
+// (interactiveMenuQuestions) counts only when a selected numbered option
+// follows it, so a reply that ends in a prose question is not a menu.
 func hasOpenInteractiveMenu(content string) bool {
 	recent := recentTailLower(content, 15)
 	for _, marker := range interactiveMenuMarkers {
 		if strings.Contains(recent, strings.ToLower(marker)) {
 			return true
+		}
+	}
+	question := false
+	for _, line := range strings.Split(recent, "\n") {
+		if question && menuOptionCursorRe.MatchString(line) {
+			return true
+		}
+		for _, q := range interactiveMenuQuestions {
+			if strings.Contains(line, q) {
+				question = true
+			}
 		}
 	}
 	return false

@@ -52,7 +52,12 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
    Never over an open menu, an error banner or the model-unavailable no-op
    (`backgroundWorkOutrankedLocked`): a menu blocks the turn on the operator
    and an error means no progress, so such a frame keeps its waiting / error
-   verdict while a workflow runs under it.
+   verdict while a workflow runs under it. An open menu means menu chrome
+   (`Enter to select`, `Esc to cancel`, `Allow once`, `No, and tell Claude
+   what to do differently`, `Enter to confirm`, `0: Dismiss`, ...); a dialog
+   question (`Do you want`, `Would you like`) counts only with a selected
+   numbered option (`❯ 1.`) after it, because Claude often ends a reply with
+   the same words in prose and that opens no menu.
 8. Prompt indicator → `waiting` (or `idle` once the operator attached).
 9. Otherwise history: `starting` inside the 2 min startup window, else the
    previous stable status / `waiting`.
@@ -71,10 +76,13 @@ vetoed. The same merge runs on the tmux path, and the notify daemon's hook
 candidate path skips a Stop that handed off to background work, so no
 `running -> waiting` record is written until the work ends (session/
 background_work.go). A menu or an error outranks background work on every
-path: a `PermissionRequest` / `Notification(permission_prompt|
-elicitation_dialog)` hook, or a frame showing an open menu, an error banner
-or the model-unavailable no-op, is never promoted to `running`, and the
-daemon still emits its `waiting` record (the child is blocked on input). The hook-lag rule flips a stale `running` hook to
+path: a frame showing an open menu, an error banner or the
+model-unavailable no-op is never promoted to `running`, and a
+`PermissionRequest` / `Notification(permission_prompt|elicitation_dialog)`
+hook holds `waiting` without looking at the pane for its first 5 s (the
+dialog is drawn just after the hook fires); after that the frame decides,
+because a dialog dismissed with Esc fires no further hook. The daemon still
+emits that event's `waiting` record (the child is blocked on input). The hook-lag rule flips a stale `running` hook to
 `waiting` after two completed turn samples; a purely pane-derived flip away from running is held for one
 sample (`debounceFlipFromRunning`) when this process saw running itself;
 Codex completion evidence bypasses that hold.

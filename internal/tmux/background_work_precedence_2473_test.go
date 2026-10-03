@@ -119,3 +119,82 @@ func TestBackgroundWork2473_TypedDraftUnderWorkflow(t *testing.T) {
 		t.Errorf("substate = %q detail %q, want background-work with the workflow detail", sub, detail)
 	}
 }
+
+// proseQuestionFrames are workflow-prose-question.txt and its "Do you want"
+// twin: the launch turn ends with a question in Claude's prose, the prompt is
+// empty and the workflow row is at 1/2. No menu is open.
+func proseQuestionFrames(t *testing.T) map[string]string {
+	t.Helper()
+	would := loadBackgroundFixture(t, "workflow-prose-question.txt")
+	const q = "  Would you like me to run the test suite while it finishes?"
+	if !strings.Contains(would, q) {
+		t.Fatal("fixture has no prose question (precondition)")
+	}
+	return map[string]string{
+		"would-you-like": would,
+		"do-you-want":    strings.Replace(would, q, "  Do you want me to open a PR once both agents report back?", 1),
+	}
+}
+
+// Issue #2473 review round 3: a reply that ends in a prose question is not an
+// open menu. The round-2 gate matched "Would you like" / "Do you want"
+// anywhere in the tail, so this frame read waiting/interactive-menu for the
+// whole run while the workflow was in flight.
+func TestBackgroundWork2473_ProseQuestionDoesNotOutrankWork(t *testing.T) {
+	for name, content := range proseQuestionFrames(t) {
+		t.Run(name, func(t *testing.T) {
+			if hasOpenInteractiveMenu(content) {
+				t.Error("prose question read as an open menu")
+			}
+			if got := ClassifyPaneFrame("claude", content); got != FrameActive {
+				t.Errorf("frame verdict = %s, want active", got)
+			}
+			sub, detail, _ := frameSubstate(content)
+			if sub != SubstateBackgroundWork || detail != "workflow probe-two-agents 1/2 · 22s" {
+				t.Errorf("substate = %q detail %q, want background-work with the workflow detail", sub, detail)
+			}
+			s := &Session{detectedTool: "claude"}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.prepareFrame(StripANSI(content)); s.lastBackgroundBlocked {
+				t.Error("prepareFrame recorded the prose question as outranking the work")
+			}
+		})
+	}
+}
+
+// The strict open-menu predicate: menu chrome counts on its own, a dialog
+// question only with a selected numbered option after it.
+func TestHasOpenInteractiveMenu_StrictQuestions(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"prose would-you-like", "⏺ Done.\n\n  Would you like me to push the branch?\n\n❯ \n  ⏵⏵ bypass permissions on", false},
+		{"prose do-you-want", "⏺ Done.\n\n  Do you want me to open a PR?\n\n❯ \n  ⏵⏵ bypass permissions on", false},
+		{"prose question then numbered list", "  Would you like me to:\n  1. push the branch\n  2. open a PR\n\n❯ \n", false},
+		{"permission dialog", " Do you want to proceed?\n ❯ 1. Yes\n   2. No\n", true},
+		{"boxed dialog", "│ Do you want to make this edit?\n│ ❯ 1. Yes\n│   2. No\n", true},
+		{"cursor moved to option 2", " Would you like to continue?\n   1. Yes\n ❯ 2. No\n", true},
+		{"cursor above the question", " ❯ 1. Yes\n Do you want to proceed?\n", false},
+		{"chrome: Esc to cancel", " Bash command\n\n Esc to cancel · Tab to amend\n", true},
+		{"chrome: Enter to select", "❯ 1. staging\n  2. production\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n", true},
+		{"chrome: tell Claude", "❯ Yes\n  No, and tell Claude what to do differently\n", true},
+		{"chrome: survey", "  How is Claude doing this session? (optional)\n  1: Bad    2: Fine   3: Good   0: Dismiss\n", true},
+	}
+	for _, c := range cases {
+		if got := hasOpenInteractiveMenu(c.content); got != c.want {
+			t.Errorf("%s: hasOpenInteractiveMenu = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A prose question with no background work is an idle prompt, not a menu.
+func TestClassifySubstate_ProseQuestionIsIdlePrompt(t *testing.T) {
+	d := NewPromptDetector("claude")
+	content := "⏺ Pushed the branch.\n\n  Would you like me to open a PR as well?\n\n────────\n❯ \n────────\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+	if got := d.ClassifySubstate(content); got != SubstateIdleAtEmptyPrompt {
+		t.Errorf("prose question at the prompt = %q, want %q", got, SubstateIdleAtEmptyPrompt)
+	}
+}
