@@ -11,6 +11,9 @@ Commands:
   move <name>      Move a conductor to another profile (--to-profile)
   migrate-dir <path>  Relocate the conductor base dir (move homes + reconcile daemons)
   heartbeat-tick <name>  Print the delta-only heartbeat message (empty when nothing changed)
+  notify --tier urgent|info "<text>"  Queue a message for the human (bridge forwards urgent now, info as a digest)
+  outbox [--json] [--ack <id>...]       List or ack the items queued for the human
+  tier-filter --json < reply             Apply the human tier rules to a conductor reply
   help             Show this help
 
 Examples:

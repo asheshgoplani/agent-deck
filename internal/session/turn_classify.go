@@ -273,7 +273,12 @@ func turnTextHash(text string) string {
 // the clip. max <= 0 means DefaultTurnTextBytes; MaxTurnTextBytes is the hard
 // ceiling so no record ever grows past the inbox line scanner's comfort zone.
 func CapTurnText(text string, max int) string {
-	max = clampTurnTextBytes(max)
+	return capTextBytes(text, clampTurnTextBytes(max))
+}
+
+// capTextBytes truncates text to at most max bytes on a rune boundary,
+// marking the clip. No defaults or ceilings: callers apply their own.
+func capTextBytes(text string, max int) string {
 	if len(text) <= max {
 		return text
 	}
