@@ -53,20 +53,25 @@ func lenientBounds(path string) (first, last Cursor, size int64, err error) {
 	if data[len(data)-1] != '\n' {
 		return 0, 0, size, fmt.Errorf("events: incomplete active tail")
 	}
+	trailingCorrupt := Cursor(0)
 	for _, ln := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
 		if ln == "" {
 			continue
 		}
 		f, perr := ParseFrameLine([]byte(ln))
 		if perr != nil {
+			trailingCorrupt++
 			continue
 		}
+		trailingCorrupt = 0
 		if first == 0 {
 			first = f.Cursor
 		}
 		last = f.Cursor
 	}
-	return first, last, size, nil
+	// Same rule as recovery: a malformed line after the last parseable
+	// frame spent its cursor number.
+	return first, last + trailingCorrupt, size, nil
 }
 
 func strictBounds(path string) (first, last Cursor, size int64, err error) {

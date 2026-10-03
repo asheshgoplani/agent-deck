@@ -268,6 +268,7 @@ func recoverActiveSegment(dir string, mode os.FileMode, keepCorrupt bool) (Curso
 	var last Cursor
 	validEnd := 0
 	corrupt := 0
+	trailingCorrupt := 0 // malformed lines after the last parseable frame
 	lines := splitLinesKeepEnds(data)
 	for _, ln := range lines {
 		if !strings.HasSuffix(string(ln), "\n") {
@@ -284,10 +285,12 @@ func recoverActiveSegment(dir string, mode os.FileMode, keepCorrupt bool) (Curso
 				break // the status bus truncates from the first bad line
 			}
 			corrupt++
+			trailingCorrupt++
 			validEnd += len(ln)
 			continue
 		}
 		validEnd += len(ln)
+		trailingCorrupt = 0
 		if f.Cursor > last {
 			last = f.Cursor
 		}
@@ -296,6 +299,10 @@ func recoverActiveSegment(dir string, mode os.FileMode, keepCorrupt bool) (Curso
 		slog.Warn("events: malformed lines inside the active segment were left in place and are skipped by readers",
 			"dir", dir, "lines", corrupt)
 	}
+	// A malformed line that followed the last parseable frame held a frame
+	// of its own: its cursor number is spent, never reused by the next
+	// commit (a consumer that acknowledged it must not skip a new frame).
+	last += Cursor(trailingCorrupt) //nolint:gosec // G115: a line count
 	if validEnd != len(data) {
 		f, err := os.OpenFile(path, os.O_WRONLY, mode)
 		if err != nil {

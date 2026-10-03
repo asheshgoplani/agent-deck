@@ -341,6 +341,9 @@ func TestLedgerBusKeepsACorruptLineAndEveryLaterFrame(t *testing.T) {
 			}
 		}
 		cancel()
+		// The corrupt line's cursor number is spent: the next commit is 4
+		// whichever line was corrupt, so a consumer's acknowledgement of 3
+		// can never apply to a frame it did not see.
 		want := []Cursor{1, 2, 3, 4}
 		want = append(want[:idx], want[idx+1:]...)
 		if len(seen) != 3 || seen[0] != want[0] || seen[1] != want[1] || seen[2] != want[2] {
