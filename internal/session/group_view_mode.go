@@ -37,15 +37,43 @@ func (m GroupViewMode) Label() string {
 }
 
 // dividerLabel returns the caption shown on the section divider for a mode.
-func (m GroupViewMode) dividerLabel() string {
+func (m GroupViewMode) dividerLabel(opts ViewModeOptions) string {
 	switch m {
 	case GroupViewActiveTop:
-		return "idle / done"
+		return opts.ActiveTopBottomLabel() + " / done"
 	case GroupViewPopulatedTop:
 		return "empty groups"
 	default:
 		return ""
 	}
+}
+
+// ViewModeOptions tunes how a GroupViewMode partitions the list. The zero
+// value is today's behavior.
+type ViewModeOptions struct {
+	// ActiveIncludesIdle ([ui] active_includes_idle, #2452) makes
+	// GroupViewActiveTop split on "has a live pane" instead of "is working":
+	// idle sessions join running/waiting/starting in the top section, and only
+	// stopped, error and queued sessions sink below the divider.
+	ActiveIncludesIdle bool
+}
+
+// countsAsActive reports whether a session status belongs in the top section
+// of GroupViewActiveTop under these options. Idle is a live pane at rest: the
+// status poller reports a dead pane as error or stopped, never idle. (A session
+// added in this process and not started yet also reads idle until it starts.)
+func (o ViewModeOptions) countsAsActive(s Status) bool {
+	return isActiveStatus(s) || (o.ActiveIncludesIdle && s == StatusIdle)
+}
+
+// ActiveTopBottomLabel names what sits below the active-on-top divider. It is
+// the divider caption's lead word and the suffix on a group header repeated
+// in the bottom section.
+func (o ViewModeOptions) ActiveTopBottomLabel() string {
+	if o.ActiveIncludesIdle {
+		return "stopped"
+	}
+	return "idle"
 }
 
 // GroupActivity summarizes, for a single group path, whether it contains any
@@ -67,6 +95,12 @@ type GroupActivity struct {
 // view-mode placement — it sinks below the divider with the other empty groups
 // rather than masquerading as a collapsed-but-populated group on top.
 func (t *GroupTree) GroupActivityMap(viewArchived bool) map[string]GroupActivity {
+	return t.GroupActivityMapWith(viewArchived, ViewModeOptions{})
+}
+
+// GroupActivityMapWith is GroupActivityMap with view-mode options applied to
+// what counts as active (see ViewModeOptions).
+func (t *GroupTree) GroupActivityMapWith(viewArchived bool, opts ViewModeOptions) map[string]GroupActivity {
 	m := make(map[string]GroupActivity)
 	mark := func(path string, active bool) {
 		if path == "" {
@@ -92,7 +126,7 @@ func (t *GroupTree) GroupActivityMap(viewArchived bool) map[string]GroupActivity
 				continue
 			}
 			activity.HasAny = true
-			activity.HasActive = activity.HasActive || isActiveStatus(s.Status)
+			activity.HasActive = activity.HasActive || opts.countsAsActive(s.Status)
 		}
 		if activity.HasAny {
 			mark(g.Path, activity.HasActive)
@@ -152,6 +186,12 @@ func hasMarkedAncestor(m map[string]bool, path string) bool {
 // If the mode is GroupViewNormal, or if either section would be empty, the
 // original slice is returned unchanged (no divider).
 func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]GroupActivity) []Item {
+	return PartitionByViewModeWith(items, mode, activity, ViewModeOptions{})
+}
+
+// PartitionByViewModeWith is PartitionByViewMode with view-mode options (see
+// ViewModeOptions). The zero options value reproduces PartitionByViewMode.
+func PartitionByViewModeWith(items []Item, mode GroupViewMode, activity map[string]GroupActivity, opts ViewModeOptions) []Item {
 	if mode == GroupViewNormal {
 		return items
 	}
@@ -172,7 +212,7 @@ func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]G
 		}
 		switch mode {
 		case GroupViewActiveTop:
-			return isActiveStatus(it.Session.Status)
+			return opts.countsAsActive(it.Session.Status)
 		case GroupViewPopulatedTop:
 			return true // every real session is "top"; only empty groups sink
 		}
@@ -293,7 +333,7 @@ func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]G
 
 	out := make([]Item, 0, len(top)+1+len(bottom))
 	out = append(out, top...)
-	out = append(out, Item{Type: ItemTypeDivider, DividerLabel: mode.dividerLabel()})
+	out = append(out, Item{Type: ItemTypeDivider, DividerLabel: mode.dividerLabel(opts)})
 	out = append(out, bottom...)
 	return out
 }

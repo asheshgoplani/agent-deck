@@ -553,6 +553,13 @@ type UISettings struct {
 	// with an explicit `--attach`.
 	AttachOnCreate bool `toml:"attach_on_create,omitempty"`
 
+	// ActiveIncludesIdle widens the active-on-top view (`t`) so an idle
+	// session whose tmux pane is still alive stays in the top section with
+	// the running/waiting/starting ones; only sessions without a live pane
+	// (stopped, error, queued) sink below the divider. Default false keeps
+	// today's working-vs-idle split. Issue #2452.
+	ActiveIncludesIdle bool `toml:"active_includes_idle,omitempty"`
+
 	// RemotePreview configures which fields the remote preview panel
 	// (right side, `remotes/<name>` host row selected) shows, and in what
 	// order. See RemotePreviewSettings.
@@ -942,6 +949,12 @@ func (u UISettings) GetNewSessionEnterAdvances() bool {
 // session immediately instead of only selecting it. Default false.
 func (u UISettings) GetAttachOnCreate() bool {
 	return u.AttachOnCreate
+}
+
+// GetActiveIncludesIdle reports whether the active-on-top view keeps idle
+// sessions with a live pane in its top section. Default false.
+func (u UISettings) GetActiveIncludesIdle() bool {
+	return u.ActiveIncludesIdle
 }
 
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval

@@ -820,6 +820,7 @@ hidden_tools = ["gemini", "opencode", "pi"]   # Denylist: hide these from the pi
 show_only_installed_tools = true              # Also hide tools not found on PATH
 new_session_enter_advances = false            # Opt OUT: restore Enter-submits behavior
 attach_on_create = true                       # Opt IN: instantly attach to a newly created session
+active_includes_idle = true                   # Opt IN: active-on-top view keeps idle sessions with a live pane on top
 ```
 
 | Key | Type | Default | Description |
@@ -831,6 +832,7 @@ attach_on_create = true                       # Opt IN: instantly attach to a ne
 | `show_only_installed_tools` | bool | `false` | When `true`, hides built-in and custom tools whose command does not resolve on the host `PATH`. `shell` stays visible. If nothing else resolves, the picker falls back to showing all tools with a one-line hint. Toggle in TUI Settings under **TOOL PICKER**. |
 | `new_session_enter_advances` | bool | `true` | Controls what **Enter** does in the new-session dialog. Default `true`: Enter **advances** to the next field on every row (Name, Tool, Model, Reasoning effort, Path, checkboxes, and each Claude Options row) and only the trailing **[ Create session ]** button creates, so walking the form with Enter never launches a session early. **Ctrl+S** is the explicit "create now" shortcut and submits from any field in both modes. Set `false` to restore the legacy behavior where Enter creates from any row. |
 | `attach_on_create` | bool | `false` | When `true`, creating a session in the TUI (`n` new-session dialog) **immediately attaches** to the new session's pane instead of only moving the cursor to it — "instantly open". Default `false`: today's select-only behavior (press **Enter** to attach). Does not affect the CLI; `agent-deck add` / `session start` attach only with an explicit `--attach`. |
+| `active_includes_idle` | bool | `false` | Changes what the active-on-top view (`t`) treats as active. Default `false`: running, waiting and starting sessions sit on top and idle sessions sink below the `idle / done` divider. When `true` (#2452), an idle session whose tmux pane is still alive stays on top too, so the sessions you are juggling no longer jump to the bottom each time one goes idle; only sessions without a live pane (stopped, error, queued) sink, the divider reads `stopped / done`, and a group repeated below it is suffixed `(stopped)`. Pins still win over the split, and the populated-on-top view is unaffected. Read at startup. TUI only: the CLI and web UI have no active-on-top view. |
 
 Filters compose: `hidden_tools` is applied first, then `show_only_installed_tools` (when enabled).
 

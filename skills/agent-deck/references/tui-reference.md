@@ -146,7 +146,7 @@ its own mouse capture regardless.
 | `&` | Filter: errors only (toggle) |
 | `%` | Filter: open only, hides errors (toggle) |
 | `^` | Filter: view archived sessions (toggle) |
-| `t` | Cycle group view: active-on-top / populated-on-top (**rebindable**) |
+| `t` | Cycle group view: active-on-top / populated-on-top (**rebindable**). Active-on-top puts running/waiting/starting sessions above an `idle / done` divider; set `[ui] active_includes_idle = true` to keep idle sessions with a live pane on top as well (divider becomes `stopped / done`) |
 | `*` | Cycle time filter: today / 3 days / 7 days / 30 days / all (**rebindable**) |
 
 Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.

@@ -709,6 +709,10 @@ type Home struct {
 	// false: today's select-only behavior. See sessionCreatedMsg handling.
 	attachOnCreate bool
 
+	// viewModeOpts tunes the `t` view-mode partition from config.toml [ui]
+	// (active_includes_idle, #2452). Zero value: today's split.
+	viewModeOpts session.ViewModeOptions
+
 	// Performance observability (debug mode only, zero cost when off)
 	debugMode          bool         // true when AGENTDECK_DEBUG=1, enables perf overlay
 	lastRenderDuration atomic.Int64 // microseconds, for debug status bar
@@ -2089,6 +2093,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
 		h.footerMode = cfg.UI.GetFooter()
 		h.attachOnCreate = cfg.UI.GetAttachOnCreate()
+		h.viewModeOpts.ActiveIncludesIdle = cfg.UI.GetActiveIncludesIdle()
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 		h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()
@@ -3466,8 +3471,8 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		// not by the (absent) session rows under a collapsed header. It honors the
 		// archive view so a group whose sessions are all archived counts as empty
 		// in the active view and sinks below the divider.
-		activity := h.groupTree.GroupActivityMap(viewArchived)
-		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
+		activity := h.groupTree.GroupActivityMapWith(viewArchived, h.viewModeOpts)
+		h.flatItems = session.PartitionByViewModeWith(h.flatItems, h.groupViewMode, activity, h.viewModeOpts)
 	}
 
 	// Recompute IsLastInGroup, IsLastSubSession and ParentIsLastInGroup on the
@@ -21655,7 +21660,7 @@ func (h *Home) renderGroupItem(
 	if h.groupViewMode == session.GroupViewActiveTop {
 		for i := 0; i < itemIndex && i < len(h.flatItems); i++ {
 			if h.flatItems[i].Type == session.ItemTypeGroup && h.flatItems[i].Path == item.Path {
-				groupName += " (idle)"
+				groupName += " (" + h.viewModeOpts.ActiveTopBottomLabel() + ")"
 				break
 			}
 		}
