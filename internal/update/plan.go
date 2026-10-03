@@ -67,8 +67,8 @@ func ShellQuote(argv []string) string {
 	return strings.Join(parts, " ")
 }
 
-// Step is one unit of a Plan: exactly one of WritePath, RemovePath or Argv is
-// set. Plans are pure data so --dry-run can print them and tests can assert
+// Step is one unit of a Plan: exactly one of WritePath, RemovePath, MovePath
+// or Argv is set. Plans are pure data so --dry-run can print them and tests can assert
 // the exact sequence without executing anything.
 type Step struct {
 	// Desc is a short human-readable label for dry-run and log output.
@@ -81,6 +81,11 @@ type Step struct {
 
 	// RemovePath: delete a file we own; a missing file is not an error.
 	RemovePath string
+
+	// MovePath + MoveTo: rename a file we do not own out of the way (the
+	// backup of a hand-made unit); a missing file is not an error.
+	MovePath string
+	MoveTo   string
 
 	// Argv: run a command through the Runner.
 	Argv []string
@@ -109,6 +114,8 @@ func (p Plan) Describe() string {
 			}
 		case s.RemovePath != "":
 			fmt.Fprintf(&b, "[%d] remove %s\n", i+1, s.RemovePath)
+		case s.MovePath != "":
+			fmt.Fprintf(&b, "[%d] move  %s -> %s\n", i+1, s.MovePath, s.MoveTo)
 		default:
 			fmt.Fprintf(&b, "[%d] run   %s\n", i+1, ShellQuote(s.Argv))
 		}
@@ -136,6 +143,16 @@ func (p Plan) Execute(r Runner, log *slog.Logger) error {
 				return fmt.Errorf("%s: remove %s: %w", s.Desc, s.RemovePath, err)
 			}
 			log.Info("plan_remove", slog.String("path", s.RemovePath))
+		case s.MovePath != "":
+			if err := os.Rename(s.MovePath, s.MoveTo); err != nil {
+				if os.IsNotExist(err) {
+					log.Info("plan_move_missing", slog.String("path", s.MovePath))
+					continue
+				}
+				log.Error("plan_move_failed", slog.String("path", s.MovePath), slog.String("to", s.MoveTo), slog.String("err", err.Error()))
+				return fmt.Errorf("%s: move %s: %w", s.Desc, s.MovePath, err)
+			}
+			log.Info("plan_move", slog.String("path", s.MovePath), slog.String("to", s.MoveTo))
 		default:
 			out, err := r.Run(s.Argv...)
 			if err != nil && s.Tolerate != nil && s.Tolerate(out, err) {
