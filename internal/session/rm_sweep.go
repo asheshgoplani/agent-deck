@@ -41,29 +41,27 @@ func SweepInboxesForChildSession(childSessionID string) (int, error) {
 	}
 
 	dir := InboxDir()
+	totalDropped := 0
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
-		}
-		return 0, err
-	}
-
-	totalDropped, err := sweepInboxFilesForChild(dir, entries, childSessionID)
-	if err != nil {
-		return totalDropped, err
+	switch {
+	case err == nil:
+		totalDropped, err = sweepInboxFilesForChild(dir, entries, childSessionID)
+	case errors.Is(err, fs.ErrNotExist):
+		err = nil // no inbox on this host; the rest of the footprint may still exist
 	}
 
 	// Issue #1225: sweep the rest of the child's outbox footprint so a reused id
 	// can't inherit stale state and per-parent ledgers don't leak. Best-effort —
-	// these never fail the rm.
+	// these never fail the rm, and they run even when the inbox sweep did not
+	// (a host with no inbox directory still keeps a turn journal, which the
+	// remote talkback cursor would otherwise name for the whole horizon).
 	_ = os.Remove(DeadLetterPathFor(childSessionID)) // dead-lettered records
 	RemoveTurnJournal(childSessionID)                // issue #2469 per-child turn journal
 	ForgetConsumedTurnsForChild(childSessionID)      // consumed-turn ledgers (this id as a CHILD)
 	ResetStopBlockBudget(childSessionID)             // Stop-hook block budget (if it was a parent)
 	sweepParentSideArtifacts(childSessionID)         // audit B5: this id's OWN parent-side files
 
-	return totalDropped, nil
+	return totalDropped, err
 }
 
 // sweepParentSideArtifacts removes the per-PARENT files keyed by this id, for

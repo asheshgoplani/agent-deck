@@ -79,9 +79,11 @@ func printInboxUsage(w io.Writer) {
 func printInboxExportUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]")
 	fmt.Fprintln(w, "Print this host's completion/transition records without consuming them.")
-	fmt.Fprintln(w, "--after returns only turn-journal lines and ledger records newer than the")
-	fmt.Fprintln(w, "cursor ({\"<child>\": <seq>, \"_ts\": \"<RFC3339>\"}) as")
+	fmt.Fprintln(w, "--after (requires --json) returns only what the cursor does not hold yet:")
+	fmt.Fprintln(w, "turn-journal lines past each child's seq, changed completion-ledger entries")
+	fmt.Fprintln(w, "and _unowned records past its read position, as")
 	fmt.Fprintln(w, "{\"records\":[...],\"cursor_next\":{...}}; --with-writer adds \"writer\".")
+	fmt.Fprintln(w, "The cursor is the cursor_next of the previous call; \"-\" reads it from stdin.")
 }
 
 func printInboxWriterStatusUsage(w io.Writer) {
@@ -530,10 +532,18 @@ func resolveSelfSessionID() (string, error) {
 // Non-destructive is the contract, not a side effect: two conductors draining
 // this host must both get the records, and this host's own conductor must still
 // find its inbox exactly as it left it.
+// inboxExportStdin is where `inbox export --after -` reads its cursor; a test
+// seam.
+var inboxExportStdin = func() io.Reader { return os.Stdin }
+
+// maxInboxExportCursorBytes bounds the cursor read from stdin (one entry per
+// remote child active within the talkback horizon, about 80 bytes each).
+const maxInboxExportCursorBytes = 64 << 20
+
 func runInboxExport(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("inbox export", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the records as a JSON array")
-	after := fs.String("after", "", "incremental export: only records newer than this cursor JSON (wrapped with cursor_next)")
+	after := fs.String("after", "", "incremental export: only records past this cursor JSON, or - to read it from stdin (wrapped with cursor_next)")
 	withWriter := fs.Bool("with-writer", false, "with --after: include the writer status in the reply")
 	fs.Usage = func() { printInboxExportUsage(stdout) }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -549,7 +559,19 @@ func runInboxExport(stdout io.Writer, args []string) error {
 		if !*asJSON {
 			return fmt.Errorf("inbox export --after requires --json")
 		}
-		cursor, err := session.ParseRemoteCursor(*after)
+		raw := *after
+		if raw == "-" {
+			// The cursor grows with the remote's fleet; stdin has no argv cap.
+			b, err := io.ReadAll(io.LimitReader(inboxExportStdin(), maxInboxExportCursorBytes+1))
+			if err != nil {
+				return fmt.Errorf("inbox export --after -: read cursor from stdin: %w", err)
+			}
+			if len(b) > maxInboxExportCursorBytes {
+				return fmt.Errorf("inbox export --after -: cursor larger than %d bytes", maxInboxExportCursorBytes)
+			}
+			raw = string(b)
+		}
+		cursor, err := session.ParseRemoteCursor(raw)
 		if err != nil {
 			return err
 		}

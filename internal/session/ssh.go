@@ -174,6 +174,10 @@ type SSHRunner struct {
 	// runFn lets tests stub out command execution. nil = real SSH.
 	runFn func(ctx context.Context, args ...string) ([]byte, error)
 
+	// runStdinFn lets tests stub runWithStdin and see the stdin it sends.
+	// nil = runFn when that is set (argv-only stubs), else real SSH.
+	runStdinFn func(ctx context.Context, stdin []byte, args ...string) ([]byte, error)
+
 	// fetchSessionsFn lets tests stub FetchSessions's stdout+stderr directly
 	// (needed because ListStats travels on stderr, which runFn does not
 	// carry). nil = real SSH via run(), reading lastStderr.
@@ -1370,15 +1374,18 @@ func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotifi
 
 // FetchRecordsAfter is the incremental talkback read: one round trip returns
 // the records newer than cursor, the next cursor and the remote writer's
-// status (`inbox export --json --after <cursor> --with-writer`). A remote
-// whose binary predates --after rejects the flag; that answer is
+// status (`inbox export --json --after - --with-writer`). The cursor travels
+// on stdin, not as an argument: it names one entry per recently active remote
+// child, and a single argv string is capped (128 KiB on Linux), past which the
+// remote shell could not even start the export. A remote whose binary
+// predates --after rejects the flag; that answer is
 // ErrRemoteCursorUnsupported so the caller falls back to the full export.
 func (r *SSHRunner) FetchRecordsAfter(ctx context.Context, cursor RemoteCursor) (RemoteExport, error) {
 	arg, err := json.Marshal(cursor)
 	if err != nil {
 		return RemoteExport{}, err
 	}
-	output, err := r.Run(ctx, "inbox", "export", "--json", "--after", string(arg), "--with-writer")
+	output, err := r.runWithStdin(ctx, arg, "inbox", "export", "--json", "--after", "-", "--with-writer")
 	if err != nil {
 		if strings.Contains(err.Error(), "flag provided but not defined") {
 			return RemoteExport{}, fmt.Errorf("%w: %s", ErrRemoteCursorUnsupported, firstLineOf([]byte(err.Error())))
@@ -1717,6 +1724,25 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 		return nil, fmt.Errorf("remote command failed: %w: %s", err, stderr.String())
 	}
 	return stdout.Bytes(), nil
+}
+
+// runWithStdin runs one remote agent-deck command with stdin attached, under
+// the same command timeout as Run. It takes a plain exec over the shared
+// ControlMaster: the persistent channel carries argv only.
+func (r *SSHRunner) runWithStdin(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	if r.runStdinFn != nil {
+		return r.runStdinFn(ctx, stdin, args...)
+	}
+	if r.runFn != nil {
+		return r.runFn(ctx, args...)
+	}
+	timeout := r.commandTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return r.remoteExec(timeoutCtx, r.buildRemoteCommand(args...), stdin)
 }
 
 // remoteVersionRe matches the first semver-looking token (with optional

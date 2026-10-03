@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -145,5 +146,35 @@ func TestIssue2469PR3_InboxExportAfterAndCursorCLI(t *testing.T) {
 	out.Reset()
 	if err := runInbox(&out, []string{"cursor", "--json", "other"}); err != nil || strings.TrimSpace(out.String()) != "[]" {
 		t.Fatalf("filter by remote: %v %s", err, out.String())
+	}
+}
+
+// The remote reads the cursor from stdin (`--after -`): it names one entry per
+// recently active child and would outgrow a single argv string.
+func TestIssue2469PR3_InboxExportAfterReadsCursorFromStdin(t *testing.T) {
+	drainTestHome(t)
+	at := time.Now().Add(-time.Minute)
+	for i := 1; i <= 2; i++ {
+		if _, err := session.AppendTurnJournal(session.TurnJournalEntry{
+			TS: at.Add(time.Duration(i) * time.Second), Child: "w7", Profile: "default", Status: "waiting",
+			Tier: "urgent", UUID: "u7-" + string(rune('0'+i)), Text: "turn",
+		}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := inboxExportStdin
+	t.Cleanup(func() { inboxExportStdin = prev })
+	inboxExportStdin = func() io.Reader { return strings.NewReader(`{"w7": 1}`) }
+
+	var out bytes.Buffer
+	if err := runInbox(&out, []string{"export", "--json", "--after", "-", "--with-writer"}); err != nil {
+		t.Fatalf("export --after -: %v", err)
+	}
+	var exp session.RemoteExport
+	if err := json.Unmarshal(out.Bytes(), &exp); err != nil {
+		t.Fatalf("wrapper not JSON: %v: %s", err, out.String())
+	}
+	if len(exp.Records) != 1 || exp.Records[0].Seq != 2 || exp.CursorNext.Seqs["w7"] != 2 {
+		t.Fatalf("the stdin cursor was not applied: %s", out.String())
 	}
 }

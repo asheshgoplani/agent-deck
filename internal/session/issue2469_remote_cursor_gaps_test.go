@@ -215,8 +215,8 @@ func TestIssue2469PR3_ConcurrentCursorSavesDoNotClobber(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < 50; i++ {
-				c := RemoteCursor{Seqs: map[string]int64{"w": int64(g*1000 + i)}, Ledger: map[string]time.Time{
-					strings.Repeat("c", 1+g*40): time.Unix(int64(i), 0)}}
+				c := RemoteCursor{Seqs: map[string]int64{"w": int64(g*1000 + i)}, Ledger: map[string]string{
+					strings.Repeat("c", 1+g*40): time.Unix(int64(i), 0).UTC().Format(time.RFC3339)}}
 				if err := SaveRemoteCursor("boxb", "conductor-race", c); err != nil {
 					errs <- err
 				}

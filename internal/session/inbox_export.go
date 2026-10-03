@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Issue #1948 — the REMOTE-SIDE READ of the cross-machine pull.
@@ -193,6 +194,12 @@ func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionN
 // unreachable host as empty. The export is small and rarely-failing; when it
 // does fail the operator gets the file name.
 func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
+	return exportLedgerRecordsSince(time.Time{})
+}
+
+// exportLedgerRecordsSince is exportLedgerRecords limited to entries written
+// at or after since (file mtime, then the entry's own stamp); zero means all.
+func exportLedgerRecordsSince(since time.Time) ([]TransitionNotificationEvent, error) {
 	dir, err := CompletionLedgerDir()
 	if err != nil {
 		return nil, err
@@ -210,6 +217,11 @@ func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
+		if !since.IsZero() {
+			if info, err := e.Info(); err == nil && info.ModTime().Before(since) {
+				continue
+			}
+		}
 		path := filepath.Join(dir, e.Name())
 		entry, err := readLedgerFile(path)
 		if err != nil {
@@ -219,6 +231,9 @@ func exportLedgerRecords() ([]TransitionNotificationEvent, error) {
 				continue
 			}
 			return nil, fmt.Errorf("export: unreadable completion ledger entry %s: %w", e.Name(), err)
+		}
+		if !since.IsZero() && entry.FinishedAt.Before(since) {
+			continue
 		}
 		out = append(out, completionLedgerEvent(entry))
 	}

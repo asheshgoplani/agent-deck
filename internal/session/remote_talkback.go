@@ -19,26 +19,34 @@ import (
 // Incremental remote talkback (issue #2469 family, PR3). The #1948 drain
 // re-shipped a remote's whole completion ledger and every inbox on every run
 // and never woke the conductor. A conductor now keeps one cursor per
-// (remote, conductor): the newest turn-journal seq it holds per remote child
-// plus the timestamp of the newest ledger record. The remote answers only
-// what is newer, and the cursor advances only once every record of the batch
-// durably landed (inserted or already present), so a failed write refetches
-// the batch and the inbox dedup absorbs the overlap.
+// (remote, conductor): the newest turn-journal seq it holds per remote child,
+// the completion-ledger entry it holds per child and its read position in the
+// remote's _unowned ledger. The remote answers only what is newer, and the
+// cursor advances only once every record of the batch durably landed
+// (inserted or already present), so a failed write refetches the batch and
+// the inbox dedup absorbs the overlap.
+//
+// The cursor stays bounded: it names only children active within
+// remoteTalkbackHorizon whose journal still exists (the rm sweep removes a
+// removed session's journal), and it travels on the export's stdin
+// (`--after -`), never as one argv string.
 
 // RemoteCursor is the drain position against one remote. On the wire it is
 // one flat JSON object:
 //
 //	{"<child_id>": <seq>, "_ts": "<RFC3339>",
-//	 "_ledger": {"<child_id>": "<RFC3339>"}, "_unowned": {"n": 12, "last": "<mark>"}}
+//	 "_ledger": {"<child_id>": "<mark>"}, "_unowned": {"n": 12, "last": "<mark>"}}
 //
 // The parts:
 //
 //   - Seqs: per child, the newest turn-journal seq already received.
-//   - Ledger: per child, the FinishedAt of the completion-ledger entry already
-//     received. The ledger is one last-wins file per child, so "differs from
-//     what I hold" is exact, and it does not depend on producers stamping
-//     records in write order (they do not: a completion is stamped with the
-//     hook's UpdatedAt, a worker writes from another process, clocks step).
+//   - Ledger: per child, a mark of the completion-ledger entry already
+//     received (its FinishedAt plus a hash of its status and summary). The
+//     ledger is one last-wins file per child, so "differs from what I hold" is
+//     exact, a rewrite with the same stamp but a new outcome still crosses,
+//     and it does not depend on producers stamping records in write order
+//     (they do not: a completion is stamped with the hook's UpdatedAt, a
+//     worker writes from another process, clocks step).
 //   - Unowned: how many _unowned records were already examined, plus a mark of
 //     the last one. The file is append-only, so the records past N are new; a
 //     rewrite (operator purge) breaks the mark and the export starts over.
@@ -52,7 +60,7 @@ import (
 type RemoteCursor struct {
 	Seqs    map[string]int64
 	TS      time.Time
-	Ledger  map[string]time.Time
+	Ledger  map[string]string
 	Unowned RemoteUnownedMark
 	Legacy  bool
 }
@@ -81,11 +89,7 @@ func (c RemoteCursor) MarshalJSON() ([]byte, error) {
 		m[remoteCursorTSKey] = c.TS.UTC().Format(time.RFC3339Nano)
 	}
 	if len(c.Ledger) > 0 {
-		ledger := make(map[string]string, len(c.Ledger))
-		for k, v := range c.Ledger {
-			ledger[k] = v.UTC().Format(time.RFC3339Nano)
-		}
-		m[remoteCursorLedgerKey] = ledger
+		m[remoteCursorLedgerKey] = c.Ledger
 	}
 	if c.Unowned.N > 0 {
 		m[remoteCursorUnownedKey] = c.Unowned
@@ -119,7 +123,7 @@ func (c *RemoteCursor) UnmarshalJSON(b []byte) error {
 			}
 			continue
 		case remoteCursorLedgerKey:
-			var m map[string]time.Time
+			var m map[string]string
 			if err := json.Unmarshal(v, &m); err != nil {
 				return fmt.Errorf("cursor %s: %w", k, err)
 			}
@@ -147,7 +151,8 @@ func (c *RemoteCursor) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// ParseRemoteCursor parses the --after argument. Empty means "from scratch".
+// ParseRemoteCursor parses the --after argument (or the stdin it names).
+// Empty means "from scratch".
 func ParseRemoteCursor(s string) (RemoteCursor, error) {
 	var c RemoteCursor
 	if strings.TrimSpace(s) == "" {
@@ -172,6 +177,49 @@ type RemoteExport struct {
 // on its first drain.
 const remoteExportNewChildLines = 64
 
+// remoteTalkbackHorizon is how far back the incremental export looks. It is
+// the receiver's consumed-turn horizon: WriteInboxEventIfUnseen answers
+// AlreadyPresent for any record stamped before it, so shipping or tracking an
+// older one could never deliver anything. A child (journal) or ledger entry
+// untouched for that long drops out of the export and out of the cursor, so
+// the cursor is bounded by recent activity, not by history.
+const remoteTalkbackHorizon = consumedTurnsTTL
+
+// exportJournal is one child's retained turn journal, as the export read it.
+type exportJournal struct {
+	child string
+	lines []TurnJournalEntry
+}
+
+// readExportJournals reads every turn journal written at or after since.
+func readExportJournals(since time.Time) ([]exportJournal, error) {
+	dir := TurnJournalDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	var out []exportJournal
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().Before(since) {
+			continue // idle past the horizon: nothing in it can still land
+		}
+		turnJournalMu.Lock()
+		lines, err := readTurnJournalLocked(filepath.Join(dir, e.Name()))
+		turnJournalMu.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("export: unreadable turn journal %s: %w", e.Name(), err)
+		}
+		if len(lines) == 0 || strings.TrimSpace(lines[len(lines)-1].Child) == "" {
+			continue
+		}
+		out = append(out, exportJournal{child: lines[len(lines)-1].Child, lines: lines})
+	}
+	return out, nil
+}
+
 // ExportRecordsAfter is the incremental, read-only remote export:
 //
 //   - turn-journal lines newer than the cursor's seq for each child (a child
@@ -180,56 +228,25 @@ const remoteExportNewChildLines = 64
 //   - completion-ledger entries that differ from the entry the cursor holds
 //     for that child (skipped when a journal line of this batch already
 //     carries the same completion);
-//   - _unowned records appended since the cursor's position, except the
-//     journaled turns (Seq > 0) of a child whose journal ships them.
+//   - _unowned records appended since the cursor's position, except a
+//     journaled turn the journal already delivers (same seq, same transcript
+//     turn). A turn the journal no longer holds (trimmed past the cursor, or
+//     a failed journal append) ships from here.
 //
-// Other parents' inboxes are never exported here: the drain's --into parent
-// decides where records land. The no_notify opt-out filter applies as in
-// ExportPendingRecords.
+// Only activity within remoteTalkbackHorizon is read or named in the next
+// cursor; a removed session's journal goes with it (rm sweep), so the cursor
+// tracks the live fleet, not history. Other parents' inboxes are never
+// exported here: the drain's --into parent decides where records land. The
+// no_notify opt-out filter applies as in ExportPendingRecords.
 func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
+	horizon := time.Now().Add(-remoteTalkbackHorizon)
 	next := RemoteCursor{Seqs: map[string]int64{}, TS: cursor.TS}
-	journaled := map[string]bool{}
-	var out []TransitionNotificationEvent
 
-	dir := TurnJournalDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	journals, err := readExportJournals(horizon)
+	if err != nil {
 		return RemoteExport{}, err
 	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		turnJournalMu.Lock()
-		lines, err := readTurnJournalLocked(filepath.Join(dir, e.Name()))
-		turnJournalMu.Unlock()
-		if err != nil {
-			return RemoteExport{}, fmt.Errorf("export: unreadable turn journal %s: %w", e.Name(), err)
-		}
-		if len(lines) == 0 || strings.TrimSpace(lines[len(lines)-1].Child) == "" {
-			continue
-		}
-		child := lines[len(lines)-1].Child
-		journaled[child] = true
-		last := lines[len(lines)-1].Seq
-		next.Seqs[child] = last
-		since, known := cursor.Seqs[child]
-		if !known || last < since {
-			// Unknown child, or a journal that was removed and recreated (its
-			// seqs restarted): ship the recent tail, dedup absorbs repeats.
-			if len(lines) > remoteExportNewChildLines {
-				lines = lines[len(lines)-remoteExportNewChildLines:]
-			}
-			since = 0
-		}
-		for _, l := range lines {
-			if l.Seq > since {
-				out = append(out, journalTurnEvent(l))
-			}
-		}
-	}
-
-	ledger, err := exportLedgerRecords()
+	ledger, err := exportLedgerRecordsSince(horizon)
 	if err != nil {
 		return RemoteExport{}, err
 	}
@@ -237,29 +254,69 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	if err != nil {
 		return RemoteExport{}, fmt.Errorf("export: unreadable inbox %s: %w", UnownedInboxID, err)
 	}
-	shipped := make(map[string]bool, len(out))
-	for _, ev := range out {
-		shipped[ev.TurnFingerprint] = true
-	}
 	noteTS := func(ts time.Time) {
 		if ts.After(next.TS) {
 			next.TS = ts
 		}
 	}
+	// delivered[child] holds the turn identity of every journal line this
+	// cursor has received or this batch ships, by seq: an _unowned copy of
+	// that same turn is redundant, any other one is news. journalDone holds
+	// the completions those lines carry, so their ledger mirror stays home.
+	delivered := map[string]map[int64]string{}
+	journalDone := map[string]bool{}
+	var out []TransitionNotificationEvent
+	for _, j := range journals {
+		child, lines := j.child, j.lines
+		last := lines[len(lines)-1].Seq
+		next.Seqs[child] = last
+		since, known := cursor.Seqs[child]
+		rendered := renderJournalTurns(lines)
+		fresh := !known || last < since
+		start := 0
+		if fresh {
+			// Unknown child, or a journal that was removed and recreated (its
+			// seqs restarted): ship the recent tail, dedup absorbs repeats.
+			start = max(0, len(lines)-remoteExportNewChildLines)
+			since = 0
+		} else if first := lines[0].Seq; first > since+1 {
+			// Trimmed past the cursor: the missing turns cross from _unowned.
+			commsLog.Warn("remote_export_journal_gap", "child", child,
+				"cursor_seq", since, "first_retained_seq", first)
+		}
+		seen := map[int64]string{}
+		for i := start; i < len(lines); i++ {
+			l := lines[i]
+			if l.Seq > since {
+				if fresh && l.TS.Before(horizon) {
+					continue // the receiver would only answer AlreadyPresent
+				}
+				out = append(out, rendered[i])
+			}
+			seen[l.Seq] = journalTurnKey(l.Seq, l.UUID, l.TextHash)
+			if rendered[i].Kind == transitionKindFinished {
+				journalDone[completionKey(rendered[i])] = true
+			}
+		}
+		delivered[child] = seen
+	}
+
 	if len(ledger) > 0 {
-		next.Ledger = make(map[string]time.Time, len(ledger))
+		next.Ledger = make(map[string]string, len(ledger))
 	}
 	for _, ev := range ledger {
 		child := ev.ChildSessionID
-		next.Ledger[child] = ev.Timestamp
-		if held, ok := cursor.Ledger[child]; ok && held.Equal(ev.Timestamp) {
+		mark := ledgerMark(ev)
+		next.Ledger[child] = mark
+		if held, ok := cursor.Ledger[child]; ok && held == mark {
 			continue // this entry already crossed
 		}
 		noteTS(ev.Timestamp)
-		// A journaled child's completion normally rides its journal line (same
-		// turn fingerprint); the ledger copy still ships when it is the only
-		// record of it, e.g. a run-task exit without a sentinel.
-		if !shipped[ev.TurnFingerprint] {
+		// A journaled child's completion rides its journal line, which carries
+		// the turn signal its ledger mirror lacks; the ledger copy still ships
+		// when it is the only record of it, e.g. a run-task exit without a
+		// sentinel.
+		if !journalDone[completionKey(ev)] {
 			out = append(out, ev)
 		}
 	}
@@ -271,11 +328,16 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		next.Unowned = RemoteUnownedMark{N: len(unowned), Last: unownedMark(unowned[len(unowned)-1])}
 	}
 	for _, ev := range unowned[start:] {
+		if ev.Timestamp.Before(horizon) {
+			continue // the receiver would only answer AlreadyPresent
+		}
 		noteTS(ev.Timestamp)
-		// A journaled turn (Seq > 0) rides the journal. A transition the
-		// producer could not classify has no journal line even when the
-		// child has a journal, so it still ships from here.
-		if ev.Seq > 0 && journaled[strings.TrimSpace(ev.ChildSessionID)] {
+		// The journal delivers its own turns. Everything else crosses from
+		// here: a flip the producer could not classify (Seq 0), a turn the
+		// journal trimmed or never got (failed append), and a turn whose
+		// identity differs from the journal line of the same seq.
+		if key, ok := delivered[strings.TrimSpace(ev.ChildSessionID)][ev.Seq]; ok && ev.Seq > 0 &&
+			key == journalTurnKey(ev.Seq, ev.TurnUUID, ev.TextHash) {
 			continue
 		}
 		out = append(out, ev)
@@ -305,11 +367,51 @@ func unownedMark(ev TransitionNotificationEvent) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// journalTurnKey is a journaled turn's identity as both the journal line and
+// the producer's record of it carry it: seq plus the transcript turn.
+func journalTurnKey(seq int64, uuid, textHash string) string {
+	return strconv.FormatInt(seq, 10) + "|" + uuid + "|" + textHash
+}
+
+// completionKey matches a completion across its journal line and its ledger
+// mirror (noteDoneEmitted stamps the ledger with the turn's own time); only
+// the journal line carries the turn signal, so TurnFingerprint differs.
+func completionKey(ev TransitionNotificationEvent) string {
+	return strings.TrimSpace(ev.ChildSessionID) + "|" + strings.ToLower(strings.TrimSpace(ev.DoneStatus)) + "|" +
+		strings.TrimSpace(ev.DoneSummary) + "|" + strconv.FormatInt(ev.Timestamp.UnixNano(), 10)
+}
+
+// ledgerMark identifies one completion-ledger entry: its stamp, readable,
+// plus a hash of its outcome, so a rewrite that keeps the stamp but changes
+// the status or summary (a #1186 rescan that finds a later sentinel) differs.
+func ledgerMark(ev TransitionNotificationEvent) string {
+	return ev.Timestamp.UTC().Format(time.RFC3339Nano) + "#" + EventFingerprint(ev)[:16]
+}
+
+// renderJournalTurns renders a child's retained journal lines as records.
+// A transition line whose turn signal repeats the previous line's is a turn
+// the transcript could not tell apart (issue #2184): the producer flagged it
+// OutputHashStale and keyed it on its emit instant, so it renders the same
+// way instead of collapsing into the previous turn.
+func renderJournalTurns(lines []TurnJournalEntry) []TransitionNotificationEvent {
+	out := make([]TransitionNotificationEvent, len(lines))
+	for i, l := range lines {
+		stale := false
+		if i > 0 && l.DoneStatus == "" {
+			sig := TurnFacts{UUID: l.UUID, TextHash: l.TextHash}.Signal()
+			prev := TurnFacts{UUID: lines[i-1].UUID, TextHash: lines[i-1].TextHash}.Signal()
+			stale = sig != "" && sig == prev
+		}
+		out[i] = journalTurnEvent(l, stale)
+	}
+	return out
+}
+
 // journalTurnEvent renders one journaled turn as the record the producer
 // committed for it: same tier, text and turn signal, so the receiving
 // consumed-turn ledger recognises a turn it already got through the legacy
-// export.
-func journalTurnEvent(e TurnJournalEntry) TransitionNotificationEvent {
+// export. stale renders a #2184 stale-signal turn as the producer stored it.
+func journalTurnEvent(e TurnJournalEntry, stale bool) TransitionNotificationEvent {
 	ev := TransitionNotificationEvent{
 		ChildSessionID: e.Child,
 		Profile:        e.Profile,
@@ -330,6 +432,10 @@ func journalTurnEvent(e TurnJournalEntry) TransitionNotificationEvent {
 		ev.Kind = transitionKindFinished
 		ev.DoneStatus = e.DoneStatus
 		ev.DoneSummary = capDoneSummary(e.DoneSummary)
+	}
+	if stale {
+		ev.OutputHashStale = true
+		ev.LastOutputHash = emitInstantSignal(ev.Timestamp)
 	}
 	ev.TurnFingerprint = TurnFingerprint(ev)
 	return ev
