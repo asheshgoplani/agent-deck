@@ -3194,8 +3194,10 @@ func handleSessionSend(profile string, args []string) {
 	}
 	// PR5 of the comms redesign: tag an agent-originated send with the
 	// sender's id. The queue worker delivers a message tagged when queued.
+	senderID := sendSenderID()
 	message, tagged := tagSendMessage(message, sendTagInputs{
-		senderID:   sendSenderID(),
+		senderID:   senderID,
+		senderTool: sendSenderTool(senderID, instances),
 		targetID:   inst.ID,
 		targetTool: inst.Tool,
 		enabled:    !*noTag && !*queueWorker && sendTagsEnabled(),

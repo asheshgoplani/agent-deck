@@ -175,16 +175,126 @@ func TestPR5_SelfSendIsNotRoutedBackToTheChild(t *testing.T) {
 
 func TestPR5_NudgeGateAcceptsNonConductorReplyTarget(t *testing.T) {
 	withNoopStatusProbe(t)
-	worker := &Instance{ID: "w", Title: "api-worker", Status: StatusIdle}
+	worker := &Instance{ID: "w", Title: "api-worker", Tool: "claude", Status: StatusIdle}
 	if !parentIsNudgeableIdle(worker, "reply") {
 		t.Fatal("an idle non-conductor reply target must be nudgeable")
 	}
 	if parentIsNudgeableIdle(worker, "parent") {
 		t.Fatal("a non-conductor parent target stays un-nudgeable")
 	}
-	busy := &Instance{ID: "w", Title: "api-worker", Status: StatusRunning}
+	busy := &Instance{ID: "w", Title: "api-worker", Tool: "claude", Status: StatusRunning}
 	if parentIsNudgeableIdle(busy, "reply") {
 		t.Fatal("a busy reply target must not be nudged (its Stop/prompt drain delivers)")
+	}
+}
+
+// Fix round 2: the wake line is typed into the reply target's pane and
+// carries the child's text. Only a Claude-compatible pane drains it; a shell
+// would execute it and another harness would strand the record.
+func TestPR5_NudgeGateRejectsNonClaudeReplyTarget(t *testing.T) {
+	withNoopStatusProbe(t)
+	for _, tool := range []string{"shell", "codex", "gemini", ""} {
+		target := &Instance{ID: "w", Title: "conductor-w", Tool: tool, Status: StatusIdle}
+		if parentIsNudgeableIdle(target, "reply") {
+			t.Fatalf("a %q reply target must not be woken", tool)
+		}
+	}
+}
+
+// pr5AssertOneReply reads the sender's inbox and asserts exactly one urgent
+// reply record for the fixture child's answer.
+func pr5AssertOneReply(t *testing.T, f *pr5Fixture, senderID string) {
+	t.Helper()
+	replies, err := ReadInboxEvents(senderID)
+	if err != nil {
+		t.Fatalf("ReadInboxEvents(sender): %v", err)
+	}
+	if len(replies) != 1 {
+		t.Fatalf("sender must get exactly one reply record, got %d: %+v", len(replies), replies)
+	}
+	r := replies[0]
+	if r.TargetKind != "reply" || r.Tier != TurnTierUrgent || r.TargetSessionID != senderID ||
+		r.ChildSessionID != f.child.ID || r.Text != "The API listens on 8443." || r.DeadLetterReason != "" {
+		t.Fatalf("reply record: %+v", r)
+	}
+	if f.woken[senderID] != 1 || f.kinds[senderID] != "reply" {
+		t.Fatalf("the sender must be woken once as a reply target: woken=%v kinds=%v", f.woken, f.kinds)
+	}
+}
+
+// Fix round 2: a child asks its TOP-LEVEL conductor with a tagged send. The
+// conductor has no parent (its own turns are self-suppressed), yet its answer
+// must reach the child that asked.
+func TestPR5_TopLevelConductorReplyReachesAskingChild(t *testing.T) {
+	f := newPR5Fixture(t)
+	f.child.Title = "conductor-ops"
+	f.child.ParentSessionID = ""
+	asker := NewInstanceWithTool("asker", f.child.ProjectPath, "claude")
+	asker.ID = "asker-pr5"
+	asker.ParentSessionID = f.child.ID
+	asker.Status = StatusIdle
+	f.saveRegistry(t, asker)
+
+	f.runTaggedTurn(t, asker.ID)
+
+	pr5AssertOneReply(t, f, asker.ID)
+	if got := f.inboxRecords(t); len(got) != 0 {
+		t.Fatalf("the unrelated session must get nothing: %+v", got)
+	}
+	if InboxHasPending(f.child.ID) {
+		t.Fatal("the conductor's own inbox must not hold its answer")
+	}
+}
+
+// Fix round 2: a peer (no parent: -no-parent or orphan) answers a tagged
+// send; the answer reaches the sender.
+func TestPR5_PeerReceiverReplyReachesSender(t *testing.T) {
+	f := newPR5Fixture(t)
+	f.child.ParentSessionID = ""
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+
+	f.runTaggedTurn(t, sib.ID)
+
+	pr5AssertOneReply(t, f, sib.ID)
+	if got := f.inboxRecords(t); len(got) != 0 {
+		t.Fatalf("no parent copy for a peer: %+v", got)
+	}
+}
+
+// Fix round 2: a receiver whose parent was removed lands in the unowned
+// ledger; the sender still gets its answer.
+func TestPR5_MissingParentReceiverReplyReachesSender(t *testing.T) {
+	f := newPR5Fixture(t)
+	f.child.ParentSessionID = "removed-parent"
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+
+	f.runTaggedTurn(t, sib.ID)
+
+	pr5AssertOneReply(t, f, sib.ID)
+}
+
+// Fix round 2: a reply is routed back only to a Claude-compatible sender;
+// any other tool gets no record (it has no prompt-time drain, so the record
+// would sit undrained and block later ones) and no wake.
+func TestPR5_NonClaudeSenderGetsNoReply(t *testing.T) {
+	for _, tool := range []string{"shell", "codex"} {
+		t.Run(tool, func(t *testing.T) {
+			f := newPR5Fixture(t)
+			sib := pr5Sibling(f.child.ProjectPath)
+			sib.Tool = tool
+			f.saveRegistry(t, sib)
+
+			f.runTaggedTurn(t, sib.ID)
+
+			if InboxHasPending(sib.ID) || f.woken[sib.ID] != 0 {
+				t.Fatalf("a %s sender must get no reply record or wake: woken=%v", tool, f.woken)
+			}
+			if got := f.inboxRecords(t); len(got) != 1 || got[0].FromID != sib.ID {
+				t.Fatalf("the parent keeps its copy: %+v", got)
+			}
+		})
 	}
 }
 
@@ -221,6 +331,14 @@ func TestPR5_IdentityPromptExplainsEnvelope(t *testing.T) {
 	inst := &Instance{ID: "id-1", Title: "t", Tool: "claude"}
 	if !strings.Contains(inst.BuildIdentityPrompt(), "Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.") {
 		t.Fatal("identity prompt must explain the envelope")
+	}
+	// A session whose turns are never reported cannot promise the sender
+	// is notified: it is told to answer with an explicit send.
+	quiet := &Instance{ID: "id-2", Title: "t", Tool: "claude", NoTransitionNotify: true}
+	got := quiet.BuildIdentityPrompt()
+	if strings.Contains(got, "the sender is notified") ||
+		!strings.Contains(got, "this session's turns are not reported, so reply with `agent-deck session send <id> \"answer\"`") {
+		t.Fatalf("no-notify identity prompt must ask for an explicit reply:\n%s", got)
 	}
 }
 

@@ -112,7 +112,8 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 // nudge to a non-conductor leaf would be pure noise) AND currently idle/waiting,
 // NOT mid-turn. A "reply" target (comms redesign PR5) is the session whose
 // tagged send the child just answered: it asked, so it is woken whatever its
-// title, and its prompt-time drain injects the reply. A send-keys into a RUNNING pane only queues the keystroke
+// title, but only when it is Claude-compatible (its prompt-time drain injects
+// the reply). A send-keys into a RUNNING pane only queues the keystroke
 // (issue #36326) — the exact failure the pull model was built to avoid — so a
 // busy conductor is left to drain at its own turn boundary.
 //
@@ -124,7 +125,17 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 // completion waited for the next heartbeat. A probe that overruns the budget
 // counts as not idle (the record still drains on the parent's next turn).
 func parentIsNudgeableIdle(parent *Instance, targetKind string) bool {
-	if parent == nil || (targetKind != "reply" && !isConductorSessionTitle(parent.Title)) {
+	if parent == nil {
+		return false
+	}
+	if targetKind == "reply" {
+		// The wake is typed into the pane and carries the child's text: only
+		// a Claude-compatible pane drains it at prompt time, and a shell
+		// would execute it.
+		if !IsClaudeCompatible(parent.Tool) {
+			return false
+		}
+	} else if !isConductorSessionTitle(parent.Title) {
 		return false
 	}
 	if refreshStatusBounded(parent, statusProbeBudget) {

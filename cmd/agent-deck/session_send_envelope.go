@@ -11,6 +11,7 @@ import (
 // so the decision is table-testable without tmux or a registry.
 type sendTagInputs struct {
 	senderID   string // the caller's AGENTDECK_INSTANCE_ID; "" for a human shell
+	senderTool string // the sender's tool in the target's registry; "" when not found
 	targetID   string
 	targetTool string
 	enabled    bool // [send] tag_sends, minus --no-tag and the queue worker
@@ -26,6 +27,10 @@ type sendTagInputs struct {
 //
 // When in doubt it does not tag: a human shell (no sender id), --no-tag or
 // tag_sends = false, a --draft the operator will review, a send to oneself,
+// a sender that is not a Claude-compatible session in the target's registry
+// (the reply is routed back only to a session whose prompt-time drain can
+// inject it; a wake line typed into a shell or another harness would run or
+// strand it, so the receiver's "the sender is notified" would be false),
 // a non-Claude target (only Claude transcripts are classified, and a
 // newline into a shell pane would run the tag as a command), a bare slash
 // command (a prefix would stop it executing), a conductor heartbeat (its
@@ -35,6 +40,7 @@ func tagSendMessage(message string, in sendTagInputs) (string, bool) {
 	sender := strings.TrimSpace(in.senderID)
 	switch {
 	case !in.enabled, in.draft, sender == "", sender == in.targetID,
+		!session.IsClaudeCompatible(in.senderTool),
 		!session.IsClaudeCompatible(in.targetTool),
 		isBareSlashCommand(message),
 		session.IsConductorHeartbeatMessage(message),
@@ -54,4 +60,15 @@ func sendTagsEnabled() bool {
 // sendSenderID is the calling session's id, "" outside an agent-deck session.
 func sendSenderID() string {
 	return strings.TrimSpace(os.Getenv("AGENTDECK_INSTANCE_ID"))
+}
+
+// sendSenderTool is the tool of the calling session as the target's registry
+// knows it; "" when the sender is not in it (another profile, removed).
+func sendSenderTool(senderID string, instances []*session.Instance) string {
+	for _, inst := range instances {
+		if inst != nil && senderID != "" && inst.ID == senderID {
+			return inst.Tool
+		}
+	}
+	return ""
 }

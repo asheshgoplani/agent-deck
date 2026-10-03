@@ -10,7 +10,7 @@ import (
 // "[agent-deck from:<sender-id>]" line; everything that is not clearly an
 // agent-to-agent prompt goes out untouched.
 func TestPR5_TagSendMessage(t *testing.T) {
-	base := sendTagInputs{senderID: "sender-1", targetID: "target-1", targetTool: "claude", enabled: true}
+	base := sendTagInputs{senderID: "sender-1", senderTool: "claude", targetID: "target-1", targetTool: "claude", enabled: true}
 	cases := []struct {
 		name string
 		msg  string
@@ -27,6 +27,9 @@ func TestPR5_TagSendMessage(t *testing.T) {
 		{name: "send to self", msg: "hi", mod: func(in *sendTagInputs) { in.targetID = "sender-1" }, want: "hi"},
 		{name: "non-Claude target", msg: "ls", mod: func(in *sendTagInputs) { in.targetTool = "shell" }, want: "ls"},
 		{name: "codex target", msg: "hi", mod: func(in *sendTagInputs) { in.targetTool = "codex" }, want: "hi"},
+		{name: "shell sender (split pane / shell session)", msg: "hi", mod: func(in *sendTagInputs) { in.senderTool = "shell" }, want: "hi"},
+		{name: "codex sender", msg: "hi", mod: func(in *sendTagInputs) { in.senderTool = "codex" }, want: "hi"},
+		{name: "sender not in the target's registry", msg: "hi", mod: func(in *sendTagInputs) { in.senderTool = "" }, want: "hi"},
 		{name: "conductor heartbeat", msg: session.ConductorHeartbeatMessagePrefix + " check", want: session.ConductorHeartbeatMessagePrefix + " check"},
 		{name: "already enveloped", msg: "[agent-deck from:other]\nfwd", want: "[agent-deck from:other]\nfwd"},
 	}
@@ -68,5 +71,21 @@ func TestPR5_SendSenderIDFromEnv(t *testing.T) {
 	t.Setenv("AGENTDECK_INSTANCE_ID", "")
 	if got := sendSenderID(); got != "" {
 		t.Fatalf("no env must mean no sender: %q", got)
+	}
+}
+
+func TestPR5_SendSenderToolLooksUpRegistry(t *testing.T) {
+	insts := []*session.Instance{{ID: "a", Tool: "claude"}, {ID: "b", Tool: "shell"}}
+	if got := sendSenderTool("a", insts); got != "claude" {
+		t.Fatalf("sendSenderTool(a) = %q", got)
+	}
+	if got := sendSenderTool("b", insts); got != "shell" {
+		t.Fatalf("sendSenderTool(b) = %q", got)
+	}
+	if got := sendSenderTool("ghost", insts); got != "" {
+		t.Fatalf("unknown sender must be \"\": %q", got)
+	}
+	if got := sendSenderTool("", insts); got != "" {
+		t.Fatalf("no sender must be \"\": %q", got)
 	}
 }
