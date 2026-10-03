@@ -65,8 +65,8 @@ An item here is not a commitment or a queue position; it is a note that the idea
 
 ## Update and install
 
-- P2: `update --timer-status` / `--check --json` can report the update timer as not installed even when a working legacy-named timer unit is active on the host; detect the legacy unit name, or migrate it during `--install-timer`, so the fleet's real update coverage is visible.
-- P2: `remote list --check` should show whether each configured remote has an update timer installed, and offer `remote update --install-timer`; at least one remote has been found relying only on the controller's sweep with no local timer at all.
+- Done (#2472): `update --timer-status` / `--check --json` can report the update timer as not installed even when a working legacy-named timer unit is active on the host; detect the legacy unit name, or migrate it during `--install-timer`, so the fleet's real update coverage is visible.
+- Done (#2472): `remote list --check` should show whether each configured remote has an update timer installed, and offer `remote update --install-timer`; at least one remote has been found relying only on the controller's sweep with no local timer at all.
 
 ## CI and repo
 
