@@ -17,7 +17,7 @@ for urgent records, so this heartbeat drain is the fallback — together they gu
 completion is missed. Agents without hooks (Codex, Hermes) get the records only from this drain.
 
 Records are tiered and carry the child's own text (issue #2469): `+"`"+`urgent`+"`"+` (a completion
-sentinel, an error, a question, or a reply to something you or a human sent) wakes you;
+sentinel, an error, or an explicit question to you) wakes you;
 `+"`"+`info`+"`"+` (progress in a turn a background task started) waits for your next turn or a
 digest. Act on the text in the record. Do NOT run `+"`"+`session output`+"`"+` on a child whose
 record you already have unless the text is clipped and you need the rest.`,
@@ -68,6 +68,14 @@ func preSubstateGuidanceConductorInstructionsTemplate(template string) string {
 // shipped: the current template minus the #2469 human-tier reply format
 // ([urgent]/[info] markers, conductor notify). Per-name templates never
 // carried it, so this is a no-op for them.
+// preStrictUrgentRuleConductorInstructionsTemplate restores the urgent-tier
+// sentence v1.16.24 shipped ("or a reply to something you or a human sent").
+func preStrictUrgentRuleConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template,
+		`sentinel, an error, or an explicit question to you) wakes you;`,
+		`sentinel, an error, a question, or a reply to something you or a human sent) wakes you;`, 1)
+}
+
 func preHumanTierConductorInstructionsTemplate(template string) string {
 	return strings.Replace(template, conductorHeartbeatReplyDoc, conductorHeartbeatReplyDocV0, 1)
 }
@@ -97,6 +105,14 @@ const (
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
 	var gens []string
+	// The urgent-tier wording changed after v1.16.24 (replies to a send are
+	// info now); a file carrying the previous sentence is still generated.
+	if prevRule := preStrictUrgentRuleConductorInstructionsTemplate(template); prevRule != template {
+		gens = append(gens, prevRule)
+		if v11624 := preHumanTierConductorInstructionsTemplate(prevRule); v11624 != prevRule {
+			gens = append(gens, v11624)
+		}
+	}
 	if v11624 := preHumanTierConductorInstructionsTemplate(template); v11624 != template {
 		gens = append(gens, v11624)
 	}
@@ -190,7 +206,7 @@ for urgent records, so this heartbeat drain is the fallback — together they gu
 completion is missed. Agents without hooks (Codex, Hermes) get the records only from this drain.
 
 Records are tiered and carry the child's own text (issue #2469): ` + "`" + `urgent` + "`" + ` (a completion
-sentinel, an error, a question, or a reply to something you or a human sent) wakes you;
+sentinel, an error, or an explicit question to you) wakes you;
 ` + "`" + `info` + "`" + ` (progress in a turn a background task started) waits for your next turn or a
 digest. Act on the text in the record. Do NOT run ` + "`" + `session output` + "`" + ` on a child whose
 record you already have unless the text is clipped and you need the rest.

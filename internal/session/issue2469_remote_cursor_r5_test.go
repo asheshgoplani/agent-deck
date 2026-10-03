@@ -92,8 +92,8 @@ func TestIssue2469PR3R5_RemoteOrphanTurnsStillCross(t *testing.T) {
 	if journal != 1 || legacy != 0 {
 		t.Fatalf("setup: want journal=1 legacy export=0, got journal=%d legacy=%d", journal, legacy)
 	}
-	if cursor != 1 || written != 1 || wakes != 1 {
-		t.Fatalf("an orphan's turn must cross: cursor export=%d written=%d wakes=%d", cursor, written, wakes)
+	if cursor != 1 || written != 1 || wakes != 0 {
+		t.Fatalf("an orphan's turn must cross (info, no wake): cursor export=%d written=%d wakes=%d", cursor, written, wakes)
 	}
 }
 

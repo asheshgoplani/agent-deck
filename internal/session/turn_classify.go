@@ -26,12 +26,12 @@ import (
 //	noise  — same text hash and same attention class as the last journaled
 //	         turn of this child, no new sentinel (hook re-fires, waiting→idle
 //	         flips, polls that saw nothing new). Never recorded in the inbox.
-//	urgent — a completion sentinel, an error status, a question, or new text
-//	         in a turn a human / parent / sibling started. Wakes the parent.
-//	info   — new text in a turn started by a background task notification, a
-//	         system injection or an inbox/heartbeat prompt. Recorded with its
-//	         text; never wakes on its own (rides the parent's next turn or the
-//	         info digest).
+//	urgent — a completion sentinel, an error status, or an explicit question
+//	         to the parent. Wakes the parent.
+//	info   — any other new text, whoever started the turn (a background task,
+//	         a system injection, an inbox prompt, a human, a send). Recorded
+//	         with its text; never wakes on its own (rides the parent's next
+//	         turn or the info digest).
 //
 // Every path fails toward "louder, not lossy": an unreadable transcript or an
 // unknown trigger classifies as urgent on new text, which is today's
@@ -334,15 +334,16 @@ func ClassifyTurnTier(facts TurnFacts, status string, prev *TurnJournalEntry) st
 			return TurnTierNoise
 		}
 	}
+	// Urgent is exactly: a completion sentinel, an error status, or an
+	// explicit question to the parent. Everything else is info, INCLUDING a
+	// reply to something the parent or a human sent: a progress note or an
+	// acknowledgement does not need the parent awake (conductor ruling,
+	// 2026-10-03: four such replies cost a wake each). The parent reads info on
+	// its next turn or in the digest; a sender that used --wait already has it.
 	if facts.HasDone || normalizeStatusString(status) == string(StatusError) || facts.Question {
 		return TurnTierUrgent
 	}
-	switch facts.Trigger {
-	case TurnTriggerTask, TurnTriggerSystem, TurnTriggerInbox:
-		return TurnTierInfo
-	default:
-		return TurnTierUrgent
-	}
+	return TurnTierInfo
 }
 
 // turnFactsCache memoises the transcript scan per path on (size, mtime), so

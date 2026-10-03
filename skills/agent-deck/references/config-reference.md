@@ -985,7 +985,7 @@ One thing to know before enabling it: the notification carries the session **tit
 
 ## [inbox] Section
 
-What reaches a parent session from its children, and when (#2469). The notify-daemon classifies every finished child turn from the transcript: `urgent` (completion sentinel, error, a question, or new text in a turn a human or a `session send` started), `info` (new text in a turn a background task notification, a system injection or the child's own inbox/heartbeat prompt started) or noise (nothing changed; never recorded). Records carry the child's new text so the parent does not re-read the child.
+What reaches a parent session from its children, and when (#2469). The notify-daemon classifies every finished child turn from the transcript: `urgent` (a completion sentinel, an error status, or an explicit question to the parent: a trailing `?` or a `NEED:` / `QUESTION:` / `ASK:` line), `info` (any other new text, whoever started the turn: a background task notification, a system injection, the child's own inbox prompt, a human, a `session send`) or noise (nothing changed; never recorded). Records carry the child's new text so the parent does not re-read the child.
 
 ```toml
 [inbox]

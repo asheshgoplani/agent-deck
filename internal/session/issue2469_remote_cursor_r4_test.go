@@ -59,8 +59,8 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatShipsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Written != 1 || wakes != 1 {
-		t.Fatalf("one urgent turn: want written=1 wakes=1, got written=%d wakes=%d", res.Written, wakes)
+	if res.Written != 1 || wakes != 0 {
+		t.Fatalf("one info turn (a plain reply): want written=1 wakes=0, got written=%d wakes=%d", res.Written, wakes)
 	}
 }
 

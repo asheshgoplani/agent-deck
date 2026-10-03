@@ -62,8 +62,8 @@ func TestIssue2469PR3R6_UnresolvableParentChildStillCrosses(t *testing.T) {
 	if journal != 1 || legacy != 1 || len(unownedRecords(t)) != 1 {
 		t.Fatalf("setup: want journal=1, legacy export=1 and one _unowned record, got journal=%d legacy=%d", journal, legacy)
 	}
-	if cursor != 1 || written != 1 || wakes != 1 {
-		t.Fatalf("a cross-host conductor's child must cross: cursor export=%d written=%d wakes=%d", cursor, written, wakes)
+	if cursor != 1 || written != 1 || wakes != 0 {
+		t.Fatalf("a cross-host conductor's child must cross (info, no wake): cursor export=%d written=%d wakes=%d", cursor, written, wakes)
 	}
 }
 
