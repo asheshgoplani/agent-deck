@@ -384,3 +384,7 @@ func instanceTurnFacts(inst *Instance) (TurnFacts, bool) {
 	}
 	return facts, true
 }
+
+// ClassifyTranscriptTailForReplay exposes the tail classifier for the
+// measurement tool under tools/; not used by the product.
+func ClassifyTranscriptTailForReplay(lines []string) TurnFacts { return classifyTranscriptTail(lines) }
