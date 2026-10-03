@@ -23158,6 +23158,9 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 	}
 	statusStyle := lipgloss.NewStyle().Foreground(statusColor)
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Status:"), statusStyle.Render(string(cardStatus))))
+	if detail := inst.CachedSubstateDetail(); detail != "" {
+		b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Task:"), valueStyle.Render(detail)))
+	}
 
 	// Tool
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
@@ -23383,6 +23386,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString(nameStyle.Render(selected.Title))
 	b.WriteString("  ")
 	b.WriteString(statusBadge)
+	if detail := selected.CachedSubstateDetail(); detail != "" {
+		b.WriteString("  ")
+		b.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Render("[" + detail + "]"))
+	}
 	b.WriteString("\n")
 
 	// Auth hold banner. A session whose agent exited on a 401 shows a bare
@@ -23570,6 +23577,11 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(labelStyle.Render("Session: "))
 			b.WriteString(valueStyle.Render(selected.ClaudeSessionID))
 			b.WriteString("\n")
+			if detail := selected.CachedSubstateDetail(); detail != "" {
+				b.WriteString(labelStyle.Render("Task:    "))
+				b.WriteString(valueStyle.Render(detail))
+				b.WriteString("\n")
+			}
 		} else {
 			statusStyle := lipgloss.NewStyle().Foreground(ColorText)
 			b.WriteString(labelStyle.Render("Status:  "))

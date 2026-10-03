@@ -6502,6 +6502,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				// Kill().
 				bgWorkPending := false
 				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) {
+					i.wireBackgroundWorkProbe()
 					i.mu.Unlock()
 					bgWorkPending = i.tmuxSession.BackgroundWorkPending()
 					i.mu.Lock()
@@ -11441,6 +11442,7 @@ func (i *Instance) Substate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
+	i.wireBackgroundWorkProbe()
 	sub := tmuxSess.GetSubstate()
 	// The frame just read is hook-lag evidence too (see hook_lag.go); feed it
 	// back so status and substate describe the same frame.
@@ -11449,7 +11451,8 @@ func (i *Instance) Substate() Substate {
 }
 
 // SubstateDetail returns free-text detail for the substate the last
-// classification produced (today: the codex usage-limit retry time), or "".
+// classification produced (the codex usage-limit retry time, or the
+// background task name and progress for Claude sessions), or "".
 // Call after Substate/CachedSubstate; it reads the cached value and never
 // captures the pane.
 func (i *Instance) SubstateDetail() string {
@@ -11457,7 +11460,56 @@ func (i *Instance) SubstateDetail() string {
 	if tmuxSess == nil {
 		return ""
 	}
-	return tmuxSess.CachedSubstateDetail()
+	detail := tmuxSess.CachedSubstateDetail()
+	if detail != "" {
+		return detail
+	}
+	if IsClaudeCompatible(i.Tool) {
+		if taskName := i.BackgroundTaskName(); taskName != "" {
+			return taskName
+		}
+	}
+	return ""
+}
+
+// CachedSubstateDetail returns free-text detail for the cached substate.
+func (i *Instance) CachedSubstateDetail() string {
+	return i.SubstateDetail()
+}
+
+// BackgroundTaskName returns the name of any background task/workflow in flight,
+// or "" if none.
+func (i *Instance) BackgroundTaskName() string {
+	if i.tmuxSession != nil {
+		if name := i.tmuxSession.BackgroundTaskName(); name != "" {
+			return name
+		}
+	}
+	if IsClaudeCompatible(i.Tool) {
+		if path := LiveTranscriptPath(i, nil); path != "" {
+			if inFlight, name := scanClaudeTranscriptBackgroundWork(path); inFlight && name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func (i *Instance) wireBackgroundWorkProbe() {
+	if i.tmuxSession == nil || !IsClaudeCompatible(i.Tool) {
+		return
+	}
+	i.tmuxSession.SetBackgroundWorkProbe(func() (bool, string) {
+		path := LiveTranscriptPath(i, nil)
+		if path == "" {
+			return false, ""
+		}
+		inFlight, name := scanClaudeTranscriptBackgroundWork(path)
+		if inFlight {
+			return true, name
+		}
+		return false, ""
+	})
 }
 
 // getTerminatedPaneSubstate returns the terminated-pane substate recorded by

@@ -147,3 +147,75 @@ func TestClaudeBackgroundShellsPending(t *testing.T) {
 		t.Errorf("awaiting a background agent must stay active, got %s", got)
 	}
 }
+
+const paneWorkflowRunning = `⏺ Starting the multi-agent workflow.
+
+  Workflow(name: "comms-followon-round3")
+  Running in background · /workflows to monitor
+                                                                            90874 tokens
+─────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────
+   Model: Opus 4.8  Ctx: 90.9k  ⎇ feat/comms  (+0,-0)  𖠰 main
+  ○ comms-followon-round3  ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱  3/5 · 18m32s · ↓ 784.8k tokens`
+
+const paneBackgroundBashRunning = `⏺ Running build in background.
+
+  Bash(command: "cargo test")
+  Running in background · /tasks to monitor
+                                                                            50123 tokens
+─────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────
+   Model: Opus 4.8  Ctx: 50.1k  ⎇ main  (+0,-0)  𖠰 main
+  ⏵⏵ bypass permissions on · 1 shell · ← for agents`
+
+const paneWorkflowCompleted = `⏺ Workflow completed successfully.
+
+  ===AGENTDECK_DONE=== status=ok summary=Workflow finished
+  ✻ Crunched for 20m 10s · done 11:45 AM
+                                                                            95000 tokens
+─────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────
+   Model: Opus 4.8  Ctx: 95.0k  ⎇ main  (+0,-0)  𖠰 main
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents`
+
+func TestClaudeBackgroundWork_WorkflowAndBash(t *testing.T) {
+	// 1. Workflow in flight: running + background-work
+	if !claudeBackgroundWorkPending(paneWorkflowRunning) {
+		t.Fatal("workflow footer must be detected as pending background work")
+	}
+	if got := ClassifyPaneFrame("claude", paneWorkflowRunning); got != FrameActive {
+		t.Fatalf("workflow running frame = %s, want active", got)
+	}
+	s := &Session{detectedTool: "claude"}
+	if got := s.classifySubstate(paneWorkflowRunning); got != SubstateBackgroundWork {
+		t.Fatalf("substate = %q, want %q", got, SubstateBackgroundWork)
+	}
+	detector := NewPromptDetector("claude")
+	detail := detector.SubstateDetail(paneWorkflowRunning)
+	if want := "comms-followon-round3 3/5 · 18m32s"; detail != want {
+		t.Fatalf("detail = %q, want %q", detail, want)
+	}
+	if task := claudeBackgroundTaskName(paneWorkflowRunning); task != "comms-followon-round3" {
+		t.Fatalf("task name = %q, want comms-followon-round3", task)
+	}
+
+	// 2. Background Bash: active + background-work
+	if !claudeBackgroundWorkPending(paneBackgroundBashRunning) {
+		t.Fatal("background bash tool call must be detected as pending background work")
+	}
+	if got := ClassifyPaneFrame("claude", paneBackgroundBashRunning); got != FrameActive {
+		t.Fatalf("background bash frame = %s, want active", got)
+	}
+
+	// 3. Completed workflow: not pending, frame is waiting
+	if claudeBackgroundWorkPending(paneWorkflowCompleted) {
+		t.Fatal("completed workflow must not be pending background work")
+	}
+	if got := ClassifyPaneFrame("claude", paneWorkflowCompleted); got != FrameWaiting {
+		t.Fatalf("completed workflow frame = %s, want waiting", got)
+	}
+}
+
