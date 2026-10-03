@@ -61,6 +61,23 @@ type Bus struct {
 	retainSegs   int
 
 	enabled bool
+	// readOnly marks a follower bus (Options.ReadOnly): no writer, no
+	// appends. retention is the optional age bound on sealed segments.
+	readOnly  bool
+	retention time.Duration
+	// fileMode is the mode of every file the bus creates (0o644 by default,
+	// 0o600 for a private log such as the comms ledger).
+	fileMode os.FileMode
+	// keepCorrupt (Options.KeepCorrupt) makes recovery leave a malformed
+	// line inside committed history in place instead of truncating from it.
+	keepCorrupt bool
+	// maxBytes (Options.MaxBytes) bounds the retained log; 0 = unbounded.
+	// totalBytes is the sum of sealed segment sizes plus the active file.
+	maxBytes   int64
+	totalBytes int64
+	// lastEventID is the event id of the newest frame appended by this Bus,
+	// so Commit can report the frame it wrote.
+	lastEventID string
 
 	queue          chan queuedFrame
 	closeCh        chan struct{}
@@ -138,16 +155,24 @@ func Open(dir string) (*Bus, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("events: create bus dir: %w", err)
 	}
+	return openWith(dir, 0o644, false)
+}
+
+// openWith is Open with the file mode every created file gets and the
+// recovery policy for a malformed line inside committed history.
+func openWith(dir string, mode os.FileMode, keepCorrupt bool) (*Bus, error) {
 	b := &Bus{
 		dir:          dir,
 		maxSegBytes:  defaultMaxSegBytes,
 		maxSegFrames: defaultMaxSegFrames,
 		retainSegs:   defaultRetainSegs,
 		enabled:      true,
+		fileMode:     mode,
+		keepCorrupt:  keepCorrupt,
 		queue:        make(chan queuedFrame, defaultQueueCap),
 		closeCh:      make(chan struct{}),
 	}
-	lockFile, err := os.OpenFile(filepath.Join(dir, "writer.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	lockFile, err := os.OpenFile(filepath.Join(dir, "writer.lock"), os.O_CREATE|os.O_RDWR, mode)
 	if err != nil {
 		return nil, fmt.Errorf("events: open writer lock: %w", err)
 	}
@@ -164,7 +189,7 @@ func Open(dir string) (*Bus, error) {
 		return nil, fmt.Errorf("events: list segments: %w", err)
 	}
 
-	lastCursor, err := recoverActiveSegment(dir)
+	lastCursor, err := recoverActiveSegment(dir, mode, keepCorrupt)
 	if err != nil {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: recover active segment: %w", err)
@@ -181,7 +206,7 @@ func Open(dir string) (*Bus, error) {
 		lastCursor = checkpoint
 	}
 
-	f, err := os.OpenFile(filepath.Join(dir, activeSegmentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, activeSegmentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, mode)
 	if err != nil {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("events: open active segment: %w", err)
@@ -197,7 +222,7 @@ func Open(dir string) (*Bus, error) {
 	b.activeFile = f
 	b.activeStart = lastCursor + 1
 	if info.Size() > 0 {
-		first, activeLast, _, err := activeBounds(filepath.Join(dir, activeSegmentName))
+		first, activeLast, _, err := b.activeBounds(filepath.Join(dir, activeSegmentName))
 		if err != nil {
 			_ = f.Close()
 			_ = lockFile.Close()
@@ -212,6 +237,7 @@ func Open(dir string) (*Bus, error) {
 	}
 	b.activeBytes = info.Size()
 	b.activeFrames = countLines(dir, activeSegmentName)
+	b.totalBytes = b.activeBytes + sealedBytes(sealed)
 
 	b.closeWg.Add(1)
 	go b.writerLoop()
@@ -219,9 +245,14 @@ func Open(dir string) (*Bus, error) {
 }
 
 // recoverActiveSegment reads active.ndjson (if present) to find the highest
-// valid cursor it contains, truncating a trailing partial line (an
-// incomplete write from a prior crash) so appends start clean.
-func recoverActiveSegment(dir string) (Cursor, error) {
+// valid cursor it contains. A torn tail (a final line with no newline: an
+// append interrupted by a crash) is always truncated away so appends start
+// clean. For a malformed line INSIDE committed history the policy depends on
+// the log: the status bus (keepCorrupt=false) truncates from that line, as
+// it always has, since its frames are a replaceable tap; a ledger
+// (keepCorrupt=true) leaves the line in place, logs it, and keeps every
+// later message: readers skip the line and the cursor keeps counting.
+func recoverActiveSegment(dir string, mode os.FileMode, keepCorrupt bool) (Cursor, error) {
 	path := filepath.Join(dir, activeSegmentName)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -236,27 +267,90 @@ func recoverActiveSegment(dir string) (Cursor, error) {
 
 	var last Cursor
 	validEnd := 0
+	corrupt := 0
+	trailingCorrupt := 0 // malformed lines after the last parseable frame
 	lines := splitLinesKeepEnds(data)
 	for _, ln := range lines {
+		if !strings.HasSuffix(string(ln), "\n") {
+			break // torn tail: truncated below
+		}
 		trimmed := strings.TrimRight(string(ln), "\n")
 		if trimmed == "" {
 			validEnd += len(ln)
 			continue
 		}
 		f, perr := ParseFrameLine([]byte(trimmed))
-		if perr != nil || !strings.HasSuffix(string(ln), "\n") {
-			// Partial/corrupt trailing line: stop here, and truncate it away.
-			break
+		if perr != nil {
+			if !keepCorrupt {
+				break // the status bus truncates from the first bad line
+			}
+			corrupt++
+			trailingCorrupt++
+			validEnd += len(ln)
+			continue
 		}
-		last = f.Cursor
 		validEnd += len(ln)
+		trailingCorrupt = 0
+		if f.Cursor > last {
+			last = f.Cursor
+		}
 	}
+	if corrupt > 0 {
+		slog.Warn("events: malformed lines inside the active segment were left in place and are skipped by readers",
+			"dir", dir, "lines", corrupt)
+	}
+	// A malformed line that followed the last parseable frame held a frame
+	// of its own: its cursor number is spent, never reused by the next
+	// commit (a consumer that acknowledged it must not skip a new frame).
+	last += Cursor(trailingCorrupt) //nolint:gosec // G115: a line count
 	if validEnd != len(data) {
-		if err := os.WriteFile(path, data[:validEnd], 0o644); err != nil {
+		f, err := os.OpenFile(path, os.O_WRONLY, mode)
+		if err != nil {
+			return 0, err
+		}
+		if err := f.Truncate(int64(validEnd)); err != nil {
+			_ = f.Close()
+			return 0, err
+		}
+		if keepCorrupt {
+			if err := f.Sync(); err != nil {
+				_ = f.Close()
+				return 0, err
+			}
+		}
+		if err := f.Close(); err != nil {
 			return 0, err
 		}
 	}
 	return last, nil
+}
+
+// durable reports whether this bus fsyncs its checkpoint, drops and
+// directory writes: the private (ledger) bus does; the status bus keeps the
+// cheaper rename-only behaviour it always had.
+func (b *Bus) durable() bool { return b.fileMode == 0o600 }
+
+// sealedBytes sums the sizes of sealed segments.
+func sealedBytes(sealed []sealedSegment) int64 {
+	var n int64
+	for _, s := range sealed {
+		if info, err := os.Stat(s.path); err == nil {
+			n += info.Size()
+		}
+	}
+	return n
+}
+
+// fsyncDirBestEffort makes a rename or truncation in dir durable. Some
+// filesystems refuse to fsync a directory; the file data fsync plus the
+// atomic rename already give the core guarantee there.
+func fsyncDirBestEffort(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	defer d.Close()
+	_ = d.Sync()
 }
 
 func splitLinesKeepEnds(data []byte) [][]byte {
@@ -335,6 +429,10 @@ func genEventID() string {
 // failed bus makes this a no-op.
 func (b *Bus) Publish(kind, sessionID string, data any) {
 	if b == nil || !b.enabled || b.closed.Load() || b.failed.Load() {
+		return
+	}
+	if b.readOnly {
+		b.dropped.Add(1)
 		return
 	}
 	raw, err := marshalData(data)
@@ -604,10 +702,14 @@ func (b *Bus) appendFrameLocked(qf queuedFrame) error {
 	before := b.activeBytes
 	n, err := b.activeFile.Write(line)
 	if err != nil || n != len(line) {
-		_ = b.activeFile.Truncate(before)
+		if terr := b.activeFile.Truncate(before); terr != nil {
+			return fmt.Errorf("events: append: %v; rollback failed: %w", err, terr)
+		}
 		return fmt.Errorf("events: append: %w", err)
 	}
 	b.cursor = next
+	b.totalBytes += int64(n)
+	b.lastEventID = f.EventID
 	b.activeBytes += int64(n)
 	b.activeFrames++
 	b.written.Add(1)
@@ -639,7 +741,7 @@ func (b *Bus) rotateLocked() {
 		// Best effort: reopen the old path so the bus keeps working even if
 		// the rename failed (e.g. permissions raced). Rotation is a safety
 		// optimization, not a correctness requirement.
-		f, oerr := os.OpenFile(oldPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+		f, oerr := os.OpenFile(oldPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, b.fileMode)
 		if oerr == nil {
 			b.activeFile = f
 		}
@@ -647,7 +749,7 @@ func (b *Bus) rotateLocked() {
 		return
 	}
 
-	f, err := os.OpenFile(oldPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(oldPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, b.fileMode)
 	if err != nil {
 		b.fail(err)
 		return
@@ -656,12 +758,18 @@ func (b *Bus) rotateLocked() {
 	b.activeStart = b.cursor + 1
 	b.activeBytes = 0
 	b.activeFrames = 0
-	if err := writeCursorCheckpoint(b.dir, b.cursor); err != nil {
+	// On a private (ledger) bus writeCursorCheckpoint syncs the file and the
+	// directory, which also makes the sealed segment's rename and the new
+	// active file durable; the status bus keeps its rename-only checkpoint.
+	if err := writeCursorCheckpoint(b.dir, b.cursor, b.fileMode, b.durable()); err != nil {
 		b.fail(err)
 		return
 	}
 
 	b.compactLocked()
+	if sealed, err := listSealedSegments(b.dir); err == nil {
+		b.totalBytes = sealedBytes(sealed) + b.activeBytes
+	}
 }
 
 // compactLocked removes the oldest sealed segments beyond retainSegs.
@@ -672,11 +780,13 @@ func (b *Bus) compactLocked() {
 	if err != nil {
 		return
 	}
-	if len(sealed) <= b.retainSegs {
-		return
+	// Drop the oldest beyond the count bound, then any kept one past the
+	// age bound.
+	excess := max(len(sealed)-b.retainSegs, 0)
+	for _, s := range sealed[:excess] {
+		_ = os.Remove(s.path)
 	}
-	toRemove := sealed[:len(sealed)-b.retainSegs]
-	for _, s := range toRemove {
+	for _, s := range b.expiredSegments(sealed[excess:], time.Now()) {
 		_ = os.Remove(s.path)
 	}
 }

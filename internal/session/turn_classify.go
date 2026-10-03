@@ -110,6 +110,9 @@ type TurnFacts struct {
 	// Pending means the Stop hook outran the transcript flush: the newest
 	// main-chain record is a user record with no assistant reply yet.
 	Pending bool
+	// At is the assistant record's own timestamp (zero when the record has
+	// none), so a consumer can tell which observed edge the facts belong to.
+	At time.Time
 }
 
 // Signal is the per-turn identity the notifier dedups and fingerprints on:
@@ -131,11 +134,12 @@ func (f TurnFacts) Signal() string {
 // Code 2.1.x stamps on user records; the content prefixes are the fallback
 // for builds that omit them.
 type transcriptTurnRecord struct {
-	Type        string `json:"type"`
-	UUID        string `json:"uuid"`
-	IsSidechain bool   `json:"isSidechain"`
-	IsMeta      bool   `json:"isMeta"`
-	TurnOrigin  string `json:"turnOrigin"`
+	Type        string          `json:"type"`
+	UUID        string          `json:"uuid"`
+	Timestamp   json.RawMessage `json:"timestamp"` // decoded leniently: a non-string value never drops the record
+	IsSidechain bool            `json:"isSidechain"`
+	IsMeta      bool            `json:"isMeta"`
+	TurnOrigin  string          `json:"turnOrigin"`
 	Origin      struct {
 		Kind string `json:"kind"`
 	} `json:"origin"`
@@ -194,6 +198,10 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 			}
 			foundAssistant = true
 			facts.UUID = rec.UUID
+			var ts string
+			if json.Unmarshal(rec.Timestamp, &ts) == nil && ts != "" {
+				facts.At, _ = time.Parse(time.RFC3339Nano, ts)
+			}
 			facts.Text = text
 			facts.TextHash = turnTextHash(text)
 			facts.Question = textAsksParent(text)
