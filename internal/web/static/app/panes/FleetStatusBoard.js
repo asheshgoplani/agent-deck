@@ -42,11 +42,13 @@ export function processHint(s) {
 
 // Structured card body written by conductors: goal / state / decision hints
 // (`session annotate --hint goal=... --hint state=... --decision ...`). Empty
-// array when none are set, so callers fall back to the headline.
+// array when none are set, so callers fall back to the headline. `decision`
+// is the CLI's "decision taken in this session", not an open ask: an ask is
+// what the Needs input column is for.
 export const CARD_FIELDS = [
   { key: 'goal',     label: 'Goal' },
   { key: 'state',    label: 'Current state' },
-  { key: 'decision', label: 'Decision needed' },
+  { key: 'decision', label: 'Decision' },
 ]
 
 export function cardFields(s) {
@@ -61,7 +63,7 @@ const byRecency = (a, b) =>
 
 // One kanban card, written to be read at normal zoom: name, then status
 // chip · ticket · group, then the conductor's labeled Goal / Current state /
-// Decision needed. Sessions without those hints fall back to the full
+// Decision. Sessions without those hints fall back to the full
 // headline plus a few lines of their note.
 function KanbanCard({ s, groupLabel, onSelect }) {
   const ann = sessionAnnotation(s)

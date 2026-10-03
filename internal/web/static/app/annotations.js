@@ -54,18 +54,17 @@ export function sessionAnnotation(s) {
 }
 
 // AnnotationLine renders status chip + ticket badge + headline for a session
-// (or null when it has none). The headline wraps to two lines in CSS so a
-// "goal · state · next" summary stays readable on narrow cards.
+// (or null when it has none). The headline is ellipsized to one line in CSS
+// with the full text in its tooltip; the (often long, markdown) note stays
+// off the row and shows in the Overview rail and on Status-board cards.
 export function AnnotationLine({ s, class: cls = '' }) {
   const ann = sessionAnnotation(s)
-  const note = noteExcerpt((s.hints || {}).note)
-  if (!ann.headline && !ann.status && !ann.ticket && !note) return null
+  if (!ann.headline && !ann.status && !ann.ticket) return null
   return html`
     <div class=${`annot ${cls}`} data-testid="session-annotation">
       ${ann.status && html`<span class=${`hint-status ${ann.statusTone}`} data-testid="session-hint-status">${ann.status}</span>`}
       ${ann.ticket && html`<span class="hint-ticket" data-testid="session-hint-ticket">${ann.ticket}</span>`}
       ${ann.headline && html`<span class="hint-headline" title=${ann.headline} data-testid="session-hint-headline">${ann.headline}</span>`}
-      ${note && html`<span class="hint-note" title=${note} data-testid="session-hint-note">${note}</span>`}
     </div>
   `
 }

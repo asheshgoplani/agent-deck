@@ -10,6 +10,7 @@ import { menuModelSignal } from '../dataModel.js'
 import { selectSession } from '../state.js'
 import { activeTabSignal, fleetViewSignal } from '../uiState.js'
 import { AnnotationLine } from '../annotations.js'
+import { useLazyComponent } from '../lazyModule.js'
 
 const EMPTY_REMOTE_COUNTS = {
   remotesOnline: 0, remotesOffline: 0, sessions: 0,
@@ -116,20 +117,10 @@ function GroupCard({ name, items, onSelect }) {
 
 // The Status view (panes/FleetStatusBoard.js) is opt-in, so its code is
 // fetched the first time a viewer picks it rather than shipped with the
-// default Groups view. Same on-demand pattern as the group stats panel in
-// AppShell.js; a failed fetch resets so a later render retries.
-let statusBoardLoad = null
+// default Groups view (see lazyModule.js; switching to Groups and back
+// retries a failed fetch).
 function useStatusBoard(needed) {
-  const [board, setBoard] = useState(null)
-  useEffect(() => {
-    if (!needed || board) return
-    let alive = true
-    statusBoardLoad = statusBoardLoad || import('./FleetStatusBoard.js')
-    statusBoardLoad
-      .then(m => { if (alive) setBoard(m) })
-      .catch(() => { statusBoardLoad = null })
-    return () => { alive = false }
-  }, [needed, board])
+  const board = useLazyComponent(needed, () => import('./FleetStatusBoard.js'), 'fleetStatusBoard', m => m)
   return needed ? board : null
 }
 
@@ -187,7 +178,9 @@ export function FleetPane() {
     activeTabSignal.value = 'terminal'
   }
   // Groups is the default; the status kanban is opt-in (agentdeck.fleetView).
-  const view = fleetViewSignal.value === 'status' ? 'status' : 'groups'
+  // With no sessions the toggle is hidden, so a persisted Status choice falls
+  // back to the plain Groups empty state rather than strand the viewer there.
+  const view = sessions.length > 0 && fleetViewSignal.value === 'status' ? 'status' : 'groups'
   const board = useStatusBoard(view === 'status')
   // Conductors are pinned in a banner above the Status board, so its columns
   // and tiles hold the workers only.
@@ -243,7 +236,7 @@ export function FleetPane() {
             `)}
           </div>`}
         </div>
-        ${sessions.length > 0 && view === 'status'
+        ${view === 'status'
           ? board && html`<${board.StatusKanban} sessions=${workers} groupLabels=${groupLabels} onSelect=${onSelect}/>`
           : groups.length === 0 || sessions.length === 0
           ? html`<div style="font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 16px;">

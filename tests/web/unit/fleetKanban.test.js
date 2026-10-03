@@ -126,14 +126,16 @@ describe('Fleet status kanban', () => {
     expect(card.querySelector('.kb-group').textContent).toBe('scoping')
   })
 
-  it('renders Goal / Current state / Decision needed with chip, ticket and group', async () => {
+  // `decision` is the CLI's --decision: a decision already taken in the
+  // session (session_annotate_cmd.go), so it is not labeled as an open ask.
+  it('renders Goal / Current state / Decision with chip, ticket and group', async () => {
     const c = await mountStatusBoard()
     const card = c.querySelector('[data-testid="kanban-card"][data-session-id="review"]')
     const fields = [...card.querySelectorAll('.kb-field')].map(f => [f.querySelector('dt').textContent, f.querySelector('dd').textContent])
     expect(fields).toEqual([
       ['Goal', 'Audit B&R error copy'],
       ['Current state', '45 msgs reviewed, 4 central fixes'],
-      ['Decision needed', 'Approve the 4 fixes?'],
+      ['Decision', 'Approve the 4 fixes?'],
     ])
     expect(card.querySelector('[data-testid="kanban-headline"]')).toBeNull()
     expect(card.querySelector('[data-testid="kanban-status"]').textContent).toBe('ready-for-review')

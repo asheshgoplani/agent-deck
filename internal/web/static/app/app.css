@@ -308,14 +308,12 @@ body[data-rail="hidden"] .rightrail { display: none; }
   font-size: 12px; line-height: 1.4; color: var(--text);
 }
 .sess .annot { grid-column: 2 / -1; }
-/* The headline is a "goal · state · next" summary: give it its own line and
-   let it wrap to two before ellipsizing, instead of a one-line stub. */
-.annot .hint-headline,
-.annot .hint-note {
-  flex: 1 1 100%; min-width: 0; overflow: hidden;
-  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+/* The headline gets its own line, ellipsized to one line (full text in the
+   tooltip) so a long purpose or summary never grows the row (#2446). */
+.annot .hint-headline {
+  flex: 1 1 100%; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
-.annot .hint-note { -webkit-line-clamp: 2; font-size: 11.5px; color: var(--text-dim); }
 .tile .tile-annot { grid-column: 2 / -1; font-family: var(--sans, inherit); }
 .hint-status,
 .hint-ticket {
@@ -1338,12 +1336,11 @@ body[data-rail="hidden"] .rightrail { display: none; }
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
 .kb-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .kb-meta .hint-status, .kb-meta .hint-ticket { font-size: 10.5px; line-height: 16px; }
-/* Labeled body: Goal / Current state / Decision needed, each label bold on
+/* Labeled body: Goal / Current state / Decision, each label bold on
    its own line with the full value below it. */
 .kb-fields { margin: 2px 0 0; display: flex; flex-direction: column; gap: 7px; }
 .kb-field dt { font-size: 11.5px; font-weight: 700; color: var(--text-hi); letter-spacing: 0.01em; }
 .kb-field dd { margin: 1px 0 0; font-size: 13.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; white-space: pre-line; }
-.kb-field.decision dt { color: var(--tn-yellow); }
 .kb-group, .kb-proc {
   font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 3px;
   border: 1px solid var(--border); color: var(--muted);

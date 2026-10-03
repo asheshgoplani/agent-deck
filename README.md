@@ -1176,7 +1176,7 @@ tiles stay, and runtime state appears on each card as a small dot (hover for
 
 ```bash
 agent-deck session annotate <id> --hint status=needs-input \
-  --hint goal="…" --hint state="…" --hint decision="…" --ticket ENG-123
+  --hint goal="…" --hint state="…" --decision "…" --ticket ENG-123
 ```
 
 | Column | `status` value | Also accepted |
@@ -1191,8 +1191,9 @@ agent-deck session annotate <id> --hint status=needs-input \
 Values are case-insensitive, and spaces or underscores count as hyphens. A set
 status always wins over runtime state. A parked or done session whose process
 has stopped shows only a quiet "process not running" note. Cards show the
-`goal`, `state` and `decision` hints as **Goal / Current state / Decision
-needed**, falling back to `headline`. In the Status view, conductor sessions
+`goal`, `state` and `decision` hints as **Goal / Current state / Decision**
+(`decision` is a decision already taken, as `--decision` records it), falling
+back to `headline`. In the Status view, conductor sessions
 are pinned above the board, and their `note` (or `summary`) hint is rendered
 there as markdown.
 

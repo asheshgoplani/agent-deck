@@ -7,7 +7,7 @@
 // Preserves existing dialog + toast components (still Tailwind-classed) so
 // no functional regression. Restyling those is a follow-up.
 import { html } from 'htm/preact'
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect } from 'preact/hooks'
 import { Topbar } from './Topbar.js'
 import { Sidebar } from './Sidebar.js'
 import { Footer } from './Footer.js'
@@ -42,6 +42,7 @@ import { KeyboardShortcuts } from './KeyboardShortcuts.js'
 import { apiFetch, authHeaders } from './api.js'
 import { shortcutsOverlaySignal } from './state.js'
 import { installViewportInsets } from './viewportInsets.js'
+import { useLazyComponent } from './lazyModule.js'
 
 function WorkHead() {
   const { sessions, groups } = menuModelSignal.value
@@ -122,25 +123,7 @@ function WorkHead() {
 // initial payload -- the page is under a hard total-byte-weight budget
 // (.lighthouserc.json) that this feature crossed (PR #2047 review, item 5).
 // Same approach the Costs route already uses for chart.umd (issue #1022).
-// Generic on-demand module loader for view code that is not needed at first
-// paint. Keeps the module out of the initial payload; the promise is cached so
-// repeated opens fetch once, and a failed fetch resets it so a later attempt
-// retries. Same approach the Costs route uses for chart.umd (issue #1022).
-function useLazyComponent(needed, loader, cacheKey, pick) {
-  const [Comp, setComp] = useState(null)
-  useEffect(() => {
-    if (!needed || Comp) return
-    let alive = true
-    lazyCache[cacheKey] = lazyCache[cacheKey] || loader()
-    lazyCache[cacheKey]
-      .then(m => { if (alive) setComp(() => pick(m)) })
-      .catch(() => { lazyCache[cacheKey] = null })
-    return () => { alive = false }
-  }, [needed, Comp])
-  return Comp
-}
-const lazyCache = {}
-
+// The loader itself (useLazyComponent) lives in lazyModule.js.
 function useLazyGroupStatsPanel(needed) {
   return useLazyComponent(needed, () => import('./GroupStatsPanel.js'), 'groupPanel', m => m.GroupStatsPanel)
 }

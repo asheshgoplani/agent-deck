@@ -1,6 +1,8 @@
 // Recall annotations (`agent-deck session annotate`) arrive on MenuSession as
 // hints/tags. These assert the projection, the sidebar card line, the Overview
 // rows and the filter, so the goal + semantic status stay visible on the board.
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { render } from 'preact'
 import { html } from 'htm/preact'
@@ -23,7 +25,7 @@ const MENU = [
     type: 'session',
     session: {
       id: 'annotated', title: 'annotated', groupPath: 'work', tool: 'claude', status: 'running',
-      hints: { headline: 'Expose hints on web cards', status: 'needs-input', ticket: 'ENG-42', why: 'board' },
+      hints: { headline: 'Expose hints on web cards', status: 'needs-input', ticket: 'ENG-42', why: 'board', note: '## Fleet\n- long markdown note' },
       tags: ['tooling', 'web'],
     },
   },
@@ -70,6 +72,26 @@ describe('session annotations', () => {
 
     expect(c.querySelector('[data-row-key="s:purpose-only"] [data-testid="session-hint-headline"]').textContent).toBe('fallback goal')
     expect(c.querySelector('[data-row-key="s:plain"] [data-testid="session-annotation"]')).toBeNull()
+  })
+
+  // Issue #2446(b): the row gains one subtitle line, not a block. `launch`
+  // derives a purpose hint of up to 200 chars and conductors keep long
+  // markdown notes, so the note stays off the row and the headline is
+  // ellipsized to a single line (full text in the tooltip).
+  it('keeps the note off the row and ellipsizes the headline to one line', async () => {
+    const { Sidebar } = await import(sidebarModulePath)
+    const c = mount(html`<${Sidebar}/>`)
+    const row = c.querySelector('[data-row-key="s:annotated"]')
+    expect(row.querySelector('[data-testid="session-hint-note"]')).toBeNull()
+    expect(row.textContent).not.toContain('long markdown note')
+    expect(row.querySelector('[data-testid="session-hint-headline"]').getAttribute('title')).toBe('Expose hints on web cards')
+
+    const css = readFileSync(resolve(import.meta.dirname, '../../../internal/web/static/app/app.css'), 'utf8')
+    const rule = css.match(/\.annot \.hint-headline\s*\{([^}]*)\}/)
+    expect(rule).not.toBeNull()
+    expect(rule[1]).toMatch(/white-space:\s*nowrap/)
+    expect(rule[1]).toMatch(/text-overflow:\s*ellipsis/)
+    expect(rule[1]).not.toMatch(/line-clamp/)
   })
 
   it('hides the line when the show-in-row option is off', async () => {

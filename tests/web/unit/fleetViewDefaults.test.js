@@ -60,6 +60,27 @@ describe('Fleet board default view', () => {
     const { fleetViewSignal } = await import(uiStateModulePath)
     expect(fleetViewSignal.value).toBe('status')
   })
+
+  // The Status | Groups toggle is hidden while there are no sessions, so a
+  // persisted Status choice must not leave status chrome over the empty
+  // state with no way to switch back.
+  it('shows the plain empty state when Status is persisted but there are no sessions', async () => {
+    localStorage.setItem('agentdeck.fleetView', '"status"')
+    const { sessionsSignal, sessionCostsSignal } = await import(stateModulePath)
+    sessionCostsSignal.value = {}
+    sessionsSignal.value = []
+    const { FleetPane } = await import(paneModulePath)
+    const c = mount(html`<${FleetPane}/>`)
+    // Long enough for the lazy Status module to load if it were requested.
+    await new Promise(r => setTimeout(r, 50))
+    const kickers = [...c.querySelectorAll('.fleet-section-head .kicker')].map(k => k.textContent)
+    expect(kickers).toContain('GROUPS')
+    expect(kickers).not.toContain('BY STATUS')
+    expect(c.querySelector('[data-testid="fleet-status-stats"]')).toBeNull()
+    expect(c.querySelector('[data-testid="fleet-kanban"]')).toBeNull()
+    expect(c.querySelector('[data-testid="fleet-view-status"]')).toBeNull()
+    expect(c.textContent).toContain('No sessions yet')
+  })
 })
 
 describe('sidebar column options', () => {

@@ -12,11 +12,12 @@
 //   - TWO-WAY input box routing to Maestro / a chosen conductor via the
 //     supported `session send` primitive (POST /api/command-center/ask).
 import { html } from 'htm/preact'
-import { useEffect, useState } from 'preact/hooks'
+import { useState } from 'preact/hooks'
 import { commandCenterSignal, connectionSignal, mutationsEnabledSignal } from '../state.js'
 import { apiFetch } from '../api.js'
 import { addToast } from '../Toast.js'
 import { sessionAnnotation } from '../annotations.js'
+import { useLazyComponent } from '../lazyModule.js'
 
 const STATUS_DOT = {
   running: '🟢',
@@ -74,21 +75,9 @@ function SessionRow({ sess }) {
 
 // The markdown renderer is fetched once a summary exists, so a fleet without
 // one does not ship it (the page is under a hard total-byte-weight budget,
-// .lighthouserc.json). A failed fetch resets so a later render retries.
-let markdownLoad = null
-function useMarkdown(needed) {
-  const [md, setMd] = useState(null)
-  useEffect(() => {
-    if (!needed || md) return
-    let alive = true
-    markdownLoad = markdownLoad || import('../miniMarkdown.js')
-    markdownLoad
-      .then(m => { if (alive) setMd(() => m.renderMarkdown) })
-      .catch(() => { markdownLoad = null })
-    return () => { alive = false }
-  }, [needed, md])
-  return md
-}
+// .lighthouserc.json). See lazyModule.js for the fetch and retry behaviour.
+const useMarkdown = (needed) =>
+  useLazyComponent(needed, () => import('../miniMarkdown.js'), 'miniMarkdown', m => m.renderMarkdown)
 
 // The conductor-maintained fleet summary: markdown from a conductor's `note`
 // hint or any session's `summary` hint (see CommandCenterSummary).
