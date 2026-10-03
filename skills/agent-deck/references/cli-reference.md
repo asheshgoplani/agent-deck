@@ -1096,6 +1096,8 @@ agent-deck health [--json] [--since <dur>]
 
 Reads local runtime health for the selected profile: no data leaves the host. Reports per-process (TUI, notify-daemon, web) samples — CPU%, RSS, open FDs, goroutines, hook files, status-pass latency, session count, tmux calls, session-list DB latency — against the fixed performance budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`). `--since <dur>` sets the history window (default `1h`; positive Go duration, e.g. `30m`). `--json` emits the same data machine-readably.
 
+Open FDs are counted natively for the sampling process itself (`/proc/self/fd` on Linux, `proc_pidinfo` on macOS; no `lsof`). Each sample's `open_fds_support` is `sampled` when `open_fds` holds a count, or `unsupported` on a platform with no native count; `open_fds` stays `null` then, and the text report prints the descriptor budget as unsupported (flagged once) instead of a budget it cannot check. The same value appears as `budgets.open_fds_support`.
+
 ```bash
 agent-deck health --json --since 1h
 ```

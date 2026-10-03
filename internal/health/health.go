@@ -65,7 +65,20 @@ type Sample struct {
 	// like the fields above: it is always known, since a process with no
 	// journal writer has simply dropped zero.
 	JournalDropped int64 `json:"journal_dropped"`
+	// OpenFDsSupport says why OpenFDs is or is not set: OpenFDsSampled, or
+	// OpenFDsUnsupported on a platform with no native descriptor count.
+	// Empty on older records and when a supported sample failed (unknown).
+	OpenFDsSupport string `json:"open_fds_support,omitempty"`
 }
+
+const (
+	OpenFDsSampled     = "sampled"
+	OpenFDsUnsupported = "unsupported"
+)
+
+// sampleOpenFDs counts this process's open descriptors natively. It returns
+// false when the platform has no way to count them. Tests replace it.
+var sampleOpenFDs = openFDs
 
 var observations struct {
 	sync.Mutex
@@ -210,14 +223,17 @@ func Start(dir, role, hooksDir, binaryVersion string) func() {
 	observations.Unlock()
 	var previousCPU *float64
 	previousTime := started
+	countFDs := sampleOpenFDs
 	sample := func() {
 		now := time.Now().UTC()
 		s := Sample{Version: 1, BinaryVersion: binaryVersion, Timestamp: now, Role: role, PID: os.Getpid(), StartedAt: started, RSSBytes: residentBytes()}
 		g := runtime.NumGoroutine()
 		s.Goroutines = &g
-		if entries, err := os.ReadDir(fdDirectory()); err == nil {
-			n := len(entries)
-			s.OpenFDs = &n
+		if n, supported := countFDs(); n != nil {
+			s.OpenFDs = n
+			s.OpenFDsSupport = OpenFDsSampled
+		} else if !supported {
+			s.OpenFDsSupport = OpenFDsUnsupported
 		}
 		s.HookFiles = countHooks(hooksDir)
 		s.JournalDropped = JournalDropped()
@@ -292,12 +308,6 @@ func Start(dir, role, hooksDir, binaryVersion string) func() {
 			observations.Unlock()
 		})
 	}
-}
-func fdDirectory() string {
-	if runtime.GOOS == "linux" {
-		return "/proc/self/fd"
-	}
-	return "/dev/fd"
 }
 func appendSample(path string, s Sample) error {
 	data, err := json.Marshal(s)
