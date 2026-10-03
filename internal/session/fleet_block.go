@@ -14,11 +14,7 @@ import (
 // last injected and skips an unchanged snapshot.
 
 func fleetBlockDir() string {
-	dir, err := runtimeDataPath("fleet-block")
-	if err != nil {
-		return tempAgentDeckPath("runtime", "fleet-block")
-	}
-	return dir
+	return runtimeDirOrTemp("fleet-block")
 }
 
 func fleetBlockPath(parentID string) string {
@@ -37,8 +33,8 @@ func FleetBlockUnchanged(parentID, summary string) bool {
 	if prev, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(prev)) == fp { // #nosec G304 -- sanitized id under the data dir
 		return true
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
-		_ = os.WriteFile(path, []byte(fp+"\n"), 0o644)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
+		_ = os.WriteFile(path, []byte(fp+"\n"), 0o600)
 	}
 	return false
 }

@@ -317,7 +317,8 @@ func handleHookHandler() {
 			parts = append(parts, drained)
 		}
 		if os.Getenv("AGENTDECK_NO_CHILDREN_CONTEXT") != "1" {
-			if summary := buildChildrenContextSummary(instanceID, normalizeHookEventKey(payload.HookEventName) == "sessionstart"); summary != "" {
+			isSessionStart := normalizeHookEventKey(payload.HookEventName) == "sessionstart"
+			if summary := buildChildrenContextSummary(instanceID, isSessionStart); summary != "" {
 				parts = append(parts, summary)
 			}
 		}

@@ -211,10 +211,11 @@ func FormatInboxRecords(events []TransitionNotificationEvent, header string) str
 		if title == "" {
 			title = ev.ChildSessionID
 		}
-		line := fmt.Sprintf("- %s (%s): %s", title, ev.ChildSessionID, status)
+		tierTag := ""
 		if ev.Tier != "" {
-			line = fmt.Sprintf("- [%s] %s (%s): %s", ev.Tier, title, ev.ChildSessionID, status)
+			tierTag = "[" + ev.Tier + "] "
 		}
+		line := fmt.Sprintf("- %s%s (%s): %s", tierTag, title, ev.ChildSessionID, status)
 		if ev.Kind == transitionKindFinished && ev.DoneSummary != "" {
 			line += " — " + ev.DoneSummary
 		}

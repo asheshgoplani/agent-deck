@@ -16,9 +16,9 @@ import (
 // `agent-deck inbox stats --json`: how often the parent was woken, how many
 // turns were suppressed as noise or dedup, how many bytes were injected.
 //
-// Layout: <data>/runtime/inbox-stats/<parent>.jsonl is NOT used; each parent
-// has one small JSON file <parent>.json rewritten durably on every bump. Bumps
-// are rare (one per child turn) and the file is a few hundred bytes.
+// Layout: one small JSON file per parent, <data>/runtime/inbox-stats/<parent>.json,
+// rewritten durably on every bump. Bumps are rare (one per child turn) and the
+// file is a few hundred bytes.
 
 // InboxStats are the counters kept per parent. All are monotonic since
 // StartedAt except the latency sample.
@@ -54,11 +54,7 @@ var inboxStatsMu sync.Mutex
 
 // InboxStatsDir is the stats root.
 func InboxStatsDir() string {
-	dir, err := runtimeDataPath("inbox-stats")
-	if err != nil {
-		return tempAgentDeckPath("runtime", "inbox-stats")
-	}
-	return dir
+	return runtimeDirOrTemp("inbox-stats")
 }
 
 func inboxStatsPath(parentID string) string {
@@ -133,7 +129,11 @@ func BumpInboxStats(parentID string, fn func(*InboxStats)) error {
 	if err != nil {
 		return err
 	}
-	return writeFileDurable(inboxStatsPath(parentID), data, 0o644)
+	// Counters live next to child text in runtime/; keep them owner-only.
+	if err := os.MkdirAll(InboxStatsDir(), 0o700); err != nil {
+		return err
+	}
+	return writeFileDurable(inboxStatsPath(parentID), data, 0o600)
 }
 
 // ResetInboxStats removes a parent's counters.

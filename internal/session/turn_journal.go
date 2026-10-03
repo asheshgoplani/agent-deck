@@ -51,14 +51,19 @@ const DefaultTurnJournalKeep = 256
 // single-threaded; this guards tests and any future second writer.
 var turnJournalMu sync.Mutex
 
-// TurnJournalDir is the journal root. Errors resolve to a temp fallback so a
-// data-path failure degrades the journal, never the daemon.
-func TurnJournalDir() string {
-	dir, err := runtimeDataPath("turn-journal")
+// runtimeDirOrTemp resolves <data>/runtime/<name>, falling back to a temp
+// path so a data-path failure degrades the feature, never the daemon.
+func runtimeDirOrTemp(name string) string {
+	dir, err := runtimeDataPath(name)
 	if err != nil {
-		return tempAgentDeckPath("runtime", "turn-journal")
+		return tempAgentDeckPath("runtime", name)
 	}
 	return dir
+}
+
+// TurnJournalDir is the journal root.
+func TurnJournalDir() string {
+	return runtimeDirOrTemp("turn-journal")
 }
 
 // TurnJournalPath is the journal file for one child.
@@ -80,7 +85,7 @@ func AppendTurnJournal(entry TurnJournalEntry, keep int) (TurnJournalEntry, erro
 	defer turnJournalMu.Unlock()
 
 	path := TurnJournalPath(entry.Child)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return entry, err
 	}
 	last, _ := lastTurnJournalEntryLocked(path)
@@ -96,7 +101,7 @@ func AppendTurnJournal(entry TurnJournalEntry, keep int) (TurnJournalEntry, erro
 		return entry, err
 	}
 	line = append(line, '\n')
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return entry, err
 	}
@@ -217,7 +222,7 @@ func trimTurnJournalLocked(path string, keep int) error {
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
-	return writeFileDurable(path, buf.Bytes(), 0o644)
+	return writeFileDurable(path, buf.Bytes(), 0o600)
 }
 
 // InboxConfig is the [inbox] section of config.toml: the tiering knobs for
@@ -286,13 +291,7 @@ func (c InboxConfig) WakesFor(tier string) bool {
 
 // GetMaxTextBytes returns the text cap with the default and ceiling applied.
 func (c InboxConfig) GetMaxTextBytes() int {
-	if c.MaxTextBytes <= 0 {
-		return DefaultTurnTextBytes
-	}
-	if c.MaxTextBytes > MaxTurnTextBytes {
-		return MaxTurnTextBytes
-	}
-	return c.MaxTextBytes
+	return clampTurnTextBytes(c.MaxTextBytes)
 }
 
 // GetInfoDigestMinutes returns the digest window (default 15).

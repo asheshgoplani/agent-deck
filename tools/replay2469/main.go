@@ -62,6 +62,7 @@ func main() {
 		for _, b := range blocks {
 			if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
 				hasText = true
+				break
 			}
 		}
 		if !hasText {
@@ -81,7 +82,7 @@ func main() {
 		counts[tier]++
 		trig[facts.Trigger]++
 		if tier != session.TurnTierNoise {
-			text := session.CapTurnText(facts.Text, 600)
+			text := session.CapTurnText(facts.Text, session.DefaultTurnTextBytes)
 			textBytes += len(text)
 			prev = &session.TurnJournalEntry{Status: "waiting", Tier: tier, TextHash: facts.TextHash, UUID: facts.UUID}
 			if facts.HasDone {

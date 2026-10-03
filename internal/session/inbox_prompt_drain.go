@@ -134,11 +134,7 @@ func firstLine(text string) string {
 
 // inboxDigestDir holds per-parent "last digest wake" timestamps.
 func inboxDigestDir() string {
-	dir, err := runtimeDataPath("inbox-digest")
-	if err != nil {
-		return tempAgentDeckPath("runtime", "inbox-digest")
-	}
-	return dir
+	return runtimeDirOrTemp("inbox-digest")
 }
 
 func inboxDigestPath(parentID string) string {
@@ -157,7 +153,10 @@ func lastDigestWake(parentID string) time.Time {
 
 func markDigestWake(parentID string, at time.Time) {
 	path := inboxDigestPath(parentID)
-	if err := writeFileDurable(path, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err == nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	if err := writeFileDurable(path, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o600); err == nil {
 		_ = os.Chtimes(path, at, at)
 	}
 }

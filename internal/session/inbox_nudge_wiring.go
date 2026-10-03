@@ -59,6 +59,23 @@ func defaultWakeNudgeWiring() *wakeNudgeWiring {
 	}
 }
 
+// nudge runs one debounced, idle-gated wake send of message to parent through
+// the wiring's injected clock, idle probe and sender.
+func (w *wakeNudgeWiring) nudge(parent *Instance, profile, message string) (bool, error) {
+	now := time.Now()
+	if w.now != nil {
+		now = w.now()
+	}
+	isIdle := func() bool { return w.isIdle != nil && w.isIdle(parent) }
+	send := func() error {
+		if w.send == nil {
+			return nil
+		}
+		return w.send(parent, profile, message)
+	}
+	return w.nudger.Nudge(parent.ID, now, isIdle, send)
+}
+
 // fireWakeNudge invokes the Tier-2 wake-nudge for a parent that just had a
 // completion durably committed. It is best-effort and MUST NOT affect the commit
 // result: a nil wiring, a non-conductor/busy parent, or a send error are all
@@ -77,23 +94,10 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 		}
 	}()
 
-	now := time.Now()
-	if w.now != nil {
-		now = w.now()
-	}
-	profile := event.Profile
-	isIdle := func() bool { return w.isIdle != nil && w.isIdle(parent) }
 	// Issue #2469: the wake line names the record it is for; the record
 	// itself (text included) is injected by the parent's prompt-time drain
 	// into the turn this line starts.
-	message := NudgeHeadline(event)
-	send := func() error {
-		if w.send == nil {
-			return nil
-		}
-		return w.send(parent, profile, message)
-	}
-	if _, err := w.nudger.Nudge(parent.ID, now, isIdle, send); err != nil {
+	if _, err := w.nudge(parent, event.Profile, NudgeHeadline(event)); err != nil {
 		// Best-effort: a failed wake is harmless. Log once at debug-ish level so
 		// the operator can see WHY a pane wasn't woken without it being an error.
 		commsLog.Warn("wake_nudge_send_failed",
@@ -159,18 +163,7 @@ func (n *TransitionNotifier) fireDigestNudge(parent *Instance, profile, message 
 	if w == nil || w.nudger == nil || parent == nil {
 		return false
 	}
-	now := time.Now()
-	if w.now != nil {
-		now = w.now()
-	}
-	isIdle := func() bool { return w.isIdle != nil && w.isIdle(parent) }
-	send := func() error {
-		if w.send == nil {
-			return nil
-		}
-		return w.send(parent, profile, message)
-	}
-	sent, err := w.nudger.Nudge(parent.ID, now, isIdle, send)
+	sent, err := w.nudge(parent, profile, message)
 	if err != nil {
 		commsLog.Warn("digest_nudge_send_failed",
 			slog.String("parent", parent.ID), slog.String("error", err.Error()))

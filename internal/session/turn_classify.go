@@ -234,9 +234,8 @@ func classifyTrigger(rec transcriptTurnRecord) (trigger, fromID string) {
 // textAsksParent reports a parent-facing question: a NEED:/QUESTION:/ASK: line
 // or a final line ending in "?".
 func textAsksParent(text string) bool {
-	lines := strings.Split(text, "\n")
 	last := ""
-	for _, raw := range lines {
+	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
@@ -262,12 +261,7 @@ func turnTextHash(text string) string {
 // the clip. max <= 0 means DefaultTurnTextBytes; MaxTurnTextBytes is the hard
 // ceiling so no record ever grows past the inbox line scanner's comfort zone.
 func CapTurnText(text string, max int) string {
-	if max <= 0 {
-		max = DefaultTurnTextBytes
-	}
-	if max > MaxTurnTextBytes {
-		max = MaxTurnTextBytes
-	}
+	max = clampTurnTextBytes(max)
 	if len(text) <= max {
 		return text
 	}
@@ -280,6 +274,17 @@ func CapTurnText(text string, max int) string {
 		keep--
 	}
 	return text[:keep] + marker
+}
+
+// clampTurnTextBytes applies the default (for n <= 0) and the hard ceiling.
+func clampTurnTextBytes(n int) int {
+	if n <= 0 {
+		return DefaultTurnTextBytes
+	}
+	if n > MaxTurnTextBytes {
+		return MaxTurnTextBytes
+	}
+	return n
 }
 
 // attentionClass folds waiting and idle together: both mean "the child is at

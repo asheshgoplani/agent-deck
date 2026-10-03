@@ -533,7 +533,7 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	// child said nothing new, so a waiting→idle flip with the same signal is
 	// the same turn, not a second record.
 	if event.LastOutputHash != "" &&
-		(record.To == event.ToStatus || attentionClass(record.To) == attentionClass(event.ToStatus)) &&
+		attentionClass(record.To) == attentionClass(event.ToStatus) &&
 		record.OutputHash == event.LastOutputHash &&
 		elapsed <= int64(n.outputHashTTL().Seconds()) {
 		return true
