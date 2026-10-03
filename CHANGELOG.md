@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- A child launched with the identity block (claude at context level `full`, the default) no longer gets the completion-sentinel instruction appended to its launch message as well; the identity block already carries it, and now says what the parent actually receives (one urgent record with the status and summary) instead of a `[DONE]` event. With `--no-identity`, a `primer`/`none` context level or another tool, `--assert-done` still appends it (#2469).
+
+### Added
+
+- Conductor to human tiering (#2469). A conductor can now reach you from any turn, not only a bridge heartbeat: `agent-deck conductor notify --tier urgent|info "<text>"` writes a durable per-conductor outbox (`runtime/human-outbox/<conductor>.jsonl`, same text within 24 h deduplicated) that the Telegram/Slack/Discord bridge polls every 5 s, forwarding `urgent` items at once as `[<name>] <text>` and acking them only after a channel accepted the message, so a stale token or a failed send keeps them queued. `info` items leave as one digest at most every `[conductor] human_digest_minutes` (default 30) or with the next urgent message. Heartbeat replies now go through `agent-deck conductor tier-filter --json`: `NEED:` / `[urgent]` / `URGENT:` lines are sent, `[info]` lines are queued for the digest, a `[STATUS]`-only reply sends nothing, and the NEED retire counters (#971, `[conductor] need_retire_cycles`, default 3) live on disk instead of in bridge memory, so a bridge restart no longer re-alerts; an older binary without the command falls back to the in-process filter. `agent-deck conductor outbox [--json] [--all] [--ack <id>...]` lists and acks the queue. Replies to your own messages are still forwarded whole. Run `agent-deck conductor setup <name>` to install the updated bridge.
+
 ## [1.16.24] - 2026-10-03
 
 - **Upgrading:** the agent-deck skill is now split into a short `SKILL.md` plus `references/` files. If you installed it with the README's curl loop rather than the plugin, re-run the loop so the new reference files are present (#2429).

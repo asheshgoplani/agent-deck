@@ -24,6 +24,7 @@ record you already have unless the text is clipped and you need the rest.`,
 		`Your Stop hook drains the same queue
 automatically at each turn boundary, so this heartbeat drain is the idle-conductor
 fallback — together they guarantee no completion is missed whether you are busy or idle.`, 1)
+	template = strings.Replace(template, conductorHeartbeatReplyDoc, conductorHeartbeatReplyDocV0, 1)
 	template = strings.Replace(template,
 		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | **Always triage with this compact count summary first:** `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`,
 		`| `+"`"+`agent-deck -p <PROFILE> status --json`+"`"+` | Get counts: `+"`"+`{"waiting": N, "running": N, "idle": N, "error": N, "stopped": N, "total": N}`+"`"+` |`, 1)
@@ -62,6 +63,14 @@ func preSubstateGuidanceConductorInstructionsTemplate(template string) string {
 **Substate (Claude sessions only; refines status in `+"`"+`list`+"`"+`/`+"`"+`show`+"`"+` JSON):** `+"`"+`auth-401`+"`"+` covers two different pane banners. A credential banner (`+"`"+`Please run /login`+"`"+`, `+"`"+`API Error: 401`+"`"+`) means the fleet is HOLDING the session; restarting will NOT fix it. Check `+"`"+`session show --json <id>`+"`"+` for the `+"`"+`auth_hold`+"`"+` object (the authoritative source, present even after the pane exits) and escalate for re-login. A dropped-socket banner (`+"`"+`socket connection closed`+"`"+`) also classifies as `+"`"+`auth-401`+"`"+` but is NOT held and IS restart-recoverable: restart it. `+"`"+`model-unavailable`+"`"+` means the selected model is down (shows as error, not running); self-heal currently only observes this and takes no action, so switch it yourself with `+"`"+`agent-deck -p <PROFILE> session set <id> model <model>`+"`"+` then `+"`"+`agent-deck -p <PROFILE> session restart <id>`+"`"+`. `+"`"+`idle-at-empty-prompt`+"`"+` (shown as coarse status `+"`"+`idle`+"`"+` or `+"`"+`waiting`+"`"+`) means the session is genuinely sitting at its prompt with nothing happening. Never restart-loop an `+"`"+`error`+"`"+` session that `+"`"+`auth_hold`+"`"+` confirms is credential-held.`,
 		`| `+"`"+`error`+"`"+` (red) | Session crashed or missing | Try `+"`"+`session restart`+"`"+`. If that fails, escalate. |`, 1)
 }
+
+// conductorHeartbeatReplyDoc is the tail of the heartbeat reply-format
+// example as of #2469 (urgent/info markers, conductor notify);
+// conductorHeartbeatReplyDocV0 is the wording v1.11.0-v1.16.23 shipped.
+const (
+	conductorHeartbeatReplyDoc   = "[info] docs-lane merged its PR\n```\n\nYour response is parsed by tier: `NEED:` / `[urgent]` lines reach the user now (retired after 3 unanswered cycles), `[info]` lines are batched into a digest, everything else (`[STATUS]`, `AUTO:`) stays local.\n\nOutside a heartbeat (a wake-nudge or Stop-block turn) nothing you write reaches the user, so for a decision the user must act on now run `agent-deck conductor notify --tier urgent \"<one line>\"`, and `--tier info \"<one line>\"` for progress worth a digest. At most one urgent per decision."
+	conductorHeartbeatReplyDocV0 = "```\n\nYour response is parsed: if it contains `NEED:` lines, those get forwarded to the user (via remote channels if configured, or visible in the TUI/task-log)."
+)
 
 // conductorInstructionsGenerations reconstructs every prior generated-template
 // generation for the given template, newest first, that
@@ -188,9 +197,7 @@ or:
 
 AUTO: frontend - told it to use the existing auth middleware
 NEED: api-fix - asking whether to run integration tests against staging or prod
-` + "```" + `
-
-Your response is parsed: if it contains ` + "`" + `NEED:` + "`" + ` lines, those get forwarded to the user (via remote channels if configured, or visible in the TUI/task-log).
+` + conductorHeartbeatReplyDoc + `
 
 ## State Management
 

@@ -916,6 +916,22 @@ agent-deck conductor list [--profile <name>]
 - Bridge daemon is installed only when Telegram and/or Slack is configured in `[conductor]`.
 - Transition notifier daemon (`agent-deck notify-daemon`) is installed by setup and sends event nudges on `running -> waiting|error|idle` transitions (parent first, then conductor fallback).
 
+### notify / outbox / tier-filter - What reaches the human (#2469)
+
+```bash
+agent-deck conductor notify --tier urgent|info [--conductor <name>] [--json] "<text>"   # or --message-file FILE
+agent-deck conductor outbox [--json] [--conductor <name>] [--all] [--ack <id>...]
+agent-deck conductor tier-filter --json [--conductor <name>] < reply.txt
+```
+
+| Command | Description |
+|---------|-------------|
+| `notify` | Queue one item for the human in the durable outbox `runtime/human-outbox/<conductor>.jsonl` (`{id, ts, tier, text, th, acked}`, text capped at 4000 B). The same text within 24 h is one record. Use it from any turn (wake-nudge, Stop-block): replies outside a heartbeat are not forwarded. |
+| `outbox` | List unacked items (`--all` adds delivered ones), or `--ack` ids once delivered; acking twice is a no-op. The bridge polls this every 5 s, forwards `urgent` at once as `[<name>] <text>` and acks only after a channel accepted it. |
+| `tier-filter` | Apply the tier rules to a conductor reply on stdin: `NEED:` / `[urgent]` / `URGENT:` lines go to `send_now` (escalated once as `STILL BLOCKED (N cycles, no reply)` on cycle `[conductor] need_retire_cycles`, then dropped; counts persist in `<conductor>.need.json`), `[info]` / `INFO:` lines are queued, `[STATUS]` and prose stay local. Output `{"send_now":[...],"queued":n,"digest_due":bool,"digest":[...]}`; `digest` holds the unacked info items when `[conductor] human_digest_minutes` passed since the last digest, or whenever there is something to send now. |
+
+Without `--conductor`, the name comes from the calling session's title (`conductor-<name>`, via `AGENTDECK_INSTANCE_ID`).
+
 ## Inbox Commands
 
 ### peek - Show pending records without consuming

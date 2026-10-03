@@ -302,7 +302,16 @@ def load_config() -> dict:
             "configured": dc_configured,
         },
         "heartbeat_interval": conductor_cfg.get("heartbeat_interval", 15),
+        # Fallback threshold for filter_need_lines when `conductor tier-filter`
+        # is unavailable; the Go side reads the same key.
+        "need_retire_cycles": _positive_int(
+            conductor_cfg.get("need_retire_cycles"), NEED_RETIRE_THRESHOLD,
+        ),
     }
+
+
+def _positive_int(value, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else default
 
 
 class _JSONObject(dict):
@@ -426,11 +435,13 @@ def select_heartbeat_conductors(conductors: list[dict]) -> list[dict]:
 
 
 def run_cli(
-    *args: str, profile: str | None = None, timeout: int = 120
+    *args: str, profile: str | None = None, timeout: int = 120,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run an agent-deck CLI command and return the result.
 
-    If profile is provided, prepends -p <profile> to the command.
+    If profile is provided, prepends -p <profile> to the command. input_text,
+    when given, is written to the command's stdin.
     """
     cmd = ["agent-deck"]
     if profile:
@@ -442,13 +453,14 @@ def run_cli(
         # when TimeoutExpired fires — subprocess.run() does NOT set exc.proc.
         proc = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE if input_text is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,  # own process group -> killpg kills grandchildren too
         )
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(input=input_text, timeout=timeout)
             return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
         except subprocess.TimeoutExpired:
             log.warning("CLI timeout: %s", " ".join(cmd))
@@ -1793,6 +1805,197 @@ def filter_need_lines(
         # new_count > threshold: dropped — already retired previously.
 
     return {"alerts": alerts, "retired": retired, "counts": counts}
+
+
+# ---------------------------------------------------------------------------
+# Conductor -> human tier (issue #2469)
+# ---------------------------------------------------------------------------
+#
+# The Go side owns the rules and the durable state: `conductor tier-filter`
+# applies the urgent/info tiers and the NEED retire to a reply (counts on disk,
+# so a bridge restart does not re-alert), and `conductor outbox` holds what a
+# conductor queued with `conductor notify` from any turn. The bridge forwards
+# and acks only after a platform accepted the message, so a stale token or a
+# failed send keeps the items queued.
+
+# Poll cadence for the human outbox, and the longest the CLI goes unpolled
+# while the outbox file is unchanged (retries a failed send / a pending digest).
+HUMAN_OUTBOX_POLL_SECONDS = 5
+HUMAN_OUTBOX_IDLE_POLL_SECONDS = 60
+
+
+def _cli_json_value(result: subprocess.CompletedProcess):
+    """Parsed JSON stdout of a successful CLI call, else None."""
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def tier_filter_reply(
+    name: str, profile: str | None, response: str, prev_counts: dict,
+    threshold: int = NEED_RETIRE_THRESHOLD,
+) -> dict:
+    """Route a conductor reply through `agent-deck conductor tier-filter`.
+
+    Returns {"lines": urgent lines to send now, "digest": info items due to
+    ride along (ack their ids after delivery), "counts": filter_need_lines
+    counts}. The in-process filter_need_lines always runs so its counts stay
+    current; its lines are used only when the CLI call fails (old binary,
+    missing CLI), which keeps today's NEED forwarding as the fallback.
+    """
+    local = filter_need_lines(response, prev_counts, threshold)
+    out = {"lines": local["alerts"] + local["retired"], "digest": [], "counts": local["counts"]}
+    try:
+        data = _cli_json_value(run_cli(
+            "conductor", "tier-filter", "--json", "--conductor", name,
+            profile=profile, timeout=30, input_text=response,
+        ))
+    except Exception as e:  # noqa: BLE001 - any CLI failure falls back, never drops an alert
+        log.warning("tier-filter [%s]: CLI call failed: %s", name, e)
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("send_now"), list):
+        log.warning("tier-filter [%s]: CLI unavailable, using in-process NEED filter", name)
+        return out
+    out["lines"] = [str(line) for line in data["send_now"]]
+    if data.get("digest_due") and isinstance(data.get("digest"), list):
+        out["digest"] = [d for d in data["digest"] if isinstance(d, dict) and d.get("id")]
+    return out
+
+
+def format_human_digest(items: list[dict]) -> str:
+    """One digest block for queued info items."""
+    lines = [f"Digest ({len(items)} update{'s' if len(items) != 1 else ''}):"]
+    lines += [f"- {str(i.get('text', '')).strip()}" for i in items]
+    return "\n".join(lines)
+
+
+def human_alert_message(prefix: str, lines: list[str], digest: list[dict]) -> str:
+    """Heartbeat alert text: urgent lines, then any due info digest."""
+    parts = []
+    if lines:
+        parts.append(f"{prefix}Conductor alert:\n" + "\n".join(lines))
+    if digest:
+        block = format_human_digest(digest)
+        parts.append(block if lines else f"{prefix}{block}")
+    return "\n\n".join(parts)
+
+
+def ack_human_outbox(name: str, profile: str | None, ids: list[str]) -> bool:
+    """Mark outbox ids delivered; True when the CLI accepted the ack."""
+    if not ids:
+        return True
+    args = ["conductor", "outbox", "--json", "--conductor", name]
+    for item_id in ids:
+        args += ["--ack", item_id]
+    ok = run_cli(*args, profile=profile, timeout=30).returncode == 0
+    if not ok:
+        log.error("Human outbox [%s]: ack of %d item(s) failed; they will be resent", name, len(ids))
+    return ok
+
+
+def build_human_outbox_message(name: str, items: list[dict], digest_due: bool) -> tuple[str, list[str]]:
+    """Compose one message from unacked outbox items.
+
+    Every urgent item goes out now as "[<name>] <text>"; queued info rides
+    along as a digest when there is an urgent send or the digest is due.
+    Returns (message, ids to ack after delivery); ("", []) when nothing goes.
+    """
+    urgent = [i for i in items if i.get("tier") == "urgent" and i.get("id")]
+    info = [i for i in items if i.get("tier") == "info" and i.get("id")]
+    parts = [f"[{name}] {str(i.get('text', '')).strip()}" for i in urgent]
+    sent = list(urgent)
+    if info and (urgent or digest_due):
+        block = format_human_digest(info)
+        parts.append(block if urgent else f"[{name}] {block}")
+        sent += info
+    if not parts:
+        return "", []
+    return "\n\n".join(parts), [str(i["id"]) for i in sent]
+
+
+def _human_outbox_signature(name: str):
+    """(mtime_ns, size) of the conductor's outbox file, or None when absent."""
+    safe = name.strip().replace("/", "_").replace("..", "_").replace(" ", "_")  # sanitizeInboxName
+    path = resolve_data_dir("runtime") / "runtime" / "human-outbox" / f"{safe}.jsonl"
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+async def human_outbox_cycle(
+    conductors: list[dict], poll_state: dict, deliver, now: float | None = None,
+) -> None:
+    """One poll of every conductor's human outbox (issue #2469).
+
+    The CLI is called when the outbox file changed since the last call or at
+    least HUMAN_OUTBOX_IDLE_POLL_SECONDS ago, so an idle bridge costs one stat
+    per conductor per poll. deliver(text) -> bool sends to every channel.
+    """
+    now = time.monotonic() if now is None else now
+    loop = asyncio.get_running_loop()
+    for conductor in conductors:
+        name = conductor.get("name", "")
+        profile = conductor.get("profile") or "default"
+        if not name:
+            continue
+        sig = _human_outbox_signature(name)
+        last = poll_state.get(name)
+        if last and last["sig"] == sig and now - last["at"] < HUMAN_OUTBOX_IDLE_POLL_SECONDS:
+            continue
+        poll_state[name] = {"sig": sig, "at": now}
+        try:
+            items = _cli_json_value(await loop.run_in_executor(None, functools.partial(
+                run_cli, "conductor", "outbox", "--json", "--conductor", name,
+                profile=profile, timeout=30,
+            )))
+            if not isinstance(items, list) or not items:
+                continue
+            digest_due = False
+            if not any(i.get("tier") == "urgent" for i in items if isinstance(i, dict)):
+                tf = _cli_json_value(await loop.run_in_executor(None, functools.partial(
+                    run_cli, "conductor", "tier-filter", "--json", "--conductor", name,
+                    profile=profile, timeout=30, input_text="",
+                )))
+                digest_due = isinstance(tf, dict) and bool(tf.get("digest_due"))
+            msg, ids = build_human_outbox_message(
+                name, [i for i in items if isinstance(i, dict)], digest_due,
+            )
+            if not msg:
+                continue
+            if not await deliver(msg):
+                log.error("Human outbox [%s]: %d item(s) NOT delivered; kept queued", name, len(ids))
+                continue
+            await loop.run_in_executor(None, functools.partial(ack_human_outbox, name, profile, ids))
+            log.info("Human outbox [%s]: delivered %d item(s)", name, len(ids))
+        except Exception as e:
+            log.error("Human outbox [%s] error: %s", name, e)
+
+
+async def human_outbox_loop(
+    telegram_bot=None, tg_user_id=None, slack_app=None, slack_channel_id=None,
+    discord_bot=None, discord_channel_id=None,
+):
+    """Forward what conductors queued for the human, every 5 s (issue #2469)."""
+    poll_state: dict = {}
+
+    async def deliver(text: str) -> bool:
+        return await _deliver_need_alert(
+            text, tg_user_id, telegram_bot, slack_app, slack_channel_id,
+            discord_bot, discord_channel_id,
+        )
+
+    log.info("Human outbox loop started (poll every %d s)", HUMAN_OUTBOX_POLL_SECONDS)
+    while True:
+        try:
+            await human_outbox_cycle(discover_conductors(), poll_state, deliver)
+        except Exception as e:
+            log.error("Human outbox cycle failed: %s", e)
+        await asyncio.sleep(HUMAN_OUTBOX_POLL_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -3425,11 +3628,14 @@ async def need_scan_cycle(
             if entry.get("reply") == reply_id:
                 continue  # same reply as the last scan: already handled
 
-            need_filtered = filter_need_lines(response, entry.get("counts") or {})
-            lines = need_filtered["alerts"] + need_filtered["retired"]
-            if lines:
+            filtered = await loop.run_in_executor(None, functools.partial(
+                tier_filter_reply, name, profile, response, entry.get("counts") or {},
+                config.get("need_retire_cycles", NEED_RETIRE_THRESHOLD),
+            ))
+            lines, digest = filtered["lines"], filtered["digest"]
+            if lines or digest:
                 prefix = f"[{name}] " if len(all_conductors) > 1 else ""
-                alert_msg = f"{prefix}Conductor alert:\n" + "\n".join(lines)
+                alert_msg = human_alert_message(prefix, lines, digest)
                 if not await _deliver_need_alert(
                     alert_msg, tg_user_id, telegram_bot, slack_app,
                     slack_channel_id, discord_bot, discord_channel_id,
@@ -3440,8 +3646,11 @@ async def need_scan_cycle(
                     )
                     continue
                 log.info("NEED scan [%s]: forwarded %d NEED line(s)", name, len(lines))
+                await loop.run_in_executor(None, functools.partial(
+                    ack_human_outbox, name, profile, [str(d["id"]) for d in digest],
+                ))
 
-            need_state[name] = {"reply": reply_id, "counts": need_filtered["counts"]}
+            need_state[name] = {"reply": reply_id, "counts": filtered["counts"]}
             changed = True
         except Exception as e:
             log.error("NEED scan [%s] error: %s", name, e)
@@ -3797,66 +4006,33 @@ async def heartbeat_loop(
                 # Dedup repeating NEED: lines (issue #971). Forward only
                 # fresh + escalation lines; drop verbatim repeats past
                 # threshold so the user isn't trained to ignore heartbeats.
+                # Tier the reply (issue #2469): urgent lines now (NEED retire
+                # #971, counts on disk via `conductor tier-filter`), info into
+                # the human outbox, a due digest rides along. Falls back to the
+                # in-process filter_need_lines when the CLI call fails.
                 prev_counts = need_state_by_conductor.get(name, {})
-                need_filtered = filter_need_lines(response, prev_counts)
-                need_state_by_conductor[name] = need_filtered["counts"]
+                filtered = await loop.run_in_executor(None, functools.partial(
+                    tier_filter_reply, name, profile, response, prev_counts,
+                    config.get("need_retire_cycles", NEED_RETIRE_THRESHOLD),
+                ))
+                need_state_by_conductor[name] = filtered["counts"]
 
-                forwarded_need_lines = (
-                    need_filtered["alerts"] + need_filtered["retired"]
-                )
+                forwarded_need_lines = filtered["lines"]
+                digest = filtered["digest"]
                 has_alerts = bool(forwarded_need_lines)
-                if need_filtered["retired"]:
-                    log.info(
-                        "Heartbeat [%s]: retiring %d stale NEED line(s) "
-                        "after >= %d cycles: %s",
-                        name,
-                        len(need_filtered["retired"]),
-                        NEED_RETIRE_THRESHOLD,
-                        need_filtered["retired"],
-                    )
-                if has_alerts:
+                if has_alerts or digest:
                     prefix = (
                         f"[{name}] " if len(all_conductors) > 1 else ""
                     )
-                    alert_body = "\n".join(forwarded_need_lines)
-                    alert_msg = f"{prefix}Conductor alert:\n{alert_body}"
-
-                    # Notify via Telegram (with HTML formatting)
-                    if telegram_bot and tg_user_id:
-                        try:
-                            alert_html = md_to_tg_html(alert_msg)
-                            for chunk in split_message(alert_html):
-                                await telegram_bot.send_message(
-                                    tg_user_id,
-                                    chunk,
-                                    parse_mode="HTML",
-                                )
-                        except Exception as e:
-                            log.error(
-                                "Failed to send Telegram notification: %s", e
-                            )
-
-                    # Notify via Slack
-                    if slack_app and slack_channel_id:
-                        try:
-                            await slack_app.client.chat_postMessage(
-                                channel=slack_channel_id, text=alert_msg,
-                            )
-                        except Exception as e:
-                            log.error(
-                                "Failed to send Slack notification: %s", e
-                            )
-
-                    # Notify via Discord
-                    if discord_bot and discord_channel_id:
-                        try:
-                            channel = discord_bot.get_channel(discord_channel_id)
-                            if channel:
-                                await send_discord_output(channel, alert_msg)
-                        except Exception as e:
-                            log.error(
-                                "Failed to send Discord notification: %s", e
-                            )
+                    alert_msg = human_alert_message(prefix, forwarded_need_lines, digest)
+                    if await _deliver_need_alert(
+                        alert_msg, tg_user_id, telegram_bot, slack_app,
+                        slack_channel_id, discord_bot, discord_channel_id,
+                    ):
+                        # Digest items stay queued until a channel accepted them.
+                        await loop.run_in_executor(None, functools.partial(
+                            ack_human_outbox, name, profile, [str(d["id"]) for d in digest],
+                        ))
 
                 # Run post-heartbeat hook (non-gating)
                 invoke_hook(profile, "post-heartbeat", {
@@ -3978,8 +4154,20 @@ async def main():
         )
     )
 
+    # Forward what conductors queued for the human (`conductor notify`)
+    human_outbox_task = asyncio.create_task(
+        human_outbox_loop(
+            telegram_bot=telegram_bot,
+            tg_user_id=config["telegram"]["user_id"] if config["telegram"]["configured"] else None,
+            slack_app=slack_app,
+            slack_channel_id=slack_channel_id,
+            discord_bot=discord_bot,
+            discord_channel_id=discord_channel_id,
+        )
+    )
+
     # Run all concurrently
-    tasks = [heartbeat_task]
+    tasks = [heartbeat_task, human_outbox_task]
     if telegram_dp and telegram_bot:
         tasks.append(asyncio.create_task(_run_platform_task(
             "Telegram polling",
@@ -4002,6 +4190,7 @@ async def main():
         await asyncio.gather(*tasks)
     finally:
         heartbeat_task.cancel()
+        human_outbox_task.cancel()
         if telegram_bot:
             await telegram_bot.session.close()
         if slack_handler:

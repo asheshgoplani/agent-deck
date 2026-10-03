@@ -286,7 +286,6 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if *noAssertDone {
 		assertDoneOn = false
 	}
-	initialMessage = applyAssertDone(initialMessage, assertDoneOn)
 
 	// Resolve worktree flags
 	wtBranch := *worktreeBranch
@@ -688,6 +687,10 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	// The identity block already states the sentinel rule (tool, sandbox and
+	// context level are settled by now); repeat it in the message only when
+	// this child will not get that block.
+	initialMessage = applyAssertDone(initialMessage, assertDoneOn && !newInstance.IdentityCarriesSentinel())
 
 	if *startupQuery != "" {
 		queryTree := session.NewGroupTreeWithGroups(instances, groups)

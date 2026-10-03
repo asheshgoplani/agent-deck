@@ -222,10 +222,21 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("\n## Completion sentinel\n")
 	b.WriteString("When a task you were given by a parent is fully done, end your final message with exactly one line:\n")
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
-	b.WriteString("agent-deck forwards it to your parent as a [DONE] event; without it the parent only sees that you are waiting.\n")
+	b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
 	b.WriteString("\nThis block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n")
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
+}
+
+// IdentityCarriesSentinel reports whether this session's injected identity
+// block includes the completion-sentinel section, so a launch message does
+// not need to repeat it: claude-family tools at context level "full".
+func (i *Instance) IdentityCarriesSentinel() bool {
+	if i == nil || !IsClaudeCompatible(i.Tool) || !i.identityInjectionEnabled() {
+		return false
+	}
+	level, _ := i.EffectiveContextLevel()
+	return level == ContextLevelFull
 }
 
 // BuildPrimerPrompt renders the "primer" context-level block: session
