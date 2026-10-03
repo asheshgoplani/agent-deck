@@ -18,11 +18,14 @@ import (
 // controller's SSH nudge alone. EnsureTimer is the one decision every path
 // shares: the explicit `update --install-timer`, and the automatic install
 // and heal (`update --unattended`, the TUI's periodic check, the notify
-// daemon at start, `update --ensure-timer` that `remote update` runs). It
-// leaves an active, current canonical timer alone, installs one where none
-// is active, and migrates the legacy pair: the canonical pair is installed
-// and verified first, then the legacy timer is disabled and both legacy
-// unit files are moved to a backup next to them, never deleted.
+// daemon at start, `update --ensure-timer` that `remote update` runs). The
+// automatic form leaves an active canonical timer as its owner wrote it,
+// installs one where none exists, re-enables an inactive one and repairs a
+// pin to a binary that is gone; the explicit form also rewrites a stale
+// pair, backing up what it replaces. Both migrate the legacy pair: the
+// canonical pair is installed and verified first, then the legacy timer is
+// disabled and the legacy unit files are moved to a backup next to them,
+// never deleted.
 
 // Timer ensure actions, as TimerEnsureResult.Action reports them.
 const (
@@ -34,8 +37,9 @@ const (
 	// TimerActionMigrated: the legacy pair was retired in favour of the
 	// canonical timer.
 	TimerActionMigrated = "migrated"
-	// TimerActionLoaded: an installed but unloaded launchd timer was
-	// bootstrapped again (automatic mode on macOS).
+	// TimerActionLoaded: an installed but unloaded or inactive timer was
+	// loaded again without rewriting it (automatic mode: launchd
+	// bootstrap, systemd enable --now).
 	TimerActionLoaded = "loaded"
 	// TimerActionSkipped: nothing could or may be done here; Reason says
 	// why (no systemd user session, unpinnable build, manage_timer off).
@@ -53,8 +57,12 @@ type TimerEnsureResult struct {
 	Reason string `json:"reason,omitempty"`
 	// Migrated names the legacy unit retired by this run.
 	Migrated string `json:"migrated,omitempty"`
-	// Backups lists where the retired legacy unit files were moved.
+	// Backups lists where retired legacy unit files, and canonical unit
+	// files a rewrite replaced, were moved.
 	Backups []string `json:"backups,omitempty"`
+	// Note says what was deliberately left as found (a legacy unit in a
+	// directory this user cannot write).
+	Note string `json:"note,omitempty"`
 	// Status is the timer state after the run (before it, for a dry run).
 	Status TimerStatus `json:"status"`
 }
@@ -70,8 +78,19 @@ func (r TimerEnsureResult) Changed() bool {
 
 // Line is the one-line summary every caller prints.
 func (r TimerEnsureResult) Line() string {
+	line := r.line()
+	if r.Note != "" {
+		line += " (" + r.Note + ")"
+	}
+	return line
+}
+
+func (r TimerEnsureResult) line() string {
 	switch r.Action {
 	case TimerActionMigrated:
+		if r.Migrated == LegacySystemdTimerService {
+			return "migrated legacy service " + r.Migrated + " -> " + SystemdTimerTimer
+		}
 		return "migrated legacy timer " + r.Migrated + " -> " + SystemdTimerTimer
 	case TimerActionInstalled:
 		return fmt.Sprintf("installed update timer (%s): %s", r.Status.Kind, r.Status.Path)
@@ -95,8 +114,10 @@ type TimerEnsurePlan struct {
 // PlanEnsureTimer decides what bringing the timer to "installed, active,
 // current, no legacy unit" takes on this host. auto is the automatic
 // install/heal: it never pins an unpinnable build, needs a reachable init
-// system first, and on macOS never replaces a loaded plist (the run may be
-// inside it). The explicit form (auto false) rewrites a stale timer.
+// system first, never rewrites an active canonical unit (an owner's edit
+// survives), and on macOS never replaces a loaded plist (the run may be
+// inside it). The explicit form (auto false) rewrites a stale timer and
+// moves the replaced files to a backup first.
 // Read-only: it queries the init system through r but changes nothing.
 func PlanEnsureTimer(c TimerConfig, r Runner, auto bool) (TimerEnsurePlan, error) {
 	switch c.GOOS {
@@ -152,35 +173,155 @@ func planEnsureSystemd(c TimerConfig, r Runner, auto bool) TimerEnsurePlan {
 		p.Result.Action, p.Result.Reason = TimerActionSkipped, reason
 		return p
 	}
-	canonicalCurrent := st.Kind == TimerKindSystemd && st.Active &&
-		fileHasContent(c.ServicePath(), c.SystemdService()) && fileHasContent(c.TimerPath(), c.SystemdTimer())
-	if !canonicalCurrent {
-		p.Steps = append(p.Steps, systemdInstallSteps(c)...)
-	}
+	stamp := c.now().UTC().Format("20060102-150405")
+	canonical, action := TimerActionNone, ""
 	switch {
-	case st.LegacyPath != "":
-		steps, backups := legacyRetireSteps(c, st.LegacyPath)
-		p.Steps = append(p.Steps, steps...)
-		p.Result.Action, p.Result.Migrated, p.Result.Backups = TimerActionMigrated, LegacySystemdTimerTimer, backups
-	case !canonicalCurrent:
-		p.Result.Action = TimerActionInstalled
+	case st.Kind != TimerKindSystemd:
+		// No canonical timer unit at all: install it.
+		action = TimerActionInstalled
+	case auto:
+		// The automatic heal leaves an existing canonical pair as its
+		// owner wrote it (a customised schedule, a pin to another
+		// installed binary) and only repairs what stops it running: a
+		// missing service, a pinned binary that is gone, a timer that is
+		// not active. Rewriting a working unit on every unattended run
+		// would silently revert the owner's edits (#2472 review).
+		switch {
+		case !fileExists(c.ServicePath()) || pinnedBinaryMissing(c.ServicePath(), c.Exe):
+			action = TimerActionInstalled
+		case !st.Active:
+			p.Steps = append(p.Steps, systemdEnableSteps()...)
+			canonical = TimerActionLoaded
+		}
 	default:
-		p.Result.Action = TimerActionNone
+		// The explicit --install-timer brings the pair to what this
+		// binary renders, backing up whatever it replaces.
+		if !st.Active || !fileHasContent(c.ServicePath(), c.SystemdService()) || !fileHasContent(c.TimerPath(), c.SystemdTimer()) {
+			action = TimerActionInstalled
+		}
+	}
+	if action == TimerActionInstalled {
+		steps, backups := canonicalBackupSteps(c, stamp)
+		p.Steps = append(append(p.Steps, steps...), systemdInstallSteps(c)...)
+		p.Result.Backups = append(p.Result.Backups, backups...)
+		canonical = TimerActionInstalled
+	}
+	p.Result.Action = canonical
+	if st.LegacyPath != "" {
+		steps, backups, note := legacyRetireSteps(c, r, st, stamp)
+		p.Steps = append(p.Steps, steps...)
+		p.Result.Backups = append(p.Result.Backups, backups...)
+		p.Result.Note = note
+		if len(steps) > 0 {
+			p.Result.Action, p.Result.Migrated = TimerActionMigrated, st.LegacyUnit
+		}
 	}
 	return p
 }
 
-// legacyRetireSteps disables the hand-made timer and moves its unit files to
-// a timestamped backup beside them. It runs after the canonical timer is
-// verified active, so a failure here never leaves the host with no timer.
-func legacyRetireSteps(c TimerConfig, legacyTimer string) ([]Step, []string) {
-	stamp := c.now().UTC().Format("20060102-150405")
-	legacyService := filepath.Join(filepath.Dir(legacyTimer), LegacySystemdTimerService)
-	steps := []Step{
-		{Desc: "disable legacy timer", Argv: []string{"systemctl", "--user", "disable", "--now", LegacySystemdTimerTimer}, Tolerate: func(string, error) bool { return true }},
-	}
+// canonicalBackupSteps moves an existing canonical unit file whose content
+// differs from what this binary renders to a timestamped backup beside it,
+// so a rewrite never loses the owner's version of it.
+func canonicalBackupSteps(c TimerConfig, stamp string) ([]Step, []string) {
+	var steps []Step
 	var backups []string
-	for _, f := range []struct{ desc, path string }{{"back up legacy timer", legacyTimer}, {"back up legacy service", legacyService}} {
+	for _, f := range []struct {
+		desc, path string
+		want       []byte
+	}{{"back up systemd service", c.ServicePath(), c.SystemdService()}, {"back up systemd timer", c.TimerPath(), c.SystemdTimer()}} {
+		if !fileExists(f.path) || fileHasContent(f.path, f.want) {
+			continue
+		}
+		to := uniqueBackupPath(f.path + legacyBackupSuffix + stamp)
+		steps = append(steps, Step{Desc: f.desc, MovePath: f.path, MoveTo: to})
+		backups = append(backups, to)
+	}
+	return steps, backups
+}
+
+// pinnedBinaryMissing reports whether the service's ExecStart runs an
+// absolute path that no longer exists. A path equal to exe is the running
+// binary's own stable path, so it exists; a relative command or a shell
+// wrapper cannot be judged and counts as present.
+func pinnedBinaryMissing(servicePath, exe string) bool {
+	data, err := os.ReadFile(servicePath)
+	if err != nil {
+		return false
+	}
+	pinned := execStartBinary(string(data))
+	if pinned == "" || pinned == exe || !filepath.IsAbs(pinned) {
+		return false
+	}
+	_, err = os.Stat(pinned)
+	return os.IsNotExist(err)
+}
+
+// execStartBinary returns the program of a unit's first ExecStart line,
+// unquoted and without systemd's prefix characters; "" when there is none.
+func execStartBinary(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		v, ok := strings.CutPrefix(strings.TrimSpace(line), "ExecStart=")
+		if !ok {
+			continue
+		}
+		v = strings.TrimLeft(strings.TrimSpace(v), "-@:+!")
+		if rest, ok := strings.CutPrefix(v, `"`); ok {
+			var b strings.Builder
+			for i := 0; i < len(rest); i++ {
+				switch rest[i] {
+				case '\\':
+					if i+1 < len(rest) {
+						i++
+						b.WriteByte(rest[i])
+					}
+				case '"':
+					return b.String()
+				default:
+					b.WriteByte(rest[i])
+				}
+			}
+			return b.String()
+		}
+		if fields := strings.Fields(v); len(fields) > 0 {
+			return fields[0]
+		}
+		return ""
+	}
+	return ""
+}
+
+// legacyRetireSteps retires the hand-made unit st names: it disables the
+// legacy timer and moves the legacy unit files to a timestamped backup
+// beside them. The steps run after the canonical timer is verified active,
+// so a failure here never leaves the host with no timer.
+//
+// A legacy unit whose directory this user cannot write (found through
+// `systemctl --user cat` in /etc/systemd/user, say) is never moved: it is
+// stopped while it is active and otherwise left alone with a note, so the
+// automatic heal does not fail, or repeat the disable, on every run. A
+// lone legacy service (its timer already gone) runs nothing; it is backed
+// up the same way so it does not linger.
+func legacyRetireSteps(c TimerConfig, r Runner, st TimerStatus, stamp string) (steps []Step, backups []string, note string) {
+	dir := filepath.Dir(st.LegacyPath)
+	isTimer := st.LegacyUnit == LegacySystemdTimerTimer
+	if !dirWritable(dir) {
+		note = "legacy unit " + st.LegacyPath + " left in place: " + dir + " is not writable"
+		if isTimer {
+			if active, _ := systemdUnitActive(r, LegacySystemdTimerTimer); active {
+				steps = append(steps, Step{Desc: "stop legacy timer", Argv: []string{"systemctl", "--user", "disable", "--now", LegacySystemdTimerTimer}, Tolerate: func(string, error) bool { return true }})
+				note += "; stopped it"
+			}
+		}
+		return steps, nil, note
+	}
+	if isTimer {
+		steps = append(steps, Step{Desc: "disable legacy timer", Argv: []string{"systemctl", "--user", "disable", "--now", LegacySystemdTimerTimer}, Tolerate: func(string, error) bool { return true }})
+	}
+	files := []struct{ desc, path string }{{"back up legacy service", filepath.Join(dir, LegacySystemdTimerService)}}
+	if isTimer {
+		files = append([]struct{ desc, path string }{{"back up legacy timer", st.LegacyPath}}, files...)
+	}
+	for _, f := range files {
 		if !fileExists(f.path) {
 			continue
 		}
@@ -188,8 +329,10 @@ func legacyRetireSteps(c TimerConfig, legacyTimer string) ([]Step, []string) {
 		steps = append(steps, Step{Desc: f.desc, MovePath: f.path, MoveTo: to})
 		backups = append(backups, to)
 	}
-	steps = append(steps, Step{Desc: "reload systemd", Argv: []string{"systemctl", "--user", "daemon-reload"}})
-	return steps, backups
+	if len(steps) > 0 {
+		steps = append(steps, Step{Desc: "reload systemd", Argv: []string{"systemctl", "--user", "daemon-reload"}})
+	}
+	return steps, backups, ""
 }
 
 // uniqueBackupPath returns p, or p.N for the first N that does not exist, so

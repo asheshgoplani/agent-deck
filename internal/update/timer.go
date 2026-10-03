@@ -311,9 +311,15 @@ func InstallTimerPlan(c TimerConfig) (Plan, error) {
 
 // systemdInstallSteps writes, enables and verifies the canonical unit pair.
 func systemdInstallSteps(c TimerConfig) []Step {
-	return []Step{
+	return append([]Step{
 		{Desc: "write systemd service", WritePath: c.ServicePath(), Content: c.SystemdService(), Mode: 0o644},
 		{Desc: "write systemd timer", WritePath: c.TimerPath(), Content: c.SystemdTimer(), Mode: 0o644},
+	}, systemdEnableSteps()...)
+}
+
+// systemdEnableSteps reloads, enables and verifies the canonical timer.
+func systemdEnableSteps() []Step {
+	return []Step{
 		{Desc: "reload systemd", Argv: []string{"systemctl", "--user", "daemon-reload"}},
 		{Desc: "enable timer", Argv: []string{"systemctl", "--user", "enable", "--now", SystemdTimerTimer}},
 		{Desc: "verify timer", Argv: []string{"systemctl", "--user", "is-active", SystemdTimerTimer}},
@@ -362,7 +368,8 @@ type TimerStatus struct {
 	// LegacyUnit names a hand-made agentdeck-autoupdate.timer found on the
 	// host (#2472), LegacyPath its unit file. Set for kind systemd-legacy
 	// and also next to a canonical timer, so the migration knows to retire
-	// it.
+	// it. A lone hand-made agentdeck-autoupdate.service (no legacy timer)
+	// is named the same way, with any kind.
 	LegacyUnit string `json:"legacy_unit,omitempty"`
 	LegacyPath string `json:"legacy_path,omitempty"`
 	// LastRun and NextRun are the timer's last trigger and next elapse
@@ -397,9 +404,21 @@ func QueryTimerStatus(c TimerConfig, r Runner) TimerStatus {
 		return st
 	case "linux":
 		legacyPath, legacyUnit := findLegacySystemdTimer(c, r)
+		// A hand-made service whose timer is already gone runs nothing,
+		// but it is named so the migration backs it up too.
+		var orphanService string
+		if legacyPath == "" {
+			if p := filepath.Join(c.SystemdUserDir, LegacySystemdTimerService); fileExists(p) {
+				orphanService = p
+			}
+		}
 		if !fileExists(c.TimerPath()) {
 			if legacyPath == "" {
-				return TimerStatus{Kind: TimerKindNone, Path: c.TimerPath()}
+				st := TimerStatus{Kind: TimerKindNone, Path: c.TimerPath()}
+				if orphanService != "" {
+					st.LegacyUnit, st.LegacyPath = LegacySystemdTimerService, orphanService
+				}
+				return st
 			}
 			// A working hand-made timer is a timer: never "not installed"
 			// (#2472). It is reported under its own kind so the owner and
@@ -413,8 +432,11 @@ func QueryTimerStatus(c TimerConfig, r Runner) TimerStatus {
 			return st
 		}
 		st := TimerStatus{Kind: TimerKindSystemd, Path: c.TimerPath(), Installed: true, Detail: "daily, randomized delay up to 1h"}
-		if legacyPath != "" {
+		switch {
+		case legacyPath != "":
 			st.LegacyUnit, st.LegacyPath = LegacySystemdTimerTimer, legacyPath
+		case orphanService != "":
+			st.LegacyUnit, st.LegacyPath = LegacySystemdTimerService, orphanService
 		}
 		if r != nil {
 			st.Active, st.Note = systemdUnitActive(r, SystemdTimerTimer)

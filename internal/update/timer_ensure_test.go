@@ -250,13 +250,14 @@ func TestEnsureTimer_InstallsWhereNoneIsActive(t *testing.T) {
 	assert.Equal(t, []string{"systemctl --user daemon-reload", "systemctl --user enable --now " + SystemdTimerTimer}, mutating(r))
 	assert.True(t, res.Status.Installed)
 
-	// An installed but inactive canonical timer is re-enabled.
+	// An installed but inactive canonical timer is re-enabled, not
+	// rewritten.
 	r2 := newFakeRunner()
 	r2.on("systemctl --user is-active "+SystemdTimerTimer, fakeReply{out: "inactive\n", err: exitErr(3)}, fakeReply{out: "active\n"})
 	res, err = EnsureTimer(c, r2, true, discardLogger())
 	require.NoError(t, err)
-	assert.Equal(t, TimerActionInstalled, res.Action)
-	assert.Contains(t, mutating(r2), "systemctl --user enable --now "+SystemdTimerTimer)
+	assert.Equal(t, TimerActionLoaded, res.Action)
+	assert.Equal(t, []string{"systemctl --user daemon-reload", "systemctl --user enable --now " + SystemdTimerTimer}, mutating(r2))
 }
 
 func TestEnsureTimer_StaleCanonicalUnitIsRewritten(t *testing.T) {
@@ -267,6 +268,9 @@ func TestEnsureTimer_StaleCanonicalUnitIsRewritten(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, TimerActionInstalled, res.Action)
 	assert.Equal(t, string(c.SystemdService()), readFile(t, c.ServicePath()))
+	// The replaced file is kept, the unchanged timer is not backed up.
+	require.Len(t, res.Backups, 1)
+	assert.Equal(t, "[Service]\nExecStart=/old/agent-deck update\n", readFile(t, res.Backups[0]))
 }
 
 func TestEnsureTimer_NoUserBusIsASkipNotAWrite(t *testing.T) {
