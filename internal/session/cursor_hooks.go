@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,14 +13,16 @@ import (
 
 const agentDeckCursorHookCommand = "agent-deck hook-handler"
 
-// cursorHookDef is the one field of a hook entry agent-deck reads. Entries
-// are otherwise kept as raw JSON, so a user's timeout, loop_limit,
-// failClosed or prompt-type hook survives every install byte for byte.
 type cursorHookDef struct {
 	Command string `json:"command"`
+	Matcher string `json:"matcher,omitempty"`
 }
 
-// cursorHookEventNames are the events every install subscribes to.
+type cursorHooksConfig struct {
+	Version int                        `json:"version"`
+	Hooks   map[string][]cursorHookDef `json:"hooks"`
+}
+
 var cursorHookEventNames = []string{
 	"sessionStart",
 	"sessionEnd",
@@ -31,102 +32,54 @@ var cursorHookEventNames = []string{
 	"stop",
 }
 
-// cursorCommsHookEvent carries the agent's final text (stop carries only a
-// status); the Comms Ledger producer reads it (docs/comms.md). It is
-// installed, and required by the installed check, only with [comms] ledger
-// on, so an install made before the ledger is left exactly as it is.
-const cursorCommsHookEvent = "afterAgentResponse"
-
-// cursorHookEventsForInstall is the event set an install writes and the
-// installed check requires.
-func cursorHookEventsForInstall() []string {
-	if CommsLedgerEnabled() {
-		return append(append([]string(nil), cursorHookEventNames...), cursorCommsHookEvent)
-	}
-	return cursorHookEventNames
-}
-
-// cursorHookEventsEverInstalled is every event an uninstall must clean.
-func cursorHookEventsEverInstalled() []string {
-	return append(append([]string(nil), cursorHookEventNames...), cursorCommsHookEvent)
-}
-
-// cursorHooksFile is hooks.json with only the parts agent-deck touches
-// decoded: top-level keys other than "hooks" and each hook entry are raw.
-type cursorHooksFile struct {
-	top   map[string]json.RawMessage
-	hooks map[string][]json.RawMessage
-}
-
-func readCursorHooksFile(hooksPath string) (*cursorHooksFile, bool, error) {
-	f := &cursorHooksFile{top: map[string]json.RawMessage{}, hooks: map[string][]json.RawMessage{}}
-	data, err := os.ReadFile(hooksPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return f, false, nil
-		}
-		return nil, false, fmt.Errorf("read hooks.json: %w", err)
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return f, true, nil
-	}
-	if err := json.Unmarshal(data, &f.top); err != nil {
-		return nil, true, fmt.Errorf("parse hooks.json: %w", err)
-	}
-	if raw, ok := f.top["hooks"]; ok && len(raw) > 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		if err := json.Unmarshal(raw, &f.hooks); err != nil {
-			return nil, true, fmt.Errorf("parse hooks.json: %w", err)
-		}
-	}
-	return f, true, nil
-}
-
-func (f *cursorHooksFile) write(hooksPath string) error {
-	hooksRaw, err := json.Marshal(f.hooks)
-	if err != nil {
-		return fmt.Errorf("marshal hooks.json: %w", err)
-	}
-	if len(f.hooks) == 0 {
-		delete(f.top, "hooks")
-	} else {
-		f.top["hooks"] = hooksRaw
-	}
-	if _, ok := f.top["version"]; !ok {
-		f.top["version"] = json.RawMessage("1")
-	}
-	finalData, err := json.MarshalIndent(f.top, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal hooks.json: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(hooksPath), 0755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	if err := atomicfile.WriteFile(hooksPath, finalData, 0644); err != nil {
-		return fmt.Errorf("write hooks.json: %w", err)
-	}
-	return nil
-}
-
 // InjectCursorHooks injects agent-deck hook entries into ~/.cursor/hooks.json.
-// Read-preserve-modify-write: only the agent-deck entries are added, every
-// other byte of the file is written back as it was.
+// Uses read-preserve-modify-write to keep existing user hooks.
 // Returns true if hooks were newly installed, false if already present.
 func InjectCursorHooks(configDir string) (bool, error) {
 	hooksPath := filepath.Join(configDir, "hooks.json")
-	f, _, err := readCursorHooksFile(hooksPath)
+
+	var cfg cursorHooksConfig
+	data, err := os.ReadFile(hooksPath)
 	if err != nil {
-		return false, err
+		if !os.IsNotExist(err) {
+			return false, fmt.Errorf("read hooks.json: %w", err)
+		}
+		cfg = cursorHooksConfig{
+			Version: 1,
+			Hooks:   make(map[string][]cursorHookDef),
+		}
+	} else {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return false, fmt.Errorf("parse hooks.json: %w", err)
+		}
+		if cfg.Version == 0 {
+			cfg.Version = 1
+		}
+		if cfg.Hooks == nil {
+			cfg.Hooks = make(map[string][]cursorHookDef)
+		}
 	}
-	events := cursorHookEventsForInstall()
-	if cursorHooksAlreadyInstalled(f.hooks, events) {
+
+	if cursorHooksAlreadyInstalled(cfg.Hooks) {
 		return false, nil
 	}
-	for _, event := range events {
-		f.hooks[event] = mergeCursorHookEvent(f.hooks[event])
+
+	for _, event := range cursorHookEventNames {
+		cfg.Hooks[event] = mergeCursorHookEvent(cfg.Hooks[event])
 	}
-	if err := f.write(hooksPath); err != nil {
-		return false, err
+
+	finalData, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshal hooks.json: %w", err)
 	}
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return false, fmt.Errorf("create config dir: %w", err)
+	}
+	if err := atomicfile.WriteFile(hooksPath, finalData, 0644); err != nil {
+		return false, fmt.Errorf("write hooks.json: %w", err)
+	}
+
 	sessionLog.Info("cursor_hooks_installed", slog.String("config_dir", configDir))
 	return true, nil
 }
@@ -176,47 +129,68 @@ func SetCursorHooksEnabled(enabled bool) error {
 // Returns true if hooks were removed, false if none found.
 func RemoveCursorHooks(configDir string) (bool, error) {
 	hooksPath := filepath.Join(configDir, "hooks.json")
-	f, exists, err := readCursorHooksFile(hooksPath)
+	data, err := os.ReadFile(hooksPath)
 	if err != nil {
-		return false, err
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read hooks.json: %w", err)
 	}
-	if !exists || len(f.hooks) == 0 {
+
+	var cfg cursorHooksConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return false, fmt.Errorf("parse hooks.json: %w", err)
+	}
+	if cfg.Hooks == nil {
 		return false, nil
 	}
+
 	removed := false
-	for _, event := range cursorHookEventsEverInstalled() {
-		cleaned, didRemove := removeAgentDeckFromCursorEvent(f.hooks[event])
-		if !didRemove {
-			continue
-		}
-		removed = true
-		if len(cleaned) == 0 {
-			delete(f.hooks, event)
-		} else {
-			f.hooks[event] = cleaned
+	for _, event := range cursorHookEventNames {
+		cleaned, didRemove := removeAgentDeckFromCursorEvent(cfg.Hooks[event])
+		if didRemove {
+			removed = true
+			if len(cleaned) == 0 {
+				delete(cfg.Hooks, event)
+			} else {
+				cfg.Hooks[event] = cleaned
+			}
 		}
 	}
+
 	if !removed {
 		return false, nil
 	}
-	if err := f.write(hooksPath); err != nil {
-		return false, err
+
+	finalData, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshal hooks.json: %w", err)
 	}
+	if err := atomicfile.WriteFile(hooksPath, finalData, 0644); err != nil {
+		return false, fmt.Errorf("write hooks.json: %w", err)
+	}
+
 	sessionLog.Info("cursor_hooks_removed", slog.String("config_dir", configDir))
 	return true, nil
 }
 
 // CheckCursorHooksInstalled reports whether required agent-deck Cursor hooks are installed.
 func CheckCursorHooksInstalled(configDir string) bool {
-	f, exists, err := readCursorHooksFile(filepath.Join(configDir, "hooks.json"))
-	if err != nil || !exists {
+	hooksPath := filepath.Join(configDir, "hooks.json")
+	data, err := os.ReadFile(hooksPath)
+	if err != nil {
 		return false
 	}
-	return cursorHooksAlreadyInstalled(f.hooks, cursorHookEventsForInstall())
+
+	var cfg cursorHooksConfig
+	if err := json.Unmarshal(data, &cfg); err != nil || cfg.Hooks == nil {
+		return false
+	}
+	return cursorHooksAlreadyInstalled(cfg.Hooks)
 }
 
-func cursorHooksAlreadyInstalled(hooks map[string][]json.RawMessage, events []string) bool {
-	for _, event := range events {
+func cursorHooksAlreadyInstalled(hooks map[string][]cursorHookDef) bool {
+	for _, event := range cursorHookEventNames {
 		if !cursorEventHasAgentDeckHook(hooks[event]) {
 			return false
 		}
@@ -224,36 +198,29 @@ func cursorHooksAlreadyInstalled(hooks map[string][]json.RawMessage, events []st
 	return true
 }
 
-func cursorEntryCommand(raw json.RawMessage) string {
-	var d cursorHookDef
-	if json.Unmarshal(raw, &d) != nil {
-		return ""
-	}
-	return d.Command
-}
-
-func cursorEventHasAgentDeckHook(defs []json.RawMessage) bool {
+func cursorEventHasAgentDeckHook(defs []cursorHookDef) bool {
 	for _, d := range defs {
-		if strings.Contains(cursorEntryCommand(d), agentDeckCursorHookCommand) {
+		if strings.Contains(d.Command, agentDeckCursorHookCommand) {
 			return true
 		}
 	}
 	return false
 }
 
-func mergeCursorHookEvent(existing []json.RawMessage) []json.RawMessage {
-	if cursorEventHasAgentDeckHook(existing) {
-		return existing
+func mergeCursorHookEvent(existing []cursorHookDef) []cursorHookDef {
+	for _, d := range existing {
+		if strings.Contains(d.Command, agentDeckCursorHookCommand) {
+			return existing
+		}
 	}
-	entry, _ := json.Marshal(cursorHookDef{Command: agentDeckCursorHookCommand})
-	return append(existing, entry)
+	return append(existing, cursorHookDef{Command: agentDeckCursorHookCommand})
 }
 
-func removeAgentDeckFromCursorEvent(defs []json.RawMessage) ([]json.RawMessage, bool) {
+func removeAgentDeckFromCursorEvent(defs []cursorHookDef) ([]cursorHookDef, bool) {
 	removed := false
-	var cleaned []json.RawMessage
+	var cleaned []cursorHookDef
 	for _, d := range defs {
-		if strings.Contains(cursorEntryCommand(d), agentDeckCursorHookCommand) {
+		if strings.Contains(d.Command, agentDeckCursorHookCommand) {
 			removed = true
 			continue
 		}

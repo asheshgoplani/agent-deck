@@ -1,4 +1,4 @@
-// AGENTDECK PI HOOK EXTENSION v3
+// AGENTDECK PI HOOK EXTENSION v2
 //
 // Managed by `agent-deck pi-hooks install`. Local edits are overwritten on the
 // next install/upgrade, and `agent-deck pi-hooks uninstall` deletes this file.
@@ -11,16 +11,6 @@
 //   turn_start       -> running   (the agent is working)
 //   turn_end         -> waiting   (back at the prompt)
 //   session_shutdown -> dead      (the session runtime is being torn down)
-//
-// v3 adds the Comms Ledger producer (docs/comms.md): the text pi already
-// has is forwarded on two events that change no status:
-//
-//   input            -> prompt_start, with the prompt text (why the turn starts)
-//   agent_settled    -> turn_end, with the final assistant text of the run
-//
-// agent_settled is the one pi event that means "no retry, compaction or
-// queued follow-up will run", so one record per run lands in the ledger;
-// the per-turn turn_end only remembers the newest assistant text.
 //
 // It is a no-op outside agent-deck: without AGENTDECK_INSTANCE_ID in the
 // environment nothing is spawned and no handler is registered. pi awaits
@@ -37,16 +27,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const INSTANCE_ID = (process.env.AGENTDECK_INSTANCE_ID ?? "").trim();
 const EMIT_TIMEOUT_MS = 2000;
-const TEXT_CAP = 4096;
 
-function emit(event: string, extra: Record<string, string> = {}): Promise<void> {
+function emit(event: string): Promise<void> {
   return new Promise((resolve) => {
     try {
       const payload = JSON.stringify({
         hook_event_name: event,
         cwd: process.cwd(),
         source: "pi",
-        ...extra,
       });
       const child = spawn("agent-deck", ["hook-handler"], {
         stdio: ["pipe", "ignore", "ignore"],
@@ -66,48 +54,13 @@ function emit(event: string, extra: Record<string, string> = {}): Promise<void> 
   });
 }
 
-// textOf flattens an assistant message's text blocks; "" when there are none.
-function textOf(message: unknown): string {
-  const content = (message as { content?: unknown } | undefined)?.content;
-  let text = "";
-  if (typeof content === "string") {
-    text = content;
-  } else if (Array.isArray(content)) {
-    text = content
-      .filter((b) => b && typeof b === "object" && (b as { type?: string }).type === "text")
-      .map((b) => String((b as { text?: unknown }).text ?? ""))
-      .join("\n");
-  }
-  text = text.trim();
-  return text.length > TEXT_CAP ? text.slice(0, TEXT_CAP) : text;
-}
-
 export default function (pi: ExtensionAPI) {
   if (!INSTANCE_ID) return;
-
-  let lastAssistantText = "";
 
   // Returning emit's promise (rather than firing and forgetting) is what makes
   // pi await delivery before it runs the next handler.
   pi.on("session_start", () => emit("session_start"));
   pi.on("turn_start", () => emit("turn_start"));
-  pi.on("turn_end", (event) => {
-    const text = textOf((event as { message?: unknown }).message);
-    if (text) lastAssistantText = text;
-    return emit("turn_end");
-  });
+  pi.on("turn_end", () => emit("turn_end"));
   pi.on("session_shutdown", () => emit("session_shutdown"));
-
-  // Comms Ledger producer: no status change, text only. These are NOT
-  // awaited: a prompt must never wait on a hook process, and the handler
-  // exits at once when the ledger is off.
-  pi.on("input", (event) => {
-    const prompt = String((event as { text?: unknown }).text ?? "").trim();
-    if (prompt) void emit("input", { prompt: prompt.slice(0, 1024) });
-  });
-  pi.on("agent_settled", () => {
-    const text = lastAssistantText;
-    lastAssistantText = "";
-    if (text) void emit("agent_settled", { text });
-  });
 }

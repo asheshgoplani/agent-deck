@@ -28,31 +28,37 @@ Timing: `latency_ms` (signal to commit) is on every record; P2 adds
 
 | Harness | Leg | Tier | Produce -> ledger | Consume -> ack | Status | Test |
 |---|---|---|---|---|---|---|
-| Claude | local | urgent | human prompt, Stop with text | UPS additionalContext | **auto** (P0+P1) / P2 | `TestCommsIngest_ClaudeTurnMatchesTheInboxClassification` |
+| Claude | local | urgent | human prompt, Stop with text (fixtures `claude_stop_v1.json`, `claude_userpromptsubmit_v1.json`) | UPS additionalContext | **auto** (P0+P1) / P2 | `TestCommsIngest_ClaudeTurnMatchesTheInboxClassification`, `TestHookHandler_ClaudeFixturesSpoolBothEdges`, `TestCommsIngest_LongClaudeReplyStillMatchesItsTranscriptTurn`, `TestCommsIngest_SameTextClaudeBacklogIsThreeRecords` |
 | Claude | local | info | task-notification turn, Stop with text | rides next turn / digest | **auto** / P2 | same, plus `TestCommsIngest_ClaudeBacklogKeepsEveryTurnsOwnText` (daemon down, three turns queued) |
 | Claude | remote | urgent, info | same on the remote; `msg export` over ssh; `Import(origin)` | as local, origin shown | **auto** (import semantics) / P3 (transport) | `TestRemoteFirstExportImportIsIdempotentPerOrigin` |
-| Codex | local | urgent | `[agent-deck from:]` prompt, notify with `last-assistant-message` | typed nudge when idle | **auto** / P2 | `TestCommsIngest_CodexTurnTakesTriggerFromThePromptEdge`, `TestCodexNotify_SpoolsLastAssistantMessage` |
+| Codex | local | urgent | `[agent-deck from:]` prompt, notify with `last-assistant-message` (fixture `codex_notify_v1.json`); a Codex Stop hook never spools (fixture `codex_stop_v1.json`) | typed nudge when idle | **auto** / P2 | `TestCommsIngest_CodexTurnTakesTriggerFromThePromptEdge`, `TestCodexNotify_FixtureSpoolsLastAssistantMessageOnce` |
 | Codex | local | info | `[HEARTBEAT]` prompt, notify with text | next typed nudge bundle | **auto** / P2 | same |
 | Codex | remote | urgent, info | as local + import | as local | P3 | matrix row only |
-| Gemini | local | urgent | BeforeAgent prompt, AfterAgent `prompt_response` | BeforeAgent additionalContext | **auto** (hook payload; ledger leg shared with the Codex ingest tests: same prompt-derived path) / P2 | `TestHookHandler_SpoolsTextPerHarness` (gemini rows), `TestCommsIngest_SameTextDifferentTurnsAreTwoRecords`, `TestCommsIngest_RecordsSurviveADaemonRestart` |
-| Gemini | local | info | same with an inbox prompt | same | **partial** (spool auto; ledger leg via `TestCommsIngest_CodexTurnTakesTriggerFromThePromptEdge`) / P2 | same |
+| Gemini | local | urgent | **status-only in P1** (text producer specified: BeforeAgent prompt, AfterAgent `prompt_response`; needs its own fixture + lab before enablement) | BeforeAgent additionalContext (P2) | **auto** (status record) / deferred | `TestCommsIngest_StatusEdgesCollapseByContentNotTime` (gemini row), `TestHookHandler_OnlyClaudeSpoolsInP1` |
+| Gemini | local | info | n/a until the producer is enabled | | deferred | |
 | Gemini | remote | urgent, info | as local + import | as local | P3 | matrix row only |
-| Cursor | local | urgent | beforeSubmitPrompt, afterAgentResponse `text` | stop `followup_message` / typed nudge | **partial** (spool auto; ledger leg shared with the prompt-derived ingest tests) / P2 | `TestHookHandler_SpoolsTextPerHarness` (cursor rows), `TestInjectCursorHooks_LedgerGatesAfterAgentResponseAndKeepsUserFields` |
-| Cursor | local | info | same | sessionStart `additional_context` | **partial** / P2 | same |
+| Cursor | local | urgent | **status-only in P1** (text producer specified: beforeSubmitPrompt, afterAgentResponse `text`, which needs one more event in the installed hooks.json and a lossless merge; deferred) | stop `followup_message` / typed nudge (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
+| Cursor | local | info | n/a until the producer is enabled | | deferred | |
 | Cursor | remote | urgent, info | as local + import | as local | P3 | matrix row only |
-| Pi | local | urgent | `input` prompt, `agent_settled` text | extension `pi.sendUserMessage()` | **auto** (hook payload) / P2; **lab** (extension on a live pi) | `TestHookHandler_SpoolsTextPerHarness` (pi rows); lab L1 |
-| Pi | local | info | same | same | **partial** (spool auto; ledger leg shared) / P2 | same |
+| Pi | local | urgent | **status-only in P1** (text producer specified: extension v3 with `input` prompt and `agent_settled` text; deferred, needs the re-versioned extension and lab L1) | extension `pi.sendUserMessage()` (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
+| Pi | local | info | n/a until the producer is enabled | | deferred | |
 | Pi | remote | urgent, info | as local + import | as local | P3 | matrix row only |
-| Hermes | local | urgent | pre_llm_call `user_message`, post_llm_call `assistant_response` | pre_llm_call `{context}` / typed nudge | **auto** (hook payload) / P2 | `TestHookHandler_SpoolsTextPerHarness` (hermes rows) |
-| Hermes | local | info | same | same | **partial** (spool auto; ledger leg shared) / P2 | same |
+| Hermes | local | urgent | **status-only in P1** (text producer specified: pre_llm_call `user_message`, post_llm_call `assistant_response`; the shell-hook payload shape is unverified) | pre_llm_call `{context}` / typed nudge (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
+| Hermes | local | info | n/a until the producer is enabled | | deferred | |
 | Hermes | remote | urgent, info | as local + import | as local | P3 | matrix row only |
-| OpenCode | local | urgent | root idle (2 s), `GET /session/:id/message` | `POST /session/:id/prompt_async` / `/tui/submit-prompt` | **auto** (httptest server) / P2; **lab** L2 | `TestOpenCodeSSEWatcher_IdleSpoolsRootSessionText` |
-| OpenCode | local | info | same with an inbox prompt | same | **auto** / P2 | same |
+| OpenCode | local | urgent | **status-only in P1** (text producer specified: root idle with a 2 s debounce and `GET /session/:id/message`, stream-decoded; deferred, needs lab L2) | `POST /session/:id/prompt_async` (P2) | **auto** (status record) / deferred | `TestCommsIngest_ShellToolGetsAStatusRecordOnce` (same path) |
+| OpenCode | local | info | n/a until the producer is enabled | | deferred | |
 | OpenCode | remote | urgent, info | as local + import | as local | P3 | matrix row only |
 | Shell | local | urgent | observed edge -> `status` record | one typed line | **auto** / P2 | `TestCommsIngest_ShellToolGetsAStatusRecordOnce` |
 | Shell | local | info | n/a (status records have no tier) | | n/a | |
 | Shell | remote | urgent | as local + import | as local | P3 | matrix row only |
 | any | local | off | `[comms] ledger = false`: no spool, no ledger dir | | **auto** | `TestCommsIngest_OffByDefaultWritesNothing`, `TestHookHandler_SpoolsNothingWithLedgerOff` |
+| any | local | isolation | ledger disk failure leaves the inbox record and wake untouched; inbox parity with the ledger on | | **auto** | `TestCommsIngest_LedgerDiskFailureNeverTouchesTheInboxPath`, `TestCommsIngest_InboxParityWithTheLedgerOn` |
+| any | local | identity | one event replayed 100 times is one record; two identical answers are two; status edges collapse by content only | | **auto** | `TestCommsIngest_OneEventReplayedAHundredTimesIsOneRecord`, `TestCommsIngest_SameTextDifferentTurnsAreTwoRecords`, `TestCommsIngest_StatusEdgesCollapseByContentNotTime` |
+| any | local | ownership | a second daemon never ingests while the first owns the ledger | | **auto** | `TestCommsIngest_SecondDaemonDoesNotOwnTheLedger` |
+| any | local | hostile input | symlink, oversized, malformed spool entries and traversal ids are rejected | | **auto** | `TestCommsSpoolRejectsSymlinksOversizedAndMalformedEntries`, `TestHookHandler_RejectsATraversalInstanceID` |
+| primitive | | | torn tail truncated, mid-history corruption kept and skipped, owner-only modes, short write rolled back | | **auto** | `TestRecoveryTruncatesOnlyATornTailAndKeepsMidHistoryCorruption`, `TestPrivateBusCreatesOwnerOnlyFiles`, `TestCommitShortWriteIsRolledBackAndReported` |
+| contract | | | receipt states, watermark + sparse acks, retention and gaps (fixtures) | | **auto** | `TestReceiptTransitionsMatchFixture`, `TestConsumerStateWatermarkAndSparseAcksMatchFixture`, `TestConsumerStateNeverSkipsPendingInfoWhenUrgentOvertakes`, `TestRetentionKeepsPendingAndReportsGaps`, `TestRecordCarriesSchemaVersionStoreAndEpoch` |
 | any | local | restart | daemon restart keeps keys and sequences | | **auto** | `TestCommsIngest_RecordsSurviveADaemonRestart`, `TestLedgerCommitStampsSequencesAndDedupsByKey` |
 | any | local | failure | a failed commit keeps the spool entry and its trigger; the ledger reopens | | **auto** | `TestCommsIngest_FailedCommitIsRetriedWithItsTrigger` |
 | any | local | config | per-conductor `[conductors.<c>.inbox]` applies to the ledger tier | | **auto** | `TestCommsIngest_UsesTheParentConductorsInboxConfig` |
@@ -64,6 +70,8 @@ Timing: `latency_ms` (signal to commit) is on every record; P2 adds
 Run on a machine with the built binary and the harness installed, with
 `[comms] ledger = true`, the notify daemon restarted, and a conductor plus
 one child of the harness under test.
+
+Lab L1 and L2 apply once the pi and OpenCode producers are enabled (not in P1).
 
 **L1 pi (urgent, local)**
 ```

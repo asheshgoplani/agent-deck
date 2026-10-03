@@ -1,0 +1,14 @@
+{
+  "fixture": "consumer-state-v1",
+  "steps": [
+    {"ack": 3, "want": {"watermark": 0, "acked": [3]}},
+    {"ack": 1, "want": {"watermark": 1, "acked": [3]}},
+    {"ack": 2, "want": {"watermark": 3, "acked": null}},
+    {"ack": 7, "want": {"watermark": 3, "acked": [7]}},
+    {"ack": 5, "want": {"watermark": 3, "acked": [5, 7]}},
+    {"ack": 2, "want": {"watermark": 3, "acked": [5, 7]}},
+    {"ack": 4, "want": {"watermark": 5, "acked": [7]}},
+    {"ack": 6, "want": {"watermark": 7, "acked": null}}
+  ],
+  "pending_after": {"records": [1, 2, 3, 4, 5, 6, 7, 8, 9], "want": [8, 9]}
+}

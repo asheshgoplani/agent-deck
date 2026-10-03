@@ -56,7 +56,76 @@ type Ledger struct {
 	order  []string
 	seq    map[string]int64
 	last   map[string]Record // newest turn record per From (the tier rule's "previous turn")
+	status map[string]Record // newest status record per From
+	store  StoreIdentity
 	closed bool
+}
+
+// StoreIdentity names one ledger across host renames and restores: a
+// random id minted when the directory is first written and an epoch that a
+// reset or a restore from backup bumps, so a stale cursor from another
+// epoch is recognisable as such instead of being mistaken for progress.
+// Kept in <ledger>/store.json.
+type StoreIdentity struct {
+	ID      string `json:"id"`
+	Epoch   int64  `json:"epoch"`
+	Created int64  `json:"created"` // Unix ms
+}
+
+const storeFileName = "store.json"
+
+// loadOrCreateStoreIdentity reads store.json, creating it on a fresh
+// ledger. A ledger directory with history but no store.json (never written
+// by this version) gets epoch 1.
+func loadOrCreateStoreIdentity(dir string) (StoreIdentity, error) {
+	path := filepath.Join(dir, storeFileName)
+	data, err := os.ReadFile(path) // #nosec G304 -- ledger dir under the data dir
+	if err == nil {
+		var id StoreIdentity
+		if json.Unmarshal(data, &id) == nil && id.ID != "" && id.Epoch > 0 {
+			return id, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return StoreIdentity{}, err
+	}
+	now := time.Now()
+	id := StoreIdentity{ID: NewID(now), Epoch: 1, Created: now.UnixMilli()}
+	data, err = json.Marshal(id)
+	if err != nil {
+		return StoreIdentity{}, err
+	}
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return StoreIdentity{}, err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return StoreIdentity{}, err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return StoreIdentity{}, err
+	}
+	if err := f.Close(); err != nil {
+		return StoreIdentity{}, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return StoreIdentity{}, err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return id, nil
+}
+
+// Store returns the ledger's identity.
+func (l *Ledger) Store() StoreIdentity {
+	if l == nil {
+		return StoreIdentity{}
+	}
+	return l.store
 }
 
 // Open opens (creating) the profile's ledger for writing. Only the daemon
@@ -76,11 +145,17 @@ func OpenDir(profile, dir string) (*Ledger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	bus, err := events.OpenAt(dir, events.Options{RetentionDays: DefaultRetentionDays, RetainSegments: retainSegments})
+	bus, err := events.OpenAt(dir, events.Options{RetentionDays: DefaultRetentionDays, RetainSegments: retainSegments, Private: true})
 	if err != nil {
 		return nil, err
 	}
-	l := &Ledger{profile: profile, bus: bus, keys: map[string]struct{}{}, seq: map[string]int64{}, last: map[string]Record{}}
+	store, err := loadOrCreateStoreIdentity(dir)
+	if err != nil {
+		_ = bus.Close()
+		return nil, err
+	}
+	l := &Ledger{profile: profile, bus: bus, keys: map[string]struct{}{}, seq: map[string]int64{},
+		last: map[string]Record{}, status: map[string]Record{}, store: store}
 	l.warm()
 	return l, nil
 }
@@ -135,9 +210,24 @@ func (l *Ledger) remember(r Record) {
 	if r.Seq > l.seq[r.From] {
 		l.seq[r.From] = r.Seq
 	}
-	if r.Kind == KindTurn {
+	switch r.Kind {
+	case KindTurn:
 		l.last[r.From] = r
+	case KindStatus:
+		l.status[r.From] = r
 	}
+}
+
+// LastStatus returns the newest status record committed for from, if any
+// is within the warm window.
+func (l *Ledger) LastStatus(from string) (Record, bool) {
+	if l == nil {
+		return Record{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.status[from]
+	return r, ok
 }
 
 // LastTurn returns the newest turn record committed for from, if any is
@@ -188,6 +278,11 @@ func (l *Ledger) Commit(r Record) (Record, events.Cursor, error) {
 	}
 	if r.Host == "" {
 		r.Host = localHost()
+	}
+	if r.Store == "" {
+		// First commit anywhere: this ledger is the record's store of
+		// origin. An imported record keeps the origin's store and epoch.
+		r.Store, r.Epoch = l.store.ID, l.store.Epoch
 	}
 	if r.Seq == 0 && r.Origin == "" {
 		r.Seq = l.seq[r.From] + 1 // an imported record keeps the origin's sequence

@@ -77,21 +77,25 @@ cannot serialise hook processes). Producers spool one small JSON file per
 observed edge under `<data>/runtime/comms/spool/<instance>/<ulid>.json`
 (tmp + fsync + rename) and the daemon drains it on its poll loop.
 
-Two edges: `turn_end` (the harness's final assistant text) and
-`prompt_start` (the prompt that started the turn, so the daemon knows why
-it ran). What each harness forwards, all from hooks `agent-deck launch`
-already installs:
+Two edges: `turn_end` (the harness's final assistant text, capped, plus
+the sha256/16 of the full text) and `prompt_start` (the prompt that started
+the turn, so the daemon knows why it ran; it is never stored on the record).
 
-| Harness | Producer | prompt_start | turn_end |
-|---|---|---|---|
-| Claude Code | `hook-handler` | `UserPromptSubmit.prompt` | `Stop.last_assistant_message` + `transcript_path` |
-| Codex CLI | `codex-notify` (the existing `notify` line) | `input-messages` (last) on the same payload | `agent-turn-complete.last-assistant-message` |
-| Gemini CLI | `hook-handler` | `BeforeAgent.prompt` | `AfterAgent.prompt_response` |
-| Cursor CLI | `hook-handler` (`afterAgentResponse` added to the installed events) | `beforeSubmitPrompt.prompt` | `afterAgentResponse.text` |
-| Pi / Oh My Pi | extension v3 (same file) | `input.text` | `agent_settled` with the newest `turn_end.message` text |
-| Hermes | `hook-handler` | `pre_llm_call.user_message` | `post_llm_call.assistant_response` |
-| OpenCode | the TUI's SSE watcher | last user message | root session idle (2 s debounce, parentID chain), `GET /session/:id/message` |
-| Plain shell | the daemon | none | `status` record on the observed edge |
+P1 enables two producers, each pinned by a versioned payload fixture under
+`cmd/agent-deck/testdata/comms/` (G7 of the architecture review):
+
+| Harness | Producer | prompt_start | turn_end | Fixture |
+|---|---|---|---|---|
+| Claude Code | `hook-handler` | `UserPromptSubmit.prompt` | `Stop.last_assistant_message` + `transcript_path` | `claude_*_v1.json` |
+| Codex CLI | `codex-notify` (the existing `notify` line) | `input-messages` (last) on the same payload | `agent-turn-complete.last-assistant-message`, keyed by `turn-id` | `codex_notify_v1.json` |
+
+A Codex `Stop` hook pointed at `hook-handler` is recognised by its
+`turn_id` and never spooled, so notify and Stop cannot produce one turn
+twice (`codex_stop_v1.json`). Every other harness (Gemini, Cursor, pi,
+Hermes, OpenCode, shell) is **status-only** in P1: the daemon commits a
+`status` record on the observed edge, with no text, and the inbox's legacy
+record is unchanged. Their text producers are specified in the test
+matrix and land one at a time, each with its own fixture and lab evidence.
 
 Classification in the daemon: a Claude child is classified from its
 transcript tail exactly as the inbox record is (same uuid, trigger, tier,
@@ -106,18 +110,8 @@ Not in P1 (notes):
 
 - Codex gets no new `hooks.json` installer (the budget allows only the
   hooks already installed; `notify` carries the text).
-- Pi: the extension file is re-versioned (v3), so `pi-hooks status` reports
-  drift on an existing install until `pi-hooks install` (or the next
-  launch) rewrites it; v2 installs keep working, status only. The two new
-  handlers (`input`, `agent_settled`) are not awaited, so a prompt never
-  waits on the hook process.
-- OpenCode text needs a session launched with `--port` and a running TUI
-  (the SSE watcher lives there). A text producer that spools nothing for a
-  turn (OpenCode without a port, pi v2, a Hermes install without the
-  extended vocabulary) leaves no ledger record for that turn: the inbox
-  record is the status edge, as before.
-- Cursor: `afterAgentResponse` is added to hooks.json only with the ledger
-  on; the install is lossless (user hook fields and unknown keys are kept).
+- Gemini, Cursor, pi, Hermes and OpenCode producers: specified (matrix
+  rows), not enabled. No installed file of theirs changes in this PR.
 - Dropped from the research row, for later: a `tools/replay2469` run
   against the ledger, Cursor transcript roots in `ValidateTranscriptPath`,
   and fswatch on the spool (the daemon polls; its interval is seconds).
@@ -125,7 +119,62 @@ Not in P1 (notes):
   sees something the spool does not carry: a flip into the error status and
   an observed running->waiting flip with a stale transcript (both urgent
   in the inbox). A spool backlog is classified entry by entry: the
-  transcript tail is used only for the turn it still describes.
+  transcript tail is used only for the turn it still describes (same
+  full-text hash, not signalled before the tail record).
+
+## Identity
+
+Every record carries `v` (schema version 1), `id` (ULID), `key` (the
+producer's idempotency key: transcript uuid, harness turn id, or the spool
+entry id when a harness has neither), `host`, and `store` + `epoch`: the id
+of the ledger it was first committed to and that ledger's epoch
+(`<ledger>/store.json`, minted once; a reset or a restore bumps the epoch).
+Imported records keep all of these and add `origin` and `src_cursor`.
+Dedup is on `origin + key` within a window of the newest 4096 records,
+restored at open; two distinct turns with identical text are two records,
+one turn observed a hundred times is one. A text-less `status` edge is
+collapsed only by the inbox's own content rule (same state and output
+signal within the 2 h TTL), never by a time bucket.
+
+## Consumers, receipts and retention (contract, built in P2)
+
+Frozen now in `internal/comms/receipt.go` with fixtures under
+`internal/comms/testdata/`:
+
+- **Receipt** per `(message id, recipient, consumer generation, attempt)`
+  with evidence states that only strengthen within an attempt:
+  `durable` -> `attempted` -> `transport_accepted` -> `context_observed` ->
+  `application_acked`; `failed` ends an attempt (the next starts at
+  `durable`); `unknown` is kept as such when the adapter cannot observe
+  landing. A timeout is a reconciliation trigger, never a promotion.
+- **ConsumerState** per consumer (`<ledger>/cursors/<consumer>.json`): a
+  contiguous acknowledged `watermark` plus bounded sparse `acked` cursors
+  above it, bound to the ledger `store` and `epoch` and a consumer
+  `generation`. Pending = every record above the watermark not in the
+  sparse set, so an urgent record acknowledged ahead never hides an
+  earlier info record. A state from another epoch is rejected and rebuilt.
+- **Retention**: audit retention is `RetentionDays` (90); pending-delivery
+  retention is `RetainFrom(consumers)` (one above the lowest watermark); a
+  segment is compacted only when both allow it. A consumer whose watermark
+  falls below the oldest retained cursor gets an explicit `Gap` (recorded
+  as an `error` record addressed to itself) and is never silently
+  restarted at the newest segment.
+
+## Recovery at every boundary
+
+| Boundary | Crash or failure | Outcome |
+|---|---|---|
+| hook -> spool | crash before the rename | a `.tmp` file, never read as an entry; the turn is in the transcript (Claude) or lost to the ledger only (status edge still in the inbox) |
+| spool -> daemon | daemon down or switch off | entries wait (per-instance cap 512, pruned after 24 h); the inbox path is untouched |
+| daemon ingest | commit fails (disk) | the entry and every later one stay, the ledger is closed and reopened next pass; the inbox record and wake already happened |
+| daemon ingest | crash after commit, before the spool file is removed | the entry is replayed and dropped as a duplicate of its key |
+| ledger file | torn tail | truncated at open; mid-history corruption is left in place, logged, and skipped by readers |
+| ledger dir | rotation or checkpoint | file fsync, atomic rename, directory fsync |
+| two daemons | second process | cannot take `daemon.lock`; it reads, never writes or ingests |
+| store restore | restored from backup | same `store` id, `epoch` must be bumped by the operator; consumer states from the old epoch are rejected |
+
+The inbox and the turn journal keep their issue #2469 order (commit, then
+journal); the ledger ingest runs after both and reads neither.
 
 ## Reading it
 
@@ -140,9 +189,9 @@ msg read|peek|ack|stats|export` with per-consumer cursor files.
 
 ## Surface
 
-Files added: `internal/comms/{record,ulid,ledger,render}.go`,
+Files added: `internal/comms/{record,ulid,ledger,render,receipt}.go`,
 `internal/events/commit.go`, `internal/session/{comms_spool,comms_ingest}.go`,
-this file. Hooks installed per harness: unchanged (Cursor gains one event in
-the hooks.json agent-deck already writes; the pi extension file is
-re-versioned). Config keys: `+1` (`[comms] ledger`). Daemons: unchanged.
-Dependencies: unchanged (the ULID is 80 lines in `internal/comms/ulid.go`).
+this file and the test matrix. Hooks installed per harness: unchanged (no
+installed file of any harness changes). Config keys: `+1` (`[comms]
+ledger`). Daemons: unchanged. Dependencies: unchanged (the ULID is in
+`internal/comms/ulid.go`).

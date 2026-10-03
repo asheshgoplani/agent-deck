@@ -57,44 +57,30 @@ type hookPayload struct {
 	// already puts on the wire, forwarded to the daemon's spool instead of
 	// discarded. Unknown to a harness that does not send them.
 	TranscriptPath       string `json:"transcript_path"`
-	TurnID               string `json:"turn_id"`
+	TurnID               string `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage string `json:"last_assistant_message"` // Claude Stop
-	Prompt               string `json:"prompt"`                 // Claude UserPromptSubmit, Gemini BeforeAgent/AfterAgent, Cursor beforeSubmitPrompt, pi
-	PromptResponse       string `json:"prompt_response"`        // Gemini AfterAgent
-	Text                 string `json:"text"`                   // Cursor afterAgentResponse, pi agent_settled
-	AssistantResponse    string `json:"assistant_response"`     // Hermes post_llm_call
-	UserMessage          string `json:"user_message"`           // Hermes pre_llm_call / post_llm_call
+	Prompt               string `json:"prompt"`                 // Claude UserPromptSubmit
 }
 
-// commsSpoolEdge maps a hook event to the comms spool edge it carries and
-// the harness it came from. Empty edge: nothing to spool for this event.
-// The harness is read off the event vocabulary first (Gemini, Hermes and
-// Cursor names are distinct), then the payload source (pi), else Claude.
+// commsSpoolEdge maps a Claude Code hook event to the comms spool edge it
+// carries. Empty edge: nothing to spool for this event. P1 enables two
+// producers only (docs/comms.md): Claude through this handler and Codex
+// through codex-notify. A Codex Stop hook (recognisable by its turn_id,
+// which Claude's Stop does not carry) is never spooled here, so a user who
+// also points Codex hooks at hook-handler cannot duplicate a turn the
+// notify line already produced. Every other harness is status-only in P1.
 func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 	switch normalizeHookEventKey(p.HookEventName) {
 	case "userpromptsubmit":
+		if p.TurnID != "" {
+			return "", "", "", "" // Codex UserPromptSubmit
+		}
 		return "claude", session.CommsEdgePromptStart, "", p.Prompt
 	case "stop":
-		if p.ConversationID != "" && p.LastAssistantMessage == "" {
-			return "", "", "", "" // Cursor stop carries only a status; afterAgentResponse has the text
+		if p.TurnID != "" || p.ConversationID != "" {
+			return "", "", "", "" // Codex Stop (notify owns the turn) or Cursor stop (status only)
 		}
 		return "claude", session.CommsEdgeTurnEnd, p.LastAssistantMessage, ""
-	case "beforeagent":
-		return "gemini", session.CommsEdgePromptStart, "", p.Prompt
-	case "afteragent":
-		return "gemini", session.CommsEdgeTurnEnd, p.PromptResponse, p.Prompt
-	case "beforesubmitprompt":
-		return "cursor", session.CommsEdgePromptStart, "", p.Prompt
-	case "afteragentresponse":
-		return "cursor", session.CommsEdgeTurnEnd, p.Text, ""
-	case "prellmcall":
-		return "hermes", session.CommsEdgePromptStart, "", p.UserMessage
-	case "postllmcall":
-		return "hermes", session.CommsEdgeTurnEnd, p.AssistantResponse, p.UserMessage
-	case "input":
-		return "pi", session.CommsEdgePromptStart, "", p.Prompt
-	case "agentsettled":
-		return "pi", session.CommsEdgeTurnEnd, p.Text, ""
 	}
 	return "", "", "", ""
 }
@@ -302,9 +288,8 @@ func handleHookHandler() {
 		return
 	}
 
-	// Comms Ledger: spool the text this event carries before the status
-	// mapping, since text-only events (Cursor afterAgentResponse, pi
-	// agent_settled, pi input) map to no status and return below.
+	// Comms Ledger: spool the text this event carries (Claude Stop and
+	// UserPromptSubmit only in P1).
 	spoolCommsFromHook(instanceID, payload)
 
 	// Map event to status

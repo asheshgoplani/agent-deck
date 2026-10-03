@@ -282,3 +282,5 @@ func TestRemoteFirstExportImportIsIdempotentPerOrigin(t *testing.T) {
 		t.Fatal("import without origin accepted")
 	}
 }
+
+func r2time() time.Time { return time.UnixMilli(1_700_000_000_000) }

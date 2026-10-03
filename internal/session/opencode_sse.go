@@ -27,7 +27,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -57,17 +56,6 @@ type OpenCodeSSEWatcher struct {
 
 	// client is overridable for tests.
 	client *http.Client
-
-	// Comms Ledger producer (docs/comms.md): per instance, the generation of
-	// the pending idle debounce (a busy event invalidates it) and the id of
-	// the last message spooled, so a repeated idle flip spools nothing new.
-	idleGen     map[string]uint64
-	lastSpooled map[string]string
-	// idleDebounce is how long the server must stay idle before the final
-	// message is fetched; OpenCode reports false idles mid-work.
-	idleDebounce time.Duration
-	// spool is overridable for tests; defaults to WriteCommsSpool.
-	spool func(CommsSpoolEntry) error
 }
 
 type openCodeSSEConn struct {
@@ -79,13 +67,9 @@ type openCodeSSEConn struct {
 // whenever a derived status changes.
 func NewOpenCodeSSEWatcher(onChange func()) *OpenCodeSSEWatcher {
 	return &OpenCodeSSEWatcher{
-		conns:        make(map[string]*openCodeSSEConn),
-		statuses:     make(map[string]*OpenCodeSSEStatus),
-		onChange:     onChange,
-		idleGen:      make(map[string]uint64),
-		lastSpooled:  make(map[string]string),
-		idleDebounce: 2 * time.Second,
-		spool:        WriteCommsSpool,
+		conns:    make(map[string]*openCodeSSEConn),
+		statuses: make(map[string]*OpenCodeSSEStatus),
+		onChange: onChange,
 		client: &http.Client{
 			// Streaming reads must not time out; bound only the dial.
 			Transport: &http.Transport{
@@ -256,168 +240,12 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, port
 		}
 		if len(busy) > 0 {
 			w.setStatus(instanceID, "running")
-			w.cancelIdleSpool(instanceID)
 		} else {
 			w.setStatus(instanceID, "waiting")
-			w.scheduleIdleSpool(ctx, instanceID, base, ev.Properties.SessionID)
 		}
 	}
 	return gotData
 }
-
-// cancelIdleSpool invalidates a pending idle debounce: the server went busy
-// again before the window elapsed (a false idle mid-work).
-func (w *OpenCodeSSEWatcher) cancelIdleSpool(instanceID string) {
-	w.mu.Lock()
-	w.idleGen[instanceID]++
-	w.mu.Unlock()
-}
-
-// scheduleIdleSpool arms the idle debounce when the ledger is on. After the
-// window, if no busy event arrived, the root session's newest assistant
-// message is fetched over the HTTP API OpenCode already serves and spooled
-// as a turn_end edge. OpenCode's idle event does not carry the text, and
-// its child (subagent) sessions emit idle too, so the root is resolved
-// through the session's parentID chain.
-func (w *OpenCodeSSEWatcher) scheduleIdleSpool(ctx context.Context, instanceID, base, sessionID string) {
-	if sessionID == "" || !CommsLedgerEnabled() {
-		return
-	}
-	w.mu.Lock()
-	w.idleGen[instanceID]++
-	gen := w.idleGen[instanceID]
-	wait := w.idleDebounce
-	w.mu.Unlock()
-	time.AfterFunc(wait, func() {
-		if ctx.Err() != nil {
-			return
-		}
-		w.mu.Lock()
-		current := w.idleGen[instanceID]
-		w.mu.Unlock()
-		if current != gen {
-			return
-		}
-		w.spoolIdleTurn(ctx, instanceID, base, sessionID)
-	})
-}
-
-// openCodeMessage is the subset of GET /session/:id/message the producer
-// reads: the role, the message id and its text parts.
-type openCodeMessage struct {
-	Info struct {
-		ID   string `json:"id"`
-		Role string `json:"role"`
-	} `json:"info"`
-	Parts []struct {
-		Type      string `json:"type"`
-		Text      string `json:"text"`
-		Synthetic bool   `json:"synthetic"`
-		Ignored   bool   `json:"ignored"`
-	} `json:"parts"`
-}
-
-func (m openCodeMessage) text() string {
-	var parts []string
-	for _, p := range m.Parts {
-		if p.Type == "text" && !p.Synthetic && !p.Ignored && strings.TrimSpace(p.Text) != "" {
-			parts = append(parts, strings.TrimSpace(p.Text))
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-// spoolIdleTurn resolves the root session and spools its newest assistant
-// text once per message id.
-func (w *OpenCodeSSEWatcher) spoolIdleTurn(ctx context.Context, instanceID, base, sessionID string) {
-	root := w.openCodeRootSession(ctx, base, sessionID)
-	var messages []openCodeMessage
-	if err := w.getJSON(ctx, base+"/session/"+root+"/message", &messages); err != nil {
-		sessionLog.Debug("opencode_comms_fetch_failed", slog.String("instance", instanceID), slog.String("error", err.Error()))
-		return
-	}
-	if len(messages) == 0 {
-		return
-	}
-	var assistant, prompt, messageID string
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		switch m.Info.Role {
-		case "assistant":
-			if assistant == "" {
-				if t := m.text(); t != "" {
-					assistant, messageID = t, m.Info.ID
-				}
-			}
-		case "user":
-			if assistant != "" {
-				prompt = m.text()
-			}
-		}
-		if assistant != "" && prompt != "" {
-			break
-		}
-	}
-	if assistant == "" {
-		return
-	}
-	spooledKey := root + "/" + messageID
-	w.mu.Lock()
-	dup := w.lastSpooled[instanceID] == spooledKey
-	if !dup {
-		w.lastSpooled[instanceID] = spooledKey
-	}
-	spool := w.spool
-	w.mu.Unlock()
-	if dup || spool == nil {
-		return
-	}
-	if err := spool(CommsSpoolEntry{
-		Harness: "opencode", Event: "session.status/idle", Edge: CommsEdgeTurnEnd, Instance: instanceID,
-		SessionID: root, TurnID: messageID, Text: assistant, Prompt: prompt, TSignal: time.Now().UnixMilli(),
-	}); err != nil {
-		sessionLog.Warn("comms_spool_write_failed", slog.String("instance", instanceID), slog.String("error", err.Error()))
-	}
-}
-
-// openCodeRootSession follows parentID up to the root (bounded), so a
-// subagent's idle resolves to the session the human talks to.
-func (w *OpenCodeSSEWatcher) openCodeRootSession(ctx context.Context, base, sessionID string) string {
-	id := sessionID
-	for hop := 0; hop < 4; hop++ {
-		var s struct {
-			ParentID string `json:"parentID"`
-		}
-		if err := w.getJSON(ctx, base+"/session/"+id, &s); err != nil || s.ParentID == "" {
-			return id
-		}
-		id = s.ParentID
-	}
-	return id
-}
-
-func (w *OpenCodeSSEWatcher) getJSON(ctx context.Context, url string, out any) error {
-	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := w.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("opencode: %s: %s", url, resp.Status)
-	}
-	// A session history can be large; the producer only needs its tail, but
-	// the API returns the whole list, so bound what is decoded.
-	return json.NewDecoder(io.LimitReader(resp.Body, openCodeMaxBodyBytes)).Decode(out)
-}
-
-// openCodeMaxBodyBytes bounds one history fetch (4 MiB).
-const openCodeMaxBodyBytes = 4 << 20
 
 // seedSnapshot loads the /session/status snapshot into busy. Returns false if
 // the snapshot could not be fetched or parsed.

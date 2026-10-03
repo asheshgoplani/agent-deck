@@ -32,15 +32,11 @@ import (
 // daemon never saw is trigger unknown and tiers urgent. Noise is committed
 // too (tier noise) so dedup and noise share are countable from the ledger.
 
-// commsHasTextProducer reports whether a harness spools turn text: a
-// status-only record is committed only for the rest (plain shell, custom
-// --cmd).
+// commsHasTextProducer reports whether a harness spools turn text. P1
+// enables Claude (hook-handler) and Codex (codex-notify); every other
+// harness is status-only (docs/comms.md) and gets status records.
 func commsHasTextProducer(tool string) bool {
-	switch strings.ToLower(strings.TrimSpace(tool)) {
-	case "opencode", "pi", "omp":
-		return true
-	}
-	return HookStatusTool(tool)
+	return IsClaudeCompatible(tool) || IsCodexCompatible(tool)
 }
 
 // commsToolName is the harness name stamped on a record's Tool field.
@@ -260,12 +256,19 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	return true
 }
 
+// commsTailSkew is how much earlier than the transcript record's own
+// timestamp a spool entry may be signalled and still be that turn (clock
+// granularity between the harness and the hook).
+const commsTailSkew = 5 * time.Second
+
 // commsTurnFacts reduces a spooled turn to the facts the tier rule needs.
 // classified is true when the Claude transcript classifier produced them
 // (same identity and trigger as the inbox record for this turn); false when
 // they were derived from the hook payload and the remembered prompt. The
 // transcript tail is used only while it still describes the spooled turn:
-// a backlog entry whose text the tail no longer matches keeps its own text.
+// the hash of the full text the hook saw must equal the tail's, and the
+// entry must not predate the tail record (a backlog of same-text turns
+// takes the hook path, each with its own identity).
 func commsTurnFacts(inst *Instance, e CommsSpoolEntry, prompt CommsSpoolEntry) (TurnFacts, bool) {
 	text := strings.TrimSpace(e.Text)
 	if IsClaudeCompatible(inst.Tool) {
@@ -275,7 +278,7 @@ func commsTurnFacts(inst *Instance, e CommsSpoolEntry, prompt CommsSpoolEntry) (
 		}
 		if clean, ok := ValidateTranscriptPath(path); ok {
 			if facts, err := turnFacts.Facts(clean); err == nil && !facts.Pending && facts.TextHash != "" &&
-				(text == "" || facts.TextHash == turnTextHash(text)) {
+				commsTailDescribes(facts, e, text) {
 				return facts, true
 			}
 		}
@@ -291,6 +294,27 @@ func commsTurnFacts(inst *Instance, e CommsSpoolEntry, prompt CommsSpoolEntry) (
 	return facts, false
 }
 
+// commsTailDescribes reports whether the transcript tail is the spooled
+// turn: same full-text hash (the spool carries it uncapped as TH; an entry
+// without one compares its capped text to the tail's capped text) and not
+// signalled before the tail record was written.
+func commsTailDescribes(facts TurnFacts, e CommsSpoolEntry, text string) bool {
+	switch {
+	case e.TH != "":
+		if facts.TextHash != e.TH {
+			return false
+		}
+	case text != "":
+		if turnTextHash(CapTurnText(facts.Text, commsSpoolTextBytes)) != turnTextHash(text) {
+			return false
+		}
+	}
+	if !facts.At.IsZero() && e.TSignal > 0 && e.TSignal < facts.At.Add(-commsTailSkew).UnixMilli() {
+		return false
+	}
+	return true
+}
+
 // commsStatusRecord commits a status-only record for a tool with no text
 // producer (plain shell, a custom --cmd), so the ledger still shows the edge
 // the inbox's legacy record carries. Called from the legacy branch of
@@ -304,6 +328,15 @@ func (d *TransitionDaemon) commsStatusRecord(profile string, inst *Instance, to 
 		return
 	}
 	state := normalizeStatusString(to)
+	signal := transitionEventOutputHash(inst)
+	// A status edge has no message identity. The only collapse is the
+	// inbox's own content rule (issue #1142): the same state with the same
+	// output signal, re-observed within the dedup TTL, is one edge. Two
+	// distinct edges are never folded by a time bucket.
+	if last, ok := l.LastStatus(inst.ID); ok && last.State == state && last.TH == signal &&
+		at.UnixMilli()-last.TRecord < defaultOutputHashDedupTTL.Milliseconds() {
+		return
+	}
 	rec := comms.Record{
 		Kind:    comms.KindStatus,
 		From:    inst.ID,
@@ -311,8 +344,8 @@ func (d *TransitionDaemon) commsStatusRecord(profile string, inst *Instance, to 
 		Profile: profile,
 		Tool:    commsToolName(inst),
 		State:   state,
+		TH:      signal, // the output signal the edge was observed with
 		TSignal: at.UnixMilli(),
-		Key:     comms.Key(comms.KindStatus, inst.ID, state, transitionEventOutputHash(inst), at.Truncate(shortWindowDedupSeconds*time.Second).String()),
 	}
 	if _, _, err := l.Commit(rec); err != nil && !errors.Is(err, comms.ErrDuplicate) {
 		commsLog.Warn("comms_status_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))

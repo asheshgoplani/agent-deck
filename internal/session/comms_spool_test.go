@@ -165,3 +165,53 @@ func TestCommsLedgerEnabledReadsConfig(t *testing.T) {
 	}
 	restore()
 }
+
+// G5: hostile spool contents are rejected and removed, never ingested.
+func TestCommsSpoolRejectsSymlinksOversizedAndMalformedEntries(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := WriteCommsSpool(CommsSpoolEntry{Harness: "codex", Edge: CommsEdgeTurnEnd, Instance: "victim", Text: "good"}); err != nil {
+		t.Fatal(err)
+	}
+	dir := commsSpoolInstanceDir("victim")
+	secret := filepath.Join(t.TempDir(), "secret.json")
+	if err := os.WriteFile(secret, []byte(`{"edge":"turn_end","instance":"victim","text":"leaked"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(dir, "00000000000000000000000001.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "00000000000000000000000002.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	big := make([]byte, commsSpoolMaxBytes+10)
+	for i := range big {
+		big[i] = 'x'
+	}
+	if err := os.WriteFile(filepath.Join(dir, "00000000000000000000000003.json"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "00000000000000000000000004.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ReadCommsSpool("victim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Text != "good" {
+		t.Fatalf("hostile entries ingested: %+v", entries)
+	}
+	for _, name := range []string{"00000000000000000000000001.json", "00000000000000000000000002.json", "00000000000000000000000003.json"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			t.Fatalf("rejected entry %s not removed", name)
+		}
+	}
+	if _, err := os.Stat(secret); err != nil {
+		t.Fatal("the symlink target must be untouched")
+	}
+	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("spool dir mode %v", info.Mode().Perm())
+	}
+	if info, err := os.Stat(entries[0].path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("spool file mode %v", info.Mode().Perm())
+	}
+}

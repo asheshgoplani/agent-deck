@@ -98,6 +98,9 @@ type TurnFacts struct {
 	// Pending means the Stop hook outran the transcript flush: the newest
 	// main-chain record is a user record with no assistant reply yet.
 	Pending bool
+	// At is the assistant record's own timestamp (zero when the record has
+	// none), so a consumer can tell which observed edge the facts belong to.
+	At time.Time
 }
 
 // Signal is the per-turn identity the notifier dedups and fingerprints on:
@@ -121,6 +124,7 @@ func (f TurnFacts) Signal() string {
 type transcriptTurnRecord struct {
 	Type        string `json:"type"`
 	UUID        string `json:"uuid"`
+	Timestamp   string `json:"timestamp"`
 	IsSidechain bool   `json:"isSidechain"`
 	IsMeta      bool   `json:"isMeta"`
 	TurnOrigin  string `json:"turnOrigin"`
@@ -182,6 +186,9 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 			}
 			foundAssistant = true
 			facts.UUID = rec.UUID
+			if rec.Timestamp != "" {
+				facts.At, _ = time.Parse(time.RFC3339Nano, rec.Timestamp)
+			}
 			facts.Text = text
 			facts.TextHash = turnTextHash(text)
 			facts.Question = textAsksParent(text)

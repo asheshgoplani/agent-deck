@@ -22,6 +22,10 @@ type Options struct {
 	// MaxSegmentBytes rotates the active segment past this size (default
 	// 8 MiB).
 	MaxSegmentBytes int64
+	// Private creates every file the bus writes with mode 0o600 (and the
+	// directory 0o700) instead of the status bus's 0o644/0o755: for a log
+	// that holds assistant text.
+	Private bool
 	// ReadOnly opens the log for Subscribe and Stats only: no writer
 	// goroutine, no tail repair, no Commit. A follower (`events follow --bus
 	// comms`) opens the ledger this way so only the owning daemon ever
@@ -44,7 +48,18 @@ func OpenAt(dir string, opts Options) (*Bus, error) {
 	if opts.ReadOnly {
 		return openReadOnly(dir, opts)
 	}
-	b, err := Open(dir)
+	if !opts.Private {
+		b, err := Open(dir)
+		if err != nil {
+			return nil, err
+		}
+		b.applyOptions(opts)
+		return b, nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("events: create bus dir: %w", err)
+	}
+	b, err := openWith(dir, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +112,7 @@ func openReadOnly(dir string, opts Options) (*Bus, error) {
 		retainSegs:   defaultRetainSegs,
 		enabled:      true,
 		readOnly:     true,
+		fileMode:     0o644,
 		lockFile:     lockFile,
 		closeCh:      make(chan struct{}),
 	}
@@ -158,6 +174,11 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 	b.enqueued.Add(1)
 	b.published.Add(1)
 	b.synced.Store(b.written.Load())
+	if b.activeFrames == 1 {
+		// First frame of a fresh active file: the file's directory entry
+		// must be durable too, not only its bytes.
+		fsyncDirBestEffort(b.dir)
+	}
 	committed := Frame{Cursor: b.cursor, EventID: b.lastEventID, TS: qf.ts.UnixMilli(), Kind: kind, SessionID: sessionID, Data: raw}
 	if b.activeBytes >= b.maxSegBytes || b.activeFrames >= b.maxSegFrames {
 		b.rotateLocked()

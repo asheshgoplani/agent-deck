@@ -99,7 +99,7 @@ func (b *Bus) refreshLocked() error {
 	if b.readOnly {
 		flags = os.O_RDONLY // a follower never creates or appends
 	}
-	f, err := os.OpenFile(path, flags, 0o644)
+	f, err := os.OpenFile(path, flags, b.fileMode)
 	if err != nil {
 		b.activeFile = nil
 		return err
@@ -155,12 +155,40 @@ func readCursorCheckpoint(dir string) (Cursor, error) {
 	return Cursor(value), err
 }
 
-func writeCursorCheckpoint(dir string, cursor Cursor) error {
-	tmp := filepath.Join(dir, "cursor.tmp."+strconv.Itoa(os.Getpid()))
-	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(uint64(cursor), 10)+"\n"), 0o644); err != nil {
+func writeCursorCheckpoint(dir string, cursor Cursor, mode os.FileMode) error {
+	return writeSmallFileDurable(dir, "cursor.tmp."+strconv.Itoa(os.Getpid()), cursorFileName,
+		[]byte(strconv.FormatUint(uint64(cursor), 10)+"\n"), mode)
+}
+
+// writeSmallFileDurable writes data to a temp file, fsyncs it, renames it
+// over name and fsyncs the directory, so the checkpoint is on disk before
+// anything relies on it.
+func writeSmallFileDurable(dir, tmpName, name string, data []byte, mode os.FileMode) error {
+	tmp := filepath.Join(dir, tmpName)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dir, cursorFileName))
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, name)); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	fsyncDirBestEffort(dir)
+	return nil
 }
 
 func (b *Bus) diskDropsLocked() (uint64, error) {
@@ -183,11 +211,8 @@ func (b *Bus) persistDropsLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(b.dir, "drops.tmp."+strconv.Itoa(os.Getpid()))
-	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(previous+current-b.persistedDrops, 10)+"\n"), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, filepath.Join(b.dir, dropsFileName)); err != nil {
+	if err := writeSmallFileDurable(b.dir, "drops.tmp."+strconv.Itoa(os.Getpid()), dropsFileName,
+		[]byte(strconv.FormatUint(previous+current-b.persistedDrops, 10)+"\n"), b.fileMode); err != nil {
 		return err
 	}
 	b.persistedDrops = current

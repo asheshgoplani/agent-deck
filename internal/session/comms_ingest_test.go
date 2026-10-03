@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -356,5 +357,229 @@ func TestCommsIngest_UsesTheParentConductorsInboxConfig(t *testing.T) {
 	recs := f.ledgerRecords(t)
 	if len(recs) != 1 || recs[0].Q || recs[0].Tier != comms.TierInfo {
 		t.Fatalf("question with question_wakes=false for the parent conductor: %+v", recs)
+	}
+}
+
+// G2: one event replayed 100 times is one logical record.
+func TestCommsIngest_OneEventReplayedAHundredTimesIsOneRecord(t *testing.T) {
+	f := newCommsFixture(t)
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, TurnID: "t1", Text: "the answer", Prompt: "ask"})
+	entries, _ := ReadCommsSpool(f.codex.ID)
+	replay, _ := os.ReadFile(entries[0].path)
+	for i := 0; i < 100; i++ {
+		if err := os.WriteFile(entries[0].path, replay, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f.d.ingestCommsSpool("default", f.byID)
+		if i%25 == 0 {
+			// A restart in the middle must not forget the key.
+			f.d.closeCommsLedgers()
+		}
+	}
+	if recs := f.ledgerRecords(t); len(recs) != 1 {
+		t.Fatalf("100 replays produced %d records", len(recs))
+	}
+}
+
+// G3: one ingest owner per profile; a second daemon process never becomes
+// a writer while the first holds the ledger.
+func TestCommsIngest_SecondDaemonDoesNotOwnTheLedger(t *testing.T) {
+	f := newCommsFixture(t)
+	if f.d.commsLedgerFor("default") == nil {
+		t.Fatal("first daemon did not open the ledger")
+	}
+	d2 := &TransitionDaemon{}
+	t.Cleanup(d2.closeCommsLedgers)
+	if d2.commsLedgerFor("default") != nil {
+		t.Fatal("second daemon took the ledger while the first owns it")
+	}
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, TurnID: "t1", Text: "x"})
+	d2.ingestCommsSpool("default", f.byID)
+	if entries, _ := ReadCommsSpool(f.codex.ID); len(entries) != 1 {
+		t.Fatal("the non-owner consumed the spool")
+	}
+	// Ownership moves when the owner releases it (process exit releases
+	// the flock the same way).
+	f.d.closeCommsLedgers()
+	d2.ledgerOpenFailed = nil // the failed open was a lock conflict; retry now
+	if d2.commsLedgerFor("default") == nil {
+		t.Fatal("second daemon could not take the released ledger")
+	}
+	d2.ingestCommsSpool("default", f.byID)
+	if recs := f.ledgerRecords(t); len(recs) != 1 {
+		t.Fatalf("new owner did not ingest: %+v", recs)
+	}
+}
+
+// G4: the inbox stays the sole delivery authority. With the ledger ON and
+// its disk broken, the inbox record and the wake still happen exactly as
+// with the ledger off, and the spool entry stays for a retry.
+func TestCommsIngest_LedgerDiskFailureNeverTouchesTheInboxPath(t *testing.T) {
+	f := newCommsFixture(t)
+	f.appendTurn(t, fxHuman("u0", "run the board"), fxAssistantText("a0", "Starting 13 lanes."))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Starting 13 lanes.", TranscriptPath: f.transcript})
+	l := f.d.commsLedgerFor("default")
+	if l == nil {
+		t.Fatal("ledger did not open")
+	}
+	dir, _ := comms.Dir("default")
+	active := filepath.Join(dir, "active.ndjson")
+	if os.Getuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
+	if err := os.Chmod(active, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil) // the inbox path
+	f.d.ingestCommsSpool("default", f.byID)                   // the ledger path, failing
+
+	inbox := f.inboxRecords(t)
+	if len(inbox) != 1 || inbox[0].Tier != TurnTierUrgent || inbox[0].Text != "Starting 13 lanes." || *f.sends != 1 {
+		t.Fatalf("inbox path changed under a ledger failure: %+v sends=%d", inbox, *f.sends)
+	}
+	if entries, _ := ReadCommsSpool(f.child.ID); len(entries) != 1 {
+		t.Fatal("spool entry must stay for a retry")
+	}
+	if recs := f.ledgerRecords(t); len(recs) != 0 {
+		t.Fatalf("ledger wrote through a read-only file: %+v", recs)
+	}
+	_ = os.Chmod(active, 0o600)
+}
+
+// G4: with the ledger on, the inbox records and wakes of the issue #2469
+// scenario are identical to the ledger-off run, and the ledger agrees with
+// the inbox record for record.
+func TestCommsIngest_InboxParityWithTheLedgerOn(t *testing.T) {
+	run := func(t *testing.T, on bool) ([]TransitionNotificationEvent, int, []comms.Record) {
+		f := newCommsFixture(t)
+		t.Cleanup(SetCommsLedgerForTest(on))
+		f.appendTurn(t, fxHuman("u0", "run the board"), fxAssistantText("a0", "Starting 13 lanes."))
+		spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Starting 13 lanes.", TranscriptPath: f.transcript})
+		statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+		f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+		f.d.ingestCommsSpool("default", f.byID)
+		f.appendTurn(t, fxTaskNotification("u1"), fxAssistantToolUse("a1"), fxToolResult("u2"), fxAssistantText("a2", "Lane C merged; verifier running."))
+		spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Lane C merged; verifier running.", TranscriptPath: f.transcript})
+		for i := 0; i < 3; i++ {
+			f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+			f.d.ingestCommsSpool("default", f.byID)
+		}
+		var ledger []comms.Record
+		if on {
+			ledger = f.ledgerRecords(t)
+		}
+		return f.inboxRecords(t), *f.sends, ledger
+	}
+	offInbox, offSends, _ := run(t, false)
+	onInbox, onSends, ledger := run(t, true)
+	if len(offInbox) != len(onInbox) || offSends != onSends {
+		t.Fatalf("inbox differs with the ledger on: off=%d/%d on=%d/%d", len(offInbox), offSends, len(onInbox), onSends)
+	}
+	for i := range offInbox {
+		a, b := offInbox[i], onInbox[i]
+		if a.Tier != b.Tier || a.Trigger != b.Trigger || a.Text != b.Text || a.TurnUUID != b.TurnUUID || a.Seq != b.Seq {
+			t.Fatalf("inbox record %d differs: off=%+v on=%+v", i, a, b)
+		}
+	}
+	if len(ledger) != len(onInbox) {
+		t.Fatalf("ledger has %d records, inbox %d", len(ledger), len(onInbox))
+	}
+	for i := range ledger {
+		if ledger[i].Tier != onInbox[i].Tier || ledger[i].Trigger != onInbox[i].Trigger || ledger[i].Text != onInbox[i].Text ||
+			ledger[i].Key != comms.Key(comms.KindTurn, onInbox[i].ChildSessionID, onInbox[i].TurnUUID) {
+			t.Fatalf("ledger record %d disagrees with the inbox: %+v vs %+v", i, ledger[i], onInbox[i])
+		}
+	}
+}
+
+// G2: status edges are collapsed only by the inbox's content rule (same
+// state, same output signal, within the TTL), never by a time bucket.
+func TestCommsIngest_StatusEdgesCollapseByContentNotTime(t *testing.T) {
+	f := newCommsFixture(t)
+	at := time.Now()
+	f.d.commsStatusRecord("default", f.shell, "waiting", at)
+	f.d.commsStatusRecord("default", f.shell, "waiting", at.Add(5*time.Minute)) // same edge, different bucket: one record
+	f.d.commsStatusRecord("default", f.shell, "error", at.Add(5*time.Minute))   // a different state: a record
+	f.d.commsStatusRecord("default", f.shell, "waiting", at.Add(6*time.Minute)) // back to waiting: a record (last was error)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 3 || recs[0].State != "waiting" || recs[1].State != "error" || recs[2].State != "waiting" {
+		t.Fatalf("status records: %+v", recs)
+	}
+	// Gemini has no text producer in P1: status-only.
+	gem := NewInstanceWithTool("gem", t.TempDir(), "gemini")
+	gem.ID = "gem-1"
+	gem.ParentSessionID = f.parent.ID
+	f.d.commsStatusRecord("default", gem, "waiting", at)
+	if recs := f.ledgerRecords(t); len(recs) != 4 || recs[3].Tool != "gemini" {
+		t.Fatalf("gemini status record: %+v", recs)
+	}
+}
+
+func fxAssistantTextAt(uuid, text string, at time.Time) string {
+	rec := map[string]any{
+		"type": "assistant", "uuid": uuid, "isSidechain": false, "timestamp": at.UTC().Format(time.RFC3339Nano),
+		"message": map[string]any{"role": "assistant", "content": []map[string]any{{"type": "text", "text": text}}},
+	}
+	b, _ := json.Marshal(rec)
+	return string(b)
+}
+
+// Round 2 item 2: three backlog turns that all say "Done." are three
+// records; only the one the tail describes is uuid-keyed, and a re-fired
+// Stop for that tail turn is still a duplicate.
+func TestCommsIngest_SameTextClaudeBacklogIsThreeRecords(t *testing.T) {
+	f := newCommsFixture(t)
+	base := time.Now().Add(-time.Minute)
+	f.appendTurn(t, fxHuman("u1", "a"), fxAssistantTextAt("a1", "Done.", base))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Done.", TranscriptPath: f.transcript, TSignal: base.UnixMilli() + 100})
+	f.appendTurn(t, fxHuman("u2", "b"), fxAssistantTextAt("a2", "Done.", base.Add(10*time.Second)))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Done.", TranscriptPath: f.transcript, TSignal: base.Add(10*time.Second).UnixMilli() + 100})
+	f.appendTurn(t, fxHuman("u3", "c"), fxAssistantTextAt("a3", "Done.", base.Add(20*time.Second)))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Done.", TranscriptPath: f.transcript, TSignal: base.Add(20*time.Second).UnixMilli() + 100})
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 3 {
+		t.Fatalf("same-text backlog: %d records %+v", len(recs), recs)
+	}
+	tailKey := comms.Key(comms.KindTurn, f.child.ID, "a3")
+	if recs[2].Key != tailKey || recs[0].Key == tailKey || recs[1].Key == tailKey || recs[0].Key == recs[1].Key {
+		t.Fatalf("keys: %s %s %s", recs[0].Key, recs[1].Key, recs[2].Key)
+	}
+	// A hook re-fire for the tail turn is one record, not four.
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Done.", TranscriptPath: f.transcript, TSignal: base.Add(21 * time.Second).UnixMilli()})
+	f.d.ingestCommsSpool("default", f.byID)
+	if recs := f.ledgerRecords(t); len(recs) != 3 {
+		t.Fatalf("re-fired Stop produced a record: %d", len(recs))
+	}
+}
+
+// Round 2 item 1: a reply longer than the spool cap still matches its
+// transcript turn (the spool carries the full-text hash), so it keeps the
+// transcript identity, trigger and the sentinel at its end.
+func TestCommsIngest_LongClaudeReplyStillMatchesItsTranscriptTurn(t *testing.T) {
+	f := newCommsFixture(t)
+	long := strings.Repeat("progress line\n", 300) + "===AGENTDECK_DONE=== status=ok summary=all green"
+	if len(long) <= commsSpoolTextBytes {
+		t.Fatalf("fixture must exceed the spool cap, got %d", len(long))
+	}
+	f.appendTurn(t, fxTaskNotification("u1"), fxAssistantText("a1", long))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: long, TranscriptPath: f.transcript})
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 1 {
+		t.Fatalf("records: %+v", recs)
+	}
+	r := recs[0]
+	if r.Key != comms.Key(comms.KindTurn, f.child.ID, "a1") || r.Trigger != TurnTriggerTask || r.Done != "ok" || r.Summary != "all green" || r.Tier != comms.TierUrgent {
+		t.Fatalf("long reply: %+v", r)
+	}
+	if len(r.Text) > MaxTurnTextBytes || r.TH != turnTextHash(long) {
+		t.Fatalf("record text cap / hash: %d %s", len(r.Text), r.TH)
+	}
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: long, TranscriptPath: f.transcript})
+	f.d.ingestCommsSpool("default", f.byID)
+	if recs := f.ledgerRecords(t); len(recs) != 1 {
+		t.Fatalf("re-fired long Stop duplicated: %d", len(recs))
 	}
 }

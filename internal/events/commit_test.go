@@ -243,3 +243,126 @@ func TestCommitOnClosedOrDisabledBusErrors(t *testing.T) {
 		t.Fatal("closed bus accepted a commit")
 	}
 }
+
+func TestRecoveryTruncatesOnlyATornTailAndKeepsMidHistoryCorruption(t *testing.T) {
+	dir := t.TempDir()
+	b, err := OpenAt(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := b.Commit("k", "s", map[string]int{"i": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = b.Close()
+	path := filepath.Join(dir, activeSegmentName)
+	data, _ := os.ReadFile(path)
+	lines := strings.SplitAfter(string(data), "\n")
+	// Corrupt the middle line in place, keep the newline; append a torn tail.
+	lines[1] = "{garbage\n"
+	corrupted := strings.Join(lines, "") + `{"cursor":4,"event_id":"x"`
+	if err := os.WriteFile(path, []byte(corrupted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b2, err := OpenAt(dir, Options{})
+	if err != nil {
+		t.Fatalf("reopen over a corrupt line must not fail: %v", err)
+	}
+	defer b2.Close()
+	if b2.Cursor() != 3 {
+		t.Fatalf("recovered cursor %d, want 3 (the corrupt line is skipped, later history kept)", b2.Cursor())
+	}
+	after, _ := os.ReadFile(path)
+	if strings.HasSuffix(string(after), `"event_id":"x"`) {
+		t.Fatal("torn tail not truncated")
+	}
+	if !strings.Contains(string(after), "{garbage\n") {
+		t.Fatal("mid-history corruption was erased instead of left in place")
+	}
+	f, err := b2.Commit("k", "s", nil)
+	if err != nil || f.Cursor != 4 {
+		t.Fatalf("commit after recovery: %+v %v", f, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub, _ := b2.Subscribe(ctx, 0)
+	var seen []Cursor
+	for fr := range sub.Frames() {
+		seen = append(seen, fr.Cursor)
+		if fr.Cursor == 4 {
+			cancel()
+		}
+	}
+	if len(seen) != 3 || seen[0] != 1 || seen[1] != 3 || seen[2] != 4 {
+		t.Fatalf("reader saw %v: the corrupt line must be skipped, nothing after it lost", seen)
+	}
+}
+
+func TestPrivateBusCreatesOwnerOnlyFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	b, err := OpenAt(dir, Options{Private: true, MaxSegmentBytes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	for i := 0; i < 2; i++ {
+		if _, err := b.Commit("k", "s", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("dir mode %v err %v", info.Mode().Perm(), err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) < 4 {
+		t.Fatalf("expected active, sealed, lock and checkpoint files, got %d", len(entries))
+	}
+	for _, e := range entries {
+		fi, _ := e.Info()
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode %v", e.Name(), fi.Mode().Perm())
+		}
+	}
+}
+
+func TestCommitShortWriteIsRolledBackAndReported(t *testing.T) {
+	dir := t.TempDir()
+	b, err := OpenAt(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if _, err := b.Commit("k", "s", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the active file handle with a read-only one: the append fails,
+	// the cursor does not advance, the bus reports the failure.
+	b.mu.Lock()
+	_ = b.activeFile.Close()
+	ro, err := os.Open(filepath.Join(dir, activeSegmentName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.activeFile = ro
+	b.mu.Unlock()
+	if _, err := b.Commit("k", "s", nil); err == nil {
+		t.Fatal("commit on a read-only handle reported success")
+	}
+	if b.Cursor() != 1 {
+		t.Fatalf("cursor advanced past a failed append: %d", b.Cursor())
+	}
+	if _, err := b.Commit("k", "s", nil); err == nil {
+		t.Fatal("bus must stay disabled after a write failure until reopened")
+	}
+	b2, err := OpenAt(dir, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b2.Close()
+	if f, err := b2.Commit("k", "s", nil); err != nil || f.Cursor != 2 {
+		t.Fatalf("reopen must continue at cursor 2: %+v %v", f, err)
+	}
+}

@@ -1,0 +1,18 @@
+{
+  "fixture": "receipt-v1",
+  "transitions": [
+    {"from": "", "to": "durable", "ok": true},
+    {"from": "durable", "to": "attempted", "ok": true},
+    {"from": "attempted", "to": "transport_accepted", "ok": true},
+    {"from": "transport_accepted", "to": "context_observed", "ok": true},
+    {"from": "context_observed", "to": "application_acked", "ok": true},
+    {"from": "transport_accepted", "to": "attempted", "ok": false},
+    {"from": "context_observed", "to": "durable", "ok": false},
+    {"from": "attempted", "to": "failed", "ok": true},
+    {"from": "failed", "to": "attempted", "ok": false},
+    {"from": "", "to": "unknown", "ok": true},
+    {"from": "unknown", "to": "transport_accepted", "ok": true},
+    {"from": "attempted", "to": "unknown", "ok": false},
+    {"from": "durable", "to": "bogus", "ok": false}
+  ]
+}

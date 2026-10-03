@@ -3,12 +3,14 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
@@ -59,7 +61,8 @@ type CommsSpoolEntry struct {
 	Instance       string `json:"instance"` // agent-deck session id
 	SessionID      string `json:"session_id,omitempty"`
 	TurnID         string `json:"turn_id,omitempty"`
-	Text           string `json:"text,omitempty"`   // assistant text (turn_end)
+	Text           string `json:"text,omitempty"`   // assistant text (turn_end), capped
+	TH             string `json:"th,omitempty"`     // sha256/16 of the FULL trimmed text, before the cap
 	Prompt         string `json:"prompt,omitempty"` // user prompt prefix (either edge)
 	TranscriptPath string `json:"transcript_path,omitempty"`
 	Cwd            string `json:"cwd,omitempty"`
@@ -124,7 +127,11 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	if e.TSignal == 0 {
 		e.TSignal = time.Now().UnixMilli()
 	}
-	e.Text = comms.CapText(strings.TrimSpace(e.Text), commsSpoolTextBytes)
+	full := strings.TrimSpace(e.Text)
+	if full != "" {
+		e.TH = turnTextHash(full) // the daemon matches this against the transcript turn
+	}
+	e.Text = comms.CapText(full, commsSpoolTextBytes)
 	e.Prompt = comms.CapText(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
 	e.Harness = capBytes(e.Harness, commsSpoolIDBytes)
 	e.Event = capBytes(e.Event, commsSpoolIDBytes)
@@ -195,25 +202,54 @@ func ReadCommsSpool(instanceID string) ([]CommsSpoolEntry, error) {
 	out := make([]CommsSpoolEntry, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
-		if info, err := os.Stat(path); err != nil || info.Size() > commsSpoolMaxBytes {
-			if err == nil {
-				commsLog.Warn("comms_spool_entry_oversized", slog.String("path", path), slog.Int64("bytes", info.Size()))
-				_ = os.Remove(path)
-			}
-			continue
-		}
-		data, err := os.ReadFile(path) // #nosec G304 -- sanitized id under the data dir
-		if err != nil {
+		data, ok := readSpoolFile(path)
+		if !ok {
 			continue
 		}
 		var e CommsSpoolEntry
 		if json.Unmarshal(data, &e) != nil || e.Edge == "" {
+			commsLog.Warn("comms_spool_entry_rejected", slog.String("path", path), slog.String("reason", "malformed"))
+			_ = os.Remove(path)
 			continue
 		}
 		e.path = path
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// readSpoolFile reads one spool entry without following a symlink and
+// without reading past the size bound. A symlink, a directory or an
+// oversized file is not ours: it is removed and logged.
+func readSpoolFile(path string) ([]byte, bool) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.EMLINK) {
+			commsLog.Warn("comms_spool_entry_rejected", slog.String("path", path), slog.String("reason", "symlink"))
+			_ = os.Remove(path)
+		}
+		return nil, false
+	}
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		_ = syscall.Close(fd)
+		return nil, false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, false
+	}
+	if info.Size() > commsSpoolMaxBytes {
+		commsLog.Warn("comms_spool_entry_rejected", slog.String("path", path), slog.String("reason", "oversized"), slog.Int64("bytes", info.Size()))
+		_ = os.Remove(path)
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, commsSpoolMaxBytes+1))
+	if err != nil {
+		return nil, false
+	}
+	return data, true
 }
 
 // RemoveCommsSpoolEntry deletes one ingested entry.

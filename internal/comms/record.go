@@ -50,6 +50,11 @@ const (
 	StateFailed   = "failed"
 )
 
+// SchemaVersion is stamped on every record as "v". A reader that meets a
+// higher version keeps the fields it knows; a writer never reuses a version
+// for a different shape.
+const SchemaVersion = 1
+
 // Text caps: the child text carried on a record. MaxTextBytes is the hard
 // ceiling whatever the config says.
 const (
@@ -61,6 +66,7 @@ const (
 // read back on every drain and every stats query. Timestamps are Unix
 // milliseconds. All omitempty except the identity fields.
 type Record struct {
+	V       int      `json:"v"`                 // SchemaVersion of the record shape
 	ID      string   `json:"id"`                // ULID, assigned at commit
 	Key     string   `json:"key,omitempty"`     // idempotency key (producer-stable)
 	Kind    string   `json:"kind"`              // Kind* constants
@@ -69,6 +75,8 @@ type Record struct {
 	Profile string   `json:"profile,omitempty"` // owning profile
 	Tool    string   `json:"tool,omitempty"`    // harness of From (claude, codex, ...)
 	Host    string   `json:"host,omitempty"`    // hostname that produced the record (every host, so cross-host readers can name it)
+	Store   string   `json:"store,omitempty"`   // id of the ledger the record was first committed to (stable across host renames)
+	Epoch   int64    `json:"epoch,omitempty"`   // that ledger's epoch (bumped when its history is reset or restored)
 	Origin  string   `json:"origin,omitempty"`  // configured remote name when the record was pulled from another host's ledger
 	// SrcCursor is the record's cursor on the origin ledger (remote-first,
 	// docs/comms.md): the importer advances its (remote, consumer) cursor to
@@ -117,6 +125,9 @@ func (r Record) IsUrgent() bool { return r.Tier == "" || r.Tier == TierUrgent }
 // Stamp fills what every committed record carries: an id, the commit time,
 // the text hash and byte count. Idempotent on an already stamped record.
 func (r *Record) Stamp(now time.Time) {
+	if r.V == 0 {
+		r.V = SchemaVersion
+	}
 	if r.ID == "" {
 		r.ID = NewID(now)
 	}
