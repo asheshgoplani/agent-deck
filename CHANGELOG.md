@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.24] - 2026-10-03
+
+- **Upgrading:** the agent-deck skill is now split into a short `SKILL.md` plus `references/` files. If you installed it with the README's curl loop rather than the plugin, re-run the loop so the new reference files are present (#2429).
+
+### Added
+
+- `[launch] nest_under_parent = true` links a session started from inside a sub-session under that sub-session's parent (one hop, with a note on stderr and a `launched-by` hint naming the caller); a parent that no longer exists gives a top-level session plus a note. Off by default: a sub-session caller gets a top-level session as before. `launch`, `add` and the startup pre-check now share one parent selector, and a plain `launch` from inside a sub-session no longer exits 1 at the capacity pre-check (#2440, thanks @AdamiecRadek).
+
+- The `*` time filter gains a "Last 30 days" step between 7 days and All, with the same rolling window as the 3- and 7-day modes (#2448, thanks @borng).
+- `group_sort = "alphabetical"` orders the sessions in a group A to Z by title, case-insensitively, with a stable tie-break on creation order; `creation` and `actionable` are unchanged and remain the default (#2459, fixes #2451).
+- Remote sessions nest under their parent in the controller's TUI: when a remote session's `parent_session_id` names another session on the same remote, the parent row comes first and its children are indented one level, as local sub-sessions are; a parent that is missing from the fetched set (archived, filtered out, or an older remote build that does not report the field) leaves the child flat as before. Shift moves among nested remote rows stay among siblings (#2463, fixes #2450).
+- `[ui] active_includes_idle = true` keeps idle sessions that still have a live pane in the active section of the active-on-top view, so only stopped, errored and never-started sessions sink to the bottom and the top list stops reshuffling whenever a juggled session goes idle. Off by default (#2468, fixes #2452).
+- `[display] hide_default_tool_badge = true` drops the tool badge from rows whose tool is the deck's default tool (an unset `default_tool` counts as claude), so only the outliers are labelled; applies to local and classic remote rows (#2445, thanks @borng).
+- Web UI: session cards and the Overview rail show recall annotation hints. `/api/menu`, `/api/session/{id}`, `/api/sessions` and the menu event stream carry optional `hints` and `tags` per session, read in one bulk query from the profile's `state.db` (read-only, re-opened if the file is replaced), so a `session annotate` shows up within about two seconds. Sidebar cards show the headline, a coloured status chip and the ticket, behind a default-on "Goal / status hints" toggle; the rail lists every hint and the tags; the sidebar filter matches them. An opt-in Status view (Status | Groups toggle) groups sessions by their `status` hint and pins a conductor's markdown summary on top; the default Groups view and the runtime Running/Waiting/Error/Idle tiles are unchanged (#2447, fixes #2446, thanks @bryant-numeric).
+- `agent-deck health` reports `open_fds_support` (`sampled` or `unsupported`) next to `open_fds`, and the budget line says `descriptors unsupported on this platform` instead of advertising a check that can never run (#2462, fixes #2427).
+
+### Fixed
+
+- `conductor setup <name>` re-run without `--agent` keeps the conductor's stored agent instead of resetting it to claude (an explicit `--agent` still switches; a corrupt `meta.json` now refuses the bare re-run instead of silently becoming claude), and the stale-instruction cleanup no longer deletes a hand-edited `CLAUDE.md`, `AGENTS.md` or `HERMES.md`: a file that still matches the rendered template is removed as before, a diverged one is moved to `<file>.bak-<timestamp>` with one notice line. `--claude-md` / `--shared-claude-md` without `--agent` on a non-claude conductor now errors instead of switching it (#2465, fixes #2434, #2435).
+- Attaching to and detaching from a pi, gemini, cursor or hermes session no longer wipes its hook-driven status. The attach-return wipe exists for Claude and Codex, which can exit via `/q` without a final hook; it is now gated to those tools (and tools declared compatible with them), so the other tools' status dot no longer falls back to pane heuristics after every attach (#2458, fixes #2436).
+- `session send` to a Codex session no longer reports "never confirmed submitted" for a message Codex is already working on. The confirmation check now reads Codex's own pane evidence, measured against a capture taken before the send: a new copy of the body in the transcript above an empty composer, or the live `Working (…)` row with the body out of the composer and not in the queued-input list. A body still sitting in the composer with no processing is still reported as typed, not submitted (#2460, fixes #2424).
+- Light theme: the preview pane now remaps only dark backgrounds to the surface colour and passes light ones through, so a tool that already renders light highlights (OpenCode on Solarized Light, for example) no longer turns into grey stripes while the Codex dark bars stay fixed; the New Session dialog re-applies its surface fill after every inner reset, so the box is uniform on any terminal background. Dark theme is unchanged (#2461, fixes #2449).
+- On macOS, `agent-deck health` samples the process's own descriptor count again. The previous `/dev/fd` read failed once the Go runtime's kqueue netpoller existed, so every sample stored null and the `descriptors <512` budget could never fire; the count now comes from `proc_pidinfo`, with no `lsof` and no filesystem events (#2462, fixes #2427).
+- `agent-deck update` leaves a launch agent that is disabled in launchd alone instead of retrying its bootstrap after every update: the hygiene step consults `launchctl print-disabled` once per run, prints one line naming the `launchctl enable` command, drops the label from the pending marker, and `update --check` reports it as `disabled` rather than `bootstrap failed`. Enabled agents behave exactly as before (#2464, fixes #2457).
+
+- Conductor `NEED:` alerts reach Telegram, Slack and Discord again when the OS heartbeat daemon is installed (the default). The bridge used to disable its own loop in that mode, and that loop was the only reader of heartbeat replies; it now runs a read-only scan each half interval, forwards fresh `NEED:` lines with the existing escalate/retire policy, keeps per-conductor counts under the conductor directory, and skips unchanged replies by hash (#2437, fixes #2426, thanks @koenzhao).
+- Web UI: a stopped session's terminal can be brought back in place. The "Restart session" button on the tmux-not-found banner is clickable again (it sat under xterm's link layer), and the terminal reattaches whenever a start or restart for the open session succeeds from the header, the sidebar, the banner or the CLI, or its status goes live over the event stream; switching sessions is no longer the only way out (#2467, fixes #2432).
+
+### Changed
+
+- The agent-deck skill loads a short core first and the detail on demand from `references/`; the description keeps its trigger terms (session, sub-agent, MCP attach, git worktree) and the `#974` alias rows are corrected (#2429, thanks @kickinrad).
+
 ## [1.16.23] - 2026-10-02
 
 - **Upgrading:** `session switch-account` now keeps a target conversation copy that is newer than the source instead of refusing; pass `--archive-destination` to insist on the source copy as before.
