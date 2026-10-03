@@ -352,3 +352,119 @@ func TestPR5_TagSendsConfigDefaultsOn(t *testing.T) {
 		t.Fatal("tag_sends = false must turn tagging off")
 	}
 }
+
+// pollTurns runs one more daemon pass over the fixture's unchanged statuses
+// (a turn whose parent commit failed is retried on every pass).
+func (f *pr5Fixture) pollTurns(t *testing.T) {
+	t.Helper()
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+}
+
+// newSaturatedParentFixture is a stopped parent whose inbox already holds
+// the per-child cap of undrained records from the fixture child, plus an
+// idle Claude sibling that asks the child with a tagged send.
+func newSaturatedParentFixture(t *testing.T) (*pr5Fixture, *Instance) {
+	t.Helper()
+	f := newPR5Fixture(t)
+	f.parent.Status = StatusStopped
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+	fillPendingTurns(t, f.parent.ID, f.child.ID, maxPendingTurnsPerChild)
+	return f, sib
+}
+
+// Fix round 3 (verify r2 finding 1): the parent's commit fails while its
+// inbox is saturated (the turn is retried), but the sibling's answer must
+// not wait on the parent's backlog. Retries must neither duplicate the
+// reply nor wake the sender again.
+func TestPR5_ParentBackpressureDoesNotHoldSiblingReply(t *testing.T) {
+	f, sib := newSaturatedParentFixture(t)
+
+	f.runTaggedTurn(t, sib.ID)
+	pr5AssertOneReply(t, f, sib.ID)
+	if LastTurnJournalEntry(f.child.ID) != nil {
+		t.Fatal("the parent commit failed: the turn must stay unjournaled so it is retried")
+	}
+
+	for i := 0; i < 3; i++ {
+		f.pollTurns(t)
+	}
+	pr5AssertOneReply(t, f, sib.ID)
+	if f.woken[f.parent.ID] != 0 {
+		t.Fatalf("a stopped parent is never woken: %v", f.woken)
+	}
+}
+
+// Fix round 3 (verify r2 finding 1): once the sender consumed the reply,
+// later retries of the same turn (parent still saturated, then drained)
+// commit the parent's copy only: no second reply record, no second wake.
+func TestPR5_ParentBackpressureReplyNotRedeliveredAfterDrains(t *testing.T) {
+	f, sib := newSaturatedParentFixture(t)
+
+	f.runTaggedTurn(t, sib.ID)
+	text, _, err := DrainForPrompt(sib.ID)
+	if err != nil || !strings.Contains(text, "reply from="+f.child.ID) {
+		t.Fatalf("the sender must drain its reply while the parent is saturated: err=%v\n%s", err, text)
+	}
+
+	f.pollTurns(t)
+	if InboxHasPending(sib.ID) {
+		t.Fatal("a consumed reply must not be committed again by a retry")
+	}
+
+	if _, err := DrainInboxForParent(f.parent.ID); err != nil {
+		t.Fatalf("parent drain: %v", err)
+	}
+	f.pollTurns(t)
+	got := f.inboxRecords(t)
+	if len(got) != 1 || got[0].FromID != sib.ID || got[0].TargetKind != "parent" {
+		t.Fatalf("the parent gets its copy once it has room: %+v", got)
+	}
+	if InboxHasPending(sib.ID) || f.woken[sib.ID] != 1 {
+		t.Fatalf("the sender is answered and woken exactly once: pending=%v woken=%v", InboxHasPending(sib.ID), f.woken)
+	}
+}
+
+// Fix round 3 (verify r2 finding 2): an idle Claude parent that is NOT a
+// conductor asked its own child with a tagged send. The child's answer is a
+// reply to it, so it is woken (as a reply target) while the record stays
+// one "parent" copy. Other parents keep the conductor-only gate.
+func TestPR5_ParentThatAskedIsWokenForTheReply(t *testing.T) {
+	for _, tc := range []struct {
+		name, title, tool string
+		tagged            bool
+		wantWoken         bool
+		wantKind          string
+	}{
+		{"non-conductor claude parent asked", "api-lead", "claude", true, true, "reply"},
+		{"non-conductor claude parent, human turn", "api-lead", "claude", false, false, "parent"},
+		{"non-conductor shell parent asked", "api-lead", "shell", true, false, "parent"},
+		{"conductor codex parent asked", "conductor-ops", "codex", true, true, "parent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPR5Fixture(t)
+			f.parent.Title = tc.title
+			f.parent.Tool = tc.tool
+			f.saveRegistry(t)
+
+			if tc.tagged {
+				f.runTaggedTurn(t, f.parent.ID)
+			} else {
+				f.appendTurn(t, fxHuman("u0", "which port does the API use?"), fxAssistantText("a0", "The API listens on 8443."))
+				f.pollTurns(t)
+			}
+
+			got := f.inboxRecords(t)
+			if len(got) != 1 || got[0].TargetKind != "parent" || got[0].Tier != TurnTierUrgent {
+				t.Fatalf("the parent holds exactly its own urgent copy: %+v", got)
+			}
+			if woken := f.woken[f.parent.ID] == 1; woken != tc.wantWoken || f.kinds[f.parent.ID] != tc.wantKind {
+				t.Fatalf("woken=%v kinds=%v, want woken=%v kind=%q", f.woken, f.kinds, tc.wantWoken, tc.wantKind)
+			}
+			if len(f.woken) > 1 {
+				t.Fatalf("only the parent may be woken: %v", f.woken)
+			}
+		})
+	}
+}

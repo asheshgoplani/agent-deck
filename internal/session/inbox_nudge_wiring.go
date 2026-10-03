@@ -111,9 +111,10 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 // nudge: it must be a conductor (only conductors drain an inbox on Stop, so a
 // nudge to a non-conductor leaf would be pure noise) AND currently idle/waiting,
 // NOT mid-turn. A "reply" target (comms redesign PR5) is the session whose
-// tagged send the child just answered: it asked, so it is woken whatever its
-// title, but only when it is Claude-compatible (its prompt-time drain injects
-// the reply). A send-keys into a RUNNING pane only queues the keystroke
+// tagged send the child just answered (a sibling sender, or the child's own
+// parent when it asked; see parentWakeEvent): it asked, so it is woken
+// whatever its title, but only when it is Claude-compatible (its prompt-time
+// drain injects the reply). A send-keys into a RUNNING pane only queues the keystroke
 // (issue #36326) — the exact failure the pull model was built to avoid — so a
 // busy conductor is left to drain at its own turn boundary.
 //

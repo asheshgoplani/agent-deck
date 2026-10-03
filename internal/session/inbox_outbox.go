@@ -144,8 +144,16 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 // This is the unified producer entry point for both the interactive
 // (running→waiting) and one-shot (run-task kernel-exit) paths.
 func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) error {
+	_, err := commitToInbox(parentSessionID, event)
+	return err
+}
+
+// commitToInbox is CommitToInbox that also reports whether the write replaced
+// a still-pending copy of the same turn (a retry) rather than adding a new
+// record.
+func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (replaced bool, err error) {
 	if strings.TrimSpace(parentSessionID) == "" {
-		return errors.New("inbox commit: empty parent session id")
+		return false, errors.New("inbox commit: empty parent session id")
 	}
 	// Audit B6: cap DoneSummary at the producer so a worker dumping a large log
 	// into its summary can't grow a JSONL line past the scanner cap and fail the
@@ -165,11 +173,11 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 
 	path := InboxPathFor(parentSessionID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
 	}
 	fileLock, err := AcquireConfigFileLock(path)
 	if err != nil {
-		return fmt.Errorf("lock inbox commit: %w", err)
+		return false, fmt.Errorf("lock inbox commit: %w", err)
 	}
 	defer fileLock.Release()
 
@@ -178,10 +186,10 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 
 	pendingForChild, retry, err := pendingTurnsForChildLocked(path, event)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !retry && pendingForChild >= maxPendingTurnsPerChild {
-		return fmt.Errorf("%w: child=%s limit=%d", ErrInboxTurnOverflow, event.ChildSessionID, maxPendingTurnsPerChild)
+		return false, fmt.Errorf("%w: child=%s limit=%d", ErrInboxTurnOverflow, event.ChildSessionID, maxPendingTurnsPerChild)
 	}
 
 	// Drop only a retry of this exact turn before appending the fresh copy.
@@ -194,10 +202,10 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 		}
 		return fp == event.TurnFingerprint
 	}); err != nil {
-		return err
+		return false, err
 	}
 
-	return appendInboxLineLocked(path, event)
+	return retry, appendInboxLineLocked(path, event)
 }
 
 // pendingTurnsForChildLocked counts the child's durable pending turns and
@@ -630,6 +638,9 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 			event.DeadLetterReason = reason
 			written, err := recordUnownedTransition(event)
 			if err != nil {
+				// The turn is retried, but the asker's answer does not
+				// wait on the unowned ledger.
+				n.commitReplyToSender(sender, reply)
 				return false, true, ""
 			}
 			if written {
@@ -660,6 +671,11 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	}
 	if err := CommitToInbox(parentID, event); err != nil {
 		n.noteCommitBackpressure(event, err)
+		// The turn is retried on the next poll, but the sender's answer must
+		// not wait on the parent's backlog: a stopped parent saturated with
+		// this child's records would otherwise hold a sibling's reply until
+		// someone drains it.
+		n.commitReplyToSender(sender, reply)
 		return false, true, ""
 	}
 	n.clearCommitBackpressure(event.ChildSessionID)
@@ -691,16 +707,33 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	// the event-driven trigger — fired the moment the completion is committed,
 	// not on a poll. Best-effort and non-fatal: a dropped nudge is harmless
 	// because this same record is still drained on the parent's next turn.
-	n.fireWakeNudge(parent, event)
+	n.fireWakeNudge(parent, parentWakeEvent(event, parent))
 	return true, false, ""
+}
+
+// parentWakeEvent is the event the parent's wake gate sees. A turn that
+// answers the parent's OWN tagged send is a reply to it (comms redesign PR5):
+// the parent asked, so it is woken as a reply target whatever its title, as
+// a sibling sender would be. Only a Claude-compatible parent qualifies (the
+// reply gate requires it); any other parent keeps the conductor-only gate.
+// The committed record keeps TargetKind "parent".
+func parentWakeEvent(event TransitionNotificationEvent, parent *Instance) TransitionNotificationEvent {
+	if event.Trigger == TurnTriggerSend && parent != nil &&
+		strings.TrimSpace(event.FromID) == parent.ID && IsClaudeCompatible(parent.Tool) {
+		event.TargetKind = "reply"
+	}
+	return event
 }
 
 // commitReplyToSender commits a second copy of a turn that answered a tagged
 // send to the sender's own inbox (comms redesign PR5): TargetKind "reply",
 // always urgent, so the session that asked is woken and its prompt-time
-// drain injects the answer. It runs only after the parent's copy is durable
-// (or the turn is terminally parentless), so this copy is best-effort: a
-// failure is logged, never retried into a duplicate.
+// drain injects the answer. It does not wait on the parent: it runs whether
+// the parent's copy landed, the turn is terminally parentless, or the
+// parent's commit failed and the turn will be retried. A retry is
+// idempotent: a reply the sender already consumed is not committed again,
+// and one still pending is replaced in place without a second wake. A
+// failure is logged; the turn's own retry (if any) tries again.
 func (n *TransitionNotifier) commitReplyToSender(sender *Instance, event TransitionNotificationEvent) {
 	if sender == nil {
 		return
@@ -708,20 +741,26 @@ func (n *TransitionNotifier) commitReplyToSender(sender *Instance, event Transit
 	if event.TurnFingerprint == "" {
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
+	if turnAlreadyConsumed(sender.ID, event.TurnFingerprint) {
+		return
+	}
 	event.TargetSessionID = sender.ID
 	event.TargetKind = "reply"
 	event.Tier = TurnTierUrgent
 	event.DeliveryResult = transitionDeliveryCommitted
 	event.DeadLetterReason = ""
-	if err := CommitToInbox(sender.ID, event); err != nil {
+	replaced, err := commitToInbox(sender.ID, event)
+	if err != nil {
 		commsLog.Warn("reply_commit_failed",
 			slog.String("sender", sender.ID), slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
-	n.logEvent(event)
-	if turnAlreadyConsumed(sender.ID, event.TurnFingerprint) {
+	if replaced {
+		// The same answer is already pending (and was announced when it
+		// first landed): a retried turn must not wake the sender again.
 		return
 	}
+	n.logEvent(event)
 	_ = BumpInboxStats(sender.ID, func(s *InboxStats) { s.WakeupsUrgent++ })
 	n.fireWakeNudge(sender, event)
 }
