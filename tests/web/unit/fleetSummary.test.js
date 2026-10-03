@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { render } from 'preact'
 import { html } from 'htm/preact'
+import { waitFor } from '@testing-library/preact'
 
 const stateModulePath = '../../../internal/web/static/app/state.js'
 const mdModulePath = '../../../internal/web/static/app/miniMarkdown.js'
@@ -50,8 +51,9 @@ describe('Command Center fleet summary', () => {
   it('renders the summary panel above the columns', async () => {
     const { CommandCenterPane } = await import(paneModulePath)
     const c = mount(html`<${CommandCenterPane}/>`)
+    // The markdown renderer is fetched on demand once a summary exists.
+    await waitFor(() => expect(c.querySelector('[data-testid="cc-fleet-summary"]')).not.toBeNull())
     const panel = c.querySelector('[data-testid="cc-fleet-summary"]')
-    expect(panel).not.toBeNull()
     expect(panel.textContent).toContain('brain-16')
     expect(panel.querySelector('h4').textContent).toBe('Today')
     expect(panel.querySelector('li').textContent).toBe('3 sessions need input')

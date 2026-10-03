@@ -12,11 +12,10 @@
 //   - TWO-WAY input box routing to Maestro / a chosen conductor via the
 //     supported `session send` primitive (POST /api/command-center/ask).
 import { html } from 'htm/preact'
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { commandCenterSignal, connectionSignal, mutationsEnabledSignal } from '../state.js'
 import { apiFetch } from '../api.js'
 import { addToast } from '../Toast.js'
-import { renderMarkdown } from '../miniMarkdown.js'
 import { sessionAnnotation } from '../annotations.js'
 
 const STATUS_DOT = {
@@ -73,10 +72,29 @@ function SessionRow({ sess }) {
   `
 }
 
+// The markdown renderer is fetched once a summary exists, so a fleet without
+// one does not ship it (the page is under a hard total-byte-weight budget,
+// .lighthouserc.json). A failed fetch resets so a later render retries.
+let markdownLoad = null
+function useMarkdown(needed) {
+  const [md, setMd] = useState(null)
+  useEffect(() => {
+    if (!needed || md) return
+    let alive = true
+    markdownLoad = markdownLoad || import('../miniMarkdown.js')
+    markdownLoad
+      .then(m => { if (alive) setMd(() => m.renderMarkdown) })
+      .catch(() => { markdownLoad = null })
+    return () => { alive = false }
+  }, [needed, md])
+  return md
+}
+
 // The conductor-maintained fleet summary: markdown from a conductor's `note`
 // hint or any session's `summary` hint (see CommandCenterSummary).
 function FleetSummaryPanel({ summaries }) {
-  if (!summaries.length) return null
+  const renderMarkdown = useMarkdown(summaries.length > 0)
+  if (!summaries.length || !renderMarkdown) return null
   return html`
     <div class="cc-summary" data-testid="cc-fleet-summary">
       ${summaries.map(s => html`

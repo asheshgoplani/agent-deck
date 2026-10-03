@@ -92,6 +92,16 @@ describe('session annotations', () => {
     expect(tone('something-else')).toBe('')
   })
 
+  it('reads a `waiting` status as Needs input, as agent-deck itself means it', async () => {
+    const { normalizeStatus, sessionAnnotation } = await import('../../../internal/web/static/app/annotations.js')
+    expect(normalizeStatus('waiting')).toBe('needs-input')
+    expect(normalizeStatus('Waiting')).toBe('needs-input')
+    expect(sessionAnnotation({ hints: { status: 'waiting' } })).toMatchObject({ status: 'needs-input', statusTone: 'err' })
+    // Inherited object keys are not statuses: shown raw in a neutral chip.
+    expect(normalizeStatus('constructor')).toBe('')
+    expect(sessionAnnotation({ hints: { status: 'toString' } })).toMatchObject({ status: 'toString', statusTone: '' })
+  })
+
   it('lets the sidebar filter match hint values and tags', async () => {
     const { sessionMatches, menuModelSignal } = await import(dataModelModulePath)
     const s = menuModelSignal.value.sessions.find(x => x.id === 'annotated')

@@ -1,13 +1,14 @@
-// The Fleet board's default view: a kanban keyed on the semantic status hint,
-// with process errors overriding and unannotated sessions falling back on
-// their process status.
+// The Fleet board's opt-in Status view: a kanban keyed on the semantic
+// status hint. Runtime state never picks a column; it keeps its own tiles.
 import { beforeEach, describe, expect, it } from 'vitest'
 import { render } from 'preact'
 import { html } from 'htm/preact'
+import { waitFor } from '@testing-library/preact'
 
 const stateModulePath = '../../../internal/web/static/app/state.js'
 const uiStateModulePath = '../../../internal/web/static/app/uiState.js'
 const annotationsModulePath = '../../../internal/web/static/app/annotations.js'
+const boardModulePath = '../../../internal/web/static/app/panes/FleetStatusBoard.js'
 const paneModulePath = '../../../internal/web/static/app/panes/FleetPane.js'
 
 function mount(vnode) {
@@ -35,9 +36,18 @@ const MENU = [
   sess('brain-16', 'waiting', { note: '# Fleet Summary\n- **3** need you' }, 'conductor'),
 ]
 
+// The Status board is fetched on demand (FleetPane useStatusBoard); wait for
+// it to render before asserting on it.
+async function mountStatusBoard() {
+  const { FleetPane } = await import(paneModulePath)
+  const c = mount(html`<${FleetPane}/>`)
+  await waitFor(() => expect(c.querySelector('[data-testid="fleet-kanban"]')).not.toBeNull())
+  return c
+}
+
 describe('kanbanColumn', () => {
-  it('uses the hint, lets a process error win, and falls back on process status', async () => {
-    const { kanbanColumn } = await import(annotationsModulePath)
+  it('places a session by its status hint only, never by runtime state', async () => {
+    const { kanbanColumn } = await import(boardModulePath)
     expect(kanbanColumn({ status: 'waiting', hints: { status: 'needs-input' } })).toBe('needs-input')
     // A set status always wins over runtime state.
     expect(kanbanColumn({ status: 'error', hints: { status: 'done' } })).toBe('done')
@@ -46,6 +56,11 @@ describe('kanbanColumn', () => {
     expect(kanbanColumn({ status: 'idle', hints: { status: 'paused' } })).toBe('parked')
     expect(kanbanColumn({ status: 'idle', hints: { status: 'Ready For_Review' } })).toBe('ready-for-review')
     expect(kanbanColumn({ status: 'idle', hints: { status: 'blocked' } })).toBe('needs-input')
+    // `waiting` is agent-deck's word for "waiting for the human": Needs input.
+    expect(kanbanColumn({ status: 'idle', hints: { status: 'waiting' } })).toBe('needs-input')
+    expect(kanbanColumn({ status: 'idle', hints: { status: 'Waiting' } })).toBe('needs-input')
+    // Inherited object keys are not statuses.
+    expect(kanbanColumn({ status: 'idle', hints: { status: 'constructor' } })).toBe('untriaged')
     // No (or an unknown) status is untriaged, never runtime-derived.
     expect(kanbanColumn({ status: 'running', hints: {} })).toBe('untriaged')
     expect(kanbanColumn({ status: 'idle' })).toBe('untriaged')
@@ -68,9 +83,8 @@ describe('Fleet status kanban', () => {
     fleetViewSignal.value = 'status'
   })
 
-  it('is the default view, with semantic columns and tiles that agree', async () => {
-    const { FleetPane } = await import(paneModulePath)
-    const c = mount(html`<${FleetPane}/>`)
+  it('groups workers into semantic columns, with tiles that agree', async () => {
+    const c = await mountStatusBoard()
     const cols = [...c.querySelectorAll('[data-testid^="kanban-col-"]')].map(e => e.dataset.testid.replace('kanban-col-', ''))
     expect(cols).toEqual(['needs-input', 'ready-for-review', 'in-progress', 'parked', 'done', 'untriaged'])
     const idsIn = (col) => [...c.querySelectorAll(`[data-testid="kanban-col-${col}"] [data-testid="kanban-card"]`)].map(e => e.dataset.sessionId).sort()
@@ -82,18 +96,17 @@ describe('Fleet status kanban', () => {
     expect(idsIn('untriaged')).toEqual(['busy', 'untagged'])
     expect(c.querySelector('[data-testid="kanban-col-error"]')).toBeNull()
 
-    // Tiles count the same buckets; no runtime tiles remain.
+    // Semantic tiles count the same buckets, in their own row; the runtime
+    // tiles stay and still count every local session (conductor included).
     const tile = (id) => c.querySelector(`[data-testid="fleet-stat-${id}"] .num`)?.textContent
     expect([tile('needs-input'), tile('ready-for-review'), tile('in-progress'), tile('parked'), tile('done'), tile('untriaged')])
       .toEqual(['1', '1', '1', '1', '1', '2'])
-    for (const gone of ['running', 'waiting', 'error', 'idle']) {
-      expect(c.querySelector(`[data-testid="fleet-stat-${gone}"]`)).toBeNull()
-    }
+    expect(c.querySelector('[data-testid="fleet-status-stats"] [data-testid="fleet-stat-running"]')).toBeNull()
+    expect([tile('running'), tile('waiting'), tile('error'), tile('idle')]).toEqual(['2', '3', '2', '1'])
   })
 
   it('shows runtime only as a secondary dot, with a quiet hint for a stopped parked/done session', async () => {
-    const { FleetPane } = await import(paneModulePath)
-    const c = mount(html`<${FleetPane}/>`)
+    const c = await mountStatusBoard()
     const card = (id) => c.querySelector(`[data-testid="kanban-card"][data-session-id="${id}"]`)
     expect(card('busy').querySelector('[data-testid="kanban-proc-dot"]').getAttribute('title')).toBe('process: running')
     expect(card('busy').querySelector('[data-testid="kanban-proc-warn"]')).toBeNull()
@@ -106,8 +119,7 @@ describe('Fleet status kanban', () => {
   })
 
   it('shows the full headline, a note excerpt and the group badge on the card', async () => {
-    const { FleetPane } = await import(paneModulePath)
-    const c = mount(html`<${FleetPane}/>`)
+    const c = await mountStatusBoard()
     const card = c.querySelector('[data-testid="kanban-card"][data-session-id="asks"]')
     expect(card.querySelector('[data-testid="kanban-headline"]').textContent).toBe('FDP-2115 scoping · needs your call on rule scope')
     expect(card.querySelector('[data-testid="kanban-note"]').textContent).toBe('Open · which rules qualify? · second line')
@@ -115,8 +127,7 @@ describe('Fleet status kanban', () => {
   })
 
   it('renders Goal / Current state / Decision needed with chip, ticket and group', async () => {
-    const { FleetPane } = await import(paneModulePath)
-    const c = mount(html`<${FleetPane}/>`)
+    const c = await mountStatusBoard()
     const card = c.querySelector('[data-testid="kanban-card"][data-session-id="review"]')
     const fields = [...card.querySelectorAll('.kb-field')].map(f => [f.querySelector('dt').textContent, f.querySelector('dd').textContent])
     expect(fields).toEqual([
@@ -133,8 +144,7 @@ describe('Fleet status kanban', () => {
   it('pins the conductor in a banner above the board, out of the kanban', async () => {
     const { conductorBannerOpenSignal } = await import(uiStateModulePath)
     conductorBannerOpenSignal.value = true
-    const { FleetPane } = await import(paneModulePath)
-    const c = mount(html`<${FleetPane}/>`)
+    const c = await mountStatusBoard()
     const banner = c.querySelector('[data-testid="conductor-banner"]')
     expect(banner.dataset.sessionId).toBe('brain-16')
     expect(c.querySelector('[data-testid="fleet-pane"]').firstElementChild).toBe(banner)
@@ -149,14 +159,13 @@ describe('Fleet status kanban', () => {
   })
 
   it('switches to the group grid and back', async () => {
-    const { FleetPane } = await import(paneModulePath)
-    const c = mount(html`<${FleetPane}/>`)
+    const c = await mountStatusBoard()
     c.querySelector('[data-testid="fleet-view-groups"]').click()
-    await new Promise(r => setTimeout(r, 0))
-    expect(c.querySelector('[data-testid="fleet-kanban"]')).toBeNull()
+    await waitFor(() => expect(c.querySelector('[data-testid="fleet-kanban"]')).toBeNull())
     expect(c.querySelector('[data-testid="fleet-group-card"]')).not.toBeNull()
+    expect(c.querySelector('[data-testid="conductor-banner"]')).toBeNull()
+    expect(c.querySelector('[data-testid="fleet-status-stats"]')).toBeNull()
     c.querySelector('[data-testid="fleet-view-status"]').click()
-    await new Promise(r => setTimeout(r, 0))
-    expect(c.querySelector('[data-testid="fleet-kanban"]')).not.toBeNull()
+    await waitFor(() => expect(c.querySelector('[data-testid="fleet-kanban"]')).not.toBeNull())
   })
 })

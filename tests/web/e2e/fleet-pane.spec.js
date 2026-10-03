@@ -22,11 +22,8 @@
 import { test, expect } from '@playwright/test'
 
 test.describe('fleet pane', () => {
-  test.beforeEach(async ({ page, request }) => {
+  test.beforeEach(async ({ request }) => {
     await request.post('/__fixture/reset')
-    // These specs cover the group-card grid; the board now defaults to the
-    // status kanban, so pin the Groups view (fleetViewSignal / agentdeck.fleetView).
-    await page.addInitScript(() => localStorage.setItem('agentdeck.fleetView', '"groups"'))
   })
 
   test('cold load lands on the Fleet tab', async ({ page }) => {
@@ -38,17 +35,16 @@ test.describe('fleet pane', () => {
     await expect(page.locator('.term-wrap')).toBeHidden()
   })
 
-  test('stat tiles count semantic status, not runtime state', async ({ page }) => {
+  test('stat tiles show counts derived from the fixture seed', async ({ page }) => {
     await page.goto('/')
     await expect(page.locator('[data-testid="fleet-pane"]')).toBeVisible({ timeout: 5000 })
-    // Seed: four sessions, none annotated with a status hint → all untriaged.
+    // Seed: sess-002 running; sess-001/003/004 idle; nothing waiting/error.
     // toHaveText retries, which absorbs the initial empty render before the
     // first SSE menu snapshot hydrates sessionsSignal.
-    await expect(page.locator('[data-testid="fleet-stat-untriaged"] .num')).toHaveText('4')
-    for (const id of ['needs-input', 'ready-for-review', 'in-progress', 'parked', 'done']) {
-      await expect(page.locator(`[data-testid="fleet-stat-${id}"] .num`)).toHaveText('0')
-    }
-    await expect(page.locator('[data-testid="fleet-stat-running"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
+    await expect(page.locator('[data-testid="fleet-stat-waiting"] .num')).toHaveText('0')
+    await expect(page.locator('[data-testid="fleet-stat-error"] .num')).toHaveText('0')
+    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('3')
     await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('4')
   })
 
@@ -95,14 +91,13 @@ test.describe('fleet pane', () => {
     await expect(page.locator('.work-head .cur')).toHaveText('innotrade-api')
   })
 
-  test('live update: a runtime status change reaches the session tile within ~2s', async ({ page, request }) => {
+  test('live update: status change is reflected in stat tiles within ~2s', async ({ page, request }) => {
     await page.goto('/')
     await expect(page.locator('[data-testid="fleet-pane"]')).toBeVisible({ timeout: 5000 })
 
-    // Runtime state no longer drives tiles; it is the per-session dot.
     // Pin the starting state so the post-mutation assertion can't false-pass.
-    const dot = page.locator('[data-testid="fleet-session-tile"][data-session-id="sess-001"] .tdot')
-    await expect(dot).toHaveClass(/\bidle\b/)
+    await expect(page.locator('[data-testid="fleet-stat-waiting"] .num')).toHaveText('0')
+    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('3')
 
     // Simulate a TUI-side transition through the fixture admin endpoint.
     // This bypasses the web mutator (no immediate SSE broadcast), so the
@@ -112,9 +107,10 @@ test.describe('fleet pane', () => {
     const res = await request.post('/__fixture/session/sess-001/status?to=waiting')
     expect(res.status()).toBe(204)
 
-    await expect(dot).toHaveClass(/\bwaiting\b/, { timeout: 4000 })
-    // Semantic tiles are unaffected by a runtime change.
-    await expect(page.locator('[data-testid="fleet-stat-untriaged"] .num')).toHaveText('4')
+    await expect(page.locator('[data-testid="fleet-stat-waiting"] .num')).toHaveText('1', { timeout: 4000 })
+    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('2')
+    // Untouched tiles stay put.
+    await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
     await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('4')
   })
 
@@ -129,6 +125,53 @@ test.describe('fleet pane', () => {
     await expect(page.locator('[data-testid="fleet-remote-age"]')).toHaveText('Last known state · 37s ago')
     await expect(page.locator('[data-testid="fleet-stat-remotes"]')).toHaveText('1/2 remotes online')
     await expect(page.locator('[data-testid="fleet-stat-sessions"] .num')).toHaveText('7')
+    // Runtime tiles add the remotes' counts (fixture: 1 running, 1 waiting,
+    // 1 idle) to the local ones.
+    await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('2')
+    await expect(page.locator('[data-testid="fleet-stat-waiting"] .num')).toHaveText('1')
+    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('4')
     await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+  })
+
+  // The Fleet board's layout is a per-browser choice (agentdeck.fleetView).
+  // A viewer who never touched the Status | Groups toggle keeps the group
+  // grid; the semantic-status kanban is opt-in.
+  test('Groups is the default board view; the status kanban stays unloaded', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+    await expect(page.locator('[data-testid="fleet-view-groups"]')).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.locator('[data-testid="fleet-view-status"]')).toHaveAttribute('aria-pressed', 'false')
+    await expect(page.locator('[data-testid="fleet-kanban"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="conductor-banner"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="fleet-status-stats"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
+    expect(await page.evaluate(() => localStorage.getItem('agentdeck.fleetView'))).toBe('"groups"')
+  })
+
+  test('Status view is opt-in: kanban, semantic tiles and conductor banner, persisted across reloads', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+    await page.locator('[data-testid="fleet-view-status"]').click()
+
+    // Seed: sess-001 is a conductor (pinned in the banner, out of the
+    // columns); the other three carry no status hint, so they are untriaged.
+    await expect(page.locator('[data-testid="fleet-kanban"]')).toBeVisible()
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="conductor-banner"]')).toHaveAttribute('data-session-id', 'sess-001')
+    await expect(page.locator('[data-testid="kanban-col-untriaged"] [data-testid="kanban-card"]')).toHaveCount(3)
+    await expect(page.locator('[data-testid="fleet-stat-untriaged"] .num')).toHaveText('3')
+    await expect(page.locator('[data-testid="fleet-stat-needs-input"] .num')).toHaveText('0')
+    // The runtime tiles stay next to the semantic ones.
+    await expect(page.locator('[data-testid="fleet-stat-running"] .num')).toHaveText('1')
+    await expect(page.locator('[data-testid="fleet-stat-idle"] .num')).toHaveText('3')
+
+    await page.reload()
+    await expect(page.locator('[data-testid="fleet-kanban"]')).toBeVisible()
+    await expect(page.locator('[data-testid="fleet-view-status"]')).toHaveAttribute('aria-pressed', 'true')
+
+    await page.locator('[data-testid="fleet-view-groups"]').click()
+    await expect(page.locator('[data-testid="fleet-group-card"]')).toHaveCount(3)
+    await expect(page.locator('[data-testid="fleet-kanban"]')).toHaveCount(0)
+    await expect(page.locator('[data-testid="conductor-banner"]')).toHaveCount(0)
   })
 })

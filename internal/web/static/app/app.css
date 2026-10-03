@@ -834,7 +834,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .fleet { flex: 1; min-height: 0; overflow: auto; padding: 18px 18px 80px; display: flex; flex-direction: column; gap: 22px; }
 
 .fleet-stats {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px;
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px;
 }
 .fleet-stats .stat {
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -1296,8 +1296,10 @@ body[data-rail="hidden"] .rightrail { display: none; }
   border-radius: 3px; padding: 0 4px;
 }
 
-/* Fleet board: status kanban (default view) and the Status | Groups toggle. */
-.fleet-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+/* Fleet board: status kanban (opt-in view) and the Status | Groups toggle. */
+/* The negative margin keeps the section head as tall as its one-line text,
+   so adding the toggle does not push the default group grid down. */
+.fleet-view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin: -4px 0; }
 .fleet-view-toggle button {
   border: 0; background: transparent; color: var(--muted); cursor: pointer;
   font-family: var(--mono); font-size: 11px; padding: 3px 10px;
@@ -1383,8 +1385,10 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .cb-empty { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .cb-empty code { font-family: var(--mono); font-size: 11.5px; }
 
-/* Semantic stat tiles: one per kanban column, coloured like its column.
-   Overrides the old positional (nth-child) runtime colours. */
+/* Semantic stat tiles (Status view): their own row under the runtime tiles,
+   one per kanban column, coloured like its column. The tone classes override
+   the positional (nth-child) colours the runtime row uses. */
+.fleet-status-stats { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
 .fleet-stats .stat.tone-err::after   { background: var(--tn-red); }
 .fleet-stats .stat.tone-warn::after  { background: var(--tn-yellow); }
 .fleet-stats .stat.tone-info::after  { background: var(--tn-blue); }
@@ -1396,6 +1400,4 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .fleet-stats .stat.tone-info .num { color: var(--tn-blue); }
 .fleet-stats .stat.tone-ok .num   { color: var(--tn-green); }
 .fleet-stats .stat.tone-muted .num { color: var(--text-dim); }
-.fleet-stats .stat[data-testid="fleet-stat-cost"]::after { background: var(--accent); }
-.fleet-stats .stat[data-testid="fleet-stat-sessions"]::after { background: var(--tn-cyan); }
 .kb-col.muted { border-top-color: var(--muted); }

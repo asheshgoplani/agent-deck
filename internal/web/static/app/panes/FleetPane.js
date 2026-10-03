@@ -1,5 +1,6 @@
 // panes/FleetPane.js -- At-a-glance overview built from the live menu.
-// Renders four stat tiles + a single "Groups" grid of GroupCards. The bundle
+// Renders four stat tiles + a single "Groups" grid of GroupCards (or, when
+// the viewer opts in, the status kanban from FleetStatusBoard.js). The bundle
 // has additional sections (conductor graph, watcher strip) that depend on
 // fields the API does not expose; those render as informative empty hints.
 import { html } from 'htm/preact'
@@ -7,9 +8,8 @@ import { useEffect, useMemo, useState } from 'preact/hooks'
 import { apiFetch } from '../api.js'
 import { menuModelSignal } from '../dataModel.js'
 import { selectSession } from '../state.js'
-import { activeTabSignal, fleetViewSignal, conductorBannerOpenSignal } from '../uiState.js'
-import { renderMarkdown } from '../miniMarkdown.js'
-import { AnnotationLine, KANBAN_COLUMNS, cardFields, kanbanColumn, noteExcerpt, processHint, sessionAnnotation } from '../annotations.js'
+import { activeTabSignal, fleetViewSignal } from '../uiState.js'
+import { AnnotationLine } from '../annotations.js'
 
 const EMPTY_REMOTE_COUNTS = {
   remotesOnline: 0, remotesOffline: 0, sessions: 0,
@@ -114,101 +114,23 @@ function GroupCard({ name, items, onSelect }) {
   `
 }
 
-// Within a column, most recently active first; ties break on title. Runtime
-// state does not rank cards: the column already says where the work is.
-const byRecency = (a, b) =>
-  String(b.lastAccessedAt || '').localeCompare(String(a.lastAccessedAt || '')) || a.title.localeCompare(b.title)
-
-// One kanban card, written to be read at normal zoom: name, then status
-// chip · ticket · group, then the conductor's labeled Goal / Current state /
-// Decision needed. Sessions without those hints fall back to the full
-// headline plus a few lines of their note.
-function KanbanCard({ s, groupLabel, onSelect }) {
-  const ann = sessionAnnotation(s)
-  const proc = processHint(s)
-  const fields = cardFields(s)
-  const note = fields.length ? '' : noteExcerpt((s.hints || {}).note, 3)
-  return html`
-    <button class="kb-card" data-testid="kanban-card" data-session-id=${s.id} onClick=${() => onSelect(s.id)}>
-      <div class="kb-top">
-        <span class="kb-title">${s.title}</span>
-        ${proc.warn && html`<span class=${`kb-proc-warn ${proc.severe ? 'severe' : ''}`} data-testid="kanban-proc-warn">${proc.warn}</span>`}
-        <span class=${`tdot ${s.status}`} title=${proc.title} aria-label=${proc.title} data-testid="kanban-proc-dot"/>
-      </div>
-      <div class="kb-meta">
-        ${ann.status && html`<span class=${`hint-status ${ann.statusTone}`} data-testid="kanban-status">${ann.status}</span>`}
-        ${ann.ticket && html`<span class="hint-ticket" data-testid="kanban-ticket">${ann.ticket}</span>`}
-        ${groupLabel && html`<span class="kb-group">${groupLabel}</span>`}
-      </div>
-      ${fields.length
-        ? html`<dl class="kb-fields" data-testid="kanban-fields">
-            ${fields.map(f => html`
-              <div class=${`kb-field ${f.key}`} key=${f.key} data-testid=${`kanban-field-${f.key}`}>
-                <dt>${f.label}</dt><dd>${f.value}</dd>
-              </div>`)}
-          </dl>`
-        : ann.headline && html`<div class="kb-headline" data-testid="kanban-headline">${ann.headline}</div>`}
-      ${note && html`<div class="kb-note" data-testid="kanban-note">${note}</div>`}
-    </button>
-  `
-}
-
-// Conductors orchestrate the fleet, so they are pinned above the board rather
-// than filed as a card in a status column or group.
-export const isConductorSession = (s) => s.kind === 'conductor' || !!(s.raw && s.raw.isConductor)
-
-// The pinned orchestrator banner: name + process status, its headline, and
-// (expanded by default) the markdown fleet summary it keeps in its `note`
-// (or `summary`) hint. Collapse state persists per browser.
-function ConductorBanner({ s, onSelect }) {
-  const open = conductorBannerOpenSignal.value
-  const h = s.hints || {}
-  const summary = h.summary || h.note || ''
-  const ann = sessionAnnotation(s)
-  return html`
-    <section class=${`conductor-banner ${s.status}`} data-testid="conductor-banner" data-session-id=${s.id}>
-      <div class="cb-head">
-        <span class="cb-kicker">CONDUCTOR</span>
-        <span class=${`tdot ${s.status}`} title=${'process: ' + s.status}/>
-        <button class="cb-name" title="Open conductor terminal" onClick=${() => onSelect(s.id)}>${s.title}</button>
-        <span class=${`cb-proc ${s.status}`} data-testid="conductor-banner-status">${s.status}</span>
-        ${ann.headline && html`<span class="cb-headline" title=${ann.headline}>${ann.headline}</span>`}
-        ${summary && html`
-          <button class="cb-toggle" aria-expanded=${open} data-testid="conductor-banner-toggle"
-                  onClick=${() => { conductorBannerOpenSignal.value = !open }}>
-            ${open ? 'Hide summary ▴' : 'Show summary ▾'}
-          </button>`}
-      </div>
-      ${summary && open && html`<div class="cb-body cc-md" data-testid="conductor-banner-summary">${renderMarkdown(summary)}</div>`}
-      ${!summary && html`<div class="cb-empty">No fleet summary yet: the conductor writes one with <code>agent-deck session annotate ${s.title} --note-stdin</code>.</div>`}
-    </section>
-  `
-}
-
-function StatusKanban({ sessions, groupLabels, onSelect }) {
-  const buckets = {}
-  for (const s of sessions) (buckets[kanbanColumn(s)] ||= []).push(s)
-  const cols = KANBAN_COLUMNS.filter(c => c.always || (buckets[c.id] || []).length)
-  return html`
-    <div class="kanban" data-testid="fleet-kanban" style=${`--kb-cols:${cols.length}`}>
-      ${cols.map(c => {
-        const items = (buckets[c.id] || []).slice().sort(byRecency)
-        return html`
-          <div class=${`kb-col ${c.tone}`} key=${c.id} data-testid=${`kanban-col-${c.id}`}>
-            <div class="kb-col-head">
-              <span class="kb-col-name">${c.label}</span>
-              <span class="kb-col-count">${items.length}</span>
-            </div>
-            <div class="kb-stack">
-              ${items.length
-                ? items.map(s => html`<${KanbanCard} key=${s.id} s=${s} groupLabel=${groupLabels[s.group] || s.group} onSelect=${onSelect}/>`)
-                : html`<div class="kb-empty">—</div>`}
-            </div>
-          </div>
-        `
-      })}
-    </div>
-  `
+// The Status view (panes/FleetStatusBoard.js) is opt-in, so its code is
+// fetched the first time a viewer picks it rather than shipped with the
+// default Groups view. Same on-demand pattern as the group stats panel in
+// AppShell.js; a failed fetch resets so a later render retries.
+let statusBoardLoad = null
+function useStatusBoard(needed) {
+  const [board, setBoard] = useState(null)
+  useEffect(() => {
+    if (!needed || board) return
+    let alive = true
+    statusBoardLoad = statusBoardLoad || import('./FleetStatusBoard.js')
+    statusBoardLoad
+      .then(m => { if (alive) setBoard(m) })
+      .catch(() => { statusBoardLoad = null })
+    return () => { alive = false }
+  }, [needed, board])
+  return needed ? board : null
 }
 
 export function FleetPane() {
@@ -242,9 +164,21 @@ export function FleetPane() {
     }
   }, [])
 
+  const localCounts = useMemo(() => ({
+    running: sessions.filter(s => s.status === 'running').length,
+    waiting: sessions.filter(s => s.status === 'waiting').length,
+    error:   sessions.filter(s => s.status === 'error').length,
+    idle:    sessions.filter(s => s.status === 'idle').length,
+  }), [sessions])
   const remoteCounts = remoteFleet?.counts || EMPTY_REMOTE_COUNTS
   const remotes = Array.isArray(remoteFleet?.remotes) ? remoteFleet.remotes : []
   const remoteTotal = remoteCounts.remotesOnline + remoteCounts.remotesOffline
+  const counts = {
+    running: localCounts.running + remoteCounts.running,
+    waiting: localCounts.waiting + remoteCounts.waiting,
+    error: localCounts.error + remoteCounts.error,
+    idle: localCounts.idle + remoteCounts.idle,
+  }
   const sessionTotal = sessions.length + remoteCounts.sessions
   const totalCost = sessions.reduce((n, s) => n + (s.cost || 0), 0)
 
@@ -252,15 +186,13 @@ export function FleetPane() {
     selectSession(id)
     activeTabSignal.value = 'terminal'
   }
-  const view = fleetViewSignal.value === 'groups' ? 'groups' : 'status'
-  const conductors = sessions.filter(isConductorSession)
-  const workers = sessions.filter(s => !isConductorSession(s))
-  // Tiles count exactly what the columns hold: workers by semantic status.
-  const statusCounts = useMemo(() => {
-    const n = {}
-    for (const s of workers) n[kanbanColumn(s)] = (n[kanbanColumn(s)] || 0) + 1
-    return n
-  }, [workers])
+  // Groups is the default; the status kanban is opt-in (agentdeck.fleetView).
+  const view = fleetViewSignal.value === 'status' ? 'status' : 'groups'
+  const board = useStatusBoard(view === 'status')
+  // Conductors are pinned in a banner above the Status board, so its columns
+  // and tiles hold the workers only.
+  const conductors = board ? sessions.filter(board.isConductorSession) : []
+  const workers = board ? sessions.filter(s => !board.isConductorSession(s)) : []
   // Leaf group name ("stride/ws1" -> "ws1"), as the group cards show it.
   const groupLabels = useMemo(
     () => Object.fromEntries(groups.map(g => [g.path, g.name || g.label])),
@@ -269,12 +201,12 @@ export function FleetPane() {
 
   return html`
     <div class="fleet" data-testid="fleet-pane">
-      ${conductors.map(s => html`<${ConductorBanner} key=${s.id} s=${s} onSelect=${onSelect}/>`)}
+      ${board && conductors.map(s => html`<${board.ConductorBanner} key=${s.id} s=${s} onSelect=${onSelect}/>`)}
       <div class="fleet-stats">
-        ${KANBAN_COLUMNS.filter(c => c.always || statusCounts[c.id]).map(c => html`
-          <div key=${c.id} class=${`stat tone-${c.tone || 'none'}`} data-testid=${`fleet-stat-${c.id}`}>
-            <div class="lbl">${c.tile}</div><div class="num">${statusCounts[c.id] || 0}</div>
-          </div>`)}
+        <div class="stat" data-testid="fleet-stat-running"><div class="lbl">RUNNING</div><div class="num running">${counts.running}</div></div>
+        <div class="stat" data-testid="fleet-stat-waiting"><div class="lbl">WAITING</div><div class="num waiting">${counts.waiting}</div></div>
+        <div class="stat" data-testid="fleet-stat-error"><div class="lbl">ERROR</div><div class="num error">${counts.error}</div></div>
+        <div class="stat" data-testid="fleet-stat-idle"><div class="lbl">IDLE</div><div class="num idle">${counts.idle}</div></div>
         <div class="stat" data-testid="fleet-stat-cost"><div class="lbl">SPEND · TODAY</div><div class="num cost">$${totalCost.toFixed(2)}</div></div>
         <div class="stat" data-testid="fleet-stat-sessions">
           <div class="lbl">SESSIONS</div>
@@ -284,6 +216,7 @@ export function FleetPane() {
           </div>`}
         </div>
       </div>
+      ${board && html`<${board.StatusTiles} sessions=${workers}/>`}
 
       ${(remoteTotal > 0 || remoteError) && html`
         <div class="fleet-section" data-testid="fleet-remotes-section">
@@ -303,15 +236,15 @@ export function FleetPane() {
         <div class="fleet-section-head">
           <span class="kicker">${view === 'status' ? 'BY STATUS' : 'GROUPS'}</span>
           <span class="sub-kicker">${groups.length} group${groups.length === 1 ? '' : 's'} · ${sessions.length} ${remoteTotal > 0 ? 'local ' : ''}session${sessions.length === 1 ? '' : 's'}</span>
-          <div class="fleet-view-toggle" role="group" aria-label="Board layout">
+          ${sessions.length > 0 && html`<div class="fleet-view-toggle" role="group" aria-label="Board layout">
             ${[['status', 'Status'], ['groups', 'Groups']].map(([id, label]) => html`
               <button key=${id} class=${view === id ? 'on' : ''} aria-pressed=${view === id}
                       data-testid=${`fleet-view-${id}`} onClick=${() => { fleetViewSignal.value = id }}>${label}</button>
             `)}
-          </div>
+          </div>`}
         </div>
         ${sessions.length > 0 && view === 'status'
-          ? html`<${StatusKanban} sessions=${workers} groupLabels=${groupLabels} onSelect=${onSelect}/>`
+          ? board && html`<${board.StatusKanban} sessions=${workers} groupLabels=${groupLabels} onSelect=${onSelect}/>`
           : groups.length === 0 || sessions.length === 0
           ? html`<div style="font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 16px;">
               No sessions yet. Use the sidebar to create one.
