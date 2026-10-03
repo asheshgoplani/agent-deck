@@ -45,6 +45,32 @@ func TestUpdateCheck_EnsuresTheTimerOncePerProcess(t *testing.T) {
 	}
 }
 
+// When the check starts the unattended updater, the child (`update
+// --unattended`) heals the timer; the TUI does not run a second heal.
+func TestUpdateCheck_InstallRunLeavesTheHealToTheChild(t *testing.T) {
+	stubUpdateSettings(t, session.UpdateSettings{})
+	t.Setenv(update.SkipUpdateCheckEnv, "")
+	calls := 0
+	prev, prevRun := ensureUpdateTimer, runUnattendedUpdate
+	ensureUpdateTimer = func(*slog.Logger) (update.TimerEnsureResult, error) {
+		calls++
+		return update.TimerEnsureResult{Action: update.TimerActionNone}, nil
+	}
+	f := &fakeUpdater{output: "ok\n"}
+	runUnattendedUpdate = f.run
+	t.Cleanup(func() { ensureUpdateTimer, runUnattendedUpdate = prev, prevRun })
+
+	h := newRestartTestHome(t)
+	h.autoUpdateSuppressedReason = ""
+	cmd := h.handleUpdateCheck(updateCheckMsg{info: &update.UpdateInfo{Available: true, CurrentVersion: "1.16.0", LatestVersion: "1.16.1"}})
+	if _, ok := cmd().(unattendedInstallFinishedMsg); !ok {
+		t.Fatal("an available release starts the updater child")
+	}
+	if !h.updateTimerEnsureStarted || h.maybeEnsureUpdateTimer() != nil || calls != 0 {
+		t.Fatalf("the child's run is this process's heal: started=%v calls=%d", h.updateTimerEnsureStarted, calls)
+	}
+}
+
 func TestRemoteTimerPreviewLine(t *testing.T) {
 	next := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
 	cases := []struct {

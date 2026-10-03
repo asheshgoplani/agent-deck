@@ -450,10 +450,15 @@ func handleRemoteList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION / LAST POLL / TIMER")
+	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION / LAST POLL")
 	fmt.Println(strings.Repeat("-", 84))
 	for name, rc := range config.Remotes {
-		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), remoteVersionColumn(versions[name], Version)+" / "+remotePollColumn(configuredRemotePoll(polls[name], rc))+" / "+remoteTimerColumn(versions[name].Timer))
+		status := remoteVersionColumn(versions[name], Version) + " / " + remotePollColumn(configuredRemotePoll(polls[name], rc))
+		// The remote's own update timer, once a --check has read it (#2472).
+		if timer := versions[name].Timer; timer != nil {
+			status += " / " + remoteTimerColumn(timer)
+		}
+		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), status)
 	}
 	fmt.Printf("\nTotal: %d remotes (controller v%s)\n", len(config.Remotes), Version)
 }

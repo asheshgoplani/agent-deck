@@ -52,10 +52,9 @@ func probeRemoteTimer(ctx context.Context, p remoteProber, found bool) update.Ti
 
 // remoteTimerColumn is the timer cell of the `remote list` text table.
 func remoteTimerColumn(st *update.TimerStatus) string {
-	if st == nil {
-		return "timer -"
-	}
 	switch {
+	case st == nil:
+		return "timer -"
 	case st.Kind == update.TimerKindUnknown:
 		return "timer unknown"
 	case !st.Installed:

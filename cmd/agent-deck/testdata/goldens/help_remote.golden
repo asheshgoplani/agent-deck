@@ -19,6 +19,8 @@ Commands:
   attach <name> <session>   Attach to a remote session
   rename <name> <session> <new-title>  Rename a remote session
   update [name | --all]     Install/update agent-deck on remote(s)
+  update --install-timer [name | --all]
+                            Install/migrate each remote's own update timer
 
 Examples:
   agent-deck remote add dev user@dev-box

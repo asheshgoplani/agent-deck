@@ -142,15 +142,13 @@ func (h *Home) handleUpdateCheck(msg updateCheckMsg) tea.Cmd {
 	// The nudge banner takes a row from the embedded pane.
 	h.syncEmbeddedTerminalGeometry()
 	// auto_install: start the unattended updater in the background.
-	install := h.maybeAutoInstall(msg.info)
-	timer := h.maybeEnsureUpdateTimer()
-	switch {
-	case timer == nil:
+	if install := h.maybeAutoInstall(msg.info); install != nil {
+		// The updater child is `update --unattended`, which installs or
+		// heals the timer itself first: that is this process's one heal.
+		h.updateTimerEnsureStarted = true
 		return install
-	case install == nil:
-		return timer
 	}
-	return tea.Batch(install, timer)
+	return h.maybeEnsureUpdateTimer()
 }
 
 // maybeEnsureUpdateTimer installs or heals this host's update timer once

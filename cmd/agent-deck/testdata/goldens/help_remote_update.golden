@@ -12,5 +12,7 @@ Options:
         Allow reinstalling or downgrading
   --dry-run
         Verify artifacts and show destination paths without installing
+  --install-timer
+        Install or migrate each remote's own update timer instead of updating its binary
   --json
         Output every result as JSON
