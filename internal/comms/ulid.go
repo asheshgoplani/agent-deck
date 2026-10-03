@@ -45,13 +45,11 @@ func NewID(now time.Time) string {
 	ulidLastMS, ulidLastRand = ms, entropy
 	ulidMu.Unlock()
 
+	// The 48-bit time field is the low six bytes of the big-endian ms.
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], uint64(ms)) //nolint:gosec // G115: Unix ms is positive for any real clock
 	var raw [16]byte
-	raw[0] = byte(ms >> 40)
-	raw[1] = byte(ms >> 32)
-	raw[2] = byte(ms >> 24)
-	raw[3] = byte(ms >> 16)
-	raw[4] = byte(ms >> 8)
-	raw[5] = byte(ms)
+	copy(raw[:6], ts[2:])
 	copy(raw[6:], entropy[:])
 	return encodeBase32(raw)
 }
