@@ -118,7 +118,10 @@ func readHumanOutboxLocked(conductor string) ([]HumanOutboxRecord, error) {
 }
 
 // AppendHumanOutbox queues text for the human. The same text (by hash) within
-// 24 h returns the existing record with created=false instead of a second one.
+// 24 h returns the existing record with created=false instead of a second one,
+// except that urgent never dedups into info: a pending info record with that
+// text is upgraded to urgent in place, and one already delivered (as part of
+// a digest) gets a new urgent record. Both return created=true.
 func AppendHumanOutbox(conductor, tier, text string) (rec HumanOutboxRecord, created bool, err error) {
 	tier = strings.ToLower(strings.TrimSpace(tier))
 	if tier != TurnTierUrgent && tier != TurnTierInfo {
@@ -143,9 +146,18 @@ func appendHumanOutboxLocked(conductor, tier, text string, now time.Time) (Human
 		return HumanOutboxRecord{}, false, err
 	}
 	for i := len(existing) - 1; i >= 0; i-- {
-		if r := existing[i]; r.TextHash == th && now.Sub(r.TS) < humanOutboxDedupWindow {
+		r := existing[i]
+		if r.TextHash != th || now.Sub(r.TS) >= humanOutboxDedupWindow {
+			continue
+		}
+		if tier != TurnTierUrgent || r.Tier != TurnTierInfo {
 			return r, false, nil
 		}
+		if r.Acked {
+			break // delivered only as info: queue it again as urgent
+		}
+		existing[i].Tier = TurnTierUrgent
+		return existing[i], true, rewriteHumanOutboxLocked(conductor, existing, lastHumanDigestFlush(existing), now)
 	}
 	rec := HumanOutboxRecord{ID: GenerateID(), TS: now, Tier: tier, Text: text, TextHash: th}
 	return rec, true, appendJSONLine(HumanOutboxPath(conductor), rec)
@@ -231,19 +243,25 @@ func AckHumanOutbox(conductor string, ids []string) (int, error) {
 		if flushed {
 			lastFlush = now
 		}
-		var buf bytes.Buffer
-		for _, r := range all {
-			if r.Tier == humanDigestMarkerTier || (r.Acked && now.Sub(r.TS) >= humanOutboxDedupWindow) {
-				continue
-			}
-			writeJSONLine(&buf, r)
-		}
-		if !lastFlush.IsZero() {
-			writeJSONLine(&buf, HumanOutboxRecord{ID: "digest", TS: lastFlush, Tier: humanDigestMarkerTier, Acked: true})
-		}
-		return writeFileDurable(HumanOutboxPath(conductor), buf.Bytes(), 0o644)
+		return rewriteHumanOutboxLocked(conductor, all, lastFlush, now)
 	})
 	return acked, err
+}
+
+// rewriteHumanOutboxLocked replaces the outbox file with all, dropping acked
+// items older than the dedup window and keeping one digest-flush marker.
+func rewriteHumanOutboxLocked(conductor string, all []HumanOutboxRecord, lastFlush, now time.Time) error {
+	var buf bytes.Buffer
+	for _, r := range all {
+		if r.Tier == humanDigestMarkerTier || (r.Acked && now.Sub(r.TS) >= humanOutboxDedupWindow) {
+			continue
+		}
+		writeJSONLine(&buf, r)
+	}
+	if !lastFlush.IsZero() {
+		writeJSONLine(&buf, HumanOutboxRecord{ID: "digest", TS: lastFlush, Tier: humanDigestMarkerTier, Acked: true})
+	}
+	return writeFileDurable(HumanOutboxPath(conductor), buf.Bytes(), 0o644)
 }
 
 func writeJSONLine(buf *bytes.Buffer, v any) {
@@ -323,13 +341,26 @@ func humanLineTier(line string) (tier, text string) {
 // and queues nothing. An empty reply (the bridge asking only whether the
 // digest is due) leaves the retire counts untouched.
 func TierFilter(conductor, reply string, now time.Time) (sendNow []string, queued int, err error) {
+	return TierFilterReply(conductor, "", reply, now)
+}
+
+// TierFilterReply is TierFilter for a caller that may retry the same reply
+// (the bridge's OS-heartbeat scan re-sends a reply whose delivery failed).
+// A non-empty replyID equal to the one the ledger last saw recomputes from the
+// counts that call started with, so N failed sends of one reply are still one
+// retire cycle; an empty replyID makes every call a new cycle (heartbeats).
+func TierFilterReply(conductor, replyID, reply string, now time.Time) (sendNow []string, queued int, err error) {
 	if strings.TrimSpace(reply) == "" {
 		return nil, 0, nil
 	}
 	settings := GetConductorSettings()
 	threshold := settings.GetNeedRetireCycles()
 	err = withHumanOutboxLock(conductor, func() error {
-		prev := loadHumanNeedCounts(conductor)
+		ledger := loadHumanNeedLedger(conductor)
+		prev := ledger.Counts
+		if replyID != "" && replyID == ledger.ReplyID {
+			prev = ledger.Base // a retry of the same reply: not a new cycle
+		}
 		counts := map[string]int{}
 		for _, raw := range strings.Split(reply, "\n") {
 			line := strings.TrimSpace(raw)
@@ -356,7 +387,11 @@ func TierFilter(conductor, reply string, now time.Time) (sendNow []string, queue
 				}
 			}
 		}
-		data, merr := json.Marshal(map[string]any{"counts": counts, "updated_at": now})
+		next := humanNeedLedger{Counts: counts, UpdatedAt: now}
+		if replyID != "" {
+			next.ReplyID, next.Base = replyID, prev
+		}
+		data, merr := json.Marshal(next)
 		if merr != nil {
 			return merr
 		}
@@ -365,13 +400,27 @@ func TierFilter(conductor, reply string, now time.Time) (sendNow []string, queue
 	return sendNow, queued, err
 }
 
-func loadHumanNeedCounts(conductor string) map[string]int {
-	var ledger struct {
-		Counts map[string]int `json:"counts"`
-	}
+// humanNeedLedger is <conductor>.need.json: the retire counts after the last
+// reply, plus that reply's id and the counts it started from (Base) so a retry
+// of the same reply recomputes instead of advancing.
+type humanNeedLedger struct {
+	Counts    map[string]int `json:"counts"`
+	ReplyID   string         `json:"reply_id,omitempty"`
+	Base      map[string]int `json:"base,omitempty"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
+func loadHumanNeedLedger(conductor string) humanNeedLedger {
+	var ledger humanNeedLedger
 	data, err := os.ReadFile(humanNeedLedgerPath(conductor))
-	if err != nil || json.Unmarshal(data, &ledger) != nil || ledger.Counts == nil {
-		return map[string]int{} // missing or corrupt: start fresh
+	if err != nil || json.Unmarshal(data, &ledger) != nil {
+		ledger = humanNeedLedger{} // missing or corrupt: start fresh
 	}
-	return ledger.Counts
+	if ledger.Counts == nil {
+		ledger.Counts = map[string]int{}
+	}
+	if ledger.Base == nil {
+		ledger.Base = map[string]int{}
+	}
+	return ledger
 }

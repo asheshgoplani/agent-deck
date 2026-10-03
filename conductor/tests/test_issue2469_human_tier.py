@@ -13,15 +13,26 @@ held in memory. Now:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import bridge  # noqa: E402  pylint: disable=wrong-import-position
+
+
+@pytest.fixture(autouse=True)
+def _fresh_send_locks():
+    # Each test runs its own event loop; a lock is bound to the loop it waited in.
+    bridge._HUMAN_SEND_LOCKS.clear()
+    yield
+    bridge._HUMAN_SEND_LOCKS.clear()
 
 NEED = "NEED: api-fix - staging or prod?"
 
@@ -171,3 +182,99 @@ class TestNeedScanUsesTierFilter2469:
         text = slack_app.client.chat_postMessage.await_args.kwargs["text"]
         assert text == "Conductor alert:\n" + NEED + "\n\nDigest (1 update):\n- docs merged"
         assert cli.acked == ["i9"]
+
+
+SCAN_CONFIG = {"heartbeat_interval": 15, "telegram": {"configured": False, "user_id": None}}
+OPS = [{"name": "ops", "profile": "default", "heartbeat_enabled": True}]
+
+
+class TestNeedScanRetryIsOneCycle2469:
+    def test_failed_sends_retry_with_the_same_reply_id(self):
+        """Every retry of one reply carries the same --reply-id, so the Go
+        ledger recomputes instead of advancing toward STILL BLOCKED/drop."""
+        slack_app = mock.MagicMock()
+        slack_app.client.chat_postMessage = mock.AsyncMock(side_effect=RuntimeError("slack down"))
+        cli = FakeCLI(tier_filter={"send_now": [NEED], "queued": 0, "digest_due": False, "digest": []})
+        state: dict = {}
+        with mock.patch.object(bridge, "discover_conductors", return_value=OPS), \
+             mock.patch.object(bridge, "get_session_output", return_value=NEED), \
+             mock.patch.object(bridge, "run_cli", cli):
+            for _ in range(3):
+                _run(bridge.need_scan_cycle(SCAN_CONFIG, state, lambda: None,
+                                            slack_app=slack_app, slack_channel_id="C1"))
+            assert state == {}  # nothing delivered: the reply stays due
+            slack_app.client.chat_postMessage = mock.AsyncMock()
+            _run(bridge.need_scan_cycle(SCAN_CONFIG, state, lambda: None,
+                                        slack_app=slack_app, slack_channel_id="C1"))
+        rid = hashlib.sha256(NEED.encode("utf-8")).hexdigest()
+        tf_calls = [c for c in cli.calls if c[:2] == ("conductor", "tier-filter")]
+        assert len(tf_calls) == 4
+        assert all(c[c.index("--reply-id") + 1] == rid for c in tf_calls)
+        assert slack_app.client.chat_postMessage.await_args.kwargs["text"] == "Conductor alert:\n" + NEED
+        assert state["ops"]["reply"] == rid
+
+    def test_heartbeat_path_sends_no_reply_id(self):
+        cli = FakeCLI(tier_filter={"send_now": [], "queued": 0, "digest_due": False, "digest": []})
+        with mock.patch.object(bridge, "run_cli", cli):
+            bridge.tier_filter_reply("ops", "default", NEED, {})
+        assert "--reply-id" not in cli.calls[0]
+
+
+class StatefulCLI:
+    """A tiny in-memory outbox behind run_cli: list, ack, and a tier-filter
+    whose digest is the unacked info items whenever there is an urgent line."""
+
+    def __init__(self, items):
+        self.items = [dict(i, acked=False) for i in items]
+
+    def __call__(self, *args, profile=None, timeout=120, input_text=None):
+        pending = [i for i in self.items if not i["acked"]]
+        if args[:2] == ("conductor", "outbox") and "--ack" in args:
+            ids = {args[i + 1] for i, a in enumerate(args) if a == "--ack"}
+            for i in self.items:
+                i["acked"] = i["acked"] or i["id"] in ids
+            return _ok({"acked": len(ids)})
+        if args[:2] == ("conductor", "outbox"):
+            return _ok(pending)
+        if args[:2] == ("conductor", "tier-filter"):
+            send = [l for l in (input_text or "").splitlines() if l.startswith("NEED:")]
+            info = [i for i in pending if i["tier"] == "info"]
+            return _ok({"send_now": send, "queued": 0, "digest_due": bool(send and info),
+                        "digest": info if send else []})
+        return _fail()
+
+
+class TestOneSenderPerConductor2469:
+    def test_outbox_loop_and_scan_never_send_the_same_digest_twice(self):
+        cli = StatefulCLI([
+            {"id": "u1", "tier": "urgent", "text": "prod is down"},
+            {"id": "i1", "tier": "info", "text": "lane C merged"},
+        ])
+        sent: list[str] = []
+
+        async def slow_send(text):
+            await asyncio.sleep(0.2)  # a slow platform: the other path runs meanwhile
+            sent.append(text)
+            return True
+
+        async def post(channel, text):
+            return await slow_send(text)
+
+        slack_app = mock.MagicMock()
+        slack_app.client.chat_postMessage = mock.AsyncMock(side_effect=post)
+
+        async def both():
+            await asyncio.gather(
+                bridge.human_outbox_cycle([{"name": "ops", "profile": "default"}], {}, slow_send, now=1.0),
+                bridge.need_scan_cycle(SCAN_CONFIG, {}, lambda: None,
+                                       slack_app=slack_app, slack_channel_id="C1"),
+            )
+
+        with mock.patch.object(bridge, "discover_conductors", return_value=OPS), \
+             mock.patch.object(bridge, "get_session_output", return_value="NEED: dup needs a key"), \
+             mock.patch.object(bridge, "_human_outbox_signature", return_value=(1, 1)), \
+             mock.patch.object(bridge, "run_cli", cli):
+            _run(both())
+        assert len(sent) == 2, sent
+        assert sum(t.count("lane C merged") for t in sent) == 1, sent
+        assert all(i["acked"] for i in cli.items)

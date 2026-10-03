@@ -205,8 +205,9 @@ func runConductorTierFilter(stdout io.Writer, stdin io.Reader, args []string, pr
 	fs := flag.NewFlagSet("conductor tier-filter", flag.ContinueOnError)
 	conductor := fs.String("conductor", "", "conductor name (default: the conductor running this command)")
 	asJSON := fs.Bool("json", false, "emit JSON")
+	replyID := fs.String("reply-id", "", "id of this reply; re-filtering the same id (a retried send) does not advance the retire count")
 	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck conductor tier-filter [--json] [--conductor <name>] < reply.txt")
+		fmt.Fprintln(stdout, "Usage: agent-deck conductor tier-filter [--json] [--conductor <name>] [--reply-id <id>] < reply.txt")
 		fmt.Fprintln(stdout, "Apply the human tier rules to a conductor reply on stdin: urgent lines to send now")
 		fmt.Fprintln(stdout, "(retired after [conductor] need_retire_cycles), info lines queued, digest when due.")
 		fs.SetOutput(stdout)
@@ -225,7 +226,7 @@ func runConductorTierFilter(stdout io.Writer, stdin io.Reader, args []string, pr
 	}
 	now := time.Now()
 	res := tierFilterResult{Conductor: name, SendNow: []string{}, Digest: []session.HumanOutboxRecord{}}
-	sendNow, queued, err := session.TierFilter(name, string(reply), now)
+	sendNow, queued, err := session.TierFilterReply(name, *replyID, string(reply), now)
 	if err != nil {
 		return err
 	}

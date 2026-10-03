@@ -169,3 +169,21 @@ func TestIssue2469_TierFilterCLI(t *testing.T) {
 		t.Fatalf("info-only reply: %+v (arrays must encode as [], not null)", res)
 	}
 }
+
+// --reply-id: the bridge's scan re-filters a reply whose send failed; the
+// retries must keep returning the line instead of retiring it.
+func TestIssue2469_TierFilterCLIReplyIDRetry(t *testing.T) {
+	withTempHomeAndConfig(t, "")
+	const need = "NEED: api-fix - staging or prod?"
+	for attempt := 1; attempt <= 4; attempt++ {
+		var out bytes.Buffer
+		args := []string{"--json", "--conductor", "ops", "--reply-id", "abc123"}
+		if err := runConductorTierFilter(&out, strings.NewReader(need), args, ""); err != nil {
+			t.Fatal(err)
+		}
+		var res tierFilterResult
+		if err := json.Unmarshal(out.Bytes(), &res); err != nil || len(res.SendNow) != 1 || res.SendNow[0] != need {
+			t.Fatalf("attempt %d: %q (err=%v)", attempt, out.String(), err)
+		}
+	}
+}

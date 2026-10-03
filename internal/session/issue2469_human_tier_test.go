@@ -94,13 +94,13 @@ func TestIssue2469_NeedRetirePersistsAcrossRestart(t *testing.T) {
 			t.Fatalf("cycle %d: got %q, want %q", cycle+1, send, w)
 		}
 	}
-	if counts := loadHumanNeedCounts("ops"); counts[need] != 4 {
+	if counts := loadHumanNeedLedger("ops").Counts; counts[need] != 4 {
 		t.Fatalf("ledger on disk must hold 4 cycles, got %v", counts)
 	}
 	// An empty reply (a digest-only query from the bridge) is not a reply
 	// without the line: the count must survive it.
-	if send, _ := mustTierFilter(t, "ops", "", now); send != nil || loadHumanNeedCounts("ops")[need] != 4 {
-		t.Fatalf("empty reply must leave the ledger alone: send=%q counts=%v", send, loadHumanNeedCounts("ops"))
+	if send, _ := mustTierFilter(t, "ops", "", now); send != nil || loadHumanNeedLedger("ops").Counts[need] != 4 {
+		t.Fatalf("empty reply must leave the ledger alone: send=%q counts=%v", send, loadHumanNeedLedger("ops").Counts)
 	}
 	// The line disappears: its count resets, so a recurrence alerts again.
 	if send, _ := mustTierFilter(t, "ops", "[STATUS] All clear.", now); send != nil {
@@ -242,5 +242,78 @@ func TestIssue2469_IdentityCarriesSentinel(t *testing.T) {
 		if inst.IdentityCarriesSentinel() {
 			t.Fatalf("%s: must not claim the sentinel section", name)
 		}
+	}
+}
+
+// The OS-heartbeat scan retries a reply whose delivery failed. Each retry
+// must not count as a retire cycle, or a NEED line is retired (or first seen
+// as STILL BLOCKED) without ever reaching the human.
+func TestIssue2469_RetriedReplyDoesNotAdvanceRetire(t *testing.T) {
+	humanTierHome(t, "")
+	const need = "NEED: api-fix - staging or prod?"
+	reply := "[STATUS] 1 needs you.\n" + need
+	now := time.Now()
+	filter := func(id string) []string {
+		t.Helper()
+		send, _, err := TierFilterReply("ops", id, reply, now)
+		if err != nil {
+			t.Fatalf("TierFilterReply: %v", err)
+		}
+		return send
+	}
+	for attempt := 1; attempt <= 5; attempt++ { // 4 failed sends, then the one that lands
+		if send := filter("r1"); !reflect.DeepEqual(send, []string{need}) {
+			t.Fatalf("attempt %d of the same reply: got %q, want the NEED line", attempt, send)
+		}
+	}
+	if counts := loadHumanNeedLedger("ops").Counts; counts[need] != 1 {
+		t.Fatalf("retries of one reply are one cycle, ledger=%v", counts)
+	}
+	// New replies still advance and retire as before, retries included.
+	if send := filter("r2"); !reflect.DeepEqual(send, []string{need}) {
+		t.Fatalf("cycle 2: %q", send)
+	}
+	still := []string{"STILL BLOCKED (3 cycles, no reply): " + need}
+	for i := 0; i < 2; i++ {
+		if send := filter("r3"); !reflect.DeepEqual(send, still) {
+			t.Fatalf("cycle 3 (try %d): %q", i+1, send)
+		}
+	}
+	if send := filter("r4"); send != nil {
+		t.Fatalf("cycle 4 must drop the line, got %q", send)
+	}
+}
+
+// Urgent never dedups into info: the same text queued as info first must not
+// leave the urgent notify waiting for the digest window.
+func TestIssue2469_UrgentAfterInfoSameTextIsUpgraded(t *testing.T) {
+	humanTierHome(t, "")
+	info, created, err := AppendHumanOutbox("ops", TurnTierInfo, "prod is down")
+	if err != nil || !created {
+		t.Fatalf("info append: created=%v err=%v", created, err)
+	}
+	up, created, err := AppendHumanOutbox("ops", TurnTierUrgent, "prod is down")
+	if err != nil || !created || up.Tier != TurnTierUrgent || up.ID != info.ID {
+		t.Fatalf("urgent after pending info must upgrade it in place: %+v created=%v err=%v", up, created, err)
+	}
+	pending, _ := ListHumanOutbox("ops", true)
+	if len(pending) != 1 || pending[0].Tier != TurnTierUrgent {
+		t.Fatalf("one pending urgent record, got %+v", pending)
+	}
+	if again, created, _ := AppendHumanOutbox("ops", TurnTierInfo, "prod is down"); created || again.Tier != TurnTierUrgent {
+		t.Fatalf("info after urgent dedups into the urgent record: %+v created=%v", again, created)
+	}
+
+	// Text already delivered as info (in a digest) gets a fresh urgent record.
+	d, _, _ := AppendHumanOutbox("ops", TurnTierInfo, "disk at 90%")
+	if n, err := AckHumanOutbox("ops", []string{d.ID}); err != nil || n != 1 {
+		t.Fatalf("ack: n=%d err=%v", n, err)
+	}
+	u, created, err := AppendHumanOutbox("ops", TurnTierUrgent, "disk at 90%")
+	if err != nil || !created || u.ID == d.ID || u.Tier != TurnTierUrgent || u.Acked {
+		t.Fatalf("urgent after delivered info must queue anew: %+v created=%v err=%v", u, created, err)
+	}
+	if _, created, _ := AppendHumanOutbox("ops", TurnTierUrgent, "disk at 90%"); created {
+		t.Fatal("a second urgent with the same text dedups again")
 	}
 }
