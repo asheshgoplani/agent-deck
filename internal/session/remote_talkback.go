@@ -247,7 +247,12 @@ func readExportJournals(since time.Time) ([]exportJournal, error) {
 // no_notify opt-out filter applies as in ExportPendingRecords, and a top-level
 // conductor's own journal never ships: the producer drops its turns on
 // purpose (self_conductor), so the legacy export never carries them either.
-// Its seq still enters the cursor, so a later reparent ships only new turns.
+// Nor does a child whose parent is in this host's registry: it belongs to that
+// parent (whose own inbox already holds its records), so none of its journal
+// lines, ledger completions or _unowned records cross to the --into conductor.
+// Only children whose parent this host cannot resolve (the cross-host
+// conductor) and orphans cross. Both skipped journals still enter the cursor,
+// so a later reparent to the cross-host conductor ships only new turns.
 func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	horizon := time.Now().Add(-remoteTalkbackHorizon)
 	next := RemoteCursor{Seqs: map[string]int64{}, TS: cursor.TS}
@@ -264,6 +269,20 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	if err != nil {
 		return RemoteExport{}, fmt.Errorf("export: unreadable inbox %s: %w", UnownedInboxID, err)
 	}
+	// The _unowned records this batch considers: appended since the cursor's
+	// position and inside the horizon.
+	start := 0
+	if n := cursor.Unowned.N; n > 0 && n <= len(unowned) && unownedMark(unowned[n-1]) == cursor.Unowned.Last {
+		start = n
+	}
+	var pendingUnowned []TransitionNotificationEvent
+	for _, ev := range unowned[start:] {
+		if !ev.Timestamp.Before(horizon) { // older: the receiver would only answer AlreadyPresent
+			pendingUnowned = append(pendingUnowned, ev)
+		}
+	}
+	// Only the profiles these records name are opened, so an old record of a
+	// deleted profile never recreates its store.
 	profiles := map[string]struct{}{}
 	for _, j := range journals {
 		profiles[j.profile] = struct{}{}
@@ -271,7 +290,7 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	for _, ev := range ledger {
 		profiles[ev.Profile] = struct{}{}
 	}
-	for _, ev := range unowned {
+	for _, ev := range pendingUnowned {
 		profiles[ev.Profile] = struct{}{}
 	}
 	reg, err := loadExportRegistry(profiles)
@@ -305,8 +324,10 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		child, lines := j.child, j.lines
 		last := lines[len(lines)-1].Seq
 		next.Seqs[child] = last
-		if reg.selfConductor[exportRegistryKey(j.profile, child)] {
-			continue // self_conductor: the producer committed none of these
+		if key := exportRegistryKey(j.profile, child); reg.selfConductor[key] || reg.localParent[key] {
+			// self_conductor: the producer committed none of these. A child of
+			// a parent on this host: they are that parent's turns.
+			continue
 		}
 		since, known := cursor.Seqs[child]
 		rendered, dropped := renderJournalTurns(lines, lastCommittedBefore(committed[child], lines[0].TS))
@@ -361,17 +382,10 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 			out = append(out, ev)
 		}
 	}
-	start := 0
-	if n := cursor.Unowned.N; n > 0 && n <= len(unowned) && unownedMark(unowned[n-1]) == cursor.Unowned.Last {
-		start = n
-	}
 	if len(unowned) > 0 {
 		next.Unowned = RemoteUnownedMark{N: len(unowned), Last: unownedMark(unowned[len(unowned)-1])}
 	}
-	for _, ev := range unowned[start:] {
-		if ev.Timestamp.Before(horizon) {
-			continue // the receiver would only answer AlreadyPresent
-		}
+	for _, ev := range pendingUnowned {
 		noteTS(ev.Timestamp)
 		// The journal delivers its own turns. Everything else crosses from
 		// here: a flip the producer could not classify (Seq 0), a turn the
@@ -385,7 +399,7 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 		out = append(out, ev)
 	}
 
-	out = reg.dropOptedOut(dedupByEventFingerprint(out))
+	out = reg.dropOptedOut(reg.dropLocallyParented(dedupByEventFingerprint(out)))
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].Timestamp.Equal(out[j].Timestamp) {
 			return out[i].Timestamp.Before(out[j].Timestamp)

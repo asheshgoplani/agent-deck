@@ -156,6 +156,7 @@ func dropSuppressedChildren(events []TransitionNotificationEvent) ([]TransitionN
 type exportRegistry struct {
 	optedOut      map[string]bool   // instanceAcceptsTransitionEvents is false
 	selfConductor map[string]bool   // isSelfSuppressedConductor (self_conductor)
+	localParent   map[string]bool   // its parent is in the same registry
 	titles        map[string]string // for journal records that carry no title
 }
 
@@ -166,7 +167,8 @@ func exportRegistryKey(profile, child string) string {
 // loadExportRegistry reads each named profile's registry once. A blank profile
 // is skipped: nothing can be proven about its children, so they are kept.
 func loadExportRegistry(profiles map[string]struct{}) (exportRegistry, error) {
-	reg := exportRegistry{optedOut: map[string]bool{}, selfConductor: map[string]bool{}, titles: map[string]string{}}
+	reg := exportRegistry{optedOut: map[string]bool{}, selfConductor: map[string]bool{},
+		localParent: map[string]bool{}, titles: map[string]string{}}
 	for profile := range profiles {
 		profile = strings.TrimSpace(profile)
 		if profile == "" {
@@ -184,8 +186,15 @@ func loadExportRegistry(profiles map[string]struct{}) (exportRegistry, error) {
 		if err != nil {
 			return exportRegistry{}, fmt.Errorf("export: cannot read the %q registry to honor notification opt-outs: %w", profile, err)
 		}
+		byID := make(map[string]*Instance, len(instances))
+		for _, inst := range instances {
+			byID[inst.ID] = inst
+		}
 		for _, inst := range instances {
 			key := exportRegistryKey(profile, inst.ID)
+			if resolveParentNotificationTarget(inst, byID) != nil {
+				reg.localParent[key] = true
+			}
 			if !instanceAcceptsTransitionEvents(inst) {
 				reg.optedOut[key] = true
 			}
@@ -211,6 +220,20 @@ func (r exportRegistry) dropOptedOut(events []TransitionNotificationEvent) []Tra
 			ev.ChildTitle = r.titles[key]
 		}
 		out = append(out, ev)
+	}
+	return out
+}
+
+// dropLocallyParented removes the records of children whose parent is on
+// this host: they belong to that parent, not to a conductor draining the host
+// from elsewhere. Used by the cursor export only; the legacy full export keeps
+// shipping them.
+func (r exportRegistry) dropLocallyParented(events []TransitionNotificationEvent) []TransitionNotificationEvent {
+	out := make([]TransitionNotificationEvent, 0, len(events))
+	for _, ev := range events {
+		if !r.localParent[exportRegistryKey(ev.Profile, ev.ChildSessionID)] {
+			out = append(out, ev)
+		}
 	}
 	return out
 }

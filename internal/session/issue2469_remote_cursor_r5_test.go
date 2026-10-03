@@ -98,7 +98,7 @@ func TestIssue2469PR3R5_RemoteOrphanTurnsStillCross(t *testing.T) {
 }
 
 // The cursor still moves past a suppressed conductor's lines, so a conductor
-// later parented under another session ships only its new turns.
+// later parented under the cross-host conductor ships only its new turns.
 func TestIssue2469PR3R5_ReparentedConductorShipsOnlyNewTurns(t *testing.T) {
 	f := newTurnTestFixture(t)
 	f.child.Title = "conductor-remotebox"
@@ -114,8 +114,7 @@ func TestIssue2469PR3R5_ReparentedConductorShipsOnlyNewTurns(t *testing.T) {
 		t.Fatalf("drain 1: want nothing written and the cursor at seq 1, got %+v %v", res, err)
 	}
 
-	f.child.ParentSessionID = f.parent.ID
-	saveFixtureRegistry(t, f)
+	parentOnOtherHost(t, f)
 	f.appendTurn(t, fxHuman("u1", "merge lane B"), fxAssistantText("a1", "Lane B merged."))
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
 	res, err = RunRemoteTalkback(context.Background(), "boxd", "conductor-x", deps)

@@ -5,7 +5,8 @@ package session
 // snapshot edge of a flip recordTerminalTurns already emitted) never crosses,
 // so one turn arrives once and a background (info) turn never wakes a
 // cross-host conductor; a stale repeat past the dedup TTL still crosses as its
-// own turn, also at the journal's trim boundary.
+// own turn, also at the journal's trim boundary. The fixture's child is under
+// the cross-host conductor, so its producer commits to _unowned.
 
 import (
 	"context"
@@ -32,12 +33,13 @@ func wakeCountingDeps(t *testing.T, wakes *int) RemoteTalkbackDeps {
 // a second line for it; the cursor export must ship the turn once.
 func TestIssue2469PR3R4_SnapshotEdgeRepeatShipsOnce(t *testing.T) {
 	f := newTurnTestFixture(t)
+	parentOnOtherHost(t, f)
 	f.appendTurn(t, fxHuman("u0", "merge lane A"), fxAssistantText("a0", "Lane A merged."))
 	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
 
-	local := f.inboxRecords(t)
+	local := unownedRecords(t)
 	journal, err := ReadTurnJournal(f.child.ID, 0)
 	if err != nil || len(journal) != 2 || len(local) != 1 {
 		t.Fatalf("setup: want 1 local record and 2 journal lines, got %d and %d (%v)", len(local), len(journal), err)
@@ -66,6 +68,7 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatShipsOnce(t *testing.T) {
 // lands afterwards. The next drain must not bring the consumed turn back.
 func TestIssue2469PR3R4_SnapshotEdgeRepeatOfConsumedTurnStaysHome(t *testing.T) {
 	f := newTurnTestFixture(t)
+	parentOnOtherHost(t, f)
 	f.appendTurn(t, fxHuman("u0", "merge lane A"), fxAssistantText("a0", "Lane A merged."))
 	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
@@ -81,7 +84,7 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatOfConsumedTurnStaysHome(t *testing.T) 
 	wakes = 0
 	time.Sleep(10 * time.Millisecond)
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-	if got := f.inboxRecords(t); len(got) != 1 {
+	if got := unownedRecords(t); len(got) != 1 {
 		t.Fatalf("the local producer must drop the repeat: %d records", len(got))
 	}
 	res, err := RunRemoteTalkback(context.Background(), "boxd", "conductor-x", deps)
@@ -97,6 +100,7 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatOfConsumedTurnStaysHome(t *testing.T) 
 // journaled as urgent; it must not cross and wake the cross-host conductor.
 func TestIssue2469PR3R4_InfoTurnSnapshotRepeatDoesNotWake(t *testing.T) {
 	f := newTurnTestFixture(t)
+	parentOnOtherHost(t, f)
 	f.appendTurn(t, fxHuman("u0", "run the board"), fxAssistantText("a0", "Starting lanes."))
 	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
