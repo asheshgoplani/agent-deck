@@ -45,6 +45,9 @@ const (
 	// no longer protected: audit retention applies and its return is an
 	// explicit Gap, never a silent restart.
 	activeConsumerFor = DefaultRetentionDays * 24 * time.Hour
+	// activityRefresh: how often a pass that changed nothing but still has
+	// records pending refreshes the consumer's activity stamp.
+	activityRefresh = 24 * time.Hour
 )
 
 var consumerNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$`)
@@ -312,10 +315,9 @@ func HasNothingPending(dir, consumer string) bool {
 		return false
 	}
 	if !flagged {
-		// The daemon writes the flag before any record for the consumer is
-		// visible, so with no flag nothing is pending beyond what the last
-		// pass left.
-		return !found || f.Pending == 0
+		// Never addressed: no flag and no state. A state without a flag
+		// (a flag write is best effort) is doubt: read the log.
+		return !found
 	}
 	return found && f.Pending == 0 && f.Through >= flag.Last && f.Epoch == flag.Epoch
 }
@@ -382,13 +384,24 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 			pass.Gap = &note
 		}
 	case f.Watermark > end || f.Through > end:
-		// The log is shorter than this consumer has read (restored from a
-		// copy older than the last high-water mark): records committed from
-		// here on reuse cursors it already passed. Resume at the end, said.
-		note := GapNote{Gap: Gap{Consumer: consumer, From: end + 1, To: max(f.Watermark, f.Through)}, Reason: "restored", Resumed: end, At: now.UnixMilli()}
-		old := f
-		f = newConsumerFile(consumer, r.Store, end, now)
-		f.Generation, f.Created, f.Gaps = old.Generation+1, old.Created, old.Gaps
+		// The log is shorter than this consumer has read: it was restored
+		// from a copy taken after the last persisted high-water mark (an
+		// older copy bumps the epoch, handled above). Records from the
+		// high-water mark on may be new ones reusing cursors the consumer
+		// already passed, so the consumer re-reads from there (at least
+		// once; ids make repeats recognisable) and the ambiguous range is
+		// reported. A watermark still inside the log is kept.
+		resume := min(f.Watermark, end, events.Cursor(r.Store.HWM))
+		note := GapNote{Gap: Gap{Consumer: consumer, From: resume + 1, To: max(f.Watermark, f.Through)}, Reason: "restored", Resumed: resume, At: now.UnixMilli()}
+		f.Watermark, f.Through = resume, resume
+		kept := f.Acked[:0]
+		for _, a := range f.Acked {
+			if a <= resume {
+				kept = append(kept, a)
+			}
+		}
+		f.Acked = kept
+		f.Normalize()
 		f.addGap(note)
 		pass.Gap = &note
 	}
@@ -450,9 +463,10 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 		}
 	}
 	f.Through, f.Pending = through, left
-	if found && stateFingerprint(f) == before {
-		// Nothing changed: no write, and a pass that changed nothing is not
-		// activity (Updated decides whether the consumer holds compaction).
+	if found && stateFingerprint(f) == before && (f.Pending == 0 || now.UnixMilli()-f.Updated < activityRefresh.Milliseconds()) {
+		// Nothing changed: no write. A reader that still has records
+		// pending refreshes its activity once a day, so a consumer that only
+		// peeks keeps holding them against compaction.
 		return f, nil
 	}
 	f.Updated = now.UnixMilli()

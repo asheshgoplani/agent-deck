@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -44,11 +43,25 @@ const (
 	scanTimeout = 10 * time.Second
 )
 
-// profileNameRE is what a ledger directory may be named after: a plain
-// profile name (letters, digits, ._- ; a leading _ for internal profiles
-// such as the test suite's). A glob, a word with a colon or a space (debris from a
-// listing that was parsed as profile names) is refused.
-var profileNameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
+// junkProfileChars are characters no profile name agent-deck creates
+// carries but that show up when a listing is parsed as profile names
+// ('*', 'Total:', '[x]'): such a name never gets a ledger directory.
+const junkProfileChars = "*?[]:"
+
+// validProfileName accepts what agent-deck itself accepts as a profile
+// (any single path element) except glob characters, ':' and control
+// characters.
+func validProfileName(profile string) bool {
+	if len(profile) > 255 || strings.ContainsAny(profile, junkProfileChars) || profile == "." || profile == ".." {
+		return false
+	}
+	for _, c := range profile {
+		if c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
 
 // Dir returns "<data>/comms/<profile>", the ledger directory for a profile.
 // The profile is validated as a single local path element.
@@ -56,7 +69,7 @@ func Dir(profile string) (string, error) {
 	if profile == "" {
 		profile = "default"
 	}
-	if !profileNameRE.MatchString(profile) || !filepath.IsLocal(profile) || filepath.Base(profile) != profile {
+	if !validProfileName(profile) || !filepath.IsLocal(profile) || filepath.Base(profile) != profile {
 		return "", fmt.Errorf("comms: invalid profile %q", profile)
 	}
 	root, err := agentpaths.EffectiveDataPath(ledgerDirName, ledgerDirName)
@@ -344,7 +357,17 @@ func (l *Ledger) raiseFlags(r Record, cursor events.Cursor) {
 // flag lost between a crash and its rewrite is seen again. Only Last is a
 // flag's business; a flag already newer is kept.
 func (l *Ledger) repairFlags(seen map[string]PendingFlag) {
+	end := l.bus.Cursor()
 	for to, w := range seen {
+		// A recipient with no state yet (a ledger written before consumer
+		// states existed) starts at the end of the log as of this open:
+		// what came before was delivered by the inbox, and its first read
+		// is not a false state_lost.
+		if _, err := os.Stat(ConsumerPath(l.dir, to)); errors.Is(err, os.ErrNotExist) {
+			if err := EnsureConsumer(l.dir, to, l.store, end); err == nil {
+				l.consumers[to] = true
+			}
+		}
 		fl, ok := ReadFlag(l.dir, to)
 		if ok && fl.Epoch == l.store.Epoch && fl.Last >= w.Last {
 			l.flags[to] = fl

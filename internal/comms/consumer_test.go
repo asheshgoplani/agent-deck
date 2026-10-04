@@ -537,7 +537,7 @@ func TestALostStateFileIsAGap(t *testing.T) {
 // new records (which reuse those cursors) are not skipped.
 func TestAWatermarkPastTheEndResumesAtTheEnd(t *testing.T) {
 	l, r, dir := openPair(t)
-	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "x"})
+	first := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "x"})
 	if err := writeConsumer(dir, ConsumerFile{ConsumerState: ConsumerState{Consumer: "X", Store: l.Store().ID, Epoch: l.Store().Epoch, Generation: 1, Watermark: 50},
 		Through: 50, Updated: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
@@ -554,16 +554,64 @@ func TestAWatermarkPastTheEndResumesAtTheEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if gap == nil || gap.Reason != "restored" {
+	if gap == nil || gap.Reason != "restored" || gap.To != 50 {
 		t.Fatalf("restored: %+v", gap)
 	}
-	_ = next
-	got, _ = pass(t, r, "X", nil)
-	if len(got) != 0 {
-		t.Fatalf("resumed at the end: %v", got)
+	// Re-read from the last persisted high-water mark (0 here): the record
+	// committed after the restore is delivered, the older one again (at
+	// least once).
+	if len(got) != 2 || got[0] != first || got[1] != next {
+		t.Fatalf("records at or below the end after a restore must be delivered: %v", got)
 	}
-	newer := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "newer"})
-	if got, _ = pass(t, r, "X", nil); len(got) != 1 || got[0] != newer {
-		t.Fatalf("a record after the resume is pending: %v", got)
+}
+
+// Verifier round 4 (#5): profile names agent-deck itself accepts keep a
+// ledger; listing debris does not.
+func TestLedgerDirAcceptsRealProfileNamesOnly(t *testing.T) {
+	for _, good := range []string{"default", "my work", "café", "work+acme", "a@b", "_test"} {
+		if _, err := Dir(good); err != nil {
+			t.Fatalf("Dir refused %q: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"*", "Total:", "_test*", "[x]", "a?b", "../x", "a/b", ".", "..", "tab\tname"} {
+		if _, err := Dir(bad); err == nil {
+			t.Fatalf("Dir accepted %q", bad)
+		}
+	}
+}
+
+// Verifier round 4 (#7): opening a ledger written before consumer states
+// existed creates them at the end, so the first read reports no false loss.
+func TestARecipientWithoutStateAtOpenStartsAtTheEndWithoutAFalseGap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "p1 era"})
+	_ = l.Close()
+	if err := os.RemoveAll(filepath.Join(dir, cursorsDirName)); err != nil { // as a P1 daemon left it
+		t.Fatal(err)
+	}
+	l2, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var gap *GapNote
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if gap != nil {
+		t.Fatalf("a P1-era ledger is not a lost state: %+v", gap)
+	}
+	newer := mustCommit(t, l2, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "p2"})
+	if got, _ := pass(t, r, "X", nil); len(got) != 1 || got[0] != newer {
+		t.Fatalf("records after the open are pending: %v", got)
 	}
 }

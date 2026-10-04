@@ -939,12 +939,12 @@ func TestCommsIngest_OnlyRealProfilesWithEntriesGetALedgerDir(t *testing.T) {
 	if entries, _ = os.ReadDir(root); len(entries) != 1 || entries[0].Name() != "default" {
 		t.Fatalf("the real profile with an entry gets its ledger: %v", entries)
 	}
-	for _, bad := range []string{"*", "Total:", "_test*", "a b", "../x", ".hidden"} {
+	for _, bad := range []string{"*", "Total:", "_test*", "../x"} {
 		if _, err := comms.Dir(bad); err == nil {
 			t.Fatalf("comms.Dir accepted %q", bad)
 		}
 	}
-	for _, good := range []string{"default", "personal", "work-2", "a.b_c"} {
+	for _, good := range []string{"default", "personal", "work-2", "a.b_c", "my work"} {
 		if _, err := comms.Dir(good); err != nil {
 			t.Fatalf("comms.Dir refused %q: %v", good, err)
 		}

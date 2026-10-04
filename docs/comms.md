@@ -210,7 +210,9 @@ Frozen now in `internal/comms/receipt.go` with fixtures under
   per-consumer state file is the consumer's position, written durably
   (file and directory fsync). A lost state file, or a watermark past the
   end of a log restored from a copy older than its high-water mark, is an
-  explicit gap (`state_lost`, `restored`), never a silent skip.
+  explicit gap (`state_lost`, `restored`), never a silent skip; after a
+  restore the consumer re-reads from the last persisted high-water mark,
+  so a record committed after the restore is delivered (at least once).
 
 Four rules from the MonoCode relay comparison are part of this contract:
 
@@ -324,8 +326,12 @@ before the first record addressed to it becomes visible, so it reads
 from that record on whoever reads first; a name nobody ever addressed
 starts at the end of the log. Records committed before a recipient's
 state existed (a ledger written by a P1 daemon, which created none) are
-not pending for it: the inbox delivered them, and `msg export` still
-shows them. The pending flag is only a fast-path hint and never decides
+not pending for it: the daemon creates such states at the end of the log
+when it opens it, because the inbox delivered what came before, and
+`msg export` still shows them. A ledger directory is created only for a
+profile one of whose own sessions has spooled something, and never for a
+name with glob characters, `:` or control characters (listing debris such
+as `*` or `Total:`). The pending flag is only a fast-path hint and never decides
 where a consumer starts. A state from another ledger store or epoch is
 rebuilt (generation + 1) at the start of the new epoch (`store.json`
 `epoch_start`: what the restored copy holds may or may not have been
