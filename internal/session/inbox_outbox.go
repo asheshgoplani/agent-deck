@@ -719,15 +719,17 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	if event.TurnFingerprint == "" {
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
-	// A turn the parent's consumed-turn ledger already holds is dropped by its
-	// next drain, so it is already delivered: writing it again only adds a
-	// duplicate record and log line, and waking the parent would cost one empty
-	// "[INBOX]" turn (issue #2240). A child with no turn signal flapping
-	// running->waiting re-sent one fingerprint 136 times (issue #2481). Report
-	// it committed (exactly-once effects) without writing anything.
-	if turnAlreadyConsumed(parentID, event.TurnFingerprint) {
-		commsLog.Debug("commit_skipped_consumed_turn",
+	// A turn the parent already has is not written again (issue #2481: a child
+	// with no turn signal flapping running->waiting re-sent one fingerprint 136
+	// times). Either its consumed-turn ledger holds it, so the next drain would
+	// drop the copy and a wake would cost one empty "[INBOX]" turn (issue
+	// #2240), or the same record is still pending and already owed a wake.
+	// Report it committed (exactly-once effects): no record, no log line, no
+	// wake. A pending copy with a different tier is still replaced.
+	if turnAlreadyConsumed(parentID, event.TurnFingerprint) || pendingSameRecord(parentID, event) {
+		commsLog.Debug("commit_skipped_known_turn",
 			slog.String("parent", parentID), slog.String("turn", event.TurnFingerprint))
+		n.clearCommitBackpressure(event.ChildSessionID)
 		n.commitReplyToSender(sender, reply)
 		return true, false, ""
 	}
@@ -784,6 +786,26 @@ func (n *TransitionNotifier) wakeCommittedInbox(parent *Instance, event Transiti
 	// not on a poll. Best-effort and non-fatal: a dropped nudge is harmless
 	// because this same record is still drained on the parent's next turn.
 	n.fireWakeNudge(parent, event)
+}
+
+// pendingSameRecord reports whether the parent's inbox already holds this
+// child's record for the same turn fingerprint, kind and tier.
+func pendingSameRecord(parentID string, event TransitionNotificationEvent) bool {
+	pending, err := ReadInboxEvents(parentID)
+	if err != nil {
+		return false
+	}
+	for _, ev := range pending {
+		fp := ev.TurnFingerprint
+		if fp == "" {
+			fp = TurnFingerprint(ev)
+		}
+		if ev.ChildSessionID == event.ChildSessionID && fp == event.TurnFingerprint &&
+			ev.Kind == event.Kind && ev.Tier == event.Tier {
+			return true
+		}
+	}
+	return false
 }
 
 // InboxTargetKindReply is the TargetKind of a record that answers the

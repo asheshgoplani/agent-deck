@@ -79,6 +79,10 @@ type TransitionDaemon struct {
 	// same turn, not a stale-signal turn, so it must not be forced urgent and
 	// journaled again. nil-safe; see forgetJournaledTurnsOfRunning.
 	journaledRun map[string]map[string]string
+	// lastSelfTurn is the last turn emitTurn skipped per top-level conductor
+	// (issue #2481). Those turns are not journaled, so this is what tells a
+	// re-observation of the same turn from a new one.
+	lastSelfTurn map[string]TurnJournalEntry
 
 	// turnLiveCheck decides whether an instance is a live session or a stale
 	// registry row. A seam because the real check probes tmux, which a unit test

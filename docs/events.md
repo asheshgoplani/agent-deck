@@ -29,6 +29,7 @@ trailing spaces).
 | `internal/session/transition_daemon.go` (only with `[macapp] transcript_events = true`) | a live session's native transcript grew | `session.transcript` |
 | `agent-deck events publish` (only with `[macapp] plugins = true`) | a client/plugin frame | `macapp.*` |
 | `internal/session/transition_notifier.go` | `NotifyTransition` | `session.transition` |
+| `internal/session/transition_daemon_turns.go` | a top-level conductor's own turn, dropped (`self_conductor`) before the notifier; one frame per turn or observed flip | `session.transition` |
 | `internal/session/transition_notifier.go` | `NotifyFinished` | `session.finished` |
 | `internal/tmux/pipemanager.go` | tmux `%output`, only while a follower demands it (see below) | `tmux.output` |
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |

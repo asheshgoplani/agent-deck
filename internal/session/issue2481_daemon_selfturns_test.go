@@ -170,3 +170,119 @@ func TestIssue2481_ConsumedFingerprintIsNotRewritten(t *testing.T) {
 		t.Fatalf("consumed-turn semantics changed: drain delivered %+v", delivered)
 	}
 }
+
+// Verifier round 1 (MAJOR 2): the parent has NOT drained (busy, stopped or
+// never draining). Every flap of the identical turn used to rewrite the
+// inbox, log a line and wake the parent again. The pending record already
+// holds the turn: one record, one log line, one wake.
+func TestIssue2481_PendingSameTurnFlapIsNoOp(t *testing.T) {
+	n, parentID, base := newWakeNudgeFixture(t)
+	wakes := 0
+	n.wake = &wakeNudgeWiring{
+		nudger: NewWakeNudger(0),
+		now:    time.Now,
+		isIdle: func(*Instance, string) bool { return true },
+		send:   func(*Instance, string, string) error { wakes++; return nil },
+	}
+	logPath := t.TempDir() + "/transition-notifier.log"
+	n.logPath = logPath
+	start := time.Now().Add(-time.Hour)
+	for i := 0; i < 10; i++ {
+		ev := base
+		ev.DoneStatus, ev.DoneSummary = "", ""
+		ev.FromStatus, ev.ToStatus, ev.Substate = "running", "waiting", "running"
+		ev.Timestamp = start.Add(time.Duration(i) * 100 * time.Second)
+		if res := n.NotifyTransition(ev); res.DeliveryResult != transitionDeliveryCommitted {
+			t.Fatalf("flap %d = %q, want committed", i, res.DeliveryResult)
+		}
+	}
+	recs, _ := ReadInboxEvents(parentID)
+	if len(recs) != 1 {
+		t.Fatalf("inbox records = %d, want 1", len(recs))
+	}
+	raw, _ := os.ReadFile(logPath)
+	if got := strings.Count(string(raw), recs[0].TurnFingerprint); got != 1 || wakes != 1 {
+		t.Fatalf("10 undrained flaps of one turn: log lines=%d wakes=%d, want 1 and 1", got, wakes)
+	}
+	if !recs[0].Timestamp.Equal(start) {
+		t.Fatalf("the pending record was rewritten: ts %v, want %v", recs[0].Timestamp, start)
+	}
+}
+
+// A pending copy with a different tier is still replaced (an escalation is
+// news), so the no-op above does not freeze a record.
+func TestIssue2481_PendingDifferentTierIsReplaced(t *testing.T) {
+	n, parentID, base := newWakeNudgeFixture(t)
+	n.wake = &wakeNudgeWiring{nudger: NewWakeNudger(0), now: time.Now,
+		isIdle: func(*Instance, string) bool { return true }, send: func(*Instance, string, string) error { return nil }}
+	ev := base
+	ev.DoneStatus, ev.DoneSummary = "", ""
+	ev.FromStatus, ev.ToStatus = "running", "waiting"
+	ev.LastOutputHash = "turn:a0"
+	ev.Tier = TurnTierInfo
+	ev.Timestamp = time.Now().Add(-time.Hour)
+	n.NotifyTransition(ev)
+	n.state.Records = map[string]transitionNotifyRecord{} // past the notifier's own dedup
+	ev.Tier = TurnTierUrgent
+	ev.Timestamp = ev.Timestamp.Add(time.Minute)
+	n.NotifyTransition(ev)
+	recs, _ := ReadInboxEvents(parentID)
+	if len(recs) != 1 || recs[0].Tier != TurnTierUrgent {
+		t.Fatalf("want the single record escalated to urgent: %+v", recs)
+	}
+}
+
+// Verifier round 1 (MINOR 3): one self turn seen by the snapshot edge and
+// then re-observed by the hook and recorded-turn paths publishes one bus
+// frame, as before the early skip.
+func TestIssue2481_SelfConductorOneBusFramePerTurn(t *testing.T) {
+	f := selfConductorFixture(t, "claude")
+	frames := 0
+	prev := publishSelfTurnFrame
+	publishSelfTurnFrame = func(string, TransitionNotificationEvent) { frames++ }
+	t.Cleanup(func() { publishSelfTurnFrame = prev })
+	f.appendTurn(t, fxHuman("u0", "status?"), fxAssistantText("a0", "All green."))
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false)
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false)
+	if frames != 1 {
+		t.Fatalf("bus frames for one self turn seen by 3 paths = %d, want 1", frames)
+	}
+	// The next real turn publishes again.
+	f.appendTurn(t, fxHuman("u1", "next?"), fxAssistantText("a1", "Next."))
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false)
+	if frames != 2 {
+		t.Fatalf("a new self turn must publish its frame: frames=%d, want 2", frames)
+	}
+}
+
+// Verifier round 1 (MINOR 4): a conductor reparented after its last
+// (skipped, unjournaled) turn. A re-observation of that pre-move turn is not
+// delivered to the new parent; its next real turn is.
+func TestIssue2481_ReparentedConductorOldTurnNotDelivered(t *testing.T) {
+	f := selfConductorFixture(t, "claude")
+	f.appendTurn(t, fxHuman("u0", "status?"), fxAssistantText("a0", "old turn before reparent"))
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+
+	f.child.ParentSessionID = f.parent.ID
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SaveWithGroups([]*Instance{f.parent, f.child}, nil); err != nil {
+		t.Fatal(err)
+	}
+	storage.Close()
+
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false)
+	if recs, _ := ReadInboxEvents(f.parent.ID); len(recs) != 0 {
+		t.Fatalf("the pre-reparent turn reached the new parent: %+v", recs)
+	}
+
+	f.appendTurn(t, fxHuman("u1", "merge lane B"), fxAssistantText("a1", "Lane B merged."))
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false)
+	recs, _ := ReadInboxEvents(f.parent.ID)
+	if len(recs) != 1 || recs[0].Text != "Lane B merged." {
+		t.Fatalf("the new turn must reach the new parent: %+v", recs)
+	}
+}
