@@ -513,3 +513,57 @@ func TestANoOpPassNeitherWritesNorCountsAsActivity(t *testing.T) {
 		t.Fatal("an acknowledgement is activity")
 	}
 }
+
+// Verifier round 3 (#1): a consumer whose state file was lost after
+// records were addressed to it is told so instead of silently starting at
+// the end.
+func TestALostStateFileIsAGap(t *testing.T) {
+	l, r, dir := openPair(t)
+	c := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "x"})
+	if err := os.Remove(ConsumerPath(dir, "X")); err != nil {
+		t.Fatal(err)
+	}
+	var gap *GapNote
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "state_lost" || gap.To != c {
+		t.Fatalf("lost state: %+v", gap)
+	}
+}
+
+// Verifier round 3 (#2): a watermark past the end of a log restored from a
+// copy older than its high-water mark resumes at the end with a gap, so
+// new records (which reuse those cursors) are not skipped.
+func TestAWatermarkPastTheEndResumesAtTheEnd(t *testing.T) {
+	l, r, dir := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "x"})
+	if err := writeConsumer(dir, ConsumerFile{ConsumerState: ConsumerState{Consumer: "X", Store: l.Store().ID, Epoch: l.Store().Epoch, Generation: 1, Watermark: 50},
+		Through: 50, Updated: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	next := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "after the restore"})
+	var gap *GapNote
+	var got []events.Cursor
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) {
+		gap = p.Gap
+		for _, e := range p.Pending {
+			got = append(got, e.Cursor)
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "restored" {
+		t.Fatalf("restored: %+v", gap)
+	}
+	_ = next
+	got, _ = pass(t, r, "X", nil)
+	if len(got) != 0 {
+		t.Fatalf("resumed at the end: %v", got)
+	}
+	newer := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "newer"})
+	if got, _ = pass(t, r, "X", nil); len(got) != 1 || got[0] != newer {
+		t.Fatalf("a record after the resume is pending: %v", got)
+	}
+}

@@ -359,8 +359,15 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 	switch {
 	case !found:
 		// Never addressed (the daemon creates a consumer's state before
-		// the first record for it is visible): start at the end.
+		// the first record for it is visible): start at the end. A flag in
+		// this epoch says records were addressed to it, so its state was
+		// lost (deleted, or never made durable): still the end, but said.
 		f = newConsumerFile(consumer, r.Store, end, now)
+		if flag, ok := ReadFlag(r.Dir, consumer); ok && flag.Epoch == r.Store.Epoch && flag.Last > 0 {
+			note := GapNote{Gap: Gap{Consumer: consumer, From: 1, To: min(flag.Last, end)}, Reason: "state_lost", Resumed: end, At: now.UnixMilli()}
+			f.addGap(note)
+			pass.Gap = &note
+		}
 	case f.Check(r.Store) != nil:
 		// The ledger was reset or restored under this consumer: its old
 		// position means nothing in the new epoch. It resumes at the start
@@ -374,6 +381,16 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 			f.addGap(note)
 			pass.Gap = &note
 		}
+	case f.Watermark > end || f.Through > end:
+		// The log is shorter than this consumer has read (restored from a
+		// copy older than the last high-water mark): records committed from
+		// here on reuse cursors it already passed. Resume at the end, said.
+		note := GapNote{Gap: Gap{Consumer: consumer, From: end + 1, To: max(f.Watermark, f.Through)}, Reason: "restored", Resumed: end, At: now.UnixMilli()}
+		old := f
+		f = newConsumerFile(consumer, r.Store, end, now)
+		f.Generation, f.Created, f.Gaps = old.Generation+1, old.Created, old.Gaps
+		f.addGap(note)
+		pass.Gap = &note
 	}
 
 	// Compaction may have overtaken the watermark (a reader idle longer
@@ -556,7 +573,16 @@ func writeConsumer(dir string, f ConsumerFile) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	// The state is the consumer's position, not a cache: make the rename
+	// itself durable.
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // ErrConsumerBusy is returned when another process holds the consumer's

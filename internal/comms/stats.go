@@ -95,7 +95,7 @@ type Stats struct {
 type StatsOptions struct {
 	Since  time.Time
 	Until  time.Time
-	Parent string // only this parent's wakes, calls and records (targets about sends and hosts stay global)
+	Parent string // only records from or to this parent (its wakes, calls, children's records, sends it observes)
 }
 
 func f64(v float64) *float64 { return &v }
@@ -179,6 +179,9 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 		}
 		if at < since || at > until {
 			continue
+		}
+		if opts.Parent != "" && r.From != opts.Parent && !containsTo(r.To, opts.Parent) {
+			continue // --parent: only records from or to that parent count
 		}
 		if first == 0 || at < first {
 			first = at
@@ -343,6 +346,15 @@ func peakPerHour(at []int64) int {
 		best = max(best, hi-lo+1)
 	}
 	return best
+}
+
+func containsTo(to []string, id string) bool {
+	for _, t := range to {
+		if t == id {
+			return true
+		}
+	}
+	return false
 }
 
 func absMS(v int64) int64 {

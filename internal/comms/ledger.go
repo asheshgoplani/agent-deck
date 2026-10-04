@@ -318,8 +318,9 @@ func recipients(r Record) []string {
 // raiseFlags runs before a record addressed to consumers becomes visible:
 // a recipient seen for the first time gets its consumer state just before
 // this record (so it reads from here, whoever reads first), and every
-// recipient's pending flag moves to cursor. Best effort: the flag is a
-// hint, and a failed state write leaves the reader to create the state.
+// recipient's pending flag moves to cursor. If the state cannot be written
+// the consumer's first read starts at the end and records the loss as a
+// state_lost gap (the flag says something was addressed to it).
 func (l *Ledger) raiseFlags(r Record, cursor events.Cursor) {
 	for _, to := range recipients(r) {
 		if !l.consumers[to] {

@@ -205,11 +205,12 @@ Frozen now in `internal/comms/receipt.go` with fixtures under
   whose watermark falls below the oldest retained cursor gets an explicit
   `Gap` (kept in its state file's `gaps` and printed by `msg read`) and is
   never silently restarted at the newest segment.
-- **Pending indexes** (P2, built): the per-consumer state file and the
-  pending flag are caches; a pass always scans from the consumer's
-  watermark, and the daemon rebuilds the flags from its dedup window at
-  open, so a crash between a commit and a flag update is repaired, never
-  trusted.
+- **Pending indexes** (P2, built): the pending flag is a cache (rebuilt
+  from the dedup window at open, never trusted to skip a record); the
+  per-consumer state file is the consumer's position, written durably
+  (file and directory fsync). A lost state file, or a watermark past the
+  end of a log restored from a copy older than its high-water mark, is an
+  explicit gap (`state_lost`, `restored`), never a silent skip.
 
 Four rules from the MonoCode relay comparison are part of this contract:
 
@@ -358,8 +359,9 @@ Nothing is consumed. `through` is the last cursor the call covered;
 when `more` is true, call again with `--after <through>`. `--limit`
 bounds a call (default 1000); `--for` keeps records from or addressed to
 one session. With no ledger for the profile (switch off, daemon never
-ran) the call succeeds with `"ledger": false` and no records, so a rig can
-tell "off" from "empty". Record fields are the table above; readers keep
+ran: no ledger directory) the call succeeds with `"ledger": false` and no
+records, so a rig can tell "no ledger" from "empty". `--for` takes a raw
+session id. Record fields are the table above; readers keep
 the fields they know (`v` is the schema version).
 
 ### `msg stats --json`: the #2482 targets
