@@ -655,9 +655,9 @@ func (s *SettingsPanel) ConsumePrivacyRequest() bool {
 func telemetryPrivacyLabel() string {
 	st := telemetry.LoadState()
 	if ok, _ := telemetry.Enabled(st); ok {
-		return "on (" + string(telemetry.EffectiveLevel(st)) + ")"
+		return "on (" + string(telemetry.EffectiveLevel(st)) + "); " + telemetry.ReadInstallTickStatus().Summary()
 	}
-	return "off"
+	return "off; " + telemetry.ReadInstallTickStatus().Summary()
 }
 
 // adjustValue changes a radio or number value by delta

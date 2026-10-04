@@ -31,25 +31,26 @@ func handleTelemetry(args []string) {
 
 // telemetryStatus is the --json shape of `telemetry status`.
 type telemetryStatus struct {
-	Enabled        bool                 `json:"enabled"`
-	Reason         string               `json:"reason,omitempty"`
-	Consent        string               `json:"consent"`
-	ConsentVersion string               `json:"consent_version,omitempty"`
-	ConsentDay     string               `json:"consent_day,omitempty"`
-	InstallID      string               `json:"install_id,omitempty"`
-	Level          string               `json:"level"`
-	Endpoint       string               `json:"endpoint"`
-	Upload         string               `json:"upload"`
-	KeySource      string               `json:"key_source"`
-	LogMode        bool                 `json:"log_mode,omitempty"`
-	Spool          telemetry.SpoolStats `json:"spool"`
-	NextUpload     string               `json:"next_upload,omitempty"`
-	LastUpload     string               `json:"last_upload,omitempty"`
-	LastResult     string               `json:"last_result,omitempty"`
-	LastErrorKind  string               `json:"last_error_kind,omitempty"`
-	CapToday       string               `json:"daily_cap_today"`
-	StatePath      string               `json:"state_path"`
-	SchemaVersion  int                  `json:"schema_version"`
+	InstallTick    telemetry.InstallTickStatus `json:"install_tick"`
+	Enabled        bool                        `json:"enabled"`
+	Reason         string                      `json:"reason,omitempty"`
+	Consent        string                      `json:"consent"`
+	ConsentVersion string                      `json:"consent_version,omitempty"`
+	ConsentDay     string                      `json:"consent_day,omitempty"`
+	InstallID      string                      `json:"install_id,omitempty"`
+	Level          string                      `json:"level"`
+	Endpoint       string                      `json:"endpoint"`
+	Upload         string                      `json:"upload"`
+	KeySource      string                      `json:"key_source"`
+	LogMode        bool                        `json:"log_mode,omitempty"`
+	Spool          telemetry.SpoolStats        `json:"spool"`
+	NextUpload     string                      `json:"next_upload,omitempty"`
+	LastUpload     string                      `json:"last_upload,omitempty"`
+	LastResult     string                      `json:"last_result,omitempty"`
+	LastErrorKind  string                      `json:"last_error_kind,omitempty"`
+	CapToday       string                      `json:"daily_cap_today"`
+	StatePath      string                      `json:"state_path"`
+	SchemaVersion  int                         `json:"schema_version"`
 }
 
 func runTelemetry(args []string, version string, in io.Reader, out, errOut io.Writer, interactive bool) int {
@@ -111,6 +112,7 @@ func buildTelemetryStatus(s *telemetry.State) telemetryStatus {
 	enabled, reason := telemetry.Enabled(s)
 	path, _ := telemetry.StatePath()
 	st := telemetryStatus{
+		InstallTick:    telemetry.ReadInstallTickStatus(),
 		Enabled:        enabled,
 		Reason:         string(reason),
 		Consent:        string(s.Consent),
@@ -186,11 +188,12 @@ func telemetryStatusCmd(out io.Writer, jsonOut bool) int {
   Next upload:   %s
   Last upload:   %s
   Daily cap:     %s
+  Daily tick:    %s
   State file:    %s
   Docs:          %s
 `, state, orDash(st.Reason), st.Consent, orDash(st.InstallID), st.Level, st.Endpoint, st.Upload, st.KeySource,
 		st.Spool.Events, st.Spool.Bytes, orDash(st.Spool.OldestDay), orDash(st.NextUpload), last,
-		st.CapToday, st.StatePath, telemetry.DocsURL)
+		st.CapToday, st.InstallTick.Summary(), st.StatePath, telemetry.DocsURL)
 	return 0
 }
 
@@ -461,6 +464,8 @@ Kill switches (win over stored consent, re-read on every run):
   AGENTDECK_TELEMETRY=0               hard off (any value but 1/true/yes/on/log; none of them enables)
   AGENTDECK_TELEMETRY=log             never sends: logs would-be events/uploads locally instead
   [telemetry] disabled = true         hard off, in config.toml
+  [telemetry] owner = true            suppress install.tick only (restart TUI to apply)
+  AGENTDECK_TELEMETRY_OWNER=1         suppress install.tick only
   [telemetry] level = "basic"         record only app.start, usage.daily and env.snapshot
   [telemetry] endpoint = URL          receiver base URL (default %s; re-asks consent)
   [telemetry] posthog_key / %s   PostHog key, only for builds without a compiled-in one
@@ -471,6 +476,10 @@ When data is sent:
   counters, as PostHog /batch/ JSON. Never from CLI commands, CI, scripts,
   tests or inside an agent-deck session (they only record locally, if at all).
   The one exception is `+"`agent-deck uninstall`"+`, which sends one event at once.
+  install.tick is checked at TUI startup and hourly, after the consent day.
+  A durable random tick_id is reused on same-day retries; the dashboard counts
+  DISTINCT tick_id per local day. Status shows the last acknowledged tick day.
+  This daily tick also runs at basic level; owner suppression affects only it.
 
 Never sent: prompts, output, titles, paths, repo, host or user names, commands,
 environment values, error messages, IP addresses (discarded by PostHog).

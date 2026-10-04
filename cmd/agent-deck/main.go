@@ -88,6 +88,7 @@ func initTelemetrySettings() {
 	telemetry.SetEndpoint(cfg.Telemetry.Endpoint)
 	telemetry.SetPostHogKey(cfg.Telemetry.PostHogKey)
 	telemetry.SetConfigLevel(cfg.Telemetry.Level)
+	telemetry.SetConfigOwner(cfg.Telemetry.Owner)
 }
 
 // telemetrySignalClose flushes the TUI's pending telemetry (activity hour,

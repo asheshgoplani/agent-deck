@@ -29,12 +29,12 @@ func (p Prop) propType() string {
 // output verbatim between the schema markers; a test keeps them equal.
 func SchemaMarkdown() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Schema version: %d. Every event carries the envelope; nothing outside these tables is ever recorded or sent.\n\n", SchemaVersion)
-	b.WriteString("#### Envelope (every event)\n\n| Property | Type | Notes |\n|---|---|---|\n")
+	fmt.Fprintf(&b, "Schema version: %d. Detailed events carry the envelope; install.tick uses only its separate allow-list below.\n\n", SchemaVersion)
+	b.WriteString("#### Envelope (detailed events)\n\n| Property | Type | Notes |\n|---|---|---|\n")
 	for _, p := range Envelope {
 		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", p.Key, cell(p.propType()), cell(p.Doc))
 	}
-	b.WriteString("\nPostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every event.\n")
+	b.WriteString("\nPostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every detailed event.\n")
 	b.WriteString("\n#### Bucket edges\n\nLower edge inclusive, upper edge exclusive.\n\n| Bucket | Values |\n|---|---|\n")
 	for _, bk := range bucketOrder {
 		fmt.Fprintf(&b, "| `%s` | %s |\n", bk, cell(codeList(bucketLabels[bk])))
@@ -65,6 +65,7 @@ func SchemaMarkdown() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString(installTickSchemaMarkdown)
 	return b.String()
 }
 
@@ -121,12 +122,18 @@ func propJSON(p Prop) schemaPropJSON {
 // SchemaJSON returns the full allow-list as indented JSON.
 func SchemaJSON() ([]byte, error) {
 	doc := struct {
-		Schema   int                 `json:"schema"`
-		Envelope []schemaPropJSON    `json:"envelope"`
-		Buckets  map[string][]string `json:"buckets"`
-		ToolBits []string            `json:"tool_bits"`
-		Events   []schemaEventJSON   `json:"events"`
-	}{Schema: SchemaVersion, Buckets: map[string][]string{}, ToolBits: toolBits}
+		Schema      int                 `json:"schema"`
+		InstallTick map[string]any      `json:"install_tick"`
+		Envelope    []schemaPropJSON    `json:"envelope"`
+		Buckets     map[string][]string `json:"buckets"`
+		ToolBits    []string            `json:"tool_bits"`
+		Events      []schemaEventJSON   `json:"events"`
+	}{Schema: SchemaVersion, Buckets: map[string][]string{}, ToolBits: toolBits,
+		InstallTick: map[string]any{
+			"event": "install.tick", "detailed_envelope": false,
+			"properties": map[string]any{"day": "YYYY-MM-DD", "v": "release version at reservation", "consent_state": []string{"granted"}, "tick_id": "random 128-bit UUID-formatted nonce per local day", "$process_person_profile": false, "$geoip_disable": true},
+			"uuid":       "tick_id", "distinct_id": "tick_id", "timestamp": "day at 12:00 labelled UTC", "counting": "DISTINCT tick_id per day",
+		}}
 	for _, p := range Envelope {
 		doc.Envelope = append(doc.Envelope, propJSON(p))
 	}
@@ -142,3 +149,19 @@ func SchemaJSON() ([]byte, error) {
 	}
 	return json.MarshalIndent(doc, "", "  ")
 }
+
+const installTickSchemaMarkdown = "#### Anonymous daily install tick\n" +
+	"\n" +
+	"`install.tick` is separate from the detailed envelope, at full and basic levels. Its complete properties are:\n" +
+	"\n" +
+	"| Property | Value |\n" +
+	"|---|---|\n" +
+	"| `day` | Local calendar day, YYYY-MM-DD |\n" +
+	"| `v` | Release version when the daily nonce was reserved |\n" +
+	"| `consent_state` | `granted`; undecided and declined never send |\n" +
+	"| `tick_id` | Random 128-bit daily nonce formatted as a UUID; reused on retries |\n" +
+	"| `$process_person_profile` | `false` |\n" +
+	"| `$geoip_disable` | `true` |\n" +
+	"\n" +
+	"The PostHog event `uuid` and required `distinct_id` both equal `tick_id`. No persistent install ID or detailed envelope is attached. Timestamp is the local day at 12:00 labelled UTC. The dashboard must count DISTINCT `tick_id` per `day`; retries may produce multiple rows. The nonce links only retries of one daily event.\n" +
+	"\n"

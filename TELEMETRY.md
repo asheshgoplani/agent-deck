@@ -83,7 +83,7 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 | Level | Records |
 |---|---|
 | `full` (default) | Every event in the tables below. |
-| `basic` | Only `app.start`, `usage.daily` and `env.snapshot`, without `hour_local`, `weekday_local` or `ds_session`; timestamps are pinned to 12:00. |
+| `basic` | `install.tick` plus `app.start`, `usage.daily` and `env.snapshot`, without `hour_local`, `weekday_local` or `ds_session`; timestamps are pinned to 12:00. |
 
 `[telemetry] level = "basic"` in `config.toml` can lower the level but never raise it.
 
@@ -95,6 +95,20 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 - **Destination.** PostHog Cloud, EU region (Frankfurt), via its public capture API: `POST <endpoint>/batch/` with `Content-Type: application/json`, hand-encoded without any SDK. The client follows no redirects, ignores proxy environment variables, sends no cookies and reads at most 1 KiB of the response. At most 500 events and 256 KiB per request, 5 requests per upload.
 - **Processor.** PostHog processes the data on the maintainer's behalf. The project is configured to discard client IP addresses, GeoIP enrichment is disabled at project level and on every event (`$geoip_disable: true`), and events are personless (`$process_person_profile: false`): PostHog creates no person profiles. Data is kept for 1 year (PostHog free-plan retention). Only the maintainer has access; no dashboard is public.
 - **Floating time.** Each event's `timestamp` is its local day and hour labelled as UTC (for example `2026-09-26T14:00:00Z` for 14:00 wherever you are). It reveals no timezone, and hour-of-day charts show local hours. PostHog also stores the time it received the upload, which is the upload time, not the activity time.
+
+## Daily active install tick
+
+After the consent day, the interactive human TUI checks `install.tick` in the background at startup and hourly, including across midnight. CLI-only use, noninteractive daemons, CI, agents, tests and non-release builds do not send ticks. This preserves existing upload eligibility; it measures reporting installs using the TUI, not every installed copy or people. The tick also runs at basic level and is independent of the detailed six-hour upload schedule.
+
+Each local day gets a fresh cryptographically random 128-bit `tick_id`. The client durably reserves it in `telemetry-tick.json` (mode 0600), next to the telemetry state, before sending. The existing state lock serializes reservation, sending and acknowledgment across processes. Old binaries can rewrite the main state without erasing this sibling ledger. Neither `off` nor `reset-id` deletes the nonce, so disable/re-enable and lost acknowledgments cannot mint a second nonce that day. The ledger contains only day, nonce, release version, acknowledgment flag and last acknowledged day.
+
+An attempt has a two-second deadline. Lock contention skips the attempt; failed sends retry on a later TUI start or hourly check with the same nonce and body. The dashboard must count **DISTINCT `tick_id` per `day`**, not rows. There is no historical backfill after the local day ends. Offline use, consent gates and stopped processes can leave days unreported; delivery is retried, not guaranteed. Corrupt/unreadable ledgers fail closed rather than replacing an unknown nonce. Clock rollback suppresses earlier days until the last reserved day is reached.
+
+The complete tick property allow-list is below. The PostHog event UUID and its required `distinct_id` both use the daily nonce, never the detailed telemetry install ID. It links only retries of that day's event; no stable identity links days or joins detailed telemetry. The existing personless and GeoIP-disabled controls remain. As with any HTTP request, the receiver sees the connection's source IP; this client code alone does not establish backend log deletion.
+
+Owner installs opt out of **only the tick** with `[telemetry] owner = true` in config.toml or `AGENTDECK_TELEMETRY_OWNER=1`. The environment switch cannot override a true config setting; false/0/no/off are false. Restart the TUI after editing configuration, as with the existing telemetry settings. All existing telemetry off switches still take precedence, and none of these options grants consent.
+
+`agent-deck telemetry status --json` includes `install_tick` with `event`, `state`, `day`, `last_sent_day` and `owner`. Text status and TUI Settings show the same last acknowledged day. `pending` means reserved but not durably acknowledged; `sent` means acknowledged; `never` means no ledger; `unavailable` means the ledger cannot be read or validated. These describe persisted delivery history, not current permission to send. Preview includes an already-reserved pending current-day tick when permitted, but never creates a nonce. Before reservation, the schema shows the exact tick shape. Log mode never sends or reserves a tick.
 
 ## Deletion
 
@@ -135,9 +149,9 @@ Builds without a project key record locally (with consent) but **never upload**;
 ## Published field list
 
 <!-- schema:begin (generated by `agent-deck telemetry schema --markdown`; do not edit) -->
-Schema version: 2. Every event carries the envelope; nothing outside these tables is ever recorded or sent.
+Schema version: 2. Detailed events carry the envelope; install.tick uses only its separate allow-list below.
 
-#### Envelope (every event)
+#### Envelope (detailed events)
 
 | Property | Type | Notes |
 |---|---|---|
@@ -157,7 +171,7 @@ Schema version: 2. Every event carries the envelope; nothing outside these table
 | `install_week` | pattern `^[0-9]{4}-W[0-9]{2}$` | ISO week of first seen, e.g. 2026-W39 |
 | `pre_v2` | bool | install first seen before the v2 build |
 
-PostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every event.
+PostHog additionally receives `$process_person_profile: false`, `$geoip_disable: true` and `$lib: agent-deck` on every detailed event.
 
 #### Bucket edges
 
@@ -443,6 +457,21 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | Property | Type |
 |---|---|
 | `rating` | bucket `rating` |
+
+#### Anonymous daily install tick
+
+`install.tick` is separate from the detailed envelope, at full and basic levels. Its complete properties are:
+
+| Property | Value |
+|---|---|
+| `day` | Local calendar day, YYYY-MM-DD |
+| `v` | Release version when the daily nonce was reserved |
+| `consent_state` | `granted`; undecided and declined never send |
+| `tick_id` | Random 128-bit daily nonce formatted as a UUID; reused on retries |
+| `$process_person_profile` | `false` |
+| `$geoip_disable` | `true` |
+
+The PostHog event `uuid` and required `distinct_id` both equal `tick_id`. No persistent install ID or detailed envelope is attached. Timestamp is the local day at 12:00 labelled UTC. The dashboard must count DISTINCT `tick_id` per `day`; retries may produce multiple rows. The nonce links only retries of one daily event.
 
 <!-- schema:end -->
 

@@ -1033,6 +1033,9 @@ type FeedbackSettings struct {
 
 // TelemetrySettings configures opt-in usage telemetry (TELEMETRY.md).
 type TelemetrySettings struct {
+	// Owner suppresses only the anonymous daily install tick. It cannot grant consent.
+	Owner bool `toml:"owner,omitempty"`
+
 	// Disabled forces telemetry off regardless of stored consent, like
 	// AGENTDECK_TELEMETRY=0. It cannot enable telemetry.
 	Disabled bool `toml:"disabled,omitempty"`

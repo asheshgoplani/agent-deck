@@ -51,3 +51,9 @@ G1 second-person review of the consent screen, schema and the redaction test; G2
 ## Verification
 
 Tests cover the consent gate table (state × environment × TTY), the dialog keys and golden frames, allow-list golden batch, redaction canaries, bucket edges, spool limits and torn lines, cross-process appends, upload against a fake PostHog (backoff, Retry-After, rejection, chunking, redirects, proxy and foreign env, log mode, dev builds, consent day, completed hours), schema doc drift and remote isolation. Tests run only in bounded Docker or CI; a transport guard fails the telemetry tests on any non-loopback request.
+
+## Daily nonce counter (install.tick)
+
+The independent `install.tick` envelope reports only local day, release version, granted consent, and a random 128-bit daily nonce, plus personless and GeoIP-disabled controls. It does not use the detailed schema-2 envelope or install ID. PostHog UUID and distinct_id equal the daily event nonce. The counting contract is DISTINCT tick_id per day, allowing retries after lost acknowledgments without inflating daily install counts. Receiver row deduplication is not assumed.
+
+`telemetry-tick.json` is a durable sibling ledger under the existing state lock, untouched by old typed-State writers, off and reset-id. Reservation precedes the first attempt; acknowledgment follows success. A non-blocking lock and two-second transport deadline bound the background work. The existing interactive human TUI startup/hourly path sends ticks after the consent day, including at basic level; CLI/daemon/CI/agent restrictions remain. Owner suppression is `[telemetry] owner = true` or `AGENTDECK_TELEMETRY_OWNER=1`. Details, failure semantics and the separate allow-list are in TELEMETRY.md.

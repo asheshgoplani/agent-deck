@@ -59,6 +59,12 @@ func uploadGate() string {
 	if LogMode() {
 		return ""
 	}
+	return uploadDestinationGate()
+}
+
+// uploadDestinationGate is also used by read-only tick preview, which runs
+// from the CLI but describes what an eligible human TUI would send.
+func uploadDestinationGate() string {
 	if !Configured() {
 		return "not configured (no PostHog project key)"
 	}
@@ -74,7 +80,7 @@ func uploadGate() string {
 	return ""
 }
 
-// MaybeUpload is the one outbound path besides SendUninstall. It sends the
+// MaybeUpload sends detailed telemetry; install.tick has its own ledger. It sends the
 // completed hours and days waiting in the spool, at most every 6 hours,
 // never on the consent day, and holds the state lock for the whole send
 // (at most uploadDeadline) so `telemetry off` either waits for it or
@@ -356,11 +362,26 @@ func PreviewBatch() ([][]byte, error) {
 	}
 	now := nowFn()
 	bodies, _ := chunk(s.pending(trimSpool(lines, now), now))
+	// Preview never reserves a nonce. Show a pending tick only if the TUI
+	// could send it today; basic level does not suppress the daily tick.
+	if ok, _ := Enabled(s); ok && !tickOwner() && !LogMode() && uploadDestinationGate() == "" && s.ConsentDay < dayOf(now) {
+		tick, err := readInstallTick()
+		if err != nil {
+			return nil, err
+		}
+		if tick.Day == dayOf(now) && !tick.Sent {
+			body, err := tickBody(tick)
+			if err != nil {
+				return nil, err
+			}
+			bodies = append([][]byte{body}, bodies...)
+		}
+	}
 	return bodies, nil
 }
 
 // SendUninstall sends the uninstall event synchronously (2 s timeout). It is
-// the only send outside MaybeUpload and has the same gates, except that it
+// an immediate send with the same gates, except that it
 // may run from the CLI.
 func SendUninstall(ctx context.Context, sessions int, lastTool, reason string) UploadResult {
 	if HardDisabled() || !Interactive() {

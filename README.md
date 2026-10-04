@@ -1044,12 +1044,12 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 
 ### Usage telemetry (opt-in, off by default)
 
-Anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names) is shared with the maintainer via PostHog EU **only after you say yes** to the one-time TUI question; `agent-deck telemetry preview` shows exactly what would be sent, and `agent-deck telemetry off` or `DO_NOT_TRACK=1` turns it off. Details and the full field list: [TELEMETRY.md](TELEMETRY.md).
+Anonymous usage data (tools and features used, session counts and lengths, active hours, error types, version and OS; never prompts, paths, titles or names) is shared with the maintainer via PostHog EU **only after you say yes** to the one-time TUI question; `agent-deck telemetry preview` shows exactly what would be sent, and `agent-deck telemetry off` or `DO_NOT_TRACK=1` turns it off. Details and the full field list: [TELEMETRY.md](TELEMETRY.md). A separate `install.tick` uses a fresh daily nonce to count reporting installs, checked by the interactive TUI after the consent day; retries reuse that nonce. Owner installs suppress it with `[telemetry] owner = true` or `AGENTDECK_TELEMETRY_OWNER=1`. Status and TUI Settings show the last acknowledged tick day.
 
 ```bash
 agent-deck telemetry status      # on/off, why, and what is waiting in the local spool
 agent-deck telemetry preview     # the exact request bodies the next upload would send
-agent-deck telemetry off         # off; install id and local data deleted
+agent-deck telemetry off         # off; install id, spool and counters deleted
 ```
 
 ### Remote Instances

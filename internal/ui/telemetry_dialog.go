@@ -30,7 +30,10 @@ type telemetryDismissMsg struct{}
 
 // telemetryUploadMsg carries the result of a background MaybeUpload. It is
 // informational only; the TUI never surfaces it.
-type telemetryUploadMsg struct{ result telemetry.UploadResult }
+type telemetryUploadMsg struct {
+	result     telemetry.UploadResult
+	tickResult telemetry.UploadResult
+}
 
 // telemetryGrantedMsg tells the home model consent was durably granted, so
 // it can record the consent events (it knows the fleet) and start sampling.
@@ -91,7 +94,8 @@ const telemetryKeyGrace = 750 * time.Millisecond
 // who has not said yes.
 func telemetryUploadCmd() tea.Cmd {
 	return func() tea.Msg {
-		return telemetryUploadMsg{result: telemetry.MaybeUpload(context.Background())}
+		tickResult := telemetry.MaybeInstallTick(context.Background())
+		return telemetryUploadMsg{result: telemetry.MaybeUpload(context.Background()), tickResult: tickResult}
 	}
 }
 

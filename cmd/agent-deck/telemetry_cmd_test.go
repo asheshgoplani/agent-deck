@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -305,5 +306,45 @@ func TestTelemetryHelpAndUnknown(t *testing.T) {
 	}
 	if code, _, _ := runTel(t, "", true, "status", "extra"); code != 2 {
 		t.Fatal("extra argument")
+	}
+}
+
+func TestTelemetryInstallTickStatusAndHelp(t *testing.T) {
+	isolateTelemetryHome(t)
+	path, err := telemetry.StatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ledger := `{"day":"2026-10-04","tick_id":"01234567-89ab-cdef-0123-456789abcdef","v":"1.16.26","sent":true,"last_sent_day":"2026-10-04"}`
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "telemetry-tick.json"), []byte(ledger), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ := runTel(t, "", true, "status", "--json")
+	var status map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatal(err)
+	}
+	var tick struct {
+		Event, State string
+		LastSentDay  string `json:"last_sent_day"`
+	}
+	if err := json.Unmarshal(status["install_tick"], &tick); err != nil {
+		t.Fatalf("tick missing: %s", out)
+	}
+	if tick.Event != "install.tick" || tick.State != "sent" || tick.LastSentDay != "2026-10-04" {
+		t.Fatalf("tick %+v", tick)
+	}
+	_, out, _ = runTel(t, "", true, "status")
+	if !strings.Contains(out, "install.tick: sent; last sent 2026-10-04") {
+		t.Fatalf("text status missing tick: %s", out)
+	}
+	_, out, _ = runTel(t, "", true, "--help")
+	for _, want := range []string{"install.tick", "AGENTDECK_TELEMETRY_OWNER", "owner = true", "tick_id"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help missing %q", want)
+		}
 	}
 }
