@@ -196,6 +196,10 @@ func TestInstallTickMalformedLedgerFailsClosed(t *testing.T) {
 			if r.Attempted || r.Reason == "" {
 				t.Fatalf("not closed %+v", r)
 			}
+			status := ReadInstallTickStatus()
+			if status.State != "unavailable" || !strings.Contains(status.Summary(), "last sent unknown") {
+				t.Fatalf("corruption misreported as no prior delivery: %+v %s", status, status.Summary())
+			}
 			got, _ := os.ReadFile(p)
 			if string(got) != body {
 				t.Fatal("replaced unknown nonce")

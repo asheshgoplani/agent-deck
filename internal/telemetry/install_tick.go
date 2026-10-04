@@ -67,6 +67,9 @@ func (s InstallTickStatus) Summary() string {
 	if last == "" {
 		last = "never"
 	}
+	if s.State == "unavailable" {
+		last = "unknown"
+	}
 	state := s.State
 	if s.Owner {
 		state = "owner suppressed"
