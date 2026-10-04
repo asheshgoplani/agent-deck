@@ -10,5 +10,6 @@ Telemetry: OFF
   Next upload:   -
   Last upload:   -
   Daily cap:     0/60 events, 0 dropped
+  Daily tick:    install.tick: never; last sent never
   State file:    <SANDBOX_HOME>/.local/share/agent-deck/telemetry-state.json
   Docs:          https://github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md
