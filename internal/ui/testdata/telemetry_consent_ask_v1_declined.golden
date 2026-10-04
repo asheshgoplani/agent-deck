@@ -4,10 +4,10 @@
  │                                                                            │ 
  │  Share anonymous usage data with the agent-deck maintainer.                │ 
  │                                                                            │ 
- │  Sent:   tools and features you use, session counts and lengths,           │ 
- │          the hour and weekday you are active, error types, fleet           │ 
- │          size, version and OS. Numbers are rounded into ranges.            │ 
- │          A random ID links your reports; reset it any time.                │ 
+ │  Sent:   tools, features, rounded session counts and lengths,              │ 
+ │          active hour and weekday, error types, fleet size,                 │ 
+ │          version, OS and daily active-install counts.                      │ 
+ │          Usage ID is resettable; tick ID is random each day.               │ 
  │  Never:  prompts, output, titles, paths, repo, host or user names,         │ 
  │          or anything you type. IP addresses are discarded.                 │ 
  │  Where:  a few times a day to PostHog (EU). Kept for 1 year.               │ 

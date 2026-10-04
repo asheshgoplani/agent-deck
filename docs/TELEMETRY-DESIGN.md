@@ -1,4 +1,4 @@
-# Opt-in telemetry design (schema 2)
+# Opt-in telemetry design (schema 3)
 
 Original owner requirement (schema 1): "make sure the user opts in, not do it without asking them at any cost".
 
@@ -40,7 +40,7 @@ Only the interactive TUI uploads (plus the one synchronous `uninstall` event): a
 
 - **Transport sees the source IP.** PostHog is configured to discard client IPs and GeoIP is disabled per event and per project; the client sends no `$ip`. Verified by a dogfood event before release (gate G4).
 - **Correlation.** The install id is random and rotatable, but rare usage patterns can still correlate reports. `reset-id` removes the explicit link, not every possible correlation.
-- **The project key is public by design.** It can only write events. Abuse means junk events and a burned quota; dashboards filter on `schema = 2` and `$lib = agent-deck`, and the key can be rotated in a release (old clients then get 4xx and stop after 3 days).
+- **The project key is public by design.** It can only write events. Abuse means junk events and a burned quota; detailed dashboards must accept consented `schema = 3` events (historical events remain schema 2) and `$lib = agent-deck`, and the key can be rotated in a release (old clients then get 4xx and stop after 3 days).
 - **Deletion.** Personless events cannot currently be deleted by id; TELEMETRY.md says so plainly and states the 1-year expiry (gate G3).
 - **Local attacker.** An account that can rewrite the state file can forge consent; that is outside this boundary.
 
@@ -54,6 +54,10 @@ Tests cover the consent gate table (state × environment × TTY), the dialog key
 
 ## Daily nonce counter (install.tick)
 
-The independent `install.tick` envelope reports only local day, release version, granted consent, and a random 128-bit daily nonce, plus personless and GeoIP-disabled controls. It does not use the detailed schema-2 envelope or install ID. PostHog UUID and distinct_id equal the daily event nonce. The counting contract is DISTINCT tick_id per day, allowing retries after lost acknowledgments without inflating daily install counts. Receiver row deduplication is not assumed.
+The independent `install.tick` envelope reports only local day, release version, granted consent, and a random 128-bit daily nonce, plus personless and GeoIP-disabled controls. It does not use the detailed schema-3 envelope or install ID. PostHog UUID and distinct_id equal the daily event nonce. The counting contract is DISTINCT tick_id per day, allowing retries after lost acknowledgments without inflating daily install counts. Receiver row deduplication is not assumed.
 
 `telemetry-tick.json` is a durable sibling ledger under the existing state lock, untouched by old typed-State writers, off and reset-id. Reservation precedes the first attempt; acknowledgment follows success. A non-blocking lock and two-second transport deadline bound the background work. The existing interactive human TUI startup/hourly path sends ticks after the consent day, including at basic level; CLI/daemon/CI/agent restrictions remain. Owner suppression is `[telemetry] owner = true` or `AGENTDECK_TELEMETRY_OWNER=1`. Details, failure semantics and the separate allow-list are in TELEMETRY.md.
+
+## Schema 3 consent migration
+
+Adding the unreserved daily install counter changes the published event schema. Schema 3 uses the existing schema-bound consent path: schema-2 grants become undecided and cannot record or upload until the person accepts the updated shared disclosure. Regrant rotates the detailed ID/salt and clears the earlier spool/counters under existing rules; it preserves the sibling daily nonce ledger. The consent-day upload delay still applies. Schema-2 refusals remain final; only actual schema-1 declines retain the historical one-time re-ask. Consent provenance distinguishes v1 and v2 answers.

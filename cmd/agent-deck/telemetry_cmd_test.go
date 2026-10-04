@@ -53,7 +53,7 @@ func statusJSON(t *testing.T) telemetryStatus {
 func TestTelemetryStatusDefaultOffNotConfigured(t *testing.T) {
 	isolateTelemetryHome(t)
 	st := statusJSON(t)
-	if st.Enabled || st.Consent != "undecided" || st.InstallID != "" || st.SchemaVersion != 2 {
+	if st.Enabled || st.Consent != "undecided" || st.InstallID != "" || st.SchemaVersion != telemetry.SchemaVersion {
 		t.Fatalf("default status %+v", st)
 	}
 	if !strings.HasPrefix(st.Upload, "not configured") || st.Endpoint != telemetry.DefaultEndpoint || st.Level != "full" {
@@ -251,7 +251,7 @@ func TestTelemetrySchemaMarkdownMatchesTELEMETRYmd(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"events"`
 	}
-	if code != 0 || json.Unmarshal([]byte(out), &parsed) != nil || parsed.Schema != 2 || len(parsed.Events) != 29 {
+	if code != 0 || json.Unmarshal([]byte(out), &parsed) != nil || parsed.Schema != telemetry.SchemaVersion || len(parsed.Events) != 29 {
 		t.Fatalf("schema --json: %d %.200s", code, out)
 	}
 }

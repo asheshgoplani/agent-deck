@@ -49,7 +49,7 @@ func TestUploadHappyPathMapsToPostHogBatch(t *testing.T) {
 			if ev.Timestamp != "2026-09-26T14:00:00Z" || p["hour_local"] != float64(14) || p["weekday_local"] != float64(6) {
 				t.Fatalf("floating time: %s %v %v", ev.Timestamp, p["hour_local"], p["weekday_local"])
 			}
-			if p["tool"] != "codex" || p["via"] != "tui_new" || p["install_age"] != "d0" || p["schema"] != float64(2) || p["$lib"] != "agent-deck" {
+			if p["tool"] != "codex" || p["via"] != "tui_new" || p["install_age"] != "d0" || p["schema"] != float64(SchemaVersion) || p["$lib"] != "agent-deck" {
 				t.Fatalf("props %v", p)
 			}
 			if ds, _ := p["ds_session"].(string); len(ds) != 16 || ds == "abc" {

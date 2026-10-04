@@ -84,7 +84,7 @@ var (
 	installMethods  = []string{"brew", "go_install", "script", "release_tarball", "other"}
 	colorModes      = []string{"truecolor", "256", "ascii"}
 	consentSources  = []string{"tui_first_run", "tui_settings", "cli_on"}
-	consentPrevious = []string{"none", "v1_granted", "v1_declined", "v1_undecided"}
+	consentPrevious = []string{"none", "v1_granted", "v1_declined", "v1_undecided", "v2_granted", "v2_declined", "v2_undecided"}
 	uninstallWhy    = []string{"not_needed", "too_complex", "bugs", "switching_tool", "skip"}
 	outcomes        = []string{"ok", "error"}
 	remoteOps       = []string{"add", "attach", "exec", "update_sweep", "drain"}
@@ -156,7 +156,7 @@ var Envelope = []Prop{
 	boolean("pre_v2").doc("install first seen before the v2 build"),
 }
 
-// Events is the complete schema 2 event table.
+// Events is the complete detailed event table.
 var Events = []EventDef{
 	{Name: "app.start", Tier: 1, Ships: shipsNow, Basic: true,
 		Props: []Prop{enum("start_kind", startKinds...), bucket("sessions_total", BucketN), bucket("groups", BucketN),
@@ -203,7 +203,7 @@ var Events = []EventDef{
 			bitmask("tools_installed", 32).doc("tool bits found on PATH"), bitmask("config_sections", 32).doc("known config sections present")},
 		Emitted: "once per local day, only from the TUI", Question: "Support matrix; tools installed vs used"},
 	{Name: "telemetry.consent", Tier: 1, Ships: shipsNow,
-		Props:   []Prop{enum("answer", "yes"), enum("source", consentSources...), enum("previous", consentPrevious...), enum("prompt_variant", "v2a")},
+		Props:   []Prop{enum("answer", "yes"), enum("source", consentSources...), enum("previous", consentPrevious...), enum("prompt_variant", "v3a")},
 		Emitted: "on consent (queued like any event)", Question: "Where consent comes from; v1 re-consent"},
 	{Name: "onboard.baseline", Tier: 1, Ships: shipsNow,
 		Props: []Prop{enum("install_method", installMethods...), boolean("tmux_ok"), bitmask("tools_found", 32), boolean("had_config"),

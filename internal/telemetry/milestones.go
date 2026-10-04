@@ -172,7 +172,7 @@ func AfterConsent(src ConsentSource, prev string, b Baseline, fleet *FleetCounts
 	tuiSeen := src != SourceCLIOn || fb != nil && !fb.FirstSeenAt.IsZero()
 	withState(func(s *State, now time.Time) bool {
 		s.spool("telemetry.consent", map[string]any{
-			"answer": "yes", "source": string(src), "previous": oneOf(prev, consentPrevious), "prompt_variant": "v2a",
+			"answer": "yes", "source": string(src), "previous": oneOf(prev, consentPrevious), "prompt_variant": "v3a",
 		}, "", now)
 		before := b.milestones(tuiSeen)
 		s.spool("onboard.baseline", map[string]any{

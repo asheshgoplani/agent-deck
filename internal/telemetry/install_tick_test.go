@@ -122,7 +122,7 @@ func TestInstallTickConcurrentAndLegacyWriter(t *testing.T) {
 		t.Fatalf("concurrent sends %d", calls.Load())
 	}
 	before, _ := readInstallTick()
-	// State is deliberately unchanged by this feature. This is also the old writer.
+	// Main-state persistence remains independent of the sibling tick ledger.
 	s := LoadState()
 	if err := SaveState(s); err != nil {
 		t.Fatal(err)
@@ -523,5 +523,103 @@ func TestInstallTickLocalCalendarMidnight(t *testing.T) {
 	after, _ := readInstallTick()
 	if after.Day != "2026-10-05" || after.TickID == before.TickID {
 		t.Fatalf("local rollover %+v", after)
+	}
+}
+
+func TestInstallTickRequiresFreshSchemaConsent(t *testing.T) {
+	c := tickEnv(t)
+	legacy := LoadState()
+	legacy.SchemaVersion = 2
+	if err := SaveState(legacy); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	sender := func(context.Context, []byte, time.Duration) postResult { calls++; return postResult{status: 200} }
+	r := maybeInstallTick(context.Background(), sender)
+	if r.Attempted || calls != 0 {
+		t.Fatal("schema-2 grant sent new tick without updated consent")
+	}
+	s := LoadState()
+	if ok, _ := Enabled(s); ok {
+		t.Fatal("schema-2 grant still enables detailed recording")
+	}
+	p, _ := siblingPath(installTickFileName)
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatal("old grant reserved a tick")
+	}
+	if s.Consent != ConsentUndecided || !ShouldPrompt(s) || s.Previous() != "v2_granted" || s.prevV1 != "" {
+		t.Fatalf("wrong upgrade provenance/consent %+v previous=%s", s, s.Previous())
+	}
+	if err := Grant(s, "9.9.9", c.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(s); err != nil {
+		t.Fatal(err)
+	}
+	if r := maybeInstallTick(context.Background(), sender); r.Attempted {
+		t.Fatal("sent on renewed consent day")
+	}
+	c.add(24 * time.Hour)
+	if r := maybeInstallTick(context.Background(), sender); !r.Sent || calls != 1 {
+		t.Fatalf("renewed consent did not allow tick: %+v calls=%d", r, calls)
+	}
+}
+
+func TestInstallTickSchemaUpgradeKeepsDeclinesFinal(t *testing.T) {
+	tickEnv(t)
+	s := LoadState()
+	s.SchemaVersion = 2
+	s.Consent = ConsentDeclined
+	s.DeclinedSchema = 2
+	if err := SaveState(s); err != nil {
+		t.Fatal(err)
+	}
+	loaded := LoadState()
+	if loaded.Consent != ConsentDeclined || loaded.V1Declined() || ShouldPrompt(loaded) || loaded.prevV1 != "" {
+		t.Fatalf("schema-2 decline reasked or mislabeled: %+v", loaded)
+	}
+	if SchemaVersion != 3 {
+		t.Fatalf("new event requires consent schema 3, got %d", SchemaVersion)
+	}
+}
+
+func TestInstallTickV2RegrantClearsDetailsPreservesLedger(t *testing.T) {
+	c := tickEnv(t)
+	maybeInstallTick(context.Background(), func(context.Context, []byte, time.Duration) postResult {
+		return postResult{err: errors.New("lost ack")}
+	})
+	tickBefore, _ := readInstallTick()
+	s := LoadState()
+	s.SchemaVersion = 2
+	s.Counters = map[string]int{"legacy": 1}
+	s.PreV2 = false
+	if err := SaveState(s); err != nil {
+		t.Fatal(err)
+	}
+	spool, _ := spoolPath()
+	if err := os.WriteFile(spool, []byte("legacy spool\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	firstDay, firstAt, oldID, oldSalt := s.FirstSeenDay, s.FirstSeenAt, s.InstallID, s.Salt
+	c.add(48 * time.Hour)
+	migrated := LoadState()
+	if err := Grant(migrated, "9.9.9", c.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(migrated); err != nil {
+		t.Fatal(err)
+	}
+	if migrated.InstallID == oldID || migrated.Salt == oldSalt || migrated.Counters != nil {
+		t.Fatal("regrant retained old detailed data/identity")
+	}
+	if migrated.FirstSeenDay != firstDay || !migrated.FirstSeenAt.Equal(firstAt) || migrated.PreV2 {
+		t.Fatal("v2 regrant changed provenance")
+	}
+	if _, err := os.Stat(spool); !os.IsNotExist(err) {
+		t.Fatalf("old spool retained: %v", err)
+	}
+	tickAfter, _ := readInstallTick()
+	if tickAfter != tickBefore {
+		t.Fatal("regrant changed daily nonce ledger")
 	}
 }

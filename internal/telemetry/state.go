@@ -42,7 +42,7 @@ const (
 
 // SchemaVersion must change with the event schema and TELEMETRY.md. A change
 // turns every existing grant back into "undecided" (consent binds to it).
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // StateFileName is the state file, stored in the agent-deck data directory.
 const StateFileName = "telemetry-state.json"
@@ -85,8 +85,9 @@ type State struct {
 	TUIOpen        bool                    `json:"tui_open,omitempty"`
 	LastVersion    string                  `json:"last_version,omitempty"`
 
-	// prevV1 is the v1 answer found on load ("" when the file was v2 or absent).
+	// Earlier-schema answers found on load, never serialized or confused with each other.
 	prevV1 Consent
+	prevV2 Consent
 }
 
 // FunnelState holds the local counters behind the funnel milestones.
@@ -147,8 +148,10 @@ func LoadState() *State {
 	default:
 		s.Consent = ConsentUndecided
 	}
-	if s.SchemaVersion < SchemaVersion {
+	if s.SchemaVersion == 1 {
 		s.prevV1 = s.Consent
+	} else if s.SchemaVersion == 2 {
+		s.prevV2 = s.Consent
 	}
 	if s.SchemaVersion != SchemaVersion && s.Consent == ConsentGranted {
 		s.Consent = ConsentUndecided
@@ -159,9 +162,17 @@ func LoadState() *State {
 	return &s
 }
 
-// Previous reports the v1 answer this state was migrated from, for the
+// Previous reports an earlier-schema answer this state was migrated from, for the
 // telemetry.consent event.
 func (s *State) Previous() string {
+	switch s.prevV2 {
+	case ConsentGranted:
+		return "v2_granted"
+	case ConsentDeclined:
+		return "v2_declined"
+	case ConsentUndecided:
+		return "v2_undecided"
+	}
 	switch s.prevV1 {
 	case ConsentGranted:
 		return "v1_granted"
@@ -176,7 +187,7 @@ func (s *State) Previous() string {
 // V1Declined reports a decline recorded by the schema 1 prompt, which counted
 // every key (even Enter) as no. It is asked once more (spec open question Q1).
 func (s *State) V1Declined() bool {
-	return s.Consent == ConsentDeclined && s.DeclinedSchema < SchemaVersion
+	return s.Consent == ConsentDeclined && s.SchemaVersion == 1 && s.DeclinedSchema < 2
 }
 
 // SaveState rejects stale revisions and durably replaces state with mode 0600.

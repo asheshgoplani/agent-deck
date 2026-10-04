@@ -16,16 +16,16 @@ const (
 	PromptHeight = 22
 )
 
-// promptTemplateV2 is the shared CLI/TUI disclosure. {{where}} is the
+// promptTemplateV3 is the shared CLI/TUI disclosure. {{where}} is the
 // destination line (PostHog EU for the default endpoint).
-const promptTemplateV2 = `Help improve agent-deck?
+const promptTemplateV3 = `Help improve agent-deck?
 
 Share anonymous usage data with the agent-deck maintainer.
 
-Sent:   tools and features you use, session counts and lengths,
-        the hour and weekday you are active, error types, fleet
-        size, version and OS. Numbers are rounded into ranges.
-        A random ID links your reports; reset it any time.
+Sent:   tools, features, rounded session counts and lengths,
+        active hour and weekday, error types, fleet size,
+        version, OS and daily active-install counts.
+        Usage ID is resettable; tick ID is random each day.
 Never:  prompts, output, titles, paths, repo, host or user names,
         or anything you type. IP addresses are discarded.
 Where:  {{where}}
@@ -53,7 +53,7 @@ const maxWhereWidth = 62
 
 // PromptText renders the disclosure for an endpoint.
 func PromptText(endpoint string) string {
-	return strings.ReplaceAll(promptTemplateV2, "{{where}}", whereLine(endpoint))
+	return strings.ReplaceAll(promptTemplateV3, "{{where}}", whereLine(endpoint))
 }
 
 func whereLine(endpoint string) string {
