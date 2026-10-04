@@ -73,9 +73,11 @@ type Ledger struct {
 	last   map[string]Record // newest turn record per From (the tier rule's "previous turn")
 	status map[string]Record // newest status record per From
 	flags  map[string]PendingFlag
-	dir    string
-	store  StoreIdentity
-	closed bool
+	// consumers caches the recipients whose state is known to exist.
+	consumers map[string]bool
+	dir       string
+	store     StoreIdentity
+	closed    bool
 }
 
 // StoreIdentity names one ledger across host renames and restores: a
@@ -205,7 +207,7 @@ func OpenDir(profile, dir string) (*Ledger, error) {
 		slog.Warn("comms_store_restored", "dir", dir, "epoch", store.Epoch, "cursor", cursor)
 	}
 	l := &Ledger{profile: profile, bus: bus, keys: map[string]Record{}, seq: map[string]int64{},
-		last: map[string]Record{}, status: map[string]Record{}, flags: map[string]PendingFlag{}, dir: dir, store: store}
+		last: map[string]Record{}, status: map[string]Record{}, flags: map[string]PendingFlag{}, consumers: map[string]bool{}, dir: dir, store: store}
 	if err := l.warm(); err != nil {
 		_ = bus.Close()
 		return nil, err
@@ -248,12 +250,7 @@ func (l *Ledger) warm() error {
 			if json.Unmarshal(f.Data, &r) == nil {
 				l.remember(r)
 				for _, to := range recipients(r) {
-					fl := seen[to]
-					if fl.First == 0 {
-						fl.First = f.Cursor
-					}
-					fl.Last = f.Cursor
-					seen[to] = fl
+					seen[to] = PendingFlag{Last: f.Cursor}
 				}
 			}
 			reached = f.Cursor
@@ -311,41 +308,41 @@ func recipients(r Record) []string {
 	return out
 }
 
-// raiseFlags moves each recipient's pending flag to cursor (best effort:
-// the flag is a cache, a failed write costs the reader one fast path).
+// raiseFlags runs before a record addressed to consumers becomes visible:
+// a recipient seen for the first time gets its consumer state just before
+// this record (so it reads from here, whoever reads first), and every
+// recipient's pending flag moves to cursor. Best effort: the flag is a
+// hint, and a failed state write leaves the reader to create the state.
 func (l *Ledger) raiseFlags(r Record, cursor events.Cursor) {
 	for _, to := range recipients(r) {
-		fl, ok := l.flags[to]
-		if !ok {
-			fl, ok = ReadFlag(l.dir, to)
-			if !ok || fl.Epoch != l.store.Epoch {
-				fl = PendingFlag{First: cursor}
+		if !l.consumers[to] {
+			if err := EnsureConsumer(l.dir, to, l.store, cursor-1); err != nil {
+				slog.Warn("comms_consumer_create_failed", "consumer", to, "error", err.Error())
+			} else {
+				l.consumers[to] = true
 			}
 		}
-		fl.Last, fl.Epoch = max(fl.Last, cursor), l.store.Epoch
-		if fl.First == 0 {
-			fl.First = cursor
+		fl := l.flags[to]
+		if fl.Epoch != l.store.Epoch {
+			fl = PendingFlag{}
 		}
+		fl.Last, fl.Epoch = max(fl.Last, cursor), l.store.Epoch
 		l.flags[to] = fl
 		_ = writeFlag(l.dir, to, fl)
 	}
 }
 
-// repairFlags rebuilds pending flags from the dedup window at open: a
-// commit whose flag write was lost to a crash is visible again. A flag
-// from another epoch is replaced; one that is already newer is kept.
+// repairFlags rebuilds pending flags from the dedup window at open, so a
+// flag lost between a crash and its rewrite is seen again. Only Last is a
+// flag's business; a flag already newer is kept.
 func (l *Ledger) repairFlags(seen map[string]PendingFlag) {
 	for to, w := range seen {
 		fl, ok := ReadFlag(l.dir, to)
-		if ok && fl.Epoch == l.store.Epoch && fl.Last >= w.Last && fl.First > 0 && fl.First <= w.First {
+		if ok && fl.Epoch == l.store.Epoch && fl.Last >= w.Last {
 			l.flags[to] = fl
 			continue
 		}
-		if !ok || fl.Epoch != l.store.Epoch {
-			fl = PendingFlag{First: w.First}
-		}
-		fl.First = min(max(fl.First, 1), w.First)
-		fl.Last, fl.Epoch = max(fl.Last, w.Last), l.store.Epoch
+		fl = PendingFlag{Last: w.Last, Epoch: l.store.Epoch}
 		l.flags[to] = fl
 		_ = writeFlag(l.dir, to, fl)
 	}

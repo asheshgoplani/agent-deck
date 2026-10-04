@@ -111,10 +111,11 @@ type GapNote struct {
 	At      int64         `json:"at"`      // Unix ms
 }
 
-// PendingFlag is the daemon's per-consumer hint: the first and the newest
-// cursor of a deliverable record addressed to the consumer, in Epoch.
+// PendingFlag is the daemon's per-consumer hint: the newest cursor of a
+// deliverable record addressed to the consumer, in Epoch. It only lets a
+// reader skip a pass; where a consumer starts is its state file's
+// business, never the flag's.
 type PendingFlag struct {
-	First events.Cursor `json:"first"`
 	Last  events.Cursor `json:"last"`
 	Epoch int64         `json:"epoch"`
 }
@@ -300,20 +301,20 @@ type Pass struct {
 }
 
 // HasNothingPending is the fast path a hook takes before opening the log:
-// true when the daemon's flag shows no record newer than what the
-// consumer's last pass covered and that pass left nothing pending. A
-// missing flag means nothing was ever addressed to the consumer. Any doubt
-// (no state yet, an unreadable file) answers false.
+// true when the consumer was never addressed (no flag and no state; the
+// daemon creates both before the first record for it becomes visible), or
+// when its flag shows no record newer than what its last pass covered and
+// that pass left nothing pending. Any doubt answers false.
 func HasNothingPending(dir, consumer string) bool {
-	flag, ok := ReadFlag(dir, consumer)
-	if !ok {
-		return true
-	}
+	flag, flagged := ReadFlag(dir, consumer)
 	f, found, err := ReadConsumer(dir, consumer)
-	if err != nil || !found {
+	if err != nil {
 		return false
 	}
-	return f.Pending == 0 && f.Through >= flag.Last && f.Epoch == flag.Epoch
+	if !flagged {
+		return !found
+	}
+	return found && f.Pending == 0 && f.Through >= flag.Last && f.Epoch == flag.Epoch
 }
 
 // Do runs one consumer pass under the consumer's lock: it loads (or
@@ -350,20 +351,19 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 	pass := Pass{Consumer: consumer}
 	switch {
 	case !found:
-		f = ConsumerFile{ConsumerState: ConsumerState{Consumer: consumer, Generation: 1}, Created: now.UnixMilli()}
-		f.bind(r, end)
+		// Never addressed (the daemon creates a consumer's state before
+		// the first record for it is visible): start at the end.
+		f = newConsumerFile(consumer, r.Store, end, now)
 	case f.Check(r.Store) != nil:
 		// The ledger was reset or restored under this consumer: its old
-		// position means nothing in the new epoch. Rebuilt, and said so.
-		note := GapNote{Gap: Gap{Consumer: consumer, From: f.Watermark + 1, To: f.Through}, Reason: "epoch", At: now.UnixMilli()}
-		hadUnread := f.Through > f.Watermark
-		f.ConsumerState = ConsumerState{Consumer: consumer, Generation: f.Generation + 1}
-		// What the restored copy holds may or may not have been shown
-		// before the reset; only the new epoch's records are certainly news
-		// (bind starts at the epoch start or later).
-		f.bind(r, end)
-		note.Resumed = f.Watermark
-		if hadUnread {
+		// position means nothing in the new epoch. It resumes at the start
+		// of the new epoch (what the restored copy holds may or may not
+		// have been shown), and whatever it had not read is a gap.
+		old := f
+		f = newConsumerFile(consumer, r.Store, min(events.Cursor(r.Store.EpochStart), end), now)
+		f.Generation, f.Created, f.Gaps = old.Generation+1, old.Created, old.Gaps
+		if to := max(old.Through, events.Cursor(r.Store.EpochStart)); to > old.Watermark {
+			note := GapNote{Gap: Gap{Consumer: consumer, From: old.Watermark + 1, To: to}, Reason: "epoch", Resumed: f.Watermark, At: now.UnixMilli()}
 			f.addGap(note)
 			pass.Gap = &note
 		}
@@ -429,19 +429,32 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 	return f, writeConsumer(r.Dir, f)
 }
 
-// bind starts a fresh state on this ledger: the store, epoch and a
-// watermark just before the first record ever addressed to the consumer in
-// this epoch (its pending flag). With no flag it starts at the beginning of
-// the epoch and lets the pass filter: a flag is only a hint (it may be
-// missing for records written before flags existed or lost to a crash), so
-// its absence must never skip a record.
-func (f *ConsumerFile) bind(r *Reader, end events.Cursor) {
-	f.Store, f.Epoch = r.Store.ID, r.Store.Epoch
-	f.Watermark = min(events.Cursor(r.Store.EpochStart), end)
-	if flag, ok := ReadFlag(r.Dir, f.Consumer); ok && flag.Epoch == r.Store.Epoch && flag.First > 0 && flag.First-1 < end && flag.First-1 > f.Watermark {
-		f.Watermark = flag.First - 1
+// newConsumerFile is a fresh state on this ledger at watermark.
+func newConsumerFile(consumer string, store StoreIdentity, watermark events.Cursor, now time.Time) ConsumerFile {
+	return ConsumerFile{ConsumerState: ConsumerState{Consumer: consumer, Store: store.ID, Epoch: store.Epoch, Generation: 1,
+		Watermark: watermark}, Created: now.UnixMilli(), Updated: now.UnixMilli(), Through: watermark}
+}
+
+// EnsureConsumer creates a consumer's state at watermark when it has none
+// (the daemon calls it for every recipient before the first record
+// addressed to it becomes visible, so the consumer reads from there). An
+// existing state is left alone.
+func EnsureConsumer(dir, consumer string, store StoreIdentity, watermark events.Cursor) error {
+	if err := ValidConsumer(consumer); err != nil {
+		return err
 	}
-	f.Acked = nil
+	if _, err := os.Stat(ConsumerPath(dir, consumer)); err == nil {
+		return nil
+	}
+	unlock, err := lockConsumer(dir, consumer)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, found, err := ReadConsumer(dir, consumer); err != nil || found {
+		return err
+	}
+	return writeConsumer(dir, newConsumerFile(consumer, store, watermark, time.Now()))
 }
 
 func (f *ConsumerFile) addGap(g GapNote) {

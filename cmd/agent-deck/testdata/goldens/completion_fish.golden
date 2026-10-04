@@ -47,12 +47,13 @@ end
 complete -c agent-deck -f -n "test (count (commandline -opc)) -eq 2; and contains -- (commandline -opc)[2] -p --profile" -a "(agent-deck __complete profiles)"
 
 # Top-level commands.
-complete -c agent-deck -f -n "__agent_deck_at '' '' 1" -a "add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek"
+complete -c agent-deck -f -n "__agent_deck_at '' '' 1" -a "add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek"
 
 # Subcommands.
 complete -c agent-deck -f -n "__agent_deck_at completion '' 2" -a "bash zsh fish"
 complete -c agent-deck -f -n "__agent_deck_at profile '' 2" -a "list create delete default"
 complete -c agent-deck -f -n "__agent_deck_at inbox '' 2" -a "drain"
+complete -c agent-deck -f -n "__agent_deck_at msg '' 2" -a "read peek ack export stats"
 complete -c agent-deck -f -n "__agent_deck_at session '' 2" -a "start stop remove cleanup prune archive unarchive restart revive fork handoff attach focus show viewers current primer set-parent unset-parent update set-transition-notify set-title-lock set switch-account move send approve send-keys output children search"
 complete -c agent-deck -f -n "__agent_deck_at fleet '' 2" -a "status recover"
 complete -c agent-deck -f -n "__agent_deck_at mcp '' 2" -a "list attached attach detach server"

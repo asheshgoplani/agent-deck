@@ -203,8 +203,8 @@ Frozen now in `internal/comms/receipt.go` with fixtures under
   entries (bounded by the per-instance cap of 512), the daemon logs the
   overload once per minute, and nothing is silently dropped. A consumer
   whose watermark falls below the oldest retained cursor gets an explicit
-  `Gap` (recorded as an `error` record addressed to itself) and is never
-  silently restarted at the newest segment.
+  `Gap` (kept in its state file's `gaps` and printed by `msg read`) and is
+  never silently restarted at the newest segment.
 - **Pending indexes** (P2, built): the per-consumer state file and the
   pending flag are caches; a pass always scans from the consumer's
   watermark, and the daemon rebuilds the flags from its dedup window at
@@ -318,23 +318,26 @@ stdout; the rest stays pending. `peek` acknowledges nothing. `ack` takes
 record ids, their last 6 characters (what every rendered line shows) or
 cursors; an unknown reference fails and acknowledges nothing.
 
-Where a new consumer starts: just before the first record ever addressed
-to it (its pending flag), or, with no flag, at the start of the epoch,
-filtering by address: a flag is a hint and its absence never skips a
-record. The daemon raises a recipient's flag before the record becomes
-visible. An enrolled delivery consumer (P2 canary) starts at the end of
-the log instead, because the inbox delivered what came before. A state from
-another ledger store or epoch is rebuilt (generation + 1) after the
-restored copy's records (`store.json` `epoch_start`), and the reset is
-kept as a gap when it had unread records. A watermark that compaction overtook is moved to the
+Where a consumer starts: the daemon creates a recipient's state, just
+before the first record addressed to it becomes visible, so it reads
+from that record on whoever reads first; a name nobody ever addressed
+starts at the end of the log. Records committed before a recipient's
+state existed (a ledger written by a P1 daemon, which created none) are
+not pending for it: the inbox delivered them, and `msg export` still
+shows them. The pending flag is only a fast-path hint and never decides
+where a consumer starts. A state from another ledger store or epoch is
+rebuilt (generation + 1) at the start of the new epoch (`store.json`
+`epoch_start`: what the restored copy holds may or may not have been
+shown), and whatever it had not read is kept as a gap. A watermark that compaction overtook is moved to the
 oldest retained cursor and the loss kept as a gap (`gaps[]`, also printed
 by `read`): never a silent restart.
 
 Pending flags: the daemon keeps `<ledger>/pending/<consumer>.json` (the
-first and newest cursor of a deliverable record addressed to it, and the
-epoch) on every commit and rebuilds them from its dedup window at open.
-A hook checks the flag and the consumer file before it opens the log; the
-flag only lets it skip work, a pass always reads from the watermark.
+newest cursor of a deliverable record addressed to it, and the epoch),
+written before the record becomes visible and rebuilt from its dedup
+window at open. A reader checks the flag and the consumer file before it
+opens the log (`HasNothingPending`); the flag only lets it skip work, a
+pass always reads from the watermark.
 
 Pending-delivery retention: the ledger's compaction asks
 `ConsumersRetainFrom` (one above the lowest watermark of every consumer
@@ -372,7 +375,7 @@ an imported record counts when it arrived). Each target carries `value`,
 | `records_with_text_pct` >= 95 | share of `turn`, `status`, `send`, `human` records (noise excluded) with text | records |
 | `records_per_finished` <= 3 | deliverable `turn` and `status` records per turn carrying a completion sentinel | records |
 | `duplicate_turn_pct` == 0 | turn records repeating a key, or one child's same full-text hash signalled within 5 s under another key | `turn` records |
-| `output_and_drain_calls_per_wake` == 0 | `session output` and `inbox drain` runs by woken parents per wake | `call` records, spooled by the CLI when it runs inside a session (`msg read` is recorded too, not counted) |
+| `output_and_drain_calls_per_wake` == 0 | `session output` and `inbox drain` runs by any session (heartbeat drains included) per recorded wake; calls with no wake are not met | `call` records, spooled by the CLI when it runs inside a session (`msg read` is recorded too, not counted) |
 | `send_with_sender_and_text_pct` == 100 | `send` records with a sender and a text hash | `send` records (P3) |
 | `cross_host_records_with_latency` > 0 | imported records whose offset-corrected latency was measured | records with `origin` (P3) |
 

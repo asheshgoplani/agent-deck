@@ -230,7 +230,16 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 		return Frame{}, err
 	}
 	if b.maxBytes > 0 && b.totalBytes+int64(len(raw))+96 > b.maxBytes {
-		return Frame{}, ErrQuota
+		// Compaction normally runs at rotation; at the quota there may be
+		// no rotation to come, so give age, count and released readers a
+		// chance before refusing.
+		b.compactLocked()
+		if sealed, err := listSealedSegments(b.dir); err == nil {
+			b.totalBytes = sealedBytes(sealed) + b.activeBytes
+		}
+		if b.totalBytes+int64(len(raw))+96 > b.maxBytes {
+			return Frame{}, ErrQuota
+		}
 	}
 	if commitFault != nil {
 		if err := commitFault("before-append", b); err != nil {

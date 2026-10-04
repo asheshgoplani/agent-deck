@@ -512,10 +512,14 @@ func printMsgStats(w io.Writer, out msgStatsOutput) {
 		value, verdict := "n/a", "no data"
 		if r.t.Value != nil {
 			value = strconv.FormatFloat(*r.t.Value, 'f', -1, 64)
+		}
+		switch {
+		case r.t.Met == nil && r.t.Value != nil:
+			verdict = "no verdict"
+		case r.t.Met != nil && *r.t.Met:
+			verdict = "met"
+		case r.t.Met != nil:
 			verdict = "MISSED"
-			if r.t.Met != nil && *r.t.Met {
-				verdict = "met"
-			}
 		}
 		fmt.Fprintf(w, "  %-34s %8s  (target %s %g, n=%d) %s\n", r.name, value, r.t.Op, r.t.Target, r.t.N, verdict)
 	}

@@ -275,8 +275,9 @@ func TestCompactionKeepsPendingRecordsAndALaggardGetsAGap(t *testing.T) {
 	}
 	commit("Q", "lost to Q "+strings.Repeat("q", 700))
 	firstForP := commit("P", "pending for P "+strings.Repeat("p", 700))
-	// The raw bus has no Ledger to raise flags; P's flag says where it starts.
-	if err := writeFlag(dir, "P", PendingFlag{First: firstForP, Last: firstForP, Epoch: 1}); err != nil {
+	// The raw bus has no Ledger: create P's state at its record, as the
+	// daemon does before a record for a new recipient becomes visible.
+	if err := EnsureConsumer(dir, "P", StoreIdentity{ID: "S", Epoch: 1}, firstForP-1); err != nil {
 		t.Fatal(err)
 	}
 	r, err := OpenReaderAt(dir)
@@ -333,7 +334,7 @@ func TestPendingFlagsAreRebuiltAtOpen(t *testing.T) {
 	}
 	defer l2.Close()
 	flag, ok := ReadFlag(dir, "P")
-	if !ok || flag.First != c || flag.Last != c || flag.Epoch != l2.Store().Epoch {
+	if !ok || flag.Last != c || flag.Epoch != l2.Store().Epoch {
 		t.Fatalf("flag not rebuilt at open: %+v ok=%v", flag, ok)
 	}
 }
@@ -383,15 +384,19 @@ func TestAMissingFlagNeverSkipsARecord(t *testing.T) {
 	}
 }
 
-// Verifier round 1 (#1): the flag is raised before the frame is visible,
-// so a reader that sees the record also sees the flag.
+// Verifier round 1 (#1): the flag is raised (and a new recipient's state
+// created) before the frame is visible, so a reader that sees the record
+// also sees both.
 func TestTheFlagIsRaisedBeforeTheRecordIsVisible(t *testing.T) {
 	l, _, dir := openPair(t)
 	seen := make(chan bool, 1)
 	c := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "x"})
+	if st, found, _ := ReadConsumer(dir, "X"); !found || st.Watermark != c-1 {
+		t.Fatalf("the daemon creates a new recipient's state just before its first record: %+v found=%v", st, found)
+	}
 	flag, ok := ReadFlag(dir, "X")
 	seen <- ok
-	if !<-seen || flag.Last < c || flag.First > c {
+	if !<-seen || flag.Last < c {
 		t.Fatalf("flag %+v ok=%v for cursor %d", flag, ok, c)
 	}
 }
@@ -412,5 +417,77 @@ func TestAckAllOverInterleavedTrafficNeverOverflowsTheSparseSet(t *testing.T) {
 	_, f := pass(t, r, "P", all)
 	if f.Pending != 0 || f.Acked != nil || f.Watermark != l.Cursor() {
 		t.Fatalf("ack all over interleaved traffic: %+v (cursor %d)", f.ConsumerState, l.Cursor())
+	}
+}
+
+// Verifier round 2 (#12): a consumer's start never comes from a flag. A
+// recipient's state is created at its first record, so flags lost and
+// rebuilt from a partial window at the next open skip nothing.
+func TestRebuiltFlagsFromAPartialWindowSkipNothing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("commits 4k records")
+	}
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "first for X"})
+	for i := 0; i < recentKeys+10; i++ {
+		mustCommit(t, l, Record{Kind: KindTurn, From: "q", To: []string{"Q"}, Tier: TierInfo, Text: "q" + strings.Repeat("x", i%5)})
+	}
+	last := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "last for X"})
+	_ = l.Close()
+	if err := os.RemoveAll(filepath.Join(dir, pendingDirName)); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got, _ := pass(t, r, "X", nil)
+	if len(got) != 2 || got[0] != first || got[1] != last {
+		t.Fatalf("X must see both records: %v (want %d, %d)", got, first, last)
+	}
+}
+
+// Verifier round 2 (#3/#5): a consumer nobody ever addressed starts at the
+// end, so compaction before it existed is not a loss it is told about.
+func TestANeverAddressedConsumerGetsNoFalseGap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	bus, err := events.OpenAt(dir, events.Options{Private: true, KeepCorrupt: true, MaxSegmentBytes: 600, RetainSegments: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	if err := writeStoreIdentity(dir, StoreIdentity{ID: "S", Epoch: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 8; i++ {
+		if _, err := bus.Commit(KindTurn, "c", Record{V: 1, ID: NewID(time.Now()), Kind: KindTurn, From: "c", To: []string{"Q"}, Tier: TierInfo, Text: strings.Repeat("q", 700)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if oldest, _ := bus.Oldest(); oldest <= 1 {
+		t.Fatalf("expected compaction, oldest %d", oldest)
+	}
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var gap *GapNote
+	f, err := r.Do("human:new", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gap != nil || len(f.Gaps) != 0 {
+		t.Fatalf("a never-addressed consumer was told about a loss: %+v", gap)
 	}
 }

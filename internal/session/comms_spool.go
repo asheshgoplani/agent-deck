@@ -182,7 +182,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		limit = commsSpoolMeasureFiles
 	}
 	if countSpoolFiles(dir) >= limit {
-		commsLog.Warn("comms_spool_full", slog.String("instance", e.Instance), slog.Int("cap", commsSpoolMaxFiles))
+		commsLog.Warn("comms_spool_full", slog.String("instance", e.Instance), slog.String("edge", e.Edge), slog.Int("cap", limit))
 		return errors.New("comms spool: instance spool full; is the notify daemon running?")
 	}
 	data, err := json.Marshal(e)

@@ -4,7 +4,7 @@
 _agent_deck() {
     local -a top_commands subs cands profile_args extra_args
     local start cmd sub arg_index kind
-    top_commands=(add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek)
+    top_commands=(add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek)
 
     start=2
     case ${words[2]} in
@@ -55,6 +55,15 @@ _agent_deck() {
     inbox)
         if (( CURRENT == start + 1 )); then
             subs=(drain)
+            compadd -a subs
+            return
+        fi
+        sub=${words[start+1]}
+        arg_index=$(( CURRENT - start - 2 ))
+        ;;
+    msg)
+        if (( CURRENT == start + 1 )); then
+            subs=(read peek ack export stats)
             compadd -a subs
             return
         fi
