@@ -415,7 +415,17 @@ func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, in
 	if id := e.ID(); id != "" {
 		rec.Key = comms.Key(comms.KindStatus, inst.ID, id)
 	}
-	if _, _, err := l.Commit(rec); err != nil && !errors.Is(err, comms.ErrDuplicate) {
+	_, _, err := l.Commit(rec)
+	switch {
+	case err == nil, errors.Is(err, comms.ErrDuplicate):
+	case errors.Is(err, comms.ErrConflict):
+		// The entry's key holds different content (a replay after the child
+		// was re-parented): kept aside as a turn would be, so it never
+		// blocks the edges behind it.
+		commsLog.Warn("comms_conflict", slog.String("child", inst.ID), slog.String("key", rec.Key), slog.String("entry", e.ID()))
+		QuarantineCommsSpoolEntry(e)
+		return true
+	default:
 		commsLog.Warn("comms_status_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
 		return false
 	}

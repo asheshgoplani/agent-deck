@@ -274,23 +274,15 @@ func (b *Bus) Ends() (end, lastFrame Cursor, err error) {
 		return 0, 0, err
 	}
 	end = b.cursor
-	_, lastFrame, _, _, err = scanFrames(filepath.Join(b.dir, activeSegmentName))
-	if err != nil && !os.IsNotExist(err) {
-		return end, 0, err
-	}
-	if lastFrame > 0 {
-		return end, lastFrame, nil
+	if lastFrame, err = lastFrameIn(filepath.Join(b.dir, activeSegmentName)); err != nil || lastFrame > 0 {
+		return end, lastFrame, err
 	}
 	sealed, err := listSealedSegments(b.dir)
 	if err != nil {
 		return end, 0, err
 	}
 	for i := len(sealed) - 1; i >= 0; i-- {
-		_, lastFrame, _, _, err = scanFrames(sealed[i].path)
-		if os.IsNotExist(err) {
-			continue // compacted under us
-		}
-		if err != nil || lastFrame > 0 {
+		if lastFrame, err = lastFrameIn(sealed[i].path); err != nil || lastFrame > 0 {
 			return end, lastFrame, err
 		}
 	}

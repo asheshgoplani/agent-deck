@@ -815,3 +815,41 @@ func TestCommsIngest_StatusEdgeReplayIsADuplicateOfItsSpoolID(t *testing.T) {
 		t.Fatalf("replayed entry left in the spool: %+v", left)
 	}
 }
+
+// Verifier round 1: a replayed status entry whose content no longer
+// matches its stored record (the child was re-parented in between) is a
+// conflict: quarantined like a turn, never a stuck spool that blocks every
+// later edge.
+func TestCommsIngest_ConflictingStatusReplayIsQuarantined(t *testing.T) {
+	f := newCommsFixture(t)
+	at := time.Now().Add(-time.Hour)
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at)
+	entries, _ := ReadCommsSpool(f.shell.ID)
+	if len(entries) != 1 {
+		t.Fatalf("spool: %+v", entries)
+	}
+	first := entries[0]
+	raw, err := os.ReadFile(first.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.d.commsStatusEdge(f.shell, "waiting", "running", at.Add(time.Minute))
+	f.d.ingestCommsSpool("default", f.byID)
+	if err := os.WriteFile(first.path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.shell.ParentSessionID = "another-parent"
+	f.d.ingestCommsSpool("default", f.byID)
+	f.d.commsStatusEdge(f.shell, "running", "error", at.Add(2*time.Minute))
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 3 || recs[2].State != "error" {
+		t.Fatalf("a later edge must still commit: %+v", recs)
+	}
+	if left, _ := ReadCommsSpool(f.shell.ID); len(left) != 0 {
+		t.Fatalf("spool stuck behind the conflict: %+v", left)
+	}
+	if q, _ := os.ReadDir(filepath.Join(CommsSpoolDir(), "conflict", f.shell.ID)); len(q) != 1 {
+		t.Fatalf("conflicting status entry not quarantined: %d files", len(q))
+	}
+}

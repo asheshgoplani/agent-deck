@@ -320,6 +320,22 @@ func recoverActiveSegment(dir string, mode os.FileMode, keepCorrupt bool) (Curso
 	if last > 0 {
 		last += Cursor(trailingCorrupt) //nolint:gosec // G115: a line count
 	}
+	if validEnd == len(data) && keepCorrupt {
+		// A writer that died between its append and its fsync may have left
+		// a complete line a follower already read: make it durable now so
+		// the next commit can never reuse its cursor after a later crash.
+		f, err := os.OpenFile(path, os.O_WRONLY, mode)
+		if err != nil {
+			return 0, err
+		}
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return 0, err
+		}
+		if err := f.Close(); err != nil {
+			return 0, err
+		}
+	}
 	if validEnd != len(data) {
 		f, err := os.OpenFile(path, os.O_WRONLY, mode)
 		if err != nil {

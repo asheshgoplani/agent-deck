@@ -99,7 +99,7 @@ func TestLedgerRolledBackCommitIsNeverVisibleAndItsCursorIsSpent(t *testing.T) {
 	// the window in which an unlocked read would expose it.
 	entered, written := make(chan struct{}), make(chan struct{})
 	var once bool
-	subscribeActiveHook = func() {
+	hook := func() {
 		if once {
 			return
 		}
@@ -110,6 +110,7 @@ func TestLedgerRolledBackCommitIsNeverVisibleAndItsCursorIsSpent(t *testing.T) {
 		case <-time.After(5 * time.Second):
 		}
 	}
+	subscribeActiveHook.Store(&hook)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	sub, _ := r.Subscribe(ctx, 1)
 	defer func() {
@@ -117,7 +118,7 @@ func TestLedgerRolledBackCommitIsNeverVisibleAndItsCursorIsSpent(t *testing.T) {
 		cancel()
 		for range sub.Frames() {
 		}
-		subscribeActiveHook = nil
+		subscribeActiveHook.Store(nil)
 	}()
 	<-entered
 	commitFault = func(at string, _ *Bus) error {
@@ -157,5 +158,101 @@ func TestLedgerRolledBackCommitIsNeverVisibleAndItsCursorIsSpent(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("follower never saw the real frame")
+	}
+}
+
+// Verifier round 1: a rotation between a follower's segment listing and its
+// read of the active file must not make it read the NEW active file as if
+// it were the listed one (skipping the frames just sealed). On the ledger
+// bus the read re-checks for a rotation under the lock and re-lists.
+func TestLedgerFollowerNeverSkipsFramesSealedBetweenListAndRead(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	b, err := OpenAt(dir, Options{Private: true, KeepCorrupt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitN(t, b, 2)
+	_ = b.Close()
+	info, err := os.Stat(filepath.Join(dir, activeSegmentName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The next commit pushes the active file past the bound and rotates.
+	w, err := OpenAt(dir, Options{Private: true, KeepCorrupt: true, MaxSegmentBytes: info.Size() + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	r, err := OpenAt(dir, Options{ReadOnly: true, KeepCorrupt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var once bool
+	hook := func() {
+		if once {
+			return
+		}
+		once = true
+		commitN(t, w, 2) // 3 seals 1-3, 4 starts the new active file
+	}
+	subscribeActiveHook.Store(&hook)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	sub, _ := r.Subscribe(ctx, 0)
+	defer func() {
+		cancel()
+		for range sub.Frames() {
+		}
+		subscribeActiveHook.Store(nil)
+	}()
+	var seen []Cursor
+	for f := range sub.Frames() {
+		seen = append(seen, f.Cursor)
+		if f.Cursor >= 4 {
+			break
+		}
+	}
+	if len(seen) != 4 || seen[0] != 1 || seen[1] != 2 || seen[2] != 3 || seen[3] != 4 {
+		t.Fatalf("follower saw %v, want [1 2 3 4]", seen)
+	}
+}
+
+// Verifier round 1: a clean ledger is never JSON-scanned line by line on
+// the hot paths (Commit's refresh, a follower's listing, Ends); the full
+// scan runs only when the first or last line does not parse.
+func TestCleanLedgerNeverTakesTheLenientScan(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	b, err := OpenAt(dir, Options{Private: true, KeepCorrupt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	commitN(t, b, 1000)
+	r, err := OpenAt(dir, Options{ReadOnly: true, KeepCorrupt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	before := lenientScans.Load()
+	commitN(t, b, 1)
+	if end, last, err := r.Ends(); err != nil || end != 1001 || last != 1001 {
+		t.Fatalf("Ends = %d, %d, %v", end, last, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	sub, _ := r.Subscribe(ctx, 999)
+	n := 0
+	for range sub.Frames() {
+		if n++; n == 2 {
+			cancel()
+		}
+	}
+	cancel()
+	if got := lenientScans.Load() - before; got != 0 {
+		t.Fatalf("clean ledger took the lenient scan %d times", got)
+	}
+	_ = b.Close()
+	corruptLog(t, dir, 1000, false)
+	if _, last, err := r.Ends(); err != nil || last != 1000 || lenientScans.Load() == before {
+		t.Fatalf("a corrupt last line must fall back to the scan: last %d err %v", last, err)
 	}
 }

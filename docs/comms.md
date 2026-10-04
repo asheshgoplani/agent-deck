@@ -258,10 +258,19 @@ returns its cursor (bytes and fsync done, or rolled back on failure). A
 ledger follower reads new bytes of the active file under the writer lock,
 which `Commit` holds from the append through the fsync or the rollback, so
 it sees a frame only after its `Commit` finished and never sees a
-rolled-back one; the bytes are emitted after the lock is released, so a
-slow follower never holds up the writer. A rolled-back cursor is also
-recorded as spent, so a reader that saw anything under that number could
-never be handed a different frame with it.
+rolled-back one. Under the same lock it checks that no rotation sealed the
+file since its listing (if one did, it re-lists, so sealed frames are never
+skipped). The locked part is a plain read of the new bytes; frames are
+decoded and emitted after the lock is released, so a follower that is slow
+to drain never holds the lock. Bounds are found from the first and last
+line; only a malformed first or last line costs a full scan. A rolled-back
+cursor is also recorded as spent, so a reader that saw anything under that
+number could never be handed a different frame with it. One window
+remains: a writer process that dies between its append and its fsync
+releases the lock, and a follower may read that complete line before the
+next open; the next ledger open fsyncs the active file, so the frame is
+kept and its cursor never reused unless the machine itself loses power in
+that window.
 P2 adds `agent-deck msg read|peek|ack|stats|export` with per-consumer state
 files.
 

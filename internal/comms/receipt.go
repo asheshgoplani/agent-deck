@@ -218,8 +218,8 @@ func (c *ConsumerState) normalize() {
 // not a record) is never delivered, so it can never be acknowledged; once
 // every record below it is acknowledged the watermark moves over it, so the
 // watermark, the sparse set and RetainFrom never stick on it. read must be
-// every record one pass returned for (after, through] (ReadAfter or Export
-// from after, through the cursor the pass returned). A pass that started
+// every record one Export pass returned for (after, through], with through
+// the cursor that pass returned. A pass that started
 // above the watermark says nothing about the cursors below its start, so
 // it changes nothing.
 func (c *ConsumerState) SkipSpent(after events.Cursor, read []Exported, through events.Cursor) {

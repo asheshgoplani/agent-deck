@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -28,15 +29,17 @@ func (b *Bus) unlockDisk() {
 }
 
 // activeBounds returns the cursors of the first and last frame of the
-// active file. On a bus that keeps malformed lines in place it skips them
-// (lenientBounds); otherwise it reads only the first and last line. Open
-// repairs an incomplete tail before calling this; a locked writer never
-// exposes a partial line.
+// active file by reading only its first and last line. On a bus that keeps
+// malformed lines in place, a first or last line that does not parse falls
+// back to the full scan (lenientBounds), which gives the same answer for a
+// clean file; otherwise that is an error. Open repairs an incomplete tail
+// before calling this; a locked writer never exposes a partial line.
 func (b *Bus) activeBounds(path string) (first, last Cursor, size int64, err error) {
-	if b != nil && b.keepCorrupt {
+	first, last, size, err = strictBounds(path)
+	if err != nil && b != nil && b.keepCorrupt && !os.IsNotExist(err) {
 		return b.lenientBounds(path)
 	}
-	return strictBounds(path)
+	return first, last, size, err
 }
 
 // lenientBounds scans the whole file for the first and last parseable
@@ -54,6 +57,9 @@ func (b *Bus) lenientBounds(path string) (first, last Cursor, size int64, err er
 	if first > 0 {
 		return first, lastFrame + trailing, size, nil
 	}
+	// The spent mark is part of the floor even when it already counted a
+	// rolled-back commit whose number these lines would otherwise have
+	// taken: at worst one extra cursor is spent, never one reused.
 	floor, err := b.historyEnd()
 	if err != nil {
 		return 0, 0, size, err
@@ -61,10 +67,15 @@ func (b *Bus) lenientBounds(path string) (first, last Cursor, size int64, err er
 	return floor + 1, floor + trailing, size, nil
 }
 
+// lenientScans counts full scans (scanFrames); tests use it to prove a
+// clean ledger stays on the first-and-last-line path.
+var lenientScans atomic.Int64
+
 // scanFrames reads a segment for the cursors of its first and last
 // parseable frame and the number of malformed lines after the last one.
 // The final line must be complete.
 func scanFrames(path string) (first, lastFrame, trailing Cursor, size int64, err error) {
+	lenientScans.Add(1)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, 0, 0, 0, err
@@ -92,6 +103,18 @@ func scanFrames(path string) (first, lastFrame, trailing Cursor, size int64, err
 		lastFrame = f.Cursor
 	}
 	return first, lastFrame, trailing, size, nil
+}
+
+// lastFrameIn returns the cursor of the newest parseable frame of a
+// segment, reading only its last line when that parses (0 for an empty or
+// missing file, or one with no parseable frame).
+func lastFrameIn(path string) (Cursor, error) {
+	_, last, _, err := strictBounds(path)
+	if err == nil || os.IsNotExist(err) {
+		return last, nil
+	}
+	_, last, _, _, err = scanFrames(path)
+	return last, err
 }
 
 // historyEnd is the highest cursor accounted for outside the active file:

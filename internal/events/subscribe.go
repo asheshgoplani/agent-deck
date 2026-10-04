@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,7 +17,7 @@ const pollInterval = 15 * time.Millisecond
 
 // subscribeActiveHook is a test seam called between a poll's segment
 // listing and its read of the active file. nil in production.
-var subscribeActiveHook func()
+var subscribeActiveHook atomic.Pointer[func()]
 
 // Subscription streams Frames with Cursor > the `after` value passed to
 // Subscribe, oldest first, never skipping and never repeating one, for as
@@ -147,8 +148,8 @@ func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 			}
 
 			// active (unsealed) segment
-			if subscribeActiveHook != nil {
-				subscribeActiveHook()
+			if hook := subscribeActiveHook.Load(); hook != nil {
+				(*hook)()
 			}
 			if seg.start != lastActiveStart {
 				lastActiveStart = seg.start
@@ -158,7 +159,7 @@ func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 			var newOffset int64
 			var n int
 			if b.keepCorrupt {
-				ok, newOffset, n, err = s.streamActiveCommitted(ctx, b, seg.path, &emitted, activeOffset)
+				ok, newOffset, n, err = s.streamActiveCommitted(ctx, b, seg, &emitted, activeOffset)
 			} else {
 				ok, newOffset, n, err = s.streamActive(ctx, seg.path, &emitted, activeOffset)
 			}
@@ -282,14 +283,26 @@ func (s *Subscription) streamActive(ctx context.Context, path string, emitted *C
 
 // streamActiveCommitted is streamActive for a ledger bus: the new bytes are
 // read under the writer lock, so a frame is visible only once the Commit
-// that wrote it has returned (its fsync done, or rolled back). The frames
-// are emitted after the lock is released, so a slow follower never holds
-// up the writer.
-func (s *Subscription) streamActiveCommitted(ctx context.Context, b *Bus, path string, emitted *Cursor, fromOffset int64) (ok bool, newOffset int64, n int, err error) {
+// that wrote it has returned (its fsync done, or rolled back). Under the
+// same lock it checks that the active file is still the one listed: if a
+// rotation sealed it since the listing, nothing is read and the next poll
+// re-lists, so the sealed frames are streamed first and none is skipped.
+// The frames are emitted after the lock is released: a follower that is
+// slow to drain its channel never holds the lock.
+func (s *Subscription) streamActiveCommitted(ctx context.Context, b *Bus, seg segRef, emitted *Cursor, fromOffset int64) (ok bool, newOffset int64, n int, err error) {
 	if err := b.lockDisk(); err != nil {
 		return false, fromOffset, 0, err
 	}
-	data, err := readFrom(path, fromOffset)
+	sealed, err := listSealedSegments(b.dir)
+	if err != nil {
+		b.unlockDisk()
+		return false, fromOffset, 0, err
+	}
+	if len(sealed) > 0 && sealed[len(sealed)-1].start >= seg.start {
+		b.unlockDisk()
+		return true, fromOffset, 0, nil // rotated since the listing
+	}
+	data, err := readFrom(seg.path, fromOffset)
 	b.unlockDisk()
 	if err != nil {
 		return false, fromOffset, 0, err
