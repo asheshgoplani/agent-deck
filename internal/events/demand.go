@@ -50,7 +50,11 @@ func (b *Bus) Want(kinds ...string) (release func()) {
 			demanded = append(demanded, k)
 		}
 	}
-	if len(demanded) == 0 || os.MkdirAll(dir, 0o755) != nil {
+	dirMode := os.FileMode(0o755)
+	if b.durable() {
+		dirMode = 0o700
+	}
+	if len(demanded) == 0 || os.MkdirAll(dir, dirMode) != nil {
 		return func() {}
 	}
 	pid := strconv.Itoa(os.Getpid())
@@ -59,6 +63,16 @@ func (b *Bus) Want(kinds ...string) (release func()) {
 		p := filepath.Join(dir, k+"."+pid+"."+leaseToken())
 		if os.WriteFile(p, nil, b.fileMode) == nil {
 			paths = append(paths, p)
+		}
+	}
+	// touch refreshes a lease, recreating it if another follower swept it
+	// while this process's refresh was late (laptop sleep, SIGSTOP).
+	touch := func(p string, now time.Time) {
+		if os.Chtimes(p, now, now) == nil {
+			return
+		}
+		if os.MkdirAll(dir, dirMode) == nil {
+			_ = os.WriteFile(p, nil, b.fileMode)
 		}
 	}
 	if len(paths) == 0 {
@@ -76,7 +90,7 @@ func (b *Bus) Want(kinds ...string) (release func()) {
 				return
 			case now := <-t.C:
 				for _, p := range paths {
-					_ = os.Chtimes(p, now, now)
+					touch(p, now)
 				}
 			}
 		}

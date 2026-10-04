@@ -52,7 +52,8 @@ filter includes `tmux.output` (or it has no filter); a daemon `subscribe`
 stream always asks. A follower holds a lease file `want/<kind>.<pid>.<id>`
 under the bus dir, touched every 5 s and removed when it stops; a lease older
 than 15 s (a follower that died) no longer counts and is swept by the next
-follower. The producer checks the lease dir at most once per second, so a new
+follower; a live follower whose late lease was swept (after a sleep or a
+stop) recreates it on its next refresh. The producer checks the lease dir at most once per second, so a new
 follower starts receiving ticks within about a second. With no follower,
 nothing is written (#2481).
 

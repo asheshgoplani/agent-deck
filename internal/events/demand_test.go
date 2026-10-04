@@ -113,3 +113,38 @@ func BenchmarkDefaultWants(b *testing.B) {
 		DefaultWants(KindTmuxOutput)
 	}
 }
+
+// TestSweptLiveLeaseRecovers: a live follower whose lease was removed (another
+// follower swept it after this one's refresh came late, e.g. across a laptop
+// sleep or SIGSTOP) gets it back on its next refresh instead of losing
+// tmux.output for good.
+func TestSweptLiveLeaseRecovers(t *testing.T) {
+	b, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	release := b.Want(KindTmuxOutput)
+	defer release()
+	dir := filepath.Join(b.dir, demandDirName)
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("want one lease, got %d (%v)", len(entries), err)
+	}
+	old := time.Now().Add(-2 * demandTTL)
+	lease := filepath.Join(dir, entries[0].Name())
+	if err := os.Chtimes(lease, old, old); err != nil {
+		t.Fatal(err)
+	}
+	b.Want(KindTmuxOutput)() // a second follower sweeps the late lease
+	if b.Wants(KindTmuxOutput) {
+		t.Fatal("setup: the late lease was not swept")
+	}
+	deadline := time.Now().Add(demandRefresh + 2*time.Second)
+	for !b.Wants(KindTmuxOutput) {
+		if time.Now().After(deadline) {
+			t.Fatal("live follower lost its lease permanently after a sweep")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
