@@ -1022,6 +1022,19 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
+		// Issue #2481: after a daemon restart (or for a tool without a
+		// transcript) the durable ledger still recognises a repeat.
+		at := hs.UpdatedAt
+		if at.IsZero() {
+			at = time.Now()
+		}
+		if repeat, counted := checkDoneRepeat(id, profile, sig, "", "", "", at); repeat {
+			if counted {
+				_ = BumpInboxStats(statsParentFor(inst), func(s *InboxStats) { s.DoneRepeats++ })
+			}
+			d.rememberDone(profile, id, sig)
+			continue
+		}
 
 		event := TransitionNotificationEvent{
 			ChildSessionID: id,
@@ -1032,11 +1045,7 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			Timestamp:      hs.UpdatedAt,
 		}
 		_ = d.notifier.NotifyFinished(event)
-
-		if d.lastDone[profile] == nil {
-			d.lastDone[profile] = map[string]DoneSignal{}
-		}
-		d.lastDone[profile][id] = sig
+		d.rememberDone(profile, id, sig)
 
 		// Record the completion to the non-destructive ledger so a parent can
 		// query `session children` without consuming the delivery event.

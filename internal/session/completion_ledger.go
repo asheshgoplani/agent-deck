@@ -22,6 +22,16 @@ type CompletionLedgerEntry struct {
 	Status     string    `json:"status"` // "ok" | "fail"
 	Summary    string    `json:"summary,omitempty"`
 	FinishedAt time.Time `json:"finished_at"`
+
+	// Issue #2481: TurnUUID is the transcript turn that carried the delivered
+	// completion. Repeats counts later identical completions that were
+	// counted here instead of delivered (see checkDoneRepeat); LastRepeatUUID
+	// makes one repeat turn count once however often it is observed.
+	// Older readers ignore these fields; older files parse with zero values.
+	TurnUUID       string    `json:"turn_uuid,omitempty"`
+	Repeats        int       `json:"repeats,omitempty"`
+	LastRepeatAt   time.Time `json:"last_repeat_at,omitempty"`
+	LastRepeatUUID string    `json:"last_repeat_uuid,omitempty"`
 }
 
 // CompletionLedgerDir returns the directory holding per-child completion

@@ -627,15 +627,8 @@ func ledgerLookup() func(string) []agents.LedgerEntry {
 
 		// What this session itself reported when it finished.
 		if entry, ok := session.ReadLedgerEntry(sessionID); ok {
-			summary := entry.Summary
-			if summary == "" {
-				// A ledger entry without a summary still tells us the turn
-				// ended and how. Say that, rather than printing a bare
-				// status word that reads like a description of the work.
-				summary = "reported " + entry.Status
-			}
 			entries = append(entries, agents.LedgerEntry{
-				At: entry.FinishedAt, Summary: summary, Status: entry.Status,
+				At: entry.FinishedAt, Summary: entry.DisplaySummary(), Status: entry.Status,
 			})
 		}
 

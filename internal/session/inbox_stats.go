@@ -35,7 +35,11 @@ type InboxStats struct {
 	RecordsLegacy   int64 `json:"records_legacy"` // records without a tier (old producer / no transcript)
 	NoiseSuppressed int64 `json:"noise_suppressed"`
 	DedupSuppressed int64 `json:"dedup_suppressed"`
-	TextBytes       int64 `json:"text_bytes"` // child text carried on records
+	// DoneRepeats counts identical completion sentinels a finished child
+	// re-printed inside doneRepeatWindow (issue #2481): counted, never
+	// committed, never woken.
+	DoneRepeats int64 `json:"done_repeats"`
+	TextBytes   int64 `json:"text_bytes"` // child text carried on records
 
 	// Wake side.
 	WakeupsUrgent     int64 `json:"wakeups_urgent"`

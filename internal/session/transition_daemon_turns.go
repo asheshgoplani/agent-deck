@@ -109,6 +109,22 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		event.DeliveryResult = transitionDeliveryDropped
 		return event, true
 	}
+	// Issue #2481: an identical completion re-printed by a finished worker's
+	// leftover scheduled check is counted on the ledger, not delivered.
+	if facts.HasDone {
+		if repeat, counted := checkDoneRepeat(inst.ID, profile, facts.Done, facts.UUID, facts.Trigger, facts.FromID, event.Timestamp); repeat {
+			_ = BumpInboxStats(statsParent, func(s *InboxStats) {
+				if counted {
+					s.DoneRepeats++
+				} else {
+					s.DedupSuppressed++
+				}
+			})
+			d.rememberDone(profile, inst.ID, facts.Done)
+			event.DeliveryResult = transitionDeliveryDropped
+			return event, true
+		}
+	}
 
 	text := CapTurnText(facts.Text, cfg.GetMaxTextBytes())
 	entry := TurnJournalEntry{
@@ -190,7 +206,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		})
 	}
 	if facts.HasDone {
-		d.noteDoneEmitted(profile, inst, facts.Done, event.Timestamp)
+		d.noteDoneEmitted(profile, inst, facts.Done, facts.UUID, event.Timestamp)
 	}
 	return result, true
 }
@@ -230,11 +246,8 @@ func (d *TransitionDaemon) forgetJournaledTurnsOfRunning(profile string, statuse
 // emitDoneSignals (which reads the hook file's done fields) does not emit a
 // second finished record, and mirrors it into the non-destructive completion
 // ledger that `session children` reads.
-func (d *TransitionDaemon) noteDoneEmitted(profile string, inst *Instance, sig DoneSignal, at time.Time) {
-	if d.lastDone[profile] == nil {
-		d.lastDone[profile] = map[string]DoneSignal{}
-	}
-	d.lastDone[profile][inst.ID] = sig
+func (d *TransitionDaemon) noteDoneEmitted(profile string, inst *Instance, sig DoneSignal, turnUUID string, at time.Time) {
+	d.rememberDone(profile, inst.ID, sig)
 	_ = WriteLedgerEntry(CompletionLedgerEntry{
 		ChildID:    inst.ID,
 		Profile:    profile,
@@ -242,7 +255,17 @@ func (d *TransitionDaemon) noteDoneEmitted(profile string, inst *Instance, sig D
 		Status:     sig.Status,
 		Summary:    sig.Summary,
 		FinishedAt: at,
+		TurnUUID:   turnUUID,
 	})
+}
+
+// rememberDone marks sig as the child's handled completion so the hook-file
+// path (emitDoneSignals) does not deliver or count it a second time.
+func (d *TransitionDaemon) rememberDone(profile, childID string, sig DoneSignal) {
+	if d.lastDone[profile] == nil {
+		d.lastDone[profile] = map[string]DoneSignal{}
+	}
+	d.lastDone[profile][childID] = sig
 }
 
 // parentTitleFor resolves the registered parent's title for config

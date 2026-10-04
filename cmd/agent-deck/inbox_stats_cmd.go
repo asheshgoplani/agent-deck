@@ -20,8 +20,9 @@ func runInboxStats(stdout io.Writer, args []string, explicitProfile string) erro
 	reset := fs.Bool("reset", false, "zero the counters for the selected parent")
 	fs.Usage = func() {
 		fmt.Fprintln(stdout, "Usage: agent-deck inbox stats [--json] [--all] [--reset] [<session-id>|self]")
-		fmt.Fprintln(stdout, "Communication counters for a parent: records by tier, noise and dedup")
-		fmt.Fprintln(stdout, "suppressed, wakeups fired and withheld, bytes injected, urgent latency.")
+		fmt.Fprintln(stdout, "Communication counters for a parent: records by tier, noise, dedup and")
+		fmt.Fprintln(stdout, "repeated-done suppressed, wakeups fired and withheld, bytes injected,")
+		fmt.Fprintln(stdout, "urgent latency.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
@@ -77,9 +78,9 @@ func printInboxStats(w io.Writer, st session.InboxStats) {
 	}
 	fmt.Fprintf(w, "  since %s (%s)\n", st.StartedAt.Format(time.RFC3339), time.Since(st.StartedAt).Round(time.Minute))
 	total := st.RecordsUrgent + st.RecordsInfo + st.RecordsLegacy
-	suppressed := st.NoiseSuppressed + st.DedupSuppressed
-	fmt.Fprintf(w, "  records      urgent=%d info=%d legacy=%d  (suppressed: noise=%d dedup=%d)\n",
-		st.RecordsUrgent, st.RecordsInfo, st.RecordsLegacy, st.NoiseSuppressed, st.DedupSuppressed)
+	suppressed := st.NoiseSuppressed + st.DedupSuppressed + st.DoneRepeats
+	fmt.Fprintf(w, "  records      urgent=%d info=%d legacy=%d  (suppressed: noise=%d dedup=%d done_repeats=%d)\n",
+		st.RecordsUrgent, st.RecordsInfo, st.RecordsLegacy, st.NoiseSuppressed, st.DedupSuppressed, st.DoneRepeats)
 	if total+suppressed > 0 {
 		fmt.Fprintf(w, "  signal ratio %.0f%% of observed turns became records\n", 100*float64(total)/float64(total+suppressed))
 	}

@@ -134,12 +134,8 @@ func agentLedgerLookup(sessionID string) []agents.LedgerEntry {
 	var entries []agents.LedgerEntry
 
 	if entry, ok := session.ReadLedgerEntry(sessionID); ok {
-		summary := entry.Summary
-		if summary == "" {
-			summary = "reported " + entry.Status
-		}
 		entries = append(entries, agents.LedgerEntry{
-			At: entry.FinishedAt, Summary: summary, Status: entry.Status,
+			At: entry.FinishedAt, Summary: entry.DisplaySummary(), Status: entry.Status,
 		})
 	}
 
