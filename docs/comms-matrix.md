@@ -60,6 +60,9 @@ observes five seconds of progress, verifies fewer than 18 attempts and no
 input, then explicitly removes its disposable target and joins its workers.
 It does **not** prove the production 30-minute queue expiry. The synchronous
 bounded-defer probe separately proves the sender receives an error on timeout.
+The remote failure fixture delays a real SSH export beyond its three-second
+command timeout while another remote answers. The measured bound covers two
+parallel public CLI requests, not the daemon scheduler across a whole fleet.
 
 Supplemental scenarios and their explicit remaining coverage gaps are emitted
 by `scenarios.py`. The broader issue also includes human delivery, full

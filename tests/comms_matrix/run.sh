@@ -26,5 +26,6 @@ git -C "$root" rev-parse HEAD > "$COMMS_OUTPUT/source-sha.txt"
 docker build --target comms-base -t "$base_image" -f "$root/sandbox/Dockerfile" "$root/sandbox"
 docker build --build-arg "COMMS_BASE_IMAGE=$base_image" -t "$COMMS_IMAGE" -f "$root/tests/comms_matrix/Dockerfile" "$root"
 docker image inspect --format '{{.Id}}' "$COMMS_IMAGE" > "$COMMS_OUTPUT/image-id.txt"
+docker run --rm --network none "$COMMS_IMAGE" python3 -m unittest discover -s /workspace/tests/comms_matrix -p test_contracts.py
 "${compose[@]}" up -d --wait r1
 "${compose[@]}" run --rm -T local

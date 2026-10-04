@@ -28,8 +28,8 @@ def write_json(path, data):
 
 def check(name, actual, target, baseline=None):
     """Only an enumerated, measured baseline may be an expected failure."""
-    status = 'PASS' if actual == target else 'FAIL'
-    if status == 'FAIL' and baseline is not None and actual in baseline:
+    status = 'PASS' if type(actual) is type(target) and actual == target else 'FAIL'
+    if status == 'FAIL' and baseline is not None and any(type(actual) is type(value) and actual == value for value in baseline):
         status = 'XFAIL'
     return dict(name=name, status=status, actual=actual, target=target)
 
@@ -295,6 +295,7 @@ def local_cell(output, tool, tier, root=None):
                   check('turn_tier', [r.get('tier') for r in turns], [tier], [[]] if tool not in ('claude', 'codex') else None)]
         if tool != 'opencode':
             checks.append(check('hook_receipt_fresh', shown.get('hook_status_fresh', False), True))
+            checks.append(check('hook_receipt_completed', shown.get('hook_status'), 'waiting'))
         else:
             http = rig.output / ('http-' + rig.child + '.jsonl')
             calls = [json.loads(line) for line in http.read_text().splitlines()] if http.exists() else []

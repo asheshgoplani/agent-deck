@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in real-model comms lab. No agent processes run without --run."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,19 @@ import signal
 import subprocess
 import sys
 import time
+
+
+def send_receipt(send, records):
+    deliveries = [record for record in records if record.get('kind') == 'delivery'
+                  and send.get('id') and record.get('ref') == send['id']]
+    final = deliveries[-1] if deliveries else send
+    state = final.get('delivery', {}).get('state') or final.get('state')
+    text = send.get('text', '')
+    hash_matches = isinstance(text, str) and bool(text) and send.get('th') == hashlib.sha256(text.encode()).hexdigest()[:16]
+    valid = send.get('from') and hash_matches and state in ('injected', 'typed', 'landed', 'failed')
+    return {'id': send.get('id'), 'from': send.get('from'), 'text_present': bool(text),
+            'text_hash': send.get('th'), 'text_hash_matches': hash_matches,
+            'final_state': state, 'verdict': 'PASS' if valid else 'HOLD'}
 
 HARNESS = ('claude', 'codex', 'gemini', 'pi', 'hermes', 'opencode', 'cursor')
 TARGETS = {
@@ -253,16 +267,7 @@ class Lab:
                     count = sum(bool(r.get('text') and r.get('from')) for r in sends)
                     metrics['send_records_with_sender_and_text_percent'].update(numerator=count,
                         denominator=len(sends), observed=100 * count / len(sends))
-                for send in sends:
-                    deliveries = [r for r in records if r.get('kind') == 'delivery' and
-                                  send.get('req') and r.get('req') == send['req']]
-                    final = deliveries[-1] if deliveries else send
-                    state = final.get('delivery', {}).get('state') or final.get('state')
-                    send_contracts.append({'id': send.get('id'), 'from': send.get('from'),
-                        'text_present': bool(send.get('text')), 'text_hash': send.get('th'),
-                        'final_state': state, 'verdict': 'PASS' if send.get('from') and
-                        send.get('text') and send.get('th') and state in
-                        ('injected', 'typed', 'landed', 'failed') else 'HOLD'})
+                send_contracts.extend(send_receipt(send, records) for send in sends)
                 for remote, tool, tier, sid in self.children:
                     turns = [r for r in records if r.get('kind') == 'turn' and
                              r.get('from') in (sid, 'r1:' + sid) and bool(r.get('origin')) == remote]
