@@ -590,8 +590,11 @@ func TestARecipientWithoutStateAtOpenStartsAtTheEndWithoutAFalseGap(t *testing.T
 	}
 	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "p1 era"})
 	_ = l.Close()
-	if err := os.RemoveAll(filepath.Join(dir, cursorsDirName)); err != nil { // as a P1 daemon left it
-		t.Fatal(err)
+	// As a P1 daemon left it: neither consumer states nor pending flags.
+	for _, sub := range []string{cursorsDirName, pendingDirName} {
+		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	l2, err := OpenDir("p", dir)
 	if err != nil {
@@ -613,5 +616,38 @@ func TestARecipientWithoutStateAtOpenStartsAtTheEndWithoutAFalseGap(t *testing.T
 	newer := mustCommit(t, l2, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierInfo, Text: "p2"})
 	if got, _ := pass(t, r, "X", nil); len(got) != 1 || got[0] != newer {
 		t.Fatalf("records after the open are pending: %v", got)
+	}
+}
+
+// Verifier round 5: a P2 consumer whose state was lost is told so even
+// after a daemon restart (only a P1-era recipient, with no flag of this
+// epoch, gets its state created at open).
+func TestALostStateSurvivesARestartAsAGap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "x"})
+	_ = l.Close()
+	if err := os.Remove(ConsumerPath(dir, "X")); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var gap *GapNote
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "state_lost" || gap.To < c {
+		t.Fatalf("a lost state after a restart must be a gap: %+v", gap)
 	}
 }

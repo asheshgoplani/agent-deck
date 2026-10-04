@@ -359,16 +359,20 @@ func (l *Ledger) raiseFlags(r Record, cursor events.Cursor) {
 func (l *Ledger) repairFlags(seen map[string]PendingFlag) {
 	end := l.bus.Cursor()
 	for to, w := range seen {
-		// A recipient with no state yet (a ledger written before consumer
-		// states existed) starts at the end of the log as of this open:
-		// what came before was delivered by the inbox, and its first read
-		// is not a false state_lost.
-		if _, err := os.Stat(ConsumerPath(l.dir, to)); errors.Is(err, os.ErrNotExist) {
-			if err := EnsureConsumer(l.dir, to, l.store, end); err == nil {
-				l.consumers[to] = true
+		fl, ok := ReadFlag(l.dir, to)
+		// A recipient with no state and no flag of this epoch dates from a
+		// ledger written before consumer states existed (a P1 daemon wrote
+		// neither): it starts at the end of the log as of this open, since
+		// the inbox delivered what came before, and its first read is not
+		// a false state_lost. A recipient with a current flag but no state
+		// lost its state: left missing, so its first read reports the gap.
+		if !ok || fl.Epoch != l.store.Epoch {
+			if _, err := os.Stat(ConsumerPath(l.dir, to)); errors.Is(err, os.ErrNotExist) {
+				if err := EnsureConsumer(l.dir, to, l.store, end); err == nil {
+					l.consumers[to] = true
+				}
 			}
 		}
-		fl, ok := ReadFlag(l.dir, to)
 		if ok && fl.Epoch == l.store.Epoch && fl.Last >= w.Last {
 			l.flags[to] = fl
 			continue

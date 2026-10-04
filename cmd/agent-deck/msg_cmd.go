@@ -239,8 +239,13 @@ func printMsgRead(w io.Writer, out msgReadOutput, names comms.Names, asJSON bool
 	}
 	var b strings.Builder
 	if out.Gap != nil {
-		fmt.Fprintf(&b, "[agent-deck msg] gap: records %d..%d were never shown to %s (%s); resumed at %d\n",
-			out.Gap.From, out.Gap.To, out.Consumer, out.Gap.Reason, out.Gap.Resumed)
+		if out.Gap.Reason == "restored" {
+			fmt.Fprintf(&b, "[agent-deck msg] the ledger was restored: records %d..%d may repeat or may be missing for %s; re-reading from %d\n",
+				out.Gap.From, out.Gap.To, out.Consumer, out.Gap.Resumed)
+		} else {
+			fmt.Fprintf(&b, "[agent-deck msg] gap: records %d..%d were never shown to %s (%s); resumed at %d\n",
+				out.Gap.From, out.Gap.To, out.Consumer, out.Gap.Reason, out.Gap.Resumed)
+		}
 	}
 	if len(out.Records) == 0 {
 		fmt.Fprintf(&b, "[agent-deck msg] nothing pending for %s\n", out.Consumer)
