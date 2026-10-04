@@ -1309,8 +1309,10 @@ func readHookStatusFile(instanceID string) *HookStatus {
 // missed while it was down; on both, the merged status stays running for the
 // whole workflow, so the send turn is never recorded. Without this the task
 // turn that settles the work would carry no sender and the sender would get
-// no reply. rememberHeldSend is idempotent per turn, so the hook path and
-// this one may both see the same held turn.
+// no reply. rememberHeldSend is idempotent per turn and skips a turn the
+// journal already holds, so the hook path and this one may both see the same
+// held turn, and a send turn answered during a menu or a lapsed hold is not
+// remembered again when the work resumes.
 func (d *TransitionDaemon) rememberHeldSendFromPoll(inst *Instance, status string) {
 	if inst == nil || normalizeStatusString(status) != string(StatusRunning) {
 		return

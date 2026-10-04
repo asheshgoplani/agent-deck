@@ -241,3 +241,58 @@ func TestBackgroundWork2473_HeldSendRememberedMidTurnAnsweredOnce(t *testing.T) 
 		t.Fatalf("the sender was already answered; the task turn must not reply again: %+v", got)
 	}
 }
+
+// Round 6 F1: a workflow agent asks for permission, so the child reads
+// waiting while the work runs. The send turn is recorded and replies once,
+// and its held record is cleared. When the menu is answered the session is
+// running on background work again with the send turn still last; the poll
+// must not remember that sender again, or the task turn would reply twice.
+func TestBackgroundWork2473_HeldSendMenuInterludeAnsweredOnce(t *testing.T) {
+	f := newPR5Fixture(t)
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+	running := map[string]string{f.child.ID: "running", f.parent.ID: "waiting", sib.ID: "idle"}
+	waiting := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting", sib.ID: "idle"}
+
+	heldSendLaunch(t, f, sib.ID, running)
+	f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+	if got := readSenderRecords(t, sib.ID); len(got) != 1 {
+		t.Fatalf("menu interlude: the send turn replies once: %+v", got)
+	}
+	for i := 0; i < 3; i++ {
+		f.d.recordTerminalTurns("default", f.byID, running, nil)
+	}
+	if held := loadHeldSend(f.child.ID); held != nil {
+		t.Fatalf("an answered send turn must not be remembered again, got %+v", held)
+	}
+	heldSendSettle(t, f, running, waiting, "comms-followon-round3 finished: 5/5 lanes merged.")
+	if got := readSenderRecords(t, sib.ID); len(got) != 1 {
+		t.Fatalf("sender answered %d times, want 1: %+v", len(got), got)
+	}
+}
+
+// Round 6 F1, hook-less: no Stop candidate at all. The poll remembers the
+// sender, the menu interlude records and answers the send turn, and the
+// resumed work must not remember it again.
+func TestBackgroundWork2473_HeldSendHooklessMenuInterludeAnsweredOnce(t *testing.T) {
+	f := newPR5Fixture(t)
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+	running := map[string]string{f.child.ID: "running", f.parent.ID: "waiting", sib.ID: "idle"}
+	waiting := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting", sib.ID: "idle"}
+
+	f.appendTurn(t, fxHuman("u0", SendEnvelope(sib.ID)+"\nrun the follow-on workflow and tell me the result"))
+	f.appendTurn(t, fxWorkflowLaunch("wqphbmkuj", "comms-followon-round3")...)
+	f.appendTurn(t, fxAssistantText("a0", "Launched comms-followon-round3 in the background."), fxTurnDuration(1))
+	for i := 0; i < 3; i++ {
+		f.d.recordTerminalTurns("default", f.byID, running, nil)
+	}
+	f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+	for i := 0; i < 3; i++ {
+		f.d.recordTerminalTurns("default", f.byID, running, nil)
+	}
+	heldSendSettle(t, f, running, waiting, "comms-followon-round3 finished: 5/5 lanes merged.")
+	if got := readSenderRecords(t, sib.ID); len(got) != 1 {
+		t.Fatalf("sender answered %d times, want 1: %+v", len(got), got)
+	}
+}

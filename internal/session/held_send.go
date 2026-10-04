@@ -43,9 +43,10 @@ func heldSendPath(childID string) string {
 }
 
 // rememberHeldSend records the sender of a held turn when that turn is a
-// tagged send. Any other held turn (a human prompt, an intermediate task
-// notification) leaves an existing record alone: the work it started is
-// still in flight and the sender is still owed the result.
+// tagged send that has not been recorded yet. Any other held turn (a human
+// prompt, an intermediate task notification) leaves an existing record
+// alone: the work it started is still in flight and the sender is still
+// owed the result.
 func rememberHeldSend(childID string, facts TurnFacts) {
 	from := strings.TrimSpace(facts.FromID)
 	if facts.Pending || facts.Trigger != TurnTriggerSend || from == "" || strings.TrimSpace(childID) == "" {
@@ -53,6 +54,13 @@ func rememberHeldSend(childID string, facts TurnFacts) {
 	}
 	if prev := loadHeldSend(childID); prev != nil && prev.FromID == from && prev.UUID == facts.UUID {
 		return // already remembered; the hold re-fires every poll
+	}
+	// A send turn that was already recorded has replied to its sender (and
+	// emitTurn cleared its record). The session can go back to running on the
+	// same work with that turn still last, after a permission menu or a lapsed
+	// hold; remembering it again would answer the sender a second time.
+	if last := LastTurnJournalEntry(childID); last != nil && last.UUID != "" && last.UUID == facts.UUID {
+		return
 	}
 	data, err := json.Marshal(heldSendOrigin{FromID: from, UUID: facts.UUID, HeldAt: time.Now()})
 	if err != nil {
