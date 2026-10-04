@@ -91,8 +91,8 @@ func TestPR5_SiblingReplyIsCommittedUrgentToSenderAndToParent(t *testing.T) {
 
 	parentRecs := f.inboxRecords(t)
 	if len(parentRecs) != 1 || parentRecs[0].Trigger != TurnTriggerSend || parentRecs[0].FromID != sib.ID ||
-		parentRecs[0].TargetKind != "parent" || parentRecs[0].Tier != TurnTierUrgent {
-		t.Fatalf("parent must keep exactly its own copy: %+v", parentRecs)
+		parentRecs[0].TargetKind != "parent" || parentRecs[0].Tier != TurnTierInfo {
+		t.Fatalf("parent must keep exactly its own copy (info: a plain reply): %+v", parentRecs)
 	}
 	replies, err := ReadInboxEvents(sib.ID)
 	if err != nil {
@@ -109,8 +109,8 @@ func TestPR5_SiblingReplyIsCommittedUrgentToSenderAndToParent(t *testing.T) {
 	if f.woken[sib.ID] != 1 || f.kinds[sib.ID] != "reply" {
 		t.Fatalf("the non-conductor sender must be woken once as a reply target: woken=%v kinds=%v", f.woken, f.kinds)
 	}
-	if f.woken[f.parent.ID] != 1 {
-		t.Fatalf("the parent keeps its urgent wake: woken=%v", f.woken)
+	if f.woken[f.parent.ID] != 0 {
+		t.Fatalf("the parent is not woken for a plain reply: woken=%v", f.woken)
 	}
 
 	// The reply drains into the sender's next turn, labelled as a reply.
@@ -142,8 +142,8 @@ func TestPR5_UnknownOrRemovedSenderCommitsOnlyToParent(t *testing.T) {
 			if InboxHasPending(from) {
 				t.Fatalf("a sender not in the registry must get nothing")
 			}
-			if len(f.woken) != 1 || f.woken[f.parent.ID] != 1 {
-				t.Fatalf("only the parent is woken: %v", f.woken)
+			if len(f.woken) != 0 {
+				t.Fatalf("a plain reply wakes nobody: %v", f.woken)
 			}
 		})
 	}
@@ -157,8 +157,8 @@ func TestPR5_SenderIsParentCommitsOnce(t *testing.T) {
 	if len(got) != 1 || got[0].TargetKind != "parent" || got[0].FromID != f.parent.ID {
 		t.Fatalf("a send from the parent is ONE record in the parent inbox: %+v", got)
 	}
-	if f.woken[f.parent.ID] != 1 || len(f.woken) != 1 {
-		t.Fatalf("one wake, to the parent: %v", f.woken)
+	if len(f.woken) != 0 {
+		t.Fatalf("a plain reply to the parent's own send wakes nobody: %v", f.woken)
 	}
 }
 
@@ -448,12 +448,15 @@ func TestPR5_ParentThatAskedIsWokenForTheReply(t *testing.T) {
 			f.parent.Tool = tc.tool
 			f.saveRegistry(t)
 
+			// A reply that asks back is urgent; a plain answer would be info
+			// and wake nobody (conductor ruling 2026-10-03).
+			const reply = "The API listens on 8443.\nNEED: should 8080 stay open too?"
+			prompt := "which port does the API use?"
 			if tc.tagged {
-				f.runTaggedTurn(t, f.parent.ID)
-			} else {
-				f.appendTurn(t, fxHuman("u0", "which port does the API use?"), fxAssistantText("a0", "The API listens on 8443."))
-				f.pollTurns(t)
+				prompt = SendEnvelope(f.parent.ID) + "\n" + prompt
 			}
+			f.appendTurn(t, fxHuman("u0", prompt), fxAssistantText("a0", reply))
+			f.pollTurns(t)
 
 			got := f.inboxRecords(t)
 			if len(got) != 1 || got[0].TargetKind != "parent" || got[0].Tier != TurnTierUrgent {

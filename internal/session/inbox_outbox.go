@@ -724,10 +724,12 @@ func (n *TransitionNotifier) commitParentlessEvent(event TransitionNotificationE
 
 // parentWakeEvent is the event the parent's wake gate sees. A turn that
 // answers the parent's OWN tagged send is a reply to it (comms redesign PR5):
-// the parent asked, so it is woken as a reply target whatever its title, as
-// a sibling sender would be. Only a Claude-compatible parent qualifies (the
-// reply gate requires it); any other parent keeps the conductor-only gate.
-// The committed record keeps TargetKind "parent".
+// the parent asked, so an URGENT reply (a question back, a sentinel, an error)
+// wakes it as a reply target whatever its title, as a sibling sender would be.
+// A plain answer is info and wakes nobody; the parent reads it at its next
+// prompt. Only a Claude-compatible parent qualifies (the reply gate requires
+// it); any other parent keeps the conductor-only gate. The committed record
+// keeps TargetKind "parent".
 func parentWakeEvent(event TransitionNotificationEvent, parent *Instance) TransitionNotificationEvent {
 	if event.Trigger == TurnTriggerSend && parent != nil &&
 		strings.TrimSpace(event.FromID) == parent.ID && IsClaudeCompatible(parent.Tool) {

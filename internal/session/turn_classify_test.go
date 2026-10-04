@@ -97,14 +97,60 @@ func TestClassifyTranscriptTail_BackgroundTaskTurnIsInfo(t *testing.T) {
 	}
 }
 
-func TestClassifyTranscriptTail_HumanTurnIsUrgent(t *testing.T) {
+func TestClassifyTranscriptTail_HumanTurnReplyIsInfo(t *testing.T) {
 	lines := []string{fxHuman("u1", "status?"), fxAssistantText("a1", "All lanes green.")}
 	f := classifyTranscriptTail(lines)
 	if f.Trigger != TurnTriggerHuman {
 		t.Fatalf("trigger = %q", f.Trigger)
 	}
-	if got := ClassifyTurnTier(f, "waiting", nil); got != TurnTierUrgent {
-		t.Fatalf("tier = %q, want urgent", got)
+	// Conductor ruling 2026-10-03: a plain reply, even to the parent's own
+	// prompt, is info. Only a sentinel, an error or a question is urgent.
+	if got := ClassifyTurnTier(f, "waiting", nil); got != TurnTierInfo {
+		t.Fatalf("tier = %q, want info", got)
+	}
+}
+
+// The four replies that woke the conductor on 2026-10-03 although they were
+// progress notes or acknowledgements, as fixtures: each is a reply to a send
+// (tagged or plain) and must classify as info.
+func TestClassifyTurnTier_ProgressRepliesToSendsAreInfo(t *testing.T) {
+	cases := []struct {
+		name, prompt, reply string
+		tagged              bool
+	}{
+		{"macapp re-freeze report", "status of the freeze?", "Re-freeze report: p9 preview rebuilt after the layout fix, full window suite green (0 skips), the two accepted reds unchanged. Freeze is on; INSTALL.txt names the accepted failures.", true},
+		{"ledger round 2 saved", "how is round 2 going?", "Round 2 report saved, waiting for Docker.", true},
+		{"ledger relay fold", "proceed with the relay rule", "relay-rule fold committed, suites running.", false},
+		{"macapp noted study", "FYI: the MonoCode study is in the shared folder", "Noted the MonoCode study; nothing changes for the freeze.", true},
+	}
+	for _, c := range cases {
+		prompt := c.prompt
+		if c.tagged {
+			prompt = "[agent-deck from:conductor-1] " + prompt
+		}
+		f := classifyTranscriptTail([]string{fxHuman("u1", prompt), fxAssistantText("a1", c.reply)})
+		if want := map[bool]string{true: TurnTriggerSend, false: TurnTriggerHuman}[c.tagged]; f.Trigger != want {
+			t.Fatalf("%s: trigger = %q, want %q", c.name, f.Trigger, want)
+		}
+		if f.Question || f.HasDone {
+			t.Fatalf("%s: neither a question nor a sentinel: %+v", c.name, f)
+		}
+		if got := ClassifyTurnTier(f, "waiting", nil); got != TurnTierInfo {
+			t.Fatalf("%s: tier = %q, want info (a progress note must not wake the parent)", c.name, got)
+		}
+	}
+	// The same reply with an explicit question, or a sentinel, or at error, is urgent.
+	q := classifyTranscriptTail([]string{fxHuman("u1", "[agent-deck from:c] go"), fxAssistantText("a1", "Round 2 saved.\nNEED: may I merge?")})
+	if ClassifyTurnTier(q, "waiting", nil) != TurnTierUrgent {
+		t.Fatal("question must be urgent")
+	}
+	d := classifyTranscriptTail([]string{fxHuman("u1", "go"), fxAssistantText("a1", "Done.\n===AGENTDECK_DONE=== status=ok summary=x")})
+	if ClassifyTurnTier(d, "waiting", nil) != TurnTierUrgent {
+		t.Fatal("sentinel must be urgent")
+	}
+	e := classifyTranscriptTail([]string{fxHuman("u1", "go"), fxAssistantText("a1", "Login expired · Please run /login")})
+	if ClassifyTurnTier(e, "error", nil) != TurnTierUrgent {
+		t.Fatal("error status must be urgent")
 	}
 }
 
@@ -182,6 +228,34 @@ func TestClassifyTrigger_PrefixFallbacksAndEnvelope(t *testing.T) {
 		}
 		if want == TurnTriggerSend && f.FromID != "abc-123" {
 			t.Errorf("from_id = %q", f.FromID)
+		}
+	}
+}
+
+func TestTextAsksParent_TolerantForms(t *testing.T) {
+	yes := []string{
+		"**NEED:** a ruling on the budget",
+		"- NEED: merge or hold",
+		"> QUESTION: which port",
+		"Which port should the API use?\nThanks.",
+		"Should I open 8080 too?)",
+		"**Do you want the digest daily?**",
+		"ask: proceed with the freeze",
+	}
+	no := []string{
+		"All 42 tests pass.",
+		"Was it flaky? Re-ran, green now.\nMerged.\nDone.",
+		"The need: field is documented.",
+		"Round 2 report saved, waiting for Docker.",
+	}
+	for _, s := range yes {
+		if !textAsksParent(s) {
+			t.Errorf("must read as a question: %q", s)
+		}
+	}
+	for _, s := range no {
+		if textAsksParent(s) {
+			t.Errorf("must not read as a question: %q", s)
 		}
 	}
 }

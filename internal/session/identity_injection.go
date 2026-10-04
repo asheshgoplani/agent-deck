@@ -230,6 +230,7 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("When a task you were given by a parent is fully done, end your final message with exactly one line:\n")
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
 	b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
+	b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
 	b.WriteString("\nThis block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n")
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()

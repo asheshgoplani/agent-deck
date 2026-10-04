@@ -26,16 +26,17 @@ import (
 //	noise  — same text hash and same attention class as the last journaled
 //	         turn of this child, no new sentinel (hook re-fires, waiting→idle
 //	         flips, polls that saw nothing new). Never recorded in the inbox.
-//	urgent — a completion sentinel, an error status, a question, or new text
-//	         in a turn a human / parent / sibling started. Wakes the parent.
-//	info   — new text in a turn started by a background task notification, a
-//	         system injection or an inbox/heartbeat prompt. Recorded with its
-//	         text; never wakes on its own (rides the parent's next turn or the
-//	         info digest).
+//	urgent — a completion sentinel, an error status, or an explicit question
+//	         to the parent. Wakes the parent.
+//	info   — any other new text, whoever started the turn (a background task,
+//	         a system injection, an inbox prompt, a human, a send). Recorded
+//	         with its text; never wakes on its own (rides the parent's next
+//	         turn or the info digest).
 //
-// Every path fails toward "louder, not lossy": an unreadable transcript or an
-// unknown trigger classifies as urgent on new text, which is today's
-// behaviour minus the duplicate re-fires.
+// An unreadable transcript takes the legacy path (no text, urgent on a new
+// signal), which is today's behaviour minus the duplicate re-fires; a readable
+// transcript with an unknown trigger is info unless it carries a sentinel, an
+// error or a question.
 
 // Turn tiers and triggers carried on TransitionNotificationEvent and the
 // per-child turn journal.
@@ -252,21 +253,32 @@ func classifyTrigger(rec transcriptTurnRecord) (trigger, fromID string) {
 }
 
 // textAsksParent reports a parent-facing question: a NEED:/QUESTION:/ASK: line
-// or a final line ending in "?".
+// (markdown emphasis and bullet prefixes ignored), or one of the last two
+// non-empty lines ending in "?" (closing punctuation and emphasis ignored, so
+// "…?)" and "…?**" count, and a question followed by a one-line sign-off is
+// still a question).
 func textAsksParent(text string) bool {
-	last := ""
+	var tail []string
 	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		last = line
-		upper := strings.ToUpper(line)
-		if strings.HasPrefix(upper, "NEED:") || strings.HasPrefix(upper, "QUESTION:") || strings.HasPrefix(upper, "ASK:") {
+		marker := strings.ToUpper(strings.TrimLeft(line, "-*>#•· \t_`"))
+		if strings.HasPrefix(marker, "NEED:") || strings.HasPrefix(marker, "QUESTION:") || strings.HasPrefix(marker, "ASK:") {
+			return true
+		}
+		tail = append(tail, line)
+		if len(tail) > 2 {
+			tail = tail[1:]
+		}
+	}
+	for _, line := range tail {
+		if strings.HasSuffix(strings.TrimRight(line, "*_`)]\"' "), "?") {
 			return true
 		}
 	}
-	return strings.HasSuffix(last, "?")
+	return false
 }
 
 func turnTextHash(text string) string {
@@ -342,15 +354,16 @@ func ClassifyTurnTier(facts TurnFacts, status string, prev *TurnJournalEntry) st
 			return TurnTierNoise
 		}
 	}
+	// Urgent is exactly: a completion sentinel, an error status, or an
+	// explicit question to the parent. Everything else is info, INCLUDING a
+	// reply to something the parent or a human sent: a progress note or an
+	// acknowledgement does not need the parent awake (conductor ruling,
+	// 2026-10-03: four such replies cost a wake each). The parent reads info on
+	// its next turn or in the digest; a sender that used --wait already has it.
 	if facts.HasDone || normalizeStatusString(status) == string(StatusError) || facts.Question {
 		return TurnTierUrgent
 	}
-	switch facts.Trigger {
-	case TurnTriggerTask, TurnTriggerSystem, TurnTriggerInbox:
-		return TurnTierInfo
-	default:
-		return TurnTierUrgent
-	}
+	return TurnTierInfo
 }
 
 // turnFactsCache memoises the transcript scan per path on (size, mtime), so
