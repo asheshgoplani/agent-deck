@@ -1013,8 +1013,11 @@ def send_to_conductor(
                 return False, "", True
             error = payload.get("error") or result.stderr.strip()
             if (
-                "not ready" in error.lower()
-                and payload.get("submitted") is not True
+                payload.get("submitted") is not True
+                and (
+                    payload.get("delivery") == "target_busy"
+                    or "not ready" in error.lower()
+                )
             ):
                 log.info(
                     "Conductor %s became busy before submission; queue required",
@@ -1176,6 +1179,11 @@ async def _drain_queue() -> None:
                         ))
                 continue
 
+            # Keep the in-flight item outside the overflow-managed deque. New
+            # arrivals can then evict only genuinely waiting messages, and the
+            # result below always belongs to this exact item.
+            inflight_item = items.popleft()
+
             # Conductor is ready — use the same structured accepted-turn path as
             # an idle remote send. A timed-out wait may still have submitted the
             # turn; in that case ownership transfers to a reply-only watcher and
@@ -1193,15 +1201,26 @@ async def _drain_queue() -> None:
             )
 
             # Another sender acquired reply ownership after the status check.
-            # Leave this item at the head of the queue for the next cycle.
+            # Restore this exact unsent item at the head for the next cycle.
             if not ok and pending == _WAIT_SEND_QUEUE_REQUIRED:
+                if len(items) >= MAX_QUEUE_DEPTH:
+                    _msg, _prof, dropped_cb = items.pop()
+                    log.warning(
+                        "Queue full for %s while restoring unsent item; dropping newest message",
+                        session,
+                    )
+                    if dropped_cb is not None:
+                        loop.create_task(_fire_callback(
+                            dropped_cb,
+                            "[Message dropped — conductor queue overflow.]",
+                        ))
+                items.appendleft(inflight_item)
                 continue
 
             # A synchronous response or an accepted asynchronous turn owns this
             # queue item now. Remove it before any callback work so it cannot be
             # replayed if callback setup fails.
             if ok or pending is True or isinstance(pending, dict):
-                items.popleft()
                 remaining = len(items)
                 if not remaining:
                     _message_queue.pop(session, None)
@@ -1236,7 +1255,6 @@ async def _drain_queue() -> None:
                 continue
 
             log.error("Failed to deliver queued message to %s — dropping", session)
-            items.popleft()
             if not items:
                 _message_queue.pop(session, None)
             if reply_callback is not None:

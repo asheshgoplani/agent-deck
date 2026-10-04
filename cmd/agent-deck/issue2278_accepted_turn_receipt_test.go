@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -198,6 +199,32 @@ func TestCodexExactOutputDelayRetainsReceiptForBridge(t *testing.T) {
 	})
 	if legacy["completion"] != "timeout" || legacy["delivery"] != deliverySubmitted || legacy["submitted"] != true {
 		t.Fatalf("non-Codex response failure lost legacy async ownership: %#v", legacy)
+	}
+}
+
+func TestClaudeCompletionTimeoutRetainsLegacyBridgeOwnership(t *testing.T) {
+	inst := &session.Instance{
+		ID: "instance-claude", Title: "conductor-claude", Tool: "claude",
+		ClaudeSessionID: "claude-thread-1",
+	}
+	sendData := sendSuccessData(
+		inst, "hi", sendDeliveryResult{delivery: deliverySubmitted, transport: "tmux"}, true,
+	)
+	message, payload := claudeWaitErrorData(nil, errors.New("agent still running"), sendData)
+	payload["tagged"] = false
+	payload["success"] = false
+	payload["error"] = message
+	payload["code"] = ErrCodeInvalidOperation
+	got, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join("..", "..", "conductor", "tests", "fixtures", "claude_completion_timeout.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got)+"\n" != string(want) {
+		t.Fatalf("Go Claude-timeout schema drifted from bridge fixture:\ngot  %s\nwant %s", got, want)
 	}
 }
 

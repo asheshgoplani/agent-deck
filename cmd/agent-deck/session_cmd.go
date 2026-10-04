@@ -3734,13 +3734,8 @@ func handleSessionSend(profile string, args []string) {
 		response, finalStatus, identityErr, completionErr, responseErr = awaitClaudeWaitReply(turnQuery, waitDeadline, func(remaining time.Duration) (string, error) {
 			return waitAfterSend(tmuxSess, sendRes.transport, remaining)
 		})
-		if identityErr != nil {
-			out.Error(fmt.Sprintf("turn identity not established: %v", identityErr), ErrCodeInvalidOperation)
-			recordSendEventOnce()
-			os.Exit(1)
-		}
-		if completionErr != nil {
-			out.Error(fmt.Sprintf("timeout waiting for completion: %v", completionErr), ErrCodeInvalidOperation)
+		if message, errorData := claudeWaitErrorData(identityErr, completionErr, sendData); message != "" {
+			out.ErrorWithData(message, ErrCodeInvalidOperation, errorData)
 			recordSendEventOnce()
 			os.Exit(1)
 		}
@@ -4617,6 +4612,19 @@ func completionTimeoutPayload(data map[string]interface{}) map[string]interface{
 	}
 	payload["completion"] = "timeout"
 	return payload
+}
+
+// claudeWaitErrorData preserves the delivery evidence for an accepted Claude
+// turn whose completion wait expires. Identity failures remain fail-closed:
+// without a bound transcript row, the bridge cannot safely own later output.
+func claudeWaitErrorData(identityErr, completionErr error, data map[string]interface{}) (string, map[string]interface{}) {
+	if identityErr != nil {
+		return fmt.Sprintf("turn identity not established: %v", identityErr), nil
+	}
+	if completionErr != nil {
+		return fmt.Sprintf("timeout waiting for completion: %v", completionErr), completionTimeoutPayload(data)
+	}
+	return "", nil
 }
 
 func responseReadFailureData(data map[string]interface{}) map[string]interface{} {
