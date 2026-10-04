@@ -111,6 +111,15 @@ func handleEventsFollow(profile string, args []string) {
 	if bus.ReadOnly() {
 		defer bus.Close()
 	}
+	// Payload-less kinds such as tmux.output are only written while a
+	// follower whose filter includes them is running.
+	var wanted []string
+	for _, k := range events.DemandKinds {
+		if eventMatches(events.Frame{Kind: k}, kinds, "") {
+			wanted = append(wanted, k)
+		}
+	}
+	defer bus.Want(wanted...)()
 	sub, err := bus.Subscribe(ctx, events.Cursor(*afterFlag))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)

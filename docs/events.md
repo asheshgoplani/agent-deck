@@ -30,7 +30,7 @@ trailing spaces).
 | `agent-deck events publish` (only with `[macapp] plugins = true`) | a client/plugin frame | `macapp.*` |
 | `internal/session/transition_notifier.go` | `NotifyTransition` | `session.transition` |
 | `internal/session/transition_notifier.go` | `NotifyFinished` | `session.finished` |
-| `internal/tmux/pipemanager.go` | tmux `%output` | `tmux.output` |
+| `internal/tmux/pipemanager.go` | tmux `%output`, only while a follower demands it (see below) | `tmux.output` |
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |
 | `internal/watcher/engine.go` | `healthLoop` (health snapshot) | `watcher.health` |
 
@@ -45,6 +45,16 @@ Frame data for the session kinds (`session_id` is the agent-deck session id):
 
 A producer that passes nil data publishes a frame without `data`; a stored
 `data: null` from an older writer is also rendered without it.
+
+`tmux.output` is an on-demand kind: it has no payload, so it is written only
+while a live follower asks for it. `events follow` asks when its `--kind`
+filter includes `tmux.output` (or it has no filter); a daemon `subscribe`
+stream always asks. A follower holds a lease file `want/<kind>.<pid>.<id>`
+under the bus dir, touched every 5 s and removed when it stops; a lease older
+than 15 s (a follower that died) no longer counts and is swept by the next
+follower. The producer checks the lease dir at most once per second, so a new
+follower starts receiving ticks within about a second. With no follower,
+nothing is written (#2481).
 
 The tmux producer calls `PublishDefault` into a bounded in-memory queue.
 Transitions call `PublishProfile` with the event's owning profile, including

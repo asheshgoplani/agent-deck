@@ -866,3 +866,40 @@ func TestSubscribeWithoutBusFails(t *testing.T) {
 		t.Fatalf("Subscribe = %v, want %s", err, CodeEventsUnavailable)
 	}
 }
+
+// TestSubscribeDemandsOutputTicks (#2481 item 6): payload-less tmux.output
+// ticks are written only while someone follows them; a daemon subscriber has
+// no kind filter, so it demands them for exactly the life of its stream.
+func TestSubscribeDemandsOutputTicks(t *testing.T) {
+	bus, err := events.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	ts := startServer(t, Options{Bus: bus})
+	if bus.Wants(events.KindTmuxOutput) {
+		t.Fatal("tmux.output wanted before any subscriber")
+	}
+	c, err := Dial(context.Background(), ts.paths.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Subscribe(0); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !bus.Wants(events.KindTmuxOutput) {
+		if time.Now().After(deadline) {
+			t.Fatal("a live subscriber does not demand tmux.output")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = c.Close()
+	deadline = time.Now().Add(5 * time.Second)
+	for bus.Wants(events.KindTmuxOutput) {
+		if time.Now().After(deadline) {
+			t.Fatal("tmux.output still wanted after the subscriber left")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

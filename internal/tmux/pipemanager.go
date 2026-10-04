@@ -430,8 +430,11 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 			// the hottest producer in the tree (fires on every tmux %output),
 			// so it deliberately does NOT call Flush — Publish's bounded
 			// queue + drop-with-counter is what keeps this path non-blocking
-			// under pressure (see internal/events).
-			events.PublishDefault("tmux.output", sessionName, nil)
+			// under pressure (see internal/events). The tick has no payload,
+			// so it is written only while a follower demands it (#2481).
+			if events.DefaultWants(events.KindTmuxOutput) {
+				events.PublishDefault(events.KindTmuxOutput, sessionName, nil)
+			}
 			if pm.onOutput != nil {
 				pm.onOutput(sessionName)
 			}

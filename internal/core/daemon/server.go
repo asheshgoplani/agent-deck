@@ -243,6 +243,9 @@ func (s *Server) handle(ctx context.Context, c net.Conn) {
 			streams.Add(1)
 			go func() {
 				defer streams.Done()
+				// A subscription has no kind filter, so it demands every
+				// on-demand kind (tmux.output) while it streams.
+				defer s.opts.Bus.Want(events.DemandKinds...)()
 				s.stream(fc, f.ID, sub)
 			}()
 			continue
