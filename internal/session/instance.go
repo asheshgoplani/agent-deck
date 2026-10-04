@@ -11583,10 +11583,10 @@ func (i *Instance) Substate() Substate {
 	if tmuxSess == nil {
 		return SubstateNone
 	}
-	sub := tmuxSess.GetSubstate()
+	sub, liveSpinner := tmuxSess.GetSubstateWithLiveSpinner()
 	// The substate capture can be newer than the waiting-hook probe. Use its
 	// narrow current-composer cue, never generic running text in scrollback.
-	if sub == SubstateRunning && tmuxSess.CachedClaudeLiveSpinner() {
+	if sub == SubstateRunning && liveSpinner {
 		i.mu.Lock()
 		if IsClaudeCompatible(i.Tool) && (i.Status == StatusWaiting || i.Status == StatusIdle) &&
 			!blockingHookInGrace(i.hookEvent, i.hookLastUpdate, time.Now()) {

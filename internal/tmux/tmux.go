@@ -1242,11 +1242,10 @@ type Session struct {
 	// UpdateStatus has no captured pane content, so it must capture separately to
 	// check for in-flight background work; this bounds that to one capture per
 	// bgWorkCacheTTL while a session sits at the prompt.
-	bgWork                BackgroundWork
-	bgWorkBlocked         bool
-	bgWorkForegroundBusy  bool
-	lastClaudeLiveSpinner bool
-	bgWorkCheckedAt       time.Time
+	bgWork               BackgroundWork
+	bgWorkBlocked        bool
+	bgWorkForegroundBusy bool
+	bgWorkCheckedAt      time.Time
 
 	// lastBackgroundWork is the background work (issue #2473) the last
 	// prepared pane frame showed, read from the frame BEFORE the agent-roster
@@ -5461,8 +5460,9 @@ func (s *Session) BackgroundWorkSince(notBefore time.Time) (work BackgroundWork,
 		// TTL would suppress retries for the full window and could let the
 		// waiting hook fire a premature completion. Keep the previous value and
 		// leave bgWorkCheckedAt unchanged so the next call re-captures.
+		// Old foreground evidence cannot promote a newer waiting hook.
 		s.mu.Lock()
-		work, blocked, foregroundBusy = s.bgWork, s.bgWorkBlocked, s.bgWorkForegroundBusy
+		work, blocked, foregroundBusy = s.bgWork, s.bgWorkBlocked, false
 		s.mu.Unlock()
 		return work, blocked, foregroundBusy
 	}
@@ -5850,8 +5850,24 @@ func (s *Session) substateDetailLocked(content string) string {
 // layers (CLI status --json, TUI label/glyph, transition events); it does NOT
 // influence the canonical status returned by GetStatus, so existing status
 // behavior stays byte-stable. Returns SubstateNone on a dead/absent pane, a
-// capture failure, or a non-claude tool.
+// non-claude tool; a capture failure retains the previous substate.
 func (s *Session) GetSubstate() Substate {
+	sub, _, _ := s.getSubstate()
+	return sub
+}
+
+// GetSubstateWithLiveSpinner returns status and foreground evidence from the
+// same successful capture. A failed read is unknown, not cached evidence that
+// can promote a newly waiting session back to running.
+func (s *Session) GetSubstateWithLiveSpinner() (Substate, bool) {
+	sub, liveSpinner, err := s.getSubstate()
+	if err != nil {
+		return SubstateNone, false
+	}
+	return sub, liveSpinner
+}
+
+func (s *Session) getSubstate() (Substate, bool, error) {
 	if !s.Exists() || s.IsPaneDead() {
 		// A dead/absent pane has no live substate; clear the cached value so a
 		// stale auth/model-unavailable glyph does not linger on a stopped
@@ -5860,22 +5876,23 @@ func (s *Session) GetSubstate() Substate {
 		s.lastSubstate = SubstateNone
 		s.lastSubstateDetail = ""
 		s.mu.Unlock()
-		return SubstateNone
+		return SubstateNone, false, nil
 	}
 	rawContent, err := s.CapturePane()
 	if err != nil {
 		s.mu.Lock()
 		cached := s.lastSubstate
 		s.mu.Unlock()
-		return cached
+		return cached, false, err
 	}
 	// Hold s.mu across classifySubstate: it mutates the shared
 	// cachedPromptDetector, which GetStatus also touches under the same lock.
 	s.mu.Lock()
 	content := s.prepareFrame(StripANSI(rawContent))
 	sub := s.classifyFrameLocked(content)
+	liveSpinner := s.isClaudeTool() && hasClaudeLiveSpinner(content)
 	s.mu.Unlock()
-	return sub
+	return sub, liveSpinner, nil
 }
 
 // classifyFrameLocked records everything a captured (ANSI-stripped) pane
@@ -5886,7 +5903,6 @@ func (s *Session) GetSubstate() Substate {
 // holds s.mu.
 func (s *Session) classifyFrameLocked(content string) Substate {
 	s.lastSubstate = s.classifySubstate(content)
-	s.lastClaudeLiveSpinner = s.isClaudeTool() && hasClaudeLiveSpinner(content)
 	s.lastSubstateDetail = s.substateDetailLocked(content)
 	// Background work in flight (issue #2473) refines a frame that is
 	// otherwise at the prompt. prepareFrame read it from the untrimmed frame,
@@ -5901,14 +5917,6 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	}
 	s.recordCompletedTurnSampleLocked(content)
 	return s.lastSubstate
-}
-
-// CachedClaudeLiveSpinner reports the narrow foreground cue from the most
-// recently classified frame, without another capture.
-func (s *Session) CachedClaudeLiveSpinner() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastClaudeLiveSpinner
 }
 
 // CachedSubstateDetail returns the detail recorded with the last substate
