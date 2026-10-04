@@ -118,7 +118,7 @@ func marshalInboxStats(st InboxStats, raw map[string]json.RawMessage) ([]byte, e
 	if err := json.Unmarshal(data, &own); err != nil {
 		return nil, err
 	}
-	out := make(map[string]json.RawMessage, len(raw)+len(own))
+	out := make(map[string]json.RawMessage)
 	for k, v := range raw {
 		if !inboxStatsFields[k] {
 			out[k] = v
