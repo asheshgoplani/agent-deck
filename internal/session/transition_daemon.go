@@ -1332,6 +1332,11 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 		// input while the work runs, and the parent must be told.
 		if !hookEventBlocksTurn(candidate.Event) &&
 			normalizeStatusString(current[id]) == string(StatusRunning) && backgroundWorkHoldsTurn(inst) {
+			// The held turn may be the only one that names a tagged send's
+			// sender; remember it so the turn that settles the work replies.
+			if facts, ok := instanceTurnFacts(inst); ok {
+				rememberHeldSend(inst.ID, facts)
+			}
 			continue
 		}
 

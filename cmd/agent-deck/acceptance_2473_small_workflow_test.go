@@ -179,7 +179,8 @@ func TestAcceptance2473_SmallWorkflowLifecycle(t *testing.T) {
 	acceptanceHook(t, inst.ID, "waiting", "Stop")
 	poll("first poll after the workflow finished", want{status: "waiting", substate: "idle-at-empty-prompt"})
 
-	// 5. The user looks at it (attach / the TUI acknowledgement): idle.
+	// 5. The user looks at it (attach / the TUI acknowledgement): idle, on
+	// the long-lived instance and from a fresh process alike.
 	ts.Acknowledge()
 	for _, surface := range []struct {
 		name   string
@@ -187,6 +188,8 @@ func TestAcceptance2473_SmallWorkflowLifecycle(t *testing.T) {
 	}{
 		{"session show --json", sessionShowStatusFields(inst)},
 		{"list --json", acceptanceListRow(t, inst)},
+		{"session show --json (fresh process)", sessionShowStatusFields(acceptanceReload(t, storage, inst))},
+		{"list --json (fresh process)", acceptanceListRow(t, acceptanceReload(t, storage, inst))},
 	} {
 		if surface.fields["status"] != "idle" {
 			t.Fatalf("acknowledged, %s: status = %v, want idle (fields %v)", surface.name, surface.fields["status"], surface.fields)

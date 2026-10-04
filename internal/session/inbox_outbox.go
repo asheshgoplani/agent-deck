@@ -594,7 +594,8 @@ func (n *TransitionNotifier) resolveInboxParent(event TransitionNotificationEven
 }
 
 // replySenderFor resolves the sender of the tagged send that started this
-// turn (comms redesign PR5), whether or not the child has a parent: a
+// turn (comms redesign PR5), or of the held send whose background work this
+// task turn settled (issue #2473), whether or not the child has a parent: a
 // top-level conductor or a peer answering a question must reach the asker
 // too. The sender must still be in the registry, must be a Claude-compatible
 // session (only those drain a reply at prompt time; a wake line typed into a
@@ -603,11 +604,10 @@ func (n *TransitionNotifier) resolveInboxParent(event TransitionNotificationEven
 // (those already hold the record, so no duplicate). An unknown or removed
 // sender gets nothing.
 func replySenderFor(event TransitionNotificationEvent, child, parent *Instance, byID map[string]*Instance) *Instance {
-	from := strings.TrimSpace(event.FromID)
-	if event.Trigger != TurnTriggerSend || from == "" {
+	if !eventAnswersSend(event) {
 		return nil
 	}
-	sender := byID[from]
+	sender := byID[strings.TrimSpace(event.FromID)]
 	if sender == nil || !IsClaudeCompatible(sender.Tool) {
 		return nil
 	}
@@ -731,7 +731,7 @@ func (n *TransitionNotifier) commitParentlessEvent(event TransitionNotificationE
 // it); any other parent keeps the conductor-only gate. The committed record
 // keeps TargetKind "parent".
 func parentWakeEvent(event TransitionNotificationEvent, parent *Instance) TransitionNotificationEvent {
-	if event.Trigger == TurnTriggerSend && parent != nil &&
+	if eventAnswersSend(event) && parent != nil &&
 		strings.TrimSpace(event.FromID) == parent.ID && IsClaudeCompatible(parent.Tool) {
 		event.TargetKind = InboxTargetKindReply
 	}

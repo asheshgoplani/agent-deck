@@ -1806,7 +1806,6 @@ func handleSessionViewers(profile string, args []string) {
 	out.Print(human.String(), data)
 }
 
-// handleSessionShow shows session details
 // sessionShowStatusFields is the status pass `session show` makes and the
 // status keys it reports: status, substate, substate_detail and
 // background_work (issue #2473). It warms the tmux pane-title cache and loads
@@ -1831,6 +1830,7 @@ func sessionShowStatusFields(inst *session.Instance) map[string]interface{} {
 	return fields
 }
 
+// handleSessionShow shows session details
 func handleSessionShow(profile string, args []string) {
 	fs := flag.NewFlagSet("session show", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
