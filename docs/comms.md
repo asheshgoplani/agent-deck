@@ -48,8 +48,13 @@ so the noise share is countable from the ledger alone; a re-observed turn
 
 A tagged send whose turn hands off to background work (issue #2473) is
 stored as two turns: the held send turn, which replies to no one, and the
-task turn that settles the work, which carries `reply_to` (the inbox answers
-the sender on that turn too), so the sender is answered once, with the result.
+task turn that settles the work, which carries `reply_to`, so the sender is
+answered once, with the result. The ledger keeps the sender it owes in its own
+record (`runtime/held-send-ledger/<child>.json`). The ledger and the inbox
+each answer the sender exactly once, but not always on the same turn: when a
+permission menu opens while the work runs, the inbox answers on the send turn
+and the ledger on the result turn; when a held send is drained only after the
+work has settled, the ledger answers on the send turn itself.
 
 ### Remote first
 
