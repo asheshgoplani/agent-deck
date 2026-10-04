@@ -213,6 +213,33 @@ func (c *ConsumerState) normalize() {
 	}
 }
 
+// SkipSpent applies the gap rule for spent cursors: a cursor that no
+// record carries (a malformed line, a rolled-back commit, a frame that is
+// not a record) is never delivered, so it can never be acknowledged; once
+// every record below it is acknowledged the watermark moves over it, so the
+// watermark, the sparse set and RetainFrom never stick on it. read must be
+// every record one pass returned for (after, through] (ReadAfter or Export
+// from after, through the cursor the pass returned). A pass that started
+// above the watermark says nothing about the cursors below its start, so
+// it changes nothing.
+func (c *ConsumerState) SkipSpent(after events.Cursor, read []Exported, through events.Cursor) {
+	if after > c.Watermark {
+		return
+	}
+	carried := make(map[events.Cursor]bool, len(read))
+	for _, e := range read {
+		carried[e.Cursor] = true
+	}
+	for c.Watermark < through {
+		next := c.Watermark + 1
+		if carried[next] && !c.IsAcked(next) {
+			break // a record still pending
+		}
+		c.Watermark = next
+	}
+	c.normalize()
+}
+
 // Normalize repairs a state read from disk (sorts, dedups, drops stale
 // acks, folds the contiguous prefix). Call it after loading.
 func (c *ConsumerState) Normalize() { c.normalize() }

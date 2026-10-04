@@ -195,6 +195,7 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 	before := b.activeBytes
 	beforeCursor, beforeEventID, beforeFrames, beforeTotal := b.cursor, b.lastEventID, b.activeFrames, b.totalBytes
 	if err := b.appendFrameLocked(qf); err != nil {
+		err = b.spendRolledBack(beforeCursor+1, err)
 		b.fail(err)
 		return Frame{}, err
 	}
@@ -212,6 +213,7 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 		}
 		b.cursor, b.lastEventID, b.activeBytes, b.activeFrames, b.totalBytes = beforeCursor, beforeEventID, before, beforeFrames, beforeTotal
 		b.written.Add(^uint64(0)) // undo the append's count
+		err = b.spendRolledBack(beforeCursor+1, err)
 		b.fail(err)
 		return Frame{}, err
 	}
@@ -234,6 +236,65 @@ func (b *Bus) Commit(kind, sessionID string, data any) (Frame, error) {
 		b.rotateLocked()
 	}
 	return committed, nil
+}
+
+// spendRolledBack marks a rolled-back commit's cursor as spent on a bus
+// that keeps malformed lines (the ledger), so a reopen continues above it
+// and no consumer ever sees that number on a different frame. Followers of
+// that bus read the active file under the writer lock and so never saw the
+// rolled-back bytes; the mark covers every other reader and a crash. A
+// failure to write the mark is added to err. Other buses keep their
+// rollback as it was.
+func (b *Bus) spendRolledBack(cursor Cursor, err error) error {
+	if !b.keepCorrupt {
+		return err
+	}
+	if serr := b.spendLocked(cursor); serr != nil {
+		return fmt.Errorf("%w; spent mark for cursor %d not written: %v", err, cursor, serr)
+	}
+	return err
+}
+
+// Ends returns the bus cursor (the highest cursor assigned, including any
+// spent by a malformed line or a rolled-back commit) and the cursor of the
+// newest parseable frame in the retained log (0 when none is retained).
+// No frame will ever carry a cursor between the two, so a reader that has
+// seen lastFrame has read everything up to end.
+func (b *Bus) Ends() (end, lastFrame Cursor, err error) {
+	if b == nil || !b.enabled {
+		return 0, 0, errors.New("events: bus disabled")
+	}
+	if err := b.lockDisk(); err != nil {
+		return 0, 0, err
+	}
+	defer b.unlockDisk()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := b.refreshLocked(); err != nil {
+		return 0, 0, err
+	}
+	end = b.cursor
+	_, lastFrame, _, _, err = scanFrames(filepath.Join(b.dir, activeSegmentName))
+	if err != nil && !os.IsNotExist(err) {
+		return end, 0, err
+	}
+	if lastFrame > 0 {
+		return end, lastFrame, nil
+	}
+	sealed, err := listSealedSegments(b.dir)
+	if err != nil {
+		return end, 0, err
+	}
+	for i := len(sealed) - 1; i >= 0; i-- {
+		_, lastFrame, _, _, err = scanFrames(sealed[i].path)
+		if os.IsNotExist(err) {
+			continue // compacted under us
+		}
+		if err != nil || lastFrame > 0 {
+			return end, lastFrame, err
+		}
+	}
+	return end, 0, nil
 }
 
 // expiredSegments lists sealed segments whose newest frame is older than the

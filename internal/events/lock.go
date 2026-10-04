@@ -34,44 +34,87 @@ func (b *Bus) unlockDisk() {
 // exposes a partial line.
 func (b *Bus) activeBounds(path string) (first, last Cursor, size int64, err error) {
 	if b != nil && b.keepCorrupt {
-		return lenientBounds(path)
+		return b.lenientBounds(path)
 	}
 	return strictBounds(path)
 }
 
 // lenientBounds scans the whole file for the first and last parseable
-// frame; a file with none is reported as empty.
-func lenientBounds(path string) (first, last Cursor, size int64, err error) {
+// frame. A malformed line after the last parseable frame spent its cursor
+// number (the same rule as recovery), so last counts it. A file holding
+// only malformed lines (a rotation followed by corruption) spent the
+// cursors right after everything before it: first and last are then
+// absolute, on top of the sealed history, the checkpoint and any spent
+// mark. A file with no lines at all is reported as empty.
+func (b *Bus) lenientBounds(path string) (first, last Cursor, size int64, err error) {
+	first, lastFrame, trailing, size, err := scanFrames(path)
+	if err != nil || trailing == 0 {
+		return first, lastFrame, size, err
+	}
+	if first > 0 {
+		return first, lastFrame + trailing, size, nil
+	}
+	floor, err := b.historyEnd()
+	if err != nil {
+		return 0, 0, size, err
+	}
+	return floor + 1, floor + trailing, size, nil
+}
+
+// scanFrames reads a segment for the cursors of its first and last
+// parseable frame and the number of malformed lines after the last one.
+// The final line must be complete.
+func scanFrames(path string) (first, lastFrame, trailing Cursor, size int64, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	size = int64(len(data))
 	if size == 0 {
-		return 0, 0, 0, nil
+		return 0, 0, 0, 0, nil
 	}
 	if data[len(data)-1] != '\n' {
-		return 0, 0, size, fmt.Errorf("events: incomplete active tail")
+		return 0, 0, 0, size, fmt.Errorf("events: incomplete active tail")
 	}
-	trailingCorrupt := Cursor(0)
 	for _, ln := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
 		if ln == "" {
 			continue
 		}
 		f, perr := ParseFrameLine([]byte(ln))
 		if perr != nil {
-			trailingCorrupt++
+			trailing++
 			continue
 		}
-		trailingCorrupt = 0
+		trailing = 0
 		if first == 0 {
 			first = f.Cursor
 		}
-		last = f.Cursor
+		lastFrame = f.Cursor
 	}
-	// Same rule as recovery: a malformed line after the last parseable
-	// frame spent its cursor number.
-	return first, last + trailingCorrupt, size, nil
+	return first, lastFrame, trailing, size, nil
+}
+
+// historyEnd is the highest cursor accounted for outside the active file:
+// the newest sealed segment's end, the rotation checkpoint and, on a bus
+// that keeps malformed lines, the spent mark a rolled-back commit leaves.
+func (b *Bus) historyEnd() (Cursor, error) {
+	end := Cursor(0)
+	sealed, err := listSealedSegments(b.dir)
+	if err != nil {
+		return 0, err
+	}
+	if len(sealed) > 0 {
+		end = sealed[len(sealed)-1].end
+	}
+	checkpoint, err := readCursorCheckpoint(b.dir)
+	if err != nil {
+		return 0, err
+	}
+	spent, err := b.spentMark()
+	if err != nil {
+		return 0, err
+	}
+	return max(end, checkpoint, spent), nil
 }
 
 func strictBounds(path string) (first, last Cursor, size int64, err error) {
@@ -165,6 +208,13 @@ func (b *Bus) refreshLocked() error {
 		if checkpoint > b.cursor {
 			b.cursor = checkpoint
 		}
+		spent, err := b.spentMark()
+		if err != nil {
+			return err
+		}
+		if spent > b.cursor {
+			b.cursor = spent
+		}
 		b.activeStart = b.cursor + 1
 		b.activeFrames = 0
 	} else {
@@ -175,6 +225,11 @@ func (b *Bus) refreshLocked() error {
 		if last < checkpoint {
 			return fmt.Errorf("events: active cursor %d precedes checkpoint %d", last, checkpoint)
 		}
+		spent, err := b.spentMark()
+		if err != nil {
+			return err
+		}
+		last = max(last, spent)
 		if last != b.cursor {
 			b.activeFrames = countLines(b.dir, activeSegmentName)
 		}
@@ -188,8 +243,33 @@ func (b *Bus) refreshLocked() error {
 const dropsFileName = "drops.count"
 const cursorFileName = "cursor.state"
 
+// spentFileName holds the highest cursor a rolled-back Commit spent on a
+// bus that keeps malformed lines (the ledger). A follower may have been
+// handed nothing for it, but a consumer must never see that number reused
+// by a different frame, so the next commit continues above it.
+const spentFileName = "spent.cursor"
+
 func readCursorCheckpoint(dir string) (Cursor, error) {
-	data, err := os.ReadFile(filepath.Join(dir, cursorFileName))
+	return readCursorFile(dir, cursorFileName)
+}
+
+// spentMark returns the spent mark (0 on a bus that does not keep one).
+func (b *Bus) spentMark() (Cursor, error) {
+	if !b.keepCorrupt {
+		return 0, nil
+	}
+	return readCursorFile(b.dir, spentFileName)
+}
+
+// spendLocked records cursor as spent: written durably before the failed
+// Commit returns its error.
+func (b *Bus) spendLocked(cursor Cursor) error {
+	return writeSmallFile(b.dir, "spent.tmp."+strconv.Itoa(os.Getpid()), spentFileName,
+		[]byte(strconv.FormatUint(uint64(cursor), 10)+"\n"), b.fileMode, true)
+}
+
+func readCursorFile(dir, name string) (Cursor, error) {
+	data, err := os.ReadFile(filepath.Join(dir, name)) // #nosec G304 -- a file of this bus
 	if os.IsNotExist(err) {
 		return 0, nil
 	}

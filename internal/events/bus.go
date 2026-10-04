@@ -205,6 +205,14 @@ func openWith(dir string, mode os.FileMode, keepCorrupt bool) (*Bus, error) {
 	if checkpoint > lastCursor {
 		lastCursor = checkpoint
 	}
+	spent, err := b.spentMark()
+	if err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("events: read spent mark: %w", err)
+	}
+	if spent > lastCursor {
+		lastCursor = spent
+	}
 
 	f, err := os.OpenFile(filepath.Join(dir, activeSegmentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, mode)
 	if err != nil {
@@ -233,7 +241,12 @@ func openWith(dir string, mode os.FileMode, keepCorrupt bool) (*Bus, error) {
 			_ = lockFile.Close()
 			return nil, fmt.Errorf("events: active cursor %d precedes checkpoint %d", activeLast, checkpoint)
 		}
-		b.activeStart = first
+		if first > 0 {
+			b.activeStart = first
+		}
+		if activeLast > b.cursor {
+			b.cursor = activeLast // malformed lines that spent cursors after the sealed history
+		}
 	}
 	b.activeBytes = info.Size()
 	b.activeFrames = countLines(dir, activeSegmentName)
@@ -302,7 +315,11 @@ func recoverActiveSegment(dir string, mode os.FileMode, keepCorrupt bool) (Curso
 	// A malformed line that followed the last parseable frame held a frame
 	// of its own: its cursor number is spent, never reused by the next
 	// commit (a consumer that acknowledged it must not skip a new frame).
-	last += Cursor(trailingCorrupt) //nolint:gosec // G115: a line count
+	// With no parseable frame at all the spent cursors sit on top of the
+	// sealed history, which only the caller knows (activeBounds).
+	if last > 0 {
+		last += Cursor(trailingCorrupt) //nolint:gosec // G115: a line count
+	}
 	if validEnd != len(data) {
 		f, err := os.OpenFile(path, os.O_WRONLY, mode)
 		if err != nil {

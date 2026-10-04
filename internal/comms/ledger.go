@@ -32,9 +32,12 @@ const (
 	// spool keeps the entries (bounded by its own cap), the daemon logs the
 	// overload, and nothing is silently dropped.
 	DefaultMaxBytes = 2 << 30
-	// warmTimeout bounds the dedup rebuild at open. A tail the reader cannot
-	// reach (a malformed last frame) makes Open fail visibly instead of
-	// starting with a partial window or hanging the daemon's poll loop.
+	// warmTimeout bounds the dedup rebuild at open. The rebuild reads up to
+	// the newest parseable frame (a malformed last line spent a cursor no
+	// frame carries), so it ends as soon as that frame is read; the bound
+	// only matters for a log the reader cannot read at all, and then Open
+	// fails visibly instead of starting with a partial window or holding
+	// the daemon's poll loop.
 	warmTimeout = 10 * time.Second
 	// scanTimeout bounds one ReadAfter / Export pass the same way.
 	scanTimeout = 10 * time.Second
@@ -201,15 +204,19 @@ func OpenDir(profile, dir string) (*Ledger, error) {
 }
 
 // ErrTailUnreadable is returned by OpenDir when the dedup rebuild could not
-// reach the ledger's last cursor within warmTimeout: the tail needs repair
+// reach the ledger's newest frame within warmTimeout: the log needs repair
 // and the daemon must not write with a partial idempotency window.
 var ErrTailUnreadable = errors.New("comms: ledger tail unreadable; dedup window could not be rebuilt")
 
 // warm reloads the idempotency window and sequences from the newest frames.
-// Bounded: it stops at the last cursor or at warmTimeout, and the second
-// outcome is an error.
+// Bounded: it stops at the newest parseable frame (cursors after it were
+// spent by malformed lines or rolled-back commits and carry nothing) or at
+// warmTimeout, and the second outcome is an error.
 func (l *Ledger) warm() error {
-	last := l.bus.Cursor()
+	_, last, err := l.bus.Ends()
+	if err != nil {
+		return err
+	}
 	if last == 0 {
 		return nil
 	}
@@ -428,7 +435,10 @@ var ErrNoLedger = errors.New("comms: no ledger for this profile yet (is [comms] 
 
 // OpenReaderDir is OpenReader at an explicit directory.
 func OpenReaderDir(dir string) (*events.Bus, error) {
-	bus, err := events.OpenAt(dir, events.Options{ReadOnly: true})
+	// KeepCorrupt as the writer: a malformed line is skipped (its cursor
+	// spent) instead of hiding the rest of the ledger, and the active file
+	// is read under the writer lock so only committed frames are seen.
+	bus, err := events.OpenAt(dir, events.Options{ReadOnly: true, KeepCorrupt: true})
 	if errors.Is(err, events.ErrNoBus) {
 		return nil, ErrNoLedger
 	}
@@ -447,7 +457,9 @@ func Decode(f events.Frame) (Record, error) {
 
 // ReadAfter returns every record with cursor > after, oldest first, plus
 // the last cursor read. It stops at the end of the retained log (it does not
-// follow). ErrCursorTooOld surfaces unchanged so a consumer can reset.
+// follow); a pass that reaches the newest frame returns the ledger's cursor,
+// past any spent cursor after it. ErrCursorTooOld surfaces unchanged so a
+// consumer can reset.
 func ReadAfter(bus *events.Bus, after events.Cursor, limit int) ([]Record, events.Cursor, error) {
 	var out []Record
 	last, err := scan(bus, after, limit, func(_ events.Cursor, r Record) {
@@ -464,31 +476,39 @@ type Exported struct {
 }
 
 // Export returns records with cursor > after as Exported pairs, oldest
-// first, bounded by limit (0 = all retained). It is ReadAfter with the
-// cursors kept, for the remote path: the puller advances its cursor for
-// this origin only to a cursor it committed.
-func Export(bus *events.Bus, after events.Cursor, limit int) ([]Exported, error) {
+// first, bounded by limit (0 = all retained), and the last cursor the pass
+// covered (as ReadAfter). It is ReadAfter with the cursors kept, for the
+// remote path (the puller advances its cursor for this origin only to a
+// cursor it committed) and for ConsumerState.SkipSpent.
+func Export(bus *events.Bus, after events.Cursor, limit int) ([]Exported, events.Cursor, error) {
 	var out []Exported
-	_, err := scan(bus, after, limit, func(c events.Cursor, r Record) {
+	last, err := scan(bus, after, limit, func(c events.Cursor, r Record) {
 		out = append(out, Exported{Cursor: c, Record: r})
 	})
-	return out, err
+	return out, last, err
 }
 
 // scan hands every decodable record with cursor > after to visit, oldest
 // first, until the end of the retained log or limit records (0 = no limit).
-// It returns the last cursor read (after when nothing was read). A frame
-// that does not decode is skipped but still advances the cursor.
+// It returns the last cursor the pass covered: the last frame read when the
+// limit stopped it, the ledger cursor when it reached the newest frame
+// (cursors after that frame are spent and carry nothing), after when there
+// was nothing past it. A frame that does not decode is skipped but still
+// advances the cursor. Every record in (after, returned cursor] was handed
+// to visit.
 func scan(bus *events.Bus, after events.Cursor, limit int, visit func(events.Cursor, Record)) (events.Cursor, error) {
 	if bus == nil {
 		return after, errors.New("comms: no ledger")
 	}
-	end := bus.Stats().Cursor
-	if end <= after {
-		return after, nil
+	end, lastFrame, err := bus.Ends()
+	if err != nil {
+		return after, err
 	}
-	// Bounded: a tail the reader cannot reach (a malformed last frame) ends
-	// the pass with ErrTailUnreadable instead of waiting forever.
+	if lastFrame <= after {
+		return max(after, end), nil
+	}
+	// Bounded: a log the reader cannot read ends the pass with
+	// ErrTailUnreadable instead of waiting forever.
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 	sub, err := bus.Subscribe(ctx, after)
@@ -504,7 +524,12 @@ func scan(bus *events.Bus, after events.Cursor, limit int, visit func(events.Cur
 			n++
 		}
 		last = f.Cursor
-		if f.Cursor >= end || (limit > 0 && n >= limit) {
+		if f.Cursor >= lastFrame {
+			done = true
+			last = max(last, end)
+			break
+		}
+		if limit > 0 && n >= limit {
 			done = true
 			break // frames already buffered past the limit are not ours to take
 		}

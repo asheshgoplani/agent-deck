@@ -112,9 +112,17 @@ CloseDefault() error                              // CLI/TUI shutdown
 
 `OpenAt` is `Open` with knobs a second log needs. The status bus itself is
 unchanged: its recovery still truncates from the first malformed line, its
-checkpoint and drops files are still rename-only, and `Publish` keeps its
-contract. `Options.KeepCorrupt` (recovery leaves a malformed line in place
-and readers skip it), `Options.Private` (0600 files, 0700 directory, fsynced
+checkpoint and drops files are still rename-only, its followers tail the
+active file without the lock, and `Publish` keeps its contract.
+`Options.KeepCorrupt` (recovery leaves a malformed line in place and
+readers skip it; a malformed line after the last parseable frame, or a
+file of only malformed lines after a rotation, spends its cursor number on
+top of the sealed history; a `Commit` rolled back after a failed write or
+fsync records its cursor in `spent.cursor` so the number is never reused;
+followers read the active file's new bytes under the writer lock, so they
+see a frame only after its `Commit` finished; `(*Bus).Ends` reports the
+cursor and the newest parseable frame so a reader stops there instead of
+waiting for a spent cursor), `Options.Private` (0600 files, 0700 directory, fsynced
 checkpoints and directory writes) and `Options.MaxBytes` (`ErrQuota`) are
 taken only by the comms ledger. `Commit` is the
 synchronous primitive for a record whose loss a consumer could not detect

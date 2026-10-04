@@ -230,7 +230,7 @@ func TestRemoteFirstExportImportIsIdempotentPerOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rbus.Close()
-	exported, err := Export(rbus, 1, 0)
+	exported, _, err := Export(rbus, 1, 0)
 	if err != nil || len(exported) != 2 || exported[0].Cursor != 2 || exported[1].Record.Text != "three" {
 		t.Fatalf("Export(after 1): %+v err %v", exported, err)
 	}

@@ -380,12 +380,15 @@ func (d *TransitionDaemon) commsStatusEdge(inst *Instance, from, to string, at t
 	}
 }
 
-// commitCommsStatus commits a spooled status edge. A status edge has no
-// message identity; the only collapse is the inbox's own rule (issues #1142
-// and #824): the same from->to edge re-observed with the same non-empty
-// output signal within the 2 h TTL, or, when either signal is empty, within
-// the 90 s short window. Two distinct edges are never folded by a time
-// bucket.
+// commitCommsStatus commits a spooled status edge. Its identity is the
+// spool entry id (minted once by the producer), so a replay of the same
+// entry is a duplicate of its key whatever was committed in between and
+// however late it comes. Separately, a re-observation of the same edge is
+// collapsed by the inbox's own rule (issues #1142 and #824): the same
+// from->to edge with the same non-empty output signal within the 2 h TTL,
+// or, when either signal is empty, within the 90 s short window. That rule
+// mirrors what the inbox records; it is not what makes a replay safe. Two
+// distinct edges are never folded by a time bucket.
 func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, inst *Instance, e CommsSpoolEntry) bool {
 	if last, ok := l.LastStatus(inst.ID); ok && last.State == e.State && last.Ref == e.From {
 		window := defaultOutputHashDedupTTL
@@ -407,6 +410,9 @@ func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, in
 		Ref:     e.From, // the status the edge left
 		TH:      e.TH,   // the output signal the edge was observed with
 		TSignal: e.TSignal,
+	}
+	if id := e.ID(); id != "" {
+		rec.Key = comms.Key(comms.KindStatus, inst.ID, id)
 	}
 	if _, _, err := l.Commit(rec); err != nil && !errors.Is(err, comms.ErrDuplicate) {
 		commsLog.Warn("comms_status_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))

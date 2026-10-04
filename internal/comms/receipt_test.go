@@ -204,3 +204,88 @@ func TestRecordCarriesSchemaVersionStoreAndEpoch(t *testing.T) {
 		}
 	}
 }
+
+// Verifier defect 5 (G6 gap rule): a cursor no record carries (a malformed
+// line, a rolled-back commit) can never be delivered, so it can never be
+// acknowledged. SkipSpent moves the watermark over it once every record
+// before it is acknowledged, so the watermark, the sparse set and
+// RetainFrom never stick on it.
+func TestConsumerStateSkipsSpentCursorsMatchFixture(t *testing.T) {
+	data, err := os.ReadFile("testdata/consumer_state_fixture.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		SkipSpent struct {
+			Records []uint64
+			End     uint64
+			Steps   []struct {
+				Ack  uint64
+				Want struct {
+					Watermark uint64
+					Acked     []uint64
+				}
+			}
+			RetainFrom uint64 `json:"retain_from"`
+		} `json:"skip_spent"`
+	}
+	if err := json.Unmarshal(data, &fx); err != nil {
+		t.Fatal(err)
+	}
+	fs := fx.SkipSpent
+	if len(fs.Steps) == 0 {
+		t.Fatal("fixture has no skip_spent steps")
+	}
+	var read []Exported
+	for _, n := range fs.Records {
+		read = append(read, Exported{Cursor: events.Cursor(n)})
+	}
+	var c ConsumerState
+	for i, st := range fs.Steps {
+		if err := c.Ack(events.Cursor(st.Ack)); err != nil {
+			t.Fatalf("step %d ack %d: %v", i, st.Ack, err)
+		}
+		c.SkipSpent(0, read, events.Cursor(fs.End))
+		var acked []uint64
+		for _, a := range c.Acked {
+			acked = append(acked, uint64(a))
+		}
+		if uint64(c.Watermark) != st.Want.Watermark || !reflect.DeepEqual(acked, st.Want.Acked) {
+			t.Fatalf("step %d (ack %d): watermark %d acked %v, want %d %v", i, st.Ack, c.Watermark, acked, st.Want.Watermark, st.Want.Acked)
+		}
+	}
+	if got := RetainFrom([]ConsumerState{c}); uint64(got) != fs.RetainFrom {
+		t.Fatalf("RetainFrom %d, want %d", got, fs.RetainFrom)
+	}
+
+	// The same rule against a real ledger with a corrupt middle line: a
+	// consumer that acknowledges every record it was handed ends with its
+	// watermark at the end of the pass.
+	dir := t.TempDir() + "/ledger"
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitTexts(t, l, "a", "b", "c")
+	_ = l.Close()
+	corruptLedgerLine(t, dir, 1)
+	bus, err := OpenReaderDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	got, end, err := Export(bus, 0, 0)
+	if err != nil || len(got) != 2 || end != 3 {
+		t.Fatalf("Export = %d records, end %d, err %v", len(got), end, err)
+	}
+	var cs ConsumerState
+	for _, e := range got {
+		if err := cs.Ack(e.Cursor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cs.SkipSpent(0, got, end)
+	if cs.Watermark != 3 || cs.Acked != nil || len(cs.Pending(got)) != 0 {
+		t.Fatalf("after acking every record: watermark %d acked %v", cs.Watermark, cs.Acked)
+	}
+}

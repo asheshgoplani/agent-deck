@@ -134,19 +134,23 @@ of the ledger it was first committed to and that ledger's epoch
 Imported records keep all of these and add `origin` and `src_cursor`.
 Dedup is on `key` (namespaced by the origin **store id** for a pulled
 record; the remote alias and `host` are display only) within a window of
-the newest 4096 records, rebuilt at open (open fails visibly,
-`ErrTailUnreadable`, if that rebuild cannot reach the last cursor, so the
-daemon never writes with a partial window). Two distinct turns with
+the newest 4096 records, rebuilt at open up to the newest parseable frame
+(a malformed last line does not block the open; open fails visibly,
+`ErrTailUnreadable`, only if the log cannot be read at all, so the daemon
+never writes with a partial window). Two distinct turns with
 identical text are two records; one turn observed a hundred times is one;
 the same key with different content is a conflict (`ErrConflict`): the
 spool entry is moved to `spool/conflict/<instance>/` and logged, never
 committed as a second record. `seq` is a per-sender counter restored from
 that window: monotonic across restarts for a sender active in the newest
 4096 records, restarting at 1 after a longer silence (ordering is the
-cursor and the id). A text-less `status` edge is collapsed only by the
-inbox's own content rule (same from->to edge with the same non-empty output
-signal within the 2 h TTL, or within the 90 s short window when the signal
-is empty), never by a time bucket.
+cursor and the id). A text-less `status` edge is keyed on its spool entry
+id (minted once by the producer), so a replayed entry is a duplicate of
+its key however late it comes; separately, a re-observation of the same
+edge is collapsed by the inbox's own content rule (same from->to edge with
+the same non-empty output signal within the 2 h TTL, or within the 90 s
+short window when the signal is empty), which mirrors what the inbox
+records and is never what makes a replay safe.
 
 Restore detection: `store.json` keeps the ledger's high-water cursor
 (persisted at close and every 256 commits). A ledger that opens with a
@@ -171,6 +175,15 @@ Frozen now in `internal/comms/receipt.go` with fixtures under
   `generation`. Pending = every record above the watermark not in the
   sparse set, so an urgent record acknowledged ahead never hides an
   earlier info record. A state from another epoch is rejected and rebuilt.
+- **Spent cursors (gap rule)**: a cursor no record carries (a malformed
+  line, a rolled-back commit, a frame that is not a record) can never be
+  delivered or acknowledged. `ConsumerState.SkipSpent(after, records,
+  through)` moves the watermark over such cursors once every record below
+  them is acknowledged, given one complete read pass from at most the
+  watermark (`ReadAfter` / `Export`, which return the cursor the pass
+  covered, past any trailing spent cursors). Spent cursors never enter the
+  sparse set and never hold `RetainFrom`. Fixture:
+  `testdata/consumer_state_fixture.json` (`skip_spent`).
 - **Retention and quota**: today compaction is by count (1024 sealed
   segments) and age (`RetentionDays`, 90); P2 adds `RetainFrom(consumers)`
   (one above the lowest watermark) as a third input so a pending record is
@@ -219,9 +232,11 @@ Four rules from the MonoCode relay comparison are part of this contract:
 | daemon ingest | same key, different content | the entry is quarantined under `spool/conflict/` and logged |
 | daemon ingest | crash after commit, before the spool file is removed | the entry is replayed and dropped as a duplicate of its key |
 | ledger file | torn tail | truncated at open; mid-history corruption is left in place, logged, and skipped by readers |
+| ledger file | malformed first, middle or last line, or a file of only malformed lines after a rotation | the writer and every reader open it; each malformed line's cursor is spent (counted on top of the sealed history and checkpoint), readers stop at the newest parseable frame and the next commit takes the cursor after the spent ones |
+| `Commit` | short write or failed fsync | the bytes are truncated away, the error is returned, the bus disables itself until reopened, and the cursor is recorded as spent (`spent.cursor`, fsynced) so it is never reused for a different frame |
 | ledger dir | rotation or checkpoint | file fsync, atomic rename, directory fsync |
 | two daemons | second process | cannot take `daemon.lock`; it reads, never writes or ingests |
-| ledger open | the dedup window cannot be rebuilt to the last cursor (unreadable tail) | open fails with `ErrTailUnreadable`, retried after 1 min; the inbox path is untouched |
+| ledger open | the dedup window cannot be rebuilt to the newest frame (the log cannot be read) | open fails with `ErrTailUnreadable`, retried after 1 min; the inbox path is untouched |
 | store restore | restored from an older copy | detected at open from the high-water mark: the epoch is bumped and logged; consumer states from the old epoch are rejected |
 
 The inbox and the turn journal keep their issue #2469 order (commit, then
@@ -234,12 +249,18 @@ agent-deck events follow --bus comms --json [--after <cursor>] [--kind turn,stat
 agent-deck events stats --bus comms --json
 ```
 
-The follower opens the ledger read-only (`events.Options{ReadOnly: true}`):
-no writer goroutine, no tail repair, `Commit` refused. Durability boundary:
-a frame is committed when `Commit` returns its cursor (bytes and fsync
-done, or rolled back on failure); a follower tailing the file can read a
-line in the instant between the write and its fsync, so P2 consumers read
-through the ledger API bounded by the committed cursor, not by tailing.
+The follower opens the ledger read-only (`comms.OpenReader`:
+`events.Options{ReadOnly: true, KeepCorrupt: true}`): no writer goroutine,
+no tail repair, `Commit` refused, malformed lines skipped as the writer
+skips them. Visibility boundary: a frame is committed when `Commit`
+returns its cursor (bytes and fsync done, or rolled back on failure). A
+ledger follower reads new bytes of the active file under the writer lock,
+which `Commit` holds from the append through the fsync or the rollback, so
+it sees a frame only after its `Commit` finished and never sees a
+rolled-back one; the bytes are emitted after the lock is released, so a
+slow follower never holds up the writer. A rolled-back cursor is also
+recorded as spent, so a reader that saw anything under that number could
+never be handed a different frame with it.
 P2 adds `agent-deck msg read|peek|ack|stats|export` with per-consumer state
 files.
 

@@ -777,3 +777,39 @@ func TestCommsIngest_LongClaudeReplyStillMatchesItsTranscriptTurn(t *testing.T) 
 		t.Fatalf("re-fired long Stop duplicated: %d", len(recs))
 	}
 }
+
+// Verifier defect 6 (G2/G3): a status record's identity is its spool entry
+// id, so a replay (a crash after the commit, before the spool file was
+// removed) is a duplicate however much later it comes and whatever was
+// committed in between: replay safety never depends on a time window.
+func TestCommsIngest_StatusEdgeReplayIsADuplicateOfItsSpoolID(t *testing.T) {
+	f := newCommsFixture(t)
+	at := time.Now().Add(-time.Hour)
+	f.d.commsStatusEdge(f.shell, "running", "waiting", at)
+	entries, err := ReadCommsSpool(f.shell.ID)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("spool: %+v %v", entries, err)
+	}
+	first := entries[0]
+	raw, err := os.ReadFile(first.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.d.commsStatusEdge(f.shell, "waiting", "running", at.Add(3*time.Hour))
+	f.d.ingestCommsSpool("default", f.byID)
+	recs := f.ledgerRecords(t)
+	if len(recs) != 2 || recs[0].Key != comms.Key(comms.KindStatus, f.shell.ID, first.ID()) {
+		t.Fatalf("status records must be keyed on the spool id: %+v", recs)
+	}
+	// The crash: the first entry's file is back after both committed.
+	if err := os.WriteFile(first.path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.d.ingestCommsSpool("default", f.byID)
+	if recs := f.ledgerRecords(t); len(recs) != 2 {
+		t.Fatalf("a replayed status edge became a second record: %+v", recs)
+	}
+	if left, _ := ReadCommsSpool(f.shell.ID); len(left) != 0 {
+		t.Fatalf("replayed entry left in the spool: %+v", left)
+	}
+}

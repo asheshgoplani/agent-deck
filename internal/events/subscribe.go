@@ -2,6 +2,7 @@ package events
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -12,6 +13,10 @@ import (
 // newly appended frames once it has caught up. Short enough that `events
 // follow` feels live; long enough not to busy-loop.
 const pollInterval = 15 * time.Millisecond
+
+// subscribeActiveHook is a test seam called between a poll's segment
+// listing and its read of the active file. nil in production.
+var subscribeActiveHook func()
 
 // Subscription streams Frames with Cursor > the `after` value passed to
 // Subscribe, oldest first, never skipping and never repeating one, for as
@@ -142,11 +147,21 @@ func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 			}
 
 			// active (unsealed) segment
+			if subscribeActiveHook != nil {
+				subscribeActiveHook()
+			}
 			if seg.start != lastActiveStart {
 				lastActiveStart = seg.start
 				activeOffset = 0
 			}
-			ok, newOffset, n, err := s.streamActive(ctx, seg.path, &emitted, activeOffset)
+			var ok bool
+			var newOffset int64
+			var n int
+			if b.keepCorrupt {
+				ok, newOffset, n, err = s.streamActiveCommitted(ctx, b, seg.path, &emitted, activeOffset)
+			} else {
+				ok, newOffset, n, err = s.streamActive(ctx, seg.path, &emitted, activeOffset)
+			}
 			if err != nil {
 				s.errCh <- err
 				return
@@ -263,4 +278,67 @@ func (s *Subscription) streamActive(ctx context.Context, path string, emitted *C
 		}
 	}
 	return true, offset, n, nil
+}
+
+// streamActiveCommitted is streamActive for a ledger bus: the new bytes are
+// read under the writer lock, so a frame is visible only once the Commit
+// that wrote it has returned (its fsync done, or rolled back). The frames
+// are emitted after the lock is released, so a slow follower never holds
+// up the writer.
+func (s *Subscription) streamActiveCommitted(ctx context.Context, b *Bus, path string, emitted *Cursor, fromOffset int64) (ok bool, newOffset int64, n int, err error) {
+	if err := b.lockDisk(); err != nil {
+		return false, fromOffset, 0, err
+	}
+	data, err := readFrom(path, fromOffset)
+	b.unlockDisk()
+	if err != nil {
+		return false, fromOffset, 0, err
+	}
+	offset := fromOffset
+	for {
+		i := bytes.IndexByte(data, '\n')
+		if i < 0 {
+			break // no complete line left: the next poll starts here
+		}
+		line := data[:i]
+		data = data[i+1:]
+		offset += int64(i + 1)
+		if len(line) == 0 {
+			continue
+		}
+		frame, perr := ParseFrameLine(line)
+		if perr != nil || frame.Cursor <= *emitted {
+			continue
+		}
+		select {
+		case s.frames <- frame:
+			*emitted = frame.Cursor
+			n++
+		case <-ctx.Done():
+			return false, offset, n, nil
+		}
+	}
+	return true, offset, n, nil
+}
+
+// readFrom returns the bytes of path from offset to its end (nil when the
+// file is missing or not longer than offset).
+func readFrom(path string, offset int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() <= offset {
+		return nil, err
+	}
+	data := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(data, offset); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return data, nil
 }
