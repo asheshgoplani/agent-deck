@@ -41,6 +41,12 @@ type RemoteVersionState struct {
 	// answer. Keyed to Version (see RecordRemoteVersions) so an upgrade
 	// forces one fresh probe instead of inheriting a stale verdict.
 	StatsSupported *bool `json:"stats_supported,omitempty"`
+	// Timer is the remote's own update timer as it last reported it
+	// (`update --timer-status --json`, #2472); nil when never asked.
+	// TimerCheckedAt is when. A version-only observation keeps both (see
+	// RecordRemoteVersions): the timer does not change with the version.
+	Timer          *update.TimerStatus `json:"timer,omitempty"`
+	TimerCheckedAt time.Time           `json:"timer_checked_at,omitzero"`
 }
 
 // Outdated reports whether the remote runs something older than controller.
@@ -421,6 +427,9 @@ func RecordRemoteVersions(states map[string]RemoteVersionState) error {
 			if state.StatsSupported == nil && previous.Version == state.Version {
 				state.StatsSupported = previous.StatsSupported
 			}
+			if state.Timer == nil {
+				state.Timer, state.TimerCheckedAt = previous.Timer, previous.TimerCheckedAt
+			}
 			cache.Remotes[name] = state
 		}
 	})
@@ -678,6 +687,12 @@ type RemoteUpdateOptions struct {
 	// update.DownloadVerifiedBinaryContext with the
 	// deploy context, so cancelling the sweep stops the download.
 	Download func(release *update.Release, goos, goarch string) ([]byte, error)
+	// EnsureTimer runs the remote's own `update --ensure-timer` after a
+	// remote ends up updated or current, so an explicit update also
+	// installs (or migrates) its update timer (#2472). The outcome lands in
+	// the result's note and never fails the update. The unattended sweeps
+	// leave it off: the remote's own unattended run heals its timer.
+	EnsureTimer bool
 	// CurrentVersion is what the remote runs now, when known. DeployRemoteBinary
 	// refuses to install a release that is not newer than it: the fallback
 	// from a missing tag to the latest release must never downgrade a remote
@@ -784,6 +799,31 @@ func DeployRemoteBinary(ctx context.Context, runner RemoteBinaryInstaller, targe
 	return deployed, nil
 }
 
+// ensureRemoteTimerNote runs the remote's timer heal and renders the note
+// an update result carries; st is the timer state it reported, nil when
+// the remote could not say.
+func ensureRemoteTimerNote(ctx context.Context, tm RemoteTimerManager) (note string, st *update.TimerStatus) {
+	inst, err := tm.InstallUpdateTimer(ctx, true)
+	if err != nil {
+		return "update timer not ensured: " + err.Error(), nil
+	}
+	if inst.Legacy {
+		return "update timer: " + inst.Summary(), nil
+	}
+	status := inst.Status
+	return "update timer: " + inst.Summary(), &status
+}
+
+func joinNote(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "; " + b
+}
+
 // ErrRemoteBinaryMissing is the Skipped reason when a sweep finds no
 // runnable agent-deck on a remote and InstallMissing is off.
 var ErrRemoteBinaryMissing = errors.New("agent-deck not found on remote or host unreachable")
@@ -874,6 +914,15 @@ func UpdateRemotes(ctx context.Context, remotes map[string]RemoteConfig, targetV
 					}
 					state = RemoteVersionState{Version: deployed, Found: true, CheckedAt: time.Now(), InstalledFrom: source}
 				}
+			}
+		}
+		if opts.EnsureTimer && !opts.DryRun && (result.Outcome == RemoteUpdateOutcomeUpdated || result.Outcome == RemoteUpdateOutcomeCurrent) {
+			if tm, ok := runner.(RemoteTimerManager); ok {
+				note, st := ensureRemoteTimerNote(ctx, tm)
+				if st != nil {
+					state.Timer, state.TimerCheckedAt = st, time.Now()
+				}
+				result.Note = joinNote(result.Note, note)
 			}
 		}
 		// Record what this remote runs now, before the next remote and

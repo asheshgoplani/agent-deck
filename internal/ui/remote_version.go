@@ -13,6 +13,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 // remoteVersionCheckInterval bounds how often the remote poll asks a remote
@@ -55,6 +56,52 @@ type remoteVersionChecker interface {
 	CheckBinary(ctx context.Context) (string, bool)
 }
 
+// remoteTimerChecker is the optional part of a remote fetch runner that can
+// read the remote's update timer (`update --timer-status --json`).
+type remoteTimerChecker interface {
+	FetchTimerStatus(ctx context.Context) update.TimerStatus
+}
+
+// fetchRemoteTimer reads a remote's update timer under its own bound, so a
+// slow version probe never starves it. ok is false when the bound ran out:
+// that answer says nothing about the timer, and keeping the reading already
+// cached beats replacing it with "unknown".
+func fetchRemoteTimer(parent context.Context, checker remoteTimerChecker, timeout time.Duration) (update.TimerStatus, bool) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	st := checker.FetchTimerStatus(ctx)
+	if ctx.Err() != nil {
+		return update.TimerStatus{}, false
+	}
+	return st, true
+}
+
+// remoteTimerPreviewLine is the preview panel's update-timer line, "" when
+// the timer was never read (#2472).
+func remoteTimerPreviewLine(st *update.TimerStatus) string {
+	if st == nil {
+		return ""
+	}
+	switch {
+	case st.Kind == update.TimerKindUnknown:
+		return "update timer unknown (remote too old to report it)"
+	case !st.Installed:
+		return "update timer none · updates only when this controller nudges it"
+	case !st.Active:
+		return "update timer inactive (" + st.Kind + ")"
+	}
+	line := "update timer active (" + st.Kind + ")"
+	if st.NextRun != "" {
+		if t, err := time.Parse(time.RFC3339, st.NextRun); err == nil {
+			line += " · next " + t.Local().Format("Jan 2 15:04")
+		}
+	}
+	if st.Kind == update.TimerKindSystemdLegacy {
+		line += " · legacy unit, `remote update --install-timer` migrates it"
+	}
+	return line
+}
+
 // remoteVersionNeedsCheck reports whether this poll should ask remoteName
 // for its version (see remoteVersionStale).
 func (h *Home) remoteVersionNeedsCheck(remoteName string, now time.Time) bool {
@@ -83,7 +130,22 @@ type remoteUpdatedMsg struct {
 // package variable so tests substitute a stub and count calls instead of
 // opening SSH; production uses the same path as `remote update <name>`.
 var deployRemoteUpdate = func(ctx context.Context, name string, rc session.RemoteConfig, target string) (string, error) {
-	return session.DeployRemoteBinary(ctx, session.NewSSHRunner(name, rc), target, session.RemoteUpdateOptions{})
+	runner := session.NewSSHRunner(name, rc)
+	deployed, err := session.DeployRemoteBinary(ctx, runner, target, session.RemoteUpdateOptions{})
+	if err == nil {
+		// Same as `remote update <name>`: the updated remote installs (or
+		// migrates) its own update timer; best-effort, logged (#2472).
+		if inst, terr := runner.InstallUpdateTimer(ctx, true); terr != nil {
+			uiLog.Warn("remote_update_timer_ensure_failed", slog.String("remote", name), slog.String("error", terr.Error()))
+		} else {
+			uiLog.Info("remote_update_timer_ensured", slog.String("remote", name), slog.String("summary", inst.Summary()))
+			if !inst.Legacy {
+				st := inst.Status
+				_ = session.RecordRemoteTimers(map[string]update.TimerStatus{name: st}, time.Now())
+			}
+		}
+	}
+	return deployed, err
 }
 
 // updateRemote runs the confirmed update for one remote header.
@@ -118,6 +180,12 @@ func (h *Home) recordRemoteVersions(states map[string]session.RemoteVersionState
 		h.remoteVersions = make(map[string]session.RemoteVersionState)
 	}
 	for name, state := range states {
+		// A version-only observation keeps the timer last read (it does
+		// not change with the version); RecordRemoteVersions does the same
+		// on disk.
+		if prev, ok := h.remoteVersions[name]; ok && state.Timer == nil {
+			state.Timer, state.TimerCheckedAt = prev.Timer, prev.TimerCheckedAt
+		}
 		h.remoteVersions[name] = state
 	}
 	h.remoteSessionsMu.Unlock()
@@ -538,6 +606,10 @@ func remotePreviewFieldLines(versionState session.RemoteVersionState, controller
 		switch f {
 		case session.PreviewFieldVersion:
 			single(remoteVersionPreviewLine(versionState, controller))
+			// The timer line only takes a row the fields below can spare.
+			if line := remoteTimerPreviewLine(versionState.Timer); line != "" && (layout.rows <= 0 || fieldLayout(i).rows > 1) {
+				single(line)
+			}
 		case session.PreviewFieldSessionsByStatus:
 			single(remoteSessionStatusLine(sessions))
 		case session.PreviewFieldHarnesses:

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
@@ -19,6 +20,12 @@ const (
 	SystemdTimerUnitBase  = "agent-deck-autoupdate"
 	SystemdTimerService   = SystemdTimerUnitBase + ".service"
 	SystemdTimerTimer     = SystemdTimerUnitBase + ".timer"
+	// LegacySystemdTimerBase is the hand-made unit pair some hosts carry
+	// from before --install-timer existed (no hyphen between agent and
+	// deck, #2472). It is recognised, reported and migrated, never written.
+	LegacySystemdTimerBase    = "agentdeck-autoupdate"
+	LegacySystemdTimerService = LegacySystemdTimerBase + ".service"
+	LegacySystemdTimerTimer   = LegacySystemdTimerBase + ".timer"
 	// TimerLogFileName is the file the timer's stdout/stderr go to under the
 	// agent-deck log dir (launchd only; systemd keeps it in the journal).
 	TimerLogFileName = "auto-update.log"
@@ -27,6 +34,18 @@ const (
 	// TriggerEnv is the environment variable the timer sets so the run logs
 	// itself as timer-triggered even when the flag is missing.
 	TriggerEnv = "AGENTDECK_UPDATE_TRIGGER"
+)
+
+// Timer kinds as TimerStatus.Kind reports them.
+const (
+	TimerKindLaunchd       = "launchd"
+	TimerKindSystemd       = "systemd"
+	TimerKindSystemdLegacy = "systemd-legacy"
+	TimerKindNone          = "none"
+	// TimerKindUnknown is what a controller reports for a remote whose
+	// binary cannot say (too old for `update --timer-status --json`, or
+	// unreachable).
+	TimerKindUnknown = "unknown"
 )
 
 // TimerConfig is everything the timer plans depend on. DefaultTimerConfig
@@ -47,20 +66,41 @@ type TimerConfig struct {
 	// random at install time. launchd has no RandomizedDelaySec, so spreading
 	// installs across the hour is the closest equivalent.
 	Minute int
+	// Unpinnable is why Exe is not a stable install path (a dev build
+	// under a temp or repo dir), empty when it is. The automatic install
+	// and heal never pin such a binary into a timer; the explicit
+	// --install-timer still may.
+	Unpinnable string
+	// Now stamps legacy-unit backups; nil means time.Now.
+	Now func() time.Time
+}
+
+func (c TimerConfig) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 // DefaultTimerConfig resolves the timer configuration for this host.
 func DefaultTimerConfig() (TimerConfig, error) {
-	exe, err := os.Executable()
+	raw, err := os.Executable()
 	if err != nil {
 		return TimerConfig{}, fmt.Errorf("resolve executable: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return TimerConfig{}, fmt.Errorf("resolve home: %w", err)
+	}
+	exe := raw
+	if resolved, err := filepath.EvalSymlinks(raw); err == nil {
+		exe = resolved
+	}
+	unpinnable := ""
+	if stable := StableExecutablePath(raw, TimerInstallDirs(home)); stable != "" {
+		exe = stable
+	} else {
+		unpinnable = "unpinnable dev build: " + exe + " is not in an install directory"
 	}
 	logDir, err := agentpaths.EffectiveDataPath("logs", "logs")
 	if err != nil {
@@ -75,7 +115,56 @@ func DefaultTimerConfig() (TimerConfig, error) {
 		LaunchAgentsDir: filepath.Join(home, "Library", "LaunchAgents"),
 		SystemdUserDir:  filepath.Join(home, ".config", "systemd", "user"),
 		Minute:          rand.Intn(60), // #nosec G404 -- schedule jitter, not security
+		Unpinnable:      unpinnable,
 	}, nil
+}
+
+// TimerInstallDirs lists the directories a timer may pin the binary in:
+// the package-manager and user-local bin directories an install lands in
+// and an upgrade replaces in place (the same set the Claude hook entries
+// pin from).
+func TimerInstallDirs(home string) []string {
+	dirs := []string{"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/home/linuxbrew/.linuxbrew/bin"}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	return dirs
+}
+
+// StableExecutablePath picks the path a timer should run for the binary
+// exe: exe as invoked, else the binary's name in each install directory,
+// the first that sits directly in one of dirs and resolves to the same
+// file as exe. A Homebrew Cellar keg is never chosen over its bin symlink,
+// so the pinned path survives a package upgrade. "" means the binary is
+// unpinnable (a dev build anywhere else).
+func StableExecutablePath(exe string, dirs []string) string {
+	real, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return ""
+	}
+	real = filepath.Clean(real)
+	candidates := []string{filepath.Clean(exe)}
+	for _, dir := range dirs {
+		candidates = append(candidates, filepath.Join(dir, filepath.Base(real)))
+	}
+	for _, candidate := range candidates {
+		if !filepath.IsAbs(candidate) || !dirListed(filepath.Dir(candidate), dirs) {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(candidate); err == nil && filepath.Clean(resolved) == real {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func dirListed(dir string, dirs []string) bool {
+	for _, d := range dirs {
+		if d != "" && filepath.Clean(d) == dir {
+			return true
+		}
+	}
+	return false
 }
 
 // PlistPath is where the launchd timer plist lives.
@@ -215,15 +304,26 @@ func InstallTimerPlan(c TimerConfig) (Plan, error) {
 			{Desc: "verify timer", Argv: []string{"launchctl", "print", target}},
 		}}, nil
 	case "linux":
-		return Plan{Steps: []Step{
-			{Desc: "write systemd service", WritePath: c.ServicePath(), Content: c.SystemdService(), Mode: 0o644},
-			{Desc: "write systemd timer", WritePath: c.TimerPath(), Content: c.SystemdTimer(), Mode: 0o644},
-			{Desc: "reload systemd", Argv: []string{"systemctl", "--user", "daemon-reload"}},
-			{Desc: "enable timer", Argv: []string{"systemctl", "--user", "enable", "--now", SystemdTimerTimer}},
-			{Desc: "verify timer", Argv: []string{"systemctl", "--user", "is-active", SystemdTimerTimer}},
-		}}, nil
+		return Plan{Steps: systemdInstallSteps(c)}, nil
 	}
 	return Plan{}, fmt.Errorf("update timer is not supported on %s", c.GOOS)
+}
+
+// systemdInstallSteps writes, enables and verifies the canonical unit pair.
+func systemdInstallSteps(c TimerConfig) []Step {
+	return append([]Step{
+		{Desc: "write systemd service", WritePath: c.ServicePath(), Content: c.SystemdService(), Mode: 0o644},
+		{Desc: "write systemd timer", WritePath: c.TimerPath(), Content: c.SystemdTimer(), Mode: 0o644},
+	}, systemdEnableSteps()...)
+}
+
+// systemdEnableSteps reloads, enables and verifies the canonical timer.
+func systemdEnableSteps() []Step {
+	return []Step{
+		{Desc: "reload systemd", Argv: []string{"systemctl", "--user", "daemon-reload"}},
+		{Desc: "enable timer", Argv: []string{"systemctl", "--user", "enable", "--now", SystemdTimerTimer}},
+		{Desc: "verify timer", Argv: []string{"systemctl", "--user", "is-active", SystemdTimerTimer}},
+	}
 }
 
 // UninstallTimerPlan returns the steps that remove the timer. An empty plan
@@ -254,25 +354,43 @@ func UninstallTimerPlan(c TimerConfig) (Plan, error) {
 
 // TimerStatus describes whether the scheduled update is installed.
 type TimerStatus struct {
-	Installed bool   `json:"installed"`
-	Kind      string `json:"kind"` // launchd | systemd | none
-	Path      string `json:"path,omitempty"`
+	Installed bool `json:"installed"`
+	// Kind is launchd | systemd | systemd-legacy | none (and unknown for a
+	// remote that cannot say, see TimerKindUnknown).
+	Kind string `json:"kind"`
+	Path string `json:"path,omitempty"`
 	// Active reports whether the init system currently has the unit loaded
 	// (launchctl print / systemctl is-active). Only queried when a Runner is
 	// given and the unit file exists.
 	Active bool `json:"active"`
 	// Detail is the schedule line for humans (e.g. "daily at 07:23").
 	Detail string `json:"detail,omitempty"`
+	// LegacyUnit names a hand-made agentdeck-autoupdate.timer found on the
+	// host (#2472), LegacyPath its unit file. Set for kind systemd-legacy
+	// and also next to a canonical timer, so the migration knows to retire
+	// it. A lone hand-made agentdeck-autoupdate.service (no legacy timer)
+	// is named the same way, with any kind.
+	LegacyUnit string `json:"legacy_unit,omitempty"`
+	LegacyPath string `json:"legacy_path,omitempty"`
+	// LastRun and NextRun are the timer's last trigger and next elapse
+	// (systemd only; RFC 3339 UTC when systemctl's answer parses, its raw
+	// text otherwise).
+	LastRun string `json:"last_run,omitempty"`
+	NextRun string `json:"next_run,omitempty"`
+	// Note says why the state could not be read fully (no systemd user
+	// session, a remote too old to report), empty when it was.
+	Note string `json:"note,omitempty"`
 }
 
 // QueryTimerStatus reports the timer's install state. r may be nil to skip
-// the init-system query.
+// the init-system queries (then a legacy unit is only found in the user
+// unit dir).
 func QueryTimerStatus(c TimerConfig, r Runner) TimerStatus {
 	switch c.GOOS {
 	case "darwin":
-		st := TimerStatus{Kind: "launchd", Path: c.PlistPath()}
+		st := TimerStatus{Kind: TimerKindLaunchd, Path: c.PlistPath()}
 		if !fileExists(st.Path) {
-			st.Kind = "none"
+			st.Kind = TimerKindNone
 			return st
 		}
 		st.Installed = true
@@ -285,20 +403,48 @@ func QueryTimerStatus(c TimerConfig, r Runner) TimerStatus {
 		}
 		return st
 	case "linux":
-		st := TimerStatus{Kind: "systemd", Path: c.TimerPath()}
-		if !fileExists(st.Path) {
-			st.Kind = "none"
+		legacyPath, legacyUnit := findLegacySystemdTimer(c, r)
+		// A hand-made service whose timer is already gone runs nothing,
+		// but it is named so the migration backs it up too.
+		var orphanService string
+		if legacyPath == "" {
+			if p := filepath.Join(c.SystemdUserDir, LegacySystemdTimerService); fileExists(p) {
+				orphanService = p
+			}
+		}
+		if !fileExists(c.TimerPath()) {
+			if legacyPath == "" {
+				st := TimerStatus{Kind: TimerKindNone, Path: c.TimerPath()}
+				if orphanService != "" {
+					st.LegacyUnit, st.LegacyPath = LegacySystemdTimerService, orphanService
+				}
+				return st
+			}
+			// A working hand-made timer is a timer: never "not installed"
+			// (#2472). It is reported under its own kind so the owner and
+			// the heal both know it wants migrating.
+			st := TimerStatus{Kind: TimerKindSystemdLegacy, Installed: true, Path: legacyPath, LegacyUnit: LegacySystemdTimerTimer, LegacyPath: legacyPath}
+			st.Detail = legacyScheduleDetail(legacyUnit)
+			if r != nil {
+				st.Active, st.Note = systemdUnitActive(r, LegacySystemdTimerTimer)
+				st.LastRun, st.NextRun = systemdTimerTimes(r, LegacySystemdTimerTimer)
+			}
 			return st
 		}
-		st.Installed = true
-		st.Detail = "daily, randomized delay up to 1h"
+		st := TimerStatus{Kind: TimerKindSystemd, Path: c.TimerPath(), Installed: true, Detail: "daily, randomized delay up to 1h"}
+		switch {
+		case legacyPath != "":
+			st.LegacyUnit, st.LegacyPath = LegacySystemdTimerTimer, legacyPath
+		case orphanService != "":
+			st.LegacyUnit, st.LegacyPath = LegacySystemdTimerService, orphanService
+		}
 		if r != nil {
-			out, err := r.Run("systemctl", "--user", "is-active", SystemdTimerTimer)
-			st.Active = err == nil && strings.TrimSpace(out) == "active"
+			st.Active, st.Note = systemdUnitActive(r, SystemdTimerTimer)
+			st.LastRun, st.NextRun = systemdTimerTimes(r, SystemdTimerTimer)
 		}
 		return st
 	}
-	return TimerStatus{Kind: "none"}
+	return TimerStatus{Kind: TimerKindNone}
 }
 
 // launchdScheduleDetail pulls Hour/Minute out of an installed plist so the

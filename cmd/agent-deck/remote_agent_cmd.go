@@ -220,12 +220,6 @@ func (c remoteAgentConfig) withDefaults() remoteAgentConfig {
 	return c
 }
 
-// remoteAgentDeniedVerbs are never run through the channel: they need a
-// terminal, or must not be reachable from a remote TUI at all.
-var remoteAgentDeniedVerbs = map[string]bool{
-	"remote-agent": true, "web": true, "uninstall": true, "update": true,
-}
-
 func handleRemoteAgent(profile string, args []string) {
 	for _, a := range args {
 		if a == "--help" || a == "-h" {
@@ -961,7 +955,7 @@ func tailLines(s string, n int) string {
 // remoteAgentArgsAllowed admits only a known CLI verb that is not on the
 // deny list, with arguments that cannot break the line protocol.
 func remoteAgentArgsAllowed(args []string) bool {
-	if len(args) == 0 || remoteAgentDeniedVerbs[args[0]] || !commandRegistry[args[0]] {
+	if len(args) == 0 || session.RemoteAgentDeniesVerb(args[0]) || !commandRegistry[args[0]] {
 		return false
 	}
 	for _, a := range args {

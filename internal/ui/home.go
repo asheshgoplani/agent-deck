@@ -569,6 +569,9 @@ type Home struct {
 	// autoInstallLastSkip is the last reason the periodic check left the
 	// updater alone, so the log says it once per change, not per minute.
 	autoInstallLastSkip string
+	// updateTimerEnsureStarted is set once this TUI has asked for the
+	// update timer to be installed or healed (#2472): once per process.
+	updateTimerEnsureStarted bool
 	// autoRestartLoggedAt rate-limits the "waiting for idle" log line.
 	autoRestartLoggedAt time.Time
 	// autoRestartHoldUntil pauses the auto path after the pre-arm check of
@@ -4880,9 +4883,16 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 			versionCtx, versionCancel := context.WithTimeout(h.ctx, rc.GetCommandTimeout())
 			defer versionCancel()
 			version, found := checker.CheckBinary(versionCtx)
-			msg.versions = map[string]session.RemoteVersionState{
-				name: {Version: version, Found: found, CheckedAt: time.Now()},
+			state := session.RemoteVersionState{Version: version, Found: found, CheckedAt: time.Now()}
+			// The remote's own update timer rides the same hourly check
+			// (#2472), so the preview says whether it depends on this
+			// controller's nudge alone.
+			if timerChecker, ok := runner.(remoteTimerChecker); ok && found {
+				if st, ok := fetchRemoteTimer(h.ctx, timerChecker, rc.GetCommandTimeout()); ok {
+					state.Timer, state.TimerCheckedAt = &st, time.Now()
+				}
 			}
+			msg.versions = map[string]session.RemoteVersionState{name: state}
 		}()
 	}
 	// The remote's live load/memory/disk snapshot rides the same round too,
@@ -8541,6 +8551,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case unattendedInstallFinishedMsg:
 		return h, h.handleUnattendedInstallFinished(msg)
+
+	case updateTimerEnsuredMsg:
+		h.handleUpdateTimerEnsured(msg)
+		return h, nil
 
 	case binaryVersionProbedMsg:
 		if h.binaryWatch != nil {

@@ -3,13 +3,15 @@
   -check-now
     	Same as --unattended, but for a controller's nudge: checks GitHub right away and never nudges this host's own remotes
   -dry-run
-    	With --install-timer/--uninstall-timer: print the files and commands, execute nothing
+    	With --install-timer/--ensure-timer/--uninstall-timer: print the files and commands, execute nothing
+  -ensure-timer
+    	Install or heal the update timer only where none is active (what unattended runs, the daemon and remote update do); honours [updates] manage_timer
   -install-timer
-    	Install (or replace) the daily unattended update timer (launchd on macOS, systemd --user on Linux)
+    	Install the daily unattended update timer (launchd on macOS, systemd --user on Linux), rewrite a stale one, migrate a legacy agentdeck-autoupdate unit; an active current timer is left alone
   -json
-    	With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents)
+    	With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents, remote_nudges); with --timer-status/--install-timer/--ensure-timer: the timer state or what was done
   -timer-status
-    	Show whether the daily update timer is installed and loaded
+    	Show whether the daily update timer is installed and loaded (kinds: launchd, systemd, systemd-legacy, none)
   -trigger string
     	Who started this run, for the debug log: tui, timer or manual (default: $AGENTDECK_UPDATE_TRIGGER or manual)
   -unattended

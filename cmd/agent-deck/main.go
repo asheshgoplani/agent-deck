@@ -3990,15 +3990,16 @@ func handleProfileSetDefault(out *CLIOutput, name string) {
 func handleUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
-	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents)")
+	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents, remote_nudges); with --timer-status/--install-timer/--ensure-timer: the timer state or what was done")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
 	unattended := fs.Bool("unattended", false, "Install without prompts (no changelog, no stdin); honours [updates] auto_install; exit 2 on Homebrew installs")
 	checkNow := fs.Bool("check-now", false, "Same as --unattended, but for a controller's nudge: checks GitHub right away and never nudges this host's own remotes")
 	trigger := fs.String("trigger", "", "Who started this run, for the debug log: tui, timer or manual (default: $AGENTDECK_UPDATE_TRIGGER or manual)")
-	installTimer := fs.Bool("install-timer", false, "Install (or replace) the daily unattended update timer (launchd on macOS, systemd --user on Linux)")
+	installTimer := fs.Bool("install-timer", false, "Install the daily unattended update timer (launchd on macOS, systemd --user on Linux), rewrite a stale one, migrate a legacy agentdeck-autoupdate unit; an active current timer is left alone")
+	ensureTimer := fs.Bool("ensure-timer", false, "Install or heal the update timer only where none is active (what unattended runs, the daemon and remote update do); honours [updates] manage_timer")
 	uninstallTimer := fs.Bool("uninstall-timer", false, "Remove the daily unattended update timer")
-	timerStatus := fs.Bool("timer-status", false, "Show whether the daily update timer is installed and loaded")
-	dryRun := fs.Bool("dry-run", false, "With --install-timer/--uninstall-timer: print the files and commands, execute nothing")
+	timerStatus := fs.Bool("timer-status", false, "Show whether the daily update timer is installed and loaded (kinds: launchd, systemd, systemd-legacy, none)")
+	dryRun := fs.Bool("dry-run", false, "With --install-timer/--ensure-timer/--uninstall-timer: print the files and commands, execute nothing")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck update [options]")
@@ -4017,8 +4018,9 @@ func handleUpdate(args []string) {
 		fmt.Println("  agent-deck update --check-now          # What a controller's nudge runs on this host")
 		fmt.Println("  agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)")
 		fmt.Println("  agent-deck update --install-timer --dry-run")
+		fmt.Println("  agent-deck update --ensure-timer      # Install/heal only where no timer is active")
 		fmt.Println("  agent-deck update --uninstall-timer")
-		fmt.Println("  agent-deck update --timer-status")
+		fmt.Println("  agent-deck update --timer-status [--json]")
 		fmt.Println()
 		fmt.Println("On macOS every install re-registers com.agentdeck.* launchd agents that run")
 		fmt.Println("this binary (bootout + bootstrap), otherwise they crash-loop with EX_CONFIG.")
@@ -4034,13 +4036,17 @@ func handleUpdate(args []string) {
 		os.Exit(code)
 	}
 
+	timerOpts := timerCommandOptions{DryRun: *dryRun, JSON: *jsonOut, ManageTimer: session.GetUpdateSettings().GetManageTimer()}
 	switch {
 	case *installTimer:
-		exit(runTimerCommand("install", *dryRun, os.Stdout))
+		exit(runTimerCommand("install", timerOpts, os.Stdout))
+	case *ensureTimer:
+		exit(runTimerCommand("ensure", timerOpts, os.Stdout))
 	case *uninstallTimer:
-		exit(runTimerCommand("uninstall", *dryRun, os.Stdout))
+		exit(runTimerCommand("uninstall", timerOpts, os.Stdout))
 	case *timerStatus:
-		exit(runTimerCommand("status", false, os.Stdout))
+		timerOpts.DryRun = false
+		exit(runTimerCommand("status", timerOpts, os.Stdout))
 	}
 
 	if *unattended || *checkNow {
@@ -4077,7 +4083,7 @@ func handleUpdate(args []string) {
 			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
 		}
 		onDisk := onDiskVersion()
-		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), pendingLaunchAgentsForCheck())); err != nil {
+		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), pendingLaunchAgentsForCheck(), session.LoadRemoteNudges()...)); err != nil {
 			exit(1)
 		}
 		exit(0)
@@ -4108,6 +4114,7 @@ func handleUpdate(args []string) {
 		if *checkOnly {
 			printOutdatedTUIs(onDiskVersion())
 			printPendingLaunchAgents()
+			printFailedRemoteNudges(os.Stdout, session.LoadRemoteNudges())
 			return
 		}
 		// Nothing to install, but a launch agent an earlier run left
@@ -4144,6 +4151,7 @@ func handleUpdate(args []string) {
 		}
 		printOutdatedTUIs(onDiskVersion())
 		printPendingLaunchAgents()
+		printFailedRemoteNudges(os.Stdout, session.LoadRemoteNudges())
 		return
 	}
 

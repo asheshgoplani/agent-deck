@@ -13,8 +13,9 @@ Examples:
   agent-deck update --check-now          # What a controller's nudge runs on this host
   agent-deck update --install-timer     # Daily unattended update at 07:MM (random minute)
   agent-deck update --install-timer --dry-run
+  agent-deck update --ensure-timer      # Install/heal only where no timer is active
   agent-deck update --uninstall-timer
-  agent-deck update --timer-status
+  agent-deck update --timer-status [--json]
 
 On macOS every install re-registers com.agentdeck.* launchd agents that run
 this binary (bootout + bootstrap), otherwise they crash-loop with EX_CONFIG.

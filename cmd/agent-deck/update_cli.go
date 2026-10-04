@@ -59,9 +59,12 @@ type updateCheckJSON struct {
 	// re-register yet (deferred by a run inside them, or booted out and
 	// never accepted back), with the attempts so far. Empty when none.
 	PendingLaunchAgents []update.PendingAgent `json:"pending_launch_agents"`
+	// RemoteNudges is each configured remote's latest auto_update_remotes
+	// nudge outcome (#2472); omitted when this host never nudged.
+	RemoteNudges []session.RemoteNudgeRecord `json:"remote_nudges,omitempty"`
 }
 
-func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus, onDisk string, tuis []update.TUIReport, pending []update.PendingAgent) updateCheckJSON {
+func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus, onDisk string, tuis []update.TUIReport, pending []update.PendingAgent, nudges ...session.RemoteNudgeRecord) updateCheckJSON {
 	if tuis == nil {
 		tuis = []update.TUIReport{}
 	}
@@ -80,6 +83,7 @@ func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettin
 		OnDisk:              onDisk,
 		RunningTUIs:         tuis,
 		PendingLaunchAgents: pending,
+		RemoteNudges:        nudges,
 	}
 }
 
@@ -142,6 +146,10 @@ type unattendedDeps struct {
 	// run does not install, since an install's own hygiene covers every
 	// agent anyway.
 	drainPending func() error
+	// ensureTimer installs or heals this host's update timer (#2472:
+	// install on first unattended use, migrate a legacy unit). It runs
+	// first, whatever the run then finds, and never changes the exit code.
+	ensureTimer func() (update.TimerEnsureResult, error)
 	// sweepRemotes pushes the new version to older remotes when
 	// [updates] auto_update_remotes is on (#2166); it never prompts and
 	// its failures are per-remote, never this run's.
@@ -157,6 +165,20 @@ func runUnattendedUpdate(d unattendedDeps) int {
 		log = unattendedLogger(d.trigger)
 	}
 	log.Info("unattended_update_start", slog.String("current", d.version))
+
+	if d.ensureTimer != nil {
+		res, err := d.ensureTimer()
+		switch {
+		case err != nil:
+			fmt.Fprintf(d.out, "Warning: %s failed: %v\n", res.Line(), err)
+			log.Warn("unattended_timer_ensure_failed", slog.String("action", res.Action), slog.String("err", err.Error()))
+		case res.Changed():
+			fmt.Fprintln(d.out, res.Line())
+			log.Info("unattended_timer_ensured", slog.String("action", res.Action), slog.String("kind", res.Status.Kind))
+		default:
+			log.Info("unattended_timer_unchanged", slog.String("action", res.Action), slog.String("reason", res.Reason))
+		}
+	}
 
 	info, err := d.check()
 	if err != nil {
@@ -297,6 +319,7 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 		updateBridge: update.UpdateBridgePy,
 		hygiene:      func() error { return rebootstrapLaunchAgentsAfterInstall(log) },
 		drainPending: func() error { return drainPendingLaunchAgents(log) },
+		ensureTimer:  func() (update.TimerEnsureResult, error) { return session.AutoEnsureUpdateTimer(log) },
 		sweepRemotes: remoteFollowUpForTrigger(trigger, log),
 	}, closeLog
 }
@@ -374,15 +397,27 @@ func remoteFollowUpUnattended(latest string, log *slog.Logger) {
 
 	fmt.Printf("nudging %d remote(s) to check for v%s now\n", len(config.Remotes), latest)
 	log.Info("unattended_remote_nudge_start", slog.Int("remotes", len(config.Remotes)), slog.String("latest", latest))
-	results := session.NudgeRemotes(context.Background(), config.Remotes, log, session.NudgeRemoteOptions{})
-	for _, r := range results {
-		fmt.Printf("  %s\n", r)
-	}
+	nudgeRemotesAndRecord(context.Background(), config.Remotes, latest, log, session.NudgeRemoteOptions{}, os.Stdout)
 
 	if !session.GetUpdateSettings().GetSweepRemotes() {
 		return
 	}
 	sweepRemotesUnattended(latest, log, config)
+}
+
+// nudgeRemotesAndRecord runs one nudge pass, prints a line per remote and
+// records each remote's outcome with the version it asked for, so a failed
+// nudge shows in `update --check --json` (remote_nudges) and not only in
+// auto-update.log (#2472).
+func nudgeRemotesAndRecord(ctx context.Context, remotes map[string]session.RemoteConfig, latest string, log *slog.Logger, opts session.NudgeRemoteOptions, out io.Writer) []session.NudgeResult {
+	results := session.NudgeRemotes(ctx, remotes, log, opts)
+	for _, r := range results {
+		fmt.Fprintf(out, "  %s\n", r)
+	}
+	if err := session.RecordRemoteNudges(latest, results, time.Now()); err != nil {
+		log.Warn("unattended_remote_nudge_record_failed", slog.String("err", err.Error()))
+	}
+	return results
 }
 
 // sweepRemotesUnattended is the opt-in byte-pushing sweep [updates]
@@ -476,40 +511,53 @@ func finishInstallHygiene(version string) bool {
 	return true
 }
 
-// runTimerCommand implements --install-timer / --uninstall-timer /
-// --timer-status. Returns the exit code.
-func runTimerCommand(action string, dryRun bool, out io.Writer) int {
+// timerCommandOptions are the flags the timer actions take.
+type timerCommandOptions struct {
+	DryRun bool
+	JSON   bool
+	// ManageTimer is [updates] manage_timer: the "ensure" action honours
+	// it, and an uninstall says the automatic heal would put it back.
+	ManageTimer bool
+}
+
+// runTimerCommand implements --install-timer / --ensure-timer /
+// --uninstall-timer / --timer-status. Returns the exit code.
+func runTimerCommand(action string, opts timerCommandOptions, out io.Writer) int {
 	cfg, err := update.DefaultTimerConfig()
 	if err != nil {
 		fmt.Fprintf(out, "Error: %v\n", err)
 		return 1
 	}
-	return runTimerCommandWith(cfg, update.ExecRunner{}, action, dryRun, out)
+	return runTimerCommandOpts(cfg, update.ExecRunner{}, action, opts, out)
 }
 
 func runTimerCommandWith(cfg update.TimerConfig, r update.Runner, action string, dryRun bool, out io.Writer) int {
-	log := updateCLILog.With(slog.String("action", action), slog.Bool("dry_run", dryRun))
+	return runTimerCommandOpts(cfg, r, action, timerCommandOptions{DryRun: dryRun, ManageTimer: true}, out)
+}
+
+// timerEnsureJSON is the --install-timer / --ensure-timer --json document.
+type timerEnsureJSON struct {
+	update.TimerEnsureResult
+	Error string `json:"error,omitempty"`
+}
+
+func runTimerCommandOpts(cfg update.TimerConfig, r update.Runner, action string, opts timerCommandOptions, out io.Writer) int {
+	log := updateCLILog.With(slog.String("action", action), slog.Bool("dry_run", opts.DryRun))
 	switch action {
 	case "status":
 		st := update.QueryTimerStatus(cfg, r)
-		if !st.Installed {
-			fmt.Fprintf(out, "Update timer: not installed (run `agent-deck update --install-timer`)\n")
+		if opts.JSON {
+			if err := writeIndentedJSON(out, st); err != nil {
+				return 1
+			}
 			return 0
 		}
-		state := "installed but not loaded"
-		if st.Active {
-			state = "active"
-		}
-		fmt.Fprintf(out, "Update timer: %s (%s)\n  unit: %s\n  schedule: %s\n", state, st.Kind, st.Path, st.Detail)
+		printTimerStatus(out, st)
 		return 0
-	case "install", "uninstall":
-		var plan update.Plan
-		var err error
-		if action == "install" {
-			plan, err = update.InstallTimerPlan(cfg)
-		} else {
-			plan, err = update.UninstallTimerPlan(cfg)
-		}
+	case "install", "ensure":
+		return runTimerEnsure(cfg, r, action == "ensure", opts, log, out)
+	case "uninstall":
+		plan, err := update.UninstallTimerPlan(cfg)
 		if err != nil {
 			fmt.Fprintf(out, "Error: %v\n", err)
 			log.Error("timer_plan_failed", slog.String("err", err.Error()))
@@ -519,8 +567,8 @@ func runTimerCommandWith(cfg update.TimerConfig, r update.Runner, action string,
 			fmt.Fprintln(out, "Update timer is not installed; nothing to remove")
 			return 0
 		}
-		if dryRun {
-			fmt.Fprintf(out, "Dry run: would %s the update timer with these steps (nothing executed):\n\n", action)
+		if opts.DryRun {
+			fmt.Fprintf(out, "Dry run: would uninstall the update timer with these steps (nothing executed):\n\n")
 			fmt.Fprint(out, plan.Describe())
 			return 0
 		}
@@ -528,16 +576,118 @@ func runTimerCommandWith(cfg update.TimerConfig, r update.Runner, action string,
 			fmt.Fprintf(out, "Error: %v\n", err)
 			return 1
 		}
-		if action == "install" {
-			st := update.QueryTimerStatus(cfg, nil)
-			fmt.Fprintf(out, "✓ Update timer installed (%s): %s\n  runs `agent-deck update --unattended` %s\n", st.Kind, st.Path, st.Detail)
-		} else {
-			fmt.Fprintln(out, "✓ Update timer removed")
+		fmt.Fprintln(out, "✓ Update timer removed")
+		if opts.ManageTimer {
+			fmt.Fprintln(out, "  [updates] manage_timer is on: the next unattended run or daemon start installs it again; set manage_timer = false to keep it off")
 		}
 		return 0
 	}
 	fmt.Fprintf(out, "Error: unknown timer action %q\n", action)
 	return 1
+}
+
+// runTimerEnsure is --install-timer (explicit: rewrites a stale timer, a
+// skip is a failure) and --ensure-timer (automatic: honours manage_timer,
+// a skip is not a failure). Both leave an active, current timer alone and
+// migrate a legacy agentdeck-autoupdate pair (#2472).
+func runTimerEnsure(cfg update.TimerConfig, r update.Runner, auto bool, opts timerCommandOptions, log *slog.Logger, out io.Writer) int {
+	report := func(res update.TimerEnsureResult, err error) int {
+		code := 0
+		if err != nil || (!auto && res.Action == update.TimerActionSkipped) {
+			code = 1
+		}
+		if opts.JSON {
+			doc := timerEnsureJSON{TimerEnsureResult: res}
+			if err != nil {
+				doc.Error = err.Error()
+			}
+			if werr := writeIndentedJSON(out, doc); werr != nil {
+				return 1
+			}
+			return code
+		}
+		switch {
+		case err != nil:
+			fmt.Fprintf(out, "Error: %v\n", err)
+		case res.Action == update.TimerActionSkipped && !auto:
+			fmt.Fprintf(out, "Error: update timer not installed: %s\n", res.Reason)
+		case res.Action == update.TimerActionInstalled:
+			fmt.Fprintf(out, "✓ Update timer installed (%s): %s\n  runs `agent-deck update --unattended` %s\n", res.Status.Kind, res.Status.Path, res.Status.Detail)
+		case res.Action == update.TimerActionMigrated:
+			fmt.Fprintln(out, res.Line())
+		case res.Action == update.TimerActionNone, res.Action == update.TimerActionLoaded:
+			fmt.Fprintln(out, "✓ "+res.Line())
+		default:
+			fmt.Fprintln(out, res.Line())
+		}
+		return code
+	}
+	if auto && !opts.ManageTimer {
+		return report(update.TimerEnsureResult{Action: update.TimerActionSkipped, Reason: "[updates] manage_timer = false", Status: update.QueryTimerStatus(cfg, nil)}, nil)
+	}
+	plan, err := update.PlanEnsureTimer(cfg, r, auto)
+	if err != nil {
+		log.Error("timer_plan_failed", slog.String("err", err.Error()))
+		return report(update.TimerEnsureResult{Action: update.TimerActionSkipped, Reason: err.Error()}, err)
+	}
+	if opts.DryRun {
+		if opts.JSON {
+			return report(plan.Result, nil)
+		}
+		if len(plan.Steps) == 0 {
+			fmt.Fprintf(out, "Dry run: nothing to do: %s\n", plan.Result.Line())
+			if !auto && plan.Result.Action == update.TimerActionSkipped {
+				return 1
+			}
+			return 0
+		}
+		verb := map[string]string{update.TimerActionMigrated: "migrate", update.TimerActionLoaded: "load", update.TimerActionStopped: "stop the legacy timer beside"}[plan.Result.Action]
+		if verb == "" {
+			verb = "install"
+		}
+		fmt.Fprintf(out, "Dry run: would %s the update timer with these steps (nothing executed):\n\n", verb)
+		fmt.Fprint(out, plan.Describe())
+		return 0
+	}
+	return report(update.RunEnsurePlan(cfg, r, plan, log))
+}
+
+// printTimerStatus is the text form of --timer-status.
+func printTimerStatus(out io.Writer, st update.TimerStatus) {
+	if !st.Installed {
+		fmt.Fprintf(out, "Update timer: not installed (run `agent-deck update --install-timer`)\n")
+		if st.Note != "" {
+			fmt.Fprintf(out, "  note: %s\n", st.Note)
+		}
+		return
+	}
+	state := "installed but not loaded"
+	if st.Active {
+		state = "active"
+	}
+	fmt.Fprintf(out, "Update timer: %s (%s)\n  unit: %s\n  schedule: %s\n", state, st.Kind, st.Path, st.Detail)
+	if st.LastRun != "" {
+		fmt.Fprintf(out, "  last run: %s\n", st.LastRun)
+	}
+	if st.NextRun != "" {
+		fmt.Fprintf(out, "  next run: %s\n", st.NextRun)
+	}
+	switch {
+	case st.Kind == update.TimerKindSystemdLegacy:
+		fmt.Fprintf(out, "  hand-made legacy unit %s: `agent-deck update --install-timer` migrates it to %s\n", st.LegacyUnit, update.SystemdTimerTimer)
+	case st.LegacyUnit != "":
+		fmt.Fprintf(out, "  also found hand-made legacy unit %s at %s: `agent-deck update --install-timer` retires it\n", st.LegacyUnit, st.LegacyPath)
+	}
+	if st.Note != "" {
+		fmt.Fprintf(out, "  note: %s\n", st.Note)
+	}
+}
+
+// writeIndentedJSON prints v as indented JSON.
+func writeIndentedJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 // initUpdateCommandLogging routes the update command's log lines to the
@@ -566,6 +716,21 @@ func printPendingLaunchAgents() {
 		lines = append(lines, "  "+update.DescribePendingAgent(p))
 	}
 	fmt.Printf("\nLaunch agents still waiting to be re-registered with launchd:\n%s\n", strings.Join(lines, "\n"))
+}
+
+// printFailedRemoteNudges lists the remotes whose latest nudge failed, one
+// line each, for `update --check`.
+func printFailedRemoteNudges(out io.Writer, nudges []session.RemoteNudgeRecord) {
+	var lines []string
+	for _, n := range nudges {
+		if !n.OK {
+			lines = append(lines, fmt.Sprintf("  %s: asked for v%s at %s: %s", n.Remote, n.AskedVersion, n.At.Local().Format("2006-01-02 15:04"), n.Error))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\nRemotes whose last update nudge failed (they update on their own timer, or `agent-deck remote update <name>`):\n%s\n", strings.Join(lines, "\n"))
 }
 
 // printOutdatedTUIs lists the TUIs still running an image older than the

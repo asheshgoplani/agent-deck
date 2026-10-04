@@ -121,7 +121,7 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("Usage: agent-deck remote list [options]")
 		fmt.Println("\nOptions:")
 		fmt.Println("  --check")
-		fmt.Println("        Ask each remote for its agent-deck version now (one SSH call per remote)")
+		fmt.Println("        Ask each remote for its agent-deck version and update timer now (two SSH calls per remote)")
 		fmt.Println("  --retry")
 		fmt.Println("        Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
 		fmt.Println("  --json")
@@ -155,6 +155,8 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("        Allow reinstalling or downgrading")
 		fmt.Println("  --dry-run")
 		fmt.Println("        Verify artifacts and show destination paths without installing")
+		fmt.Println("  --install-timer")
+		fmt.Println("        Install or migrate each remote's own update timer instead of updating its binary")
 		fmt.Println("  --json")
 		fmt.Println("        Output every result as JSON")
 	default:
@@ -184,6 +186,8 @@ func printRemoteUsage() {
 	fmt.Println("  attach <name> <session>   Attach to a remote session")
 	fmt.Println("  rename <name> <session> <new-title>  Rename a remote session")
 	fmt.Println("  update [name | --all]     Install/update agent-deck on remote(s)")
+	fmt.Println("  update --install-timer [name | --all]")
+	fmt.Println("                            Install/migrate each remote's own update timer")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck remote add dev user@dev-box")
@@ -345,7 +349,7 @@ func handleRemoteRemove(args []string) {
 func handleRemoteList(args []string) {
 	fs := flag.NewFlagSet("remote list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	check := fs.Bool("check", false, "Ask each remote for its agent-deck version now")
+	check := fs.Bool("check", false, "Ask each remote for its agent-deck version and update timer now")
 	retry := fs.Bool("retry", false, "Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
 	_ = fs.Parse(args)
 
@@ -401,6 +405,12 @@ func handleRemoteList(args []string) {
 			LastPollMS     *int64 `json:"last_poll_ms"`
 			LastPollStatus string `json:"last_poll_status"`
 			LastPollError  string `json:"last_poll_error"`
+			// Timer is the remote's own update timer (installed, kind,
+			// active, last_run, next_run), as `--check` last read it from
+			// the remote's `update --timer-status --json`; kind "unknown"
+			// for a remote too old to say (#2472). Omitted when never read.
+			Timer          *update.TimerStatus `json:"timer,omitempty"`
+			TimerCheckedAt string              `json:"timer_checked_at,omitempty"`
 		}
 
 		var remotes []remoteJSON
@@ -424,6 +434,10 @@ func handleRemoteList(args []string) {
 			}
 			poll := configuredRemotePoll(polls[name], rc)
 			row.LastPollMS, row.LastPollStatus, row.LastPollError = poll.LastPollMS, poll.LastPollStatus, poll.LastPollError
+			row.Timer = state.Timer
+			if !state.TimerCheckedAt.IsZero() {
+				row.TimerCheckedAt = state.TimerCheckedAt.Format(time.RFC3339)
+			}
 			remotes = append(remotes, row)
 		}
 
@@ -439,7 +453,12 @@ func handleRemoteList(args []string) {
 	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "PROFILE", "VERSION / LAST POLL")
 	fmt.Println(strings.Repeat("-", 84))
 	for name, rc := range config.Remotes {
-		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), remoteVersionColumn(versions[name], Version)+" / "+remotePollColumn(configuredRemotePoll(polls[name], rc)))
+		status := remoteVersionColumn(versions[name], Version) + " / " + remotePollColumn(configuredRemotePoll(polls[name], rc))
+		// The remote's own update timer, once a --check has read it (#2472).
+		if timer := versions[name].Timer; timer != nil {
+			status += " / " + remoteTimerColumn(timer)
+		}
+		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), status)
 	}
 	fmt.Printf("\nTotal: %d remotes (controller v%s)\n", len(config.Remotes), Version)
 }
@@ -475,13 +494,17 @@ func remoteVersionColumn(state session.RemoteVersionState, controller string) st
 	return "v" + state.Version
 }
 
-// probeRemoteVersions asks every remote for its version now and refreshes
-// the shared cache so the TUI and later list calls see the same answer.
+// probeRemoteVersions asks every remote for its version and its update
+// timer now and refreshes the shared cache so the TUI and later list calls
+// see the same answer.
 func probeRemoteVersions(ctx context.Context, remotes map[string]session.RemoteConfig) map[string]session.RemoteVersionState {
 	states := make(map[string]session.RemoteVersionState, len(remotes))
 	for name, rc := range remotes {
-		version, found := session.NewSSHRunner(name, rc).CheckBinary(ctx)
-		states[name] = session.RemoteVersionState{Version: version, Found: found, CheckedAt: time.Now()}
+		prober := newRemoteProber(name, rc)
+		version, found := prober.CheckBinary(ctx)
+		timer := probeRemoteTimer(ctx, prober, found)
+		now := time.Now()
+		states[name] = session.RemoteVersionState{Version: version, Found: found, CheckedAt: now, Timer: &timer, TimerCheckedAt: now}
 	}
 	_ = session.RecordRemoteVersions(states)
 	// Keep fresh probe results even if the best-effort cache write failed.
@@ -800,12 +823,19 @@ func handleRemoteUpdate(args []string) {
 	force := fs.Bool("force", false, "Allow reinstalling or downgrading")
 	dryRun := fs.Bool("dry-run", false, "Show the verified installation plan without changing remotes")
 	jsonOutput := fs.Bool("json", false, "Output every result as JSON")
+	installTimer := fs.Bool("install-timer", false, "Install or migrate each remote's own update timer (its `update --install-timer`) instead of updating its binary")
 	_ = fs.Parse(reorderRemoteArgs(fs, args))
 	if fs.NArg() > 1 {
 		fmt.Fprintln(os.Stderr, "Error: expected one remote name or --all")
 		os.Exit(2)
 	}
-	opts := remoteUpdateCLIOptions{JSON: *jsonOutput, Update: session.RemoteUpdateOptions{Force: *force, DryRun: *dryRun}}
+	if *installTimer && (*fromBuild != "" || *force || *dryRun) {
+		fmt.Fprintln(os.Stderr, "Error: --install-timer takes only a remote name or --all (and --json)")
+		os.Exit(2)
+	}
+	// An explicit update also installs (or migrates) each updated remote's
+	// own timer, so it stops depending on this controller's nudge (#2472).
+	opts := remoteUpdateCLIOptions{JSON: *jsonOutput, Update: session.RemoteUpdateOptions{Force: *force, DryRun: *dryRun, EnsureTimer: !*dryRun}}
 	if *fromBuild != "" {
 		build, err := session.LoadLocalBuild(*fromBuild)
 		if err != nil {
@@ -842,6 +872,14 @@ func handleRemoteUpdate(args []string) {
 			os.Exit(1)
 		}
 		remotes = map[string]session.RemoteConfig{name: rc}
+	}
+
+	if *installTimer {
+		results := runRemoteTimerInstall(context.Background(), remotes)
+		if printRemoteTimerInstall(os.Stdout, results, *jsonOutput) > 0 {
+			os.Exit(1)
+		}
+		return
 	}
 
 	results := runRemoteUpdatesCLI(context.Background(), remotes, Version, remoteSweepWait, opts)

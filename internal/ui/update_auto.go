@@ -69,7 +69,16 @@ var (
 	// launch agent for a later run to re-register (it ran inside that
 	// service; update.RebootstrapOptions.ServiceLabel).
 	pendingLaunchAgents = update.HasPendingRebootstrap
+	// ensureUpdateTimer installs or heals this host's update timer
+	// (#2472); gated inside by [updates] manage_timer.
+	ensureUpdateTimer = session.AutoEnsureUpdateTimer
 )
+
+// updateTimerEnsuredMsg reports the TUI's one timer install/heal.
+type updateTimerEnsuredMsg struct {
+	result update.TimerEnsureResult
+	err    error
+}
 
 // pendingDrainKey is the autoInstallAttempts / autoInstallInFlight key of
 // a run started only to drain pending launch agents.
@@ -133,7 +142,42 @@ func (h *Home) handleUpdateCheck(msg updateCheckMsg) tea.Cmd {
 	// The nudge banner takes a row from the embedded pane.
 	h.syncEmbeddedTerminalGeometry()
 	// auto_install: start the unattended updater in the background.
-	return h.maybeAutoInstall(msg.info)
+	if install := h.maybeAutoInstall(msg.info); install != nil {
+		// The updater child is `update --unattended`, which installs or
+		// heals the timer itself first: that is this process's one heal.
+		h.updateTimerEnsureStarted = true
+		return install
+	}
+	return h.maybeEnsureUpdateTimer()
+}
+
+// maybeEnsureUpdateTimer installs or heals this host's update timer once
+// per TUI process, from the periodic check path, so a host that only ever
+// runs the TUI still gets its own timer (#2472). Never in a test-, CI- or
+// script-driven TUI.
+func (h *Home) maybeEnsureUpdateTimer() tea.Cmd {
+	if h.updateTimerEnsureStarted || h.autoUpdateSuppressedReason != "" {
+		return nil
+	}
+	h.updateTimerEnsureStarted = true
+	return func() tea.Msg {
+		res, err := ensureUpdateTimer(uiLog)
+		return updateTimerEnsuredMsg{result: res, err: err}
+	}
+}
+
+// handleUpdateTimerEnsured logs the outcome; a failure shows one footer
+// line, since the hands-off update path depends on the timer.
+func (h *Home) handleUpdateTimerEnsured(msg updateTimerEnsuredMsg) {
+	switch {
+	case msg.err != nil:
+		uiLog.Warn("tui_update_timer_ensure_failed", slog.String("action", msg.result.Action), slog.String("error", msg.err.Error()))
+		h.setError(fmt.Errorf("update timer: %v; run agent-deck update --install-timer", msg.err))
+	case msg.result.Changed():
+		uiLog.Info("tui_update_timer_ensured", slog.String("action", msg.result.Action), slog.String("line", msg.result.Line()))
+	default:
+		uiLog.Debug("tui_update_timer_unchanged", slog.String("action", msg.result.Action), slog.String("reason", msg.result.Reason))
+	}
 }
 
 // autoInstallSkipReason returns "" when the periodic check may start an
