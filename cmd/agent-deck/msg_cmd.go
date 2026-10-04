@@ -469,7 +469,7 @@ func runMsgStats(stdout io.Writer, args []string) error {
 	switch {
 	case errors.Is(err, comms.ErrNoLedger):
 		out.Stats = comms.Stats{Profile: profile, SinceMS: now.Add(-*since).UnixMilli(), UntilMS: now.UnixMilli(),
-			ByKind: map[string]int{}, ByTier: map[string]int{}, Parents: []comms.ParentStats{}}
+			ByKind: map[string]int{}, ByTier: map[string]int{}, Parents: []comms.ParentStats{}, Targets: comms.NewTargets()}
 	case err != nil:
 		return err
 	default:

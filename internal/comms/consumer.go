@@ -356,16 +356,17 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 		// The ledger was reset or restored under this consumer: its old
 		// position means nothing in the new epoch. Rebuilt, and said so.
 		note := GapNote{Gap: Gap{Consumer: consumer, From: f.Watermark + 1, To: f.Through}, Reason: "epoch", At: now.UnixMilli()}
+		hadUnread := f.Through > f.Watermark
 		f.ConsumerState = ConsumerState{Consumer: consumer, Generation: f.Generation + 1}
-		f.bind(r, end)
 		// What the restored copy holds may or may not have been shown
-		// before the reset; only the new epoch's records are certainly news.
-		if start := events.Cursor(r.Store.EpochStart); f.Watermark < start && start <= end {
-			f.Watermark = start
-		}
+		// before the reset; only the new epoch's records are certainly news
+		// (bind starts at the epoch start or later).
+		f.bind(r, end)
 		note.Resumed = f.Watermark
-		f.addGap(note)
-		pass.Gap = &note
+		if hadUnread {
+			f.addGap(note)
+			pass.Gap = &note
+		}
 	}
 
 	// Compaction may have overtaken the watermark (a reader idle longer
@@ -407,13 +408,17 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 	}
 	acked := map[events.Cursor]bool{}
 	for _, c := range acks {
+		acked[c] = true
+	}
+	// Fold the acknowledged prefix into the watermark first (together with
+	// the cursors that are not this consumer's news), so only acks above a
+	// record still pending enter the bounded sparse set.
+	f.advanceAcked(read, through, deliverable, acked)
+	for _, c := range acks {
 		if err := f.Ack(c); err != nil {
 			return f, err
 		}
-		acked[c] = true
 	}
-	// Acknowledging the oldest pending records may have freed the prefix.
-	f.AdvanceOver(after, read, through, deliverable)
 	left := 0
 	for _, e := range pass.Pending {
 		if !acked[e.Cursor] && !f.IsAcked(e.Cursor) {
@@ -426,11 +431,14 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 
 // bind starts a fresh state on this ledger: the store, epoch and a
 // watermark just before the first record ever addressed to the consumer in
-// this epoch, else the end of the log.
+// this epoch (its pending flag). With no flag it starts at the beginning of
+// the epoch and lets the pass filter: a flag is only a hint (it may be
+// missing for records written before flags existed or lost to a crash), so
+// its absence must never skip a record.
 func (f *ConsumerFile) bind(r *Reader, end events.Cursor) {
 	f.Store, f.Epoch = r.Store.ID, r.Store.Epoch
-	f.Watermark = end
-	if flag, ok := ReadFlag(r.Dir, f.Consumer); ok && flag.Epoch == r.Store.Epoch && flag.First > 0 && flag.First-1 < end {
+	f.Watermark = min(events.Cursor(r.Store.EpochStart), end)
+	if flag, ok := ReadFlag(r.Dir, f.Consumer); ok && flag.Epoch == r.Store.Epoch && flag.First > 0 && flag.First-1 < end && flag.First-1 > f.Watermark {
 		f.Watermark = flag.First - 1
 	}
 	f.Acked = nil
@@ -467,6 +475,26 @@ func (c *ConsumerState) AdvanceOver(after events.Cursor, read []Exported, throug
 		c.Watermark = next
 	}
 	c.normalize()
+}
+
+// advanceAcked moves the watermark over cursors that are acknowledged in
+// this pass (acked) or are not pending news, stopping at the first record
+// still pending.
+func (f *ConsumerFile) advanceAcked(read []Exported, through events.Cursor, deliverable func(Record) bool, acked map[events.Cursor]bool) {
+	news := make(map[events.Cursor]bool, len(read))
+	for _, e := range read {
+		if deliverable(e.Record) {
+			news[e.Cursor] = true
+		}
+	}
+	for f.Watermark < through {
+		next := f.Watermark + 1
+		if news[next] && !acked[next] && !f.IsAcked(next) {
+			break
+		}
+		f.Watermark = next
+	}
+	f.normalize()
 }
 
 // writeConsumer persists a consumer file durably (tmp, fsync, rename).

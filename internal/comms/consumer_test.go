@@ -201,7 +201,13 @@ func TestEpochChangeRebuildsTheConsumerWithAnExplicitGap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Do("P", func(p Pass) ([]events.Cursor, error) { return all(p), nil }); err != nil {
+	// P read (peeked) but acknowledged nothing: it has unread records when
+	// the ledger is restored, so the reset is a gap it is told about.
+	if _, err := r.Do("P", func(p Pass) ([]events.Cursor, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	// C read and acknowledged everything: nothing was lost, no gap.
+	if _, err := r.Do("C", func(p Pass) ([]events.Cursor, error) { return all(p), nil }); err != nil {
 		t.Fatal(err)
 	}
 	_ = r.Close()
@@ -237,8 +243,15 @@ func TestEpochChangeRebuildsTheConsumerWithAnExplicitGap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gap == nil || gap.Reason != "epoch" || f.Epoch != l2.Store().Epoch || f.Generation != 2 || len(f.Gaps) != 1 {
+	if gap == nil || gap.Reason != "epoch" || gap.From > gap.To || f.Epoch != l2.Store().Epoch || f.Generation != 2 || len(f.Gaps) != 1 {
 		t.Fatalf("epoch change must rebuild with an explicit gap: gap %+v state %+v", gap, f)
+	}
+	var cGap *GapNote
+	if _, err := r2.Do("C", func(p Pass) ([]events.Cursor, error) { cGap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if cGap != nil {
+		t.Fatalf("a caught-up consumer lost nothing; no gap: %+v", cGap)
 	}
 }
 
@@ -351,5 +364,53 @@ func TestADecideErrorAcknowledgesNothing(t *testing.T) {
 	}
 	if got, _ := pass(t, r, "P", nil); len(got) != 1 {
 		t.Fatalf("a failed print must leave the record pending: %v", got)
+	}
+}
+
+// Verifier round 1 (#1): a flag is only a hint. A consumer whose flag is
+// missing (lost to a crash, or never written by an older daemon) still
+// gets every record addressed to it.
+func TestAMissingFlagNeverSkipsARecord(t *testing.T) {
+	l, r, dir := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"Q"}, Tier: TierInfo, Text: "for Q"})
+	mine := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "for X"})
+	if err := os.Remove(FlagPath(dir, "X")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := pass(t, r, "X", nil)
+	if len(got) != 1 || got[0] != mine {
+		t.Fatalf("a missing flag skipped the record: pending %v", got)
+	}
+}
+
+// Verifier round 1 (#1): the flag is raised before the frame is visible,
+// so a reader that sees the record also sees the flag.
+func TestTheFlagIsRaisedBeforeTheRecordIsVisible(t *testing.T) {
+	l, _, dir := openPair(t)
+	seen := make(chan bool, 1)
+	c := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "x"})
+	flag, ok := ReadFlag(dir, "X")
+	seen <- ok
+	if !<-seen || flag.Last < c || flag.First > c {
+		t.Fatalf("flag %+v ok=%v for cursor %d", flag, ok, c)
+	}
+}
+
+// Verifier round 1 (#2): acknowledging every pending record of a consumer
+// whose records are interleaved with other traffic folds into the
+// watermark instead of overflowing the sparse set.
+func TestAckAllOverInterleavedTrafficNeverOverflowsTheSparseSet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("commits 8k records")
+	}
+	l, r, _ := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: "first"})
+	for i := 0; i < MaxSparseAcks+10; i++ {
+		mustCommit(t, l, Record{Kind: KindTurn, From: "q", To: []string{"Q"}, Tier: TierInfo, Text: "q" + strings.Repeat("x", i%7)})
+		mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: "p" + strings.Repeat("y", i%7)})
+	}
+	_, f := pass(t, r, "P", all)
+	if f.Pending != 0 || f.Acked != nil || f.Watermark != l.Cursor() {
+		t.Fatalf("ack all over interleaved traffic: %+v (cursor %d)", f.ConsumerState, l.Cursor())
 	}
 }

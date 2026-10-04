@@ -63,9 +63,12 @@ const (
 	commsSpoolPromptBytes = 1024
 	commsSpoolMaxAge      = 24 * time.Hour
 	commsSpoolMaxFiles    = 512 // per instance; a daemon that never drains must not fill the disk
-	commsSpoolIDBytes     = 256 // harness, event, session and turn ids
-	commsSpoolCwdBytes    = 4096
-	commsSpoolMaxBytes    = 64 << 10 // an entry over this is not ours: skipped and removed on read
+	// commsSpoolMeasureFiles is the share of the per-instance cap that wake
+	// and call edges may use.
+	commsSpoolMeasureFiles = 128
+	commsSpoolIDBytes      = 256 // harness, event, session and turn ids
+	commsSpoolCwdBytes     = 4096
+	commsSpoolMaxBytes     = 64 << 10 // an entry over this is not ours: skipped and removed on read
 )
 
 // CommsSpoolEntry is one spooled edge. Field names match the ledger record
@@ -172,7 +175,13 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if countSpoolFiles(dir) >= commsSpoolMaxFiles {
+	limit := commsSpoolMaxFiles
+	if e.Edge == CommsEdgeWake || e.Edge == CommsEdgeCall {
+		// Measurement rows get a smaller share, so a parent that polls
+		// during a daemon outage never crowds out its own turn edges.
+		limit = commsSpoolMeasureFiles
+	}
+	if countSpoolFiles(dir) >= limit {
 		commsLog.Warn("comms_spool_full", slog.String("instance", e.Instance), slog.Int("cap", commsSpoolMaxFiles))
 		return errors.New("comms spool: instance spool full; is the notify daemon running?")
 	}

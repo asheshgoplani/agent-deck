@@ -127,3 +127,31 @@ func TestStatsOnAnEmptyWindowHaveNoVerdict(t *testing.T) {
 func round2(v float64) float64 {
 	return float64(int64(v*100+0.5)) / 100
 }
+
+// Verifier round 1 (#7, #6): calls from a parent that was never woken
+// still count, and calls with no wake at all are not met; a window with
+// records but no recorded wake has no wake verdict.
+func TestStatsCallsWithoutWakesAreNotMet(t *testing.T) {
+	l, r, _ := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: "x"})
+	for i := 0; i < 10; i++ {
+		mustCommit(t, l, Record{Kind: KindCall, From: "Q", State: CallInboxDrain})
+	}
+	st, err := ComputeStats(r.Bus, r.Store, StatsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := st.Targets.CallsPerWake
+	if c.Value == nil || *c.Value != 10 || c.Met == nil || *c.Met {
+		t.Fatalf("10 drains and no wake must not be met: %+v", c)
+	}
+	w := st.Targets.WakesPerParentHour
+	if w.Met != nil {
+		t.Fatalf("no wake record: no verdict: %+v", w)
+	}
+	mustCommit(t, l, Record{Kind: KindWake, From: "agent-deck", To: []string{"R"}, Trigger: "inbox", Via: "tmux", Text: "w"})
+	st, _ = ComputeStats(r.Bus, r.Store, StatsOptions{})
+	if c := st.Targets.CallsPerWake; c.Value == nil || *c.Value != 10 || c.N != 1 {
+		t.Fatalf("calls by un-woken parents count against the wakes: %+v", c)
+	}
+}

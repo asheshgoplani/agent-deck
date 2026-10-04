@@ -319,11 +319,14 @@ record ids, their last 6 characters (what every rendered line shows) or
 cursors; an unknown reference fails and acknowledges nothing.
 
 Where a new consumer starts: just before the first record ever addressed
-to it (its pending flag), or at the end of the log when none was, so a
-reader never gets 90 days of history it was not sent. A state from
+to it (its pending flag), or, with no flag, at the start of the epoch,
+filtering by address: a flag is a hint and its absence never skips a
+record. The daemon raises a recipient's flag before the record becomes
+visible. An enrolled delivery consumer (P2 canary) starts at the end of
+the log instead, because the inbox delivered what came before. A state from
 another ledger store or epoch is rebuilt (generation + 1) after the
 restored copy's records (`store.json` `epoch_start`), and the reset is
-kept as a gap. A watermark that compaction overtook is moved to the
+kept as a gap when it had unread records. A watermark that compaction overtook is moved to the
 oldest retained cursor and the loss kept as a gap (`gaps[]`, also printed
 by `read`): never a silent restart.
 
@@ -372,6 +375,17 @@ an imported record counts when it arrived). Each target carries `value`,
 | `output_and_drain_calls_per_wake` == 0 | `session output` and `inbox drain` runs by woken parents per wake | `call` records, spooled by the CLI when it runs inside a session (`msg read` is recorded too, not counted) |
 | `send_with_sender_and_text_pct` == 100 | `send` records with a sender and a text hash | `send` records (P3) |
 | `cross_host_records_with_latency` > 0 | imported records whose offset-corrected latency was measured | records with `origin` (P3) |
+
+Limits, stated: the wake count covers the wakes agent-deck records
+(inbox typed nudge, inbox digest, inbox Stop-hook block, the ledger's own
+wakes); heartbeats, `/loop` timers and direct `session send` lines are
+not wake records, so the value is a lower bound of the #2482 baseline's
+"machine wakes" (sends become `send` records in P3). A window with records
+but no wake record has value 0 and no verdict (a daemon too old to record
+wakes looks the same). Re-read calls by a session that was never woken
+still count; calls with no wake at all are not met. Both `msg stats` and
+a consumer pass read their range in one bounded pass (10 s); a ledger
+past about a gigabyte in one window needs paging, which is not built.
 
 `parents[]` breaks wakes down per parent and per path/transport
 (`inbox/tmux`, `inbox/stop`, `ledger/tmux`, ...) so a canary parent on

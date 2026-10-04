@@ -111,6 +111,20 @@ func (t *Target) set(value float64, n int) {
 	t.Met = &met
 }
 
+// NewTargets returns the seven targets with their definitions and no
+// values (what an empty window or a missing ledger reports).
+func NewTargets() Targets {
+	return Targets{
+		WakesPerParentHour: Target{Target: TargetWakesPerParentHour, Op: "<=", Note: "the busiest parent's machine wakes per hour; counts the wakes agent-deck records (inbox typed nudge, inbox digest, inbox Stop-hook block, the ledger's own wakes), not heartbeats, timers or direct session sends, so it is a lower bound of the #2482 baseline's machine wakes"},
+		TextPct:            Target{Target: TargetTextPct, Op: ">=", Note: "turn, status, send and human records (noise excluded) that carry text"},
+		RecordsPerFinished: Target{Target: TargetRecordsPerFinished, Op: "<=", Note: "deliverable turn and status records per turn carrying a completion sentinel"},
+		DuplicatePct:       Target{Target: TargetDuplicatePct, Op: "<=", Note: "turn records repeating a key, or a child's same text signalled within 5 s under another key"},
+		CallsPerWake:       Target{Target: TargetCallsPerWake, Op: "<=", Note: "session output and inbox drain calls made by sessions (heartbeat drains included), per recorded wake; calls with no wake at all are not met"},
+		SendSenderTextPct:  Target{Target: TargetSendSenderTextPct, Op: ">=", Note: "send records with a sender and a text hash"},
+		CrossHostLatency:   Target{Target: TargetCrossHostLatency, Op: ">", Note: "imported records whose cross-host latency was measured (offset-corrected, uncertainty below the estimate)"},
+	}
+}
+
 // ComputeStats scans the ledger records committed inside the window and
 // returns the measurement document.
 func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stats, error) {
@@ -122,16 +136,7 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 	}
 	since, until := opts.Since.UnixMilli(), opts.Until.UnixMilli()
 	st := Stats{Store: store.ID, Epoch: store.Epoch, SinceMS: since, UntilMS: until,
-		ByKind: map[string]int{}, ByTier: map[string]int{}, ByTool: map[string]int{}}
-	st.Targets = Targets{
-		WakesPerParentHour: Target{Target: TargetWakesPerParentHour, Op: "<=", Note: "the busiest parent's machine wakes per hour (inbox and ledger paths, typed and Stop-hook)"},
-		TextPct:            Target{Target: TargetTextPct, Op: ">=", Note: "turn, status, send and human records (noise excluded) that carry text"},
-		RecordsPerFinished: Target{Target: TargetRecordsPerFinished, Op: "<=", Note: "deliverable turn and status records per turn carrying a completion sentinel"},
-		DuplicatePct:       Target{Target: TargetDuplicatePct, Op: "<=", Note: "turn records repeating a key, or a child's same text signalled within 5 s under another key"},
-		CallsPerWake:       Target{Target: TargetCallsPerWake, Op: "<=", Note: "session output and inbox drain calls made by woken parents, per wake"},
-		SendSenderTextPct:  Target{Target: TargetSendSenderTextPct, Op: ">=", Note: "send records with a sender and a text hash"},
-		CrossHostLatency:   Target{Target: TargetCrossHostLatency, Op: ">", Note: "imported records whose cross-host latency was measured (offset-corrected, uncertainty below the estimate)"},
-	}
+		ByKind: map[string]int{}, ByTier: map[string]int{}, ByTool: map[string]int{}, Targets: NewTargets()}
 
 	after, err := bus.CursorBefore(opts.Since)
 	if err != nil {
@@ -259,10 +264,10 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 	maxRate := 0.0
 	for _, p := range parents {
 		p.WakesPerHour = math.Round(float64(p.Wakes)/st.Hours*100) / 100
+		calls += p.Calls
 		if p.Wakes > 0 {
 			wakingParents++
 			totalWakes += p.Wakes
-			calls += p.Calls
 			if p.WakesPerHour > maxRate {
 				maxRate = p.WakesPerHour
 			}
@@ -286,8 +291,12 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 	}
 
 	t := &st.Targets
-	if st.Records > 0 {
+	if totalWakes > 0 {
 		t.WakesPerParentHour.set(maxRate, wakingParents)
+	} else if st.Records > 0 {
+		// No wake was recorded: zero wakes, but a daemon too old to record
+		// them looks the same, so no verdict.
+		t.WakesPerParentHour.Value, t.WakesPerParentHour.N = f64(0), 0
 	}
 	if textTotal > 0 {
 		t.TextPct.set(100*float64(textual)/float64(textTotal), textTotal)
@@ -298,8 +307,13 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 	if turns > 0 {
 		t.DuplicatePct.set(100*float64(dupExact+dupNear)/float64(turns), turns)
 	}
-	if totalWakes > 0 {
+	switch {
+	case totalWakes > 0:
 		t.CallsPerWake.set(float64(calls)/float64(totalWakes), totalWakes)
+	case calls > 0:
+		// Re-reads with no recorded wake: the per-wake ratio is undefined,
+		// and calls exist, so the target is not met.
+		t.CallsPerWake.set(float64(calls), 0)
 	}
 	if sends > 0 {
 		t.SendSenderTextPct.set(100*float64(sendsWhole)/float64(sends), sends)

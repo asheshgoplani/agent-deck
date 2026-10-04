@@ -322,7 +322,7 @@ func (l *Ledger) raiseFlags(r Record, cursor events.Cursor) {
 				fl = PendingFlag{First: cursor}
 			}
 		}
-		fl.Last, fl.Epoch = cursor, l.store.Epoch
+		fl.Last, fl.Epoch = max(fl.Last, cursor), l.store.Epoch
 		if fl.First == 0 {
 			fl.First = cursor
 		}
@@ -448,12 +448,20 @@ func (l *Ledger) Commit(r Record) (Record, events.Cursor, error) {
 		r.Seq = l.seq[r.From] + 1 // an imported record keeps the origin's sequence
 	}
 	r.Stamp(time.Now())
+	// Raise the recipients' pending flags BEFORE the frame becomes
+	// visible: a reader that sees the record always finds a flag at or
+	// above it (an early flag for a commit that then fails costs a reader
+	// one scan, never a record).
+	predicted := l.bus.Cursor() + 1
+	l.raiseFlags(r, predicted)
 	f, err := l.bus.Commit(r.Kind, r.From, r)
 	if err != nil {
 		return r, 0, err
 	}
 	l.remember(r)
-	l.raiseFlags(r, f.Cursor)
+	if f.Cursor != predicted {
+		l.raiseFlags(r, f.Cursor)
+	}
 	if uint64(f.Cursor)%hwmEvery == 0 {
 		l.persistHWM(uint64(f.Cursor))
 	}
