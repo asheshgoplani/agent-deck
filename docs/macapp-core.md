@@ -62,8 +62,10 @@ file) takes it from there:
    typing worker can submit later queued sends while the first message is
    still waiting for its turn. The watcher is locked per send and can be
    restarted after a process exit without retyping.
-5. The retry budget is 30 minutes (`deadline`), then `failed` with a reason
-   (only ever when nothing was typed). A send not seen in the transcript
+5. The retry budget is 30 minutes (`deadline`) and 5 attempts
+   (`max_attempts`, `AGENTDECK_SEND_MAX_ATTEMPTS`), then `failed` with a
+   reason such as `not delivered after 5 attempts: composer_blocked` (only
+   ever when nothing was typed). A send not seen in the transcript
    within 2 minutes, or sent to a harness with no transcript reader (not
    Claude or Codex), keeps its state, gets a reason and `settled: true`.
 

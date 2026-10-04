@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -127,7 +128,8 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 		SendID: id, State: sendqueue.StateQueued, Verdict: "queued", TargetStatus: status,
 		SessionID: inst.ID, SessionTitle: inst.Title, Tool: inst.Tool, Message: message, Images: images,
 		CreatedAt: now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
-		Deadline: now.Add(sendqueue.DefaultRetryBudget).UTC().Format(time.RFC3339Nano),
+		Deadline:    now.Add(sendqueue.DefaultRetryBudget).UTC().Format(time.RFC3339Nano),
+		MaxAttempts: sendMaxAttempts(), Sender: sendJournalSender(),
 	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		rec.ClaudeSessionID = inst.ClaudeSessionID
@@ -274,6 +276,35 @@ func envDuration(name string, def time.Duration) time.Duration {
 // sendWorkerPoll is how often the worker rechecks a busy target.
 func sendWorkerPoll() time.Duration {
 	return envDuration("AGENTDECK_SEND_WORKER_POLL", time.Second)
+}
+
+// sendMaxAttempts is the attempt bound a new queued send is recorded with;
+// AGENTDECK_SEND_MAX_ATTEMPTS overrides sendqueue.DefaultMaxAttempts.
+func sendMaxAttempts() int {
+	if n, err := strconv.Atoi(os.Getenv("AGENTDECK_SEND_MAX_ATTEMPTS")); err == nil && n > 0 {
+		return n
+	}
+	return sendqueue.DefaultMaxAttempts
+}
+
+// queuedSendJournalMeta is the journal identity of one send: the caller as
+// sender, or, for a --queue-worker delivery, the queued record's sender,
+// send_id and attempt (the worker's own environment is whoever started it,
+// not necessarily who queued this send).
+func queuedSendJournalMeta(storage *session.Storage, sendID, message string) sendJournalMeta {
+	meta := sendJournalMeta{sender: sendJournalSender(), text: message}
+	if sendID == "" || storage == nil {
+		return meta
+	}
+	rec, err := sendqueue.Load(sendQueueDir(storage), sendID)
+	if err != nil {
+		return meta
+	}
+	meta.sendID, meta.attempt = rec.SendID, rec.Attempts
+	if rec.Sender != "" {
+		meta.sender = rec.Sender
+	}
+	return meta
 }
 
 // sendLandWindow is how long a delivered send is watched for in the
@@ -507,9 +538,15 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 			return
 		}
 		if rec.State == sendqueue.StateQueued {
-			// Refused before typing: safe to try again once the target settles.
+			// Refused before typing: safe to try again once the target settles,
+			// within the time budget and the attempt bound.
+			refusal := strings.TrimPrefix(rec.Reason, "retrying: ")
 			if pastDeadline() {
-				fail("not delivered before the retry budget ran out: " + strings.TrimPrefix(rec.Reason, "retrying: "))
+				fail("not delivered before the retry budget ran out: " + refusal)
+				return
+			}
+			if rec.Attempts >= rec.AttemptLimit() {
+				fail(fmt.Sprintf("not delivered after %d attempts: %s", rec.Attempts, refusal))
 				return
 			}
 			time.Sleep(poll)
@@ -748,7 +785,8 @@ func startChildSend(profile, id, message, resultPath string) (int, func() int, e
 	if err != nil {
 		return 0, nil, err
 	}
-	cmd := exec.Command(exe, profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")...)
+	sendID := strings.TrimSuffix(filepath.Base(resultPath), ".result")
+	cmd := exec.Command(exe, profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker", "--queue-send-id", sendID)...)
 	cmd.Stdout = out
 	if err := cmd.Start(); err != nil {
 		return 0, nil, errors.Join(err, out.Close())

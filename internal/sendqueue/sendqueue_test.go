@@ -1,6 +1,7 @@
 package sendqueue
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"sort"
@@ -168,5 +169,23 @@ func TestPendingTargetsAndPrune(t *testing.T) {
 		if r.SendID == oldLanded || r.SendID == oldSettled {
 			t.Fatalf("old finished record kept: %+v", r)
 		}
+	}
+}
+
+// TestRecordAttemptLimitAcceptsOldRecords: a record written before the
+// attempt bound existed (no max_attempts, no sender) still parses and gets
+// the default bound; a new record keeps its own (issue #2481).
+func TestRecordAttemptLimitAcceptsOldRecords(t *testing.T) {
+	var old Record
+	if err := json.Unmarshal([]byte(`{"send_id":"x","state":"queued","attempts":2}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.AttemptLimit() != DefaultMaxAttempts || old.Sender != "" {
+		t.Fatalf("old record: limit %d sender %q", old.AttemptLimit(), old.Sender)
+	}
+	b, _ := json.Marshal(Record{SendID: "y", MaxAttempts: 3, Sender: "cli"})
+	var cur Record
+	if err := json.Unmarshal(b, &cur); err != nil || cur.AttemptLimit() != 3 || cur.Sender != "cli" {
+		t.Fatalf("new record round trip: %+v %v", cur, err)
 	}
 }

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -238,13 +240,51 @@ func journalSendOutcome(delivery string, sendErr error) string {
 // acceptance. Computed once, right after performSend returns, so the moved
 // journal write (recordSendEvent, run after the verdict) still measures the
 // real send latency rather than however long the verdict took to print.
-func sendEventDetail(res sendDeliveryResult, sendErr error, sentAt time.Time) map[string]any {
+//
+// The detail also says who sent what (issue #2481): meta's sender, a sha256
+// prefix of the text as delivered (never the text itself) and its length in
+// bytes, plus send_id and attempt for a queued send's delivery attempt. All
+// additive keys: a reader that predates them ignores them.
+func sendEventDetail(res sendDeliveryResult, sendErr error, sentAt time.Time, meta sendJournalMeta) map[string]any {
 	outcome := journalSendOutcome(res.delivery, sendErr)
 	detail := map[string]any{"outcome": outcome, "delivery": res.delivery, "transport": res.transport}
 	if outcome == health.SendConfirmed {
 		detail["ack_ms"] = health.Milliseconds(time.Since(sentAt))
 	}
+	sum := sha256.Sum256([]byte(meta.text))
+	detail["sender"] = meta.sender
+	detail["text_sha256"] = hex.EncodeToString(sum[:])[:sendTextHashLen]
+	detail["text_len"] = len(meta.text)
+	if meta.sendID != "" {
+		detail["send_id"] = meta.sendID
+		detail["attempt"] = meta.attempt
+	}
 	return detail
+}
+
+// sendTextHashLen is how many hex digits of the text's sha256 a send record
+// keeps: enough to tell resends of the same text apart from new ones.
+const sendTextHashLen = 16
+
+// sendJournalMeta is who sent which text, for one send record.
+type sendJournalMeta struct {
+	sender string // calling session id, or sendSenderCLI
+	text   string // as delivered; only its hash and length are journaled
+	sendID string // queued send being delivered, "" for a direct send
+	// attempt is the queued send's delivery attempt (1-based).
+	attempt int
+}
+
+// sendSenderCLI is the sender of a send made outside any agent-deck session.
+const sendSenderCLI = "cli"
+
+// sendJournalSender is the sender a send record carries: the calling
+// session's id, or "cli" from a plain shell.
+func sendJournalSender() string {
+	if id := sendSenderID(); id != "" {
+		return id
+	}
+	return sendSenderCLI
 }
 
 // sendJournalWriter is recordSendEvent's actual journal append, indirected

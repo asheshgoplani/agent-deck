@@ -38,6 +38,12 @@ const (
 // DefaultRetryBudget is how long a send may wait for a busy target.
 const DefaultRetryBudget = 30 * time.Minute
 
+// DefaultMaxAttempts bounds how often a send refused before typing
+// (composer_blocked, target_busy) is tried again before it fails, so a
+// target whose composer stays blocked is not retyped for the whole retry
+// budget (issue #2481: 14 and 18 loops measured).
+const DefaultMaxAttempts = 5
+
 // RetainFinished is how long finished records stay readable by send-status.
 const RetainFinished = 7 * 24 * time.Hour
 
@@ -58,6 +64,12 @@ type Record struct {
 	Deadline     string   `json:"deadline"`
 	Attempts     int      `json:"attempts"`
 	SentAt       string   `json:"sent_at,omitempty"`
+	// MaxAttempts bounds Attempts for refusals before typing; 0 (a record
+	// written before the bound existed) means DefaultMaxAttempts.
+	MaxAttempts int `json:"max_attempts,omitempty"`
+	// Sender is who queued the send: the calling session's id, or "cli".
+	// The delivering child journals it as the send's sender.
+	Sender string `json:"sender,omitempty"`
 	// ChildPID is the `session send` process delivering a typing record;
 	// its result lands in ResultPath(dir, send_id).
 	ChildPID       int    `json:"child_pid,omitempty"`
@@ -72,6 +84,14 @@ type Record struct {
 	// Settled marks a typed/submitted send whose text was not found in the
 	// transcript within the watch window: it is never typed again.
 	Settled bool `json:"settled,omitempty"`
+}
+
+// AttemptLimit is the bound on Attempts for this record.
+func (r *Record) AttemptLimit() int {
+	if r.MaxAttempts > 0 {
+		return r.MaxAttempts
+	}
+	return DefaultMaxAttempts
 }
 
 // Final reports whether the worker is done with the record.

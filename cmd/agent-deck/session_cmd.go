@@ -3078,6 +3078,7 @@ func handleSessionSend(profile string, args []string) {
 	codexComposerFallback := fs.Bool("codex-composer-fallback", false, "Codex only: when the session's Codex identity is provably unavailable (fresh composer, rollout re-created after the trust prompt), send through the verified composer path instead of refusing. Never used for --json --wait; every other acceptance error still refuses")
 	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle, at most once; every send ends landed, failed or settled with a reason (see session send-status)")
 	queueWorker := fs.Bool("queue-worker", false, "Internal: deliver a durable queued send directly")
+	queueSendID := fs.String("queue-send-id", "", "Internal: the queued send this --queue-worker delivery belongs to")
 	noTag := fs.Bool("no-tag", false, "Do not prefix the [agent-deck from:<id>] envelope a send from inside a session gets by default ([send] tag_sends)")
 	var images imageList
 	fs.Var(&images, "image", "Attach an image (repeatable): Claude Code and Gemini get @<copy under .agentdeck-images/>; Codex and other harnesses exit 2")
@@ -3114,7 +3115,8 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  send_id with verdict queued. Claude accepts input while busy; other harnesses wait")
 		fmt.Println("  for idle. send-status and delivery events upgrade the verdict when evidence arrives.")
 		fmt.Println("  The send is watched until its text lands in")
-		fmt.Println("  the transcript (state landed, landed_row_id). Retry budget 30m, then failed with a reason.")
+		fmt.Println("  the transcript (state landed, landed_row_id). Retry budget 30m and 5 attempts")
+		fmt.Println("  (AGENTDECK_SEND_MAX_ATTEMPTS), then failed with a reason.")
 		fmt.Println("  Exit 0 queued, 1 failed at once (e.g. target not running).")
 		fmt.Println("From inside an agent-deck session, a send to a Claude target starts with one")
 		fmt.Println("  [agent-deck from:<your session id>] line so the reply is routed back to you")
@@ -3490,7 +3492,7 @@ func handleSessionSend(profile string, args []string) {
 	// Computed now (accurate ack_ms), journaled after the verdict at every
 	// exit path below — never before it, per the same rule applied to
 	// handleSessionStop/handleSessionRestart.
-	sendDetail := sendEventDetail(sendRes, sendErr, sentAt)
+	sendDetail := sendEventDetail(sendRes, sendErr, sentAt, queuedSendJournalMeta(storage, *queueSendID, message))
 	if acceptanceGuard != nil {
 		if markerErr := acceptanceGuard.RecordTransportOutcome(sendRes.delivery, time.Now()); markerErr != nil {
 			acceptanceGuard.Release()
