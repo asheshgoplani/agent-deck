@@ -836,6 +836,11 @@ func main() {
 		}
 	}
 
+	// This process is the TUI or the web server and lives long enough to reuse
+	// one persistent channel per remote. One-shot CLI commands never get here,
+	// so they do not dial a channel they would drop on exit (#2481).
+	session.EnableRemoteChannels()
+
 	// [updates] auto_update_remotes: bring older remotes up to this version
 	// in the background. On by default (auto_update_remotes = false opts
 	// out); never prompts, never blocks (#2164).

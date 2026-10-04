@@ -333,11 +333,27 @@ func RemoteChannelFor(name string) *RemoteChannel {
 	return remoteChannels[name]
 }
 
-// remoteChannelsEnabled lets AGENT_DECK_REMOTE_CHANNEL=0 turn the channel off
-// (every command then runs as its own ssh exec, the pre-#2174 behaviour).
+// remoteChannelsAllowed is set by long-lived processes (the TUI and the web
+// server) through EnableRemoteChannels. A one-shot CLI command leaves it
+// unset: it exits right after its request, so a channel dialled in the
+// background only costs a second ssh session and a remote agent process that
+// never serves anything (#2481).
+var remoteChannelsAllowed atomic.Bool
+
+// EnableRemoteChannels lets this process keep one persistent channel per
+// remote. Call it once from a process that lives long enough to reuse it.
+func EnableRemoteChannels() { remoteChannelsAllowed.Store(true) }
+
+// remoteChannelsEnabled reports whether commands may use the channel.
+// AGENT_DECK_REMOTE_CHANNEL=1 forces it on and any other non-empty value
+// turns it off (every command then runs as its own ssh exec, the pre-#2174
+// behaviour); unset, it follows EnableRemoteChannels.
 func remoteChannelsEnabled() bool {
 	v := strings.TrimSpace(os.Getenv("AGENT_DECK_REMOTE_CHANNEL"))
-	return v == "" || v == "1" || strings.EqualFold(v, "true")
+	if v == "" {
+		return remoteChannelsAllowed.Load()
+	}
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // remoteIdentity is the part of a remote's config a channel is bound to.
