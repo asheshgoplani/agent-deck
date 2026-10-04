@@ -75,8 +75,12 @@ func TestIssue2057_OverflowWarningRearmsAfterDrain(t *testing.T) {
 	if res := n.NotifyFinished(event); res.DeliveryResult != transitionDeliveryCommitted {
 		t.Fatalf("commit after drain = %q", res.DeliveryResult)
 	}
-	// the commit above already occupies one slot
-	fillPendingTurns(t, parentID, event.ChildSessionID, maxPendingTurnsPerChild-1)
+	// Replaying the consumed turn is a no-op (issue #2481 item 3), so
+	// it occupies no slot. The next saturation needs a full fresh queue.
+	if pending, err := ReadInboxEvents(parentID); err != nil || len(pending) != 0 {
+		t.Fatalf("consumed replay: pending=%d err=%v, want no record", len(pending), err)
+	}
+	fillPendingTurns(t, parentID, event.ChildSessionID, maxPendingTurnsPerChild)
 	event.DoneSummary = "second stall"
 	if res := n.NotifyFinished(event); res.DeliveryResult != transitionDeliveryCommitted {
 		t.Fatalf("second saturation: %q, want a digest commit", res.DeliveryResult)
