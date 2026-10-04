@@ -289,6 +289,9 @@ type Pass struct {
 	// Pending is every deliverable, unacknowledged record above the
 	// watermark, oldest first.
 	Pending []Exported
+	// Watermark is the consumer's acknowledged watermark when the pass
+	// started deciding (everything at or below it is acknowledged).
+	Watermark events.Cursor
 	// Through is the last cursor the pass covered.
 	Through events.Cursor
 	// Gap is set when this pass discovered a loss (compaction or an epoch
@@ -396,7 +399,7 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 			pass.Pending = append(pass.Pending, e)
 		}
 	}
-	pass.Through = through
+	pass.Through, pass.Watermark = through, f.Watermark
 
 	acks, err := decide(pass)
 	if err != nil {

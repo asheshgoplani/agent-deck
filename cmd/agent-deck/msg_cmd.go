@@ -207,7 +207,7 @@ func runMsgRead(stdout io.Writer, args []string, explicitProfile string, consume
 	_, err = reader.Do(consumer, func(p comms.Pass) ([]events.Cursor, error) {
 		take := selectForBudget(p.Pending, *last, *maxBytes, names)
 		out = msgReadOutput{Consumer: consumer, Profile: profile, Store: reader.Store.ID, Epoch: reader.Store.Epoch,
-			Through: p.Through, Acked: consume, Records: take, Left: len(p.Pending) - len(take), Gap: p.Gap}
+			Watermark: p.Watermark, Through: p.Through, Acked: consume, Records: take, Left: len(p.Pending) - len(take), Gap: p.Gap}
 		if out.Records == nil {
 			out.Records = []comms.Exported{}
 		}
