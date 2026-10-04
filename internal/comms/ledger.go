@@ -516,6 +516,15 @@ func (l *Ledger) persistHWM(cursor uint64) {
 	}
 }
 
+// Reader is a consumer handle on this ledger's own bus, for the daemon's
+// delivery pass (no second open of the log).
+func (l *Ledger) Reader() *Reader {
+	if l == nil {
+		return nil
+	}
+	return &Reader{Dir: l.dir, Bus: l.bus, Store: l.store, Now: time.Now}
+}
+
 // Cursor returns the ledger's last committed cursor.
 func (l *Ledger) Cursor() events.Cursor {
 	if l == nil || l.bus == nil {

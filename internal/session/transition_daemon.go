@@ -637,6 +637,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// Comms Ledger: a second, independent store fed from the producers'
 	// spool. Runs after the inbox path so nothing above changes.
 	d.ingestCommsSpool(profile, byID)
+	// Delivery canary ([comms] consumers): the ledger, not the inbox,
+	// wakes and feeds the listed parents.
+	d.deliverCommsLedger(profile, byID, statuses)
 	d.journalStatusChanges(profile, byID, statuses, substates)
 	if cfg, _ := LoadUserConfig(); cfg != nil && cfg.Macapp.TranscriptEvents {
 		transcriptGrowth.publish(profile, instances)

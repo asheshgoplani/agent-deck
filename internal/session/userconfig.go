@@ -337,6 +337,13 @@ type CommsSettings struct {
 	// spool file is written and no ledger directory is created. The old
 	// inbox, turn journal and inbox stats keep working either way.
 	Ledger bool `toml:"ledger,omitempty"`
+	// Consumers enrolls Claude parents by id, unique title, or "*". The
+	// inbox is unchanged; the ledger adds prompt text and deduplicates exact
+	// transcript turns in both directions. Ledger wakes and Stop blocks are
+	// only for ledger-only urgent records, which have no production producer
+	// in P2b, so this phase does not move the #2482 wake targets.
+	// Needs ledger = true. See docs/comms.md "Delivery".
+	Consumers []string `toml:"consumers,omitempty"`
 }
 
 // MacappSettings is the [macapp] section. Everything is off by default.

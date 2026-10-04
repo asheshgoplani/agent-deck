@@ -84,6 +84,7 @@ func sweepParentSideArtifacts(parentID string) {
 	_ = os.Remove(inboxDigestPath(parentID))
 	_ = os.Remove(fleetBlockPath(parentID))
 	consumedTurnsMu.Unlock()
+	_ = os.Remove(commsEnrollmentPath(parentID)) // a removed parent is no ledger consumer
 }
 
 // sweepInboxFilesForChild rewrites every inbox file dropping the child's lines,

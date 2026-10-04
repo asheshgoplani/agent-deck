@@ -87,6 +87,9 @@ func printInboxStats(w io.Writer, st session.InboxStats) {
 	fmt.Fprintf(w, "  wakeups      urgent=%d digest=%d withheld(info)=%d\n", st.WakeupsUrgent, st.WakeupsDigest, st.WakeupsSuppressed)
 	fmt.Fprintf(w, "  delivered    drains=%d records=%d bytes_injected=%d text_bytes=%d fleet_block_skips=%d\n",
 		st.Drains, st.RecordsDelivered, st.BytesInjected, st.TextBytes, st.FleetBlockSkips)
+	if st.ShadowedByLedger > 0 {
+		fmt.Fprintf(w, "  ledger       shadowed_by_ledger=%d (already shown by the other path)\n", st.ShadowedByLedger)
+	}
 	if st.LastUrgentLatencyMS > 0 {
 		fmt.Fprintf(w, "  last urgent latency %d ms\n", st.LastUrgentLatencyMS)
 	}

@@ -51,6 +51,10 @@ type InboxStats struct {
 	RecordsDelivered int64 `json:"records_delivered"`
 	BytesInjected    int64 `json:"bytes_injected"` // Stop-block / context / nudge text
 	FleetBlockSkips  int64 `json:"fleet_block_skips"`
+	// ShadowedByLedger counts inbox records retired unshown because the
+	// shared shown-turn set says the same turn was already delivered to this
+	// parent by either path ([comms] consumers, exact turn identity).
+	ShadowedByLedger int64 `json:"shadowed_by_ledger,omitempty"`
 
 	// Latency: last urgent record commit -> delivery, in milliseconds.
 	LastUrgentLatencyMS int64 `json:"last_urgent_latency_ms,omitempty"`

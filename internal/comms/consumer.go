@@ -103,6 +103,20 @@ type ConsumerFile struct {
 	// last, bounded): records compacted before it read them, or a ledger
 	// reset or restore that invalidated its position.
 	Gaps []GapNote `json:"gaps,omitempty"`
+
+	// Delivery state (P2 consumer adapters, delivery.go): the records a
+	// delivery attempt carries until a turn proves they were shown
+	// (Inflight), the wake bookkeeping, and how often a record's wake
+	// did not take.
+	Mode       string         `json:"mode,omitempty"` // ModeLedger: the daemon delivers this consumer's records (canary)
+	Inflight   []Inflight     `json:"inflight,omitempty"`
+	LastWake   int64          `json:"last_wake,omitempty"`   // Unix ms of the last automatic wake
+	LastDigest int64          `json:"last_digest,omitempty"` // Unix ms of the last wake that carried only info
+	AutoWakes  int            `json:"auto_wakes,omitempty"`  // automatic wakes since the consumer's last own turn
+	CapNoted   bool           `json:"cap_noted,omitempty"`   // the MaxAutoWakes pause was recorded
+	WakeTries  map[string]int `json:"wake_tries,omitempty"`  // cursor -> wakes that did not take
+	NextDue    int64          `json:"next_due,omitempty"`    // Unix ms the delivery pass next has something to do without a new record
+	Shown      []string       `json:"shown,omitempty"`       // keys of turns recently shown to the parent by either path (newest last, bounded)
 }
 
 // GapNote is one recorded loss: records From..To (cursors of the epoch the
@@ -290,6 +304,9 @@ func (r *Reader) now() time.Time {
 // Pass is what one consumer pass found.
 type Pass struct {
 	Consumer string
+	// File is the consumer's state, which decide may update (delivery
+	// bookkeeping); it is saved with the acknowledgements.
+	File *ConsumerFile
 	// Pending is every deliverable, unacknowledged record above the
 	// watermark, oldest first.
 	Pending []Exported
@@ -437,7 +454,7 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 			pass.Pending = append(pass.Pending, e)
 		}
 	}
-	pass.Through, pass.Watermark = through, f.Watermark
+	pass.Through, pass.Watermark, pass.File = through, f.Watermark, &f
 
 	acks, err := decide(pass)
 	if err != nil {
@@ -463,6 +480,7 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 		}
 	}
 	f.Through, f.Pending = through, left
+	f.pruneDelivered()
 	if found && stateFingerprint(f) == before && (f.Pending == 0 || now.UnixMilli()-f.Updated < activityRefresh.Milliseconds()) {
 		// Nothing changed: no write. A reader that still has records
 		// pending refreshes its activity once a day, so a consumer that only
@@ -470,6 +488,77 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 		return f, nil
 	}
 	f.Updated = now.UnixMilli()
+	return f, writeConsumer(r.Dir, f)
+}
+
+// ModeLedger marks a consumer the ledger delivers to (wakes, prompt
+// injection, Stop blocks) instead of the inbox.
+const ModeLedger = "ledger"
+
+// Enroll makes the ledger the delivery path for consumer. A consumer
+// enrolled for the first time starts at the end of the log: what was
+// committed before was delivered by the inbox it leaves. keepPosition keeps
+// an existing position (a parent re-listed while it still drains: what it
+// has not read stays pending). Enrolling an enrolled consumer changes
+// nothing.
+func (r *Reader) Enroll(consumer string, keepPosition bool) (ConsumerFile, error) {
+	return r.setMode(consumer, ModeLedger, keepPosition)
+}
+
+// Unenroll hands the consumer back to the inbox; its position is kept.
+func (r *Reader) Unenroll(consumer string) (ConsumerFile, error) {
+	return r.setMode(consumer, "", true)
+}
+
+func (r *Reader) setMode(consumer, mode string, keepPosition bool) (ConsumerFile, error) {
+	if err := ValidConsumer(consumer); err != nil {
+		return ConsumerFile{}, err
+	}
+	unlock, err := lockConsumer(r.Dir, consumer)
+	if err != nil {
+		return ConsumerFile{}, err
+	}
+	defer unlock()
+	f, found, err := ReadConsumer(r.Dir, consumer)
+	if err != nil {
+		return f, err
+	}
+	if found && f.Mode == mode && f.Check(r.Store) == nil {
+		return f, nil
+	}
+	now := r.now().UnixMilli()
+	if mode == ModeLedger && !(keepPosition && found && f.Check(r.Store) == nil) {
+		end, _, err := r.Bus.Ends()
+		if err != nil {
+			return f, err
+		}
+		gen := f.Generation + 1
+		f = ConsumerFile{ConsumerState: ConsumerState{Consumer: consumer, Store: r.Store.ID, Epoch: r.Store.Epoch, Generation: gen, Watermark: end},
+			Created: now, Through: end}
+	}
+	f.Consumer, f.Mode, f.Updated = consumer, mode, now
+	return f, writeConsumer(r.Dir, f)
+}
+
+// Rebuild replaces a consumer's state (unreadable or missing) with a fresh
+// one in the given mode at watermark, recording the reset as a gap. The
+// records above watermark are pending again (at least once).
+func (r *Reader) Rebuild(consumer string, watermark events.Cursor) (ConsumerFile, error) {
+	if err := ValidConsumer(consumer); err != nil {
+		return ConsumerFile{}, err
+	}
+	unlock, err := lockConsumer(r.Dir, consumer)
+	if err != nil {
+		return ConsumerFile{}, err
+	}
+	defer unlock()
+	if _, found, err := ReadConsumer(r.Dir, consumer); err == nil && found {
+		return ConsumerFile{}, nil // repaired meanwhile
+	}
+	now := r.now()
+	f := newConsumerFile(consumer, r.Store, watermark, now)
+	f.Mode = ModeLedger
+	f.addGap(GapNote{Gap: Gap{Consumer: consumer, From: watermark + 1, To: watermark}, Reason: "state_rebuilt", Resumed: watermark, At: now.UnixMilli()})
 	return f, writeConsumer(r.Dir, f)
 }
 

@@ -83,6 +83,12 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		// Comms Ledger: the same edge, spooled after the inbox record so a
 		// ledger problem can never delay or lose the parent's wake.
 		d.commsStatusEdge(inst, from, to, event.Timestamp)
+		if IsClaudeCompatible(inst.Tool) && strings.TrimSpace(inst.ParentSessionID) != "" {
+			// A Claude turn with no identity (interrupted, no text) reaches
+			// the inbox only; the ledger gets the same edge so a parent it
+			// delivers to misses nothing the inbox would have shown.
+			d.commsInboxOnlyEdge(inst, from, to, event.Timestamp)
+		}
 		return result, true
 	}
 
@@ -126,8 +132,10 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		classPrev = &last
 	}
 	tier := ClassifyTurnTier(facts, to, classPrev)
+	staleFlip := false
 	if tier == TurnTierNoise && observedFlip && !d.journaledThisRun(profile, inst.ID, facts.UUID) {
 		tier = TurnTierUrgent // a real turn the transcript cannot distinguish; never silent
+		staleFlip = true
 	}
 	if tier == TurnTierNoise {
 		_ = BumpInboxStats(statsParent, func(s *InboxStats) {
@@ -238,6 +246,13 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	}
 	if facts.HasDone {
 		d.noteDoneEmitted(profile, inst, facts.Done, facts.UUID, event.Timestamp)
+	}
+	if (staleFlip || to == string(StatusError)) && strings.TrimSpace(inst.ParentSessionID) != "" {
+		// Urgent only to the inbox (its own inputs: a flip into the error
+		// status, an observed flip with a stale transcript): the ledger,
+		// whose spooled turn cannot see either, gets the edge as a status
+		// record after the inbox record is committed.
+		d.commsInboxOnlyEdge(inst, from, to, event.Timestamp)
 	}
 	return result, true
 }

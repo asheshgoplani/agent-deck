@@ -211,6 +211,9 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 			RemoveCommsSpoolEntry(prev)
 		}
 		d.commsPrompts[inst.ID] = e
+		// An enrolled parent's prompt confirms the records a wake line
+		// showed it (how a Codex parent's wake is acknowledged).
+		d.commsAckPrompt(l, inst, e.Prompt)
 		return true
 	case CommsEdgeStatus:
 		return d.commitCommsStatus(l, profile, inst, e)
@@ -222,6 +225,12 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		return true
 	}
 
+	// The prompt that started this turn, when the harness reported it with
+	// the turn (codex-notify): for an enrolled parent it confirms the records
+	// a wake line showed it.
+	if e.Prompt != "" {
+		d.commsAckPrompt(l, inst, e.Prompt)
+	}
 	rec := comms.Record{
 		Kind:    comms.KindTurn,
 		From:    inst.ID,
@@ -270,7 +279,7 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	rec.TH = facts.TextHash
 	rec.Q = facts.Question
 	if facts.HasDone {
-		rec.Done, rec.Summary = facts.Done.Status, facts.Done.Summary
+		rec.Done, rec.Summary = facts.Done.Status, CapTurnText(facts.Done.Summary, cfg.GetMaxTextBytes())
 	}
 	if facts.FromID != "" {
 		rec.ReplyTo = facts.FromID
@@ -431,7 +440,18 @@ func commsTailDescribes(facts TurnFacts, e CommsSpoolEntry, text string) bool {
 // the daemon never opens the ledger on the inbox path. A no-op with the
 // ledger off or for tools that spool text.
 func (d *TransitionDaemon) commsStatusEdge(inst *Instance, from, to string, at time.Time) {
-	if inst == nil || !CommsLedgerEnabled() || commsHasTextProducer(inst.Tool) {
+	if inst == nil || commsHasTextProducer(inst.Tool) {
+		return
+	}
+	d.commsInboxOnlyEdge(inst, from, to, at)
+}
+
+// commsInboxOnlyEdge spools a status edge for something only the inbox
+// path observed, whatever the child's harness: an edge with no turn text,
+// a flip into the error status, a flip whose transcript is stale. A no-op
+// with the ledger off.
+func (d *TransitionDaemon) commsInboxOnlyEdge(inst *Instance, from, to string, at time.Time) {
+	if inst == nil || !CommsLedgerEnabled() {
 		return
 	}
 	if err := WriteCommsSpool(CommsSpoolEntry{

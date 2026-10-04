@@ -96,8 +96,15 @@ func saveStopBlockCountLocked(instanceID string, count int) error {
 // budget is exhausted it returns no-block WITHOUT draining, so pending records
 // are preserved for the heartbeat path (never lost to the guard).
 func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision, bool, error) {
+	decision, blocked, _, err := drainForStopHook(instanceID, stopHookActive, nil)
+	return decision, blocked, err
+}
+
+// drainForStopHook is DrainForStopHook leaving out the records whose turn
+// the caller already showed (consumed, not shown again).
+func drainForStopHook(instanceID string, stopHookActive bool, shown func(TransitionNotificationEvent) bool) (StopHookDecision, bool, []TransitionNotificationEvent, error) {
 	if strings.TrimSpace(instanceID) == "" {
-		return StopHookDecision{}, false, nil
+		return StopHookDecision{}, false, nil, nil
 	}
 
 	// Audit B12 fast path + scope: a session with nothing pending — every leaf /
@@ -106,7 +113,7 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	// to) ever has a pending inbox, so the global Stop-hook sync flip is inert
 	// for non-conductor sessions. Cheap stat, no consume.
 	if !InboxHasPending(instanceID) {
-		return StopHookDecision{}, false, nil
+		return StopHookDecision{}, false, nil, nil
 	}
 	// Issue #2469, design principle 4: a busy parent is interrupted at its
 	// turn boundary only for urgent records. Info records stay queued and are
@@ -114,7 +121,7 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	// anyway (or by the info digest). When an urgent record is present the
 	// whole queue is drained so the info rides along in the same block.
 	if !InboxHasUrgentPending(instanceID) {
-		return StopHookDecision{}, false, nil
+		return StopHookDecision{}, false, nil, nil
 	}
 
 	stopBlockMu.Lock()
@@ -130,7 +137,7 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	// pending records untouched for the heartbeat to drain. The counter is
 	// already at its persisted value, so no write is needed.
 	if count >= MaxStopHookBlocks {
-		return StopHookDecision{}, false, nil
+		return StopHookDecision{}, false, nil, nil
 	}
 
 	// Audit B4: reserve the block slot durably BEFORE draining (which consumes
@@ -142,12 +149,21 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 			slog.String("instance", instanceID),
 			slog.String("error", err.Error()),
 		)
-		return StopHookDecision{}, false, err
+		return StopHookDecision{}, false, nil, err
 	}
 
-	events, err := DrainInboxForParent(instanceID)
+	drained, err := DrainInboxForParent(instanceID)
 	if err != nil {
-		return StopHookDecision{}, false, err
+		return StopHookDecision{}, false, nil, err
+	}
+	var events []TransitionNotificationEvent
+	for _, ev := range drained {
+		if shown == nil || !shown(ev) {
+			events = append(events, ev)
+		}
+	}
+	if dup := len(drained) - len(events); dup > 0 {
+		_ = BumpInboxStats(instanceID, func(s *InboxStats) { s.ShadowedByLedger += int64(dup) })
 	}
 	if len(events) == 0 {
 		// Race: another drain (heartbeat) emptied the inbox between the peek and
@@ -159,7 +175,7 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 				slog.String("error", rbErr.Error()),
 			)
 		}
-		return StopHookDecision{}, false, nil
+		return StopHookDecision{}, false, nil, nil
 	}
 
 	reason := FormatCompletionsForInjection(events)
@@ -172,7 +188,7 @@ func DrainForStopHook(instanceID string, stopHookActive bool) (StopHookDecision,
 	return StopHookDecision{
 		Decision: "block",
 		Reason:   reason,
-	}, true, nil
+	}, true, events, nil
 }
 
 // urgentLatencyMS returns the age of the newest urgent record in ms, or 0.

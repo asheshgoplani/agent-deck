@@ -35,5 +35,6 @@
 - When a middleware validates HTTP Host, direct-handler tests must send a realistic local Host: `httptest.NewRequest` defaults to `example.com` for relative URLs, causing unrelated route assertions to fail with 421. Keep an explicit test request helper and preserve absolute-URL Hosts for authority tests.
 - Host validation spans the CLI-built server as well as `internal/web`: update direct-handler fixtures in both packages. A web-package-only green result cannot clear the CLI package gate.
 
+- Inbox fixtures that bypass transcript classification must supply the production `LastOutputHash` signal from `TurnFacts.Signal()` alongside `TurnUUID`. Otherwise distinct turns with the same child and status collapse in the existing consumed-turn ledger before the exact ledger/inbox shown-key filter runs.
 - Resolve pending digest identity before same-turn replacement: an escalation must retain the digest count and dedup history. An info-only backlog proves that overflow still needs normal urgent wake gating.
 - Retention failure must not become record loss. Test both lock acquisition and rename failures, and keep appending when best-effort rotation cannot proceed.

@@ -416,7 +416,107 @@ past about a gigabyte in one window needs paging, which is not built.
 (`inbox/tmux`, `inbox/stop`, `ledger/tmux`, ...) so a canary parent on
 the ledger path can be compared with the others on the inbox path.
 
+## Delivery (P2 canary: `[comms] consumers`)
+
+```toml
+[comms]
+ledger = true
+consumers = ["conductor-ops"]   # session ids, titles unique in the profile, or "*"
+```
+
+A listed **Claude** parent is **enrolled** by the daemon on its next
+pass: its consumer state starts at the end of the log (the inbox
+delivered what came before), `mode` is `ledger`, and a marker
+`<runtime>/comms/consumers/<id>.json` (with the enrollment time and
+cursor) tells its hooks where the ledger is. A Codex parent stays on the
+inbox in this phase: no prompt hook is installed for Codex, and a
+wake-only path could strand records; Codex children are recorded with
+their text like any other.
+
+**The inbox runs unchanged.** Enrollment keeps every inbox record and all
+inbox wakes, info digests and Stop blocks, exactly as without the canary.
+There is no coverage marker and no ledger digest. The inbox continues to
+handle transcript turns, status edges, reply copies to tagged senders,
+run-task completions, remote records, alerts and retries.
+
+**The ledger adds prompt context.** At `UserPromptSubmit`,
+`LedgerPromptContext` injects pending ledger news (turn, send, delivery and
+error records), then runs the inbox prompt drain in the remaining space
+of one 9000-byte budget. Status edges and reply copies addressed to the
+tagged sender are left to the inbox. Records that do not fit remain
+pending for a later prompt.
+
+Duplicates are removed by **exact transcript turn identity**, in both
+directions. An inbox record's key is
+`comms.Key(comms.KindTurn, ev.ChildSessionID, ev.TurnUUID)`; its ledger
+twin uses `r.Key`. `LedgerDelivery.Done(true)` remembers keys shown by
+either prompt or Stop path in `ConsumerFile.Shown` through `NoteShown`.
+`WasShown` prevents a later ledger copy from repeating an inbox turn;
+the inbox drain retires a twin already shown by the ledger, including
+one selected for the current prompt. Matching text, a recent record
+from the same child, or an unread spool is never evidence that a turn
+was shown. Error edges, stale hashes and records without a matching local
+transcript UUID signal keep their inbox delivery. Done context includes both
+the summary and body before its inbox twin is retired. `shadowed_by_ledger`
+counts inbox twins retired by the shown-turn filter.
+
+| News | Parent idle | Parent busy |
+|---|---|---|
+| Turns and sends in the ledger | No ledger wake; text rides the next prompt. The inbox still wakes and digests as before. | No ledger-triggered Stop block; the inbox Stop drain runs with the shown-turn filter. |
+| Ledger-only urgent records, such as an urgent delivery failure | One typed ledger wake line carries the urgent records' text and ids, at most 900 bytes; long records get a marked preview and arrive whole in prompt context. | No typing; the ledger Stop decision blocks with pending context, subject to the inbox's `MaxStopHookBlocks` budget. |
+| Other pending ledger news | Context on the next prompt; no ledger digest. | Context on the next prompt. |
+
+`ledgerOnlyUrgent` excludes turns and sends. When there is no ledger
+block, `LedgerStopDecision` itself calls the inbox Stop drain and returns
+its decision, including a block for remote urgent text. The hook handler
+prints that returned decision. In P2b, ledger-only urgent records have no
+production producer yet (the wake-cap error is informational). This phase
+therefore does not move the #2482 wake targets; inbox wakes remain unchanged.
+
+Acknowledgement follows the P0 receipt contract: a wake line's records
+remain in flight until the prompt it starts names their ids. Only records
+the wake carried whole are acknowledged that way; a child quoting
+another id acknowledges nothing, and a previewed record is injected
+whole. Injected and Stop-block records remain in flight until the turn
+that carried them ends at Stop or the next prompt starts. A ledger
+injection the hook could not print returns to pending. A wake that did
+not start a turn within 90 seconds while the parent is idle again is
+retried once, then waits for the next prompt.
+
+Ledger wakes are limited to one per parent per minute. After
+`comms.MaxAutoWakes` (20) ledger wakes and Stop blocks without a prompt of
+the parent's own, automatic ledger wakes pause and one `error` record
+explains the pause. The daemon touches only idle parents and skips the
+pass when nothing new arrived and no settle or debounce deadline is due.
+
+**Transitions.** Removing a parent from the list (or turning the ledger
+off) makes the marker `draining`: the inbox continues unchanged, and
+the hooks still deliver every ledger record signalled before it left,
+however late the ledger committed it, then remove the marker
+`commsDrainGrace` (10 min) after leaving. A parent re-listed while it
+drains keeps what the ledger owed and skips what the inbox delivered
+meanwhile. A consumer state that becomes unreadable or goes missing is
+never recreated by a hook (that would start at the end); the hooks fall
+back to the inbox and the next daemon pass rebuilds it at the enrollment
+cursor (a `state_rebuilt` gap; records re-delivered, at least once). A
+hook pass that leaves records pending re-arms the daemon's next pass.
+Downgrading to a binary without the canary leaves the markers in place:
+the old hooks ignore them and the inbox delivers everything (it kept every
+record); after an upgrade the parent resumes where the ledger left it, so
+records the inbox delivered meanwhile can repeat.
+
+Not in this phase: Gemini, Cursor, pi, Hermes, OpenCode and Codex parents
+stay on the inbox; the Claude cross-session socket is not used (tmux typed
+line only, through the same `session send --no-wait` the inbox wake uses).
+
 ## Surface
+
+P2 delivery canary: `internal/comms/delivery.go`,
+`internal/session/comms_deliver.go`; config key `[comms] consumers`;
+markers under `<runtime>/comms/consumers/`; inbox stats counter
+`shadowed_by_ledger`. Hooks installed per harness unchanged (the existing
+Claude prompt and Stop hooks print the ledger's context); daemons
+unchanged.
 
 P2 (msg verbs): `internal/comms/{consumer,stats}.go`,
 `cmd/agent-deck/msg_cmd.go`; on disk `cursors/` and `pending/` under the

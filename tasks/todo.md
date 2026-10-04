@@ -57,6 +57,13 @@
 - [x] Complete the G14 race gate and inspect its exact result.
 - [x] Refresh the patch and final RESULTS.md receipt.
 
+# PR #2498 verifier round 4
+
+- [x] Reproduce the focused Docker failures and trace the missing inbox turn.
+- [x] Update legacy delivery tests, production-shaped turn fixtures and docs.
+- [x] Pass focused session and CLI race tests, gofmt and Docker vet.
+- [x] Commit once locally and write codex-pr2/DONE.md.
+
 # PR #2496 item 7, Round 2
 
 - [x] Read brief, verifier, report and current main; rebase with same-turn retry support.

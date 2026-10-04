@@ -25,17 +25,45 @@ const inboxContextHeader = "[agent-deck inbox]"
 // starting and renders them for injection. Returns "" when nothing is
 // pending (the common case for every leaf session: two stats, no writes).
 func DrainForPrompt(instanceID string) (string, []TransitionNotificationEvent, error) {
+	return drainForPrompt(instanceID, promptContextBudgetBytes, nil)
+}
+
+// drainForPrompt is DrainForPrompt within budget bytes. A record whose turn
+// the caller already showed (shown reports it, by the record's exact turn
+// identity) is consumed without being shown again: the Comms Ledger's
+// prompt hook passes the turns it showed.
+func drainForPrompt(instanceID string, budget int, shown func(TransitionNotificationEvent) bool) (string, []TransitionNotificationEvent, error) {
 	if strings.TrimSpace(instanceID) == "" || !InboxHasPending(instanceID) {
 		return "", nil, nil
 	}
-	var left int
-	events, err := DrainInboxForParentWhere(instanceID, func(pending []TransitionNotificationEvent) []TransitionNotificationEvent {
-		take := selectRecordsForBudget(pending, promptContextBudgetBytes)
-		left = len(pending) - len(take)
-		return take
+	var left, dup int
+	drained, err := DrainInboxForParentWhere(instanceID, func(pending []TransitionNotificationEvent) []TransitionNotificationEvent {
+		var fresh, seen []TransitionNotificationEvent
+		for _, ev := range pending {
+			if shown != nil && shown(ev) {
+				seen = append(seen, ev)
+			} else {
+				fresh = append(fresh, ev)
+			}
+		}
+		take := selectRecordsForBudget(fresh, budget)
+		left, dup = len(fresh)-len(take), len(seen)
+		return append(take, seen...)
 	})
-	if err != nil || len(events) == 0 {
+	if err != nil {
 		return "", nil, err
+	}
+	var events []TransitionNotificationEvent
+	for _, ev := range drained {
+		if shown == nil || !shown(ev) {
+			events = append(events, ev)
+		}
+	}
+	if dup > 0 {
+		_ = BumpInboxStats(instanceID, func(s *InboxStats) { s.ShadowedByLedger += int64(dup) })
+	}
+	if len(events) == 0 {
+		return "", nil, nil
 	}
 	text := FormatInboxRecords(events, fmt.Sprintf("%s %s pending from your children — act on each (the text is the child's own words; do not re-read the child unless you need more):", inboxContextHeader, countByTier(events)))
 	if left > 0 {

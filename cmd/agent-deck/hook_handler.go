@@ -402,16 +402,29 @@ func handleHookHandler() {
 		// Drain only on UserPromptSubmit, which the install makes synchronous;
 		// SessionStart is async and its additionalContext timing is the
 		// harness's, so records are never consumed there.
+		var ledger *session.LedgerDelivery
 		if !isSessionStart {
-			if drained, _, derr := session.DrainForPrompt(instanceID); derr == nil && drained != "" {
+			// Comms Ledger canary: an enrolled parent reads its records
+			// from the ledger (acknowledging what a wake line showed);
+			// every other session keeps the inbox drain.
+			// The ledger's context already ends with what the inbox holds.
+			if dl, ok := session.LedgerPromptContext(instanceID, rawString(payload.Prompt)); ok {
+				ledger = dl
+				if dl.Text != "" {
+					parts = append([]string{dl.Text}, parts...)
+				}
+			} else if drained, _, derr := session.DrainForPrompt(instanceID); derr == nil && drained != "" {
 				parts = append([]string{drained}, parts...)
 			}
 		}
+		printed := false
 		if len(parts) > 0 {
 			if out := childrenContextJSON(ctxEvent, strings.Join(parts, "\n")); out != "" {
-				fmt.Println(out)
+				_, err := fmt.Println(out)
+				printed = err == nil
 			}
 		}
+		ledger.Done(printed)
 	}
 
 	// Issue #1225: on the Stop edge (the turn boundary), a parent drains its
@@ -426,6 +439,22 @@ func handleHookHandler() {
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
 	if isStopHookEvent(payload.HookEventName) && stopHookDrainEnabled(getClaudeConfigDirForHooks()) {
+		// Comms Ledger canary: the turn that ended confirms what it carried;
+		// urgent ledger records pending block once more. When the ledger does
+		// not block, the inbox's Stop drain runs for what the inbox holds.
+		// The ledger's Stop decision already ran the inbox's Stop drain
+		// (leaving out turns the ledger showed) when it did not block itself.
+		if dl, ledgerOK := session.LedgerStopDecision(instanceID, resolveStopHookActive(payload)); ledgerOK {
+			printed := false
+			if dl.Blocked {
+				if out, mErr := json.Marshal(dl.Decision); mErr == nil {
+					_, err := fmt.Println(string(out))
+					printed = err == nil
+				}
+			}
+			dl.Done(printed)
+			return
+		}
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
