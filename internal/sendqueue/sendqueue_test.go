@@ -172,20 +172,34 @@ func TestPendingTargetsAndPrune(t *testing.T) {
 	}
 }
 
-// TestRecordAttemptLimitAcceptsOldRecords: a record written before the
-// attempt bound existed (no max_attempts, no sender) still parses and gets
-// the default bound; a new record keeps its own (issue #2481).
-func TestRecordAttemptLimitAcceptsOldRecords(t *testing.T) {
+// TestRecordSenderIsAdditive: a record written before the sender field
+// existed still parses; a new record keeps its sender (issue #2481).
+func TestRecordSenderIsAdditive(t *testing.T) {
 	var old Record
-	if err := json.Unmarshal([]byte(`{"send_id":"x","state":"queued","attempts":2}`), &old); err != nil {
-		t.Fatal(err)
+	if err := json.Unmarshal([]byte(`{"send_id":"x","state":"queued","attempts":2}`), &old); err != nil || old.Sender != "" || old.Attempts != 2 {
+		t.Fatalf("old record: %+v %v", old, err)
 	}
-	if old.AttemptLimit() != DefaultMaxAttempts || old.Sender != "" {
-		t.Fatalf("old record: limit %d sender %q", old.AttemptLimit(), old.Sender)
-	}
-	b, _ := json.Marshal(Record{SendID: "y", MaxAttempts: 3, Sender: "cli"})
+	b, _ := json.Marshal(Record{SendID: "y", Sender: "cli"})
 	var cur Record
-	if err := json.Unmarshal(b, &cur); err != nil || cur.AttemptLimit() != 3 || cur.Sender != "cli" {
+	if err := json.Unmarshal(b, &cur); err != nil || cur.Sender != "cli" {
 		t.Fatalf("new record round trip: %+v %v", cur, err)
+	}
+}
+
+// TestRetryDelayDoublesToCap: the wait after a refusal doubles from the base
+// and stops at the cap.
+func TestRetryDelayDoublesToCap(t *testing.T) {
+	base, max := time.Second, time.Minute
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, time.Minute, time.Minute}
+	for i, w := range want {
+		if got := RetryDelay(base, max, i+1); got != w {
+			t.Errorf("RetryDelay(attempts=%d) = %v, want %v", i+1, got, w)
+		}
+	}
+	if got := RetryDelay(base, max, 0); got != base {
+		t.Errorf("RetryDelay(0) = %v, want %v", got, base)
+	}
+	if got := RetryDelay(base, max, 1000); got != max {
+		t.Errorf("RetryDelay(1000) = %v, want %v", got, max)
 	}
 }

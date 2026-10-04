@@ -628,6 +628,15 @@ func (c *CLIOutput) Success(message string, data interface{}) {
 	fmt.Printf("%s %s\n", successSymbol, message)
 }
 
+// QuietNotice prints message on stderr in quiet mode only (Success already
+// printed it otherwise): a quiet caller still learns an outcome that is not
+// the plain success its silence stands for (issue #2481).
+func (c *CLIOutput) QuietNotice(message string) {
+	if c.quietMode {
+		fmt.Fprintln(os.Stderr, message)
+	}
+}
+
 // Error prints an error message or JSON error response
 func (c *CLIOutput) Error(message string, code string) {
 	c.ErrorWithData(message, code, nil)

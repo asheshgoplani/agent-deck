@@ -38,11 +38,26 @@ const (
 // DefaultRetryBudget is how long a send may wait for a busy target.
 const DefaultRetryBudget = 30 * time.Minute
 
-// DefaultMaxAttempts bounds how often a send refused before typing
-// (composer_blocked, target_busy) is tried again before it fails, so a
-// target whose composer stays blocked is not retyped for the whole retry
-// budget (issue #2481: 14 and 18 loops measured).
-const DefaultMaxAttempts = 5
+// DefaultRetryBackoffMax caps the wait between two attempts of a send
+// refused before typing (composer_blocked, target_busy). The wait doubles
+// from the worker poll up to this cap, so a composer held by a human typing
+// is retried a few times a minute at first and then once a minute until the
+// retry budget ends, not every second (issue #2481: 19 and 15 attempts
+// within five minutes measured).
+const DefaultRetryBackoffMax = time.Minute
+
+// RetryDelay is the wait before the next attempt of a send that has been
+// refused attempts times: base doubled per refusal, capped at max.
+func RetryDelay(base, max time.Duration, attempts int) time.Duration {
+	d := base
+	for i := 1; i < attempts && d < max; i++ {
+		d *= 2
+	}
+	if d > max {
+		return max
+	}
+	return d
+}
 
 // RetainFinished is how long finished records stay readable by send-status.
 const RetainFinished = 7 * 24 * time.Hour
@@ -64,9 +79,6 @@ type Record struct {
 	Deadline     string   `json:"deadline"`
 	Attempts     int      `json:"attempts"`
 	SentAt       string   `json:"sent_at,omitempty"`
-	// MaxAttempts bounds Attempts for refusals before typing; 0 (a record
-	// written before the bound existed) means DefaultMaxAttempts.
-	MaxAttempts int `json:"max_attempts,omitempty"`
 	// Sender is who queued the send: the calling session's id, or "cli".
 	// The delivering child journals it as the send's sender.
 	Sender string `json:"sender,omitempty"`
@@ -84,14 +96,6 @@ type Record struct {
 	// Settled marks a typed/submitted send whose text was not found in the
 	// transcript within the watch window: it is never typed again.
 	Settled bool `json:"settled,omitempty"`
-}
-
-// AttemptLimit is the bound on Attempts for this record.
-func (r *Record) AttemptLimit() int {
-	if r.MaxAttempts > 0 {
-		return r.MaxAttempts
-	}
-	return DefaultMaxAttempts
 }
 
 // Final reports whether the worker is done with the record.

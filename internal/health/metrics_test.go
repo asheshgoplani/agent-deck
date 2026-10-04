@@ -151,3 +151,19 @@ func TestPercentiles(t *testing.T) {
 		t.Fatalf("%v %v", p50, p95)
 	}
 }
+
+// TestSessionMetricsSkipsFinalSendRecords: a queued send's terminal record
+// (detail.final) summarizes attempts already counted and is not a send of
+// its own (issue #2481).
+func TestSessionMetricsSkipsFinalSendRecords(t *testing.T) {
+	t0 := time.Date(2026, 10, 4, 10, 0, 0, 0, time.UTC)
+	events := []Event{
+		{TS: t0, SessionID: "s", Kind: KindSend, Detail: map[string]any{"outcome": SendFailed, "delivery": "composer_blocked", "send_id": "q1", "attempt": 1}},
+		{TS: t0.Add(time.Second), SessionID: "s", Kind: KindSend, Detail: map[string]any{"outcome": SendConfirmed, "delivery": "submitted", "send_id": "q1", "attempt": 2}},
+		{TS: t0.Add(2 * time.Second), SessionID: "s", Kind: KindSend, Detail: map[string]any{"outcome": SendConfirmed, "delivery": "landed", "send_id": "q1", "final": true, "attempts": 2}},
+	}
+	m := ComputeSessionMetrics("s", events, t0.Add(-time.Minute), t0.Add(time.Minute))
+	if m.Sends.Count != 2 || m.Sends.Failed != 1 || m.Sends.Confirmed != 1 {
+		t.Fatalf("sends = %+v, want the 2 attempts only", m.Sends)
+	}
+}

@@ -187,6 +187,11 @@ func foldSession(events []Event, until time.Time) sessionFold {
 			}
 			f.last = &events[i]
 		case KindSend:
+			if isFinalSendRecord(e) {
+				// A queued send's terminal summary: its attempts were
+				// already counted as they happened.
+				continue
+			}
 			f.sends.Count++
 			switch stringDetail(e, "outcome") {
 			case SendConfirmed:
@@ -353,4 +358,11 @@ func formatSessionAggregate(a *SessionAggregate) string {
 	fmt.Fprintf(&b, "  turns/day: %s; median turn: %s; unconfirmed send rate: %s; restarts/day: %s\n", formatPerDay(a.TurnsPerDay), FormatMS(a.MedianTurnMS), FormatRate(a.UnconfirmedSendRate), formatPerDay(a.RestartsPerDay))
 	fmt.Fprintf(&b, "  sessions with dead letters: %s\n", FormatCount(a.SessionsWithDeadLetters))
 	return b.String()
+}
+
+// isFinalSendRecord reports a queued send's terminal record (detail.final),
+// written once per send_id after its per-attempt records (issue #2481).
+func isFinalSendRecord(e Event) bool {
+	final, _ := e.Detail["final"].(bool)
+	return final
 }
