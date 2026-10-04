@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 	"github.com/asheshgoplani/agent-deck/internal/health"
 )
@@ -120,6 +121,17 @@ type TransitionDaemon struct {
 	//
 	// Accessed only from the single-threaded Run loop, like lastProbeStall.
 	lastDesktopNotify map[string]string
+
+	// Comms Ledger (docs/comms.md): one open ledger per profile with its
+	// daemon.lock handle, the time of the last failed open or commit per
+	// profile (retry backoff), the last prompt-start edge seen per child
+	// (the trigger of its next turn), and the last spool prune. Single-
+	// threaded, like the maps above.
+	ledgers          map[string]*comms.Ledger
+	ledgerLocks      map[string]*os.File
+	ledgerOpenFailed map[string]time.Time
+	commsPrompts     map[string]CommsSpoolEntry
+	lastCommsPrune   time.Time
 
 	// journalWriters holds the per-profile writer for the session event
 	// journal, resolved once per profile for the daemon's lifetime and nil
@@ -613,6 +625,9 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// Runs on EVERY pass, the first scan included — see the FIRST SCAN note on
 	// recordTerminalTurns for why suppressing it would recreate the field bug.
 	d.recordTerminalTurns(profile, byID, statuses, hookStatuses)
+	// Comms Ledger: a second, independent store fed from the producers'
+	// spool. Runs after the inbox path so nothing above changes.
+	d.ingestCommsSpool(profile, byID)
 	d.journalStatusChanges(profile, byID, statuses, substates)
 	if cfg, _ := LoadUserConfig(); cfg != nil && cfg.Macapp.TranscriptEvents {
 		transcriptGrowth.publish(profile, instances)
@@ -1141,6 +1156,7 @@ func (d *TransitionDaemon) shutdown() {
 	// Flush any in-flight async dispatches before closing storage so their
 	// logEvent/logMissed writes aren't lost when the process exits.
 	d.Flush()
+	d.closeCommsLedgers()
 	for _, s := range d.storages {
 		if s != nil {
 			_ = s.Close()

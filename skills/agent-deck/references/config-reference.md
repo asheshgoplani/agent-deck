@@ -33,6 +33,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[recall] Section](#recall-section)
 - [[notifications] Section](#notifications-section)
 - [[inbox] Section](#inbox-section)
+- [[comms] Section](#comms-section)
 - [[send] Section](#send-section)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
@@ -1009,6 +1010,13 @@ wake_on = ["urgent", "info"]     # restores a wake per recorded turn for this co
 
 Measure the effect with `agent-deck inbox stats self` (or `--all`): records by tier, turns suppressed as noise or duplicates, wakeups fired and withheld, bytes injected.
 
+## [comms] Section
+
+The Comms Ledger (docs/comms.md): one append-only message log per profile, written only by the notify-daemon, fed by the hooks agent-deck already installs. Off by default while it is canaried; with it on, every finished turn of a Claude or Codex child lands as one record with the child's text next to the `[inbox]` record, every other harness (Gemini, Cursor, pi, Hermes, OpenCode, shell) records its status edges only in this phase, and `agent-deck events follow --bus comms` streams them. Nothing else changes.
+
+```toml
+[comms]
+ledger = true   # default false
 ## [send] Section
 
 Tunes `agent-deck session send` (comms redesign PR5).
@@ -1028,6 +1036,7 @@ talkback_interval_secs = 30   # 0 / unset = off
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `ledger` | bool | `false` | Spool hook text to `runtime/comms/spool/` and let the notify-daemon commit records to `comms/<profile>/`. `false`: no spool file, no ledger directory. |
 | `tag_sends` | bool | `true` | A `session send` from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one `[agent-deck from:<sender-id>]` line, so the receiver's reply is classified as a send and, when the sender is not the receiver's parent, committed to the sender's inbox as an urgent `reply` record that wakes it (also when the receiver has no parent). `false` turns tagging off for every send (`--no-tag` does it per send). Human shells, senders that are not Claude-compatible sessions, `--draft`, bare slash commands, heartbeats, sends to oneself and non-Claude targets are never tagged. |
 | `talkback_interval_secs` | int | `0` (off) | Every N seconds the notify-daemon runs the same incremental drain as `agent-deck remote drain <name> --into <conductor>` for every local `conductor-*` session enrolled with that remote (it has a cursor for it, i.e. it drained it once, or it holds a pending record from it). 30 is a good value. The drain runs off the poll loop, bounded at 60 s, and a remote with a drain in flight is skipped. A failure backs off from 1 min to 10 min; after 3 consecutive failures each enrolled conductor gets ONE urgent record (`remote <name>: talkback failing for N min: <last error>`), and a success clears the streak. An ingested urgent record wakes an idle conductor exactly like a local one; info records ride its next turn. |
 
