@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -449,13 +448,8 @@ func (d *TransitionDaemon) logProbeStall(profile, instanceID, reason string) {
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = f.Write(append(line, '\n'))
-	if err := f.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "logProbeStall: close %s: %v\n", path, err)
+	if err := appendRotatingLogLine(path, line, transitionLogRotation); err != nil {
+		commsLog.Debug("probe_stall_log_write_failed", slog.String("path", path), slog.String("error", err.Error()))
 	}
 }
 

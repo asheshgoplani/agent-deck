@@ -695,7 +695,13 @@ func writeIndentedJSON(w io.Writer, v any) error {
 // terminal and the owner audits it after the fact. Same policy as the
 // notify daemon, hence the shared setup.
 func initUpdateCommandLogging() func() {
-	return initDaemonLogging()
+	shutdown := initDaemonLogging()
+	return func() {
+		if err := session.RotateAutoUpdateLog(); err != nil {
+			slog.Debug("auto_update_log_rotation_failed", "error", err)
+		}
+		shutdown()
+	}
 }
 
 // pendingLaunchAgentsForCheck is the pending marker as `update --check`

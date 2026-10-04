@@ -205,9 +205,18 @@ func BumpInboxStats(parentID string, fn func(*InboxStats)) error {
 
 // ResetInboxStats removes a parent's counters.
 func ResetInboxStats(parentID string) error {
+	parentID = strings.TrimSpace(parentID)
+	if parentID == "" {
+		return nil
+	}
 	inboxStatsMu.Lock()
 	defer inboxStatsMu.Unlock()
-	err := os.Remove(inboxStatsPath(parentID))
+	lock, err := AcquireConfigFileLock(inboxStatsPath(parentID))
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	err = os.Remove(inboxStatsPath(parentID))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

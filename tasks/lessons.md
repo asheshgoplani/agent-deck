@@ -34,3 +34,6 @@
 - A route coverage test that calls an SSE endpoint through `ServeHTTP` must cancel its request context before invoking the handler; an allowed stream otherwise stays open and stalls the entire package gate.
 - When a middleware validates HTTP Host, direct-handler tests must send a realistic local Host: `httptest.NewRequest` defaults to `example.com` for relative URLs, causing unrelated route assertions to fail with 421. Keep an explicit test request helper and preserve absolute-URL Hosts for authority tests.
 - Host validation spans the CLI-built server as well as `internal/web`: update direct-handler fixtures in both packages. A web-package-only green result cannot clear the CLI package gate.
+
+- Resolve pending digest identity before same-turn replacement: an escalation must retain the digest count and dedup history. An info-only backlog proves that overflow still needs normal urgent wake gating.
+- Retention failure must not become record loss. Test both lock acquisition and rename failures, and keep appending when best-effort rotation cannot proceed.

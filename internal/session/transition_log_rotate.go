@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 )
 
@@ -22,8 +23,14 @@ type logRotation struct {
 }
 
 // transitionLogRotation is the retention for transition-notifier.log: 8 MiB
-// live plus 4 rotated files, about six months at the busiest measured host's
+// live plus 4 rotated files, about eight months at the busiest measured host's
 // rate (~170 KB/day). A var so tests can shrink it.
+// Retention is deliberately size-only: quiet installations keep sparse forensic
+// history without an age deadline, while disk usage remains bounded. Using mtime
+// as file age would never rotate a continuously appended file; a creation-age
+// policy would need extra persistent metadata. The issue permits size or age.
+// Diagnostic notifier logs share this policy. Rotation failures are best-effort:
+// appending the record takes precedence over the size bound.
 var transitionLogRotation = logRotation{MaxBytes: 8 << 20, Keep: 4}
 
 // appendRotatingLogLine appends line plus a newline to path, first rotating
@@ -34,7 +41,7 @@ func appendRotatingLogLine(path string, line []byte, r logRotation) error {
 	need := int64(len(line)) + 1
 	if r.due(path, need) {
 		if err := r.rotate(path, need); err != nil {
-			return err
+			commsLog.Debug("log_rotation_failed", slog.String("path", path), slog.String("error", err.Error()))
 		}
 	}
 	return appendLogLine(path, line)
@@ -78,4 +85,18 @@ func (r logRotation) due(path string, need int64) bool {
 // rotatedLogPath names the i-th rotated copy of path (1 = newest).
 func rotatedLogPath(path string, i int) string {
 	return fmt.Sprintf("%s.%d", path, i)
+}
+
+// RotateAutoUpdateLog bounds launchd's stdout/stderr log after an update command
+// finishes. The next scheduled process reopens the active path. Unlike per-line
+// notifier logs, this cap is checked per run, so one run may exceed MaxBytes.
+func RotateAutoUpdateLog() error {
+	path, err := logDataPath("auto-update.log")
+	if err != nil {
+		return err
+	}
+	if !transitionLogRotation.due(path, 0) {
+		return nil
+	}
+	return transitionLogRotation.rotate(path, 0)
 }

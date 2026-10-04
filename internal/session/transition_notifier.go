@@ -804,7 +804,7 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 	if err != nil {
 		return
 	}
-	if err := appendLogLine(n.missedPath, line); err != nil {
+	if err := appendRotatingLogLine(n.missedPath, line, transitionLogRotation); err != nil {
 		commsLog.Debug("transition_notify_missed_log_write_failed", slog.String("path", n.missedPath), slog.String("error", err.Error()))
 	}
 }
@@ -882,7 +882,7 @@ func (n *TransitionNotifier) logOrphanOnce(event TransitionNotificationEvent, ch
 	if err != nil {
 		return
 	}
-	if err := appendLogLine(path, line); err != nil {
+	if err := appendRotatingLogLine(path, line, transitionLogRotation); err != nil {
 		commsLog.Debug("transition_notify_orphan_log_write_failed", slog.String("path", path), slog.String("error", err.Error()))
 	}
 }

@@ -59,9 +59,10 @@ const maxPendingTurnsPerChild = 64
 type inboxCommitOutcome int
 
 const (
-	inboxCommitAdded    inboxCommitOutcome = iota // a new record was queued
-	inboxCommitReplaced                           // a pending copy of the same turn was replaced (a retry)
-	inboxCommitDigested                           // the turn was folded into the child's overflow digest
+	inboxCommitAdded     inboxCommitOutcome = iota // a new record was queued
+	inboxCommitReplaced                            // a pending copy of the same turn was replaced (a retry)
+	inboxCommitDigested                            // the turn was folded into the child's overflow digest
+	inboxCommitUnchanged                           // a replay was already counted in the digest
 )
 
 // capDoneSummary truncates an over-long completion summary to maxDoneSummaryBytes,
@@ -158,7 +159,8 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 
 // commitToInbox is CommitToInbox that also returns the record as stored and
 // whether the write added it, replaced a still-pending copy of the same turn
-// (a retry), or folded it into the child's overflow digest.
+// (a retry), folded it into the child's overflow digest, or left an already
+// counted digest replay unchanged.
 func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (stored TransitionNotificationEvent, outcome inboxCommitOutcome, err error) {
 	if strings.TrimSpace(parentSessionID) == "" {
 		return event, inboxCommitAdded, errors.New("inbox commit: empty parent session id")
@@ -201,7 +203,10 @@ func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (s
 	case digest != nil && event.OverflowTurns == 0 && digestHoldsTurn(*digest, event.TurnFingerprint):
 		// A replay of a turn already folded into the digest: it is counted
 		// there, and replacing the digest with it would lose the count.
-		return *digest, inboxCommitDigested, nil
+		return *digest, inboxCommitUnchanged, nil
+	case digest != nil && event.OverflowTurns == 0 && sameInboxTurn(*digest, event):
+		event = foldIntoOverflowDigest(event, digest)
+		outcome = inboxCommitDigested
 	case retry:
 		outcome = inboxCommitReplaced
 	case pendingForChild >= maxPendingTurnsPerChild:
@@ -248,11 +253,17 @@ func sameInboxTurn(ev, event TransitionNotificationEvent) bool {
 // is itself a digest (pulled from a remote) adds its whole count. An urgent
 // turn keeps the digest urgent.
 func foldIntoOverflowDigest(event TransitionNotificationEvent, prev *TransitionNotificationEvent) TransitionNotificationEvent {
+	// The newest folded turn may escalate under the same UUID. Update its
+	// content and tier without counting the logical turn a second time.
+	alreadyCounted := prev != nil && event.OverflowTurns == 0 && sameInboxTurn(*prev, event)
 	if event.OverflowTurns <= 0 {
 		event.OverflowTurns = 1
 	}
 	if prev == nil {
 		return event
+	}
+	if alreadyCounted {
+		event.OverflowTurns = 0
 	}
 	folds := append(append([]string(nil), prev.OverflowFolded...), event.OverflowFolded...)
 	folds = append(folds, event.TurnFingerprint)
@@ -443,19 +454,7 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
-	f, err := os.OpenFile(s.missedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		commsLog.Warn("dead_letter_missed_log_open_failed",
-			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
-		return
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			commsLog.Warn("dead_letter_missed_log_close_failed",
-				slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
-		}
-	}()
-	if _, err := f.Write(append(line, '\n')); err != nil {
+	if err := appendRotatingLogLine(s.missedPath, line, transitionLogRotation); err != nil {
 		commsLog.Warn("dead_letter_missed_log_write_failed",
 			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 	}
@@ -727,18 +726,25 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		n.commitReplyToSender(sender, reply)
 		return false, true, ""
 	}
-	if outcome == inboxCommitDigested {
-		// The parent already holds maxPendingTurnsPerChild undrained turns
-		// from this child, each of which woke it: the digest is counted and
-		// durable, but buys no further wake.
-		n.noteCommitBackpressure(stored)
-		n.logEvent(stored)
-		n.commitReplyToSender(sender, reply)
+	n.commitReplyToSender(sender, reply)
+	if outcome == inboxCommitUnchanged {
 		return true, false, ""
 	}
-	n.clearCommitBackpressure(event.ChildSessionID)
+	if outcome == inboxCommitDigested {
+		n.noteCommitBackpressure(stored)
+	} else {
+		n.clearCommitBackpressure(event.ChildSessionID)
+	}
+	// Log the incoming turn identity, not the digest's fixed fingerprint.
 	n.logEvent(event)
-	n.commitReplyToSender(sender, reply)
+	n.wakeCommittedInbox(parent, parentWakeEvent(stored, parent))
+	return true, false, ""
+}
+
+// wakeCommittedInbox applies the same consumed-turn, tier and idle/debounce
+// gates to ordinary records, overflow digests and replies.
+func (n *TransitionNotifier) wakeCommittedInbox(parent *Instance, event TransitionNotificationEvent) {
+	parentID := parent.ID
 	// A turn the parent's consumed-turn ledger already holds is dropped by its
 	// next drain, so waking it would cost one empty "[INBOX]" turn for nothing
 	// (issue #2240, notify-daemon restart re-delivery). The record itself is left
@@ -747,7 +753,7 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	if turnAlreadyConsumed(parentID, event.TurnFingerprint) {
 		commsLog.Debug("wake_nudge_skipped_consumed_turn",
 			slog.String("parent", parentID), slog.String("turn", event.TurnFingerprint))
-		return true, false, ""
+		return
 	}
 	// Issue #2469, design principle 1: only the tiers listed in [inbox]
 	// wake_on (default: urgent) wake the parent. An info record stays durably
@@ -757,7 +763,7 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsSuppressed++ })
 		commsLog.Debug("wake_nudge_skipped_tier",
 			slog.String("parent", parentID), slog.String("tier", event.Tier), slog.String("turn", event.TurnFingerprint))
-		return true, false, ""
+		return
 	}
 	_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsUrgent++ })
 	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
@@ -765,8 +771,7 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	// the event-driven trigger — fired the moment the completion is committed,
 	// not on a poll. Best-effort and non-fatal: a dropped nudge is harmless
 	// because this same record is still drained on the parent's next turn.
-	n.fireWakeNudge(parent, parentWakeEvent(event, parent))
-	return true, false, ""
+	n.fireWakeNudge(parent, event)
 }
 
 // InboxTargetKindReply is the TargetKind of a record that answers the
@@ -841,21 +846,18 @@ func (n *TransitionNotifier) commitReplyToSender(sender *Instance, event Transit
 	event.Tier = TurnTierUrgent
 	event.DeliveryResult = transitionDeliveryCommitted
 	event.DeadLetterReason = ""
-	_, outcome, err := commitToInbox(sender.ID, event)
+	stored, outcome, err := commitToInbox(sender.ID, event)
 	if err != nil {
 		commsLog.Warn("reply_commit_failed",
 			slog.String("sender", sender.ID), slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
-	if outcome != inboxCommitAdded {
-		// The same answer is already pending, replaced in place or folded
-		// into the overflow digest (and was announced when it first landed):
-		// a retried turn must not wake the sender again.
+	if outcome == inboxCommitReplaced || outcome == inboxCommitUnchanged {
+		// The same answer is already pending; do not announce a retry.
 		return
 	}
 	n.logEvent(event)
-	_ = BumpInboxStats(sender.ID, func(s *InboxStats) { s.WakeupsUrgent++ })
-	n.fireWakeNudge(sender, event)
+	n.wakeCommittedInbox(sender, stored)
 }
 
 // noteCommitBackpressure logs a saturated parent inbox ONCE per child: from
