@@ -6,7 +6,9 @@ Go binary in Docker, and starts a second container as `r1` over SSH. No real
 model, account credentials, host home, or live tmux socket is used.
 
 The reusable `comms-matrix.yml` workflow runs four shards from `go-test.yml`.
-The existing full-test-suite gate depends on their result. Each shard retains
+It is advisory for the first week and does not feed the required full-test-suite
+gate. Review promotion after one week of clean real-PR runs; promotion is manual,
+not automatic. Each shard retains
 JSON assertions, exact command receipts, raw stdin bytes, timestamped pane
 input, hook payloads, daemon logs and source/image identities. The shell runner
 removes only its own compose project, volume, network and tagged images.

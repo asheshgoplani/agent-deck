@@ -61,7 +61,8 @@ permissions:
 
 jobs:
   comms-matrix:
-    name: Comms matrix acceptance
+    # Advisory for the first week; promote only after clean real-PR runs.
+    name: Comms matrix advisory
     uses: ./.github/workflows/comms-matrix.yml
 
   # Docs-only PRs still need the required check to REPORT, but running the
@@ -198,21 +199,18 @@ jobs:
           if-no-files-found: ignore
 
   # The single required context the main ruleset names. It passes when the
-  # comms matrix passes and either the diff is not Go-relevant or every Go
-  # shard passed. It fails (and never skips) otherwise, so a docs-only PR
-  # still reports and either acceptance failure blocks.
+  # diff is not Go-relevant or every Go shard passed. It fails (and never
+  # skips) otherwise, so a docs-only PR still reports. The comms matrix is
+  # advisory and deliberately does not feed this gate.
   full-test-suite:
     name: Full test suite (PR gate)
-    needs: [changes, shard, comms-matrix]
+    needs: [changes, shard]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Gate on shard results
         run: |
-          if [ "${{ needs.comms-matrix.result }}" != "success" ]; then
-            echo "Comms matrix failed or was cancelled."; exit 1
-          fi
           echo "go-relevant: ${{ needs.changes.outputs.go }}"
           echo "shards: ${{ needs.shard.result }}"
           if [ "${{ needs.changes.outputs.go }}" != "true" ]; then
