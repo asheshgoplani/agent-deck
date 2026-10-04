@@ -69,6 +69,9 @@ type ParentStats struct {
 	Records      int            `json:"records"`            // deliverable records addressed to it
 	Calls        int            `json:"calls"`              // session output + inbox drain it ran
 	WakeBytes    int            `json:"wake_bytes"`         // bytes typed or injected by its wakes
+	// PeakHour is the most wakes it got in any 60 minutes of the window.
+	PeakHour int     `json:"peak_hour"`
+	wakeAt   []int64 // commit times of its wakes, for PeakHour
 }
 
 // Stats is the `msg stats --json` document.
@@ -115,7 +118,7 @@ func (t *Target) set(value float64, n int) {
 // values (what an empty window or a missing ledger reports).
 func NewTargets() Targets {
 	return Targets{
-		WakesPerParentHour: Target{Target: TargetWakesPerParentHour, Op: "<=", Note: "the busiest parent's machine wakes per hour; counts the wakes agent-deck records (inbox typed nudge, inbox digest, inbox Stop-hook block, the ledger's own wakes), not heartbeats, timers or direct session sends, so it is a lower bound of the #2482 baseline's machine wakes"},
+		WakesPerParentHour: Target{Target: TargetWakesPerParentHour, Op: "<=", Note: "the busiest parent's machine wakes per hour over the window (never divided by less than one hour; parents[].peak_hour is its busiest 60 minutes); counts the wakes agent-deck records (inbox typed nudge, inbox digest, inbox Stop-hook block, the ledger's own wakes), not heartbeats, timers or direct session sends, so it is a lower bound of the #2482 baseline's machine wakes"},
 		TextPct:            Target{Target: TargetTextPct, Op: ">=", Note: "turn, status, send and human records (noise excluded) that carry text"},
 		RecordsPerFinished: Target{Target: TargetRecordsPerFinished, Op: "<=", Note: "deliverable turn and status records per turn carrying a completion sentinel"},
 		DuplicatePct:       Target{Target: TargetDuplicatePct, Op: "<=", Note: "turn records repeating a key, or a child's same text signalled within 5 s under another key"},
@@ -237,6 +240,7 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 			}
 			p.WakesBy[path+"/"+r.Via]++
 			p.WakeBytes += r.Bytes
+			p.wakeAt = append(p.wakeAt, at)
 		case KindCall:
 			if !wanted(r.From) || (r.State != CallSessionOutput && r.State != CallInboxDrain) {
 				continue
@@ -262,8 +266,12 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 
 	var calls int
 	maxRate := 0.0
+	// A rate never extrapolates a window shorter than an hour: 3 wakes in
+	// 10 minutes are 3 per hour, not 18.
+	rateHours := math.Max(st.Hours, 1)
 	for _, p := range parents {
-		p.WakesPerHour = math.Round(float64(p.Wakes)/st.Hours*100) / 100
+		p.WakesPerHour = math.Round(float64(p.Wakes)/rateHours*100) / 100
+		p.PeakHour = peakPerHour(p.wakeAt)
 		calls += p.Calls
 		if p.Wakes > 0 {
 			wakingParents++
@@ -322,6 +330,19 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 		t.CrossHostLatency.set(float64(importedTimed), imported)
 	}
 	return st, nil
+}
+
+// peakPerHour is the largest number of times inside any 60-minute span.
+func peakPerHour(at []int64) int {
+	sort.Slice(at, func(i, j int) bool { return at[i] < at[j] })
+	best, lo := 0, 0
+	for hi := range at {
+		for at[hi]-at[lo] >= time.Hour.Milliseconds() {
+			lo++
+		}
+		best = max(best, hi-lo+1)
+	}
+	return best
 }
 
 func absMS(v int64) int64 {

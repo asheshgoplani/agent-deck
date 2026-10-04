@@ -78,6 +78,9 @@ func TestStatsMeasuresTheIssueTargets(t *testing.T) {
 		t.Fatalf("hours %.3f, want the span from the first in-window record (~1.55)", hours)
 	}
 	want("wakes per parent hour", tg.WakesPerParentHour, round2(6/hours), 2, round2(6/hours) <= 4)
+	if st.Parents[0].PeakHour != 6 {
+		t.Fatalf("P's 6 wakes fall within 20 minutes: peak hour %d", st.Parents[0].PeakHour)
+	}
 	// text: turns a, done, same, same, remote, remote2 (6) + status (no
 	// text) + 3 sends (one without text) = 10, 8 with text.
 	want("text pct", tg.TextPct, 80, 10, false)
@@ -153,5 +156,21 @@ func TestStatsCallsWithoutWakesAreNotMet(t *testing.T) {
 	st, _ = ComputeStats(r.Bus, r.Store, StatsOptions{})
 	if c := st.Targets.CallsPerWake; c.Value == nil || *c.Value != 10 || c.N != 1 {
 		t.Fatalf("calls by un-woken parents count against the wakes: %+v", c)
+	}
+}
+
+// A window shorter than an hour never extrapolates: 3 wakes in 5 minutes
+// are 3 per hour.
+func TestStatsRateNeverExtrapolatesAShortWindow(t *testing.T) {
+	l, r, _ := openPair(t)
+	for i := 0; i < 3; i++ {
+		mustCommit(t, l, Record{Kind: KindWake, From: "agent-deck", To: []string{"P"}, Trigger: "ledger", Via: "tmux", Text: "w"})
+	}
+	st, err := ComputeStats(r.Bus, r.Store, StatsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := st.Targets.WakesPerParentHour.Value; v == nil || *v != 3 || st.Parents[0].PeakHour != 3 {
+		t.Fatalf("3 wakes in minutes: %+v %+v", st.Targets.WakesPerParentHour, st.Parents)
 	}
 }
