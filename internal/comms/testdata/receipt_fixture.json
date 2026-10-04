@@ -1,0 +1,95 @@
+{
+  "fixture": "receipt-v1",
+  "transitions": [
+    {
+      "from": "",
+      "to": "durable",
+      "ok": true
+    },
+    {
+      "from": "durable",
+      "to": "attempted",
+      "ok": true
+    },
+    {
+      "from": "attempted",
+      "to": "transport_accepted",
+      "ok": true
+    },
+    {
+      "from": "transport_accepted",
+      "to": "context_observed",
+      "ok": true
+    },
+    {
+      "from": "context_observed",
+      "to": "application_acked",
+      "ok": true
+    },
+    {
+      "from": "transport_accepted",
+      "to": "attempted",
+      "ok": false
+    },
+    {
+      "from": "context_observed",
+      "to": "durable",
+      "ok": false
+    },
+    {
+      "from": "attempted",
+      "to": "failed",
+      "ok": true
+    },
+    {
+      "from": "failed",
+      "to": "attempted",
+      "ok": false
+    },
+    {
+      "from": "durable",
+      "to": "bogus",
+      "ok": false
+    },
+    {
+      "from": "",
+      "to": "unknown",
+      "ok": false
+    },
+    {
+      "from": "durable",
+      "to": "unknown",
+      "ok": false
+    },
+    {
+      "from": "attempted",
+      "to": "unknown",
+      "ok": true
+    },
+    {
+      "from": "transport_accepted",
+      "to": "unknown",
+      "ok": false
+    },
+    {
+      "from": "unknown",
+      "to": "transport_accepted",
+      "ok": false
+    },
+    {
+      "from": "unknown",
+      "to": "context_observed",
+      "ok": true
+    },
+    {
+      "from": "unknown",
+      "to": "application_acked",
+      "ok": true
+    },
+    {
+      "from": "unknown",
+      "to": "failed",
+      "ok": true
+    }
+  ]
+}

@@ -216,6 +216,46 @@ func handleCodexNotify() {
 	}
 
 	writeCodexHookStatus(instanceID, status, sessionID, event, turnID)
+	spoolCommsFromCodexNotify(instanceID, sessionID, turnID, event, data)
+}
+
+// codexNotifyText is the text Codex's notify payload already carries
+// (https://learn.chatgpt.com/docs/config-file/config-advanced): the final
+// assistant message and the user messages of the turn.
+type codexNotifyText struct {
+	LastAssistantMessage string   `json:"last-assistant-message"`
+	InputMessages        []string `json:"input-messages"`
+	Cwd                  string   `json:"cwd"`
+}
+
+// spoolCommsFromCodexNotify forwards a completed turn's text to the daemon's
+// spool when the ledger is on. Codex has one producer line (notify) and it
+// is enough: the text is in the payload. The last input message is the
+// prompt that started the turn, which gives the daemon the trigger.
+func spoolCommsFromCodexNotify(instanceID, sessionID, turnID, event string, data []byte) {
+	if _, completed := codexTurnEdge(event); !completed || len(data) == 0 || !session.CommsLedgerEnabled() {
+		return
+	}
+	// Same guard as hook-handler: the id names a directory under the spool.
+	// The status file path above keeps its historical filepath.Base rule.
+	if !validInstanceID.MatchString(instanceID) || strings.Contains(instanceID, "..") {
+		return
+	}
+	var t codexNotifyText
+	if json.Unmarshal(data, &t) != nil || strings.TrimSpace(t.LastAssistantMessage) == "" {
+		return
+	}
+	prompt := ""
+	if n := len(t.InputMessages); n > 0 {
+		prompt = t.InputMessages[n-1]
+	}
+	if err := session.WriteCommsSpool(session.CommsSpoolEntry{
+		Harness: "codex", Event: event, Edge: session.CommsEdgeTurnEnd, Instance: instanceID,
+		SessionID: sessionID, TurnID: turnID, Text: t.LastAssistantMessage, Prompt: prompt,
+		Cwd: strings.TrimSpace(t.Cwd), TSignal: time.Now().UnixMilli(),
+	}); err != nil {
+		slog.Warn("comms_spool_write_failed", slog.String("instance", instanceID), slog.String("event", event), slog.String("error", err.Error()))
+	}
 }
 
 // codexNotifyHome is the Codex home of the Codex process that spawned this

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -44,8 +45,25 @@ func handleEvents(profile string, args []string) {
 	}
 }
 
+// busFlagHelp documents the --bus selector shared by follow and stats.
+const busFlagHelp = "which log to read: events (the status bus, default) or comms (the comms ledger, docs/comms.md)"
+
+// openBusForRead returns the bus a read-only command streams or counts.
+// The events bus is the process-owned Default(); the comms ledger is
+// opened read-only so only the notify daemon ever writes it.
+func openBusForRead(name string) (*events.Bus, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "events":
+		return events.Default(), nil
+	case "comms":
+		return comms.OpenReader(events.CurrentProfile())
+	default:
+		return nil, fmt.Errorf("unknown --bus %q (events or comms)", name)
+	}
+}
+
 // handleEventsFollow implements `agent-deck events follow --json [--after <cursor>]
-// [--kind <prefix>[,<prefix>]] [--session <id>]`. It streams one canonical-JSON
+// [--kind <prefix>[,<prefix>]] [--session <id>] [--bus events|comms]`. It streams one canonical-JSON
 // frame per line to stdout, oldest first, and keeps streaming newly published
 // frames until interrupted (Ctrl-C / SIGTERM) or the bus reports an error
 // (e.g. --after older than the retained log). --json is accepted for symmetry
@@ -58,8 +76,9 @@ func handleEventsFollow(profile string, args []string) {
 	_ = fs.Bool("json", true, "stream NDJSON frames (always on; kept for CLI symmetry)")
 	kindFlag := fs.String("kind", "", "only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)")
 	sessionFlag := fs.String("session", "", "only frames for this session id")
+	busFlag := fs.String("bus", "events", busFlagHelp)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>]")
+		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -84,7 +103,14 @@ func handleEventsFollow(profile string, args []string) {
 		}
 	}
 
-	bus := events.Default()
+	bus, err := openBusForRead(*busFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)
+		os.Exit(1)
+	}
+	if bus.ReadOnly() {
+		defer bus.Close()
+	}
 	sub, err := bus.Subscribe(ctx, events.Cursor(*afterFlag))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)
@@ -198,20 +224,29 @@ func handleEventsPublish(profile string, args []string) {
 	out.Success(fmt.Sprintf("published %s at cursor %d", *kind, cursor), map[string]any{"ok": true, "kind": *kind, "session_id": sid, "cursor": uint64(cursor), "profile": profile})
 }
 
-// handleEventsStats implements `agent-deck events stats --json`.
+// handleEventsStats implements `agent-deck events stats [--json] [--bus events|comms]`.
 func handleEventsStats(args []string) {
 	fs := flag.NewFlagSet("agent-deck events stats", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "print stats as JSON")
+	busFlag := fs.String("bus", "events", busFlagHelp)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck events stats [--json]")
+		fmt.Fprintln(os.Stderr, "Usage: agent-deck events stats [--json] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 
-	stats := events.Default().Stats()
-	kinds, kindErr := events.Default().KindCounts()
+	bus, err := openBusForRead(*busFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: events stats: %v\n", err)
+		os.Exit(1)
+	}
+	if bus.ReadOnly() {
+		defer bus.Close()
+	}
+	stats := bus.Stats()
+	kinds, kindErr := bus.KindCounts()
 	if *jsonOut {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

@@ -52,6 +52,79 @@ type hookPayload struct {
 	// false. A missing field must NOT be read as "fresh user turn" (which would
 	// reset the loop guard every Stop); resolveStopHookActive fails safe to true.
 	StopHookActive *bool `json:"stop_hook_active"`
+
+	// Comms Ledger producer fields (docs/comms.md): the text each harness
+	// already puts on the wire, forwarded to the daemon's spool instead of
+	// discarded. Unknown to a harness that does not send them.
+	// Decoded leniently (raw, then read as a string) so a harness that
+	// sends an unexpected type for one of them never makes the whole
+	// payload undecodable for the status path.
+	TranscriptPath       json.RawMessage `json:"transcript_path"`
+	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
+	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
+	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
+}
+
+// rawString reads a leniently decoded field as a string ("" for anything
+// that is not a JSON string).
+func rawString(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// commsSpoolEdge maps a Claude Code hook event to the comms spool edge it
+// carries. Empty edge: nothing to spool for this event. P1 enables two
+// producers only (docs/comms.md): Claude through this handler and Codex
+// through codex-notify. A Codex Stop hook (recognisable by its turn_id,
+// which Claude's Stop does not carry) is never spooled here, so a user who
+// also points Codex hooks at hook-handler cannot duplicate a turn the
+// notify line already produced. Every other harness is status-only in P1.
+func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
+	turnID := rawString(p.TurnID)
+	switch normalizeHookEventKey(p.HookEventName) {
+	case "userpromptsubmit":
+		if turnID != "" {
+			return "", "", "", "" // Codex UserPromptSubmit
+		}
+		return "claude", session.CommsEdgePromptStart, "", rawString(p.Prompt)
+	case "stop":
+		if turnID != "" || p.ConversationID != "" {
+			return "", "", "", "" // Codex Stop (notify owns the turn) or Cursor stop (status only)
+		}
+		return "claude", session.CommsEdgeTurnEnd, rawString(p.LastAssistantMessage), ""
+	}
+	return "", "", "", ""
+}
+
+// spoolCommsFromHook forwards the hook's text to the daemon's spool when
+// the ledger is on. It never writes the ledger itself (the #824 rule), never
+// blocks on anything but one small file write, and never fails the hook.
+func spoolCommsFromHook(instanceID string, p hookPayload) {
+	harness, edge, text, prompt := commsSpoolEdge(p)
+	if edge == "" || !session.CommsLedgerEnabled() {
+		return
+	}
+	sessionID := strings.TrimSpace(p.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(p.ConversationID)
+	}
+	transcript := ""
+	if harness == "claude" {
+		if clean, ok := session.ValidateTranscriptPath(rawString(p.TranscriptPath)); ok {
+			transcript = clean
+		}
+	}
+	if err := session.WriteCommsSpool(session.CommsSpoolEntry{
+		Harness: harness, Event: p.HookEventName, Edge: edge, Instance: instanceID,
+		SessionID: sessionID, TurnID: strings.TrimSpace(rawString(p.TurnID)), Text: text, Prompt: prompt,
+		TranscriptPath: transcript, Cwd: strings.TrimSpace(p.Cwd), TSignal: time.Now().UnixMilli(),
+	}); err != nil {
+		hookHandlerLog.Warn("comms_spool_write_failed",
+			slog.String("instance", instanceID), slog.String("event", p.HookEventName), slog.String("error", err.Error()))
+	}
 }
 
 // resolveStopHookActive fails safe (audit B8): an absent stop_hook_active is
@@ -228,6 +301,10 @@ func handleHookHandler() {
 		warnProjectDirMissingOnce(instanceID, payload.Cwd)
 		return
 	}
+
+	// Comms Ledger: spool the text this event carries (Claude Stop and
+	// UserPromptSubmit only in P1).
+	spoolCommsFromHook(instanceID, payload)
 
 	// Map event to status
 	status := mapEventToStatus(payload.HookEventName)

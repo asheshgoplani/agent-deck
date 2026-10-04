@@ -2,9 +2,11 @@ package events
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -12,6 +14,10 @@ import (
 // newly appended frames once it has caught up. Short enough that `events
 // follow` feels live; long enough not to busy-loop.
 const pollInterval = 15 * time.Millisecond
+
+// subscribeActiveHook is a test seam called between a poll's segment
+// listing and its read of the active file. nil in production.
+var subscribeActiveHook atomic.Pointer[func()]
 
 // Subscription streams Frames with Cursor > the `after` value passed to
 // Subscribe, oldest first, never skipping and never repeating one, for as
@@ -78,7 +84,7 @@ func (b *Bus) listAllSegments() ([]segRef, error) {
 
 	activePath := b.dir + string(os.PathSeparator) + activeSegmentName
 	if _, err := os.Stat(activePath); err == nil {
-		activeStart, _, _, err := activeBounds(activePath)
+		activeStart, _, _, err := b.activeBounds(activePath)
 		if err != nil {
 			return nil, err
 		}
@@ -142,11 +148,21 @@ func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
 			}
 
 			// active (unsealed) segment
+			if hook := subscribeActiveHook.Load(); hook != nil {
+				(*hook)()
+			}
 			if seg.start != lastActiveStart {
 				lastActiveStart = seg.start
 				activeOffset = 0
 			}
-			ok, newOffset, n, err := s.streamActive(ctx, seg.path, &emitted, activeOffset)
+			var ok bool
+			var newOffset int64
+			var n int
+			if b.keepCorrupt {
+				ok, newOffset, n, err = s.streamActiveCommitted(ctx, b, seg, &emitted, activeOffset)
+			} else {
+				ok, newOffset, n, err = s.streamActive(ctx, seg.path, &emitted, activeOffset)
+			}
 			if err != nil {
 				s.errCh <- err
 				return
@@ -263,4 +279,79 @@ func (s *Subscription) streamActive(ctx context.Context, path string, emitted *C
 		}
 	}
 	return true, offset, n, nil
+}
+
+// streamActiveCommitted is streamActive for a ledger bus: the new bytes are
+// read under the writer lock, so a frame is visible only once the Commit
+// that wrote it has returned (its fsync done, or rolled back). Under the
+// same lock it checks that the active file is still the one listed: if a
+// rotation sealed it since the listing, nothing is read and the next poll
+// re-lists, so the sealed frames are streamed first and none is skipped.
+// The frames are emitted after the lock is released: a follower that is
+// slow to drain its channel never holds the lock.
+func (s *Subscription) streamActiveCommitted(ctx context.Context, b *Bus, seg segRef, emitted *Cursor, fromOffset int64) (ok bool, newOffset int64, n int, err error) {
+	if err := b.lockDisk(); err != nil {
+		return false, fromOffset, 0, err
+	}
+	sealed, err := listSealedSegments(b.dir)
+	if err != nil {
+		b.unlockDisk()
+		return false, fromOffset, 0, err
+	}
+	if len(sealed) > 0 && sealed[len(sealed)-1].start >= seg.start {
+		b.unlockDisk()
+		return true, fromOffset, 0, nil // rotated since the listing
+	}
+	data, err := readFrom(seg.path, fromOffset)
+	b.unlockDisk()
+	if err != nil {
+		return false, fromOffset, 0, err
+	}
+	offset := fromOffset
+	for {
+		i := bytes.IndexByte(data, '\n')
+		if i < 0 {
+			break // no complete line left: the next poll starts here
+		}
+		line := data[:i]
+		data = data[i+1:]
+		offset += int64(i + 1)
+		if len(line) == 0 {
+			continue
+		}
+		frame, perr := ParseFrameLine(line)
+		if perr != nil || frame.Cursor <= *emitted {
+			continue
+		}
+		select {
+		case s.frames <- frame:
+			*emitted = frame.Cursor
+			n++
+		case <-ctx.Done():
+			return false, offset, n, nil
+		}
+	}
+	return true, offset, n, nil
+}
+
+// readFrom returns the bytes of path from offset to its end (nil when the
+// file is missing or not longer than offset).
+func readFrom(path string, offset int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() <= offset {
+		return nil, err
+	}
+	data := make([]byte, info.Size()-offset)
+	if _, err := f.ReadAt(data, offset); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return data, nil
 }
