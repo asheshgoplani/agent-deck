@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,7 @@ import (
 )
 
 // Issue #2481: a one-shot CLI call (`agent-deck remote sessions <host>`, run
-// by pollers such as a desktop app every few seconds) opened the persistent
+// by pollers such as a desktop app every minute or two per remote) opened the persistent
 // remote-agent channel in the background next to its own ssh exec, then
 // exited. Every call cost two remote ssh sessions and a remote agent-deck
 // process that never served a request. Only long-lived processes (TUI, web
@@ -101,8 +102,9 @@ func TestOneShotRemoteCommandOpensNoPersistentChannel2481(t *testing.T) {
 	const rounds = 2
 	spawns := oneShotRemoteCalls(t, calls, remotes, rounds)
 	want := len(remotes) * rounds
-	t.Logf("one-shot calls=%d ssh spawns=%d remote-agent dials=%d", want, len(spawns), countRemoteAgentDials(spawns))
-	if dials := countRemoteAgentDials(spawns); dials != 0 {
+	dials := countRemoteAgentDials(spawns)
+	t.Logf("one-shot calls=%d ssh spawns=%d remote-agent dials=%d", want, len(spawns), dials)
+	if dials != 0 {
 		t.Fatalf("one-shot CLI calls dialled the persistent channel %d times (spawns=%q)", dials, spawns)
 	}
 	if len(spawns) != want {
@@ -133,29 +135,24 @@ func TestLongLivedProcessKeepsPersistentChannel2481(t *testing.T) {
 
 func TestRemoteChannelEnvOverridesProcessDefault2481(t *testing.T) {
 	cases := []struct {
-		env     string
-		set     bool
+		env     string // "" behaves as unset
 		allowed bool
 		want    bool
 	}{
-		{set: false, allowed: false, want: false},
-		{set: false, allowed: true, want: true},
-		{env: "1", set: true, allowed: false, want: true},
-		{env: "true", set: true, allowed: false, want: true},
-		{env: "0", set: true, allowed: true, want: false},
-		{env: "false", set: true, allowed: true, want: false},
+		{env: "", allowed: false, want: false},
+		{env: "", allowed: true, want: true},
+		{env: "1", allowed: false, want: true},
+		{env: "true", allowed: false, want: true},
+		{env: "0", allowed: true, want: false},
+		{env: "false", allowed: true, want: false},
 	}
 	for _, tc := range cases {
-		t.Setenv("AGENT_DECK_REMOTE_CHANNEL", tc.env)
-		if !tc.set {
-			os.Unsetenv("AGENT_DECK_REMOTE_CHANNEL")
-		}
-		prev := remoteChannelsAllowed.Load()
-		remoteChannelsAllowed.Store(tc.allowed)
-		got := remoteChannelsEnabled()
-		remoteChannelsAllowed.Store(prev)
-		if got != tc.want {
-			t.Errorf("env=%q (set=%v) allowed=%v: enabled=%v, want %v", tc.env, tc.set, tc.allowed, got, tc.want)
-		}
+		t.Run(fmt.Sprintf("env=%q/allowed=%v", tc.env, tc.allowed), func(t *testing.T) {
+			t.Setenv("AGENT_DECK_REMOTE_CHANNEL", tc.env)
+			setRemoteChannelsAllowed(t, tc.allowed)
+			if got := remoteChannelsEnabled(); got != tc.want {
+				t.Errorf("enabled=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }
