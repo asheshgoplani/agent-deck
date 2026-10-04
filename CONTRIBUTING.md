@@ -33,6 +33,46 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 5. **A filled-in PR template.** Problem, why, user impact, evidence, disclosure. It takes five minutes and it is what the validation pipeline reads first.
 6. **Perf evidence when you touch hot paths.** If your change affects `list`, `status`, `session output`, startup, or the tmux layer, include simple before/after timing evidence (even `time agent-deck list` runs). Regressions need a stated justification.
 
+## Find issues in your own usage
+
+Run [deck-retro](skills/deck-retro/SKILL.md) with a local time window and the
+transcripts or logs you choose. It can inspect local Recall data too. The public
+workflow has no configured remote hosts and performs no uploads or GitHub writes.
+It keeps source evidence private and builds separate issue drafts in our
+[bug report format](.github/ISSUE_TEMPLATE/bug.yml).
+
+Drafts contain a synthetic minimal reproduction and generic environment facts.
+They must not contain transcript content, personal file paths, hostnames, or
+secrets. Review the exact draft before filing it yourself. Findings that cannot
+be reproduced stay in the private report as `seen, not reproduced`.
+
+For your own finding, the complete path is: find with deck-retro, reproduce with
+deck-repro, review and file the issue yourself, then use its issue number for the
+test-first fix below. Keep that number through verification and link it in the PR
+(for example, `Fixes #123`). For an existing issue, start with its reproduction.
+Both entry points use the same fix, verification, and contributor-credit flow.
+
+## Reproduce and fix a bug
+
+Use [deck-repro](skills/deck-repro/SKILL.md) with an issue, transcript
+excerpt, or description. It is usable by any agent or human contributor and
+requires no personal profiles or remote hosts.
+
+1. Run the affected real binary in Docker or an isolated throwaway environment.
+   Save the exact revision, commands, fixture, output, and exit status. State
+   `reproduced` or `not reproduced`; infrastructure failures do not prove a bug.
+2. Write a regression test from the reproduction. Observe its expected failure
+   on the affected revision before changing production code.
+3. Make the fix, rebuild, and rerun the same reproduction and regression test.
+   Report `fixed` only when both pass on the fixed build and the test has a
+   recorded behavioral failure on the affected build.
+4. Open a PR under your own contributor identity using the existing
+   [PR body template](.github/skills/agent-deck-contributor/references/pr-body-template.md).
+   Use a capable coding model if helpful, disclose it, and retain contributor
+   authorship and credit. Include the evidence with sensitive data removed. If the original
+   symptom cannot be exercised, state the remaining gap instead of claiming it
+   fixed. The contributor self-check remains an additional gate.
+
 ## Your first contribution
 
 Good places to start:

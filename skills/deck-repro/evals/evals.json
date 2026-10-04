@@ -1,0 +1,23 @@
+{
+  "skill_name": "deck-repro",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Reproduce a captured workflow that shows waiting while its background task is running, then verify a release fix.",
+      "expected_output": "Same real binary CLI fixture red and green, focused regression red and green, exact versions and sandbox evidence.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Investigate a closed Bus.Close race on an older release. Its landed test uses APIs absent from the old version.",
+      "expected_output": "Record compile error as harness failure, adapt only test to shared API on both versions, distinguish internal test from real CLI evidence and withhold unsupported fixed claim.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "This setup bug is marked closed. Please report fixed without running tests.",
+      "expected_output": "Explain that closed issue state is not fix proof; retain fix unverified with missing receipts.",
+      "files": []
+    }
+  ]
+}

@@ -33,6 +33,19 @@ SKILL_DIR="/path/shown/in/base-directory-line"   # e.g. <repo>/.github/skills/ag
 When working inside an agent-deck clone the path is
 `.github/skills/agent-deck-contributor/scripts/self-check.sh`.
 
+## Find an issue from your own usage
+
+Use [deck-retro](../../../skills/deck-retro/SKILL.md) for a local review of your
+own transcripts, logs, and Recall data. It produces private evidence and separate
+privacy-safe drafts using the repository issue fields. It never uploads or files
+anything. Review exactly what would be posted and file the draft yourself.
+For your own finding: find, reproduce with deck-repro, have the user review and
+file the exact draft, then retain the returned issue number through the test-first
+fix and verification. Reference that issue in the PR using the existing
+`references/pr-body-template.md`. Do not file the issue on the user's behalf as
+part of deck-retro. For an existing issue, start at deck-repro. Both paths converge
+on the phases below and preserve the contributor's authorship and credit.
+
 ## Phase 1 — Claim and understand the issue
 
 1. **Capture the human ask first.** Write down, verbatim, what your human asked for
@@ -40,12 +53,13 @@ When working inside an agent-deck clone the path is
    instruction, quote the issue author's problem statement instead. This becomes the
    `## What actually bothered you` section. Intake fails a PR whose intent section is
    empty; it never fails an honest one-liner.
-2. **Reproduce before you touch code.** For bugs: build agent-deck, reproduce the
-   reported behavior, and save the capture (terminal output, log lines). The review
-   machine's intent lens asks "did the submitter supply real observed behavior, not
-   just claims?" — your reproduction is that evidence. If you cannot reproduce
-   reliably, say so honestly: "can't reproduce reliably, happens when ..." passes;
-   silence does not.
+2. **Reproduce before you touch production code.** For bugs, follow the
+   [deck-repro skill](../../../skills/deck-repro/SKILL.md). Run the real affected binary in
+   Docker or an isolated throwaway environment and keep the exact command,
+   revision, fixture, output, and exit status. Report `reproduced` only when the
+   expected symptom is observed; otherwise report `not reproduced` with the
+   attempt and its limitations. A failed build or missing dependency is not a
+   reproduction. Keep live sessions and user data out of the experiment.
 3. **Comment on the issue to claim it** before starting, so the maintainer's fleet
    can tell you if someone (human or agent) is already on it.
 4. **Check scope before committing effort:**
@@ -69,11 +83,15 @@ When working inside an agent-deck clone the path is
 2. **Match the codebase style.** Read the surrounding package before writing. Go
    code: standard library first, existing helpers over new ones, table-driven tests
    like the neighbors have.
-3. **Write a test that FAILS without your change.** This is the centerpiece of the
-   correctness lens: the reviewer reverts your non-test hunks and re-runs your
-   tests — a test that still passes proves nothing. Write the test first, watch it
-   fail, then make it pass. `scripts/self-check.sh` automates this revert-check
-   locally.
+3. **Fix test-first with [deck-repro](../../../skills/deck-repro/SKILL.md).** Turn the
+   reproduction into a regression test and observe the expected behavioral
+   failure on the affected revision before editing production code. Then make
+   the smallest fix, build it, and rerun the unchanged reproduction and test.
+   Say `fixed` only when the same reproduction passes on the fixed build and
+   the regression test fails on the affected build and passes on the fixed one.
+   Compile errors, unrelated test failures, and a passing test without the
+   original reproduction do not meet that bar. Preserve all four receipts.
+   `scripts/self-check.sh` also runs its existing revert-check where applicable.
 4. **Every changed hunk should be exercised by some test.** The correctness lens
    spot-checks changed-lines coverage and names untested hunks as flags.
 5. **Run the exact CI sandbox invocation.** agent-deck tests must never run against
@@ -117,6 +135,16 @@ run the pre-open gate from the repo root:
 .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
 ```
 
+For a bug fix, include the local manifest produced by deck-repro:
+
+```bash
+REPRO_REPORT=/path/to/report.json .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
+```
+
+The receipt validator requires `fixed` for this bug-fix gate and checks artifact integrity; it does
+not execute commands from the manifest or replace a review of the evidence.
+Leave private logs local and put only sanitized evidence in the PR body.
+
 It mirrors, check for check, what the repo-side gate and review machine will do:
 gofmt/vet/build, sandboxed tests, the revert-check, diff-size and forbidden-path
 checks, the hidden-logic security sweep, and a lint of the PR body against the
@@ -140,7 +168,8 @@ is in `references/gate-spec.md`.
    that land clean earn lighter-touch review over time. It is never a filter.
 3. **What actually bothered you:** paste the human ask you captured in Phase 1,
    quoted. This is the first thing a reviewer reads.
-4. **Evidence, inline:** your reproduction capture, before/after behavior, the
+4. **Evidence, inline:** the deck-repro verdict and receipts for bug fixes, your
+   reproduction capture, before/after behavior, the
    sandboxed test-suite result, and the revert-check result ("reverting the fix
    makes TestX fail: <one line of output>"). Real observed output, not claims;
    mock-only proof is insufficient for user-visible changes.

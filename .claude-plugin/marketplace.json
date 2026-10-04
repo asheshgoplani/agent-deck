@@ -17,7 +17,9 @@
       "skills": [
         "./skills/agent-deck",
         "./skills/session-share",
-        "./skills/fleet"
+        "./skills/fleet",
+        "./skills/deck-retro",
+        "./skills/deck-repro"
       ]
     }
   ]

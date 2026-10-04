@@ -9,6 +9,7 @@
 # Usage:   scripts/self-check.sh [pr-body.md]
 #          (run from anywhere inside the agent-deck repo)
 # Env:     BASE_REF=origin/main   comparison base
+#          REPRO_REPORT=<json>   validate a deck-repro evidence manifest for a bug fix
 #          FULL_TESTS=1           run the whole suite, not just touched packages
 #          LINKED_ISSUE=<n|url>   set when a >3000-line diff has an agreed issue/Discussion
 #          SKIP_REVERT_CHECK=1    skip the revert-check (e.g. pure test-infra PRs)
@@ -136,6 +137,20 @@ elif [ -n "$GO_CHANGED" ]; then
   WARN go-toolchain "Go not installed — gofmt/vet/build/test/revert checks NOT run"
 else
   SKIP go-checks "no .go files changed"
+fi
+
+# A bug-fix receipt is an additional check, not a substitute for the suite.
+# The validator checks local evidence; it never executes receipt commands.
+if [ -n "${REPRO_REPORT:-}" ]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    FAIL deck-repro "python3 is required to validate REPRO_REPORT"
+  elif OUT=$(python3 "$ROOT/skills/deck-repro/scripts/validate.py" "$REPRO_REPORT" --require-status fixed 2>&1); then
+    PASS deck-repro "$OUT"
+  else
+    FAIL deck-repro "$OUT"
+  fi
+else
+  SKIP deck-repro "no REPRO_REPORT provided; bug fixes need reproduction and test-first evidence"
 fi
 
 # ------------------------------------------------------------- diff hygiene

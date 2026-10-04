@@ -45,6 +45,17 @@ genuine no-human-behind-it submissions).
 | **Revert-check (centerpiece)** | reverts your non-test hunks and re-runs your tests; a test that still passes proves nothing | write the test first, watch it fail, then fix; `self-check.sh` automates this and put the result in `## Evidence` |
 | Diff-coverage spot-check | which changed hunks are exercised by ANY test; untested hunks become named flags | every changed hunk behind at least one test, or say in the body why a hunk is untestable |
 
+For bug fixes, use [deck-repro](../../../../skills/deck-repro/SKILL.md) before implementation.
+Its evidence complements the revert-check: record the original reproduction on
+the affected real binary, a test-first behavioral failure, then the unchanged
+reproduction and regression test passing on the fixed build. `not reproduced`
+is an honest result, not permission to label an unverified change `fixed`.
+An infrastructure failure, compile failure, or unrelated red test does not prove
+the reported symptom. Keep the environment isolated and redact public receipts.
+Set `REPRO_REPORT` when running `self-check.sh` to validate the deck-repro
+manifest, require its `fixed` verdict, and check its local artifacts. An omitted manifest is reported as skipped;
+it does not establish reproduction or fixed status.
+
 ### Security lens (diff-scoped security gates)
 
 | Criterion | Trips on | Fix |
