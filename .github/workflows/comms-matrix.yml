@@ -1,0 +1,39 @@
+name: Comms matrix
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Comms (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [claude, codex, others, failures]
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Run isolated local and SSH rig
+        run: bash tests/comms_matrix/run.sh "${{ matrix.group }}" "$RUNNER_TEMP/comms-${{ matrix.group }}"
+      - name: Summarize target gaps
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/comms-${{ matrix.group }}/summary.md" ]; then
+            cat "$RUNNER_TEMP/comms-${{ matrix.group }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain matrix observations and cleanup receipt
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: comms-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/comms-${{ matrix.group }}
+          if-no-files-found: error
+          retention-days: 7

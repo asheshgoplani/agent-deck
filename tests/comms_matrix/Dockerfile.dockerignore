@@ -1,0 +1,10 @@
+.git
+artifacts
+.env
+.env.*
+node_modules
+.DS_Store
+
+demos
+**/__pycache__
+**/*.pyc

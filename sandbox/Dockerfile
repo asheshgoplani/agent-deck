@@ -4,7 +4,7 @@
 # Build:  docker build -t agent-deck-sandbox sandbox/
 # Test:   docker run --rm -it agent-deck-sandbox bash
 
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS comms-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -36,6 +36,9 @@ RUN git lfs install
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y nodejs \
   && rm -rf /var/lib/apt/lists/*
+
+# The comms rig builds only comms-base, before any real model CLI is installed.
+FROM comms-base AS sandbox
 
 # The container runs as the host user (--user uid:gid) at runtime, not root.
 # Tools are installed under /root at build time; chmod 755 makes them traversable.

@@ -38,6 +38,9 @@ on:
       - 'scripts/ci-test-summary.py'
       - 'tests/known-flaky.txt'
       - 'tests/ci/ci-test-summary.test.sh'
+      - 'tests/comms_matrix/**'
+      - '.github/workflows/comms-matrix.yml'
+      - 'sandbox/Dockerfile'
 
 # One in-flight run per PR (or per branch on push). Rapid follow-up pushes
 # cancel the stale run instead of stacking 20-minute jobs.
@@ -57,6 +60,10 @@ permissions:
   contents: read
 
 jobs:
+  comms-matrix:
+    name: Comms matrix acceptance
+    uses: ./.github/workflows/comms-matrix.yml
+
   # Docs-only PRs still need the required check to REPORT, but running the
   # full race suite for a README tweak is waste. Decide once here; the shards
   # and the gate below read the answer.
@@ -191,18 +198,21 @@ jobs:
           if-no-files-found: ignore
 
   # The single required context the main ruleset names. It passes when the
-  # diff is not Go-relevant, or when every shard passed; it fails (and never
-  # skips) otherwise, so a docs-only PR still reports and a broken shard
-  # still blocks.
+  # comms matrix passes and either the diff is not Go-relevant or every Go
+  # shard passed. It fails (and never skips) otherwise, so a docs-only PR
+  # still reports and either acceptance failure blocks.
   full-test-suite:
     name: Full test suite (PR gate)
-    needs: [changes, shard]
+    needs: [changes, shard, comms-matrix]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Gate on shard results
         run: |
+          if [ "${{ needs.comms-matrix.result }}" != "success" ]; then
+            echo "Comms matrix failed or was cancelled."; exit 1
+          fi
           echo "go-relevant: ${{ needs.changes.outputs.go }}"
           echo "shards: ${{ needs.shard.result }}"
           if [ "${{ needs.changes.outputs.go }}" != "true" ]; then

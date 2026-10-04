@@ -1,0 +1,9 @@
+{
+  "type": "session.status",
+  "properties": {
+    "sessionID": "matrix-opencode-session",
+    "status": {
+      "type": "busy"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Only used inside the disposable comms matrix rig.
+case "${1:-}" in
+  --version|-v) printf '%s\n' '2026.8.3'; exit 0 ;;
+esac
+exec python3 "$(dirname "$0")/../fake_harness.py" --tool hermes --pane "$@"

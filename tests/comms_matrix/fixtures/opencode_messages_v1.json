@@ -1,0 +1,22 @@
+[
+  {
+    "info": {
+      "id": "matrix-message",
+      "sessionID": "matrix-opencode-session",
+      "role": "assistant",
+      "time": {
+        "created": 1791072000000,
+        "completed": 1791072000001
+      }
+    },
+    "parts": [
+      {
+        "id": "matrix-part",
+        "sessionID": "matrix-opencode-session",
+        "messageID": "matrix-message",
+        "type": "text",
+        "text": "Matrix OpenCode finished its assigned task."
+      }
+    ]
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "session_id": "matrix-gemini-session",
+  "hook_event_name": "BeforeAgent",
+  "cwd": "/tmp",
+  "prompt": "[agent-deck from:matrix-parent] build it"
+}

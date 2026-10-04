@@ -1,0 +1,8 @@
+{
+  "session_id": "matrix-gemini-session",
+  "hook_event_name": "AfterAgent",
+  "cwd": "/tmp",
+  "prompt": "[agent-deck from:matrix-parent] build it",
+  "prompt_response": "Matrix Gemini finished its assigned task.",
+  "transcript_path": "/tmp/matrix-gemini-transcript.json"
+}

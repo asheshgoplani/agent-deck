@@ -1,0 +1,6 @@
+{
+  "session_id": "matrix-hermes-session",
+  "hook_event_name": "post_llm_call",
+  "cwd": "/tmp",
+  "assistant_response": "Matrix Hermes finished its assigned task."
+}

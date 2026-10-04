@@ -1,0 +1,6 @@
+{
+  "type": "turn_start",
+  "turnIndex": 0,
+  "timestamp": 1791072000000,
+  "session_id": "matrix-pi-session"
+}

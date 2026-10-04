@@ -1,0 +1,7 @@
+{
+  "conversation_id": "matrix-cursor-session",
+  "generation_id": "matrix-generation",
+  "hook_event_name": "afterAgentResponse",
+  "cwd": "/tmp",
+  "text": "Matrix Cursor finished its assigned task."
+}

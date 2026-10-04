@@ -1,0 +1,7 @@
+{
+  "conversation_id": "matrix-cursor-session",
+  "generation_id": "matrix-generation",
+  "hook_event_name": "stop",
+  "cwd": "/tmp",
+  "status": "completed"
+}

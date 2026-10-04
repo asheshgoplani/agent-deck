@@ -1,0 +1,39 @@
+services:
+  r1:
+    image: ${COMMS_IMAGE:?Set COMMS_IMAGE via run.sh}
+    hostname: r1
+    volumes:
+      - rig-keys:/rig-keys
+    networks: [rig]
+    command:
+      - /bin/bash
+      - -euc
+      - |
+        ssh-keygen -q -t ed25519 -N '' -f /rig-keys/id_ed25519
+        cp /rig-keys/id_ed25519.pub /root/.ssh/authorized_keys
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/authorized_keys
+        ssh-keygen -q -t ed25519 -N '' -f /rig-keys/host_ed25519
+        printf 'r1 ' > /rig-keys/known_hosts
+        cat /rig-keys/host_ed25519.pub >> /rig-keys/known_hosts
+        exec /usr/sbin/sshd -D -e -h /rig-keys/host_ed25519 -o PermitRootLogin=prohibit-password -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o UsePAM=no
+    healthcheck:
+      test: [CMD-SHELL, 'ssh r1 true']
+      interval: 1s
+      timeout: 5s
+      retries: 30
+  local:
+    image: ${COMMS_IMAGE:?Set COMMS_IMAGE via run.sh}
+    depends_on:
+      r1:
+        condition: service_healthy
+    volumes:
+      - rig-keys:/rig-keys:ro
+      - ${COMMS_OUTPUT:?Set COMMS_OUTPUT via run.sh}:/artifacts
+    networks: [rig]
+    command: [python3, /workspace/tests/comms_matrix/runner.py, --output, /artifacts, --group, '${COMMS_GROUP:-all}']
+volumes:
+  rig-keys:
+networks:
+  rig:
+    internal: true
