@@ -71,8 +71,9 @@ func TestIssue2469PR3R5_RemoteTopLevelConductorTurnsStayHome(t *testing.T) {
 			f.child.ParentSessionID = tc.parent(f.child)
 			saveFixtureRegistry(t, f)
 			journal, legacy, cursor, written, wakes := remoteTurnCounts(t, f)
-			if journal != 1 || legacy != 0 {
-				t.Fatalf("setup: want journal=1 legacy export=0, got journal=%d legacy=%d", journal, legacy)
+			// Issue #2481: the producer skips a self turn before journaling it.
+			if journal != 0 || legacy != 0 {
+				t.Fatalf("setup: want journal=0 legacy export=0, got journal=%d legacy=%d", journal, legacy)
 			}
 			if cursor != 0 || written != 0 || wakes != 0 {
 				t.Fatalf("a remote conductor's own turn crossed: cursor export=%d written=%d wakes=%d", cursor, written, wakes)
@@ -97,8 +98,9 @@ func TestIssue2469PR3R5_RemoteOrphanTurnsStillCross(t *testing.T) {
 	}
 }
 
-// The cursor still moves past a suppressed conductor's lines, so a conductor
-// later parented under the cross-host conductor ships only its new turns.
+// A conductor later parented under the cross-host conductor ships only its
+// new turns. Since issue #2481 its suppressed turns are never journaled, so
+// there is nothing older for the cursor to move past.
 func TestIssue2469PR3R5_ReparentedConductorShipsOnlyNewTurns(t *testing.T) {
 	f := newTurnTestFixture(t)
 	f.child.Title = "conductor-remotebox"
@@ -110,8 +112,8 @@ func TestIssue2469PR3R5_ReparentedConductorShipsOnlyNewTurns(t *testing.T) {
 	statuses := map[string]string{f.child.ID: "waiting"}
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
 	res, err := RunRemoteTalkback(context.Background(), "boxd", "conductor-x", deps)
-	if err != nil || res.Written != 0 || res.CursorAfter == nil || res.CursorAfter.Seqs[f.child.ID] != 1 {
-		t.Fatalf("drain 1: want nothing written and the cursor at seq 1, got %+v %v", res, err)
+	if err != nil || res.Written != 0 {
+		t.Fatalf("drain 1: want nothing written, got %+v %v", res, err)
 	}
 
 	parentOnOtherHost(t, f)
@@ -121,8 +123,8 @@ func TestIssue2469PR3R5_ReparentedConductorShipsOnlyNewTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Written != 1 || len(res.Stored) != 1 || res.Stored[0].Seq != 2 {
-		t.Fatalf("after reparent: want only seq 2, got written=%d stored=%+v", res.Written, res.Stored)
+	if res.Written != 1 || len(res.Stored) != 1 || res.Stored[0].Text != "Lane B merged." {
+		t.Fatalf("after reparent: want only the new turn, got written=%d stored=%+v", res.Written, res.Stored)
 	}
 }
 

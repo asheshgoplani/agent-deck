@@ -719,6 +719,18 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	if event.TurnFingerprint == "" {
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
+	// A turn the parent's consumed-turn ledger already holds is dropped by its
+	// next drain, so it is already delivered: writing it again only adds a
+	// duplicate record and log line, and waking the parent would cost one empty
+	// "[INBOX]" turn (issue #2240). A child with no turn signal flapping
+	// running->waiting re-sent one fingerprint 136 times (issue #2481). Report
+	// it committed (exactly-once effects) without writing anything.
+	if turnAlreadyConsumed(parentID, event.TurnFingerprint) {
+		commsLog.Debug("commit_skipped_consumed_turn",
+			slog.String("parent", parentID), slog.String("turn", event.TurnFingerprint))
+		n.commitReplyToSender(sender, reply)
+		return true, false, ""
+	}
 	stored, outcome, err := commitToInbox(parentID, event)
 	if err != nil {
 		// The turn is retried on the next poll, but the sender's answer must

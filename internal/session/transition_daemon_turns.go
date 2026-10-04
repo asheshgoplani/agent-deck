@@ -65,8 +65,15 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	}
 	event.LastOutputHash = transitionEventOutputHash(inst)
 	statsParent := statsParentFor(inst)
+	selfConductor := isSelfSuppressedConductor(inst)
 
 	if !classified {
+		if selfConductor {
+			// Issue #2481: no transcript, so no sender to answer; the notifier
+			// would drop it as self_conductor after a registry load.
+			d.commsStatusEdge(inst, from, to, event.Timestamp)
+			return dropSelfConductorTurn(event), true
+		}
 		// Legacy signal, no text: emit as before. The notifier's dedup is the
 		// only improvement available without a transcript.
 		result := d.notifier.NotifyTransition(event)
@@ -87,6 +94,16 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		if carried = loadHeldSend(inst.ID); carried != nil {
 			facts.FromID = carried.FromID
 		}
+	}
+
+	// Issue #2481: a top-level conductor's own turn reaches no inbox; only a
+	// turn that answers a tagged send (its reply goes to the asker) or carries
+	// a completion sentinel (the completion ledger) needs the rest of the
+	// path. Drop the others before tiering, journaling, stats and the
+	// notifier's registry load: they were 42% of all transition frames.
+	if selfConductor && !facts.HasDone &&
+		!eventAnswersSend(TransitionNotificationEvent{FromID: facts.FromID, Trigger: facts.Trigger}) {
+		return dropSelfConductorTurn(event), true
 	}
 
 	cfg := ResolveInboxConfig(parentTitleFor(inst, byID))
@@ -224,6 +241,16 @@ func (d *TransitionDaemon) forgetJournaledTurnsOfRunning(profile string, statuse
 			delete(run, id)
 		}
 	}
+}
+
+// dropSelfConductorTurn is the result the notifier would have produced for a
+// top-level conductor's own turn. The bus frame is kept so event consumers
+// still see the edge; nothing else is written.
+func dropSelfConductorTurn(event TransitionNotificationEvent) TransitionNotificationEvent {
+	event.DeliveryResult = transitionDeliveryDropped
+	event.DeadLetterReason = deadLetterReasonSelfConductor
+	publishTransitionEvent("session.transition", event)
+	return event
 }
 
 // noteDoneEmitted records that emitTurn already delivered this completion so
