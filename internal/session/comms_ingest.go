@@ -29,8 +29,9 @@ import (
 // is classified from what its notify carried: the prompt that started the
 // turn (a send envelope, an inbox or heartbeat prompt, a human) gives the
 // trigger, the text gives the hash, the sentinel and the question flag; a
-// turn whose prompt the daemon never saw is trigger unknown and tiers
-// urgent. A repeated background answer is committed with tier noise so
+// turn whose prompt the daemon never saw is trigger unknown and tiered by
+// the same rule (urgent only for a sentinel, an error or a question). A
+// repeated background answer is committed with tier noise so
 // dedup and noise share are countable from the ledger.
 //
 // Every other harness is status-only in P1: the legacy branch of emitTurn

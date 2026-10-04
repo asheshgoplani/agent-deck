@@ -104,8 +104,9 @@ sentinel) while the tail still describes the spooled turn; the two
 inbox-only inputs listed under "Not in P1" are the known differences. Every other harness is classified from
 what its hook carried: the prompt gives the trigger (a `[agent-deck from:]`
 envelope is `send`, `[INBOX`/`[HEARTBEAT]`/`[agent-deck msg]` is `inbox`,
-else `human`; no prompt seen is `unknown` and tiers urgent), the text gives
-the hash, the sentinel and the question. The tier rule is
+else `human`; no prompt seen is `unknown`), the text gives the hash, the
+sentinel and the question (urgent only for a sentinel, an error or a
+question, as the inbox since #2478). The tier rule is
 `ClassifyTurnTier` from #2469 against the child's previous ledger turn.
 
 Not in P1 (notes):

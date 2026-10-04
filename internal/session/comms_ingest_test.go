@@ -115,7 +115,7 @@ func TestCommsIngest_ClaudeTurnMatchesTheInboxClassification(t *testing.T) {
 		t.Fatalf("records: %+v", recs)
 	}
 	r := recs[0]
-	if r.Kind != comms.KindTurn || r.From != f.child.ID || r.Tool != "claude" || r.Tier != comms.TierUrgent ||
+	if r.Kind != comms.KindTurn || r.From != f.child.ID || r.Tool != "claude" || r.Tier != comms.TierInfo ||
 		r.Trigger != TurnTriggerHuman || r.Text != "Starting 13 lanes." || r.Profile != "default" || r.Seq != 1 {
 		t.Fatalf("claude record: %+v", r)
 	}
@@ -160,7 +160,7 @@ func TestCommsIngest_CodexTurnTakesTriggerFromThePromptEdge(t *testing.T) {
 		t.Fatalf("records: %+v", recs)
 	}
 	r := recs[0]
-	if r.Tool != "codex" || r.Trigger != TurnTriggerSend || r.ReplyTo != f.parent.ID || r.Tier != comms.TierUrgent || r.Text != "Done: tests green." {
+	if r.Tool != "codex" || r.Trigger != TurnTriggerSend || r.ReplyTo != f.parent.ID || r.Tier != comms.TierInfo || r.Text != "Done: tests green." {
 		t.Fatalf("codex send reply: %+v", r)
 	}
 	if r.Key != comms.Key(comms.KindTurn, f.codex.ID, "codex", "thread-1:turn-1") {
@@ -176,11 +176,11 @@ func TestCommsIngest_CodexTurnTakesTriggerFromThePromptEdge(t *testing.T) {
 		t.Fatalf("heartbeat-triggered turn: %+v", recs)
 	}
 
-	// No prompt seen: unknown, tiers urgent (louder, not lossy).
+	// No prompt seen: trigger unknown; a plain reply is info (#2478).
 	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, SessionID: "thread-1", TurnID: "turn-3", Text: "Something happened."})
 	f.d.ingestCommsSpool("default", f.byID)
 	recs = f.ledgerRecords(t)
-	if len(recs) != 3 || recs[2].Trigger != TurnTriggerUnknown || recs[2].Tier != comms.TierUrgent {
+	if len(recs) != 3 || recs[2].Trigger != TurnTriggerUnknown || recs[2].Tier != comms.TierInfo {
 		t.Fatalf("unknown-trigger turn: %+v", recs[len(recs)-1])
 	}
 
@@ -331,8 +331,9 @@ func TestCommsIngest_SameTextDifferentTurnsAreTwoRecords(t *testing.T) {
 	if len(recs) != 2 || recs[0].Key == recs[1].Key {
 		t.Fatalf("same-text turns: %+v", recs)
 	}
-	// A new human turn with the same answer is news (urgent), not noise.
-	if recs[1].Tier != comms.TierUrgent {
+	// A new human turn with the same answer is news, not noise (a plain
+	// reply is info since #2478).
+	if recs[1].Tier != comms.TierInfo {
 		t.Fatalf("second human-triggered turn: %+v", recs[1])
 	}
 }
@@ -468,8 +469,9 @@ func TestCommsIngest_SecondDaemonDoesNotOwnTheLedger(t *testing.T) {
 // with the ledger off, and the spool entry stays for a retry.
 func TestCommsIngest_LedgerDiskFailureNeverTouchesTheInboxPath(t *testing.T) {
 	f := newCommsFixture(t)
-	f.appendTurn(t, fxHuman("u0", "run the board"), fxAssistantText("a0", "Starting 13 lanes."))
-	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Starting 13 lanes.", TranscriptPath: f.transcript})
+	// A question to the parent: urgent, so the inbox path wakes it (#2478).
+	f.appendTurn(t, fxHuman("u0", "run the board"), fxAssistantText("a0", "Starting 13 lanes. Which board first?"))
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Event: "Stop", Instance: f.child.ID, Text: "Starting 13 lanes. Which board first?", TranscriptPath: f.transcript})
 	l := f.d.commsLedgerFor("default")
 	if l == nil {
 		t.Fatal("ledger did not open")
@@ -487,7 +489,7 @@ func TestCommsIngest_LedgerDiskFailureNeverTouchesTheInboxPath(t *testing.T) {
 	f.d.ingestCommsSpool("default", f.byID)                   // the ledger path, failing
 
 	inbox := f.inboxRecords(t)
-	if len(inbox) != 1 || inbox[0].Tier != TurnTierUrgent || inbox[0].Text != "Starting 13 lanes." || *f.sends != 1 {
+	if len(inbox) != 1 || inbox[0].Tier != TurnTierUrgent || inbox[0].Text != "Starting 13 lanes. Which board first?" || *f.sends != 1 {
 		t.Fatalf("inbox path changed under a ledger failure: %+v sends=%d", inbox, *f.sends)
 	}
 	if entries, _ := ReadCommsSpool(f.child.ID); len(entries) != 1 {
