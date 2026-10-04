@@ -53,6 +53,22 @@ class MeasureTests(unittest.TestCase):
         result = self.run_measure({"transcripts": {"worker": str(malformed)}})
         self.assertIsNone(result["parents"]["worker"]["wakes"])
 
+    def test_journal_unknown_identity_stays_in_denominator(self):
+        stamp = "2026-01-01T01:00:00Z"
+        journal = self.write_records("journal.jsonl", [
+            {"ts": stamp, "child": "fixture-child", "uuid": "fixture-turn"},
+            {"ts": stamp, "child": "fixture-child", "uuid": "fixture-turn"},
+            {"ts": stamp, "child": "fixture-child"},
+            {"ts": stamp, "uuid": "orphan-turn"},
+            {"ts": stamp},
+        ])
+        result = self.run_measure({"journals": [journal]})
+        metrics = result["metrics"]
+        self.assertEqual(metrics["journal_entries"], 5)
+        self.assertEqual(metrics["duplicate_journal_entries"], 1)
+        self.assertEqual(metrics["journal_unknown_keys"], 3)
+        self.assertEqual(metrics["duplicate_journal_pct"], 20)
+
     def test_unsafe_label_is_rejected_before_read(self):
         result = self.run_measure({"transcripts": {"../escaped": "unused"}}, 2)
         self.assertIn("safe filenames", result.stderr)

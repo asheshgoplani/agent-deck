@@ -23,7 +23,9 @@ def recognized_record(category, record):
     if category in ('bus', 'ledger', 'send_health'):
         return bool(record.get('kind'))
     if category == 'journals':
-        return bool(record.get('child') and record.get('uuid'))
+        # The caller already validated the timestamp. Missing identity affects
+        # duplicate attribution, not membership in the configured journal.
+        return True
     return bool(record.get('child_session_id'))
 
 
