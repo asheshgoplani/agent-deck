@@ -229,8 +229,10 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	cfg := ResolveInboxConfig(parentTitleFor(inst, byID))
 	prompt := d.commsPrompts[inst.ID]
 	facts, classified := commsTurnFacts(inst, e, prompt)
+	owed := commsOwedNone
+	owedFrom := strings.TrimSpace(facts.FromID)
 	if IsClaudeCompatible(inst.Tool) {
-		facts.FromID = commsHeldSendReplyTo(inst, facts, classified)
+		facts.FromID, owed = commsHeldSendReplyTo(inst, facts, classified)
 	}
 	if !cfg.GetQuestionWakes() {
 		facts.Question = false
@@ -293,6 +295,14 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		commsLog.Warn("comms_turn_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
 		return false
 	}
+	// The turn is durable (or already was): settle what it owes or pays,
+	// then the entry and the prompt edge it consumed can go.
+	switch owed {
+	case commsOwedRemember:
+		rememberLedgerOwedSender(inst.ID, owedFrom)
+	case commsOwedPaid:
+		clearLedgerOwedSender(inst.ID)
+	}
 	// The turn is durable (or already was): the entry and the prompt edge
 	// it consumed can go. A later turn with no new prompt edge is unknown,
 	// not a repeat of the old trigger.
@@ -304,49 +314,49 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	return true
 }
 
-// commsHeldSendReplyTo returns the sender a Claude turn's record replies to,
-// following the inbox's reply routing for a tagged send whose turn handed off
-// to background work (issue #2473). The Stop hook spools that held send turn
-// like any other, but the inbox does not record it: the reply goes with the
-// task turn that settles the work. So the ledger keeps the held turn without
-// the sender and stamps the sender on the settling task turn, and the sender
-// is answered once, with the result. In order:
-//   - a turn the inbox already recorded replies to whom the inbox replied;
-//   - a send turn the background work still holds replies to no one;
-//   - a classified task turn that settles held work (the work no longer holds
-//     the turn) replies to the remembered sender of the held send.
+// commsOwed says what committing a Claude turn does to the sender the
+// ledger owes a held send's result.
+type commsOwed int
+
+const (
+	commsOwedNone     commsOwed = iota
+	commsOwedRemember           // a held send turn: its sender is owed the result
+	commsOwedPaid               // the settling task turn: the owed sender is answered
+)
+
+// commsHeldSendReplyTo returns the sender a Claude turn's record replies to
+// when a tagged send hands off to background work (issue #2473), and what
+// committing the turn does to the ledger's owed sender. The ledger keeps this
+// state itself (rememberLedgerOwedSender): it never reads the inbox's held
+// send record or its turn journal, which are written only when the child's
+// transition notifications are on, are cleared when the inbox answers through
+// another turn (a permission menu while the work runs), and drift from the
+// ledger whenever the two run at different times. So the sender is answered
+// exactly once in the ledger whatever the inbox does:
+//   - a send turn the background work still holds when it is committed
+//     replies to no one, and its sender becomes owed;
+//   - the first classified task turn committed once the work no longer holds
+//     the turn replies to the owed sender and pays it;
+//   - every other turn replies to its own sender, and a send turn committed
+//     unheld (a late drain after the work settled) owes nothing.
 //
-// Known limit: a held send whose hold later lapses is answered by the inbox
-// with the send turn itself; the ledger, which committed that turn while it
-// was held, then carries no reply for it.
-func commsHeldSendReplyTo(inst *Instance, facts TurnFacts, classified bool) string {
+// The ledger may answer on a different turn than the inbox (the result turn
+// where the inbox answered the send turn at a menu); each store answers once.
+func commsHeldSendReplyTo(inst *Instance, facts TurnFacts, classified bool) (string, commsOwed) {
 	from := strings.TrimSpace(facts.FromID)
-	if facts.Trigger != TurnTriggerSend && facts.Trigger != TurnTriggerTask {
-		return from
-	}
-	if facts.UUID != "" {
-		if entries, err := ReadTurnJournal(inst.ID, 0); err == nil {
-			for i := len(entries) - 1; i >= 0; i-- {
-				if entries[i].UUID == facts.UUID {
-					return entries[i].FromID
-				}
-			}
-		}
-	}
-	holds := backgroundWorkHoldsTurn(inst)
 	switch facts.Trigger {
 	case TurnTriggerSend:
-		if from != "" && holds {
-			return ""
+		if from != "" && backgroundWorkHoldsTurn(inst) {
+			return "", commsOwedRemember
 		}
 	case TurnTriggerTask:
-		if from == "" && classified && !holds {
-			if held := loadHeldSend(inst.ID); held != nil {
-				return held.FromID
+		if from == "" && classified && !backgroundWorkHoldsTurn(inst) {
+			if owed := loadLedgerOwedSender(inst.ID); owed != "" {
+				return owed, commsOwedPaid
 			}
 		}
 	}
-	return from
+	return from, commsOwedNone
 }
 
 // commsTurnFacts reduces a spooled turn to the facts the tier rule needs.

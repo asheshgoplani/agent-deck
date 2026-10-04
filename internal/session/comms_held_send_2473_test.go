@@ -100,8 +100,8 @@ func assertLedgerAnsweredOnSettlingTurn(t *testing.T, f *pr5Fixture, senderID st
 }
 
 // The inbox records the settling turn first (same pass, before the ingest),
-// which clears the held send record: the ledger takes the sender from the
-// inbox's own record of that turn.
+// which clears the inbox's held send record: the ledger answers from its own
+// owed sender.
 func TestCommsLedger2473_HeldSendRepliesOnceOnTheSettlingTurn(t *testing.T) {
 	f, sib, running, waiting := newHeldLedgerFixture(t)
 	heldLedgerLaunch(t, f, sib.ID, running)
@@ -167,5 +167,103 @@ func TestCommsLedger2473_IntermediateTaskTurnCarriesNoSender(t *testing.T) {
 	}
 	if held := loadHeldSend(f.child.ID); held == nil || held.FromID != sib.ID {
 		t.Fatalf("the sender is still owed the result: %+v", held)
+	}
+	if owed := loadLedgerOwedSender(f.child.ID); owed != sib.ID {
+		t.Fatalf("the ledger still owes the sender the result: %q", owed)
+	}
+}
+
+func ledgerRepliesTo(t *testing.T, f *pr5Fixture, sender string) int {
+	t.Helper()
+	n := 0
+	for _, r := range childLedgerTurns(t, f) {
+		if r.ReplyTo == sender {
+			n++
+		}
+	}
+	return n
+}
+
+// A permission menu while the work runs: the inbox answers the sender on the
+// held send turn and clears its held record. The ledger committed that turn
+// while it was held, so it must still answer once, on the settling turn.
+func TestCommsLedger2473_MenuInterludeLedgerRepliesOnce(t *testing.T) {
+	f, sib, running, waiting := newHeldLedgerFixture(t)
+	heldLedgerLaunch(t, f, sib.ID, running)
+	for i := 0; i < 2; i++ {
+		f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+		f.d.ingestCommsSpool("default", f.byID)
+	}
+	for i := 0; i < 3; i++ {
+		f.d.recordTerminalTurns("default", f.byID, running, nil)
+		f.d.ingestCommsSpool("default", f.byID)
+	}
+	f.appendTurn(t, fxRawWorkflowNotification("u1", "wqphbmkuj"), fxAssistantText("a1", heldLedgerResult), fxTurnDuration(0))
+	spoolClaudeStop(t, f, heldLedgerResult)
+	stop := map[string]hookTransitionCandidate{f.child.ID: {ToStatus: "waiting", Timestamp: time.Now(), Event: "Stop"}}
+	for i := 0; i < 5; i++ {
+		f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+		f.d.ingestCommsSpool("default", f.byID)
+		f.d.emitHookTransitionCandidates("default", f.byID, running, waiting, stop)
+	}
+	if inbox := len(readSenderRecords(t, sib.ID)); inbox != 1 {
+		t.Fatalf("inbox must answer the sender once, got %d", inbox)
+	}
+	assertLedgerAnsweredOnSettlingTurn(t, f, sib.ID)
+	if owed := loadLedgerOwedSender(f.child.ID); owed != "" {
+		t.Fatalf("the paid sender must be cleared, got %q", owed)
+	}
+}
+
+// A child with transition notifications off: the inbox never remembers the
+// held send, but the ledger records every turn and must answer the sender once.
+func TestCommsLedger2473_NoTransitionNotifyLedgerRepliesOnce(t *testing.T) {
+	f, sib, running, waiting := newHeldLedgerFixture(t)
+	f.child.NoTransitionNotify = true
+	heldLedgerLaunch(t, f, sib.ID, running)
+	if loadHeldSend(f.child.ID) != nil {
+		t.Fatal("precondition: the inbox remembers nothing for a child with notifications off")
+	}
+	f.appendTurn(t, fxRawWorkflowNotification("u1", "wqphbmkuj"), fxAssistantText("a1", heldLedgerResult), fxTurnDuration(0))
+	spoolClaudeStop(t, f, heldLedgerResult)
+	for i := 0; i < 3; i++ {
+		f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+		f.d.ingestCommsSpool("default", f.byID)
+	}
+	assertLedgerAnsweredOnSettlingTurn(t, f, sib.ID)
+}
+
+// The ledger could not ingest during the whole hold and drains the backlog
+// after the work settled: the send turn is committed unheld with its own
+// reply and owes nothing, so the task turn must not answer a second time.
+func TestCommsLedger2473_LateDrainRepliesOnce(t *testing.T) {
+	f, sib, running, waiting := newHeldLedgerFixture(t)
+	env := SendEnvelope(sib.ID) + "\nrun the follow-on workflow and tell me the result"
+	spoolTurn(t, CommsSpoolEntry{Harness: "claude", Edge: CommsEdgePromptStart, Event: "UserPromptSubmit", Instance: f.child.ID,
+		SessionID: f.child.ClaudeSessionID, Prompt: env, TSignal: time.Now().UnixMilli()})
+	f.appendTurn(t, fxHuman("u0", env))
+	f.appendTurn(t, fxWorkflowLaunch("wqphbmkuj", "comms-followon-round3")...)
+	const launched = "Launched comms-followon-round3 in the background."
+	f.appendTurn(t, fxAssistantText("a0", launched), fxTurnDuration(1))
+	spoolClaudeStop(t, f, launched)
+	stop := map[string]hookTransitionCandidate{f.child.ID: {ToStatus: "waiting", Timestamp: time.Now(), Event: "Stop"}}
+	for i := 0; i < 3; i++ {
+		f.d.recordTerminalTurns("default", f.byID, running, nil)
+		f.d.emitHookTransitionCandidates("default", f.byID, running, running, stop)
+	}
+	f.appendTurn(t, fxRawWorkflowNotification("u1", "wqphbmkuj"), fxAssistantText("a1", heldLedgerResult), fxTurnDuration(0))
+	spoolClaudeStop(t, f, heldLedgerResult)
+	f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+	f.d.ingestCommsSpool("default", f.byID)
+
+	turns := childLedgerTurns(t, f)
+	if len(turns) != 2 {
+		t.Fatalf("want both turns in the ledger, got %+v", turns)
+	}
+	if n := ledgerRepliesTo(t, f, sib.ID); n != 1 {
+		t.Fatalf("late drain: ledger replies %d, want 1: %+v", n, turns)
+	}
+	if loadLedgerOwedSender(f.child.ID) != "" {
+		t.Fatal("an unheld send turn owes nothing")
 	}
 }

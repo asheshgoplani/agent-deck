@@ -62,24 +62,63 @@ func rememberHeldSend(childID string, facts TurnFacts) {
 	if last := LastTurnJournalEntry(childID); last != nil && last.UUID != "" && last.UUID == facts.UUID {
 		return
 	}
-	data, err := json.Marshal(heldSendOrigin{FromID: from, UUID: facts.UUID, HeldAt: time.Now()})
-	if err != nil {
-		return
-	}
-	path := heldSendPath(childID)
-	err = os.MkdirAll(filepath.Dir(path), 0o700)
-	if err == nil {
-		err = atomicWriteFile(path, data, 0o600)
-	}
-	if err != nil {
-		commsLog.Warn("held_send_write_failed", slog.String("child", childID), slog.String("error", err.Error()))
-	}
+	writeHeldSendOrigin(heldSendPath(childID), childID, heldSendOrigin{FromID: from, UUID: facts.UUID, HeldAt: time.Now()})
 }
 
 // loadHeldSend returns the remembered sender for childID, or nil when none
 // is remembered or the record is older than heldSendMaxAge.
 func loadHeldSend(childID string) *heldSendOrigin {
-	data, err := os.ReadFile(heldSendPath(childID))
+	return readHeldSendOrigin(heldSendPath(childID), childID)
+}
+
+func clearHeldSend(childID string) {
+	removeHeldSendOrigin(heldSendPath(childID), childID)
+}
+
+// The Comms Ledger keeps its own owed sender per child, in a separate
+// directory, so the inbox's gating and clearing never decide what the ledger
+// answers (see commsHeldSendReplyTo). Same record, same max age.
+//
+// Layout: <data>/runtime/held-send-ledger/<child>.json.
+func ledgerOwedSenderPath(childID string) string {
+	return filepath.Join(runtimeDirOrTemp("held-send-ledger"), sanitizeInboxName(childID)+".json")
+}
+
+func rememberLedgerOwedSender(childID, from string) {
+	if strings.TrimSpace(childID) == "" || strings.TrimSpace(from) == "" {
+		return
+	}
+	writeHeldSendOrigin(ledgerOwedSenderPath(childID), childID, heldSendOrigin{FromID: from, HeldAt: time.Now()})
+}
+
+// loadLedgerOwedSender returns the sender the ledger owes childID a held
+// send's result, or "" when none.
+func loadLedgerOwedSender(childID string) string {
+	if origin := readHeldSendOrigin(ledgerOwedSenderPath(childID), childID); origin != nil {
+		return origin.FromID
+	}
+	return ""
+}
+
+func clearLedgerOwedSender(childID string) {
+	removeHeldSendOrigin(ledgerOwedSenderPath(childID), childID)
+}
+
+func writeHeldSendOrigin(path, childID string, origin heldSendOrigin) {
+	data, err := json.Marshal(origin)
+	if err == nil {
+		err = os.MkdirAll(filepath.Dir(path), 0o700)
+	}
+	if err == nil {
+		err = atomicWriteFile(path, data, 0o600)
+	}
+	if err != nil {
+		commsLog.Warn("held_send_write_failed", slog.String("child", childID), slog.String("path", path), slog.String("error", err.Error()))
+	}
+}
+
+func readHeldSendOrigin(path, childID string) *heldSendOrigin {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -88,15 +127,15 @@ func loadHeldSend(childID string) *heldSendOrigin {
 		return nil
 	}
 	if !origin.HeldAt.IsZero() && time.Since(origin.HeldAt) > heldSendMaxAge {
-		clearHeldSend(childID)
+		removeHeldSendOrigin(path, childID)
 		return nil
 	}
 	return &origin
 }
 
-func clearHeldSend(childID string) {
-	if err := os.Remove(heldSendPath(childID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		commsLog.Warn("held_send_clear_failed", slog.String("child", childID), slog.String("error", err.Error()))
+func removeHeldSendOrigin(path, childID string) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		commsLog.Warn("held_send_clear_failed", slog.String("child", childID), slog.String("path", path), slog.String("error", err.Error()))
 	}
 }
 
