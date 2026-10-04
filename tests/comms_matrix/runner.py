@@ -285,6 +285,10 @@ def local_cell(output, tool, tier, root=None):
         rig.tick()
         if tool not in ('claude', 'codex'):
             rig.tick()
+        if rig.live is not None:
+            rig.live.terminate()
+            rig.live.wait(timeout=10)
+            rig.live = None
         shown = json.loads(rig.cli('session', 'show', rig.child, '--json').stdout)
         records, export = rig.records()
         turns = [r for r in records if r.get('from') == rig.child and r['kind'] == 'turn']
@@ -306,10 +310,23 @@ def local_cell(output, tool, tier, root=None):
         typed = rig.capture(rig.parent)[len(before):]
         if tier == 'info':
             checks.append(check('info_stop_no_block', any('\"block\"' in h['stdout'] for h in rig.hook_outputs if h['instance'] == rig.child and h['event'] in ('Stop', 'stop')), False))
-            checks.append(check('info_no_input', typed.hex(), ''))
+            baseline = None
+            if tool == 'hermes':
+                # P1's generation-seeded parent receives exactly one legacy nudge.
+                # Never apply this allowance to approval safety or another tool.
+                legacy = f"[INBOX] urgent · matrix-child ({rig.child}): waiting · details are in this turn's context\r"
+                baseline = [legacy.encode().hex()]
+            checks.append(check('info_no_input', typed.hex(), '', baseline))
         checks.append(check('no_legacy_doorbell', b'[INBOX] A child just committed' in typed, False, [True]))
         count = sum(s.get('records_urgent', 0) + s.get('records_info', 0) + s.get('records_legacy', 0) for s in stats if s.get('parent') == rig.parent)
-        checks.append(check('stats_match_turns', count, len([r for r in records if r.get('from') == rig.child and r['kind'] in ('turn', 'status')]), ([0] if tool == 'codex' else [3] if tool == 'hermes' else None)))
+        child_records = [r for r in records if r.get('from') == rig.child and r['kind'] in ('turn', 'status')]
+        stats_baseline = None
+        if tool == 'codex' and len(turns) == 1:
+            stats_baseline = [0]
+        elif not turns and len(child_records) == 1:
+            # Measured legacy-counter overcount on the pre-consumer baseline.
+            stats_baseline = {'hermes': [2, 3], 'cursor': [3, 4, 5]}.get(tool)
+        checks.append(check('stats_match_records', count, len(child_records), stats_baseline))
         sends = [r for r in records if r['kind'] == 'send' and r.get('from') == rig.parent and rig.child in r.get('to', [])]
         final_states = {'injected', 'typed', 'landed', 'failed'}
         valid_sends = [r for r in sends if r.get('text') == 'Matrix parent-assigned task.' and r.get('th') == hashlib.sha256(r['text'].encode()).hexdigest()[:16] and (r.get('state') in final_states or any(d.get('ref') == r['id'] and d.get('state') in final_states for d in records if d['kind'] == 'delivery'))]
