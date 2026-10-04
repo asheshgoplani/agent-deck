@@ -25,6 +25,14 @@ class ResultContractTests(unittest.TestCase):
         # Decoder must not "fix" duplicates. The behavioral assertion sees both.
         self.assertEqual(decode_records('\n'.join(json.dumps(f) for f in frames)), [record, record])
 
+    def test_cursor_record_export_envelope_preserves_record_identity(self):
+        record = {'id': 'r1', 'key': 'turn:one', 'kind': 'turn', 'text': 'answer'}
+        envelope = {'v': 1, 'records': [dict(cursor=i, record=record) for i in (1, 2)]}
+        self.assertEqual(decode_records(json.dumps(envelope)), [record, record])
+        envelope['records'] = [dict(cursor=1, record={})]
+        with self.assertRaises(ValueError):
+            decode_records(json.dumps(envelope))
+
 
 if __name__ == '__main__':
     unittest.main()

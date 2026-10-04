@@ -15,5 +15,7 @@ func TestMain(m *testing.M) { os.Exit(runTestMain(m)) }
 func runTestMain(m *testing.M) int {
 	cleanupHome := testutil.IsolateHome()
 	defer cleanupHome()
+	cleanupTmux := testutil.IsolateTmuxSocket()
+	defer cleanupTmux()
 	return m.Run()
 }

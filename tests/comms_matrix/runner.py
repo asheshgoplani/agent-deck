@@ -48,8 +48,11 @@ def decode_records(text):
         raise ValueError('export is not a record list')
     records = []
     for item in value:
-        if 'data' in item and 'cursor' in item:
-            item = item['data']
+        if isinstance(item, dict) and 'cursor' in item:
+            if 'record' in item:
+                item = item['record']
+            elif 'data' in item:
+                item = item['data']
         if not isinstance(item, dict) or 'kind' not in item:
             raise ValueError('export contains an invalid record')
         records.append(item)
