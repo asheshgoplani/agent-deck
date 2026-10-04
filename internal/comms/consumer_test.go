@@ -1,0 +1,355 @@
+package comms
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/events"
+)
+
+// Consumer side (P2): a consumer reads only what is addressed to it, its
+// acknowledgements survive concurrent readers, a new consumer starts at its
+// first record, and every loss (epoch change, compaction) is explicit.
+
+func openPair(t *testing.T) (*Ledger, *Reader, string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return l, r, dir
+}
+
+func mustCommit(t *testing.T, l *Ledger, r Record) events.Cursor {
+	t.Helper()
+	_, c, err := l.Commit(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// pass runs one Do for consumer acknowledging nothing and returns the
+// pending cursors.
+func pass(t *testing.T, r *Reader, consumer string, ack func(Pass) []events.Cursor) ([]events.Cursor, ConsumerFile) {
+	t.Helper()
+	var got []events.Cursor
+	f, err := r.Do(consumer, func(p Pass) ([]events.Cursor, error) {
+		for _, e := range p.Pending {
+			got = append(got, e.Cursor)
+		}
+		if ack == nil {
+			return nil, nil
+		}
+		return ack(p), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got, f
+}
+
+func all(p Pass) []events.Cursor {
+	var out []events.Cursor
+	for _, e := range p.Pending {
+		out = append(out, e.Cursor)
+	}
+	return out
+}
+
+func TestConsumerReadsOnlyItsNewsAndAckMovesTheWatermark(t *testing.T) {
+	l, r, dir := openPair(t)
+	mine := mustCommit(t, l, Record{Kind: KindTurn, From: "c1", To: []string{"P"}, Tier: TierInfo, Text: "one"})
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c2", To: []string{"Q"}, Tier: TierUrgent, Text: "not mine"})
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c1", To: []string{"P"}, Tier: TierNoise, Text: "one"})
+	mustCommit(t, l, Record{Kind: KindWake, From: "agent-deck", To: []string{"P"}, Text: "[INBOX] ..."})
+	mustCommit(t, l, Record{Kind: KindCall, From: "P", State: CallSessionOutput})
+	sendSeen := mustCommit(t, l, Record{Kind: KindSend, From: "c1", To: []string{"c2", "P"}, Tier: TierInfo, Text: "hi sibling"})
+	// The send's target reads it from its pane, never again from the ledger.
+	if Deliverable(Record{Kind: KindSend, From: "c1", To: []string{"c2", "P"}}, "c2") {
+		t.Fatal("a send must not be delivered to its own target")
+	}
+
+	got, f := pass(t, r, "P", nil)
+	if len(got) != 2 || got[0] != mine || got[1] != sendSeen {
+		t.Fatalf("pending for P = %v, want [%d %d] (noise, wake, call and Q's record are not P's news)", got, mine, sendSeen)
+	}
+	if f.Watermark != mine-1 || f.Pending != 2 {
+		t.Fatalf("peek moved the watermark past pending news: %+v", f)
+	}
+	if HasNothingPending(dir, "P") {
+		t.Fatal("fast path says nothing pending while two records wait")
+	}
+	_, f = pass(t, r, "P", all)
+	if f.Watermark != l.Cursor() || f.Pending != 0 || f.Acked != nil {
+		t.Fatalf("after acking everything: %+v (cursor %d)", f, l.Cursor())
+	}
+	if !HasNothingPending(dir, "P") {
+		t.Fatal("fast path must skip a consumer with nothing new")
+	}
+	// A record for someone else does not wake P's fast path; one for P does.
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c2", To: []string{"Q"}, Tier: TierUrgent, Text: "q again"})
+	if !HasNothingPending(dir, "P") {
+		t.Fatal("Q's record raised P's flag")
+	}
+	next := mustCommit(t, l, Record{Kind: KindTurn, From: "c1", To: []string{"P"}, Tier: TierUrgent, Text: "done", Done: "ok"})
+	if HasNothingPending(dir, "P") {
+		t.Fatal("a new record for P must defeat the fast path")
+	}
+	if got, _ := pass(t, r, "P", nil); len(got) != 1 || got[0] != next {
+		t.Fatalf("pending after a new record: %v", got)
+	}
+}
+
+func TestNewConsumerStartsAtItsFirstRecordElseAtTheEnd(t *testing.T) {
+	l, r, _ := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"Q"}, Tier: TierInfo, Text: "before P existed"})
+	first := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: "first for P"})
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: "second for P"})
+	got, f := pass(t, r, "P", nil)
+	if len(got) != 2 || got[0] != first || f.Generation != 1 || f.Store != l.Store().ID {
+		t.Fatalf("new consumer P: pending %v state %+v", got, f)
+	}
+	// A consumer nobody ever addressed starts at the end: no history flood.
+	got, f = pass(t, r, "nobody", nil)
+	if len(got) != 0 || f.Watermark != l.Cursor() {
+		t.Fatalf("unaddressed consumer: pending %v watermark %d (cursor %d)", got, f.Watermark, l.Cursor())
+	}
+	later := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"nobody"}, Tier: TierInfo, Text: "now you"})
+	if got, _ := pass(t, r, "nobody", nil); len(got) != 1 || got[0] != later {
+		t.Fatalf("record after creation: %v", got)
+	}
+}
+
+func TestUrgentAckedAheadNeverHidesEarlierInfo(t *testing.T) {
+	l, r, _ := openPair(t)
+	info := mustCommit(t, l, Record{Kind: KindTurn, From: "a", To: []string{"P"}, Tier: TierInfo, Text: "progress"})
+	urgent := mustCommit(t, l, Record{Kind: KindTurn, From: "b", To: []string{"P"}, Tier: TierUrgent, Text: "blocked?", Q: true})
+	_, f := pass(t, r, "P", func(p Pass) []events.Cursor { return []events.Cursor{urgent} })
+	if f.Watermark != info-1 || len(f.Acked) != 1 || f.Acked[0] != urgent || f.Pending != 1 {
+		t.Fatalf("urgent acked ahead: %+v", f)
+	}
+	got, _ := pass(t, r, "P", nil)
+	if len(got) != 1 || got[0] != info {
+		t.Fatalf("the info record must stay pending: %v", got)
+	}
+	_, f = pass(t, r, "P", all)
+	if f.Watermark != urgent || f.Acked != nil {
+		t.Fatalf("contiguous acks fold into the watermark: %+v", f)
+	}
+}
+
+func TestConcurrentReadersNeverLoseAnAcknowledgement(t *testing.T) {
+	l, r, dir := openPair(t)
+	var cursors []events.Cursor
+	for i := 0; i < 40; i++ {
+		cursors = append(cursors, mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: strings.Repeat("x", i+1)}))
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, len(cursors))
+	for _, c := range cursors {
+		wg.Add(1)
+		go func(c events.Cursor) {
+			defer wg.Done()
+			rd, err := OpenReaderAt(dir)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer rd.Close()
+			_, err = rd.Do("P", func(Pass) ([]events.Cursor, error) { return []events.Cursor{c}, nil })
+			errs <- err
+		}(c)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, f := pass(t, r, "P", nil)
+	if len(got) != 0 || f.Watermark != cursors[len(cursors)-1] {
+		t.Fatalf("lost acknowledgements: still pending %v, state %+v", got, f)
+	}
+}
+
+func TestEpochChangeRebuildsTheConsumerWithAnExplicitGap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, _, err := l.Commit(Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: strings.Repeat("y", i+1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Do("P", func(p Pass) ([]events.Cursor, error) { return all(p), nil }); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	oldEpoch := l.Store().Epoch
+	_ = l.Close()
+	// Restore from an older copy: only the first line survives.
+	data, _ := os.ReadFile(filepath.Join(dir, "active.ndjson"))
+	if err := os.WriteFile(filepath.Join(dir, "active.ndjson"), []byte(strings.SplitAfter(string(data), "\n")[0]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	if l2.Store().Epoch != oldEpoch+1 {
+		t.Fatalf("restore not detected: epoch %d", l2.Store().Epoch)
+	}
+	fresh := mustCommit(t, l2, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierUrgent, Text: "after restore", Done: "ok"})
+	r2, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	var gap *GapNote
+	f, err := r2.Do("P", func(p Pass) ([]events.Cursor, error) {
+		gap = p.Gap
+		if len(p.Pending) != 1 || p.Pending[0].Cursor != fresh {
+			t.Errorf("after the epoch change P must see the new record once: %+v", p.Pending)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "epoch" || f.Epoch != l2.Store().Epoch || f.Generation != 2 || len(f.Gaps) != 1 {
+		t.Fatalf("epoch change must rebuild with an explicit gap: gap %+v state %+v", gap, f)
+	}
+}
+
+func TestCompactionKeepsPendingRecordsAndALaggardGetsAGap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	bus, err := events.OpenAt(dir, events.Options{Private: true, KeepCorrupt: true, MaxSegmentBytes: 600, RetainSegments: 1,
+		RetainFrom: func() events.Cursor { return ConsumersRetainFrom(dir, time.Now()) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	if err := writeStoreIdentity(dir, StoreIdentity{ID: "S", Epoch: 1}); err != nil {
+		t.Fatal(err)
+	}
+	commit := func(to, text string) events.Cursor {
+		f, err := bus.Commit(KindTurn, "c", Record{V: 1, ID: NewID(time.Now()), Kind: KindTurn, From: "c", To: []string{to}, Tier: TierInfo, Text: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.Cursor
+	}
+	commit("Q", "lost to Q "+strings.Repeat("q", 700))
+	firstForP := commit("P", "pending for P "+strings.Repeat("p", 700))
+	// The raw bus has no Ledger to raise flags; P's flag says where it starts.
+	if err := writeFlag(dir, "P", PendingFlag{First: firstForP, Last: firstForP, Epoch: 1}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	// Q's state exists but it has not read for longer than the audit
+	// retention, so it holds nothing; P reads (a peek) and holds its record.
+	if err := writeConsumer(dir, ConsumerFile{ConsumerState: ConsumerState{Consumer: "Q", Store: "S", Epoch: 1, Generation: 1},
+		Updated: time.Now().Add(-2 * activeConsumerFor).UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := pass(t, r, "P", nil); len(got) != 1 || got[0] != firstForP {
+		t.Fatalf("P pending %v", got)
+	}
+	for i := 0; i < 12; i++ {
+		commit("Q", strings.Repeat("q", 700))
+	}
+	oldest, err := bus.Oldest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldest > firstForP || oldest <= 1 {
+		t.Fatalf("compaction must drop Q's unheld record and stop at P's pending one: oldest %d, P's record %d", oldest, firstForP)
+	}
+	if got, _ := pass(t, r, "P", nil); len(got) != 1 || got[0] != firstForP {
+		t.Fatalf("compaction dropped P's pending record: %v", got)
+	}
+	// Q is told what it lost instead of silently starting later.
+	var gap *GapNote
+	if _, err := r.Do("Q", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "compacted" || gap.From != 1 || gap.To != oldest-1 || gap.Resumed != oldest-1 {
+		t.Fatalf("laggard gap %+v (oldest %d)", gap, oldest)
+	}
+}
+
+func TestPendingFlagsAreRebuiltAtOpen(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierUrgent, Text: "lost flag"})
+	_ = l.Close()
+	if err := os.RemoveAll(filepath.Join(dir, pendingDirName)); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	flag, ok := ReadFlag(dir, "P")
+	if !ok || flag.First != c || flag.Last != c || flag.Epoch != l2.Store().Epoch {
+		t.Fatalf("flag not rebuilt at open: %+v ok=%v", flag, ok)
+	}
+}
+
+func TestConsumerNamesAreOnePathElement(t *testing.T) {
+	for _, bad := range []string{"", ".", "..", "../x", "a/b", ".hidden", strings.Repeat("a", 201)} {
+		if ValidConsumer(bad) == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	for _, good := range []string{"8f3c2a1e-0000", "human:conductor-ops", "sess_1.2@host"} {
+		if err := ValidConsumer(good); err != nil {
+			t.Fatalf("rejected %q: %v", good, err)
+		}
+	}
+	_, r, _ := openPair(t)
+	if _, err := r.Do("../escape", func(Pass) ([]events.Cursor, error) { return nil, nil }); err == nil {
+		t.Fatal("Do accepted a traversal consumer name")
+	}
+}
+
+func TestADecideErrorAcknowledgesNothing(t *testing.T) {
+	l, r, _ := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierUrgent, Text: "show me"})
+	boom := errors.New("stdout closed")
+	if _, err := r.Do("P", func(p Pass) ([]events.Cursor, error) { return all(p), boom }); !errors.Is(err, boom) {
+		t.Fatalf("decide error not returned: %v", err)
+	}
+	if got, _ := pass(t, r, "P", nil); len(got) != 1 {
+		t.Fatalf("a failed print must leave the record pending: %v", got)
+	}
+}

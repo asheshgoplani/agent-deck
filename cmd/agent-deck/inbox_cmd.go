@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -328,6 +329,9 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 	sessionID, err = resolveInboxDrainSessionInProfile(sessionID, explicitProfile)
 	if err != nil {
 		return err
+	}
+	if caller := callerSessionID(); caller != "" {
+		session.SpoolCommsCall(caller, comms.CallInboxDrain, sessionID)
 	}
 
 	events, err := session.DrainInboxForParent(sessionID)

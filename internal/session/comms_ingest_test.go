@@ -657,8 +657,9 @@ func TestCommsIngest_ProductionWiringAndShutdown(t *testing.T) {
 	for _, r := range recs {
 		kinds[r.Kind+":"+r.Tool]++
 	}
-	if len(recs) != 3 || kinds["turn:claude"] != 1 || kinds["turn:codex"] != 1 || kinds["status:shell"] != 1 {
-		t.Fatalf("ledger records: %v %+v", kinds, recs)
+	// One wake record per wake the inbox path typed (P2 measurement).
+	if len(recs) != 3+*f.sends || kinds["turn:claude"] != 1 || kinds["turn:codex"] != 1 || kinds["status:shell"] != 1 || kinds["wake:"] != *f.sends {
+		t.Fatalf("ledger records (%d inbox wakes): %v %+v", *f.sends, kinds, recs)
 	}
 	dir, _ := comms.Dir("default")
 	f.d.shutdown()
@@ -851,5 +852,64 @@ func TestCommsIngest_ConflictingStatusReplayIsQuarantined(t *testing.T) {
 	}
 	if q, _ := os.ReadDir(filepath.Join(CommsSpoolDir(), "conflict", f.shell.ID)); len(q) != 1 {
 		t.Fatalf("conflicting status entry not quarantined: %d files", len(q))
+	}
+}
+
+// P2 measurement rows: a machine wake on the inbox path (typed nudge,
+// digest, Stop block) and a session re-reading another one become wake and
+// call records, so `msg stats` measures both delivery paths from the
+// ledger alone. Neither is ever delivered to anyone.
+func TestCommsIngest_WakesAndReadCallsAreMeasurementRecords(t *testing.T) {
+	f := newCommsFixture(t)
+	ev := TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: "board-zero", ToStatus: "waiting",
+		Tier: TurnTierUrgent, Text: "need a decision", TargetKind: "parent", Profile: "default"}
+	f.d.notifier.fireWakeNudge(f.parent, ev)
+	if !f.d.notifier.fireDigestNudge(f.parent, "default", DigestNudgeMessage(2, 1)) {
+		t.Fatal("digest nudge not sent")
+	}
+	SpoolCommsWake(f.parent.ID, "inbox", "stop", "Child session(s) completed while you were busy", "")
+	SpoolCommsCall(f.parent.ID, comms.CallSessionOutput, f.child.ID)
+	SpoolCommsCall("", comms.CallInboxDrain, f.parent.ID) // a shell, not a session: not counted
+	f.d.ingestCommsSpool("default", f.byID)
+
+	var wakes, calls []comms.Record
+	for _, r := range f.ledgerRecords(t) {
+		switch r.Kind {
+		case comms.KindWake:
+			wakes = append(wakes, r)
+		case comms.KindCall:
+			calls = append(calls, r)
+		}
+	}
+	if len(wakes) != 3 {
+		t.Fatalf("want 3 wake records (urgent nudge, digest, Stop block), got %+v", wakes)
+	}
+	for _, w := range wakes {
+		if w.From != "agent-deck" || len(w.To) != 1 || w.To[0] != f.parent.ID || w.Trigger != "inbox" || w.Text == "" || w.Key == "" {
+			t.Fatalf("wake record %+v", w)
+		}
+		if comms.Deliverable(w, f.parent.ID) {
+			t.Fatal("a wake record must never be delivered")
+		}
+	}
+	if wakes[0].Via != "tmux" || !strings.Contains(wakes[0].Text, "need a decision") || wakes[2].Via != "stop" || wakes[2].State != comms.StateInjected {
+		t.Fatalf("wake transports: %+v", wakes)
+	}
+	if len(calls) != 1 || calls[0].From != f.parent.ID || calls[0].State != comms.CallSessionOutput || calls[0].Ref != f.child.ID || calls[0].Tool != "claude" {
+		t.Fatalf("call records %+v", calls)
+	}
+	// Replayed spool entries (a crash before removal) are duplicates.
+	before := len(f.ledgerRecords(t))
+	f.d.ingestCommsSpool("default", f.byID)
+	if after := len(f.ledgerRecords(t)); after != before {
+		t.Fatalf("a second pass added records: %d -> %d", before, after)
+	}
+
+	// Switch off: a wake spools nothing.
+	t.Cleanup(SetCommsLedgerForTest(false))
+	SetCommsLedgerForTest(false)
+	SpoolCommsWake(f.parent.ID, "inbox", "tmux", "x", "")
+	if entries, _ := ReadCommsSpool(f.parent.ID); len(entries) != 0 {
+		t.Fatalf("ledger off must spool nothing: %+v", entries)
 	}
 }

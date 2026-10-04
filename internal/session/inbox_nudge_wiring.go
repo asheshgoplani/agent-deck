@@ -99,11 +99,19 @@ func (n *TransitionNotifier) fireWakeNudge(parent *Instance, event TransitionNot
 	// Issue #2469: the wake line names the record it is for; the record
 	// itself (text included) is injected by the parent's prompt-time drain
 	// into the turn this line starts.
-	if _, err := w.nudge(parent, event.TargetKind, event.Profile, NudgeHeadline(event)); err != nil {
+	line := NudgeHeadline(event)
+	sent, err := w.nudge(parent, event.TargetKind, event.Profile, line)
+	if err != nil {
 		// Best-effort: a failed wake is harmless. Log once at debug-ish level so
 		// the operator can see WHY a pane wasn't woken without it being an error.
 		commsLog.Warn("wake_nudge_send_failed",
 			slog.String("parent", parent.ID), slog.String("error", err.Error()))
+		return
+	}
+	if sent {
+		// Comms Ledger measurement: one wake record per machine wake, so
+		// `msg stats` compares this path with the ledger's own.
+		SpoolCommsWake(parent.ID, "inbox", "tmux", line, "")
 	}
 }
 
@@ -185,6 +193,9 @@ func (n *TransitionNotifier) fireDigestNudge(parent *Instance, profile, message 
 		commsLog.Warn("digest_nudge_send_failed",
 			slog.String("parent", parent.ID), slog.String("error", err.Error()))
 		return false
+	}
+	if sent {
+		SpoolCommsWake(parent.ID, "inbox", "tmux", message, "")
 	}
 	return sent
 }

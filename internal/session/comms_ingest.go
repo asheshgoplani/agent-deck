@@ -212,6 +212,8 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		return true
 	case CommsEdgeStatus:
 		return d.commitCommsStatus(l, profile, inst, e)
+	case CommsEdgeWake, CommsEdgeCall:
+		return commitCommsMeasure(l, profile, inst, e)
 	case CommsEdgeTurnEnd:
 	default:
 		RemoveCommsSpoolEntry(e)
@@ -485,6 +487,41 @@ func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, in
 		return true
 	default:
 		commsLog.Warn("comms_status_commit_failed", slog.String("child", inst.ID), slog.String("error", err.Error()))
+		return false
+	}
+	RemoveCommsSpoolEntry(e)
+	return true
+}
+
+// commitCommsMeasure commits a wake or call edge as a measurement record
+// (never delivered). Its identity is the spool entry id, so a replay is a
+// duplicate. A wake is addressed to the parent it woke (To) and comes from
+// agent-deck itself; a call comes from the session that ran it.
+func commitCommsMeasure(l *comms.Ledger, profile string, inst *Instance, e CommsSpoolEntry) bool {
+	rec := comms.Record{Profile: profile, TSignal: e.TSignal, Ref: e.Ref, Via: e.Via}
+	switch e.Edge {
+	case CommsEdgeWake:
+		rec.Kind, rec.From, rec.To = comms.KindWake, "agent-deck", []string{inst.ID}
+		rec.Trigger, rec.Text = e.Event, comms.CapText(e.Text, comms.MaxTextBytes)
+		rec.State = comms.StateTyped
+		if e.Via == "stop" {
+			rec.State = comms.StateInjected
+		}
+	default:
+		rec.Kind, rec.From, rec.State = comms.KindCall, inst.ID, e.Event
+		rec.Tool = commsToolName(inst)
+	}
+	if id := e.ID(); id != "" {
+		rec.Key = comms.Key(rec.Kind, inst.ID, id)
+	}
+	_, _, err := l.Commit(rec)
+	switch {
+	case err == nil, errors.Is(err, comms.ErrDuplicate):
+	case errors.Is(err, comms.ErrConflict):
+		QuarantineCommsSpoolEntry(e)
+		return true
+	default:
+		commsLog.Warn("comms_measure_commit_failed", slog.String("instance", inst.ID), slog.String("edge", e.Edge), slog.String("error", err.Error()))
 		return false
 	}
 	RemoveCommsSpoolEntry(e)

@@ -65,6 +65,9 @@ type Bus struct {
 	// appends. retention is the optional age bound on sealed segments.
 	readOnly  bool
 	retention time.Duration
+	// retainFrom is Options.RetainFrom: segments a reader still needs are
+	// never compacted.
+	retainFrom func() Cursor
 	// fileMode is the mode of every file the bus creates (0o644 by default,
 	// 0o600 for a private log such as the comms ledger).
 	fileMode os.FileMode
@@ -818,12 +821,21 @@ func (b *Bus) compactLocked() {
 		return
 	}
 	// Drop the oldest beyond the count bound, then any kept one past the
-	// age bound.
+	// age bound; never a segment a reader still needs (retainFrom).
+	held := Cursor(0)
+	if b.retainFrom != nil {
+		held = b.retainFrom()
+	}
+	needed := func(s sealedSegment) bool { return held > 0 && s.end >= held }
 	excess := max(len(sealed)-b.retainSegs, 0)
 	for _, s := range sealed[:excess] {
-		_ = os.Remove(s.path)
+		if !needed(s) {
+			_ = os.Remove(s.path)
+		}
 	}
 	for _, s := range b.expiredSegments(sealed[excess:], time.Now()) {
-		_ = os.Remove(s.path)
+		if !needed(s) {
+			_ = os.Remove(s.path)
+		}
 	}
 }

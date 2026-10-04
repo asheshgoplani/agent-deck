@@ -31,6 +31,10 @@ const (
 	KindHuman    = "human"    // a line bound for the human (conductor -> Telegram)
 	KindError    = "error"    // a producer or delivery failure worth a record
 	KindStatus   = "status"   // a status-only edge for tools with no text (shell)
+	// KindCall is a measurement row: a session ran a read verb (`session
+	// output`, `inbox drain`, `msg read`) that a ledger-fed parent should
+	// not need. Never delivered.
+	KindCall = "call"
 )
 
 // Tiers, as issue #2469 defines them.
@@ -103,12 +107,25 @@ type Record struct {
 	Via       string `json:"via,omitempty"`   // tmux | socket | ssh | telegram | hook
 	State     string `json:"state,omitempty"` // State* constants
 	Ref       string `json:"ref,omitempty"`   // id of the record this one is about
+	// Refs are the ids of every record a wake or a delivery carried.
+	Refs []string `json:"refs,omitempty"`
 
 	TSignal   int64 `json:"t_signal,omitempty"` // the harness signal (hook) fired
 	TRecord   int64 `json:"t_record,omitempty"` // the daemon committed the record
 	TPushed   int64 `json:"t_pushed,omitempty"` // the record left for a consumer
 	TSeen     int64 `json:"t_seen,omitempty"`   // a consumer's prompt carried it
 	LatencyMS int64 `json:"latency_ms,omitempty"`
+
+	// Cross-host timing of an imported record (P3), measured on the
+	// importing host. TImport is the local commit. XLatencyMS estimates
+	// the origin's signal (or commit) to TImport with the clock offset
+	// between the hosts corrected; XErrMS is its uncertainty (half the
+	// round trip that measured the offset plus clock granularity). An
+	// estimate that the uncertainty could make negative is not stored: the
+	// latency is then unknown, never a precise-looking wrong number.
+	TImport    int64 `json:"t_import,omitempty"`
+	XLatencyMS int64 `json:"xlat_ms,omitempty"`
+	XErrMS     int64 `json:"xlat_err_ms,omitempty"`
 }
 
 // DedupKey is what the idempotency window is keyed on: the producer's key

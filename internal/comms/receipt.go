@@ -223,21 +223,7 @@ func (c *ConsumerState) normalize() {
 // above the watermark says nothing about the cursors below its start, so
 // it changes nothing.
 func (c *ConsumerState) SkipSpent(after events.Cursor, read []Exported, through events.Cursor) {
-	if after > c.Watermark {
-		return
-	}
-	carried := make(map[events.Cursor]bool, len(read))
-	for _, e := range read {
-		carried[e.Cursor] = true
-	}
-	for c.Watermark < through {
-		next := c.Watermark + 1
-		if carried[next] && !c.IsAcked(next) {
-			break // a record still pending
-		}
-		c.Watermark = next
-	}
-	c.normalize()
+	c.AdvanceOver(after, read, through, nil)
 }
 
 // Normalize repairs a state read from disk (sorts, dedups, drops stale

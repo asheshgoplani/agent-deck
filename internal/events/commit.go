@@ -40,6 +40,13 @@ type Options struct {
 	// comms`) opens the ledger this way so only the owning daemon ever
 	// writes it. The directory must already exist.
 	ReadOnly bool
+	// RetainFrom, when set, is asked at every compaction for the lowest
+	// cursor a reader still needs (the comms ledger's pending-delivery
+	// bound). A sealed segment holding any cursor at or above it is kept
+	// whatever its age or the segment count say; MaxBytes still bounds the
+	// log, so a stuck reader turns into an explicit quota error, never a
+	// silent drop. 0 from the callback means no reader holds anything.
+	RetainFrom func() Cursor
 }
 
 // ErrReadOnly is returned by Commit and reported by Publish (as a drop) on a
@@ -100,6 +107,47 @@ func (b *Bus) applyOptions(opts Options) {
 	if opts.MaxBytes > 0 {
 		b.maxBytes = opts.MaxBytes
 	}
+	b.retainFrom = opts.RetainFrom
+}
+
+// CursorBefore returns a cursor from which a reader sees every frame
+// written at or after t: the cursor just before the oldest sealed segment
+// whose newest frame (its mtime) is not older than t, or just before the
+// active file when every sealed segment is older. 0 means read from the
+// start. Frames before t may still follow it; callers filter by their own
+// timestamps. It saves a reader of the newest day a scan of 90 days.
+func (b *Bus) CursorBefore(t time.Time) (Cursor, error) {
+	if b == nil || !b.enabled {
+		return 0, errors.New("events: bus disabled")
+	}
+	segs, err := b.listAllSegments()
+	if err != nil {
+		return 0, err
+	}
+	for _, s := range segs {
+		if !s.sealed {
+			return max(s.start, 1) - 1, nil
+		}
+		info, err := os.Stat(s.path)
+		if err != nil || !info.ModTime().Before(t) {
+			return max(s.start, 1) - 1, nil
+		}
+	}
+	return 0, nil
+}
+
+// Oldest returns the first cursor of the retained log (the start of the
+// oldest segment), 0 when nothing is retained. A reader whose position is
+// below Oldest()-1 has lost records to compaction and must say so.
+func (b *Bus) Oldest() (Cursor, error) {
+	if b == nil || !b.enabled {
+		return 0, errors.New("events: bus disabled")
+	}
+	segs, err := b.listAllSegments()
+	if err != nil || len(segs) == 0 {
+		return 0, err
+	}
+	return segs[0].start, nil
 }
 
 // openReadOnly builds a Bus that can list segments, Subscribe and report

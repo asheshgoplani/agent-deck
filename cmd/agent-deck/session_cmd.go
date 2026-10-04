@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
@@ -6297,6 +6298,11 @@ func handleSessionOutput(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+	// Comms Ledger measurement: a session re-reading another one is the
+	// call a ledger-fed parent should not need (#2482 target).
+	if caller := callerSessionID(); caller != "" && caller != inst.ID {
+		session.SpoolCommsCall(caller, comms.CallSessionOutput, inst.ID)
 	}
 
 	// Refresh session ID from tmux env before reading output.

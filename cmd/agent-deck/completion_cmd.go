@@ -126,6 +126,7 @@ var completionTree = []completionNode{
 		},
 	},
 	{name: "inbox", subs: []string{"drain"}},
+	{name: "msg", subs: []string{"read", "peek", "ack", "export", "stats"}},
 	{
 		name: "session",
 		subs: []string{

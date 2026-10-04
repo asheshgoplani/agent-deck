@@ -195,20 +195,21 @@ Frozen now in `internal/comms/receipt.go` with fixtures under
   covered, past any trailing spent cursors). Spent cursors never enter the
   sparse set and never hold `RetainFrom`. Fixture:
   `testdata/consumer_state_fixture.json` (`skip_spent`).
-- **Retention and quota**: today compaction is by count (1024 sealed
-  segments) and age (`RetentionDays`, 90); P2 adds `RetainFrom(consumers)`
-  (one above the lowest watermark) as a third input so a pending record is
-  never compacted. The ledger is bounded at `DefaultMaxBytes` (2 GiB per
+- **Retention and quota**: compaction is by count (1024 sealed segments)
+  and age (`RetentionDays`, 90), and since P2 never drops a segment a
+  recently active consumer still needs (`RetainFrom(consumers)`, one above
+  the lowest watermark). The ledger is bounded at `DefaultMaxBytes` (2 GiB per
   profile): past it `Commit` returns `events.ErrQuota`, the spool keeps its
   entries (bounded by the per-instance cap of 512), the daemon logs the
   overload once per minute, and nothing is silently dropped. A consumer
   whose watermark falls below the oldest retained cursor gets an explicit
   `Gap` (recorded as an `error` record addressed to itself) and is never
   silently restarted at the newest segment.
-- **Pending indexes** (P2): the per-consumer state file and the 32-byte
-  pending flag are caches rebuilt from the ledger by a scan from the
-  consumer's watermark; a crash between a commit and a flag update is
-  repaired by that scan, never by trusting the flag.
+- **Pending indexes** (P2, built): the per-consumer state file and the
+  pending flag are caches; a pass always scans from the consumer's
+  watermark, and the daemon rebuilds the flags from its dedup window at
+  open, so a crash between a commit and a flag update is repaired, never
+  trusted.
 
 Four rules from the MonoCode relay comparison are part of this contract:
 
@@ -221,7 +222,7 @@ Four rules from the MonoCode relay comparison are part of this contract:
    now; `session send` wiring: P2.
 2. **Bounded reads.** At most N recent records, a per-message byte cap, a
    cursor for older ones, tool noise never stored. `ReadAfter(limit)`: now;
-   `msg read --last N --max-bytes`: P2.
+   `msg read --last N --max-bytes`: built (P2).
 3. **Combined idle wake with rollback and a cap.** One wake carrying every
    pending record when the parent is idle; a failed parent turn returns the
    records to pending (`failed` receipt, `Retry`); at most `MaxAutoWakes`
@@ -281,12 +282,111 @@ releases the lock, and a follower may read that complete line before the
 next open; the next ledger open fsyncs the active file, so the frame is
 kept and its cursor never reused unless the machine itself loses power in
 that window.
-P2 adds `agent-deck msg read|peek|ack|stats|export` with per-consumer state
-files.
+
+## Reading by consumer (`agent-deck msg`, P2)
+
+```
+agent-deck msg read   [--for <session|self|name>] [--last N] [--max-bytes B] [--json]
+agent-deck msg peek   [--for <session|self|name>] [--last N] [--max-bytes B] [--json]
+agent-deck msg ack    [--for <session|self|name>] [--json] (<id>|<cursor>... | --all)
+agent-deck msg export [--after <cursor>] [--limit N] [--for <session>] [--json]
+agent-deck msg stats  [--since 24h] [--parent <session>] [--json]
+```
+
+A **consumer** is whoever records are addressed to: a session id in a
+record's `to`, or a named reader such as `human:<conductor>`. `--for`
+defaults to the calling session (`AGENTDECK_INSTANCE_ID`). A record is a
+consumer's news (`comms.Deliverable`) when it is a `turn`, `status`,
+`delivery`, `human` or `error` record addressed to it and not `noise`; a
+`send` record's first recipient is its target, which the send's own
+transport reached, so only the observers after it (a parent following
+its children's exchange) read it here; `wake` and `call` records are
+measurement rows and never delivered.
+
+State: `<ledger>/cursors/<consumer>.json` holds the P0 `ConsumerState`
+(watermark plus sparse acknowledgements, store, epoch, generation) and
+the last pass (`through`, `pending`, `gaps`). Every read-modify-write runs
+under `<consumer>.lock` (flock, 5 s wait), so the prompt hook, the Stop
+hook, `msg read|ack` and the daemon never lose each other's
+acknowledgements. A pass reads the log from the watermark, moves the
+watermark over every cursor that is not the consumer's pending news
+(spent, addressed elsewhere, noise, measurement, acknowledged) and
+returns the rest oldest first. `read` takes urgent records first, then
+the rest, within `--max-bytes` (9000, under Claude's additionalContext
+limit) and `--last`, prints them, and acknowledges exactly what reached
+stdout; the rest stays pending. `peek` acknowledges nothing. `ack` takes
+record ids, their last 6 characters (what every rendered line shows) or
+cursors; an unknown reference fails and acknowledges nothing.
+
+Where a new consumer starts: just before the first record ever addressed
+to it (its pending flag), or at the end of the log when none was, so a
+reader never gets 90 days of history it was not sent. A state from
+another ledger store or epoch is rebuilt (generation + 1) after the
+restored copy's records (`store.json` `epoch_start`), and the reset is
+kept as a gap. A watermark that compaction overtook is moved to the
+oldest retained cursor and the loss kept as a gap (`gaps[]`, also printed
+by `read`): never a silent restart.
+
+Pending flags: the daemon keeps `<ledger>/pending/<consumer>.json` (the
+first and newest cursor of a deliverable record addressed to it, and the
+epoch) on every commit and rebuilds them from its dedup window at open.
+A hook checks the flag and the consumer file before it opens the log; the
+flag only lets it skip work, a pass always reads from the watermark.
+
+Pending-delivery retention: the ledger's compaction asks
+`ConsumersRetainFrom` (one above the lowest watermark of every consumer
+that read within the 90-day audit window) and never drops a sealed
+segment holding a cursor at or above it, whatever its age or the segment
+count; the 2 GiB quota still bounds the log, so a stuck reader becomes an
+explicit `ErrQuota`, never a silent drop.
+
+### `msg export --json` (stable contract)
+
+```json
+{"v":1,"ledger":true,"profile":"default","store":"01J...","epoch":1,"now_ms":1791100000000,
+ "after":0,"through":42,"more":false,
+ "records":[{"cursor":1,"record":{"v":1,"id":"01J...","kind":"turn","from":"...","to":["..."], "...": "..."}}]}
+```
+
+Nothing is consumed. `through` is the last cursor the call covered;
+when `more` is true, call again with `--after <through>`. `--limit`
+bounds a call (default 1000); `--for` keeps records from or addressed to
+one session. With no ledger for the profile (switch off, daemon never
+ran) the call succeeds with `"ledger": false` and no records, so a rig can
+tell "off" from "empty". Record fields are the table above; readers keep
+the fields they know (`v` is the schema version).
+
+### `msg stats --json`: the #2482 targets
+
+One scan of the records committed in the window (`--since`, default 24 h;
+an imported record counts when it arrived). Each target carries `value`,
+`target`, `op`, `met` and `n` (its denominator); with no data `value` and
+`met` are null, so an empty window never reads as a pass.
+
+| Target | Value | Counted from |
+|---|---|---|
+| `wakes_per_parent_hour` <= 4 | the busiest parent's wakes per hour | `wake` records: every machine wake on either path (inbox typed nudge, inbox digest, inbox Stop-hook block, and the ledger's own wakes), spooled by whoever fired it |
+| `records_with_text_pct` >= 95 | share of `turn`, `status`, `send`, `human` records (noise excluded) with text | records |
+| `records_per_finished` <= 3 | deliverable `turn` and `status` records per turn carrying a completion sentinel | records |
+| `duplicate_turn_pct` == 0 | turn records repeating a key, or one child's same full-text hash signalled within 5 s under another key | `turn` records |
+| `output_and_drain_calls_per_wake` == 0 | `session output` and `inbox drain` runs by woken parents per wake | `call` records, spooled by the CLI when it runs inside a session (`msg read` is recorded too, not counted) |
+| `send_with_sender_and_text_pct` == 100 | `send` records with a sender and a text hash | `send` records (P3) |
+| `cross_host_records_with_latency` > 0 | imported records whose offset-corrected latency was measured | records with `origin` (P3) |
+
+`parents[]` breaks wakes down per parent and per path/transport
+(`inbox/tmux`, `inbox/stop`, `ledger/tmux`, ...) so a canary parent on
+the ledger path can be compared with the others on the inbox path.
 
 ## Surface
 
-Files added: `internal/comms/{record,ulid,ledger,render,receipt}.go`,
+P2 (msg verbs): `internal/comms/{consumer,stats}.go`,
+`cmd/agent-deck/msg_cmd.go`; on disk `cursors/` and `pending/` under the
+ledger; record kind `call` (measurement) and the `refs`, `t_import`,
+`xlat_ms`, `xlat_err_ms` fields; `events.Options.RetainFrom`,
+`Bus.Oldest`, `Bus.CursorBefore`. Config keys, hooks and daemons
+unchanged.
+
+P0 + P1: files added: `internal/comms/{record,ulid,ledger,render,receipt}.go`,
 `internal/events/commit.go`, `internal/session/{comms_spool,comms_ingest}.go`,
 this file and the test matrix. Hooks installed per harness: unchanged (no
 installed file of any harness changes). Config keys: `+1` (`[comms]

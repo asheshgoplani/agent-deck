@@ -429,6 +429,9 @@ func handleHookHandler() {
 		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
+				// A Stop-hook block buys the parent another turn: a machine
+				// wake for `msg stats`, like a typed nudge.
+				session.SpoolCommsWake(instanceID, "inbox", "stop", dec.Reason, "")
 			}
 		}
 	}
