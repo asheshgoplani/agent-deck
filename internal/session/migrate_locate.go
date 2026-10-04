@@ -157,7 +157,7 @@ func VerifyConversationInDir(inst *Instance, cfgDir string, wantSize int64) erro
 	if dir == "" {
 		return fmt.Errorf("empty config dir")
 	}
-	path := resolveClaudeTranscriptPath(dir, inst.ProjectPath, inst.ClaudeSessionID)
+	path := resolveClaudeTranscriptPath(dir, inst.ProjectPath, inst.ClaudeSessionID, inst.EffectiveWorkingDir())
 	if path == "" {
 		return fmt.Errorf("conversation missing from target: %s", filepath.Join(dir, "projects", "*", inst.ClaudeSessionID+".jsonl"))
 	}

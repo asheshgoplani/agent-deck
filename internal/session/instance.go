@@ -8800,32 +8800,27 @@ func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
 // D:\proj -> D--proj). The two encodings never match, so the computed path misses
 // and analytics / last-response silently break. The session ID is a UUID, so
 // matching on the filename is unambiguous.
-func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string) string {
+func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, additionalPaths ...string) string {
 	if sessionID == "" {
 		return ""
 	}
 
-	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp).
-	resolvedPath := projectPath
-	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
-		resolvedPath = resolved
-	}
-
 	projectsDir := filepath.Join(configDir, "projects")
 
-	// Primary: the directory name Claude derives from the project path. Claude
-	// replaces every non-alphanumeric char with a hyphen.
-	//
-	// Both encodings of the project path are tried as EXACT candidates, resolved
-	// first: Claude names the directory from getcwd() (the physical path), but a
-	// transcript recorded through a symlinked path — or copied from another host
-	// — can carry the unresolved form. Checking the second candidate here keeps
-	// the resolution deterministic and, more importantly, keeps it OUT of the
-	// glob fallback below, which cannot tell two projects apart when they share
-	// a session id (issue #1720).
-	candidateDirs := []string{resolvedPath}
-	if projectPath != resolvedPath {
-		candidateDirs = append(candidateDirs, projectPath)
+	// Try ProjectPath first, then other known working directories (multi-repo
+	// sessions launch in EffectiveWorkingDir). All exact candidates precede the
+	// glob so a cached miss cannot delay a new transcript at a known location.
+	// Resolve symlinks first, but retain the original encoding for copied
+	// transcripts and to keep same-ID projects distinct (issue #1720).
+	var candidateDirs []string
+	for index, path := range append([]string{projectPath}, additionalPaths...) {
+		if path == "" || (index > 0 && path == projectPath) {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
+			candidateDirs = append(candidateDirs, resolved)
+		}
+		candidateDirs = append(candidateDirs, path)
 	}
 	for _, candidateDir := range candidateDirs {
 		if candidateDir == "" {
@@ -8891,6 +8886,12 @@ func globClaudeTranscript(projectsDir, sessionID string) string {
 		found = matches[0]
 	}
 	transcriptGlobMu.Lock()
+	// A lookup may finish after another caller has cached a hit. Preserve that
+	// hit, while still allowing a missing file to invalidate the entry we read.
+	if latest := transcriptGlobCache[key]; found == "" && latest.path != "" && latest != entry {
+		transcriptGlobMu.Unlock()
+		return ""
+	}
 	if len(transcriptGlobCache) >= 4096 {
 		clear(transcriptGlobCache) // bound: one entry per session id resolved
 	}
@@ -8914,21 +8915,22 @@ func (i *Instance) GetJSONLPath() string {
 	if !i.TranscriptIsResolvableLocally() {
 		return ""
 	}
-	return resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID)
+	return resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
 }
 
 // ResolveClaudeTranscriptPath returns the path to the Claude JSONL transcript
 // for a session id under a specific config dir, or "" when none exists.
+// Optional additional working directories are exact candidates before the glob.
 //
 // It is exported for callers that must resolve a transcript against a
 // PER-INSTANCE config dir. GetJSONLPath resolves against the process-wide
 // GetClaudeConfigDir(), which agent-deck's account/conductor/group scoping and
 // per-session scratch homes make frequently wrong for a given instance.
-func ResolveClaudeTranscriptPath(configDir, projectPath, sessionID string) string {
+func ResolveClaudeTranscriptPath(configDir, projectPath, sessionID string, additionalPaths ...string) string {
 	if configDir == "" || sessionID == "" {
 		return ""
 	}
-	return resolveClaudeTranscriptPath(configDir, projectPath, sessionID)
+	return resolveClaudeTranscriptPath(configDir, projectPath, sessionID, additionalPaths...)
 }
 
 // getClaudeLastResponse extracts the last assistant message from Claude's JSONL file
@@ -8944,7 +8946,7 @@ func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 		return nil, fmt.Errorf("instance %s runs on %s; its Claude transcript is not on this machine", i.ID, i.SSHHost)
 	}
 
-	sessionFile := resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID)
+	sessionFile := resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
 	if sessionFile == "" {
 		return nil, fmt.Errorf("session file not found for claude_session_id %s", i.ClaudeSessionID)
 	}

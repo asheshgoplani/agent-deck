@@ -155,7 +155,7 @@ func RecallEnabled() bool {
 func recallInstanceTranscript(inst *Instance) string {
 	switch {
 	case IsClaudeCompatible(inst.Tool) && inst.ClaudeSessionID != "":
-		return ResolveClaudeTranscriptPath(GetClaudeConfigDirForInstance(inst), inst.ProjectPath, inst.ClaudeSessionID)
+		return ResolveClaudeTranscriptPath(GetClaudeConfigDirForInstance(inst), inst.ProjectPath, inst.ClaudeSessionID, inst.EffectiveWorkingDir())
 	case IsCodexCompatible(inst.Tool):
 		return CodexRolloutPathForInstance(inst)
 	case inst.Tool == "pi":

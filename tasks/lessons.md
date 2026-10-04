@@ -37,3 +37,5 @@
 
 - Resolve pending digest identity before same-turn replacement: an escalation must retain the digest count and dedup history. An info-only backlog proves that overflow still needs normal urgent wake gating.
 - Retention failure must not become record loss. Test both lock acquisition and rename failures, and keep appending when best-effort rotation cannot proceed.
+
+- Before caching transcript misses, enumerate every known launch directory. Multi-repo EffectiveWorkingDir must be an exact candidate before the glob in each instance reader, and a test must create the transcript after an initial miss.

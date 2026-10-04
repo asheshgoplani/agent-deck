@@ -187,3 +187,101 @@ func TestIssue2481_TranscriptGlobCacheBounded(t *testing.T) {
 		t.Fatalf("cache grew to %d entries", size)
 	}
 }
+
+func TestIssue2481_MultiRepoTranscriptImmediatelyVisible(t *testing.T) {
+	for _, reader := range []string{"path", "response", "recall", "migration", "explicit-config"} {
+		t.Run(reader, func(t *testing.T) {
+			config := t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", config)
+			calls := countTranscriptGlobs(t)
+			inst := &Instance{Tool: "claude", ProjectPath: t.TempDir(), MultiRepoEnabled: true,
+				MultiRepoTempDir: t.TempDir(), ClaudeSessionID: "81111111-2222-3333-4444-555555555555"}
+			if got := inst.GetJSONLPath(); got != "" {
+				t.Fatalf("before creation = %q", got)
+			}
+			// Claude starts in the multi-repo directory, not ProjectPath.
+			cwd, err := filepath.EvalSymlinks(inst.EffectiveWorkingDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := mkTranscript(t, config, ConvertToClaudeDirName(cwd), inst.ClaudeSessionID)
+			if err := os.WriteFile(want, []byte(fxAssistantText("a1", "multi-repo reply")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			switch reader {
+			case "path":
+				if got := inst.GetJSONLPath(); got != want {
+					t.Fatalf("next lookup = %q, want %q immediately", got, want)
+				}
+			case "recall":
+				if got := recallInstanceTranscript(inst); got != want {
+					t.Fatalf("recall lookup = %q, want %q", got, want)
+				}
+			case "migration":
+				if err := VerifyConversationInDir(inst, config, 0); err != nil {
+					t.Fatal(err)
+				}
+			case "explicit-config":
+				if got := ResolveClaudeTranscriptPath(config, inst.ProjectPath, inst.ClaudeSessionID, inst.EffectiveWorkingDir()); got != want {
+					t.Fatalf("explicit config lookup = %q, want %q", got, want)
+				}
+			case "response":
+				response, err := inst.getClaudeLastResponse()
+				if err != nil {
+					t.Fatalf("next response lookup: %v", err)
+				}
+				if response.Content != "multi-repo reply" {
+					t.Fatalf("response = %q", response.Content)
+				}
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("exact multi-repo lookup triggered another glob: %d", calls.Load())
+			}
+			primary := mkTranscript(t, config, ConvertToClaudeDirName(inst.ProjectPath), inst.ClaudeSessionID)
+			if got := inst.GetJSONLPath(); got != primary {
+				t.Fatalf("ProjectPath precedence: got %q, want %q", got, primary)
+			}
+		})
+	}
+}
+
+func TestIssue2481_TranscriptGlobLateMissKeepsNewerHit(t *testing.T) {
+	config := t.TempDir()
+	const sid = "91111111-2222-3333-4444-555555555555"
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var calls atomic.Int64
+	previous := transcriptGlob
+	transcriptGlob = func(pattern string) ([]string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+			return nil, nil // An old miss finishes after a newer lookup finds the file.
+		}
+		return filepath.Glob(pattern)
+	}
+	t.Cleanup(func() { transcriptGlob = previous })
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(release) }); <-done })
+	go func() { defer close(done); resolveClaudeTranscriptPath(config, "/work", sid) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first glob did not start")
+	}
+	want := mkTranscript(t, config, "non-exact", sid)
+	if got := resolveClaudeTranscriptPath(config, "/work", sid); got != want {
+		t.Fatalf("newer lookup = %q, want %q", got, want)
+	}
+	unblock.Do(func() { close(release) })
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("old lookup did not finish")
+	}
+	if got := resolveClaudeTranscriptPath(config, "/work", sid); got != want {
+		t.Fatalf("late miss replaced newer hit: %q", got)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("cached hit was lost: %d globs", calls.Load())
+	}
+}

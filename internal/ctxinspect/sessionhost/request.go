@@ -99,7 +99,7 @@ func BuildRequest(inst *session.Instance, peers []*session.Instance, opts Reques
 			// Retry under the dir that actually applies to this instance: an
 			// account, conductor or group override, or a per-session scratch
 			// home, puts the transcript somewhere the default never looks.
-			path = session.ResolveClaudeTranscriptPath(req.ConfigDir, inst.ProjectPath, inst.ClaudeSessionID)
+			path = session.ResolveClaudeTranscriptPath(req.ConfigDir, inst.ProjectPath, inst.ClaudeSessionID, inst.EffectiveWorkingDir())
 		}
 		if strings.TrimSpace(path) == "" && configSource == session.ClaudeConfigSourceWorkerScratch {
 			// A scratch home mirrors the profile it was seeded from by symlink,
@@ -107,7 +107,7 @@ func BuildRequest(inst *session.Instance, peers []*session.Instance, opts Reques
 			// mirror is incomplete, the profile dir is still the real place the
 			// transcript lives, and finding it there beats reporting none.
 			if profileDir := session.GetClaudeConfigDirForInstance(inst); profileDir != configDir {
-				path = session.ResolveClaudeTranscriptPath(profileDir, inst.ProjectPath, inst.ClaudeSessionID)
+				path = session.ResolveClaudeTranscriptPath(profileDir, inst.ProjectPath, inst.ClaudeSessionID, inst.EffectiveWorkingDir())
 			}
 		}
 		if strings.TrimSpace(path) == "" {
