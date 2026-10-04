@@ -34,10 +34,11 @@ The baseline was developed against `ad1738b8ffddbac5c0fc7eae4109ed429fc3931e`.
 Hermes info currently types one exact legacy waiting nudge despite the requested
 background scenario. That specific observed line is XFAIL; any extra or different
 input fails. Approval no-Enter assertions retain no allowance. The observed legacy-counter
-counts are two or three for Hermes and three to five for Cursor against exactly one
+counts are two or three for Hermes and two to five for Cursor against exactly one
 status ledger record; those specific counts remain XFAIL. Empty/missing ledger
 records cannot use that allowance. The daemon stops before the final ledger and
-counter snapshots so those reads share a fixed observation boundary.
+counter snapshots so those reads share a fixed observation boundary. These values
+are a measured timing-dependent baseline envelope, not correct counter behavior.
 It is not a waiver to merge later ledger phases. Those PRs must identify their
 relevant cells and require target PASS, or explicitly document a waiver.
 

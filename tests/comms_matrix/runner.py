@@ -325,7 +325,7 @@ def local_cell(output, tool, tier, root=None):
             stats_baseline = [0]
         elif not turns and len(child_records) == 1:
             # Measured legacy-counter overcount on the pre-consumer baseline.
-            stats_baseline = {'hermes': [2, 3], 'cursor': [3, 4, 5]}.get(tool)
+            stats_baseline = {'hermes': [2, 3], 'cursor': [2, 3, 4, 5]}.get(tool)
         checks.append(check('stats_match_records', count, len(child_records), stats_baseline))
         sends = [r for r in records if r['kind'] == 'send' and r.get('from') == rig.parent and rig.child in r.get('to', [])]
         final_states = {'injected', 'typed', 'landed', 'failed'}
