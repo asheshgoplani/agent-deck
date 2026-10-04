@@ -59,23 +59,22 @@ work has settled, the ledger answers on the send turn itself.
 ### Remote first
 
 Sessions on different hosts talk through the same records. Every record
-carries `host` (the producing machine, stamped at commit) so a reader can
-name where a child ran. When a conductor pulls another host's ledger (P3:
-`msg export --after <cursor>` over ssh, or a daemon push over the remote
-channel when it is up), each record is committed locally through
-`Ledger.Import(origin, exported)`:
+carries `host` (the producing machine, stamped at commit, display only) so
+a reader can name where a child ran. When a conductor pulls another
+host's records (P3, built: "Sends and remote records" below) each record
+is committed locally through `Ledger.Import(origin, exported)`:
 
 - `origin` is the configured remote name, `src_cursor` the record's cursor
-  on the origin ledger; id, key, host, sequence and timestamps are kept.
-- idempotency is on `origin + key` (`Record.DedupKey`), so a re-pull adds
-  nothing and two hosts' children can never collide, whatever their ids.
-- the puller stores, per origin, the highest `src_cursor` Import returned:
-  every exported record up to it is durable locally. An error stops the
-  cursor just before the failed record so the next pull retries it.
-- addressing does not change: `to` holds session ids; the record's `origin`
-  says which host's ledger to reach the sender on, which is what child to
-  child across hosts needs (the daemon routes a `send` record to the host
-  whose ledger owns the target).
+  on the origin ledger; id, key, host, store, epoch, sequence and
+  timestamps are kept.
+- idempotency is on the origin store + key (`Record.DedupKey`), so a
+  re-pull adds nothing and two hosts' children can never collide. A record
+  whose key the origin reused for other content, or that no ledger could
+  have committed (no kind, sender or store), is skipped and logged.
+- the puller's position on the origin ledger is kept per remote and local
+  profile and advances only after the pulled batch is durable locally.
+- addressing does not change: `to` holds session ids, and a pulled record
+  is delivered by the talkback inbox path in this phase.
 
 `comms.Export(bus, after, limit)` returns `{cursor, record}` pairs for the
 transport to ship; the same pairs are what a future workflow runner waits
@@ -398,7 +397,7 @@ an imported record counts when it arrived). Each target carries `value`,
 | `records_per_finished` <= 3 | deliverable `turn` and `status` records per turn carrying a completion sentinel | records |
 | `duplicate_turn_pct` == 0 | turn records repeating a key, or one child's same full-text hash signalled within 5 s under another key | `turn` records |
 | `output_and_drain_calls_per_wake` == 0 | `session output` and `inbox drain` runs by any session (heartbeat drains included) per recorded wake; calls with no wake are not met | `call` records, spooled by the CLI when it runs inside a session (`msg read` is recorded too, not counted) |
-| `send_with_sender_and_text_pct` == 100 | `send` records with a sender and a text hash | `send` records (P3) |
+| `send_with_sender_and_text_pct` == 100 | `send` records with a sender (a session, or `cli`), a text hash and a final `delivery` state in the window | `send` and `delivery` records (P3); a send still inside its retry budget reads as not yet final |
 | `cross_host_records_with_latency` > 0 | imported records whose offset-corrected latency was measured | records with `origin` (P3) |
 
 Limits, stated: the wake count covers the wakes agent-deck records
@@ -509,7 +508,100 @@ Not in this phase: Gemini, Cursor, pi, Hermes, OpenCode and Codex parents
 stay on the inbox; the Claude cross-session socket is not used (tmux typed
 line only, through the same `session send --no-wait` the inbox wake uses).
 
+## Sends and remote records (P3)
+
+**Sends.** Every `session send` with the ledger on spools a `send` record
+under the target **before** the message is typed (the receipt, MonoCode
+rule 1): `from` is the sending session (or `cli` for a person at a
+shell), `to` is the target followed by the parents following the
+exchange (the sender's and the target's parent, never the two ends), the
+text capped as a turn's plus `th`, the hash of the full text, `req` a
+request id (a ULID; a queued send's `send_id`) and `via` (`tmux`, `ssh` for
+an SSH-backed target, `queue`). The key is `send:<from>:<req>`, so a replay
+is a duplicate. The transport outcome follows as a `delivery` record
+(`state` `landed` when the submission was confirmed, `typed` when it was
+sent but landing was not observed, `failed` only for a failed send; a
+settled queued `submitted` maps to `landed`, and settled `typed` stays
+`typed`, both retaining the reason `settled: ...`;
+`ref` the send record's id, `err` the reason). The sender of a
+synchronous send already has the outcome on its own stdout, so that
+record is addressed to no one; a queued send's final state is addressed
+back to its sender (info, urgent when it failed), because the sender
+returned before delivery. When the queued failure notice was successfully
+committed to the sender's inbox, its ledger receipt has `trigger: "inbox"`: it
+remains in export with the same sender routing and final state, but the local
+ledger consumer leaves notification to the inbox. A failed inbox write leaves
+the ledger notification active. A send's target never reads the send from the
+ledger (its pane got it). Observing parents enrolled as ledger consumers
+read sends as info at their next prompt, without a send-triggered wake.
+Other observing parents can read the exchange with `agent-deck msg read`.
+The queue worker does not record its own attempt twice. A wake line
+agent-deck itself types runs `session send` with
+`AGENTDECK_SEND_MACHINE=1` and is a `wake` record, never a send; a send
+with `--no-tag` (a web or script send that only inherited a session's
+environment) is recorded as from `cli`, never attributed to that session.
+Restart the notify daemon after upgrading: an older daemon does not set the
+machine-send flag, so its wake lines keep counting as `cli` sends until it
+restarts.
+A queued send's sender is persisted in the queue record
+(`sender`, shared with the send journal and failure notification) and read
+when its final state is published, never taken from the worker's environment; the delivery's
+`ref` comes from the send record (kept by request id for the newest 4096
+sends; after a ledger reopen it can be empty, the sender and the state are
+not). The send metric counts only sends originating on the measured host;
+pulled sends are measured on their origin host, where their final state is
+recorded.
+
+**Remote records.** A remote's ledger records travel on the talkback
+round trip the daemon already makes (`[remotes.<name>]
+talkback_interval_secs`, or `remote drain`): when the local ledger is on,
+the cursor sent on stdin carries `_comms` (the remote ledger's store,
+epoch and the last cursor this profile accepted), and a remote that knows
+the key answers `comms` with the records past it that are addressed to
+sessions it does not host, at most 500 records or about 1 MiB per round
+trip (scan progress moves over everything else; `more` says to continue).
+The local daemon imports one pulled batch per poll and keeps only records
+addressed to one of the pulling profile's own sessions (two local profiles
+may pull the same remote). A batch whose import fails (the ledger cannot
+write) is kept, since the remote position has already moved past it: the
+ledger is reopened after the one-minute backoff and the local spool waits
+for the same reopen. Only a batch that cannot be read is set aside as
+`.rejected` (kept a week). The remote answers "no ledger" (position unchanged) when its
+switch is off, its registry cannot be read (fail closed) or a read fails.
+An older remote ignores the key and answers nothing new; an older puller
+never sends it. The batch is written to a local import spool (tmp, fsync,
+rename) before the position advances (per remote and local profile, in
+`runtime/remote-cursors/<remote>.<profile>._comms.json`, never in the
+per-parent talkback cursor), and the daemon imports it with `origin` =
+the remote's name: idempotent on the origin store and key, so a repeated
+batch or a second pull adds nothing. A remote ledger reset or restore
+(new store or epoch) restarts the position at the talkback horizon and is
+flagged `reset`.
+
+Clocks: a record's own times are its origin's. The puller measures the
+offset between the hosts on the very round trip that fetched the batch:
+the remote's clock when it answered against the midpoint of the local
+send and receive, with an uncertainty of half the round trip plus 1 ms.
+Each imported record gets `t_import` (local) and, when the corrected
+origin-signal-to-import estimate is larger than its uncertainty,
+`xlat_ms` and `xlat_err_ms`; otherwise its cross-host latency is unknown
+(no field), never a precise-looking wrong or negative number. Order across
+hosts is the origin's cursor (`src_cursor`) and the local cursor, never a
+timestamp.
+
+Pulled ledger records are not `Deliverable` and never enter parent prompt
+context, including for enrolled consumers. Pulled send and delivery records
+are for audit, `msg export` and stats only. The existing talkback inbox path
+continues to deliver its own remote records (one wake per batch, as before).
+Imported text, summary and error fields are each capped at `MaxTextBytes`
+(2048 bytes) on a rune boundary before the ledger commits them.
+
 ## Surface
+
+P3: `internal/session/comms_remote.go`; spool edges `send` and
+`delivery`; the talkback cursor key `_comms` and export key `comms`;
+`runtime/comms/import/<profile>/` and the per-(remote, profile) position
+files. Wire format additive both ways; no new ssh call.
 
 P2 delivery canary: `internal/comms/delivery.go`,
 `internal/session/comms_deliver.go`; config key `[comms] consumers`;

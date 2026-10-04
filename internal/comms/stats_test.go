@@ -47,9 +47,12 @@ func TestStatsMeasuresTheIssueTargets(t *testing.T) {
 	commit(Record{Kind: KindTurn, From: "c1", To: []string{"P"}, Tier: TierNoise, Text: "a", Key: "k5"}, 72)
 
 	// Sends: 2 complete, 1 without text hash.
-	commit(Record{Kind: KindSend, From: "c1", To: []string{"c2", "P"}, Tier: TierInfo, Text: "hi"}, 80)
-	commit(Record{Kind: KindSend, From: "c2", To: []string{"c1", "P"}, Tier: TierInfo, Text: "back"}, 81)
-	commit(Record{Kind: KindSend, From: "c3", To: []string{"c1"}, Tier: TierInfo}, 82)
+	commit(Record{Kind: KindSend, From: "c1", To: []string{"c2", "P"}, Tier: TierInfo, Text: "hi", Req: "r1"}, 80)
+	commit(Record{Kind: KindSend, From: "c2", To: []string{"c1", "P"}, Tier: TierInfo, Text: "back", Req: "r2"}, 81)
+	commit(Record{Kind: KindSend, From: "c3", To: []string{"c1"}, Tier: TierInfo, Req: "r3"}, 82)
+	// Final delivery states: r1 and r3 (r3 has no text), r2 none yet.
+	commit(Record{Kind: KindDelivery, From: "c2", Req: "r1", State: StateLanded}, 80)
+	commit(Record{Kind: KindDelivery, From: "c1", Req: "r3", State: StateFailed}, 82)
 
 	// Imported: one with a measured cross-host latency, one unknown.
 	commit(Record{Kind: KindTurn, From: "rc", To: []string{"P"}, Tier: TierInfo, Text: "remote", Origin: "r1", Store: "R1", Key: "rk1",
@@ -90,7 +93,8 @@ func TestStatsMeasuresTheIssueTargets(t *testing.T) {
 	want("duplicate pct", tg.DuplicatePct, round2(100.0/7), 7, false)
 	// calls: P made 3 output/drain calls over its 6 wakes, R none over 1.
 	want("calls per wake", tg.CallsPerWake, round2(3.0/7), 7, false)
-	want("send sender+text", tg.SendSenderTextPct, round2(200.0/3), 3, false)
+	// A send counts only with a sender, a text hash and a final state: r1.
+	want("send sender+text+final", tg.SendSenderTextPct, round2(100.0/3), 3, false)
 	want("cross-host latency", tg.CrossHostLatency, 1, 2, true)
 	if len(st.Parents) != 2 || st.Parents[0].ID != "P" || st.Parents[0].Wakes != 6 || st.Parents[0].Calls != 3 ||
 		st.Parents[0].WakesBy["inbox/tmux"] != 4 || st.Parents[0].WakesBy["inbox/stop"] != 1 || st.Parents[0].WakesBy["ledger/tmux"] != 1 {
@@ -98,6 +102,18 @@ func TestStatsMeasuresTheIssueTargets(t *testing.T) {
 	}
 	if st.Imported != 2 || st.ByKind[KindWake] != 7 {
 		t.Fatalf("counts: imported %d by_kind %v", st.Imported, st.ByKind)
+	}
+
+	// A pulled send is measured on its origin host. It remains visible in
+	// the audit counts but cannot change the local send denominator.
+	commit(Record{Kind: KindSend, From: "remote-sender", To: []string{"c1", "P"}, Text: "remote send", Req: "remote-request", Origin: "peer", Store: "peer-store"}, 30)
+	withRemote, err := ComputeStats(r.Bus, r.Store, StatsOptions{Since: now.Add(-24 * time.Hour), Until: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want("local sends with pulled send", withRemote.Targets.SendSenderTextPct, round2(100.0/3), 3, false)
+	if withRemote.Imported != 3 || withRemote.ByKind[KindSend] != 4 {
+		t.Fatalf("pulled send missing from audit counts: %+v", withRemote)
 	}
 
 	// Only P.
@@ -172,5 +188,20 @@ func TestStatsRateNeverExtrapolatesAShortWindow(t *testing.T) {
 	}
 	if v := st.Targets.WakesPerParentHour.Value; v == nil || *v != 3 || st.Parents[0].PeakHour != 3 {
 		t.Fatalf("3 wakes in minutes: %+v %+v", st.Targets.WakesPerParentHour, st.Parents)
+	}
+}
+
+// Verifier P3 round 4 (D): a parent observing its children's exchange sees
+// their sends as complete when the delivery (addressed elsewhere) landed.
+func TestStatsParentSeesObservedSendsComplete(t *testing.T) {
+	l, r, _ := openPair(t)
+	mustCommit(t, l, Record{Kind: KindSend, From: "c1", To: []string{"c2", "P"}, Tier: TierInfo, Text: "hi", Req: "q1"})
+	mustCommit(t, l, Record{Kind: KindDelivery, From: "c2", Req: "q1", State: StateLanded})
+	st, err := ComputeStats(r.Bus, r.Store, StatsOptions{Parent: "P"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := st.Targets.SendSenderTextPct.Value; v == nil || *v != 100 {
+		t.Fatalf("observed send with a final state: %+v", st.Targets.SendSenderTextPct)
 	}
 }

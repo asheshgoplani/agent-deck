@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -958,4 +959,121 @@ func mustCommsDir(t *testing.T, profile string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// P3 sends: a `session send` is a send record (sender, target, text, full
+// hash, request id) committed before delivery, then a delivery record with
+// the final state; a parent following the exchange reads the send as info;
+// a queued send's outcome is addressed back to the sender, urgent when it
+// failed; a person at a shell is "cli".
+func TestCommsIngest_SendsAreRecordsWithSenderTextAndAFinalState(t *testing.T) {
+	f := newCommsFixture(t)
+	// child (claude) -> codex sibling, both under the same parent.
+	req := SpoolCommsSend(f.child.ID, f.codex.ID, "please rebase on main", "tmux", "")
+	if req == "" {
+		t.Fatal("no request id")
+	}
+	SpoolCommsDelivery(f.child.ID, f.codex.ID, req, comms.StateLanded, "tmux", "", false)
+	// a queued send from the parent that failed later
+	SpoolCommsSend(f.parent.ID, f.shell.ID, "run the tests", "queue", "send-42")
+	// The final state is published by the target's worker, which does not
+	// know the sender (verifier P3 round 1, A): the daemon finds it.
+	t.Setenv("AGENTDECK_INSTANCE_ID", "worker-env-session")
+	SpoolCommsDelivery("", f.shell.ID, "send-42", comms.StateFailed, "queue", "composer blocked", true)
+	// a person at a shell
+	SpoolCommsSend("", f.child.ID, "hi from the human", "tmux", "")
+	f.d.ingestCommsSpool("default", f.byID)
+	f.d.ingestCommsSpool("default", f.byID) // a second pass adds nothing
+
+	var sends, deliveries []comms.Record
+	for _, r := range f.ledgerRecords(t) {
+		switch r.Kind {
+		case comms.KindSend:
+			sends = append(sends, r)
+		case comms.KindDelivery:
+			deliveries = append(deliveries, r)
+		}
+	}
+	if len(sends) != 3 || len(deliveries) != 2 {
+		t.Fatalf("sends %d deliveries %d", len(sends), len(deliveries))
+	}
+	by := map[string]comms.Record{}
+	for _, r := range sends {
+		by[r.From] = r
+	}
+	for _, r := range deliveries {
+		by["delivery:"+r.State] = r
+	}
+	sib := by[f.child.ID]
+	if sib.From != f.child.ID || len(sib.To) != 2 || sib.To[0] != f.codex.ID || sib.To[1] != f.parent.ID || sib.Text != "please rebase on main" ||
+		sib.TH != comms.TextHash("please rebase on main") || sib.Req != req || sib.Tier != comms.TierInfo {
+		t.Fatalf("sibling send %+v", sib)
+	}
+	if comms.Deliverable(sib, f.codex.ID) || !comms.Deliverable(sib, f.parent.ID) {
+		t.Fatal("the target got it from its pane; the parent reads it from the ledger")
+	}
+	if human := by["cli"]; human.From != "cli" || human.TH == "" {
+		t.Fatalf("human send %+v", human)
+	}
+	landed := by["delivery:landed"]
+	if landed.State != comms.StateLanded || landed.Ref != sib.ID || len(landed.To) != 0 {
+		t.Fatalf("a sync send's outcome went to the sender's stdout; recorded, not addressed: %+v", landed)
+	}
+	failed := by["delivery:failed"]
+	if failed.State != comms.StateFailed || len(failed.To) != 1 || failed.To[0] != f.parent.ID || failed.Tier != comms.TierUrgent ||
+		!strings.Contains(failed.Text, "composer blocked") || failed.Ref != by[f.parent.ID].ID {
+		t.Fatalf("a queued send's failure returns to the sender, urgent: %+v", failed)
+	}
+}
+
+// Verifier P3 round 2 (#1): a queued send's outcome finds its sender even
+// after thousands of other records pushed the send out of the dedup window.
+func TestCommsIngest_AQueuedSendsOutcomeFindsItsSenderAfterTheWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("commits 4k records")
+	}
+	f := newCommsFixture(t)
+	SpoolCommsSend(f.parent.ID, f.shell.ID, "run the tests", "queue", "send-77")
+	f.d.ingestCommsSpool("default", f.byID)
+	l := f.d.commsLedgerFor("default")
+	for i := 0; i < 4200; i++ { // keyed, so they really push the send out of the dedup window
+		if _, _, err := l.Commit(comms.Record{Kind: comms.KindTurn, From: "noise", To: []string{"elsewhere"}, Tier: comms.TierInfo,
+			Text: fmt.Sprintf("n%d", i), Key: fmt.Sprintf("noise:%d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	SpoolCommsDelivery("", f.shell.ID, "send-77", comms.StateFailed, "queue", "settled: retry budget", true)
+	f.d.ingestCommsSpool("default", f.byID)
+	var d *comms.Record
+	for _, r := range f.ledgerRecords(t) {
+		if r.Kind == comms.KindDelivery {
+			r := r
+			d = &r
+		}
+	}
+	if d == nil || len(d.To) != 1 || d.To[0] != f.parent.ID || d.Tier != comms.TierUrgent || d.Ref == "" {
+		t.Fatalf("the outcome must return to the sender: %+v", d)
+	}
+}
+
+// The queue supplies the sender even after a daemon restart lost the
+// in-memory request window. Queue persistence is covered by the CLI tests.
+func TestCommsIngest_AQueuedSendsSenderSurvivesARestart(t *testing.T) {
+	f := newCommsFixture(t)
+	SpoolCommsSend(f.parent.ID, f.shell.ID, "build it", "queue", "send-88")
+	f.d.ingestCommsSpool("default", f.byID)
+	f.d.dropCommsLedger("default")
+	f.d.ledgerOpenFailed = nil // reopen at once
+	SpoolCommsDelivery(f.parent.ID, f.shell.ID, "send-88", comms.StateFailed, "queue", "composer blocked", true)
+	f.d.ingestCommsSpool("default", f.byID)
+	var d *comms.Record
+	for _, r := range f.ledgerRecords(t) {
+		if r.Kind == comms.KindDelivery {
+			r := r
+			d = &r
+		}
+	}
+	if d == nil || len(d.To) != 1 || d.To[0] != f.parent.ID || d.Tier != comms.TierUrgent {
+		t.Fatalf("after a restart the outcome still returns to the sender: %+v", d)
+	}
 }

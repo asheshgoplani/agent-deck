@@ -11,6 +11,22 @@ import (
 	"time"
 )
 
+func TestWakeNudgeExecInheritsEnvWithMachineMarker(t *testing.T) {
+	// This subprocess is agent-deck itself, so retain the conductor's env.
+	t.Setenv("CLAUDE_CONFIG_DIR", "/test/conductor-config")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-inherited-token")
+	t.Setenv(MachineSendEnv, "0")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := wakeNudgeExec(ctx, "sh", "-c", `
+		test "$AGENTDECK_SEND_MACHINE" = 1 &&
+		test "$CLAUDE_CONFIG_DIR" = /test/conductor-config &&
+		test "$TELEGRAM_BOT_TOKEN" = test-inherited-token
+	`); err != nil {
+		t.Fatalf("wake subprocess environment: %v", err)
+	}
+}
+
 // The wake-nudge send always runs under a context deadline, ~wakeNudgeSendTimeout
 // out, so a stuck binary is reaped instead of leaking the goroutine forever.
 func TestIssue1225_WakeNudgeSendHasTimeout(t *testing.T) {

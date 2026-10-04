@@ -3235,7 +3235,11 @@ func handleSessionSend(profile string, args []string) {
 				out.Error(err.Error(), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
-			queueSend(profile, storage, inst, message, copies, tagged, out) // exits on failure
+			ledgerSender := senderID
+			if *noTag {
+				ledgerSender = "" // --no-tag: never attributed to an inherited session
+			}
+			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, out) // exits on failure
 			recordSent()
 			return
 		}
@@ -3489,7 +3493,26 @@ func handleSessionSend(profile string, args []string) {
 	// on, so it needs the same lookup closure. performSend only calls it
 	// under --wait, which is the only caller that acts on the answer.
 	hookStatus := func() (string, error) { return fetchHookDrivenStatus(profile, sessionRef) }
+	// Comms Ledger (P3): the send's receipt is recorded before the action,
+	// its transport outcome after. A queued send is recorded by the queue
+	// (queueSend, publishSendState), so its worker does not record it twice,
+	// and a machine wake line (a nudge typed by the daemon) is a wake record,
+	// never a send.
+	ledgerReq, ledgerSender := "", ""
+	if !*queueWorker && ledgerSendAllowed() {
+		// --no-tag: the caller opted out of being the sender (a web or
+		// script send that only inherited a session's environment): recorded
+		// as from a person at a shell, never attributed to that session.
+		ledgerSender = senderID
+		if *noTag {
+			ledgerSender = ""
+		}
+		ledgerReq = session.SpoolCommsSend(ledgerSender, inst.ID, message, ledgerSendVia(inst), "")
+	}
 	sendRes, sendErr := performSend(inst, tmuxSess, message, *noWait || busyAcceptsInput, tun, sendTransportValue, *wait, hookStatus, nil, nil)
+	if ledgerReq != "" {
+		session.SpoolCommsDelivery(ledgerSender, inst.ID, ledgerReq, ledgerDeliveryState(sendRes.delivery, sendErr), sendRes.transport, ledgerDeliveryReason(sendErr), false)
+	}
 	// Computed now (accurate ack_ms), journaled after the verdict at every
 	// exit path below — never before it, per the same rule applied to
 	// handleSessionStop/handleSessionRestart.

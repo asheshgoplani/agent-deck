@@ -162,6 +162,26 @@ func (d *TransitionDaemon) ingestCommsSpool(profile string, byID map[string]*Ins
 		}
 		return
 	}
+	// Batches pulled from a remote's ledger (P3), written only by a
+	// talkback drain for one of this profile's parents.
+	// A pulled batch whose import fails (the ledger cannot write) is kept:
+	// the ledger is dropped and reopened after the backoff, and the local
+	// spool waits for the same reopen.
+	if hasCommsImports(profile) {
+		if l := d.commsLedgerFor(profile); l != nil && !d.importCommsSpool(l, profile, byID) {
+			// A ledger write failed: the batch stays, the ledger is reopened
+			// after the backoff. The local spool waits for the same reopen.
+			d.dropCommsLedger(profile)
+			return
+		}
+	}
+	if d.lastImportPrune == nil {
+		d.lastImportPrune = map[string]time.Time{}
+	}
+	if now := time.Now(); now.Sub(d.lastImportPrune[profile]) > time.Hour {
+		d.lastImportPrune[profile] = now
+		pruneCommsImports(profile)
+	}
 	// The spool is shared by every profile: a profile's ledger is opened
 	// (and its directory created) only when one of ITS sessions has an
 	// entry, so a profile name with no sessions (a stale or mistyped entry
@@ -219,6 +239,8 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		return d.commitCommsStatus(l, profile, inst, e)
 	case CommsEdgeWake, CommsEdgeCall:
 		return commitCommsMeasure(l, profile, inst, e)
+	case CommsEdgeSend, CommsEdgeDelivery:
+		return commitCommsSend(l, profile, inst, byID, e)
 	case CommsEdgeTurnEnd:
 	default:
 		RemoveCommsSpoolEntry(e)
@@ -548,4 +570,101 @@ func commitCommsMeasure(l *comms.Ledger, profile string, inst *Instance, e Comms
 	}
 	RemoveCommsSpoolEntry(e)
 	return true
+}
+
+// commsSender is the record sender of a spooled send: the session that
+// sent it, or "cli" for a person at a shell.
+func commsSender(from string) string {
+	if from = strings.TrimSpace(from); from != "" {
+		return from
+	}
+	return "cli"
+}
+
+// commitCommsSend commits a send or its delivery outcome (P3). A send
+// record is addressed to its target first, then to the parents following
+// the exchange (the sender's and the target's, never the two ends
+// themselves), which read it as info; the target already got the message
+// from the transport. Its key is the sender's request id, so a replay is a
+// duplicate. A delivery record refers to its send and is addressed back to
+// the sender only when the sender did not see the outcome on its own
+// stdout (a queued send); a failed one is then urgent.
+func commitCommsSend(l *comms.Ledger, profile string, target *Instance, byID map[string]*Instance, e CommsSpoolEntry) bool {
+	from := commsSender(e.From)
+	req := strings.TrimSpace(e.Ref)
+	if req == "" {
+		RemoveCommsSpoolEntry(e)
+		return true
+	}
+	var rec comms.Record
+	switch e.Edge {
+	case CommsEdgeSend:
+		to := []string{target.ID}
+		for _, observer := range []string{parentOf(byID[from]), parentOf(target)} {
+			if observer != "" && observer != from && observer != target.ID && !containsID(to, observer) {
+				to = append(to, observer)
+			}
+		}
+		rec = comms.Record{Kind: comms.KindSend, From: from, To: to, Profile: profile, Tier: comms.TierInfo,
+			Text: CapTurnText(e.Text, ResolveInboxConfig(target.Title).GetMaxTextBytes()), TH: e.TH, Req: req,
+			Via: e.Via, State: comms.StateQueued, TSignal: e.TSignal, Key: comms.SendKey(from, req)}
+		if sender := byID[from]; sender != nil {
+			rec.Tool = commsToolName(sender)
+		}
+	default:
+		send, sendFound := l.LookupSendByReq(req)
+		if strings.TrimSpace(e.From) == "" && sendFound {
+			// An older queued send without a sender: the send record knows.
+			from = send.From
+		}
+		rec = comms.Record{Kind: comms.KindDelivery, From: target.ID, Profile: profile, Tier: comms.TierInfo,
+			State: e.State, Via: e.Via, Req: req, Err: e.Prompt, TSignal: e.TSignal,
+			Key: comms.Key(comms.KindDelivery, from, req, e.State)}
+		rec.Text = "delivery to " + target.Title + ": " + e.State
+		if e.Prompt != "" {
+			rec.Text += " (" + e.Prompt + ")"
+		}
+		if sendFound && send.From == from {
+			rec.Ref = send.ID
+		} else if send, ok := l.Lookup(comms.SendKey(from, req)); ok {
+			rec.Ref = send.ID
+		}
+		if (e.Event == "async" || e.Event == "async-inbox") && byID[from] != nil {
+			rec.To = []string{from}
+			if e.State == comms.StateFailed {
+				rec.Tier = comms.TierUrgent
+				if e.Event == "async-inbox" {
+					rec.Trigger = "inbox"
+				}
+			}
+		}
+	}
+	_, _, err := l.Commit(rec)
+	switch {
+	case err == nil, errors.Is(err, comms.ErrDuplicate):
+	case errors.Is(err, comms.ErrConflict):
+		QuarantineCommsSpoolEntry(e)
+		return true
+	default:
+		commsLog.Warn("comms_send_commit_failed", slog.String("target", target.ID), slog.String("error", err.Error()))
+		return false
+	}
+	RemoveCommsSpoolEntry(e)
+	return true
+}
+
+func parentOf(inst *Instance) string {
+	if inst == nil {
+		return ""
+	}
+	return strings.TrimSpace(inst.ParentSessionID)
+}
+
+func containsID(list []string, id string) bool {
+	for _, v := range list {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }

@@ -27,6 +27,8 @@ const (
 	// producer re-observes a turn within seconds (hook re-fires, polls),
 	// not thousands of records later.
 	recentKeys = 4096
+	// recentSends bounds the send records kept by request id.
+	recentSends = 4096
 	// DefaultMaxBytes bounds one profile's ledger on disk (sealed segments
 	// plus the active file). Past it Commit returns events.ErrQuota: the
 	// spool keeps the entries (bounded by its own cap), the daemon logs the
@@ -93,6 +95,11 @@ type Ledger struct {
 	last   map[string]Record // newest turn record per From (the tier rule's "previous turn")
 	status map[string]Record // newest status record per From
 	flags  map[string]PendingFlag
+	// reqs keeps the newest recentSends local send records by request id,
+	// independent of the dedup window, so a queued send's outcome (reported
+	// without its sender, up to the 30 min retry budget later) finds it.
+	reqs     map[string]Record
+	reqOrder []string
 	// consumers caches the recipients whose state is known to exist.
 	consumers map[string]bool
 	dir       string
@@ -227,7 +234,7 @@ func OpenDir(profile, dir string) (*Ledger, error) {
 		slog.Warn("comms_store_restored", "dir", dir, "epoch", store.Epoch, "cursor", cursor)
 	}
 	l := &Ledger{profile: profile, bus: bus, keys: map[string]Record{}, seq: map[string]int64{},
-		last: map[string]Record{}, status: map[string]Record{}, flags: map[string]PendingFlag{}, consumers: map[string]bool{}, dir: dir, store: store}
+		last: map[string]Record{}, status: map[string]Record{}, flags: map[string]PendingFlag{}, consumers: map[string]bool{}, reqs: map[string]Record{}, dir: dir, store: store}
 	if err := l.warm(); err != nil {
 		_ = bus.Close()
 		return nil, err
@@ -304,6 +311,16 @@ func (l *Ledger) remember(r Record) {
 				l.order = l.order[1:]
 			}
 		}
+	}
+	if r.Kind == KindSend && r.Req != "" && r.Origin == "" {
+		if _, known := l.reqs[r.Req]; !known {
+			l.reqOrder = append(l.reqOrder, r.Req)
+			if len(l.reqOrder) > recentSends {
+				delete(l.reqs, l.reqOrder[0])
+				l.reqOrder = l.reqOrder[1:]
+			}
+		}
+		l.reqs[r.Req] = r
 	}
 	if r.Seq > l.seq[r.From] {
 		l.seq[r.From] = r.Seq
@@ -408,6 +425,18 @@ func (l *Ledger) LastTurn(from string) (Record, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	r, ok := l.last[from]
+	return r, ok
+}
+
+// LookupSendByReq returns the local send record committed with request
+// id req within the window.
+func (l *Ledger) LookupSendByReq(req string) (Record, bool) {
+	if l == nil || req == "" {
+		return Record{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r, ok := l.reqs[req]
 	return r, ok
 }
 
@@ -684,7 +713,15 @@ func (l *Ledger) Import(origin string, exported []Exported) (events.Cursor, erro
 	var done events.Cursor
 	for _, e := range exported {
 		r := e.Record
-		if r.Store != "" && r.Store == l.store.ID {
+		if r.Kind == "" || r.From == "" || r.Store == "" {
+			// Not a record another ledger could have committed (every commit
+			// has a kind, a sender and a store): a corrupt or forged frame,
+			// skipped and logged, never a reason to stall the batch.
+			slog.Warn("comms_import_invalid", "origin", origin, "id", r.ID)
+			done = e.Cursor
+			continue
+		}
+		if r.Store == l.store.ID {
 			// Our own record coming back through another host: an echo,
 			// not news. Treated as durable so the puller's cursor moves on.
 			done = e.Cursor
@@ -700,7 +737,18 @@ func (l *Ledger) Import(origin string, exported []Exported) (events.Cursor, erro
 			// A keyless record still needs a stable identity across pulls.
 			r.Key = Key(r.Kind, r.From, r.ID)
 		}
+		r.Text = CapText(r.Text, MaxTextBytes)
+		r.Summary = CapText(r.Summary, MaxTextBytes)
+		r.Err = CapText(r.Err, MaxTextBytes)
 		if _, _, err := l.Commit(r); err != nil && !errors.Is(err, ErrDuplicate) {
+			if errors.Is(err, ErrConflict) {
+				// The origin reused a key for different content: kept out
+				// and logged, never retried as a new record and never a
+				// reason to stall every batch behind it.
+				slog.Warn("comms_import_conflict", "origin", origin, "key", r.Key, "id", r.ID)
+				done = e.Cursor
+				continue
+			}
 			return done, err
 		}
 		done = e.Cursor

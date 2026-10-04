@@ -301,6 +301,7 @@ func TestQueuedSendRetriesBackOffAndStillDeliver(t *testing.T) {
 // fails only when the budget is spent, at a bounded attempt rate, journals
 // one final record and puts a notice in the sender session's inbox.
 func TestQueuedSendFailureReachesTheSender(t *testing.T) {
+	t.Cleanup(session.SetCommsLedgerForTest(true))
 	t.Setenv("AGENTDECK_SEND_WORKER_POLL", "20ms")
 	f := newRetryFixture(t, "_test_send_retry_notice")
 	starts := stubChild(t, -1)
@@ -338,6 +339,10 @@ func TestQueuedSendFailureReachesTheSender(t *testing.T) {
 	}
 	if notice == nil {
 		t.Fatalf("sender inbox has no send_failed notice for %s: %+v", rec.SendID, inbox)
+	}
+	spool, err := session.ReadCommsSpool(rec.SessionID)
+	if err != nil || len(spool) != 1 || spool[0].Event != "async-inbox" || spool[0].From != f.senderID {
+		t.Fatalf("ledger must reuse the committed inbox failure: %+v, %v", spool, err)
 	}
 
 	dir, err := session.HealthLogDir(f.profile)

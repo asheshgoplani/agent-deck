@@ -62,13 +62,20 @@ func ValidConsumer(name string) error {
 }
 
 // Deliverable reports whether r is a message for consumer: a record of a
-// kind a consumer reads, addressed to it, that is not noise. Measurement
+// kind a consumer reads, addressed to it, committed on this host (not
+// pulled from another), that is not noise. Measurement
 // records (wake, call) are never delivered. A send record's first recipient
 // is its target, which the send's own transport already reached; only the
 // observers after it (a parent following its children's exchange) read it
 // from the ledger.
 func Deliverable(r Record, consumer string) bool {
 	if r.Tier == TierNoise {
+		return false
+	}
+	if r.Origin != "" {
+		// Pulled from another host (P3): delivered by the talkback inbox
+		// path, which already reaches the parent once; the ledger keeps it
+		// for audit, export and stats until remote delivery moves here.
 		return false
 	}
 	to := r.To

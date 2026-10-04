@@ -185,28 +185,28 @@ func finishQueuedSend(profile string, r *sendqueue.Record, notify bool) {
 		detail["sender"] = "unknown"
 	}
 	recordSendEvent(profile, r.SessionID, detail)
-	if notify && r.State == sendqueue.StateFailed {
-		notifySenderOfFailedSend(profile, r)
-	}
+	inboxOwned := notify && r.State == sendqueue.StateFailed && notifySenderOfFailedSend(profile, r)
+	ledgerQueuedSend(r, inboxOwned)
 }
 
 // notifySenderOfFailedSend writes the failure into the sender session's
 // inbox (read by its prompt-time drain, `inbox peek` and the TUI like any
 // other record). Only for a sender this profile knows: a send from a plain
 // shell ("cli") or an unknown id would only strand an inbox nobody drains.
-func notifySenderOfFailedSend(profile string, r *sendqueue.Record) {
+// True means the inbox durably owns notification; false keeps ledger fallback.
+func notifySenderOfFailedSend(profile string, r *sendqueue.Record) bool {
 	if r.Sender == "" || r.Sender == sendSenderCLI {
-		return
+		return false
 	}
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil || instanceByID(instances, r.Sender) == nil {
-		return
+		return false
 	}
 	title := r.SessionTitle
 	if title == "" {
 		title = r.SessionID
 	}
-	_ = session.CommitToInbox(r.Sender, session.TransitionNotificationEvent{
+	return session.CommitToInbox(r.Sender, session.TransitionNotificationEvent{
 		ChildSessionID: r.SessionID,
 		ChildTitle:     title,
 		Profile:        profile,
@@ -215,5 +215,5 @@ func notifySenderOfFailedSend(profile string, r *sendqueue.Record) {
 		Timestamp:      time.Now(),
 		LastOutputHash: "send:" + r.SendID,
 		Text:           fmt.Sprintf("Your queued send %s to '%s' was not delivered: %s. Nothing was typed, so resending is safe.", r.SendID, title, r.Reason),
-	})
+	}) == nil
 }

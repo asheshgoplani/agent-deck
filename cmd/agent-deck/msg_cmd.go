@@ -510,7 +510,7 @@ func printMsgStats(w io.Writer, out msgStatsOutput) {
 		{"records per finished event", t.RecordsPerFinished},
 		{"duplicate turn records %", t.DuplicatePct},
 		{"output+drain calls per wake", t.CallsPerWake},
-		{"sends with sender and text %", t.SendSenderTextPct},
+		{"sends with sender, text and final state %", t.SendSenderTextPct},
 		{"cross-host records with latency", t.CrossHostLatency},
 	}
 	for _, r := range rows {

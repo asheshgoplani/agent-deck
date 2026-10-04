@@ -836,3 +836,85 @@ func TestLedgerConsumer_FinalPassOnlyExactTurnKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestLedgerConsumer_QueuedLandedAndTypedNeverWakeSender(t *testing.T) {
+	for _, state := range []string{comms.StateLanded, comms.StateTyped} {
+		t.Run(state, func(t *testing.T) {
+			f := newDeliverFixture(t)
+			SpoolCommsSend(f.parent.ID, f.child.ID, "build it", "queue", "settled-send")
+			SpoolCommsDelivery(f.parent.ID, f.child.ID, "settled-send", state, "queue", "settled: no transcript confirmation", true)
+			f.d.ingestCommsSpool("default", f.byID)
+			var found bool
+			for _, r := range f.ledgerRecords(t) {
+				if r.Kind == comms.KindDelivery {
+					found = true
+					if r.State != state || r.Tier != comms.TierInfo || len(r.To) != 1 || r.To[0] != f.parent.ID {
+						t.Fatalf("sender delivery: %+v", r)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing delivery")
+			}
+			f.deliver(t, "waiting")
+			if len(f.sent) != 0 {
+				t.Fatalf("successful settled send woke sender: %q", f.sent)
+			}
+			dl, _ := LedgerStopDecision(f.parent.ID, false)
+			if dl.Blocked {
+				t.Fatalf("successful settled send blocked Stop: %+v", dl)
+			}
+			dl.Done(false)
+		})
+	}
+}
+
+func TestLedgerConsumer_QueuedFailureInboxOwnsNotification(t *testing.T) {
+	for _, inboxFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(inboxFirst), func(t *testing.T) {
+			f := newDeliverFixture(t)
+			const reason = "composer refused the queued message"
+			if err := CommitToInbox(f.parent.ID, TransitionNotificationEvent{
+				ChildSessionID: f.child.ID, ChildTitle: f.child.Title, Profile: "default",
+				ToStatus: "send_failed", LastOutputHash: "send:failed-request", Text: reason, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if inboxFirst {
+				dl, _ := LedgerPromptContext(f.parent.ID, "first")
+				if strings.Count(dl.Text, reason) != 1 {
+					t.Fatalf("inbox notice: %q", dl.Text)
+				}
+				dl.Done(true)
+			}
+			SpoolCommsSend(f.parent.ID, f.child.ID, "build it", "queue", "failed-request")
+			SpoolCommsInboxFailure(f.parent.ID, f.child.ID, "failed-request", "queue", reason)
+			f.d.ingestCommsSpool("default", f.byID)
+			var found bool
+			for _, r := range f.ledgerRecords(t) {
+				if r.Kind == comms.KindDelivery {
+					found = true
+					if r.Trigger != "inbox" || r.State != comms.StateFailed || r.Tier != comms.TierUrgent || len(r.To) != 1 || r.To[0] != f.parent.ID || r.Ref == "" {
+						t.Fatalf("audit receipt must retain failure and routing: %+v", r)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing audit receipt")
+			}
+			f.deliver(t, "waiting")
+			if len(f.sent) != 0 {
+				t.Fatalf("ledger duplicated inbox wake: %q", f.sent)
+			}
+			dl, _ := LedgerPromptContext(f.parent.ID, "next")
+			want := 1
+			if inboxFirst {
+				want = 0
+			}
+			if strings.Count(dl.Text, reason) != want {
+				t.Fatalf("duplicate failure notice: %q", dl.Text)
+			}
+			dl.Done(true)
+		})
+	}
+}

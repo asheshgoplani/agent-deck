@@ -138,3 +138,16 @@ func TestMsgSelfReadSpoolsACallAndNoLedgerIsExplicit(t *testing.T) {
 		t.Fatal("read without a ledger must be an error, not an empty queue")
 	}
 }
+
+// Verifier P3 round 1 (B): a wake line the daemon types is a wake record,
+// never a send record.
+func TestMachineWakeLinesAreNotSends(t *testing.T) {
+	t.Setenv(session.MachineSendEnv, "1")
+	if ledgerSendAllowed() {
+		t.Fatal("a machine wake line must not be recorded as a send")
+	}
+	t.Setenv(session.MachineSendEnv, "")
+	if !ledgerSendAllowed() {
+		t.Fatal("a person's or a session's send is recorded")
+	}
+}

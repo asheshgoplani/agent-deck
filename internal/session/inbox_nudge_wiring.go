@@ -220,8 +220,15 @@ const wakeNudgeSendTimeout = SendTargetLockWait + wakeNudgeDeliveryBudget
 // test can substitute a spy and assert the deadline/args without spawning a real
 // process; production runs the real bounded subprocess.
 var wakeNudgeExec = func(ctx context.Context, bin string, args ...string) error {
-	return exec.CommandContext(ctx, bin, args...).Run()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = append(cmd.Environ(), MachineSendEnv+"=1")
+	return cmd.Run()
 }
+
+// MachineSendEnv marks a `session send` agent-deck itself runs to type a
+// wake line: the Comms Ledger records it as a wake, never as a send. An
+// environment variable, not a flag, so an older binary simply ignores it.
+const MachineSendEnv = "AGENTDECK_SEND_MACHINE"
 
 // sendWakeNudgeNoWait shells out to `agent-deck [-p profile] session send <ref>
 // <msg> --no-wait -q`. --no-wait keeps it fire-and-forget: it neither blocks for

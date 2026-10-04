@@ -130,8 +130,9 @@ const commsDrainGrace = 10 * time.Minute
 // an enrolled consumer. Status edges and the copy of a reply addressed to
 // the tagged sender keep the inbox path (the inbox holds them, wakes for
 // them and, for a reply, treats them as urgent), so the ledger leaves them.
+// Queued failures also stay on the inbox path after its durable write succeeds.
 func ledgerNews(r comms.Record, consumer string) bool {
-	if r.Kind == comms.KindStatus {
+	if r.Kind == comms.KindStatus || (r.Kind == comms.KindDelivery && r.Trigger == "inbox" && r.Origin == "") {
 		return false
 	}
 	if r.ReplyTo == consumer && len(r.To) > 0 && r.To[0] != consumer {

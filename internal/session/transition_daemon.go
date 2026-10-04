@@ -142,6 +142,7 @@ type TransitionDaemon struct {
 	ledgerOpenFailed map[string]time.Time
 	commsPrompts     map[string]CommsSpoolEntry
 	lastCommsPrune   time.Time
+	lastImportPrune  map[string]time.Time // per profile
 
 	// journalWriters holds the per-profile writer for the session event
 	// journal, resolved once per profile for the daemon's lifetime and nil

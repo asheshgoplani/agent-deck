@@ -51,6 +51,17 @@ const (
 	// drain`, `msg read`), spooled under the calling session: Event is the
 	// verb (comms.Call*), Ref the session it read.
 	CommsEdgeCall = "call"
+	// CommsEdgeSend is a `session send` leaving its sender (P3), spooled
+	// under the TARGET before the message is delivered: From is the sender
+	// (a session id, or "" for a person at a shell), Ref the request id,
+	// Text the message, Via the transport (tmux, ssh).
+	CommsEdgeSend = "send"
+	// CommsEdgeDelivery is the send's transport outcome (State: landed,
+	// typed, failed, or a queued send's final state), spooled under the
+	// target: Ref is the request id, Text the failure reason if any, Event
+	// "async" when the sender did not get the outcome on its own stdout (a
+	// queued send), which addresses the record back to it.
+	CommsEdgeDelivery = "delivery"
 )
 
 // Spool caps. Text is capped well above the record ceiling (the daemon
@@ -145,7 +156,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		return errors.New("comms spool: empty instance id")
 	}
 	switch e.Edge {
-	case CommsEdgeTurnEnd, CommsEdgePromptStart, CommsEdgeStatus, CommsEdgeWake, CommsEdgeCall:
+	case CommsEdgeTurnEnd, CommsEdgePromptStart, CommsEdgeStatus, CommsEdgeWake, CommsEdgeCall, CommsEdgeSend, CommsEdgeDelivery:
 	default:
 		return errors.New("comms spool: unknown edge " + e.Edge)
 	}
@@ -153,8 +164,8 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		e.TSignal = time.Now().UnixMilli()
 	}
 	full := strings.TrimSpace(e.Text)
-	if full != "" && e.Edge == CommsEdgeTurnEnd {
-		e.TH = turnTextHash(full) // the daemon matches this against the transcript turn
+	if full != "" && (e.Edge == CommsEdgeTurnEnd || e.Edge == CommsEdgeSend) {
+		e.TH = turnTextHash(full) // the hash of the full text, before the cap
 	}
 	e.Text = capBytes(full, commsSpoolTextBytes)
 	e.Prompt = comms.CapText(strings.TrimSpace(e.Prompt), commsSpoolPromptBytes)
@@ -166,7 +177,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	e.Cwd = capBytes(e.Cwd, commsSpoolCwdBytes)
 	e.Via = capBytes(e.Via, commsSpoolIDBytes)
 	e.Ref = capBytes(e.Ref, commsSpoolIDBytes)
-	if e.Edge == CommsEdgeTurnEnd && e.Text == "" {
+	if (e.Edge == CommsEdgeTurnEnd || e.Edge == CommsEdgeSend) && e.Text == "" {
 		// Nothing to carry: the status edge is already in the hook file. An
 		// empty turn would only become a text-less record.
 		return nil
@@ -427,5 +438,53 @@ func SpoolCommsCall(callerID, verb, target string) {
 	if err := WriteCommsSpool(CommsSpoolEntry{Harness: "agent-deck", Event: verb, Edge: CommsEdgeCall,
 		Instance: callerID, Ref: target}); err != nil {
 		commsLog.Warn("comms_call_spool_failed", slog.String("caller", callerID), slog.String("error", err.Error()))
+	}
+}
+
+// SpoolCommsSend records a send from senderID ("" outside a session) to
+// targetID for the ledger, before the message is delivered, and returns
+// its request id (req, or a new one when req is ""). The record is the
+// send's receipt: one per request id, with the sender, the target, the
+// text and its full hash. A no-op returning "" with the ledger off.
+func SpoolCommsSend(senderID, targetID, text, via, req string) string {
+	if strings.TrimSpace(targetID) == "" || !CommsLedgerEnabled() {
+		return ""
+	}
+	if req == "" {
+		req = comms.NewID(time.Now())
+	}
+	if err := WriteCommsSpool(CommsSpoolEntry{Harness: "agent-deck", Event: "send", Edge: CommsEdgeSend, Instance: targetID,
+		From: strings.TrimSpace(senderID), Text: text, Via: via, Ref: req}); err != nil {
+		commsLog.Warn("comms_send_spool_failed", slog.String("target", targetID), slog.String("error", err.Error()))
+		return ""
+	}
+	return req
+}
+
+// SpoolCommsDelivery records the outcome of the send req to targetID.
+// async marks an outcome the sender did not see on its own stdout (a
+// queued send): the record is then addressed back to the sender.
+func SpoolCommsDelivery(senderID, targetID, req, state, via, reason string, async bool) {
+	event := "sync"
+	if async {
+		event = "async"
+	}
+	spoolCommsDelivery(senderID, targetID, req, state, via, reason, event)
+}
+
+// SpoolCommsInboxFailure records a queued failure whose notice was durably
+// written to the inbox. The ledger retains the receipt without delivering
+// the same local notification twice. Call only after a successful inbox write.
+func SpoolCommsInboxFailure(senderID, targetID, req, via, reason string) {
+	spoolCommsDelivery(senderID, targetID, req, comms.StateFailed, via, reason, "async-inbox")
+}
+
+func spoolCommsDelivery(senderID, targetID, req, state, via, reason, event string) {
+	if strings.TrimSpace(targetID) == "" || req == "" || !CommsLedgerEnabled() {
+		return
+	}
+	if err := WriteCommsSpool(CommsSpoolEntry{Harness: "agent-deck", Event: event, Edge: CommsEdgeDelivery, Instance: targetID,
+		From: strings.TrimSpace(senderID), State: state, Via: via, Ref: req, Prompt: reason}); err != nil {
+		commsLog.Warn("comms_delivery_spool_failed", slog.String("target", targetID), slog.String("error", err.Error()))
 	}
 }

@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/comms"
+	"github.com/asheshgoplani/agent-deck/internal/health"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -74,4 +77,39 @@ func sendSenderTool(senderID string, instances []*session.Instance) string {
 		}
 	}
 	return ""
+}
+
+// ledgerSendVia is the transport a send record names before delivery.
+func ledgerSendVia(inst *session.Instance) string {
+	if inst != nil && inst.IsSSH() {
+		return "ssh"
+	}
+	return "tmux"
+}
+
+// ledgerDeliveryState maps a send's delivery classification onto the
+// ledger's delivery states: landed (submission confirmed), typed (sent,
+// landing not observed), failed.
+func ledgerDeliveryState(delivery string, sendErr error) string {
+	switch journalSendOutcome(delivery, sendErr) {
+	case health.SendConfirmed:
+		return comms.StateLanded
+	case health.SendUnconfirmed:
+		return comms.StateTyped
+	}
+	return comms.StateFailed
+}
+
+func ledgerDeliveryReason(sendErr error) string {
+	if sendErr == nil {
+		return ""
+	}
+	return firstLineOf(sendErr.Error())
+}
+
+// ledgerSendAllowed reports whether this send is a message to record as a
+// send: not a machine wake line (the daemon's nudges carry
+// session.MachineSendEnv, and are wake records already).
+func ledgerSendAllowed() bool {
+	return os.Getenv(session.MachineSendEnv) != "1"
 }

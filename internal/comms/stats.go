@@ -123,7 +123,7 @@ func NewTargets() Targets {
 		RecordsPerFinished: Target{Target: TargetRecordsPerFinished, Op: "<=", Note: "deliverable turn and status records per turn carrying a completion sentinel"},
 		DuplicatePct:       Target{Target: TargetDuplicatePct, Op: "<=", Note: "turn records repeating a key, or a child's same text signalled within 5 s under another key"},
 		CallsPerWake:       Target{Target: TargetCallsPerWake, Op: "<=", Note: "session output and inbox drain calls made by sessions (heartbeat drains included), per recorded wake; calls with no wake at all are not met"},
-		SendSenderTextPct:  Target{Target: TargetSendSenderTextPct, Op: ">=", Note: "send records with a sender and a text hash"},
+		SendSenderTextPct:  Target{Target: TargetSendSenderTextPct, Op: ">=", Note: "local send records with a sender (a session, or cli for a person at a shell or an unattributed --no-tag send), a text hash and a final delivery state in the window"},
 		CrossHostLatency:   Target{Target: TargetCrossHostLatency, Op: ">", Note: "imported records whose cross-host latency was measured (offset-corrected, uncertainty below the estimate)"},
 	}
 }
@@ -171,6 +171,8 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 		keys                      = map[string]bool{}
 		lastByChild               = map[string]Record{}
 		totalWakes, wakingParents int
+		sendReqs                  = map[string]bool{} // sends with a sender and a text hash
+		finalReqs                 = map[string]bool{} // requests with a delivery state
 	)
 	for _, r := range records {
 		at := r.TRecord
@@ -179,6 +181,11 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 		}
 		if at < since || at > until {
 			continue
+		}
+		if r.Kind == KindDelivery && r.Req != "" && r.State != "" {
+			// A final state settles its send whoever is looking (a parent
+			// observing its children's exchange included).
+			finalReqs[r.Req] = true
 		}
 		if opts.Parent != "" && r.From != opts.Parent && !containsTo(r.To, opts.Parent) {
 			continue // --parent: only records from or to that parent count
@@ -227,10 +234,14 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 				finished++
 			}
 		case KindSend:
+			if r.Origin != "" {
+				break // A pulled send is measured on its origin host.
+			}
 			sends++
 			if r.From != "" && r.TH != "" {
-				sendsWhole++
+				sendReqs[r.Req] = true
 			}
+
 		case KindWake:
 			if len(r.To) == 0 || !wanted(r.To[0]) {
 				continue
@@ -325,6 +336,11 @@ func ComputeStats(bus *events.Bus, store StoreIdentity, opts StatsOptions) (Stat
 		// Re-reads with no recorded wake: the per-wake ratio is undefined,
 		// and calls exist, so the target is not met.
 		t.CallsPerWake.set(float64(calls), 0)
+	}
+	for req := range sendReqs {
+		if finalReqs[req] {
+			sendsWhole++
+		}
 	}
 	if sends > 0 {
 		t.SendSenderTextPct.set(100*float64(sendsWhole)/float64(sends), sends)

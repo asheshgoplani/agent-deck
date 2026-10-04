@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/events"
 )
 
 // Incremental remote talkback (issue #2469 family, PR3). The #1948 drain
@@ -63,6 +65,10 @@ type RemoteCursor struct {
 	Ledger  map[string]string
 	Unowned RemoteUnownedMark
 	Legacy  bool
+	// Comms is the position on the remote's Comms Ledger (`_comms`, P3):
+	// set only by a puller whose own ledger is on; a remote that does not
+	// know the key ignores it, and one that does answers Export.Comms.
+	Comms *RemoteCommsCursor
 }
 
 // RemoteUnownedMark is the _unowned position: N records examined, Last the
@@ -77,6 +83,7 @@ const (
 	remoteCursorLedgerKey  = "_ledger"
 	remoteCursorUnownedKey = "_unowned"
 	remoteCursorLegacyKey  = "_legacy"
+	remoteCursorCommsKey   = "_comms"
 )
 
 // MarshalJSON writes the flat wire form.
@@ -96,6 +103,9 @@ func (c RemoteCursor) MarshalJSON() ([]byte, error) {
 	}
 	if c.Legacy {
 		m[remoteCursorLegacyKey] = true
+	}
+	if c.Comms != nil {
+		m[remoteCursorCommsKey] = c.Comms
 	}
 	return json.Marshal(m)
 }
@@ -133,6 +143,11 @@ func (c *RemoteCursor) UnmarshalJSON(b []byte) error {
 			}
 		case remoteCursorLegacyKey:
 			_ = json.Unmarshal(v, &out.Legacy)
+		case remoteCursorCommsKey:
+			var cc RemoteCommsCursor
+			if err := json.Unmarshal(v, &cc); err == nil {
+				out.Comms = &cc
+			}
 		default:
 			var seq int64
 			if err := json.Unmarshal(v, &seq); err != nil {
@@ -173,6 +188,9 @@ type RemoteExport struct {
 	Records    []TransitionNotificationEvent `json:"records"`
 	CursorNext RemoteCursor                  `json:"cursor_next"`
 	Writer     *WriterStatus                 `json:"writer,omitempty"`
+	// Comms answers the cursor's `_comms` position (P3): this host's ledger
+	// records for sessions it does not host. Absent when not asked.
+	Comms *RemoteCommsExport `json:"comms,omitempty"`
 }
 
 // remoteExportNewChildLines bounds what a child unknown to the cursor ships
@@ -411,7 +429,13 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	if out == nil {
 		out = []TransitionNotificationEvent{}
 	}
-	return RemoteExport{Records: out, CursorNext: next}, nil
+	exp := RemoteExport{Records: out, CursorNext: next}
+	if cursor.Comms != nil {
+		cx := exportCommsAfter(*cursor.Comms, time.Now())
+		exp.Comms = &cx
+		exp.CursorNext.Comms = &RemoteCommsCursor{Store: cx.Store, Epoch: cx.Epoch, After: cx.Through}
+	}
+	return exp, nil
 }
 
 // unownedMark identifies one _unowned record for the cursor's position check:
@@ -773,8 +797,23 @@ func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps Remote
 	var records []TransitionNotificationEvent
 	var next RemoteCursor
 	legacy := deps.FetchAfter == nil
+	// Comms Ledger (P3): ask for the remote's ledger records on the same
+	// round trip, from the position this profile's ledger holds; the
+	// round trip's two local times measure the clock offset.
+	commsProfile := ""
+	if CommsLedgerEnabled() && !legacy {
+		commsProfile = talkbackProfile(deps)
+		cc := loadRemoteCommsCursor(remote, commsProfile)
+		cursor.Comms = &cc
+	}
+	var commsExp *RemoteCommsExport
+	var t0, t1 time.Time
 	if !legacy {
+		t0 = time.Now()
 		exp, err := deps.FetchAfter(ctx, cursor)
+		t1 = time.Now()
+		commsExp = exp.Comms
+		exp.CursorNext.Comms = nil // kept per (remote, profile), not per parent
 		switch {
 		case errors.Is(err, ErrRemoteCursorUnsupported):
 			legacy = true
@@ -805,6 +844,22 @@ func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps Remote
 			Err: fmt.Errorf("remote %s is not recording session transitions: %s", remote, res.Writer.Detail)}
 	}
 
+	if commsExp != nil {
+		if err := acceptRemoteComms(remote, commsProfile, commsExp, t0, t1); err != nil {
+			// The position stays; the next round trip repeats the batch.
+			commsLog.Warn("remote_comms_accept_failed", "remote", remote, "error", err.Error())
+		}
+	}
+	if !res.Legacy && cursor.Comms != nil {
+		// The profile cursor may advance independently of the inbox cursor.
+		// Report its durable position even if inbox ingest later fails, without
+		// changing CursorBefore or persisting it in the per-parent cursor.
+		after := cursor
+		cc := loadRemoteCommsCursor(remote, commsProfile)
+		after.Comms = &cc
+		res.CursorAfter = &after
+	}
+
 	ingest, err := IngestRemoteRecords(remote, targetID, records)
 	res.RemoteIngestResult = ingest
 	// Records inserted before a later write failed are fresh now and only
@@ -818,7 +873,9 @@ func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps Remote
 		if err := SaveRemoteCursor(remote, targetID, next); err != nil {
 			return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageIngest, Err: fmt.Errorf("save cursor: %w", err)}
 		}
-		res.CursorAfter = &next
+		reported := next
+		reported.Comms = res.CursorAfter.Comms
+		res.CursorAfter = &reported
 	case res.Legacy && !cursorFound:
 		// No position to keep, but the file keeps this conductor enrolled
 		// for scheduled talkback once it consumes the ingested records.
@@ -884,4 +941,15 @@ var remoteWakeWiring = func() *wakeNudgeWiring {
 func WakeParentForRecord(parent *Instance, profile string, ev TransitionNotificationEvent) {
 	ev.Profile = profile
 	(&TransitionNotifier{wake: remoteWakeWiring()}).fireWakeNudge(parent, ev)
+}
+
+// talkbackProfile is the local profile a drain's records belong to: the
+// receiving parent's, else the process profile.
+func talkbackProfile(deps RemoteTalkbackDeps) string {
+	if deps.Parent != nil {
+		if _, profile := deps.Parent(); profile != "" {
+			return profile
+		}
+	}
+	return events.CurrentProfile()
 }

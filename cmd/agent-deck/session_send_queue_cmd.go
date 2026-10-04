@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/send"
@@ -125,9 +126,40 @@ func queuedSendChanged(profile string, prev, r *sendqueue.Record) {
 	}
 }
 
+// ledgerQueuedSend mirrors a queued send's final state into the Comms
+// Ledger (P3), addressed back to the sender persisted in the queue record.
+func ledgerQueuedSend(r *sendqueue.Record, inboxOwned bool) {
+	if !r.Final() {
+		return
+	}
+	// Match the synchronous send evidence: confirmed submission is landed,
+	// while typed alone makes no claim about submission or transcript receipt.
+	var state string
+	switch r.State {
+	case sendqueue.StateLanded, sendqueue.StateSubmitted:
+		state = comms.StateLanded
+	case sendqueue.StateTyped:
+		state = comms.StateTyped
+	case sendqueue.StateFailed:
+		state = comms.StateFailed
+	default:
+		return // No final delivery evidence to publish.
+	}
+	reason := r.Reason
+	if r.Settled {
+		reason = strings.TrimSpace("settled: " + reason)
+	}
+	// Use the durable queue identity, never the worker's environment.
+	if inboxOwned {
+		session.SpoolCommsInboxFailure(r.Sender, r.SessionID, r.SendID, "queue", reason)
+	} else {
+		session.SpoolCommsDelivery(r.Sender, r.SessionID, r.SendID, state, "queue", reason, true)
+	}
+}
+
 // queueSend records the send and hands it to the target's worker. It never
 // types anything itself; it returns at once.
-func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, tagged bool, out *CLIOutput) {
+func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, tagged bool, ledgerSender string, out *CLIOutput) {
 	now := time.Now()
 	dir := sendQueueDir(storage)
 	status := "unknown"
@@ -141,7 +173,10 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 		SessionID: inst.ID, SessionTitle: inst.Title, Tool: inst.Tool, Message: message, Images: images,
 		CreatedAt: now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
 		Deadline: now.Add(sendqueue.DefaultRetryBudget).UTC().Format(time.RFC3339Nano),
-		Sender:   sendJournalSender(),
+		Sender:   ledgerSender,
+	}
+	if rec.Sender == "" {
+		rec.Sender = sendSenderCLI
 	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		rec.ClaudeSessionID = inst.ClaudeSessionID
@@ -152,6 +187,10 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 	if err := sendqueue.Save(dir, rec); err != nil {
 		out.Error(fmt.Sprintf("cannot queue send: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+	// Comms Ledger (P3): reuse the queue's durable sender identity.
+	if ledgerSendAllowed() {
+		session.SpoolCommsSend(rec.Sender, inst.ID, message, "queue", rec.SendID)
 	}
 	publishSendState(profile, rec)
 	if rec.State == sendqueue.StateFailed {
