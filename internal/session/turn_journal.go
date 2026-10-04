@@ -75,6 +75,20 @@ func TurnJournalPath(childID string) string {
 // returns the stored entry. The append is O_APPEND + fsync; the trim past the
 // cap is an atomic rewrite.
 func AppendTurnJournal(entry TurnJournalEntry, keep int) (TurnJournalEntry, error) {
+	return writeTurnJournal(entry, keep, false)
+}
+
+// UpsertTurnJournal is AppendTurnJournal keeping one line per turn (issue
+// #2481): an entry whose uuid matches the newest line is a re-observation of
+// that turn (an info turn that escalated to urgent, a stale-signal flip) and
+// replaces that line instead of adding a second one. It still takes the next
+// seq, so a reader that already read the old line sees the change. Journals
+// written before this (with repeat lines) stay readable as they are.
+func UpsertTurnJournal(entry TurnJournalEntry, keep int) (TurnJournalEntry, error) {
+	return writeTurnJournal(entry, keep, true)
+}
+
+func writeTurnJournal(entry TurnJournalEntry, keep int, replaceSameTurn bool) (TurnJournalEntry, error) {
 	if strings.TrimSpace(entry.Child) == "" {
 		return entry, errors.New("turn journal: empty child id")
 	}
@@ -101,6 +115,9 @@ func AppendTurnJournal(entry TurnJournalEntry, keep int) (TurnJournalEntry, erro
 		return entry, err
 	}
 	line = append(line, '\n')
+	if replaceSameTurn && last != nil && entry.UUID != "" && last.UUID == entry.UUID {
+		return entry, replaceLastTurnJournalLocked(path, line)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return entry, err
@@ -198,6 +215,26 @@ func lastTurnJournalEntryLocked(path string) (*TurnJournalEntry, error) {
 		return &entries[len(entries)-1], nil
 	}
 	return &e, nil
+}
+
+// replaceLastTurnJournalLocked atomically rewrites the journal with its newest
+// parseable line replaced by line (torn lines are dropped on the way).
+func replaceLastTurnJournalLocked(path string, line []byte) error {
+	entries, err := readTurnJournalLocked(path)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	for _, e := range entries[:max(len(entries)-1, 0)] {
+		old, err := json.Marshal(e)
+		if err != nil {
+			continue
+		}
+		buf.Write(old)
+		buf.WriteByte('\n')
+	}
+	buf.Write(line)
+	return writeFileDurable(path, buf.Bytes(), 0o600)
 }
 
 // trimTurnJournalLocked keeps the last keep lines. Cheap in steady state: a

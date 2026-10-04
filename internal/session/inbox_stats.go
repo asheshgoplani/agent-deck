@@ -27,7 +27,8 @@ type InboxStats struct {
 	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	// Producer side.
+	// Producer side. Records* count records committed (to the parent's
+	// inbox or the unowned ledger), not turns observed (issue #2481).
 	RecordsUrgent   int64 `json:"records_urgent"`
 	RecordsInfo     int64 `json:"records_info"`
 	RecordsLegacy   int64 `json:"records_legacy"` // records without a tier (old producer / no transcript)

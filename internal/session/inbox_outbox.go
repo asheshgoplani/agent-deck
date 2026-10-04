@@ -196,16 +196,31 @@ func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (r
 	// rewriteInboxLocked is atomic and invalidates the
 	// fingerprint cache for the path.
 	if _, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
-		fp := ev.TurnFingerprint
-		if fp == "" {
-			fp = TurnFingerprint(ev)
-		}
-		return fp == event.TurnFingerprint
+		return sameInboxTurn(ev, event)
 	}); err != nil {
 		return false, err
 	}
 
 	return retry, appendInboxLineLocked(path, event)
+}
+
+// sameInboxTurn reports whether the pending record ev is the turn event
+// carries: the same turn fingerprint, or (issue #2481) the same child
+// transcript turn uuid, so a turn that escalated after its record was written
+// (info, then error or a completion) replaces its pending record instead of
+// queueing a second one. Records without a turn uuid (legacy, hook-file
+// completions) match on the fingerprint only.
+func sameInboxTurn(ev, event TransitionNotificationEvent) bool {
+	fp := ev.TurnFingerprint
+	if fp == "" {
+		fp = TurnFingerprint(ev)
+	}
+	if fp == event.TurnFingerprint {
+		return true
+	}
+	uuid := strings.TrimSpace(event.TurnUUID)
+	return uuid != "" && strings.TrimSpace(ev.TurnUUID) == uuid &&
+		ev.ChildSessionID == event.ChildSessionID && ev.SourceRemote == event.SourceRemote
 }
 
 // pendingTurnsForChildLocked counts the child's durable pending turns and
@@ -236,7 +251,7 @@ func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) 
 		if fp == "" {
 			fp = TurnFingerprint(ev)
 		}
-		if fp == event.TurnFingerprint {
+		if sameInboxTurn(ev, event) {
 			retry = true
 		}
 		seen[fp] = struct{}{}

@@ -31,6 +31,10 @@ import (
 // notifier then flags it OutputHashStale as before. Hook re-fires and
 // recorded-turn re-scans observe no flip and are subject to the noise rule.
 //
+// An observed flip of a turn this daemon already journaled during the same
+// run (the hook or recorded-turn path saw it first) is that turn again, not a
+// stale signal, so it stays noise (issue #2481).
+//
 // The returned bool is false for a pending turn and for a transiently failed
 // commit; in both cases the caller leaves its bookkeeping untouched so the
 // next poll retries.
@@ -65,8 +69,10 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	if !classified {
 		// Legacy signal, no text: emit as before. The notifier's dedup is the
 		// only improvement available without a transcript.
-		_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.RecordsLegacy++ })
 		result := d.notifier.NotifyTransition(event)
+		if result.DeliveryResult == transitionDeliveryCommitted {
+			_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.RecordsLegacy++ })
+		}
 		// Comms Ledger: the same edge, spooled after the inbox record so a
 		// ledger problem can never delay or lose the parent's wake.
 		d.commsStatusEdge(inst, from, to, event.Timestamp)
@@ -89,7 +95,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	}
 	prev := LastTurnJournalEntry(inst.ID)
 	tier := ClassifyTurnTier(facts, to, prev)
-	if tier == TurnTierNoise && observedFlip {
+	if tier == TurnTierNoise && observedFlip && !d.journaledThisRun(profile, inst.ID, facts.UUID) {
 		tier = TurnTierUrgent // a real turn the transcript cannot distinguish; never silent
 	}
 	if tier == TurnTierNoise {
@@ -165,22 +171,59 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 			clearHeldSend(inst.ID)
 		}
 	}
-	if _, err := AppendTurnJournal(entry, cfg.GetJournalKeep()); err != nil {
+	if _, err := UpsertTurnJournal(entry, cfg.GetJournalKeep()); err != nil {
 		commsLog.Warn("turn_journal_append_failed",
 			slog.String("child", inst.ID), slog.String("error", err.Error()))
 	}
-	_ = BumpInboxStats(statsParent, func(s *InboxStats) {
-		if tier == TurnTierUrgent {
-			s.RecordsUrgent++
-		} else {
-			s.RecordsInfo++
-		}
-		s.TextBytes += int64(len(text))
-	})
+	d.noteJournaledTurn(profile, inst.ID, facts.UUID)
+	// Counters count records that landed, not observations: a turn the
+	// notifier dropped (a duplicate, a dead letter) is journaled but is not a
+	// record.
+	if result.DeliveryResult == transitionDeliveryCommitted {
+		_ = BumpInboxStats(statsParent, func(s *InboxStats) {
+			if tier == TurnTierUrgent {
+				s.RecordsUrgent++
+			} else {
+				s.RecordsInfo++
+			}
+			s.TextBytes += int64(len(text))
+		})
+	}
 	if facts.HasDone {
 		d.noteDoneEmitted(profile, inst, facts.Done, event.Timestamp)
 	}
 	return result, true
+}
+
+// journaledThisRun reports whether emitTurn journaled turn uuid for the
+// child since the daemon last saw the child running.
+func (d *TransitionDaemon) journaledThisRun(profile, childID, uuid string) bool {
+	return uuid != "" && d.journaledRun[profile][childID] == uuid
+}
+
+// noteJournaledTurn remembers the turn uuid just journaled for the child.
+func (d *TransitionDaemon) noteJournaledTurn(profile, childID, uuid string) {
+	if uuid == "" {
+		return
+	}
+	if d.journaledRun == nil {
+		d.journaledRun = map[string]map[string]string{}
+	}
+	if d.journaledRun[profile] == nil {
+		d.journaledRun[profile] = map[string]string{}
+	}
+	d.journaledRun[profile][childID] = uuid
+}
+
+// forgetJournaledTurnsOfRunning starts a new run for every child the pass
+// sees running, and drops children that left the profile.
+func (d *TransitionDaemon) forgetJournaledTurnsOfRunning(profile string, statuses map[string]string) {
+	run := d.journaledRun[profile]
+	for id := range run {
+		if st, ok := statuses[id]; !ok || normalizeStatusString(st) == string(StatusRunning) {
+			delete(run, id)
+		}
+	}
 }
 
 // noteDoneEmitted records that emitTurn already delivered this completion so

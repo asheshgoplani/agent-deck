@@ -28,9 +28,10 @@ func wakeCountingDeps(t *testing.T, wakes *int) RemoteTalkbackDeps {
 }
 
 // One daemon pass that sees running->waiting: recordTerminalTurns emits the
-// turn, then the snapshot loop emits the same edge (observed flip, forced
-// urgent). The notifier drops the second as a duplicate but the journal holds
-// a second line for it; the cursor export must ship the turn once.
+// turn, then the snapshot loop emits the same edge. Since issue #2481 the
+// edge of a turn already journaled in this run is noise, so the journal holds
+// one line (journals written before that hold a dropped repeat line, covered
+// by the render tests below); the cursor export must ship the turn once.
 func TestIssue2469PR3R4_SnapshotEdgeRepeatShipsOnce(t *testing.T) {
 	f := newTurnTestFixture(t)
 	parentOnOtherHost(t, f)
@@ -41,8 +42,8 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatShipsOnce(t *testing.T) {
 
 	local := unownedRecords(t)
 	journal, err := ReadTurnJournal(f.child.ID, 0)
-	if err != nil || len(journal) != 2 || len(local) != 1 {
-		t.Fatalf("setup: want 1 local record and 2 journal lines, got %d and %d (%v)", len(local), len(journal), err)
+	if err != nil || len(journal) != 1 || len(local) != 1 {
+		t.Fatalf("setup: want 1 local record and 1 journal line, got %d and %d (%v)", len(local), len(journal), err)
 	}
 	exp, err := ExportRecordsAfter(RemoteCursor{})
 	if err != nil {
@@ -51,8 +52,8 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatShipsOnce(t *testing.T) {
 	if len(exp.Records) != 1 || exp.Records[0].Seq != 1 || exp.Records[0].OutputHashStale {
 		t.Fatalf("the dropped repeat crossed: want only seq 1, got %+v", exp.Records)
 	}
-	if exp.CursorNext.Seqs[f.child.ID] != 2 {
-		t.Fatalf("the cursor must still move past the dropped line: %+v", exp.CursorNext)
+	if exp.CursorNext.Seqs[f.child.ID] != 1 {
+		t.Fatalf("the cursor must move past the shipped line: %+v", exp.CursorNext)
 	}
 	wakes := 0
 	res, err := RunRemoteTalkback(context.Background(), "boxd", "conductor-x", wakeCountingDeps(t, &wakes))
@@ -97,7 +98,8 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatOfConsumedTurnStaysHome(t *testing.T) 
 }
 
 // A background turn is info and must never wake. Its snapshot-edge repeat is
-// journaled as urgent; it must not cross and wake the cross-host conductor.
+// not journaled again (issue #2481: it used to be journaled as urgent); it
+// must not cross and wake the cross-host conductor.
 func TestIssue2469PR3R4_InfoTurnSnapshotRepeatDoesNotWake(t *testing.T) {
 	f := newTurnTestFixture(t)
 	parentOnOtherHost(t, f)
@@ -118,8 +120,8 @@ func TestIssue2469PR3R4_InfoTurnSnapshotRepeatDoesNotWake(t *testing.T) {
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
 	journal, _ := ReadTurnJournal(f.child.ID, 0)
-	if len(journal) != 3 || journal[1].Tier != TurnTierInfo || journal[2].Tier != TurnTierUrgent {
-		t.Fatalf("setup: want an info line and its urgent repeat, got %+v", journal)
+	if len(journal) != 2 || journal[1].Tier != TurnTierInfo || journal[1].UUID != "a1" {
+		t.Fatalf("setup: want the info line and no urgent repeat, got %+v", journal)
 	}
 	res, err := RunRemoteTalkback(context.Background(), "boxd", "conductor-x", deps)
 	if err != nil {

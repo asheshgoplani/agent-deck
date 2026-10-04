@@ -74,6 +74,13 @@ type TransitionDaemon struct {
 	// happened to observe the session mid-`running`: see recordTerminalTurns.
 	lastTurn map[string]map[string]string
 
+	// journaledRun maps (profile, child) to the turn uuid emitTurn journaled
+	// for it since this daemon last saw the child running (issue #2481). The
+	// snapshot edge that follows a hook-path record of the same run is that
+	// same turn, not a stale-signal turn, so it must not be forced urgent and
+	// journaled again. nil-safe; see forgetJournaledTurnsOfRunning.
+	journaledRun map[string]map[string]string
+
 	// turnLiveCheck decides whether an instance is a live session or a stale
 	// registry row. A seam because the real check probes tmux, which a unit test
 	// cannot and should not do — and testing this logic is the whole point after a
@@ -615,6 +622,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// immediately. Reuses the instances/hookStatuses already loaded above — no
 	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
 	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
+
+	// Issue #2481: a child seen running starts a new run, so the next observed
+	// flip is a new turn unless a path journals one for it first.
+	d.forgetJournaledTurnsOfRunning(profile, statuses)
 
 	// A daemon PROCESS start (first pass for the profile) seeds the turn
 	// baseline from the registry against the persisted last-notified state, so
