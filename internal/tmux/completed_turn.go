@@ -160,9 +160,9 @@ func (d *PromptDetector) CompletedTurnAtIdlePrompt(content string) bool {
 
 // CompletedTurnSampleInterval is the minimum spacing between two pane
 // samples for the hook-lag rule to count them as independent: a single frame
-// can never flip the light. Same ceiling as the background-work probe on the
-// waiting path.
-const CompletedTurnSampleInterval = bgWorkCacheTTL
+// can never flip the light. This is deliberately longer than the foreground
+// work probe cache, which must notice new spinners promptly.
+const CompletedTurnSampleInterval = 3 * time.Second
 
 // recordCompletedTurnSampleLocked stores the completed-turn verdict for a pane
 // frame that a status or substate read has ALREADY captured and classified

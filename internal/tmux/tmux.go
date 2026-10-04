@@ -1242,9 +1242,11 @@ type Session struct {
 	// UpdateStatus has no captured pane content, so it must capture separately to
 	// check for in-flight background work; this bounds that to one capture per
 	// bgWorkCacheTTL while a session sits at the prompt.
-	bgWork          BackgroundWork
-	bgWorkBlocked   bool
-	bgWorkCheckedAt time.Time
+	bgWork                BackgroundWork
+	bgWorkBlocked         bool
+	bgWorkForegroundBusy  bool
+	lastClaudeLiveSpinner bool
+	bgWorkCheckedAt       time.Time
 
 	// lastBackgroundWork is the background work (issue #2473) the last
 	// prepared pane frame showed, read from the frame BEFORE the agent-roster
@@ -5414,13 +5416,13 @@ func (s *Session) isClaudeTool() bool {
 
 // bgWorkCacheTTL bounds how often BackgroundWorkSince captures the pane while a
 // session sits at the prompt. CapturePane has its own 500ms cache; this adds a
-// coarser ceiling so the per-tick hook-fast-path probe stays cheap at scale.
-const bgWorkCacheTTL = 3 * time.Second
+// matching ceiling so foreground changes cannot be hidden by a longer cache.
+const bgWorkCacheTTL = 500 * time.Millisecond
 
 // BackgroundWorkPending reports whether a Claude session at the prompt still has
 // background work in flight. See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
-	work, blocked := s.BackgroundWorkSince(time.Time{})
+	work, blocked, _ := s.BackgroundWorkSince(time.Time{})
 	return work.InFlight() && !blocked
 }
 
@@ -5436,19 +5438,20 @@ func (s *Session) BackgroundWorkPending() bool {
 // blocked reports that the same frame shows something that outranks the work
 // (an open menu or an error, see backgroundWorkOutrankedLocked): the caller
 // must not promote the session to running for it. Returns the zero value for
-// non-Claude sessions. Safe to call WITHOUT holding s.mu (acquires it
+// non-Claude sessions. foregroundBusy reports a live spinner above the composer in the same frame.
+// Safe to call WITHOUT holding s.mu (acquires it
 // internally; releases it for the slow capture).
-func (s *Session) BackgroundWorkSince(notBefore time.Time) (work BackgroundWork, blocked bool) {
+func (s *Session) BackgroundWorkSince(notBefore time.Time) (work BackgroundWork, blocked bool, foregroundBusy bool) {
 	s.mu.Lock()
 	if !s.isClaudeTool() {
 		s.mu.Unlock()
-		return BackgroundWork{}, false
+		return BackgroundWork{}, false, false
 	}
 	if !s.bgWorkCheckedAt.IsZero() && time.Since(s.bgWorkCheckedAt) < bgWorkCacheTTL &&
 		!s.bgWorkCheckedAt.Before(notBefore) {
-		work, blocked = s.bgWork, s.bgWorkBlocked
+		work, blocked, foregroundBusy = s.bgWork, s.bgWorkBlocked, s.bgWorkForegroundBusy
 		s.mu.Unlock()
-		return work, blocked
+		return work, blocked, foregroundBusy
 	}
 	s.mu.Unlock()
 
@@ -5459,20 +5462,23 @@ func (s *Session) BackgroundWorkSince(notBefore time.Time) (work BackgroundWork,
 		// waiting hook fire a premature completion. Keep the previous value and
 		// leave bgWorkCheckedAt unchanged so the next call re-captures.
 		s.mu.Lock()
-		work, blocked = s.bgWork, s.bgWorkBlocked
+		work, blocked, foregroundBusy = s.bgWork, s.bgWorkBlocked, s.bgWorkForegroundBusy
 		s.mu.Unlock()
-		return work, blocked
+		return work, blocked, foregroundBusy
 	}
 	stripped := StripANSI(rawContent)
 	work = ParseClaudeBackgroundWork(stripped)
 
 	s.mu.Lock()
-	blocked = s.backgroundWorkOutrankedLocked(trimClaudeTrailingRoster(stripped))
+	content := trimClaudeTrailingRoster(stripped)
+	blocked = s.backgroundWorkOutrankedLocked(content)
+	foregroundBusy = hasClaudeLiveSpinner(content)
+	s.bgWorkForegroundBusy = foregroundBusy
 	s.bgWork, s.bgWorkBlocked = work, blocked
 	s.bgWorkCheckedAt = time.Now()
 	s.lastBackgroundWork, s.lastBackgroundBlocked = work, blocked
 	s.mu.Unlock()
-	return work, blocked
+	return work, blocked, foregroundBusy
 }
 
 // CachedBackgroundWork returns the background work the last classified pane
@@ -5880,6 +5886,7 @@ func (s *Session) GetSubstate() Substate {
 // holds s.mu.
 func (s *Session) classifyFrameLocked(content string) Substate {
 	s.lastSubstate = s.classifySubstate(content)
+	s.lastClaudeLiveSpinner = s.isClaudeTool() && hasClaudeLiveSpinner(content)
 	s.lastSubstateDetail = s.substateDetailLocked(content)
 	// Background work in flight (issue #2473) refines a frame that is
 	// otherwise at the prompt. prepareFrame read it from the untrimmed frame,
@@ -5894,6 +5901,14 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	}
 	s.recordCompletedTurnSampleLocked(content)
 	return s.lastSubstate
+}
+
+// CachedClaudeLiveSpinner reports the narrow foreground cue from the most
+// recently classified frame, without another capture.
+func (s *Session) CachedClaudeLiveSpinner() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastClaudeLiveSpinner
 }
 
 // CachedSubstateDetail returns the detail recorded with the last substate

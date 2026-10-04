@@ -168,6 +168,9 @@ func isHorizontalRuleLine(line string) bool {
 // - CCManager state detection
 // - cli-spinners: github.com/sindresorhus/cli-spinners (dots spinner)
 func (d *PromptDetector) hasClaudePrompt(content string) bool {
+	if hasClaudeLiveSpinner(content) {
+		return false
+	}
 	// Get last 15 lines for analysis (increased from 10 for better context)
 	lines := strings.Split(content, "\n")
 	var lastLines []string

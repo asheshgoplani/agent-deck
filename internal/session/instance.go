@@ -6528,11 +6528,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				// dialog dismissed with Esc fires no further hook and the stale
 				// event must not hold a running workflow at waiting.
 				var work tmux.BackgroundWork
+				var foregroundBusy bool
 				if i.tmuxSession != nil && IsClaudeCompatible(i.Tool) &&
 					!blockingHookInGrace(i.hookEvent, i.hookLastUpdate, time.Now()) {
 					hookAt := i.hookLastUpdate
 					i.mu.Unlock()
-					if pane, blocked := i.tmuxSession.BackgroundWorkSince(hookAt); !blocked {
+					if pane, blocked, busy := i.tmuxSession.BackgroundWorkSince(hookAt); !blocked {
+						foregroundBusy = busy
 						work = i.probeBackgroundWork(pane)
 					}
 					i.mu.Lock()
@@ -6541,6 +6543,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 					}
 				}
 				switch {
+				case foregroundBusy:
+					// Stop can arrive before Claude removes its live spinner.
+					// A fresh waiting hook cannot override that frame (#2502).
+					i.Status = StatusRunning
+					i.tmuxSession.ResetAcknowledged()
 				case work.InFlight():
 					i.Status = StatusRunning
 					i.bgWorkActive = true
@@ -11577,6 +11584,17 @@ func (i *Instance) Substate() Substate {
 		return SubstateNone
 	}
 	sub := tmuxSess.GetSubstate()
+	// The substate capture can be newer than the waiting-hook probe. Use its
+	// narrow current-composer cue, never generic running text in scrollback.
+	if sub == SubstateRunning && tmuxSess.CachedClaudeLiveSpinner() {
+		i.mu.Lock()
+		if IsClaudeCompatible(i.Tool) && (i.Status == StatusWaiting || i.Status == StatusIdle) &&
+			!blockingHookInGrace(i.hookEvent, i.hookLastUpdate, time.Now()) {
+			i.Status = StatusRunning
+			tmuxSess.ResetAcknowledged()
+		}
+		i.mu.Unlock()
+	}
 	// The frame just read is hook-lag evidence too (see hook_lag.go); feed it
 	// back so status and substate describe the same frame.
 	i.absorbCompletedTurnSample()

@@ -329,7 +329,41 @@ func hasOpenInteractiveMenu(content string) bool {
 // actively working (spinner char or an "esc|ctrl+c to interrupt" hint). It is
 // the substate-classification counterpart of the busy checks inside
 // hasClaudePrompt, scoped to the same recent-tail window.
+// claudeLiveSpinnerRe excludes completed summaries and quoted prose. A bare
+// spinner is live only immediately above the current framed composer (#2502).
+var claudeLiveSpinnerRe = regexp.MustCompile(`^[✳✽✶✻✢·]\s+[\p{L}\p{M}]+(?:[ -][\p{L}\p{M}]+)*…(?: \([^\r\n]*\))?$`)
+
+func hasClaudeLiveSpinner(content string) bool {
+	if hasOpenInteractiveMenu(content) {
+		return false
+	}
+	lines := lastNLines(StripANSI(content), 25)
+	for i := len(lines) - 1; i >= 2; i-- {
+		line := strings.TrimSpace(lines[i])
+		if prompt, _ := isClaudePromptLine(line); !prompt {
+			continue
+		}
+		// Only the bottom-most prompt is the composer. Require its top
+		// border so an echoed user message cannot make old output live.
+		if !strings.HasPrefix(strings.TrimSpace(lines[i-1]), "────") {
+			return false
+		}
+		for j := i - 2; j >= 0; j-- {
+			candidate := strings.TrimSpace(lines[j])
+			if candidate == "" || strings.HasPrefix(candidate, "⎿") && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(candidate, "⎿")), "Tip:") {
+				continue
+			}
+			return claudeLiveSpinnerRe.MatchString(candidate)
+		}
+		return false
+	}
+	return false
+}
+
 func (d *PromptDetector) hasClaudeBusyIndicator(content string) bool {
+	if hasClaudeLiveSpinner(content) {
+		return true
+	}
 	// Scope ALL checks to the recent tail: a spinner char left in scrollback
 	// must not permanently classify the session as running and mask a later
 	// auth/model failure. recentTailLower lowercases, which does not affect the
