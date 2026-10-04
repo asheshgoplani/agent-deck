@@ -144,7 +144,7 @@ its own mouse capture regardless.
 | `@` / `Shift+2` | Filter: waiting only (toggle) |
 | `#` / `Shift+3` | Filter: idle only (toggle) |
 | `&` | Filter: errors only (toggle) |
-| `%` | Filter: open only, hides errors (toggle) |
+| `%` | Filter: Open only, hides stopped and error sessions by default (toggle). With custom exclusions that keep stopped visible, cycles All → Open → Open with stopped hidden → All. The selected step survives restart, including an empty Open view. |
 | `^` | Filter: view archived sessions (toggle) |
 | `t` | Cycle group view: active-on-top / populated-on-top (**rebindable**). Active-on-top puts running/waiting/starting sessions above an `idle / done` divider; set `[ui] active_includes_idle = true` to keep idle sessions with a live pane on top as well (divider becomes `stopped / done`) |
 | `*` | Cycle time filter: today / 3 days / 7 days / 30 days / all (**rebindable**) |

@@ -810,12 +810,19 @@ include_cwd_prefix = true                         # Prefix titles with "[<cwd-ba
 title_format = "{group}/{name}"                   # Template the terminal title (unset by default); placeholders {group} {project} {name}; overrides include_cwd_prefix
 ```
 
+These filter settings also support `config get/set/schema --json`. For example:
+
+```sh
+agent-deck config set display.active_filter_excludes error,stopped --json
+agent-deck config set display.default_filter active --json
+```
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `full_repaint` | bool | `false` | Force full redraws (fix for Ghostty 1.3+ drift). Also via `AGENTDECK_REPAINT=full`. |
-| `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` engages the configurable Open filter. Auto-clears if no sessions match. |
+| `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` engages the configurable Open filter. Concrete status filters auto-clear if no sessions match; `active` remains selected even when empty. |
 | `active_filter_label` | string | `"Open"` | Label shown on the filter pill when active filter is engaged (e.g., "Active", "Live", "Open"). |
-| `active_filter_excludes` | []string | `["error", "stopped"]` | Statuses hidden when the `%` "Open" filter is engaged. Default matches the original hardcoded behavior. Valid values: `running`, `waiting`, `idle`, `error`, `starting`, `stopped`. Unknown entries are dropped silently; if the resulting list is empty the default applies. **Set to `["error"]`** to keep stopped/closed sessions visible while still hiding errors — fixes the over-broad "Open" semantics where closed sessions disappeared from view. Extend with `idle` for an aggressive "show only running/waiting" definition of open. When the list keeps `stopped` visible, `%` cycles All → Open → Open with stopped also hidden → All. |
+| `active_filter_excludes` | []string | `["error", "stopped"]` | Statuses hidden when the `%` "Open" filter is engaged. Default matches the original hardcoded behavior. Valid values: `running`, `waiting`, `idle`, `error`, `starting`, `stopped`. Unknown entries are dropped silently; if the resulting list is empty the default applies. **Set to `["error"]`** to keep stopped/closed sessions visible while still hiding errors — fixes the over-broad "Open" semantics where closed sessions disappeared from view. Extend with `idle` for an aggressive "show only running/waiting" definition of open. When the list keeps `stopped` visible, `%` cycles All → Open → Open with stopped also hidden → All. The selected step is saved across TUI restarts. |
 | `hide_default_tool_badge` | bool | `false` | Drops the tool badge on session rows whose tool matches the top-level `default_tool` (or `claude` when `default_tool` is unset, the same tool new sessions start with), whatever the session's status or archive state. Sessions on any other tool keep their badge, so they stand out. Applies to local rows and to remote rows in the classic list (remote rows compare against this deck's `default_tool`); the embedded sidebar cards are unchanged. Changing `default_tool` in the Settings panel (`S`) takes effect on save. |
 | `show_pane_titles` | bool | `false` | Shows the dim tmux pane-title (task description) suffix on every session row instead of only the selected row. Also toggleable in the TUI Settings panel (`S`) under **DISPLAY**. |
 | `include_cwd_prefix` | bool | `true` | Show the working-directory prefix (`[<cwd-basename>]`) on session rows/titles. Set `false` to show only the session title. (v1.9.46) |

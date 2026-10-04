@@ -1051,12 +1051,13 @@ type reloadState struct {
 
 // uiState persists cursor, preview mode, and status filter across restarts
 type uiState struct {
-	CursorSessionID string `json:"cursor_session_id,omitempty"`
-	CursorGroupPath string `json:"cursor_group_path,omitempty"`
-	PreviewMode     int    `json:"preview_mode"`
-	StatusFilter    string `json:"status_filter,omitempty"`
-	GroupViewMode   int    `json:"group_view_mode,omitempty"`
-	TimeFilterMode  int    `json:"time_filter_mode,omitempty"`
+	CursorSessionID         string `json:"cursor_session_id,omitempty"`
+	CursorGroupPath         string `json:"cursor_group_path,omitempty"`
+	PreviewMode             int    `json:"preview_mode"`
+	StatusFilter            string `json:"status_filter,omitempty"`
+	ActiveFilterHideStopped bool   `json:"active_filter_hide_stopped,omitempty"`
+	GroupViewMode           int    `json:"group_view_mode,omitempty"`
+	TimeFilterMode          int    `json:"time_filter_mode,omitempty"`
 	// Collapsed remote headers, keyed like Item.Path. Local group folds live in
 	// groupTree, which is persisted separately by saveGroupState; remote groups
 	// are synthetic UI rows and have no home there.
@@ -2147,7 +2148,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.remotePolls = session.LoadRemotePolls()
 
 	// Apply default_filter from config if no filter was restored from persisted state.
-	// Restored and configured filters fall back to All when nothing matches.
+	// Concrete status filters fall back to All when nothing matches; the active
+	// filter remains selected so stopped/error rows stay hidden across restarts.
 	if h.statusFilter == "" && h.defaultFilter != "" {
 		h.statusFilter = session.Status(h.defaultFilter)
 	}
@@ -3367,7 +3369,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 				}
 			}
 		}
-		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter {
+		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter && h.statusFilter != FilterModeActive {
 			h.statusFilter = ""
 			h.flatItems = allItems
 		} else {
@@ -15173,13 +15175,14 @@ func (h *Home) saveUIStateErr() error {
 	}
 
 	state := uiState{
-		PreviewMode:            int(h.previewMode),
-		StatusFilter:           string(h.statusFilter),
-		GroupViewMode:          int(h.groupViewMode),
-		TimeFilterMode:         int(h.timeFilter),
-		RemoteSessionOrder:     h.remoteSessionOrder,
-		SidebarMode:            string(h.sidebarMode),
-		SidebarWidthCustomized: h.embeddedLayout && !h.compactSidebar,
+		PreviewMode:             int(h.previewMode),
+		StatusFilter:            string(h.statusFilter),
+		ActiveFilterHideStopped: h.activeFilterHideStopped,
+		GroupViewMode:           int(h.groupViewMode),
+		TimeFilterMode:          int(h.timeFilter),
+		RemoteSessionOrder:      h.remoteSessionOrder,
+		SidebarMode:             string(h.sidebarMode),
+		SidebarWidthCustomized:  h.embeddedLayout && !h.compactSidebar,
 	}
 
 	// Sorted so an unchanged fold state marshals byte-identically and doesn't
@@ -15285,6 +15288,7 @@ func (h *Home) loadUIState() {
 }
 
 func (h *Home) applyUIState(state uiState) {
+	h.activeFilterHideStopped = state.StatusFilter == string(FilterModeActive) && state.ActiveFilterHideStopped
 	h.previewMode = PreviewMode(state.PreviewMode)
 	h.statusFilter = session.Status(state.StatusFilter)
 	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)

@@ -1,6 +1,9 @@
 package session
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // TestConfigKeysRoundTrip: every key parses its default back, sets it on a
 // config and reads the same value, so get/set/schema cannot drift apart.
@@ -16,7 +19,7 @@ func TestConfigKeysRoundTrip(t *testing.T) {
 		case float64:
 			raw = "0.3"
 		case []string:
-			raw = "cpu,load"
+			raw = k.Values[0] + "," + k.Values[1]
 		case string:
 			raw = v
 			if k.Type == "enum" {
@@ -35,7 +38,7 @@ func TestConfigKeysRoundTrip(t *testing.T) {
 		k.Set(cfg, val)
 		got := k.Get(cfg)
 		if g, ok := got.([]string); ok {
-			if len(g) != 2 || g[0] != "cpu" || g[1] != "load" {
+			if !reflect.DeepEqual(g, val) {
 				t.Errorf("%s: list round-trip %v", k.Key, g)
 			}
 			continue

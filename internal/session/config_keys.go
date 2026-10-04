@@ -122,6 +122,20 @@ var configKeys = []ConfigKey{
 	{Key: "system_stats.show", Section: "System stats", Label: "Visible stats", Help: "Stats shown: any of cpu, ram, disk, network, gpu, load (comma-separated)", Type: "list", Values: []string{"cpu", "ram", "disk", "network", "gpu", "load"},
 		get: func(c *UserConfig) any { return c.SystemStats.GetShow() },
 		set: func(c *UserConfig, v any) { c.SystemStats.Show = v.([]string) }},
+	{Key: "display.default_filter", Section: "Display", Label: "Default status filter", Help: "Initial status filter when no saved filter is selected; active hides the configured excluded statuses", Type: "enum", Values: []string{"", "active", "running", "waiting", "idle", "error"}, RestartRequired: true,
+		get: func(c *UserConfig) any { return c.Display.GetDefaultFilter() },
+		set: func(c *UserConfig, v any) { c.Display.DefaultFilter = v.(string) }},
+	{Key: "display.active_filter_excludes", Section: "Display", Label: "Active filter exclusions", Help: "Statuses hidden by % Open; empty uses error and stopped", Type: "list", Values: []string{"error", "stopped", "running", "waiting", "idle", "starting"}, RestartRequired: true,
+		get: func(c *UserConfig) any {
+			excludes := c.Display.GetActiveFilterExcludes()
+			out := make([]string, 0, len(excludes))
+			for status := range excludes {
+				out = append(out, string(status))
+			}
+			sort.Strings(out)
+			return out
+		},
+		set: func(c *UserConfig, v any) { c.Display.ActiveFilterExcludes = v.([]string) }},
 	{Key: "display.show_session_timestamps", Section: "Display", Label: "Show session timestamps", Help: "Show created/active times on session rows", Type: "bool",
 		get: func(c *UserConfig) any { return c.Display.ShowSessionTimestamps },
 		set: func(c *UserConfig, v any) { c.Display.ShowSessionTimestamps = v.(bool) }},

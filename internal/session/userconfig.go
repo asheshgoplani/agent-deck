@@ -3878,7 +3878,7 @@ type DisplaySettings struct {
 	// DefaultFilter sets the initial status filter when the TUI opens.
 	// Valid values: "" (all, default), "active" (hides error/stopped),
 	// "running", "waiting", "idle", "error".
-	// If set to "active" and no non-error sessions exist, falls back to showing all.
+	// The active filter remains selected even when no sessions match.
 	DefaultFilter string `toml:"default_filter,omitempty"`
 
 	// ActiveFilterLabel sets the label shown on the filter pill when the active
