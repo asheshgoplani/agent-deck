@@ -504,6 +504,13 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 		reconcileTyping(dir, rec, set)
 	}
 	for rec.State == sendqueue.StateQueued {
+		// Checked before every attempt, not only after a refusal, so a worker
+		// restarted after the last refusal (or a record already past the
+		// bound) never starts one more child.
+		if rec.Attempts >= rec.AttemptLimit() {
+			fail(fmt.Sprintf("not delivered after %d attempts: %s", rec.Attempts, strings.TrimPrefix(rec.Reason, "retrying: ")))
+			return
+		}
 		_, instances, _, err := loadSessionData(profile)
 		if err != nil {
 			fail("cannot load sessions: " + err.Error())
@@ -539,14 +546,9 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 		}
 		if rec.State == sendqueue.StateQueued {
 			// Refused before typing: safe to try again once the target settles,
-			// within the time budget and the attempt bound.
-			refusal := strings.TrimPrefix(rec.Reason, "retrying: ")
+			// within the time budget and the attempt bound (checked above).
 			if pastDeadline() {
-				fail("not delivered before the retry budget ran out: " + refusal)
-				return
-			}
-			if rec.Attempts >= rec.AttemptLimit() {
-				fail(fmt.Sprintf("not delivered after %d attempts: %s", rec.Attempts, refusal))
+				fail("not delivered before the retry budget ran out: " + strings.TrimPrefix(rec.Reason, "retrying: "))
 				return
 			}
 			time.Sleep(poll)

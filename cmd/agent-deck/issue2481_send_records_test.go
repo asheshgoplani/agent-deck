@@ -216,3 +216,26 @@ func TestQueuedSendRetriesAreBounded(t *testing.T) {
 		t.Fatalf("attempts = %d (child starts %d), want %d", got.Attempts, calls.Load(), maxAttempts)
 	}
 }
+
+// TestQueuedSendAtAttemptBoundIsNotTypedAgain: a worker restarted after the
+// last refusal was persisted (or a record already past the bound) fails the
+// record without starting one more child.
+func TestQueuedSendAtAttemptBoundIsNotTypedAgain(t *testing.T) {
+	calls := forbidSendChild(t)
+	dir := t.TempDir()
+	now := time.Now()
+	rec := &sendqueue.Record{SendID: sendqueue.NewID(now), State: sendqueue.StateQueued, Verdict: "queued", SessionID: "target-bound", Tool: "claude", Message: "m",
+		Reason: "retrying: composer_blocked", Attempts: sendqueue.DefaultMaxAttempts,
+		CreatedAt: now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano), Deadline: now.Add(time.Hour).UTC().Format(time.RFC3339Nano)}
+	if err := sendqueue.Save(dir, rec); err != nil {
+		t.Fatal(err)
+	}
+	deliverQueued("", dir, rec)
+	got, err := sendqueue.Load(dir, rec.SendID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 0 || got.Attempts != sendqueue.DefaultMaxAttempts || got.State != sendqueue.StateFailed || !strings.Contains(got.Reason, "composer_blocked") {
+		t.Fatalf("child starts %d, record %+v; want failed without another attempt", *calls, got)
+	}
+}
