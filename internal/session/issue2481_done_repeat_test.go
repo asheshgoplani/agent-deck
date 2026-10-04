@@ -252,29 +252,48 @@ func TestIssue2481_LongSendJobSameSummaryIsDelivered(t *testing.T) {
 	}
 }
 
-// Review round 1 (MINOR 2): a slash command a person typed classifies as
-// system like a /loop wake, but only the wake is meta. The typed command
-// starts new work and its completion is delivered.
+// Prompt commands and skills write a command record followed by a meta
+// expansion. Only the command record distinguishes typed from scheduled work.
 func TestIssue2481_TypedSlashCommandJobSameSummaryIsDelivered(t *testing.T) {
-	f := newTurnTestFixture(t)
-	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
-	f.appendTurn(t, fxTaskNotification("u0"), fxAssistantText("a0", "All lanes merged."+doneLine))
-	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
-	f.drain(t)
+	for _, tc := range []struct {
+		name   string
+		origin map[string]any
+		typed  bool
+	}{
+		{"typed skill", nil, true},
+		{"scheduled loop", map[string]any{"turnOrigin": "scheduled"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTurnTestFixture(t)
+			statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+			f.appendTurn(t, fxTaskNotification("u0"), fxAssistantText("a0", "All lanes merged."+doneLine))
+			f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+			f.drain(t)
 
-	f.appendTurn(t, fxUser("u1", "<command-name>/ship</command-name>\n<command-message>ship</command-message>\n<command-args>board 2</command-args>", nil),
-		fxAssistantText("a1", "Shipped board 2."+doneLine))
-	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
-	if got := f.drain(t); len(got) != 1 || got[0].TurnUUID != "a1" {
-		t.Fatalf("a typed slash-command job with the same summary must be delivered: %+v", got)
-	}
-
-	// A meta command record (what a scheduled wake injects) is still a repeat.
-	f.appendTurn(t, fxUser("u2", "<command-name>/loop</command-name>", map[string]any{"isMeta": true, "turnOrigin": "scheduled"}),
-		fxAssistantText("a2", "Still shipped.\n===AGENTDECK_DONE=== status=ok summary=board at zero, 13 closed"))
-	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
-	if got := f.inboxRecords(t); len(got) != 0 {
-		t.Fatalf("a scheduled meta command repeat must be counted, not delivered: %+v", got)
+			command, args, body := "ship", "board 2", "Base directory for this skill: /x/ship\n\nShip the board."
+			if !tc.typed {
+				command, args, body = "loop", "tick", "# /loop schedule a recurring prompt"
+			}
+			f.appendTurn(t,
+				fxUser("u1", "<command-message>"+command+"</command-message>\n<command-name>/"+command+"</command-name>\n<command-args>"+args+"</command-args>", tc.origin),
+				fxUser("u1m", body, map[string]any{"isMeta": true}),
+				fxAssistantText("a1", "Finished."+doneLine))
+			facts, _ := instanceTurnFacts(f.child)
+			f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+			got := f.drain(t)
+			e, _ := ReadLedgerEntry(f.child.ID)
+			t.Logf("trigger=%q typed=%v delivered=%d repeats=%d", facts.Trigger, facts.TypedCommand, len(got), e.Repeats)
+			if tc.typed {
+				if len(got) != 1 || got[0].TurnUUID != "a1" || e.Repeats != 0 {
+					t.Fatalf("typed skill completion must be delivered: records=%+v repeats=%d", got, e.Repeats)
+				}
+			} else if len(got) != 0 || e.Repeats != 1 {
+				t.Fatalf("scheduled loop repeat must be counted: records=%+v repeats=%d", got, e.Repeats)
+			}
+			if facts.Trigger != TurnTriggerSystem || facts.TypedCommand != tc.typed {
+				t.Fatalf("unexpected command classification: %+v", facts)
+			}
+		})
 	}
 }
 
@@ -302,5 +321,30 @@ func TestIssue2481_HookFirstHumanTurnAfterRestartIsDeliveredNotCounted(t *testin
 	}
 	if st, _ := ReadInboxStats(f.parent.ID); st.DoneRepeats != 0 {
 		t.Fatalf("a delivered completion must not be counted as a repeat: %+v", st)
+	}
+}
+
+func TestIssue2481_TypedCommandTurnBoundary(t *testing.T) {
+	command := fxUser("command", "<command-name>/ship</command-name>", nil)
+	meta := fxUser("meta", "Expanded command body", map[string]any{"isMeta": true})
+	for _, tc := range []struct {
+		name    string
+		prompts []string
+		typed   bool
+	}{
+		{"single command", []string{command}, true},
+		{"multiple expansions", []string{command, meta, meta}, true},
+		{"missing start", []string{meta}, false},
+		{"previous turn", []string{command, fxAssistantText("old", "Done"), meta}, false},
+		{"ordinary prompt", []string{command, fxHuman("human", "Check status"), meta}, false},
+		{"scheduled wake", []string{command, fxScheduledWake("wake", "/loop check")}, false},
+		{"sidechain command", []string{fxUser("side", "<command-name>/ship</command-name>", map[string]any{"isSidechain": true}), meta}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := classifyTranscriptTail(append(tc.prompts, fxAssistantText("reply", "Finished."+doneLine)))
+			if facts.TypedCommand != tc.typed {
+				t.Fatalf("TypedCommand=%v, want %v", facts.TypedCommand, tc.typed)
+			}
+		})
 	}
 }
