@@ -21,7 +21,9 @@ var subscribeActiveHook atomic.Pointer[func()]
 
 // Subscription streams Frames with Cursor > the `after` value passed to
 // Subscribe, oldest first, never skipping and never repeating one, for as
-// long as ctx is not cancelled. Cancelling ctx (or the process dying) is the
+// long as ctx is not cancelled and the Bus is not closed. Bus.Close stops
+// every subscription and waits for it before releasing the bus's files.
+// Cancelling ctx (or the process dying) is the
 // "kill the follower" half of the durability proof: a fresh Subscribe(ctx,
 // after) with the last Cursor seen resumes exactly where it left off.
 type Subscription struct {
@@ -30,7 +32,8 @@ type Subscription struct {
 }
 
 // Frames returns the channel of frames in cursor order. It is closed when
-// ctx is cancelled or a read error occurs (check Err() after it closes).
+// ctx is cancelled, the Bus is closed, or a read error occurs (check Err()
+// after it closes; it is nil for a cancel or a close).
 func (s *Subscription) Frames() <-chan Frame { return s.frames }
 
 // Err returns the error that stopped the subscription, if any (non-blocking;
@@ -45,9 +48,11 @@ func (s *Subscription) Err() error {
 }
 
 // Subscribe streams every frame with Cursor > after, then keeps streaming
-// newly published frames until ctx is cancelled. after=0 replays the whole
-// retained log. Returns ErrCursorTooOld (via Subscription.Err after the
-// channel closes) if `after` predates every retained segment.
+// newly published frames until ctx is cancelled or the Bus is closed.
+// after=0 replays the whole retained log. Returns ErrCursorTooOld (via
+// Subscription.Err after the channel closes) if `after` predates every
+// retained segment. Subscribe on a closed Bus returns a subscription whose
+// channel is already closed.
 func (b *Bus) Subscribe(ctx context.Context, after Cursor) (*Subscription, error) {
 	sub := &Subscription{
 		frames: make(chan Frame, 64),
@@ -57,7 +62,20 @@ func (b *Bus) Subscribe(ctx context.Context, after Cursor) (*Subscription, error
 		close(sub.frames)
 		return sub, nil
 	}
-	go sub.run(ctx, b, after)
+	// Register under the lock Close takes to set closed, so no subscription
+	// is added once Close has started waiting for them.
+	b.publishMu.RLock()
+	if b.closed.Load() {
+		b.publishMu.RUnlock()
+		close(sub.frames)
+		return sub, nil
+	}
+	b.subWg.Add(1)
+	b.publishMu.RUnlock()
+	go func() {
+		defer b.subWg.Done()
+		sub.run(ctx, b, after)
+	}()
 	return sub, nil
 }
 
@@ -107,8 +125,19 @@ func (b *Bus) listAllSegments() ([]segRef, error) {
 	return out, nil
 }
 
-func (s *Subscription) run(ctx context.Context, b *Bus, after Cursor) {
+func (s *Subscription) run(parent context.Context, b *Bus, after Cursor) {
 	defer close(s.frames)
+	// ctx ends with the caller's context or with Bus.Close, so every ctx
+	// check and every blocked frame send below also gives way to Close.
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	go func() {
+		select {
+		case <-b.closeCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	emitted := after
 	var lastActiveStart Cursor = 0

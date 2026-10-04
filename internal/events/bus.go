@@ -82,6 +82,7 @@ type Bus struct {
 	queue          chan queuedFrame
 	closeCh        chan struct{}
 	closeWg        sync.WaitGroup
+	subWg          sync.WaitGroup // running subscriptions; Close waits for them before closing files
 	publishMu      sync.RWMutex
 	closed         atomic.Bool
 	failed         atomic.Bool
@@ -566,8 +567,10 @@ func (b *Bus) Stats() Stats {
 	}
 }
 
-// Close flushes any queued frames, fsyncs and stops the background writer.
-// Safe to call once; a nil or already-disabled Bus is a no-op.
+// Close flushes any queued frames, fsyncs and stops the background writer,
+// then stops every subscription and waits for it to exit before it closes
+// the bus's files. A later call, or a nil or disabled Bus, is a no-op; it
+// is safe to call Close from a goroutine consuming a subscription.
 func (b *Bus) Close() error {
 	if b == nil || !b.enabled {
 		return nil
@@ -580,6 +583,7 @@ func (b *Bus) Close() error {
 	b.publishMu.Unlock()
 	close(b.closeCh)
 	b.closeWg.Wait()
+	b.subWg.Wait()
 	if b.abandoned.Load() {
 		// No writer remains. Count exactly the accepted frames that were not
 		// appended, including a batch interrupted by the exit deadline.
