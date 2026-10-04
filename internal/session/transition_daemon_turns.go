@@ -154,7 +154,10 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	if carried != nil {
 		clearHeldSend(inst.ID)
 	} else if facts.Trigger == TurnTriggerSend {
-		if held := loadHeldSend(inst.ID); held != nil && held.UUID == facts.UUID {
+		// Matched by turn, or by sender: a poll can remember the send while
+		// its turn is still writing, so the stored uuid may be an earlier
+		// assistant record of this same turn.
+		if held := loadHeldSend(inst.ID); held != nil && (held.UUID == facts.UUID || held.FromID == facts.FromID) {
 			clearHeldSend(inst.ID)
 		}
 	}

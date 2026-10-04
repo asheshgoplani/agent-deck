@@ -176,3 +176,68 @@ func TestBackgroundWork2473_TaskTurnWithoutHeldSendHasNoSender(t *testing.T) {
 		t.Fatalf("parent record must carry no sender: %+v", parentRecs)
 	}
 }
+
+// Round 5 F1: a hook-less Claude session ([claude] hooks_enabled = false), or
+// a notify daemon that was down while the launch turn's Stop hook was fresh,
+// never yields a hook candidate. The status stays running for the whole
+// workflow, so the send turn is never recorded; the poll must still remember
+// its sender so the task turn that settles the work answers it.
+func TestBackgroundWork2473_HeldSendRepliesWithoutHookCandidate(t *testing.T) {
+	f := newPR5Fixture(t)
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+	running := map[string]string{f.child.ID: "running", f.parent.ID: "waiting", sib.ID: "idle"}
+	waiting := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting", sib.ID: "idle"}
+
+	f.appendTurn(t, fxHuman("u0", SendEnvelope(sib.ID)+"\nrun the follow-on workflow and tell me the result"))
+	f.appendTurn(t, fxWorkflowLaunch("wqphbmkuj", "comms-followon-round3")...)
+	f.appendTurn(t, fxAssistantText("a0", "Launched comms-followon-round3 in the background."), fxTurnDuration(1))
+	for i := 0; i < 5; i++ {
+		f.d.recordTerminalTurns("default", f.byID, running, nil)
+		f.d.emitHookTransitionCandidates("default", f.byID, running, running, nil)
+	}
+	if got := readSenderRecords(t, sib.ID); len(got) != 0 {
+		t.Fatalf("no reply while the work runs: %+v", got)
+	}
+
+	const result = "comms-followon-round3 finished: 5/5 lanes merged."
+	f.appendTurn(t, fxWorkflowNotification("u1", "wqphbmkuj"), fxAssistantText("a1", result), fxTurnDuration(0))
+	for i := 0; i < 3; i++ {
+		f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+	}
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+	assertHeldSendAnswered(t, f, sib.ID, result)
+}
+
+// A poll can remember the send while its turn is still writing, under the
+// uuid of an earlier assistant record of that turn. If the turn then settles
+// between two polls, it records itself with its final uuid and replies; the
+// remembered sender must be cleared so the task turn does not reply twice.
+func TestBackgroundWork2473_HeldSendRememberedMidTurnAnsweredOnce(t *testing.T) {
+	f := newPR5Fixture(t)
+	sib := pr5Sibling(f.child.ProjectPath)
+	f.saveRegistry(t, sib)
+	running := map[string]string{f.child.ID: "running", f.parent.ID: "waiting", sib.ID: "idle"}
+	waiting := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting", sib.ID: "idle"}
+
+	f.appendTurn(t, fxHuman("u0", SendEnvelope(sib.ID)+"\nrun the follow-on workflow and tell me the result"))
+	f.appendTurn(t, fxAssistantText("a00", "Launching the workflow now."))
+	f.appendTurn(t, fxWorkflowLaunch("wqphbmkuj", "comms-followon-round3")...)
+	f.d.recordTerminalTurns("default", f.byID, running, nil)
+	held := loadHeldSend(f.child.ID)
+	if held == nil || held.FromID != sib.ID || held.UUID != "a00" {
+		t.Fatalf("the poll must remember the sender mid-turn, got %+v", held)
+	}
+
+	// The turn finishes and the hold lapses before the next poll.
+	f.appendTurn(t, fxAssistantText("a0", "Launched comms-followon-round3 in the background."), fxTurnDuration(1))
+	f.d.recordTerminalTurns("default", f.byID, waiting, nil)
+	if got := readSenderRecords(t, sib.ID); len(got) != 1 || got[0].Trigger != TurnTriggerSend {
+		t.Fatalf("the settled send turn must reply once itself: %+v", got)
+	}
+
+	heldSendSettle(t, f, running, waiting, "comms-followon-round3 finished: 5/5 lanes merged.")
+	if got := readSenderRecords(t, sib.ID); len(got) != 1 {
+		t.Fatalf("the sender was already answered; the task turn must not reply again: %+v", got)
+	}
+}

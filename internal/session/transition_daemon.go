@@ -901,6 +901,9 @@ func (d *TransitionDaemon) recordTerminalTurns(
 
 	for id, to := range statuses {
 		if !isRecordableTurnStatus(to) {
+			if notifyEnabled {
+				d.rememberHeldSendFromPoll(byID[id], to)
+			}
 			continue
 		}
 		inst := byID[id]
@@ -1297,6 +1300,27 @@ func readHookStatusFile(instanceID string) *HookStatus {
 	}
 	maskConsumedCodexCompletion(instanceID, hookStatus)
 	return hookStatus
+}
+
+// rememberHeldSendFromPoll remembers the sender of a tagged send whose turn
+// handed off to background work, seen from the poll rather than a Stop hook
+// (issue #2473). A hook-less Claude session ([claude] hooks_enabled = false)
+// never yields a hook candidate, and neither does a Stop the notify daemon
+// missed while it was down; on both, the merged status stays running for the
+// whole workflow, so the send turn is never recorded. Without this the task
+// turn that settles the work would carry no sender and the sender would get
+// no reply. rememberHeldSend is idempotent per turn, so the hook path and
+// this one may both see the same held turn.
+func (d *TransitionDaemon) rememberHeldSendFromPoll(inst *Instance, status string) {
+	if inst == nil || normalizeStatusString(status) != string(StatusRunning) {
+		return
+	}
+	if !instanceAcceptsTransitionEvents(inst) || !backgroundWorkHoldsTurn(inst) {
+		return
+	}
+	if facts, ok := instanceTurnFacts(inst); ok {
+		rememberHeldSend(inst.ID, facts)
+	}
 }
 
 func (d *TransitionDaemon) emitHookTransitionCandidates(
