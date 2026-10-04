@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -66,23 +67,80 @@ func inboxStatsPath(parentID string) string {
 func ReadInboxStats(parentID string) (InboxStats, error) {
 	inboxStatsMu.Lock()
 	defer inboxStatsMu.Unlock()
-	return readInboxStatsLocked(parentID)
+	st, _, err := readInboxStatsFile(parentID, false)
+	return st, err
 }
 
-func readInboxStatsLocked(parentID string) (InboxStats, error) {
+// readInboxStatsFile returns the parent's counters plus the file's raw
+// top-level fields, so a rewrite can carry the fields this binary does not
+// know (issue #2481 item 7: a counter added by a newer agent-deck must survive
+// a bump from an older one still running on the same host, and the other way
+// round). A field of an unexpected type keeps the counters that did decode. A
+// file that is not a JSON object at all reads as zero counters; with
+// quarantine (the writer, holding the file lock) it is set aside as
+// <file>.corrupt instead of being silently overwritten.
+func readInboxStatsFile(parentID string, quarantine bool) (InboxStats, map[string]json.RawMessage, error) {
 	st := InboxStats{Parent: strings.TrimSpace(parentID)}
-	data, err := os.ReadFile(inboxStatsPath(parentID)) // #nosec G304 -- sanitized id under the data dir
+	path := inboxStatsPath(parentID)
+	data, err := os.ReadFile(path) // #nosec G304 -- sanitized id under the data dir
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return st, nil
+			return st, nil, nil
 		}
-		return st, err
+		return st, nil, err
 	}
-	if err := json.Unmarshal(data, &st); err != nil {
-		return InboxStats{Parent: strings.TrimSpace(parentID)}, nil // corrupt file: start over
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		if quarantine {
+			_ = os.Rename(path, path+".corrupt") // keep the evidence; start over
+		}
+		return st, nil, nil
 	}
-	return st, nil
+	var typeErr *json.UnmarshalTypeError
+	if err := json.Unmarshal(data, &st); err != nil && !errors.As(err, &typeErr) {
+		return InboxStats{Parent: strings.TrimSpace(parentID)}, raw, nil
+	}
+	return st, raw, nil
 }
+
+// marshalInboxStats encodes st over raw: every field InboxStats owns is
+// replaced (or dropped when omitempty and zero), every other field in raw is
+// kept as it was.
+func marshalInboxStats(st InboxStats, raw map[string]json.RawMessage) ([]byte, error) {
+	if len(raw) == 0 {
+		return json.Marshal(st)
+	}
+	data, err := json.Marshal(st)
+	if err != nil {
+		return nil, err
+	}
+	var own map[string]json.RawMessage
+	if err := json.Unmarshal(data, &own); err != nil {
+		return nil, err
+	}
+	out := make(map[string]json.RawMessage, len(raw)+len(own))
+	for k, v := range raw {
+		if !inboxStatsFields[k] {
+			out[k] = v
+		}
+	}
+	for k, v := range own {
+		out[k] = v
+	}
+	return json.Marshal(out)
+}
+
+// inboxStatsFields is the set of JSON keys InboxStats owns.
+var inboxStatsFields = func() map[string]bool {
+	t := reflect.TypeOf(InboxStats{})
+	fields := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			fields[name] = true
+		}
+	}
+	return fields
+}()
 
 // ListInboxStats returns every parent's counters, sorted by parent id.
 func ListInboxStats() ([]InboxStats, error) {
@@ -116,7 +174,19 @@ func BumpInboxStats(parentID string, fn func(*InboxStats)) error {
 	}
 	inboxStatsMu.Lock()
 	defer inboxStatsMu.Unlock()
-	st, err := readInboxStatsLocked(parentID)
+	// Counters live next to child text in runtime/; keep them owner-only.
+	if err := os.MkdirAll(InboxStatsDir(), 0o700); err != nil {
+		return err
+	}
+	// The daemon and every hook process bump the same file: without the
+	// cross-process lock the last read-modify-write wins and the others'
+	// increments are lost.
+	lock, err := AcquireConfigFileLock(inboxStatsPath(parentID))
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	st, raw, err := readInboxStatsFile(parentID, true)
 	if err != nil {
 		return err
 	}
@@ -126,12 +196,8 @@ func BumpInboxStats(parentID string, fn func(*InboxStats)) error {
 	}
 	fn(&st)
 	st.UpdatedAt = now
-	data, err := json.Marshal(st)
+	data, err := marshalInboxStats(st, raw)
 	if err != nil {
-		return err
-	}
-	// Counters live next to child text in runtime/; keep them owner-only.
-	if err := os.MkdirAll(InboxStatsDir(), 0o700); err != nil {
 		return err
 	}
 	return writeFileDurable(inboxStatsPath(parentID), data, 0o600)

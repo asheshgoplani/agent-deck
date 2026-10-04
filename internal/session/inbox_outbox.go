@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -47,14 +48,21 @@ const maxDoneSummaryBytes = 32 * 1024
 // maxPendingTurnsPerChild preserves distinct turn notifications without
 // allowing one stopped/no-longer-draining child producer to grow its parent's
 // inbox without bound. The total valid queue is therefore bounded by the
-// number of children. A producer gets ErrInboxTurnOverflow instead of an
-// implicit eviction, so no unacknowledged turn is silently lost.
+// number of children. A turn past the bound is not evicted and not refused:
+// it is folded into ONE overflow digest record per child (issue #2481 item 7)
+// that carries the newest turn and counts every folded turn, so the queue
+// holds at most maxPendingTurnsPerChild+1 records per child and the producer
+// never fails or retries on a full inbox.
 const maxPendingTurnsPerChild = 64
 
-// ErrInboxTurnOverflow is returned when a distinct turn would exceed the
-// per-child pending-turn bound. Callers can treat it as an observable,
-// retryable backpressure outcome; the inbox remains unchanged.
-var ErrInboxTurnOverflow = errors.New("inbox pending-turn limit reached")
+// inboxCommitOutcome says what a successful commitToInbox did.
+type inboxCommitOutcome int
+
+const (
+	inboxCommitAdded    inboxCommitOutcome = iota // a new record was queued
+	inboxCommitReplaced                           // a pending copy of the same turn was replaced (a retry)
+	inboxCommitDigested                           // the turn was folded into the child's overflow digest
+)
 
 // capDoneSummary truncates an over-long completion summary to maxDoneSummaryBytes,
 // appending a marker so an operator sees the summary was clipped. Truncation is
@@ -144,16 +152,16 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 // This is the unified producer entry point for both the interactive
 // (running→waiting) and one-shot (run-task kernel-exit) paths.
 func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) error {
-	_, err := commitToInbox(parentSessionID, event)
+	_, _, err := commitToInbox(parentSessionID, event)
 	return err
 }
 
-// commitToInbox is CommitToInbox that also reports whether the write replaced
-// a still-pending copy of the same turn (a retry) rather than adding a new
-// record.
-func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (replaced bool, err error) {
+// commitToInbox is CommitToInbox that also returns the record as stored and
+// whether the write added it, replaced a still-pending copy of the same turn
+// (a retry), or folded it into the child's overflow digest.
+func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (stored TransitionNotificationEvent, outcome inboxCommitOutcome, err error) {
 	if strings.TrimSpace(parentSessionID) == "" {
-		return false, errors.New("inbox commit: empty parent session id")
+		return event, inboxCommitAdded, errors.New("inbox commit: empty parent session id")
 	}
 	// Audit B6: cap DoneSummary at the producer so a worker dumping a large log
 	// into its summary can't grow a JSONL line past the scanner cap and fail the
@@ -173,23 +181,32 @@ func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (r
 
 	path := InboxPathFor(parentSessionID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
+		return event, inboxCommitAdded, err
 	}
 	fileLock, err := AcquireConfigFileLock(path)
 	if err != nil {
-		return false, fmt.Errorf("lock inbox commit: %w", err)
+		return event, inboxCommitAdded, fmt.Errorf("lock inbox commit: %w", err)
 	}
 	defer fileLock.Release()
 
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
-	pendingForChild, retry, err := pendingTurnsForChildLocked(path, event)
+	pendingForChild, retry, digest, err := pendingTurnsForChildLocked(path, event)
 	if err != nil {
-		return false, err
+		return event, inboxCommitAdded, err
 	}
-	if !retry && pendingForChild >= maxPendingTurnsPerChild {
-		return false, fmt.Errorf("%w: child=%s limit=%d", ErrInboxTurnOverflow, event.ChildSessionID, maxPendingTurnsPerChild)
+	outcome = inboxCommitAdded
+	switch {
+	case digest != nil && event.OverflowTurns == 0 && digestHoldsTurn(*digest, event.TurnFingerprint):
+		// A replay of a turn already folded into the digest: it is counted
+		// there, and replacing the digest with it would lose the count.
+		return *digest, inboxCommitDigested, nil
+	case retry:
+		outcome = inboxCommitReplaced
+	case pendingForChild >= maxPendingTurnsPerChild:
+		event = foldIntoOverflowDigest(event, digest)
+		outcome = inboxCommitDigested
 	}
 
 	// Drop only a retry of this exact turn before appending the fresh copy.
@@ -198,10 +215,10 @@ func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (r
 	if _, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
 		return sameInboxTurn(ev, event)
 	}); err != nil {
-		return false, err
+		return event, outcome, err
 	}
 
-	return retry, appendInboxLineLocked(path, event)
+	return event, outcome, appendInboxLineLocked(path, event)
 }
 
 // sameInboxTurn reports whether the pending record ev is the turn event
@@ -223,16 +240,52 @@ func sameInboxTurn(ev, event TransitionNotificationEvent) bool {
 		ev.ChildSessionID == event.ChildSessionID && ev.SourceRemote == event.SourceRemote
 }
 
-// pendingTurnsForChildLocked counts the child's durable pending turns and
-// reports whether event is a retry already present in the queue. Caller holds
-// inboxWriteMu and the cross-process config-file lock.
-func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) (count int, retry bool, err error) {
+// foldIntoOverflowDigest turns event (a turn past the per-child bound) into
+// the child's overflow digest record. The digest carries the newest turn's
+// status and text, keeps the fingerprint of the digest it replaces (so it is
+// still one pending record, and a consumer that already acted on an older copy
+// of it does not act twice), and counts every turn folded into it. A turn that
+// is itself a digest (pulled from a remote) adds its whole count. An urgent
+// turn keeps the digest urgent.
+func foldIntoOverflowDigest(event TransitionNotificationEvent, prev *TransitionNotificationEvent) TransitionNotificationEvent {
+	if event.OverflowTurns <= 0 {
+		event.OverflowTurns = 1
+	}
+	if prev == nil {
+		return event
+	}
+	folds := append(append([]string(nil), prev.OverflowFolded...), event.OverflowFolded...)
+	folds = append(folds, event.TurnFingerprint)
+	if len(folds) > maxPendingTurnsPerChild {
+		folds = folds[len(folds)-maxPendingTurnsPerChild:]
+	}
+	event.OverflowFolded = folds
+	event.TurnFingerprint = prev.TurnFingerprint
+	event.OverflowTurns += prev.OverflowTurns
+	if prev.IsUrgent() && !event.IsUrgent() {
+		event.Tier = prev.Tier
+	}
+	event.Question = event.Question || prev.Question
+	return event
+}
+
+// digestHoldsTurn reports whether the turn with fingerprint fp is already
+// counted in digest.
+func digestHoldsTurn(digest TransitionNotificationEvent, fp string) bool {
+	return fp == digest.TurnFingerprint || slices.Contains(digest.OverflowFolded, fp)
+}
+
+// pendingTurnsForChildLocked counts the child's durable pending turns, reports
+// whether event is a retry already present in the queue, and returns the
+// child's pending overflow digest (nil when none). Caller holds inboxWriteMu
+// and the cross-process config-file lock.
+func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) (count int, retry bool, digest *TransitionNotificationEvent, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, false, nil
+			return 0, false, nil, nil
 		}
-		return 0, false, err
+		return 0, false, nil, err
 	}
 	defer f.Close()
 
@@ -254,12 +307,16 @@ func pendingTurnsForChildLocked(path string, event TransitionNotificationEvent) 
 		if sameInboxTurn(ev, event) {
 			retry = true
 		}
+		if ev.OverflowTurns > 0 {
+			ev.TurnFingerprint = fp
+			digest = &ev
+		}
 		seen[fp] = struct{}{}
 		return nil
 	}); err != nil {
-		return 0, false, err
+		return 0, false, nil, err
 	}
-	return len(seen), retry, nil
+	return len(seen), retry, digest, nil
 }
 
 // appendInboxLineLocked marshals one event and atomically installs an old-or-new
@@ -663,14 +720,21 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 	if event.TurnFingerprint == "" {
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
-	if err := CommitToInbox(parentID, event); err != nil {
-		n.noteCommitBackpressure(event, err)
+	stored, outcome, err := commitToInbox(parentID, event)
+	if err != nil {
 		// The turn is retried on the next poll, but the sender's answer must
-		// not wait on the parent's backlog: a stopped parent saturated with
-		// this child's records would otherwise hold a sibling's reply until
-		// someone drains it.
+		// not wait on the parent's backlog.
 		n.commitReplyToSender(sender, reply)
 		return false, true, ""
+	}
+	if outcome == inboxCommitDigested {
+		// The parent already holds maxPendingTurnsPerChild undrained turns
+		// from this child, each of which woke it: the digest is counted and
+		// durable, but buys no further wake.
+		n.noteCommitBackpressure(stored)
+		n.logEvent(stored)
+		n.commitReplyToSender(sender, reply)
+		return true, false, ""
 	}
 	n.clearCommitBackpressure(event.ChildSessionID)
 	n.logEvent(event)
@@ -777,15 +841,16 @@ func (n *TransitionNotifier) commitReplyToSender(sender *Instance, event Transit
 	event.Tier = TurnTierUrgent
 	event.DeliveryResult = transitionDeliveryCommitted
 	event.DeadLetterReason = ""
-	replaced, err := commitToInbox(sender.ID, event)
+	_, outcome, err := commitToInbox(sender.ID, event)
 	if err != nil {
 		commsLog.Warn("reply_commit_failed",
 			slog.String("sender", sender.ID), slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
-	if replaced {
-		// The same answer is already pending (and was announced when it
-		// first landed): a retried turn must not wake the sender again.
+	if outcome != inboxCommitAdded {
+		// The same answer is already pending, replaced in place or folded
+		// into the overflow digest (and was announced when it first landed):
+		// a retried turn must not wake the sender again.
 		return
 	}
 	n.logEvent(event)
@@ -793,13 +858,10 @@ func (n *TransitionNotifier) commitReplyToSender(sender *Instance, event Transit
 	n.fireWakeNudge(sender, event)
 }
 
-// noteCommitBackpressure logs a saturated parent inbox ONCE per child. The
-// commit stays a transient retry, so only this line tells an operator why a
-// child's completions stopped landing.
-func (n *TransitionNotifier) noteCommitBackpressure(event TransitionNotificationEvent, err error) {
-	if !errors.Is(err, ErrInboxTurnOverflow) {
-		return
-	}
+// noteCommitBackpressure logs a saturated parent inbox ONCE per child: from
+// here on the child's turns fold into one overflow digest record instead of
+// queueing one record each.
+func (n *TransitionNotifier) noteCommitBackpressure(event TransitionNotificationEvent) {
 	child := strings.TrimSpace(event.ChildSessionID)
 	n.overflowMu.Lock()
 	if n.overflowWarned == nil {
@@ -815,7 +877,7 @@ func (n *TransitionNotifier) noteCommitBackpressure(event TransitionNotification
 		slog.String("child", child),
 		slog.String("parent", event.TargetSessionID),
 		slog.Int("limit", maxPendingTurnsPerChild),
-		slog.String("error", err.Error()))
+		slog.Int("overflow_turns", event.OverflowTurns))
 }
 
 // clearCommitBackpressure re-arms the saturation warning after a commit for

@@ -3,7 +3,6 @@ package session
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,16 +24,23 @@ func TestIssue2057_DistinctTurnQueueIsBoundedAndOverflowObservable(t *testing.T)
 			t.Fatalf("commit %d below bound: %v", i, err)
 		}
 	}
-	overflow := TransitionNotificationEvent{
-		ChildSessionID: child, FromStatus: "running", ToStatus: "waiting",
-		LastOutputHash: "one-turn-too-many", Timestamp: time.Unix(999, 0),
-	}
-	if err := CommitToInbox(parent, overflow); !errors.Is(err, ErrInboxTurnOverflow) {
-		t.Fatalf("overflow error = %v, want ErrInboxTurnOverflow", err)
+	// Issue #2481 item 7: turns past the bound fold into one counted digest
+	// record instead of failing, so the queue is bounded at limit+1.
+	for i := 0; i < 3; i++ {
+		overflow := TransitionNotificationEvent{
+			ChildSessionID: child, FromStatus: "running", ToStatus: "waiting",
+			LastOutputHash: fmt.Sprintf("one-turn-too-many-%d", i), Timestamp: time.Unix(int64(999+i), 0),
+		}
+		if err := CommitToInbox(parent, overflow); err != nil {
+			t.Fatalf("overflow commit %d: %v", i, err)
+		}
 	}
 	got := readInboxLines(t, parent)
-	if len(got) != maxPendingTurnsPerChild {
-		t.Fatalf("pending turns = %d, want hard bound %d", len(got), maxPendingTurnsPerChild)
+	if len(got) != maxPendingTurnsPerChild+1 {
+		t.Fatalf("pending records = %d, want hard bound %d plus one digest", len(got), maxPendingTurnsPerChild)
+	}
+	if d := got[len(got)-1]; d.OverflowTurns != 3 || d.LastOutputHash != "one-turn-too-many-2" {
+		t.Fatalf("digest = %+v, want 3 folded turns carrying the newest", d)
 	}
 
 	// A retry at capacity remains accepted and idempotent; the bound must not
@@ -42,7 +48,7 @@ func TestIssue2057_DistinctTurnQueueIsBoundedAndOverflowObservable(t *testing.T)
 	if err := CommitToInbox(parent, got[0]); err != nil {
 		t.Fatalf("retry at capacity: %v", err)
 	}
-	if got := readInboxLines(t, parent); len(got) != maxPendingTurnsPerChild {
+	if got := readInboxLines(t, parent); len(got) != maxPendingTurnsPerChild+1 {
 		t.Fatalf("retry changed queue size to %d", len(got))
 	}
 }

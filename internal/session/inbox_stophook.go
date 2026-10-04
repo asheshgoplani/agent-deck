@@ -226,6 +226,11 @@ func FormatInboxRecords(events []TransitionNotificationEvent, header string) str
 		if ev.Kind == transitionKindFinished && ev.DoneSummary != "" {
 			line += " — " + ev.DoneSummary
 		}
+		if ev.OverflowTurns > 0 {
+			// Issue #2481 item 7: this record stands for every turn past the
+			// per-child bound; it shows the newest of them.
+			line += fmt.Sprintf(" [overflow digest: %d turns past the %d-record limit, newest shown]", ev.OverflowTurns, maxPendingTurnsPerChild)
+		}
 		b.WriteString(line)
 		b.WriteByte('\n')
 		// Issue #2469, design principle 2: the record carries the child's new

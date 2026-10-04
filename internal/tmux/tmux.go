@@ -7093,7 +7093,18 @@ func TruncateLogFile(logPath string, maxLines int) error {
 	return nil
 }
 
-// TruncateLargeLogFiles checks all log files and truncates any that exceed maxSizeMB
+// isSessionLogName reports whether name is a per-session pane log
+// (<SessionPrefix>...log, see Session.LogFile). The logs directory is shared
+// with agent-deck's own logs (transition-notifier.log, notifier-missed.log,
+// ...), which no tmux session owns: log maintenance must never truncate or
+// delete those as "orphans" (issue #2481 item 7, the transition log was lost on
+// 4 of 5 hosts this way).
+func isSessionLogName(name string) bool {
+	return strings.HasPrefix(name, SessionPrefix) && strings.HasSuffix(name, ".log")
+}
+
+// TruncateLargeLogFiles checks the per-session log files and truncates any that
+// exceed maxSizeMB
 func TruncateLargeLogFiles(maxSizeMB int, maxLines int) (truncated int, err error) {
 	logDir := LogDir()
 
@@ -7108,7 +7119,7 @@ func TruncateLargeLogFiles(maxSizeMB int, maxLines int) (truncated int, err erro
 	maxSizeBytes := int64(maxSizeMB * 1024 * 1024)
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+		if entry.IsDir() || !isSessionLogName(entry.Name()) {
 			continue
 		}
 
@@ -7130,8 +7141,9 @@ func TruncateLargeLogFiles(maxSizeMB int, maxLines int) (truncated int, err erro
 	return truncated, nil
 }
 
-// CleanupOrphanedLogs removes log files for sessions that no longer exist
-// A log is considered orphaned if:
+// CleanupOrphanedLogs removes per-session log files for sessions that no
+// longer exist. Only <SessionPrefix>*.log files are candidates. A log is
+// considered orphaned if:
 // 1. No tmux session with matching name exists
 // 2. The log file is older than 1 hour (to avoid race conditions during session creation)
 func CleanupOrphanedLogs() (removed int, freedBytes int64, err error) {
@@ -7162,7 +7174,7 @@ func CleanupOrphanedLogs() (removed int, freedBytes int64, err error) {
 	minAge := 1 * time.Hour // Only cleanup logs older than 1 hour
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+		if entry.IsDir() || !isSessionLogName(entry.Name()) {
 			continue
 		}
 

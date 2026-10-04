@@ -137,6 +137,17 @@ type TransitionNotificationEvent struct {
 	Question bool   `json:"question,omitempty"`
 	Seq      int64  `json:"seq,omitempty"`
 	FromID   string `json:"from_id,omitempty"`
+
+	// OverflowTurns marks the child's overflow digest record (issue #2481
+	// item 7): once the parent holds maxPendingTurnsPerChild undrained turns
+	// from this child, later turns fold into this one record, which carries
+	// the newest turn and counts the folded ones. Zero on every other record;
+	// an older reader ignores it and sees the newest turn.
+	OverflowTurns int `json:"overflow_turns,omitempty"`
+	// OverflowFolded lists the turn fingerprints folded into the digest after
+	// the first (whose fingerprint the digest keeps), newest last and capped
+	// at maxPendingTurnsPerChild, so a re-observed turn is not counted twice.
+	OverflowFolded []string `json:"overflow_folded,omitempty"`
 }
 
 // IsUrgent reports whether a consumer must wake for this record: an explicit
@@ -194,11 +205,10 @@ type TransitionNotifier struct {
 	terminalSeen map[string]bool
 
 	// overflowMu guards overflowWarned, the set of children whose parent inbox
-	// is saturated at maxPendingTurnsPerChild. Backpressure stays retryable, so
-	// without a signal here a stalled parent makes its child re-observe the
-	// same transition every poll with nothing in any log — the runaway class
-	// the dead-letter work removed. Cleared once a commit for that child
-	// succeeds, so a second stall is reported again.
+	// is saturated at maxPendingTurnsPerChild, so the saturation is logged once
+	// when the child's turns start folding into its overflow digest. Cleared
+	// once a regular commit for that child succeeds, so a second stall is
+	// reported again.
 	overflowMu     sync.Mutex
 	overflowWarned map[string]bool
 
@@ -745,7 +755,7 @@ func (n *TransitionNotifier) logEvent(event TransitionNotificationEvent) {
 	if err != nil {
 		return
 	}
-	if err := appendLogLine(n.logPath, line); err != nil {
+	if err := appendRotatingLogLine(n.logPath, line, transitionLogRotation); err != nil {
 		commsLog.Debug("transition_notify_log_write_failed", slog.String("path", n.logPath), slog.String("error", err.Error()))
 	}
 }

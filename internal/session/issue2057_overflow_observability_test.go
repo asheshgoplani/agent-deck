@@ -1,11 +1,9 @@
 package session
 
-// The pending-turn bound is documented as an observable backpressure outcome,
-// but commitEventToInbox maps every CommitToInbox error to "transient". A
-// parent that stopped draining therefore makes its child re-observe the same
-// transition on every poll with no operator signal at all — the ~1/sec runaway
-// class the dead-letter work removed. Backpressure stays retryable; it just has
-// to be visible once per child.
+// The pending-turn bound must be visible to an operator once per child. Since
+// issue #2481 item 7 a saturated child's turns fold into one overflow digest
+// record (committed, never `failed` and retried every poll); the warning marks
+// the moment the folding starts.
 
 import (
 	"bytes"
@@ -43,10 +41,13 @@ func TestIssue2057_OverflowBackpressureIsLoggedOncePerChild(t *testing.T) {
 	buf := captureWarnings(t)
 	fillPendingTurns(t, parentID, event.ChildSessionID, maxPendingTurnsPerChild)
 
+	// Issue #2481 item 7: past the bound the turn folds into the child's
+	// overflow digest (committed, never failed); the warning still fires once.
 	for attempt := 0; attempt < 3; attempt++ {
-		res := n.NotifyFinished(event)
-		if res.DeliveryResult == transitionDeliveryCommitted {
-			t.Fatalf("attempt %d committed past the bound", attempt)
+		ev := event
+		ev.DoneSummary = fmt.Sprintf("past the bound %d", attempt)
+		if res := n.NotifyFinished(ev); res.DeliveryResult != transitionDeliveryCommitted {
+			t.Fatalf("attempt %d: delivery_result = %q, want a digest commit", attempt, res.DeliveryResult)
 		}
 	}
 
@@ -65,8 +66,8 @@ func TestIssue2057_OverflowWarningRearmsAfterDrain(t *testing.T) {
 	n, parentID, event := newWakeNudgeFixture(t)
 	buf := captureWarnings(t)
 	fillPendingTurns(t, parentID, event.ChildSessionID, maxPendingTurnsPerChild)
-	if res := n.NotifyFinished(event); res.DeliveryResult == transitionDeliveryCommitted {
-		t.Fatal("first saturation committed past the bound")
+	if res := n.NotifyFinished(event); res.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("first saturation: %q, want a digest commit", res.DeliveryResult)
 	}
 	if _, err := DrainInboxForParent(parentID); err != nil {
 		t.Fatalf("drain: %v", err)
@@ -77,8 +78,8 @@ func TestIssue2057_OverflowWarningRearmsAfterDrain(t *testing.T) {
 	// the commit above already occupies one slot
 	fillPendingTurns(t, parentID, event.ChildSessionID, maxPendingTurnsPerChild-1)
 	event.DoneSummary = "second stall"
-	if res := n.NotifyFinished(event); res.DeliveryResult == transitionDeliveryCommitted {
-		t.Fatal("second saturation committed past the bound")
+	if res := n.NotifyFinished(event); res.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("second saturation: %q, want a digest commit", res.DeliveryResult)
 	}
 	if got := strings.Count(buf.String(), "inbox_turn_overflow"); got != 2 {
 		t.Fatalf("overflow warnings = %d, want 2 (once per stall)\n%s", got, buf.String())

@@ -1,7 +1,6 @@
 package session
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -280,21 +279,24 @@ func TestIssue2469_RepeatedDoneSummaryOnNewTurnIsDelivered(t *testing.T) {
 	}
 }
 
-// F3: a commit that fails transiently (here the per-child pending cap) is
-// retried on the next poll instead of being journaled as already seen.
+// F3: a commit that fails transiently (here an unreadable inbox: a directory
+// sits at its path) is retried on the next poll instead of being journaled as
+// already seen. (The per-child pending cap no longer fails a commit: since
+// issue #2481 item 7 it folds the turn into an overflow digest.)
 func TestIssue2469_TransientCommitFailureIsRetried(t *testing.T) {
 	f := newTurnTestFixture(t)
 	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
-	for i := 0; i < maxPendingTurnsPerChild; i++ {
-		commitTestRecord(t, f.parent.ID, TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: "board", Tier: TurnTierInfo, Text: "p", LastOutputHash: fmt.Sprintf("turn:fill-%d", i)})
+	inbox := InboxPathFor(f.parent.ID)
+	if err := os.MkdirAll(inbox, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	f.appendTurn(t, fxHuman("u0", "status?"), fxAssistantText("a0", "Blocked on CI."))
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
 	if LastTurnJournalEntry(f.child.ID) != nil {
 		t.Fatal("a failed commit must not be journaled")
 	}
-	if _, err := DrainInboxForParent(f.parent.ID); err != nil {
-		t.Fatalf("drain: %v", err)
+	if err := os.Remove(inbox); err != nil {
+		t.Fatal(err)
 	}
 	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
 	got := f.inboxRecords(t)

@@ -374,17 +374,18 @@ func newSaturatedParentFixture(t *testing.T) (*pr5Fixture, *Instance) {
 	return f, sib
 }
 
-// Fix round 3 (verify r2 finding 1): the parent's commit fails while its
-// inbox is saturated (the turn is retried), but the sibling's answer must
-// not wait on the parent's backlog. Retries must neither duplicate the
-// reply nor wake the sender again.
+// Fix round 3 (verify r2 finding 1): the parent's inbox is saturated, but the
+// sibling's answer must not wait on the parent's backlog. Since issue #2481
+// item 7 the parent's copy folds into the child's overflow digest (the turn
+// is committed and journaled, not retried). Later polls must neither
+// duplicate the reply nor wake the sender again.
 func TestPR5_ParentBackpressureDoesNotHoldSiblingReply(t *testing.T) {
 	f, sib := newSaturatedParentFixture(t)
 
 	f.runTaggedTurn(t, sib.ID)
 	pr5AssertOneReply(t, f, sib.ID)
-	if LastTurnJournalEntry(f.child.ID) != nil {
-		t.Fatal("the parent commit failed: the turn must stay unjournaled so it is retried")
+	if LastTurnJournalEntry(f.child.ID) == nil {
+		t.Fatal("the parent's copy folded into the overflow digest: the turn must be journaled")
 	}
 
 	for i := 0; i < 3; i++ {
@@ -397,8 +398,8 @@ func TestPR5_ParentBackpressureDoesNotHoldSiblingReply(t *testing.T) {
 }
 
 // Fix round 3 (verify r2 finding 1): once the sender consumed the reply,
-// later retries of the same turn (parent still saturated, then drained)
-// commit the parent's copy only: no second reply record, no second wake.
+// later polls (parent still saturated, then drained) commit nothing more:
+// the parent's copy is its overflow digest, no second reply, no second wake.
 func TestPR5_ParentBackpressureReplyNotRedeliveredAfterDrains(t *testing.T) {
 	f, sib := newSaturatedParentFixture(t)
 
@@ -413,13 +414,17 @@ func TestPR5_ParentBackpressureReplyNotRedeliveredAfterDrains(t *testing.T) {
 		t.Fatal("a consumed reply must not be committed again by a retry")
 	}
 
+	got := f.inboxRecords(t)
+	digest := got[len(got)-1]
+	if digest.OverflowTurns != 1 || digest.FromID != sib.ID || digest.TargetKind != "parent" {
+		t.Fatalf("the parent's copy is its overflow digest, counted once: %+v", digest)
+	}
 	if _, err := DrainInboxForParent(f.parent.ID); err != nil {
 		t.Fatalf("parent drain: %v", err)
 	}
 	f.pollTurns(t)
-	got := f.inboxRecords(t)
-	if len(got) != 1 || got[0].FromID != sib.ID || got[0].TargetKind != "parent" {
-		t.Fatalf("the parent gets its copy once it has room: %+v", got)
+	if got := f.inboxRecords(t); len(got) != 0 {
+		t.Fatalf("a drained digest must not be committed again: %+v", got)
 	}
 	if InboxHasPending(sib.ID) || f.woken[sib.ID] != 1 {
 		t.Fatalf("the sender is answered and woken exactly once: pending=%v woken=%v", InboxHasPending(sib.ID), f.woken)
