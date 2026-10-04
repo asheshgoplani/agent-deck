@@ -491,3 +491,25 @@ func TestANeverAddressedConsumerGetsNoFalseGap(t *testing.T) {
 		t.Fatalf("a never-addressed consumer was told about a loss: %+v", gap)
 	}
 }
+
+// A pass that changes nothing writes nothing and is not activity, so a
+// daemon polling a consumer never keeps it holding compaction.
+func TestANoOpPassNeitherWritesNorCountsAsActivity(t *testing.T) {
+	l, r, dir := openPair(t)
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"P"}, Tier: TierInfo, Text: "x"})
+	_, first := pass(t, r, "P", nil)
+	info1, _ := os.Stat(ConsumerPath(dir, "P"))
+	r.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	_, second := pass(t, r, "P", nil)
+	info2, _ := os.Stat(ConsumerPath(dir, "P"))
+	if second.Updated != first.Updated || !info2.ModTime().Equal(info1.ModTime()) {
+		t.Fatalf("a no-op pass rewrote the state: %d -> %d", first.Updated, second.Updated)
+	}
+	if HasNothingPending(dir, "P") {
+		t.Fatal("one record is still pending")
+	}
+	_, acked := pass(t, r, "P", all)
+	if acked.Updated == first.Updated {
+		t.Fatal("an acknowledgement is activity")
+	}
+}

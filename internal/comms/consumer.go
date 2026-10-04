@@ -312,7 +312,10 @@ func HasNothingPending(dir, consumer string) bool {
 		return false
 	}
 	if !flagged {
-		return !found
+		// The daemon writes the flag before any record for the consumer is
+		// visible, so with no flag nothing is pending beyond what the last
+		// pass left.
+		return !found || f.Pending == 0
 	}
 	return found && f.Pending == 0 && f.Through >= flag.Last && f.Epoch == flag.Epoch
 }
@@ -343,6 +346,10 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 	f, found, err := ReadConsumer(r.Dir, consumer)
 	if err != nil {
 		return f, err
+	}
+	before := ""
+	if found {
+		before = stateFingerprint(f)
 	}
 	end, _, err := r.Bus.Ends()
 	if err != nil {
@@ -425,7 +432,13 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 			left++
 		}
 	}
-	f.Through, f.Pending, f.Updated = through, left, now.UnixMilli()
+	f.Through, f.Pending = through, left
+	if found && stateFingerprint(f) == before {
+		// Nothing changed: no write, and a pass that changed nothing is not
+		// activity (Updated decides whether the consumer holds compaction).
+		return f, nil
+	}
+	f.Updated = now.UnixMilli()
 	return f, writeConsumer(r.Dir, f)
 }
 
@@ -508,6 +521,13 @@ func (f *ConsumerFile) advanceAcked(read []Exported, through events.Cursor, deli
 		f.Watermark = next
 	}
 	f.normalize()
+}
+
+// stateFingerprint is the consumer state without its activity stamp.
+func stateFingerprint(f ConsumerFile) string {
+	f.Updated = 0
+	data, _ := json.Marshal(f)
+	return string(data)
 }
 
 // writeConsumer persists a consumer file durably (tmp, fsync, rename).
