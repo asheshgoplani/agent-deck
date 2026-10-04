@@ -1023,12 +1023,17 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 			continue
 		}
 		// Issue #2481: after a daemon restart (or for a tool without a
-		// transcript) the durable ledger still recognises a repeat.
+		// transcript) the durable ledger still recognises a repeat. This
+		// path has no trigger, so it treats the turn as background; for a
+		// child with a readable transcript emitTurn owns the decision (it
+		// knows who started the turn), so a repeat here is held back without
+		// being counted and emitTurn delivers or counts it.
 		at := hs.UpdatedAt
 		if at.IsZero() {
 			at = time.Now()
 		}
-		if repeat, counted := checkDoneRepeat(id, profile, sig, "", "", "", at); repeat {
+		_, emitTurnOwns := instanceTurnFacts(inst)
+		if repeat, counted := checkDoneRepeat(id, profile, sig, "", true, !emitTurnOwns, at); repeat {
 			if counted {
 				_ = BumpInboxStats(statsParentFor(inst), func(s *InboxStats) { s.DoneRepeats++ })
 			}

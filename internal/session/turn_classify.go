@@ -108,6 +108,11 @@ type TurnFacts struct {
 	// Done is the completion sentinel when HasDone.
 	Done    DoneSignal
 	HasDone bool
+	// TypedCommand reports that the turn was started by a slash command a
+	// person typed: a <command-name> record that is not meta (a scheduled
+	// /loop wake is isMeta). Trigger stays system; the done-repeat check
+	// (issue #2481) reads this to treat the turn as started by a person.
+	TypedCommand bool
 	// Pending means the Stop hook outran the transcript flush: the newest
 	// main-chain record is a user record with no assistant reply yet.
 	Pending bool
@@ -217,6 +222,8 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 				return facts
 			}
 			facts.Trigger, facts.FromID = classifyTrigger(rec)
+			facts.TypedCommand = !rec.IsMeta && rec.TurnOrigin != "scheduled" &&
+				strings.HasPrefix(strings.TrimSpace(transcriptText(rec.Message.Content)), "<command-name>")
 			return facts
 		}
 	}

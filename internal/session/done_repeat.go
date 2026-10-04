@@ -20,34 +20,34 @@ const doneRepeatWindow = time.Hour
 
 // checkDoneRepeat reports whether a completion about to be delivered repeats
 // the child's last delivered one (same status and summary on the ledger
-// entry) and, if so, counts it there. It is a repeat when it is either
+// entry) and, if count is set, counts it there. It is a repeat when it is
+// either
 //   - the delivered transcript turn seen again, at any age; or
-//   - a background turn (no person or parent send started it, no held send
-//     answered by it) within doneRepeatWindow of the delivery. A turn a
-//     person or a send started is news (the #2469 rule), never a repeat.
+//   - a background turn (see doneRepeatBackground) within doneRepeatWindow
+//     of the delivery.
 //
-// counted is false when the turn was already counted or is the delivered
-// turn itself. Ledger errors fail open, so the completion is delivered.
-func checkDoneRepeat(childID, profile string, sig DoneSignal, turnUUID, trigger, fromID string, at time.Time) (repeat, counted bool) {
+// counted is false when the turn was already counted, is the delivered turn
+// itself, or count is false. Ledger errors fail open, so the completion is
+// delivered.
+func checkDoneRepeat(childID, profile string, sig DoneSignal, turnUUID string, background, count bool, at time.Time) (repeat, counted bool) {
 	prev, ok := ReadLedgerEntry(childID)
-	if !ok {
-		return false, false
-	}
-	if p := strings.TrimSpace(prev.Profile); p != "" && profile != "" && p != profile {
-		return false, false
-	}
-	if !strings.EqualFold(strings.TrimSpace(prev.Status), sig.Status) || strings.TrimSpace(prev.Summary) != strings.TrimSpace(sig.Summary) {
+	if !ok || !sameDelivered(prev, profile, sig) {
 		return false, false
 	}
 	if turnUUID != "" && prev.TurnUUID == turnUUID {
 		return true, false
 	}
-	background := strings.TrimSpace(fromID) == "" && trigger != TurnTriggerHuman && trigger != TurnTriggerSend
 	if !background || at.Sub(prev.FinishedAt) >= doneRepeatWindow {
 		return false, false
 	}
-	if turnUUID != "" && prev.LastRepeatUUID == turnUUID {
+	if !count || (turnUUID != "" && prev.LastRepeatUUID == turnUUID) {
 		return true, false
+	}
+	// Re-read just before the write: a task worker in another process may
+	// have recorded a new completion since; never overwrite it with this
+	// stale entry.
+	if cur, ok := ReadLedgerEntry(childID); !ok || !cur.FinishedAt.Equal(prev.FinishedAt) || !sameDelivered(cur, profile, sig) {
+		return false, false
 	}
 	prev.Repeats++
 	prev.LastRepeatAt = at
@@ -56,6 +56,31 @@ func checkDoneRepeat(childID, profile string, sig DoneSignal, turnUUID, trigger,
 		return false, false
 	}
 	return true, true
+}
+
+// sameDelivered reports whether the ledger entry records sig for profile.
+func sameDelivered(e CompletionLedgerEntry, profile string, sig DoneSignal) bool {
+	if p := strings.TrimSpace(e.Profile); p != "" && profile != "" && p != profile {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(e.Status), sig.Status) && strings.TrimSpace(e.Summary) == strings.TrimSpace(sig.Summary)
+}
+
+// doneRepeatBackground reports whether a turn nobody started: a background
+// task, a system or scheduled injection, or the child's own inbox prompt
+// (the same set ClassifyTurnTier treats as background). A turn a person or a
+// send started is news even when it ends with the same sentinel (the #2469
+// rule for replies), and so is a turn whose start fell outside the tail
+// window (unknown) or a slash command a person typed.
+func doneRepeatBackground(facts TurnFacts) bool {
+	if strings.TrimSpace(facts.FromID) != "" || facts.TypedCommand {
+		return false
+	}
+	switch facts.Trigger {
+	case TurnTriggerTask, TurnTriggerSystem, TurnTriggerInbox:
+		return true
+	}
+	return false
 }
 
 // DisplaySummary is the ledger entry's summary as the CLI and the TUI show

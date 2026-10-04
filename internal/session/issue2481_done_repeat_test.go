@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -222,5 +223,84 @@ func TestIssue2481_LedgerCompatAcrossVersions(t *testing.T) {
 	}
 	if got := e.DisplaySummary(); got != "s (repeated 3x, not delivered)" {
 		t.Fatalf("display must show the repeat count: %q", got)
+	}
+}
+
+// Review round 1 (MAJOR 1): a worker reused for a second job by a tagged send
+// whose job is long enough that the send record falls outside the transcript
+// tail window classifies as trigger "unknown". Unknown is not background
+// (the ClassifyTurnTier rule), so the same summary is a new completion.
+func TestIssue2481_LongSendJobSameSummaryIsDelivered(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxTaskNotification("u0"), fxAssistantText("a0", "All lanes merged."+doneLine))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	f.drain(t)
+
+	lines := []string{fxUser("u1", "[agent-deck from:parent-2469] second job: redo the board", nil)}
+	for i := 0; i < 120; i++ {
+		lines = append(lines, fxAssistantToolUse(fmt.Sprintf("tu%d", i)), fxToolResult(fmt.Sprintf("tr%d", i)))
+	}
+	lines = append(lines, fxAssistantText("a1", "Second job finished."+doneLine))
+	f.appendTurn(t, lines...)
+	if facts, _ := instanceTurnFacts(f.child); facts.Trigger != TurnTriggerUnknown {
+		t.Fatalf("fixture must exercise trigger unknown, got %q", facts.Trigger)
+	}
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	if got := f.drain(t); len(got) != 1 || got[0].TurnUUID != "a1" {
+		t.Fatalf("a long send-started job with the same summary must be delivered: %+v", got)
+	}
+}
+
+// Review round 1 (MINOR 2): a slash command a person typed classifies as
+// system like a /loop wake, but only the wake is meta. The typed command
+// starts new work and its completion is delivered.
+func TestIssue2481_TypedSlashCommandJobSameSummaryIsDelivered(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxTaskNotification("u0"), fxAssistantText("a0", "All lanes merged."+doneLine))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	f.drain(t)
+
+	f.appendTurn(t, fxUser("u1", "<command-name>/ship</command-name>\n<command-message>ship</command-message>\n<command-args>board 2</command-args>", nil),
+		fxAssistantText("a1", "Shipped board 2."+doneLine))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	if got := f.drain(t); len(got) != 1 || got[0].TurnUUID != "a1" {
+		t.Fatalf("a typed slash-command job with the same summary must be delivered: %+v", got)
+	}
+
+	// A meta command record (what a scheduled wake injects) is still a repeat.
+	f.appendTurn(t, fxUser("u2", "<command-name>/loop</command-name>", map[string]any{"isMeta": true, "turnOrigin": "scheduled"}),
+		fxAssistantText("a2", "Still shipped.\n===AGENTDECK_DONE=== status=ok summary=board at zero, 13 closed"))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	if got := f.inboxRecords(t); len(got) != 0 {
+		t.Fatalf("a scheduled meta command repeat must be counted, not delivered: %+v", got)
+	}
+}
+
+// Review round 1 (MINOR 3): after a restart the hook-file path can see a new
+// human-started identical done before emitTurn. For a child with a readable
+// transcript emitTurn owns the decision: the hook path must not count it, and
+// emitTurn delivers it.
+func TestIssue2481_HookFirstHumanTurnAfterRestartIsDeliveredNotCounted(t *testing.T) {
+	f := newTurnTestFixture(t)
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.appendTurn(t, fxTaskNotification("u0"), fxAssistantText("a0", "All lanes merged."+doneLine))
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	f.drain(t)
+
+	f.appendTurn(t, fxHuman("u1", "do board 2"), fxAssistantText("a1", "Board 2 done."+doneLine))
+	f.d.lastDone = map[string]map[string]DoneSignal{} // daemon restart
+	hs := &HookStatus{Status: "waiting", Event: "Stop", UpdatedAt: time.Now(), DoneStatus: "ok", DoneSummary: "board at zero, 13 closed"}
+	f.d.emitDoneSignals("default", f.byID, map[string]*HookStatus{f.child.ID: hs})
+	if e, _ := ReadLedgerEntry(f.child.ID); e.Repeats != 0 {
+		t.Fatalf("the hook path must not count a turn emitTurn owns: %+v", e)
+	}
+	f.d.recordTerminalTurns("default", f.byID, statuses, nil)
+	if got := f.drain(t); len(got) != 1 || got[0].TurnUUID != "a1" {
+		t.Fatalf("emitTurn must deliver the human-started completion once: %+v", got)
+	}
+	if st, _ := ReadInboxStats(f.parent.ID); st.DoneRepeats != 0 {
+		t.Fatalf("a delivered completion must not be counted as a repeat: %+v", st)
 	}
 }

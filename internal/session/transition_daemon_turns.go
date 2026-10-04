@@ -112,7 +112,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	// Issue #2481: an identical completion re-printed by a finished worker's
 	// leftover scheduled check is counted on the ledger, not delivered.
 	if facts.HasDone {
-		if repeat, counted := checkDoneRepeat(inst.ID, profile, facts.Done, facts.UUID, facts.Trigger, facts.FromID, event.Timestamp); repeat {
+		if repeat, counted := checkDoneRepeat(inst.ID, profile, facts.Done, facts.UUID, doneRepeatBackground(facts), true, event.Timestamp); repeat {
 			_ = BumpInboxStats(statsParent, func(s *InboxStats) {
 				if counted {
 					s.DoneRepeats++
