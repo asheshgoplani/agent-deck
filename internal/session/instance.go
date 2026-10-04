@@ -8840,11 +8840,63 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string) strin
 	// Fallback: the transcript may live under a differently-encoded directory name
 	// (notably WSL Linux path vs. Windows/UNC cwd). Locate it by its unique
 	// session-id filename. A UUID contains no glob metacharacters.
-	if matches, err := filepath.Glob(filepath.Join(projectsDir, "*", sessionID+".jsonl")); err == nil && len(matches) > 0 {
-		return matches[0]
+	return globClaudeTranscript(projectsDir, sessionID)
+}
+
+// transcriptGlob is filepath.Glob; tests count its calls.
+var transcriptGlob = filepath.Glob
+
+// transcriptGlobMissTTL bounds how long a glob that found nothing is reused.
+// The glob lists every project directory (hundreds on a real host) and stats
+// each one; the notify-daemon resolved the same missing transcript several
+// times per pass, every second, which was most of its CPU (issue #2481).
+const transcriptGlobMissTTL = 10 * time.Second
+
+type transcriptGlobEntry struct {
+	path    string
+	checked time.Time
+}
+
+var (
+	transcriptGlobMu    sync.Mutex
+	transcriptGlobCache = map[string]transcriptGlobEntry{}
+)
+
+// globClaudeTranscript is the glob fallback of resolveClaudeTranscriptPath,
+// memoized: a found path is reused while it still exists, a miss for
+// transcriptGlobMissTTL. The exact-path checks above run on every call, so a
+// transcript at its normal location is never delayed by a cached miss. A new
+// transcript under a non-exact encoding (notably WSL) may take up to 10 s to
+// discover. The key includes the config directory and session ID, so restarting
+// with a new ID cannot reuse the previous transcript. Concurrent cold lookups
+// may duplicate a glob; filesystem I/O stays outside the cache mutex.
+func globClaudeTranscript(projectsDir, sessionID string) string {
+	key := projectsDir + "\x00" + sessionID
+	now := time.Now()
+	transcriptGlobMu.Lock()
+	entry, ok := transcriptGlobCache[key]
+	transcriptGlobMu.Unlock()
+	if ok {
+		if entry.path != "" {
+			if _, err := os.Stat(entry.path); err == nil {
+				return entry.path
+			}
+		} else if now.Sub(entry.checked) < transcriptGlobMissTTL {
+			return ""
+		}
 	}
 
-	return ""
+	found := ""
+	if matches, err := transcriptGlob(filepath.Join(projectsDir, "*", sessionID+".jsonl")); err == nil && len(matches) > 0 {
+		found = matches[0]
+	}
+	transcriptGlobMu.Lock()
+	if len(transcriptGlobCache) >= 4096 {
+		clear(transcriptGlobCache) // bound: one entry per session id resolved
+	}
+	transcriptGlobCache[key] = transcriptGlobEntry{path: found, checked: now}
+	transcriptGlobMu.Unlock()
+	return found
 }
 
 // GetJSONLPath returns the path to the Claude session JSONL file for analytics.
