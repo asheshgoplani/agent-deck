@@ -472,7 +472,7 @@ approval: that path sends composer text followed by Enter.
 ### session output
 
 ```bash
-agent-deck session output [id|title] [--json] [-q] [--pane] [--copy] [--max-tokens N]
+agent-deck session output [id|title] [--json] [-q] [--pane] [--copy] [--max-tokens N] [--if-version V]
 ```
 
 Get the last response from a session. Default text output strips ANSI and is
@@ -480,6 +480,13 @@ bounded to approximately 25,000 tokens (configurable with `--max-tokens`), with
 an explicit omission marker and a durable full-output path when truncated.
 `--json`, `-q`/`--quiet`, and `--copy` preserve the full source for compatibility;
 `--pane --json` is the raw ANSI-preserving transport used by remote previews.
+
+Change detection for pollers (additive): `--json` carries `content_version`, an
+opaque version of the transcript file the response was parsed from (omitted for
+pane or fallback responses). `--json --if-version V` answers
+`{"success":true,"unchanged":true,"content_version":V,...}` without `content`
+while that file is unchanged; it costs one stat, parses nothing and is not
+logged as a read. Any change returns the full response with a new version.
 
 ### session context
 

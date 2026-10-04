@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"maps"
@@ -8342,6 +8343,67 @@ func (i *Instance) GetLastResponseBestEffortChecked(peers []*Instance) (*Respons
 		}
 	}
 	return i.GetLastResponseBestEffort()
+}
+
+// responseVersionedFile is the one file the primary last-response read parses
+// (the bound Claude transcript or the exact Codex rollout), or "" when the
+// response would come from somewhere unversioned (pane text, a disk-scan
+// recovery, another tool) or when peers share the Claude transcript (#1400).
+func (i *Instance) responseVersionedFile(peers []*Instance) string {
+	switch {
+	case IsCodexCompatible(i.Tool):
+		path, err := i.codexRolloutPath()
+		if err != nil {
+			return ""
+		}
+		return path
+	case IsClaudeCompatible(i.Tool):
+		path, err := i.GetJSONLPathChecked(peers)
+		if err != nil {
+			return ""
+		}
+		return path
+	}
+	return ""
+}
+
+// ResponseContentVersion returns an opaque version of the file the last
+// response is parsed from (path, size and modification time), or "" when the
+// response is not backed by one versioned file. Equal versions mean the
+// parsed last response cannot have changed, so a poller can skip the read
+// (issue #2481). It costs one stat, never a parse.
+func (i *Instance) ResponseContentVersion(peers []*Instance) string {
+	path := i.responseVersionedFile(peers)
+	if path == "" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(path))
+	return fmt.Sprintf("v1-%x-%x-%x", h.Sum64(), info.Size(), info.ModTime().UnixNano())
+}
+
+// GetLastResponseAtVersion is GetLastResponseBestEffortChecked for a caller
+// that took version from ResponseContentVersion just before. It reports true
+// when the response was parsed from that versioned file, so the version may
+// be handed out with it; a fallback response reports false. The version is
+// taken before the read, so a write racing the read can only make the next
+// comparison miss (one extra read), never hide a change.
+func (i *Instance) GetLastResponseAtVersion(peers []*Instance, version string) (*ResponseOutput, bool, error) {
+	if version != "" {
+		read := i.getClaudeLastResponse
+		if IsCodexCompatible(i.Tool) {
+			read = i.getCodexLastResponse
+		}
+		if resp, err := read(); err == nil {
+			return resp, true, nil
+		}
+	}
+	resp, err := i.GetLastResponseBestEffortChecked(peers)
+	return resp, false, err
 }
 
 // GetLastResponseBestEffort returns the last assistant response with fallback logic

@@ -6228,6 +6228,10 @@ func handleSessionOutput(profile string, args []string) {
 	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (ANSI stripped in default text mode)")
 	primaryPane := fs.Bool("primary", false, "With --pane, capture the managed first window")
 	maxTokens := fs.Int("max-tokens", defaultOutputMaxTokens, "Maximum default text-output budget in approximate tokens (head+tail; full text retained on disk)")
+	// #2481: conditional read for pollers. With the content_version of an
+	// earlier --json read, an unchanged transcript answers {"unchanged":true}
+	// from one stat: no transcript parse, no content, no read-log entry.
+	ifVersion := fs.String("if-version", "", "With --json: answer {\"unchanged\":true} without content when the response source still has this content_version")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -6242,6 +6246,10 @@ func handleSessionOutput(profile string, args []string) {
 			"around an explicit \"output omitted\" seam and ends with the path of the full output retained on\n"+
 			"disk. --json, -q/--quiet and --copy always carry the complete, unstripped source.\n",
 			defaultOutputMaxTokens, outputBytesPerToken)
+		fmt.Println()
+		fmt.Println("Change detection: --json carries content_version when the response is parsed from one\n" +
+			"transcript file. Pass it back with --if-version to get {\"unchanged\":true} (no content, not a\n" +
+			"logged read) while that file is unchanged; any change returns the full response and a new version.")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -6258,6 +6266,10 @@ func handleSessionOutput(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 	if *primaryPane && !*paneFlag {
 		out.Error("--primary requires --pane", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *ifVersion != "" && (!*jsonOutput || quietMode || *paneFlag || *copyFlag) {
+		out.Error("--if-version requires --json and cannot be combined with -q, --pane or --copy", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -6336,8 +6348,21 @@ func handleSessionOutput(profile string, args []string) {
 	// claude_session_id resolve to the SAME transcript, so the parsed "last
 	// response" (-q / --json / default / --copy) would be byte-identical for
 	// all of them. Refuse the read instead — the same guard `session output
-	// --stream` got in #1352.
-	response, err := inst.GetLastResponseBestEffortChecked(instances)
+	// --stream` got in #1352. A colliding transcript has no content version,
+	// so the #2481 stat-only shortcut below never bypasses that guard.
+	version := inst.ResponseContentVersion(instances)
+	if version != "" && version == *ifVersion {
+		out.Print("unchanged", map[string]interface{}{
+			"success":         true,
+			"session_id":      inst.ID,
+			"session_title":   inst.Title,
+			"tool":            inst.Tool,
+			"unchanged":       true,
+			"content_version": version,
+		})
+		return
+	}
+	response, versioned, err := inst.GetLastResponseAtVersion(instances, version)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -6386,6 +6411,9 @@ func handleSessionOutput(profile string, args []string) {
 	}
 	if response.CodexTurnGeneration != "" {
 		jsonData["codex_turn_generation"] = response.CodexTurnGeneration
+	}
+	if versioned {
+		jsonData["content_version"] = version
 	}
 	// Add tool-specific conversation session ID
 	if response.SessionID != "" {
