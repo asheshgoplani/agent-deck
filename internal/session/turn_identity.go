@@ -68,12 +68,17 @@ func TranscriptCursor(path string) (int64, error) {
 }
 
 type turnRecord struct {
-	UUID        string          `json:"uuid"`
-	Type        string          `json:"type"`
-	Timestamp   string          `json:"timestamp"`
-	IsSidechain bool            `json:"isSidechain"`
-	SessionID   string          `json:"sessionId"`
-	Message     json.RawMessage `json:"message"`
+	UUID        string `json:"uuid"`
+	Type        string `json:"type"`
+	Timestamp   string `json:"timestamp"`
+	IsSidechain bool   `json:"isSidechain"`
+	IsMeta      bool   `json:"isMeta"`
+	TurnOrigin  string `json:"turnOrigin"`
+	Origin      struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
+	SessionID string          `json:"sessionId"`
+	Message   json.RawMessage `json:"message"`
 }
 
 type turnMessage struct {
@@ -99,6 +104,33 @@ func promptMatches(body, want string) bool {
 	}
 	unwrapped, ok := query.UnwrapPastedContent(body)
 	return ok && normalizeTurnPrompt(unwrapped) == want
+}
+
+const (
+	peerPromptPrefix = "Another Claude session sent a message:\n"
+	peerPromptSuffix = "\n\nThis came from another Claude session"
+)
+
+// peerPromptMatches unwraps the presentation text Claude adds around a prompt
+// delivered through its peer transport. The wrapper is trusted only when all
+// three transcript metadata fields identify a peer-origin meta record; ordinary
+// user text that imitates the wrapper must never acquire another send's turn.
+func peerPromptMatches(rec turnRecord, body, want string) bool {
+	if !rec.IsMeta || rec.TurnOrigin != "peer" || rec.Origin.Kind != "peer" {
+		return false
+	}
+	if unwrapped, ok := query.UnwrapPastedContent(body); ok {
+		body = unwrapped
+	}
+	if !strings.HasPrefix(body, peerPromptPrefix) {
+		return false
+	}
+	body = strings.TrimPrefix(body, peerPromptPrefix)
+	suffix := strings.LastIndex(body, peerPromptSuffix)
+	if suffix < 0 {
+		return false
+	}
+	return normalizeTurnPrompt(body[:suffix]) == want
 }
 
 func humanPrompt(rec turnRecord) (string, bool) {
@@ -186,7 +218,7 @@ func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, err
 			continue
 		}
 		body, human := humanPrompt(rec)
-		if !human || !promptMatches(body, want) || recordTooOld(rec, q.NotBefore) {
+		if !human || (!promptMatches(body, want) && !peerPromptMatches(rec, body, want)) || recordTooOld(rec, q.NotBefore) {
 			continue
 		}
 		if rec.UUID == "" {

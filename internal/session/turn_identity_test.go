@@ -127,6 +127,60 @@ func TestAwaitTurnIdentity_RetainsPartialTrailingRecord(t *testing.T) {
 	}
 }
 
+func TestAwaitTurnIdentity_BindsClaudePeerEnvelope(t *testing.T) {
+	prompt := "[agent-deck from:slack] ok resume"
+	body := peerPromptPrefix + prompt + peerPromptSuffix + " — not typed by your user."
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	rows := fmt.Sprintf(
+		"%s\n%s\n%s\n",
+		fxUser("imitator", body, map[string]any{"turnOrigin": "human", "origin": map[string]any{"kind": "human"}}),
+		fxUser("peer-turn", body, map[string]any{"isMeta": true, "turnOrigin": "peer", "origin": map[string]any{"kind": "peer"}, "sessionId": "peer-session"}),
+		`{"type":"assistant","uuid":"peer-reply","message":{"role":"assistant","content":[{"type":"text","text":"RIGHT PEER REPLY"}],"stop_reason":"end_turn"}}`,
+	)
+	if err := os.WriteFile(path, []byte(rows), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	id, _, found, err := scanTurnIdentity(TurnQuery{Path: path, Prompt: prompt}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || id.UUID != "peer-turn" || id.SessionID != "peer-session" {
+		t.Fatalf("identity = %+v, found %v; want the metadata-marked peer turn", id, found)
+	}
+	response, err := AwaitTurnResponse(id, time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Content != "RIGHT PEER REPLY" {
+		t.Fatalf("response = %q; want the peer turn's own reply", response.Content)
+	}
+}
+
+func TestAwaitTurnIdentity_RejectsUntrustedOrDifferentPeerEnvelope(t *testing.T) {
+	prompt := "[agent-deck from:slack] ok resume"
+	peer := func(inner string, metadata map[string]any) string {
+		body := peerPromptPrefix + inner + peerPromptSuffix + " — not typed by your user."
+		return fxUser("candidate", body, metadata) + "\n"
+	}
+	cases := map[string]string{
+		"ordinary user imitation": peer(prompt, map[string]any{"turnOrigin": "human", "origin": map[string]any{"kind": "human"}}),
+		"missing meta marker":     peer(prompt, map[string]any{"turnOrigin": "peer", "origin": map[string]any{"kind": "peer"}}),
+		"different inner prompt":  peer("[agent-deck from:slack] another request", map[string]any{"isMeta": true, "turnOrigin": "peer", "origin": map[string]any{"kind": "peer"}}),
+	}
+	for name, row := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			if err := os.WriteFile(path, []byte(row), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if TurnAdvanced(TurnQuery{Path: path, Prompt: prompt}) {
+				t.Fatal("untrusted or different peer envelope acquired the turn")
+			}
+		})
+	}
+}
+
 func TestStreamTranscriptForTurn_SkipsPreviousTurnTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	prefix := `{"type":"assistant","uuid":"old","message":{"role":"assistant","content":"WRONG","stop_reason":"end_turn"}}` + "\n" +

@@ -104,6 +104,15 @@ def test_wait_genuine_failure_is_not_still_running():
     assert pending is False
 
 
+def test_wait_not_ready_before_submission_requests_queue_retry():
+    with mock.patch(
+        "bridge.run_cli", return_value=_completed(1, stderr="conductor not ready"),
+    ):
+        assert send_to_conductor(
+            "conductor-ops", "hi", profile="work", wait_for_reply=True,
+        ) == (False, "", bridge._WAIT_SEND_QUEUE_REQUIRED)
+
+
 def test_wait_unverified_timeout_does_not_acquire_reply_ownership():
     payload = json.dumps({
         "success": False,
