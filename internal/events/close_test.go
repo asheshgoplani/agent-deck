@@ -118,7 +118,8 @@ func TestCloseStopsLivePollingSubscriptions(t *testing.T) {
 					}
 				}(sub)
 			}
-			// Keep writing while the subscriptions poll, then close mid-poll.
+			// Write while the subscriptions poll, so each one is mid-poll on a
+			// growing active segment.
 			stop := make(chan struct{})
 			var writer sync.WaitGroup
 			writer.Add(1)
@@ -137,6 +138,11 @@ func TestCloseStopsLivePollingSubscriptions(t *testing.T) {
 				}
 			}()
 			time.Sleep(60 * time.Millisecond)
+			// Stop the writer before Close: a Commit racing Close is a separate
+			// path, outside #2484. The subscriptions keep polling the active
+			// segment, so Close still lands mid-poll.
+			close(stop)
+			writer.Wait()
 			if err := closeWithin(t, b, 5*time.Second); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
@@ -145,8 +151,6 @@ func TestCloseStopsLivePollingSubscriptions(t *testing.T) {
 			}
 			// Give a still-running poller time to touch the closed lock file.
 			time.Sleep(3 * pollInterval)
-			close(stop)
-			writer.Wait()
 			waitDone := make(chan struct{})
 			go func() { wg.Wait(); close(waitDone) }()
 			select {
