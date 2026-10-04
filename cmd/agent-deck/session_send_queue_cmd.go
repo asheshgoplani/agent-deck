@@ -776,8 +776,12 @@ func startChildSend(profile, id, message, resultPath string) (int, func() int, e
 	}
 	cmd := exec.Command(exe, profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")...)
 	// The send id rides in the environment, not argv: a binary that predates
-	// it ignores the variable instead of refusing an unknown flag.
-	cmd.Env = append(os.Environ(), queueSendIDEnv+"="+strings.TrimSuffix(filepath.Base(resultPath), ".result"))
+	// it ignores the variable instead of refusing an unknown flag. The rest
+	// of the environment is passed through unchanged, exactly as before
+	// (cmd.Env was nil): this child is agent-deck itself delivering the
+	// send, not a harness, and it resolves the target's transcript through
+	// the same CLAUDE_CONFIG_DIR its parent sees.
+	cmd.Env = append(os.Environ(), queueSendIDEnv+"="+strings.TrimSuffix(filepath.Base(resultPath), ".result")) //nolint:forbidigo // verbatim pass-through, see above
 	cmd.Stdout = out
 	if err := cmd.Start(); err != nil {
 		return 0, nil, errors.Join(err, out.Close())
