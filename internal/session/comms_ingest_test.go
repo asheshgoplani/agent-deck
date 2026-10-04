@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,8 +239,8 @@ func TestCommsIngest_UnknownInstancesAreLeftForTheirProfile(t *testing.T) {
 	if got, _ := ReadCommsSpool("someone-elses-child"); len(got) != 1 {
 		t.Fatalf("foreign spool consumed: %+v", got)
 	}
-	if recs := f.ledgerRecords(t); len(recs) != 0 {
-		t.Fatalf("foreign spool committed: %+v", recs)
+	if _, err := comms.OpenReader("default"); !errors.Is(err, comms.ErrNoLedger) {
+		t.Fatalf("a foreign entry alone must not even create this profile's ledger: %v", err)
 	}
 }
 
@@ -912,4 +913,49 @@ func TestCommsIngest_WakesAndReadCallsAreMeasurementRecords(t *testing.T) {
 	if entries, _ := ReadCommsSpool(f.parent.ID); len(entries) != 0 {
 		t.Fatalf("ledger off must spool nothing: %+v", entries)
 	}
+}
+
+// Canary finding (2026-10-04): with the ledger on, the daemon created a
+// ledger directory for every name in the profile list, junk included
+// ('*', 'Total:', typos). A profile gets a ledger only when one of its own
+// sessions has spooled something, and a name that is not a plain profile
+// name never gets one.
+func TestCommsIngest_OnlyRealProfilesWithEntriesGetALedgerDir(t *testing.T) {
+	f := newCommsFixture(t)
+	spoolTurn(t, CommsSpoolEntry{Harness: "codex", Event: "agent-turn-complete", Instance: f.codex.ID, SessionID: "th", TurnID: "t1", Text: "x"})
+	for _, junk := range []string{"totally-bogus-typo-xyz", "perosnal", "*", "Total:", "_test*"} {
+		f.d.ingestCommsSpool(junk, map[string]*Instance{}) // a profile with no sessions
+	}
+	root := filepath.Dir(mustCommsDir(t, "default"))
+	entries, _ := os.ReadDir(root)
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("ledger dirs created for profiles with no sessions: %v", names)
+	}
+	f.d.ingestCommsSpool("default", f.byID)
+	if entries, _ = os.ReadDir(root); len(entries) != 1 || entries[0].Name() != "default" {
+		t.Fatalf("the real profile with an entry gets its ledger: %v", entries)
+	}
+	for _, bad := range []string{"*", "Total:", "_test*", "a b", "../x", ".hidden"} {
+		if _, err := comms.Dir(bad); err == nil {
+			t.Fatalf("comms.Dir accepted %q", bad)
+		}
+	}
+	for _, good := range []string{"default", "personal", "work-2", "a.b_c"} {
+		if _, err := comms.Dir(good); err != nil {
+			t.Fatalf("comms.Dir refused %q: %v", good, err)
+		}
+	}
+}
+
+func mustCommsDir(t *testing.T, profile string) string {
+	t.Helper()
+	dir, err := comms.Dir(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

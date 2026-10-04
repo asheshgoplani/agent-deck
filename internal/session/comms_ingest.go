@@ -162,25 +162,27 @@ func (d *TransitionDaemon) ingestCommsSpool(profile string, byID map[string]*Ins
 		}
 		return
 	}
-	instances := ListCommsSpoolInstances()
-	if len(instances) == 0 {
-		return
-	}
-	l := d.commsLedgerFor(profile)
-	if l == nil {
-		return
-	}
+	// The spool is shared by every profile: a profile's ledger is opened
+	// (and its directory created) only when one of ITS sessions has an
+	// entry, so a profile name with no sessions (a stale or mistyped entry
+	// in the profile list) never gets a ledger directory.
+	var l *comms.Ledger
 	if d.commsPrompts == nil {
 		d.commsPrompts = map[string]CommsSpoolEntry{}
 	}
-	for _, id := range instances {
+	for _, id := range ListCommsSpoolInstances() {
 		inst := byID[id]
 		if inst == nil {
 			continue
 		}
 		entries, err := ReadCommsSpool(id)
-		if err != nil {
+		if err != nil || len(entries) == 0 {
 			continue
+		}
+		if l == nil {
+			if l = d.commsLedgerFor(profile); l == nil {
+				return
+			}
 		}
 		for _, e := range entries {
 			if !d.ingestCommsEntry(l, profile, inst, byID, e) {

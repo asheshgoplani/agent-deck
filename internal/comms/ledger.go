@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -43,13 +44,19 @@ const (
 	scanTimeout = 10 * time.Second
 )
 
+// profileNameRE is what a ledger directory may be named after: a plain
+// profile name (letters, digits, ._- ; a leading _ for internal profiles
+// such as the test suite's). A glob, a word with a colon or a space (debris from a
+// listing that was parsed as profile names) is refused.
+var profileNameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$`)
+
 // Dir returns "<data>/comms/<profile>", the ledger directory for a profile.
 // The profile is validated as a single local path element.
 func Dir(profile string) (string, error) {
 	if profile == "" {
 		profile = "default"
 	}
-	if !filepath.IsLocal(profile) || filepath.Base(profile) != profile {
+	if !profileNameRE.MatchString(profile) || !filepath.IsLocal(profile) || filepath.Base(profile) != profile {
 		return "", fmt.Errorf("comms: invalid profile %q", profile)
 	}
 	root, err := agentpaths.EffectiveDataPath(ledgerDirName, ledgerDirName)
