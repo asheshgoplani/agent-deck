@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.26] - 2026-10-04
+
+- Write terminal-output event ticks only while a follower needs them, reducing background disk writes (#2490).
+- Record senders and private text hashes for sends, slow retries to busy sessions, and notify senders when queued delivery fails (#2491).
+- Report unconfirmed delivery on stderr even for quiet sends (#2491).
+- Avoid opening an unused persistent SSH channel for one-shot remote commands (#2492).
+- Keep one journal entry per agent turn and count committed journal records accurately (#2493).
+- Count repeated completion sentinels without repeatedly waking the parent (#2494).
+- Let output pollers skip unchanged transcript reads with `content_version` and `--if-version` (#2495).
+- Preserve notifier logs through maintenance, rotate them, and retain inbox counters across mixed versions (#2496).
+- Fold inbox overflow into a digest instead of repeatedly failing the same delivery (#2496).
+- Skip unnecessary processing of conductor self turns and prevent consumed turns from being delivered again (#2497).
+- Add `deck-retro` and `deck-repro` skills for private local issue discovery and test-first fix verification (#2501).
+- Add opt-in `msg read`, `peek`, `ack`, `export` and `stats` commands with durable per-consumer positions (#2489).
+- Let selected Claude consumers receive full ledger text at the prompt while keeping existing inbox delivery active (#2498).
+- Record sends and final delivery states in the opt-in ledger, exchange records during remote talkback, and report cross-host latency only when clock uncertainty permits (#2499).
+- Add an opt-in daily active-install tick with a fresh daily random identifier, durable retry identity and updated consent disclosure (#2503).
+- Reduce repeated transcript-directory searches while preserving exact-path discovery and invalidating moved files (#2504).
+- Keep Claude sessions marked running when a live spinner appears above the input composer (#2507).
+- Restore the Open filter, including its hide-stopped choice, after restarting and keep it selected when no sessions match (#2508).
+
+Upgrading: restart older `events follow` processes that need terminal-output ticks so they register demand with the new binary (#2490).
+
+Telemetry schema 3 requires fresh consent before sharing resumes; nothing is sent on the consent day. The daily tick measures eligible reporting TUI installs, not people. The communications ledger stays off by default; its delivery canary requires explicit consumer enrollment.
+
+Thanks to @asheshgoplani for this release's changes, including the advisory communications test matrix (#2488) and updated visual baselines (#2506).
+
 ## [1.16.25] - 2026-10-04
 
 - **Upgrading:** re-run `agent-deck conductor setup <name>` once per conductor to install the updated Telegram/Slack/Discord bridge (outbox polling and the tier filter, #2474). Remotes install or migrate their own update timer on their next update; nothing to do by hand (#2483).
