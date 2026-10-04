@@ -566,6 +566,32 @@ def get_session_output_state(
         return result.stdout.strip(), ""
 
 
+def get_claude_turn_output_state(
+    session: str, receipt: dict, profile: str | None = None,
+) -> tuple[str, bool]:
+    """Return only the Claude response bound to an accepted-turn receipt."""
+    result = run_cli(
+        "session", "output", session, "--json",
+        "--claude-turn-uuid", receipt["turn_uuid"],
+        "--claude-turn-start-offset", str(receipt["turn_start_offset"]),
+        "--claude-turn-session-id", receipt["claude_session_id"],
+        profile=profile, timeout=30,
+    )
+    if result.returncode != 0:
+        return f"{SESSION_OUTPUT_ERROR_PREFIX} {result.stderr.strip()}]", False
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "", False
+    if (
+        data.get("success") is not True
+        or data.get("claude_turn_uuid") != receipt["turn_uuid"]
+        or data.get("claude_session_id") != receipt["claude_session_id"]
+    ):
+        return "", False
+    return (data.get("content") or "").strip(), data.get("completion") == "complete"
+
+
 def capture_pane(session: str, profile: str | None = None) -> str:
     """Raw tmux pane capture for a session, via ``session output --pane``.
 
@@ -883,20 +909,44 @@ def _accepted_turn_from_timeout(payload: dict) -> dict | None:
         payload.get("completion") != "timeout"
         or payload.get("delivery") != "submitted"
         or payload.get("submitted") is not True
-        or payload.get("accepted_turn_kind") != "codex_rollout"
     ):
         return None
+    kind = payload.get("accepted_turn_kind")
     receipt = payload.get("accepted_turn")
     if not isinstance(receipt, dict):
         return None
-    required = (
-        "receipt_id", "instance_id", "codex_session_id", "turn_generation", "accepted_at",
-    )
-    if any(not isinstance(receipt.get(key), str) or not receipt[key] for key in required):
-        return None
-    if not receipt["turn_generation"].startswith(receipt["codex_session_id"] + ":"):
-        return None
-    return receipt
+    if kind == "codex_rollout":
+        required = (
+            "receipt_id", "instance_id", "codex_session_id",
+            "turn_generation", "accepted_at",
+        )
+        if any(
+            not isinstance(receipt.get(key), str) or not receipt[key]
+            for key in required
+        ):
+            return None
+        if not receipt["turn_generation"].startswith(
+            receipt["codex_session_id"] + ":"
+        ):
+            return None
+        return receipt
+    if kind == "claude_transcript":
+        required = (
+            "receipt_id", "instance_id", "claude_session_id", "turn_uuid",
+        )
+        if any(
+            not isinstance(receipt.get(key), str) or not receipt[key]
+            for key in required
+        ):
+            return None
+        if (
+            receipt["receipt_id"] != receipt["turn_uuid"]
+            or not isinstance(receipt.get("turn_start_offset"), int)
+            or receipt["turn_start_offset"] <= 0
+        ):
+            return None
+        return receipt
+    return None
 
 
 def _legacy_submitted_timeout(payload: dict) -> bool:
@@ -905,7 +955,8 @@ def _legacy_submitted_timeout(payload: dict) -> bool:
         payload.get("completion") == "timeout"
         and payload.get("delivery") == "submitted"
         and payload.get("submitted") is True
-        and payload.get("accepted_turn_kind") != "codex_rollout"
+        and payload.get("accepted_turn_kind")
+        not in ("codex_rollout", "claude_transcript")
     )
 
 
@@ -1300,9 +1351,9 @@ async def _watch_pending_reply(
 ) -> None:
     """Deliver the accepted turn's output without re-sending its message.
 
-    Codex requires an exact rollout generation because status, timestamps, and
-    content are not ownership evidence. Receipt-less tools retain the previous
-    status-based watcher until they expose equivalent turn identity.
+    Codex requires an exact rollout generation and Claude requires its durable
+    transcript turn. Receipt-less tools retain the previous status-based
+    watcher until they expose equivalent turn identity.
     """
     loop = asyncio.get_running_loop()
     max_polls = max(1, PENDING_REPLY_MAX_WAIT // PENDING_REPLY_POLL_INTERVAL)
@@ -1321,6 +1372,28 @@ async def _watch_pending_reply(
                 reply_callback, output.strip() or "[No output from conductor.]",
             )
             return
+        if "turn_uuid" in receipt:
+            output, complete = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    get_claude_turn_output_state,
+                    session,
+                    receipt,
+                    profile=profile,
+                ),
+            )
+            if complete:
+                await _fire_callback(
+                    reply_callback,
+                    output.strip() or "[No output from conductor.]",
+                )
+                log.info(
+                    "Pending reply %s for %s delivered after matching Claude completion",
+                    receipt["receipt_id"], session,
+                )
+                return
+            await asyncio.sleep(PENDING_REPLY_POLL_INTERVAL)
+            continue
         output, generation = await loop.run_in_executor(
             None, functools.partial(get_session_output_state, session, profile=profile),
         )

@@ -43,7 +43,7 @@ func TestIssue2399_WaitReturnsAfterPastedFollowUpCompletes(t *testing.T) {
 	const followUp = "Follow-up for the second turn:\n1. Read /work/child/notes.md\n2. Summarise it in three bullets\n\nReply with the bullets only."
 	timeout := 5 * time.Second
 	start := time.Now()
-	resp, status, identityErr, completionErr, responseErr := awaitClaudeWaitReply(
+	resp, status, _, identityErr, completionErr, responseErr := awaitClaudeWaitReply(
 		session.TurnQuery{Path: path, Prompt: followUp, Cursor: cursor},
 		time.Now().Add(timeout),
 		func(time.Duration) (string, error) { return "waiting", nil },

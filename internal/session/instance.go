@@ -8783,15 +8783,37 @@ func (i *Instance) claudeTranscriptDir() string {
 // same transcript, corrupting routing. When there is no collision it delegates
 // to GetJSONLPath.
 func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
-	if i.ClaudeSessionIDCollidesWith(peers) {
+	return i.GetJSONLPathForSessionIDChecked(peers, i.ClaudeSessionID)
+}
+
+// GetJSONLPathForSessionIDChecked resolves a specific durable Claude
+// conversation without rebinding the instance's current conversation. Late
+// reply watchers use it after /clear or a later turn has advanced the live
+// instance, while retaining the same live-collision guard as ordinary output.
+func (i *Instance) GetJSONLPathForSessionIDChecked(peers []*Instance, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	if _, err := conversationPathComponent(sessionID + ".jsonl"); err != nil {
+		return "", fmt.Errorf("invalid claude_session_id %q: %w", sessionID, err)
+	}
+	mine := i.claudeTranscriptDir()
+	for _, peer := range peers {
+		if peer == nil || peer.ID == i.ID || peer.ClaudeSessionID != sessionID ||
+			!isLiveSessionStatus(peer.Status) || peer.claudeTranscriptDir() != mine {
+			continue
+		}
 		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 			InstanceID: i.ID, Tool: i.Tool, Action: "reject",
-			Source: "jsonl_resolve", OldID: i.ClaudeSessionID, Candidate: i.ClaudeSessionID,
+			Source: "jsonl_resolve", OldID: i.ClaudeSessionID, Candidate: sessionID,
 			Reason: "claude_session_id_collision_across_live_instances",
 		})
-		return "", fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", i.ClaudeSessionID, i.ID)
+		return "", fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", sessionID, i.ID)
 	}
-	return i.GetJSONLPath(), nil
+	if !IsClaudeCompatible(i.Tool) || !i.TranscriptIsResolvableLocally() {
+		return "", nil
+	}
+	return resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, sessionID, i.EffectiveWorkingDir()), nil
 }
 
 // resolveClaudeTranscriptPath returns the path to the Claude JSONL transcript for

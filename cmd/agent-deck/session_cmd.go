@@ -3731,10 +3731,11 @@ func handleSessionSend(profile string, args []string) {
 	var responseErr error
 	if useTurnIdentity {
 		var identityErr, completionErr error
-		response, finalStatus, identityErr, completionErr, responseErr = awaitClaudeWaitReply(turnQuery, waitDeadline, func(remaining time.Duration) (string, error) {
+		var turnID session.TurnIdentity
+		response, finalStatus, turnID, identityErr, completionErr, responseErr = awaitClaudeWaitReply(turnQuery, waitDeadline, func(remaining time.Duration) (string, error) {
 			return waitAfterSend(tmuxSess, sendRes.transport, remaining)
 		})
-		if message, errorData := claudeWaitErrorData(identityErr, completionErr, sendData); message != "" {
+		if message, errorData := claudeWaitErrorData(identityErr, completionErr, turnID, inst.ID, sendData); message != "" {
 			out.ErrorWithData(message, ErrCodeInvalidOperation, errorData)
 			recordSendEventOnce()
 			os.Exit(1)
@@ -3881,17 +3882,17 @@ func handleSessionSend(profile string, args []string) {
 // dressed up as complete. Output from the turn that was in flight when the
 // message was queued can never be returned: the read starts after the
 // message's own user record and stops at the next human prompt.
-func awaitClaudeWaitReply(q session.TurnQuery, deadline time.Time, completion func(remaining time.Duration) (string, error)) (resp *session.ResponseOutput, finalStatus string, identityErr, completionErr, responseErr error) {
-	turnID, identityErr := session.AwaitTurnIdentity(q, time.Until(deadline), 100*time.Millisecond)
+func awaitClaudeWaitReply(q session.TurnQuery, deadline time.Time, completion func(remaining time.Duration) (string, error)) (resp *session.ResponseOutput, finalStatus string, turnID session.TurnIdentity, identityErr, completionErr, responseErr error) {
+	turnID, identityErr = session.AwaitTurnIdentity(q, time.Until(deadline), 100*time.Millisecond)
 	if identityErr != nil {
-		return nil, "", identityErr, nil, nil
+		return nil, "", session.TurnIdentity{}, identityErr, nil, nil
 	}
 	finalStatus, completionErr = completion(time.Until(deadline))
 	if completionErr != nil {
-		return nil, finalStatus, nil, completionErr, nil
+		return nil, finalStatus, turnID, nil, completionErr, nil
 	}
 	resp, responseErr = session.AwaitTurnResponse(turnID, time.Until(deadline), 100*time.Millisecond)
-	return resp, finalStatus, nil, nil, responseErr
+	return resp, finalStatus, turnID, nil, nil, responseErr
 }
 
 // sendTracksTurn reports whether a send reads its own turn record out of the
@@ -4271,6 +4272,16 @@ type codexAcceptedTurnReceipt struct {
 	AcceptedAt     string `json:"accepted_at"`
 }
 
+// claudeAcceptedTurnReceipt binds a late reply watcher to one durable Claude
+// transcript turn. It carries identity only, never prompt or response text.
+type claudeAcceptedTurnReceipt struct {
+	ReceiptID       string `json:"receipt_id"`
+	InstanceID      string `json:"instance_id"`
+	ClaudeSessionID string `json:"claude_session_id"`
+	TurnUUID        string `json:"turn_uuid"`
+	TurnStartOffset int64  `json:"turn_start_offset"`
+}
+
 const (
 	sessionSendDefaultTimeout  = 10 * time.Minute
 	codexAcceptanceLockTimeout = 5 * time.Second
@@ -4617,14 +4628,63 @@ func completionTimeoutPayload(data map[string]interface{}) map[string]interface{
 // claudeWaitErrorData preserves the delivery evidence for an accepted Claude
 // turn whose completion wait expires. Identity failures remain fail-closed:
 // without a bound transcript row, the bridge cannot safely own later output.
-func claudeWaitErrorData(identityErr, completionErr error, data map[string]interface{}) (string, map[string]interface{}) {
+func claudeWaitErrorData(
+	identityErr, completionErr error,
+	turnID session.TurnIdentity,
+	instanceID string,
+	data map[string]interface{},
+) (string, map[string]interface{}) {
 	if identityErr != nil {
 		return fmt.Sprintf("turn identity not established: %v", identityErr), nil
 	}
 	if completionErr != nil {
-		return fmt.Sprintf("timeout waiting for completion: %v", completionErr), completionTimeoutPayload(data)
+		receipt := newClaudeAcceptedTurnReceipt(instanceID, turnID)
+		if receipt == nil {
+			return fmt.Sprintf("timeout waiting for completion: %v", completionErr), nil
+		}
+		payload := completionTimeoutPayload(data)
+		payload["accepted_turn_kind"] = "claude_transcript"
+		payload["accepted_turn"] = receipt
+		return fmt.Sprintf("timeout waiting for completion: %v", completionErr), payload
 	}
 	return "", nil
+}
+
+func newClaudeAcceptedTurnReceipt(instanceID string, turnID session.TurnIdentity) *claudeAcceptedTurnReceipt {
+	if instanceID == "" || turnID.UUID == "" || turnID.SessionID == "" || turnID.StartOffset <= 0 {
+		return nil
+	}
+	return &claudeAcceptedTurnReceipt{
+		ReceiptID: turnID.UUID, InstanceID: instanceID,
+		ClaudeSessionID: turnID.SessionID, TurnUUID: turnID.UUID,
+		TurnStartOffset: turnID.StartOffset,
+	}
+}
+
+// readClaudeTurnOutput resolves the transcript named by a durable Claude turn
+// receipt and reads only that turn. A later turn in the same conversation can
+// never replace this response.
+func readClaudeTurnOutput(
+	inst *session.Instance,
+	peers []*session.Instance,
+	receipt claudeAcceptedTurnReceipt,
+) (*session.ResponseOutput, bool, error) {
+	if inst == nil || receipt.InstanceID != inst.ID || receipt.ReceiptID == "" ||
+		receipt.ReceiptID != receipt.TurnUUID ||
+		receipt.TurnUUID == "" || receipt.ClaudeSessionID == "" || receipt.TurnStartOffset <= 0 {
+		return nil, false, fmt.Errorf("invalid Claude accepted-turn receipt")
+	}
+	path, err := inst.GetJSONLPathForSessionIDChecked(peers, receipt.ClaudeSessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	if path == "" {
+		return nil, false, fmt.Errorf("Claude transcript %q is unavailable", receipt.ClaudeSessionID)
+	}
+	return session.ReadTurnResponse(session.TurnIdentity{
+		UUID: receipt.TurnUUID, Path: path,
+		StartOffset: receipt.TurnStartOffset, SessionID: receipt.ClaudeSessionID,
+	})
 }
 
 func responseReadFailureData(data map[string]interface{}) map[string]interface{} {
@@ -6246,6 +6306,9 @@ func handleSessionOutput(profile string, args []string) {
 	// earlier --json read, an unchanged transcript answers {"unchanged":true}
 	// from one stat: no transcript parse, no content, no read-log entry.
 	ifVersion := fs.String("if-version", "", "With --json: answer {\"unchanged\":true} without content when the response source still has this content_version")
+	claudeTurnUUID := fs.String("claude-turn-uuid", "", "With --json: read one exact accepted Claude turn")
+	claudeTurnStartOffset := fs.Int64("claude-turn-start-offset", 0, "With --claude-turn-uuid: durable transcript offset after the user record")
+	claudeTurnSessionID := fs.String("claude-turn-session-id", "", "With --claude-turn-uuid: native Claude conversation ID")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -6278,12 +6341,18 @@ func handleSessionOutput(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	boundAgentOutput := shouldBoundAgentOutput(*jsonOutput, quietMode, *copyFlag)
 	out := NewCLIOutput(*jsonOutput, quietMode)
+	exactClaudeTurn := *claudeTurnUUID != "" || *claudeTurnStartOffset != 0 || *claudeTurnSessionID != ""
 	if *primaryPane && !*paneFlag {
 		out.Error("--primary requires --pane", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 	if *ifVersion != "" && (!*jsonOutput || quietMode || *paneFlag || *copyFlag) {
 		out.Error("--if-version requires --json and cannot be combined with -q, --pane or --copy", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if exactClaudeTurn && (!*jsonOutput || quietMode || *paneFlag || *copyFlag || *ifVersion != "" ||
+		*claudeTurnUUID == "" || *claudeTurnStartOffset <= 0 || *claudeTurnSessionID == "") {
+		out.Error("exact Claude turn output requires --json, --claude-turn-uuid, --claude-turn-start-offset, and --claude-turn-session-id, without -q, --pane, --copy, or --if-version", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -6323,6 +6392,34 @@ func handleSessionOutput(profile string, args []string) {
 			session.NoteClaudeSessionIDFromOwnPane(inst)
 			inst.ClaudeDetectedAt = time.Now()
 		}
+	}
+
+	if exactClaudeTurn {
+		receipt := claudeAcceptedTurnReceipt{
+			ReceiptID: *claudeTurnUUID, InstanceID: inst.ID,
+			ClaudeSessionID: *claudeTurnSessionID, TurnUUID: *claudeTurnUUID,
+			TurnStartOffset: *claudeTurnStartOffset,
+		}
+		response, complete, readErr := readClaudeTurnOutput(inst, instances, receipt)
+		if readErr != nil {
+			out.Error(fmt.Sprintf("failed to get exact Claude turn response: %v", readErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		content := ""
+		if response != nil {
+			content = response.Content
+		}
+		completion := "pending"
+		if complete {
+			completion = "complete"
+		}
+		out.Print(content, map[string]interface{}{
+			"success": true, "session_id": inst.ID, "session_title": inst.Title,
+			"tool": "claude", "role": "assistant", "content": content,
+			"completion": completion, "claude_session_id": *claudeTurnSessionID,
+			"claude_turn_uuid": *claudeTurnUUID,
+		})
+		return
 	}
 
 	// #1101: --pane short-circuits the transcript path and returns the live

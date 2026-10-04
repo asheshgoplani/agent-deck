@@ -202,15 +202,20 @@ func TestCodexExactOutputDelayRetainsReceiptForBridge(t *testing.T) {
 	}
 }
 
-func TestClaudeCompletionTimeoutRetainsLegacyBridgeOwnership(t *testing.T) {
+func TestClaudeCompletionTimeoutRetainsExactBridgeOwnership(t *testing.T) {
 	inst := &session.Instance{
 		ID: "instance-claude", Title: "conductor-claude", Tool: "claude",
 		ClaudeSessionID: "claude-thread-1",
 	}
+	turnID := session.TurnIdentity{
+		UUID: "turn-claude-1", SessionID: "claude-thread-1", StartOffset: 512,
+	}
 	sendData := sendSuccessData(
 		inst, "hi", sendDeliveryResult{delivery: deliverySubmitted, transport: "tmux"}, true,
 	)
-	message, payload := claudeWaitErrorData(nil, errors.New("agent still running"), sendData)
+	message, payload := claudeWaitErrorData(
+		nil, errors.New("agent still running"), turnID, inst.ID, sendData,
+	)
 	payload["tagged"] = false
 	payload["success"] = false
 	payload["error"] = message
@@ -225,6 +230,43 @@ func TestClaudeCompletionTimeoutRetainsLegacyBridgeOwnership(t *testing.T) {
 	}
 	if string(got)+"\n" != string(want) {
 		t.Fatalf("Go Claude-timeout schema drifted from bridge fixture:\ngot  %s\nwant %s", got, want)
+	}
+}
+
+func TestClaudeAcceptedTurnReadsItsReplyNotTheLatestTurn(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	projectDir := t.TempDir()
+	transcriptDir := filepath.Join(
+		configDir, "projects", session.ConvertToClaudeDirName(projectDir),
+	)
+	if err := os.MkdirAll(transcriptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	firstUser := `{"uuid":"turn-claude-1","type":"user","sessionId":"claude-thread-1","message":{"role":"user","content":"first"}}` + "\n"
+	transcript := firstUser +
+		`{"uuid":"assistant-1","type":"assistant","sessionId":"claude-thread-1","message":{"role":"assistant","content":[{"type":"text","text":"exact first reply"}],"stop_reason":"end_turn"}}` + "\n" +
+		`{"uuid":"turn-claude-2","type":"user","sessionId":"claude-thread-1","message":{"role":"user","content":"second"}}` + "\n" +
+		`{"uuid":"assistant-2","type":"assistant","sessionId":"claude-thread-1","message":{"role":"assistant","content":[{"type":"text","text":"later unrelated reply"}],"stop_reason":"end_turn"}}` + "\n"
+	path := filepath.Join(transcriptDir, "claude-thread-1.jsonl")
+	if err := os.WriteFile(path, []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst := &session.Instance{
+		ID: "instance-claude", Tool: "claude", ProjectPath: projectDir,
+		ClaudeSessionID: "claude-thread-1",
+	}
+	receipt := claudeAcceptedTurnReceipt{
+		ReceiptID: "turn-claude-1", InstanceID: inst.ID,
+		ClaudeSessionID: "claude-thread-1", TurnUUID: "turn-claude-1",
+		TurnStartOffset: int64(len(firstUser)),
+	}
+	response, complete, err := readClaudeTurnOutput(inst, []*session.Instance{inst}, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !complete || response == nil || response.Content != "exact first reply" {
+		t.Fatalf("exact turn response = (%#v, %v), want first reply complete", response, complete)
 	}
 }
 

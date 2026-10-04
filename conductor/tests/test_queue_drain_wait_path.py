@@ -127,12 +127,17 @@ def test_queue_drain_routes_actual_claude_timeout_payload_to_late_reply():
     payload = (
         Path(__file__).parent / "fixtures" / "claude_completion_timeout.json"
     ).read_text()
+    receipt = json.loads(payload)["accepted_turn"]
 
     async def callback(text: str) -> None:
         delivered.append(text)
 
     async def fake_watcher(session, profile, receipt, reply_callback) -> None:
-        assert (session, profile, receipt) == ("conductor-claude", "work", None)
+        assert (session, profile, receipt) == (
+            "conductor-claude",
+            "work",
+            json.loads(payload)["accepted_turn"],
+        )
         await reply_callback("late Claude reply")
 
     async def driver() -> None:
@@ -162,6 +167,7 @@ def test_queue_drain_routes_actual_claude_timeout_payload_to_late_reply():
     try:
         _run(driver())
         assert delivered == ["late Claude reply"]
+        assert receipt["turn_uuid"] == "turn-claude-1"
     finally:
         bridge._message_queue.clear()
 

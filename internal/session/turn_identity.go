@@ -317,7 +317,7 @@ func AwaitTurnResponse(id TurnIdentity, timeout, poll time.Duration) (*ResponseO
 	deadline := time.Now().Add(timeout)
 	var partial *ResponseOutput
 	for {
-		resp, done, err := readTurnResponse(id)
+		resp, done, err := ReadTurnResponse(id)
 		if err != nil {
 			return nil, err
 		}
@@ -338,10 +338,10 @@ func AwaitTurnResponse(id TurnIdentity, timeout, poll time.Duration) (*ResponseO
 	return nil, fmt.Errorf("turn %s response not complete within %s", id.UUID, timeout)
 }
 
-// readTurnResponse scans the transcript tail after id.StartOffset once. It
+// ReadTurnResponse scans the transcript tail after id.StartOffset once. It
 // returns the assistant text so far, whether the turn has ended, and an error
 // only when a later human prompt appears before this turn ended.
-func readTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
+func ReadTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
 	f, err := os.Open(id.Path)
 	if err != nil {
 		return nil, false, nil
