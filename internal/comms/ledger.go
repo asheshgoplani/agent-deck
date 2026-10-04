@@ -360,17 +360,21 @@ func (l *Ledger) repairFlags(seen map[string]PendingFlag) {
 	end := l.bus.Cursor()
 	for to, w := range seen {
 		fl, ok := ReadFlag(l.dir, to)
-		// A recipient with no state and no flag of this epoch dates from a
-		// ledger written before consumer states existed (a P1 daemon wrote
-		// neither): it starts at the end of the log as of this open, since
-		// the inbox delivered what came before, and its first read is not
-		// a false state_lost. A recipient with a current flag but no state
-		// lost its state: left missing, so its first read reports the gap.
-		if !ok || fl.Epoch != l.store.Epoch {
+		// A recipient with no state and no flag dates from a ledger written
+		// before consumer states existed (a P1 daemon wrote neither): it
+		// starts at the end of the log as of this open, since the inbox
+		// delivered what came before, and its first read is not a false
+		// state_lost. A recipient with a flag but no state lost its state:
+		// left missing, so its first read reports the gap.
+		if !ok {
+			// No flag of any epoch: a P1 daemon (it wrote no flags) addressed
+			// this recipient. A flag of an older epoch is a P2 recipient (a
+			// restore bumped the epoch): its lost state stays a gap.
 			if _, err := os.Stat(ConsumerPath(l.dir, to)); errors.Is(err, os.ErrNotExist) {
-				if err := EnsureConsumer(l.dir, to, l.store, end); err == nil {
-					l.consumers[to] = true
+				if err := EnsureConsumer(l.dir, to, l.store, end); err != nil {
+					continue // no flag either, so the next open retries
 				}
+				l.consumers[to] = true
 			}
 		}
 		if ok && fl.Epoch == l.store.Epoch && fl.Last >= w.Last {

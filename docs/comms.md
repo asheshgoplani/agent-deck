@@ -339,6 +339,20 @@ shown), and whatever it had not read is kept as a gap. A watermark that compacti
 oldest retained cursor and the loss kept as a gap (`gaps[]`, also printed
 by `read`): never a silent restart.
 
+Gap reasons (`gaps[]` in the consumer state, `gap` in `msg read --json`):
+
+| Reason | Meaning |
+|---|---|
+| `compacted` | records `from..to` were compacted before the consumer read them; it resumes at the oldest retained cursor |
+| `epoch` | the ledger was reset or restored to an older copy (new epoch); what the consumer had not read is `from..to`; it resumes at the new epoch's start |
+| `restored` | the log was restored to a copy newer than the last persisted high-water mark; records `from..to` may repeat or may be missing; it re-reads from `from` |
+| `state_lost` | the consumer's state was missing although records were addressed to it (its pending flag says so); it resumes at the end |
+| `state_rebuilt` | (delivery canary) an enrolled parent's unreadable or missing state was rebuilt at its enrollment point; records after it are delivered again |
+
+The pending flag also decides whether a missing state is reported: with a
+flag of any epoch the recipient was addressed by a P2 daemon (`state_lost`);
+with none it dates from a P1 ledger and starts at the end silently.
+
 Pending flags: the daemon keeps `<ledger>/pending/<consumer>.json` (the
 newest cursor of a deliverable record addressed to it, and the epoch),
 written before the record becomes visible and rebuilt from its dedup

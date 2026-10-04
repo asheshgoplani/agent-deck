@@ -651,3 +651,43 @@ func TestALostStateSurvivesARestartAsAGap(t *testing.T) {
 		t.Fatalf("a lost state after a restart must be a gap: %+v", gap)
 	}
 }
+
+// Verifier round 6: a restore that bumps the epoch plus a lost state is
+// still a gap (a flag of an older epoch marks a P2 recipient).
+func TestALostStateAfterARestoreIsAGap(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ledger")
+	l, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustCommit(t, l, Record{Kind: KindTurn, From: "c", To: []string{"X"}, Tier: TierUrgent, Text: "x"})
+	store := l.Store()
+	_ = l.Close()
+	if err := os.Remove(ConsumerPath(dir, "X")); err != nil {
+		t.Fatal(err)
+	}
+	store.HWM = 100 // the next open sees a shorter log: a restore, new epoch
+	if err := writeStoreIdentity(dir, store); err != nil {
+		t.Fatal(err)
+	}
+	l2, err := OpenDir("p", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l2.Close()
+	if l2.Store().Epoch != store.Epoch+1 {
+		t.Fatalf("restore not detected")
+	}
+	r, err := OpenReaderAt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var gap *GapNote
+	if _, err := r.Do("X", func(p Pass) ([]events.Cursor, error) { gap = p.Gap; return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if gap == nil || gap.Reason != "state_lost" {
+		t.Fatalf("restore plus a lost state must be a gap: %+v", gap)
+	}
+}

@@ -365,7 +365,7 @@ func (r *Reader) Do(consumer string, decide func(p Pass) ([]events.Cursor, error
 		// this epoch says records were addressed to it, so its state was
 		// lost (deleted, or never made durable): still the end, but said.
 		f = newConsumerFile(consumer, r.Store, end, now)
-		if flag, ok := ReadFlag(r.Dir, consumer); ok && flag.Epoch == r.Store.Epoch && flag.Last > 0 {
+		if flag, ok := ReadFlag(r.Dir, consumer); ok && flag.Last > 0 {
 			note := GapNote{Gap: Gap{Consumer: consumer, From: 1, To: min(flag.Last, end)}, Reason: "state_lost", Resumed: end, At: now.UnixMilli()}
 			f.addGap(note)
 			pass.Gap = &note
