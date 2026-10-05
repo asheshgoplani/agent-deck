@@ -115,6 +115,10 @@ func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool, hiddenTools
 		r.builtins[bt.Name] = bt
 	}
 	for name, def := range custom {
+		if name == "opencode2" {
+			registryLog.Warn("ignored custom tool: name shadows a built-in launcher", "name", name)
+			continue
+		}
 		if _, isBuiltin := r.builtins[name]; isBuiltin {
 			registryLog.Warn("ignored custom tool: name shadows a built-in",
 				"name", name,
@@ -187,6 +191,10 @@ func (r *Registry) runInstalledProbe() {
 			nonShellInstalled++
 		}
 	}
+	r.installed["opencode2"] = probeInstalled("opencode2")
+	if r.installed["opencode2"] {
+		nonShellInstalled++
+	}
 
 	r.fallback = nonShellInstalled == 0
 }
@@ -194,6 +202,7 @@ func (r *Registry) runInstalledProbe() {
 // IsBuiltin reports whether name is one of the canonical built-in tools.
 // Replaces isBuiltinToolName().
 func (r *Registry) IsBuiltin(name string) bool {
+	name = CanonicalToolName(name)
 	_, ok := r.builtins[name]
 	return ok
 }
@@ -231,6 +240,7 @@ func (r *Registry) Get(name string) *ToolDef {
 // when set, otherwise the built-in icon, otherwise "" for names the registry
 // does not know. Callers treat "" as "use your own fallback".
 func (r *Registry) Icon(name string) string {
+	name = CanonicalToolName(name)
 	if def, ok := r.custom[name]; ok && def.Icon != "" {
 		return def.Icon
 	}
@@ -246,6 +256,7 @@ func (r *Registry) Icon(name string) string {
 // "" means the registry has no color for name and the caller should use its
 // default.
 func (r *Registry) Color(name string) string {
+	name = CanonicalToolName(name)
 	if def, ok := r.custom[name]; ok && def.Color != "" {
 		return def.Color
 	}
@@ -346,6 +357,9 @@ func (r *Registry) IsVisible(name string) bool {
 		return true
 	}
 	if r.userHidden[name] {
+		return false
+	}
+	if name == "opencode2" && r.userHidden["opencode"] {
 		return false
 	}
 	if !r.filterInstalled || r.fallback {
@@ -484,8 +498,13 @@ func FilterVisibleToolNames(names []string) []string {
 func VisibleToolNames() []string {
 	r := currentRegistry()
 	names := make([]string, 0, len(r.order)+len(r.custom))
-	for _, d := range r.Visible() {
-		names = append(names, d.Command)
+	for _, name := range r.order {
+		if r.IsVisible(name) {
+			names = append(names, name)
+		}
+		if name == "opencode" && r.IsVisible("opencode2") {
+			names = append(names, "opencode2")
+		}
 	}
 	for _, n := range r.CustomNames() {
 		if r.IsVisible(n) {
@@ -512,7 +531,7 @@ func ConfiguredHiddenToolNames() []string {
 }
 
 // pickerPresetOrder matches buildPresetCommands in internal/ui/newdialog.go.
-var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp"}
+var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "cursor", "hermes", "deepseek", "omp"}
 
 // PickerToolNames returns tool names for the new-session picker after applying
 // hidden_tools and show_only_installed_tools. The empty command "" is mapped
