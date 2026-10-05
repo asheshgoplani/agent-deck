@@ -84,6 +84,16 @@ func (p DarwinProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
 	return descendantsOf(p, root, parsePSTable(out))
 }
 
+// Commands implements CommandReader over one `ps -A` snapshot. -ww lifts the
+// column limit so a long argv is not truncated before the match.
+func (DarwinProber) Commands() (map[int]ProcCommand, error) {
+	out, err := runBounded("ps", "-ww", "-Ao", "pid=,ppid=,command=")
+	if err != nil {
+		return nil, fmt.Errorf("%w: ps -A command: %v", ErrUnreadable, err)
+	}
+	return parsePSCommandTable(out), nil
+}
+
 func runBounded(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
