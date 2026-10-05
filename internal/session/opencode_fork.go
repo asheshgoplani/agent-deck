@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
 
 // OpenCode 2's interactive TUI accepts -s/--session but not --fork (that flag
@@ -19,15 +20,19 @@ import (
 // openCodeExecutableBase returns the basename of the first non-env token in a
 // launch command, lowercased and without a Windows .exe suffix.
 func openCodeExecutableBase(command string) string {
-	for _, field := range strings.Fields(strings.TrimSpace(command)) {
-		if isShellEnvAssignment(field) {
-			continue
-		}
-		base := strings.Trim(filepath.Base(field), `"'`)
-		base = strings.TrimSuffix(strings.ToLower(base), ".exe")
-		return base
+	words, ok := shellwords.Split(command)
+	if !ok {
+		return ""
 	}
-	return ""
+	return strings.TrimSuffix(strings.ToLower(shellwords.ExecutableBase(words)), ".exe")
+}
+
+// CanonicalToolName maps launcher aliases to the identity used by session features.
+func CanonicalToolName(tool string) string {
+	if tool == "opencode2" {
+		return "opencode"
+	}
+	return tool
 }
 
 // openCodeUsesV2CLI reports whether this session's OpenCode launch must avoid
@@ -42,7 +47,7 @@ func (i *Instance) openCodeUsesV2CLI() bool {
 	if openCodeExecutableBase(i.Command) == "opencode2" {
 		return true
 	}
-	if openCodeExecutableBase(GetToolCommand("opencode")) == "opencode2" {
+	if openCodeExecutableBase(i.openCodeForkBinary()) == "opencode2" {
 		return true
 	}
 	return i.openCodeRejectsV1LaunchFlags()
@@ -61,6 +66,20 @@ func (i *Instance) openCodeLauncher(baseCommand string) (string, bool) {
 	case "opencode2":
 		return "opencode2", true
 	default:
+		// An explicit executable path or env-wrapped root launcher still needs
+		// resume/options handling. Subcommands remain intentional passthroughs.
+		words, valid := shellwords.Split(baseCommand)
+		if valid && (openCodeExecutableBase(baseCommand) == "opencode" || openCodeExecutableBase(baseCommand) == "opencode2") {
+			for index, word := range words {
+				base := strings.TrimSuffix(strings.ToLower(filepath.Base(word)), ".exe")
+				if base == "opencode" || base == "opencode2" {
+					if index+1 == len(words) {
+						return baseCommand, true
+					}
+					break
+				}
+			}
+		}
 		return "", false
 	}
 }
@@ -68,11 +87,8 @@ func (i *Instance) openCodeLauncher(baseCommand string) (string, bool) {
 // openCodePersistentCommand is the Command stored on a forked OpenCode session
 // so a later restart resumes through the same launcher the fork used.
 func (i *Instance) openCodePersistentCommand() string {
-	if openCodeExecutableBase(i.Command) == "opencode2" {
-		return "opencode2"
-	}
-	if openCodeExecutableBase(GetToolCommand("opencode")) == "opencode2" {
-		return "opencode2"
+	if command := strings.TrimSpace(i.Command); command != "" {
+		return command
 	}
 	return "opencode"
 }
@@ -83,13 +99,21 @@ func (i *Instance) OpenCodeCommandName() string {
 	if i == nil || i.Tool != "opencode" {
 		return ""
 	}
-	return i.openCodePersistentCommand()
+	if openCodeExecutableBase(i.openCodeForkBinary()) == "opencode2" {
+		return "opencode2"
+	}
+	return "opencode"
 }
 
 // quoteOpenCodeArg quotes a single token. A multi-word [opencode].command is
 // already a shell command line (buildOpenCodeCommand interpolates it raw), so
 // quoting it as one word would break `env FOO=bar opencode`.
 func quoteOpenCodeArg(s string) string {
+	if words, ok := shellwords.Split(s); ok && len(words) > 0 && isShellEnvAssignment(words[0]) {
+		// `exec VAR=value binary` is not a valid shell command. env makes the
+		// same configured assignments work for both API calls and exec.
+		return "env " + s
+	}
 	if strings.ContainsAny(s, " \t") {
 		return s
 	}
@@ -102,16 +126,17 @@ func quoteOpenCodeArg(s string) string {
 // buildOpenCodeV2ForkCommand is the one-shot launch for an OpenCode 2 fork.
 // It forks via the session API (the TUI has no --fork), moves the child onto
 // workDir when that is a different tree, then execs the TUI on the child id.
-func (i *Instance) buildOpenCodeV2ForkCommand(workDir, title string) string {
+func (i *Instance) buildOpenCodeV2ForkCommand(workDir, title string, opts *OpenCodeOptions) string {
 	bin := quoteOpenCodeArg(i.openCodeForkBinary())
 	parentParam := shellescape.Quote("sessionID=" + strings.TrimSpace(i.OpenCodeSessionID))
 
 	steps := []string{
 		"cd -- " + shellescape.Quote(workDir),
 		fmt.Sprintf(`fork_json=$(%s api session.fork --param %s --data '{}') || exit 1`, bin, parentParam),
-		`new_id=$(printf '%s' "$fork_json" | tr -d '\n' | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\(ses_[^"]*\)".*/\1/p')`,
+		openCodeV2SessionIDCommand("fork_json"),
 		`if [ -z "$new_id" ]; then echo "OpenCode fork did not return a session id" >&2; printf '%s\n' "$fork_json" >&2; exit 1; fi`,
 	}
+	steps = append(steps, openCodeV2OptionCommands(bin, `"$new_id"`, opts)...)
 	if filepath.Clean(workDir) != filepath.Clean(i.ProjectPath) {
 		body, err := json.Marshal(map[string]string{"directory": workDir})
 		if err == nil {
@@ -142,5 +167,5 @@ func (i *Instance) openCodeForkBinary() string {
 	if launcher, ok := i.openCodeLauncher(i.openCodePersistentCommand()); ok {
 		return launcher
 	}
-	return "opencode"
+	return i.openCodePersistentCommand()
 }

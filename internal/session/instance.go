@@ -1339,6 +1339,11 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	}
 	tmuxSess.GroupPath = inst.GroupPath
 
+	if tool == "opencode2" {
+		inst.Tool = "opencode"
+		inst.Command = "opencode2"
+	}
+
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
 
@@ -2191,14 +2196,9 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 	if cmd, ok := i.openCodeLauncher(baseCommand); ok {
 		var extraFlags string
 		if i.openCodeUsesV2CLI() {
-			// 2.x exits on -m/--agent/--port (opencode_version.go). Without
-			// --port there is no SSE server, so status falls back to tmux.
-			if dropped := i.buildOpenCodeExtraFlags(); dropped != "" {
-				sessionLog.Warn("opencode_v2_launch_flags_dropped",
-					slog.String("instance_id", i.ID),
-					slog.String("flags", dropped))
-			}
+			// V2 uses the shared service instead of a per-TUI --port server.
 			i.setOpenCodePort(0)
+			return envPrefix + i.buildOpenCodeV2Command(cmd)
 		} else {
 			extraFlags = i.buildOpenCodeExtraFlags() + i.buildOpenCodeSSEPortFlag()
 		}
@@ -3152,7 +3152,9 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 }
 
 func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
-	cacheKey := normalizePath(projectPath)
+	// V1 and V2 can use different stores for the same project. Never share
+	// cached results across launchers (or their configured environment).
+	cacheKey := i.openCodeForkBinary() + "\x00" + normalizePath(projectPath)
 	if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 		return sessions
 	}
@@ -3201,10 +3203,17 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionM
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Run: opencode session list --format json
-	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
-	cmd.Dir = projectPath
-	cmd.WaitDelay = 500 * time.Millisecond
+	args := []string{"session", "list", "--format", "json"}
+	if i.openCodeUsesV2CLI() {
+		// The API includes forked children too; the v2 session-list CLI only
+		// lists top-level sessions and would lose a fork's restart binding.
+		args = []string{"api", "session.list", "--param", "directory=" + projectPath, "--param", "limit=100"}
+	}
+	cmd, err := i.openCodeCLICommand(ctx, projectPath, args...)
+	if err != nil {
+		sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
+		return nil
+	}
 
 	sessionLog.Debug("opencode_query_sessions", slog.String("dir", logging.SanitizeValue(projectPath)))
 
@@ -3226,6 +3235,22 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionM
 	// Parse JSON response
 	// Expected format: array of session objects with id, directory, created, updated fields
 	var sessions []openCodeSessionMetadata
+	if i.openCodeUsesV2CLI() {
+		var response struct {
+			Data []openCodeHTTPSessionMetadata `json:"data"`
+		}
+		if err := json.Unmarshal(output, &response); err != nil {
+			sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+			return nil
+		}
+		for _, item := range response.Data {
+			sessions = append(sessions, openCodeSessionMetadata{
+				ID: item.ID, Directory: item.Location.Directory,
+				Created: item.Time.Created, Updated: item.Time.Updated,
+			})
+		}
+		return sessions
+	}
 
 	if err := json.Unmarshal(output, &sessions); err != nil {
 		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
@@ -10849,6 +10874,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || IsCodexCompatible(tool)
 }
 
@@ -11085,6 +11111,7 @@ func (i *Instance) CanRestartFresh() bool {
 // newly supported tool cannot be admitted by Instance.CanFork while remaining
 // rejected or hidden at another surface.
 func SupportsNativeFork(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "pi" || tool == "opencode" ||
 		IsCodexCompatible(tool) || tool == "omp"
 }
@@ -11415,7 +11442,7 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		workDir = i.ProjectPath
 	}
 	if i.openCodeUsesV2CLI() {
-		return i.buildOpenCodeV2ForkCommand(workDir, newTitle), nil
+		return i.buildOpenCodeV2ForkCommand(workDir, newTitle, opts), nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -11433,8 +11460,8 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 
 	// workDir and the session id are shell-quoted to keep the launch command
 	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
-	return fmt.Sprintf("cd %s && opencode -s %s --fork%s",
-		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), nil
+	return fmt.Sprintf("cd %s && %s -s %s --fork%s",
+		shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(i.OpenCodeSessionID), extraFlags), nil
 }
 
 // CreateForkedOpenCodeInstance creates a new Instance configured for forking an OpenCode session

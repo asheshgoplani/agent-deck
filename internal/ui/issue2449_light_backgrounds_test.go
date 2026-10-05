@@ -255,6 +255,10 @@ func TestNewDialog_LightThemeSurfaceFillIsUniform_Issue2449(t *testing.T) {
 }
 
 func TestNewDialog_DarkThemeViewGolden_Issue2449(t *testing.T) {
+	// Snapshot the default picker, independent of user config and installed
+	// Cursor entrypoints (which change the label from "cursor agent" to "agent").
+	setXDGTestHome(t)
+	t.Setenv("PATH", t.TempDir())
 	forceTrueColorProfile()
 	useThemeForTest(t, "dark")
 

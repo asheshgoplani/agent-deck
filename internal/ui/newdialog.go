@@ -409,27 +409,11 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
+	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
 	return session.FilterVisibleToolNames(presets)
-}
-
-// newDialogPresetCommands is the new-session command picker. opencode2 is a
-// command alias (the v2 shim), not a harness identity, so it is not part of
-// buildPresetCommands — that list is also the edit-dialog harness row, and an
-// extra pill there wraps "cursor agent" off the 80-column row.
-func newDialogPresetCommands() []string {
-	presets := buildPresetCommands()
-	out := make([]string, 0, len(presets)+1)
-	for _, preset := range presets {
-		out = append(out, preset)
-		if preset == "opencode" {
-			out = append(out, "opencode2")
-		}
-	}
-	return out
 }
 
 // RefreshPresetCommands rebuilds the tool picker after config changes.
@@ -438,7 +422,7 @@ func (d *NewDialog) RefreshPresetCommands() {
 		return
 	}
 	prev := d.GetSelectedCommand()
-	d.presetCommands = newDialogPresetCommands()
+	d.presetCommands = buildPresetCommands()
 	d.commandCursor = 0
 	for i, cmd := range d.presetCommands {
 		if cmd == prev {
@@ -542,7 +526,7 @@ func NewNewDialog() *NewDialog {
 		ompOptions:      NewOMPOptionsPanel(),
 		focusIndex:      0,
 		visible:         false,
-		presetCommands:  newDialogPresetCommands(),
+		presetCommands:  buildPresetCommands(),
 		commandCursor:   0,
 		parentGroupPath: "default",
 		parentGroupName: "default",

@@ -14,8 +14,8 @@ import (
 // OpenCode 2.x reshaped the root command's flags. It rejects the 1.x
 // -m/--model, --agent and --port flags ("Unrecognized flag: --port in command
 // opencode") and exits at once, so a session launched with any of them dies
-// before the TUI draws (spawn_died_fast). In 2.x the model and agent are
-// picked inside the TUI, and events come from a shared background service
+// before the TUI draws (spawn_died_fast). In 2.x model and agent overrides
+// are applied through the session API, and events come from a shared service
 // rather than a per-TUI --port server.
 //
 // buildOpenCodeCommand therefore asks the binary a launch will run for its
@@ -92,7 +92,7 @@ func probeOpenCodeBinaryMajorVersion(binary string) (int, bool) {
 // through: `env [VAR=value...] opencode` runs opencode with those assignments
 // applied, PATH included.
 func (i *Instance) openCodeLaunchBinary() (string, bool) {
-	words, ok := shellwords.Split(GetToolCommand("opencode"))
+	words, ok := shellwords.Split(i.openCodeForkBinary())
 	if !ok {
 		return "", false
 	}

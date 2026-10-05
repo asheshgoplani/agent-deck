@@ -440,7 +440,7 @@ func TestDialogPresetCommands(t *testing.T) {
 	d := NewNewDialog()
 
 	// Should have shell (empty), claude, gemini, opencode, opencode2, codex, pi, copilot, crush, muse, cursor, hermes, deepseek, omp.
-	// opencode2 is a new-session command alias, not an edit-dialog harness.
+	// opencode2 is a launcher alias; persisted tool identity remains opencode.
 	expectedCommands := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
 
 	if len(d.presetCommands) != len(expectedCommands) {

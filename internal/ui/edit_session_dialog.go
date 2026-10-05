@@ -571,7 +571,7 @@ func (d *EditSessionDialog) FocusField(key string) {
 // switch (the transactional path in handleEditSessionDialogKey) rather than
 // plain field writes.
 func (d *EditSessionDialog) switchPending() bool {
-	if target := d.selectedPill(session.FieldTool); target != "" && target != d.sourceTool {
+	if target := d.selectedPill(session.FieldTool); target != "" && session.CanonicalToolName(target) != session.CanonicalToolName(d.sourceTool) {
 		return true
 	}
 	account := d.selectedPill(session.FieldAccount)

@@ -5,6 +5,7 @@ package session
 // the static catalog entries the probe did not mention. The list is a
 // suggestion source, not an allowlist.
 func KnownModelIDsForTool(tool string) []string {
+	tool = CanonicalToolName(tool)
 	static := staticModelIDsForTool(tool)
 	if probed := probedModelCatalog(modelProbeKind(tool)); probed != nil {
 		return mergeOrdered(probed.Models, static)
