@@ -118,7 +118,7 @@ func TestOpenCodeSessionMatching(t *testing.T) {
 			}
 
 			// Apply the matching logic (same as queryOpenCodeSession but testable)
-			gotID := findBestOpenCodeSession(sessions, tt.projectPath, tt.currentID, tt.startedAt, tt.activityAt)
+			gotID := findBestOpenCodeSession(sessions, tt.projectPath, tt.currentID, tt.startedAt, tt.activityAt, false)
 
 			if tt.wantMatch {
 				if gotID != tt.wantID {
