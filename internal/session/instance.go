@@ -2158,11 +2158,11 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 
-	// If baseCommand is just "opencode", handle specially
-	if baseCommand == "opencode" {
-		cmd := GetToolCommand("opencode")
+	// "opencode" and the v2 shim "opencode2" are the launchers. A custom
+	// command (the one-shot fork script, a wrapper) is run as written.
+	if cmd, ok := i.openCodeLauncher(baseCommand); ok {
 		var extraFlags string
-		if i.openCodeRejectsV1LaunchFlags() {
+		if i.openCodeUsesV2CLI() {
 			// 2.x exits on -m/--agent/--port (opencode_version.go). Without
 			// --port there is no SSE server, so status falls back to tmux.
 			if dropped := i.buildOpenCodeExtraFlags(); dropped != "" {
@@ -11336,28 +11336,31 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 	return i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
 }
 
-// forkOpenCodeWithOptionsInWorkDir builds the one-time `cd <workDir> &&
-// opencode -s <parent-id> --fork` launch command for a forked OpenCode
-// instance. `--fork` is a newer OpenCode CLI flag that branches the session
-// named by -s/--continue; if the installed binary predates it the launched
-// command fails into a recoverable error state, mirroring how `codex fork` is
-// handled (CanForkCodex below).
+// forkOpenCodeWithOptionsInWorkDir builds the one-shot fork launch.
+//
+// OpenCode 1.x: `cd <workDir> && opencode -s <parent-id> --fork`. `--fork` is a
+// 1.x TUI flag; a binary that predates it fails into a recoverable error state,
+// mirroring `codex fork`.
+//
+// OpenCode 2.x (and the `opencode2` shim): the TUI rejects `--fork`, so the
+// launch forks through `opencode api session.fork`, moves the child onto a
+// worktree when workDir differs from the parent, then execs `opencode -s <child>`.
 //
 // The launch is explicitly anchored to workDir with a `cd`: the multi-repo fork
 // path later repoints the tmux session WorkDir to the MultiRepoTempDir
 // container (internal/ui/home.go), yet async OpenCode session detection matches
 // by ProjectPath (DetectOpenCodeSession), so OpenCode must run in the requested
 // repo/worktree dir — not tmux's WorkDir — for the child session to be
-// discoverable. OpenCode mints the child session id, which that async detection
-// picks up; the previous export/import clone relied on the same path (and the
-// same `cd`), so no id is pre-assigned here. The env prefix is applied once by
-// buildOpenCodeCommand at start time.
+// discoverable. The env prefix is applied once by buildOpenCodeCommand at start.
 func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, error) {
 	if !i.CanForkOpenCode() {
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
+	}
+	if i.openCodeUsesV2CLI() {
+		return i.buildOpenCodeV2ForkCommand(workDir, newTitle), nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -11419,7 +11422,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	// script self-deletes after first run, so storing it as the persistent Command
 	// would make a later restart re-run a missing file. Command holds a stable base
 	// ("opencode") that restart resumes from via OpenCodeSessionID.
-	forked.Command = "opencode"
+	forked.Command = i.openCodePersistentCommand()
 	forked.ForkStartCommand = cmd
 	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"
