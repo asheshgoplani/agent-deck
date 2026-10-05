@@ -223,9 +223,15 @@ type Instance struct {
 	MultiRepoTempDir   string              `json:"multi_repo_temp_dir,omitempty"` // Temp cwd for multi-repo sessions
 	MultiRepoWorktrees []MultiRepoWorktree `json:"multi_repo_worktrees,omitempty"`
 
-	Command        string    `json:"command"`
-	Wrapper        string    `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
-	Tool           string    `json:"tool"`
+	Command string `json:"command"`
+	Wrapper string `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
+	Tool    string `json:"tool"`
+	// observedTool is the runtime DetectTool last reported (a nested agent
+	// inside Neovim, a foreground CLI, or shell). It is not persisted and is
+	// not consulted by Start/Restart: detection must not change what restarts.
+	// Empty until the first status sample that reaches DetectTool.
+	observedTool string
+
 	Status         Status    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"` // When user last attached
@@ -1022,12 +1028,34 @@ func (inst *Instance) SetStatusThreadSafe(s Status) {
 	inst.mu.Unlock()
 }
 
-// GetToolThreadSafe returns the tool name with read-lock protection.
+// GetToolThreadSafe returns the configured launch tool with read-lock protection.
+// Restart and resume read this, not the observed runtime.
 func (inst *Instance) GetToolThreadSafe() string {
 	inst.mu.RLock()
 	t := inst.Tool
 	inst.mu.RUnlock()
 	return t
+}
+
+// ObservedTool returns the runtime identity last reported by DetectTool.
+// It is empty until a status sample runs, and it is not the launch identity.
+func (inst *Instance) ObservedTool() string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	return inst.observedTool
+}
+
+// DisplayToolThreadSafe is the tool to show. A nested or foreground agent
+// wins over the configured shell so the list matches what is actually running;
+// a shell observation does not hide a configured agent, and neither value is
+// what Restart launches.
+func (inst *Instance) DisplayToolThreadSafe() string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	if inst.observedTool != "" && inst.observedTool != "shell" {
+		return inst.observedTool
+	}
+	return inst.Tool
 }
 
 // GetAccountThreadSafe returns the stored slot, not a resolved login identity.
@@ -4825,6 +4853,44 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 	}
 }
 
+// noteObservedRuntimeLocked records a DetectTool result without changing Tool.
+// Status patterns follow the observed agent so a nested OpenCode pane is
+// classified with OpenCode's busy/prompt rules; they are restored to the
+// configured tool when the observation drops back to shell. Caller holds i.mu.
+// SetDetectPatterns is deliberately not used: it would pin customToolName and
+// make the next DetectTool skip the process tree.
+func (i *Instance) noteObservedRuntimeLocked(observed string) {
+	if observed == "" {
+		return
+	}
+	if observed == i.observedTool {
+		return
+	}
+	prev := i.runtimePatternToolLocked()
+	i.observedTool = observed
+	next := i.runtimePatternToolLocked()
+	if next == prev || i.tmuxSession == nil {
+		return
+	}
+	raw := MergeToolPatterns(next)
+	if raw == nil {
+		return
+	}
+	resolved, err := tmux.CompilePatterns(raw)
+	if err != nil || resolved == nil {
+		sessionLog.Warn("pattern_compile_error", slog.String("tool", next), slog.String("error", errString(err)))
+		return
+	}
+	i.tmuxSession.SetPatterns(resolved)
+}
+
+func (i *Instance) runtimePatternToolLocked() string {
+	if i.observedTool != "" && i.observedTool != "shell" {
+		return i.observedTool
+	}
+	return i.Tool
+}
+
 // buildTmuxOptionOverrides returns tmux option overrides from user config,
 // adding remain-on-exit for sandbox sessions (needed for dead-pane detection).
 // Returns nil if no overrides apply.
@@ -6859,24 +6925,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		}
 	}
 
-	// Update tool detection dynamically (enables fork when wrapped tools start).
-	// Only built-in tool identities are rewritten here. Custom tools like
-	// "my-codex" should keep their configured identity even when tmux correctly
-	// detects the wrapped CLI as Codex.
+	// Observed runtime is separate from the configured launch identity. A shell
+	// session that later runs OpenCode inside Neovim is observed as opencode
+	// for status patterns and the list icon, but Restart still launches the
+	// configured command. Writing the observation back onto Tool is what made
+	// a screen-text guess sticky and then resumed the wrong agent.
 	if detectedTool := i.tmuxSession.DetectTool(); detectedTool != "" {
-		if !isBuiltinToolName(i.Tool) && GetToolDef(i.Tool) != nil {
-			// Preserve configured custom tool names.
-		} else {
-			switch detectedTool {
-			case "claude", "gemini", "opencode", "codex":
-				i.Tool = detectedTool
-			case "shell":
-				switch i.Tool {
-				case "", "shell", "claude", "gemini", "opencode", "codex":
-					i.Tool = detectedTool
-				}
-			}
-		}
+		i.noteObservedRuntimeLocked(detectedTool)
 	}
 
 	// Update session metadata tracking only for active/waiting sessions.

@@ -610,8 +610,8 @@ func TestDetectToolKeepsRecognizedRuntimeWhenPaneCommandIsChildTool(t *testing.T
 	}
 }
 
-// Same guard for the content fallback: an unrecognized foreground command must
-// not open the door for conversation text to relabel a recognized runtime.
+// An unrecognized foreground command must not open the door for conversation
+// text to relabel a recognized runtime. Pane text is not a detection input.
 func TestDetectToolKeepsRecognizedRuntimeWhenContentMentionsOtherTool(t *testing.T) {
 	sess := NewSession("tool-detection-child-shell", "/tmp")
 	sess.Command = "shell"
