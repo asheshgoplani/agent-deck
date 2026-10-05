@@ -15650,6 +15650,11 @@ func createSessionTool(command string) (string, string) {
 		tool = "codex"
 	case "opencode":
 		tool = "opencode"
+	case "opencode2":
+		// v2 shim. Tool stays opencode so session discovery, status, and fork
+		// dispatch keep working; Command remembers the shim so launch and fork
+		// call opencode2 and take the v2 API fork path.
+		tool = "opencode"
 	case "pi":
 		tool = "pi"
 	case "omp":

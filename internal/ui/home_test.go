@@ -128,7 +128,12 @@ func TestPersistClaudeDialogDefaults(t *testing.T) {
 // Tool="pi" rather than Tool="shell" with Command="pi", matching the
 // tmux/userconfig wiring already present.
 func TestCreateSessionTool_Pi(t *testing.T) {
-	tool, command := createSessionTool("pi")
+	tool, command := createSessionTool("opencode2")
+	if tool != "opencode" || command != "opencode2" {
+		t.Fatalf("createSessionTool(\"opencode2\") = (%q, %q), want (\"opencode\", \"opencode2\")", tool, command)
+	}
+
+	tool, command = createSessionTool("pi")
 	if tool != "pi" || command != "pi" {
 		t.Fatalf("createSessionTool(\"pi\") = (%q, %q), want (\"pi\", \"pi\")", tool, command)
 	}

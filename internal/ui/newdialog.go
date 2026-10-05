@@ -416,13 +416,29 @@ func buildPresetCommands() []string {
 	return session.FilterVisibleToolNames(presets)
 }
 
+// newDialogPresetCommands is the new-session command picker. opencode2 is a
+// command alias (the v2 shim), not a harness identity, so it is not part of
+// buildPresetCommands — that list is also the edit-dialog harness row, and an
+// extra pill there wraps "cursor agent" off the 80-column row.
+func newDialogPresetCommands() []string {
+	presets := buildPresetCommands()
+	out := make([]string, 0, len(presets)+1)
+	for _, preset := range presets {
+		out = append(out, preset)
+		if preset == "opencode" {
+			out = append(out, "opencode2")
+		}
+	}
+	return out
+}
+
 // RefreshPresetCommands rebuilds the tool picker after config changes.
 func (d *NewDialog) RefreshPresetCommands() {
 	if d.remoteTarget {
 		return
 	}
 	prev := d.GetSelectedCommand()
-	d.presetCommands = buildPresetCommands()
+	d.presetCommands = newDialogPresetCommands()
 	d.commandCursor = 0
 	for i, cmd := range d.presetCommands {
 		if cmd == prev {
@@ -526,7 +542,7 @@ func NewNewDialog() *NewDialog {
 		ompOptions:      NewOMPOptionsPanel(),
 		focusIndex:      0,
 		visible:         false,
-		presetCommands:  buildPresetCommands(),
+		presetCommands:  newDialogPresetCommands(),
 		commandCursor:   0,
 		parentGroupPath: "default",
 		parentGroupName: "default",
@@ -1460,7 +1476,7 @@ func (d *NewDialog) modelInputHint() string {
 		return "Examples: claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5"
 	case cmd == "gemini":
 		return "Examples: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro"
-	case cmd == "opencode":
+	case cmd == "opencode" || cmd == "opencode2":
 		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-opus-5-5"
 	case cmd == "omp":
 		return "Primary model; use OMP Options below for multi-model and role routing"
@@ -3905,6 +3921,10 @@ func (d *NewDialog) toolKind(name string) string {
 		}
 		if session.IsCodexCompatible(name) {
 			return "codex"
+		}
+		// opencode2 is the v2 shim, not a separate tool identity.
+		if name == "opencode2" {
+			return "opencode"
 		}
 		return name
 	}

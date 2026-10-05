@@ -201,7 +201,19 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldTool:
 		oldValue = inst.Tool
-		inst.Tool = value
+		// opencode2 is a command-picker alias for the OpenCode tool that always
+		// launches the v2 shim. Keep Tool as "opencode" so every existing
+		// OpenCode path still matches, and remember the shim on Command.
+		if value == "opencode2" {
+			inst.Tool = "opencode"
+			inst.Command = "opencode2"
+			value = "opencode"
+		} else {
+			if value == "opencode" && openCodeExecutableBase(inst.Command) == "opencode2" {
+				inst.Command = "opencode"
+			}
+			inst.Tool = value
+		}
 		// Leaving claude → drop encoded ClaudeOptions so a same-submit
 		// skip/auto toggle (Tool applies last) doesn't leave ghost flags
 		// for a future shell→claude switch. UnmarshalClaudeOptions
