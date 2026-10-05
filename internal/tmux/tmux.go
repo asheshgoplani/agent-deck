@@ -1237,6 +1237,14 @@ type Session struct {
 	detectedTool     string
 	toolDetectedAt   time.Time
 	toolDetectExpiry time.Duration // How long before re-detecting (default 30s)
+	// detectedAgentPID/Start bind a tree match to one process incarnation.
+	// A dead process or a reused PID must not keep the label. Empty start
+	// means the identity was not bound (configured command, or a probe that
+	// could not read a start time).
+	detectedAgentPID   int
+	detectedAgentStart string
+	// agentTreeOverride replaces the live pane process probe. Nil in production.
+	agentTreeOverride func() (int, []processSample, error)
 
 	// Cached background-work probe (BackgroundWorkSince). The hook fast path in
 	// UpdateStatus has no captured pane content, so it must capture separately to
@@ -4365,87 +4373,140 @@ func (s *Session) HasUpdated() (bool, error) {
 // DetectTool detects which AI coding tool is running in the session
 // Uses caching to avoid re-detection on every call
 func (s *Session) DetectTool() string {
-	// Check cache first (read lock pattern for better concurrency)
-	s.mu.Lock()
-	if s.detectedTool != "" && time.Since(s.toolDetectedAt) < s.toolDetectExpiry {
-		result := s.detectedTool
-		s.mu.Unlock()
-		return result
+	// Check cache first. A bound agent whose process has exited or been reused
+	// is not a cache hit, even inside the expiry window.
+	if tool, ok := s.freshCachedTool(); ok {
+		return tool
 	}
-	s.mu.Unlock()
 
 	// If a custom tool name is set, return it directly.
 	// Custom tools have their underlying command detected at creation time;
 	// runtime detection should preserve the custom name.
 	s.mu.Lock()
 	if s.customToolName != "" {
-		s.detectedTool = s.customToolName
+		name := s.customToolName
+		s.detectedTool = name
 		s.toolDetectedAt = time.Now()
+		s.detectedAgentPID = 0
+		s.detectedAgentStart = ""
 		s.mu.Unlock()
-		return s.customToolName
+		return name
 	}
 	s.mu.Unlock()
 
 	// Detect tool from command first (most reliable)
 	if tool := detectToolFromCommand(s.Command); tool != "" {
-		s.mu.Lock()
-		s.detectedTool = tool
-		s.toolDetectedAt = time.Now()
-		s.mu.Unlock()
+		// Configured launch identity. This is what a restart should run; it is
+		// not an observation of the pane, and a nested process must not replace it.
+		s.rememberTool(tool)
 		return tool
 	}
 
-	// Everything below is a promotion-only signal. tmux reports the pane's
-	// foreground process, which is frequently a child the agent spawned for a
-	// tool call (see AnalyzePaneTitle), and pane content routinely names other
-	// tools in ordinary conversation. Neither signal can tell "a different
-	// runtime is in charge now" apart from "the same runtime is running a
-	// subprocess", so they may only give a runtime identity to a session that
-	// has none yet ("" or "shell"). They never replace one that was already
-	// recognized. Cross-runtime switching needs a durable process-root identity
-	// rather than a single foreground sample (#1718). ForceDetectTool clears the
-	// previous detection, so an explicit re-detect still runs the full sequence.
-	s.mu.Lock()
-	if previous := s.detectedTool; previous != "" && previous != "shell" {
-		s.toolDetectedAt = time.Now()
-		s.mu.Unlock()
-		return previous
+	// A successful process-tree probe is stronger than a foreground sample and
+	// is never overridden by pane text. It picks the outermost agent ancestor
+	// (shell → nvim → opencode is opencode; claude running a codex child stays
+	// claude) and fails closed when sibling agents are ambiguous. An empty
+	// tree is not a contradiction of the foreground command: the process may
+	// have started between the two samples, so that promotion still runs.
+	switch match, status := s.observeNestedAgent(); status {
+	case agentTreeMatch:
+		s.rememberAgent(match)
+		return match.Tool
+	case agentTreeAmbiguous:
+		s.rememberShell()
+		return "shell"
+	case agentTreeUnavailable:
+		// The probe was indeterminate (no pane, ps failed). A previously
+		// recognized runtime is kept: one missing sample cannot tell "the
+		// agent exited" from "we could not see it". A dead bound process is
+		// not kept. ForceDetectTool clears this so an explicit re-detect
+		// runs the full sequence.
+		if previous, ok := s.keepPreviousRuntime(); ok {
+			return previous
+		}
 	}
-	s.mu.Unlock()
 
-	// A session created as "shell" can later launch a supported tool. Prefer the
-	// pane's current command over terminal content so conversation text that
-	// mentions another tool cannot rewrite the running tool's identity.
+	// A session created as "shell" can later launch a supported tool. Only
+	// promote it when the pane's current command identifies that tool.
 	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
 		if tool := detectToolFromCommand(paneInfo.CurrentCommand); tool != "" {
-			s.mu.Lock()
-			s.detectedTool = tool
-			s.toolDetectedAt = time.Now()
-			s.mu.Unlock()
+			s.rememberTool(tool)
 			return tool
 		}
 	}
 
-	// Fallback to content detection
-	content, err := s.CapturePane()
-	if err != nil {
-		s.mu.Lock()
-		s.detectedTool = "shell"
-		s.toolDetectedAt = time.Now()
-		s.mu.Unlock()
-		return "shell"
-	}
+	// Screen text is not evidence of process identity. Shell output, editor
+	// buffers, and agent conversations can all contain another tool's banner
+	// or vendor name. In particular, an agent inside a Neovim terminal leaves
+	// nvim as tmux's foreground command. Without a process tree, failing closed
+	// to shell is safer than persisting an unrelated tool.
+	s.rememberShell()
+	return "shell"
+}
 
-	// Strip ANSI codes for accurate matching
-	cleanContent := StripANSI(content)
-
-	detectedTool := detectToolFromContent(cleanContent)
-
+// freshCachedTool returns a detection that is still inside the expiry window
+// and, when the match was bound to a process, whose process is still that
+// same incarnation. A dead or reused PID invalidates the cache immediately.
+func (s *Session) freshCachedTool() (string, bool) {
 	s.mu.Lock()
-	s.detectedTool = detectedTool
+	tool := s.detectedTool
+	fresh := tool != "" && time.Since(s.toolDetectedAt) < s.toolDetectExpiry
+	pid, start := s.detectedAgentPID, s.detectedAgentStart
+	s.mu.Unlock()
+	if !fresh {
+		return "", false
+	}
+	if pid > 0 && start != "" && !agentIncarnationAlive(pid, start) {
+		return "", false
+	}
+	return tool, true
+}
+
+func (s *Session) rememberAgent(match nestedAgentMatch) {
+	s.mu.Lock()
+	s.detectedTool = match.Tool
+	s.toolDetectedAt = time.Now()
+	if match.PID > 0 && match.StartID != "" {
+		s.detectedAgentPID = match.PID
+		s.detectedAgentStart = match.StartID
+	} else {
+		s.detectedAgentPID = 0
+		s.detectedAgentStart = ""
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) rememberTool(tool string) {
+	s.mu.Lock()
+	s.detectedTool = tool
+	s.toolDetectedAt = time.Now()
+	s.detectedAgentPID = 0
+	s.detectedAgentStart = ""
+	s.mu.Unlock()
+}
+
+func (s *Session) rememberShell() {
+	s.rememberTool("shell")
+}
+
+// keepPreviousRuntime reports a recognized runtime that a failed probe must
+// not discard. A binding whose process has exited or been reused is not kept:
+// that is a different fact from "the probe could not run".
+func (s *Session) keepPreviousRuntime() (string, bool) {
+	s.mu.Lock()
+	previous := s.detectedTool
+	pid, start := s.detectedAgentPID, s.detectedAgentStart
+	s.mu.Unlock()
+	if previous == "" || previous == "shell" {
+		return "", false
+	}
+	if pid > 0 && start != "" && !agentIncarnationAlive(pid, start) {
+		return "", false
+	}
+	s.mu.Lock()
 	s.toolDetectedAt = time.Now()
 	s.mu.Unlock()
-	return detectedTool
+	return previous, true
 }
 
 // ForceDetectTool forces a re-detection of the tool, ignoring cache
@@ -4453,6 +4514,8 @@ func (s *Session) ForceDetectTool() string {
 	s.mu.Lock()
 	s.detectedTool = ""
 	s.toolDetectedAt = time.Time{}
+	s.detectedAgentPID = 0
+	s.detectedAgentStart = ""
 	s.mu.Unlock()
 	return s.DetectTool()
 }
