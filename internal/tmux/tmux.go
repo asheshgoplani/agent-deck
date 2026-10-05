@@ -6441,6 +6441,12 @@ func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
 }
 
+// SendKeysChunkedToPrimaryWindow preserves multiline messages while targeting
+// the managed agent, even when a different tmux window is active.
+func (s *Session) SendKeysChunkedToPrimaryWindow(content string) error {
+	return s.sendKeysChunkedToTarget(s.primaryWindowTarget(), content)
+}
+
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
 //
 // CR handling: CRLF and bare-CR line breaks are normalized to LF before the

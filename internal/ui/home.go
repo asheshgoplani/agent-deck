@@ -1244,7 +1244,13 @@ func (h *Home) openPromptInput(inst *session.Instance) {
 		h.setError(fmt.Errorf("session %q is not running; start it before prompting", inst.Title))
 		return
 	}
+	if err := inst.PromptDeliveryError(); err != nil {
+		h.setError(err)
+		return
+	}
+	h.promptInputDialog.SetSize(h.width, h.height)
 	h.promptInputDialog.Show(inst.ID, inst.Title)
+	h.syncViewport()
 }
 
 // resolveITermOpenAs reads the [ui] iterm_open_as setting from the user
@@ -1521,7 +1527,7 @@ func (h *Home) stackedPreviewTopY() int {
 	if h.debugMode {
 		debugBarHeight = 1
 	}
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
 	listHeight := h.stackedListHeight(contentHeight)
 	// content top + full list block (title + body) + the 1-row separator.
 	return h.contentChromeTop() + listHeight + 1
@@ -3709,7 +3715,7 @@ func (h *Home) sidebarLineBudget() (lineBudget int, sidebarWidth int) {
 
 	// contentHeight = total height for main content area
 	// MUST match View(): subtract debugBarHeight when the debug footer is rendered.
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
 
 	// CRITICAL: Calculate panelContentHeight based on current layout mode
 	// This MUST match the calculations in renderStackedLayout/renderDualColumnLayout/renderSingleColumnLayout
@@ -3986,7 +3992,7 @@ func (h *Home) getVisibleHeight() int {
 		debugBarHeight = 1
 	}
 
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
 
 	var panelContentHeight int
 	layoutMode := h.getLayoutMode()
@@ -9082,12 +9088,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case promptEditorMsg:
+		if msg.err != nil {
+			h.setError(fmt.Errorf("edit message: %w", msg.err))
+		} else if h.promptInputDialog.IsVisible() {
+			h.promptInputDialog.input.SetValue(msg.text)
+		}
+		return h, nil
+
+	case promptDeliveryMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+		}
+		return h, nil
+
 	case promptSubmitMsg:
-		// #1410: deliver a one-line prompt to the highlighted session without
-		// attaching, reusing the prompt-state-aware send path (the #1409/#1432
-		// composer-draft guard) so the prompt never merges with a half-typed
-		// operator draft and delivery is verified. Dispatch in a goroutine —
-		// the guard holds briefly and the verify loop polls the pane.
+		// Deliver asynchronously through session send's harness-aware path.
 		h.instancesMu.RLock()
 		inst := h.instanceByID[msg.instanceID]
 		h.instancesMu.RUnlock()
@@ -9109,16 +9125,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(err)
 			return h, nil
 		}
-		text := msg.text
-		tmuxName := ts.Name
-		go func() {
-			if err := deliverToConductorPane(ts, text); err != nil {
-				uiLog.Warn("list_prompt_send_failed",
-					slog.String("tmux_session", tmuxName),
-					slog.String("error", err.Error()))
-			}
-		}()
-		return h, nil
+		return h, quickMessageCmd(h.profile, inst, msg)
 
 	case refreshMsg:
 		return h, h.sessionLoadCmd(nil, true)
@@ -10180,6 +10187,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.promptInputDialog.IsVisible() {
 			d, cmd := h.promptInputDialog.Update(msg)
 			h.promptInputDialog = d
+			h.syncViewport()
 			return h, cmd
 		}
 		if h.sessionSwitcher.IsVisible() {
@@ -12066,7 +12074,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "s":
+	case defaultHotkeyBindings[hotkeySkillsManager]:
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil &&
@@ -12652,25 +12660,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case defaultHotkeyBindings[hotkeyPromptSession]:
-		// #1410: open a one-line prompt input for the highlighted session and
-		// send it via the prompt-state-aware send path WITHOUT attaching. Gated
-		// to Claude-compatible tools — the composer-draft guard (#1409) and the
-		// delivery verify are Claude-shaped — and to running sessions, since the
-		// prompt goes into the live tmux pane. The guarded send targets the
-		// session's default pane, so a window sub-row routes to its parent
-		// session (gated on that window's detected tool, like quickApprove).
+	case defaultHotkeyBindings[hotkeyPromptSession], defaultHotkeyBindings[hotkeyQueueMessage]:
+		// Send or queue without attaching. Window rows target the parent
+		// session's managed agent pane, as session send does.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			switch item.Type {
 			case session.ItemTypeWindow:
-				if session.IsClaudeCompatible(item.WindowTool) {
-					h.openPromptInput(h.getInstanceByID(item.WindowSessionID))
-				}
+				h.openPromptInput(h.getInstanceByID(item.WindowSessionID))
 			case session.ItemTypeSession:
-				if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
-					h.openPromptInput(item.Session)
-				}
+				h.openPromptInput(item.Session)
+			}
+			if h.promptInputDialog.IsVisible() {
+				h.promptInputDialog.queue = key == defaultHotkeyBindings[hotkeyQueueMessage]
 			}
 		}
 		return h, nil
@@ -19211,7 +19213,7 @@ func (h *Home) renderFrame() string {
 		debugBarHeight = 1
 	}
 	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - h.promptInputDialog.ReservedHeight()
 
 	var mainContent string
 	if h.embeddedMode && h.embeddedSidebarHidden {
@@ -19232,6 +19234,10 @@ func (h *Home) renderFrame() string {
 	mainContent = ensureExactHeight(mainContent, contentHeight)
 	b.WriteString(mainContent)
 	b.WriteString("\n")
+	if h.promptInputDialog.IsVisible() {
+		b.WriteString(h.promptInputDialog.Bar())
+		b.WriteString("\n")
+	}
 
 	// ═══════════════════════════════════════════════════════════════════
 	// HELP BAR (context-aware shortcuts) — replaced by the insert-mode
@@ -19296,7 +19302,7 @@ func (h *Home) renderFrame() string {
 	// This is the single source of truth for output height - guarantees exactly h.height lines
 	// regardless of component content, ANSI codes, or terminal differences
 	content := b.String()
-	if h.promptInputDialog.IsVisible() || h.sessionSwitcher.IsVisible() {
+	if h.sessionSwitcher.IsVisible() {
 		// Overlays compose on rows already fitted to the viewport, and the
 		// composite then goes through the same final clamp as every frame
 		// (#2334), so their rows get the same width safety net and exactly
@@ -19304,12 +19310,6 @@ func (h *Home) renderFrame() string {
 		// The final clamp fits these rows a second time; fitting is
 		// idempotent, so only the overlay rows change.
 		content = fitViewportRows(content, h.width, h.height)
-		// #1410: when the inline prompt input is open, overlay it at the
-		// bottom of the list so the operator types without attaching.
-		// Rendered last so it sits above the status line.
-		if h.promptInputDialog.IsVisible() {
-			content = h.promptInputDialog.View(content)
-		}
 		// Keep the session list and preview visible while Ctrl+S is open.
 		// The card is anchored to the left edge of the active-session area,
 		// immediately beside the sidebar in a dual layout, so the current
@@ -20638,12 +20638,8 @@ func (h *Home) renderHelpBarCompact() string {
 			if key := h.actionKey(hotkeyRestart); key != "" {
 				contextHints = append(contextHints, h.helpKeyShort(key, "Restart"))
 			}
-			// Skills is a primary selected-session action. Keep it ahead of the
-			// rarer optional actions so the width fitter retains it at 100 cols.
-			if item.Session != nil && session.SupportsProjectSkills(item.Session.Tool) {
-				if key := h.actionKey(hotkeySkillsManager); key != "" {
-					contextHints = append(contextHints, h.helpKeyShort(key, "Skills"))
-				}
+			if key := h.actionKey(hotkeyPromptSession); key != "" {
+				contextHints = append(contextHints, h.helpKeyShort(key, "Send"))
 			}
 			if item.Session != nil && item.Session.CanRestartFresh() && restartFreshKey != "" {
 				contextHints = append(contextHints, h.helpKeyShort(restartFreshKey, "Fresh"))
@@ -20651,6 +20647,14 @@ func (h *Home) renderHelpBarCompact() string {
 			if item.Session != nil && item.Session.CanFork() {
 				if key := h.actionKey(hotkeyQuickFork); key != "" {
 					contextHints = append(contextHints, h.helpKeyShort(key, "Fork"))
+				}
+			}
+			if key := h.actionKey(hotkeyQueueMessage); key != "" {
+				contextHints = append(contextHints, h.helpKeyShort(key, "Queue"))
+			}
+			if item.Session != nil && session.SupportsProjectSkills(item.Session.Tool) {
+				if key := h.actionKey(hotkeySkillsManager); key != "" {
+					contextHints = append(contextHints, h.helpKeyShort(key, "Skills"))
 				}
 			}
 			if item.Session != nil && session.ToolSupportsMCPManager(item.Session.Tool) {

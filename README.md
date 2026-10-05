@@ -121,6 +121,13 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 
 ### Key Shortcuts
 
+From the main menu, `s` and `Shift+Q` open a message composer above the footer.
+Press `Enter` to submit, `Ctrl+J` for a newline, or `Esc` to cancel.
+`Ctrl+X`, then `E`, opens the draft in `$VISUAL` / `$EDITOR` (fallback: `vi`);
+returning from the editor restores the draft without sending it.
+Queueing uses native Claude/OpenCode 2 queueing where available and waits for
+the current turn to finish on other commands.
+
 | Key | Action |
 |-----|--------|
 | `Enter` | Attach to session |
@@ -130,7 +137,9 @@ agent-deck web                    # Start web UI on http://127.0.0.1:8420
 | `A` / `Shift+U` | Archive / unarchive session |
 | `^` | Show archived sessions |
 | `m` | MCP Manager |
-| `s` | Skills Manager |
+| `s` | Send a message / steer the selected session |
+| `Shift+Q` | Queue a message after the current turn |
+| `Alt+S` | Skills Manager |
 | `$` | Cost Dashboard |
 | `M` | Move session to group |
 | `S` | Settings |
