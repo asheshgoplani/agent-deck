@@ -6503,8 +6503,8 @@ func (h *Home) backgroundStatusUpdate() {
 			if st == session.StatusStopped {
 				continue
 			}
-			if port := inst.GetOpenCodePort(); port > 0 {
-				targets = append(targets, session.SSETarget{InstanceID: inst.ID, Port: port})
+			if target, ok := inst.OpenCodeSSETarget(); ok {
+				targets = append(targets, target)
 				if ss := h.sseWatcher.GetStatus(inst.ID); ss != nil {
 					inst.UpdateOpenCodeSSEStatus(ss.Status, ss.UpdatedAt)
 				}

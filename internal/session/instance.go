@@ -2929,6 +2929,7 @@ type openCodeSessionMetadata struct {
 
 type openCodeHTTPSessionMetadata struct {
 	ID        string `json:"id"`
+	ParentID  string `json:"parentID"`
 	Directory string `json:"directory"`
 	Path      string `json:"path"`
 	Location  struct {
@@ -2939,6 +2940,37 @@ type openCodeHTTPSessionMetadata struct {
 		Updated int64 `json:"updated"`
 	} `json:"time"`
 }
+
+func (s openCodeHTTPSessionMetadata) flatten() openCodeSessionMetadata {
+	directory := s.Directory
+	if directory == "" {
+		directory = s.Location.Directory
+	}
+	return openCodeSessionMetadata{
+		ID:        s.ID,
+		Directory: directory,
+		Path:      s.Path,
+		Created:   s.Time.Created,
+		Updated:   s.Time.Updated,
+	}
+}
+
+// openCodeServiceSessionPage is one page of `opencode api session.list` on
+// 2.x, where sessions live in the shared background service.
+type openCodeServiceSessionPage struct {
+	Data   []openCodeHTTPSessionMetadata `json:"data"`
+	Cursor struct {
+		Next string `json:"next"`
+	} `json:"cursor"`
+}
+
+// The service pages at 50 by default and the directory filter still returns
+// every sub-agent session, so one page can miss the root the TUI is in.
+const openCodeServiceSessionPageSize = 200
+
+// A page can be nothing but sub-agent sessions, so discovery follows the cursor
+// until it holds a root and the bound session; the cap bounds a runaway store.
+const openCodeServiceSessionMaxPages = 5
 
 type openCodeCLIQueryCacheEntry struct {
 	queriedAt time.Time
@@ -2952,7 +2984,15 @@ type openCodeCLIQueryCacheEntry struct {
 // rotate to a newer sibling when there was very recent local pane activity,
 // which approximates an intentional in-pane `/new` without stealing sessions
 // from other tabs in the same project.
-func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, currentID string, startedAt, activityAt int64) string {
+// sharedService is the OpenCode 2.x case: every TUI on the host shares one
+// service, so the directory listing holds sibling conversations that other
+// deck sessions are driving. An unbound instance then adopts only a session
+// created after its own spawn; a sibling's fresh activity is not evidence.
+func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, currentID string, startedAt, activityAt int64, sharedService bool) string {
+	if sharedService && currentID == "" && startedAt <= 0 {
+		// Without a spawn time an unbound instance cannot tell its conversation from a sibling's.
+		return ""
+	}
 	normalizedProjectPath := normalizePath(projectPath)
 
 	var bestMatch string
@@ -2991,8 +3031,13 @@ func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, cu
 			continue
 		}
 
-		if currentID == "" && startedAt > 0 && updatedAt < startupThreshold && sess.Created < startupThreshold {
-			continue
+		if currentID == "" && startedAt > 0 {
+			if sharedService && sess.Created < startupThreshold {
+				continue
+			}
+			if !sharedService && updatedAt < startupThreshold && sess.Created < startupThreshold {
+				continue
+			}
 		}
 
 		if currentID != "" && activityAt > 0 && (updatedAt >= activityThreshold || sess.Created >= activityThreshold) {
@@ -3038,7 +3083,20 @@ func (i *Instance) queryOpenCodeSession() string {
 	projectPath := i.ProjectPath
 	currentID := i.OpenCodeSessionID
 	startedAt := i.OpenCodeStartedAt
+	lastStartedAt := i.LastStartedAt
 	i.mu.RUnlock()
+
+	sharedService := port == 0 && i.openCodeRejectsV1LaunchFlags()
+	var minCreated int64
+	if sharedService && currentID == "" {
+		// OpenCodeStartedAt is not persisted, so a reloaded instance falls back to its last start.
+		if startedAt <= 0 && !lastStartedAt.IsZero() {
+			startedAt = lastStartedAt.UnixMilli()
+		}
+		if startedAt > 0 {
+			minCreated = startedAt - opencodeStartupTimeSkew.Milliseconds()
+		}
+	}
 
 	var sessions []openCodeSessionMetadata
 	if port > 0 {
@@ -3053,7 +3111,7 @@ func (i *Instance) queryOpenCodeSession() string {
 			return ""
 		}
 	} else {
-		sessions = i.queryOpenCodeSessionsCLI(projectPath)
+		sessions = i.queryOpenCodeSessionsCLI(projectPath, currentID, minCreated)
 	}
 
 	sessionLog.Debug("opencode_parsed_sessions", slog.Int("count", len(sessions)))
@@ -3066,7 +3124,7 @@ func (i *Instance) queryOpenCodeSession() string {
 		}
 	}
 
-	bestMatch := findBestOpenCodeSession(sessions, projectPath, currentID, startedAt, activityAt)
+	bestMatch := findBestOpenCodeSession(sessions, projectPath, currentID, startedAt, activityAt, sharedService)
 	sessionLog.Debug(
 		"opencode_best_match",
 		slog.String("session_id", bestMatch),
@@ -3108,23 +3166,18 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 
 	sessions := make([]openCodeSessionMetadata, 0, len(payload))
 	for _, session := range payload {
-		directory := session.Directory
-		if directory == "" {
-			directory = session.Location.Directory
-		}
-		sessions = append(sessions, openCodeSessionMetadata{
-			ID:        session.ID,
-			Directory: directory,
-			Path:      session.Path,
-			Created:   session.Time.Created,
-			Updated:   session.Time.Updated,
-		})
+		sessions = append(sessions, session.flatten())
 	}
 	return sessions, nil
 }
 
-func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
+// minCreated is the earliest creation time an unbound 2.x instance may adopt; 0 means any.
+func (i *Instance) queryOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
 	cacheKey := normalizePath(projectPath)
+	if i.openCodeRejectsV1LaunchFlags() {
+		// The 2.x pager stops at what this caller can use, so a page set is only complete for that caller.
+		cacheKey += "\x00" + currentID + "\x00" + strconv.FormatInt(minCreated, 10)
+	}
 	if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 		return sessions
 	}
@@ -3133,7 +3186,7 @@ func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessio
 		if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 			return sessions, nil
 		}
-		sessions := i.runOpenCodeSessionsCLI(projectPath)
+		sessions := i.runOpenCodeSessionsCLI(projectPath, currentID, minCreated)
 		cacheOpenCodeCLISessions(cacheKey, sessions)
 		return sessions, nil
 	})
@@ -3169,16 +3222,43 @@ func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadat
 	}
 }
 
-func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
+func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Run: opencode session list --format json
-	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
+	// On 2.x `session list` prints [] for a directory: the sessions live in the
+	// shared background service and `opencode api` is the CLI's door to it.
+	v2 := i.openCodeRejectsV1LaunchFlags()
+
+	sessionLog.Debug("opencode_query_sessions",
+		slog.String("dir", logging.SanitizeValue(projectPath)),
+		slog.Bool("service_api", v2),
+	)
+
+	if v2 {
+		return i.runOpenCodeServiceSessionPages(ctx, projectPath, currentID, minCreated)
+	}
+
+	output, ok := i.runOpenCodeCLI(ctx, projectPath, "opencode", "session", "list", "--format", "json")
+	if !ok {
+		return nil
+	}
+
+	// Parse JSON response
+	// Expected format: array of session objects with id, directory, created, updated fields
+	var sessions []openCodeSessionMetadata
+
+	if err := json.Unmarshal(output, &sessions); err != nil {
+		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+		return nil
+	}
+	return sessions
+}
+
+func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath, binary string, args ...string) ([]byte, bool) {
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = projectPath
 	cmd.WaitDelay = 500 * time.Millisecond
-
-	sessionLog.Debug("opencode_query_sessions", slog.String("dir", logging.SanitizeValue(projectPath)))
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -3190,20 +3270,78 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionM
 		} else {
 			sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
 		}
-		return nil
+		return nil, false
 	}
 
 	sessionLog.Debug("opencode_session_data_size", slog.Int("bytes", len(output)))
+	return output, true
+}
 
-	// Parse JSON response
-	// Expected format: array of session objects with id, directory, created, updated fields
+// runOpenCodeServiceSessionPages walks `session.list` pages newest first and
+// stops once it holds a root the caller can use: the bound session for a bound
+// instance, else a root created at or after minCreated. Returning before the
+// bound session is seen would rebind to a newer sibling.
+// A failed page, or hitting the page cap before the bound session, returns
+// nothing for the same reason.
+func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
+	// The version that picked this path came from the configured binary, which a bare name may not reach.
+	binary, ok := i.openCodeLaunchBinary()
+	if !ok {
+		return nil
+	}
+
 	var sessions []openCodeSessionMetadata
-
-	if err := json.Unmarshal(output, &sessions); err != nil {
-		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+	cursor := ""
+	usableSeen := false
+	for page := 0; page < openCodeServiceSessionMaxPages; page++ {
+		args := []string{"api", "session.list",
+			"--param", "directory=" + projectPath,
+			"--param", "limit=" + strconv.Itoa(openCodeServiceSessionPageSize)}
+		if cursor != "" {
+			args = append(args, "--param", "cursor="+cursor)
+		}
+		output, ok := i.runOpenCodeCLI(ctx, projectPath, binary, args...)
+		if !ok {
+			return nil
+		}
+		roots, next, ok := parseOpenCodeServiceSessionPage(output)
+		if !ok {
+			return nil
+		}
+		for _, root := range roots {
+			if (currentID != "" && root.ID == currentID) || (currentID == "" && root.Created >= minCreated) {
+				usableSeen = true
+			}
+		}
+		sessions = append(sessions, roots...)
+		if next == "" || usableSeen {
+			return sessions
+		}
+		cursor = next
+	}
+	if currentID != "" && !usableSeen {
 		return nil
 	}
 	return sessions
+}
+
+// parseOpenCodeServiceSessionPage keeps root sessions only: a sub-agent
+// session shares the directory and is updated more recently than the TUI's
+// own, so it would win the best-match rotation and rebind the instance.
+func parseOpenCodeServiceSessionPage(output []byte) ([]openCodeSessionMetadata, string, bool) {
+	var page openCodeServiceSessionPage
+	if err := json.Unmarshal(output, &page); err != nil {
+		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+		return nil, "", false
+	}
+	sessions := make([]openCodeSessionMetadata, 0, len(page.Data))
+	for _, session := range page.Data {
+		if session.ParentID != "" {
+			continue
+		}
+		sessions = append(sessions, session.flatten())
+	}
+	return sessions, page.Cursor.Next, true
 }
 
 // normalizePath normalizes a file path for comparison
@@ -11333,7 +11471,8 @@ func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 // which branches the parent transcript into a fresh session while leaving the
 // parent intact, plus any model/agent flags.
 func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (string, error) {
-	return i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
+	cmd, _, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
+	return cmd, err
 }
 
 // forkOpenCodeWithOptionsInWorkDir builds the one-time `cd <workDir> &&
@@ -11352,12 +11491,42 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 // picks up; the previous export/import clone relied on the same path (and the
 // same `cd`), so no id is pre-assigned here. The env prefix is applied once by
 // buildOpenCodeCommand at start time.
-func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, error) {
+func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, string, error) {
 	if !i.CanForkOpenCode() {
-		return "", fmt.Errorf("cannot fork: no active OpenCode session")
+		return "", "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
+	}
+
+	if i.openCodeRejectsV1LaunchFlags() {
+		serviceOpts := opts
+		if serviceOpts == nil {
+			if config, err := LoadUserConfig(); err == nil && config != nil {
+				serviceOpts = NewOpenCodeOptions(config)
+			}
+		}
+		if serviceOpts != nil && serviceOpts.Model != "" {
+			if _, err := openCodeModelRef(serviceOpts.Model); err != nil {
+				return "", "", err
+			}
+		}
+		// The 2.x verdict came from the configured binary, which a bare name may not reach.
+		binary, ok := i.openCodeLaunchBinary()
+		if !ok {
+			return "", "", fmt.Errorf("opencode fork: cannot resolve the configured opencode binary")
+		}
+		childID, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir)
+		if err != nil {
+			return "", "", err
+		}
+		if err := applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts); err != nil {
+			if _, rmErr := runOpenCodeServiceCall(binary, workDir, "session.remove", childID, ""); rmErr != nil {
+				return "", "", fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
+			}
+			return "", "", err
+		}
+		return fmt.Sprintf("cd %s && opencode -s %s", shellescape.Quote(workDir), childID), childID, nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -11376,7 +11545,110 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 	// workDir and the session id are shell-quoted to keep the launch command
 	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
 	return fmt.Sprintf("cd %s && opencode -s %s --fork%s",
-		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), nil
+		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", nil
+}
+
+// forkOpenCodeSessionViaService forks parentID in the OpenCode 2.x shared
+// service, where `--fork` no longer exists, and returns the new session id.
+// The child is a root session in the same directory, so the forked instance
+// resumes it with a plain `-s` and a later restart does the same. The 1.x
+// -m/--agent fork flags are not emitted: 2.x exits on them, so model and agent
+// overrides are applied to the child session by applyOpenCodeForkOverridesViaService.
+func (i *Instance) forkOpenCodeSessionViaService(binary, parentID, workDir string) (string, error) {
+	output, err := runOpenCodeServiceCall(binary, workDir, "session.fork", parentID, "{}")
+	if err != nil {
+		return "", fmt.Errorf("opencode fork via service failed: %w", err)
+	}
+
+	var reply struct {
+		Data openCodeHTTPSessionMetadata `json:"data"`
+	}
+	if err := json.Unmarshal(output, &reply); err != nil {
+		return "", fmt.Errorf("opencode fork via service: unexpected reply: %w", err)
+	}
+	childID, err := normalizeToolSessionID(FieldOpenCodeSessionID, reply.Data.ID)
+	if err != nil {
+		return "", fmt.Errorf("opencode fork via service: %w", err)
+	}
+	if childID == "" {
+		return "", fmt.Errorf("opencode fork via service: reply carries no session id")
+	}
+	sessionLog.Info("opencode_forked_via_service",
+		slog.String("instance_id", i.ID),
+		slog.String("parent_session_id", parentID),
+		slog.String("child_session_id", childID))
+	return childID, nil
+}
+
+// applyOpenCodeForkOverridesViaService sets the fork's model and agent
+// overrides on the 2.x child session. The service stores both on the session,
+// so the first launch and every later `-s` resume pick them up.
+func applyOpenCodeForkOverridesViaService(binary, childID, workDir string, opts *OpenCodeOptions) error {
+	if opts == nil {
+		return nil
+	}
+	if opts.Model != "" {
+		ref, err := openCodeModelRef(opts.Model)
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(map[string]any{"model": ref})
+		if err != nil {
+			return fmt.Errorf("opencode fork: encode model override: %w", err)
+		}
+		if _, err := runOpenCodeServiceCall(binary, workDir, "session.switchModel", childID, string(body)); err != nil {
+			return fmt.Errorf("opencode fork: set model on child session %s: %w", childID, err)
+		}
+	}
+	if opts.Agent != "" {
+		body, err := json.Marshal(map[string]string{"agent": opts.Agent})
+		if err != nil {
+			return fmt.Errorf("opencode fork: encode agent override: %w", err)
+		}
+		if _, err := runOpenCodeServiceCall(binary, workDir, "session.switchAgent", childID, string(body)); err != nil {
+			return fmt.Errorf("opencode fork: set agent on child session %s: %w", childID, err)
+		}
+	}
+	return nil
+}
+
+// openCodeModelRef splits a provider/model string into the 2.x service's
+// model reference.
+func openCodeModelRef(model string) (map[string]string, error) {
+	providerID, modelID, ok := strings.Cut(model, "/")
+	if !ok || providerID == "" || modelID == "" {
+		return nil, fmt.Errorf("opencode fork: model %q is not in provider/model form", model)
+	}
+	return map[string]string{"providerID": providerID, "id": modelID}, nil
+}
+
+// runOpenCodeServiceCall runs one `opencode api <operation>` request with the
+// resolved opencode binary against the 2.x shared service for sessionID and
+// returns its stdout. An empty body sends no request body.
+func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// #nosec G204 -- binary is the configured opencode resolved by
+	// openCodeLaunchBinary, operation is a constant at every call site,
+	// sessionID passed a shell-safe identifier check, and the JSON body is
+	// passed as a single argv element.
+	args := []string{"api", operation, "--param", "sessionID=" + sessionID}
+	if body != "" {
+		args = append(args, "-d", body)
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = workDir
+	cmd.WaitDelay = 500 * time.Millisecond
+	output, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return nil, errors.New(strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, err
+	}
+	return output, nil
 }
 
 // CreateForkedOpenCodeInstance creates a new Instance configured for forking an OpenCode session
@@ -11403,12 +11675,16 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
 	}
-	cmd, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
+	cmd, childID, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
 	if err != nil {
 		return nil, "", err
 	}
 
 	forked := NewInstance(newTitle, workDir)
+	if childID != "" {
+		forked.OpenCodeSessionID = childID
+		forked.OpenCodeDetectedAt = time.Now()
+	}
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
