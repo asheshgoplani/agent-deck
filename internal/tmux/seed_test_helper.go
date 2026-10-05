@@ -5,6 +5,49 @@ import (
 	"time"
 )
 
+// ExpireToolDetectionForTest clears a session's detection cache and process
+// binding so the next DetectTool walks again.
+func ExpireToolDetectionForTest(s *Session) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.detectedTool = ""
+	s.toolDetectedAt = time.Time{}
+	s.detectedAgentPID = 0
+	s.detectedAgentStart = ""
+	s.mu.Unlock()
+}
+
+// SetAgentTreeForTest replaces this session's pane process probe. The live
+// /proc and tmux reads are not used until cleanup. The probe is reported as
+// successful; an empty agent set is a real "no agent" result, not a failure.
+func (s *Session) SetAgentTreeForTest(t testing.TB, panePID int, procs []PaneProcess) {
+	t.Helper()
+	if s == nil {
+		t.Fatal("nil session")
+	}
+	prev := s.agentTreeOverride
+	samples := make([]processSample, len(procs))
+	for i, proc := range procs {
+		argv := append([]string(nil), proc.Argv...)
+		samples[i] = processSample{
+			PID:     proc.PID,
+			PPID:    proc.PPID,
+			Comm:    proc.Comm,
+			Argv:    argv,
+			StartID: proc.StartID,
+			Zombie:  proc.Zombie,
+		}
+	}
+	s.agentTreeOverride = func() (int, []processSample, error) {
+		out := make([]processSample, len(samples))
+		copy(out, samples)
+		return panePID, out, nil
+	}
+	t.Cleanup(func() { s.agentTreeOverride = prev })
+}
+
 // SeedPaneInfoCacheForTest replaces the package's pane info cache with the
 // supplied data and marks it fresh. Test cleanup wipes the cache back to its
 // pristine zero state so concurrent or follow-on tests do not see seeded data.

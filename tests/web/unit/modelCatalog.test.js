@@ -18,6 +18,14 @@ const SERVER = {
 }
 
 describe('modelOptionsForTool', () => {
+  it('gives opencode2 the OpenCode fallback and server model labels', async () => {
+    const { modelOptionsForTool, MODEL_ID_CATALOG } = await import(modulePath)
+    expect(modelOptionsForTool('opencode2', {})).toBe(MODEL_ID_CATALOG.opencode)
+    expect(modelOptionsForTool('opencode2', { opencode2: { models: ['openai/gpt-5.5'] } })).toEqual([
+      { value: 'openai/gpt-5.5', label: 'OpenAI GPT-5.5' },
+    ])
+  })
+
   it('uses the server list and keeps known labels', async () => {
     const { modelOptionsForTool } = await import(modulePath)
     expect(modelOptionsForTool('codex', SERVER)).toEqual([

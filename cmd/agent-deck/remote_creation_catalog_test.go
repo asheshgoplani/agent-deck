@@ -31,6 +31,30 @@ func TestRemoteCreationCatalogMatchesParsers(t *testing.T) {
 	}
 }
 
+func TestOpenCode2RemoteCreationCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+	catalog, err := buildCreationCatalog("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range catalog.Tools {
+		if tool.Name == "opencode2" {
+			if tool.Kind != "opencode" || len(tool.Models) == 0 {
+				t.Fatalf("v2 catalog entry: %+v", tool)
+			}
+			if detectTool("opencode2") != "opencode" {
+				t.Fatal("CLI alias does not dispatch OpenCode options")
+			}
+			return
+		}
+	}
+	t.Fatal("remote catalog has no opencode2 launcher")
+}
+
 func TestRemoteCreationFlagTypes(t *testing.T) {
 	fs := flag.NewFlagSet("fixture", flag.ContinueOnError)
 	fs.Bool("enabled", false, "")

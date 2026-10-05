@@ -409,7 +409,7 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
+	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -1460,7 +1460,7 @@ func (d *NewDialog) modelInputHint() string {
 		return "Examples: claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5"
 	case cmd == "gemini":
 		return "Examples: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro"
-	case cmd == "opencode":
+	case cmd == "opencode" || cmd == "opencode2":
 		return "Examples: openai/gpt-5.5, openai/gpt-5.4, anthropic/claude-opus-5-5"
 	case cmd == "omp":
 		return "Primary model; use OMP Options below for multi-model and role routing"
@@ -3905,6 +3905,10 @@ func (d *NewDialog) toolKind(name string) string {
 		}
 		if session.IsCodexCompatible(name) {
 			return "codex"
+		}
+		// opencode2 is the v2 shim, not a separate tool identity.
+		if name == "opencode2" {
+			return "opencode"
 		}
 		return name
 	}

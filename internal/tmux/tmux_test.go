@@ -610,8 +610,8 @@ func TestDetectToolKeepsRecognizedRuntimeWhenPaneCommandIsChildTool(t *testing.T
 	}
 }
 
-// Same guard for the content fallback: an unrecognized foreground command must
-// not open the door for conversation text to relabel a recognized runtime.
+// An unrecognized foreground command must not open the door for conversation
+// text to relabel a recognized runtime. Pane text is not a detection input.
 func TestDetectToolKeepsRecognizedRuntimeWhenContentMentionsOtherTool(t *testing.T) {
 	sess := NewSession("tool-detection-child-shell", "/tmp")
 	sess.Command = "shell"
@@ -624,6 +624,114 @@ func TestDetectToolKeepsRecognizedRuntimeWhenContentMentionsOtherTool(t *testing
 
 	if got := sess.DetectTool(); got != "claude" {
 		t.Fatalf("DetectTool() = %q, want %q when pane content merely mentions another tool", got, "claude")
+	}
+}
+
+func TestDetectToolDoesNotPromoteScreenText(t *testing.T) {
+	for _, command := range []string{"zsh", "nvim", "node", ""} {
+		for _, content := range []string{
+			"Gemini API key; OpenCode is running inside Neovim",
+			"OpenAI GPT model",
+			"codex --help",
+			"Welcome to Claude Code!",
+		} {
+			t.Run(command+"/"+content, func(t *testing.T) {
+				sess := NewSession("tool-detection-screen-text", "/tmp")
+				sess.Command = "shell"
+				sess.cacheContent = content
+				sess.cacheTime = time.Now()
+				seedPaneCommand(t, sess.Name, command)
+
+				if got := sess.DetectTool(); got != "shell" {
+					t.Fatalf("DetectTool() = %q, want shell for foreground %q and incidental text %q", got, command, content)
+				}
+				if got := sess.ForceDetectTool(); got != "shell" {
+					t.Fatalf("ForceDetectTool() = %q, want shell", got)
+				}
+			})
+		}
+	}
+}
+
+func TestDetectToolWithoutPaneInfoDoesNotPromoteScreenText(t *testing.T) {
+	sess := NewSession("tool-detection-no-pane-info", "/tmp")
+	sess.Command = "shell"
+	sess.cacheContent = "Gemini OpenAI Codex OpenCode Claude Code"
+	sess.cacheTime = time.Now()
+	seedPaneCommand(t, "another-session", "gemini")
+
+	if got := sess.DetectTool(); got != "shell" {
+		t.Fatalf("DetectTool() = %q, want shell without process evidence", got)
+	}
+}
+
+func TestDetectToolPreservesConfiguredIdentityOverScreenText(t *testing.T) {
+	for _, tool := range []string{"claude", "gemini", "opencode", "codex"} {
+		t.Run(tool, func(t *testing.T) {
+			sess := NewSession("tool-detection-configured", "/tmp")
+			sess.Command = tool
+			sess.cacheContent = "Gemini OpenAI Codex OpenCode Claude Code"
+			sess.cacheTime = time.Now()
+			seedPaneCommand(t, sess.Name, "nvim")
+
+			if got := sess.DetectTool(); got != tool {
+				t.Fatalf("DetectTool() = %q, want configured tool %q", got, tool)
+			}
+		})
+	}
+}
+
+func TestDetectToolDoesNotPromoteLiveShellOutput(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	sess := NewSession("tool-detection-live-output", t.TempDir())
+	sess.Command = "shell"
+	sess.SocketName = fmt.Sprintf("agentdeck-detection-test-%d", time.Now().UnixNano())
+	output, err := exec.Command("tmux", "-L", sess.SocketName, "-f", "/dev/null",
+		"new-session", "-d", "-s", sess.Name,
+		"printf 'Gemini OpenAI Codex OpenCode Claude Code\\n'; exec sleep 60").CombinedOutput()
+	if err != nil {
+		t.Fatalf("create isolated tmux server: %v: %s", err, output)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", sess.SocketName, "kill-server").Run()
+	})
+
+	// Read a real pane, not the content cache used by the unit tests above.
+	deadline := time.Now().Add(5 * time.Second)
+	var content string
+	for time.Now().Before(deadline) {
+		output, err = exec.Command("tmux", "-L", sess.SocketName,
+			"capture-pane", "-p", "-t", sess.Name).CombinedOutput()
+		if err != nil {
+			t.Fatalf("capture isolated pane: %v: %s", err, output)
+		}
+		content = string(output)
+		if strings.Contains(content, "Gemini OpenAI Codex OpenCode Claude Code") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	require.Contains(t, content, "Gemini OpenAI Codex OpenCode Claude Code")
+	seedPaneCommand(t, "another-session", "") // no process-cache entry for this pane
+	got := sess.DetectTool()
+	t.Logf("live pane output: %q; detected tool: %s", strings.TrimSpace(content), got)
+	if got != "shell" {
+		t.Fatalf("DetectTool() = %q, want shell for incidental live output", got)
+	}
+}
+
+func BenchmarkDetectToolScreenText(b *testing.B) {
+	sess := NewSession("tool-detection-benchmark", "/tmp")
+	sess.Command = "shell"
+	sess.cacheContent = "Gemini OpenAI Codex OpenCode Claude Code"
+	sess.cacheTime = time.Now().Add(time.Hour)
+	sess.toolDetectExpiry = 0
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sess.detectedTool = ""
+		sess.DetectTool()
 	}
 }
 

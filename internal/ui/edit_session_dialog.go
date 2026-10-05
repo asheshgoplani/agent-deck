@@ -77,7 +77,11 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 	d.validationErr = ""
 	d.focusIndex = 0
 
-	tools, toolCursor := toolPillsForInstance(inst.Tool)
+	toolLabel := inst.Tool
+	if inst.OpenCodeCommandName() == "opencode2" {
+		toolLabel = "opencode2"
+	}
+	tools, toolCursor := toolPillsForInstance(toolLabel)
 
 	d.fields = []editField{
 		{key: session.FieldTitle, label: "Title", kind: editFieldText,
@@ -399,6 +403,9 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 	case session.FieldTitle:
 		return inst.Title
 	case session.FieldTool:
+		if inst.OpenCodeCommandName() == "opencode2" {
+			return "opencode2"
+		}
 		return inst.Tool
 	case session.FieldExtraArgs:
 		return strings.Join(inst.ExtraArgs, " ")
@@ -564,7 +571,7 @@ func (d *EditSessionDialog) FocusField(key string) {
 // switch (the transactional path in handleEditSessionDialogKey) rather than
 // plain field writes.
 func (d *EditSessionDialog) switchPending() bool {
-	if target := d.selectedPill(session.FieldTool); target != "" && target != d.sourceTool {
+	if target := d.selectedPill(session.FieldTool); target != "" && session.CanonicalToolName(target) != session.CanonicalToolName(d.sourceTool) {
 		return true
 	}
 	account := d.selectedPill(session.FieldAccount)
