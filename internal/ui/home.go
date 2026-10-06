@@ -646,10 +646,12 @@ type Home struct {
 	transitionTrackerOnce sync.Once
 	transitionTracker     *transitionTracker
 
-	// Logs once per engine instance when the first watcher event is consumed
-	// from the engine's EventCh. Helps diagnose listener-not-firing issues
-	// without needing to instrument every event.
-	firstWatcherEventOnce sync.Once
+	// The watcher panel's feed: routed events and health states that
+	// relayWatcherEngine has already dispatched to conductor panes, so the
+	// TUI only refreshes its panel from them (#2524). Nil until Init starts
+	// an engine.
+	watcherPanelEvents <-chan watcher.Event
+	watcherPanelHealth <-chan watcher.HealthState
 
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
@@ -4222,15 +4224,16 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 	}
 
 	h.watcherEngine = eng
-	h.firstWatcherEventOnce = sync.Once{}
+	h.watcherPanelEvents, h.watcherPanelHealth = relayWatcherEngine(
+		eng.EventCh(), eng.HealthCh(), h.dispatchWatcherEvent, h.dispatchHealthAlert)
 
 	uiLog.Info("watcher_engine_started",
 		slog.Int("watcher_count", len(rows)),
 		slog.Int("running_count", runningCount(rows)))
 
 	return tea.Batch(
-		listenForWatcherEvent(eng.EventCh()),
-		listenForWatcherHealth(eng.HealthCh()),
+		listenForWatcherEvent(h.watcherPanelEvents),
+		listenForWatcherHealth(h.watcherPanelHealth),
 	)
 }
 
@@ -9680,31 +9683,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case watcherEventMsg:
-		// One-shot log per engine instance to confirm the listener path is alive.
-		h.firstWatcherEventOnce.Do(func() {
-			uiLog.Info("watcher_event_first_received",
-				slog.String("sender", msg.event.Sender),
-				slog.String("routed_to", msg.event.RoutedTo))
-		})
 		// Refresh watcher panel data on new events and re-register listener.
+		// relayWatcherEngine already dispatched the event to its conductor's
+		// pane, off this loop (#2524); dispatching it here too would deliver
+		// it twice.
 		h.refreshWatcherPanel()
-		// Deliver event to the routed conductor's tmux pane (parity with
-		// dispatchHealthAlert). Skipped for triage and unrouted events.
-		h.dispatchWatcherEvent(msg.event)
-		if h.watcherEngine != nil {
-			return h, listenForWatcherEvent(h.watcherEngine.EventCh())
+		if h.watcherPanelEvents != nil {
+			return h, listenForWatcherEvent(h.watcherPanelEvents)
 		}
 		return h, nil
 
 	case watcherHealthMsg:
-		// Update health display and re-register listener.
+		// Update health display and re-register listener. Any health alert
+		// was already dispatched by relayWatcherEngine (#2524).
 		h.refreshWatcherPanel()
-		// Dispatch health alert to conductor session on warning/error transitions (D-22, D-23).
-		if msg.state.Status == watcher.HealthStatusWarning || msg.state.Status == watcher.HealthStatusError {
-			h.dispatchHealthAlert(msg.state)
-		}
-		if h.watcherEngine != nil {
-			return h, listenForWatcherHealth(h.watcherEngine.HealthCh())
+		if h.watcherPanelHealth != nil {
+			return h, listenForWatcherHealth(h.watcherPanelHealth)
 		}
 		return h, nil
 
@@ -13721,10 +13715,12 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		if h.recallSource != nil {
 			h.recallSource.Close()
 		}
-		// Stop watcher engine (D-07: lifecycle tied to TUI)
+		// Stop watcher engine (D-07: lifecycle tied to TUI). Stop closes its
+		// channels, which ends the delivery relay and the panel feed.
 		if h.watcherEngine != nil {
 			h.watcherEngine.Stop()
 			h.watcherEngine = nil
+			h.watcherPanelEvents, h.watcherPanelHealth = nil, nil
 		}
 		// Shutdown or disconnect from MCP pool based on user choice
 		if err := session.ShutdownGlobalPool(shutdownPool); err != nil {
@@ -13835,33 +13831,44 @@ func formatWatcherDispatchMsg(evt watcher.Event) string {
 // Skipped for triage and unrouted events (RoutedTo empty or "triage") since those have no
 // concrete delivery target yet. Mirrors dispatchHealthAlert: looks up the conductor session
 // by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
+// Called by relayWatcherEngine, off the Bubble Tea loop (#2524).
 func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
 	if evt.RoutedTo == "" || evt.RoutedTo == "triage" || strings.HasPrefix(evt.RoutedTo, "triage-") {
 		return
 	}
+	ts := h.conductorTmuxSession(evt.RoutedTo)
+	if ts == nil {
+		return
+	}
 	msg := formatWatcherDispatchMsg(evt)
-	sessionTitle := session.ConductorSessionTitle(evt.RoutedTo)
+	tmuxName := ts.Name
+	go func() {
+		if err := deliverToConductorPane(ts, msg); err != nil {
+			uiLog.Warn("dispatch_watcher_event_send_failed",
+				slog.String("tmux_session", tmuxName),
+				slog.String("error", err.Error()))
+		}
+	}()
+}
+
+// conductorTmuxSession returns the tmux session of the named conductor, or nil
+// when that conductor is not loaded or has no tmux session. The watcher
+// dispatchers run on the relay goroutine while Update may rewrite h.instances,
+// so the lookup holds the read lock for the whole scan.
+func (h *Home) conductorTmuxSession(conductorName string) *tmux.Session {
+	sessionTitle := session.ConductorSessionTitle(conductorName)
 	h.instancesMu.RLock()
-	instances := h.instances
-	h.instancesMu.RUnlock()
-	for _, inst := range instances {
+	defer h.instancesMu.RUnlock()
+	for _, inst := range h.instances {
 		if inst.Title != sessionTitle {
 			continue
 		}
-		ts := inst.GetTmuxSession()
-		if ts == nil || ts.Name == "" {
-			return
+		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
+			return ts
 		}
-		tmuxName := ts.Name
-		go func() {
-			if err := deliverToConductorPane(ts, msg); err != nil {
-				uiLog.Warn("dispatch_watcher_event_send_failed",
-					slog.String("tmux_session", tmuxName),
-					slog.String("error", err.Error()))
-			}
-		}()
-		return
+		return nil
 	}
+	return nil
 }
 
 // deliverToConductorPane sends msg into a conductor's tmux pane and verifies it
@@ -14040,8 +14047,12 @@ func deliverToConductorPaneAttributed(p conductorPane, msg string, ownPasteMarke
 }
 
 // dispatchHealthAlert sends a health alert message to the conductor session associated
-// with the watcher that entered warning or error state (D-22, D-23, TUI-03).
+// with the watcher that entered warning or error state (D-22, D-23, TUI-03); a healthy
+// state sends nothing. Called by relayWatcherEngine, off the Bubble Tea loop (#2524).
 func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
+	if state.Status != watcher.HealthStatusWarning && state.Status != watcher.HealthStatusError {
+		return
+	}
 	db := statedb.GetGlobal()
 	if db == nil {
 		return
@@ -14068,26 +14079,18 @@ func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
 		state.WatcherName, state.Status, state.Message)
 
 	// Find the conductor session by title and deliver via tmux send-keys (T-16-08).
-	sessionTitle := session.ConductorSessionTitle(conductorName)
-	h.instancesMu.RLock()
-	instances := h.instances
-	h.instancesMu.RUnlock()
-	for _, inst := range instances {
-		if inst.Title == sessionTitle {
-			ts := inst.GetTmuxSession()
-			if ts != nil && ts.Name != "" {
-				tmuxName := ts.Name
-				go func() {
-					if err := deliverToConductorPane(ts, alertMsg); err != nil {
-						uiLog.Warn("dispatch_health_alert_send_failed",
-							slog.String("tmux_session", tmuxName),
-							slog.String("error", err.Error()))
-					}
-				}()
-			}
-			break
-		}
+	ts := h.conductorTmuxSession(conductorName)
+	if ts == nil {
+		return
 	}
+	tmuxName := ts.Name
+	go func() {
+		if err := deliverToConductorPane(ts, alertMsg); err != nil {
+			uiLog.Warn("dispatch_health_alert_send_failed",
+				slog.String("tmux_session", tmuxName),
+				slog.String("error", err.Error()))
+		}
+	}()
 }
 
 // handleMCPDialogKey handles keys when MCP dialog is visible
