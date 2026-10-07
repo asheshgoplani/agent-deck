@@ -87,6 +87,8 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 
 `[telemetry] level = "basic"` in `config.toml` can lower the level but never raise it.
 
+Lowering the level also covers data already waiting in the local spool, including events kept across a re-consent: at the next upload (and in `telemetry preview`), events that `basic` does not record are deleted unsent, and the rest are sent without `hour_local`, `weekday_local` or `ds_session`, with the timestamp pinned to 12:00.
+
 ## When and where data is sent
 
 - **Recording** happens in every agent-deck process where a person is at a terminal: never in CI, tests, non-TTY runs (scripts, cron, SSH commands on a remote) or before consent. Commands run by a coding agent at a terminal are recorded with `actor = agent`. At most 60 events per local day are recorded (daily rollups are exempt); the rest are counted as `dropped`.

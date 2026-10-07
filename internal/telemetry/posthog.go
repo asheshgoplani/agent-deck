@@ -60,6 +60,33 @@ func withAPIKey(body []byte) ([]byte, error) {
 	return append(out, rest...), nil
 }
 
+// atLevel reduces waiting spool lines to what level records now. A line
+// keeps the level it was recorded at, but a level lowered since then (by
+// `telemetry level basic` or the config ceiling) also covers data not sent
+// yet, including lines kept across a re-consent: at basic, events basic does
+// not record are dropped and the rest lose hour, weekday and ds_session,
+// exactly as if they had been recorded at basic.
+func atLevel(lines []spoolLine, level Level) []spoolLine {
+	if level != LevelBasic {
+		return lines
+	}
+	out := lines[:0:0]
+	for _, l := range lines {
+		if def, ok := LookupEvent(l.E); !ok || !def.Basic {
+			continue
+		}
+		p := make(map[string]any, len(l.P))
+		for k, v := range l.P {
+			if k != propDSSession.Key {
+				p[k] = v
+			}
+		}
+		l.P, l.H, l.W, l.L = p, nil, nil, string(LevelBasic)
+		out = append(out, l)
+	}
+	return out
+}
+
 // pendingEvent is one event ready to encode, with where it came from.
 type pendingEvent struct {
 	ev        phEvent
