@@ -168,6 +168,10 @@ func TestSessionMetricsSkipsFinalSendRecords(t *testing.T) {
 	}
 }
 
+// TestSessionMetricsSubstateEventsDoNotSplitTurns: running -> running and
+// waiting -> waiting substate records sit inside one turn and one waiting span;
+// they must not end the turn early or move the last coarse status change
+// (issue #2525).
 func TestSessionMetricsSubstateEventsDoNotSplitTurns(t *testing.T) {
 	events := []Event{
 		{TS: at(0), SessionID: "s", Kind: KindStatus, From: "idle", To: "running"},
@@ -197,6 +201,8 @@ func TestSessionMetricsSubstateEventsDoNotSplitTurns(t *testing.T) {
 	}
 }
 
+// TestSessionMetricsSameStatusEventsDoNotCountTurns: a same-status record for
+// a terminal status is not a turn boundary, so it adds no turn (issue #2525).
 func TestSessionMetricsSameStatusEventsDoNotCountTurns(t *testing.T) {
 	for _, status := range []string{"waiting", "idle", "error", "stopped", "queued"} {
 		t.Run(status, func(t *testing.T) {
