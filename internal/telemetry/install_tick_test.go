@@ -587,7 +587,7 @@ func TestInstallTickSchemaUpgradeKeepsDeclinesFinal(t *testing.T) {
 	}
 }
 
-func TestInstallTickV2RegrantClearsDetailsPreservesLedger(t *testing.T) {
+func TestInstallTickV2RegrantKeepsIdentityAndLedger(t *testing.T) {
 	c := tickEnv(t)
 	maybeInstallTick(context.Background(), func(context.Context, []byte, time.Duration) postResult {
 		return postResult{err: errors.New("lost ack")}
@@ -613,14 +613,14 @@ func TestInstallTickV2RegrantClearsDetailsPreservesLedger(t *testing.T) {
 	if err := SaveState(migrated); err != nil {
 		t.Fatal(err)
 	}
-	if migrated.InstallID == oldID || migrated.Salt == oldSalt || migrated.Counters != nil {
-		t.Fatal("regrant retained old detailed data/identity")
+	if migrated.InstallID != oldID || migrated.Salt != oldSalt || migrated.Counters["legacy"] != 1 {
+		t.Fatal("schema-only regrant changed the identity or dropped recorded data")
 	}
 	if migrated.FirstSeenDay != firstDay || !migrated.FirstSeenAt.Equal(firstAt) || migrated.PreV2 {
 		t.Fatal("v2 regrant changed provenance")
 	}
-	if _, err := os.Stat(spool); !os.IsNotExist(err) {
-		t.Fatalf("old spool retained: %v", err)
+	if _, err := os.Stat(spool); err != nil {
+		t.Fatalf("schema-only regrant deleted the spool: %v", err)
 	}
 	tickAfter, _ := readInstallTick()
 	if tickAfter != tickBefore {

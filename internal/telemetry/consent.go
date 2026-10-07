@@ -81,13 +81,18 @@ func ShouldPrompt(s *State) bool {
 	return Interactive()
 }
 
-// Grant records consent. A new install id and salt are created unless the
-// existing ones were granted for this exact endpoint and schema; a new
-// identity also deletes the spool, so events recorded under an earlier
-// consent or destination can never be sent under this one. Nothing records
-// into the spool meanwhile: the stale grant does not enable recording.
+// Grant records consent. The install id and salt survive upgrades and
+// re-consent to a new schema: a schema bump only asks again (LoadState), it
+// never changes who the install is. A new id and salt are created only when
+// the existing ones are missing or invalid (after a decline, or a v1 state)
+// or were granted for a different endpoint; a new identity also deletes the
+// spool, so events recorded for an earlier destination can never be sent to
+// this one. Spool lines kept across a schema bump are re-validated against
+// the current schema when read and get os, arch and schema when sent.
+// Nothing records into the spool meanwhile: the stale grant does not enable
+// recording.
 func Grant(s *State, version string, now time.Time) error {
-	if !validInstallID(s.InstallID) || len(s.Salt) != 64 || s.ConsentEndpoint != Endpoint() || s.SchemaVersion != SchemaVersion {
+	if !validInstallID(s.InstallID) || len(s.Salt) != 64 || s.ConsentEndpoint != Endpoint() {
 		id, salt, err := newIdentity()
 		if err != nil {
 			return err
