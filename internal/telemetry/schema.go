@@ -75,7 +75,7 @@ var (
 	endKinds        = []string{"stop", "delete", "tool_exit", "crash", "restart"}
 	sendVias        = []string{"tui", "cli_send", "conductor", "inbox", "telegram", "web"}
 	attachVias      = []string{"tui", "cli", "web", "remote"}
-	errorAreas      = []string{"tmux", "session_start", "send", "worktree", "mcp", "remote", "update", "config", "hook", "db", "web", "conductor", "telemetry"}
+	errorAreas      = []string{"tmux", "session_start", "send", "worktree", "mcp", "remote", "update", "config", "hook", "db", "web", "conductor", "telemetry", "tui"}
 	errorKinds      = []string{"tmux_missing", "tmux_too_old", "tool_not_found", "tool_auth", "worktree_dirty", "mcp_spawn_failed", "ssh_auth", "ssh_unreachable", "config_parse", "db_locked", "timeout", "permission", "disk_full", "panic", "other"}
 	updateKinds     = []string{"auto", "manual", "timer", "remote_sweep"}
 	updateOutcomes  = []string{"ok", "error", "rolled_back"}

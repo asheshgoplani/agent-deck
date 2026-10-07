@@ -292,7 +292,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry` |
+| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry`, `tui` |
 | `kind` | enum: `tmux_missing`, `tmux_too_old`, `tool_not_found`, `tool_auth`, `worktree_dirty`, `mcp_spawn_failed`, `ssh_auth`, `ssh_unreachable`, `config_parse`, `db_locked`, `timeout`, `permission`, `disk_full`, `panic`, `other` |
 | `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
 | `before_first_success` | bool |
@@ -442,7 +442,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry` |
+| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry`, `tui` |
 | `panic_type` | enum: `nil_deref`, `index`, `slice`, `map_concurrent`, `closed_chan`, `custom`, `other` |
 | `frames_hash` | 12 hex (SHA-256 over agent-deck function names of the top 8 frames; no paths, lines or values) |
 

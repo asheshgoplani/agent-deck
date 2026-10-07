@@ -3352,6 +3352,7 @@ func handleSessionSend(profile string, args []string) {
 			if acceptanceGuard != nil {
 				acceptanceGuard.Release()
 			}
+			telemetry.ErrorOccurred(telemetry.AreaSend, telemetry.KindTimeout, inst.Tool)
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -3532,6 +3533,7 @@ func handleSessionSend(profile string, args []string) {
 		if acceptanceGuard != nil {
 			acceptanceGuard.Release()
 		}
+		telemetry.ErrorOccurred(telemetry.AreaSend, telemetry.ErrKindOf(sendErr), inst.Tool)
 		extra := sendRes.jsonFields()
 		extra["session_id"] = inst.ID
 		extra["session_title"] = inst.Title

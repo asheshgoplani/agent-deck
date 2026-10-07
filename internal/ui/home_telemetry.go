@@ -123,9 +123,13 @@ func (h *Home) telemetryAttachEnd() tea.Cmd {
 }
 
 // CloseTelemetry flushes the current activity hour and app.exit to the
-// local spool. It never touches the network and runs at most once.
+// local spool. It never touches the network and runs at most once. A panic
+// exit is also an error (area tui, kind panic), so it shows in error counts.
 func (h *Home) CloseTelemetry(kind telemetry.ExitKind) {
 	h.tel.closeOnce.Do(func() {
+		if kind == telemetry.ExitPanic {
+			telemetry.ErrorOccurred(telemetry.AreaTUI, telemetry.KindPanic, "")
+		}
 		if !h.tel.started {
 			return
 		}

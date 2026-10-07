@@ -15604,6 +15604,7 @@ func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDi
 		wtSettings.CreateOptions(sourceDir),
 		&buf, &buf, wtSettings.SetupTimeout())
 	if err != nil {
+		telemetry.ErrorOccurred(telemetry.AreaWorktree, telemetry.ErrKindOf(err), "")
 		return nil, err
 	}
 	if setupErr != nil {

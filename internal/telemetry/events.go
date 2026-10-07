@@ -294,6 +294,7 @@ const (
 	AreaWeb          ErrArea = "web"
 	AreaConductor    ErrArea = "conductor"
 	AreaTelemetry    ErrArea = "telemetry"
+	AreaTUI          ErrArea = "tui"
 
 	KindTmuxMissing    ErrKind = "tmux_missing"
 	KindTmuxTooOld     ErrKind = "tmux_too_old"
