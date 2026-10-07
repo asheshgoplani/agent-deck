@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Conductor Bridge: Telegram & Slack & Discord <-> Agent-Deck conductor sessions (multi-conductor).
+Conductor Bridge: Telegram & Slack & Discord & Mattermost <-> Agent-Deck conductor sessions (multi-conductor).
 
 A thin bridge that:
-  A) Forwards Telegram/Slack/Discord messages -> conductor session (via agent-deck CLI)
-  B) Forwards conductor responses -> Telegram/Slack/Discord
+  A) Forwards Telegram/Slack/Discord/Mattermost messages -> conductor session (via agent-deck CLI)
+  B) Forwards conductor responses -> Telegram/Slack/Discord/Mattermost
   C) Runs a periodic heartbeat to trigger conductor status checks
 
 Discovers conductors dynamically from meta.json files in ~/.agent-deck/conductor/*/
 Each conductor has its own name, profile, and heartbeat settings.
 
-Dependencies: pip3 install toml aiogram slack-bolt slack-sdk discord.py
+Dependencies: pip3 install toml aiogram slack-bolt slack-sdk discord.py aiohttp
   - aiogram is only needed if Telegram is configured
   - slack-bolt/slack-sdk are only needed if Slack is configured
   - discord.py is only needed if Discord is configured
+  - aiohttp is only needed if Mattermost is configured
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Coroutine
@@ -63,6 +65,13 @@ try:
     HAS_DISCORD = True
 except ImportError:
     HAS_DISCORD = False
+
+# Conditional import for Mattermost (its REST API and WebSocket, via aiohttp)
+try:
+    import aiohttp
+    HAS_AIOHTTP = True
+except ImportError:
+    HAS_AIOHTTP = False
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -139,6 +148,9 @@ SLACK_MAX_LENGTH = 40000
 
 # Discord message length limit
 DISCORD_MAX_LENGTH = 2000
+
+# Mattermost post length limit (the server's default MaxPostSize is 16383)
+MM_MAX_LENGTH = 16000
 
 # Marker for uploading local images through the Discord bridge.
 IMAGE_MARKER_RE = re.compile(r"\[IMAGE:(?P<path>[^\]]+)\]")
@@ -218,8 +230,8 @@ def _resolve_secret(value: str) -> str:
 def load_config() -> dict:
     """Load [conductor] section from config.toml.
 
-    Returns a dict with nested 'telegram' and 'slack' sub-dicts,
-    each with a 'configured' flag.
+    Returns a dict with a nested sub-dict per platform (telegram, slack,
+    discord, mattermost), each with a 'configured' flag.
     """
     if not CONFIG_PATH.exists():
         log.error("Config not found: %s", CONFIG_PATH)
@@ -271,10 +283,25 @@ def load_config() -> dict:
     dc_ignore_replies_to_others = dc.get("ignore_replies_to_others", False)
     dc_configured = bool(dc_bot_token and dc_guild_id and dc_channel_id and dc_user_id)
 
-    if not tg_configured and not sl_configured and not dc_configured:
+    # Mattermost config. `user` is the one person the bot obeys, as a username
+    # or a user ID; with no channel_id the bot talks to them in a DM.
+    mm = conductor_cfg.get("mattermost", {})
+    mm_server_url = str(mm.get("server_url", "") or "").strip().rstrip("/")
+    mm_bot_token = _resolve_secret(mm.get("bot_token", ""))
+    mm_user = _resolve_secret(str(mm.get("user", "") or "")).strip().lstrip("@")
+    mm_allow_insecure_http = bool(mm.get("allow_insecure_http", False))
+    mm_configured = bool(mm_server_url and mm_bot_token and mm_user)
+    if mm_configured:
+        problem = mattermost_url_problem(mm_server_url, mm_allow_insecure_http)
+        if problem:
+            log.error("[conductor.mattermost] ignored: %s", problem)
+            mm_configured = False
+
+    if not tg_configured and not sl_configured and not dc_configured and not mm_configured:
         log.error(
             "No messaging platform configured in config.toml. "
-            "Set [conductor.telegram], [conductor.slack], or [conductor.discord]."
+            "Set [conductor.telegram], [conductor.slack], [conductor.discord], "
+            "or [conductor.mattermost]."
         )
         sys.exit(1)
 
@@ -300,6 +327,15 @@ def load_config() -> dict:
             "listen_mode": dc_listen_mode,
             "ignore_replies_to_others": bool(dc_ignore_replies_to_others),
             "configured": dc_configured,
+        },
+        "mattermost": {
+            "server_url": mm_server_url,
+            "bot_token": mm_bot_token,
+            "user": mm_user,
+            "channel_id": str(mm.get("channel_id", "") or "").strip(),
+            "listen_mode": mm.get("listen_mode", "all"),  # "mentions" or "all"
+            "allow_insecure_http": mm_allow_insecure_http,
+            "configured": mm_configured,
         },
         "heartbeat_interval": conductor_cfg.get("heartbeat_interval", 15),
         # Fallback threshold for filter_need_lines when `conductor tier-filter`
@@ -1940,13 +1976,14 @@ def ack_tier_filter_reply(name: str, profile: str | None, reply_id: str) -> bool
 
 def need_alert_deliverer(
     tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+    mattermost_bot=None,
 ):
     """deliver(text) -> bool that sends text to every configured channel
     (_deliver_need_alert): True when at least one accepted it."""
     async def deliver(text: str) -> bool:
         return await _deliver_need_alert(
             text, tg_user_id, telegram_bot, slack_app,
-            slack_channel_id, discord_bot, discord_channel_id,
+            slack_channel_id, discord_bot, discord_channel_id, mattermost_bot,
         )
 
     return deliver
@@ -2081,12 +2118,13 @@ async def _human_outbox_send(loop, name: str, profile: str, deliver) -> None:
 
 async def human_outbox_loop(
     telegram_bot=None, tg_user_id=None, slack_app=None, slack_channel_id=None,
-    discord_bot=None, discord_channel_id=None,
+    discord_bot=None, discord_channel_id=None, mattermost_bot=None,
 ):
     """Forward what conductors queued for the human, every 5 s (issue #2469)."""
     poll_state: dict = {}
     deliver = need_alert_deliverer(
         tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+        mattermost_bot,
     )
 
     log.info("Human outbox loop started (poll every %d s)", HUMAN_OUTBOX_POLL_SECONDS)
@@ -3634,6 +3672,670 @@ def create_discord_bot(config: dict):
 
 
 # ---------------------------------------------------------------------------
+# Mattermost bot setup
+# ---------------------------------------------------------------------------
+
+# Set on every post the bridge makes, so its own posts are never relayed back.
+MM_BRIDGE_POST_PROP = "from_agent_deck"
+
+# Mattermost IDs are 26 lowercase alphanumerics; anything else is a username.
+_MM_ID_RE = re.compile(r"^[a-z0-9]{26}$")
+
+# Text commands. Mattermost slash commands need an HTTP endpoint the server can
+# reach, so the bridge reads "!status" and friends from ordinary posts instead.
+MM_COMMANDS = ("status", "sessions", "restart", "help")
+
+# Props Mattermost sets on posts that a webhook, bot or plugin made on behalf
+# of a user. Values arrive as "true" strings or booleans.
+MM_AUTOMATED_POST_PROPS = ("from_webhook", "from_bot", "from_plugin")
+
+# Loopback hosts may be reached over plain http without allow_insecure_http.
+_MM_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def describe_error(error: BaseException) -> str:
+    """Text for a log line; some exceptions (asyncio.TimeoutError) have none."""
+    return str(error) or type(error).__name__
+
+
+def _mm_prop_set(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "0")
+    return bool(value)
+
+
+def mattermost_retry_after(headers) -> float | None:
+    """Seconds a 429 response asks the client to wait, or None if it does not
+    say. Mattermost sends X-Ratelimit-Reset (seconds until the limit resets);
+    proxies may send Retry-After."""
+    for name in ("Retry-After", "X-Ratelimit-Reset"):
+        try:
+            return max(0.0, float(headers.get(name)))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def mattermost_url_problem(server_url: str, allow_insecure_http: bool) -> str | None:
+    """Why server_url must not be used, or None. The bot token and every
+    message travel on this connection, so plain http needs a loopback host or
+    an explicit allow_insecure_http."""
+    parsed = urllib.parse.urlparse(server_url)
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        return f"server_url {server_url!r} is not an http(s) URL"
+    if parsed.scheme == "http" and parsed.hostname not in _MM_LOOPBACK_HOSTS and not allow_insecure_http:
+        return (
+            f"server_url {server_url!r} uses plain http, which would send the bot token "
+            "unencrypted; use https, or set allow_insecure_http = true"
+        )
+    return None
+
+
+def mattermost_post_text(
+    post: dict,
+    bot_user_id: str,
+    bot_username: str,
+    owner_user_id: str,
+    home_channel_id: str,
+    home_is_dm: bool,
+    listen_mode: str,
+) -> str | None:
+    """The text to act on for a post, or None when the bridge must ignore it.
+
+    Ignored: the bridge's own posts, system posts, posts made by a webhook, bot
+    or plugin, posts outside the home channel, posts by anyone but the owner,
+    and (in a channel with listen_mode "mentions") posts that do not @mention
+    the bot. A mention of the bot is stripped from the text.
+    """
+    if post.get("user_id") == bot_user_id:
+        return None
+    props = post.get("props") or {}
+    if props.get(MM_BRIDGE_POST_PROP):
+        return None
+    if post.get("type"):  # join/leave and other system posts
+        return None
+    # A webhook's posts carry its creator's user_id, so the owner check alone
+    # would obey anyone holding the URL of a webhook the owner created.
+    automated = [p for p in MM_AUTOMATED_POST_PROPS if _mm_prop_set(props.get(p))]
+    if automated:
+        log.warning("Ignoring Mattermost post %s marked %s", post.get("id"), ", ".join(automated))
+        return None
+    if post.get("channel_id") != home_channel_id:
+        return None
+    text = (post.get("message") or "").strip()
+    mention = re.compile(r"(?<![\w@.-])@" + re.escape(bot_username) + r"(?![\w.-])", re.IGNORECASE)
+    if not home_is_dm and listen_mode == "mentions" and not mention.search(text):
+        return None
+    if post.get("user_id") != owner_user_id:
+        log.warning("Unauthorized Mattermost message from user %s", post.get("user_id"))
+        return None
+    text = mention.sub("", text).strip()
+    return text or None
+
+
+def mattermost_reply_root(post: dict, home_is_dm: bool) -> str:
+    """The thread a reply belongs in: the post's own thread, or a new thread
+    under it in a channel. In a DM an unthreaded post is answered unthreaded."""
+    if post.get("root_id"):
+        return post["root_id"]
+    return "" if home_is_dm else post.get("id", "")
+
+
+def parse_mattermost_command(text: str) -> tuple[str, str] | None:
+    """("restart", "ops") for "!restart ops"; None when text is not a command."""
+    if not text.startswith("!"):
+        return None
+    word, _, argument = text[1:].partition(" ")
+    word = word.lower()
+    if word not in MM_COMMANDS:
+        return None
+    return word, argument.strip()
+
+
+def mattermost_command_reply(command: str, argument: str) -> str:
+    """Run a text command and return the reply. Blocking (it calls the CLI)."""
+    if command == "status":
+        profiles = get_unique_profiles()
+        agg = get_status_summary_all(profiles)
+        totals = agg["totals"]
+        lines = [
+            f"Total: {totals['total']} sessions",
+            f"  Running: {totals['running']}",
+            f"  Waiting: {totals['waiting']}",
+            f"  Idle: {totals['idle']}",
+            f"  Error: {totals['error']}",
+        ]
+        if len(profiles) > 1:
+            lines.append("")
+            for profile in profiles:
+                p = agg["per_profile"][profile]
+                lines.append(
+                    f"[{profile}] {p['total']}s "
+                    f"({p['running']}R {p['waiting']}W {p['idle']}I {p['error']}E)"
+                )
+        return "```\n" + "\n".join(lines) + "\n```"
+
+    if command == "sessions":
+        profiles = get_unique_profiles()
+        all_sessions = get_sessions_list_all(profiles)
+        if not all_sessions:
+            return "No sessions found."
+        lines = []
+        for profile, s in all_sessions:
+            prefix = f"[{profile}] " if len(profiles) > 1 else ""
+            lines.append(
+                f"{prefix}{s.get('title', 'untitled')} ({s.get('tool', '')}) - {s.get('status', 'unknown')}"
+            )
+        return "```\n" + "\n".join(lines) + "\n```"
+
+    if command == "restart":
+        target = None
+        if argument:
+            target = next((c for c in discover_conductors() if c["name"] == argument), None)
+            if target is None:
+                return f"No conductor named {argument}."
+        else:
+            target = get_default_conductor()
+        if target is None:
+            return "No conductors found."
+        result = run_cli(
+            "session", "restart", conductor_session_title(target["name"]),
+            profile=target["profile"], timeout=60,
+        )
+        if result.returncode == 0:
+            return f"Conductor {target['name']} restarted."
+        return f"Restart of {target['name']} failed: {result.stderr.strip()}"
+
+    names = [c["name"] for c in discover_conductors()]
+    return (
+        "Conductor commands:\n"
+        "- `!status`: aggregated status across all profiles\n"
+        "- `!sessions`: list all sessions (all profiles)\n"
+        "- `!restart [name]`: restart a conductor (default: the first)\n"
+        "- `!help`: this message\n\n"
+        f"Conductors: {', '.join(names) if names else 'none'}\n"
+        "Route a message with `<name>: <message>`; otherwise it goes to the first conductor."
+    )
+
+
+class MattermostAPIError(RuntimeError):
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+class MattermostBridge:
+    """A Mattermost bot account driven through the REST API and the WebSocket
+    event stream, with nothing but aiohttp.
+
+    It listens in one home channel: a DM between the bot and its owner, or the
+    configured channel_id. Only the owner is obeyed, and every reply and alert
+    goes to the home channel.
+
+    Missed posts are recovered by reading the home channel back to a little
+    before the newest post handled. All timestamps compared are the server's
+    create_at values, so the local clock never decides what was missed.
+    """
+
+    RECONNECT_INITIAL_DELAY = 2
+    RECONNECT_MAX_DELAY = 60
+    # Only a connection that stayed up this long resets the reconnect backoff.
+    STABLE_CONNECTION_SECONDS = 60
+    REQUEST_TIMEOUT = 30
+    TYPING_INTERVAL = 4
+    POST_ATTEMPTS = 3
+    POST_RETRY_DELAY = 1
+    # A 429 is retried after the wait the server asks for, capped here.
+    RATE_LIMIT_ATTEMPTS = 6
+    RATE_LIMIT_DEFAULT_WAIT = 1
+    RATE_LIMIT_MAX_WAIT = 60
+    # Catch-up re-reads this far behind the newest post handled, for posts in
+    # the same millisecond or delivered out of order. Post IDs in the window
+    # are remembered, so nothing in it is handled twice.
+    CATCH_UP_OVERLAP_MS = 60_000
+    CATCH_UP_PAGE_SIZE = 200
+    # After a catch-up, the IDs it read are all kept this long, while the
+    # events that queued on the socket during it are read and matched.
+    CATCH_UP_DEDUP_HOLD_SECONDS = 60
+
+    def __init__(self, settings: dict):
+        self.server_url = settings["server_url"].rstrip("/")
+        problem = mattermost_url_problem(self.server_url, bool(settings.get("allow_insecure_http")))
+        if problem:
+            raise ValueError(problem)
+        self._token = settings["bot_token"]
+        self._owner = settings["user"].lstrip("@")
+        self._configured_channel_id = settings.get("channel_id", "")
+        self.listen_mode = settings.get("listen_mode", "all")
+        self._api = f"{self.server_url}/api/v4"
+        self._ws_url = re.sub(r"^http", "ws", self.server_url) + "/api/v4/websocket"
+        self._http = None
+        self.bot_user_id = ""
+        self.bot_username = ""
+        self.owner_user_id = ""
+        self.owner_username = ""
+        self.home_channel_id = ""
+        self.home_is_dm = True
+        self.home_channel_tag = "[dm]"
+        # create_at of every home-channel post handled (or present at start)
+        # inside the catch-up window, by post ID.
+        self._seen_posts: dict[str, int] = {}
+        self._prune_at = 1024
+        # Until _dedup_hold_until, IDs at or after _dedup_hold_floor are kept.
+        self._dedup_hold_floor = 0
+        self._dedup_hold_until = 0.0
+        self._last_create_at = 0
+        self._connected_at: float | None = None
+        self._tasks: set = set()
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.home_channel_id)
+
+    async def _request(self, method: str, path: str, **kwargs):
+        timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)
+        for attempt in range(1, self.RATE_LIMIT_ATTEMPTS + 1):
+            async with self._http.request(method, f"{self._api}{path}", timeout=timeout, **kwargs) as resp:
+                # Error bodies need not be JSON: the rate limiter answers a
+                # 429 with plain text.
+                if resp.status == 429 and attempt < self.RATE_LIMIT_ATTEMPTS:
+                    wait = mattermost_retry_after(resp.headers)
+                    if wait is None:
+                        wait = self.RATE_LIMIT_DEFAULT_WAIT * attempt
+                    wait = min(wait, self.RATE_LIMIT_MAX_WAIT)
+                    log.warning("Mattermost %s %s rate limited; retrying in %ss", method, path, wait)
+                elif resp.status >= 300:
+                    text = await resp.text()
+                    try:
+                        detail = json.loads(text).get("message") or text
+                    except (ValueError, AttributeError):
+                        detail = text.strip()
+                    raise MattermostAPIError(
+                        f"Mattermost {method} {path} failed ({resp.status}): {detail}", resp.status,
+                    )
+                else:
+                    return await resp.json(content_type=None)
+            await asyncio.sleep(wait)
+
+    async def start(self) -> None:
+        """Identify the bot and its owner and resolve the home channel."""
+        if self._http is None:
+            self._http = aiohttp.ClientSession(headers={"Authorization": f"Bearer {self._token}"})
+        me = await self._request("GET", "/users/me")
+        self.bot_user_id, self.bot_username = me["id"], me["username"]
+        owner_path = f"/users/{self._owner}" if _MM_ID_RE.match(self._owner) else f"/users/username/{self._owner}"
+        owner = await self._request("GET", owner_path)
+        self.owner_user_id, self.owner_username = owner["id"], owner["username"]
+        if self._configured_channel_id:
+            channel = await self._request("GET", f"/channels/{self._configured_channel_id}")
+        else:
+            channel = await self._request(
+                "POST", "/channels/direct", json=[self.bot_user_id, self.owner_user_id],
+            )
+        self.home_is_dm = channel.get("type") == "D"
+        self.home_channel_tag = (
+            "[dm]" if self.home_is_dm
+            else f"[channel:~{channel.get('name') or channel['id']} ({channel['id']})]"
+        )
+        if not self._last_create_at:
+            await self._skip_existing_posts(channel["id"])
+        self.home_channel_id = channel["id"]
+        log.info(
+            "Mattermost bot @%s ready (owner=@%s, home=%s)",
+            self.bot_username, self.owner_username,
+            "DM" if self.home_is_dm else self.home_channel_tag,
+        )
+
+    async def _skip_existing_posts(self, channel_id: str) -> None:
+        """Start the catch-up point at the channel's newest post, and remember
+        the posts in its overlap window so a catch-up does not replay them.
+
+        The newest post and the window come from one newest-first read whose
+        pages are anchored on posts already read, so posts arriving meanwhile
+        are never on its later pages and are left for the first catch-up.
+        """
+        for post in await self._read_back(channel_id, None):
+            self._seen_posts[post["id"]] = post.get("create_at", 0)
+            self._last_create_at = max(self._last_create_at, post.get("create_at", 0))
+
+    async def _read_back(self, channel_id: str, floor: int | None) -> list[dict]:
+        """Every live post in the channel created at or after floor, oldest
+        first. With floor None, the floor is the overlap window behind the
+        newest post on the first page.
+
+        Pages back from the newest post until it passes floor, however many
+        pages that takes: stopping early would abandon the oldest missed
+        posts. (The `since` query is no use: the server caps it at 1000 posts,
+        other users' posts included.) Posts the owner did not write can never
+        be acted on, so only their ID and create_at are kept.
+
+        Each page after the first is the posts `before` one already read, not
+        a numeric offset: a post deleted or added mid-read would shift offsets
+        and make a page skip or repeat posts at its edge.
+        """
+        found: dict[str, dict] = {}
+        anchor: dict | None = None
+        while True:
+            params = {"per_page": str(self.CATCH_UP_PAGE_SIZE)}
+            if anchor is not None:
+                params["before"] = anchor["id"]
+            listing = await self._request("GET", f"/channels/{channel_id}/posts", params=params)
+            order = listing.get("order") or []
+            posts = listing.get("posts") or {}
+            # `posts` also holds the thread roots of replies on the page.
+            batch = [posts[i] for i in order if i in posts]
+            if floor is None:
+                newest = max((p.get("create_at", 0) for p in batch), default=0)
+                floor = newest - self.CATCH_UP_OVERLAP_MS
+            for post in batch:
+                create_at = post.get("create_at", 0)
+                if create_at < floor or post.get("delete_at") or post["id"] in found:
+                    continue
+                if post.get("user_id") == self.owner_user_id:
+                    found[post["id"]] = post
+                else:
+                    found[post["id"]] = {"id": post["id"], "create_at": create_at, "compact": True}
+            if len(order) < self.CATCH_UP_PAGE_SIZE or min((p.get("create_at", 0) for p in batch), default=0) < floor:
+                break
+            next_anchor = self._page_anchor(batch)
+            if anchor is not None and next_anchor.get("create_at", 0) >= anchor.get("create_at", 0):
+                raise RuntimeError("Mattermost catch-up is not making progress; will retry")
+            anchor = next_anchor
+        return sorted(found.values(), key=lambda p: (p.get("create_at", 0), p["id"]))
+
+    @staticmethod
+    def _page_anchor(batch: list[dict]) -> dict:
+        """The post to read the next page `before`.
+
+        `before` returns posts strictly older than the anchor's create_at, and
+        a full page can end part way through the posts of one millisecond. So
+        the anchor is the oldest post newer than the page's oldest
+        millisecond, and the next page re-reads that millisecond whole.
+        """
+        oldest = min(p.get("create_at", 0) for p in batch)
+        newer = [p for p in batch if p.get("create_at", 0) > oldest]
+        if newer:
+            return min(newer, key=lambda p: p.get("create_at", 0))
+        log.warning(
+            "Mattermost: a full page of posts shares one millisecond; others in it may be skipped",
+        )
+        return min(batch, key=lambda p: p.get("create_at", 0))
+
+    async def run(self) -> None:
+        """Start, then keep the event stream open, reconnecting with backoff.
+
+        A failed start raises, so _run_platform_task retries it.
+        """
+        if not self.ready:
+            await self.start()
+        delay = self.RECONNECT_INITIAL_DELAY
+        while True:
+            self._connected_at = None
+            try:
+                await self._listen()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("Mattermost event stream failed: %s", describe_error(e))
+            if (
+                self._connected_at is not None
+                and time.monotonic() - self._connected_at >= self.STABLE_CONNECTION_SECONDS
+            ):
+                delay = self.RECONNECT_INITIAL_DELAY
+            log.info("Mattermost: reconnecting in %ss", delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, self.RECONNECT_MAX_DELAY)
+
+    async def _listen(self) -> None:
+        async with self._http.ws_connect(self._ws_url, heartbeat=30) as ws:
+            self._connected_at = time.monotonic()
+            log.info("Mattermost event stream connected")
+            await self._catch_up()
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    self._on_event(json.loads(msg.data))
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    raise ws.exception() or ConnectionError("websocket error")
+        log.warning("Mattermost event stream closed")
+
+    async def _catch_up(self) -> None:
+        """Handle home-channel posts made while the stream was down.
+
+        The whole backlog is read before any of it is handled, so a read that
+        fails part way leaves the catch-up point where it was and the next
+        connection reads it all again.
+        """
+        floor = self._last_create_at - self.CATCH_UP_OVERLAP_MS if self._last_create_at else 0
+        posts = await self._read_back(self.home_channel_id, floor)
+        self._forget_old_posts()
+        # Posts made during the catch-up are queued on the socket too, and may
+        # be anywhere in the window it read: keep every ID in it until they
+        # have been read.
+        self._dedup_hold_floor = floor
+        self._dedup_hold_until = float("inf")
+        skipped = 0
+        for post in posts:
+            if post.get("compact"):
+                skipped += self._remember(post) is not None
+            else:
+                self._accept(post)
+        if skipped:
+            log.info("Mattermost catch-up passed over %d posts by other users", skipped)
+        self._dedup_hold_until = time.monotonic() + self.CATCH_UP_DEDUP_HOLD_SECONDS
+
+    def _forget_old_posts(self) -> None:
+        """Drop remembered IDs older than any catch-up or queued socket event
+        can deliver again."""
+        floor = self._last_create_at - self.CATCH_UP_OVERLAP_MS
+        if time.monotonic() < self._dedup_hold_until:
+            floor = min(floor, self._dedup_hold_floor)
+        self._seen_posts = {i: t for i, t in self._seen_posts.items() if t >= floor}
+        self._prune_at = max(1024, 2 * len(self._seen_posts))
+
+    def _on_event(self, event: dict) -> None:
+        if event.get("event") != "posted":
+            return
+        try:
+            post = json.loads(event["data"]["post"])
+        except (KeyError, TypeError, ValueError) as e:
+            log.warning("Mattermost: unreadable posted event: %s", describe_error(e))
+            return
+        self._accept(post)
+
+    def _remember(self, post: dict) -> str | None:
+        """Record a home-channel post as seen. Its ID if it is new, else None."""
+        post_id = post.get("id")
+        if not post_id or post_id in self._seen_posts:
+            return None
+        create_at = post.get("create_at", 0)
+        self._seen_posts[post_id] = create_at
+        self._last_create_at = max(self._last_create_at, create_at)
+        if len(self._seen_posts) >= self._prune_at:
+            self._forget_old_posts()
+        return post_id
+
+    def _accept(self, post: dict) -> None:
+        # Posts elsewhere (the bot can be in other channels) must not move
+        # the catch-up point past an unseen home-channel post.
+        if post.get("channel_id") != self.home_channel_id:
+            return
+        if self._remember(post) is None:
+            return
+        # Handled in its own task: a relay can wait minutes for the conductor,
+        # and the event stream must keep being read meanwhile.
+        task = asyncio.create_task(self._handle_post(post))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _handle_post(self, post: dict) -> None:
+        try:
+            text = mattermost_post_text(
+                post, self.bot_user_id, self.bot_username, self.owner_user_id,
+                self.home_channel_id, self.home_is_dm, self.listen_mode,
+            )
+            if text is None:
+                return
+            root_id = mattermost_reply_root(post, self.home_is_dm)
+            command = parse_mattermost_command(text)
+            if command is not None:
+                loop = asyncio.get_running_loop()
+                reply = await loop.run_in_executor(
+                    None, functools.partial(mattermost_command_reply, *command),
+                )
+                await self.post(reply, root_id)
+                return
+            await self._relay(text, root_id)
+        except Exception as e:
+            log.error("Mattermost: handling post %s failed: %s", post.get("id"), describe_error(e))
+
+    async def post(self, text: str, root_id: str = "") -> bool:
+        """Post text to the home channel (split if long). True if all of it posted."""
+        if not self.ready:
+            log.warning("Mattermost: not connected yet; dropping post")
+            return False
+        ok = True
+        for chunk in split_message(text, max_len=MM_MAX_LENGTH):
+            ok = await self._post_chunk(chunk, root_id) and ok
+        return ok
+
+    async def _post_chunk(self, chunk: str, root_id: str) -> bool:
+        """Post one chunk, retrying network errors and 5xx responses. A retry
+        after a lost response can duplicate the post; that beats losing a reply."""
+        for attempt in range(1, self.POST_ATTEMPTS + 1):
+            try:
+                await self._request("POST", "/posts", json={
+                    "channel_id": self.home_channel_id,
+                    "message": chunk,
+                    "root_id": root_id,
+                    "props": {MM_BRIDGE_POST_PROP: True},
+                })
+                return True
+            except Exception as e:
+                retryable = not isinstance(e, MattermostAPIError) or e.status >= 500
+                if not retryable or attempt == self.POST_ATTEMPTS:
+                    log.error("Mattermost post failed (attempt %d): %s", attempt, describe_error(e))
+                    return False
+                log.warning("Mattermost post failed (attempt %d), retrying: %s", attempt, describe_error(e))
+                await asyncio.sleep(self.POST_RETRY_DELAY * attempt)
+        return False
+
+    async def _show_typing(self, root_id: str) -> None:
+        """Show "<bot> is typing" until cancelled. Best effort."""
+        try:
+            while True:
+                await self._request("POST", f"/users/{self.bot_user_id}/typing", json={
+                    "channel_id": self.home_channel_id, "parent_id": root_id,
+                })
+                await asyncio.sleep(self.TYPING_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("Mattermost typing indicator failed; continuing: %s", describe_error(e))
+
+    async def _relay(self, text: str, root_id: str) -> None:
+        """Send text to its conductor and post the reply, mirroring the Slack
+        flow: queue while the conductor is busy, else wait for the reply, and
+        hand a turn that outlasts the wait to a late-reply watcher."""
+        async def reply(message: str) -> None:
+            await self.post(message, root_id)
+
+        conductors = discover_conductors()
+        target_name, cleaned = parse_conductor_prefix(text, [c["name"] for c in conductors])
+        target = next((c for c in conductors if c["name"] == target_name), None) or get_default_conductor()
+        if target is None:
+            await reply("[No conductors configured. Run: agent-deck conductor setup <name>]")
+            return
+
+        message = (
+            f"[from:{self.owner_username} ({self.owner_user_id})] "
+            f"{self.home_channel_tag} {cleaned or text}"
+        )
+        session_title = conductor_session_title(target["name"])
+        profile = target["profile"]
+        name_tag = f"[{target['name']}] " if len(conductors) > 1 else ""
+
+        if not await ensure_conductor_running(target["name"], profile):
+            await reply(f"[Could not start conductor {target['name']}. Check agent-deck.]")
+            return
+
+        loop = asyncio.get_running_loop()
+        status = await loop.run_in_executor(
+            None, functools.partial(get_session_status, session_title, profile=profile),
+        )
+        log.info("Mattermost message -> [%s]: %s", target["name"], message[:100])
+        started_at = time.monotonic()
+        busy_notice = f"{name_tag}⏳ Conductor busy — message queued, will reply here when done."
+
+        async def late_reply(response_text: str) -> None:
+            elapsed = int(time.monotonic() - started_at)
+            waited = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
+            await reply(f"{name_tag}Queued response (waited {waited}):\n{response_text}")
+
+        if status in ("running", "active", "starting"):
+            ok, _, _ = send_to_conductor(
+                session_title, message, profile=profile,
+                wait_for_reply=False, reply_callback=late_reply, force_queue=True,
+            )
+            await reply(busy_notice if ok else f"[Failed to send message to conductor {target['name']}.]")
+            return
+
+        typing = asyncio.create_task(self._show_typing(root_id))
+        try:
+            ok, response, still_running = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    send_to_conductor, session_title, message, profile=profile,
+                    wait_for_reply=True, response_timeout=RESPONSE_TIMEOUT,
+                    claim_late_reply=True,
+                ),
+            )
+        finally:
+            typing.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await typing
+
+        if ok:
+            log.info("Conductor [%s] response: %s", target["name"], response[:100])
+            await reply(f"{name_tag}{response}")
+            return
+        if not still_running:
+            await reply(f"[Failed to send message to conductor {target['name']}.]")
+            return
+        # The message WAS delivered; the turn just outran the blocking wait.
+        # Don't re-send (that would double-process): watch for the reply.
+        receipt = still_running if isinstance(still_running, dict) else None
+        if still_running == _WAIT_SEND_QUEUE_REQUIRED:
+            _enqueue_message(session_title, message, profile, late_reply)
+            notice = busy_notice
+        elif _register_pending_reply(session_title, profile, receipt, late_reply):
+            notice = f"{name_tag}⏳ Still working — will reply here when done."
+        else:
+            _release_late_reply_claim(session_title, profile, receipt)
+            notice = f"[Accepted turn could not acquire a reply watcher {target['name']}.]"
+        await reply(notice)
+
+    async def close(self) -> None:
+        if self._http is not None:
+            await self._http.close()
+            self._http = None
+
+
+def create_mattermost_bot(config: dict) -> MattermostBridge | None:
+    """The Mattermost bot, or None if Mattermost is not configured or aiohttp
+    is unavailable. Nothing touches the network until run()."""
+    if not HAS_AIOHTTP:
+        log.warning("aiohttp not installed, skipping Mattermost bot")
+        return None
+    if not config["mattermost"]["configured"]:
+        return None
+    try:
+        return MattermostBridge(config["mattermost"])
+    except ValueError as e:
+        log.error("Mattermost bot not started: %s", describe_error(e))
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Heartbeat loop
 # ---------------------------------------------------------------------------
 
@@ -3710,7 +4412,7 @@ async def need_scan_cycle(
     need_state: dict,
     save_state,
     telegram_bot=None, slack_app=None, slack_channel_id=None,
-    discord_bot=None, discord_channel_id=None,
+    discord_bot=None, discord_channel_id=None, mattermost_bot=None,
 ) -> None:
     """One scan pass over all heartbeat-enabled conductors (issue #2426).
 
@@ -3730,6 +4432,7 @@ async def need_scan_cycle(
     changed = False
     deliver = need_alert_deliverer(
         tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+        mattermost_bot,
     )
 
     # Forget conductors that are gone or no longer heartbeat-enabled so the
@@ -3789,7 +4492,7 @@ async def need_scan_cycle(
 
 async def _deliver_need_alert(
     alert_msg: str, tg_user_id, telegram_bot, slack_app, slack_channel_id,
-    discord_bot, discord_channel_id,
+    discord_bot, discord_channel_id, mattermost_bot=None,
 ) -> bool:
     """Send a NEED alert to every configured channel; True if any accepted it."""
     delivered = False
@@ -3813,12 +4516,18 @@ async def _deliver_need_alert(
                 delivered = True
         except Exception as e:
             log.error("Failed to send Discord notification: %s", e)
+    if mattermost_bot is not None:
+        try:
+            if await mattermost_bot.post(alert_msg):
+                delivered = True
+        except Exception as e:
+            log.error("Failed to send Mattermost notification: %s", describe_error(e))
     return delivered
 
 
 async def heartbeat_need_scan_loop(
     config: dict, telegram_bot=None, slack_app=None, slack_channel_id=None,
-    discord_bot=None, discord_channel_id=None,
+    discord_bot=None, discord_channel_id=None, mattermost_bot=None,
 ):
     """Scan-only NEED: forwarder for OS-heartbeat mode (issue #2426).
 
@@ -3854,7 +4563,7 @@ async def heartbeat_need_scan_loop(
             await need_scan_cycle(
                 config, need_state, lambda: save_need_scan_state(state_path, need_state),
                 telegram_bot, slack_app, slack_channel_id,
-                discord_bot, discord_channel_id,
+                discord_bot, discord_channel_id, mattermost_bot,
             )
         except Exception as e:
             log.error("NEED scan cycle failed: %s", e)
@@ -3863,7 +4572,7 @@ async def heartbeat_need_scan_loop(
 
 async def heartbeat_loop(
     config: dict, telegram_bot=None, slack_app=None, slack_channel_id=None,
-    discord_bot=None, discord_channel_id=None,
+    discord_bot=None, discord_channel_id=None, mattermost_bot=None,
 ):
     """Periodic heartbeat: check status for each conductor and trigger checks."""
     global_interval = config["heartbeat_interval"]
@@ -3875,7 +4584,7 @@ async def heartbeat_loop(
         log.info("OS heartbeat daemon detected; switching to scan-only NEED forwarding (no bridge ticks)")
         await heartbeat_need_scan_loop(
             config, telegram_bot, slack_app, slack_channel_id,
-            discord_bot, discord_channel_id,
+            discord_bot, discord_channel_id, mattermost_bot,
         )
         return
 
@@ -3883,6 +4592,7 @@ async def heartbeat_loop(
     tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
     deliver_alert = need_alert_deliverer(
         tg_user_id, telegram_bot, slack_app, slack_channel_id, discord_bot, discord_channel_id,
+        mattermost_bot,
     )
 
     # Per-conductor NEED: dedup state for issue #971 — tracks consecutive
@@ -4187,7 +4897,7 @@ async def _run_platform_task(
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log.error("%s task failed: %s; retrying in %ds", name, e, backoff)
+            log.error("%s task failed: %s; retrying in %ds", name, describe_error(e), backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
@@ -4203,15 +4913,18 @@ async def main():
     tg_ok = config["telegram"]["configured"] and HAS_AIOGRAM
     sl_ok = config["slack"]["configured"] and HAS_SLACK
     dc_ok = config["discord"]["configured"] and HAS_DISCORD
+    mm_ok = config["mattermost"]["configured"] and HAS_AIOHTTP
 
-    if not tg_ok and not sl_ok and not dc_ok:
+    if not tg_ok and not sl_ok and not dc_ok and not mm_ok:
         if config["telegram"]["configured"] and not HAS_AIOGRAM:
             log.error("Telegram configured but aiogram not installed. pip install aiogram")
         if config["slack"]["configured"] and not HAS_SLACK:
             log.error("Slack configured but slack-bolt not installed. pip install slack-bolt slack-sdk")
         if config["discord"]["configured"] and not HAS_DISCORD:
             log.error("Discord configured but discord.py not installed. pip install discord.py")
-        if not config["telegram"]["configured"] and not config["slack"]["configured"] and not config["discord"]["configured"]:
+        if config["mattermost"]["configured"] and not HAS_AIOHTTP:
+            log.error("Mattermost configured but aiohttp not installed. pip install aiohttp")
+        if not any(config[p]["configured"] for p in ("telegram", "slack", "discord", "mattermost")):
             log.error("No messaging platform configured. Exiting.")
         sys.exit(1)
 
@@ -4222,6 +4935,8 @@ async def main():
         platforms.append("Slack")
     if dc_ok:
         platforms.append("Discord")
+    if mm_ok:
+        platforms.append("Mattermost")
 
     log.info(
         "Starting conductor bridge (platforms=%s, heartbeat=%dm, conductors=%s)",
@@ -4253,6 +4968,9 @@ async def main():
         if result:
             discord_bot, discord_channel_id = result
 
+    # Create Mattermost bot (it connects in its platform task)
+    mattermost_bot = create_mattermost_bot(config) if mm_ok else None
+
     # Pre-start all conductors so they're warm when messages arrive
     for c in conductors:
         if await ensure_conductor_running(c["name"], c["profile"]):
@@ -4269,6 +4987,7 @@ async def main():
             slack_channel_id=slack_channel_id,
             discord_bot=discord_bot,
             discord_channel_id=discord_channel_id,
+            mattermost_bot=mattermost_bot,
         )
     )
 
@@ -4281,6 +5000,7 @@ async def main():
             slack_channel_id=slack_channel_id,
             discord_bot=discord_bot,
             discord_channel_id=discord_channel_id,
+            mattermost_bot=mattermost_bot,
         )
     )
 
@@ -4303,6 +5023,11 @@ async def main():
             lambda: discord_bot.start(config["discord"]["bot_token"]),
         )))
         log.info("Discord bot started")
+    if mattermost_bot:
+        tasks.append(asyncio.create_task(_run_platform_task(
+            "Mattermost", mattermost_bot.run,
+        )))
+        log.info("Mattermost bot started")
 
     try:
         await asyncio.gather(*tasks)
@@ -4315,6 +5040,8 @@ async def main():
             await slack_handler.close_async()
         if discord_bot:
             await discord_bot.close()
+        if mattermost_bot:
+            await mattermost_bot.close()
 
 
 if __name__ == "__main__":

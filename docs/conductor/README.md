@@ -7,7 +7,7 @@ Think of it as the foreman on a jobsite: you send instructions to the foreman, t
 
 ## Quickstart (local, two minutes)
 
-No Telegram, Slack, or Discord required.
+No Telegram, Slack, Discord, or Mattermost required.
 The conductor runs as a normal agent-deck session you can interact with from the TUI or CLI.
 
 ### 1. Create the conductor
@@ -62,7 +62,7 @@ Under the hood, a conductor is:
 - A `claude` (or `codex`, `hermes`, `pi`) process pinned inside a named tmux session managed by agent-deck.
 - A directory at `~/.local/share/agent-deck/conductor/<name>/` that holds its instructions, policy, learnings, state, and task log.
 - An agent-deck session record (`agent-deck list` will show it) with `is_conductor: true`.
-- Optionally, one or more remote channels attached (Telegram, Slack, Discord) so you can talk to it from your phone.
+- Optionally, one or more remote channels attached (Telegram, Slack, Discord, Mattermost) so you can talk to it from your phone.
 - Optionally, a heartbeat daemon that pings the conductor on a schedule.
 
 ![Fleet topology: user phone or TUI, conductor, child sessions, with watchers on the side](assets/fleet-topology.svg)
@@ -193,6 +193,7 @@ They are optional — the conductor works fully without them.
 - [Telegram](telegram.md) — easiest to set up, one bot per conductor, message from your phone
 - [Slack](slack.md) — channel-based control with slash commands and threaded replies
 - [Discord](discord.md) — server-based control with permission scopes
+- [Mattermost](mattermost.md) — a bot account you talk to in a DM or a channel
 
 ![Channels topology — one bot per conductor](assets/channels-topology.svg)
 

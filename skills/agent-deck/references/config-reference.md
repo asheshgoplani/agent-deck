@@ -654,7 +654,7 @@ branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-tit
 
 ## [conductor] Section
 
-Conductor (meta-agent orchestration) settings. The `[conductor]` block also carries the conductor-system toggles (`enabled`, `heartbeat_interval`, Telegram/Slack/Discord integration) — see the conductor setup docs; the key below governs where conductor state lives.
+Conductor (meta-agent orchestration) settings. The `[conductor]` block also carries the conductor-system toggles (`enabled`, `heartbeat_interval`, Telegram/Slack/Discord/Mattermost integration) — see the conductor setup docs; the key below governs where conductor state lives.
 
 ```toml
 [conductor]
@@ -671,7 +671,7 @@ need_retire_cycles = 3      # unanswered urgent line: escalated once on this cyc
 
 > **Note:** Each conductor's `heartbeat.sh` honors `[conductor].dir` and self-heals — when you change `dir`, the script content is auto-refreshed by the migration that runs on the next `agent-deck conductor list` / `status` / `setup` / `teardown`. The surface that goes **stale** is the daemon, not the script: the launchd heartbeat plist (and the Linux systemd unit) bakes absolute script/log paths at install time and is regenerated only by `agent-deck conductor setup`. After changing `dir`, re-run `agent-deck conductor setup <name>` per conductor to regenerate and reload the daemon. (A `conductor migrate-dir` helper to automate this is planned.) A `conductor list`/`status` after a dir change will flag a stale heartbeat daemon in its `[migrated]` output.
 
-> **Note:** The Telegram/Slack/Discord bridge daemon (`bridge.py`) now honors `[conductor].dir`: the Go side injects the resolved override into the daemon environment as `AGENT_DECK_CONDUCTOR_DIR`, and the bridge prefers it over its XDG/legacy resolver (#1350). Caveat: the daemon's environment is frozen at install time, so if you change `[conductor].dir` after the bridge is set up, regenerate the bridge daemon (re-run conductor setup, or the planned `conductor migrate-dir`) for the daemon to pick up the new directory.
+> **Note:** The Telegram/Slack/Discord/Mattermost bridge daemon (`bridge.py`) now honors `[conductor].dir`: the Go side injects the resolved override into the daemon environment as `AGENT_DECK_CONDUCTOR_DIR`, and the bridge prefers it over its XDG/legacy resolver (#1350). Caveat: the daemon's environment is frozen at install time, so if you change `[conductor].dir` after the bridge is set up, regenerate the bridge daemon (re-run conductor setup, or the planned `conductor migrate-dir`) for the daemon to pick up the new directory.
 
 ## [launch] Section
 
