@@ -59,6 +59,7 @@ import (
 type codexThreadMeta struct {
 	ThreadSource   string
 	ParentThreadID string
+	Source         string
 	valid          bool
 }
 
@@ -148,6 +149,7 @@ func readCodexRolloutThreadMeta(path string) codexThreadMeta {
 		ParentThreadID: head.Payload.ParentThreadID,
 		valid:          true,
 	}
+	_ = json.Unmarshal(head.Payload.Source, &meta.Source)
 	// Older payloads carry parenthood only inside source.subagent.thread_spawn.
 	if meta.ParentThreadID == "" && len(head.Payload.Source) > 0 {
 		var src struct {
@@ -236,7 +238,7 @@ func codexGuardianParentThreadID(sessionID, codexHome string) string {
 		if !ok || !meta.valid {
 			return ""
 		}
-		if (meta.ThreadSource == "user" || meta.ThreadSource == "cli") && meta.ParentThreadID == "" {
+		if (meta.ThreadSource == "user" || meta.ThreadSource == "cli") && meta.ParentThreadID == "" && meta.Source != "exec" {
 			return parentID
 		}
 		if meta.ThreadSource != "subagent" && meta.ThreadSource != "guardian_review" {

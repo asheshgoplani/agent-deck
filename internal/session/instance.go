@@ -7325,7 +7325,19 @@ func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) error {
 	}
 	detectedAt := time.Now()
 	if db != nil {
-		if err := db.WriteCodexSessionBinding(i.ID, sessionID, detectedAt); err != nil {
+		err := db.WriteCodexSessionBinding(i.ID, sessionID, detectedAt)
+		// Web mutators save live instances through a short-lived Storage,
+		// which can leave restartDB closed. Retry through the saved owning
+		// path, never through an unrelated profile's global database.
+		if err != nil && i.storageSnapshot != nil && i.storageSnapshot.dbPath != "" {
+			var retryDB *statedb.StateDB
+			retryDB, err = statedb.Open(i.storageSnapshot.dbPath)
+			if err == nil {
+				err = retryDB.WriteCodexSessionBinding(i.ID, sessionID, detectedAt)
+				_ = retryDB.Close()
+			}
+		}
+		if err != nil {
 			sessionLog.Warn("codex_session_rebind_persist_failed",
 				slog.String("instance_id", i.ID),
 				slog.String("new_id", sessionID),

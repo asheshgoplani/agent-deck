@@ -389,6 +389,71 @@ func TestBuildCodexCommand_ForksWhenGuardianRepairWriteFails(t *testing.T) {
 	}
 }
 
+func TestCodexBindingAfterShortLivedStorageCloses(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		name := "hook"
+		if recovery {
+			name = "guardian_recovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			inst, codexHome := newCodexGateInstance(t)
+			owner := newTestStorage(t)
+			_ = withTempGlobalStateDB(t) // A different profile must not receive the repair.
+			mainSID, oldSID := uniqueSID(t), uniqueSID(t)
+			seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+			if recovery {
+				seedCodexRolloutWithMeta(t, codexHome, oldSID, "guardian_review", mainSID, true)
+			}
+			inst.CodexSessionID = oldSID
+			if err := owner.Save([]*Instance{inst}); err != nil {
+				t.Fatal(err)
+			}
+			webDB, err := statedb.Open(owner.dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			webStorage := &Storage{db: webDB, dbPath: owner.dbPath, profile: owner.profile}
+			if err := webStorage.Save([]*Instance{inst}); err != nil {
+				t.Fatal(err)
+			}
+			if err := webStorage.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if recovery {
+				if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+					t.Fatalf("closed storage must not prevent guardian recovery: got %q", cmd)
+				}
+			} else {
+				inst.UpdateHookStatus(&HookStatus{
+					Status: "waiting", SessionID: mainSID,
+					Event: "agent-turn-complete", UpdatedAt: time.Now(),
+				})
+			}
+			if inst.CodexSessionID != mainSID {
+				t.Fatalf("closed storage prevented rebind: got %q, want %q", inst.CodexSessionID, mainSID)
+			}
+			if got := readCodexSessionIDFromDB(t, owner.db, inst.ID); got != mainSID {
+				t.Fatalf("owning database saved %q, want %q", got, mainSID)
+			}
+		})
+	}
+}
+
+func TestBuildCodexCommand_DoesNotResumeGuardianExecParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	execSID, guardianSID := uniqueSID(t), uniqueSID(t)
+	path := seedCodexRolloutWithMeta(t, codexHome, execSID, "user", "", false)
+	head := fmt.Sprintf(`{"type":"session_meta","payload":{"id":%q,"cwd":"/tmp/project","thread_source":"user","source":"exec"}}`, execSID)
+	if err := os.WriteFile(path, []byte(head+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", execSID, true)
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "fork "+guardianSID) || strings.Contains(cmd, "resume "+execSID) {
+		t.Fatalf("guardian recovery must not resume a nested exec thread: got %q", cmd)
+	}
+}
+
 func TestBuildCodexCommand_ResumesGuardianReviewUserAncestor(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 	mainSID := uniqueSID(t)
