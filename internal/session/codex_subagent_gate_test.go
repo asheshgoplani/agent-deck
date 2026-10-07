@@ -313,6 +313,34 @@ func TestBuildCodexCommand_ResumesGuardianReviewParent(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_RepairsGuardianBindingInOwningDB(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	ownerDB := withTempGlobalStateDB(t)
+
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+	if err := ownerDB.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath,
+		GroupPath: inst.GroupPath, Command: inst.Command, Tool: "codex",
+		Status: "idle", CreatedAt: time.Now(),
+		ToolData: json.RawMessage(`{"codex_session_id":"` + guardianSID + `"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inst.restartDB.Store(ownerDB)
+	_ = withTempGlobalStateDB(t) // An unrelated profile is the process-wide database.
+
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("guardian binding must resume its user parent: got %q", cmd)
+	}
+	if got := readCodexSessionIDFromDB(t, ownerDB, inst.ID); got != mainSID {
+		t.Fatalf("owning database persisted %q, want parent %q", got, mainSID)
+	}
+}
+
 func TestBuildCodexCommand_DoesNotResumeMissingGuardianParent(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 	guardianSID := uniqueSID(t)

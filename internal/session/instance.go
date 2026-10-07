@@ -7325,7 +7325,11 @@ func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) {
 	// producing a runaway loop of fresh "rebind" decisions on every
 	// poll. WriteCodexSessionBinding rewrites only the typed schema
 	// fields via json_set, leaving every other tool_data key untouched.
-	if db := statedb.GetGlobal(); db != nil {
+	db := i.restartDB.Load()
+	if db == nil {
+		db = statedb.GetGlobal()
+	}
+	if db != nil {
 		if err := db.WriteCodexSessionBinding(i.ID, sessionID, i.CodexDetectedAt); err != nil {
 			sessionLog.Warn("codex_session_rebind_persist_failed",
 				slog.String("instance_id", i.ID),
