@@ -475,6 +475,10 @@ func profilesForTransitionDaemon() []string {
 	return profiles
 }
 
+// syncProfile runs one status pass over a profile's instances and returns the
+// interval until the next pass. Live-status priors are not seeded into
+// persisted stopped or queued instances, so a stale sample cannot override
+// those decisions (issue #2526).
 func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	storage := d.getStorage(profile)
 	if storage == nil {

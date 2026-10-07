@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// TestUpdateStatusPreservesQueued: a queued session with no tmux pane stays
+// queued across fresh/old, nil/non-nil tmux handle and new/reloaded instances,
+// and is never sampled as a live pane (issue #2526).
 func TestUpdateStatusPreservesQueued(t *testing.T) {
 	for _, fresh := range []bool{true, false} {
 		for _, handle := range []bool{true, false} {
@@ -50,6 +53,8 @@ func TestUpdateStatusPreservesQueued(t *testing.T) {
 	}
 }
 
+// TestQueuedSessionStartsWhenReleased: once Start creates the pane, the next
+// status pass leaves the queue and does not report an error.
 func TestQueuedSessionStartsWhenReleased(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 	inst := NewInstanceWithTool("queued-release", t.TempDir(), "shell")
@@ -61,14 +66,20 @@ func TestQueuedSessionStartsWhenReleased(t *testing.T) {
 	if err := inst.UpdateStatus(); err != nil {
 		t.Fatal(err)
 	}
-	if got := inst.GetStatusThreadSafe(); got == StatusQueued {
+	switch got := inst.GetStatusThreadSafe(); got {
+	case StatusQueued:
 		t.Fatal("Start did not release queued state")
+	case StatusError:
+		t.Fatal("released queued session reported error")
 	}
 	if !inst.Exists() {
 		t.Fatal("released queued session has no tmux pane")
 	}
 }
 
+// TestDaemonPreservesQueuedOverLivePrior: with no live TUI, the transition
+// daemon must not let a carried running prior overwrite a persisted queued
+// status, in the database or in its own observed status (issue #2526).
 func TestDaemonPreservesQueuedOverLivePrior(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ClearUserConfigCache()

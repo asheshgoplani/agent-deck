@@ -6293,6 +6293,9 @@ func (i *Instance) probeTmuxExists() (exists, current bool) {
 	return exists, i.tmuxSession == s && i.stopRevision == stopRevision
 }
 
+// updateStatus refreshes i.Status from tmux, hooks and the pane. A session
+// still queued for group capacity keeps StatusQueued until its tmux pane
+// exists; a missing pane is not an error for it (issue #2526).
 func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
