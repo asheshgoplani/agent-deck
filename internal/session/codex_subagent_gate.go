@@ -50,6 +50,9 @@ import (
 // The rebind gate stops the poisoning at the source; the safety net is the
 // backstop for any binding poisoned before the gate existed or by a path the
 // gate does not cover.
+// Guardian approval review threads have thread_source=guardian_review and a
+// parent_thread_id. Reject them as child threads; if one is already bound,
+// resume its verified user parent instead of forking the reviewer's context.
 
 // codexThreadMeta is the subset of a rollout's session_meta payload the
 // gate/safety-net decisions need.
@@ -190,8 +193,9 @@ func (i *Instance) shouldRejectCodexSubagentRebind(candidateID string) bool {
 	return CodexSubagentThread(candidateID, i.getCodexHomeDir())
 }
 
-// CodexSubagentThread reports whether threadID names a thread whose rollout
-// under codexHome says thread_source=subagent. A subagent's notify
+// CodexSubagentThread reports whether threadID names a non-user child thread.
+// Codex uses thread_source=subagent for collaboration and guardian_review for
+// approval review. A child thread's notify
 // (agent-turn-complete when the child finishes its task) says nothing about
 // the parent turn the pane shows: the parent keeps working, and usually
 // spawned the child from inside that very turn. The notify writer drops such
@@ -205,7 +209,26 @@ func CodexSubagentThread(threadID, codexHome string) bool {
 		return false
 	}
 	meta, ok := codexThreadMetaForSession(threadID, codexHome)
-	return ok && meta.ThreadSource == "subagent"
+	return ok && codexNonUserThread(meta)
+}
+
+func codexNonUserThread(meta codexThreadMeta) bool {
+	return meta.valid && (meta.ParentThreadID != "" ||
+		(meta.ThreadSource != "" && meta.ThreadSource != "user"))
+}
+
+// codexGuardianParentThreadID returns a guardian review's verified user parent.
+// A missing or non-user parent must not become a resume target.
+func codexGuardianParentThreadID(sessionID, codexHome string) string {
+	meta, ok := codexThreadMetaForSession(sessionID, codexHome)
+	if !ok || !meta.valid || meta.ThreadSource != "guardian_review" || meta.ParentThreadID == "" {
+		return ""
+	}
+	parent, ok := codexThreadMetaForSession(meta.ParentThreadID, codexHome)
+	if !ok || !parent.valid || parent.ThreadSource != "user" || parent.ParentThreadID != "" {
+		return ""
+	}
+	return meta.ParentThreadID
 }
 
 // codexHookFromForeignThread reports whether a hook status record belongs to a
@@ -281,17 +304,15 @@ func (i *Instance) filterCodexProcessProbeCandidate(candidateID string) string {
 }
 
 // codexSessionNeedsFork reports whether the bound session id names a
-// subagent-sourced thread, which `codex resume` would load but never accept
-// operator input on. buildCodexCommand launches such bindings with `codex
-// fork <sid>` instead: the fork carries the thread's full context into a
-// fresh thread_source=user thread, and the live-process probe rebinds the
-// instance to the fork's new id once the process is up. Bindings without a
-// flushed rollout return false (the #756 existence gate already handled
-// them).
+// non-user child thread, which `codex resume` would load but never accept
+// operator input on. buildCodexCommand resumes a verified Guardian parent
+// or forks the child into a user thread when that parent is unavailable.
+// Bindings without a flushed rollout return false (the #756 existence gate
+// already handled them).
 func codexSessionNeedsFork(sessionID, codexHome string) bool {
 	path := codexRolloutPathInHome(sessionID, codexHome)
 	if path == "" {
 		return false
 	}
-	return readCodexRolloutThreadMeta(path).ThreadSource == "subagent"
+	return codexNonUserThread(readCodexRolloutThreadMeta(path))
 }

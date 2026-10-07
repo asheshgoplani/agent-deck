@@ -2560,23 +2560,30 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		ClearHookSessionAnchor(i.ID)
 	}
 
-	// Safety net (incident 2026-07-15): codex loads subagent-sourced threads
+	// Safety net (incident 2026-07-15): codex loads non-user child threads
 	// via `resume` but refuses user-initiated turns on them — the TUI exits
 	// status 1 with "turn/start failed in TUI" on the first typed message,
-	// killing the tmux session in an error loop. This bites bindings
-	// poisoned by a subagent turn-complete hook before the gate existed (or
-	// raced past it) AND sessions legitimately living on an adopted subagent
-	// thread from an earlier mid-flight restart. `codex fork` carries the
-	// thread's full context into a fresh thread_source=user thread that
-	// accepts input; the live-process probe then rebinds the instance to the
-	// fork's new id. See codex_subagent_gate.go.
+	// killing the tmux session in an error loop. Guardian review bindings
+	// resume their verified user parent. Other child bindings use `codex fork`
+	// to create a thread_source=user thread that accepts input. The live-process
+	// probe then rebinds the instance to the fork's new id. See
+	// codex_subagent_gate.go.
 	if i.CodexSessionID != "" && codexSessionNeedsFork(i.CodexSessionID, codexHome) {
-		sessionLog.Warn("codex_subagent_binding_forked",
-			slog.String("instance_id", i.ID),
-			slog.String("title", i.Title),
-			slog.String("sid", i.CodexSessionID))
-		return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s",
-			command, yoloFlag, modelFlag, reasoningFlag, identityFlag, i.CodexSessionID)
+		if parentID := codexGuardianParentThreadID(i.CodexSessionID, codexHome); parentID != "" {
+			oldID := i.CodexSessionID
+			i.bindCodexSessionFromHook(parentID, "guardian_parent_recovery")
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "rebind",
+				Source: "guardian_parent_recovery", OldID: oldID, NewID: parentID,
+			})
+		} else {
+			sessionLog.Warn("codex_subagent_binding_forked",
+				slog.String("instance_id", i.ID),
+				slog.String("title", i.Title),
+				slog.String("sid", i.CodexSessionID))
+			return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s",
+				command, yoloFlag, modelFlag, reasoningFlag, identityFlag, i.CodexSessionID)
+		}
 	}
 
 	if i.CodexSessionID != "" {

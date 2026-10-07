@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // Tests for the codex subagent-thread rebind gate and restart safety net
@@ -34,6 +36,9 @@ func seedCodexRolloutWithMeta(t *testing.T, codexHome, sid, threadSource, parent
 	}
 	if parentID != "" {
 		payload["parent_thread_id"] = parentID
+	}
+	if threadSource == "guardian_review" {
+		payload["source"] = map[string]any{"subagent": map[string]any{"other": "guardian"}}
 	}
 	lines := []map[string]any{
 		{"timestamp": "2026-07-15T20:00:00.000Z", "type": "session_meta", "payload": payload},
@@ -135,6 +140,27 @@ func TestCodexHookRebind_RejectsSubagentThread(t *testing.T) {
 	if inst.CodexSessionID != mainSID {
 		t.Fatalf("subagent turn-complete hook must not usurp the binding: "+
 			"got %q, want %q (the 2026-07-15 poisoning)", inst.CodexSessionID, mainSID)
+	}
+}
+
+func TestCodexHookRebind_RejectsGuardianReviewThread(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+
+	inst.CodexSessionID = mainSID
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: guardianSID,
+		Event:     "agent-turn-complete",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.CodexSessionID != mainSID {
+		t.Fatalf("guardian review hook replaced the user thread: got %q, want %q", inst.CodexSessionID, mainSID)
 	}
 }
 
@@ -256,6 +282,50 @@ func TestBuildCodexCommand_ResumesUserThreadBinding(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_ResumesGuardianReviewParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	db := withTempGlobalStateDB(t)
+
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath,
+		GroupPath: inst.GroupPath, Command: inst.Command, Tool: "codex",
+		Status: "idle", CreatedAt: time.Now(),
+		ToolData: json.RawMessage(`{"codex_session_id":"` + guardianSID + `"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	inst.CodexSessionID = guardianSID
+	cmd := inst.buildCodexCommand("codex")
+
+	if !strings.Contains(cmd, "resume "+mainSID) || strings.Contains(cmd, "fork "+guardianSID) {
+		t.Fatalf("guardian review binding must resume its user parent: got %q", cmd)
+	}
+	if inst.CodexSessionID != mainSID {
+		t.Fatalf("guardian review binding was not repaired: got %q, want %q", inst.CodexSessionID, mainSID)
+	}
+	if got := readCodexSessionIDFromDB(t, db, inst.ID); got != mainSID {
+		t.Fatalf("guardian review binding persisted %q, want parent %q", got, mainSID)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotResumeMissingGuardianParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", uniqueSID(t), true)
+
+	inst.CodexSessionID = guardianSID
+	cmd := inst.buildCodexCommand("codex")
+
+	if !strings.Contains(cmd, "fork "+guardianSID) {
+		t.Fatalf("a missing guardian parent must not become a resume target: got %q", cmd)
+	}
+}
+
 func TestShouldRejectCodexSubagentRebind(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 
@@ -310,6 +380,18 @@ func TestResolveCodexDetectionCandidateRejectsSubagent(t *testing.T) {
 
 	if got := inst.resolveCodexDetectionCandidate(subSID, nil); got != userSID {
 		t.Fatalf("async candidate resolution = %q, want user thread %q", got, userSID)
+	}
+}
+
+func TestResolveCodexDetectionCandidateRejectsGuardianReview(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	userSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutCwd(t, codexHome, userSID, "user", inst.ProjectPath)
+	seedCodexRolloutCwd(t, codexHome, guardianSID, "guardian_review", inst.ProjectPath)
+
+	if got := inst.resolveCodexDetectionCandidate(guardianSID, nil); got != userSID {
+		t.Fatalf("guardian probe candidate resolved to %q, want user thread %q", got, userSID)
 	}
 }
 
