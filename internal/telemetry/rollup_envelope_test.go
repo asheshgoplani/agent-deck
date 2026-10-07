@@ -12,7 +12,7 @@ func TestRollupEnvelope(t *testing.T) {
 	c.set(at(1, 10, 0))
 	SetProcess("1.16.25", SurfaceCLI)
 	t.Setenv("CLAUDECODE", "1")
-	CLICommand(Feature("launch"))
+	CLICommand(Feature("launch"), false)
 	FeatureUsed(Feature("rename"), false)
 	t.Setenv("CLAUDECODE", "")
 
