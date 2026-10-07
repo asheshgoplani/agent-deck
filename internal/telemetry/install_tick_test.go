@@ -750,3 +750,38 @@ func TestInstallTickAllowListStaysWithinGrantedEnvelope(t *testing.T) {
 		t.Fatal("schema JSON has no install_tick properties")
 	}
 }
+
+// Decision (2026-10): os and arch ship on install.tick without a
+// SchemaVersion bump. v1.16.26 shipped schema 3; a bump turns every grant
+// back into undecided and asks every install again. This test pins schema 3
+// so the tick change cannot quietly force a new consent round.
+func TestInstallTickOSArchKeepsSchemaVersion(t *testing.T) {
+	const v11626SchemaVersion = 3
+	if SchemaVersion != v11626SchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d (unchanged from v1.16.26): os/arch on install.tick was approved without a bump", SchemaVersion, v11626SchemaVersion)
+	}
+	raw, err := SchemaJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Schema      int `json:"schema"`
+		InstallTick struct {
+			Properties map[string]any `json:"properties"`
+		} `json:"install_tick"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Schema != v11626SchemaVersion {
+		t.Fatalf("schema JSON reports schema %d, want %d", doc.Schema, v11626SchemaVersion)
+	}
+	for _, key := range []string{"os", "arch"} {
+		if _, ok := doc.InstallTick.Properties[key]; !ok {
+			t.Fatalf("schema JSON install_tick lacks %q", key)
+		}
+	}
+	if !strings.Contains(installTickSchemaMarkdown, "without a schema version change") {
+		t.Fatal("tick schema markdown does not record the no-bump decision")
+	}
+}

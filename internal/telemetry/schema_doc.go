@@ -166,4 +166,6 @@ const installTickSchemaMarkdown = "#### Anonymous daily install tick\n" +
 	"| `$geoip_disable` | `true` |\n" +
 	"\n" +
 	"The PostHog event `uuid` and required `distinct_id` both equal `tick_id`. No persistent install ID or detailed envelope is attached. Timestamp is the local day at 12:00 labelled UTC. The dashboard must count DISTINCT `tick_id` per `day`; retries may produce multiple rows. The nonce links only retries of one daily event.\n" +
+	"\n" +
+	"`os` and `arch` were added to the tick in schema 3 without a schema version change. This is a recorded decision: every detailed schema 3 event already sends both values under the same grant, and a bump would ask every install for consent again.\n" +
 	"\n"

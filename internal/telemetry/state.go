@@ -46,7 +46,8 @@ const (
 // value that every detailed event of this schema already sends onto
 // install.tick, under the same grant, is not such a change: the tick gained os
 // and arch in schema 3 without a bump. TELEMETRY.md records that decision and
-// TestInstallTickAllowListStaysWithinGrantedEnvelope enforces its limit.
+// TestInstallTickAllowListStaysWithinGrantedEnvelope enforces its limit;
+// TestInstallTickOSArchKeepsSchemaVersion pins the version.
 const SchemaVersion = 3
 
 // StateFileName is the state file, stored in the agent-deck data directory.

@@ -106,7 +106,7 @@ An attempt has a two-second deadline. Lock contention skips the attempt; failed 
 
 The complete tick property allow-list is below. The PostHog event UUID and its required `distinct_id` both use the daily nonce, never the detailed telemetry install ID. It links only retries of that day's event; no identifier links days or joins detailed telemetry. The coarse values `day`, `v`, `os` and `arch` are not identifiers, but they narrow a tick: on a rare platform and version only a few installs share them, so such a tick can be narrowed to those few detailed installs, and ticks with the same rare values on consecutive days may come from the same install.
 
-`os` and `arch` were added to the tick without a schema version change, so existing grants were not asked again. The consent question already lists version and OS, and every detailed schema 3 event already sends both values under the same grant. A tick field that detailed events do not already send would change the schema version. The existing personless and GeoIP-disabled controls remain. As with any HTTP request, the receiver sees the connection's source IP; this client code alone does not establish backend log deletion.
+**Decision: `os` and `arch` ship on the tick without a schema version change.** The schema version stays at 3, so existing grants are not asked again. The consent question already lists version and OS, and every detailed schema 3 event already sends both values under the same grant. Another bump would send every install back through consent, and in 1.16.26 a re-grant after a bump also restarted the install under a new anonymous id. A tick field that detailed events do not already send would still change the schema version. The existing personless and GeoIP-disabled controls remain. As with any HTTP request, the receiver sees the connection's source IP; this client code alone does not establish backend log deletion.
 
 Owner installs opt out of **only the tick** with `[telemetry] owner = true` in config.toml or `AGENTDECK_TELEMETRY_OWNER=1`. The environment switch cannot override a true config setting; false/0/no/off are false. Restart the TUI after editing configuration, as with the existing telemetry settings. All existing telemetry off switches still take precedence, and none of these options grants consent.
 
@@ -476,6 +476,8 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `$geoip_disable` | `true` |
 
 The PostHog event `uuid` and required `distinct_id` both equal `tick_id`. No persistent install ID or detailed envelope is attached. Timestamp is the local day at 12:00 labelled UTC. The dashboard must count DISTINCT `tick_id` per `day`; retries may produce multiple rows. The nonce links only retries of one daily event.
+
+`os` and `arch` were added to the tick in schema 3 without a schema version change. This is a recorded decision: every detailed schema 3 event already sends both values under the same grant, and a bump would ask every install for consent again.
 
 <!-- schema:end -->
 
