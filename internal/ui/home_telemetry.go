@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -136,6 +137,35 @@ func (h *Home) CloseTelemetry(kind telemetry.ExitKind) {
 		h.tel.sampler.Close()
 		telemetry.TUIExited(time.Since(h.tel.startedAt), kind)
 	})
+}
+
+// CloseTelemetryAfterRun records how tea.Program.Run ended, from its error.
+// bubbletea returns ErrProgramPanic (wrapped in ErrProgramKilled) after it
+// recovers a panic in Update, View or a Cmd: that is the one panic report,
+// app.exit kind=panic plus error area=tui kind=panic. ErrInterrupted is a
+// SIGINT bubbletea saw first, recorded like agent-deck's own signal close.
+// Any other error means the terminal could not be run (TTY or raw mode
+// setup); it is an error classified by type, and app.exit is left out
+// because none of its kinds describe it. All paths share CloseTelemetry's
+// once guard, so a signal close racing behind adds nothing.
+func (h *Home) CloseTelemetryAfterRun(err error) {
+	switch {
+	case err == nil:
+		kind := telemetry.ExitQuit
+		if _, ok := h.RestartTarget(); ok {
+			kind = telemetry.ExitUpdateRestart
+		}
+		h.CloseTelemetry(kind)
+	case errors.Is(err, tea.ErrProgramPanic):
+		h.CloseTelemetry(telemetry.ExitPanic)
+	case errors.Is(err, tea.ErrInterrupted):
+		h.CloseTelemetry(telemetry.ExitSignal)
+	default:
+		h.tel.closeOnce.Do(func() {
+			telemetry.ErrorOccurred(telemetry.AreaTUI, telemetry.ErrKindOf(err), "")
+			h.tel.sampler.Close()
+		})
+	}
 }
 
 // telemetryDisabledMsg carries the result of turning telemetry off from

@@ -1321,17 +1321,13 @@ func main() {
 		p.Send(ui.MaintenanceCompleteMsg{Result: result})
 	})
 
-	if _, err := p.Run(); err != nil {
-		homeModel.CloseTelemetry(telemetry.ExitPanic)
+	_, runErr := p.Run()
+	homeModel.CloseTelemetryAfterRun(runErr)
+	if runErr != nil {
 		runEmbeddedTerminalCleanup()
-		fmt.Printf("Error: %v\n", err)
+		fmt.Printf("Error: %v\n", runErr)
 		os.Exit(1)
 	}
-	exitKind := telemetry.ExitQuit
-	if _, ok := homeModel.RestartTarget(); ok {
-		exitKind = telemetry.ExitUpdateRestart
-	}
-	homeModel.CloseTelemetry(exitKind)
 
 	// In-place restart (restart_deck hotkey or auto_restart): the TUI has
 	// flushed its state and restored the terminal, so replace this process

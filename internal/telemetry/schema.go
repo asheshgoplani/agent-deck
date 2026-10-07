@@ -190,7 +190,7 @@ var Events = []EventDef{
 		Props:   []Prop{propTool, enum("via", attachVias...), bucket("count", BucketN), bucket("total_dur", BucketDur)},
 		Emitted: "one per (tool, via) that day", Question: "Time inside sessions vs on the dashboard"},
 	{Name: "error", Tier: 1, Ships: shipsNow,
-		Props: []Prop{enum("area", errorAreas...), enum("kind", errorKinds...), propTool, boolean("before_first_success"),
+		Props: []Prop{enum("area", errorAreas...).doc("tui means a recovered TUI panic or a terminal the TUI could not set up"), enum("kind", errorKinds...), propTool, boolean("before_first_success"),
 			enum("onboarding_step", onboardingSteps...)},
 		Emitted: "per occurrence, deduped per (area, kind) per hour, max 20/day", Question: "Top errors, regressions per version"},
 	{Name: "update", Tier: 1, Ships: shipsNow,
