@@ -246,6 +246,27 @@ func TestTelemetryDialogFailedSaveIsNotConsent(t *testing.T) {
 	}
 }
 
+// TestTelemetryDialogFailedReconsentSaveKeepsState: a yes whose save fails
+// leaves the in-memory state exactly as it was, so a kept id and its salt
+// stay paired and the install is still asked.
+func TestTelemetryDialogFailedReconsentSaveKeepsState(t *testing.T) {
+	h := telemetryDialogHarness(t)
+	h.st.SchemaVersion = 2
+	h.st.InstallID = strings.Repeat("ab", 16)
+	h.st.Salt = strings.Repeat("cd", 32)
+	h.st.ConsentEndpoint = telemetry.Endpoint()
+	before := *h.st
+	forceShow(h)
+	h.d.saveState = func(*telemetry.State) error { return errors.New("disk full") }
+	_, cmd := h.d.Update(key("y"))
+	if grantedMsgs(cmd) != 0 || h.st.Consent == telemetry.ConsentGranted {
+		t.Fatal("unsaved consent must stay off")
+	}
+	if h.st.InstallID != before.InstallID || h.st.Salt != before.Salt || h.st.SchemaVersion != before.SchemaVersion || h.st.ConsentDay != before.ConsentDay {
+		t.Fatalf("a failed save changed the state: id %q salt kept=%v schema %d", h.st.InstallID, h.st.Salt == before.Salt, h.st.SchemaVersion)
+	}
+}
+
 func TestTelemetryDialogChangedConditionsCannotGrant(t *testing.T) {
 	h := telemetryDialogHarness(t)
 	forceShow(h)

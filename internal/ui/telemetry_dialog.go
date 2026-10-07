@@ -193,16 +193,18 @@ func (d *TelemetryDialog) accept() tea.Cmd {
 	if !d.canConsent() || d.endpoint != telemetry.Endpoint() {
 		return nil
 	}
+	before := *d.state
 	if err := telemetry.Grant(d.state, d.version, d.now()); err != nil {
 		d.saveErr = err
+		*d.state = before
 		d.step = telemetryStepDeclined
 		return telemetryDismissAfter()
 	}
 	if err := d.saveState(d.state); err != nil {
-		// Consent that did not reach disk is not consent: stay off.
+		// Consent that did not reach disk is not consent: stay off, with
+		// the state (and any kept id and salt) exactly as it was before.
 		d.saveErr = err
-		d.state.Consent = telemetry.ConsentUndecided
-		d.state.InstallID = ""
+		*d.state = before
 		d.step = telemetryStepDeclined
 		return telemetryDismissAfter()
 	}
