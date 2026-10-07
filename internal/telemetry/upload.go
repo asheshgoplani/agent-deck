@@ -257,8 +257,12 @@ func prepareUpload() (*uploadBatch, UploadResult) {
 		bodies, groups = bodies[:maxBatchRequests], groups[:maxBatchRequests]
 	}
 
-	// Reserve the attempt durably before any request (v1 rule).
+	// Reserve the attempt durably before any request (v1 rule). The lease
+	// closes the NextTry gate that 1.16.26 and older check under the state
+	// lock, so an older binary running side by side does not send this
+	// spool again while the request is in flight; the outcome replaces it.
 	s.Upload.AttemptsToday++
+	s.Upload.NextTry = now.Add(uploadDeadline + time.Minute)
 	if err := saveStateLocked(s); err != nil {
 		return nil, UploadResult{Reason: err.Error()}
 	}

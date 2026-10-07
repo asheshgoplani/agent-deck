@@ -235,8 +235,15 @@ func Disable(version string, now time.Time) error {
 }
 
 // SetLevel stores the recording level. Raising basic to full is a consent
-// decision; callers must confirm it interactively first.
+// decision; callers must confirm it interactively first. Like Disable, it
+// waits for an in-flight send through the send lock, so once it returns no
+// batch built at the previous level is still going out.
 func SetLevel(l Level) (*State, error) {
+	unlockSend, err := lockSend(syscall.LOCK_EX)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockSend()
 	unlock, err := lockState()
 	if err != nil {
 		return nil, err
