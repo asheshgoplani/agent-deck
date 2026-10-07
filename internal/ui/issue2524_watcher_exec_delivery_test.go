@@ -93,8 +93,9 @@ type issue2524Env struct {
 
 // newIssue2524Env prepares an isolated profile with one webhook watcher whose
 // [source] settings are given, routes alice@example.com to the demo conductor,
-// and starts a tmux pane for that conductor that echoes whatever is typed.
-func newIssue2524Env(t *testing.T, watcherName string, source map[string]string, configTOML string) *issue2524Env {
+// and starts a tmux pane for that conductor running paneCmd (default: a pane
+// that echoes whatever is typed).
+func newIssue2524Env(t *testing.T, watcherName string, source map[string]string, configTOML, paneCmd string) *issue2524Env {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
@@ -164,8 +165,11 @@ func newIssue2524Env(t *testing.T, watcherName string, source map[string]string,
 	socket := fmt.Sprintf("agentdeck-2524-%d-%d", os.Getpid(), time.Now().UnixNano())
 	ts := tmux.NewSession(session.ConductorSessionTitle(issue2524Conductor), t.TempDir())
 	ts.SocketName = socket
-	start := exec.Command("tmux", "-L", socket, "new-session", "-d", "-x", "200", "-y", "50",
-		"-s", ts.Name, "cat >/dev/null")
+	if paneCmd == "" {
+		paneCmd = "cat >/dev/null"
+	}
+	start := exec.Command("tmux", "-u", "-L", socket, "new-session", "-d", "-x", "200", "-y", "30",
+		"-s", ts.Name, paneCmd)
 	if out, err := start.CombinedOutput(); err != nil {
 		t.Fatalf("start conductor pane: %v: %s", err, out)
 	}
@@ -299,7 +303,7 @@ func postWebhook(t *testing.T, port, sender, body string) {
 
 func TestIssue2524_WatcherEventReachesConductorWhileHomeIsInExec(t *testing.T) {
 	port := issue2524FreePort(t)
-	env := newIssue2524Env(t, "hook-2524", map[string]string{"bind": "127.0.0.1", "port": port}, "")
+	env := newIssue2524Env(t, "hook-2524", map[string]string{"bind": "127.0.0.1", "port": port}, "", "")
 	prog := env.run(t)
 	detach := env.attach(t, prog)
 
@@ -337,12 +341,70 @@ func TestIssue2524_HealthAlertReachesConductorWhileHomeIsInExec(t *testing.T) {
 	// an error on every health tick.
 	env := newIssue2524Env(t, "hook-2524-down",
 		map[string]string{"bind": "192.0.2.1", "port": issue2524FreePort(t)},
-		"[watcher]\nhealth_check_interval_seconds = 1\n")
+		"[watcher]\nhealth_check_interval_seconds = 1\n", "")
 	prog := env.run(t)
 	env.attach(t, prog)
 
 	want := `[WATCHER HEALTH ALERT] Watcher "hook-2524-down" transitioned to error`
 	if !env.waitForPane(want, 6*time.Second) {
 		t.Fatal("watcher health alert did not reach the conductor pane within 6s while Home was in tea.Exec (attached)")
+	}
+}
+
+// TestIssue2524_EventBurstReachesConductorAsSeparateSubmissionsInOrder: the
+// relay dispatches a burst of routed events within microseconds. Each delivery
+// runs the composer guard, pastes the text and presses Enter 100 ms later, so
+// deliveries running side by side can all pass the guard on an empty composer
+// and land their text before any Enter, merging several events into one
+// conductor command. The conductor here is a prompt that logs every submitted
+// line; each event must arrive as its own line, in the order it was sent.
+func TestIssue2524_EventBurstReachesConductorAsSeparateSubmissionsInOrder(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not installed")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "submitted.log")
+	script := filepath.Join(dir, "conductor.sh")
+	// A composer the delivery path recognizes ("❯ " prompt), which records
+	// each submitted line.
+	if err := os.WriteFile(script, []byte("#!/bin/bash\nwhile IFS= read -r -p '❯ ' line; do printf '%s\\n' \"$line\" >> \"$1\"; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	port := issue2524FreePort(t)
+	env := newIssue2524Env(t, "hook-2524-burst", map[string]string{"bind": "127.0.0.1", "port": port}, "",
+		fmt.Sprintf("bash %q %q", script, logPath))
+	prog := env.run(t)
+	env.attach(t, prog)
+	if !env.waitForPane("❯", 5*time.Second) {
+		t.Fatal("conductor prompt never appeared")
+	}
+
+	const burst = 5
+	var want []string
+	stamp := time.Now().UnixNano()
+	for i := 1; i <= burst; i++ {
+		marker := fmt.Sprintf("burst-%d-%d", stamp, i)
+		postWebhook(t, port, "alice@example.com", marker)
+		want = append(want, "[webhook] alice@example.com: "+marker)
+	}
+
+	var got []string
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(logPath)
+		got = nil
+		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+			if line != "" {
+				got = append(got, line)
+			}
+		}
+		if len(got) >= burst || strings.Count(string(data), "[webhook]") >= burst {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("conductor received %d submissions, want %d separate ones in order:\ngot:\n  %s\nwant:\n  %s",
+			len(got), burst, strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
 }

@@ -652,6 +652,9 @@ type Home struct {
 	// an engine.
 	watcherPanelEvents <-chan watcher.Event
 	watcherPanelHealth <-chan watcher.HealthState
+	// conductorDeliveries serializes watcher deliveries per conductor pane
+	// so a burst arrives as separate submissions, in order.
+	conductorDeliveries paneDeliveryQueue
 
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
@@ -13842,13 +13845,13 @@ func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
 	}
 	msg := formatWatcherDispatchMsg(evt)
 	tmuxName := ts.Name
-	go func() {
+	h.conductorDeliveries.enqueue(tmuxName, func() {
 		if err := deliverToConductorPane(ts, msg); err != nil {
 			uiLog.Warn("dispatch_watcher_event_send_failed",
 				slog.String("tmux_session", tmuxName),
 				slog.String("error", err.Error()))
 		}
-	}()
+	})
 }
 
 // conductorTmuxSession returns the tmux session of the named conductor, or nil
@@ -13860,7 +13863,9 @@ func (h *Home) conductorTmuxSession(conductorName string) *tmux.Session {
 	h.instancesMu.RLock()
 	defer h.instancesMu.RUnlock()
 	for _, inst := range h.instances {
-		if inst.Title != sessionTitle {
+		// Title is written under the instance's own lock (SetTitleThreadSafe,
+		// renames and title sync), not instancesMu.
+		if inst.GetTitleThreadSafe() != sessionTitle {
 			continue
 		}
 		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
@@ -14084,13 +14089,13 @@ func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
 		return
 	}
 	tmuxName := ts.Name
-	go func() {
+	h.conductorDeliveries.enqueue(tmuxName, func() {
 		if err := deliverToConductorPane(ts, alertMsg); err != nil {
 			uiLog.Warn("dispatch_health_alert_send_failed",
 				slog.String("tmux_session", tmuxName),
 				slog.String("error", err.Error()))
 		}
-	}()
+	})
 }
 
 // handleMCPDialogKey handles keys when MCP dialog is visible

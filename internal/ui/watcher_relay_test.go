@@ -2,9 +2,13 @@ package ui
 
 import (
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
 )
 
@@ -110,5 +114,156 @@ func TestRelayWatcherEngine_SurvivesAPanickingDelivery(t *testing.T) {
 	}
 	if len(got) != 2 || !got["good"] || !got["health:good"] {
 		t.Fatalf("delivered %v after a panic, want the good event and the good health state", got)
+	}
+}
+
+// paneQueueIdle waits until q has no runner left for any pane.
+func paneQueueIdle(t *testing.T, q *paneDeliveryQueue) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		q.mu.Lock()
+		n := len(q.pending)
+		q.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("pane runner did not exit after its queue drained")
+}
+
+// TestPaneDeliveryQueue_OnePaneDeliversOneAtATimeInOrder: deliveries to one
+// conductor pane never overlap and keep their queue order, so a burst cannot
+// merge in the composer or arrive reordered.
+func TestPaneDeliveryQueue_OnePaneDeliversOneAtATimeInOrder(t *testing.T) {
+	var q paneDeliveryQueue
+	var inflight, maxInflight atomic.Int32
+	var mu sync.Mutex
+	var order []int
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		q.enqueue("pane", func() {
+			defer wg.Done()
+			n := inflight.Add(1)
+			for {
+				m := maxInflight.Load()
+				if n <= m || maxInflight.CompareAndSwap(m, n) {
+					break
+				}
+			}
+			mu.Lock()
+			order = append(order, i)
+			mu.Unlock()
+			time.Sleep(200 * time.Microsecond)
+			inflight.Add(-1)
+		})
+	}
+	wg.Wait()
+	paneQueueIdle(t, &q)
+	if m := maxInflight.Load(); m != 1 {
+		t.Errorf("deliveries to one pane overlapped: %d in flight at once", m)
+	}
+	for i, got := range order {
+		if got != i {
+			t.Fatalf("delivery %d ran as %d: queue order broken (%v)", i, got, order)
+		}
+	}
+}
+
+// TestPaneDeliveryQueue_NeverBlocksAndPanesAreIndependent: while one pane's
+// delivery hangs (an occupied composer is held for seconds), queuing more for
+// it returns at once and another pane still gets its deliveries.
+func TestPaneDeliveryQueue_NeverBlocksAndPanesAreIndependent(t *testing.T) {
+	var q paneDeliveryQueue
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var ran atomic.Int32
+	q.enqueue("busy", func() {
+		close(started)
+		<-release
+	})
+	<-started
+
+	queued := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			q.enqueue("busy", func() { ran.Add(1) })
+		}
+		close(queued)
+	}()
+	select {
+	case <-queued:
+	case <-time.After(5 * time.Second):
+		t.Fatal("enqueue blocked behind a running delivery")
+	}
+
+	other := make(chan struct{})
+	q.enqueue("other", func() { close(other) })
+	select {
+	case <-other:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a busy pane held up another pane's delivery")
+	}
+	if n := ran.Load(); n != 0 {
+		t.Fatalf("%d deliveries ran while the pane's first delivery was still running", n)
+	}
+
+	close(release)
+	paneQueueIdle(t, &q)
+	if n := ran.Load(); n != 100 {
+		t.Fatalf("ran %d queued deliveries, want 100", n)
+	}
+}
+
+// TestPaneDeliveryQueue_SurvivesAPanickingDelivery: a panic in one delivery
+// must not leave the pane's queue stuck.
+func TestPaneDeliveryQueue_SurvivesAPanickingDelivery(t *testing.T) {
+	var q paneDeliveryQueue
+	done := make(chan struct{})
+	q.enqueue("pane", func() { panic("boom") })
+	q.enqueue("pane", func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the delivery after a panic never ran")
+	}
+	paneQueueIdle(t, &q)
+}
+
+// TestConductorTmuxSession_ReadsTitleUnderInstanceLock: the relay looks the
+// conductor up off the UI goroutine while renames and title sync write Title
+// under the instance's own lock. Run with -race: a plain Title read races.
+func TestConductorTmuxSession_ReadsTitleUnderInstanceLock(t *testing.T) {
+	inst := session.NewInstanceWithTool(session.ConductorSessionTitle("demo"), t.TempDir(), "shell")
+	ts := tmux.NewSession("conductor-demo", t.TempDir())
+	inst.SetTmuxSessionForTest(ts)
+	home := NewHome()
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{inst}
+	home.instancesMu.Unlock()
+
+	stop := make(chan struct{})
+	renamed := make(chan struct{})
+	go func() {
+		defer close(renamed)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				inst.SetTitleThreadSafe(session.ConductorSessionTitle("demo"))
+				return
+			default:
+			}
+			inst.SetTitleThreadSafe(session.ConductorSessionTitle("demo-" + strconv.Itoa(i%2)))
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		_ = home.conductorTmuxSession("demo")
+	}
+	close(stop)
+	<-renamed
+	if got := home.conductorTmuxSession("demo"); got != ts {
+		t.Fatalf("conductor lookup returned %v, want the conductor's tmux session", got)
 	}
 }
