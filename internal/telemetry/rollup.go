@@ -219,9 +219,28 @@ func (h *hourSample) props() map[string]any {
 	}
 }
 
+// keepsOpenHour reports whether an open hour may be stored or emitted:
+// activity.hourly is a full-only event, so below full nothing is kept.
+func (s *State) keepsOpenHour() bool { return EffectiveLevel(s) == LevelFull }
+
+// dropOpenHourBelowFull forgets the stored open hour when the effective level
+// is below full (a config cap does not go through SetLevel), and reports
+// whether state changed. Callers hold the state lock.
+func (s *State) dropOpenHourBelowFull() bool {
+	if s.OpenHour == nil || s.keepsOpenHour() {
+		return false
+	}
+	s.OpenHour = nil
+	return true
+}
+
 // emitOpenHour spools the stored open hour with write once now is past it,
-// and reports whether state changed. Callers hold the state lock.
+// and reports whether state changed. Below full it only forgets it. Callers
+// hold the state lock.
 func (s *State) emitOpenHour(now time.Time, write func(spoolLine) error) bool {
+	if s.dropOpenHourBelowFull() {
+		return true
+	}
 	h := s.OpenHour
 	if h == nil || !h.Start.Before(localHourStart(now)) {
 		return false
@@ -271,13 +290,16 @@ func recordHour(h hourSample) {
 }
 
 // resume continues the hour an earlier TUI left open, or emits it when that
-// hour is over.
+// hour is over. Below full it forgets it.
 func (sp *Sampler) resume() {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 	withState(func(s *State, now time.Time) bool {
 		if s.OpenHour == nil {
 			return false
+		}
+		if s.dropOpenHourBelowFull() {
+			return true
 		}
 		if !s.emitOpenHour(now, appendSpool) {
 			sp.hour, s.OpenHour = *s.OpenHour, nil
@@ -384,7 +406,8 @@ func (sp *Sampler) rollHour(now time.Time) {
 }
 
 // Close emits a finished hour, stores the still open one in State for the
-// next TUI or upload to continue or emit, and releases the lock.
+// next TUI or upload to continue or emit, and releases the lock. Below full
+// the open hour is not stored (it could ship after the level is raised).
 func (sp *Sampler) Close() {
 	if sp == nil {
 		return
@@ -394,7 +417,10 @@ func (sp *Sampler) Close() {
 	sp.rollHour(sp.now())
 	if h := sp.hour; h.active() {
 		withState(func(s *State, now time.Time) bool {
-			s.emitOpenHour(now, appendSpool)
+			changed := s.emitOpenHour(now, appendSpool)
+			if !s.keepsOpenHour() {
+				return changed
+			}
 			if s.OpenHour != nil {
 				h.merge(*s.OpenHour)
 			}

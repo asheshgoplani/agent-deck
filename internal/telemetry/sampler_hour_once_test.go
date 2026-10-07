@@ -230,3 +230,160 @@ func TestDeclineAndResetIDForgetOpenHour(t *testing.T) {
 		t.Fatal("open hour survived ResetID")
 	}
 }
+
+// openCloseTUIActive is openCloseTUI with a key press, so the hour is active
+// both by minutes and by human input.
+func openCloseTUIActive(t *testing.T, c *clock, when time.Time) {
+	t.Helper()
+	c.set(when)
+	sp := NewSampler()
+	if sp == nil {
+		t.Fatal("TUI did not win the sampler lock")
+	}
+	sp.Observe(running(1))
+	sp.KeyPressed()
+	sp.Close()
+}
+
+// assertNoOpenHourStored fails when the state holds an open hour, in memory
+// or on disk.
+func assertNoOpenHourStored(t *testing.T, why string) {
+	t.Helper()
+	p, err := StatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if LoadState().OpenHour != nil || strings.Contains(string(b), "open_hour") {
+		t.Fatalf("open hour stored %s: %s", why, b)
+	}
+}
+
+// TestBasicLevelNeverStoresOpenHour: activity.hourly is a full-only event, so
+// a TUI closed at level basic (chosen with `telemetry level`, or capped by
+// config) stores no open hour, and that hour never ships after the level is
+// raised to full. Raising basic to full is a consent decision.
+func TestBasicLevelNeverStoresOpenHour(t *testing.T) {
+	for _, viaConfig := range []bool{false, true} {
+		name := "state"
+		if viaConfig {
+			name = "config"
+		}
+		t.Run(name, func(t *testing.T) {
+			c := env(t)
+			f := newFakePostHog(t)
+			grant(t, c)
+			if viaConfig {
+				SetConfigLevel("basic")
+			} else if _, err := SetLevel(LevelBasic); err != nil {
+				t.Fatal(err)
+			}
+			openCloseTUIActive(t, c, at(1, 21, 5))
+			assertNoOpenHourStored(t, "at level basic")
+			if viaConfig {
+				SetConfigLevel("")
+			} else if _, err := SetLevel(LevelFull); err != nil {
+				t.Fatal(err)
+			}
+			openCloseTUIActive(t, c, at(1, 22, 3)) // next TUI, now at full
+			c.set(at(2, 9, 0))
+			MaybeUpload(t.Context())
+			for _, l := range hourlyLines(t) {
+				if l.H != nil && *l.H == 21 {
+					t.Fatalf("hour sampled at basic shipped after raising to full: %v", l.P)
+				}
+			}
+			for i := 0; i < f.hits(); i++ {
+				for _, e := range f.batch(t, i).Batch {
+					if e.Event == "activity.hourly" && strings.HasPrefix(e.Timestamp, dayOf(at(1, 0, 0))+"T21") {
+						t.Fatalf("hour sampled at basic uploaded after raising to full: %+v", e)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestBasicLevelNeverEmitsStoredOpenHour: an hour stored at full is not
+// emitted, adopted or kept once the effective level is basic (a config cap
+// does not go through SetLevel), by a TUI resume or by an upload.
+func TestBasicLevelNeverEmitsStoredOpenHour(t *testing.T) {
+	for _, path := range []string{"resume", "upload", "preview"} {
+		t.Run(path, func(t *testing.T) {
+			c := env(t)
+			f := newFakePostHog(t)
+			grant(t, c)
+			openCloseTUIActive(t, c, at(1, 21, 5)) // stored at full
+			if LoadState().OpenHour == nil {
+				t.Fatal("expected a stored open hour at full")
+			}
+			SetConfigLevel("basic")
+			switch path {
+			case "resume":
+				c.set(at(1, 21, 30)) // same hour: must not be adopted
+				sp := NewSampler()
+				if sp == nil {
+					t.Fatal("no sampler")
+				}
+				sp.Close()
+				assertNoOpenHourStored(t, "after a resume at level basic")
+				SetConfigLevel("")
+				openCloseTUI(t, c, at(1, 22, 3))
+			case "upload":
+				c.set(at(2, 9, 0))
+				MaybeUpload(t.Context())
+				assertNoOpenHourStored(t, "after an upload at level basic")
+			case "preview":
+				c.set(at(2, 9, 0))
+				bodies, err := PreviewBatch()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, b := range bodies {
+					if strings.Contains(string(b), "activity.hourly") {
+						t.Fatalf("preview at level basic shows the stored hour: %s", b)
+					}
+				}
+			}
+			for _, l := range hourlyLines(t) {
+				if l.D == dayOf(at(1, 0, 0)) && (l.H == nil || *l.H == 21) {
+					t.Fatalf("stored hour emitted at level basic: %+v", l)
+				}
+			}
+			for i := 0; i < f.hits(); i++ {
+				for _, e := range f.batch(t, i).Batch {
+					if e.Event == "activity.hourly" {
+						t.Fatalf("stored hour uploaded at level basic: %+v", e)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestSetLevelLeavingFullClearsOpenHour: `telemetry level basic` forgets the
+// stored hour; staying at full keeps it.
+func TestSetLevelLeavingFullClearsOpenHour(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	openCloseTUIActive(t, c, at(1, 21, 5))
+	if _, err := SetLevel(LevelFull); err != nil {
+		t.Fatal(err)
+	}
+	if LoadState().OpenHour == nil {
+		t.Fatal("SetLevel(full) at full dropped the stored hour")
+	}
+	if _, err := SetLevel(LevelBasic); err != nil {
+		t.Fatal(err)
+	}
+	assertNoOpenHourStored(t, "after SetLevel(basic)")
+	if _, err := SetLevel(LevelFull); err != nil {
+		t.Fatal(err)
+	}
+	openCloseTUI(t, c, at(1, 22, 3))
+	for _, l := range hourlyLines(t) {
+		if *l.H == 21 {
+			t.Fatalf("hour stored before leaving full shipped after returning to full: %v", l.P)
+		}
+	}
+}

@@ -225,7 +225,9 @@ func Disable(version string, now time.Time) error {
 }
 
 // SetLevel stores the recording level. Raising basic to full is a consent
-// decision; callers must confirm it interactively first.
+// decision; callers must confirm it interactively first. Unless the level
+// stays full, the stored open hour is forgotten, so an hour sampled at one
+// level never ships at another.
 func SetLevel(l Level) (*State, error) {
 	unlock, err := lockState()
 	if err != nil {
@@ -233,6 +235,9 @@ func SetLevel(l Level) (*State, error) {
 	}
 	defer unlock()
 	s := LoadState()
+	if !s.keepsOpenHour() || l != LevelFull {
+		s.OpenHour = nil
+	}
 	s.Level = l
 	return s, saveStateLocked(s)
 }
