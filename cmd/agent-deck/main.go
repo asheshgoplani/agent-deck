@@ -2718,6 +2718,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		return
 	}
 
+	// add without --attach only registers the session, and the later
+	// `session start` has no create hook, so record the create here: a
+	// session is counted when it is created, once, on every add path.
+	newInstance.RecordTelemetryCreate(telemetry.ViaCLIAdd)
+
 	// Build human-readable output
 	var humanLines []string
 	humanLines = append(humanLines, fmt.Sprintf("Added session: %s", sessionTitle))

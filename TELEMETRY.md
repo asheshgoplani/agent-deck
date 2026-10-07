@@ -218,7 +218,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | Property | Type |
 |---|---|
 | `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
-| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
+| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_fork`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
 | `worktree` | bool |
 | `mcps` | bucket `n` |
 | `skills` | bucket `n` |
@@ -346,7 +346,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 |---|---|
 | `step` | enum: `first_run`, `consented`, `first_session_created`, `first_session_running`, `first_attach`, `first_send`, `second_session`, `second_tool`, `first_fork`, `first_worktree`, `first_mcp_attach`, `first_group`, `first_conductor`, `first_remote`, `first_fleet`, `activated` |
 | `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
-| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
+| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_fork`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
 | `since` | bucket `since` |
 | `before_consent` | bool |
 

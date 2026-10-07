@@ -1457,7 +1457,7 @@ func handleSessionFork(profile string, args []string) {
 		out.Error(fmt.Sprintf("failed to start forked session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	forkedInst.RecordTelemetryCreate(telemetry.ViaCLIAdd)
+	forkedInst.RecordTelemetryCreate(telemetry.ViaCLIFork)
 
 	// Capture forked session's new session ID
 	forkedInst.PostStartSync(3 * time.Second)

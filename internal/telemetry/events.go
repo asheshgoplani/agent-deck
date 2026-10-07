@@ -234,6 +234,7 @@ const (
 	ViaTUIFork   CreateVia = "tui_fork"
 	ViaTUIQuick  CreateVia = "tui_quick"
 	ViaCLIAdd    CreateVia = "cli_add"
+	ViaCLIFork   CreateVia = "cli_fork"
 	ViaCLILaunch CreateVia = "cli_launch"
 	ViaTry       CreateVia = "try"
 	ViaFleet     CreateVia = "fleet"

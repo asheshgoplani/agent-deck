@@ -71,7 +71,7 @@ var (
 	toolValues      = append(append([]string{}, toolBits...), toolOther)
 	startKinds      = []string{"first_ever", "normal", "after_update", "after_crash"}
 	exitKinds       = []string{"quit", "signal", "update_restart", "panic"}
-	createVias      = []string{"tui_new", "tui_fork", "tui_quick", "cli_add", "cli_launch", "try", "fleet", "conductor", "web"}
+	createVias      = []string{"tui_new", "tui_fork", "tui_quick", "cli_add", "cli_fork", "cli_launch", "try", "fleet", "conductor", "web"}
 	endKinds        = []string{"stop", "delete", "tool_exit", "crash", "restart"}
 	sendVias        = []string{"tui", "cli_send", "conductor", "inbox", "telegram", "web"}
 	attachVias      = []string{"tui", "cli", "web", "remote"}
