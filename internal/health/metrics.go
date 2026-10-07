@@ -169,6 +169,11 @@ func foldSession(events []Event, until time.Time) sessionFold {
 	for i, e := range events {
 		switch e.Kind {
 		case KindStatus:
+			// The daemon also journals substate-only changes. They are not
+			// coarse status boundaries and must not reset or finish a turn.
+			if e.From == e.To {
+				continue
+			}
 			if !waitStart.IsZero() {
 				f.waiting += e.TS.Sub(waitStart)
 				waitStart = time.Time{}
