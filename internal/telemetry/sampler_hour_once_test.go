@@ -387,3 +387,94 @@ func TestSetLevelLeavingFullClearsOpenHour(t *testing.T) {
 		}
 	}
 }
+
+// hourlyUUID builds the activity.hourly line recording would spool for the
+// hour at, without touching the spool, and returns its uuid.
+func hourlyUUID(t *testing.T, s *State, at time.Time) string {
+	t.Helper()
+	h := hourSample{Start: localHourStart(at), Minutes: 1}
+	var got []spoolLine
+	s.spoolTo(func(l spoolLine) error { got = append(got, l); return nil },
+		SurfaceTUI, "activity.hourly", h.props(), "", h.Start)
+	if len(got) != 1 {
+		t.Fatalf("%d lines built for %v", len(got), at)
+	}
+	if !uuidPattern.MatchString(got[0].U) {
+		t.Fatalf("uuid %q is not a version 4 uuid", got[0].U)
+	}
+	return got[0].U
+}
+
+// TestHourlyUUIDDeterministicWithinDay: a second row for the same local hour
+// (a residual duplicate path, such as a spool append followed by a failed
+// state save, or a row rebuilt after a lost acknowledgement) carries the same
+// uuid, so PostHog keeps one. The uuid is keyed by the day and the local
+// salt, which is never sent: rows of different days share nothing, and two
+// installs never share a uuid.
+func TestHourlyUUIDDeterministicWithinDay(t *testing.T) {
+	c := env(t)
+	sequentialUUIDs(t) // the random seam must not be what makes them equal
+	s := grant(t, c)
+	a := hourlyUUID(t, s, at(1, 21, 5))
+	if b := hourlyUUID(t, s, at(1, 21, 50)); a != b {
+		t.Fatalf("same hour, same day: uuids %s and %s differ", a, b)
+	}
+	if b := hourlyUUID(t, s, at(1, 22, 5)); a == b {
+		t.Fatalf("different hours of one day share uuid %s", a)
+	}
+	if b := hourlyUUID(t, s, at(2, 21, 5)); a == b {
+		t.Fatalf("same hour on different days share uuid %s", a)
+	}
+	if strings.Contains(strings.ReplaceAll(a, "-", ""), s.InstallID) {
+		t.Fatalf("uuid %s carries the install id", a)
+	}
+	other := *s
+	other.Salt = strings.Repeat("5a", 32)
+	if b := hourlyUUID(t, &other, at(1, 21, 5)); a == b {
+		t.Fatalf("installs with different salts share uuid %s", a)
+	}
+	// Other events keep random uuids.
+	var got []spoolLine
+	s.spoolTo(func(l spoolLine) error { got = append(got, l); return nil },
+		SurfaceTUI, "app.start", map[string]any{}, "", at(1, 21, 5))
+	for _, l := range got {
+		if !strings.HasPrefix(l.U, "00000000-0000-4000-8000-") {
+			t.Fatalf("%s uuid %s is not from the random seam", l.E, l.U)
+		}
+	}
+}
+
+// TestHourlyUUIDSameAcrossTUIRowsOfOneHour: end to end, when a residual path
+// spools one hour twice (here: the stored part was lost after an append),
+// both rows carry one uuid, and the same hour on the next day another.
+func TestHourlyUUIDSameAcrossTUIRowsOfOneHour(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	openCloseTUI(t, c, at(1, 21, 5)) // stores 21:00
+	s := LoadState()
+	stored := *s.OpenHour
+	s.OpenHour = nil // as if a crash lost the merge after an append
+	if err := SaveState(s); err != nil {
+		t.Fatal(err)
+	}
+	recordHour(stored)
+	recordHour(stored)
+	openCloseTUI(t, c, at(2, 21, 5))
+	recordHour(hourSample{Start: localHourStart(at(2, 21, 5)), Minutes: 1})
+	byDay := map[string]map[string]bool{}
+	for _, l := range hourlyLines(t) {
+		if byDay[l.D] == nil {
+			byDay[l.D] = map[string]bool{}
+		}
+		byDay[l.D][l.U] = true
+	}
+	d1, d2 := byDay[dayOf(at(1, 0, 0))], byDay[dayOf(at(2, 0, 0))]
+	if len(d1) != 1 || len(d2) != 1 {
+		t.Fatalf("want one uuid per hour, got day1 %v day2 %v", d1, d2)
+	}
+	for u := range d1 {
+		if d2[u] {
+			t.Fatalf("21:00 on two days share uuid %s", u)
+		}
+	}
+}

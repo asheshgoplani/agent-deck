@@ -54,6 +54,19 @@ func formatUUID(h string) string {
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
+// lineUUID is random, except for activity.hourly at full: there it is
+// deterministic per (install salt, day, local hour), so a residual second row
+// for an hour (a spool append whose state save failed, a row rebuilt after a
+// lost acknowledgement) is deduplicated by PostHog. The salt never leaves the
+// machine and the day is part of the key, so rows of different days share
+// nothing.
+func (s *State) lineUUID(name string, at time.Time, level Level) string {
+	if name == "activity.hourly" && level == LevelFull {
+		return s.rollupUUID(dayOf(at), name, strconv.Itoa(at.Local().Hour()))
+	}
+	return newUUID()
+}
+
 func actor() string {
 	if AgentActor() {
 		return "agent"
@@ -184,7 +197,7 @@ func (s *State) spoolTo(write func(spoolLine) error, sf Surface, name string, pr
 func (s *State) newLine(name string, props map[string]any, at time.Time, level Level, sf Surface) spoolLine {
 	s.Seq++
 	l := spoolLine{
-		E: name, U: newUUID(), D: dayOf(at), S: s.Seq, V: safeVersion(processVersion),
+		E: name, U: s.lineUUID(name, at, level), D: dayOf(at), S: s.Seq, V: safeVersion(processVersion),
 		A: actor(), SF: string(sf), L: string(level), P: props,
 	}
 	if level == LevelFull {
