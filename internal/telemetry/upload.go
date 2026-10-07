@@ -115,12 +115,20 @@ func MaybeUpload(ctx context.Context) UploadResult {
 		return UploadResult{Reason: "attempt budget for today used"}
 	}
 
-	// A finished open hour joins the spool before its day's rollup is built.
-	s.emitOpenHour(now, appendSpool)
 	lines, err := readSpool()
 	if err != nil {
 		return UploadResult{Reason: err.Error()}
 	}
+	// A finished open hour joins the spool before its day's rollup is built.
+	// It is emitted only after the read, so every return below saves the
+	// state that records it as emitted.
+	s.emitOpenHour(now, func(l spoolLine) error {
+		if err := appendSpool(l); err != nil {
+			return err
+		}
+		lines = append(lines, l)
+		return nil
+	})
 	lines = trimSpool(lines, now)
 	s.dropExpiredDaily(now)
 	if s.Upload.RejectedVersion != "" && s.Upload.RejectedVersion == safeVersion(processVersion) {

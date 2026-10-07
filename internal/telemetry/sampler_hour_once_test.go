@@ -129,6 +129,49 @@ func TestSamplerMergesStoredHourWhenResumeLostLock(t *testing.T) {
 	}
 }
 
+// TestUploadSpoolReadErrorDoesNotReemitOpenHour: when the uploader cannot
+// read the spool, the stored open hour must not be spooled without the
+// state that records it as emitted, or the retry spools it a second time.
+func TestUploadSpoolReadErrorDoesNotReemitOpenHour(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("needs a non-root user: root reads a write-only spool")
+	}
+	c := env(t)
+	f := newFakePostHog(t)
+	grant(t, c)
+	openCloseTUI(t, c, at(1, 21, 5)) // stores 21:00
+	p, err := spoolPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o200); err != nil { // writable, not readable
+		t.Fatal(err)
+	}
+	c.set(at(2, 9, 0))
+	if r := MaybeUpload(t.Context()); r.Attempted {
+		t.Fatalf("upload attempted with an unreadable spool: %+v", r)
+	}
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	MaybeUpload(t.Context())
+	n := 0
+	for i := 0; i < f.hits(); i++ {
+		for _, e := range f.batch(t, i).Batch {
+			if e.Event == "activity.hourly" {
+				n++
+			}
+		}
+	}
+	n += len(hourlyLines(t))
+	if n != 1 {
+		t.Fatalf("21:00 shipped or left spooled %d times, want 1", n)
+	}
+}
+
 // TestOpenHourNeedsConsent: without consent nothing is stored or spooled.
 func TestOpenHourNeedsConsent(t *testing.T) {
 	c := env(t)
