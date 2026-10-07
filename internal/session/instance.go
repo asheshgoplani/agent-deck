@@ -6311,6 +6311,19 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// Don't block status detection once tmux session exists
 	var exists bool
 	var checkedExists bool
+	if i.Status == StatusQueued {
+		// Waiting for group capacity is not a missing-pane error. Start may
+		// leave an interactive shell queued until this pass sees its pane.
+		if i.tmuxSession == nil {
+			return nil
+		}
+		var current bool
+		exists, current = i.probeTmuxExists()
+		if !current || !exists {
+			return nil
+		}
+		checkedExists = true
+	}
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
 		if i.tmuxSession == nil {

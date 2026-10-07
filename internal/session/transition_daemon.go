@@ -560,10 +560,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		nextPriors := make(map[string]liveStatusPrior, len(instances))
 		for _, inst := range instances {
 			previousStatus := normalizeStatusString(string(inst.Status))
-			// A persisted stop supersedes this daemon's older live sample. Keep
-			// it intact so UpdateStatus can distinguish an intentional stop
-			// from a vanished running pane, while still detecting a live restart.
-			if prior, ok := priors[inst.ID]; ok && inst.Status != StatusStopped {
+			// Persisted stop and queue decisions supersede older live samples.
+			// Keep them intact so UpdateStatus can distinguish an intentional
+			// stop or capacity wait from a vanished pane, while detecting starts.
+			if prior, ok := priors[inst.ID]; ok && inst.Status != StatusStopped && inst.Status != StatusQueued {
 				inst.SeedLiveStatusPrior(prior.status, prior.flipPending)
 			}
 			if passBudgetSpent || time.Since(passStart) > syncPassBudget {
