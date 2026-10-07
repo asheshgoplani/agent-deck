@@ -131,7 +131,7 @@ func SchemaJSON() ([]byte, error) {
 	}{Schema: SchemaVersion, Buckets: map[string][]string{}, ToolBits: toolBits,
 		InstallTick: map[string]any{
 			"event": "install.tick", "detailed_envelope": false,
-			"properties": map[string]any{"day": "YYYY-MM-DD", "v": "release version at reservation", "consent_state": []string{"granted"}, "tick_id": "random 128-bit UUID-formatted nonce per local day", "$process_person_profile": false, "$geoip_disable": true},
+			"properties": map[string]any{"day": "YYYY-MM-DD", "v": "release version at reservation", "os": osValues, "arch": archValues, "consent_state": []string{"granted"}, "tick_id": "random 128-bit UUID-formatted nonce per local day", "$process_person_profile": false, "$geoip_disable": true},
 			"uuid":       "tick_id", "distinct_id": "tick_id", "timestamp": "day at 12:00 labelled UTC", "counting": "DISTINCT tick_id per day",
 		}}
 	for _, p := range Envelope {
@@ -158,6 +158,8 @@ const installTickSchemaMarkdown = "#### Anonymous daily install tick\n" +
 	"|---|---|\n" +
 	"| `day` | Local calendar day, YYYY-MM-DD |\n" +
 	"| `v` | Release version when the daily nonce was reserved |\n" +
+	"| `os` | Go GOOS, same allow-list as the detailed envelope; no OS version |\n" +
+	"| `arch` | Go GOARCH, same allow-list as the detailed envelope |\n" +
 	"| `consent_state` | `granted`; undecided and declined never send |\n" +
 	"| `tick_id` | Random 128-bit daily nonce formatted as a UUID; reused on retries |\n" +
 	"| `$process_person_profile` | `false` |\n" +

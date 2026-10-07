@@ -100,7 +100,7 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 
 After the consent day, the interactive human TUI checks `install.tick` in the background at startup and hourly, including across midnight. CLI-only use, noninteractive daemons, CI, agents, tests and non-release builds do not send ticks. This preserves existing upload eligibility; it measures reporting installs using the TUI, not every installed copy or people. The tick also runs at basic level and is independent of the detailed six-hour upload schedule.
 
-Each local day gets a fresh cryptographically random 128-bit `tick_id`. The client durably reserves it in `telemetry-tick.json` (mode 0600), next to the telemetry state, before sending. The existing state lock serializes reservation, sending and acknowledgment across processes. Old binaries can rewrite the main state without erasing this sibling ledger. Neither `off` nor `reset-id` deletes the nonce, so disable/re-enable and lost acknowledgments cannot mint a second nonce that day. The ledger contains only day, nonce, release version, acknowledgment flag and last acknowledged day.
+Each local day gets a fresh cryptographically random 128-bit `tick_id`. The client durably reserves it in `telemetry-tick.json` (mode 0600), next to the telemetry state, before sending. The existing state lock serializes reservation, sending and acknowledgment across processes. Old binaries can rewrite the main state without erasing this sibling ledger. Neither `off` nor `reset-id` deletes the nonce, so disable/re-enable and lost acknowledgments cannot mint a second nonce that day. The ledger contains only day, nonce, release version, acknowledgment flag and last acknowledged day. The tick also reports the coarse `os` and `arch` values that every detailed event already carries; they are computed at send time and not stored in the ledger.
 
 An attempt has a two-second deadline. Lock contention skips the attempt; failed sends retry on a later TUI start or hourly check with the same nonce and body. The dashboard must count **DISTINCT `tick_id` per `day`**, not rows. There is no historical backfill after the local day ends. Offline use, consent gates and stopped processes can leave days unreported; delivery is retried, not guaranteed. Corrupt/unreadable ledgers fail closed rather than replacing an unknown nonce. Clock rollback suppresses earlier days until the last reserved day is reached.
 
@@ -466,6 +466,8 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 |---|---|
 | `day` | Local calendar day, YYYY-MM-DD |
 | `v` | Release version when the daily nonce was reserved |
+| `os` | Go GOOS, same allow-list as the detailed envelope; no OS version |
+| `arch` | Go GOARCH, same allow-list as the detailed envelope |
 | `consent_state` | `granted`; undecided and declined never send |
 | `tick_id` | Random 128-bit daily nonce formatted as a UUID; reused on retries |
 | `$process_person_profile` | `false` |

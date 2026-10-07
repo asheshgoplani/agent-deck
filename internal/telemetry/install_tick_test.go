@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,7 +74,10 @@ func TestInstallTickRetryPrivacyAndRollover(t *testing.T) {
 	if event.Event != "install.tick" || event.UUID != first.TickID || event.DistinctID != first.TickID || event.Timestamp != first.Day+"T12:00:00Z" {
 		t.Fatalf("wire %+v", event)
 	}
-	expected := map[string]any{"day": first.Day, "v": "9.9.9", "consent_state": "granted", "tick_id": first.TickID, "$geoip_disable": true, "$process_person_profile": false}
+	// os and arch are the same coarse allow-listed values every detailed event
+	// carries; no install id, salt, schema or surface may join them.
+	expected := map[string]any{"day": first.Day, "v": "9.9.9", "os": oneOf(runtime.GOOS, osValues), "arch": oneOf(runtime.GOARCH, archValues),
+		"consent_state": "granted", "tick_id": first.TickID, "$geoip_disable": true, "$process_person_profile": false}
 	a, _ := json.Marshal(event.Properties)
 	b, _ := json.Marshal(expected)
 	if string(a) != string(b) {

@@ -54,7 +54,7 @@ Tests cover the consent gate table (state × environment × TTY), the dialog key
 
 ## Daily nonce counter (install.tick)
 
-The independent `install.tick` envelope reports only local day, release version, granted consent, and a random 128-bit daily nonce, plus personless and GeoIP-disabled controls. It does not use the detailed schema-3 envelope or install ID. PostHog UUID and distinct_id equal the daily event nonce. The counting contract is DISTINCT tick_id per day, allowing retries after lost acknowledgments without inflating daily install counts. Receiver row deduplication is not assumed.
+The independent `install.tick` envelope reports only local day, release version, coarse os and arch (the same allow-listed values the detailed envelope carries), granted consent, and a random 128-bit daily nonce, plus personless and GeoIP-disabled controls. It does not use the detailed schema-3 envelope or install ID. PostHog UUID and distinct_id equal the daily event nonce. The counting contract is DISTINCT tick_id per day, allowing retries after lost acknowledgments without inflating daily install counts. Receiver row deduplication is not assumed.
 
 `telemetry-tick.json` is a durable sibling ledger under the existing state lock, untouched by old typed-State writers, off and reset-id. Reservation precedes the first attempt; acknowledgment follows success. A non-blocking lock and two-second transport deadline bound the background work. The existing interactive human TUI startup/hourly path sends ticks after the consent day, including at basic level; CLI/daemon/CI/agent restrictions remain. Owner suppression is `[telemetry] owner = true` or `AGENTDECK_TELEMETRY_OWNER=1`. Details, failure semantics and the separate allow-list are in TELEMETRY.md.
 

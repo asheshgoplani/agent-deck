@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -145,10 +146,12 @@ func saveInstallTick(tick installTick) error {
 
 func tickBody(tick installTick) ([]byte, error) {
 	// PostHog requires a distinct_id. Use only this day's random event nonce,
-	// never State.InstallID. It cannot join days or detailed telemetry.
+	// never State.InstallID. It cannot join days or detailed telemetry. os and
+	// arch are the same coarse allow-listed values every detailed event carries.
 	return json.Marshal(phBatch{APIKey: redactedAPIKey, Batch: []phEvent{{ //nolint:gosec // G117: only the redacted placeholder; post() inserts the key
 		Event: "install.tick", UUID: tick.TickID, DistinctID: tick.TickID, Timestamp: tick.Day + "T12:00:00Z",
-		Properties: map[string]any{"day": tick.Day, "v": tick.Version, "consent_state": string(ConsentGranted), "tick_id": tick.TickID,
+		Properties: map[string]any{"day": tick.Day, "v": tick.Version,
+			"os": oneOf(runtime.GOOS, osValues), "arch": oneOf(runtime.GOARCH, archValues), "consent_state": string(ConsentGranted), "tick_id": tick.TickID,
 			"$geoip_disable": true, "$process_person_profile": false},
 	}}})
 }
