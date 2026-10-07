@@ -143,7 +143,7 @@ var telemetryDisable = telemetry.Disable
 
 // togglePrivacyFromSettings handles the Settings Privacy row: turning off is
 // immediate; turning on opens the same consent question as the first run.
-// Disable can wait for an in-flight upload's state lock, so it runs off the
+// Disable can wait for an in-flight send's send lock, so it runs off the
 // TUI goroutine.
 func (h *Home) togglePrivacyFromSettings() tea.Cmd {
 	st := telemetry.LoadState()
