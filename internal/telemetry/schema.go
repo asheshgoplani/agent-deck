@@ -208,7 +208,7 @@ var Events = []EventDef{
 	{Name: "onboard.baseline", Tier: 1, Ships: shipsNow,
 		Props: []Prop{enum("install_method", installMethods...), boolean("tmux_ok"), bitmask("tools_found", 32), boolean("had_config"),
 			bitmask("milestones_before", 16), bucket("sessions_total", BucketN)},
-		Emitted: "once, right after consent, computed from existing local state", Question: "What a new install looks like; how far upgraders got"},
+		Emitted: "once per install id, right after its first consent, computed from existing local state", Question: "What a new install looks like; how far upgraders got"},
 	{Name: "onboard.milestone", Tier: 1, Ships: shipsNow,
 		Props:   []Prop{enum("step", milestoneNames...), propTool, enum("via", createVias...), bucket("since", BucketSince), boolean("before_consent")},
 		Emitted: "the first time each funnel step is reached", Question: "Time to first value, where people get stuck"},

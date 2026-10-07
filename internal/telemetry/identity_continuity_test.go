@@ -302,3 +302,65 @@ func TestReconsentAfter1_16_22GrantKeepsIdentityAndSendsSpool(t *testing.T) {
 		t.Fatal("acknowledged events must leave the spool")
 	}
 }
+
+// TestReconsentUnderKeptIDSendsBaselineOnce: onboard.baseline is sent once
+// per install id. A yes that keeps the id (schema re-ask) records the new
+// telemetry.consent but no second baseline; a yes with a new id records one.
+func TestReconsentUnderKeptIDSendsBaselineOnce(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	AfterConsent(SourceTUIFirstRun, "none", Baseline{}, nil)
+	if n := countEvent(spoolLines(t), "onboard.baseline"); n != 1 {
+		t.Fatalf("first consent: %d baselines", n)
+	}
+	downgradeToSchema2(t)
+	c.set(at(1, 9, 0))
+	s := LoadState()
+	prev := s.Previous()
+	if err := Grant(s, "9.9.9", c.now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(s); err != nil {
+		t.Fatal(err)
+	}
+	AfterConsent(SourceTUIFirstRun, prev, Baseline{}, nil)
+	lines := spoolLines(t)
+	if countEvent(lines, "onboard.baseline") != 1 || countEvent(lines, "telemetry.consent") != 2 {
+		t.Fatalf("re-consent under a kept id: %v", eventNames(lines))
+	}
+
+	if err := Disable("9.9.9", c.now()); err != nil {
+		t.Fatal(err)
+	}
+	grant(t, c)
+	AfterConsent(SourceCLIOn, "none", Baseline{}, nil)
+	if n := countEvent(spoolLines(t), "onboard.baseline"); n != 1 {
+		t.Fatalf("a new id after off must get its own baseline: %d", n)
+	}
+}
+
+// TestRegrantForNewEndpointKeepsSequenceAndMilestones: a yes for another
+// destination keeps the id, so it must not restart seq or forget reached
+// milestones; otherwise an A, B, A switch repeats seq numbers and one-time
+// milestones under the same distinct_id.
+func TestRegrantForNewEndpointKeepsSequenceAndMilestones(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	AfterConsent(SourceTUIFirstRun, "none", Baseline{}, nil)
+	before := LoadState()
+	if before.Seq == 0 || before.Milestones == 0 {
+		t.Fatalf("setup: seq %d milestones %d", before.Seq, before.Milestones)
+	}
+	s := LoadState()
+	s.ConsentEndpoint = "https://other.example"
+	if err := Grant(s, "9.9.9", c.now()); err != nil {
+		t.Fatal(err)
+	}
+	if s.InstallID != before.InstallID || s.Seq != before.Seq || s.Milestones != before.Milestones {
+		t.Fatalf("new destination: id kept=%v seq %d -> %d milestones %d -> %d",
+			s.InstallID == before.InstallID, before.Seq, s.Seq, before.Milestones, s.Milestones)
+	}
+	if len(spoolBytes(t)) != 0 || s.Daily != nil {
+		t.Fatal("data recorded for the old destination must be deleted")
+	}
+}

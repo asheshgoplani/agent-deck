@@ -115,8 +115,9 @@ func hasIdentity(s *State) bool {
 // the same id; they are re-validated against the current schema when read
 // and get os, arch and schema when sent. Data is dropped only with a new
 // identity or when the destination changed, so events recorded for one
-// destination are never sent to another. Nothing records meanwhile: a stale
-// grant does not enable recording.
+// destination are never sent to another; a kept id keeps its seq counter and
+// milestones even then. Nothing records meanwhile: a stale grant does not
+// enable recording.
 func Grant(s *State, version string, now time.Time) error {
 	switch {
 	case !hasIdentity(s):
@@ -133,7 +134,7 @@ func Grant(s *State, version string, now time.Time) error {
 		if err := DeleteSpool(); err != nil {
 			return err
 		}
-		s.resetCollected()
+		s.dropUnsent()
 	}
 	s.SchemaVersion = SchemaVersion
 	s.ConsentEndpoint = Endpoint()
@@ -160,14 +161,21 @@ func newIdentity() (id, salt string, err error) {
 
 // resetCollected forgets everything recorded under an install id.
 func (s *State) resetCollected() {
+	s.dropUnsent()
+	s.Seq = 0
+	s.Milestones = 0
+	s.Funnel = FunnelState{}
+}
+
+// dropUnsent forgets the rollups waiting to be sent and the upload history
+// of one destination. The per-id sequence, milestones and funnel stay, so a
+// kept id never repeats a seq number or a one-time milestone.
+func (s *State) dropUnsent() {
 	s.Counters = nil
 	s.LastPayload = nil
 	s.LastSentDay = ""
-	s.Seq = 0
 	s.Daily = nil
 	s.Upload = UploadState{}
-	s.Milestones = 0
-	s.Funnel = FunnelState{}
 	s.TUIOpen = false
 }
 
