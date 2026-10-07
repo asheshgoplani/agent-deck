@@ -22,17 +22,26 @@ import (
 // The panel forwards never block. The panel re-reads the database on every
 // refresh, so while the TUI is not reading (attached), one pending item per
 // channel is all it needs. Both returned channels close once the engine's
-// channels close (Engine.Stop).
+// channels close (Engine.Stop), and done closes once both goroutines have
+// handed on everything the engine had buffered.
 func relayWatcherEngine(
 	events <-chan watcher.Event,
 	health <-chan watcher.HealthState,
 	deliverEvent func(watcher.Event),
 	deliverHealth func(watcher.HealthState),
-) (<-chan watcher.Event, <-chan watcher.HealthState) {
+) (<-chan watcher.Event, <-chan watcher.HealthState, <-chan struct{}) {
 	panelEvents := make(chan watcher.Event, 1)
 	panelHealth := make(chan watcher.HealthState, 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	finished := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(finished)
+	}()
 
 	go func() {
+		defer wg.Done()
 		defer close(panelEvents)
 		first := true
 		for evt := range events {
@@ -52,6 +61,7 @@ func relayWatcherEngine(
 	}()
 
 	go func() {
+		defer wg.Done()
 		defer close(panelHealth)
 		for state := range health {
 			relayDeliver("health", deliverHealth, state)
@@ -62,7 +72,7 @@ func relayWatcherEngine(
 		}
 	}()
 
-	return panelEvents, panelHealth
+	return panelEvents, panelHealth, finished
 }
 
 // relayDeliver runs one delivery with panic recovery, like statusWorker does
@@ -75,63 +85,4 @@ func relayDeliver[T any](kind string, deliver func(T), item T) {
 		}
 	}()
 	deliver(item)
-}
-
-// paneDeliveryQueue runs the watcher deliveries for one conductor pane one at
-// a time, in the order they were queued. A delivery (composer guard, paste,
-// Enter 100 ms later, verify) owns the pane until it returns: two in flight
-// together both pass the guard on an empty composer and paste before either
-// Enter, so a burst of events reached the conductor as one merged command,
-// out of order. Queuing never blocks, so the relay keeps draining the engine
-// while a pane is busy, and different panes still deliver in parallel. The
-// zero value is ready to use.
-type paneDeliveryQueue struct {
-	mu sync.Mutex
-	// pending holds, per pane, the deliveries waiting behind the running one.
-	// A pane has a key exactly while its runner goroutine is alive.
-	pending map[string][]func()
-}
-
-// enqueue adds deliver to pane's queue and starts the pane's runner if it is
-// idle.
-func (q *paneDeliveryQueue) enqueue(pane string, deliver func()) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.pending == nil {
-		q.pending = make(map[string][]func())
-	}
-	waiting, running := q.pending[pane]
-	q.pending[pane] = append(waiting, deliver)
-	if !running {
-		go q.run(pane)
-	}
-}
-
-// run delivers pane's queue in order and exits once it is empty.
-func (q *paneDeliveryQueue) run(pane string) {
-	for {
-		q.mu.Lock()
-		waiting := q.pending[pane]
-		if len(waiting) == 0 {
-			delete(q.pending, pane)
-			q.mu.Unlock()
-			return
-		}
-		next := waiting[0]
-		waiting[0] = nil
-		q.pending[pane] = waiting[1:]
-		q.mu.Unlock()
-		runDelivery(pane, next)
-	}
-}
-
-// runDelivery contains a panic in one delivery, so it cannot stop the pane's
-// runner and with it every later delivery to that pane.
-func runDelivery(pane string, deliver func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			uiLog.Error("conductor_delivery_panic", slog.String("tmux_session", pane), slog.Any("panic", r))
-		}
-	}()
-	deliver()
 }

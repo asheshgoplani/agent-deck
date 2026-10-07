@@ -652,9 +652,14 @@ type Home struct {
 	// an engine.
 	watcherPanelEvents <-chan watcher.Event
 	watcherPanelHealth <-chan watcher.HealthState
-	// conductorDeliveries serializes watcher deliveries per conductor pane
-	// so a burst arrives as separate submissions, in order.
-	conductorDeliveries paneDeliveryQueue
+	// watcherRelayDone closes once the relay has dispatched everything the
+	// stopped engine had buffered.
+	watcherRelayDone <-chan struct{}
+	// conductorDeliveries delivers watcher messages to conductor panes, one
+	// at a time per conductor and in order (see conductorQueue). Created on
+	// first use by deliveryQueue.
+	conductorDeliveries     *conductorQueue
+	conductorDeliveriesOnce sync.Once
 
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
@@ -4227,7 +4232,7 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 	}
 
 	h.watcherEngine = eng
-	h.watcherPanelEvents, h.watcherPanelHealth = relayWatcherEngine(
+	h.watcherPanelEvents, h.watcherPanelHealth, h.watcherRelayDone = relayWatcherEngine(
 		eng.EventCh(), eng.HealthCh(), h.dispatchWatcherEvent, h.dispatchHealthAlert)
 
 	uiLog.Info("watcher_engine_started",
@@ -7791,6 +7796,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// storage-watcher refresh must not reset the walk/alternate
 				// state the user has built up since startup.
 				h.mru = session.NewMRUHistoryFromInstances(msg.instances, session.DefaultMRUCapacity)
+				// The conductors are known now: deliver what the last quit
+				// left undelivered.
+				h.replayUndeliveredWatcherEvents()
 			}
 			h.refreshSessionRenderSnapshot(msg.instances)
 			// Invalidate status counts cache
@@ -13719,12 +13727,21 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 			h.recallSource.Close()
 		}
 		// Stop watcher engine (D-07: lifecycle tied to TUI). Stop closes its
-		// channels, which ends the delivery relay and the panel feed.
+		// channels, which ends the delivery relay and the panel feed; the
+		// relay first dispatches whatever the engine had buffered.
 		if h.watcherEngine != nil {
 			h.watcherEngine.Stop()
 			h.watcherEngine = nil
-			h.watcherPanelEvents, h.watcherPanelHealth = nil, nil
+			select {
+			case <-h.watcherRelayDone:
+			case <-time.After(5 * time.Second):
+				uiLog.Warn("watcher_relay_stop_timeout")
+			}
+			h.watcherPanelEvents, h.watcherPanelHealth, h.watcherRelayDone = nil, nil, nil
 		}
+		// Finish the conductor delivery in flight and record the rest for
+		// the next start, instead of exiting with them still queued.
+		h.stopConductorDeliveries(5 * time.Second)
 		// Shutdown or disconnect from MCP pool based on user choice
 		if err := session.ShutdownGlobalPool(shutdownPool); err != nil {
 			mcpUILog.Warn("pool_shutdown_error", slog.String("error", err.Error()))
@@ -13830,34 +13847,103 @@ func formatWatcherDispatchMsg(evt watcher.Event) string {
 	return fmt.Sprintf("[%s] %s: %s", evt.Source, evt.Sender, text)
 }
 
-// dispatchWatcherEvent sends a routed watcher event into the conductor's tmux pane.
+// dispatchWatcherEvent queues a routed watcher event for the conductor's tmux pane.
 // Skipped for triage and unrouted events (RoutedTo empty or "triage") since those have no
-// concrete delivery target yet. Mirrors dispatchHealthAlert: looks up the conductor session
-// by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
+// concrete delivery target yet. Mirrors dispatchHealthAlert: sendToConductor looks up the
+// conductor session by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
 // Called by relayWatcherEngine, off the Bubble Tea loop (#2524).
 func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
 	if evt.RoutedTo == "" || evt.RoutedTo == "triage" || strings.HasPrefix(evt.RoutedTo, "triage-") {
 		return
 	}
-	ts := h.conductorTmuxSession(evt.RoutedTo)
-	if ts == nil {
-		return
-	}
-	msg := formatWatcherDispatchMsg(evt)
-	tmuxName := ts.Name
-	h.conductorDeliveries.enqueue(tmuxName, func() {
-		if err := deliverToConductorPane(ts, msg); err != nil {
-			uiLog.Warn("dispatch_watcher_event_send_failed",
-				slog.String("tmux_session", tmuxName),
-				slog.String("error", err.Error()))
-		}
+	h.deliveryQueue().enqueue(conductorDelivery{
+		Conductor: evt.RoutedTo,
+		Text:      formatWatcherDispatchMsg(evt),
+		QueuedAt:  time.Now(),
 	})
 }
 
+// deliveryQueue returns the queue that delivers watcher messages to conductor
+// panes, creating it on first use.
+func (h *Home) deliveryQueue() *conductorQueue {
+	h.conductorDeliveriesOnce.Do(func() {
+		h.conductorDeliveries = newConductorQueue(h.sendToConductor)
+	})
+	return h.conductorDeliveries
+}
+
+// sendToConductor types one queued watcher message into its conductor's pane.
+// The pane is looked up when the message is sent, so a conductor restarted
+// meanwhile still gets it.
+func (h *Home) sendToConductor(d conductorDelivery) {
+	ts := h.conductorTmuxSession(d.Conductor)
+	if ts == nil {
+		uiLog.Warn("watcher_delivery_conductor_not_loaded", slog.String("conductor", d.Conductor))
+		return
+	}
+	if err := deliverToConductorPane(ts, d.text()); err != nil {
+		failed := "dispatch_watcher_event_send_failed"
+		if d.Alert != "" {
+			failed = "dispatch_health_alert_send_failed"
+		}
+		uiLog.Warn(failed,
+			slog.String("tmux_session", ts.Name),
+			slog.String("error", err.Error()))
+	}
+}
+
+// stopConductorDeliveries waits up to wait for the conductor delivery in
+// flight and records the routed events still queued, so the next TUI start
+// delivers them (replayUndeliveredWatcherEvents) instead of a quit dropping
+// them.
+func (h *Home) stopConductorDeliveries(wait time.Duration) {
+	if h.conductorDeliveries == nil {
+		return
+	}
+	pending := h.conductorDeliveries.stop(wait)
+	if len(pending) == 0 {
+		return
+	}
+	path, err := undeliveredWatcherPath()
+	if err == nil {
+		err = saveUndelivered(path, pending)
+	}
+	if err != nil {
+		uiLog.Warn("undelivered_watcher_events_not_recorded",
+			slog.Int("count", len(pending)), slog.String("error", err.Error()))
+		return
+	}
+	uiLog.Info("undelivered_watcher_events_recorded",
+		slog.Int("count", len(pending)), slog.String("path", path))
+}
+
+// replayUndeliveredWatcherEvents queues the routed events a previous quit
+// recorded as undelivered. Called once the first session load has made the
+// conductors known.
+func (h *Home) replayUndeliveredWatcherEvents() {
+	path, err := undeliveredWatcherPath()
+	if err != nil {
+		return
+	}
+	pending, err := takeUndelivered(path)
+	if err != nil {
+		uiLog.Warn("undelivered_watcher_events_unreadable",
+			slog.String("path", path), slog.String("error", err.Error()))
+	}
+	if len(pending) == 0 {
+		return
+	}
+	uiLog.Info("undelivered_watcher_events_replayed", slog.Int("count", len(pending)))
+	q := h.deliveryQueue()
+	for _, d := range pending {
+		q.enqueue(d)
+	}
+}
+
 // conductorTmuxSession returns the tmux session of the named conductor, or nil
-// when that conductor is not loaded or has no tmux session. The watcher
-// dispatchers run on the relay goroutine while Update may rewrite h.instances,
-// so the lookup holds the read lock for the whole scan.
+// when that conductor is not loaded or has no tmux session. Watcher deliveries
+// look it up off the UI goroutine while Update may rewrite h.instances, so the
+// lookup holds the read lock for the whole scan.
 func (h *Home) conductorTmuxSession(conductorName string) *tmux.Session {
 	sessionTitle := session.ConductorSessionTitle(conductorName)
 	h.instancesMu.RLock()
@@ -14083,18 +14169,13 @@ func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
 	alertMsg := fmt.Sprintf("[WATCHER HEALTH ALERT] Watcher %q transitioned to %s: %s. Suggested action: check watcher configuration and source connectivity.",
 		state.WatcherName, state.Status, state.Message)
 
-	// Find the conductor session by title and deliver via tmux send-keys (T-16-08).
-	ts := h.conductorTmuxSession(conductorName)
-	if ts == nil {
-		return
-	}
-	tmuxName := ts.Name
-	h.conductorDeliveries.enqueue(tmuxName, func() {
-		if err := deliverToConductorPane(ts, alertMsg); err != nil {
-			uiLog.Warn("dispatch_health_alert_send_failed",
-				slog.String("tmux_session", tmuxName),
-				slog.String("error", err.Error()))
-		}
+	// Deliver to the conductor session via tmux send-keys (T-16-08), ahead of
+	// any routed events waiting for it.
+	h.deliveryQueue().enqueue(conductorDelivery{
+		Conductor: conductorName,
+		Text:      alertMsg,
+		QueuedAt:  time.Now(),
+		Alert:     state.WatcherName,
 	})
 }
 
