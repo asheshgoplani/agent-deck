@@ -320,6 +320,35 @@ func TestConductorQueue_LogsOverflowOncePerEpisodeNotPerDrop(t *testing.T) {
 	}
 }
 
+// TestConductorQueue_OverflowLoggingCannotEndTheRunner: an unset or panicking
+// warn hook must not take the runner down when it logs an overflow outside
+// deliver's recovery; the notice and the kept events still go out.
+func TestConductorQueue_OverflowLoggingCannotEndTheRunner(t *testing.T) {
+	for name, warn := range map[string]func(string, ...any){
+		"unset":     nil,
+		"panicking": func(string, ...any) { panic("boom") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			sent := &sentLog{}
+			send, started, release := blockingSend(t, sent)
+			q := newConductorQueue(send)
+			q.warn = warn // before any goroutine reads it
+
+			q.enqueue(event("demo", "in flight"))
+			<-started
+			for i := 0; i <= maxConductorBacklog; i++ {
+				q.enqueue(event("demo", "e"+strconv.Itoa(i)))
+			}
+			release()
+			queueIdle(t, q)
+			if got := sent.texts(); len(got) != maxConductorBacklog+2 || !strings.Contains(got[1], "1 routed watcher event(s)") {
+				t.Fatalf("delivered %d messages (second %q); want the one in flight, the notice and %d events",
+					len(got), got[min(1, len(got)-1)], maxConductorBacklog)
+			}
+		})
+	}
+}
+
 // TestConductorQueue_HealthAlertsGoFirstAndKeepTheNewestPerWatcher: a health
 // alert never waits behind a backlog of routed events, and a newer alert from
 // the same watcher replaces the pending one.

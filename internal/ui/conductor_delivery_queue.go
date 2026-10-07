@@ -149,7 +149,7 @@ func (q *conductorQueue) enqueue(d conductorDelivery) {
 	}
 	q.mu.Unlock()
 	if newNotice {
-		q.warn("watcher_events_dropping_backlog_full",
+		q.logOverflow("watcher_events_dropping_backlog_full",
 			slog.String("conductor", d.Conductor), slog.Int("dropped_total", total))
 	}
 }
@@ -176,12 +176,28 @@ func (q *conductorQueue) run(conductor string, b *conductorBacklog) {
 		total := q.dropped[conductor]
 		q.mu.Unlock()
 		if next.Dropped > 0 {
-			q.warn("watcher_events_dropped_backlog_full",
+			q.logOverflow("watcher_events_dropped_backlog_full",
 				slog.String("conductor", conductor),
 				slog.Int("dropped", next.Dropped), slog.Int("dropped_total", total))
 		}
 		q.deliver(next)
 	}
+}
+
+// logOverflow writes an overflow warning through q.warn, falling back to uiLog
+// when the hook is unset, and contains a panic in the hook: logging must never
+// end the runner, which calls it outside deliver's recovery.
+func (q *conductorQueue) logOverflow(msg string, args ...any) {
+	defer func() {
+		if r := recover(); r != nil {
+			uiLog.Error("conductor_delivery_log_panic", slog.Any("panic", r))
+		}
+	}()
+	warn := q.warn
+	if warn == nil {
+		warn = uiLog.Warn
+	}
+	warn(msg, args...)
 }
 
 // deliver contains a panic in one delivery, so it cannot end the runner and
