@@ -158,8 +158,8 @@ const installTickSchemaMarkdown = "#### Anonymous daily install tick\n" +
 	"|---|---|\n" +
 	"| `day` | Local calendar day, YYYY-MM-DD |\n" +
 	"| `v` | Release version when the daily nonce was reserved |\n" +
-	"| `os` | Go GOOS, same allow-list as the detailed envelope; no OS version |\n" +
-	"| `arch` | Go GOARCH, same allow-list as the detailed envelope |\n" +
+	"| `os` | Go GOOS at reservation, same allow-list as the detailed envelope; no OS version; absent on ticks reserved by older releases |\n" +
+	"| `arch` | Go GOARCH at reservation, same allow-list as the detailed envelope; absent on ticks reserved by older releases |\n" +
 	"| `consent_state` | `granted`; undecided and declined never send |\n" +
 	"| `tick_id` | Random 128-bit daily nonce formatted as a UUID; reused on retries |\n" +
 	"| `$process_person_profile` | `false` |\n" +
