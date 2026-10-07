@@ -115,6 +115,8 @@ func MaybeUpload(ctx context.Context) UploadResult {
 		return UploadResult{Reason: "attempt budget for today used"}
 	}
 
+	// A finished open hour joins the spool before its day's rollup is built.
+	s.emitOpenHour(now, appendSpool)
 	lines, err := readSpool()
 	if err != nil {
 		return UploadResult{Reason: err.Error()}
@@ -361,6 +363,7 @@ func PreviewBatch() ([][]byte, error) {
 		return nil, err
 	}
 	now := nowFn()
+	s.emitOpenHour(now, func(l spoolLine) error { lines = append(lines, l); return nil })
 	bodies, _ := chunk(s.pending(trimSpool(lines, now), now))
 	// Preview never reserves a nonce. Show a pending tick only if the TUI
 	// could send it today; basic level does not suppress the daily tick.

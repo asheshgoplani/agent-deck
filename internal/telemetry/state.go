@@ -84,6 +84,8 @@ type State struct {
 	Upload         UploadState             `json:"upload,omitempty"`
 	TUIOpen        bool                    `json:"tui_open,omitempty"`
 	LastVersion    string                  `json:"last_version,omitempty"`
+	// OpenHour is the unfinished activity hour of the last sampling TUI.
+	OpenHour *hourSample `json:"open_hour,omitempty"`
 
 	// Earlier-schema answers found on load, never serialized or confused with each other.
 	prevV1 Consent

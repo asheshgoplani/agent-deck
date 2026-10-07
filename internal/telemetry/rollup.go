@@ -182,17 +182,55 @@ type Sampler struct {
 	hour       hourSample
 }
 
-// hourSample accumulates one local hour.
+// hourSample accumulates one local hour. A sampler that closes mid-hour
+// stores it in State.OpenHour (local only), so the hour is emitted once, when
+// it is over, however many TUIs were opened in it.
 type hourSample struct {
-	start      time.Time
+	Start      time.Time `json:"start"`
 	lastSample time.Time
-	running    int
-	waiting    int
-	idle       int
-	errored    int
-	minutes    int
-	human      bool
-	tools      uint32
+	Running    int    `json:"running,omitempty"`
+	Waiting    int    `json:"waiting,omitempty"`
+	Idle       int    `json:"idle,omitempty"`
+	Errored    int    `json:"error,omitempty"`
+	Minutes    int    `json:"minutes,omitempty"`
+	Human      bool   `json:"human,omitempty"`
+	Tools      uint32 `json:"tools,omitempty"`
+}
+
+func (h *hourSample) active() bool { return h.Minutes > 0 || h.Human }
+
+// merge adds another part of the same hour: peaks stay peaks, minutes add up.
+func (h *hourSample) merge(o hourSample) {
+	h.Running = max(h.Running, o.Running)
+	h.Waiting = max(h.Waiting, o.Waiting)
+	h.Idle = max(h.Idle, o.Idle)
+	h.Errored = max(h.Errored, o.Errored)
+	h.Minutes += o.Minutes
+	h.Human = h.Human || o.Human
+	h.Tools |= o.Tools
+}
+
+func (h *hourSample) props() map[string]any {
+	return map[string]any{
+		"running": CountBucket(h.Running), "waiting": CountBucket(h.Waiting),
+		"idle": CountBucket(h.Idle), "error": CountBucket(h.Errored),
+		"sampled_min": CountBucket(h.Minutes), "human_active": h.Human,
+		"tools_running": int(h.Tools),
+	}
+}
+
+// emitOpenHour spools the stored open hour with write once now is past it,
+// and reports whether state changed. Callers hold the state lock.
+func (s *State) emitOpenHour(now time.Time, write func(spoolLine) error) bool {
+	h := s.OpenHour
+	if h == nil || !h.Start.Before(localHourStart(now)) {
+		return false
+	}
+	s.OpenHour = nil
+	if h.active() {
+		s.spoolTo(write, SurfaceTUI, "activity.hourly", h.props(), "", h.Start)
+	}
+	return true
 }
 
 // SamplerLockFileName is held for the lifetime of the sampling TUI.
@@ -213,9 +251,27 @@ func NewSampler() *Sampler {
 	if err != nil {
 		return nil
 	}
-	return &Sampler{unlock: unlock, now: nowFn, emit: func(p map[string]any, at time.Time) {
+	sp := &Sampler{unlock: unlock, now: nowFn, emit: func(p map[string]any, at time.Time) {
 		recordAt("activity.hourly", p, "", at)
 	}}
+	sp.resume()
+	return sp
+}
+
+// resume continues the hour an earlier TUI left open, or emits it when that
+// hour is over.
+func (sp *Sampler) resume() {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	withState(func(s *State, now time.Time) bool {
+		if s.OpenHour == nil {
+			return false
+		}
+		if !s.emitOpenHour(now, appendSpool) {
+			sp.hour, s.OpenHour = *s.OpenHour, nil
+		}
+		return true
+	})
 }
 
 // Observe feeds the status poll. It samples at most once a minute (calling
@@ -248,7 +304,7 @@ func (sp *Sampler) observe(sessions func() []SessionSample) string {
 		switch s.Status {
 		case StatusRunning:
 			run++
-			h.tools |= ToolBit(s.Tool)
+			h.Tools |= ToolBit(s.Tool)
 			runningTool = s.Tool
 		case StatusWaiting:
 			wait++
@@ -258,11 +314,11 @@ func (sp *Sampler) observe(sessions func() []SessionSample) string {
 			errd++
 		}
 	}
-	h.running = max(h.running, run)
-	h.waiting = max(h.waiting, wait)
-	h.idle = max(h.idle, idle)
-	h.errored = max(h.errored, errd)
-	h.minutes++
+	h.Running = max(h.Running, run)
+	h.Waiting = max(h.Waiting, wait)
+	h.Idle = max(h.Idle, idle)
+	h.Errored = max(h.Errored, errd)
+	h.Minutes++
 	if runningTool == "" || sp.sawRunning {
 		return ""
 	}
@@ -278,7 +334,7 @@ func (sp *Sampler) KeyPressed() {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 	sp.rollHour(sp.now())
-	sp.hour.human = true
+	sp.hour.Human = true
 }
 
 // Reset forgets the current hour without emitting it. Called when consent is
@@ -289,7 +345,7 @@ func (sp *Sampler) Reset() {
 	}
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
-	sp.hour = hourSample{start: localHourStart(sp.now())}
+	sp.hour = hourSample{Start: localHourStart(sp.now())}
 }
 
 // localHourStart is the start of t's local wall-clock hour. Truncate would
@@ -302,39 +358,39 @@ func localHourStart(t time.Time) time.Time {
 // rollHour emits the previous hour when the local hour changed. Callers hold mu.
 func (sp *Sampler) rollHour(now time.Time) {
 	h := localHourStart(now)
-	if sp.hour.start.IsZero() {
-		sp.hour.start = h
+	if sp.hour.Start.IsZero() {
+		sp.hour.Start = h
 		return
 	}
-	if h.Equal(sp.hour.start) {
+	if h.Equal(sp.hour.Start) {
 		return
 	}
-	sp.flush()
-	sp.hour.start = h
-}
-
-// flush emits the current hour and starts an empty one. Callers hold mu.
-func (sp *Sampler) flush() {
-	h := sp.hour
-	if h.minutes > 0 || h.human {
-		sp.emit(map[string]any{
-			"running": CountBucket(h.running), "waiting": CountBucket(h.waiting),
-			"idle": CountBucket(h.idle), "error": CountBucket(h.errored),
-			"sampled_min": CountBucket(h.minutes), "human_active": h.human,
-			"tools_running": int(h.tools),
-		}, h.start)
+	if sp.hour.active() {
+		sp.emit(sp.hour.props(), sp.hour.Start)
 	}
-	sp.hour = hourSample{}
+	sp.hour = hourSample{Start: h}
 }
 
-// Close flushes the current hour to the spool and releases the lock.
+// Close emits a finished hour, stores the still open one in State for the
+// next TUI or upload to continue or emit, and releases the lock.
 func (sp *Sampler) Close() {
 	if sp == nil {
 		return
 	}
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
-	sp.flush()
+	sp.rollHour(sp.now())
+	if h := sp.hour; h.active() {
+		withState(func(s *State, now time.Time) bool {
+			s.emitOpenHour(now, appendSpool)
+			if s.OpenHour != nil {
+				h.merge(*s.OpenHour)
+			}
+			s.OpenHour = &h
+			return true
+		})
+	}
+	sp.hour = hourSample{}
 	if sp.unlock != nil {
 		sp.unlock()
 		sp.unlock = nil

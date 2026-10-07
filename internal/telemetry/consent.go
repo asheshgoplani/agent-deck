@@ -132,6 +132,7 @@ func (s *State) resetCollected() {
 	s.Milestones = 0
 	s.Funnel = FunnelState{}
 	s.TUIOpen = false
+	s.OpenHour = nil
 }
 
 // Decline records a refusal and forgets the id, salt and everything recorded.
@@ -158,6 +159,7 @@ func RotateInstallID(s *State) error {
 	s.InstallID, s.Salt = id, salt
 	s.Seq = 0
 	s.Daily = nil
+	s.OpenHour = nil
 	s.LastPayload = nil
 	s.LastSentDay = ""
 	return nil

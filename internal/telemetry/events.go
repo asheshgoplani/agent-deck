@@ -140,6 +140,12 @@ func (s *State) spool(name string, props map[string]any, sessionID string, at ti
 
 // spoolFrom is spool for an event from surface sf.
 func (s *State) spoolFrom(sf Surface, name string, props map[string]any, sessionID string, at time.Time) bool {
+	return s.spoolTo(appendSpool, sf, name, props, sessionID, at)
+}
+
+// spoolTo is spoolFrom with the line written by write, so PreviewBatch can
+// build a line exactly as recording would without touching the spool.
+func (s *State) spoolTo(write func(spoolLine) error, sf Surface, name string, props map[string]any, sessionID string, at time.Time) bool {
 	def, ok := LookupEvent(name)
 	if !ok {
 		return false
@@ -163,7 +169,7 @@ func (s *State) spoolFrom(sf Surface, name string, props map[string]any, session
 		inc(&r.Dropped)
 		return true
 	}
-	if appendSpool(s.newLine(name, props, at, level, sf)) != nil {
+	if write(s.newLine(name, props, at, level, sf)) != nil {
 		return true
 	}
 	r.Emitted++
