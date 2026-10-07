@@ -41,6 +41,12 @@ const (
 	// PromptV1Declined is shown above the buttons for installs that declined
 	// the schema 1 prompt, which counted every key as no.
 	PromptV1Declined = "You said no to an earlier, smaller version of this question."
+	// PromptKeepsID is shown above the buttons when a yes keeps an existing
+	// install id (asked again after an upgrade changed the question).
+	PromptKeepsID = "Your anonymous ID is kept; unsent data from before will be sent."
+	// PromptKeepsIDNewEndpoint is the same note when the destination changed:
+	// data recorded for the old destination is never sent to the new one.
+	PromptKeepsIDNewEndpoint = "Your anonymous ID is kept; unsent data for the old endpoint is deleted."
 	// PromptTooSmall replaces the question when the terminal is too small.
 	PromptTooSmall = "Telemetry is off. Enlarge the window to 78×22 to read the question, or run agent-deck telemetry on in a shell."
 
@@ -81,18 +87,39 @@ func ShouldPrompt(s *State) bool {
 	return Interactive()
 }
 
-// Grant records consent. The install id and salt survive upgrades and
-// re-consent to a new schema: a schema bump only asks again (LoadState), it
-// never changes who the install is. A new id and salt are created only when
-// the existing ones are missing or invalid (after a decline, or a v1 state)
-// or were granted for a different endpoint; a new identity also deletes the
-// spool, so events recorded for an earlier destination can never be sent to
-// this one. Spool lines kept across a schema bump are re-validated against
-// the current schema when read and get os, arch and schema when sent.
-// Nothing records into the spool meanwhile: the stale grant does not enable
-// recording.
+// ReconsentNote returns the line the prompt adds when a yes would keep an
+// existing install id (a grant from an earlier schema, or for another
+// endpoint), or "" when a yes creates a new one.
+func ReconsentNote(s *State, endpoint string) string {
+	switch {
+	case s == nil || !hasIdentity(s):
+		return ""
+	case s.ConsentEndpoint != endpoint:
+		return PromptKeepsIDNewEndpoint
+	default:
+		return PromptKeepsID
+	}
+}
+
+// hasIdentity reports a usable install id and salt.
+func hasIdentity(s *State) bool {
+	return validInstallID(s.InstallID) && len(s.Salt) == 64
+}
+
+// Grant records consent. An existing install id and salt are always kept:
+// upgrades, a schema bump (which only asks again, see LoadState) and a new
+// destination never change who the install is. Only reset-id rotates them,
+// and only a no or off clears them; a new pair is created when none is
+// usable (after a no or off, or a v1 state without a salt). Unsent spool
+// lines and rollups recorded before the yes are kept and sent later under
+// the same id; they are re-validated against the current schema when read
+// and get os, arch and schema when sent. Data is dropped only with a new
+// identity or when the destination changed, so events recorded for one
+// destination are never sent to another. Nothing records meanwhile: a stale
+// grant does not enable recording.
 func Grant(s *State, version string, now time.Time) error {
-	if !validInstallID(s.InstallID) || len(s.Salt) != 64 || s.ConsentEndpoint != Endpoint() {
+	switch {
+	case !hasIdentity(s):
 		id, salt, err := newIdentity()
 		if err != nil {
 			return err
@@ -102,6 +129,11 @@ func Grant(s *State, version string, now time.Time) error {
 		}
 		s.resetCollected()
 		s.InstallID, s.Salt = id, salt
+	case s.ConsentEndpoint != Endpoint():
+		if err := DeleteSpool(); err != nil {
+			return err
+		}
+		s.resetCollected()
 	}
 	s.SchemaVersion = SchemaVersion
 	s.ConsentEndpoint = Endpoint()
@@ -199,7 +231,7 @@ func Enabled(s *State) (bool, DisableReason) {
 		if s.SchemaVersion != SchemaVersion || s.ConsentEndpoint != Endpoint() {
 			return false, DisableReason("endpoint or schema changed; interactive consent required")
 		}
-		if !validInstallID(s.InstallID) || len(s.Salt) != 64 {
+		if !hasIdentity(s) {
 			return false, DisableReason("invalid install id; interactive consent required")
 		}
 		return true, ReasonNone

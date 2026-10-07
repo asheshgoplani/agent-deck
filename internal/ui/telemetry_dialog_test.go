@@ -292,6 +292,30 @@ func TestTelemetryDialogV1DeclineAskedOnceWithNote(t *testing.T) {
 	}
 }
 
+// TestTelemetryDialogReconsentSaysIDKept: an install re-asked after a schema
+// bump is told its id is kept and earlier unsent data will be sent; a yes
+// keeps the id.
+func TestTelemetryDialogReconsentSaysIDKept(t *testing.T) {
+	h := telemetryDialogHarness(t)
+	forceShow(h)
+	if strings.Contains(stripAnsi(h.d.View()), telemetry.PromptKeepsID) {
+		t.Fatal("a first question must not claim an existing id")
+	}
+	h = telemetryDialogHarness(t)
+	h.st.SchemaVersion = 2
+	h.st.InstallID = strings.Repeat("ab", 16)
+	h.st.Salt = strings.Repeat("cd", 32)
+	h.st.ConsentEndpoint = telemetry.Endpoint()
+	forceShow(h)
+	if !strings.Contains(stripAnsi(h.d.View()), telemetry.PromptKeepsID) {
+		t.Fatal("a re-asked install must be told its id is kept")
+	}
+	h.d.Update(key("y"))
+	if h.st.Consent != telemetry.ConsentGranted || h.st.InstallID != strings.Repeat("ab", 16) {
+		t.Fatalf("re-consent changed the id: %s", h.st.InstallID)
+	}
+}
+
 func TestTelemetryDialogGoldenFrames(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -301,6 +325,8 @@ func TestTelemetryDialogGoldenFrames(t *testing.T) {
 		{"ask", func(dialogHarness) {}, 80, 24},
 		{"ask_no_focused", func(h dialogHarness) { h.d.focus = telemetryFocusNo }, 80, 24},
 		{"ask_v1_declined", func(h dialogHarness) { h.d.v1Declined = true }, 80, 24},
+		{"ask_kept_id", func(h dialogHarness) { h.d.reconsentNote = telemetry.PromptKeepsID }, 80, 24},
+		{"ask_kept_id_min", func(h dialogHarness) { h.d.reconsentNote = telemetry.PromptKeepsID }, 78, 22},
 		{"ask_min", func(dialogHarness) {}, 78, 22},
 		{"too_small", func(dialogHarness) {}, 60, 15},
 	} {

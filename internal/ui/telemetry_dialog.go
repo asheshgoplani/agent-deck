@@ -60,11 +60,13 @@ type TelemetryDialog struct {
 	state      *telemetry.State
 	previous   string
 	v1Declined bool
-	source     telemetry.ConsentSource
-	saveErr    error
-	shownAt    time.Time
-	endpoint   string
-	canConsent func() bool
+	// reconsentNote says a yes keeps the existing install id ("" if none).
+	reconsentNote string
+	source        telemetry.ConsentSource
+	saveErr       error
+	shownAt       time.Time
+	endpoint      string
+	canConsent    func() bool
 
 	// Seams for tests.
 	saveState    func(*telemetry.State) error
@@ -134,6 +136,7 @@ func (d *TelemetryDialog) open(version string, st *telemetry.State, src telemetr
 	d.saveErr = nil
 	d.shownAt = d.now()
 	d.endpoint = telemetry.Endpoint()
+	d.reconsentNote = telemetry.ReconsentNote(st, d.endpoint)
 }
 
 // Hide closes the dialog.
@@ -251,6 +254,10 @@ func (d *TelemetryDialog) View() string {
 		parts := []string{titleStyle.Render(lines[0]), textStyle.Render(strings.Join(lines[1:], "\n")), ""}
 		if d.v1Declined {
 			parts = append(parts, dimStyle.Render(telemetry.PromptV1Declined), "")
+			padV = 0
+		}
+		if d.reconsentNote != "" {
+			parts = append(parts, dimStyle.Render(d.reconsentNote), "")
 			padV = 0
 		}
 		parts = append(parts, d.buttons(), "", dimStyle.Render(" "+telemetry.PromptLegend))
