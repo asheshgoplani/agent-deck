@@ -178,7 +178,7 @@ type Sampler struct {
 	unlock     func()
 	sawRunning bool
 	now        func() time.Time
-	emit       func(props map[string]any, at time.Time)
+	emit       func(h hourSample)
 	hour       hourSample
 }
 
@@ -251,11 +251,23 @@ func NewSampler() *Sampler {
 	if err != nil {
 		return nil
 	}
-	sp := &Sampler{unlock: unlock, now: nowFn, emit: func(p map[string]any, at time.Time) {
-		recordAt("activity.hourly", p, "", at)
-	}}
+	sp := &Sampler{unlock: unlock, now: nowFn, emit: recordHour}
 	sp.resume()
 	return sp
+}
+
+// recordHour spools a finished hour. A part of the same hour that an earlier
+// TUI stored and this sampler did not adopt (its resume lost the state lock)
+// is merged in and cleared under the same lock, so the hour ships once.
+func recordHour(h hourSample) {
+	recordLocked("activity.hourly", h.props(), h.Start, func(s *State, at time.Time) bool {
+		merged := false
+		if o := s.OpenHour; o != nil && o.Start.Equal(h.Start) {
+			h.merge(*o)
+			s.OpenHour, merged = nil, true
+		}
+		return s.spoolFrom(surface, "activity.hourly", h.props(), "", at) || merged
+	})
 }
 
 // resume continues the hour an earlier TUI left open, or emits it when that
@@ -366,7 +378,7 @@ func (sp *Sampler) rollHour(now time.Time) {
 		return
 	}
 	if sp.hour.active() {
-		sp.emit(sp.hour.props(), sp.hour.Start)
+		sp.emit(sp.hour)
 	}
 	sp.hour = hourSample{Start: h}
 }

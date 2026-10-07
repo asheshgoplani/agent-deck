@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,5 +85,105 @@ func TestDisableForgetsOpenHour(t *testing.T) {
 	}
 	if s := LoadState(); s.OpenHour != nil {
 		t.Fatalf("open hour survived Disable: %+v", s.OpenHour)
+	}
+}
+
+// TestSamplerMergesStoredHourWhenResumeLostLock: a TUI whose resume loses the
+// state lock (to the upload the TUI itself starts at launch, or to a CLI or
+// hook recording) does not adopt the stored part of the current hour. When
+// it stays open past the hour end, the hour must still ship once, with the
+// minutes of both parts.
+func TestSamplerMergesStoredHourWhenResumeLostLock(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	openCloseTUI(t, c, at(1, 21, 5)) // stores 21:00
+	c.set(at(1, 21, 30))
+	unlock, err := lockState() // an upload holds the state lock during resume
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := NewSampler()
+	unlock()
+	if sp == nil {
+		t.Fatal("no sampler")
+	}
+	sp.Observe(running(1))
+	c.set(at(1, 22, 1))
+	sp.Observe(running(1)) // the hour rolls in this TUI
+	sp.Close()
+	openCloseTUI(t, c, at(1, 23, 2)) // emits any stored past hour
+	var rows []spoolLine
+	for _, l := range hourlyLines(t) {
+		if *l.H == 21 {
+			rows = append(rows, l)
+		}
+	}
+	if len(rows) != 1 {
+		for _, l := range rows {
+			t.Logf("21:00 row sampled_min=%v", l.P["sampled_min"])
+		}
+		t.Fatalf("%d activity.hourly rows for 21:00, want 1", len(rows))
+	}
+	if got := rows[0].P["sampled_min"]; got != "2-3" {
+		t.Fatalf("21:00 sampled_min=%v, want 2-3 (both parts)", got)
+	}
+}
+
+// TestOpenHourNeedsConsent: without consent nothing is stored or spooled.
+func TestOpenHourNeedsConsent(t *testing.T) {
+	c := env(t)
+	c.set(at(1, 21, 5))
+	sp := NewSampler()
+	if sp == nil {
+		t.Fatal("no sampler")
+	}
+	sp.Observe(running(1))
+	sp.KeyPressed()
+	sp.Close()
+	p, _ := StatePath()
+	b, _ := os.ReadFile(p)
+	if LoadState().OpenHour != nil || strings.Contains(string(b), "open_hour") {
+		t.Fatalf("open hour stored without consent: %s", b)
+	}
+	if n := len(hourlyLines(t)); n != 0 {
+		t.Fatalf("%d hourly lines without consent", n)
+	}
+}
+
+// TestDeclineAndResetIDForgetOpenHour: a declined hour never ships after a
+// later grant, and ResetID rotates the id and forgets the stored hour.
+func TestDeclineAndResetIDForgetOpenHour(t *testing.T) {
+	c := env(t)
+	grant(t, c)
+	openCloseTUI(t, c, at(1, 21, 5))
+	s := LoadState()
+	Decline(s, "9.9.9", c.now())
+	if err := SaveState(s); err != nil {
+		t.Fatal(err)
+	}
+	if LoadState().OpenHour != nil {
+		t.Fatal("open hour survived Decline")
+	}
+	c.set(at(2, 10, 0))
+	grant(t, c)
+	openCloseTUI(t, c, at(2, 11, 5))
+	for _, l := range hourlyLines(t) {
+		if l.D == dayOf(at(1, 21, 0)) {
+			t.Fatalf("pre-decline hour shipped after re-grant: %+v", l)
+		}
+	}
+	old := LoadState().InstallID
+	if LoadState().OpenHour == nil {
+		t.Fatal("expected a stored open hour before ResetID")
+	}
+	s2, err := ResetID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.InstallID == old || LoadState().InstallID == old {
+		t.Fatal("ResetID did not rotate the id")
+	}
+	if LoadState().OpenHour != nil {
+		t.Fatal("open hour survived ResetID")
 	}
 }

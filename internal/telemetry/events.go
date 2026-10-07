@@ -100,14 +100,18 @@ func record(name string, props map[string]any, sessionID string) {
 	recordFrom(surface, name, props, sessionID, time.Time{})
 }
 
-// recordAt spools one event with its time fields taken from at (zero = now).
-func recordAt(name string, props map[string]any, sessionID string, at time.Time) {
-	recordFrom(surface, name, props, sessionID, at)
-}
-
 // recordFrom spools one event from surface sf, which differs from the
 // process surface for web requests served by a TUI process.
 func recordFrom(sf Surface, name string, props map[string]any, sessionID string, at time.Time) {
+	recordLocked(name, props, at, func(s *State, at time.Time) bool {
+		return s.spoolFrom(sf, name, props, sessionID, at)
+	})
+}
+
+// recordLocked runs spool on the loaded state under a non-blocking state
+// lock when consent is granted, and saves when spool reports a change. In log
+// mode without consent it logs name and props instead. A zero at means now.
+func recordLocked(name string, props map[string]any, at time.Time, spool func(s *State, at time.Time) bool) {
 	if !canRecord() {
 		return
 	}
@@ -127,7 +131,7 @@ func recordFrom(sf Surface, name string, props map[string]any, sessionID string,
 		}
 		return
 	}
-	if s.spoolFrom(sf, name, props, sessionID, at) {
+	if spool(s, at) {
 		_ = saveStateFast(s)
 	}
 }
