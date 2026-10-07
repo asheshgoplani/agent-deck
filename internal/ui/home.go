@@ -13891,43 +13891,44 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 
 // stopConductorDeliveries starts no further conductor delivery, waits up to
 // wait for the one in flight (so a quit does not leave a pasted message
-// without its Enter), and logs per conductor the routed events it leaves: the
-// ones still queued, which are not delivered, and any still being sent when
-// the wait expired, whose outcome is unknown. They stay in watcher_events and
-// the watcher's task log (durable delivery is #2537). It returns both counts.
-func (h *Home) stopConductorDeliveries(wait time.Duration) (queued, unconfirmed int) {
+// without its Enter), and logs per conductor the routed events it leaves:
+// undelivered (still queued, or dropped from a full backlog) and, if the wait
+// expired mid-delivery, the one still being sent, whose outcome is unknown.
+// They stay in watcher_events and the watcher's task log (durable delivery is
+// #2537). It returns both counts.
+func (h *Home) stopConductorDeliveries(wait time.Duration) (undelivered, unconfirmed int) {
 	if h.conductorDeliveries == nil {
 		return 0, 0
 	}
-	type left struct{ queued, unconfirmed int }
+	type left struct{ undelivered, unconfirmed int }
 	per := map[string]*left{}
-	count := func(d conductorDelivery) (string, int) {
+	entry := func(d conductorDelivery) (*left, int) {
 		if per[d.Conductor] == nil {
 			per[d.Conductor] = &left{}
 		}
 		if d.Dropped > 0 {
-			return d.Conductor, d.Dropped
+			return per[d.Conductor], d.Dropped
 		}
-		return d.Conductor, 1
+		return per[d.Conductor], 1
 	}
-	pending, inflight := h.conductorDeliveries.stop(wait)
-	for _, d := range pending {
-		c, n := count(d)
-		per[c].queued += n
-		queued += n
+	gone, inflight := h.conductorDeliveries.stop(wait)
+	for _, d := range gone {
+		l, n := entry(d)
+		l.undelivered += n
+		undelivered += n
 	}
 	for _, d := range inflight {
-		c, n := count(d)
-		per[c].unconfirmed += n
+		l, n := entry(d)
+		l.unconfirmed += n
 		unconfirmed += n
 	}
 	for conductor, l := range per {
 		uiLog.Warn("watcher_events_undelivered_at_quit",
 			slog.String("conductor", conductor),
-			slog.Int("queued", l.queued),
+			slog.Int("undelivered", l.undelivered),
 			slog.Int("in_flight_outcome_unknown", l.unconfirmed))
 	}
-	return queued, unconfirmed
+	return undelivered, unconfirmed
 }
 
 // conductorTmuxSession returns the tmux session of the named conductor, or nil

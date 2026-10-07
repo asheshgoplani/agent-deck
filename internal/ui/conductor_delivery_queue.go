@@ -110,6 +110,7 @@ type conductorQueue struct {
 	mu       sync.Mutex
 	backlogs map[string]*conductorBacklog
 	stopped  bool
+	started  int // runners ever started; only grows
 	runners  sync.WaitGroup
 }
 
@@ -130,6 +131,7 @@ func (q *conductorQueue) enqueue(d conductorDelivery) {
 	b.add(d)
 	if !b.running && !q.stopped {
 		b.running = true
+		q.started++
 		q.runners.Add(1)
 		go q.run(d.Conductor, b)
 	}
@@ -172,11 +174,13 @@ func (q *conductorQueue) deliver(d conductorDelivery) {
 
 // stop lets no further delivery start, waits up to wait for the ones already
 // in flight (so a quit does not leave a pasted message without its Enter), and
-// returns, for the caller to report, the routed events and overflow notices
-// still queued and, if the wait expired, the ones still being sent: their
-// outcome is unknown, not failed. Health alerts are left out: the next health
-// tick restates them.
-func (q *conductorQueue) stop(wait time.Duration) (queued, unconfirmed []conductorDelivery) {
+// returns, for the caller to report, what it leaves: undelivered holds the
+// routed events and overflow notices still queued, plus a notice still being
+// sent when the wait expired (the events it stands for were dropped already);
+// unconfirmed holds routed events still being sent then, whose outcome is
+// unknown, not failed. Health alerts are left out: the next health tick
+// restates them.
+func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []conductorDelivery) {
 	q.mu.Lock()
 	q.stopped = true
 	conductors := make([]string, 0, len(q.backlogs))
@@ -188,7 +192,7 @@ func (q *conductorQueue) stop(wait time.Duration) (queued, unconfirmed []conduct
 		b := q.backlogs[c]
 		for _, d := range b.items {
 			if d.Alert == "" {
-				queued = append(queued, d)
+				undelivered = append(undelivered, d)
 			}
 		}
 		b.items = nil
@@ -202,17 +206,22 @@ func (q *conductorQueue) stop(wait time.Duration) (queued, unconfirmed []conduct
 	}()
 	select {
 	case <-done:
-		return queued, nil
+		return undelivered, nil
 	case <-time.After(wait):
 	}
 	q.mu.Lock()
 	for _, c := range conductors {
-		if b := q.backlogs[c]; b != nil && b.inflight != nil && b.inflight.Alert == "" {
+		b := q.backlogs[c]
+		switch {
+		case b == nil || b.inflight == nil || b.inflight.Alert != "":
+		case b.inflight.Dropped > 0:
+			undelivered = append(undelivered, *b.inflight)
+		default:
 			unconfirmed = append(unconfirmed, *b.inflight)
 		}
 	}
 	q.mu.Unlock()
 	uiLog.Warn("conductor_delivery_stop_timeout",
 		slog.Duration("waited", wait), slog.Int("in_flight", len(unconfirmed)))
-	return queued, unconfirmed
+	return undelivered, unconfirmed
 }

@@ -272,11 +272,11 @@ func TestConductorQueue_StopFinishesTheDeliveryInFlightAndReturnsTheRest(t *test
 	q.enqueue(alert("demo", "w1", "alert"))
 	q.enqueue(event("demo", "e2"))
 
-	type stopResult struct{ queued, unconfirmed []conductorDelivery }
+	type stopResult struct{ undelivered, unconfirmed []conductorDelivery }
 	stopped := make(chan stopResult, 1)
 	go func() {
-		queued, unconfirmed := q.stop(5 * time.Second)
-		stopped <- stopResult{queued, unconfirmed}
+		undelivered, unconfirmed := q.stop(5 * time.Second)
+		stopped <- stopResult{undelivered, unconfirmed}
 	}()
 	// Release only once stop has taken the queue, so the runner cannot reach
 	// e1 first however the goroutines are scheduled.
@@ -293,23 +293,25 @@ func TestConductorQueue_StopFinishesTheDeliveryInFlightAndReturnsTheRest(t *test
 	case <-time.After(5 * time.Second):
 		t.Fatal("stop did not return after the delivery in flight finished")
 	}
-	if got := strings.Join(texts(res.queued), ","); got != "e1,e2" {
-		t.Fatalf("stop returned %s queued, want e1,e2", got)
+	if got := strings.Join(texts(res.undelivered), ","); got != "e1,e2" {
+		t.Fatalf("stop returned %s undelivered, want e1,e2", got)
 	}
 	if len(res.unconfirmed) != 0 {
 		t.Fatalf("stop reported %v as unconfirmed, but the delivery in flight finished", texts(res.unconfirmed))
 	}
 
-	// After stop, enqueue starts no runner: checked on the queue's state,
-	// which enqueue sets before it returns, rather than by waiting for a
-	// delivery that should not happen.
+	// After stop, enqueue starts no runner. started only grows, so a runner
+	// started here would show even if it had already exited again; no wait
+	// for a delivery that should not happen.
+	q.mu.Lock()
+	before := q.started
+	q.mu.Unlock()
 	q.enqueue(event("demo", "after stop"))
 	q.mu.Lock()
-	b := q.backlogs["demo"]
-	running := b != nil && b.running
+	after := q.started
 	q.mu.Unlock()
-	if running {
-		t.Fatal("enqueue after stop started a runner")
+	if after != before {
+		t.Fatalf("enqueue after stop started %d runner(s)", after-before)
 	}
 	if got := strings.Join(log.texts(), ","); got != "in flight" {
 		t.Fatalf("delivered %s, want only the delivery that was in flight", got)
@@ -323,12 +325,12 @@ func TestConductorQueue_StopGivesUpOnAHungDelivery(t *testing.T) {
 	q, _, _ := busyQueue(t)
 	q.enqueue(event("demo", "e1"))
 	start := time.Now()
-	queued, unconfirmed := q.stop(50 * time.Millisecond)
+	undelivered, unconfirmed := q.stop(50 * time.Millisecond)
 	if waited := time.Since(start); waited > 2*time.Second {
 		t.Fatalf("stop waited %s for a hung delivery", waited)
 	}
-	if got := strings.Join(texts(queued), ","); got != "e1" {
-		t.Fatalf("stop returned %s queued, want e1", got)
+	if got := strings.Join(texts(undelivered), ","); got != "e1" {
+		t.Fatalf("stop returned %s undelivered, want e1", got)
 	}
 	if got := strings.Join(texts(unconfirmed), ","); got != "in flight" {
 		t.Fatalf("stop returned %q as unconfirmed, want the delivery still in flight", got)
@@ -344,8 +346,8 @@ func TestConductorQueue_StopLeavesAHungAlertOutOfTheReport(t *testing.T) {
 	q := newConductorQueue(send)
 	q.enqueue(alert("demo", "w1", "alert in flight"))
 	<-started
-	if queued, unconfirmed := q.stop(50 * time.Millisecond); len(queued) != 0 || len(unconfirmed) != 0 {
-		t.Fatalf("stop reported queued %v, unconfirmed %v; want nothing for an alert", texts(queued), texts(unconfirmed))
+	if undelivered, unconfirmed := q.stop(50 * time.Millisecond); len(undelivered) != 0 || len(unconfirmed) != 0 {
+		t.Fatalf("stop reported undelivered %v, unconfirmed %v; want nothing for an alert", texts(undelivered), texts(unconfirmed))
 	}
 }
 
@@ -363,18 +365,18 @@ func TestWatcherDeliveries_QuitFinishesTheDeliveryInFlightAndStartsNoOther(t *te
 	home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "bob", Body: "unrouted"})
 	<-started
 
-	type leftCounts struct{ queued, unconfirmed int }
+	type leftCounts struct{ undelivered, unconfirmed int }
 	left := make(chan leftCounts, 1)
 	go func() {
-		queued, unconfirmed := home.stopConductorDeliveries(5 * time.Second)
-		left <- leftCounts{queued, unconfirmed}
+		undelivered, unconfirmed := home.stopConductorDeliveries(5 * time.Second)
+		left <- leftCounts{undelivered, unconfirmed}
 	}()
 	waitStopped(t, home.conductorDeliveries)
 	release()
 	select {
 	case n := <-left:
-		if n.queued != 2 || n.unconfirmed != 0 {
-			t.Fatalf("stopConductorDeliveries left %d queued and %d unconfirmed, want 2 and 0", n.queued, n.unconfirmed)
+		if n.undelivered != 2 || n.unconfirmed != 0 {
+			t.Fatalf("stopConductorDeliveries left %d undelivered and %d unconfirmed, want 2 and 0", n.undelivered, n.unconfirmed)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("stopConductorDeliveries did not return after the delivery in flight finished")
@@ -396,7 +398,52 @@ func TestWatcherDeliveries_QuitReportsADeliveryStillInFlightAtTheDeadline(t *tes
 	home.conductorDeliveriesOnce.Do(func() { home.conductorDeliveries = newConductorQueue(send) })
 	home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "alice", Body: "only", RoutedTo: "demo"})
 	<-started
-	if queued, unconfirmed := home.stopConductorDeliveries(50 * time.Millisecond); queued != 0 || unconfirmed != 1 {
-		t.Fatalf("stopConductorDeliveries left %d queued and %d unconfirmed, want 0 and 1", queued, unconfirmed)
+	if undelivered, unconfirmed := home.stopConductorDeliveries(50 * time.Millisecond); undelivered != 0 || unconfirmed != 1 {
+		t.Fatalf("stopConductorDeliveries left %d undelivered and %d unconfirmed, want 0 and 1", undelivered, unconfirmed)
+	}
+}
+
+// TestWatcherDeliveries_QuitCountsAnOverflowNoticeInFlightAsUndelivered: when
+// the quit wait expires while the overflow notice is being sent, the events
+// it stands for were dropped already, so they count as undelivered, not as an
+// unknown outcome.
+func TestWatcherDeliveries_QuitCountsAnOverflowNoticeInFlightAsUndelivered(t *testing.T) {
+	home := NewHome()
+	firstHeld := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	noticeSending := make(chan struct{})
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	home.conductorDeliveriesOnce.Do(func() {
+		home.conductorDeliveries = newConductorQueue(func(d conductorDelivery) {
+			switch {
+			case d.Dropped > 0:
+				close(noticeSending)
+				<-hang
+			case d.Text == "[slack] alice: first":
+				close(firstHeld)
+				<-releaseFirst
+			}
+		})
+	})
+	dispatch := func(body string) {
+		home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "alice", Body: body, RoutedTo: "demo"})
+	}
+	dispatch("first")
+	<-firstHeld
+	for i := 1; i <= maxConductorBacklog+1; i++ {
+		dispatch("e" + strconv.Itoa(i)) // one more than fits: e1 is dropped
+	}
+	close(releaseFirst)
+	select {
+	case <-noticeSending:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the overflow notice was never sent")
+	}
+
+	undelivered, unconfirmed := home.stopConductorDeliveries(50 * time.Millisecond)
+	if undelivered != maxConductorBacklog+1 || unconfirmed != 0 {
+		t.Fatalf("stopConductorDeliveries left %d undelivered and %d unconfirmed, want %d and 0",
+			undelivered, unconfirmed, maxConductorBacklog+1)
 	}
 }
