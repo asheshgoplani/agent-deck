@@ -397,15 +397,17 @@ func TUIExited(openFor time.Duration, kind ExitKind) {
 	})
 }
 
-// CLICommand counts a human CLI command and its feature, and records
-// app.start at most once per local hour for the CLI surface.
-func CLICommand(f Feature) {
+// CLICommand counts a finished human CLI command and its feature, and records
+// app.start at most once per local hour for the CLI surface. failed counts a
+// feature error and withholds the first-use milestone; an empty f counts the
+// invocation only.
+func CLICommand(f Feature, failed bool) {
 	withState(func(s *State, now time.Time) bool {
 		r := s.day(dayOf(now))
 		inc(&r.CLICmds)
 		s.markActive(now)
 		if f != "" {
-			s.countFeature(r, f, false, now)
+			s.countFeature(r, f, failed, now)
 		}
 		if bit := HourBit(now.Local().Hour()); r.CLIStarts&bit == 0 {
 			r.CLIStarts |= bit

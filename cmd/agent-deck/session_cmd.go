@@ -36,7 +36,7 @@ import (
 func handleSession(profile string, args []string) {
 	if len(args) == 0 {
 		printSessionHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	switch args[0] {
@@ -140,7 +140,7 @@ func handleSession(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown session command: %s\n", args[0])
 		printSessionHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -272,7 +272,7 @@ func handleSessionStart(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -283,14 +283,14 @@ func handleSessionStart(profile string, args []string) {
 	initialMessage, err := resolveMessageInput(mergeFlags(*message, *messageShort), *messageFile, os.Stdin)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load sessions
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
@@ -298,21 +298,21 @@ func handleSessionStart(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	// Check if already running
 	if inst.Exists() {
 		out.Error(fmt.Sprintf("session '%s' is already running", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := applyCLIYoloOverride(inst, *yoloMode); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// v1.9.1 group concurrency cap: if the target group is at its
@@ -325,7 +325,7 @@ func handleSessionStart(profile string, args []string) {
 		inst.Status = session.StatusQueued
 		if err := saveSessionData(storage, instances, groups); err != nil {
 			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		out.Success(
 			fmt.Sprintf("Queued session: %s (group at cap %d)", inst.Title, max),
@@ -345,12 +345,12 @@ func handleSessionStart(profile string, args []string) {
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	} else {
 		if err := inst.Start(); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -374,7 +374,7 @@ func handleSessionStart(profile string, args []string) {
 	// Save updated state
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// --attach: drop the user into the freshly started session's pane. This
@@ -385,15 +385,15 @@ func handleSessionStart(profile string, args []string) {
 	if *attach {
 		if *jsonOutput {
 			out.Error("--attach cannot be combined with --json; session was started", ErrCodeInvalidOperation)
-			os.Exit(3)
+			exitCLI(3)
 		}
 		if err := attachInstanceInteractive(inst); err != nil {
 			if errors.Is(err, errAttachNoTTY) {
 				fmt.Fprintf(os.Stderr, "Error: %v; session was started\n", err)
-				os.Exit(3)
+				exitCLI(3)
 			}
 			fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -471,7 +471,7 @@ func failSpawnVerification(out *CLIOutput, verb string, storage *session.Storage
 	}
 	msg, data := spawnFailureOutput(verb, inst, err)
 	out.ErrorWithData(msg, ErrCodeInvalidOperation, data)
-	os.Exit(1)
+	exitCLI(1)
 }
 
 // handleSessionStop stops a session process
@@ -491,7 +491,7 @@ func handleSessionStop(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -502,7 +502,7 @@ func handleSessionStop(profile string, args []string) {
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
@@ -510,16 +510,16 @@ func handleSessionStop(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	// Check if not running
 	if !inst.Exists() {
 		out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Capture tool conversation IDs from tmux env before killing the session.
@@ -532,7 +532,7 @@ func handleSessionStop(profile string, args []string) {
 	// Stop the session by killing the tmux session
 	if err := inst.Kill(); err != nil {
 		out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	inst.RecordTelemetryEnd(telemetry.EndStop)
 
@@ -545,7 +545,7 @@ func handleSessionStop(profile string, args []string) {
 	// Save updated state
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Output success
@@ -586,7 +586,7 @@ func handleSessionArchive(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -601,28 +601,28 @@ func handleSessionArchive(profile string, args []string) {
 		if !*jsonOutput {
 			fs.Usage()
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	if inst.IsArchived() {
 		out.Error(fmt.Sprintf("session '%s' is already archived", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Only kill a live tmux session. Killing an already-dead session returns a
@@ -645,7 +645,7 @@ func handleSessionArchive(profile string, args []string) {
 		adoptLiveCodexIdentity(storage, inst)
 		if err := inst.Kill(); err != nil {
 			out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		killed = true
 	}
@@ -653,7 +653,7 @@ func handleSessionArchive(profile string, args []string) {
 	inst.ArchivedAt = time.Now().UTC()
 	if err := persistArchivedCLI(storage, inst, killed); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out.Success(fmt.Sprintf("Archived session: %s", inst.Title), map[string]interface{}{
@@ -682,7 +682,7 @@ func handleSessionUnarchive(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -695,35 +695,35 @@ func handleSessionUnarchive(profile string, args []string) {
 		if !*jsonOutput {
 			fs.Usage()
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	if !inst.IsArchived() {
 		out.Error(fmt.Sprintf("session '%s' is not archived", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// unarchive never kills tmux, so there is no post-kill status to persist.
 	inst.ArchivedAt = time.Time{}
 	if err := persistArchivedCLI(storage, inst, false); err != nil {
 		out.Error(fmt.Sprintf("failed to persist unarchive: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out.Success(fmt.Sprintf("Unarchived session: %s", inst.Title), map[string]interface{}{
@@ -823,7 +823,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -833,7 +833,7 @@ func handleSessionRestart(profile string, args []string) {
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *all {
@@ -845,7 +845,7 @@ func handleSessionRestart(profile string, args []string) {
 	if identifier == "" {
 		out.Error("session identifier required (or use --all)", ErrCodeInvalidOperation)
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
@@ -853,9 +853,9 @@ func handleSessionRestart(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -872,13 +872,14 @@ func handleSessionRestart(profile string, args []string) {
 			"title":   inst.Title,
 		}
 		out.Success(fmt.Sprintf("Skipped restart of %s: %s", inst.Title, reason), data)
+		markCLINoop()
 		return
 	}
 
 	// Restart the session
 	if err := inst.RestartWithEnv(envFlags); err != nil {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// #2099: confirm the new pane is actually there before reporting success.
 	if err := inst.VerifySpawned(spawnVerifyWait); err != nil {
@@ -900,7 +901,7 @@ func handleSessionRestart(profile string, args []string) {
 	// Save updated state
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Output success
@@ -938,7 +939,7 @@ func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage
 
 	if len(active) == 0 {
 		out.Error("no active sessions to restart", ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	results := make(map[string]map[string]interface{}, len(active))
@@ -1016,7 +1017,7 @@ func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage
 	// Save updated state after all restarts
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if sweepResult.TripMessage != "" && !out.jsonMode {
@@ -1044,7 +1045,7 @@ func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage
 	}
 
 	if restartAllSessionsExitCode(sweepResult) != 0 {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -1103,7 +1104,7 @@ func handleSessionFork(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -1118,7 +1119,7 @@ func handleSessionFork(profile string, args []string) {
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
@@ -1126,9 +1127,9 @@ func handleSessionFork(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -1139,7 +1140,7 @@ func handleSessionFork(profile string, args []string) {
 			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Try to capture Claude session ID from tmux if missing (handles pre-fix sessions).
@@ -1153,7 +1154,7 @@ func handleSessionFork(profile string, args []string) {
 			fmt.Sprintf("session '%s' cannot be forked: no resumable session for tool %s", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Default title if not provided. An explicitly passed -t/--title is user
@@ -1181,7 +1182,7 @@ func handleSessionFork(profile string, args []string) {
 	wantState := *withState || *withStateGitignored
 	if wantState && wtBranch == "" {
 		out.Error("--with-state requires an explicit worktree branch (-w/--worktree)", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Handle worktree creation
@@ -1191,7 +1192,7 @@ func handleSessionFork(profile string, args []string) {
 		backend, err := detectAndCreateBackend(inst.ProjectPath)
 		if err != nil {
 			out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		worktreeType = string(backend.Type())
 		repoRoot := backend.RepoDir()
@@ -1203,7 +1204,7 @@ func handleSessionFork(profile string, args []string) {
 		// reached only on the git branch; jujutsu has its own branch.
 		if wantState && backend.Type() != vcs.TypeGit && backend.Type() != vcs.TypeJujutsu {
 			out.Error("--with-state is not supported for this repository's VCS backend", ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 
 		// Apply configured branch prefix before validation/existence checks.
@@ -1212,7 +1213,7 @@ func handleSessionFork(profile string, args []string) {
 		wtSettings, err := session.GetWorktreeSettingsForDir(repoRoot)
 		if err != nil {
 			out.Error(fmt.Sprintf("invalid directory-local config: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
@@ -1235,10 +1236,10 @@ func handleSessionFork(profile string, args []string) {
 					default:
 						out.Error(collErr.Error(), ErrCodeInvalidOperation)
 					}
-					os.Exit(1)
+					exitCLI(1)
 				}
 				out.Error(fmt.Sprintf("failed to validate destination: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		} else if wantState {
 			// jujutsu with-state: a fresh destination bookmark is required, mirroring
@@ -1247,15 +1248,15 @@ func handleSessionFork(profile string, args []string) {
 			exists, bmErr := jujutsu.BookmarkExists(repoRoot, wtBranch)
 			if bmErr != nil {
 				out.Error(fmt.Sprintf("failed to validate destination: %v", bmErr), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 			if exists {
 				out.Error(fmt.Sprintf("bookmark '%s' already exists; choose a new destination branch for --with-state", wtBranch), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		} else if !createNewBranch && !backend.BranchExists(wtBranch) {
 			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 
 		worktreePath := backend.WorktreePath(vcs.WorktreePathOptions{
@@ -1280,12 +1281,12 @@ func handleSessionFork(profile string, args []string) {
 		if !reuseExistingWorktree {
 			if _, statErr := os.Stat(worktreePath); statErr == nil {
 				out.Error(fmt.Sprintf("worktree path already exists: %s", worktreePath), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 				out.Error(fmt.Sprintf("failed to create directory: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 
 			var setupErr error
@@ -1308,7 +1309,7 @@ func handleSessionFork(profile string, args []string) {
 					}[kind]
 					out.Error(fmt.Sprintf("parent session is mid-%s; finish or abort the %s before forking with state (cd %s && %s)",
 						kind, kind, inst.ProjectPath, abortCmd), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 
 				if git.HasSubmodules(inst.ProjectPath) {
@@ -1319,7 +1320,7 @@ func handleSessionFork(profile string, args []string) {
 				parentHead, hcErr := git.HeadCommit(inst.ProjectPath)
 				if hcErr != nil {
 					out.Error(fmt.Sprintf("failed to resolve parent session HEAD: %v", hcErr), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 
 				// #1708: inherit the PARENT SESSION's sparse state (its own
@@ -1328,7 +1329,7 @@ func handleSessionFork(profile string, args []string) {
 					wtSettings.CreateOptions(inst.ProjectPath))
 				if cwErr != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 
 				// Materialize parent state, with cleanup-on-error.
@@ -1352,7 +1353,7 @@ func handleSessionFork(profile string, args []string) {
 							branchCleanupHint(createdBranch, repoRoot, wtBranch),
 						), ErrCodeInvalidOperation)
 					}
-					os.Exit(1)
+					exitCLI(1)
 				}
 
 				// Continue upstream's wrapper tail: worktreeinclude + setup hook.
@@ -1366,11 +1367,11 @@ func handleSessionFork(profile string, args []string) {
 				parentBase, pbErr := jujutsu.WorkingCopyParentRevision(inst.ProjectPath)
 				if pbErr != nil {
 					out.Error(fmt.Sprintf("failed to resolve parent session committed anchor: %v", pbErr), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 				if cwErr := jujutsu.CreateWorkspaceAtRevision(repoRoot, worktreePath, wtBranch, parentBase); cwErr != nil {
 					out.Error(fmt.Sprintf("workspace creation failed: %v", cwErr), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 				if matErr := jujutsu.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
 					var cleanupErrs []string
@@ -1386,7 +1387,7 @@ func handleSessionFork(profile string, args []string) {
 						out.Error(fmt.Sprintf("failed to materialize parent state: %v; cleanup also failed (%s); manual cleanup required: rm -rf %s",
 							matErr, strings.Join(cleanupErrs, "; "), shellescape.Quote(worktreePath)), ErrCodeInvalidOperation)
 					}
-					os.Exit(1)
+					exitCLI(1)
 				}
 				if *withStateGitignored && !jujutsu.SupportsGitignoredCopy(inst.ProjectPath) {
 					fmt.Fprintln(os.Stderr, "Warning: forked without gitignored files: this jj repo has no git metadata to copy them")
@@ -1401,13 +1402,13 @@ func handleSessionFork(profile string, args []string) {
 					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 				if cwErr != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 			} else {
 				// Non-git backend (jujutsu): with-state already rejected above.
 				if err := backend.CreateWorktree(worktreePath, wtBranch); err != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 			}
 			// A skipped (unapproved) hook already printed its notice above.
@@ -1429,7 +1430,7 @@ func handleSessionFork(profile string, args []string) {
 	forkedInst, _, err = inst.CreateForkedInstanceForTool(forkTitle, forkGroup, opts)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if explicitTitle {
 		forkedInst.TitleLocked = true
@@ -1455,7 +1456,7 @@ func handleSessionFork(profile string, args []string) {
 	// Start the forked session
 	if err := forkedInst.Start(); err != nil {
 		out.Error(fmt.Sprintf("failed to start forked session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	forkedInst.RecordTelemetryCreate(telemetry.ViaCLIAdd)
 
@@ -1476,7 +1477,7 @@ func handleSessionFork(profile string, args []string) {
 	// Save
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Output success
@@ -1506,7 +1507,7 @@ func handleSessionAttach(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -1515,7 +1516,7 @@ func handleSessionAttach(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session (allow current session detection)
@@ -1523,23 +1524,23 @@ func handleSessionAttach(profile string, args []string) {
 	if inst == nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", errMsg)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	// Check if session exists
 	if !inst.Exists() {
 		fmt.Fprintf(os.Stderr, "Error: session '%s' is not running\n", inst.Title)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Attach to the session
 	tmuxSession := inst.GetTmuxSession()
 	if tmuxSession == nil {
 		fmt.Fprintf(os.Stderr, "Error: no tmux session for '%s'\n", inst.Title)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Create context for attach
@@ -1548,7 +1549,7 @@ func handleSessionAttach(profile string, args []string) {
 	attachedAt := time.Now()
 	if err := tmuxSession.Attach(ctx, detachByte); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	telemetry.Attached(inst.Tool, telemetry.AttachCLI, time.Since(attachedAt))
 }
@@ -1711,7 +1712,7 @@ func handleSessionFocus(profile string, args []string) {
 		fmt.Println("pressed Enter on it) instead of only moving the cursor.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	id := fs.Arg(0)
@@ -1719,13 +1720,13 @@ func handleSessionFocus(profile string, args []string) {
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	db := storage.GetDB()
 	if db == nil {
 		fmt.Fprintln(os.Stderr, "Error: no state database available")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	var switcher liveSwitcher
@@ -1737,9 +1738,9 @@ func handleSessionFocus(profile string, args []string) {
 	if err := routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher, detacher); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		if errors.Is(err, errFocusNotFound) {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -1771,22 +1772,22 @@ func handleSessionViewers(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	inst, errMsg, errCode := ResolveSessionOrCurrent(fs.Arg(0), instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 	viewers, known := inst.Viewers(context.Background())
@@ -1850,7 +1851,7 @@ func handleSessionShow(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -1861,7 +1862,7 @@ func handleSessionShow(profile string, args []string) {
 	_, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session (allow current session detection)
@@ -1883,7 +1884,7 @@ func handleSessionShow(profile string, args []string) {
 					_, instances, groupsData, err = loadSessionData(profile)
 					if err != nil {
 						out.Error(err.Error(), ErrCodeNotFound)
-						os.Exit(1)
+						exitCLI(1)
 					}
 				}
 			}
@@ -1895,9 +1896,9 @@ func handleSessionShow(profile string, args []string) {
 		} else {
 			out.Error(errMsg, errCode)
 			if errCode == ErrCodeNotFound {
-				os.Exit(2)
+				exitCLI(2)
 			}
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -2231,12 +2232,12 @@ func handleSessionSet(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if fs.NArg() < 3 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -2254,7 +2255,7 @@ func handleSessionSet(profile string, args []string) {
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A title change takes a (title, location) pair exactly as `add` does, so it
@@ -2266,13 +2267,13 @@ func handleSessionSet(profile string, args []string) {
 		regLock, regLockErr := session.AcquireRegistrationLock(profile)
 		if regLockErr != nil {
 			out.Error(fmt.Sprintf("failed to acquire session registration lock: %v", regLockErr), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		defer regLock.Release()
 		freshInstances, freshGroups, reloadErr := reloadForRegistration(storage)
 		if reloadErr != nil {
 			out.Error(reloadErr.Error(), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		instances, groupsData = freshInstances, freshGroups
 	}
@@ -2282,9 +2283,9 @@ func handleSessionSet(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -2298,7 +2299,7 @@ func handleSessionSet(profile string, args []string) {
 	if field == session.FieldTitle {
 		if msg, code := checkTitleConflict(instances, inst, value); msg != "" {
 			out.Error(msg, code)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -2308,14 +2309,14 @@ func handleSessionSet(profile string, args []string) {
 		n, perr := strconv.Atoi(value)
 		if perr != nil || n < 0 {
 			out.Error(fmt.Sprintf("invalid order %q: expected a non-negative integer", value), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 		oldPos := strconv.Itoa(groupTree.SessionPosition(inst))
 		groupTree.SetSessionOrder(inst, n)
 		if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 			out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		newPos := strconv.Itoa(groupTree.SessionPosition(inst))
 		out.Success(fmt.Sprintf("Updated order: %q -> %q", oldPos, newPos), map[string]interface{}{
@@ -2342,7 +2343,7 @@ func handleSessionSet(profile string, args []string) {
 	oldValue, postCommit, setErr := session.SetField(inst, field, value, extraArgTokens)
 	if setErr != nil {
 		out.Error(setErr.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 	// #1706: SetField canonicalizes a project path (expand + absolutize), so
@@ -2357,7 +2358,7 @@ func handleSessionSet(profile string, args []string) {
 	if field == session.FieldToolSessionID {
 		if err := session.PersistGenericSessionBinding(storage.GetDB(), inst); err != nil {
 			out.Error(fmt.Sprintf("failed to persist tool-session-id: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 	// CLI holds no lock — run tmux side effects inline. TUI defers them
@@ -2384,7 +2385,7 @@ func handleSessionSet(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Output success
@@ -2520,7 +2521,7 @@ func showTmuxSessionInfo(out *CLIOutput, jsonOutput bool) {
 		"#{session_name}\t#{pane_current_path}\t#{session_created}\t#{window_name}")
 	if err != nil {
 		out.Error("failed to get tmux session info", ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	parts := strings.Split(strings.TrimSpace(string(output)), "\t")
@@ -2601,12 +2602,12 @@ func handleSessionSetParent(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -2618,14 +2619,14 @@ func handleSessionSetParent(profile string, args []string) {
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve the session to be linked
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -2633,20 +2634,20 @@ func handleSessionSetParent(profile string, args []string) {
 	parentInst, errMsg, errCode := ResolveSession(parentID, instances)
 	if parentInst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	// Validate: can't set self as parent
 	if inst.ID == parentInst.ID {
 		out.Error("cannot set session as its own parent", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Validate: parent can't be a sub-session (single level only)
 	if parentInst.IsSubSession() {
 		out.Error("cannot set parent to a sub-session (single level only)", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Validate: session can't already have sub-sessions
@@ -2656,7 +2657,7 @@ func handleSessionSetParent(profile string, args []string) {
 				fmt.Sprintf("session '%s' already has sub-sessions, cannot become a sub-session", inst.Title),
 				ErrCodeInvalidOperation,
 			)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -2671,7 +2672,7 @@ func handleSessionSetParent(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out.Success(fmt.Sprintf("Linked '%s' as sub-session of '%s'", inst.Title, parentInst.Title), map[string]interface{}{
@@ -2771,12 +2772,12 @@ func handleSessionUnsetParent(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if fs.NArg() < 1 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -2787,21 +2788,21 @@ func handleSessionUnsetParent(profile string, args []string) {
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve the session
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	// Check if it's actually a sub-session
 	if !inst.IsSubSession() {
 		out.Error(fmt.Sprintf("session '%s' is not a sub-session", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Get parent title for output
@@ -2820,7 +2821,7 @@ func handleSessionUnsetParent(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out.Success(
@@ -2858,12 +2859,12 @@ func handleSessionSetTransitionNotify(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -2879,19 +2880,19 @@ func handleSessionSetTransitionNotify(profile string, args []string) {
 		suppress = true
 	default:
 		out.Error(fmt.Sprintf("invalid value %q: must be 'on' or 'off'", value), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return
 	}
 
@@ -2900,7 +2901,7 @@ func handleSessionSetTransitionNotify(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	stateStr := "on"
@@ -2942,12 +2943,12 @@ func handleSessionSetTitleLock(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if fs.NArg() < 2 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -2963,19 +2964,19 @@ func handleSessionSetTitleLock(profile string, args []string) {
 		locked = false
 	default:
 		out.Error(fmt.Sprintf("invalid value %q: must be 'on' or 'off' (also true/false/1/0)", value), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return
 	}
 
@@ -2984,7 +2985,7 @@ func handleSessionSetTitleLock(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	stateStr := "off"
@@ -3134,7 +3135,7 @@ func handleSessionSend(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	remaining := fs.Args()
 
@@ -3144,38 +3145,38 @@ func handleSessionSend(profile string, args []string) {
 	if len(remaining) < 1 || (needPositionalMessage && len(remaining) < 2) {
 		fs.Usage()
 		out.Error("session and message (or --message-file) are required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *stream && *wait {
 		out.Error("--stream and --wait are mutually exclusive", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *draft && (*wait || *stream || *noWait) {
 		out.Error("--draft is incompatible with --wait, --stream, and --no-wait", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// #1578: --defer-if-busy holds delivery until the target is turn-finished;
 	// --no-wait fires immediately. They are opposites.
 	if *deferIfBusy && *noWait {
 		out.Error("--defer-if-busy is incompatible with --no-wait", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionRef := remaining[0]
 	message, err := resolveMessageInput(strings.Join(remaining[1:], " "), *messageFile, os.Stdin)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load sessions
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
@@ -3183,9 +3184,9 @@ func handleSessionSend(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -3221,19 +3222,19 @@ func handleSessionSend(profile string, args []string) {
 	if len(images) > 0 || *queue || asyncJSON {
 		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
 			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		var imgErr error
 		var copies []string
 		message, copies, imgErr = attachImages(inst, message, images, time.Now())
 		if imgErr != nil {
 			out.Error(imgErr.Error(), ErrCodeInvalidOperation)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		if *queue || asyncJSON {
 			if err := inst.PromptDeliveryError(); err != nil {
 				out.Error(err.Error(), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 			ledgerSender := senderID
 			if *noTag {
@@ -3250,14 +3251,14 @@ func handleSessionSend(profile string, args []string) {
 	if *stream {
 		if msg := streamPreconditionError(inst.Tool); msg != "" {
 			out.Error(msg, ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
 	// Check if session is running
 	if !inst.Exists() {
 		out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// PR #1942 review (P1a): refuse a send the target cannot receive. A DeepSeek
@@ -3267,7 +3268,7 @@ func handleSessionSend(profile string, args []string) {
 	// hard refusal rather than a warning. Every other tool returns nil.
 	if err := inst.PromptDeliveryError(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if shouldSkipConductorHeartbeatSend(inst, message) {
@@ -3286,7 +3287,7 @@ func handleSessionSend(profile string, args []string) {
 	tmuxSess := inst.GetTmuxSession()
 	if tmuxSess == nil {
 		out.Error("could not determine tmux session", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// #1578: --defer-if-busy holds delivery until the target is turn-finished.
@@ -3299,7 +3300,7 @@ func handleSessionSend(profile string, args []string) {
 			return fetchHookDrivenStatus(profile, sessionRef)
 		}, *deferTimeout, send.DeferPollInterval, time.Sleep); err != nil {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -3331,7 +3332,7 @@ func handleSessionSend(profile string, args []string) {
 		default:
 			out.ErrorWithData(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", guardErr), ErrCodeInvalidOperation,
 				map[string]interface{}{"delivery": deliveryAcceptanceRefused})
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -3353,7 +3354,7 @@ func handleSessionSend(profile string, args []string) {
 				acceptanceGuard.Release()
 			}
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		// Issue #966: after a restart, Claude reaches "waiting" + composer
 		// visible before its slash-command parser registers. Bare `/foo`
@@ -3368,7 +3369,7 @@ func handleSessionSend(profile string, args []string) {
 					acceptanceGuard.Release()
 				}
 				out.Error(fmt.Sprintf("timeout waiting for slash-command registration: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		}
 	}
@@ -3422,7 +3423,7 @@ func handleSessionSend(profile string, args []string) {
 	if *draft {
 		if err := executeDraft(tmuxSess, message); err != nil {
 			out.Error(fmt.Sprintf("failed to pre-fill prompt: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		out.Success(fmt.Sprintf("Pre-filled prompt in '%s'", inst.Title), map[string]interface{}{
 			"success":       true,
@@ -3473,12 +3474,12 @@ func handleSessionSend(profile string, args []string) {
 		if err := validateCodexAcceptanceFence(inst, acceptanceFence); err != nil {
 			acceptanceGuard.Release()
 			out.Error(fmt.Sprintf("cannot submit against changed Codex turn fence: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if err := acceptanceGuard.Prepare(inst.ID, time.Now()); err != nil {
 			acceptanceGuard.Release()
 			out.Error(fmt.Sprintf("cannot durably reserve Codex turn acceptance: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 	// #2089: pick tmux keystrokes or Claude Code's own messaging socket for
@@ -3525,7 +3526,7 @@ func handleSessionSend(profile string, args []string) {
 			extra["session_title"] = inst.Title
 			out.ErrorWithData(fmt.Sprintf("cannot persist Codex submission state: %v", markerErr), ErrCodeInvalidOperation, extra)
 			recordSendEvent(profile, inst.ID, sendDetail)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 	if sendErr != nil {
@@ -3568,7 +3569,7 @@ func handleSessionSend(profile string, args []string) {
 			out.ErrorWithData(fmt.Sprintf("failed to send message: %v", sendErr), ErrCodeInvalidOperation, extra)
 		}
 		recordSendEvent(profile, inst.ID, sendDetail)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	recordSent()
 
@@ -3608,7 +3609,7 @@ func handleSessionSend(profile string, args []string) {
 				ErrCodeInvalidOperation,
 				completionTimeoutPayload(sendData),
 			)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		acceptanceGuard.Release()
 		acceptanceGuard = nil
@@ -3729,7 +3730,7 @@ func handleSessionSend(profile string, args []string) {
 		}); err != nil {
 			// Error already serialized as a stream event; exit 1.
 			recordSendEventOnce()
-			os.Exit(1)
+			exitCLI(1)
 		}
 		recordSendEventOnce()
 		return
@@ -3760,12 +3761,12 @@ func handleSessionSend(profile string, args []string) {
 		if identityErr != nil {
 			out.Error(fmt.Sprintf("turn identity not established: %v", identityErr), ErrCodeInvalidOperation)
 			recordSendEventOnce()
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if completionErr != nil {
 			out.Error(fmt.Sprintf("timeout waiting for completion: %v", completionErr), ErrCodeInvalidOperation)
 			recordSendEventOnce()
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if errors.Is(responseErr, session.ErrTurnResponseIncomplete) && response != nil {
 			fmt.Fprintf(os.Stderr, "Warning: %v — response may be incomplete\n", responseErr)
@@ -3793,7 +3794,7 @@ func handleSessionSend(profile string, args []string) {
 					completionTimeoutPayload(sendData),
 				)
 				recordSendEventOnce()
-				os.Exit(1)
+				exitCLI(1)
 			}
 		}
 		if acceptanceGuard != nil {
@@ -3803,7 +3804,7 @@ func handleSessionSend(profile string, args []string) {
 		if receiptErr != nil {
 			out.ErrorWithData(receiptErr.Error(), ErrCodeInvalidOperation, sendData)
 			recordSendEventOnce()
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if err != nil {
 			out.ErrorWithData(
@@ -3812,7 +3813,7 @@ func handleSessionSend(profile string, args []string) {
 				completionTimeoutPayload(sendData),
 			)
 			recordSendEventOnce()
-			os.Exit(1)
+			exitCLI(1)
 		}
 		// Refresh session ID: the instance was loaded before sending the
 		// message, so the ClaudeSessionID may be stale (e.g., PostStartSync
@@ -3859,7 +3860,7 @@ func handleSessionSend(profile string, args []string) {
 			responseReadFailureData(sendData),
 		)
 		recordSendEventOnce()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *jsonOutput {
 		sendData["completion"] = "complete"
@@ -3889,7 +3890,7 @@ func handleSessionSend(profile string, args []string) {
 
 	// Exit 1 for error/inactive status
 	if finalStatus == "inactive" || finalStatus == "error" {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -3953,7 +3954,7 @@ func failSessionSend(out *CLIOutput, stream bool, msg string, record func()) {
 	if record != nil {
 		record()
 	}
-	os.Exit(1)
+	exitCLI(1)
 }
 
 // emitStreamErrorEvent writes one --stream error event to stdout, matching
@@ -6282,11 +6283,11 @@ func handleSessionOutput(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *maxTokens <= 0 {
 		fmt.Fprintln(os.Stderr, "Error: --max-tokens must be greater than zero")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -6295,18 +6296,18 @@ func handleSessionOutput(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 	if *primaryPane && !*paneFlag {
 		out.Error("--primary requires --pane", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *ifVersion != "" && (!*jsonOutput || quietMode || *paneFlag || *copyFlag) {
 		out.Error("--if-version requires --json and cannot be combined with -q, --pane or --copy", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load sessions
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// The read log names the effective profile so an empty -p (env or
 	// default profile) does not record as "".
@@ -6317,9 +6318,9 @@ func handleSessionOutput(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 	// Comms Ledger measurement: a session re-reading another one is the
@@ -6354,7 +6355,7 @@ func handleSessionOutput(profile string, args []string) {
 		}
 		if paneErr != nil {
 			out.Error(fmt.Sprintf("failed to capture pane: %v", paneErr), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		emitted := boundSessionOutputOrExit(out, profile, inst.ID, "pane", paneContent, *maxTokens, boundAgentOutput)
 		jsonData := map[string]interface{}{
@@ -6399,7 +6400,7 @@ func handleSessionOutput(profile string, args []string) {
 	response, versioned, err := inst.GetLastResponseAtVersion(instances, version)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	bounded := boundSessionOutputOrExit(out, profile, inst.ID, "response", response.Content, *maxTokens, boundAgentOutput)
 
@@ -6409,7 +6410,7 @@ func handleSessionOutput(profile string, args []string) {
 		result, err := clipboard.Copy(response.Content, termInfo.SupportsOSC52)
 		if err != nil {
 			out.Error(fmt.Sprintf("clipboard: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		jsonData := map[string]interface{}{
 			"success":       true,
@@ -6491,7 +6492,7 @@ func handleSessionCurrent(profileArg string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -6500,7 +6501,7 @@ func handleSessionCurrent(profileArg string, args []string) {
 	// Check if we're in a tmux session
 	if os.Getenv("TMUX") == "" {
 		out.Error("not in a tmux session", ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -6510,7 +6511,7 @@ func handleSessionCurrent(profileArg string, args []string) {
 	tmuxSessionName, err := getCurrentTmuxSessionName()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to get current tmux session: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Detect profile: use explicit arg if provided, otherwise auto-detect.
@@ -6526,7 +6527,7 @@ func handleSessionCurrent(profileArg string, args []string) {
 		resolved, err := session.ResolveProfileForStorage("")
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to resolve profile: %v", err), ErrCodeNotFound)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		detectedProfile = resolved
 	}
@@ -6539,7 +6540,7 @@ func handleSessionCurrent(profileArg string, args []string) {
 			"current tmux session is not an agent-deck session\nHint: Run 'agent-deck list' to see available sessions",
 			ErrCodeNotFound,
 		)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if foundProfile != "" {
@@ -6642,7 +6643,7 @@ func handleSessionPrimer(profileArg string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, false)
@@ -6655,16 +6656,16 @@ func handleSessionPrimer(profileArg string, args []string) {
 	_, instances, _, err := loadSessionData(profileArg)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -6850,7 +6851,7 @@ func handleSessionChildren(profile string, args []string) {
 		fmt.Println("  agent-deck session children --follow --until-done      # exits when every child needs input or finishes")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	identifier := fs.Arg(0)
 	quietMode := *quiet || *quietShort
@@ -6859,7 +6860,7 @@ func handleSessionChildren(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// Default to the caller's own session. resolveSelfSessionID prefers
 	// AGENTDECK_INSTANCE_ID (the authoritative full id) over the tmux session
@@ -6868,30 +6869,30 @@ func handleSessionChildren(profile string, args []string) {
 		self, err := resolveSelfSessionID()
 		if err != nil {
 			out.Error(err.Error(), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		identifier = self
 	}
 	parent, errMsg, errCode := ResolveSession(identifier, instances)
 	if parent == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	if *untilDone && !*follow {
 		out.Error("--until-done requires --follow", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// A non-positive interval makes time.Sleep a no-op, turning the poll into a
 	// busy-loop that reopens storage every pass. Reject rather than clamp: a
 	// silently different interval than asked for is its own surprise.
 	if *follow && *interval <= 0 {
 		out.Error("--interval must be positive", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *follow {
 		// The stream is JSONL by contract; --json/-q are irrelevant here.
-		os.Exit(runChildrenFollow(profile, parent.ID, *interval, *heartbeat, *untilDone, os.Stdout))
+		exitCLI(runChildrenFollow(profile, parent.ID, *interval, *heartbeat, *untilDone, os.Stdout))
 	}
 
 	kids := childrenOf(parent.ID, instances)
@@ -6945,7 +6946,7 @@ func handleSessionSearch(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
@@ -6954,7 +6955,7 @@ func handleSessionSearch(profile string, args []string) {
 	if query == "" {
 		out.Error("query is required", ErrCodeNotFound)
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	claudeDir := session.GetClaudeConfigDir()
@@ -6969,11 +6970,11 @@ func handleSessionSearch(profile string, args []string) {
 	index, err := session.NewGlobalSearchIndex(claudeDir, cfg)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize search index: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if index == nil {
 		out.Error("search index is disabled", ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer index.Close()
 

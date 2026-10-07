@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"sort"
 	"time"
 
@@ -38,7 +37,7 @@ func handleSessionRecent(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, false)
@@ -46,7 +45,7 @@ func handleSessionRecent(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	recent := make([]*session.Instance, 0, len(instances))

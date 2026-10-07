@@ -31,13 +31,13 @@ func handleAgents(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	defs, err := agents.LoadAll()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Zero-config users see nothing new. An empty registry is not an error
@@ -72,7 +72,7 @@ func handleAgents(profile string, args []string) {
 func handleAgent(profile string, args []string) {
 	if len(args) == 0 {
 		printAgentUsage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "adopt":
@@ -86,7 +86,7 @@ func handleAgent(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown agent subcommand: %s\n\n", args[0])
 		printAgentUsage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -121,11 +121,11 @@ func handleAgentAdopt(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if fs.NArg() == 0 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	opts := agents.Options{
@@ -140,7 +140,7 @@ func handleAgentAdopt(profile string, args []string) {
 	plan, err := agents.Adopt(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -168,23 +168,23 @@ func handleAgentAdopt(profile string, args []string) {
 					fmt.Fprintf(os.Stderr, "  %s: %s\n", f.Field, f.Message)
 				}
 			}
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
 	root, err := agents.Dir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: create registry: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	written, err := plan.WriteTo(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !*jsonOutput {
 		fmt.Println()
@@ -201,18 +201,18 @@ func handleAgentShow(profile string, args []string) {
 	fs := flag.NewFlagSet("agent show", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if fs.NArg() == 0 {
 		fmt.Println("Usage: agent-deck agent show <name>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	name := fs.Arg(0)
 
 	defs, err := agents.LoadAll()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	var match *agents.Definition
 	for _, def := range defs {
@@ -223,7 +223,7 @@ func handleAgentShow(profile string, args []string) {
 	}
 	if match == nil {
 		fmt.Fprintf(os.Stderr, "Error: no adopted agent named %q\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Build the view from the WHOLE registry, not just this definition. The
@@ -241,7 +241,7 @@ func handleAgentShow(profile string, args []string) {
 	row, found := findAgentRow(view, name)
 	if !found {
 		fmt.Fprintf(os.Stderr, "Error: %q could not be rendered\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -513,7 +513,7 @@ func emitJSON(value any) {
 	out, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(out))
 }

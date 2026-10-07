@@ -45,7 +45,7 @@ func cliSessionStart(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(jsonOutput.enabled(), *quiet || *quietShort)
@@ -96,10 +96,10 @@ func cliSessionStart(profile string, args []string) {
 		if err := attachInstanceInteractive(started.Instance); err != nil {
 			if errors.Is(err, errAttachNoTTY) {
 				fmt.Fprintf(os.Stderr, "Error: %v; session was started\n", err)
-				os.Exit(3)
+				exitCLI(3)
 			}
 			fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -145,7 +145,7 @@ func cliSessionStop(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(jsonOutput.enabled(), *quiet || *quietShort)
@@ -219,7 +219,7 @@ func cliSessionRestart(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -259,6 +259,9 @@ func cliSessionRestart(profile string, args []string) {
 	if restarted.All != nil {
 		renderRestartAll(out, &jsonOutput, res, restarted.All)
 		return
+	}
+	if restarted.Skipped {
+		markCLINoop() // the freshness or auth guard skipped it: not a restart
 	}
 
 	switch {
@@ -323,7 +326,7 @@ func renderRestartAll(out *CLIOutput, mode *jsonModeFlag, res *core.Result, all 
 
 	res.Finish()
 	if !all.OK() {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

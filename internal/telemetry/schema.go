@@ -111,12 +111,14 @@ var (
 
 // FeatureValues is the feature enum (feature.daily). "creds_refresh" is
 // deprecated: the command was removed, but older clients still send it, so it
-// stays valid here.
+// stays valid here. "fleet_launch" is likewise kept for older clients, which
+// sent it for `agent-deck fleet`; that command is counted as fleet_status or
+// fleet_recover now.
 var FeatureValues = []string{
 	"fork", "restart", "restart_all", "rename", "move_group", "group_create", "search", "filter",
 	"worktree_create", "worktree_finish", "mcp_attach", "mcp_detach", "skill_attach", "plugin_install",
 	"session_send", "send_keys", "send_queue", "session_children", "session_handoff", "session_context",
-	"session_annotate", "session_approve", "inbox_drain", "fleet_launch", "launch", "try", "conductor_start",
+	"session_annotate", "session_approve", "inbox_drain", "fleet_launch", "fleet_status", "fleet_recover", "launch", "try", "conductor_start",
 	"conductor_telegram", "watcher", "remote_add", "remote_attach", "remote_agent", "recall_search",
 	"recall_timeline", "costs", "usage", "limits", "accounts_switch", "creds_refresh", "web_ui", "daemon",
 	"notify_daemon", "openclaw", "deepseek", "harness", "doctor", "health", "update", "migrate_paths",

@@ -108,17 +108,17 @@ func handleSessionMetrics(profile string, args []string) {
 		if err == flag.ErrHelp {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *since <= 0 || (*all && fs.NArg() != 0) || (!*all && fs.NArg() != 1) {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	w, err := readSessionEvents(profile, *since)
 	if err != nil {
 		out.Error(fmt.Sprintf("session metrics: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	deadLetters, deadLetterErr := deadLettersBySession()
 	records, _ := session.LoadCompletionRecords(profile)
@@ -155,7 +155,7 @@ func handleSessionMetrics(profile string, args []string) {
 	finishSessionMetrics(&m, w, deadLetters, deadLetterErr, records)
 	if title == "" && m.Events == 0 {
 		out.Error(fmt.Sprintf("session '%s' not found in the registry and has no journal events in the last %s", identifier, since), ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *jsonOutput {
 		encodeMetricsJSON(m)
@@ -167,7 +167,7 @@ func handleSessionMetrics(profile string, args []string) {
 func encodeMetricsJSON(v any) {
 	if err := json.NewEncoder(os.Stdout).Encode(v); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

@@ -108,7 +108,7 @@ func lookupSessionAnyProfile(id string) (*session.Instance, string) {
 
 func handleRemoteDrain(args []string) {
 	if code := runRemoteDrain(os.Stdout, os.Stderr, args, fetchRemoteRecordsOverSSH); code != 0 {
-		os.Exit(code)
+		exitCLI(code)
 	}
 }
 

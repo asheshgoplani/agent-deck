@@ -303,7 +303,7 @@ func handleSessionAnnotate(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
@@ -312,49 +312,49 @@ func handleSessionAnnotate(profile string, args []string) {
 	if *self {
 		if identifier != "" {
 			out.Error("--self cannot be combined with a session argument", ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		resolved, err := resolveSelfSessionID()
 		if err != nil {
 			out.Error(err.Error(), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		identifier = resolved
 	}
 	if identifier == "" {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if fs.NArg() > 1 {
 		out.Error(fmt.Sprintf("unexpected extra arguments: %s", strings.Join(fs.Args()[1:], " ")), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *noteStdin {
 		body, err := io.ReadAll(io.LimitReader(os.Stdin, maxHintValueBytes+1))
 		if err != nil {
 			out.Error(fmt.Sprintf("read note from stdin: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if err := edits.setHint(hintKeyNote, string(body)); err != nil {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	db := storage.GetDB()
 	if db == nil {
 		out.Error("session storage has no state database", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	changes, errs := edits.apply(db, inst.ID, statedb.HintSourceAnnotate)
@@ -386,7 +386,7 @@ func handleSessionAnnotate(profile string, args []string) {
 		}
 		data["errors"] = msgs
 		out.ErrorWithData(strings.Join(msgs, "; "), ErrCodeInvalidOperation, data)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	var human strings.Builder

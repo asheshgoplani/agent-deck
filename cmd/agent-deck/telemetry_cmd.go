@@ -25,7 +25,7 @@ func handleTelemetry(args []string) {
 	}
 	code := runTelemetry(args, Version, os.Stdin, os.Stdout, os.Stderr, telemetry.Interactive())
 	if code != 0 {
-		os.Exit(code)
+		exitCLI(code)
 	}
 }
 

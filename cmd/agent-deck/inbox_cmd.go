@@ -49,7 +49,7 @@ func handleInbox(profile string, args []string) {
 	}
 	if err := runInboxWithProfile(os.Stdout, args, profile); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(inboxExitCode(err))
+		exitCLI(inboxExitCode(err))
 	}
 }
 

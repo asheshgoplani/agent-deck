@@ -398,7 +398,7 @@ func recordEveryEvent(t *testing.T, c *clock) {
 	ErrorOccurred(AreaTmux, KindTmuxTooOld, "")
 	UpdateAttempted("1.16.17", "1.16.18", UpdateManual, UpdateOK, false)
 	FeatureUsed("mcp_attach", false)
-	CLICommand("costs")
+	CLICommand("costs", false)
 	sp := &Sampler{now: c.now, emit: func(p map[string]any, at time.Time) { recordAt("activity.hourly", p, "", at) }}
 	sp.Observe(func() []SessionSample {
 		return []SessionSample{{Tool: "claude", Status: StatusRunning}, {Tool: "codex", Status: StatusIdle}}
@@ -509,7 +509,7 @@ func TestRedactionCanaries(t *testing.T) {
 		ErrorOccurred(ErrArea(cn), ErrKind(cn), cn)
 		ErrorOccurred(AreaConfig, KindOther, cn)
 		FeatureUsed(Feature(cn), false)
-		CLICommand(Feature(cn))
+		CLICommand(Feature(cn), false)
 		UpdateAttempted(cn, cn, UpdateKind(cn), UpdateOutcome(cn), true)
 		EnvSnapshot(EnvInfo{Terminal: cn, TmuxMinor: cn, Shell: cn, InstallMethod: cn, Color: cn})
 		c.add(time.Hour)

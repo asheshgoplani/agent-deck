@@ -395,7 +395,7 @@ func writeCodexHookStatus(instanceID, status, sessionID, event string, turnIDs .
 func handleCodexHooks(args []string) {
 	if len(args) == 0 {
 		printCodexHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -417,7 +417,7 @@ func handleCodexHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown codex-hooks subcommand: %s\n", args[0])
 		printCodexHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -449,11 +449,11 @@ func handleCodexHooksInstall() {
 			updated = prependCodexNotifyBlock(block, updated)
 			if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 				fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-				os.Exit(1)
+				exitCLI(1)
 			}
 			if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
 				fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-				os.Exit(1)
+				exitCLI(1)
 			}
 			fmt.Println("Codex notify hook upgraded successfully.")
 			fmt.Printf("Config: %s\n", configPath)
@@ -465,11 +465,11 @@ func handleCodexHooksInstall() {
 		updated = prependCodexNotifyBlock(block, strings.TrimSpace(updated))
 		if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println("Codex notify hook upgraded successfully.")
 		fmt.Printf("Config: %s\n", configPath)
@@ -486,18 +486,18 @@ func handleCodexHooksInstall() {
 		fmt.Fprintf(os.Stderr, "Error: existing notify setting found in %s\n", configPath)
 		fmt.Fprintln(os.Stderr, "Please merge manually by setting:")
 		fmt.Fprintln(os.Stderr, `  notify = ["agent-deck", "codex-notify"]`)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	newContent := prependCodexNotifyBlock(block, content)
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating codex config dir: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if err := os.WriteFile(configPath, []byte(newContent), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Println("Codex notify hook installed successfully.")
@@ -509,7 +509,7 @@ func handleCodexHooksUninstall() {
 	content, err := readFileOrEmpty(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading codex config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	begin := strings.Index(content, codexNotifyMarkerBegin)
@@ -517,7 +517,7 @@ func handleCodexHooksUninstall() {
 		endRel := strings.Index(content[begin:], codexNotifyMarkerEnd)
 		if endRel == -1 {
 			fmt.Fprintln(os.Stderr, "Error: malformed agent-deck Codex hook block in config.")
-			os.Exit(1)
+			exitCLI(1)
 		}
 		end := begin + endRel + len(codexNotifyMarkerEnd)
 		updated := content[:begin] + content[end:]
@@ -528,7 +528,7 @@ func handleCodexHooksUninstall() {
 
 		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println("Codex notify hook removed successfully.")
 		return
@@ -537,7 +537,7 @@ func handleCodexHooksUninstall() {
 	if updated, removed := removeLegacyCodexNotifyTable(content); removed {
 		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println("Codex notify hook removed successfully.")
 		return
@@ -546,7 +546,7 @@ func handleCodexHooksUninstall() {
 	if updated, removed := removeExactCodexNotifyLine(content); removed {
 		if err := os.WriteFile(configPath, []byte(updated), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing codex config: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println("Codex notify hook removed successfully.")
 		return

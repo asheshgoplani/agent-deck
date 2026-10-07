@@ -235,7 +235,7 @@ func handleSessionCleanup(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -243,13 +243,13 @@ func handleSessionCleanup(profile string, args []string) {
 
 	if *days < 0 {
 		out.Error("--days must be zero or positive", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	now := time.Now()

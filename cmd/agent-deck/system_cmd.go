@@ -24,7 +24,7 @@ func handleSystem(args []string) {
 		handleSystemStats(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown system subcommand: %s\n", args[0])
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -232,7 +232,7 @@ func handleSystemStats(args []string) {
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		fmt.Printf("Error: failed to format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(data))
 }

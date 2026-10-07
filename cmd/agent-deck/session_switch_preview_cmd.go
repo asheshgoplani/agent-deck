@@ -60,7 +60,7 @@ func handleSessionSwitchPreview(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -68,7 +68,7 @@ func handleSessionSwitchPreview(profile string, args []string) {
 
 	if identifier == "" {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	cfg, _ := session.LoadUserConfig()
@@ -76,13 +76,13 @@ func handleSessionSwitchPreview(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	target := session.SwitchPreviewTarget{
@@ -96,7 +96,7 @@ func handleSessionSwitchPreview(profile string, args []string) {
 	if *jsonOutput {
 		printSwitchPreviewJSON(preview, *maxChars)
 		if preview.Refusal != nil {
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -105,7 +105,7 @@ func handleSessionSwitchPreview(profile string, args []string) {
 
 	// Exit 1 when there is a refusal so callers can check $?
 	if preview.Refusal != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

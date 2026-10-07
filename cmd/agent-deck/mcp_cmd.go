@@ -15,7 +15,7 @@ import (
 func handleMCP(profile string, args []string) {
 	if len(args) == 0 {
 		printMCPHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	switch args[0] {
@@ -34,7 +34,7 @@ func handleMCP(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown mcp command '%s'\n", args[0])
 		printMCPHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -79,7 +79,7 @@ func handleMCPList(args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -224,7 +224,7 @@ func handleMCPAttached(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -234,13 +234,13 @@ func handleMCPAttached(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
@@ -248,7 +248,7 @@ func handleMCPAttached(profile string, args []string) {
 	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -366,7 +366,7 @@ func handleMCPAttach(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -378,7 +378,7 @@ func handleMCPAttach(profile string, args []string) {
 		if !*jsonOutput {
 			fmt.Println("\nUsage: agent-deck mcp attach <session-id> <mcp-name> [options]")
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -388,20 +388,20 @@ func handleMCPAttach(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -415,7 +415,7 @@ func handleMCPAttach(profile string, args []string) {
 				fmt.Printf("  %s %s\n", bulletSymbol, name)
 			}
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	scope := session.GetMCPDefaultScope()
@@ -437,13 +437,13 @@ func handleMCPAttach(profile string, args []string) {
 		for _, name := range currentGlobal {
 			if name == mcpName {
 				out.Error(fmt.Sprintf("MCP '%s' is already attached globally", mcpName), ErrCodeAlreadyExists)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		}
 		newGlobal := append(currentGlobal, mcpName)
 		if err := inst.WriteGlobalMCPConfig(newGlobal); err != nil {
 			out.Error(fmt.Sprintf("failed to write global MCP config: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	} else {
 		mcpInfo := inst.MCPInfoForLocalAttach()
@@ -453,13 +453,13 @@ func handleMCPAttach(profile string, args []string) {
 		for _, name := range mcpInfo.Local() {
 			if name == mcpName {
 				out.Error(fmt.Sprintf("MCP '%s' is already attached locally", mcpName), ErrCodeAlreadyExists)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		}
 		newLocal := append(mcpInfo.Local(), mcpName)
 		if err := inst.WriteLocalMCPConfig(newLocal); err != nil {
 			out.Error(fmt.Sprintf("failed to write local MCP config: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -539,7 +539,7 @@ func handleMCPDetach(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -551,7 +551,7 @@ func handleMCPDetach(profile string, args []string) {
 		if !*jsonOutput {
 			fmt.Println("\nUsage: agent-deck mcp detach <session-id> <mcp-name> [options]")
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -561,20 +561,20 @@ func handleMCPDetach(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -605,11 +605,11 @@ func handleMCPDetach(profile string, args []string) {
 		}
 		if !found {
 			out.Error(fmt.Sprintf("MCP '%s' is not attached globally", mcpName), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		if err := inst.WriteGlobalMCPConfig(newGlobal); err != nil {
 			out.Error(fmt.Sprintf("failed to write global MCP config: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	} else {
 		mcpInfo := inst.MCPInfoForLocalAttach()
@@ -628,11 +628,11 @@ func handleMCPDetach(profile string, args []string) {
 		}
 		if !found {
 			out.Error(fmt.Sprintf("MCP '%s' is not attached locally", mcpName), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		if err := inst.WriteLocalMCPConfig(newLocal); err != nil {
 			out.Error(fmt.Sprintf("failed to write local MCP config: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -688,7 +688,7 @@ func handleMCPDetach(profile string, args []string) {
 func handleMCPServer(args []string) {
 	if len(args) == 0 {
 		printMCPServerHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	switch args[0] {
@@ -703,7 +703,7 @@ func handleMCPServer(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown mcp server command '%s'\n", args[0])
 		printMCPServerHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -742,7 +742,7 @@ func handleMCPServerStart(args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -750,7 +750,7 @@ func handleMCPServerStart(args []string) {
 
 	if fs.NArg() < 1 {
 		out.Error("MCP name is required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	mcpName := fs.Arg(0)
@@ -759,7 +759,7 @@ func handleMCPServerStart(args []string) {
 	def := session.GetMCPDef(mcpName)
 	if def == nil {
 		out.Error(fmt.Sprintf("MCP '%s' not found in config.toml", mcpName), ErrCodeMCPNotAvailable)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	// Check if it's an HTTP MCP with server config
@@ -777,13 +777,13 @@ func handleMCPServerStart(args []string) {
 				fmt.Println("  args = [\"your-server-package\"]")
 			}
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	// Start the server
 	if err := session.StartHTTPServer(mcpName, def); err != nil {
 		out.Error(fmt.Sprintf("failed to start HTTP server: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Output result
@@ -816,7 +816,7 @@ func handleMCPServerStop(args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -824,7 +824,7 @@ func handleMCPServerStop(args []string) {
 
 	if fs.NArg() < 1 {
 		out.Error("MCP name is required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	mcpName := fs.Arg(0)
@@ -833,19 +833,19 @@ func handleMCPServerStop(args []string) {
 	httpPool := session.GetGlobalHTTPPool()
 	if httpPool == nil {
 		out.Error("HTTP pool not initialized (run TUI first)", ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	// Check if server is running
 	if !httpPool.IsRunning(mcpName) {
 		out.Error(fmt.Sprintf("HTTP server '%s' is not running", mcpName), ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	// Stop the server
 	if err := httpPool.Stop(mcpName); err != nil {
 		out.Error(fmt.Sprintf("failed to stop HTTP server: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Output result
@@ -877,7 +877,7 @@ func handleMCPServerStatus(args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -943,7 +943,7 @@ func handleMCPServerStatus(args []string) {
 
 	if mcpName != "" && len(servers) == 0 {
 		out.Error(fmt.Sprintf("HTTP MCP '%s' not found", mcpName), ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	if *jsonOutput {

@@ -46,7 +46,7 @@ func handleTelegramDoctor(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON output")
 	quiet := fs.Bool("quiet", false, "suppress healthy lines; only print drift")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, *quiet)
@@ -54,12 +54,12 @@ func handleTelegramDoctor(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	runningPollers := scanBunTelegramProcesses()
@@ -141,7 +141,7 @@ func handleTelegramDoctor(profile string, args []string) {
 	}
 
 	if anyUnhealthy {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

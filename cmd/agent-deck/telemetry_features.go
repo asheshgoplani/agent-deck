@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"sync"
+
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
@@ -32,7 +35,7 @@ var cliFeatures = map[string]cliFeature{
 		"context": "session_context", "annotate": "session_annotate", "approve": "session_approve",
 		"cleanup": "session_cleanup", "revive": "revive", "window": "window",
 	}},
-	"fleet":           {feature: "fleet_launch"},
+	"fleet":           {sub: map[string]telemetry.Feature{"status": "fleet_status", "recover": "fleet_recover"}},
 	"mcp":             {sub: map[string]telemetry.Feature{"attach": "mcp_attach", "detach": "mcp_detach"}},
 	"plugin":          {sub: map[string]telemetry.Feature{"install": "plugin_install"}},
 	"skill":           {sub: map[string]telemetry.Feature{"attach": "skill_attach"}},
@@ -95,10 +98,61 @@ func cliFeatureFor(subcommand string, rest []string) (telemetry.Feature, bool) {
 	return entry.feature, true
 }
 
-// recordCLITelemetry counts a human CLI subcommand (no-op without consent;
-// the telemetry package checks consent, TTY and every kill switch).
-func recordCLITelemetry(subcommand string, rest []string) {
-	if f, ok := cliFeatureFor(subcommand, rest); ok {
-		telemetry.CLICommand(f)
+// cliOutcome holds the command begun at dispatch until it finishes, so its
+// feature is counted with the command's outcome rather than before it runs.
+var cliOutcome struct {
+	mu      sync.Mutex
+	pending bool
+	feature telemetry.Feature
+}
+
+// beginCLITelemetry notes a human CLI subcommand at dispatch. Nothing is
+// recorded until finishCLITelemetry.
+func beginCLITelemetry(subcommand string, rest []string) {
+	f, ok := cliFeatureFor(subcommand, rest)
+	if !ok {
+		return
 	}
+	cliOutcome.mu.Lock()
+	cliOutcome.pending, cliOutcome.feature = true, f
+	cliOutcome.mu.Unlock()
+}
+
+// markCLINoop marks the running command as having done nothing (for example
+// a restart skipped by the freshness guard): the invocation is still counted,
+// its feature is not.
+func markCLINoop() {
+	cliOutcome.mu.Lock()
+	cliOutcome.feature = ""
+	cliOutcome.mu.Unlock()
+}
+
+// finishCLITelemetry counts the begun command once, as failed when code is
+// non-zero (no-op without consent; the telemetry package checks consent, TTY
+// and every kill switch).
+func finishCLITelemetry(code int) {
+	cliOutcome.mu.Lock()
+	pending, f := cliOutcome.pending, cliOutcome.feature
+	cliOutcome.pending = false
+	cliOutcome.mu.Unlock()
+	if pending {
+		telemetry.CLICommand(f, code != 0)
+	}
+}
+
+// settleCLITelemetry is deferred by main after beginCLITelemetry: a handler
+// that returns succeeded, one that panics failed (the panic continues).
+func settleCLITelemetry() {
+	if r := recover(); r != nil {
+		finishCLITelemetry(2)
+		panic(r)
+	}
+	finishCLITelemetry(0)
+}
+
+// exitCLI records the running command's outcome, then exits. CLI code calls
+// it instead of os.Exit, which skips deferred calls.
+func exitCLI(code int) {
+	finishCLITelemetry(code)
+	os.Exit(code)
 }

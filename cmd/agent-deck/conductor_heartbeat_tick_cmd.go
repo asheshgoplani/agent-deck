@@ -24,23 +24,23 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	name := fs.Arg(0)
 
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heartbeat-tick: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "heartbeat-tick: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	session.RefreshInstancesForCLIStatus(instances)
 
@@ -73,11 +73,11 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 	if *commitMessage != "" {
 		if msg != *commitMessage {
 			fmt.Fprintln(os.Stderr, "heartbeat-tick: inputs changed before commit; next tick will retry")
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if err := session.SaveHeartbeatTickState(name, next); err != nil {
 			fmt.Fprintf(os.Stderr, "heartbeat-tick: save state: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}

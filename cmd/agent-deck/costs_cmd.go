@@ -20,7 +20,7 @@ func handleCosts(profile string, args []string) {
 	}
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, costsUsage)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	switch args[0] {
@@ -31,7 +31,7 @@ func handleCosts(profile string, args []string) {
 		}
 		if len(args) != 1 {
 			fmt.Fprintln(os.Stderr, "Usage: agent-deck costs sync")
-			os.Exit(1)
+			exitCLI(1)
 		}
 		handleCostsSync(profile)
 	case "summary":
@@ -41,7 +41,7 @@ func handleCosts(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown costs subcommand: %s\n", args[0])
 		fmt.Fprintln(os.Stderr, costsUsage)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -50,12 +50,12 @@ func openCostStore(profile string) (*costs.Store, *session.Storage) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to open storage: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	db := storage.GetDB()
 	if db == nil {
 		fmt.Fprintln(os.Stderr, "Error: database not available")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	return costs.NewStore(db.DB()), storage
 }
@@ -86,7 +86,7 @@ func handleCostsSync(profile string) {
 	instances, err := storage.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to load sessions: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	var syncSessions []costs.SyncSession
@@ -128,7 +128,7 @@ func handleCostsSummary(profile string, args []string) {
 	fs := flag.NewFlagSet("costs summary", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	costStore, storage := openCostStore(profile)
@@ -203,7 +203,7 @@ func handleCostsRecompute(profile string, args []string) {
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown flag: %s\n", a)
 			fmt.Fprintln(os.Stderr, "Usage: agent-deck costs recompute [--dry-run]")
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -220,7 +220,7 @@ func handleCostsRecompute(profile string, args []string) {
 	updated, skipped, err := costs.Recompute(context.Background(), costStore, pricer, dryRun)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("\nResults:\n")

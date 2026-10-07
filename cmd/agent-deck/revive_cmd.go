@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -132,12 +131,12 @@ func handleSessionRevive(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if !*all && *name == "" {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -146,7 +145,7 @@ func handleSessionRevive(profile string, args []string) {
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	rev := session.NewReviver()
@@ -162,9 +161,9 @@ func handleSessionRevive(profile string, args []string) {
 		if inst == nil {
 			out.Error(errMsg, errCode)
 			if errCode == ErrCodeNotFound {
-				os.Exit(2)
+				exitCLI(2)
 			}
-			os.Exit(1)
+			exitCLI(1)
 			return
 		}
 		target = []*session.Instance{inst}
@@ -173,7 +172,7 @@ func handleSessionRevive(profile string, args []string) {
 	summary, err := reviveAndPersist(storage, target, rev)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	jsonData := map[string]interface{}{

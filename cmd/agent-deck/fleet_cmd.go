@@ -21,7 +21,7 @@ import (
 func handleFleet(profile string, args []string) {
 	if len(args) == 0 {
 		printFleetHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "status":
@@ -33,7 +33,7 @@ func handleFleet(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown fleet command: %s\n", args[0])
 		printFleetHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -119,7 +119,7 @@ func handleFleetStatus(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// See handleFleetRecover: -q must not silence a --json payload.
@@ -128,7 +128,7 @@ func handleFleetStatus(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	as := det.detector().Assess(instances)
@@ -274,7 +274,7 @@ func handleFleetRecover(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -286,7 +286,7 @@ func handleFleetRecover(profile string, args []string) {
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	as := det.detector().Assess(instances)
@@ -347,7 +347,7 @@ func handleFleetRecover(profile string, args []string) {
 	// the exit status, so that path must not be the one that reports a halted
 	// fleet as success.
 	if summary.Halted {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

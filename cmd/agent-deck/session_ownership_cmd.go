@@ -21,7 +21,7 @@ import (
 func handleSessionOwnership(profile string, args []string) {
 	if len(args) == 0 {
 		printSessionOwnershipHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "inspect", "status", "show":
@@ -35,7 +35,7 @@ func handleSessionOwnership(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown session ownership command: %s\n", args[0])
 		printSessionOwnershipHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -60,20 +60,20 @@ func printSessionOwnershipHelp() {
 func resolveOwnershipTarget(profile, identifier string, out *CLIOutput) *session.Instance {
 	if strings.TrimSpace(identifier) == "" {
 		out.Error("session identifier is required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 	return inst
 }
@@ -87,7 +87,7 @@ func handleSessionOwnershipInspect(profile string, args []string) {
 		fmt.Println("Show what this session owns. Read-only: signals nothing, changes nothing.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	inst := resolveOwnershipTarget(profile, fs.Arg(0), out)
@@ -98,7 +98,7 @@ func handleSessionOwnershipInspect(profile string, args []string) {
 	if !status.Admissible() {
 		// A non-zero exit lets a script tell "this session is blocked" from
 		// "this session is fine" without parsing prose.
-		os.Exit(3)
+		exitCLI(3)
 	}
 }
 
@@ -118,7 +118,7 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 		fmt.Println("stops the running session rather than cleaning up after a dead one.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	inst := resolveOwnershipTarget(profile, fs.Arg(0), out)
@@ -136,13 +136,13 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 		if !*jsonOutput {
 			fmt.Fprintln(os.Stderr, renderOwnershipStatus(inst, status))
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	report, err := inst.ReconcileOwnership()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to reconcile ownership: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	payload := map[string]interface{}{
 		"instance_id": inst.ID,
@@ -162,7 +162,7 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 					"`agent-deck session ownership abandon %s` discards it without killing anything.\n",
 				inst.ID)
 		}
-		os.Exit(3)
+		exitCLI(3)
 	}
 	out.Success(fmt.Sprintf("ownership reconciled: %s", report.Reason), payload)
 	if !*jsonOutput && report.Signalled() > 0 {
@@ -185,7 +185,7 @@ func handleSessionOwnershipAbandon(profile string, args []string) {
 		fmt.Println("managing it; find it with the pids from `ownership inspect` first.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	inst := resolveOwnershipTarget(profile, fs.Arg(0), out)
@@ -197,11 +197,11 @@ func handleSessionOwnershipAbandon(profile string, args []string) {
 		if !*jsonOutput {
 			fmt.Fprintln(os.Stderr, renderOwnershipStatus(inst, status))
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if err := inst.AbandonOwnership(); err != nil {
 		out.Error(fmt.Sprintf("failed to abandon ownership receipt: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out.Success("ownership receipt discarded; nothing was signalled", ownershipPayload(inst.OwnershipStatus()))
 }

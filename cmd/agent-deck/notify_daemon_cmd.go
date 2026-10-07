@@ -41,7 +41,7 @@ func handleNotifyDaemon(args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// handleNotifyDaemon is dispatched from main()'s early command switch and
@@ -88,7 +88,7 @@ func handleNotifyDaemon(args []string) {
 	if err := daemon.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "notify-daemon error: %v\n", err)
 		_ = events.CloseDefault()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

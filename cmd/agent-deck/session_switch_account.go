@@ -62,11 +62,11 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if fs.NArg() < 2 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -79,15 +79,15 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
@@ -104,7 +104,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 			message += "; re-run with --archive-destination to archive it and switch anyway"
 		}
 		out.Error(message, ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	for _, warning := range result.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
@@ -112,7 +112,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 
 	if err := session.CommitAccountSwitch(storage, inst, result); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if switchErr != nil {
@@ -124,7 +124,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		} else {
 			out.Error(switchErr.Error(), ErrCodeInvalidOperation)
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out.Success(fmt.Sprintf("Switched %s: account %q -> %q; %s", inst.Title, result.OldAccount, result.NewAccount, result.Conversation),

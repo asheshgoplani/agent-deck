@@ -69,7 +69,7 @@ func handleConductor(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "Unknown conductor command: %s\n", args[0])
 		fmt.Fprintln(os.Stderr)
 		printConductorHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -244,40 +244,40 @@ func handleConductorSetup(profile string, args []string) {
 
 	name, extras, err := parseConductorSetupArgs(fs, args)
 	if err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if name == "" {
 		fmt.Fprintln(os.Stderr, "Error: conductor name is required")
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck [-p profile] conductor setup <name>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if len(extras) > 0 {
 		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\n", strings.Join(extras, " "))
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := session.ValidateConductorName(name); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	resolvedAgent, err := resolveConductorSetupAgent(fs, name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	spec, err := session.GetConductorAgentSpec(resolvedAgent)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *instructionsMD != "" && *claudeMD != "" {
 		fmt.Fprintln(os.Stderr, "Error: use only one of -instructions-md or -claude-md")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *sharedInstructionsMD != "" && *sharedClaudeMD != "" {
 		fmt.Fprintln(os.Stderr, "Error: use only one of -shared-instructions-md or -shared-claude-md")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	resolvedInstructionsMD := *instructionsMD
 	if resolvedInstructionsMD == "" {
@@ -289,7 +289,7 @@ func handleConductorSetup(profile string, args []string) {
 	}
 	if spec.Agent != session.ConductorAgentClaude && (*claudeMD != "" || *sharedClaudeMD != "") {
 		fmt.Fprintln(os.Stderr, "Error: -claude-md and -shared-claude-md are only valid with --agent=claude")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// #1790/#1822 F2: route through the guarded resolver, not a bare
 	// GetEffectiveProfile — this value goes on to SetupConductorWithAgent
@@ -301,7 +301,7 @@ func handleConductorSetup(profile string, args []string) {
 	resolvedProfile, err := session.ResolveProfileForStorage(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to resolve profile: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Auto-migrate legacy conductors
@@ -314,7 +314,7 @@ func handleConductorSetup(profile string, args []string) {
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	settings := config.Conductor
@@ -389,7 +389,7 @@ func handleConductorSetup(profile string, args []string) {
 					token = strings.TrimSpace(token)
 					if token == "" {
 						fmt.Fprintln(os.Stderr, "Error: token is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					fmt.Print("Your Telegram user ID: ")
@@ -398,7 +398,7 @@ func handleConductorSetup(profile string, args []string) {
 					userID, err := strconv.ParseInt(userIDStr, 10, 64)
 					if err != nil || userID == 0 {
 						fmt.Fprintln(os.Stderr, "Error: valid user ID is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					settings.Telegram = session.TelegramSettings{Token: token, UserID: session.NewConductorID(userID)}
@@ -426,7 +426,7 @@ func handleConductorSetup(profile string, args []string) {
 					botToken = strings.TrimSpace(botToken)
 					if botToken == "" {
 						fmt.Fprintln(os.Stderr, "Error: bot token is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					fmt.Print("Slack app token (xapp-...): ")
@@ -434,7 +434,7 @@ func handleConductorSetup(profile string, args []string) {
 					appToken = strings.TrimSpace(appToken)
 					if appToken == "" {
 						fmt.Fprintln(os.Stderr, "Error: app token is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					fmt.Print("Slack channel ID (C01234...): ")
@@ -442,7 +442,7 @@ func handleConductorSetup(profile string, args []string) {
 					channelID = strings.TrimSpace(channelID)
 					if channelID == "" {
 						fmt.Fprintln(os.Stderr, "Error: channel ID is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					settings.Slack = session.SlackSettings{BotToken: botToken, AppToken: appToken, ChannelID: channelID}
@@ -470,7 +470,7 @@ func handleConductorSetup(profile string, args []string) {
 					dcBotToken = strings.TrimSpace(dcBotToken)
 					if dcBotToken == "" {
 						fmt.Fprintln(os.Stderr, "Error: bot token is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					fmt.Print("Discord guild (server) ID: ")
@@ -479,7 +479,7 @@ func handleConductorSetup(profile string, args []string) {
 					dcGuildID, err := strconv.ParseInt(dcGuildIDStr, 10, 64)
 					if err != nil || dcGuildID == 0 {
 						fmt.Fprintln(os.Stderr, "Error: valid guild ID is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					fmt.Print("Discord channel ID: ")
@@ -488,7 +488,7 @@ func handleConductorSetup(profile string, args []string) {
 					dcChannelID, err := strconv.ParseInt(dcChannelIDStr, 10, 64)
 					if err != nil || dcChannelID == 0 {
 						fmt.Fprintln(os.Stderr, "Error: valid channel ID is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					fmt.Print("Your Discord user ID: ")
@@ -497,7 +497,7 @@ func handleConductorSetup(profile string, args []string) {
 					dcUserID, err := strconv.ParseInt(dcUserIDStr, 10, 64)
 					if err != nil || dcUserID == 0 {
 						fmt.Fprintln(os.Stderr, "Error: valid user ID is required")
-						os.Exit(1)
+						exitCLI(1)
 					}
 
 					settings.Discord = session.DiscordSettings{BotToken: dcBotToken, GuildID: session.NewConductorID(dcGuildID), ChannelID: session.NewConductorID(dcChannelID), UserID: session.NewConductorID(dcUserID)}
@@ -518,7 +518,7 @@ func handleConductorSetup(profile string, args []string) {
 
 				if err := session.SaveUserConfig(config); err != nil {
 					fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-					os.Exit(1)
+					exitCLI(1)
 				}
 				fmt.Println()
 				fmt.Println("[ok] Conductor config saved to config.toml")
@@ -533,14 +533,14 @@ func handleConductorSetup(profile string, args []string) {
 		config.Conductor = settings
 		if err := session.SaveUserConfig(config); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
 	// Step 3: Install/update shared instructions file for the selected agent
 	if err := session.InstallSharedConductorInstructions(spec.Agent, resolvedSharedInstructionsMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing shared %s: %v\n", spec.InstructionsFileName, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !*jsonOutput {
 		fmt.Printf("[ok] Shared %s installed/updated\n", spec.InstructionsFileName)
@@ -549,7 +549,7 @@ func handleConductorSetup(profile string, args []string) {
 	// Step 3b: Install/update shared POLICY.md
 	if err := session.InstallPolicyMD(*sharedPolicyMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing POLICY.md: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !*jsonOutput {
 		fmt.Println("[ok] Shared POLICY.md installed/updated")
@@ -558,7 +558,7 @@ func handleConductorSetup(profile string, args []string) {
 	// Step 3c: Install shared LEARNINGS.md (don't overwrite existing)
 	if err := session.InstallLearningsMD(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing LEARNINGS.md: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !*jsonOutput {
 		fmt.Println("[ok] Shared LEARNINGS.md installed")
@@ -579,7 +579,7 @@ func handleConductorSetup(profile string, args []string) {
 	}
 	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, *heartbeatRulesMD, envMap, *envFile, *heartbeatIdleMinutes); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !*jsonOutput {
 		fmt.Printf("  [ok] Directory, %s, and meta.json created\n", spec.InstructionsFileName)
@@ -590,13 +590,13 @@ func handleConductorSetup(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(resolvedProfile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading storage for %s: %v\n", resolvedProfile, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, groups, err := storage.LoadWithGroups()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading sessions for %s: %v\n", resolvedProfile, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Check if session already exists
@@ -645,7 +645,7 @@ func handleConductorSetup(profile string, args []string) {
 
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving session for %s: %v\n", resolvedProfile, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// Recall phase 1: a conductor session carries its purpose as a durable
 	// hint from the start (docs/recall.md), so the hint corpus does not
@@ -686,7 +686,7 @@ func handleConductorSetup(profile string, args []string) {
 
 		if err := session.InstallBridgeScript(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error installing bridge.py: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if !*jsonOutput {
 			fmt.Println("[ok] bridge.py installed")
@@ -824,13 +824,13 @@ func handleConductorTeardown(_ string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if !*allConductors && name == "" {
 		fmt.Fprintln(os.Stderr, "Error: conductor name or --all is required")
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck conductor teardown <name> or --all")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Auto-migrate before teardown so we can find legacy conductors
@@ -843,7 +843,7 @@ func handleConductorTeardown(_ string, args []string) {
 		targets, err = session.ListConductors()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error listing conductors: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if len(targets) == 0 {
 			if *jsonOutput {
@@ -857,7 +857,7 @@ func handleConductorTeardown(_ string, args []string) {
 		meta, err := session.LoadConductorMeta(name)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: conductor %q not found: %v\n", name, err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		targets = []session.ConductorMeta{*meta}
 	}
@@ -914,7 +914,7 @@ func handleConductorTeardown(_ string, args []string) {
 		// Remove heartbeat timer
 		if err := session.UninstallHeartbeatDaemon(meta.Name); err != nil {
 			fmt.Fprintf(os.Stderr, "Error disabling heartbeat for %s: %v\n", meta.Name, err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 
 		// Optionally remove directory and session
@@ -1030,7 +1030,7 @@ func handleConductorStatus(_ string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Auto-migrate before status check so stale heartbeat scripts self-heal even
@@ -1058,7 +1058,7 @@ func handleConductorStatus(_ string, args []string) {
 		meta, err := session.LoadConductorMeta(name)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: conductor %q not found: %v\n", name, err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		conductors = []session.ConductorMeta{*meta}
 	} else {
@@ -1066,7 +1066,7 @@ func handleConductorStatus(_ string, args []string) {
 		conductors, err = session.ListConductors()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error listing conductors: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -1220,7 +1220,7 @@ func handleConductorList(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Auto-migrate
@@ -1239,7 +1239,7 @@ func handleConductorList(profile string, args []string) {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error listing conductors: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -1619,13 +1619,13 @@ func handleConductorMigrateDir(_ string, args []string) {
 		}
 	}
 	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if strings.TrimSpace(target) == "" {
 		fmt.Fprintln(os.Stderr, "Error: migrate-dir requires a target path")
 		fmt.Fprintln(os.Stderr)
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	res, err := session.MigrateConductorDir(session.ConductorDirMigrateOptions{
@@ -1636,7 +1636,7 @@ func handleConductorMigrateDir(_ string, args []string) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: migrate-dir failed: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Daemon reconcile (apply only, and only when the migration actually
@@ -1698,7 +1698,7 @@ func handleConductorMigrateDir(_ string, args []string) {
 		fmt.Println(string(b))
 		// An apply that refused to mutate is a failure for scripting purposes.
 		if *apply && res.Refused {
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -1708,7 +1708,7 @@ func handleConductorMigrateDir(_ string, args []string) {
 	// An apply that refused to mutate exits non-zero so the operator (or a
 	// script) sees it did NOT relocate anything.
 	if *apply && res.Refused {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -1830,7 +1830,7 @@ func handleConductorMove(sourceProfile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
@@ -1838,12 +1838,12 @@ func handleConductorMove(sourceProfile string, args []string) {
 	if fs.NArg() < 1 {
 		out.Error("conductor move requires <name>", ErrCodeInvalidOperation)
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *toProfile == "" {
 		out.Error("--to-profile is required", ErrCodeInvalidOperation)
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	name := fs.Arg(0)
@@ -1861,7 +1861,7 @@ func handleConductorMove(sourceProfile string, args []string) {
 			hint = " (stop the conductor/workers first, or re-run with --force)"
 		}
 		out.Error(fmt.Sprintf("%v%s", err, hint), exitCode)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out.Success(
