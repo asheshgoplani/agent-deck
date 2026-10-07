@@ -157,15 +157,15 @@ Schema version: 3. Detailed events carry the envelope; install.tick uses only it
 |---|---|---|
 | `install_id` | 32 hex | random, created on consent, rotatable; sent as PostHog distinct_id |
 | `schema` | int 3-3 | constant |
-| `v` | pattern `^([0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\|dev)$` | release X.Y.Z or dev |
+| `v` | pattern `^([0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\|dev)$` | release X.Y.Z or dev; on daily rollups, the release that last recorded that day |
 | `os` | enum: `darwin`, `linux`, `freebsd`, `openbsd`, `netbsd`, `windows`, `other` | Go GOOS; no OS version |
 | `arch` | enum: `amd64`, `arm64`, `386`, `arm`, `riscv64`, `other` | Go GOARCH |
 | `day` | pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}$` | local YYYY-MM-DD |
 | `hour_local` | int 0-23 | local hour; omitted at level basic |
 | `weekday_local` | int 0-6 | 0 = Sunday; omitted at level basic |
 | `seq` | int 0-1073741824 | per-install counter, ordering only, resets on reset-id |
-| `actor` | enum: `human`, `agent` | human (TTY, not in a session) or agent (TTY inside an agent session) |
-| `surface` | enum: `tui`, `cli`, `web` |  |
+| `actor` | enum: `human`, `agent`, `mixed` | human (TTY, not in a session) or agent (TTY inside an agent session); mixed on daily rollups |
+| `surface` | enum: `tui`, `cli`, `web`, `rollup` | rollup on daily rollups |
 | `level` | enum: `full`, `basic` |  |
 | `install_age` | bucket `install_age` | from the local first-seen day; the date is never sent |
 | `install_week` | pattern `^[0-9]{4}-W[0-9]{2}$` | ISO week of first seen, e.g. 2026-W39 |

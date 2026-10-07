@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 )
 
@@ -101,10 +102,10 @@ var (
 	keybindActions  = []string{"new_session", "quick_new", "fork", "delete", "restart", "rename", "move", "attach", "search", "filter", "group_create", "mcp_manager", "skill_manager", "settings", "help", "send", "preview_toggle", "worktree_finish", "collapse_group", "quit", "other"}
 	perfOps         = []string{"tui_start", "session_start", "list", "status_poll"}
 	panicTypes      = []string{"nil_deref", "index", "slice", "map_concurrent", "closed_chan", "custom", "other"}
-	actorValues     = []string{"human", "agent"}
+	actorValues     = []string{"human", "agent"} // recorded events; see rollupActor
 	osValues        = []string{"darwin", "linux", "freebsd", "openbsd", "netbsd", "windows", "other"}
 	archValues      = []string{"amd64", "arm64", "386", "arm", "riscv64", "other"}
-	surfaceValues   = []string{"tui", "cli", "web"}
+	surfaceValues   = []string{"tui", "cli", "web"} // recorded events; see rollupSurface
 	levelValues     = []string{"full", "basic"}
 	onboardingSteps = append([]string{"none"}, milestoneNames[:6]...)
 )
@@ -137,19 +138,27 @@ var (
 	propOutcome   = enum("outcome", outcomes...)
 )
 
+// A daily rollup aggregates every actor and surface of its day (the split is
+// in usage.daily's own properties), so it carries these neutral envelope
+// values. They are never valid on a recorded (spooled) event.
+const (
+	rollupActor   = "mixed"
+	rollupSurface = "rollup"
+)
+
 // Envelope lists the properties added to every event by the client.
 var Envelope = []Prop{
 	{Key: "install_id", Kind: KindHash, HexLen: 32, Doc: "random, created on consent, rotatable; sent as PostHog distinct_id"},
 	{Key: "schema", Kind: KindInt, Min: SchemaVersion, Max: SchemaVersion, Doc: "constant"},
-	{Key: "v", Kind: KindPattern, Pattern: reVersion, Doc: "release X.Y.Z or dev"},
+	{Key: "v", Kind: KindPattern, Pattern: reVersion, Doc: "release X.Y.Z or dev; on daily rollups, the release that last recorded that day"},
 	enum("os", osValues...).doc("Go GOOS; no OS version"),
 	enum("arch", archValues...).doc("Go GOARCH"),
 	{Key: "day", Kind: KindPattern, Pattern: reDay, Doc: "local YYYY-MM-DD"},
 	{Key: "hour_local", Kind: KindInt, Min: 0, Max: 23, Doc: "local hour; omitted at level basic"},
 	{Key: "weekday_local", Kind: KindInt, Min: 0, Max: 6, Doc: "0 = Sunday; omitted at level basic"},
 	{Key: "seq", Kind: KindInt, Min: 0, Max: 1 << 30, Doc: "per-install counter, ordering only, resets on reset-id"},
-	enum("actor", actorValues...).doc("human (TTY, not in a session) or agent (TTY inside an agent session)"),
-	enum("surface", surfaceValues...),
+	enum("actor", slices.Concat(actorValues, []string{rollupActor})...).doc("human (TTY, not in a session) or agent (TTY inside an agent session); mixed on daily rollups"),
+	enum("surface", slices.Concat(surfaceValues, []string{rollupSurface})...).doc("rollup on daily rollups"),
 	enum("level", levelValues...),
 	bucket("install_age", BucketAge).doc("from the local first-seen day; the date is never sent"),
 	{Key: "install_week", Kind: KindPattern, Pattern: reWeek, Doc: "ISO week of first seen, e.g. 2026-W39"},

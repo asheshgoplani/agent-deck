@@ -19,6 +19,9 @@ const (
 // DailyRollup holds one local day of counters. Map keys are allow-listed
 // enum values only, so nothing here is free text.
 type DailyRollup struct {
+	// V is the release that last recorded into this day; rollups are sent
+	// with it, not with the (possibly newer) uploading release.
+	V           string `json:"v,omitempty"`
 	Emitted     int    `json:"emitted,omitempty"`
 	Dropped     int    `json:"dropped,omitempty"`
 	SchemaDrops int    `json:"schema_drops,omitempty"`
@@ -73,6 +76,7 @@ func (s *State) day(d string) *DailyRollup {
 		r = &DailyRollup{}
 		s.Daily[d] = r
 	}
+	r.V = safeVersion(processVersion)
 	return r
 }
 

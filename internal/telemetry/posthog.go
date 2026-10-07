@@ -128,13 +128,17 @@ func (s *State) pending(lines []spoolLine, now time.Time) []pendingEvent {
 		if day >= today {
 			continue
 		}
+		v := safeVersion(processVersion) // a day stored by an older client has no V
+		if s.Daily[day].V != "" {
+			v = safeVersion(s.Daily[day].V)
+		}
 		for _, r := range rollupEvents(s.Daily[day], level) {
 			if Validate(r.name, r.props) != nil {
 				continue
 			}
 			s.Seq++
 			l := spoolLine{E: r.name, U: s.rollupUUID(day, r.name, r.key), D: day, S: s.Seq,
-				V: safeVersion(processVersion), A: "human", SF: string(SurfaceTUI), L: string(level), P: r.props}
+				V: v, A: rollupActor, SF: rollupSurface, L: string(level), P: r.props}
 			out = append(out, pendingEvent{ev: s.toPostHog(l), rollupDay: day})
 		}
 		out = append(out, pendingEvent{rollupDay: day}) // marks the day for removal even when empty
