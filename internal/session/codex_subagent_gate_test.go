@@ -341,6 +341,52 @@ func TestBuildCodexCommand_RepairsGuardianBindingInOwningDB(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_ResumesGuardianReviewUserAncestor(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	mainSID := uniqueSID(t)
+	subagentSID := uniqueSID(t)
+	firstGuardianSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, subagentSID, "subagent", mainSID, false)
+	seedCodexRolloutWithMeta(t, codexHome, firstGuardianSID, "guardian_review", subagentSID, true)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", firstGuardianSID, true)
+
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("guardian review chain must resume its user ancestor: got %q", cmd)
+	}
+	if inst.CodexSessionID != mainSID {
+		t.Fatalf("guardian review chain bound %q, want user thread %q", inst.CodexSessionID, mainSID)
+	}
+}
+
+func TestBuildCodexCommand_ResumesLegacyCLIParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "cli", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("guardian review must resume its legacy CLI parent: got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotFollowGuardianParentCycle(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	firstGuardianSID := uniqueSID(t)
+	secondGuardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, firstGuardianSID, "guardian_review", secondGuardianSID, true)
+	seedCodexRolloutWithMeta(t, codexHome, secondGuardianSID, "guardian_review", firstGuardianSID, true)
+
+	inst.CodexSessionID = firstGuardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "fork "+firstGuardianSID) {
+		t.Fatalf("guardian parent cycle must use the existing fallback: got %q", cmd)
+	}
+}
+
 func TestBuildCodexCommand_DoesNotResumeMissingGuardianParent(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 	guardianSID := uniqueSID(t)

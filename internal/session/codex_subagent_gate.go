@@ -214,21 +214,36 @@ func CodexSubagentThread(threadID, codexHome string) bool {
 
 func codexNonUserThread(meta codexThreadMeta) bool {
 	return meta.valid && (meta.ParentThreadID != "" ||
-		(meta.ThreadSource != "" && meta.ThreadSource != "user"))
+		meta.ThreadSource == "subagent" || meta.ThreadSource == "guardian_review")
 }
 
-// codexGuardianParentThreadID returns a guardian review's verified user parent.
-// A missing or non-user parent must not become a resume target.
+// codexGuardianParentThreadID returns a guardian review's verified user ancestor.
+// Review threads can belong to subagents, so follow only known child sources.
+// A missing parent, unknown source, or cycle must not become a resume target.
 func codexGuardianParentThreadID(sessionID, codexHome string) string {
 	meta, ok := codexThreadMetaForSession(sessionID, codexHome)
 	if !ok || !meta.valid || meta.ThreadSource != "guardian_review" || meta.ParentThreadID == "" {
 		return ""
 	}
-	parent, ok := codexThreadMetaForSession(meta.ParentThreadID, codexHome)
-	if !ok || !parent.valid || parent.ThreadSource != "user" || parent.ParentThreadID != "" {
-		return ""
+	visited := map[string]bool{sessionID: true}
+	for depth := 0; depth < 32 && meta.ParentThreadID != ""; depth++ {
+		parentID := meta.ParentThreadID
+		if visited[parentID] {
+			return ""
+		}
+		visited[parentID] = true
+		meta, ok = codexThreadMetaForSession(parentID, codexHome)
+		if !ok || !meta.valid {
+			return ""
+		}
+		if (meta.ThreadSource == "user" || meta.ThreadSource == "cli") && meta.ParentThreadID == "" {
+			return parentID
+		}
+		if meta.ThreadSource != "subagent" && meta.ThreadSource != "guardian_review" {
+			return ""
+		}
 	}
-	return meta.ParentThreadID
+	return ""
 }
 
 // codexHookFromForeignThread reports whether a hook status record belongs to a
@@ -305,7 +320,7 @@ func (i *Instance) filterCodexProcessProbeCandidate(candidateID string) string {
 
 // codexSessionNeedsFork reports whether the bound session id names a
 // non-user child thread, which `codex resume` would load but never accept
-// operator input on. buildCodexCommand resumes a verified Guardian parent
+// operator input on. buildCodexCommand resumes a verified Guardian user ancestor
 // or forks the child into a user thread when that parent is unavailable.
 // Bindings without a flushed rollout return false (the #756 existence gate
 // already handled them).

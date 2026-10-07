@@ -2564,7 +2564,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	// via `resume` but refuses user-initiated turns on them — the TUI exits
 	// status 1 with "turn/start failed in TUI" on the first typed message,
 	// killing the tmux session in an error loop. Guardian review bindings
-	// resume their verified user parent. Other child bindings use `codex fork`
+	// resume their verified user ancestor. Other child bindings use `codex fork`
 	// to create a thread_source=user thread that accepts input. The live-process
 	// probe then rebinds the instance to the fork's new id. See
 	// codex_subagent_gate.go.
