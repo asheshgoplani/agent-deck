@@ -143,9 +143,9 @@ func collectSystemStatsAccounts() *[]systemStatsAccountJSON {
 // /proc, ...) are simply omitted, matching handleSystemStats in
 // internal/web/handlers_system.go so both callers degrade the same way.
 func handleSystemStats(args []string) {
-	fs := flag.NewFlagSet("system stats", flag.ExitOnError)
+	fs := flag.NewFlagSet("system stats", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	_ = fs.Parse(args)
+	_ = parseCLIFlags(fs, args)
 
 	stats := sysinfo.Collect()
 

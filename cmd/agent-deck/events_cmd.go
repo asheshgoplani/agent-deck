@@ -71,7 +71,7 @@ func openBusForRead(name string) (*events.Bus, error) {
 // only output shape this command has, so the flag doesn't change anything.
 // --kind and --session only filter what is printed; cursors stay the bus's.
 func handleEventsFollow(profile string, args []string) {
-	fs := flag.NewFlagSet("agent-deck events follow", flag.ExitOnError)
+	fs := flag.NewFlagSet("agent-deck events follow", flag.ContinueOnError)
 	afterFlag := fs.Uint64("after", 0, "resume after this cursor (0 = from the beginning of the retained log)")
 	_ = fs.Bool("json", true, "stream NDJSON frames (always on; kept for CLI symmetry)")
 	kindFlag := fs.String("kind", "", "only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)")
@@ -81,7 +81,7 @@ func handleEventsFollow(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	var kinds []string
@@ -240,14 +240,14 @@ func handleEventsPublish(profile string, args []string) {
 
 // handleEventsStats implements `agent-deck events stats [--json] [--bus events|comms]`.
 func handleEventsStats(args []string) {
-	fs := flag.NewFlagSet("agent-deck events stats", flag.ExitOnError)
+	fs := flag.NewFlagSet("agent-deck events stats", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print stats as JSON")
 	busFlag := fs.String("bus", "events", busFlagHelp)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events stats [--json] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(1)
 	}
 

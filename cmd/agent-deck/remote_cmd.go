@@ -206,7 +206,7 @@ func isValidRemoteName(name string) bool {
 }
 
 func handleRemoteAdd(args []string) {
-	fs := flag.NewFlagSet("remote add", flag.ExitOnError)
+	fs := flag.NewFlagSet("remote add", flag.ContinueOnError)
 	agentDeckPath := fs.String("agent-deck-path", "", "Path to agent-deck on the remote (default: agent-deck)")
 	remoteProfile := fs.String("profile", "", "Remote profile to use (default: default)")
 
@@ -219,7 +219,7 @@ func handleRemoteAdd(args []string) {
 
 	// Reorder: move flags before positional args so Go's flag package sees them
 	reordered := reorderRemoteArgs(fs, args)
-	if err := fs.Parse(reordered); err != nil {
+	if err := parseCLIFlags(fs, reordered); err != nil {
 		exitCLI(1)
 	}
 
@@ -347,11 +347,11 @@ func handleRemoteRemove(args []string) {
 }
 
 func handleRemoteList(args []string) {
-	fs := flag.NewFlagSet("remote list", flag.ExitOnError)
+	fs := flag.NewFlagSet("remote list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	check := fs.Bool("check", false, "Ask each remote for its agent-deck version and update timer now")
 	retry := fs.Bool("retry", false, "Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
-	_ = fs.Parse(args)
+	_ = parseCLIFlags(fs, args)
 
 	config, err := session.LoadUserConfig()
 	if err != nil {
@@ -817,14 +817,14 @@ func handleRemoteRename(args []string) {
 }
 
 func handleRemoteUpdate(args []string) {
-	fs := flag.NewFlagSet("remote update", flag.ExitOnError)
+	fs := flag.NewFlagSet("remote update", flag.ContinueOnError)
 	all := fs.Bool("all", false, "Update every configured remote that is older than this controller")
 	fromBuild := fs.String("from-build", "", "Install archives from a local build directory")
 	force := fs.Bool("force", false, "Allow reinstalling or downgrading")
 	dryRun := fs.Bool("dry-run", false, "Show the verified installation plan without changing remotes")
 	jsonOutput := fs.Bool("json", false, "Output every result as JSON")
 	installTimer := fs.Bool("install-timer", false, "Install or migrate each remote's own update timer (its `update --install-timer`) instead of updating its binary")
-	_ = fs.Parse(reorderRemoteArgs(fs, args))
+	_ = parseCLIFlags(fs, reorderRemoteArgs(fs, args))
 	if fs.NArg() > 1 {
 		fmt.Fprintln(os.Stderr, "Error: expected one remote name or --all")
 		exitCLI(2)

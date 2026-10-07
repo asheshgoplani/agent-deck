@@ -24,7 +24,7 @@ const versionCheckInterval = 60 * time.Second
 
 // handleNotifyDaemon runs the always-on transition notifier daemon.
 func handleNotifyDaemon(args []string) {
-	fs := flag.NewFlagSet("notify-daemon", flag.ExitOnError)
+	fs := flag.NewFlagSet("notify-daemon", flag.ContinueOnError)
 	once := fs.Bool("once", false, "Run one sync pass and exit")
 
 	fs.Usage = func() {
@@ -40,7 +40,7 @@ func handleNotifyDaemon(args []string) {
 		return
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

@@ -14,7 +14,7 @@ import (
 // conversation history. Read-only: it never mutates the source session; the
 // caller (or a future `session switch`) feeds the prompt to a new session.
 func handleSessionHandoff(profile string, args []string) {
-	fs := flag.NewFlagSet("session handoff", flag.ExitOnError)
+	fs := flag.NewFlagSet("session handoff", flag.ContinueOnError)
 	maxChars := fs.Int("max-chars", session.DefaultHandoffMaxChars, "Maximum transcript characters to include (tail-truncated)")
 	outPath := fs.String("out", "", "Write the prompt to a file instead of stdout")
 	jsonOutput := fs.Bool("json", false, "Output prompt + info as JSON")
@@ -31,7 +31,7 @@ func handleSessionHandoff(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

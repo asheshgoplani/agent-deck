@@ -60,7 +60,7 @@ func handleLaunch(profile string, args []string) {
 }
 
 func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.FlagSet)) {
-	fs := flag.NewFlagSet("launch", flag.ExitOnError)
+	fs := flag.NewFlagSet("launch", flag.ContinueOnError)
 	title := fs.String("title", "", "Session title (defaults to folder name; an explicit title is locked against Claude's session-name sync)")
 	titleShort := fs.String("t", "", "Session title (short)")
 	group := fs.String("group", "", "Group path (defaults to parent folder)")
@@ -223,7 +223,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 
 	// Reorder args: move path to end so flags are parsed correctly
 
-	if err := fs.Parse(normalizeCreationArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeCreationArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if *capabilities {

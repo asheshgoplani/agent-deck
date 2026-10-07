@@ -14,7 +14,7 @@ import (
 
 // handleTry handles the 'try' subcommand for quick experiments
 func handleTry(profile string, args []string) {
-	fs := flag.NewFlagSet("try", flag.ExitOnError)
+	fs := flag.NewFlagSet("try", flag.ContinueOnError)
 	listOnly := fs.Bool("list", false, "List experiments without creating session")
 	listShort := fs.Bool("l", false, "List experiments (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -56,7 +56,7 @@ func handleTry(profile string, args []string) {
 	// This allows: "try myproject --no-session" to work same as "try --no-session myproject"
 	args = reorderArgsForTryCommand(args)
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(1)
 	}
 

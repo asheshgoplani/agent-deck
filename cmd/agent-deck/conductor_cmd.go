@@ -168,7 +168,7 @@ func resolveConductorSetupAgent(fs *flag.FlagSet, name string) (string, error) {
 
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
-	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
+	fs := flag.NewFlagSet("conductor setup", flag.ContinueOnError)
 	fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude, codex, hermes, or pi); a re-run without it keeps the conductor's current agent")
 	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up (the /clear only arms on an established context window: AGENTDECK_CONTEXT_WINDOW or a harness-reported size)")
 	description := fs.String("description", "", "Description for this conductor")
@@ -243,9 +243,7 @@ func handleConductorSetup(profile string, args []string) {
 	}
 
 	name, extras, err := parseConductorSetupArgs(fs, args)
-	if err != nil {
-		exitCLI(1)
-	}
+	exitOnFlagError(err)
 
 	if name == "" {
 		fmt.Fprintln(os.Stderr, "Error: conductor name is required")
@@ -792,7 +790,7 @@ func handleConductorSetup(profile string, args []string) {
 
 // handleConductorTeardown stops conductors and optionally removes directories
 func handleConductorTeardown(_ string, args []string) {
-	fs := flag.NewFlagSet("conductor teardown", flag.ExitOnError)
+	fs := flag.NewFlagSet("conductor teardown", flag.ContinueOnError)
 	removeAll := fs.Bool("remove", false, "Remove conductor directories and sessions")
 	allConductors := fs.Bool("all", false, "Teardown all conductors")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -823,7 +821,7 @@ func handleConductorTeardown(_ string, args []string) {
 		}
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, flagArgs)); err != nil {
 		exitCLI(1)
 	}
 
@@ -1003,7 +1001,7 @@ func handleConductorTeardown(_ string, args []string) {
 
 // handleConductorStatus shows conductor health
 func handleConductorStatus(_ string, args []string) {
-	fs := flag.NewFlagSet("conductor status", flag.ExitOnError)
+	fs := flag.NewFlagSet("conductor status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -1029,7 +1027,7 @@ func handleConductorStatus(_ string, args []string) {
 		}
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, flagArgs)); err != nil {
 		exitCLI(1)
 	}
 
@@ -1206,7 +1204,7 @@ func handleConductorStatus(_ string, args []string) {
 
 // handleConductorList lists all conductors
 func handleConductorList(profile string, args []string) {
-	fs := flag.NewFlagSet("conductor list", flag.ExitOnError)
+	fs := flag.NewFlagSet("conductor list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	filterProfile := fs.String("profile", "", "Filter by profile")
 
@@ -1219,7 +1217,7 @@ func handleConductorList(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -1587,7 +1585,7 @@ func bridgeDaemonInstalled() bool {
 // performs the move. This is the deliberate, destructive path the declarative
 // [conductor].dir override intentionally avoids.
 func handleConductorMigrateDir(_ string, args []string) {
-	fs := flag.NewFlagSet("conductor migrate-dir", flag.ExitOnError)
+	fs := flag.NewFlagSet("conductor migrate-dir", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "Perform the relocation (default is a dry-run that changes nothing)")
 	force := fs.Bool("force", false, "Merge into an existing destination per-file (destination wins on conflicts) instead of skipping")
 	from := fs.String("from", "", "Override the auto-detected source base directory")
@@ -1618,7 +1616,7 @@ func handleConductorMigrateDir(_ string, args []string) {
 			flagArgs = append(flagArgs, arg)
 		}
 	}
-	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, flagArgs)); err != nil {
 		exitCLI(1)
 	}
 	if strings.TrimSpace(target) == "" {
@@ -1812,7 +1810,7 @@ func printMigrateDirSummary(res *session.ConductorDirMigrateResult, reloadedHear
 // handleConductorMove migrates a conductor (session row + all child sessions
 // + meta.json) to another profile (issue #928).
 func handleConductorMove(sourceProfile string, args []string) {
-	fs := flag.NewFlagSet("conductor move", flag.ExitOnError)
+	fs := flag.NewFlagSet("conductor move", flag.ContinueOnError)
 	toProfile := fs.String("to-profile", "", "Target profile (required)")
 	force := fs.Bool("force", false, "Migrate even if the conductor or a worker is running")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -1829,7 +1827,7 @@ func handleConductorMove(sourceProfile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

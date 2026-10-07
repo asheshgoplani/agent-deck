@@ -14,7 +14,7 @@ import (
 // a single keypress. It is intentionally separate from `session send`: an
 // approval is a TUI decision event, not composer text followed by Enter.
 func handleSessionApprove(profile string, args []string) {
-	fs := flag.NewFlagSet("session approve", flag.ExitOnError)
+	fs := flag.NewFlagSet("session approve", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	choiceFlag := fs.String("choice", "", "Approval choice: once, always, session, or displayed option number")
 	timeout := fs.Duration("timeout", 5*time.Second, "Max time to verify that the original approval prompt cleared")
@@ -42,7 +42,7 @@ func handleSessionApprove(profile string, args []string) {
 		fmt.Println("  agent-deck session approve worker 2 --json")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	remaining := fs.Args()

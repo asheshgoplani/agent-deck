@@ -21,7 +21,7 @@ import (
 //
 // No sessions are stopped, no files are copied, no credentials are read.
 func handleSessionSwitchPreview(profile string, args []string) {
-	fs := flag.NewFlagSet("session switch-preview", flag.ExitOnError)
+	fs := flag.NewFlagSet("session switch-preview", flag.ContinueOnError)
 	toHarness := fs.String("to-harness", "", "Target harness (claude, codex, …). Defaults to source harness.")
 	toAccount := fs.String("to-account", "", "Target named account slot (must have a config_dir in config.toml)")
 	maxChars := fs.Int("max-chars", session.DefaultHandoffMaxChars,
@@ -59,7 +59,7 @@ func handleSessionSwitchPreview(profile string, args []string) {
 		fmt.Println("  agent-deck session switch-preview my-project --to-account work --json")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

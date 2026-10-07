@@ -198,7 +198,7 @@ func humanizeAge(d time.Duration) string {
 // explicit interactive "yes". Archived and pinned sessions are excluded unless
 // --include-archived / --force. Registry-only unless --prune-worktree.
 func handleSessionCleanup(profile string, args []string) {
-	fs := flag.NewFlagSet("session cleanup", flag.ExitOnError)
+	fs := flag.NewFlagSet("session cleanup", flag.ContinueOnError)
 	days := fs.Int("days", cleanupDefaultDays, "Minimum days without activity before a dead session is a purge candidate")
 	yes := fs.Bool("yes", false, "Actually delete (skip the confirmation prompt)")
 	yesShort := fs.Bool("y", false, "Actually delete (short for --yes)")
@@ -234,7 +234,7 @@ func handleSessionCleanup(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

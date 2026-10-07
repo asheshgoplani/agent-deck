@@ -18,7 +18,7 @@ import (
 // the TUI. It never infers an account or harness: both are explicit (an empty
 // value means the target default only where the preview says that is valid).
 func handleSessionSwitch(profile string, args []string) {
-	fs := flag.NewFlagSet("session switch", flag.ExitOnError)
+	fs := flag.NewFlagSet("session switch", flag.ContinueOnError)
 	toHarness := fs.String("to-harness", "", "Target harness (claude, codex, pi, …); empty keeps the source harness")
 	toAccount := fs.String("to-account", "", "Target configured account slot; empty means the target default")
 	maxBytes := fs.Int("max-bytes", session.DefaultHandoffMaxChars, "Maximum transferred context bytes for cross-harness handoff")
@@ -37,7 +37,7 @@ func handleSessionSwitch(profile string, args []string) {
 		fmt.Println()
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() < 1 {

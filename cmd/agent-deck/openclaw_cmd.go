@@ -60,9 +60,9 @@ func printOpenClawHelp() {
 // --- sync ---
 
 func handleOpenClawSync(profile string, args []string) {
-	fs := flag.NewFlagSet("openclaw sync", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw sync", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
 
@@ -176,10 +176,10 @@ func buildOpenClawBridgeCommand(agentID string) string {
 // --- bridge ---
 
 func handleOpenClawBridge(args []string) {
-	fs := flag.NewFlagSet("openclaw bridge", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw bridge", flag.ContinueOnError)
 	agentID := fs.String("agent", "", "Agent ID to bridge")
 	agentName := fs.String("name", "", "Agent display name (optional)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
 
@@ -314,9 +314,9 @@ func handleOpenClawStatus(args []string) {
 // --- list ---
 
 func handleOpenClawList(args []string) {
-	fs := flag.NewFlagSet("openclaw list", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
 
@@ -365,9 +365,9 @@ func handleOpenClawList(args []string) {
 // --- send ---
 
 func handleOpenClawSend(args []string) {
-	fs := flag.NewFlagSet("openclaw send", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw send", flag.ContinueOnError)
 	agentID := fs.String("agent", "", "Agent ID to send to")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(2)
 	}
 

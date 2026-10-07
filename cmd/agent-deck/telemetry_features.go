@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"os"
 	"sync"
 
@@ -155,4 +157,26 @@ func settleCLITelemetry() {
 func exitCLI(code int) {
 	finishCLITelemetry(code)
 	os.Exit(code)
+}
+
+// parseCLIFlags parses a flag.ContinueOnError FlagSet with the exit codes of
+// flag.ExitOnError (0 for -help, 2 for a bad flag), but exits through exitCLI
+// so the invocation is still recorded. flag.ExitOnError calls os.Exit itself.
+func parseCLIFlags(fs *flag.FlagSet, args []string) error {
+	exitOnFlagError(fs.Parse(args))
+	return nil
+}
+
+// exitOnFlagError exits like flag.ExitOnError for a non-nil parse error. The
+// flag package has already printed the error and usage. A help request counts
+// as an invocation, not a use of the command's feature.
+func exitOnFlagError(err error) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		markCLINoop()
+		exitCLI(0)
+	}
+	exitCLI(2)
 }

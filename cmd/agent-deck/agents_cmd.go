@@ -19,7 +19,7 @@ import (
 // agent-deck — declared triggers still belong to the plists and timers that
 // own them today, and rows say so.
 func handleAgents(profile string, args []string) {
-	fs := flag.NewFlagSet("agents", flag.ExitOnError)
+	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	noRemote := fs.Bool("no-remote", false, "Skip remote machines")
 	fs.Usage = func() {
@@ -30,7 +30,7 @@ func handleAgents(profile string, args []string) {
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -106,7 +106,7 @@ func printAgentUsage() {
 // separate, explicit step behind --write, so the default invocation cannot
 // change anything on disk.
 func handleAgentAdopt(profile string, args []string) {
-	fs := flag.NewFlagSet("agent adopt", flag.ExitOnError)
+	fs := flag.NewFlagSet("agent adopt", flag.ContinueOnError)
 	write := fs.Bool("write", false, "Write the generated definitions (default: dry run)")
 	jsonOutput := fs.Bool("json", false, "Output the plan as JSON")
 	manager := fs.String("manager", "", "Post name that non-manager roles report to")
@@ -120,7 +120,7 @@ func handleAgentAdopt(profile string, args []string) {
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() == 0 {
@@ -198,9 +198,9 @@ func handleAgentAdopt(profile string, args []string) {
 
 // handleAgentShow prints one agent's detail, matching the TUI detail screen.
 func handleAgentShow(profile string, args []string) {
-	fs := flag.NewFlagSet("agent show", flag.ExitOnError)
+	fs := flag.NewFlagSet("agent show", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() == 0 {

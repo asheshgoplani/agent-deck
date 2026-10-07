@@ -108,7 +108,7 @@ func reviveAndPersist(
 // Rebuilds dead control pipes for sessions whose tmux server is still alive
 // (see REPORT-D). Exits 0 on success, 1 on usage/load errors, 2 if --name not found.
 func handleSessionRevive(profile string, args []string) {
-	fs := flag.NewFlagSet("session revive", flag.ExitOnError)
+	fs := flag.NewFlagSet("session revive", flag.ContinueOnError)
 	all := fs.Bool("all", false, "Revive all errored sessions with alive tmux servers")
 	name := fs.String("name", "", "Revive a single session by title or id")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -130,7 +130,7 @@ func handleSessionRevive(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

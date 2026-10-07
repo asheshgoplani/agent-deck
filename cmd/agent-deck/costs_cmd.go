@@ -125,9 +125,9 @@ func handleCostsSync(profile string) {
 func handleCostsSummary(profile string, args []string) {
 	// #1101: --json output so a remote agent-deck can be queried over SSH and
 	// its cost totals merged into the local TUI's status-line cost segment.
-	fs := flag.NewFlagSet("costs summary", flag.ExitOnError)
+	fs := flag.NewFlagSet("costs summary", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(1)
 	}
 

@@ -244,7 +244,7 @@ func printSessionHelp() {
 
 // handleSessionStart starts a session's tmux process
 func handleSessionStart(profile string, args []string) {
-	fs := flag.NewFlagSet("session start", flag.ExitOnError)
+	fs := flag.NewFlagSet("session start", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -271,7 +271,7 @@ func handleSessionStart(profile string, args []string) {
 		fmt.Println("  git diff | agent-deck session start my-project --message-file -   # initial message from stdin")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -476,7 +476,7 @@ func failSpawnVerification(out *CLIOutput, verb string, storage *session.Storage
 
 // handleSessionStop stops a session process
 func handleSessionStop(profile string, args []string) {
-	fs := flag.NewFlagSet("session stop", flag.ExitOnError)
+	fs := flag.NewFlagSet("session stop", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -490,7 +490,7 @@ func handleSessionStop(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -571,7 +571,7 @@ func handleSessionStop(profile string, args []string) {
 // from active lists but retained in storage. Mirrors the TUI archive action
 // (home.go archiveSession) and WebMutator.ArchiveSession.
 func handleSessionArchive(profile string, args []string) {
-	fs := flag.NewFlagSet("session archive", flag.ExitOnError)
+	fs := flag.NewFlagSet("session archive", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -585,7 +585,7 @@ func handleSessionArchive(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -667,7 +667,7 @@ func handleSessionArchive(profile string, args []string) {
 // handleSessionUnarchive clears the archive flag without restarting tmux.
 // Mirrors the TUI unarchiveSession and WebMutator.UnarchiveSession.
 func handleSessionUnarchive(profile string, args []string) {
-	fs := flag.NewFlagSet("session unarchive", flag.ExitOnError)
+	fs := flag.NewFlagSet("session unarchive", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -681,7 +681,7 @@ func handleSessionUnarchive(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -784,7 +784,7 @@ func drainGroupQueue(groupPath string, instances []*session.Instance, groups []*
 
 // handleSessionRestart restarts a session (or all active sessions with --all)
 func handleSessionRestart(profile string, args []string) {
-	fs := flag.NewFlagSet("session restart", flag.ExitOnError)
+	fs := flag.NewFlagSet("session restart", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -822,7 +822,7 @@ func handleSessionRestart(profile string, args []string) {
 		fmt.Println("  agent-deck session restart --all")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -1068,7 +1068,7 @@ func branchCleanupHint(createdBranch bool, repoRoot, branchName string) string {
 
 // handleSessionFork forks a supported tool session
 func handleSessionFork(profile string, args []string) {
-	fs := flag.NewFlagSet("session fork", flag.ExitOnError)
+	fs := flag.NewFlagSet("session fork", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -1103,7 +1103,7 @@ func handleSessionFork(profile string, args []string) {
 		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state-and-gitignored")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -1494,7 +1494,7 @@ func handleSessionFork(profile string, args []string) {
 
 // handleSessionAttach attaches to a session interactively
 func handleSessionAttach(profile string, args []string) {
-	fs := flag.NewFlagSet("session attach", flag.ExitOnError)
+	fs := flag.NewFlagSet("session attach", flag.ContinueOnError)
 
 	detachByte := ui.ResolvedDetachByte(session.GetHotkeyOverrides())
 	detachLabel := ui.DetachByteLabel(detachByte)
@@ -1506,7 +1506,7 @@ func handleSessionAttach(profile string, args []string) {
 		fmt.Printf("Press %s to detach.\n", detachLabel)
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -1701,7 +1701,7 @@ func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id
 // its next poll. Fire-and-forget: no stdout on success. Unknown id exits 2.
 // With --attach, the TUI opens/attaches the session instead of only selecting it.
 func handleSessionFocus(profile string, args []string) {
-	fs := flag.NewFlagSet("session focus", flag.ExitOnError)
+	fs := flag.NewFlagSet("session focus", flag.ContinueOnError)
 	attach := fs.Bool("attach", false, "Open/attach the session, not just select it")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session focus <id> [--attach]")
@@ -1711,7 +1711,7 @@ func handleSessionFocus(profile string, args []string) {
 		fmt.Println("With --attach, the TUI opens/attaches the session (as if you")
 		fmt.Println("pressed Enter on it) instead of only moving the cursor.")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -1760,7 +1760,7 @@ func formatViewersLine(viewers []tmux.Viewer, known bool) string {
 // handleSessionViewers prints who is attached to a session: the CLI form of
 // the TUI's viewers badge and the "also viewing" notice on attach.
 func handleSessionViewers(profile string, args []string) {
-	fs := flag.NewFlagSet("session viewers", flag.ExitOnError)
+	fs := flag.NewFlagSet("session viewers", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session viewers [id|title] [--json]")
@@ -1771,7 +1771,7 @@ func handleSessionViewers(profile string, args []string) {
 		fmt.Println("Options:")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
@@ -1834,7 +1834,7 @@ func sessionShowStatusFields(inst *session.Instance) map[string]interface{} {
 
 // handleSessionShow shows session details
 func handleSessionShow(profile string, args []string) {
-	fs := flag.NewFlagSet("session show", flag.ExitOnError)
+	fs := flag.NewFlagSet("session show", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -1850,7 +1850,7 @@ func handleSessionShow(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -2186,7 +2186,7 @@ func mcpInfoForJSON(mcpInfo *session.MCPInfo) map[string]interface{} {
 
 // handleSessionSet updates a session property
 func handleSessionSet(profile string, args []string) {
-	fs := flag.NewFlagSet("session set", flag.ExitOnError)
+	fs := flag.NewFlagSet("session set", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -2231,7 +2231,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  agent-deck session set my-project context-level \"\"       # clear (inherit group/global)")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -2580,7 +2580,7 @@ func showTmuxSessionInfo(out *CLIOutput, jsonOutput bool) {
 
 // handleSessionSetParent links a session as a sub-session of another
 func handleSessionSetParent(profile string, args []string) {
-	fs := flag.NewFlagSet("session set-parent", flag.ExitOnError)
+	fs := flag.NewFlagSet("session set-parent", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -2601,7 +2601,7 @@ func handleSessionSetParent(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -2756,7 +2756,7 @@ func handleSessionUpdate(profile string, args []string) {
 
 // handleSessionUnsetParent removes the sub-session link
 func handleSessionUnsetParent(profile string, args []string) {
-	fs := flag.NewFlagSet("session unset-parent", flag.ExitOnError)
+	fs := flag.NewFlagSet("session unset-parent", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -2771,7 +2771,7 @@ func handleSessionUnsetParent(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -2837,7 +2837,7 @@ func handleSessionUnsetParent(profile string, args []string) {
 
 // handleSessionSetTransitionNotify enables or disables transition notifications for a session
 func handleSessionSetTransitionNotify(profile string, args []string) {
-	fs := flag.NewFlagSet("session set-transition-notify", flag.ExitOnError)
+	fs := flag.NewFlagSet("session set-transition-notify", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -2858,7 +2858,7 @@ func handleSessionSetTransitionNotify(profile string, args []string) {
 		fmt.Println("  agent-deck session set-transition-notify worker on")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -2920,7 +2920,7 @@ func handleSessionSetTransitionNotify(profile string, args []string) {
 // claude-hook name-sync path (applyClaudeTitleSync) is a no-op for this
 // session, preserving the conductor-assigned title across Claude renames.
 func handleSessionSetTitleLock(profile string, args []string) {
-	fs := flag.NewFlagSet("session set-title-lock", flag.ExitOnError)
+	fs := flag.NewFlagSet("session set-title-lock", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -2942,7 +2942,7 @@ func handleSessionSetTitleLock(profile string, args []string) {
 		fmt.Println("  agent-deck session set-title-lock worker true")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -3062,7 +3062,7 @@ func hookDrivenBusy(inst *session.Instance) (busy, known bool) {
 // handleSessionSend sends a message to a running session
 // Waits for the agent to be ready before sending (Claude, Gemini, etc.)
 func handleSessionSend(profile string, args []string) {
-	fs := flag.NewFlagSet("session send", flag.ExitOnError)
+	fs := flag.NewFlagSet("session send", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode: nothing on a confirmed delivery; one stderr line when delivery is unconfirmed or queued; errors as usual")
@@ -3134,7 +3134,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  Local agent-deck sends are serialized; direct pane or keyboard input is outside this guarantee.")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	remaining := fs.Args()
@@ -6247,7 +6247,7 @@ func streamSessionSend(inst *session.Instance, sessionRef, profile string, turnI
 
 // handleSessionOutput gets the last response from a session
 func handleSessionOutput(profile string, args []string) {
-	fs := flag.NewFlagSet("session output", flag.ExitOnError)
+	fs := flag.NewFlagSet("session output", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -6282,7 +6282,7 @@ func handleSessionOutput(profile string, args []string) {
 			"logged read) while that file is unchanged; any change returns the full response and a new version.")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if *maxTokens <= 0 {
@@ -6477,7 +6477,7 @@ func handleSessionOutput(profile string, args []string) {
 // handleSessionCurrent shows current session and profile (auto-detected)
 // Uses a fast path that reads session data without tmux initialization (LoadLite).
 func handleSessionCurrent(profileArg string, args []string) {
-	fs := flag.NewFlagSet("session current", flag.ExitOnError)
+	fs := flag.NewFlagSet("session current", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -6491,7 +6491,7 @@ func handleSessionCurrent(profileArg string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -6623,7 +6623,7 @@ func handleSessionCurrent(profileArg string, args []string) {
 // available (SSH/sandboxed sessions never inject; an unset field renders as
 // the same "(none)" placeholder BuildIdentityPrompt/BuildPrimerPrompt use).
 func handleSessionPrimer(profileArg string, args []string) {
-	fs := flag.NewFlagSet("session primer", flag.ExitOnError)
+	fs := flag.NewFlagSet("session primer", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -6642,7 +6642,7 @@ func handleSessionPrimer(profileArg string, args []string) {
 		fmt.Println("  agent-deck session primer my-project --json")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -6823,7 +6823,7 @@ func childrenOf(parentID string, instances []*session.Instance) []*session.Insta
 // defaults to the current session and never clears the inbox, so a parent can
 // poll it from any chat without disturbing delivery.
 func handleSessionChildren(profile string, args []string) {
-	fs := flag.NewFlagSet("session children", flag.ExitOnError)
+	fs := flag.NewFlagSet("session children", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -6850,7 +6850,7 @@ func handleSessionChildren(profile string, args []string) {
 		fmt.Println("  agent-deck session children --follow                    # live fleet event stream")
 		fmt.Println("  agent-deck session children --follow --until-done      # exits when every child needs input or finishes")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	identifier := fs.Arg(0)
@@ -6920,7 +6920,7 @@ func handleSessionChildren(profile string, args []string) {
 // dropping into the TUI.
 func handleSessionSearch(profile string, args []string) {
 	_ = profile // reserved: future per-profile claudeDir lookup
-	fs := flag.NewFlagSet("session search", flag.ExitOnError)
+	fs := flag.NewFlagSet("session search", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -6945,7 +6945,7 @@ func handleSessionSearch(profile string, args []string) {
 		fmt.Println("  agent-deck session search \"database migration\" --limit 5")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

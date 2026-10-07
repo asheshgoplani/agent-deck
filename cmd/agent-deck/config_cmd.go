@@ -86,7 +86,7 @@ type configEffectiveWorktreeJSON struct {
 }
 
 func handleConfigShow(_ string, args []string) {
-	fs := flag.NewFlagSet("config show", flag.ExitOnError)
+	fs := flag.NewFlagSet("config show", flag.ContinueOnError)
 	// --effective is accepted, and ignored, for forward compatibility: the
 	// merged view is currently the only one `config show` knows how to print.
 	_ = fs.Bool("effective", false, "Show the merged effective settings (currently the only supported view)")
@@ -94,7 +94,7 @@ func handleConfigShow(_ string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck config show --effective [path] [--json]")
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(1)
 	}
 

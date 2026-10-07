@@ -18,7 +18,7 @@ import (
 // (asserted by TestCoreRegistryMatchesLegacyHandlers).
 
 func cliList(profile string, args []string) {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
@@ -43,7 +43,7 @@ func cliList(profile string, args []string) {
 		fmt.Println("  agent-deck list --all              # List from all profiles")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -202,7 +202,7 @@ func renderListAllProfiles(listed core.SessionListOut, jsonOutput bool) {
 }
 
 func cliGroupList(profile string, args []string) {
-	fs := flag.NewFlagSet("group list", flag.ExitOnError)
+	fs := flag.NewFlagSet("group list", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -217,7 +217,7 @@ func cliGroupList(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

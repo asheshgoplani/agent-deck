@@ -16,7 +16,7 @@ import (
 // set path + group move + cp ~/.claude/projects/<old>/ + session restart)
 // into a single atomic command.
 func handleSessionMove(profile string, args []string) {
-	fs := flag.NewFlagSet("session move", flag.ExitOnError)
+	fs := flag.NewFlagSet("session move", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -47,7 +47,7 @@ func handleSessionMove(profile string, args []string) {
 		fmt.Println("  agent-deck session move my-project --to-profile march")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

@@ -274,7 +274,7 @@ func readInstanceHints(db *statedb.StateDB, instanceID string) (map[string]strin
 
 // handleSessionAnnotate implements `agent-deck session annotate`.
 func handleSessionAnnotate(profile string, args []string) {
-	fs := flag.NewFlagSet("session annotate", flag.ExitOnError)
+	fs := flag.NewFlagSet("session annotate", flag.ContinueOnError)
 	edits := registerAnnotateFlags(fs)
 	noteStdin := fs.Bool("note-stdin", false, "Read a free-text note from stdin and store it as the 'note' hint")
 	self := fs.Bool("self", false, "Annotate the calling session (AGENTDECK_INSTANCE_ID or the current tmux session) instead of a named one")
@@ -302,7 +302,7 @@ func handleSessionAnnotate(profile string, args []string) {
 		fmt.Println("  agent-deck session annotate auth-fix --json          # show hints, tags and links")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	quietMode := *quiet || *quietShort

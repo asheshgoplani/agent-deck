@@ -222,7 +222,7 @@ func runWorktreeTrustHooks(args []string, in io.Reader, out, errOut io.Writer, i
 
 // handleWorktreeList lists all worktrees with session associations
 func handleWorktreeList(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree list", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -234,7 +234,7 @@ func handleWorktreeList(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -349,7 +349,7 @@ func handleWorktreeList(profile string, args []string) {
 
 // handleWorktreeInfo shows worktree info for a specific session
 func handleWorktreeInfo(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree info", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree info", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -364,7 +364,7 @@ func handleWorktreeInfo(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -432,7 +432,7 @@ func handleWorktreeInfo(profile string, args []string) {
 
 // handleWorktreeCleanup finds and removes orphaned worktrees and sessions
 func handleWorktreeCleanup(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree cleanup", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree cleanup", flag.ContinueOnError)
 	force := fs.Bool("force", false, "Actually remove orphans (default is dry-run)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
@@ -452,7 +452,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 		fmt.Println("Use --force to actually perform the cleanup.")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -662,7 +662,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 
 // handleWorktreeFinish merges a worktree branch, removes the worktree, and deletes the session
 func handleWorktreeFinish(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree finish", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree finish", flag.ContinueOnError)
 	into := fs.String("into", "", "Target branch to merge into (default: auto-detect)")
 	noMerge := fs.Bool("no-merge", false, "Skip merge (e.g. for PR workflows)")
 	keepBranch := fs.Bool("keep-branch", false, "Don't delete local branch after finish")
@@ -687,7 +687,7 @@ func handleWorktreeFinish(profile string, args []string) {
 		fmt.Println("  agent-deck worktree finish \"My Feature\" --no-merge --force")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

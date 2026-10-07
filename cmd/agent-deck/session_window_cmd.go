@@ -76,12 +76,12 @@ func printSessionWindowCloseUsage() {
 // reports the outcome of closeSessionWindow, which carries the kill's
 // identity guard.
 func handleSessionWindowClose(profile string, args []string) {
-	fs := flag.NewFlagSet("session window close", flag.ExitOnError)
+	fs := flag.NewFlagSet("session window close", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	yes := fs.Bool("yes", false, "Actually kill the window (without this only the target is printed)")
 	force := fs.Bool("force", false, "Alias for --yes")
 	fs.Usage = printSessionWindowCloseUsage
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() < 2 {

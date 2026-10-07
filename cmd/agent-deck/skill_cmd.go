@@ -100,7 +100,7 @@ func printSkillHelp() {
 }
 
 func handleSkillList(args []string) {
-	fs := flag.NewFlagSet("skill list", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -115,7 +115,7 @@ func handleSkillList(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -178,7 +178,7 @@ func handleSkillList(args []string) {
 }
 
 func handleSkillAttached(profile string, args []string) {
-	fs := flag.NewFlagSet("skill attached", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill attached", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -193,7 +193,7 @@ func handleSkillAttached(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -310,7 +310,7 @@ func handleSkillAttached(profile string, args []string) {
 }
 
 func handleSkillAttach(profile string, args []string) {
-	fs := flag.NewFlagSet("skill attach", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill attach", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -326,7 +326,7 @@ func handleSkillAttach(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -414,7 +414,7 @@ func handleSkillAttach(profile string, args []string) {
 }
 
 func handleSkillDetach(profile string, args []string) {
-	fs := flag.NewFlagSet("skill detach", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill detach", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -430,7 +430,7 @@ func handleSkillDetach(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -540,12 +540,12 @@ func printSkillSourceHelp() {
 }
 
 func handleSkillSourceList(args []string) {
-	fs := flag.NewFlagSet("skill source list", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill source list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -593,13 +593,13 @@ func handleSkillSourceList(args []string) {
 }
 
 func handleSkillSourceAdd(args []string) {
-	fs := flag.NewFlagSet("skill source add", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill source add", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	description := fs.String("description", "", "Optional source description")
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -631,12 +631,12 @@ func handleSkillSourceAdd(args []string) {
 }
 
 func handleSkillSourceRemove(args []string) {
-	fs := flag.NewFlagSet("skill source remove", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill source remove", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

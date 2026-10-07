@@ -95,7 +95,7 @@ func (f fleetDetectorFlags) detector() *fleet.Detector {
 // all — safe to run on a live host, and the thing to run first when the TUI
 // looks wrong.
 func handleFleetStatus(profile string, args []string) {
-	fs := flag.NewFlagSet("fleet status", flag.ExitOnError)
+	fs := flag.NewFlagSet("fleet status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -118,7 +118,7 @@ func handleFleetStatus(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -227,7 +227,7 @@ func fleetAuthCredentialsJSON(sum fleet.AuthCredentialSummary) map[string]interf
 
 // handleFleetRecover plans (default) or runs the recovery sweep.
 func handleFleetRecover(profile string, args []string) {
-	fs := flag.NewFlagSet("fleet recover", flag.ExitOnError)
+	fs := flag.NewFlagSet("fleet recover", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -273,7 +273,7 @@ func handleFleetRecover(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

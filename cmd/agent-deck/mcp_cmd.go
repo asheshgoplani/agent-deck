@@ -64,7 +64,7 @@ func printMCPHelp() {
 
 // handleMCPList lists all available MCPs from config.toml
 func handleMCPList(args []string) {
-	fs := flag.NewFlagSet("mcp list", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -78,7 +78,7 @@ func handleMCPList(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -208,7 +208,7 @@ func handleMCPList(args []string) {
 
 // handleMCPAttached shows MCPs attached to a session
 func handleMCPAttached(profile string, args []string) {
-	fs := flag.NewFlagSet("mcp attached", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp attached", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -223,7 +223,7 @@ func handleMCPAttached(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -343,7 +343,7 @@ func handleMCPAttached(profile string, args []string) {
 
 // handleMCPAttach attaches an MCP to a session
 func handleMCPAttach(profile string, args []string) {
-	fs := flag.NewFlagSet("mcp attach", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp attach", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -365,7 +365,7 @@ func handleMCPAttach(profile string, args []string) {
 		fmt.Println("  agent-deck mcp attach my-project exa --restart # Attach and restart")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -516,7 +516,7 @@ func handleMCPAttach(profile string, args []string) {
 
 // handleMCPDetach detaches an MCP from a session
 func handleMCPDetach(profile string, args []string) {
-	fs := flag.NewFlagSet("mcp detach", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp detach", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -538,7 +538,7 @@ func handleMCPDetach(profile string, args []string) {
 		fmt.Println("  agent-deck mcp detach my-project exa --restart # Detach and restart")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -727,7 +727,7 @@ func printMCPServerHelp() {
 
 // handleMCPServerStart starts an HTTP MCP server
 func handleMCPServerStart(args []string) {
-	fs := flag.NewFlagSet("mcp server start", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp server start", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -741,7 +741,7 @@ func handleMCPServerStart(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -801,7 +801,7 @@ func handleMCPServerStart(args []string) {
 
 // handleMCPServerStop stops an HTTP MCP server
 func handleMCPServerStop(args []string) {
-	fs := flag.NewFlagSet("mcp server stop", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp server stop", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -815,7 +815,7 @@ func handleMCPServerStop(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -862,7 +862,7 @@ func handleMCPServerStop(args []string) {
 
 // handleMCPServerStatus shows HTTP MCP server status
 func handleMCPServerStatus(args []string) {
-	fs := flag.NewFlagSet("mcp server status", flag.ExitOnError)
+	fs := flag.NewFlagSet("mcp server status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -876,7 +876,7 @@ func handleMCPServerStatus(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

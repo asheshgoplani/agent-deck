@@ -79,14 +79,14 @@ func resolveOwnershipTarget(profile, identifier string, out *CLIOutput) *session
 }
 
 func handleSessionOwnershipInspect(profile string, args []string) {
-	fs := flag.NewFlagSet("session ownership inspect", flag.ExitOnError)
+	fs := flag.NewFlagSet("session ownership inspect", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session ownership inspect <id|title> [--json]")
 		fmt.Println()
 		fmt.Println("Show what this session owns. Read-only: signals nothing, changes nothing.")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
@@ -103,7 +103,7 @@ func handleSessionOwnershipInspect(profile string, args []string) {
 }
 
 func handleSessionOwnershipReconcile(profile string, args []string) {
-	fs := flag.NewFlagSet("session ownership reconcile", flag.ExitOnError)
+	fs := flag.NewFlagSet("session ownership reconcile", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	yes := fs.Bool("yes", false, "Confirm reconciling a session whose pane is still running")
 	fs.Usage = func() {
@@ -117,7 +117,7 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 		fmt.Println("receipt's leader is still the live pane process, because reconciling then")
 		fmt.Println("stops the running session rather than cleaning up after a dead one.")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
@@ -171,7 +171,7 @@ func handleSessionOwnershipReconcile(profile string, args []string) {
 }
 
 func handleSessionOwnershipAbandon(profile string, args []string) {
-	fs := flag.NewFlagSet("session ownership abandon", flag.ExitOnError)
+	fs := flag.NewFlagSet("session ownership abandon", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	yes := fs.Bool("yes", false, "Confirm: stop managing whatever the receipt named")
 	fs.Usage = func() {
@@ -184,7 +184,7 @@ func handleSessionOwnershipAbandon(profile string, args []string) {
 		fmt.Println("Any process that receipt named keeps running and agent-deck stops")
 		fmt.Println("managing it; find it with the pids from `ownership inspect` first.")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)

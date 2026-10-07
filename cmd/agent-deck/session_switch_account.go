@@ -19,7 +19,7 @@ import (
 // Session dialog; this handler only parses flags, resolves the session,
 // persists the result and renders output.
 func handleSessionSwitchAccount(profile string, args []string) {
-	fs := flag.NewFlagSet("session switch-account", flag.ExitOnError)
+	fs := flag.NewFlagSet("session switch-account", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -61,7 +61,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		fmt.Println("  agent-deck session switch-account my-project personal --no-restart")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() < 2 {

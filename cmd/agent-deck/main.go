@@ -561,6 +561,7 @@ func main() {
 			var err error
 			webOptions, err = parseWebCommandOptions(args[1:])
 			if errors.Is(err, flag.ErrHelp) {
+				markCLINoop()
 				return
 			}
 			if err != nil {
@@ -569,8 +570,7 @@ func main() {
 			}
 			webHeadless = webOptions.noTUI
 			ensureTmuxInPathOrExit()
-			// The web UI is launched: count it now, not when the server exits.
-			finishCLITelemetry(0)
+			// web_ui is counted once the server listens (see SetOnListening).
 			// fall through to TUI launch below (or headless server boot if --no-tui)
 		case "uninstall":
 			handleUninstall(args[1:])
@@ -1186,6 +1186,9 @@ func main() {
 		if costStore != nil {
 			server.SetCostStore(costStore)
 		}
+		// The web UI is up once it listens: count it then, not when the
+		// long-running server exits. A failure before that counts as failed.
+		server.SetOnListening(func() { finishCLITelemetry(0) })
 
 		if webHeadless {
 			// Headless: block on server.Start() and skip bubbletea. The
@@ -1216,6 +1219,7 @@ func main() {
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
 					slog.String("error", err.Error()))
+				finishCLITelemetry(1)
 			}
 		}()
 		fmt.Printf("Web server: http://%s\n", server.Addr())
@@ -1812,7 +1816,7 @@ func handleAdd(profile string, args []string) {
 }
 
 func handleAddCommand(profile string, args []string, inspectFlags func(*flag.FlagSet)) {
-	fs := flag.NewFlagSet("add", flag.ExitOnError)
+	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	title := fs.String("title", "", "Session title (defaults to folder name)")
 	titleShort := fs.String("t", "", "Session title (short)")
 	group := fs.String("group", "", "Group path (defaults to parent folder)")
@@ -1996,7 +2000,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
-	if err := fs.Parse(normalizeCreationArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeCreationArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if *capabilities {
@@ -2854,7 +2858,7 @@ func resolveConfiguredDefaultPath(defaultPath string) string {
 
 // handleList lists all sessions
 func handleList(profile string, args []string) {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
 	includeSuperseded := fs.Bool("include-superseded", false, "Include archived source rows retained for cross-harness recovery")
@@ -2879,7 +2883,7 @@ func handleList(profile string, args []string) {
 		fmt.Println("  agent-deck list --all              # List from all profiles")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -3248,7 +3252,7 @@ func listParentProjectPath(inst *session.Instance, instances []*session.Instance
 
 // handleRemove removes a session by ID or title
 func handleRemove(profile string, args []string) {
-	fs := flag.NewFlagSet("remove", flag.ExitOnError)
+	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -3264,7 +3268,7 @@ func handleRemove(profile string, args []string) {
 		fmt.Println("  agent-deck -p work remove abc12345   # Remove from 'work' profile")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -3395,7 +3399,7 @@ func handleRemove(profile string, args []string) {
 }
 
 func handleRename(profile string, args []string) {
-	fs := flag.NewFlagSet("rename", flag.ExitOnError)
+	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -3411,7 +3415,7 @@ func handleRename(profile string, args []string) {
 		fmt.Println("  agent-deck -p work rename abc12345 \"New Name\"   # Rename in 'work' profile")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -3538,7 +3542,7 @@ func countByStatus(instances []*session.Instance) statusCounts {
 
 // handleStatus shows session status summary
 func handleStatus(profile string, args []string) {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	verbose := fs.Bool("verbose", false, "Show detailed session list")
 	verboseShort := fs.Bool("v", false, "Show detailed session list (short)")
 	quiet := fs.Bool("quiet", false, "Only output waiting count (for scripts)")
@@ -3578,7 +3582,7 @@ func handleStatus(profile string, args []string) {
 		fmt.Println("  then act yourself via `session stop`/`session remove`.")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if *stale {
@@ -4001,7 +4005,7 @@ func handleProfileSetDefault(out *CLIOutput, name string) {
 
 // handleUpdate checks for and performs updates
 func handleUpdate(args []string) {
-	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
 	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents, remote_nudges); with --timer-status/--install-timer/--ensure-timer: the timer state or what was done")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
@@ -4039,7 +4043,7 @@ func handleUpdate(args []string) {
 		fmt.Println("this binary (bootout + bootstrap), otherwise they crash-loop with EX_CONFIG.")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -4726,7 +4730,7 @@ func handleDebugDump() {
 }
 
 func handleUninstall(args []string) {
-	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	keepData := fs.Bool("keep-data", false, "Keep XDG config/data/cache locations and legacy ~/.agent-deck/")
 	keepTmuxConfig := fs.Bool("keep-tmux-config", false, "Keep tmux configuration")
 	dryRun := fs.Bool("dry-run", false, "Show what would be removed without removing")
@@ -4750,7 +4754,7 @@ func handleUninstall(args []string) {
 		fmt.Println("  agent-deck uninstall -y           # Uninstall without prompts")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -4920,6 +4924,10 @@ func handleUninstall(args []string) {
 		fmt.Println("Dry run complete. No changes made.")
 		return
 	}
+
+	// Record this invocation now: recording after the data locations are
+	// removed below would recreate the telemetry dir.
+	finishCLITelemetry(0)
 
 	// Opt-in telemetry: the one synchronous send, only with consent.
 	maybeSendUninstallTelemetry(os.Stdin, os.Stdout, !*yes)

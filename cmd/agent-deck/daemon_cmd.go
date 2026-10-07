@@ -62,7 +62,7 @@ func daemonPaths(profile string) (string, daemon.Paths, error) {
 }
 
 func parseDaemonFlags(name string, args []string, setup func(fs *flag.FlagSet)) {
-	fs := flag.NewFlagSet("daemon "+name, flag.ExitOnError)
+	fs := flag.NewFlagSet("daemon "+name, flag.ContinueOnError)
 	if setup != nil {
 		setup(fs)
 	}
@@ -70,7 +70,7 @@ func parseDaemonFlags(name string, args []string, setup func(fs *flag.FlagSet)) 
 		fmt.Println(daemonUsage)
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() > 0 {

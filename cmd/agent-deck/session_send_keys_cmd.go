@@ -31,7 +31,7 @@ import (
 // trivial and avoids encoding ordering ("text then enter? enter then named?")
 // at the CLI boundary — the TUI calls once per logical key it wants to send.
 func handleSessionSendKeys(profile string, args []string) {
-	fs := flag.NewFlagSet("session send-keys", flag.ExitOnError)
+	fs := flag.NewFlagSet("session send-keys", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	text := fs.String("text", "", "Literal text to type (tmux send-keys -l)")
 	namedKey := fs.String("named-key", "", "Tmux named key (e.g. BSpace, Up, C-c)")
@@ -59,7 +59,7 @@ func handleSessionSendKeys(profile string, args []string) {
 		fmt.Println("  agent-deck session send-keys my-project --enter")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	remaining := fs.Args()

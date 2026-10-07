@@ -140,7 +140,7 @@ func isValidWatcherType(t string) bool {
 
 // handleWatcherCreate creates a new watcher entry in statedb and writes meta.json.
 func handleWatcherCreate(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher create", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher create", flag.ContinueOnError)
 	name := fs.String("name", "", "Watcher name (required)")
 	port := fs.Int("port", 0, "Port for webhook adapter")
 	topic := fs.String("topic", "", "Topic for ntfy or slack adapter")
@@ -164,7 +164,7 @@ func handleWatcherCreate(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -466,11 +466,11 @@ func renderWatcherSourceToml(header string, settings [][2]string) string {
 
 // handleWatcherStart marks a watcher as running in statedb.
 func handleWatcherStart(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher start", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher start", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher start <name>")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
@@ -507,11 +507,11 @@ func handleWatcherStart(profile string, args []string) {
 
 // handleWatcherStop marks a watcher as stopped in statedb.
 func handleWatcherStop(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher stop", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher stop", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher stop <name>")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
@@ -548,12 +548,12 @@ func handleWatcherStop(profile string, args []string) {
 
 // handleWatcherList lists all watchers with name, type, status, event rate, and health.
 func handleWatcherList(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher list", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher list [--json]")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -624,7 +624,7 @@ func handleWatcherList(profile string, args []string) {
 
 // handleWatcherStatus shows detailed info for a named watcher including recent events.
 func handleWatcherStatus(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher status", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher status <name> [--json]")
@@ -643,7 +643,7 @@ func handleWatcherStatus(profile string, args []string) {
 		}
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, flagArgs)); err != nil {
 		exitCLI(1)
 	}
 
@@ -743,11 +743,11 @@ func handleWatcherStatus(profile string, args []string) {
 
 // handleWatcherTest runs a synthetic event through the router for the named watcher.
 func handleWatcherTest(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher test", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher test", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher test <name>")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
@@ -806,12 +806,12 @@ func handleWatcherTest(profile string, args []string) {
 
 // handleWatcherRoutes lists all routing rules from clients.json.
 func handleWatcherRoutes(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher routes", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher routes", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher routes [--json]")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 	_ = profile

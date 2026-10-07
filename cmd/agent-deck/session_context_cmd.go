@@ -78,7 +78,7 @@ const defaultVerifyTimeout = 30 * time.Second
 // fully exercisable from here: the TUI is a second renderer over the same
 // report, never a second implementation.
 func handleSessionContext(profile string, args []string) {
-	fs := flag.NewFlagSet("session context", flag.ExitOnError)
+	fs := flag.NewFlagSet("session context", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Emit the report as JSON (stable schema; carries provenance on every figure)")
 	quiet := fs.Bool("quiet", false, "One-line summary: the gauge figure and how many items you can act on")
 	quietShort := fs.Bool("q", false, "One-line summary (short for --quiet)")
@@ -144,7 +144,7 @@ func handleSessionContext(profile string, args []string) {
 		fmt.Println("  5  --verify: nothing could be graded, so no agreement is claimed (never read this as a pass)")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(contextExitError)
 	}
 

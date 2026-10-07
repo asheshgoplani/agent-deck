@@ -16,7 +16,7 @@ import (
 // TestCoreRegistryMatchesLegacyHandlers); the work itself runs in internal/core.
 
 func cliSessionStart(profile string, args []string) {
-	fs := flag.NewFlagSet("session start", flag.ExitOnError)
+	fs := flag.NewFlagSet("session start", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -44,7 +44,7 @@ func cliSessionStart(profile string, args []string) {
 		fmt.Println("  git diff | agent-deck session start my-project --message-file -   # initial message from stdin")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -129,7 +129,7 @@ func cliSessionStart(profile string, args []string) {
 }
 
 func cliSessionStop(profile string, args []string) {
-	fs := flag.NewFlagSet("session stop", flag.ExitOnError)
+	fs := flag.NewFlagSet("session stop", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -144,7 +144,7 @@ func cliSessionStop(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
@@ -179,7 +179,7 @@ func cliSessionStop(profile string, args []string) {
 }
 
 func cliSessionRestart(profile string, args []string) {
-	fs := flag.NewFlagSet("session restart", flag.ExitOnError)
+	fs := flag.NewFlagSet("session restart", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -218,7 +218,7 @@ func cliSessionRestart(profile string, args []string) {
 		fmt.Println("  agent-deck session restart --all")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

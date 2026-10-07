@@ -42,10 +42,10 @@ import (
 
 // handleTelegramDoctor is the entry point dispatched from main.go.
 func handleTelegramDoctor(profile string, args []string) {
-	fs := flag.NewFlagSet("telegram-doctor", flag.ExitOnError)
+	fs := flag.NewFlagSet("telegram-doctor", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON output")
 	quiet := fs.Bool("quiet", false, "suppress healthy lines; only print drift")
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 

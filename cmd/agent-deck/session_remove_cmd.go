@@ -18,7 +18,7 @@ import (
 //
 // Claude transcripts under ~/.claude/projects/<slug>/ are never touched.
 func handleSessionRemove(profile string, args []string) {
-	fs := flag.NewFlagSet("session remove", flag.ExitOnError)
+	fs := flag.NewFlagSet("session remove", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -41,7 +41,7 @@ func handleSessionRemove(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
