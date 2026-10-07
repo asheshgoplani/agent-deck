@@ -40,8 +40,13 @@ const (
 	LevelBasic Level = "basic"
 )
 
-// SchemaVersion must change with the event schema and TELEMETRY.md. A change
-// turns every existing grant back into "undecided" (consent binds to it).
+// SchemaVersion must change with the event schema and TELEMETRY.md whenever a
+// change sends a new kind of data or a new way to link it. A change turns
+// every existing grant back into "undecided" (consent binds to it). Copying a
+// value that every detailed event of this schema already sends onto
+// install.tick, under the same grant, is not such a change: the tick gained os
+// and arch in schema 3 without a bump. TELEMETRY.md records that decision and
+// TestInstallTickAllowListStaysWithinGrantedEnvelope enforces its limit.
 const SchemaVersion = 3
 
 // StateFileName is the state file, stored in the agent-deck data directory.
