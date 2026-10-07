@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -206,7 +207,39 @@ func SaveState(s *State) error {
 // lockState uses a stable sibling file because state is replaced atomically.
 // Separate open descriptions serialize goroutines and processes alike. The
 // same lock guards the spool, so recording, upload and disable never interleave.
+// It is held only around local reads and writes, never across the network.
 func lockState() (func(), error) { return lockStateWithFlags(syscall.LOCK_EX) }
+
+// Recording waits at most lockWaitTries*lockWaitStep for the state lock.
+const (
+	lockWaitTries = 5
+	lockWaitStep  = 10 * time.Millisecond
+)
+
+// lockStateBriefly takes the state lock, retrying a contended lock for a
+// short bounded time so recording never blocks the UI for long.
+func lockStateBriefly() (func(), error) {
+	for i := 0; ; i++ {
+		unlock, err := lockStateWithFlags(syscall.LOCK_EX | syscall.LOCK_NB)
+		if err == nil || i >= lockWaitTries || !errors.Is(err, syscall.EWOULDBLOCK) {
+			return unlock, err
+		}
+		time.Sleep(lockWaitStep)
+	}
+}
+
+// sendLockFileName serializes network sends with each other and with
+// `telemetry off` and reset-id, without holding the state lock. Lock order:
+// send lock, then state lock.
+const sendLockFileName = "telemetry-send.lock"
+
+func lockSend(flags int) (func(), error) {
+	path, err := siblingPath(sendLockFileName)
+	if err != nil {
+		return nil, err
+	}
+	return flockFile(path, flags)
+}
 
 func lockStateWithFlags(flags int) (func(), error) {
 	path, err := StatePath()

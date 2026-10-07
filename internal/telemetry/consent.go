@@ -3,6 +3,7 @@ package telemetry
 import (
 	"errors"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -163,8 +164,14 @@ func RotateInstallID(s *State) error {
 	return nil
 }
 
-// ResetID rotates the install id and deletes the spool, under the lock.
+// ResetID rotates the install id and deletes the spool, under the lock. It
+// waits for an in-flight send so no batch straddles the rotation.
 func ResetID() (*State, error) {
+	unlockSend, err := lockSend(syscall.LOCK_EX)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockSend()
 	unlock, err := lockState()
 	if err != nil {
 		return nil, err
@@ -206,9 +213,14 @@ func Enabled(s *State) (bool, DisableReason) {
 }
 
 // Disable commits a fresh refusal and deletes the spool under the lock. It
-// may wait for an in-flight upload (at most uploadDeadline); once it returns,
-// nothing further is sent and the spool is gone.
+// waits for an in-flight send (at most uploadDeadline) through the send lock;
+// once it returns, nothing further is sent and the spool is gone.
 func Disable(version string, now time.Time) error {
+	unlockSend, err := lockSend(syscall.LOCK_EX)
+	if err != nil {
+		return err
+	}
+	defer unlockSend()
 	unlock, err := lockState()
 	if err != nil {
 		return err

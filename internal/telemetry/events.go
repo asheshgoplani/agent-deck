@@ -4,9 +4,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -73,15 +75,47 @@ func sessionHash(salt, id string) string {
 	return hex.EncodeToString(m.Sum(nil))[:16]
 }
 
-// withState runs fn on the loaded state under a non-blocking lock, only when
-// recording is allowed and consent is granted, then saves. Contention drops
-// the update: recording must never block the UI.
+// lockDrops counts updates this process dropped because the state lock
+// stayed busy; the next update that gets the lock adds them to the day's
+// Dropped counter.
+var lockDrops atomic.Int32
+
+// lockForRecord takes the state lock with a short bounded wait. Contention
+// past the wait drops the update and counts it: recording must never block
+// the UI.
+func lockForRecord() (func(), bool) {
+	unlock, err := lockStateBriefly()
+	if err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			lockDrops.Add(1)
+		}
+		return nil, false
+	}
+	return unlock, true
+}
+
+// flushLockDrops adds counted lock drops to the day's Dropped counter and
+// reports whether state changed. Callers hold the state lock.
+func (s *State) flushLockDrops(now time.Time) bool {
+	n := lockDrops.Swap(0)
+	if n <= 0 {
+		return false
+	}
+	r := s.day(dayOf(now))
+	for range n {
+		inc(&r.Dropped)
+	}
+	return true
+}
+
+// withState runs fn on the loaded state under the state lock, only when
+// recording is allowed and consent is granted, then saves.
 func withState(fn func(s *State, now time.Time) bool) {
 	if !canRecord() {
 		return
 	}
-	unlock, err := lockStateWithFlags(syscall.LOCK_EX | syscall.LOCK_NB)
-	if err != nil {
+	unlock, ok := lockForRecord()
+	if !ok {
 		return
 	}
 	defer unlock()
@@ -90,7 +124,8 @@ func withState(fn func(s *State, now time.Time) bool) {
 		return
 	}
 	now := nowFn()
-	if fn(s, now) {
+	dropped := s.flushLockDrops(now)
+	if fn(s, now) || dropped {
 		_ = saveStateFast(s)
 	}
 }
@@ -111,8 +146,8 @@ func recordFrom(sf Surface, name string, props map[string]any, sessionID string,
 	if !canRecord() {
 		return
 	}
-	unlock, err := lockStateWithFlags(syscall.LOCK_EX | syscall.LOCK_NB)
-	if err != nil {
+	unlock, ok := lockForRecord()
+	if !ok {
 		return
 	}
 	defer unlock()
@@ -127,7 +162,8 @@ func recordFrom(sf Surface, name string, props map[string]any, sessionID string,
 		}
 		return
 	}
-	if s.spoolFrom(sf, name, props, sessionID, at) {
+	dropped := s.flushLockDrops(now)
+	if s.spoolFrom(sf, name, props, sessionID, at) || dropped {
 		_ = saveStateFast(s)
 	}
 }
