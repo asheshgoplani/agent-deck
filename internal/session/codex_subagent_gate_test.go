@@ -341,6 +341,54 @@ func TestBuildCodexCommand_RepairsGuardianBindingInOwningDB(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_ForksWhenGuardianRepairWriteFails(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := statedb.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath,
+		GroupPath: inst.GroupPath, Command: inst.Command, Tool: "codex",
+		Status: "idle", CreatedAt: time.Now(),
+		ToolData: json.RawMessage(`{"codex_session_id":"` + guardianSID + `"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inst.restartDB.Store(db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = withTempGlobalStateDB(t) // The owning database is present but cannot accept writes.
+
+	inst.CodexSessionID = guardianSID
+	cmd := inst.buildCodexCommand("codex")
+	if !strings.Contains(cmd, "fork "+guardianSID) || strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("failed repair must use the existing fork fallback: got %q", cmd)
+	}
+	if inst.CodexSessionID != guardianSID {
+		t.Fatalf("failed repair changed in-memory binding to %q", inst.CodexSessionID)
+	}
+
+	reopened, err := statedb.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if got := readCodexSessionIDFromDB(t, reopened, inst.ID); got != guardianSID {
+		t.Fatalf("failed repair saved %q, want original guardian ID", got)
+	}
+}
+
 func TestBuildCodexCommand_ResumesGuardianReviewUserAncestor(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 	mainSID := uniqueSID(t)
