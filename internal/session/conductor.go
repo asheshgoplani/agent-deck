@@ -130,6 +130,17 @@ type ConductorSettings struct {
 	// 'conductor migrate-dir'). The bridge daemon similarly freezes
 	// AGENT_DECK_CONDUCTOR_DIR at install time.
 	Dir string `toml:"dir,omitempty"`
+
+	// PermissionAsk controls whether setup writes the mutating agent-deck
+	// commands into a Claude conductor's permissions.ask (#1358). Ask rules
+	// prompt even in auto mode. nil/absent = true; false = no ask list, and
+	// setup removes the entries it wrote before.
+	PermissionAsk *bool `toml:"permission_ask,omitempty"`
+}
+
+// PermissionAskEnabled reports whether setup writes the conductor ask list.
+func (c ConductorSettings) PermissionAskEnabled() bool {
+	return c.PermissionAsk == nil || *c.PermissionAsk
 }
 
 // GitHubWatcherMode values accepted by [conductor.github_watcher].mode.
@@ -1244,10 +1255,12 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	// Claude-only (codex/hermes don't use this file). Auto-allows read-only and
 	// safe CLI commands plus scoped data-file writes so the conductor's heartbeat
 	// read loop doesn't drown the user in permission prompts, while keeping
-	// lifecycle/mutating commands and executable/config writes behind prompts.
+	// lifecycle/mutating commands and executable/config writes behind prompts
+	// ([conductor] permission_ask = false drops the ask list and leaves the
+	// mutating commands to the conductor's permission mode).
 	// Non-fatal: setup still succeeds if this fails.
 	if spec.Agent == ConductorAgentClaude {
-		if err := writeConductorClaudeSettingsAt(dir); err != nil {
+		if err := writeConductorClaudeSettingsAt(dir, conductorPermissionAskEnabled()); err != nil {
 			sessionLog.Warn("conductor_claude_settings_failed",
 				slog.String("conductor", name),
 				slog.String("dir", dir),
