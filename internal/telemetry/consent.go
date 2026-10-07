@@ -213,8 +213,9 @@ func Enabled(s *State) (bool, DisableReason) {
 }
 
 // Disable commits a fresh refusal and deletes the spool under the lock. It
-// waits for an in-flight send (at most uploadDeadline) through the send lock;
-// once it returns, nothing further is sent and the spool is gone.
+// waits for an in-flight send through the send lock (its requests are bounded
+// by uploadDeadline, its state lock waits are not); once it returns, nothing
+// further is sent by a binary that takes the send lock, and the spool is gone.
 func Disable(version string, now time.Time) error {
 	unlockSend, err := lockSend(syscall.LOCK_EX)
 	if err != nil {

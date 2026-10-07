@@ -229,8 +229,8 @@ func lockStateBriefly() (func(), error) {
 }
 
 // sendLockFileName serializes network sends with each other and with
-// `telemetry off` and reset-id, without holding the state lock. Lock order:
-// send lock, then state lock.
+// `telemetry off`, reset-id and `telemetry level`, without holding the state
+// lock. Lock order: send lock, then state lock.
 const sendLockFileName = "telemetry-send.lock"
 
 func lockSend(flags int) (func(), error) {

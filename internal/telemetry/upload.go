@@ -23,8 +23,10 @@ const (
 
 var retryBackoff = []time.Duration{5 * time.Minute, 30 * time.Minute, 2 * time.Hour}
 
-// uploadDeadline bounds a whole upload (every request of it), and so how
-// long `telemetry off` can wait for the send lock an upload holds.
+// uploadDeadline bounds the network requests of an upload, counted from when
+// the send lock is taken. It does not bound the blocking state lock waits that
+// prepare the batch and record the result, so `telemetry off` can wait for
+// the send lock longer than this while the state lock is busy.
 var uploadDeadline = 8 * time.Second
 
 // UploadResult describes what MaybeUpload did, for tests and `status`.
@@ -83,10 +85,10 @@ func uploadDestinationGate() string {
 
 // MaybeUpload sends detailed telemetry; install.tick has its own ledger. It sends the
 // completed hours and days waiting in the spool, at most every 6 hours,
-// never on the consent day. It holds the send lock for the whole send (at
-// most uploadDeadline) so `telemetry off` either waits for it or prevents
-// it, and the state lock only to prepare the batch and to record the
-// result, so events recorded meanwhile are kept.
+// never on the consent day. It holds the send lock for the whole send
+// (requests bounded by uploadDeadline) so `telemetry off` either waits for it
+// or prevents it, and the state lock only to prepare the batch and to record
+// the result, so events recorded meanwhile are kept.
 func MaybeUpload(ctx context.Context) UploadResult {
 	if reason := uploadGate(); reason != "" {
 		return UploadResult{Reason: reason}
