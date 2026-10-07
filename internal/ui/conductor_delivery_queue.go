@@ -46,54 +46,49 @@ type conductorBacklog struct {
 // waits behind a backlog of them, and replaces a pending alert from the same
 // watcher with the newer state. Routed events are capped at
 // maxConductorBacklog: past that the oldest is dropped and counted in a single
-// notice placed before the remaining events.
-func (b *conductorBacklog) add(d conductorDelivery) {
+// notice placed before the remaining events. add reports whether it dropped an
+// event.
+func (b *conductorBacklog) add(d conductorDelivery) (dropped bool) {
 	alerts := 0
 	for alerts < len(b.items) && b.items[alerts].Alert != "" {
 		alerts++
 	}
-	switch {
-	case d.Alert != "":
+	if d.Alert != "" {
 		for i := 0; i < alerts; i++ {
 			if b.items[i].Alert == d.Alert {
 				b.items[i] = d
-				return
+				return false
 			}
 		}
 		b.items = slices.Insert(b.items, alerts, d)
-	case d.Dropped > 0:
-		b.addDropped(alerts, d)
-	default:
-		b.items = append(b.items, d)
-		events := 0
-		first := -1
-		for i, it := range b.items {
-			if it.Alert == "" && it.Dropped == 0 {
-				if first < 0 {
-					first = i
-				}
-				events++
+		return false
+	}
+	b.items = append(b.items, d)
+	events := 0
+	first := -1
+	for i, it := range b.items {
+		if it.Alert == "" && it.Dropped == 0 {
+			if first < 0 {
+				first = i
 			}
-		}
-		if events > maxConductorBacklog {
-			dropped := b.items[first]
-			b.items = slices.Delete(b.items, first, first+1)
-			dropped.Text, dropped.Dropped = "", 1
-			b.addDropped(alerts, dropped)
+			events++
 		}
 	}
-}
-
-// addDropped counts notice.Dropped more dropped events in the pending notice,
-// creating it right after the alerts when there is none.
-func (b *conductorBacklog) addDropped(alerts int, notice conductorDelivery) {
+	if events <= maxConductorBacklog {
+		return false
+	}
+	oldest := b.items[first]
+	b.items = slices.Delete(b.items, first, first+1)
 	for i := range b.items {
 		if b.items[i].Dropped > 0 {
-			b.items[i].Dropped += notice.Dropped
-			return
+			b.items[i].Dropped++
+			return true
 		}
 	}
-	b.items = slices.Insert(b.items, alerts, notice)
+	b.items = slices.Insert(b.items, alerts, conductorDelivery{
+		Conductor: oldest.Conductor, QueuedAt: oldest.QueuedAt, Dropped: 1,
+	})
+	return true
 }
 
 // conductorQueue delivers watcher messages to conductor panes, one at a time
@@ -109,13 +104,20 @@ type conductorQueue struct {
 
 	mu       sync.Mutex
 	backlogs map[string]*conductorBacklog
-	stopped  bool
-	started  int // runners ever started; only grows
-	runners  sync.WaitGroup
+	// dropped counts, per conductor, the routed events dropped from a full
+	// backlog over the queue's life, whether or not their notice went out.
+	dropped map[string]int
+	stopped bool
+	started int // runners ever started; only grows
+	runners sync.WaitGroup
 }
 
 func newConductorQueue(send func(conductorDelivery)) *conductorQueue {
-	return &conductorQueue{send: send, backlogs: make(map[string]*conductorBacklog)}
+	return &conductorQueue{
+		send:     send,
+		backlogs: make(map[string]*conductorBacklog),
+		dropped:  make(map[string]int),
+	}
 }
 
 // enqueue queues d for its conductor and starts that conductor's runner if it
@@ -128,7 +130,12 @@ func (q *conductorQueue) enqueue(d conductorDelivery) {
 		b = &conductorBacklog{}
 		q.backlogs[d.Conductor] = b
 	}
-	b.add(d)
+	if b.add(d) {
+		q.dropped[d.Conductor]++
+		uiLog.Warn("watcher_event_dropped_backlog_full",
+			slog.String("conductor", d.Conductor),
+			slog.Int("dropped_total", q.dropped[d.Conductor]))
+	}
 	if !b.running && !q.stopped {
 		b.running = true
 		q.started++
@@ -174,13 +181,13 @@ func (q *conductorQueue) deliver(d conductorDelivery) {
 
 // stop lets no further delivery start, waits up to wait for the ones already
 // in flight (so a quit does not leave a pasted message without its Enter), and
-// returns, for the caller to report, what it leaves: undelivered holds the
-// routed events and overflow notices still queued, plus a notice still being
-// sent when the wait expired (the events it stands for were dropped already);
-// unconfirmed holds routed events still being sent then, whose outcome is
-// unknown, not failed. Health alerts are left out: the next health tick
+// returns, for the caller to report, what it leaves: the routed events still
+// queued (undelivered); the routed events still being sent when the wait
+// expired (unconfirmed: their outcome is unknown, not failed); and, per
+// conductor, the events dropped from a full backlog during the queue's life.
+// The three never overlap. Health alerts are left out: the next health tick
 // restates them.
-func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []conductorDelivery) {
+func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []conductorDelivery, dropped map[string]int) {
 	q.mu.Lock()
 	q.stopped = true
 	conductors := make([]string, 0, len(q.backlogs))
@@ -191,11 +198,15 @@ func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []co
 	for _, c := range conductors {
 		b := q.backlogs[c]
 		for _, d := range b.items {
-			if d.Alert == "" {
+			if d.Alert == "" && d.Dropped == 0 {
 				undelivered = append(undelivered, d)
 			}
 		}
 		b.items = nil
+	}
+	dropped = make(map[string]int, len(q.dropped))
+	for c, n := range q.dropped {
+		dropped[c] = n
 	}
 	q.mu.Unlock()
 
@@ -206,22 +217,18 @@ func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []co
 	}()
 	select {
 	case <-done:
-		return undelivered, nil
+		return undelivered, nil, dropped
 	case <-time.After(wait):
 	}
 	q.mu.Lock()
 	for _, c := range conductors {
-		b := q.backlogs[c]
-		switch {
-		case b == nil || b.inflight == nil || b.inflight.Alert != "":
-		case b.inflight.Dropped > 0:
-			undelivered = append(undelivered, *b.inflight)
-		default:
+		// An overflow notice in flight is already counted in dropped.
+		if b := q.backlogs[c]; b != nil && b.inflight != nil && b.inflight.Alert == "" && b.inflight.Dropped == 0 {
 			unconfirmed = append(unconfirmed, *b.inflight)
 		}
 	}
 	q.mu.Unlock()
 	uiLog.Warn("conductor_delivery_stop_timeout",
 		slog.Duration("waited", wait), slog.Int("in_flight", len(unconfirmed)))
-	return undelivered, unconfirmed
+	return undelivered, unconfirmed, dropped
 }
