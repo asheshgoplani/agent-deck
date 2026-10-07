@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Count CLI telemetry features after the command finishes, with failures as errors and without first-use milestones; `fleet status` and `fleet recover` are no longer reported as fleet launches, mistyped flags are still counted, and `uninstall` no longer recreates the telemetry directory. See "How CLI commands are counted" in TELEMETRY.md for the effect on trends.
+
 ## [1.16.26] - 2026-10-04
 
 - Write terminal-output event ticks only while a follower needs them, reducing background disk writes (#2490).
