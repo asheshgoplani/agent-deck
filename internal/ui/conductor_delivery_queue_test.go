@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -244,6 +245,78 @@ func TestConductorQueue_BoundsTheBacklogAndSaysWhatItDropped(t *testing.T) {
 		if want := "e" + strconv.Itoa(extra+1+i); text != want {
 			t.Fatalf("event %d delivered as %q, want %q (the newest events, in order)", i, text, want)
 		}
+	}
+}
+
+// warnLog records the overflow warnings a conductorQueue logs.
+type warnLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (w *warnLog) warn(msg string, args ...any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	line := msg
+	for _, a := range args {
+		if attr, ok := a.(slog.Attr); ok {
+			line += " " + attr.String()
+		}
+	}
+	w.lines = append(w.lines, line)
+}
+
+func (w *warnLog) all() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.lines...)
+}
+
+// TestConductorQueue_LogsOverflowOncePerEpisodeNotPerDrop: a sustained stream
+// into a busy pane logs when the conductor starts dropping and, with the
+// count, when the notice goes out, not once per dropped event; the drop
+// counter stays exact.
+func TestConductorQueue_LogsOverflowOncePerEpisodeNotPerDrop(t *testing.T) {
+	sent := &sentLog{}
+	send, started, release := blockingSend(t, sent)
+	q := newConductorQueue(send)
+	w := &warnLog{}
+	q.warn = w.warn // before any goroutine reads it
+
+	q.enqueue(event("demo", "in flight"))
+	<-started
+	for i := 0; i < maxConductorBacklog+100; i++ {
+		q.enqueue(event("demo", "e"+strconv.Itoa(i)))
+	}
+	if got := w.all(); len(got) != 1 || !strings.HasPrefix(got[0], "watcher_events_dropping_backlog_full conductor=demo dropped_total=1") {
+		t.Fatalf("while dropping, logged %q; want one line for the first drop", got)
+	}
+
+	release()
+	queueIdle(t, q)
+	got := w.all()
+	if len(got) != 2 || got[1] != "watcher_events_dropped_backlog_full conductor=demo dropped=100 dropped_total=100" {
+		t.Fatalf("after the notice went out, logged %q; want the first-drop line and one line with dropped=100", got)
+	}
+	q.mu.Lock()
+	dropped := q.dropped["demo"]
+	q.mu.Unlock()
+	if dropped != 100 {
+		t.Fatalf("queue counted %d drops, want 100", dropped)
+	}
+
+	// A later overflow is a new episode and is logged again.
+	send2, started2, release2 := blockingSend(t, sent)
+	q.send = send2
+	q.enqueue(event("demo", "in flight again"))
+	<-started2
+	for i := 0; i <= maxConductorBacklog; i++ {
+		q.enqueue(event("demo", "f"+strconv.Itoa(i)))
+	}
+	release2()
+	queueIdle(t, q)
+	if got := w.all(); len(got) != 4 || got[3] != "watcher_events_dropped_backlog_full conductor=demo dropped=1 dropped_total=101" {
+		t.Fatalf("second episode logged %q; want two more lines ending with dropped=1 dropped_total=101", got)
 	}
 }
 

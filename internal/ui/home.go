@@ -13893,8 +13893,9 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 // wait for the one in flight (so a quit does not leave a pasted message
 // without its Enter), and logs per conductor the routed events this session
 // did not get to it: undelivered (still queued), dropped from a full backlog
-// (each drop was also logged when it happened), and, if the wait expired
-// mid-delivery, the one still being sent, whose outcome is unknown. They stay
+// (overflow is also logged as it starts and when its notice goes out), and, if
+// the wait expired mid-delivery, the one still being sent, whose outcome is
+// unknown. They stay
 // in watcher_events and the watcher's task log (durable delivery is #2537).
 // It returns the three counts.
 func (h *Home) stopConductorDeliveries(wait time.Duration) (undelivered, dropped, unconfirmed int) {

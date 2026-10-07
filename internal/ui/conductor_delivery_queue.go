@@ -47,8 +47,9 @@ type conductorBacklog struct {
 // watcher with the newer state. Routed events are capped at
 // maxConductorBacklog: past that the oldest is dropped and counted in a single
 // notice placed before the remaining events. add reports whether it dropped an
-// event.
-func (b *conductorBacklog) add(d conductorDelivery) (dropped bool) {
+// event and whether that drop opened a new notice (the first drop since the
+// last notice went out).
+func (b *conductorBacklog) add(d conductorDelivery) (dropped, newNotice bool) {
 	alerts := 0
 	for alerts < len(b.items) && b.items[alerts].Alert != "" {
 		alerts++
@@ -57,11 +58,11 @@ func (b *conductorBacklog) add(d conductorDelivery) (dropped bool) {
 		for i := 0; i < alerts; i++ {
 			if b.items[i].Alert == d.Alert {
 				b.items[i] = d
-				return false
+				return false, false
 			}
 		}
 		b.items = slices.Insert(b.items, alerts, d)
-		return false
+		return false, false
 	}
 	b.items = append(b.items, d)
 	events := 0
@@ -75,20 +76,20 @@ func (b *conductorBacklog) add(d conductorDelivery) (dropped bool) {
 		}
 	}
 	if events <= maxConductorBacklog {
-		return false
+		return false, false
 	}
 	oldest := b.items[first]
 	b.items = slices.Delete(b.items, first, first+1)
 	for i := range b.items {
 		if b.items[i].Dropped > 0 {
 			b.items[i].Dropped++
-			return true
+			return true, false
 		}
 	}
 	b.items = slices.Insert(b.items, alerts, conductorDelivery{
 		Conductor: oldest.Conductor, QueuedAt: oldest.QueuedAt, Dropped: 1,
 	})
-	return true
+	return true, true
 }
 
 // conductorQueue delivers watcher messages to conductor panes, one at a time
@@ -110,6 +111,8 @@ type conductorQueue struct {
 	stopped bool
 	started int // runners ever started; only grows
 	runners sync.WaitGroup
+	// warn logs overflow, never with mu held; tests replace it before use.
+	warn func(msg string, args ...any)
 }
 
 func newConductorQueue(send func(conductorDelivery)) *conductorQueue {
@@ -117,30 +120,37 @@ func newConductorQueue(send func(conductorDelivery)) *conductorQueue {
 		send:     send,
 		backlogs: make(map[string]*conductorBacklog),
 		dropped:  make(map[string]int),
+		warn:     uiLog.Warn,
 	}
 }
 
 // enqueue queues d for its conductor and starts that conductor's runner if it
-// is idle. After stop nothing new is started.
+// is idle. After stop nothing new is started. Overflow is logged once when a
+// conductor starts dropping and once, with the count, when its notice goes out
+// (run), not per dropped event: a sustained stream into a busy pane must not
+// turn into a stream of log writes.
 func (q *conductorQueue) enqueue(d conductorDelivery) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	b := q.backlogs[d.Conductor]
 	if b == nil {
 		b = &conductorBacklog{}
 		q.backlogs[d.Conductor] = b
 	}
-	if b.add(d) {
+	dropped, newNotice := b.add(d)
+	if dropped {
 		q.dropped[d.Conductor]++
-		uiLog.Warn("watcher_event_dropped_backlog_full",
-			slog.String("conductor", d.Conductor),
-			slog.Int("dropped_total", q.dropped[d.Conductor]))
 	}
+	total := q.dropped[d.Conductor]
 	if !b.running && !q.stopped {
 		b.running = true
 		q.started++
 		q.runners.Add(1)
 		go q.run(d.Conductor, b)
+	}
+	q.mu.Unlock()
+	if newNotice {
+		q.warn("watcher_events_dropping_backlog_full",
+			slog.String("conductor", d.Conductor), slog.Int("dropped_total", total))
 	}
 }
 
@@ -163,7 +173,13 @@ func (q *conductorQueue) run(conductor string, b *conductorBacklog) {
 		b.items[0] = conductorDelivery{}
 		b.items = b.items[1:]
 		b.inflight = &next
+		total := q.dropped[conductor]
 		q.mu.Unlock()
+		if next.Dropped > 0 {
+			q.warn("watcher_events_dropped_backlog_full",
+				slog.String("conductor", conductor),
+				slog.Int("dropped", next.Dropped), slog.Int("dropped_total", total))
+		}
 		q.deliver(next)
 	}
 }
