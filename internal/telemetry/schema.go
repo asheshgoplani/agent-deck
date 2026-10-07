@@ -47,8 +47,10 @@ type EventDef struct {
 }
 
 const (
-	shipsNow   = "1.16.18"
-	shipsLater = "1.16.19+"
+	shipsNow = "1.16.18"
+	// shipsLater marks Tier 2/3 events that are specified but have no call
+	// site in any release yet; the catalog publishes them as planned.
+	shipsLater = "planned"
 	toolOther  = "other"
 )
 

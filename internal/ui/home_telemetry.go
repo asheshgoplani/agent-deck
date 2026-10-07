@@ -157,3 +157,22 @@ func (h *Home) togglePrivacyFromSettings() tea.Cmd {
 	}
 	return nil
 }
+
+// telemetryFeatureFromTUI counts one TUI feature use (feature.daily) after
+// its outcome is known. It runs off the TUI goroutine like the other
+// telemetry writes; without consent it is a no-op.
+func telemetryFeatureFromTUI(f telemetry.Feature, failed bool) tea.Cmd {
+	return func() tea.Msg {
+		telemetry.FeatureUsed(f, failed)
+		return nil
+	}
+}
+
+// telemetrySentFromTUI counts one message typed in the TUI and submitted to
+// a session (send.daily, via=tui). Only the length bucket of chars is kept.
+func telemetrySentFromTUI(tool string, chars int) tea.Cmd {
+	return func() tea.Msg {
+		telemetry.MessageSent(tool, telemetry.SendTUI, chars, false)
+		return nil
+	}
+}

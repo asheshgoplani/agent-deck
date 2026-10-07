@@ -106,16 +106,19 @@ func (h *Home) enterInsertMode() bool {
 	// proves we can't trust the exit path as the sole reset point.
 	h.insertBuf.Reset()
 	h.insertFlushPending = false
+	h.insertTypedChars = 0
 
 	h.insertMode = true
 	if target.isRemote() {
 		h.insertModeSessionID = ""
 		h.insertModeRemoteName = target.remoteName
 		h.insertModeRemoteID = target.remoteID
+		h.insertTool = target.remoteTool
 	} else {
 		h.insertModeSessionID = target.local.ID
 		h.insertModeRemoteName = ""
 		h.insertModeRemoteID = ""
+		h.insertTool = target.local.GetToolThreadSafe()
 	}
 	return true
 }
@@ -233,6 +236,7 @@ func (h *Home) selectedInsertTarget() (insertTargetRef, bool) {
 		return insertTargetRef{
 			remoteName: item.RemoteName,
 			remoteID:   item.RemoteSession.ID,
+			remoteTool: item.RemoteSession.Tool,
 		}, true
 	default:
 		h.setError(fmt.Errorf("insert mode: select a session first"))
@@ -281,6 +285,7 @@ func (h *Home) exitInsertMode() {
 	h.insertModeRemoteID = ""
 	h.insertBuf.Reset()
 	h.insertFlushPending = false
+	h.insertTypedChars = 0
 	if h.insertKeySender != nil {
 		_ = h.insertKeySender.Close()
 		h.insertKeySender = nil
@@ -359,16 +364,23 @@ func (h *Home) handleInsertModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 	case tea.KeyEnter:
 		h.flushInsertBuf()
-		h.dispatchInsertKey("", true)
+		chars, tool := h.insertTypedChars, h.insertTool
+		h.insertTypedChars = 0
+		// A bare Enter (menu confirmation) is not a message.
+		if h.dispatchInsertKey("", true) && chars > 0 {
+			return h, telemetrySentFromTUI(tool, chars)
+		}
 		return h, nil
 	case tea.KeySpace:
 		h.insertBuf.WriteString(" ")
+		h.insertTypedChars++
 		return h, h.scheduleInsertFlush()
 	case tea.KeyRunes:
 		if len(msg.Runes) == 0 {
 			return h, nil
 		}
 		h.insertBuf.WriteString(string(msg.Runes))
+		h.insertTypedChars += len(msg.Runes)
 		return h, h.scheduleInsertFlush()
 	case tea.KeyBackspace:
 		h.flushInsertBuf()
@@ -588,23 +600,24 @@ func (h *Home) flushInsertBuf() {
 }
 
 // dispatchInsertKey forwards literal text (optionally followed by Enter) to
-// the target session. Dispatch order:
+// the target session and reports whether it was delivered. Dispatch order:
 //  1. insertKeySink — test override that captures calls
 //  2. insertKeySender — production persistent client (local tmux -C OR
 //     remote SSH RPC; opened in enterInsertMode)
 //  3. legacy fallback — fork+exec one tmux send-keys per call (slow but
 //     unconditional; used when the persistent client failed to open)
-func (h *Home) dispatchInsertKey(text string, sendEnter bool) {
+func (h *Home) dispatchInsertKey(text string, sendEnter bool) bool {
 	// Tests use insertKeySink to inspect calls without running tmux.
 	if h.insertKeySink != nil {
 		inst := h.resolveInsertTarget()
 		if inst == nil {
-			return
+			return false
 		}
 		if err := h.insertKeySink(inst, text, sendEnter); err != nil {
 			h.setError(fmt.Errorf("insert mode send failed: %w", err))
+			return false
 		}
-		return
+		return true
 	}
 
 	// Production: prefer the persistent KeySender. One fork+exec at
@@ -614,15 +627,16 @@ func (h *Home) dispatchInsertKey(text string, sendEnter bool) {
 		if text != "" {
 			if err := h.insertKeySender.SendKeys(text); err != nil {
 				h.setError(fmt.Errorf("insert mode send-keys failed: %w", err))
-				return
+				return false
 			}
 		}
 		if sendEnter {
 			if err := h.insertKeySender.SendEnter(); err != nil {
 				h.setError(fmt.Errorf("insert mode send-enter failed: %w", err))
+				return false
 			}
 		}
-		return
+		return true
 	}
 
 	// Legacy fallback: per-call fork+exec via the Session's tmux helpers.
@@ -631,25 +645,27 @@ func (h *Home) dispatchInsertKey(text string, sendEnter bool) {
 	// when no SSHRunner is configured.
 	inst := h.resolveInsertTarget()
 	if inst == nil {
-		return
+		return false
 	}
 	tmuxSess := inst.GetTmuxSession()
 	if tmuxSess == nil {
 		h.exitInsertMode()
 		h.setError(fmt.Errorf("insert mode: tmux session vanished"))
-		return
+		return false
 	}
 	if text != "" {
 		if err := tmuxSess.SendKeys(text); err != nil {
 			h.setError(fmt.Errorf("insert mode send-keys failed: %w", err))
-			return
+			return false
 		}
 	}
 	if sendEnter {
 		if err := tmuxSess.SendEnter(); err != nil {
 			h.setError(fmt.Errorf("insert mode send-enter failed: %w", err))
+			return false
 		}
 	}
+	return true
 }
 
 // dispatchInsertNamedKey forwards a tmux named key (Up/Down/Left/Right/Tab/

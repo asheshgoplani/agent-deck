@@ -1017,6 +1017,11 @@ type Home struct {
 	insertBuf           strings.Builder
 	insertFlushPending  bool
 	insertBatchDuration time.Duration
+	// insertTool and insertTypedChars feed send.daily (via=tui): the
+	// target's tool and how many characters were typed since the last
+	// Enter. Only the length bucket is ever recorded, never the text.
+	insertTool       string
+	insertTypedChars int
 	// insertPreviewRefreshPending guards the fast preview-refresh tick armed
 	// after an insert keystroke (#1131). Only one tick is in flight at a time;
 	// see scheduleInsertPreviewRefresh.
@@ -14666,6 +14671,8 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// remote's own state DB (remote-session move, remote group create) and
 		// reports back via remoteMoveResultMsg / remoteGroupResultMsg.
 		var remoteCmd tea.Cmd
+		// telCmd counts a completed local action in feature.daily.
+		var telCmd tea.Cmd
 
 		switch h.groupDialog.Mode() {
 		case GroupDialogCreate:
@@ -14713,6 +14720,9 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if created != nil && defaultPath != "" {
 					h.groupTree.SetDefaultPathForGroup(created.Path, defaultPath)
 				}
+				if created != nil {
+					telCmd = telemetryFeatureFromTUI("group_create", false)
+				}
 				h.rebuildFlatItems()
 				h.saveInstances() // Persist the new group (reload-race safe via pendingGroupOps)
 			}
@@ -14746,6 +14756,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
 						kind: groupOpMove, sessionID: item.Session.ID, targetPath: targetGroupPath,
 					})
+					telCmd = telemetryFeatureFromTUI("move_group", false)
 					h.instancesMu.Lock()
 					h.instances = h.groupTree.GetAllInstances()
 					h.instancesMu.Unlock()
@@ -14793,6 +14804,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if inst := h.getInstanceByID(sessionID); inst != nil {
 						_, postCommit, setErr = session.SetField(inst, session.FieldTitle, newName, nil)
 						locked = inst.TitleLocked
+						telCmd = telemetryFeatureFromTUI("rename", setErr != nil)
 					}
 					h.instancesMu.Unlock()
 					if setErr != nil {
@@ -14823,7 +14835,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		h.groupDialog.Hide()
-		return h, remoteCmd
+		return h, tea.Batch(remoteCmd, telCmd)
 	case "esc":
 		// First Esc dismisses the path suggestion dropdown only; the dialog
 		// stays open (mirrors the model-picker Esc handling in #1162).

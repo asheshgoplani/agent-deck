@@ -33,6 +33,7 @@ type insertTargetRef struct {
 	// local sessions. When non-empty, remoteID must also be set.
 	remoteName  string
 	remoteID    string
+	remoteTool  string // remote row's tool, for telemetry only
 	hasWindow   bool
 	windowIndex int
 }

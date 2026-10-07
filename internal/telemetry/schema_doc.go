@@ -44,7 +44,11 @@ func SchemaMarkdown() string {
 	fmt.Fprintf(&b, "\nFunnel step bits (`milestones_before`): %s.\n", bitDoc(milestoneNames))
 	b.WriteString("\n#### Events\n\n")
 	for _, e := range Events {
-		flags := []string{fmt.Sprintf("tier %d", e.Tier), "call sites " + e.Ships}
+		ships := "call sites " + e.Ships
+		if e.Ships == shipsLater {
+			ships = "planned, not emitted yet"
+		}
+		flags := []string{fmt.Sprintf("tier %d", e.Tier), ships}
 		if e.Basic {
 			flags = append(flags, "also at level basic")
 		}

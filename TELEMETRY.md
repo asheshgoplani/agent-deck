@@ -358,7 +358,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `last_tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` |
 | `reason` | enum: `not_needed`, `too_complex`, `bugs`, `switching_tool`, `skip` |
 
-**`fleet.launch`** (tier 2, call sites 1.16.19+)
+**`fleet.launch`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -366,7 +366,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `tools_mix` | bitmask (32 bits) |
 | `worktrees` | bool |
 
-**`conductor.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`conductor.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
@@ -375,7 +375,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `heartbeats` | bucket `n` |
 | `telegram` | bool |
 
-**`remote.op`** (tier 2, call sites 1.16.19+)
+**`remote.op`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -383,7 +383,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `remotes` | bucket `n` |
 | `outcome` | enum: `ok`, `error` |
 
-**`worktree.op`** (tier 2, call sites 1.16.19+)
+**`worktree.op`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -391,7 +391,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `vcs` | enum: `git`, `jj` |
 | `outcome` | enum: `ok`, `error` |
 
-**`ext.op`** (tier 2, call sites 1.16.19+)
+**`ext.op`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -401,7 +401,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `source` | enum: `builtin`, `pool`, `custom` |
 | `count` | bucket `n` |
 
-**`account.switch`** (tier 2, call sites 1.16.19+)
+**`account.switch`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -409,7 +409,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `trigger` | enum: `rate_limit`, `auth`, `manual` |
 | `accounts` | bucket `n` |
 
-**`search.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`search.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
@@ -417,28 +417,28 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `count` | bucket `n` |
 | `zero_results` | bucket `n` |
 
-**`tui.view.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`tui.view.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
 | `view` | enum: `home`, `new`, `fork`, `mcp`, `skill`, `group`, `settings`, `help`, `worktree_finish`, `session_picker`, `costs`, `usage`, `recall`, `inbox`, `other` |
 | `count` | bucket `n` |
 
-**`keybind.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`keybind.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
 | `action` | enum: `new_session`, `quick_new`, `fork`, `delete`, `restart`, `rename`, `move`, `attach`, `search`, `filter`, `group_create`, `mcp_manager`, `skill_manager`, `settings`, `help`, `send`, `preview_toggle`, `worktree_finish`, `collapse_group`, `quit`, `other` |
 | `count` | bucket `n` |
 
-**`perf`** (tier 3, call sites 1.16.19+): sampled at 10% locally
+**`perf`** (tier 3, planned, not emitted yet): sampled at 10% locally
 
 | Property | Type |
 |---|---|
 | `op` | enum: `tui_start`, `session_start`, `list`, `status_poll` |
 | `ms` | bucket `ms` |
 
-**`crash`** (tier 3, call sites 1.16.19+)
+**`crash`** (tier 3, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -446,13 +446,13 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `panic_type` | enum: `nil_deref`, `index`, `slice`, `map_concurrent`, `closed_chan`, `custom`, `other` |
 | `frames_hash` | 12 hex (SHA-256 over agent-deck function names of the top 8 frames; no paths, lines or values) |
 
-**`doctor.run`** (tier 3, call sites 1.16.19+)
+**`doctor.run`** (tier 3, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
 | `checks_failed` | bitmask (32 bits) |
 
-**`feedback.rating`** (tier 3, call sites 1.16.19+)
+**`feedback.rating`** (tier 3, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
