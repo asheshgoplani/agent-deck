@@ -7796,9 +7796,6 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// storage-watcher refresh must not reset the walk/alternate
 				// state the user has built up since startup.
 				h.mru = session.NewMRUHistoryFromInstances(msg.instances, session.DefaultMRUCapacity)
-				// The conductors are known now: deliver what the last quit
-				// left undelivered.
-				h.replayUndeliveredWatcherEvents()
 			}
 			h.refreshSessionRenderSnapshot(msg.instances)
 			// Invalidate status counts cache
@@ -13739,8 +13736,8 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 			}
 			h.watcherPanelEvents, h.watcherPanelHealth, h.watcherRelayDone = nil, nil, nil
 		}
-		// Finish the conductor delivery in flight and record the rest for
-		// the next start, instead of exiting with them still queued.
+		// Finish the conductor delivery in flight and report what is left,
+		// instead of exiting mid-delivery.
 		h.stopConductorDeliveries(5 * time.Second)
 		// Shutdown or disconnect from MCP pool based on user choice
 		if err := session.ShutdownGlobalPool(shutdownPool); err != nil {
@@ -13892,52 +13889,30 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 	}
 }
 
-// stopConductorDeliveries waits up to wait for the conductor delivery in
-// flight and records the routed events still queued, so the next TUI start
-// delivers them (replayUndeliveredWatcherEvents) instead of a quit dropping
-// them.
-func (h *Home) stopConductorDeliveries(wait time.Duration) {
+// stopConductorDeliveries starts no further conductor delivery, waits up to
+// wait for the one in flight (so a quit does not leave a pasted message
+// without its Enter), and logs the routed events still queued per conductor.
+// They are not delivered by this process; they stay in watcher_events and the
+// watcher's task log (durable delivery is #2537). It returns how many were left.
+func (h *Home) stopConductorDeliveries(wait time.Duration) int {
 	if h.conductorDeliveries == nil {
-		return
+		return 0
 	}
-	pending := h.conductorDeliveries.stop(wait)
-	if len(pending) == 0 {
-		return
+	left := map[string]int{}
+	total := 0
+	for _, d := range h.conductorDeliveries.stop(wait) {
+		n := 1
+		if d.Dropped > 0 {
+			n = d.Dropped
+		}
+		left[d.Conductor] += n
+		total += n
 	}
-	path, err := undeliveredWatcherPath()
-	if err == nil {
-		err = saveUndelivered(path, pending)
+	for conductor, n := range left {
+		uiLog.Warn("watcher_events_undelivered_at_quit",
+			slog.String("conductor", conductor), slog.Int("count", n))
 	}
-	if err != nil {
-		uiLog.Warn("undelivered_watcher_events_not_recorded",
-			slog.Int("count", len(pending)), slog.String("error", err.Error()))
-		return
-	}
-	uiLog.Info("undelivered_watcher_events_recorded",
-		slog.Int("count", len(pending)), slog.String("path", path))
-}
-
-// replayUndeliveredWatcherEvents queues the routed events a previous quit
-// recorded as undelivered. Called once the first session load has made the
-// conductors known.
-func (h *Home) replayUndeliveredWatcherEvents() {
-	path, err := undeliveredWatcherPath()
-	if err != nil {
-		return
-	}
-	pending, err := takeUndelivered(path)
-	if err != nil {
-		uiLog.Warn("undelivered_watcher_events_unreadable",
-			slog.String("path", path), slog.String("error", err.Error()))
-	}
-	if len(pending) == 0 {
-		return
-	}
-	uiLog.Info("undelivered_watcher_events_replayed", slog.Int("count", len(pending)))
-	q := h.deliveryQueue()
-	for _, d := range pending {
-		q.enqueue(d)
-	}
+	return total
 }
 
 // conductorTmuxSession returns the tmux session of the named conductor, or nil

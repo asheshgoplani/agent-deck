@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,6 +71,22 @@ func busyQueue(t *testing.T) (*conductorQueue, *sentLog, func()) {
 		t.Fatal("first delivery never started")
 	}
 	return q, log, release
+}
+
+// waitStopped waits until stop has marked q stopped.
+func waitStopped(t *testing.T, q *conductorQueue) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		q.mu.Lock()
+		stopped := q.stopped
+		q.mu.Unlock()
+		if stopped {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("stop never took the queue")
 }
 
 func event(conductor, text string) conductorDelivery {
@@ -252,10 +266,13 @@ func TestConductorQueue_StopFinishesTheDeliveryInFlightAndReturnsTheRest(t *test
 
 	stopped := make(chan []conductorDelivery, 1)
 	go func() { stopped <- q.stop(5 * time.Second) }()
+	// Release only once stop has taken the queue, so the runner cannot reach
+	// e1 first however the goroutines are scheduled.
+	waitStopped(t, q)
 	select {
 	case <-stopped:
 		t.Fatal("stop returned while a delivery was still in flight")
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 	release()
 	var pending []conductorDelivery
@@ -294,142 +311,34 @@ func TestConductorQueue_StopGivesUpOnAHungDelivery(t *testing.T) {
 	}
 }
 
-// TestUndeliveredRecord_MergesBoundsAndIsTakenOnce: a quit appends to what an
-// earlier quit left, the record stays bounded per conductor like a live
-// backlog, and a start claims it exactly once.
-func TestUndeliveredRecord_MergesBoundsAndIsTakenOnce(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "watcher", "undelivered-test.json")
-	if err := saveUndelivered(path, []conductorDelivery{event("demo", "a1"), event("demo", "a2")}); err != nil {
-		t.Fatal(err)
-	}
-	var second []conductorDelivery
-	for i := 1; i <= maxConductorBacklog; i++ {
-		second = append(second, event("demo", "b"+strconv.Itoa(i)))
-	}
-	second = append(second, event("other", "x"))
-	if err := saveUndelivered(path, second); err != nil {
-		t.Fatal(err)
-	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("record mode = %v (%v), want 0600", info, err)
-	}
-
-	got, err := takeUndelivered(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != maxConductorBacklog+2 {
-		t.Fatalf("record holds %d items, want a notice, %d events for demo and 1 for other", len(got), maxConductorBacklog)
-	}
-	if got[0].Conductor != "demo" || got[0].Dropped != 2 {
-		t.Fatalf("first item = %+v, want demo's notice for the 2 dropped events", got[0])
-	}
-	if got[1].Text != "b1" || got[maxConductorBacklog].Text != "b"+strconv.Itoa(maxConductorBacklog) {
-		t.Fatalf("demo's events = %q..%q, want b1..b%d", got[1].Text, got[maxConductorBacklog].Text, maxConductorBacklog)
-	}
-	if last := got[len(got)-1]; last.Conductor != "other" || last.Text != "x" {
-		t.Fatalf("last item = %+v, want other's event", last)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("record still present after it was taken: %v", err)
-	}
-	if again, err := takeUndelivered(path); err != nil || again != nil {
-		t.Fatalf("second take = %v, %v; want nothing", again, err)
-	}
-}
-
-// TestUndeliveredRecord_UnreadableRecordIsKept: a truncated or corrupt record
-// is neither deleted by a replay nor overwritten by the next quit; it stays on
-// disk for recovery.
-func TestUndeliveredRecord_UnreadableRecordIsKept(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "undelivered-test.json")
-	const corrupt = `[{"conductor": "demo", "text": "trunc`
-	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if items, err := takeUndelivered(path); err == nil || items != nil {
-		t.Fatalf("take of a corrupt record = %v, %v; want an error", items, err)
-	}
-	kept, _ := filepath.Glob(path + ".replay-*")
-	if len(kept) != 1 {
-		t.Fatalf("corrupt record not kept after a failed replay: %v", kept)
-	}
-	if data, _ := os.ReadFile(kept[0]); string(data) != corrupt {
-		t.Fatalf("kept record = %q, want the original bytes", data)
-	}
-
-	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := saveUndelivered(path, []conductorDelivery{event("demo", "new")}); err != nil {
-		t.Fatal(err)
-	}
-	aside, _ := filepath.Glob(path + ".unreadable-*")
-	if len(aside) != 1 {
-		t.Fatalf("corrupt record overwritten instead of kept aside: %v", aside)
-	}
-	if data, _ := os.ReadFile(aside[0]); string(data) != corrupt {
-		t.Fatalf("kept record = %q, want the original bytes", data)
-	}
-	got, err := takeUndelivered(path)
-	if err != nil || len(got) != 1 || got[0].Text != "new" {
-		t.Fatalf("record after save = %+v, %v; want the new event", got, err)
-	}
-}
-
-// TestWatcherDeliveries_QuitRecordsQueuedEventsAndTheNextStartDeliversThem:
-// events still queued for a busy conductor when the TUI quits are recorded,
-// and the next TUI start delivers them, in order, after its first session
-// load.
-func TestWatcherDeliveries_QuitRecordsQueuedEventsAndTheNextStartDeliversThem(t *testing.T) {
-	setIsolatedAgentDeckDir(t)
-	tmpHome := os.Getenv("HOME")
-	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, ".local", "share"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpHome, ".cache"))
-	path, err := undeliveredWatcherPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(path, tmpHome+string(filepath.Separator)) {
-		t.Fatalf("undelivered record %q is outside the isolated HOME %q", path, tmpHome)
-	}
-
-	quitting := NewHome()
-	log1 := &sentLog{}
-	send, started, release := blockingSend(t, log1)
-	quitting.conductorDeliveriesOnce.Do(func() { quitting.conductorDeliveries = newConductorQueue(send) })
+// TestWatcherDeliveries_QuitFinishesTheDeliveryInFlightAndStartsNoOther: on
+// quit Home waits for the conductor delivery in flight, starts none of the
+// queued ones, and reports how many routed events it leaves undelivered.
+func TestWatcherDeliveries_QuitFinishesTheDeliveryInFlightAndStartsNoOther(t *testing.T) {
+	home := NewHome()
+	log := &sentLog{}
+	send, started, release := blockingSend(t, log)
+	home.conductorDeliveriesOnce.Do(func() { home.conductorDeliveries = newConductorQueue(send) })
 	for _, m := range []string{"one", "two", "three"} {
-		quitting.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "alice", Body: m, RoutedTo: "demo"})
+		home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "alice", Body: m, RoutedTo: "demo"})
 	}
-	quitting.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "bob", Body: "unrouted"})
+	home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "bob", Body: "unrouted"})
 	<-started
-	stopped := make(chan struct{})
-	go func() {
-		quitting.stopConductorDeliveries(5 * time.Second)
-		close(stopped)
-	}()
-	time.Sleep(50 * time.Millisecond)
+
+	left := make(chan int, 1)
+	go func() { left <- home.stopConductorDeliveries(5 * time.Second) }()
+	waitStopped(t, home.conductorDeliveries)
 	release()
 	select {
-	case <-stopped:
+	case n := <-left:
+		if n != 2 {
+			t.Fatalf("stopConductorDeliveries left %d events undelivered, want 2", n)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("stopConductorDeliveries did not return")
+		t.Fatal("stopConductorDeliveries did not return after the delivery in flight finished")
 	}
-	if got := strings.Join(log1.texts(), "|"); got != "[slack] alice: one" {
-		t.Fatalf("quitting TUI delivered %q, want only the event in flight", got)
-	}
-
-	starting := NewHome()
-	starting.initialLoading = true
-	log2 := &sentLog{}
-	starting.conductorDeliveriesOnce.Do(func() { starting.conductorDeliveries = newConductorQueue(log2.add) })
-	starting.Update(loadSessionsMsg{})
-	queueIdle(t, starting.conductorDeliveries)
-	if got := strings.Join(log2.texts(), "|"); got != "[slack] alice: two|[slack] alice: three" {
-		t.Fatalf("next start delivered %q, want the two queued events in order", got)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("undelivered record still present after replay: %v", err)
+	queueIdle(t, home.conductorDeliveries)
+	if got := strings.Join(log.texts(), "|"); got != "[slack] alice: one" {
+		t.Fatalf("delivered %q, want only the event in flight", got)
 	}
 }

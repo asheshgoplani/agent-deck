@@ -1,19 +1,12 @@
 package ui
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/asheshgoplani/agent-deck/internal/events"
-	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // maxConductorBacklog bounds the routed events waiting for one conductor's
@@ -22,15 +15,14 @@ const maxConductorBacklog = 64
 
 // conductorDelivery is one watcher message waiting for a conductor's pane.
 type conductorDelivery struct {
-	Conductor string    `json:"conductor"`
-	Text      string    `json:"text,omitempty"`
-	QueuedAt  time.Time `json:"queued_at"`
+	Conductor string
+	Text      string
+	QueuedAt  time.Time
 	// Dropped > 0 marks the notice that stands in for that many routed
 	// events dropped from a full backlog.
-	Dropped int `json:"dropped,omitempty"`
-	// Alert names the watcher of a health alert. Alerts are never recorded
-	// for replay: the next health tick restates the watcher's state.
-	Alert string `json:"-"`
+	Dropped int
+	// Alert names the watcher of a health alert.
+	Alert string
 }
 
 // text is what gets typed into the conductor's pane.
@@ -178,7 +170,8 @@ func (q *conductorQueue) deliver(d conductorDelivery) {
 // stop lets no further delivery start, waits up to wait for the ones already
 // in flight (so a quit does not leave a pasted message without its Enter), and
 // returns the routed events and overflow notices still queued, for the caller
-// to record for replay. Queued health alerts are dropped.
+// to report. Queued health alerts are dropped: the next health tick restates
+// them.
 func (q *conductorQueue) stop(wait time.Duration) []conductorDelivery {
 	q.mu.Lock()
 	q.stopped = true
@@ -210,87 +203,4 @@ func (q *conductorQueue) stop(wait time.Duration) []conductorDelivery {
 		uiLog.Warn("conductor_delivery_stop_timeout", slog.Duration("waited", wait))
 	}
 	return pending
-}
-
-// undeliveredWatcherPath is where a clean quit records the routed events it
-// could not deliver, for the next TUI start of the same profile to deliver.
-func undeliveredWatcherPath() (string, error) {
-	dir, err := session.WatcherDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "undelivered-"+events.CurrentProfile()+".json"), nil
-}
-
-// saveUndelivered records pending after whatever an earlier quit left at path
-// that no start has replayed yet, bounded per conductor like a live backlog.
-func saveUndelivered(path string, pending []conductorDelivery) error {
-	prior, err := readUndelivered(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		// Keep an unreadable record for recovery rather than overwrite it.
-		kept := fmt.Sprintf("%s.unreadable-%d", path, time.Now().UnixNano())
-		if renameErr := os.Rename(path, kept); renameErr != nil {
-			kept = path
-		}
-		uiLog.Warn("undelivered_watcher_events_unreadable", slog.String("kept", kept), slog.String("error", err.Error()))
-	}
-	backlogs := make(map[string]*conductorBacklog)
-	var order []string
-	for _, d := range append(prior, pending...) {
-		b := backlogs[d.Conductor]
-		if b == nil {
-			b = &conductorBacklog{}
-			backlogs[d.Conductor] = b
-			order = append(order, d.Conductor)
-		}
-		b.add(d)
-	}
-	var out []conductorDelivery
-	for _, c := range order {
-		out = append(out, backlogs[c].items...)
-	}
-	data, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-// takeUndelivered claims and removes the record at path, so it is replayed
-// once even when two TUIs start together. No record is not an error. A record
-// that cannot be read is kept under its claimed name for recovery, and the
-// error names it.
-func takeUndelivered(path string) ([]conductorDelivery, error) {
-	claimed := fmt.Sprintf("%s.replay-%d", path, os.Getpid())
-	if err := os.Rename(path, claimed); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	items, err := readUndelivered(claimed)
-	if err != nil {
-		return nil, fmt.Errorf("undelivered record kept at %s: %w", claimed, err)
-	}
-	_ = os.Remove(claimed)
-	return items, nil
-}
-
-func readUndelivered(path string) ([]conductorDelivery, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var items []conductorDelivery
-	if err := json.Unmarshal(data, &items); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
