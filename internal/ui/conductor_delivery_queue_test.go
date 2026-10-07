@@ -89,6 +89,14 @@ func waitStopped(t *testing.T, q *conductorQueue) {
 	t.Fatal("stop never took the queue")
 }
 
+func texts(ds []conductorDelivery) []string {
+	out := make([]string, len(ds))
+	for i, d := range ds {
+		out[i] = d.text()
+	}
+	return out
+}
+
 func event(conductor, text string) conductorDelivery {
 	return conductorDelivery{Conductor: conductor, Text: text}
 }
@@ -264,8 +272,12 @@ func TestConductorQueue_StopFinishesTheDeliveryInFlightAndReturnsTheRest(t *test
 	q.enqueue(alert("demo", "w1", "alert"))
 	q.enqueue(event("demo", "e2"))
 
-	stopped := make(chan []conductorDelivery, 1)
-	go func() { stopped <- q.stop(5 * time.Second) }()
+	type stopResult struct{ queued, unconfirmed []conductorDelivery }
+	stopped := make(chan stopResult, 1)
+	go func() {
+		queued, unconfirmed := q.stop(5 * time.Second)
+		stopped <- stopResult{queued, unconfirmed}
+	}()
 	// Release only once stop has taken the queue, so the runner cannot reach
 	// e1 first however the goroutines are scheduled.
 	waitStopped(t, q)
@@ -275,39 +287,65 @@ func TestConductorQueue_StopFinishesTheDeliveryInFlightAndReturnsTheRest(t *test
 	default:
 	}
 	release()
-	var pending []conductorDelivery
+	var res stopResult
 	select {
-	case pending = <-stopped:
+	case res = <-stopped:
 	case <-time.After(5 * time.Second):
 		t.Fatal("stop did not return after the delivery in flight finished")
 	}
-	var texts []string
-	for _, d := range pending {
-		texts = append(texts, d.text())
+	if got := strings.Join(texts(res.queued), ","); got != "e1,e2" {
+		t.Fatalf("stop returned %s queued, want e1,e2", got)
 	}
-	if got := strings.Join(texts, ","); got != "e1,e2" {
-		t.Fatalf("stop returned %s, want e1,e2", got)
+	if len(res.unconfirmed) != 0 {
+		t.Fatalf("stop reported %v as unconfirmed, but the delivery in flight finished", texts(res.unconfirmed))
 	}
 
+	// After stop, enqueue starts no runner: checked on the queue's state,
+	// which enqueue sets before it returns, rather than by waiting for a
+	// delivery that should not happen.
 	q.enqueue(event("demo", "after stop"))
-	time.Sleep(50 * time.Millisecond)
+	q.mu.Lock()
+	b := q.backlogs["demo"]
+	running := b != nil && b.running
+	q.mu.Unlock()
+	if running {
+		t.Fatal("enqueue after stop started a runner")
+	}
 	if got := strings.Join(log.texts(), ","); got != "in flight" {
 		t.Fatalf("delivered %s, want only the delivery that was in flight", got)
 	}
 }
 
 // TestConductorQueue_StopGivesUpOnAHungDelivery: a delivery that never
-// returns cannot hold a quit past the wait.
+// returns cannot hold a quit past the wait, and it is reported as still in
+// flight (outcome unknown) next to the queued events.
 func TestConductorQueue_StopGivesUpOnAHungDelivery(t *testing.T) {
 	q, _, _ := busyQueue(t)
 	q.enqueue(event("demo", "e1"))
 	start := time.Now()
-	pending := q.stop(50 * time.Millisecond)
+	queued, unconfirmed := q.stop(50 * time.Millisecond)
 	if waited := time.Since(start); waited > 2*time.Second {
 		t.Fatalf("stop waited %s for a hung delivery", waited)
 	}
-	if len(pending) != 1 || pending[0].Text != "e1" {
-		t.Fatalf("stop returned %+v, want e1", pending)
+	if got := strings.Join(texts(queued), ","); got != "e1" {
+		t.Fatalf("stop returned %s queued, want e1", got)
+	}
+	if got := strings.Join(texts(unconfirmed), ","); got != "in flight" {
+		t.Fatalf("stop returned %q as unconfirmed, want the delivery still in flight", got)
+	}
+}
+
+// TestConductorQueue_StopLeavesAHungAlertOutOfTheReport: a health alert still
+// being sent when the wait expires is not reported; the next health tick
+// restates it.
+func TestConductorQueue_StopLeavesAHungAlertOutOfTheReport(t *testing.T) {
+	log := &sentLog{}
+	send, started, _ := blockingSend(t, log)
+	q := newConductorQueue(send)
+	q.enqueue(alert("demo", "w1", "alert in flight"))
+	<-started
+	if queued, unconfirmed := q.stop(50 * time.Millisecond); len(queued) != 0 || len(unconfirmed) != 0 {
+		t.Fatalf("stop reported queued %v, unconfirmed %v; want nothing for an alert", texts(queued), texts(unconfirmed))
 	}
 }
 
@@ -325,14 +363,18 @@ func TestWatcherDeliveries_QuitFinishesTheDeliveryInFlightAndStartsNoOther(t *te
 	home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "bob", Body: "unrouted"})
 	<-started
 
-	left := make(chan int, 1)
-	go func() { left <- home.stopConductorDeliveries(5 * time.Second) }()
+	type leftCounts struct{ queued, unconfirmed int }
+	left := make(chan leftCounts, 1)
+	go func() {
+		queued, unconfirmed := home.stopConductorDeliveries(5 * time.Second)
+		left <- leftCounts{queued, unconfirmed}
+	}()
 	waitStopped(t, home.conductorDeliveries)
 	release()
 	select {
 	case n := <-left:
-		if n != 2 {
-			t.Fatalf("stopConductorDeliveries left %d events undelivered, want 2", n)
+		if n.queued != 2 || n.unconfirmed != 0 {
+			t.Fatalf("stopConductorDeliveries left %d queued and %d unconfirmed, want 2 and 0", n.queued, n.unconfirmed)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("stopConductorDeliveries did not return after the delivery in flight finished")
@@ -340,5 +382,21 @@ func TestWatcherDeliveries_QuitFinishesTheDeliveryInFlightAndStartsNoOther(t *te
 	queueIdle(t, home.conductorDeliveries)
 	if got := strings.Join(log.texts(), "|"); got != "[slack] alice: one" {
 		t.Fatalf("delivered %q, want only the event in flight", got)
+	}
+}
+
+// TestWatcherDeliveries_QuitReportsADeliveryStillInFlightAtTheDeadline: when
+// the quit wait expires mid-delivery, that event is reported as in flight with
+// an unknown outcome, next to the queued ones, instead of disappearing from
+// the report.
+func TestWatcherDeliveries_QuitReportsADeliveryStillInFlightAtTheDeadline(t *testing.T) {
+	home := NewHome()
+	log := &sentLog{}
+	send, started, _ := blockingSend(t, log)
+	home.conductorDeliveriesOnce.Do(func() { home.conductorDeliveries = newConductorQueue(send) })
+	home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "alice", Body: "only", RoutedTo: "demo"})
+	<-started
+	if queued, unconfirmed := home.stopConductorDeliveries(50 * time.Millisecond); queued != 0 || unconfirmed != 1 {
+		t.Fatalf("stopConductorDeliveries left %d queued and %d unconfirmed, want 0 and 1", queued, unconfirmed)
 	}
 }

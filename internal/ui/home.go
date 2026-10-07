@@ -13891,28 +13891,43 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 
 // stopConductorDeliveries starts no further conductor delivery, waits up to
 // wait for the one in flight (so a quit does not leave a pasted message
-// without its Enter), and logs the routed events still queued per conductor.
-// They are not delivered by this process; they stay in watcher_events and the
-// watcher's task log (durable delivery is #2537). It returns how many were left.
-func (h *Home) stopConductorDeliveries(wait time.Duration) int {
+// without its Enter), and logs per conductor the routed events it leaves: the
+// ones still queued, which are not delivered, and any still being sent when
+// the wait expired, whose outcome is unknown. They stay in watcher_events and
+// the watcher's task log (durable delivery is #2537). It returns both counts.
+func (h *Home) stopConductorDeliveries(wait time.Duration) (queued, unconfirmed int) {
 	if h.conductorDeliveries == nil {
-		return 0
+		return 0, 0
 	}
-	left := map[string]int{}
-	total := 0
-	for _, d := range h.conductorDeliveries.stop(wait) {
-		n := 1
-		if d.Dropped > 0 {
-			n = d.Dropped
+	type left struct{ queued, unconfirmed int }
+	per := map[string]*left{}
+	count := func(d conductorDelivery) (string, int) {
+		if per[d.Conductor] == nil {
+			per[d.Conductor] = &left{}
 		}
-		left[d.Conductor] += n
-		total += n
+		if d.Dropped > 0 {
+			return d.Conductor, d.Dropped
+		}
+		return d.Conductor, 1
 	}
-	for conductor, n := range left {
+	pending, inflight := h.conductorDeliveries.stop(wait)
+	for _, d := range pending {
+		c, n := count(d)
+		per[c].queued += n
+		queued += n
+	}
+	for _, d := range inflight {
+		c, n := count(d)
+		per[c].unconfirmed += n
+		unconfirmed += n
+	}
+	for conductor, l := range per {
 		uiLog.Warn("watcher_events_undelivered_at_quit",
-			slog.String("conductor", conductor), slog.Int("count", n))
+			slog.String("conductor", conductor),
+			slog.Int("queued", l.queued),
+			slog.Int("in_flight_outcome_unknown", l.unconfirmed))
 	}
-	return total
+	return queued, unconfirmed
 }
 
 // conductorTmuxSession returns the tmux session of the named conductor, or nil

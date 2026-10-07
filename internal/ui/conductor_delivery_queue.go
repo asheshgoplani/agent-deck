@@ -37,8 +37,9 @@ func (d conductorDelivery) text() string {
 // then the overflow notice if there is one, then routed events, each group in
 // arrival order.
 type conductorBacklog struct {
-	items   []conductorDelivery
-	running bool // a runner is draining this backlog
+	items    []conductorDelivery
+	running  bool               // a runner is draining this backlog
+	inflight *conductorDelivery // the delivery the runner is sending, if any
 }
 
 // add queues d. A health alert goes ahead of every routed event, so it never
@@ -140,6 +141,7 @@ func (q *conductorQueue) run(conductor string, b *conductorBacklog) {
 	defer q.runners.Done()
 	for {
 		q.mu.Lock()
+		b.inflight = nil
 		if q.stopped || len(b.items) == 0 {
 			b.running = false
 			if len(b.items) == 0 {
@@ -151,6 +153,7 @@ func (q *conductorQueue) run(conductor string, b *conductorBacklog) {
 		next := b.items[0]
 		b.items[0] = conductorDelivery{}
 		b.items = b.items[1:]
+		b.inflight = &next
 		q.mu.Unlock()
 		q.deliver(next)
 	}
@@ -169,10 +172,11 @@ func (q *conductorQueue) deliver(d conductorDelivery) {
 
 // stop lets no further delivery start, waits up to wait for the ones already
 // in flight (so a quit does not leave a pasted message without its Enter), and
-// returns the routed events and overflow notices still queued, for the caller
-// to report. Queued health alerts are dropped: the next health tick restates
-// them.
-func (q *conductorQueue) stop(wait time.Duration) []conductorDelivery {
+// returns, for the caller to report, the routed events and overflow notices
+// still queued and, if the wait expired, the ones still being sent: their
+// outcome is unknown, not failed. Health alerts are left out: the next health
+// tick restates them.
+func (q *conductorQueue) stop(wait time.Duration) (queued, unconfirmed []conductorDelivery) {
 	q.mu.Lock()
 	q.stopped = true
 	conductors := make([]string, 0, len(q.backlogs))
@@ -180,12 +184,11 @@ func (q *conductorQueue) stop(wait time.Duration) []conductorDelivery {
 		conductors = append(conductors, c)
 	}
 	sort.Strings(conductors)
-	var pending []conductorDelivery
 	for _, c := range conductors {
 		b := q.backlogs[c]
 		for _, d := range b.items {
 			if d.Alert == "" {
-				pending = append(pending, d)
+				queued = append(queued, d)
 			}
 		}
 		b.items = nil
@@ -199,8 +202,17 @@ func (q *conductorQueue) stop(wait time.Duration) []conductorDelivery {
 	}()
 	select {
 	case <-done:
+		return queued, nil
 	case <-time.After(wait):
-		uiLog.Warn("conductor_delivery_stop_timeout", slog.Duration("waited", wait))
 	}
-	return pending
+	q.mu.Lock()
+	for _, c := range conductors {
+		if b := q.backlogs[c]; b != nil && b.inflight != nil && b.inflight.Alert == "" {
+			unconfirmed = append(unconfirmed, *b.inflight)
+		}
+	}
+	q.mu.Unlock()
+	uiLog.Warn("conductor_delivery_stop_timeout",
+		slog.Duration("waited", wait), slog.Int("in_flight", len(unconfirmed)))
+	return queued, unconfirmed
 }
