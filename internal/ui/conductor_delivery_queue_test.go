@@ -338,6 +338,46 @@ func TestUndeliveredRecord_MergesBoundsAndIsTakenOnce(t *testing.T) {
 	}
 }
 
+// TestUndeliveredRecord_UnreadableRecordIsKept: a truncated or corrupt record
+// is neither deleted by a replay nor overwritten by the next quit; it stays on
+// disk for recovery.
+func TestUndeliveredRecord_UnreadableRecordIsKept(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "undelivered-test.json")
+	const corrupt = `[{"conductor": "demo", "text": "trunc`
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if items, err := takeUndelivered(path); err == nil || items != nil {
+		t.Fatalf("take of a corrupt record = %v, %v; want an error", items, err)
+	}
+	kept, _ := filepath.Glob(path + ".replay-*")
+	if len(kept) != 1 {
+		t.Fatalf("corrupt record not kept after a failed replay: %v", kept)
+	}
+	if data, _ := os.ReadFile(kept[0]); string(data) != corrupt {
+		t.Fatalf("kept record = %q, want the original bytes", data)
+	}
+
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveUndelivered(path, []conductorDelivery{event("demo", "new")}); err != nil {
+		t.Fatal(err)
+	}
+	aside, _ := filepath.Glob(path + ".unreadable-*")
+	if len(aside) != 1 {
+		t.Fatalf("corrupt record overwritten instead of kept aside: %v", aside)
+	}
+	if data, _ := os.ReadFile(aside[0]); string(data) != corrupt {
+		t.Fatalf("kept record = %q, want the original bytes", data)
+	}
+	got, err := takeUndelivered(path)
+	if err != nil || len(got) != 1 || got[0].Text != "new" {
+		t.Fatalf("record after save = %+v, %v; want the new event", got, err)
+	}
+}
+
 // TestWatcherDeliveries_QuitRecordsQueuedEventsAndTheNextStartDeliversThem:
 // events still queued for a busy conductor when the TUI quits are recorded,
 // and the next TUI start delivers them, in order, after its first session

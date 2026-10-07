@@ -227,7 +227,12 @@ func undeliveredWatcherPath() (string, error) {
 func saveUndelivered(path string, pending []conductorDelivery) error {
 	prior, err := readUndelivered(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		uiLog.Warn("undelivered_watcher_events_unreadable", slog.String("path", path), slog.String("error", err.Error()))
+		// Keep an unreadable record for recovery rather than overwrite it.
+		kept := fmt.Sprintf("%s.unreadable-%d", path, time.Now().UnixNano())
+		if renameErr := os.Rename(path, kept); renameErr != nil {
+			kept = path
+		}
+		uiLog.Warn("undelivered_watcher_events_unreadable", slog.String("kept", kept), slog.String("error", err.Error()))
 	}
 	backlogs := make(map[string]*conductorBacklog)
 	var order []string
@@ -259,7 +264,9 @@ func saveUndelivered(path string, pending []conductorDelivery) error {
 }
 
 // takeUndelivered claims and removes the record at path, so it is replayed
-// once even when two TUIs start together. No record is not an error.
+// once even when two TUIs start together. No record is not an error. A record
+// that cannot be read is kept under its claimed name for recovery, and the
+// error names it.
 func takeUndelivered(path string) ([]conductorDelivery, error) {
 	claimed := fmt.Sprintf("%s.replay-%d", path, os.Getpid())
 	if err := os.Rename(path, claimed); err != nil {
@@ -268,8 +275,12 @@ func takeUndelivered(path string) ([]conductorDelivery, error) {
 		}
 		return nil, err
 	}
-	defer os.Remove(claimed)
-	return readUndelivered(claimed)
+	items, err := readUndelivered(claimed)
+	if err != nil {
+		return nil, fmt.Errorf("undelivered record kept at %s: %w", claimed, err)
+	}
+	_ = os.Remove(claimed)
+	return items, nil
 }
 
 func readUndelivered(path string) ([]conductorDelivery, error) {
