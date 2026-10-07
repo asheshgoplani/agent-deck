@@ -9903,7 +9903,13 @@ func (i *Instance) killInternal(sync bool) error {
 // stamp generation from any prior spawn is already in the new caller's
 // pre-lock snapshot.
 func (i *Instance) Restart() error {
-	return i.restartRecorded(nil)
+	return i.restartRecorded(nil, "")
+}
+
+// RestartFrom is Restart with session.end recorded from surface sf ("" =
+// the process surface), for web requests served by a CLI or TUI process.
+func (i *Instance) RestartFrom(sf telemetry.Surface) error {
+	return i.restartRecorded(nil, sf)
 }
 
 // RestartWithEnv restarts the session with one-shot environment overrides.
@@ -9915,14 +9921,15 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 			return fmt.Errorf("invalid environment variable name %q", key)
 		}
 	}
-	return i.restartRecorded(env)
+	return i.restartRecorded(env, "")
 }
 
-// restartRecorded restarts and records session.end(restart) on success.
-func (i *Instance) restartRecorded(env map[string]string) error {
+// restartRecorded restarts and records session.end(restart) from surface sf
+// on success.
+func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) error {
 	err := i.restart(env)
 	if err == nil {
-		i.RecordTelemetryEnd(telemetry.EndRestart)
+		i.RecordTelemetryEndFrom(telemetry.EndRestart, sf)
 	}
 	return err
 }
