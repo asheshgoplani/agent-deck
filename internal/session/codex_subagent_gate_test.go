@@ -454,6 +454,30 @@ func TestBuildCodexCommand_DoesNotResumeGuardianExecParent(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_DoesNotBypassReadOnlyOwningDB(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	owner := newTestStorage(t)
+	mainSID, guardianSID := uniqueSID(t), uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+	inst.CodexSessionID = guardianSID
+	if err := owner.Save([]*Instance{inst}); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := statedb.OpenReadOnlyLive(owner.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = readOnly.Close() })
+	inst.restartDB.Store(readOnly)
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "fork "+guardianSID) {
+		t.Fatalf("read-only storage must retain the failed-write fallback: got %q", cmd)
+	}
+	if got := readCodexSessionIDFromDB(t, owner.db, inst.ID); got != guardianSID {
+		t.Fatalf("read-only repair changed the saved binding to %q", got)
+	}
+}
+
 func TestBuildCodexCommand_ResumesGuardianReviewUserAncestor(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 	mainSID := uniqueSID(t)

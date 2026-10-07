@@ -7329,7 +7329,7 @@ func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) error {
 		// Web mutators save live instances through a short-lived Storage,
 		// which can leave restartDB closed. Retry through the saved owning
 		// path, never through an unrelated profile's global database.
-		if err != nil && i.storageSnapshot != nil && i.storageSnapshot.dbPath != "" {
+		if err != nil && db.DB().Ping() != nil && i.storageSnapshot != nil && i.storageSnapshot.dbPath != "" {
 			var retryDB *statedb.StateDB
 			retryDB, err = statedb.Open(i.storageSnapshot.dbPath)
 			if err == nil {
