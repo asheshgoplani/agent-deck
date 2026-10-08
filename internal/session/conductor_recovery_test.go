@@ -131,8 +131,8 @@ func TestConductorRecoveryDraftDoesNotFailSpawn(t *testing.T) {
 }
 
 func TestConductorRecoveryDroppedEnterIsUncertain(t *testing.T) {
-	inst, _ := recoveryFixture(t, false)
-	body := "#!/bin/sh\nstty -echo\nprintf '\\033[2J\\033[H❯ '\nwhile IFS= read -r line; do printf '\\033[2J\\033[H❯ %s' \"$line\"; done\n"
+	inst, capture := recoveryFixture(t, false)
+	body := "#!/bin/sh\nprintf '\\033[2J\\033[H❯ '\nwhile IFS= read -r line; do printf 'enter\\n' >> '" + capture + "'; printf '\\033[2J\\033[H❯ %s' \"$line\"; done\n"
 	if err := os.WriteFile(inst.Command, []byte(body), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +142,10 @@ func TestConductorRecoveryDroppedEnterIsUncertain(t *testing.T) {
 	inst.IsConductor = true
 	if err := inst.wakeConductorAfterSpawn(); err == nil {
 		t.Fatal("unconsumed recovery draft was falsely accepted")
+	}
+	b, err := os.ReadFile(capture)
+	if err != nil || string(b) != "enter\n" {
+		t.Fatalf("expected one Enter without retries, got %q (%v)", b, err)
 	}
 }
 
