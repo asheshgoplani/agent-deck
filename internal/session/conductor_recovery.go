@@ -54,6 +54,10 @@ func (i *Instance) wakeConductorAfterSpawn() error {
 	if !i.IsConductor {
 		return nil
 	}
+	if !conductorRecoveryTurnEnabled() {
+		sessionLog.Info("conductor_recovery_disabled", slog.String("instance_id", i.ID))
+		return nil
+	}
 	if !IsClaudeCompatible(i.Tool) && !IsCodexCompatible(i.Tool) {
 		return fmt.Errorf("conductor process started but recovery was not sent: %s has no verified empty-composer guard", i.Tool)
 	}
@@ -109,6 +113,17 @@ func (i *Instance) wakeConductorAfterSpawn() error {
 		}
 	}
 	return fmt.Errorf("conductor process started but recovery submission is uncertain (not retried): composer did not clear")
+}
+
+// conductorRecoveryTurnEnabled reads [conductor].recovery_turn. An unreadable
+// config keeps the default (on), matching how the rest of the conductor
+// settings fall back.
+func conductorRecoveryTurnEnabled() bool {
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return true
+	}
+	return cfg.Conductor.RecoveryTurnEnabled()
 }
 
 func conductorRecoveryPromptSafe(tool, raw string) bool {

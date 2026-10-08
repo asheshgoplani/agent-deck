@@ -98,6 +98,12 @@ type ConductorSettings struct {
 	// then dropped (issue #971). <= 0 = 3.
 	NeedRetireCycles int `toml:"need_retire_cycles,omitzero"`
 
+	// RecoveryTurn controls the one bounded recovery prompt a Claude or Codex
+	// conductor receives after an actual start or restart (issue #2518).
+	// nil = true (default on); false skips it for operators who would rather
+	// wake conductors themselves. Use RecoveryTurnEnabled to read it.
+	RecoveryTurn *bool `toml:"recovery_turn,omitempty"`
+
 	// Profiles is the list of agent-deck profiles to manage
 	// Kept for backward compat but ignored after migration to meta.json-based discovery
 	Profiles []string `toml:"profiles,omitempty"`
@@ -503,6 +509,12 @@ func (c *ConductorSettings) GetHumanDigestMinutes() int {
 		return 30
 	}
 	return max(*c.HumanDigestMinutes, 0)
+}
+
+// RecoveryTurnEnabled reports whether conductors get the automatic recovery
+// turn after start/restart (default true).
+func (c *ConductorSettings) RecoveryTurnEnabled() bool {
+	return c == nil || c.RecoveryTurn == nil || *c.RecoveryTurn
 }
 
 // GetNeedRetireCycles returns the urgent-line retire threshold (default 3).

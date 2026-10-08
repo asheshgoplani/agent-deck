@@ -264,3 +264,48 @@ func TestConductorRecoverySerializesWithOtherSenders(t *testing.T) {
 	}
 	assertRecoveryTurns(t, capture, 1)
 }
+
+func TestConductorRecoveryTurnConfig(t *testing.T) {
+	no, yes := false, true
+	for _, tc := range []struct {
+		name string
+		s    *ConductorSettings
+		want bool
+	}{
+		{"nil settings", nil, true},
+		{"key absent", &ConductorSettings{}, true},
+		{"explicit true", &ConductorSettings{RecoveryTurn: &yes}, true},
+		{"explicit false", &ConductorSettings{RecoveryTurn: &no}, false},
+	} {
+		if got := tc.s.RecoveryTurnEnabled(); got != tc.want {
+			t.Errorf("%s: RecoveryTurnEnabled=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestConductorRecoveryOptOut(t *testing.T) {
+	inst, capture := recoveryFixture(t, true)
+	path, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[conductor]\nrecovery_turn = false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Restart(); err != nil {
+		t.Fatal(err)
+	}
+	// Give a wrongly enabled wake time to land before asserting zero.
+	time.Sleep(2 * time.Second)
+	assertRecoveryTurns(t, capture, 0)
+	if warning := inst.ConductorRecoveryWarning(); warning != "" {
+		t.Fatalf("opt-out must not warn: %q", warning)
+	}
+}
