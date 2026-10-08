@@ -1,36 +1,20 @@
 package session
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestHandoffLauncherIdentityUsesVerifiedSend(t *testing.T) {
-	home := identityTestEnv(t)
-	dir := filepath.Join(home, ".agent-deck")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"),
-		[]byte("[codex]\ncommand='/installed/codex-ad'\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ClearUserConfigCache()
-	inst := identityTestInstance("codex")
-	inst.ProjectPath = t.TempDir()
-	got := inst.BuildIdentityPrompt()
-	if !strings.Contains(got, "agent-handoff send --key KEY") {
-		t.Fatalf("handoff launcher must advertise verified sends:\n%s", got)
-	}
-	if strings.Contains(got, "agent-deck session send <id-or-title>") {
-		t.Fatal("must not advertise conflicting raw send default")
-	}
-	inst.Tool = "claude"
-	got = inst.BuildIdentityPrompt()
-	if strings.Contains(got, "agent-handoff send --key KEY") ||
-		!strings.Contains(got, "agent-deck session send <id-or-title>") {
-		t.Fatal("non-Codex sessions must retain their ordinary messaging instructions")
+func TestClaudeHandoffRejectsTraversalIdentityBeforeLookup(t *testing.T) {
+	for _, id := range []string{"../../foreign", "nested/thread", `nested\thread`, "thread*", "thread\x00"} {
+		t.Run(id, func(t *testing.T) {
+			inst := &Instance{Tool: "claude", ClaudeSessionID: id, ProjectPath: t.TempDir()}
+			if _, err := canonicalClaudeExactTranscriptPath(inst); err == nil || !strings.Contains(err.Error(), "identity") {
+				t.Fatalf("canonical lookup must reject malformed identity: %v", err)
+			}
+			if prompt, _, err := BuildClaudeToCodexHandoffPrompt(inst, 1000); err == nil || prompt != "" {
+				t.Fatalf("handoff accepted malformed identity: prompt=%q err=%v", prompt, err)
+			}
+		})
 	}
 }

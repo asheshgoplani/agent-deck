@@ -211,11 +211,7 @@ func (i *Instance) BuildIdentityPrompt() string {
 	}
 	b.WriteString("\n## agent-deck CLI (flags go BEFORE positional arguments)\n")
 	b.WriteString("- `agent-deck session current --json` — this session's full, current metadata from the database (source of truth; the snapshot above may be renamed or re-parented later)\n")
-	if cfg, err := LoadUserConfig(); err == nil && i.Tool == "codex" && filepath.Base(cfg.Codex.Command) == "codex-ad" {
-		b.WriteString("- Bounded handoff follow-ups use `agent-handoff send --key KEY --message TEXT`, not raw session send. Queued/typed/submitted is not accepted-turn proof; inspect uncertain delivery without automatic resend.\n")
-	} else {
-		b.WriteString("- `agent-deck session send <id-or-title> \"message\"` — message another session (`--message-file FILE` for long text)\n")
-	}
+	b.WriteString("- `agent-deck session send <id-or-title> \"message\"` — message another session (`--message-file FILE` for long text)\n")
 	if i.NoTransitionNotify {
 		// This session's turns are never reported, so an answer reaches
 		// nobody unless it is sent back explicitly.
