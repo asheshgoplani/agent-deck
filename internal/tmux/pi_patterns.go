@@ -3,13 +3,13 @@ package tmux
 import "strings"
 
 // piBusyPatternContent blanks complete fenced examples while preserving line
-// positions for the busy-pattern tail window. An unmatched fence is left intact:
+// positions in the original 25-line tail window. An unmatched fence is left intact:
 // a streaming answer must not hide the live interrupt bar beneath it.
 func piBusyPatternContent(content string) string {
 	if !strings.Contains(content, "```") && !strings.Contains(content, "~~~") {
-		return content
+		return strings.Join(lastNLines(content, 25), "\n")
 	}
-	lines := strings.Split(content, "\n")
+	lines := lastNLines(content, strings.Count(content, "\n")+1)
 	start, fence := -1, ""
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -34,5 +34,5 @@ func piBusyPatternContent(content string) string {
 		}
 		start, fence = i, trimmed[:n]
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines[max(0, len(lines)-25):], "\n")
 }

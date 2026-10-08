@@ -5666,7 +5666,7 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 		recentContent := strings.Join(recentLines, "\n")
 		regexContent := recentContent
 		if tool == "pi" {
-			regexContent = strings.Join(lastNLines(piBusyPatternContent(content), 25), "\n")
+			regexContent = piBusyPatternContent(content)
 		}
 		for _, re := range patterns.BusyRegexps {
 			if re.MatchString(regexContent) {

@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -113,5 +114,13 @@ func TestIssue2521PiQuotedBusy(t *testing.T) {
 				t.Fatalf("frame=%q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIssue2521PiBusyWindowAfterFence(t *testing.T) {
+	content := "escape interrupt\n" + strings.Repeat("old answer\n", 23) + "```text\nexample\n```\n\n"
+	s := &Session{Command: "pi"}
+	if s.hasBusyIndicator(content) {
+		t.Fatal("closed trailing fence pulled stale busy text into the 25-line window")
 	}
 }
