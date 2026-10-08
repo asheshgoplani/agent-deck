@@ -328,7 +328,9 @@ func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
 	// Describe xterm.js, not the terminal that launched the web daemon.
 	// Inheriting xterm-ghostty makes tmux emit colon-form RGB sequences that
 	// xterm.js misreads, turning dark backgrounds green and text yellow.
-	// COLORTERM preserves truecolor support with the xterm-256color terminfo.
+	// COLORTERM=truecolor lets tmux 3.6+ keep exact RGB with the
+	// xterm-256color terminfo; older tmux approximates RGB with the 256
+	// colour palette unless the user's config enables RGB for this TERM.
 	cmd.Env = ensureTERM(cmd.Env)
 	return cmd
 }
