@@ -377,6 +377,10 @@ func handleSessionStart(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	if warning := inst.ConductorRecoveryWarning(); warning != "" && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+	}
+
 	// --attach: drop the user into the freshly started session's pane. This
 	// suspends the CLI into tmux and blocks until the user detaches, so the
 	// normal success output below is skipped. Refused loudly (never silently)
@@ -403,6 +407,9 @@ func handleSessionStart(profile string, args []string) {
 		"success": true,
 		"id":      inst.ID,
 		"title":   inst.Title,
+	}
+	if warning := inst.ConductorRecoveryWarning(); warning != "" {
+		jsonData["warning"] = warning
 	}
 	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 		jsonData["tmux"] = tmuxSess.Name
@@ -887,7 +894,7 @@ func handleSessionRestart(profile string, args []string) {
 	// Stamp the persisted freshness marker so subsequent watchdog ticks see
 	// this session as "just started" and skip (issue #30).
 	inst.LastStartedAt = time.Now()
-	warning := inst.ConsumeCodexRestartWarning()
+	warning := strings.TrimSpace(inst.ConsumeCodexRestartWarning() + "\n" + inst.ConductorRecoveryWarning())
 	if warning != "" && !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 	}
@@ -985,7 +992,7 @@ func restartAllSessions(profile string, out *CLIOutput, storage *session.Storage
 		inst.LastStartedAt = time.Now()
 		restarted = append(restarted, inst.ID)
 
-		warning := inst.ConsumeCodexRestartWarning()
+		warning := strings.TrimSpace(inst.ConsumeCodexRestartWarning() + "\n" + inst.ConductorRecoveryWarning())
 		if warning != "" && !out.jsonMode {
 			fmt.Fprintf(os.Stderr, "  Warning: %s\n", warning)
 		}

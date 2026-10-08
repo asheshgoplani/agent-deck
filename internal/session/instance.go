@@ -570,7 +570,8 @@ type Instance struct {
 	// JSON structure: {"tool": "claude", "options": {...}}
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
 
-	tmuxSession *tmux.Session // Internal tmux session
+	tmuxSession              *tmux.Session // Internal tmux session
+	conductorRecoveryWarning string        // protected by mu; latest spawn only
 	// Database that last loaded or saved this instance. Restart bookkeeping must
 	// return to that profile instead of whichever database is process-global.
 	restartDB atomic.Pointer[statedb.StateDB]
@@ -5452,7 +5453,8 @@ func (i *Instance) Start() error {
 		go i.detectCopilotSessionAsync()
 	}
 
-	return i.wakeConductorAfterSpawn()
+	i.recoverConductorAfterSpawn()
+	return nil
 }
 
 // StartWithMessage starts the session and sends an initial message when ready
@@ -9971,7 +9973,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	// lock. Storm-suppressed calls and failed spawns never send recovery input.
 	defer func() {
 		if err == nil {
-			err = i.wakeConductorAfterSpawn()
+			i.recoverConductorAfterSpawn()
 		}
 	}()
 	// Registered AFTER the gate and BEFORE the tmux work, so it runs on every

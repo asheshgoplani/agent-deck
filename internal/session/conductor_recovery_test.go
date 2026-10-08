@@ -76,6 +76,9 @@ func TestConductorRecoveryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRecoveryTurns(t, capture, 3)
+	if warning := inst.ConductorRecoveryWarning(); warning != "" {
+		t.Fatal(warning)
+	}
 }
 
 func TestConductorRecoveryOrdinarySession(t *testing.T) {
@@ -122,6 +125,9 @@ func TestConductorRecoveryDraftDoesNotFailSpawn(t *testing.T) {
 		t.Fatal("successful spawn lost its lifecycle state")
 	}
 	assertRecoveryTurns(t, capture, 0)
+	if warning := inst.ConductorRecoveryWarning(); !strings.Contains(warning, "not sent") {
+		t.Fatalf("missing refusal warning: %q", warning)
+	}
 }
 
 func TestConductorRecoveryDroppedEnterIsUncertain(t *testing.T) {
@@ -156,4 +162,96 @@ func TestConductorRecoveryMenuNeverReceivesInput(t *testing.T) {
 		t.Error("interactive menu authorized recovery input")
 	}
 	assertRecoveryTurns(t, capture, 0)
+}
+
+func TestConductorRecoveryExplicitMessage(t *testing.T) {
+	inst, capture := recoveryFixture(t, true)
+	// A regular explicit initial message owns the one initial turn.
+	if err := inst.StartWithMessage("operator task"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "operator task\n" {
+		t.Fatalf("explicit message changed or duplicated: %q", b)
+	}
+	assertRecoveryTurns(t, capture, 0)
+}
+
+func TestConductorRecoverySlowStartup(t *testing.T) {
+	inst, capture := recoveryFixture(t, true)
+	b, err := os.ReadFile(inst.Command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = []byte(strings.Replace(string(b), "#!/bin/sh\n", "#!/bin/sh\nsleep 21\n", 1))
+	if err := os.WriteFile(inst.Command, b, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	assertRecoveryTurns(t, capture, 1)
+}
+
+func TestConductorRecoveryFreshFrameGuards(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool, pane string
+		safe             bool
+	}{
+		{"claude empty", "claude", "❯ ", true},
+		{"claude draft", "claude", "❯ operator draft", false},
+		{"claude busy overrides prompt", "claude", "✳ Working… (esc to interrupt)\n❯ ", false},
+		{"claude menu", "claude", "❯ \nEnter to select", false},
+		{"codex empty", "codex", "› ", true},
+		{"codex draft", "codex", "› operator draft", false},
+		{"codex legacy unscopable", "codex", "codex> operator draft", false},
+		{"codex approval", "codex", "Continue?", false},
+		{"codex busy", "codex", "• Working (2s • esc to interrupt)\n› ", false},
+		{"blank", "claude", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := conductorRecoveryPromptSafe(tc.tool, tc.pane); got != tc.safe {
+				t.Fatalf("safe=%v, want %v", got, tc.safe)
+			}
+		})
+	}
+}
+
+func TestConductorRecoveryEmptyMessageAndDurableState(t *testing.T) {
+	inst, capture := recoveryFixture(t, true)
+	state := filepath.Join(inst.ProjectPath, "state.json")
+	saved := []byte(`{"completed":["already-delivered"],"running":["existing-child"],"pending":["authorized-task"]}`)
+	if err := os.WriteFile(state, saved, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := inst.StartWithMessage(""); err != nil {
+		t.Fatal(err)
+	}
+	assertRecoveryTurns(t, capture, 1)
+	got, err := os.ReadFile(state)
+	if err != nil || string(got) != string(saved) {
+		t.Fatalf("lifecycle rewrote durable work: %q, %v", got, err)
+	}
+	if err := inst.RestartWithEnv(map[string]string{"RECOVERY_FIXTURE": "1"}); err != nil {
+		t.Fatal(err)
+	}
+	assertRecoveryTurns(t, capture, 2)
+}
+
+func TestConductorRecoverySerializesWithOtherSenders(t *testing.T) {
+	inst, capture := recoveryFixture(t, true)
+	lock, err := AcquireSendLock(inst.ID, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() { time.Sleep(3 * time.Second); lock.Release(); close(released) }()
+	t.Cleanup(func() { <-released })
+	if err := inst.Start(); err != nil {
+		t.Fatal(err)
+	}
+	assertRecoveryTurns(t, capture, 1)
 }
