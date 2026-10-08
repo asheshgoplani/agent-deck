@@ -5664,8 +5664,12 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	if patterns != nil {
 		recentLines := lastNLines(content, 25)
 		recentContent := strings.Join(recentLines, "\n")
+		regexContent := recentContent
+		if tool == "pi" {
+			regexContent = strings.Join(lastNLines(piBusyPatternContent(content), 25), "\n")
+		}
 		for _, re := range patterns.BusyRegexps {
-			if re.MatchString(recentContent) {
+			if re.MatchString(regexContent) {
 				tracker.MarkBusy()
 				statusLog.Debug(
 					"busy_pattern_match",

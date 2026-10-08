@@ -94,3 +94,24 @@ func BenchmarkIssue2521PiPrompt(b *testing.B) {
 		s.hasPromptIndicator(pi2521Footer)
 	}
 }
+
+func TestIssue2521PiQuotedBusy(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		want          FrameVerdict
+	}{
+		{"closed backticks", "Here is the shortcut:\n```text\nescape interrupt\n```\nDone.\n" + pi2521Footer, FrameWaiting},
+		{"closed full bar", "```text\nescape interrupt · ctrl+c/ctrl+d clear/exit\n```\n" + pi2521Footer, FrameWaiting},
+		{"indented tilde", "  ~~~text\n  escape interrupt\n  ~~~\n" + pi2521Footer, FrameWaiting},
+		{"long fence", "````text\nescape interrupt\n```\n````\n" + pi2521Footer, FrameWaiting},
+		{"unclosed fence", "```text\n" + pi2521Busy, FrameActive},
+		{"different closing fence", "```text\nescape interrupt\n~~~\n" + pi2521Footer, FrameActive},
+		{"live after example", "```text\nescape interrupt\n```\n" + pi2521Busy, FrameActive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyPaneFrame("pi", tc.content); got != tc.want {
+				t.Fatalf("frame=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
