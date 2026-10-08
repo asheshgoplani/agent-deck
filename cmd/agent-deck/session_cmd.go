@@ -4769,8 +4769,9 @@ func noWaitSendTuning() sendExecTuning {
 //     would merge into the stuck composer) — it is surfaced in the result
 //     instead so the caller can report it.
 //
-// Steps 1, 2 and 4 are Claude-only: composer introspection is Claude-shaped
-// and non-Claude tools gate readiness upstream.
+// Steps 1 and 4 are Claude-only: non-Claude tools gate readiness upstream.
+// Step 2 runs for every tool whose composer agent-deck can read: Claude, and
+// Codex since issue #2536 (composerDraftReaderFor).
 func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun sendExecTuning) (sendDeliveryResult, error) {
 	res := sendDeliveryResult{}
 	claudeLike := session.IsClaudeCompatible(tool)
@@ -4785,23 +4786,27 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 		}
 	}
 
-	if claudeLike {
+	if draftReader, guarded := composerDraftReaderFor(tool); guarded {
 		guard := send.GuardComposerDraft(target, send.ComposerGuardOptions{
 			HoldWait:     tun.guardHold,
 			PollInterval: tun.guardPoll,
 			ClearWait:    tun.guardClearWait,
 			Strip:        tmux.StripANSI,
+			Draft:        draftReader,
 		})
 		res.held = guard.Held
 		if guard.Refused {
 			res.delivery = deliveryComposerBlocked
 			return res, fmt.Errorf("message not sent: composer is occupied or unreadable; existing draft preserved")
 		}
-		// Provenance for the #1777 attribution gate, taken from the capture
-		// the guard already made just before we type: with no paste marker
-		// parked in the composer then, a marker seen during verification is
-		// the collapsed form of our own payload and may be nudged.
-		tun.retry.composerPasteFreeBeforeSend = guard.ComposerPasteMarkerFree
+		if claudeLike {
+			// Provenance for the #1777 attribution gate, taken from the
+			// capture the guard already made just before we type: with no
+			// paste marker parked in the composer then, a marker seen
+			// during verification is the collapsed form of our own payload
+			// and may be nudged.
+			tun.retry.composerPasteFreeBeforeSend = guard.ComposerPasteMarkerFree
+		}
 	}
 
 	tun.retry.tool = tool
@@ -4820,6 +4825,20 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 	}
 
 	return res, err
+}
+
+// composerDraftReaderFor returns the composer-draft reader for tool and
+// whether the composer-draft guard (issue #1409) applies to it at all. Claude
+// tools read Claude's composer; Codex reads its last "›" cell (issue #2536).
+// Other tools have no introspectable composer and stay unguarded.
+func composerDraftReaderFor(tool string) (send.ComposerDraftReader, bool) {
+	switch {
+	case session.IsClaudeCompatible(tool):
+		return send.ComposerDraft, true
+	case tool == "codex":
+		return send.CodexComposerDraft, true
+	}
+	return nil, false
 }
 
 // skipClaudeDeliveryVerify reports whether the Claude-tuned post-send delivery
