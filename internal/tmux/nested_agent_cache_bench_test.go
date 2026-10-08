@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 )
 
 // BenchmarkNestedAgentCachedDetection measures a real process-identity cache hit.
@@ -16,6 +17,8 @@ func BenchmarkNestedAgentCachedDetection(b *testing.B) {
 	}
 	sess := NewSession("identity-bench", b.TempDir())
 	sess.rememberAgent(nestedAgentMatch{Tool: "opencode", PID: pid, StartID: start})
+	// Measure identity checks, not detection-entry expiry, even for long runs.
+	sess.toolDetectExpiry = time.Duration(1<<63 - 1)
 	b.ResetTimer()
 	for b.Loop() {
 		if _, ok := sess.freshCachedTool(); !ok {
