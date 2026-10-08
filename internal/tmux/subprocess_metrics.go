@@ -67,9 +67,14 @@ func RunUncounted(fn func()) {
 	if fn == nil {
 		return
 	}
-	depth := uncountedCounter(currentGoroutineID())
+	id := currentGoroutineID()
+	depth := uncountedCounter(id)
 	depth.Add(1)
-	defer depth.Add(-1)
+	defer func() {
+		if depth.Add(-1) == 0 {
+			uncountedDepth.Delete(id)
+		}
+	}()
 	fn()
 }
 

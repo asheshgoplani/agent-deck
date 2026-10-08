@@ -86,3 +86,58 @@ func TestRefreshStatusBarImmediateNotChargedPerViewer(t *testing.T) {
 		t.Fatalf("per-client status-bar refresh charged %d calls; web viewers must not count against the session budget", got)
 	}
 }
+
+func TestRunUncountedCleansUpNestedCalls(t *testing.T) {
+	id := currentGoroutineID()
+	RunUncounted(nil)
+	if _, ok := uncountedDepth.Load(id); ok {
+		t.Fatal("nil callback created an entry")
+	}
+	RunUncounted(func() {
+		RunUncounted(func() {
+			if !startIsUncounted() {
+				t.Fatal("nested callback is counted")
+			}
+		})
+		if !startIsUncounted() {
+			t.Fatal("nested return cleared the outer exclusion")
+		}
+	})
+	if _, ok := uncountedDepth.Load(id); ok {
+		t.Fatal("outer return retained the goroutine entry")
+	}
+}
+
+func TestRunUncountedCleansUpAfterPanic(t *testing.T) {
+	id := currentGoroutineID()
+	func() {
+		defer func() {
+			if got := recover(); got != "test panic" {
+				t.Errorf("panic = %v, want test panic", got)
+			}
+		}()
+		RunUncounted(func() {
+			RunUncounted(func() { panic("test panic") })
+		})
+	}()
+	if _, ok := uncountedDepth.Load(id); ok {
+		t.Fatal("panic retained the goroutine entry")
+	}
+}
+
+func TestRunUncountedCleansUpShortLivedGoroutines(t *testing.T) {
+	ids := make(chan int64, 100)
+	for range cap(ids) {
+		go func() {
+			id := currentGoroutineID()
+			RunUncounted(func() {})
+			ids <- id
+		}()
+	}
+	for range cap(ids) {
+		id := <-ids
+		if _, ok := uncountedDepth.Load(id); ok {
+			t.Errorf("completed goroutine %d retained an entry", id)
+		}
+	}
+}
