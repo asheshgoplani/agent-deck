@@ -877,6 +877,7 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	},
 }
 
+// detectToolFromCommand classifies a configured launch command independently of pane output.
 func detectToolFromCommand(command string) string {
 	cmdLower := strings.ToLower(strings.TrimSpace(command))
 	if cmdLower == "" {
@@ -1245,6 +1246,11 @@ type Session struct {
 	detectedAgentStart string
 	// agentTreeOverride replaces the live pane process probe. Nil in production.
 	agentTreeOverride func() (int, []processSample, error)
+	// Identity checks have a separate one-second cache; failed checks never stick.
+	agentIdentityMu        sync.Mutex
+	agentIdentityPID       int
+	agentIdentityStart     string
+	agentIdentityCheckedAt time.Time
 
 	// Cached background-work probe (BackgroundWorkSince). The hook fast path in
 	// UpdateStatus has no captured pane content, so it must capture separately to
@@ -4446,7 +4452,7 @@ func (s *Session) DetectTool() string {
 
 // freshCachedTool returns a detection that is still inside the expiry window
 // and, when the match was bound to a process, whose process is still that
-// same incarnation. A dead or reused PID invalidates the cache immediately.
+// same incarnation. Successful identity probes are reused for up to one second.
 func (s *Session) freshCachedTool() (string, bool) {
 	s.mu.Lock()
 	tool := s.detectedTool
@@ -4456,12 +4462,13 @@ func (s *Session) freshCachedTool() (string, bool) {
 	if !fresh {
 		return "", false
 	}
-	if pid > 0 && start != "" && !agentIncarnationAlive(pid, start) {
+	if pid > 0 && start != "" && !s.agentIncarnationAlive(pid, start) {
 		return "", false
 	}
 	return tool, true
 }
 
+// rememberAgent caches the observed tool together with its runtime incarnation.
 func (s *Session) rememberAgent(match nestedAgentMatch) {
 	s.mu.Lock()
 	s.detectedTool = match.Tool
@@ -4476,6 +4483,7 @@ func (s *Session) rememberAgent(match nestedAgentMatch) {
 	s.mu.Unlock()
 }
 
+// rememberTool caches a tool label without a process-identity binding.
 func (s *Session) rememberTool(tool string) {
 	s.mu.Lock()
 	s.detectedTool = tool
@@ -4485,6 +4493,7 @@ func (s *Session) rememberTool(tool string) {
 	s.mu.Unlock()
 }
 
+// rememberShell records a conservative fallback when no agent can be identified.
 func (s *Session) rememberShell() {
 	s.rememberTool("shell")
 }
@@ -4500,7 +4509,7 @@ func (s *Session) keepPreviousRuntime() (string, bool) {
 	if previous == "" || previous == "shell" {
 		return "", false
 	}
-	if pid > 0 && start != "" && !agentIncarnationAlive(pid, start) {
+	if pid > 0 && start != "" && !s.agentIncarnationAlive(pid, start) {
 		return "", false
 	}
 	s.mu.Lock()

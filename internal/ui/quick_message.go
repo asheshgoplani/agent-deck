@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -14,24 +16,7 @@ import (
 
 type promptDeliveryMsg struct{ err error }
 
-type nativeQueuePane interface {
-	SendKeysChunkedToPrimaryWindow(string) error
-	SendNamedKeyToPrimaryWindow(string) error
-}
-
-func queueOpenCodePrompt(p nativeQueuePane, text string) error {
-	if err := p.SendKeysChunkedToPrimaryWindow(text); err != nil {
-		return err
-	}
-	for _, key := range []string{"C-x", "Enter"} {
-		if err := p.SendNamedKeyToPrimaryWindow(key); err != nil {
-			return fmt.Errorf("message typed but not queued: %w", err)
-		}
-	}
-	return nil
-}
-
-// Reuse session send's readiness, draft protection, and delivery reporting for
+// quickMessageCmd reuses session send's readiness, draft protection, and reporting for
 // every harness. Queue mode uses native queueing where available, otherwise
 // waits for turn end; it is not the CLI's --queue (durable delivery retry).
 func quickMessageCmd(profile string, inst *session.Instance, msg promptSubmitMsg) tea.Cmd {
@@ -46,9 +31,11 @@ func quickMessageCmd(profile string, inst *session.Instance, msg promptSubmitMsg
 	}
 	return func() tea.Msg {
 		if msg.queue && openCode2 {
-			// OpenCode 2's prompt.queue is Ctrl+X Return. Plain Return
-			// steers the current turn instead, so do not substitute it.
-			return promptDeliveryMsg{err: queueOpenCodePrompt(ts, msg.text)}
+			// A session-bound API request cannot drift to another tmux pane or
+			// submit into a replacement shell. Never fall back to terminal keys.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return promptDeliveryMsg{err: inst.QueueOpenCodePrompt(ctx, msg.text)}
 		}
 		// Claude queues Enter during generation. Explicit steering interrupts
 		// first, but never clears or merges an existing operator draft.
@@ -75,6 +62,7 @@ func quickMessageCmd(profile string, inst *session.Instance, msg promptSubmitMsg
 	}
 }
 
+// quickMessageArgs chooses immediate delivery or turn-end deferral for session send.
 func quickMessageArgs(profile string, msg promptSubmitMsg) []string {
 	args := []string{"--profile", profile, "session", "send", msg.instanceID, "--message-file", "-"}
 	if msg.queue {

@@ -293,3 +293,60 @@ func copyExecutable(src, dst string) error {
 	}
 	return out.Close()
 }
+
+func TestNestedAgentIdentityCache(t *testing.T) {
+	original := processIdentityOf
+	t.Cleanup(func() { processIdentityOf = original })
+	calls := 0
+	processIdentityOf = func(context.Context, int) (string, error) {
+		calls++
+		return "start", nil
+	}
+	sess := NewSession("identity-cache", t.TempDir())
+	sess.rememberAgent(nestedAgentMatch{Tool: "opencode", PID: 123, StartID: "start"})
+	for range 10 {
+		if tool, ok := sess.freshCachedTool(); !ok || tool != "opencode" {
+			t.Fatal("live identity rejected")
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("identity probes = %d, want 1 within one second", calls)
+	}
+	sess.agentIdentityCheckedAt = time.Now().Add(-2 * time.Second)
+	if !sess.agentIncarnationAlive(123, "start") || calls != 2 {
+		t.Fatal("expired identity was not rechecked")
+	}
+	if sess.agentIncarnationAlive(123, "reused") || calls != 3 {
+		t.Fatal("different start identity reused successful check")
+	}
+	if sess.agentIncarnationAlive(123, "reused") || calls != 4 {
+		t.Fatal("failed identity check was cached")
+	}
+	if !sess.agentIncarnationAlive(124, "start") || calls != 5 {
+		t.Fatal("different PID reused successful check")
+	}
+	for _, input := range []struct {
+		pid   int
+		start string
+	}{{0, "start"}, {-1, "start"}, {123, ""}} {
+		if sess.agentIncarnationAlive(input.pid, input.start) {
+			t.Fatal("invalid identity accepted")
+		}
+	}
+	if calls != 5 {
+		t.Fatal("invalid inputs triggered a probe")
+	}
+	processIdentityOf = func(context.Context, int) (string, error) {
+		calls++
+		return "", errors.New("process exited")
+	}
+	sess.agentIdentityCheckedAt = time.Now().Add(-2 * time.Second)
+	for range 2 {
+		if sess.agentIncarnationAlive(124, "start") {
+			t.Fatal("exited process accepted")
+		}
+	}
+	if calls != 7 {
+		t.Fatal("probe errors were cached")
+	}
+}

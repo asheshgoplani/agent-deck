@@ -163,6 +163,7 @@ func (i *Instance) buildOpenCodeV2ForkCommand(workDir, title string, opts *OpenC
 	return strings.Join(steps, " && ")
 }
 
+// openCodeForkBinary preserves the configured launcher for API calls and forks.
 func (i *Instance) openCodeForkBinary() string {
 	if launcher, ok := i.openCodeLauncher(i.openCodePersistentCommand()); ok {
 		return launcher

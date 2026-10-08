@@ -6038,6 +6038,7 @@ func (h *Home) publishSessionRenderSnapshot(snap map[string]sessionRenderState) 
 	h.sessionRenderSnapshot.Store(snap)
 }
 
+// refreshSessionRenderSnapshot publishes immutable row state for lock-free rendering.
 func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 	if instances == nil {
 		h.instancesMu.RLock()
@@ -6096,6 +6097,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 	h.publishSessionRenderSnapshot(snap)
 }
 
+// getSessionRenderState reads the row snapshot, falling back for newly added sessions.
 func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState {
 	if inst == nil {
 		return sessionRenderState{}
@@ -14244,6 +14246,7 @@ func (h *Home) handleEditPathsDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleEditSessionDialogKey applies edit-dialog actions to the selected session.
 func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":

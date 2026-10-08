@@ -1,53 +1,62 @@
 package ui
 
 import (
-	"errors"
-	"reflect"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-type fakeNativeQueuePane struct {
-	text     string
-	keys     []string
-	failText bool
-	failKey  bool
+// TestQuickMessageQueueRecipientContinuity ensures native queueing never sends
+// terminal keys, even when the session no longer has a live tmux recipient.
+func TestQuickMessageQueueRecipientContinuity(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "terminal-keys")
+	t.Setenv("QUEUE_KEYS_MARKER", marker)
+	for name, script := range map[string]string{
+		"tmux":      "#!/bin/sh\nprintf keys >> \"$QUEUE_KEYS_MARKER\"\nexit 1\n",
+		"opencode2": "#!/bin/sh\nprintf '%s\\n' '{\"data\":{\"id\":\"msg_queued\",\"sessionID\":\"ses_target\",\"delivery\":\"queue\"}}'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	inst := session.NewInstanceWithGroupAndTool("queue", dir, "", "opencode2")
+	inst.OpenCodeSessionID = "ses_target"
+	for _, id := range []string{"ses_target", ""} {
+		inst.OpenCodeSessionID = id
+		msg := quickMessageCmd("work", inst, promptSubmitMsg{instanceID: inst.ID, text: "first\nsecond", queue: true})().(promptDeliveryMsg)
+		if (msg.err != nil) != (id == "") {
+			t.Fatalf("session %q: %v", id, msg.err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("native queue attempted terminal delivery or fallback")
+	}
 }
 
-func (p *fakeNativeQueuePane) SendKeysChunkedToPrimaryWindow(text string) error {
-	if p.failText {
-		return errors.New("paste failed")
-	}
-	p.text = text
-	return nil
+// TestQuickMessageRemoteSession documents the intentionally local-only scope:
+// remote queueing needs a versioned SSH/API transport, not local tmux delivery.
+func TestQuickMessageRemoteSession(t *testing.T) {
+	t.Skip("Send/Queue is local-only: RemoteSession has no versioned native-queue transport; attaching or remote session send remains available")
 }
 
-func (p *fakeNativeQueuePane) SendNamedKeyToPrimaryWindow(key string) error {
-	if p.failKey {
-		return errors.New("key failed")
-	}
-	p.keys = append(p.keys, key)
-	return nil
-}
-
-func TestQuickMessageNativeQueue(t *testing.T) {
-	p := &fakeNativeQueuePane{}
-	if err := queueOpenCodePrompt(p, "first\nsecond"); err != nil {
-		t.Fatal(err)
-	}
-	if p.text != "first\nsecond" || !reflect.DeepEqual(p.keys, []string{"C-x", "Enter"}) {
-		t.Fatalf("wrong native queue sequence: %+v", p)
-	}
-	p = &fakeNativeQueuePane{failText: true}
-	if err := queueOpenCodePrompt(p, "message"); err == nil || len(p.keys) != 0 {
-		t.Fatal("paste failure still submitted")
-	}
-	p = &fakeNativeQueuePane{failKey: true}
-	if err := queueOpenCodePrompt(p, "message"); err == nil {
-		t.Fatal("submit failure not reported")
+// TestQuickMessageRemoteDoesNotTargetLocal ensures remote rows cannot accidentally
+// open a composer for an unrelated local session while remote delivery is unsupported.
+func TestQuickMessageRemoteDoesNotTargetLocal(t *testing.T) {
+	for _, key := range []string{"s", "Q"} {
+		h, _ := armHomeWithRunningClaudeSession(t, "claude")
+		h.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession}}
+		h.cursor = 0
+		h.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		if h.promptInputDialog.IsVisible() {
+			t.Fatal("remote hotkey opened a local message composer")
+		}
 	}
 }
 
@@ -101,6 +110,18 @@ func TestQuickMessageEditorReturn(t *testing.T) {
 	d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
 	if d.editorChord || !strings.Contains(d.input.Value(), "z") {
 		t.Fatal("unmatched chord swallowed text")
+	}
+}
+
+// TestQuickMessageCtrlE opens the external editor without submitting the draft.
+func TestQuickMessageCtrlE(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	d := NewPromptInputDialog()
+	d.Show("target", "session")
+	d.input.SetValue("draft")
+	_, cmd := d.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if cmd == nil || !d.IsVisible() || d.input.Value() != "draft" {
+		t.Fatal("Ctrl+E did not open the editor while preserving the draft")
 	}
 }
 

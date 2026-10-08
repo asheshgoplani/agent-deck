@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
@@ -210,6 +211,7 @@ func detectNestedAgent(panePID int, procs []processSample) (nestedAgentMatch, ag
 	}
 }
 
+// classifyProcess recognizes exact agent executables or interpreter entrypoints.
 func classifyProcess(proc processSample) (string, bool) {
 	base := normalizeExe(proc.Comm)
 	if tool, ok := agentExecutables[base]; ok {
@@ -224,6 +226,7 @@ func classifyProcess(proc processSample) (string, bool) {
 	return classifyInterpreterArgv(base, proc.Argv)
 }
 
+// classifyInterpreterArgv skips launcher options without treating inline code as an agent.
 func classifyInterpreterArgv(comm string, argv []string) (string, bool) {
 	start := 0
 	if len(argv) > 0 && normalizeExe(argv[0]) == comm {
@@ -275,6 +278,7 @@ func classifyInterpreterArgv(comm string, argv []string) (string, bool) {
 	return "", false
 }
 
+// entrypointTool resolves known packages and script basenames, never arbitrary suffixes.
 func entrypointTool(arg string) string {
 	trimmed := strings.Trim(arg, `"'`)
 	if trimmed == ompPackageSpec {
@@ -293,6 +297,7 @@ func entrypointTool(arg string) string {
 	return ""
 }
 
+// normalizeExe strips path, quoting, case, and Windows launcher extensions.
 func normalizeExe(path string) string {
 	base := filepath.Base(strings.Trim(strings.TrimSpace(path), `"'`))
 	base = strings.ToLower(base)
@@ -300,6 +305,7 @@ func normalizeExe(path string) string {
 	return base
 }
 
+// isInterpreterOrLauncher reports whether argv must be inspected for tool identity.
 func isInterpreterOrLauncher(base string) bool {
 	return knownInterpreters[base] || knownLaunchers[base]
 }
@@ -313,6 +319,7 @@ func (s *Session) agentTree() (int, []processSample, error) {
 	return readLivePaneAgentTree(s)
 }
 
+// observeNestedAgent binds an unambiguous pane-tree match to its process start identity.
 func (s *Session) observeNestedAgent() (nestedAgentMatch, agentTreeStatus) {
 	panePID, procs, err := s.agentTree()
 	if err != nil || panePID <= 0 {
@@ -330,12 +337,28 @@ func (s *Session) observeNestedAgent() (nestedAgentMatch, agentTreeStatus) {
 	return match, agentTreeMatch
 }
 
-func agentIncarnationAlive(pid int, startID string) bool {
+// agentIncarnationAlive reuses successful PID/start-identity probes for one
+// second, independently of tool detection. Never use this cache to authorize
+// message delivery: process exit or reuse can take up to one second to surface.
+func (s *Session) agentIncarnationAlive(pid int, startID string) bool {
 	if pid <= 0 || startID == "" {
 		return false
 	}
+	s.agentIdentityMu.Lock()
+	defer s.agentIdentityMu.Unlock()
+	if s.agentIdentityPID == pid && s.agentIdentityStart == startID &&
+		time.Since(s.agentIdentityCheckedAt) < time.Second {
+		return true
+	}
+	s.agentIdentityCheckedAt = time.Time{}
 	got, err := processIdentityOf(context.Background(), pid)
-	return err == nil && got == startID
+	if err != nil || got != startID {
+		return false
+	}
+	s.agentIdentityPID = pid
+	s.agentIdentityStart = startID
+	s.agentIdentityCheckedAt = time.Now()
+	return true
 }
 
 // readLivePaneAgentTree snapshots the process tree rooted at the tmux pane PID.
@@ -358,6 +381,7 @@ func readLivePaneAgentTree(s *Session) (int, []processSample, error) {
 	return panePID, procs, nil
 }
 
+// parsePSTree decodes fixed ps columns and marks exited processes for exclusion.
 func parsePSTree(out []byte) []processSample {
 	var procs []processSample
 	for _, line := range bytes.Split(out, []byte{'\n'}) {
@@ -385,6 +409,7 @@ func parsePSTree(out []byte) []processSample {
 	return procs
 }
 
+// fillInterpreterArgv reads arguments only for interpreters in the rooted pane tree.
 func fillInterpreterArgv(panePID int, procs []processSample) {
 	index := make(map[int]int, len(procs))
 	children := make(map[int][]int, len(procs))
@@ -419,6 +444,7 @@ func fillInterpreterArgv(panePID int, procs []processSample) {
 	}
 }
 
+// readProcArgv prefers lossless procfs arguments, with a conservative ps fallback.
 func readProcArgv(pid int) ([]string, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err == nil {

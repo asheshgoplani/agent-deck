@@ -42,6 +42,7 @@ func creationCommandFields(command string) []session.RemoteCreationField {
 	return fields
 }
 
+// writeCreationCatalog validates the CLI request and emits the host creation catalog.
 func writeCreationCatalog(profile string, fs *flag.FlagSet, jsonOutput bool) {
 	valid := jsonOutput && fs.NArg() == 0
 	fs.Visit(func(f *flag.Flag) {
@@ -64,6 +65,7 @@ func writeCreationCatalog(profile string, fs *flag.FlagSet, jsonOutput bool) {
 	}
 }
 
+// buildCreationCatalog describes the host's available launchers and creation defaults.
 func buildCreationCatalog(profile string) (*session.RemoteCreationCatalog, error) {
 	cfg, err := session.LoadUserConfig()
 	if err != nil {

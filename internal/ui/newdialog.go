@@ -1444,6 +1444,7 @@ func (d *NewDialog) cycleReasoningEffort(delta int) {
 	d.reasoningEffort = choices[idx]
 }
 
+// updateModelPlaceholder keeps model browsing guidance separate from example IDs.
 func (d *NewDialog) updateModelPlaceholder() {
 	// One neutral placeholder for every tool. A per-tool example ID here read
 	// as an already-chosen model ("it picked claude-sonnet-4-6 by itself");
@@ -1451,6 +1452,7 @@ func (d *NewDialog) updateModelPlaceholder() {
 	d.modelInput.Placeholder = "tool default (↓ to browse)"
 }
 
+// modelInputHint supplies launcher-specific examples or remote model-resolution guidance.
 func (d *NewDialog) modelInputHint() string {
 	if d.remoteTarget {
 		return "Model IDs are resolved on the remote host"

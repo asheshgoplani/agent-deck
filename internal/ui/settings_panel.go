@@ -394,6 +394,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.showOnlyInstalledTools = config.UI.ShowOnlyInstalledTools
 }
 
+// buildToolLists combines builtin launchers and sorted custom tools for the picker.
 func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
 	names := append([]string{}, builtinToolNames...)
 	values := append([]string{}, builtinToolValues...)

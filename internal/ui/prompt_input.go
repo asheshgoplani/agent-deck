@@ -91,7 +91,7 @@ func (d *PromptInputDialog) SetSize(width, height int) {
 
 // Update handles a key while the input is visible. On Enter with non-empty
 // trimmed text it returns a promptSubmitMsg and hides; Esc cancels; all other
-// keys feed the textinput.
+// keys feed the textarea. Ctrl+J inserts a newline; Ctrl+E or Ctrl+X E opens an editor.
 func (d *PromptInputDialog) Update(msg tea.KeyMsg) (*PromptInputDialog, tea.Cmd) {
 	if d == nil || !d.visible {
 		return d, nil
@@ -103,6 +103,8 @@ func (d *PromptInputDialog) Update(msg tea.KeyMsg) (*PromptInputDialog, tea.Cmd)
 		}
 	}
 	switch msg.String() {
+	case "ctrl+e":
+		return d, editPrompt(d.input.Value())
 	case "ctrl+j", "shift+enter", "alt+enter":
 		d.input.InsertString("\n")
 		return d, nil
@@ -167,6 +169,7 @@ func (d *PromptInputDialog) Bar() string {
 	return bar
 }
 
+// ReservedHeight reports the rows the visible composer needs above the footer.
 func (d *PromptInputDialog) ReservedHeight() int {
 	if !d.IsVisible() {
 		return 0
@@ -174,6 +177,7 @@ func (d *PromptInputDialog) ReservedHeight() int {
 	return lipgloss.Height(d.Bar())
 }
 
+// editPrompt opens a private temporary draft in VISUAL, EDITOR, or vi and removes it on return.
 func editPrompt(text string) tea.Cmd {
 	f, err := os.CreateTemp("", "agent-deck-message-*.txt")
 	if err != nil {

@@ -3103,6 +3103,7 @@ func (i *Instance) queryOpenCodeSession() string {
 	return bestMatch
 }
 
+// queryOpenCodeSessionsHTTP reads legacy server session metadata for one project.
 func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]openCodeSessionMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -3151,6 +3152,7 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 	return sessions, nil
 }
 
+// queryOpenCodeSessionsCLI deduplicates discovery by launcher and project directory.
 func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
 	// V1 and V2 can use different stores for the same project. Never share
 	// cached results across launchers (or their configured environment).
@@ -3184,6 +3186,7 @@ func cachedOpenCodeCLISessions(cacheKey string) ([]openCodeSessionMetadata, bool
 	return nil, false
 }
 
+// cacheOpenCodeCLISessions stores a copied discovery result and prunes expired entries.
 func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadata) {
 	now := time.Now()
 	openCodeCLIQueryCache.Lock()
@@ -3199,6 +3202,7 @@ func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadat
 	}
 }
 
+// runOpenCodeSessionsCLI reads session metadata using the selected launcher's CLI or API.
 func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -4909,6 +4913,8 @@ func (i *Instance) noteObservedRuntimeLocked(observed string) {
 	i.tmuxSession.SetPatterns(resolved)
 }
 
+// runtimePatternToolLocked selects observed-agent patterns without changing launch identity.
+// The caller must hold i.mu.
 func (i *Instance) runtimePatternToolLocked() string {
 	if i.observedTool != "" && i.observedTool != "shell" {
 		return i.observedTool
@@ -6384,6 +6390,7 @@ func (i *Instance) probeTmuxExists() (exists, current bool) {
 	return exists, i.tmuxSession == s && i.stopRevision == stopRevision
 }
 
+// updateStatus refreshes runtime status, optionally synchronizing agent metadata.
 func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
