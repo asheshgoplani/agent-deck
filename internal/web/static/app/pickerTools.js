@@ -4,7 +4,7 @@
 // (hidden_tools + show_only_installed_tools). These helpers apply the
 // web-side fallback and edit-dialog "keep current tool" rule.
 
-export const DEFAULT_PICKER_TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
+export const DEFAULT_PICKER_TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'opencode2', 'shell']
 
 export const TOOL_DISPLAY_LABELS = {
   codex: 'ChatGPT',

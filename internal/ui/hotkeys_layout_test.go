@@ -19,12 +19,11 @@ func TestJcukenAliasReachesTheSameAction(t *testing.T) {
 		action    string
 	}{
 		{"т", "n", hotkeyNewSession},
-		{"щ", "o", hotkeyPromptSession},
+		{"ы", "s", hotkeyPromptSession},
 		{"ф", "a", hotkeyQuickApprove},
 		{"а", "f", hotkeyQuickFork},
 		{"в", "d", hotkeyDelete},
 		{"ь", "m", hotkeyMCPManager},
-		{"ы", "s", hotkeySkillsManager},
 		{"г", "u", hotkeyMarkUnread},
 		{"й", "q", hotkeyQuit},
 	}
@@ -53,7 +52,7 @@ func TestJcukenAliasCoversShiftedBindings(t *testing.T) {
 func TestLatinBindingsStillResolve(t *testing.T) {
 	lookup, _ := buildHotkeyLookup(resolveHotkeys(nil))
 
-	for _, key := range []string{"n", "o", "a", "f", "d", "m", "s", "u", "q", "F", "shift+u"} {
+	for _, key := range []string{"n", "a", "f", "d", "m", "s", "u", "q", "F", "shift+u", "Q", "alt+s"} {
 		if _, ok := lookup[key]; !ok {
 			t.Errorf("latin binding %q no longer resolves", key)
 		}

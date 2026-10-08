@@ -30,6 +30,7 @@ const (
 	hotkeyMarkUnread       = "mark_unread"
 	hotkeyQuickApprove     = "quick_approve"
 	hotkeyPromptSession    = "prompt_session" // #1410: prompt the highlighted session without attaching
+	hotkeyQueueMessage     = "queue_message"
 	hotkeyToggleYolo       = "toggle_yolo"
 	hotkeyQuickFork        = "quick_fork"
 	hotkeyForkWithOptions  = "fork_with_options"
@@ -131,6 +132,7 @@ var hotkeyActionOrder = []string{
 	hotkeyMarkUnread,
 	hotkeyQuickApprove,
 	hotkeyPromptSession,
+	hotkeyQueueMessage,
 	hotkeyToggleYolo,
 	hotkeyQuickFork,
 	hotkeyForkWithOptions,
@@ -180,13 +182,14 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyMoveToGroup:      "M",
 	hotkeyMCPManager:       "m",
 	hotkeyPluginManager:    "L",
-	hotkeySkillsManager:    "s",
+	hotkeySkillsManager:    "alt+s",
 	hotkeyTogglePreview:    "v",
 	hotkeyCycleGroupView:   "t",
 	hotkeyCycleTimeFilter:  "*",
 	hotkeyMarkUnread:       "u",
 	hotkeyQuickApprove:     "a",
-	hotkeyPromptSession:    "o",
+	hotkeyPromptSession:    "s",
+	hotkeyQueueMessage:     "Q",
 	hotkeyToggleYolo:       "y",
 	hotkeyQuickFork:        "f",
 	hotkeyForkWithOptions:  "F",

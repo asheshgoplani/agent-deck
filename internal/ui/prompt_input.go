@@ -1,43 +1,50 @@
 package ui
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// promptSubmitMsg is emitted when the operator submits a one-line prompt from
-// the main list (issue #1410). Home routes it to the target session via the
-// existing prompt-state-aware send path (the #1409/#1432 composer guard), with
-// no attach. Delivery targets the session's default pane — the guarded send
-// (deliverToConductorPane) does not address individual tmux windows — so there
-// is no per-window target here.
+// promptSubmitMsg sends a message to the selected session without attaching.
+// Delivery targets the session's managed agent pane, not a window sub-row.
 type promptSubmitMsg struct {
 	instanceID string
 	text       string
+	queue      bool
 }
 
-// PromptInputDialog is a one-line input anchored at the bottom of the list that
-// sends a prompt to the highlighted session without attaching (issue #1410,
-// Lawrence-Dawson feedback). It mirrors the Search component: a focused
-// textinput.Model that consumes keys while visible and surfaces submit/cancel.
+type promptEditorMsg struct {
+	text string
+	err  error
+}
+
+// PromptInputDialog is a multiline composer anchored above the dashboard footer.
 type PromptInputDialog struct {
-	input      textinput.Model
-	visible    bool
-	width      int
-	height     int
-	instanceID string
-	title      string
+	input       textarea.Model
+	visible     bool
+	width       int
+	height      int
+	instanceID  string
+	title       string
+	queue       bool
+	editorChord bool
 }
 
 // NewPromptInputDialog creates the inline prompt input (hidden).
 func NewPromptInputDialog() *PromptInputDialog {
-	ti := textinput.New()
-	ti.Placeholder = "Type a prompt and press Enter to send (Esc to cancel)…"
-	ti.CharLimit = 2000
-	ti.Width = 60
+	ti := textarea.New()
+	ti.Placeholder = "Type a message…"
+	ti.CharLimit = 0
+	ti.ShowLineNumbers = false
+	ti.Prompt = ""
+	ti.SetWidth(60)
+	ti.SetHeight(2)
 	return &PromptInputDialog{input: ti}
 }
 
@@ -46,6 +53,8 @@ func (d *PromptInputDialog) Show(instanceID, title string) {
 	d.visible = true
 	d.instanceID = instanceID
 	d.title = title
+	d.queue = false
+	d.editorChord = false
 	d.input.SetValue("")
 	d.input.Focus()
 }
@@ -77,30 +86,45 @@ func (d *PromptInputDialog) SetSize(width, height int) {
 	if w > 120 {
 		w = 120
 	}
-	d.input.Width = w
+	d.input.SetWidth(w)
 }
 
 // Update handles a key while the input is visible. On Enter with non-empty
 // trimmed text it returns a promptSubmitMsg and hides; Esc cancels; all other
-// keys feed the textinput.
+// keys feed the textarea. Ctrl+J inserts a newline; Ctrl+E or Ctrl+X E opens an editor.
 func (d *PromptInputDialog) Update(msg tea.KeyMsg) (*PromptInputDialog, tea.Cmd) {
 	if d == nil || !d.visible {
 		return d, nil
 	}
+	if d.editorChord {
+		d.editorChord = false
+		if msg.String() == "e" || msg.String() == "ctrl+e" {
+			return d, editPrompt(d.input.Value())
+		}
+	}
 	switch msg.String() {
+	case "ctrl+e":
+		return d, editPrompt(d.input.Value())
+	case "ctrl+j", "shift+enter", "alt+enter":
+		d.input.InsertString("\n")
+		return d, nil
+	case "ctrl+x":
+		d.editorChord = true
+		return d, nil
 	case "esc":
 		d.Hide()
 		return d, nil
 	case "enter":
 		text := strings.TrimSpace(d.input.Value())
 		instanceID := d.instanceID
+		queue := d.queue
 		if text == "" {
 			d.Hide()
 			return d, nil
 		}
 		d.Hide()
 		return d, func() tea.Msg {
-			return promptSubmitMsg{instanceID: instanceID, text: text}
+			return promptSubmitMsg{instanceID: instanceID, text: text, queue: queue}
 		}
 	default:
 		var cmd tea.Cmd
@@ -109,39 +133,79 @@ func (d *PromptInputDialog) Update(msg tea.KeyMsg) (*PromptInputDialog, tea.Cmd)
 	}
 }
 
-// View overlays the prompt bar at the bottom of the (already rendered) list
-// body, trimming the body so the composite fits the viewport height.
+// View appends the bar to a body that has already reserved space for it.
 func (d *PromptInputDialog) View(listBody string) string {
-	if d == nil || !d.visible {
+	if !d.IsVisible() {
 		return listBody
+	}
+	return listBody + "\n" + d.Bar()
+}
+
+// Bar is laid out in reserved rows above the footer, not over session info.
+func (d *PromptInputDialog) Bar() string {
+	if d == nil || !d.visible {
+		return ""
 	}
 
 	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
 
-	barWidth := d.width - 2
+	barWidth := d.width - 4
 	if barWidth < 1 {
 		barWidth = d.width
 	}
-	label := "Prompt → " + d.title
+	action := "Send"
+	if d.queue {
+		action = "Queue"
+	}
+	label := action + " → " + cellTruncate(d.title, max(1, barWidth-12), "…")
 	bar := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorAccent).
 		Padding(0, 1).
 		Width(barWidth).
 		Render(labelStyle.Render(label) + "\n" + d.input.View() + "\n" +
-			dimStyle.Render("Enter Send   Esc Cancel   (sends without attaching)"))
+			dimStyle.Render("Enter "+action+"   Ctrl+J Newline   Ctrl+X E Editor   Esc Cancel"))
+	return bar
+}
 
-	// Reserve space for the bar at the bottom: trim the list body so the
-	// composite stays within the viewport height.
-	barHeight := lipgloss.Height(bar)
-	bodyLines := strings.Split(listBody, "\n")
-	maxBody := d.height - barHeight
-	if maxBody < 0 {
-		maxBody = 0
+// ReservedHeight reports the rows the visible composer needs above the footer.
+func (d *PromptInputDialog) ReservedHeight() int {
+	if !d.IsVisible() {
+		return 0
 	}
-	if len(bodyLines) > maxBody {
-		bodyLines = bodyLines[:maxBody]
+	return lipgloss.Height(d.Bar())
+}
+
+// editPrompt opens a private temporary draft in VISUAL, EDITOR, or vi and removes it on return.
+func editPrompt(text string) tea.Cmd {
+	f, err := os.CreateTemp("", "agent-deck-message-*.txt")
+	if err != nil {
+		return func() tea.Msg { return promptEditorMsg{err: err} }
 	}
-	return strings.Join(bodyLines, "\n") + "\n" + bar
+	path := f.Name()
+	_, writeErr := f.WriteString(text)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		return func() tea.Msg {
+			return promptEditorMsg{err: fmt.Errorf("write editor draft: %v / %v", writeErr, closeErr)}
+		}
+	}
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	cmd := exec.Command("sh", "-c", editor+" \"$1\"", "editor", path)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		defer os.Remove(path)
+		if err != nil {
+			return promptEditorMsg{err: err}
+		}
+		data, err := os.ReadFile(path)
+		return promptEditorMsg{text: string(data), err: err}
+	})
 }

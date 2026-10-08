@@ -133,8 +133,8 @@ type SettingsPanel struct {
 // builtinToolNames and builtinToolValues are the built-in tools. Custom tools
 // from config are appended dynamically in LoadConfig.
 var (
-	builtinToolNames  = []string{"Claude", "Gemini", "OpenCode", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek", "Oh My Pi"}
-	builtinToolValues = []string{"claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
+	builtinToolNames  = []string{"Claude", "Gemini", "OpenCode", "OpenCode 2", "Codex", "Pi", "Copilot", "Crush", "Muse", "Cursor", "Hermes", "DeepSeek", "Oh My Pi"}
+	builtinToolValues = []string{"claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
 )
 
 // Search tier names for radio selection
@@ -394,13 +394,14 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.showOnlyInstalledTools = config.UI.ShowOnlyInstalledTools
 }
 
+// buildToolLists combines builtin launchers and sorted custom tools for the picker.
 func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
 	names := append([]string{}, builtinToolNames...)
 	values := append([]string{}, builtinToolValues...)
 
 	if len(config.Tools) > 0 {
 		builtins := map[string]bool{
-			"claude": true, "gemini": true, "opencode": true,
+			"claude": true, "gemini": true, "opencode": true, "opencode2": true,
 			"codex": true, "pi": true, "crush": true, "copilot": true,
 			"shell": true, "cursor": true, "aider": true, "hermes": true,
 			"deepseek": true, "muse": true, "omp": true,

@@ -223,9 +223,15 @@ type Instance struct {
 	MultiRepoTempDir   string              `json:"multi_repo_temp_dir,omitempty"` // Temp cwd for multi-repo sessions
 	MultiRepoWorktrees []MultiRepoWorktree `json:"multi_repo_worktrees,omitempty"`
 
-	Command        string    `json:"command"`
-	Wrapper        string    `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
-	Tool           string    `json:"tool"`
+	Command string `json:"command"`
+	Wrapper string `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
+	Tool    string `json:"tool"`
+	// observedTool is the runtime DetectTool last reported (a nested agent
+	// inside Neovim, a foreground CLI, or shell). It is not persisted and is
+	// not consulted by Start/Restart: detection must not change what restarts.
+	// Empty until the first status sample that reaches DetectTool.
+	observedTool string
+
 	Status         Status    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"` // When user last attached
@@ -1022,12 +1028,34 @@ func (inst *Instance) SetStatusThreadSafe(s Status) {
 	inst.mu.Unlock()
 }
 
-// GetToolThreadSafe returns the tool name with read-lock protection.
+// GetToolThreadSafe returns the configured launch tool with read-lock protection.
+// Restart and resume read this, not the observed runtime.
 func (inst *Instance) GetToolThreadSafe() string {
 	inst.mu.RLock()
 	t := inst.Tool
 	inst.mu.RUnlock()
 	return t
+}
+
+// ObservedTool returns the runtime identity last reported by DetectTool.
+// It is empty until a status sample runs, and it is not the launch identity.
+func (inst *Instance) ObservedTool() string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	return inst.observedTool
+}
+
+// DisplayToolThreadSafe is the tool to show. A nested or foreground agent
+// wins over the configured shell so the list matches what is actually running;
+// a shell observation does not hide a configured agent, and neither value is
+// what Restart launches.
+func (inst *Instance) DisplayToolThreadSafe() string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	if inst.observedTool != "" && inst.observedTool != "shell" {
+		return inst.observedTool
+	}
+	return inst.Tool
 }
 
 // GetAccountThreadSafe returns the stored slot, not a resolved login identity.
@@ -1310,6 +1338,11 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 		addedThisProcess: true,
 	}
 	tmuxSess.GroupPath = inst.GroupPath
+
+	if tool == "opencode2" {
+		inst.Tool = "opencode"
+		inst.Command = "opencode2"
+	}
 
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
@@ -2158,19 +2191,14 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 
-	// If baseCommand is just "opencode", handle specially
-	if baseCommand == "opencode" {
-		cmd := GetToolCommand("opencode")
+	// "opencode" and the v2 shim "opencode2" are the launchers. A custom
+	// command (the one-shot fork script, a wrapper) is run as written.
+	if cmd, ok := i.openCodeLauncher(baseCommand); ok {
 		var extraFlags string
-		if i.openCodeRejectsV1LaunchFlags() {
-			// 2.x exits on -m/--agent/--port (opencode_version.go). Without
-			// --port there is no SSE server, so status falls back to tmux.
-			if dropped := i.buildOpenCodeExtraFlags(); dropped != "" {
-				sessionLog.Warn("opencode_v2_launch_flags_dropped",
-					slog.String("instance_id", i.ID),
-					slog.String("flags", dropped))
-			}
+		if i.openCodeUsesV2CLI() {
+			// V2 uses the shared service instead of a per-TUI --port server.
 			i.setOpenCodePort(0)
+			return envPrefix + i.buildOpenCodeV2Command(cmd)
 		} else {
 			extraFlags = i.buildOpenCodeExtraFlags() + i.buildOpenCodeSSEPortFlag()
 		}
@@ -3075,6 +3103,7 @@ func (i *Instance) queryOpenCodeSession() string {
 	return bestMatch
 }
 
+// queryOpenCodeSessionsHTTP reads legacy server session metadata for one project.
 func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]openCodeSessionMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -3123,8 +3152,11 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 	return sessions, nil
 }
 
+// queryOpenCodeSessionsCLI deduplicates discovery by launcher and project directory.
 func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
-	cacheKey := normalizePath(projectPath)
+	// V1 and V2 can use different stores for the same project. Never share
+	// cached results across launchers (or their configured environment).
+	cacheKey := i.openCodeForkBinary() + "\x00" + normalizePath(projectPath)
 	if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 		return sessions
 	}
@@ -3154,6 +3186,7 @@ func cachedOpenCodeCLISessions(cacheKey string) ([]openCodeSessionMetadata, bool
 	return nil, false
 }
 
+// cacheOpenCodeCLISessions stores a copied discovery result and prunes expired entries.
 func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadata) {
 	now := time.Now()
 	openCodeCLIQueryCache.Lock()
@@ -3169,14 +3202,22 @@ func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadat
 	}
 }
 
+// runOpenCodeSessionsCLI reads session metadata using the selected launcher's CLI or API.
 func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Run: opencode session list --format json
-	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
-	cmd.Dir = projectPath
-	cmd.WaitDelay = 500 * time.Millisecond
+	args := []string{"session", "list", "--format", "json"}
+	if i.openCodeUsesV2CLI() {
+		// The API includes forked children too; the v2 session-list CLI only
+		// lists top-level sessions and would lose a fork's restart binding.
+		args = []string{"api", "session.list", "--param", "directory=" + projectPath, "--param", "limit=100"}
+	}
+	cmd, err := i.openCodeCLICommand(ctx, projectPath, args...)
+	if err != nil {
+		sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
+		return nil
+	}
 
 	sessionLog.Debug("opencode_query_sessions", slog.String("dir", logging.SanitizeValue(projectPath)))
 
@@ -3198,6 +3239,22 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionM
 	// Parse JSON response
 	// Expected format: array of session objects with id, directory, created, updated fields
 	var sessions []openCodeSessionMetadata
+	if i.openCodeUsesV2CLI() {
+		var response struct {
+			Data []openCodeHTTPSessionMetadata `json:"data"`
+		}
+		if err := json.Unmarshal(output, &response); err != nil {
+			sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+			return nil
+		}
+		for _, item := range response.Data {
+			sessions = append(sessions, openCodeSessionMetadata{
+				ID: item.ID, Directory: item.Location.Directory,
+				Created: item.Time.Created, Updated: item.Time.Updated,
+			})
+		}
+		return sessions
+	}
 
 	if err := json.Unmarshal(output, &sessions); err != nil {
 		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
@@ -4825,6 +4882,46 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 	}
 }
 
+// noteObservedRuntimeLocked records a DetectTool result without changing Tool.
+// Status patterns follow the observed agent so a nested OpenCode pane is
+// classified with OpenCode's busy/prompt rules; they are restored to the
+// configured tool when the observation drops back to shell. Caller holds i.mu.
+// SetDetectPatterns is deliberately not used: it would pin customToolName and
+// make the next DetectTool skip the process tree.
+func (i *Instance) noteObservedRuntimeLocked(observed string) {
+	if observed == "" {
+		return
+	}
+	if observed == i.observedTool {
+		return
+	}
+	prev := i.runtimePatternToolLocked()
+	i.observedTool = observed
+	next := i.runtimePatternToolLocked()
+	if next == prev || i.tmuxSession == nil {
+		return
+	}
+	raw := MergeToolPatterns(next)
+	if raw == nil {
+		return
+	}
+	resolved, err := tmux.CompilePatterns(raw)
+	if err != nil || resolved == nil {
+		sessionLog.Warn("pattern_compile_error", slog.String("tool", next), slog.String("error", errString(err)))
+		return
+	}
+	i.tmuxSession.SetPatterns(resolved)
+}
+
+// runtimePatternToolLocked selects observed-agent patterns without changing launch identity.
+// The caller must hold i.mu.
+func (i *Instance) runtimePatternToolLocked() string {
+	if i.observedTool != "" && i.observedTool != "shell" {
+		return i.observedTool
+	}
+	return i.Tool
+}
+
 // buildTmuxOptionOverrides returns tmux option overrides from user config,
 // adding remain-on-exit for sandbox sessions (needed for dead-pane detection).
 // Returns nil if no overrides apply.
@@ -6293,6 +6390,7 @@ func (i *Instance) probeTmuxExists() (exists, current bool) {
 	return exists, i.tmuxSession == s && i.stopRevision == stopRevision
 }
 
+// updateStatus refreshes runtime status, optionally synchronizing agent metadata.
 func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
@@ -6859,24 +6957,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		}
 	}
 
-	// Update tool detection dynamically (enables fork when wrapped tools start).
-	// Only built-in tool identities are rewritten here. Custom tools like
-	// "my-codex" should keep their configured identity even when tmux correctly
-	// detects the wrapped CLI as Codex.
+	// Observed runtime is separate from the configured launch identity. A shell
+	// session that later runs OpenCode inside Neovim is observed as opencode
+	// for status patterns and the list icon, but Restart still launches the
+	// configured command. Writing the observation back onto Tool is what made
+	// a screen-text guess sticky and then resumed the wrong agent.
 	if detectedTool := i.tmuxSession.DetectTool(); detectedTool != "" {
-		if !isBuiltinToolName(i.Tool) && GetToolDef(i.Tool) != nil {
-			// Preserve configured custom tool names.
-		} else {
-			switch detectedTool {
-			case "claude", "gemini", "opencode", "codex":
-				i.Tool = detectedTool
-			case "shell":
-				switch i.Tool {
-				case "", "shell", "claude", "gemini", "opencode", "codex":
-					i.Tool = detectedTool
-				}
-			}
-		}
+		i.noteObservedRuntimeLocked(detectedTool)
 	}
 
 	// Update session metadata tracking only for active/waiting sessions.
@@ -10794,6 +10881,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || IsCodexCompatible(tool)
 }
 
@@ -11030,6 +11118,7 @@ func (i *Instance) CanRestartFresh() bool {
 // newly supported tool cannot be admitted by Instance.CanFork while remaining
 // rejected or hidden at another surface.
 func SupportsNativeFork(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "pi" || tool == "opencode" ||
 		IsCodexCompatible(tool) || tool == "omp"
 }
@@ -11336,28 +11425,31 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 	return i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
 }
 
-// forkOpenCodeWithOptionsInWorkDir builds the one-time `cd <workDir> &&
-// opencode -s <parent-id> --fork` launch command for a forked OpenCode
-// instance. `--fork` is a newer OpenCode CLI flag that branches the session
-// named by -s/--continue; if the installed binary predates it the launched
-// command fails into a recoverable error state, mirroring how `codex fork` is
-// handled (CanForkCodex below).
+// forkOpenCodeWithOptionsInWorkDir builds the one-shot fork launch.
+//
+// OpenCode 1.x: `cd <workDir> && opencode -s <parent-id> --fork`. `--fork` is a
+// 1.x TUI flag; a binary that predates it fails into a recoverable error state,
+// mirroring `codex fork`.
+//
+// OpenCode 2.x (and the `opencode2` shim): the TUI rejects `--fork`, so the
+// launch forks through `opencode api session.fork`, moves the child onto a
+// worktree when workDir differs from the parent, then execs `opencode -s <child>`.
 //
 // The launch is explicitly anchored to workDir with a `cd`: the multi-repo fork
 // path later repoints the tmux session WorkDir to the MultiRepoTempDir
 // container (internal/ui/home.go), yet async OpenCode session detection matches
 // by ProjectPath (DetectOpenCodeSession), so OpenCode must run in the requested
 // repo/worktree dir — not tmux's WorkDir — for the child session to be
-// discoverable. OpenCode mints the child session id, which that async detection
-// picks up; the previous export/import clone relied on the same path (and the
-// same `cd`), so no id is pre-assigned here. The env prefix is applied once by
-// buildOpenCodeCommand at start time.
+// discoverable. The env prefix is applied once by buildOpenCodeCommand at start.
 func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, error) {
 	if !i.CanForkOpenCode() {
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
+	}
+	if i.openCodeUsesV2CLI() {
+		return i.buildOpenCodeV2ForkCommand(workDir, newTitle, opts), nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -11375,8 +11467,8 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 
 	// workDir and the session id are shell-quoted to keep the launch command
 	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
-	return fmt.Sprintf("cd %s && opencode -s %s --fork%s",
-		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), nil
+	return fmt.Sprintf("cd %s && %s -s %s --fork%s",
+		shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(i.OpenCodeSessionID), extraFlags), nil
 }
 
 // CreateForkedOpenCodeInstance creates a new Instance configured for forking an OpenCode session
@@ -11419,7 +11511,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	// script self-deletes after first run, so storing it as the persistent Command
 	// would make a later restart re-run a missing file. Command holds a stable base
 	// ("opencode") that restart resumes from via OpenCodeSessionID.
-	forked.Command = "opencode"
+	forked.Command = i.openCodePersistentCommand()
 	forked.ForkStartCommand = cmd
 	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"

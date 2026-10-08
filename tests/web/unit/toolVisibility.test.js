@@ -24,6 +24,7 @@ describe('resolveCreateSessionPickerTools', () => {
   it('falls back to DEFAULT_PICKER_TOOLS when pickerTools is empty', async () => {
     const { resolveCreateSessionPickerTools, DEFAULT_PICKER_TOOLS } = await import(pickerToolsPath)
     expect(resolveCreateSessionPickerTools([])).toEqual(DEFAULT_PICKER_TOOLS)
+    expect(resolveCreateSessionPickerTools([])).toContain('opencode2')
   })
 
   it('deduplicates pickerTools', async () => {

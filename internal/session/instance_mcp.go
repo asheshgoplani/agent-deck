@@ -8,12 +8,14 @@ import (
 
 // ToolSupportsMCPManager reports whether the TUI/CLI MCP surfaces apply to this tool.
 func ToolSupportsMCPManager(toolName string) bool {
+	toolName = CanonicalToolName(toolName)
 	return IsClaudeCompatible(toolName) || IsCodexCompatible(toolName) || toolName == "gemini" || toolName == "cursor" || toolName == "opencode"
 }
 
 // MCPLocalConfigPathForTool returns the project-local MCP config path for display and writes.
 // Empty when the tool has no project-local MCP file (e.g. Gemini uses global settings only).
 func MCPLocalConfigPathForTool(toolName, projectPath string) string {
+	toolName = CanonicalToolName(toolName)
 	if projectPath == "" {
 		return ""
 	}
@@ -33,6 +35,7 @@ func MCPLocalConfigPathForTool(toolName, projectPath string) string {
 
 // MCPGlobalConfigPathForTool returns the global MCP config path for display and writes.
 func MCPGlobalConfigPathForTool(toolName string) string {
+	toolName = CanonicalToolName(toolName)
 	switch {
 	case IsCodexCompatible(toolName):
 		return filepath.Join(GetCodexConfigDir(), "config.toml")
@@ -53,6 +56,7 @@ func MCPGlobalConfigPathForTool(toolName string) string {
 // Gemini is special: global MCPs live in settings.json, but "local" CLI scope still
 // targets the Claude-style .mcp.json walker in the project tree (legacy behavior).
 func MCPInfoForLocalAttach(toolName, projectPath string) *MCPInfo {
+	toolName = CanonicalToolName(toolName)
 	if toolName == "gemini" {
 		return GetMCPInfo(projectPath)
 	}
@@ -72,6 +76,9 @@ func MCPInfoForLocalAttach(toolName, projectPath string) *MCPInfo {
 
 // WriteLocalMCPConfigForTool writes enabled catalog MCPs to the tool's project-local MCP file.
 func WriteLocalMCPConfigForTool(toolName, projectPath string, names []string) error {
+	if toolName == "opencode2" {
+		return WriteOpenCodeProjectMCP(projectPath, names, true)
+	}
 	switch {
 	case IsCodexCompatible(toolName):
 		return WriteCodexMCPConfig("", names)
@@ -88,6 +95,9 @@ func WriteLocalMCPConfigForTool(toolName, projectPath string, names []string) er
 
 // WriteGlobalMCPConfigForTool writes enabled catalog MCPs to the tool's global MCP store.
 func WriteGlobalMCPConfigForTool(toolName string, names []string) error {
+	if toolName == "opencode2" {
+		return WriteOpenCodeGlobalMCP(names, true)
+	}
 	switch {
 	case IsCodexCompatible(toolName):
 		return WriteCodexMCPConfig("", names)
@@ -149,6 +159,9 @@ func (i *Instance) MCPInfoForLocalAttach() *MCPInfo {
 
 // WriteLocalMCPConfig writes catalog MCPs to this instance's project-local MCP file.
 func (i *Instance) WriteLocalMCPConfig(names []string) error {
+	if i.Tool == "opencode" && i.openCodeUsesV2CLI() {
+		return WriteOpenCodeProjectMCP(i.ProjectPath, names, true)
+	}
 	if IsCodexCompatible(i.Tool) {
 		if i.isRemoteSession() {
 			return i.unsupportedRemoteCodexMCPError()
@@ -160,6 +173,9 @@ func (i *Instance) WriteLocalMCPConfig(names []string) error {
 
 // WriteGlobalMCPConfig writes catalog MCPs to this instance's global MCP store.
 func (i *Instance) WriteGlobalMCPConfig(names []string) error {
+	if i.Tool == "opencode" && i.openCodeUsesV2CLI() {
+		return WriteOpenCodeGlobalMCP(names, true)
+	}
 	if IsCodexCompatible(i.Tool) {
 		if i.isRemoteSession() {
 			return i.unsupportedRemoteCodexMCPError()

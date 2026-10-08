@@ -240,7 +240,7 @@ func (h *HelpOverlay) View() string {
 	moveKey := h.key(hotkeyMoveToGroup, "M")
 	mcpKey := h.key(hotkeyMCPManager, "m")
 	pluginKey := h.key(hotkeyPluginManager, "L")
-	skillsKey := h.key(hotkeySkillsManager, "s")
+	skillsKey := h.key(hotkeySkillsManager, "alt+s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
 	groupViewKey := h.key(hotkeyCycleGroupView, "t")
 	timeFilterKey := h.key(hotkeyCycleTimeFilter, "*")
@@ -251,7 +251,8 @@ func (h *HelpOverlay) View() string {
 	scrollbackKey := ResolvedScrollbackTrigger(session.GetHotkeyOverrides()).Label()
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
-	promptSessionKey := h.key(hotkeyPromptSession, "o")
+	promptSessionKey := h.key(hotkeyPromptSession, "s")
+	queueMessageKey := h.key(hotkeyQueueMessage, "Q")
 	copyKey := h.key(hotkeyCopyOutput, "c")
 	copyPaneKey := h.key(hotkeyCopyPane, "V")
 	yoloKey := h.key(hotkeyToggleYolo, "y")
@@ -361,7 +362,8 @@ func (h *HelpOverlay) View() string {
 				{"< / >", "Shrink / grow preview pane by 5% (drag divider with mouse; vertical in below-orientation)"},
 				{unreadKey, "Mark unread"},
 				{quickApproveKey, "Quick approve (send '1' to Claude)"},
-				{promptSessionKey, "Prompt session (send a one-line prompt without attaching)"},
+				{promptSessionKey, "Send / steer session (Ctrl+X E opens editor)"},
+				{queueMessageKey, "Queue message for after the current turn"},
 				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
 				{reorderDownKeys, "Reorder down (auto-promote at edge)"},
 				{indentKeys, "Indent / outdent (in group)"},
