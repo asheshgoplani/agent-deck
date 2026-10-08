@@ -794,89 +794,6 @@ func SupportsHyperlinks() bool {
 	return GetTerminalInfo().SupportsOSC8
 }
 
-// Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "pi", "omp"}
-
-var toolDetectionPatterns = map[string][]*regexp.Regexp{
-	"claude": {
-		// Avoid matching bare words like "claude-deck" in shell prompts/paths.
-		regexp.MustCompile(`(?i)\bclaude\s+code\b`),
-		regexp.MustCompile(`(?i)\bno,\s*and\s*tell\s+claude\s+what\s+to\s+do\s+differently\b`),
-		regexp.MustCompile(`(?i)\bdo you trust the files in this folder\??`),
-	},
-	"gemini": {
-		regexp.MustCompile(`(?i)gemini`),
-		regexp.MustCompile(`(?i)google ai`),
-	},
-	"opencode": {
-		regexp.MustCompile(`(?i)opencode`),
-		regexp.MustCompile(`(?i)open code`),
-	},
-	"codex": {
-		regexp.MustCompile(`(?i)codex`),
-		regexp.MustCompile(`(?i)openai`),
-	},
-	"copilot": {
-		// GitHub Copilot CLI (the `copilot` binary from @github/copilot,
-		// NOT the older `gh copilot` shell-suggestion extension). Issue #556.
-		regexp.MustCompile(`(?i)\bgithub\s+copilot\b`),
-		regexp.MustCompile(`(?i)\bcopilot\s+cli\b`),
-		regexp.MustCompile(`(?i)^copilot>\s*`),
-	},
-	"crush": {
-		// charmbracelet/crush — Charm's terminal-first AI assistant. Issue #940.
-		// Distinct phrases to avoid colliding with the English word "crush".
-		regexp.MustCompile(`(?i)\bcharm\s+crush\b`),
-		regexp.MustCompile(`(?i)\bcrush>\s*`),
-	},
-	"muse": {
-		// Muse Code CLI (`muse`). Anchored on the product banner and the
-		// busy marker so the English words "muse"/"amuse"/"museum" in a
-		// pane cannot claim it.
-		regexp.MustCompile(`(?i)\bmuse\s+code\b`),
-		regexp.MustCompile(`◈ Thinking \(`),
-	},
-	"hermes": {
-		// Hermes Agent CLI (github.com/NousResearch/hermes-agent).
-		regexp.MustCompile(`(?i)\bhermes\s+agent\b`),
-		regexp.MustCompile(`(?i)\bnous\s*research\b`),
-	},
-	"deepseek": {
-		// DeepSeek Harness (`dsh`, npm @deepseek-ai/dsh). Captured live from
-		// 0.1.0-rc.6 in a sandboxed HOME:
-		//   web ready banner: "dsh web: http://127.0.0.1:39949"
-		//   launcher help:    "dsh: boot a DeepSeek Harness profile"
-		//   headless usage:   "Usage: dsh --profile headless [options] [task...]"
-		//   credential error: "dsh: MISSING_CREDENTIAL: llm-deepseek: ..."
-		// Every pattern anchors on the "dsh" prefix or the product name, so the
-		// bare word "deepseek" in a model name (a codex pane running a DeepSeek
-		// model, say) cannot claim the pane.
-		regexp.MustCompile(`(?i)\bdeepseek\s+harness\b`),
-		regexp.MustCompile(`(?mi)^dsh(\s+web)?:\s`),
-		regexp.MustCompile(`(?i)\bdsh\s+--profile\b`),
-	},
-	"pi": {
-		regexp.MustCompile(`(?mi)^\s*pi>\s*`),
-		regexp.MustCompile(`(?i)\bpi\s+cli\b`),
-		regexp.MustCompile(`(?i)\bpi\s+code\b`),
-	},
-	"omp": {
-		// Oh My Pi (github.com/can1357/oh-my-pi). Captured LIVE against the
-		// real installed binary (v17.3.8) via a PTY: the busy/streaming
-		// status line always contains the literal "⟨esc⟩" marker (U+27E8/
-		// U+27E9 angle brackets — NOT ascii "<esc>"), and the tool-approval
-		// dialog always contains "Allow tool: ". Neither string collides with
-		// any other registered tool's vocabulary.
-		regexp.MustCompile(`⟨esc⟩`),
-		regexp.MustCompile(`(?m)^\s*Allow tool:\s`),
-	},
-	"cursor": {
-		// Cursor CLI agent TUI
-		regexp.MustCompile(`(?i)\bcursor\s+agent\b`),
-		regexp.MustCompile(`(?i)cursor\s+cli\b`),
-	},
-}
-
 func detectToolFromCommand(command string) string {
 	cmdLower := strings.ToLower(strings.TrimSpace(command))
 	if cmdLower == "" {
@@ -1023,21 +940,6 @@ func isShellAssignmentToken(token string) bool {
 		}
 	}
 	return true
-}
-
-func detectToolFromContent(cleanContent string) string {
-	for _, tool := range toolDetectionOrder {
-		patterns, ok := toolDetectionPatterns[tool]
-		if !ok {
-			continue
-		}
-		for _, pattern := range patterns {
-			if pattern.MatchString(cleanContent) {
-				return tool
-			}
-		}
-	}
-	return "shell"
 }
 
 // StateTracker tracks content changes for notification-style status detection

@@ -722,7 +722,7 @@ func TestDetectToolDoesNotPromoteLiveShellOutput(t *testing.T) {
 	}
 }
 
-func BenchmarkDetectToolScreenText(b *testing.B) {
+func BenchmarkDetectToolIgnoresScreenText(b *testing.B) {
 	sess := NewSession("tool-detection-benchmark", "/tmp")
 	sess.Command = "shell"
 	sess.cacheContent = "Gemini OpenAI Codex OpenCode Claude Code"
@@ -764,65 +764,6 @@ func TestDetectToolFromCommand(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := detectToolFromCommand(tt.command); got != tt.want {
 				t.Fatalf("detectToolFromCommand(%q) = %q, want %q", tt.command, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestDetectToolFromContentClaudeRegression(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-		want    string
-	}{
-		{
-			name: "path containing claude should stay shell",
-			content: `user@host:/Users/test/claude-deck$ 
-$ `,
-			want: "shell",
-		},
-		{
-			name: "claude banner detects claude",
-			content: `Welcome to Claude Code!
-Do you trust the files in this folder?`,
-			want: "claude",
-		},
-		{
-			name: "claude permission prompt detects claude",
-			content: `No, and tell Claude what to do differently
-Yes, allow once`,
-			want: "claude",
-		},
-		{
-			name: "pi prompt detects pi",
-			content: `Welcome to Pi CLI
-pi> `,
-			want: "pi",
-		},
-		{
-			name: "omp busy marker detects omp",
-			content: `╭──     Sonnet 5 · high   my-session   2.4%/1M  (sub) ────────────────────────╮
-╰─                                                                              ─╯
- ⠋ Working… ⟨esc⟩`,
-			want: "omp",
-		},
-		{
-			name: "omp approval dialog detects omp",
-			content: ` Allow tool: bash
- Command: echo hi
-
-  Approve
-   Deny
-
- up/down navigate  enter select  esc cancel`,
-			want: "omp",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := detectToolFromContent(tt.content); got != tt.want {
-				t.Fatalf("detectToolFromContent(%q) = %q, want %q", tt.name, got, tt.want)
 			}
 		})
 	}
