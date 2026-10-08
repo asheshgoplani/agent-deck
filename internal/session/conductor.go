@@ -347,6 +347,14 @@ type SlackSettings struct {
 	// If empty, all users are allowed (backward compatible).
 	// Get user ID from Slack: Right-click user → View profile → More → Copy member ID
 	AllowedUserIDs []string `toml:"allowed_user_ids,omitempty"`
+
+	// DefaultConductor controls where an unprefixed message routes (#2547).
+	//   explicit name -> that conductor is the default target
+	//   ""           -> no default: the bridge replies with the conductor
+	//                  list and the `name: message` syntax, routing nothing
+	//   absent (nil) -> legacy behavior: the alphabetically first conductor
+	// Pointer so an explicitly empty string is distinguishable from absent.
+	DefaultConductor *string `toml:"default_conductor,omitempty"`
 }
 
 // DiscordSettings defines Discord bot configuration for the conductor bridge
