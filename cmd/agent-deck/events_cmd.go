@@ -86,7 +86,7 @@ func handleEventsFollow(profile string, args []string) {
 	kindFlag := fs.String("kind", "", "only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)")
 	sessionFlag := fs.String("session", "", "only frames for this session id")
 	busFlag := fs.String("bus", "events", busFlagHelp)
-	readOnlyFlag := fs.Bool("read-only", false, "do not restart pending send workers while observing events")
+	readOnlyFlag := fs.Bool("read-only", false, "observe only: no send-worker recovery, no writer handle, no demand lease (tmux.output frames appear only while another follower asks for them); fails if no writer has created the bus yet")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]")
 		fs.PrintDefaults()
@@ -260,7 +260,7 @@ func handleEventsStats(args []string) {
 	fs := flag.NewFlagSet("agent-deck events stats", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "print stats as JSON")
 	busFlag := fs.String("bus", "events", busFlagHelp)
-	readOnlyFlag := fs.Bool("read-only", false, "read existing event log without opening a writer")
+	readOnlyFlag := fs.Bool("read-only", false, "read the existing event log without opening a writer; fails if no writer has created the bus yet")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events stats [--json] [--bus events|comms] [--read-only]")
 		fs.PrintDefaults()

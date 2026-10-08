@@ -150,8 +150,8 @@ a drop; the directory must already exist (`ErrNoBus` otherwise).
 
 | Command | Output |
 |---|---|
-| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events\|comms]` | NDJSON frames, oldest first, streams live until killed. `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. `--bus comms` follows the comms ledger (read-only; docs/comms.md). |
-| `agent-deck events stats --json [--bus events\|comms]` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap, kinds: {kind: retained count}}`. |
+| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events\|comms] [--read-only]` | NDJSON frames, oldest first, streams live until killed. `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. `--bus comms` follows the comms ledger (read-only; docs/comms.md). `--read-only` observes the events bus of the resolved profile without restarting queued send workers, without a writer handle and without a demand lease, so `tmux.output` frames appear only while another follower asks for them; it exits with an error when no writer has created the bus yet. |
+| `agent-deck events stats --json [--bus events\|comms] [--read-only]` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap, kinds: {kind: retained count}}`. `--read-only` counts the existing log without opening a writer. |
 | `agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> \| --data-file <path\|->] [--json]` | Publishes one frame and waits (≤ 2 s) until it is committed; prints `{ok, kind, session_id, cursor, profile}`. Only the `macapp.*` namespace, only with `[macapp] plugins = true` (exit 2 otherwise). `--session` defaults to `$AGENTDECK_INSTANCE_ID`. |
 
 `cursor` and `dropped` reflect the profile across processes. `published`,
