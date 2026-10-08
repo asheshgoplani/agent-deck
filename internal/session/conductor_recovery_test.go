@@ -166,7 +166,15 @@ func TestConductorRecoveryMenuNeverReceivesInput(t *testing.T) {
 
 func TestConductorRecoveryExplicitMessage(t *testing.T) {
 	inst, capture := recoveryFixture(t, true)
-	// A regular explicit initial message owns the one initial turn.
+	// A regular explicit initial message owns the one initial turn. Put its
+	// prompt in the existing launch helper's bottom-of-pane scan window.
+	script, err := os.ReadFile(inst.Command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inst.Command, []byte(strings.ReplaceAll(string(script), "\\033[H", "\\033[40;1H")), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := inst.StartWithMessage("operator task"); err != nil {
 		t.Fatal(err)
 	}
