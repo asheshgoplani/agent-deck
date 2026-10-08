@@ -1,12 +1,58 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
+
+func TestFooterMessageHints(t *testing.T) {
+	for _, width := range []int{200, 300} {
+		for _, local := range []bool{true, false} {
+			for _, keys := range []map[string]string{
+				{hotkeyPromptSession: "s", hotkeyQueueMessage: "Q"},
+				{hotkeyPromptSession: "ctrl+s", hotkeyQueueMessage: "ctrl+q"},
+				{hotkeyPromptSession: "", hotkeyQueueMessage: ""},
+			} {
+				t.Run(fmt.Sprintf("width=%d/local=%t/keys=%v", width, local, keys), func(t *testing.T) {
+					home := NewHome()
+					home.width = width
+					home.setHotkeys(resolveHotkeys(keys))
+					item := session.Item{Type: session.ItemTypeRemoteSession}
+					if local {
+						item = session.Item{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}}
+					}
+					home.flatItems = []session.Item{item}
+					home.cursor = 0
+					result := tmux.StripANSI(home.renderHelpBar())
+					if local && keys[hotkeyPromptSession] != "" && keys[hotkeyQueueMessage] != "" {
+						shell := strings.Index(result, "Shell")
+						steer := strings.Index(result, "Steer")
+						queue := strings.Index(result, "Queue")
+						if shell < 0 || steer <= shell || queue <= steer {
+							t.Errorf("message hints must follow Shell in order: %q", result)
+						}
+					}
+					for _, hint := range []struct{ action, label string }{
+						{hotkeyPromptSession, "Steer"},
+						{hotkeyQueueMessage, "Queue"},
+					} {
+						key := keys[hint.action]
+						if want := local && key != ""; strings.Contains(result, hint.label) != want {
+							t.Errorf("hint %q visible=%t, want %t: %q", hint.label, !want, want, result)
+						}
+						if local && key != "" && !strings.Contains(result, key) {
+							t.Errorf("missing configured key %q: %q", key, result)
+						}
+					}
+				})
+			}
+		}
+	}
+}
 
 // TestFooterCompactAt80ColsNeverGluesKeyAndLabel: at 80 columns the footer's
 // compact tier used to render "n/NNew" and "⏎Toggle" — a key chip and its

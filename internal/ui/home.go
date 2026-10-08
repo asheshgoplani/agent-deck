@@ -20878,6 +20878,14 @@ func (h *Home) renderHelpBarFull() string {
 			if openShellHereKey != "" && item.Session != nil && item.Type == session.ItemTypeSession {
 				primaryHints = append(primaryHints, h.helpKey(openShellHereKey, "Shell"))
 			}
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				if key := h.actionKey(hotkeyPromptSession); key != "" {
+					primaryHints = append(primaryHints, h.helpKey(key, "Steer"))
+				}
+				if key := h.actionKey(hotkeyQueueMessage); key != "" {
+					primaryHints = append(primaryHints, h.helpKey(key, "Queue"))
+				}
+			}
 			if item.Session != nil && item.Session.IsMultiRepo() {
 				if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
 					primaryHints = append(primaryHints, h.helpKey(editPathsKey, "Paths"))
