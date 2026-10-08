@@ -5452,7 +5452,7 @@ func (i *Instance) Start() error {
 		go i.detectCopilotSessionAsync()
 	}
 
-	return nil
+	return i.wakeConductorAfterSpawn()
 }
 
 // StartWithMessage starts the session and sends an initial message when ready
@@ -5464,6 +5464,9 @@ func (i *Instance) Start() error {
 // `launch -m "..."` racing with a poller-triggered Start() must not
 // produce two parallel tmux sessions.
 func (i *Instance) StartWithMessage(message string) error {
+	if message == "" && i.IsConductor {
+		return i.Start()
+	}
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -9927,7 +9930,7 @@ func (i *Instance) restartRecorded(env map[string]string) error {
 	return err
 }
 
-func (i *Instance) restart(env map[string]string) error {
+func (i *Instance) restart(env map[string]string) (err error) {
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -9964,6 +9967,13 @@ func (i *Instance) restart(env map[string]string) error {
 	// so it must not leave a spawn stamp that makes a concurrent caller believe
 	// a replacement is already running.
 	defer recordInstanceSpawn(i.ID)
+	// Cover every successful respawn/recreate branch while holding the spawn
+	// lock. Storm-suppressed calls and failed spawns never send recovery input.
+	defer func() {
+		if err == nil {
+			err = i.wakeConductorAfterSpawn()
+		}
+	}()
 	// Registered AFTER the gate and BEFORE the tmux work, so it runs on every
 	// exit of this function — including each per-tool respawn-pane fast path —
 	// while the spawn lock is still held (deferred release() was registered
