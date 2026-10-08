@@ -4,7 +4,7 @@ Thanks for being here. agent-deck ships community fixes in nearly every release,
 
 This page tells you how the project actually works, what makes a PR land fast, and where to start. If you are an AI agent contributing on a human's behalf, read [.github/INTAKE.md](.github/INTAKE.md): it is the field-level contract, and following it means you pass intake on the first try.
 
-**Contributing with an AI agent?** Point it at the [agent-deck contributor skill](.github/skills/agent-deck-contributor/SKILL.md). It packages this whole page, the intake contract, and the review criteria as an agent skill, including a `self-check.sh` that runs every gate check locally before you open the PR. An agent that follows it opens a PR we can merge on the first try.
+**Contributing with an AI agent?** Point it at the [agent-deck contributor skill](.github/skills/agent-deck-contributor/SKILL.md). It packages this whole page, the intake contract, and the review criteria as an agent skill, including a `self-check.sh` that runs every gate check locally before you open the PR. It runs `go test` only inside a container; on a host it prints the Docker command to use. An agent that follows it opens a PR we can merge on the first try.
 
 ## Start here
 

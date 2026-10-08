@@ -27,6 +27,8 @@ on:
       - 'tests/ci/structure-advisory-workflow.test.sh'
       - '.github/workflows/dependabot-automerge.yml'
       - 'tests/ci/dependabot-automerge-workflow.test.sh'
+      - '.github/skills/agent-deck-contributor/scripts/self-check.sh'
+      - 'tests/ci/self-check-container-guard.test.sh'
       - '.github/workflows/eval-smoke.yml'
       - 'go.mod'
       - 'go.sum'
@@ -137,3 +139,24 @@ jobs:
 
       - name: Run dependabot-automerge workflow static checks
         run: bash tests/ci/dependabot-automerge-workflow.test.sh
+
+  # Contributor self-check container guard: go test only inside a container,
+  # a printed Docker command everywhere else. The test builds a throwaway Go
+  # module; the runner is disposable, so it also runs the in-container cases.
+  self-check-container-guard:
+    name: self-check.sh container guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run self-check container guard test
+        env:
+          AGENTDECK_TEST_CONTAINER: "1"
+        run: bash tests/ci/self-check-container-guard.test.sh
