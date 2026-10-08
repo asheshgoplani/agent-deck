@@ -7530,6 +7530,16 @@ func InitializeStatusBarOptions() error {
 // Uses -S flag which only refreshes the status line (lightweight operation ~1-2ms per client).
 // Filters out control mode clients (from PipeManager) which don't have a visible status bar.
 func RefreshStatusBarImmediate() error {
+	// One list-clients plus one refresh-client per attached client. A web
+	// terminal is another client, so this scales with viewers, not sessions.
+	// The status-pass budget is per session; charging this is what made
+	// Ctrl+Q (the bar changes as the attached session changes) exceed it.
+	var err error
+	RunUncounted(func() { err = refreshStatusBarImmediate() })
+	return err
+}
+
+func refreshStatusBarImmediate() error {
 	socket := DefaultSocketName()
 	// Get all connected clients, filtering out control mode clients
 	// client_name is free-text (a pts path) so it goes LAST, after the 0/1

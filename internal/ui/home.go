@@ -6393,10 +6393,14 @@ func (h *Home) backgroundStatusUpdate() {
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
 
-	tmuxBefore := tmux.SubprocessStarts()
+	// Charged omits RunUncounted work: the detach reconciliation and the
+	// per-client status-bar refresh. Those scale with viewers (a web
+	// terminal is another tmux client), not with the session count, and
+	// counting them is what flashed the footer on Ctrl+Q.
+	tmuxBefore := tmux.SnapshotStarts()
 	defer func() {
 		elapsed := time.Since(totalStart)
-		calls := tmux.SubprocessStarts() - tmuxBefore
+		calls := tmuxBefore.Charged()
 		// session_count must agree with list --json's tracked set (the same
 		// filter countByStatus/countSessionStatuses/renderGroupPreview use),
 		// not the raw snapshot: archived-cross-harness sources superseded by
@@ -7100,7 +7104,9 @@ func (h *Home) attachReturnSyncCmd(sessionID string) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		h.refreshAttachedSessionStatus(sessionID)
+		// Not a status-pass probe. Charging it made one Ctrl+Q exceed the
+		// per-session tmux budget and paint the footer warning.
+		tmux.RunUncounted(func() { h.refreshAttachedSessionStatus(sessionID) })
 		return attachReturnSyncedMsg{}
 	}
 }
@@ -7111,9 +7117,11 @@ func (h *Home) attachReturnSyncCmd(sessionID string) tea.Cmd {
 // as attachReturnSyncCmd: tmux work here, row rebuild on the event loop.
 func (h *Home) attachReturnRefreshCmd() tea.Cmd {
 	return func() tea.Msg {
-		tmux.RefreshSessionCache()
-		tmux.RefreshPaneInfoCache()
-		h.refreshSessionRenderSnapshot(nil)
+		tmux.RunUncounted(func() {
+			tmux.RefreshSessionCache()
+			tmux.RefreshPaneInfoCache()
+			h.refreshSessionRenderSnapshot(nil)
+		})
 		return attachReturnSyncedMsg{}
 	}
 }

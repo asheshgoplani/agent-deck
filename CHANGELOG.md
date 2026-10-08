@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Do not flash the footer warning "tmux calls exceed twice the session count" when Ctrl+Q returns to the menu. Detach reconciliation and the per-client status-bar refresh (one command per attached viewer, including a session open in the web app) are no longer charged to the per-session budget, and the warning now requires three consecutive breaches.
+
 ## [1.16.26] - 2026-10-04
 
 - Write terminal-output event ticks only while a follower needs them, reducing background disk writes (#2490).
