@@ -216,7 +216,7 @@ var tmuxBreach struct {
 // it immediately. A zero session count is not a breach: the ratio is
 // undefined, and the fixed cache probes would otherwise warn forever.
 func tmuxCallsSustainedBreach(sessions int, tmuxCalls int64) bool {
-	over := sessions > 0 && tmuxCalls > int64(2*sessions)
+	over := tmuxCallsOverBudget(sessions, tmuxCalls)
 	tmuxBreach.Lock()
 	defer tmuxBreach.Unlock()
 	if !over {
@@ -225,6 +225,13 @@ func tmuxCallsSustainedBreach(sessions int, tmuxCalls int64) bool {
 	}
 	tmuxBreach.consecutiveOver++
 	return tmuxBreach.consecutiveOver >= statusConsecutiveBreach
+}
+
+// tmuxCallsOverBudget is the per-sample tmux budget shared by the footer and
+// the health report: more than twice as many tmux starts as sessions. With no
+// sessions the ratio is undefined, so the sample is not a breach.
+func tmuxCallsOverBudget(sessions int, tmuxCalls int64) bool {
+	return sessions > 0 && tmuxCalls > int64(2*sessions)
 }
 
 // ResetStatusPassBreachState clears the sustained-breach trackers. Exposed for tests only.
