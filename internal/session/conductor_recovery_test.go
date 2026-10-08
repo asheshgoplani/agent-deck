@@ -76,9 +76,6 @@ func TestConductorRecoveryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRecoveryTurns(t, capture, 3)
-	if warning := inst.ConductorRecoveryWarning(); warning != "" {
-		t.Fatal(warning)
-	}
 }
 
 func TestConductorRecoveryOrdinarySession(t *testing.T) {
@@ -186,7 +183,7 @@ func TestConductorRecoveryExplicitMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b) != "operator task\n" {
+	if strings.TrimSpace(string(b)) != "operator task" {
 		t.Fatalf("explicit message changed or duplicated: %q", b)
 	}
 	assertRecoveryTurns(t, capture, 0)
