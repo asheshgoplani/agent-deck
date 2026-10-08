@@ -2927,8 +2927,12 @@ def create_slack_app(config: dict):
         user_id: str = None, event_channel: str = None,
     ):
         """Shared handler for Slack messages and mentions."""
-        conductor_names = get_conductor_names()
+        # One discovery snapshot for both lists (CodeRabbit, #2548): two
+        # separate calls can race, leaving conductor_names empty while
+        # conductors is not — the no-default prompt would then IndexError on
+        # conductor_names[0].
         conductors = discover_conductors()
+        conductor_names = [c["name"] for c in conductors]
 
         target, cleaned_msg, reason = resolve_slack_routing(
             text, thread_ts, conductor_names, conductors, default_conductor,
