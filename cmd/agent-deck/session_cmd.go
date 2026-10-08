@@ -3330,7 +3330,7 @@ func handleSessionSend(profile string, args []string) {
 			fmt.Fprintf(os.Stderr, "Note: no Codex accepted-turn receipt yet (%v); sending through the composer (--codex-composer-fallback)\n", guardErr)
 		default:
 			out.ErrorWithData(fmt.Sprintf("cannot establish exact Codex turn acceptance: %v", guardErr), ErrCodeInvalidOperation,
-				map[string]interface{}{"delivery": deliveryAcceptanceRefused})
+				codexAcceptanceRefusalData(guardErr))
 			os.Exit(1)
 		}
 	}
@@ -4356,33 +4356,46 @@ func (g *codexAcceptanceGuard) ResolveAccepted() error {
 	return session.ClearCodexSubmissionMarker(g.marker)
 }
 
-// hydrateLegacyCodexIdentity repairs the narrow upgrade case where a live,
-// local Codex pane already owns an exact rollout but its database row predates
-// durable Codex identity tracking. The one thread the pane's live Codex
-// process holds open is the authority (a fresh composer owns its thread before
-// any rollout exists); without it, the pane environment is used. Disk scans and
-// terminal text are deliberately not identity sources here.
+// hydrateLegacyCodexIdentity binds a live, local Codex pane to the thread its
+// live Codex process owns before a send establishes acceptance. It repairs two
+// cases:
+//
+//   - an unbound row (it predates durable Codex identity tracking, or a fresh
+//     composer owns its thread before any rollout exists);
+//   - a stale binding (#2549): Codex restarted or re-authed inside the pane and
+//     moved to a new thread, while the row kept the old id, so every send was
+//     refused for want of a current rollout generation.
+//
+// The one user thread the pane's live Codex process holds open is the
+// authority; ambiguous evidence (more than one open thread), subagent and
+// Guardian review threads (#2529) and a thread another live session owns are
+// never adopted. Only an unbound row falls back to the pane environment. Disk
+// scans and terminal text are deliberately not identity sources here.
 func hydrateLegacyCodexIdentity(
 	inst *session.Instance,
 	peers []*session.Instance,
 	storage *session.Storage,
 ) error {
-	if inst == nil || !session.IsCodexCompatible(inst.Tool) ||
-		!inst.CodexRolloutIsResolvableLocally() || strings.TrimSpace(inst.CodexSessionID) != "" {
+	if inst == nil || !session.IsCodexCompatible(inst.Tool) || !inst.CodexRolloutIsResolvableLocally() {
+		return nil
+	}
+	stored := strings.TrimSpace(inst.CodexSessionID)
+	live := inst.LiveCodexUserThreadID()
+	if stored != "" && (live == "" || live == stored) {
 		return nil
 	}
 
-	previousDetectedAt := inst.CodexDetectedAt
+	previousID, previousDetectedAt := inst.CodexSessionID, inst.CodexDetectedAt
 	restore := func() {
-		inst.CodexSessionID = ""
+		inst.CodexSessionID = previousID
 		inst.CodexDetectedAt = previousDetectedAt
 	}
 
-	candidate := liveCodexSessionID(inst)
-	processOwned := false
-	// Panes from earlier builds can carry a disk-scan guess (#2394).
-	if live := inst.LiveCodexThreadID(); live != "" {
-		candidate, processOwned = live, true
+	candidate, processOwned := live, live != ""
+	if !processOwned {
+		// Panes from earlier builds can carry a disk-scan guess (#2394), so
+		// the pane environment only ever fills an empty identity.
+		candidate = liveCodexSessionID(inst)
 	}
 	if candidate == "" {
 		return errCodexIdentityUnavailable
@@ -4420,6 +4433,19 @@ func hydrateLegacyCodexIdentity(
 		restore()
 		return fmt.Errorf("persist live Codex session identity: %w", err)
 	}
+	if processOwned {
+		// The pane environment is what status passes read first; leaving the
+		// old id there would bind the session straight back to it.
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
+			_ = tmuxSess.SetEnvironment("CODEX_SESSION_ID", inst.CodexSessionID)
+		}
+	}
+	if stored != "" {
+		_ = session.WriteSessionIDLifecycleEvent(session.SessionIDLifecycleEvent{
+			InstanceID: inst.ID, Tool: inst.Tool, Action: "rebind", Source: "send_live_process",
+			OldID: stored, NewID: inst.CodexSessionID, Reason: "live_process_owns_new_thread",
+		})
+	}
 	return nil
 }
 
@@ -4442,7 +4468,24 @@ func codexComposerFallbackAllowed(err error, flag, structuredWait bool) bool {
 	if err == nil || !flag || structuredWait {
 		return false
 	}
+	return codexIdentityProvablyUnavailable(err)
+}
+
+// codexIdentityProvablyUnavailable reports whether an acceptance error is
+// one of the two that mean the Codex identity is provably unavailable.
+func codexIdentityProvablyUnavailable(err error) bool {
 	return errors.Is(err, errCodexIdentityUnavailable) || errors.Is(err, errCodexGenerationUnavailable)
+}
+
+// codexAcceptanceRefusalData is the JSON data of a refused Codex send.
+// acceptance_unavailable marks the provably unavailable identity (the class
+// --codex-composer-fallback accepts), which waiting does not cure the way it
+// cures contention; the send queue fails fast on it once it persists (#2549).
+func codexAcceptanceRefusalData(err error) map[string]interface{} {
+	return map[string]interface{}{
+		"delivery":               deliveryAcceptanceRefused,
+		"acceptance_unavailable": codexIdentityProvablyUnavailable(err),
+	}
 }
 
 // liveCodexSessionID reads only the authoritative Codex identity from a live

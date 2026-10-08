@@ -100,6 +100,13 @@ func (i *Instance) LiveCodexThreadID() string {
 	return owned
 }
 
+// LiveCodexUserThreadID is LiveCodexThreadID without subagent and Guardian
+// review threads, which never take operator input (#2529): the one thread the
+// live process owns that may become this instance's identity, or "".
+func (i *Instance) LiveCodexUserThreadID() string {
+	return i.filterCodexProcessProbeCandidate(i.LiveCodexThreadID())
+}
+
 // liveCodexBootstrapEvidence reports what the pane's live Codex process says
 // about this instance's thread, for the bootstrap paths that would otherwise
 // guess from a disk scan. live is true when a Codex process runs in the pane:
@@ -118,5 +125,5 @@ func (i *Instance) liveCodexBootstrapEvidence() (threadID string, live bool) {
 	if err != nil {
 		return "", true // Codex is live but the probe is incomplete: bind nothing
 	}
-	return i.filterCodexProcessProbeCandidate(i.LiveCodexThreadID()), true
+	return i.LiveCodexUserThreadID(), true
 }
