@@ -401,3 +401,29 @@ func TestWriteConductorClaudeSettings_ReadsPermissionAskFromConfig(t *testing.T)
 		})
 	}
 }
+
+// TestConductorClaudeSettings_PermissionAskOffIdenticalUserRule pins the
+// documented edge case: setup does not track who wrote an ask entry, so with
+// permission_ask = false a user rule identical to a managed one is removed,
+// while a narrower user rule for the same command is kept.
+func TestConductorClaudeSettings_PermissionAskOffIdenticalUserRule(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := `{"permissions":{"ask":["Bash(agent-deck session send *)","Bash(agent-deck session send prod-*)"]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := writeConductorClaudeSettingsAt(dir, false); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	perms := loadConductorPerms(t, dir)
+	if permContains(perms.Ask, "Bash(agent-deck session send *)") {
+		t.Errorf("identical-to-managed rule is treated as managed and must be removed\nask=%v", perms.Ask)
+	}
+	if !permContains(perms.Ask, "Bash(agent-deck session send prod-*)") {
+		t.Errorf("narrower user rule must be kept\nask=%v", perms.Ask)
+	}
+}

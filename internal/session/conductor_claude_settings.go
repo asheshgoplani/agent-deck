@@ -26,8 +26,10 @@ import (
 //     auto-mode classifier. Users who want the conductor's permission mode to
 //     decide set [conductor] permission_ask = false: setup then writes no ask
 //     list and removes the entries it wrote before, keeping any the user
-//     added. The commands stay off the allow list, so the default mode still
-//     prompts for them.
+//     added. Setup does not track who wrote an entry, so a user rule that is
+//     character for character identical to a managed one is removed too. The
+//     commands stay off the allow list, so the default mode still prompts for
+//     them.
 //   - The write-allow is NOT a recursive /** over the conductor dir. A conductor
 //     dir holds executables/config that run on spawn/hook (.claude/settings.json
 //     = arbitrary hooks, .mcp.json = arbitrary stdio servers, .envrc = injected
