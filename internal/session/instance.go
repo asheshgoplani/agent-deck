@@ -88,6 +88,7 @@ const (
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateInteractiveMenu   = tmux.SubstateInteractiveMenu
 	SubstateBackgroundWork    = tmux.SubstateBackgroundWork
+	SubstateWatching          = tmux.SubstateWatching
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
@@ -6465,6 +6466,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		i.hookLagFlipped = false
 		i.bgWorkActive = false
+		i.bgWork = tmux.BackgroundWork{}
 		if i.hookStatus != "running" {
 			// The hook moved on (Stop landed, or a new lifecycle event): any
 			// lag observed under the old running event is over.
@@ -6507,7 +6509,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
 				// ends, including the turn that launched a Workflow, background
-				// agents, run_in_background shells or a Monitor. Issue #2473: a
+				// agents or finite run_in_background shells. Issue #2473: a
 				// running workflow means a running session, so this "waiting"
 				// never overrides a pane or transcript that proves background
 				// work in flight (background_work.go has the merge rule); the
@@ -6548,7 +6550,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 					// A fresh waiting hook cannot override that frame (#2502).
 					i.Status = StatusRunning
 					i.tmuxSession.ResetAcknowledged()
-				case work.InFlight():
+				case work.Running():
 					i.Status = StatusRunning
 					i.bgWorkActive = true
 					// Output produced while the work ran is unseen: when it
@@ -6767,11 +6769,12 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// A frame that shows an open menu or an error is never promoted: the menu
 	// blocks the turn on the operator (#2185) and the error means no progress.
 	i.bgWorkActive = false
+	i.bgWork = tmux.BackgroundWork{}
 	if IsClaudeCompatible(i.Tool) && (status == "active" || status == "waiting" || status == "idle") &&
 		!backgroundWorkOutrankedBySubstate(i.tmuxSession) {
 		pane := i.tmuxSession.CachedBackgroundWork()
 		fromBackground := status != "active" ||
-			(pane.InFlight() && i.tmuxSession.CachedSubstate() == tmux.SubstateBackgroundWork)
+			(pane.InFlight() && (i.tmuxSession.CachedSubstate() == tmux.SubstateBackgroundWork || i.tmuxSession.CachedSubstate() == tmux.SubstateWatching))
 		if fromBackground {
 			i.mu.Unlock()
 			work := i.probeBackgroundWork(pane)
@@ -6780,7 +6783,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				return nil
 			}
 			switch {
-			case work.InFlight():
+			case work.Running():
 				if status != "active" {
 					i.tmuxSession.ResetAcknowledged()
 				}

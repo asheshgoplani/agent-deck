@@ -5422,7 +5422,7 @@ const bgWorkCacheTTL = 500 * time.Millisecond
 // background work in flight. See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
 	work, blocked, _ := s.BackgroundWorkSince(time.Time{})
-	return work.InFlight() && !blocked
+	return work.Running() && !blocked
 }
 
 // BackgroundWorkSince returns the background work (issue #2473) a Claude
@@ -5523,7 +5523,7 @@ func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64
 		return false
 	}
 	stripped := StripANSI(content)
-	if !s.lastBackgroundWork.InFlight() && !claudeBackgroundWorkPending(stripped) {
+	if !s.lastBackgroundWork.Running() && !claudeBackgroundWorkPending(stripped) {
 		return false
 	}
 	// An open menu or an error outranks background work: the frame stays
@@ -5910,8 +5910,8 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	// foreground cue (running), an error, or an open menu keeps its verdict.
 	if s.isClaudeTool() && s.lastBackgroundWork.InFlight() && !s.lastBackgroundBlocked {
 		switch s.lastSubstate {
-		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork:
-			s.lastSubstate = SubstateBackgroundWork
+		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching:
+			s.lastSubstate = s.lastBackgroundWork.Substate()
 			s.lastSubstateDetail = s.lastBackgroundWork.Summary()
 		}
 	}
