@@ -1747,6 +1747,31 @@ _DELIVER_CONDUCTOR: contextvars.ContextVar = contextvars.ContextVar(
 )
 
 
+@contextlib.contextmanager
+def _delivering_for(name: str):
+    """Tag every post made inside the block with conductor `name` (#2547),
+    restoring the previous tag on exit so it never leaks to later posts."""
+    token = _DELIVER_CONDUCTOR.set(name)
+    try:
+        yield
+    finally:
+        _DELIVER_CONDUCTOR.reset(token)
+
+
+def _slack_post_ts(resp) -> str | None:
+    """ts of an accepted chat_postMessage, else None.
+
+    slack_sdk's AsyncWebClient returns an AsyncSlackResponse, which is not a
+    dict: its parsed JSON body is the .data dict. Anything else yields None,
+    since affinity is bookkeeping and must never fail an accepted post.
+    """
+    data = resp if isinstance(resp, dict) else getattr(resp, "data", None)
+    if not isinstance(data, dict) or not data.get("ok"):
+        return None
+    ts = data.get("ts")
+    return ts if isinstance(ts, str) and ts else None
+
+
 def remember_thread_conductor(
     ts: str | None, name: str, affinity: OrderedDict[str, str] | None = None,
 ) -> None:
@@ -2064,7 +2089,11 @@ async def deliver_tiered_reply(loop, name: str, profile: str | None, filtered: d
     """
     # Thread affinity (#2547): posts in this reply carry the conductor name
     # (async-safe context var) so replies inside the thread route back to it.
-    _DELIVER_CONDUCTOR.set(name)
+    with _delivering_for(name):
+        return await _deliver_tiered_reply(loop, name, profile, filtered, prefix, deliver)
+
+
+async def _deliver_tiered_reply(loop, name: str, profile: str | None, filtered: dict, prefix: str, deliver) -> bool:
     lines, digest = filtered["lines"], filtered["digest"]
     delivered = True
     if lines:
@@ -2127,7 +2156,11 @@ async def _human_outbox_send(loop, name: str, profile: str, deliver) -> None:
     others. Queued info leaves as digest message(s) when an urgent item went
     out this poll or the digest window is due.
     """
-    _DELIVER_CONDUCTOR.set(name)  # thread affinity (#2547)
+    with _delivering_for(name):  # thread affinity (#2547)
+        await _human_outbox_send_items(loop, name, profile, deliver)
+
+
+async def _human_outbox_send_items(loop, name: str, profile: str, deliver) -> None:
     items = _cli_json_value(await loop.run_in_executor(None, functools.partial(
         run_cli, "conductor", "outbox", "--json", "--conductor", name,
         profile=profile, timeout=30,
@@ -3905,10 +3938,10 @@ async def _deliver_need_alert(
     if slack_app and slack_channel_id:
         try:
             resp = await slack_app.client.chat_postMessage(channel=slack_channel_id, text=alert_msg)
-            conductor_name = _DELIVER_CONDUCTOR.get()
-            if conductor_name and isinstance(resp, dict) and resp.get("ok"):
-                remember_thread_conductor(resp.get("ts"), conductor_name)
             delivered = True
+            conductor_name = _DELIVER_CONDUCTOR.get()
+            if conductor_name:
+                remember_thread_conductor(_slack_post_ts(resp), conductor_name)
         except Exception as e:
             log.error("Failed to send Slack notification: %s", e)
     if discord_bot and discord_channel_id:
