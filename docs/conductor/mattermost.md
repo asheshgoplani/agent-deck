@@ -1,5 +1,9 @@
 # Mattermost channel setup
 
+> **Experimental.** The Mattermost bridge is new and has had less real-world use than Telegram, Slack and Discord.
+> Its configuration keys and commands may still change, and it does not yet support Slack's `default_conductor` routing or thread affinity.
+> Please report problems on the issue tracker with the bridge log attached (`bridge.log`, tokens removed).
+
 Connect a Mattermost bot account to your conductor so you can talk to it from the Mattermost desktop or mobile app.
 By default the bot talks to you in a direct message; it can use a channel instead.
 

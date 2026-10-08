@@ -193,7 +193,7 @@ They are optional — the conductor works fully without them.
 - [Telegram](telegram.md) — easiest to set up, one bot per conductor, message from your phone
 - [Slack](slack.md) — channel-based control with slash commands and threaded replies
 - [Discord](discord.md) — server-based control with permission scopes
-- [Mattermost](mattermost.md) — a bot account you talk to in a DM or a channel
+- [Mattermost](mattermost.md) (experimental) — a bot account you talk to in a DM or a channel
 
 ![Channels topology — one bot per conductor](assets/channels-topology.svg)
 
