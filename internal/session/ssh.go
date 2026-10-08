@@ -1357,10 +1357,16 @@ func parseRemoteMCPNames(output []byte) []string {
 //   - empty stdout with exit 0 means the remote said NOTHING, which is not the
 //     same as saying "[]". Reporting it as "no records" is the same silent-zero
 //     conflation the corrupt-ledger path forbids.
+//
+// Issue #2539: the read always names the remote's configured profile
+// (--profile, "default" when unset), independent of the global -p, which is
+// omitted for "default", and of the persistent channel's own -p. A remote too
+// old to know --profile rejects the flag, so the drain fails instead of
+// receiving every profile's records.
 func (r *SSHRunner) FetchPendingRecords(ctx context.Context) ([]TransitionNotificationEvent, error) {
-	output, err := r.Run(ctx, "inbox", "export", "--json")
+	output, err := r.Run(ctx, "inbox", "export", "--json", "--profile", r.exportProfile())
 	if err != nil {
-		return nil, err
+		return nil, remoteProfileScopeError(err)
 	}
 
 	trimmed := bytes.TrimSpace(output)
@@ -1391,8 +1397,11 @@ func (r *SSHRunner) FetchRecordsAfter(ctx context.Context, cursor RemoteCursor) 
 	if err != nil {
 		return RemoteExport{}, err
 	}
-	output, err := r.runWithStdin(ctx, payload, "inbox", "export", "--json", "--after", "-", "--with-writer")
+	output, err := r.runWithStdin(ctx, payload, "inbox", "export", "--json", "--profile", r.exportProfile(), "--after", "-", "--with-writer")
 	if err != nil {
+		if perr := remoteProfileScopeError(err); perr != err {
+			return RemoteExport{}, perr // never a fallback: the full export needs --profile too
+		}
 		if strings.Contains(err.Error(), "flag provided but not defined") {
 			return RemoteExport{}, fmt.Errorf("%w: %s", ErrRemoteCursorUnsupported, firstLineOf([]byte(err.Error())))
 		}
@@ -1413,6 +1422,29 @@ func (r *SSHRunner) FetchRecordsAfter(ctx context.Context, cursor RemoteCursor) 
 		exp.CursorNext.Seqs = map[string]int64{}
 	}
 	return exp, nil
+}
+
+// exportProfile is the profile a remote export is scoped to (#2539): the
+// configured one, "default" when unset.
+func (r *SSHRunner) exportProfile() string {
+	if p := strings.TrimSpace(r.Profile); p != "" {
+		return p
+	}
+	return DefaultProfile
+}
+
+// ErrRemoteProfileScopeUnsupported marks a remote whose binary predates
+// `inbox export --profile` (#2539). Such a remote can only answer with every
+// profile's records, so the drain fails rather than receive them.
+var ErrRemoteProfileScopeUnsupported = errors.New("remote does not support a profile-scoped export (inbox export --profile); update its agent-deck")
+
+// remoteProfileScopeError classifies a rejected --profile flag as
+// ErrRemoteProfileScopeUnsupported and returns any other error unchanged.
+func remoteProfileScopeError(err error) error {
+	if err != nil && strings.Contains(err.Error(), "flag provided but not defined: -profile") {
+		return fmt.Errorf("%w: %s", ErrRemoteProfileScopeUnsupported, firstLineOf([]byte(err.Error())))
+	}
+	return err
 }
 
 // FetchWriterStatus asks the remote whether anything is recording transitions
