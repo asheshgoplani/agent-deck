@@ -660,6 +660,9 @@ type Home struct {
 	// first use by deliveryQueue.
 	conductorDeliveries     *conductorQueue
 	conductorDeliveriesOnce sync.Once
+	// watcherHealth remembers each watcher's last health status, so its
+	// conductor hears about a warning or error once per transition (#2531).
+	watcherHealth watcherHealthMemo
 
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
@@ -13850,7 +13853,7 @@ func formatWatcherDispatchMsg(evt watcher.Event) string {
 // conductor session by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
 // Called by relayWatcherEngine, off the Bubble Tea loop (#2524).
 func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
-	if evt.RoutedTo == "" || evt.RoutedTo == "triage" || strings.HasPrefix(evt.RoutedTo, "triage-") {
+	if evt.RoutedTo == "" || isTriageRoute(evt.RoutedTo) {
 		return
 	}
 	h.deliveryQueue().enqueue(conductorDelivery{
@@ -14128,48 +14131,6 @@ func deliverToConductorPaneAttributed(p conductorPane, msg string, ownPasteMarke
 		}
 	}
 	return fmt.Errorf("watcher dispatch not confirmed submitted (status never active, composer still pending) after %s", time.Duration(maxChecks)*checkDelay)
-}
-
-// dispatchHealthAlert sends a health alert message to the conductor session associated
-// with the watcher that entered warning or error state (D-22, D-23, TUI-03); a healthy
-// state sends nothing. Called by relayWatcherEngine, off the Bubble Tea loop (#2524).
-func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
-	if state.Status != watcher.HealthStatusWarning && state.Status != watcher.HealthStatusError {
-		return
-	}
-	db := statedb.GetGlobal()
-	if db == nil {
-		return
-	}
-
-	watchers, err := db.LoadWatchers()
-	if err != nil {
-		return
-	}
-
-	var conductorName string
-	for _, w := range watchers {
-		if w.Name == state.WatcherName && w.Conductor != "" {
-			conductorName = w.Conductor
-			break
-		}
-	}
-	if conductorName == "" {
-		return // No conductor configured, skip alert.
-	}
-
-	// Build alert message (D-23): include name, status, reason, and suggested action.
-	alertMsg := fmt.Sprintf("[WATCHER HEALTH ALERT] Watcher %q transitioned to %s: %s. Suggested action: check watcher configuration and source connectivity.",
-		state.WatcherName, state.Status, state.Message)
-
-	// Deliver to the conductor session via tmux send-keys (T-16-08), ahead of
-	// any routed events waiting for it.
-	h.deliveryQueue().enqueue(conductorDelivery{
-		Conductor: conductorName,
-		Text:      alertMsg,
-		QueuedAt:  time.Now(),
-		Alert:     state.WatcherName,
-	})
 }
 
 // handleMCPDialogKey handles keys when MCP dialog is visible

@@ -126,6 +126,8 @@ Each watcher gets its own directory at `~/.agent-deck/watcher/<name>/` with (REQ
 
 `clients.json` is where you decide *which* conductor wakes up for *which* event. Edit it by hand, or let `watcher create` prompt you for defaults. `agent-deck watcher routes` is the authoritative read-out.
 
+Health alerts follow the same routing. While the TUI runs, a watcher that moves into warning or error sends one `[WATCHER HEALTH ALERT]` line to its conductor, and one `[WATCHER HEALTH RECOVERED]` line when it is healthy again. A watcher that stays in the same state sends nothing more. The conductor is the one set on the watcher row if any, else the one its newest routed event went to, else the only conductor `clients.json` names. If `clients.json` names several and the watcher has no routed events yet, the alert waits and the TUI logs `watcher_health_alert_no_conductor`.
+
 Dedupe is SQL-level: `INSERT OR IGNORE INTO watcher_events (watcher_name, event_id, ...)`. Retries from the sender (GitHub re-fires when its delivery times out, ntfy replays when the subscriber reconnects) cannot double-fire a conductor. Turning this off requires an RFC.
 
 Restart catch-up (ntfy and slack): `state.json` keeps `dedup_cursor`, the ntfy message ID of the last event the engine stored. On start the adapter subscribes with `since=<that ID>`, so messages published to the topic while agent-deck was down are fetched and handled once. Replay is bounded: a fresh watcher only streams new messages, and a cursor older than 24 hours resumes from 24 hours ago instead (the ntfy server's own message cache, 12 hours by default on ntfy.sh, limits it further). Set `resume_max_age` in the watcher's `[source]` table to change the bound (a duration such as `"6h"`; `"0"` turns catch-up off).
