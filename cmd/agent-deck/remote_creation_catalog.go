@@ -51,16 +51,16 @@ func writeCreationCatalog(profile string, fs *flag.FlagSet, jsonOutput bool) {
 	})
 	if !valid {
 		fmt.Fprintln(os.Stderr, "Error: --capabilities requires --json and cannot be combined with creation arguments")
-		os.Exit(2)
+		exitCLI(2)
 	}
 	catalog, err := buildCreationCatalog(profile)
 	if err != nil {
 		NewCLIOutput(true, false).Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(catalog); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

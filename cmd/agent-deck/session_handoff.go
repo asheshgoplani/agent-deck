@@ -14,7 +14,7 @@ import (
 // conversation history. Read-only: it never mutates the source session; the
 // caller (or a future `session switch`) feeds the prompt to a new session.
 func handleSessionHandoff(profile string, args []string) {
-	fs := flag.NewFlagSet("session handoff", flag.ExitOnError)
+	fs := flag.NewFlagSet("session handoff", flag.ContinueOnError)
 	maxChars := fs.Int("max-chars", session.DefaultHandoffMaxChars, "Maximum transcript characters to include (tail-truncated)")
 	outPath := fs.String("out", "", "Write the prompt to a file instead of stdout")
 	jsonOutput := fs.Bool("json", false, "Output prompt + info as JSON")
@@ -31,8 +31,8 @@ func handleSessionHandoff(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -41,19 +41,19 @@ func handleSessionHandoff(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	prompt, info, err := session.BuildClaudeToCodexHandoffPrompt(inst, *maxChars)
 	if err != nil {
 		out.Error(fmt.Sprintf("build handoff prompt: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -65,7 +65,7 @@ func handleSessionHandoff(profile string, args []string) {
 		enc.SetEscapeHTML(false)
 		if err := enc.Encode(payload); err != nil {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -73,11 +73,11 @@ func handleSessionHandoff(profile string, args []string) {
 	if *outPath != "" {
 		if samePath(*outPath, info.TranscriptPath) {
 			out.Error("--out refuses to overwrite the source transcript", ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if err := os.WriteFile(*outPath, []byte(prompt), 0o600); err != nil {
 			out.Error(fmt.Sprintf("write %s: %v", *outPath, err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	} else {
 		fmt.Println(prompt)

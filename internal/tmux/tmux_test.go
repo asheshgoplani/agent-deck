@@ -407,6 +407,24 @@ press esc to exit cancel`,
 press enter to send the message`,
 			expected: false,
 		},
+		{
+			name: "fresh home screen logo with idle prompt",
+			content: `█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀
+▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+┃ Ask anything… "Fix a TODO in the codebase"`,
+			expected: false,
+		},
+		{
+			name:     "static pulse character with question prompt",
+			content:  "░ Progress: 100%\nenter submit     esc dismiss",
+			expected: false,
+		},
+		{
+			name:     "busy interrupt hint overrides idle prompt",
+			content:  "┃ Ask anything\n█\nesc interrupt",
+			expected: true,
+		},
 	}
 
 	for _, tt := range tests {

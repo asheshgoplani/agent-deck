@@ -82,7 +82,15 @@ type ComposerGuardOptions struct {
 	// Strip is applied to raw captured pane content before composer
 	// introspection (pass tmux.StripANSI). nil means identity.
 	Strip func(string) string
+	// Draft reads the operator draft out of a raw capture for the target's
+	// TUI, with ComposerDraft's contract. nil means ComposerDraft (Claude);
+	// Codex targets pass CodexComposerDraft (issue #2536).
+	Draft ComposerDraftReader
 }
+
+// ComposerDraftReader extracts the operator draft from a raw (ANSI-bearing)
+// pane capture and reports whether a composer is visible at all.
+type ComposerDraftReader func(raw string, strip func(string) string) (draft string, composerVisible bool)
 
 // ComposerGuardResult reports what the guard did.
 type ComposerGuardResult struct {
@@ -129,8 +137,8 @@ const saveReconfirmDelay = 50 * time.Millisecond
 // foreign marker that renders later be misattributed as ours (#1778 review
 // finding 2). Mirror ComposerHoldsPasteMarker's choice here so the two
 // producers of this evidence never disagree.
-func composerProvenanceFree(raw string, strip func(string) string) bool {
-	draft, visible := ComposerDraft(raw, strip)
+func composerProvenanceFree(raw string, strip func(string) string, read ComposerDraftReader) bool {
+	draft, visible := read(raw, strip)
 	if visible {
 		return draft == ""
 	}
@@ -146,6 +154,10 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	if strip == nil {
 		strip = func(s string) string { return s }
 	}
+	read := opts.Draft
+	if read == nil {
+		read = ComposerDraft
+	}
 	poll := opts.PollInterval
 	if poll <= 0 {
 		poll = 250 * time.Millisecond
@@ -160,7 +172,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			// An unreadable pane cannot authorize input.
 			return ComposerGuardResult{Held: time.Since(start), Refused: true}
 		}
-		if composerProvenanceFree(raw, strip) {
+		if composerProvenanceFree(raw, strip, read) {
 			return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 		}
 		if !time.Now().Before(deadline) {
@@ -179,7 +191,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	// Reclassify one settled frame without modifying the composer.
 	time.Sleep(saveReconfirmDelay)
 	raw, err := t.CapturePaneFresh()
-	if err == nil && composerProvenanceFree(raw, strip) {
+	if err == nil && composerProvenanceFree(raw, strip, read) {
 		return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
 	}
 	return ComposerGuardResult{Held: time.Since(start), Refused: true}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
@@ -114,7 +115,13 @@ func detectAndCreateBackend(dir string) (vcs.Backend, error) {
 // PR body.
 // create carries git creation-time options (#1708 sparse-checkout
 // inheritance), which jujutsu workspaces ignore.
+// A failed creation is recorded as error area=worktree (no-op without consent).
 func createWorktreeWithSetup(backend vcs.Backend, worktreePath, branchName string, create git.WorktreeCreateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	defer func() {
+		if err != nil {
+			telemetry.ErrorOccurred(telemetry.AreaWorktree, telemetry.ErrKindOf(err), "")
+		}
+	}()
 	if backend.Type() == vcs.TypeGit {
 		return git.CreateWorktreeWithSetupOptions(backend.RepoDir(), worktreePath, branchName, git.WorktreeStateOptions{}, create, stdout, stderr, setupTimeout)
 	}

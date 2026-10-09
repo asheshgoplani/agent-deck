@@ -184,6 +184,7 @@ type Server struct {
 	baseCtx     context.Context
 	cancelBase  context.CancelFunc
 	hookWatcher *session.StatusFileWatcher
+	onListening func()
 
 	menuSubscribersMu sync.Mutex
 	menuSubscribers   map[chan struct{}]struct{}
@@ -327,6 +328,12 @@ func (s *Server) Handler() http.Handler {
 	return s.httpServer.Handler
 }
 
+// SetOnListening sets fn to run once Start has bound the listen address,
+// before it serves requests. It is not called when binding fails.
+func (s *Server) SetOnListening(fn func()) {
+	s.onListening = fn
+}
+
 // Start starts the HTTP server and blocks until shutdown or error.
 // Returns nil on graceful shutdown.
 func (s *Server) Start() error {
@@ -355,7 +362,7 @@ func (s *Server) Start() error {
 	if s.push != nil {
 		s.push.Start(s.baseCtx)
 	}
-	err := s.httpServer.ListenAndServe()
+	err := s.listenAndServe()
 	if s.hookWatcher != nil {
 		s.hookWatcher.Stop()
 		s.hookWatcher = nil
@@ -370,6 +377,23 @@ func (s *Server) Start() error {
 		return err
 	}
 	return nil
+}
+
+// listenAndServe is http.Server.ListenAndServe with the onListening hook
+// between binding and serving.
+func (s *Server) listenAndServe() error {
+	addr := s.httpServer.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	if s.onListening != nil {
+		s.onListening()
+	}
+	return s.httpServer.Serve(ln)
 }
 
 // Shutdown gracefully stops the server.

@@ -16,7 +16,7 @@ import (
 func handleConfig(profile string, args []string) {
 	if len(args) == 0 {
 		printConfigHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	switch args[0] {
@@ -34,7 +34,7 @@ func handleConfig(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "Unknown config command: %s\n", args[0])
 		fmt.Println()
 		printConfigHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -86,7 +86,7 @@ type configEffectiveWorktreeJSON struct {
 }
 
 func handleConfigShow(_ string, args []string) {
-	fs := flag.NewFlagSet("config show", flag.ExitOnError)
+	fs := flag.NewFlagSet("config show", flag.ContinueOnError)
 	// --effective is accepted, and ignored, for forward compatibility: the
 	// merged view is currently the only one `config show` knows how to print.
 	_ = fs.Bool("effective", false, "Show the merged effective settings (currently the only supported view)")
@@ -94,8 +94,8 @@ func handleConfigShow(_ string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck config show --effective [path] [--json]")
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(1)
 	}
 
 	targetDir := "."
@@ -105,13 +105,13 @@ func handleConfigShow(_ string, args []string) {
 	absDir, err := filepath.Abs(session.ExpandPath(targetDir))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: invalid path %q: %v\n", targetDir, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	settings, sources, rejections, err := session.ResolveWorktreeSettingsForDir(absDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Display order, which also matches the sorted key order encoding/json uses
@@ -132,7 +132,7 @@ func handleConfigShow(_ string, args []string) {
 		b, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to encode JSON: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println(string(b))
 		return
@@ -167,9 +167,9 @@ func configKeyFlags(name string, args []string) (*flag.FlagSet, *bool) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			os.Exit(0)
+			exitCLI(0)
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	return fs, jsonOutput
 }
@@ -199,18 +199,18 @@ func handleConfigGet(args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 1 {
 		out.Error("usage: agent-deck config get <key> [--json]", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	k, ok := session.LookupConfigKey(fs.Arg(0))
 	if !ok {
 		out.Error(fmt.Sprintf("unknown config key %q (see agent-deck config schema)", fs.Arg(0)), ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	session.ClearUserConfigCache()
 	cfg, err := session.LoadUserConfig()
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	printConfigValue(k, k.Get(cfg), *jsonOutput)
 }
@@ -220,7 +220,7 @@ func handleConfigSet(args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 2 {
 		out.Error("usage: agent-deck config set <key> <value> [--json]", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	k, v, err := session.SetConfigValue(fs.Arg(0), fs.Arg(1))
 	if err != nil {
@@ -229,7 +229,7 @@ func handleConfigSet(args []string) {
 			code = ErrCodeNotFound
 		}
 		out.Error(err.Error(), code)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	printConfigValue(k, v, *jsonOutput)
 }

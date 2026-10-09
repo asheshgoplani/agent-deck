@@ -92,16 +92,16 @@ func handleHealth(profile string, args []string) {
 		if err == flag.ErrHelp {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if fs.NArg() != 0 || *since <= 0 {
 		fmt.Fprintln(os.Stderr, "health requires a positive --since duration and no positional arguments")
-		os.Exit(2)
+		exitCLI(2)
 	}
 	report, err := readRuntimeHealth(profile, *since)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: runtime health: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	aggregate := sessionAggregateForHealth(profile, *since)
 	report.Sessions = &aggregate
@@ -113,7 +113,7 @@ func handleHealth(profile string, args []string) {
 	if *jsonOutput {
 		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}

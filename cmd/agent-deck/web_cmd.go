@@ -25,7 +25,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	options, err := parseWebCommandOptions(args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			os.Exit(0)
+			exitCLI(0)
 		}
 		return nil, err
 	}

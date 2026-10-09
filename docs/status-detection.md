@@ -48,7 +48,8 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
    short of its last step (`○ name ▰▰▱ 3/5 · 18m32s`; a finished row stays at
    n/n), `Waiting for N background agents / dynamic workflows to finish` as
    the last turn line above the input box (an older one further up is
-   history), or the live `· N shells, M monitors ·` counter on the footer.
+   history), or the live shell count on the footer. Monitor-only counters
+   are passive watchers and do not promote the session.
    Never over an open menu, an error banner or the model-unavailable no-op
    (`backgroundWorkOutrankedLocked`): a menu blocks the turn on the operator
    and an error means no progress, so such a frame keeps its waiting / error
@@ -66,7 +67,7 @@ Instance layer on top: a fresh hook verdict short-circuits the pane, except
 that a `waiting` hook (the Stop that ends every foreground turn) never
 overrides background work in flight: the pane (captured for the hook path,
 never reusing a probe older than the hook event) OR the transcript (pending
-Workflow / background Agent / background Bash / Monitor launch with no
+Workflow / background Agent / background Bash launch with no
 terminal `<task-notification>` yet, or Claude Code's `pendingWorkflowCount`
 / `pendingBackgroundAgentCount` on the last `turn_duration`) keeps the
 session `running` with substate `background-work`. Transcript-only evidence
@@ -98,9 +99,11 @@ completion evidence bypasses that hold.
 ## Substates (additive, never change the colour except model-unavailable)
 
 `running`, `idle-at-empty-prompt`, `interactive-menu`, `background-work`
-(Claude at the prompt with a workflow, background agents, shells or a monitor
+(Claude at the prompt with a workflow, background agents or finite shells
 still in flight; pairs with `running`, detail in `substate_detail` and the
 `background_work` JSON object),
+`watching` (armed Monitor or proven sleep-only until loop; waiting/idle,
+watcher count in `background_work.count`),
 `auth-401`, `usage-limit`, `model-unavailable`, `unknown-exit`, `hook-lag`.
 
 ## Who computes, how often, what persists
@@ -149,3 +152,22 @@ running rows out):
   running whatever the controller runs, until the remote is updated.
 - A Codex live status line pushed out of the live slot (a popup drawn between
   it and the composer) is not seen; the pane-title spinner still is.
+
+### Passive watchers
+
+Monitor tool receipts and the harness's live monitor-kind footer counter establish
+an armed watcher. They do not keep a completed turn open or reset acknowledgment.
+Finite transcript work wins over a monitor-only footer. A new foreground spinner
+or running hook still means running. Menus and errors keep their existing priority.
+
+A background Bash receipt is passive only when its correlated `tool_use.input.command`
+is exactly `until [ -e|-f|-d PATH ]; do sleep SECONDS; done` (literal simple path,
+no substitutions or trailing commands). Every shell in the footer must be accounted
+for by such a pending receipt. Missing receipts, unmatched counts, arbitrary polling
+commands and work after the loop remain running. This deliberately covers the
+provable sleep-only form; it does not guess the purpose of general shell scripts.
+The pane and transcript evidence source is retained in `background_work.source`.
+Watcher-only transcript evidence uses the existing three-minute freshness bound.
+Until-loop reclassification also requires receipts within that bound even when a
+shell footer remains visible. Long-lived until loops revert to running unless fresh
+identity evidence is available; Monitor-kind footer evidence does not expire.

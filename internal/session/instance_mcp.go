@@ -148,7 +148,8 @@ func (i *Instance) MCPInfoForLocalAttach() *MCPInfo {
 }
 
 // WriteLocalMCPConfig writes catalog MCPs to this instance's project-local MCP file.
-func (i *Instance) WriteLocalMCPConfig(names []string) error {
+func (i *Instance) WriteLocalMCPConfig(names []string) (err error) {
+	defer func() { i.recordTelemetryMCPError(err) }()
 	if IsCodexCompatible(i.Tool) {
 		if i.isRemoteSession() {
 			return i.unsupportedRemoteCodexMCPError()
@@ -159,7 +160,8 @@ func (i *Instance) WriteLocalMCPConfig(names []string) error {
 }
 
 // WriteGlobalMCPConfig writes catalog MCPs to this instance's global MCP store.
-func (i *Instance) WriteGlobalMCPConfig(names []string) error {
+func (i *Instance) WriteGlobalMCPConfig(names []string) (err error) {
+	defer func() { i.recordTelemetryMCPError(err) }()
 	if IsCodexCompatible(i.Tool) {
 		if i.isRemoteSession() {
 			return i.unsupportedRemoteCodexMCPError()

@@ -19,17 +19,63 @@ import (
 
 const (
 	StatusPassBudget = 250 * time.Millisecond
+	// DescriptorBudget is the descriptor budget of a process managing no
+	// sessions. A process managing sessions gets DescriptorsPerSession more
+	// for each one (see DescriptorBudgetFor).
 	DescriptorBudget = 512
-	RemotePollBudget = 2 * time.Second
-	maxFileBytes     = 1 << 20
-	retention        = 7 * 24 * time.Hour
+	// DescriptorsPerSession is the per-session allowance on top of
+	// DescriptorBudget. A TUI legitimately holds descriptors in proportion to
+	// its fleet: with the MCP pool, one client socket per pooled MCP per
+	// session (#2535: 100 sessions with 5 pooled MCPs held a steady 554).
+	DescriptorsPerSession = 16
+	RemotePollBudget      = 2 * time.Second
+	maxFileBytes          = 1 << 20
+	retention             = 7 * 24 * time.Hour
 
 	// statusHistoryWindow and statusConsecutiveBreach gate the footer's status
 	// pass budget warning behind a sustained breach, so a single slow pass
 	// (e.g. the first status refresh of a freshly opened deck) never shows it.
 	statusHistoryWindow     = 5
 	statusConsecutiveBreach = 3
+
+	// descriptorConsecutiveBreach gates the footer's descriptor warning the
+	// same way: the count must stay over budget for this many consecutive
+	// samples (one per minute) before the footer shows it.
+	descriptorConsecutiveBreach = 2
 )
+
+// DescriptorBudgetFor returns the descriptor budget of a process managing
+// sessions sessions whose soft RLIMIT_NOFILE is limit (0 when unknown).
+// The budget never exceeds four fifths of the limit, so a count that is
+// approaching the point where opening a file fails always breaches it.
+func DescriptorBudgetFor(sessions int, limit uint64) int {
+	if sessions < 0 {
+		sessions = 0
+	}
+	budget := DescriptorBudget + DescriptorsPerSession*sessions
+	if ceiling := limit - limit/5; limit > 0 && ceiling < uint64(budget) {
+		budget = int(ceiling) //nolint:gosec // G115: ceiling < budget, which is an int
+	}
+	return budget
+}
+
+// descriptorBudgetOf is the budget a sample was checked against: the one it
+// recorded, or for records written before the budget was recorded, the
+// budget its session count implies.
+func descriptorBudgetOf(s Sample) int {
+	if s.OpenFDsBudget != nil {
+		return *s.OpenFDsBudget
+	}
+	sessions := 0
+	if s.Sessions != nil {
+		sessions = *s.Sessions
+	}
+	return DescriptorBudgetFor(sessions, 0)
+}
+
+func descriptorWarning(openFDs, budget int) string {
+	return fmt.Sprintf("Health: %d open descriptors exceed the budget of %d; run agent-deck health for details", openFDs, budget)
+}
 
 type Remote struct {
 	LatencyMS float64 `json:"latency_ms"`
@@ -69,6 +115,12 @@ type Sample struct {
 	// OpenFDsUnsupported on a platform with no native descriptor count.
 	// Empty on older records and when a supported sample failed (unknown).
 	OpenFDsSupport string `json:"open_fds_support,omitempty"`
+	// OpenFDsLimit is the process's soft RLIMIT_NOFILE, when known.
+	OpenFDsLimit *uint64 `json:"open_fds_limit,omitempty"`
+	// OpenFDsBudget is the descriptor budget this sample was checked
+	// against: DescriptorBudgetFor the latest known session count and
+	// OpenFDsLimit.
+	OpenFDsBudget *int `json:"open_fds_budget,omitempty"`
 }
 
 const (
@@ -79,6 +131,20 @@ const (
 // sampleOpenFDs counts this process's open descriptors natively. It returns
 // false when the platform has no way to count them. Tests replace it.
 var sampleOpenFDs = openFDs
+
+// sampleDescriptorLimit returns the soft RLIMIT_NOFILE, 0 when unknown.
+// Tests replace it.
+var sampleDescriptorLimit = func() uint64 {
+	var limit unix.Rlimit
+	if unix.Getrlimit(unix.RLIMIT_NOFILE, &limit) != nil {
+		return 0
+	}
+	return uint64(limit.Cur)
+}
+
+// sampleInterval is how often Start samples after the first sample. Tests
+// shorten it.
+var sampleInterval = time.Minute
 
 var observations struct {
 	sync.Mutex
@@ -224,6 +290,13 @@ func Start(dir, role, hooksDir, binaryVersion string) func() {
 	var previousCPU *float64
 	previousTime := started
 	countFDs := sampleOpenFDs
+	fdLimit := sampleDescriptorLimit
+	interval := sampleInterval
+	// lastSessions is the latest session count a status pass recorded. It
+	// sizes the descriptor budget of samples taken before the next pass,
+	// which leave session_count itself unknown.
+	lastSessions := 0
+	descriptorBreaches := 0
 	sample := func() {
 		now := time.Now().UTC()
 		s := Sample{Version: 1, BinaryVersion: binaryVersion, Timestamp: now, Role: role, PID: os.Getpid(), StartedAt: started, RSSBytes: residentBytes()}
@@ -251,6 +324,9 @@ func Start(dir, role, hooksDir, binaryVersion string) func() {
 		observations.Lock()
 		s.StatusPassMS = observations.status
 		s.Sessions = observations.sessions
+		if s.Sessions != nil {
+			lastSessions = *s.Sessions
+		}
 		s.TmuxCalls = observations.tmux
 		s.DBQueryMS = observations.db
 		if len(observations.remotes) > 0 {
@@ -260,8 +336,21 @@ func Start(dir, role, hooksDir, binaryVersion string) func() {
 			}
 		}
 		observations.warning = ""
-		if s.OpenFDs != nil && *s.OpenFDs >= DescriptorBudget {
-			observations.warning = "Health: descriptor count exceeds 512 budget"
+		if s.OpenFDs != nil {
+			limit := fdLimit()
+			if limit > 0 {
+				s.OpenFDsLimit = &limit
+			}
+			budget := DescriptorBudgetFor(lastSessions, limit)
+			s.OpenFDsBudget = &budget
+			if *s.OpenFDs >= budget {
+				descriptorBreaches++
+			} else {
+				descriptorBreaches = 0
+			}
+			if descriptorBreaches >= descriptorConsecutiveBreach {
+				observations.warning = descriptorWarning(*s.OpenFDs, budget)
+			}
 		}
 		for name, r := range s.Remotes {
 			if r.LatencyMS >= 2000 || r.Outcome != "ok" {
@@ -283,7 +372,7 @@ func Start(dir, role, hooksDir, binaryVersion string) func() {
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		ticker := time.NewTicker(time.Minute)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

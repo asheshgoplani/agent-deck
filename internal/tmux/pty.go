@@ -261,6 +261,13 @@ type attachStdinPump struct {
 	opts      AttachOptions
 	startTime time.Time    // attach start, for the reply-quarantine window
 	ioErrors  chan<- error // buffered; sends are best-effort
+
+	tmuxIgnoresColorReplies bool
+}
+
+func tmuxParsesColorReplies(ver string) bool {
+	major, minor, _, ok := splitTmuxVersion(ver)
+	return !ok || major > 3 || (major == 3 && minor >= 4)
 }
 
 // run pumps input until ctx is cancelled, stdin reaches EOF, an interrupt key
@@ -274,7 +281,7 @@ type attachStdinPump struct {
 // cancellation.
 func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 	buf := make([]byte, 32)
-	var replyFilter termreply.Filter
+	replyFilter := termreply.Filter{ForwardColorReplies: !p.tmuxIgnoresColorReplies}
 	fd := int(p.in.Fd()) // #nosec G115 -- an OS file descriptor is a small positive int
 
 	reportErr := func(err error) {
@@ -671,6 +678,8 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		opts:      opts,
 		startTime: startTime,
 		ioErrors:  ioErrors,
+
+		tmuxIgnoresColorReplies: !tmuxParsesColorReplies(hostTmuxVersionString()),
 	}
 	wg.Add(1)
 	go func() {

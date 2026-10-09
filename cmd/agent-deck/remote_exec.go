@@ -256,7 +256,7 @@ func handleRemoteExec(name string, args []string) {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 	}
 	if code != 0 {
-		os.Exit(code)
+		exitCLI(code)
 	}
 }
 

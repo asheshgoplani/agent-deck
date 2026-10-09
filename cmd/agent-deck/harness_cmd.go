@@ -257,7 +257,7 @@ func handleHarness(profile string, args []string) {
 	if len(args) == 0 || helpRequested(args[:1]) {
 		usage()
 		if len(args) == 0 {
-			os.Exit(2)
+			exitCLI(2)
 		}
 		return
 	}
@@ -269,7 +269,7 @@ func handleHarness(profile string, args []string) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	switch args[0] {
 	case "list":
@@ -284,12 +284,12 @@ func handleHarness(profile string, args []string) {
 	case "status":
 		if fs.NArg() != 1 {
 			usage()
-			os.Exit(2)
+			exitCLI(2)
 		}
 		list := collectHarnesses(profile, fs.Arg(0))
 		if len(list) == 0 {
 			NewCLIOutput(*jsonOutput, false).Error(fmt.Sprintf("unknown harness %q (known: %s)", fs.Arg(0), strings.Join(harness.Names(), ", ")), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		h := list[0]
 		if *jsonOutput {
@@ -306,7 +306,7 @@ func handleHarness(profile string, args []string) {
 		}
 	default:
 		usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 }
 
@@ -314,7 +314,7 @@ func printJSONValue(v any) {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: encode JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(b))
 }
@@ -538,13 +538,13 @@ func handleLimits(args []string) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	cfg, _ := session.LoadUserConfig()
 	if cfg == nil || !cfg.Macapp.Plugins {
 		out.Error("limits is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	now := time.Now()
 	accounts := append(claudeLimits(cfg, now), codexLimits(cfg, now)...)

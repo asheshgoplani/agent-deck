@@ -35,7 +35,11 @@ const (
 	csiFinalDeviceAttributesByte = 'c' // DA1 / DA2 reply
 	csiFinalDeviceStatusByte     = 'n' // DSR reply
 	csiFinalCursorPositionByte   = 'R' // DSR cursor position reply
+
+	colorReplyMaxLen = 64 // tmux reads a color reply with a 127+ byte payload as keys
 )
+
+var colorReplyPrefixes = [...]string{"\x1b]10;", "\x1b]11;"}
 
 type filterMode uint8
 
@@ -44,12 +48,18 @@ const (
 	filterModeDiscardEscapeString
 	filterModeCollectCSI
 	filterModeCollectSS3
+	filterModeCollectColorReply
 )
 
 // Filter strips terminal-generated control replies from a byte stream while
 // preserving ordinary keyboard input. It is stateful so replies split across
 // reads are discarded without relying on terminal-specific payload strings.
 type Filter struct {
+	// ForwardColorReplies passes OSC 10/11 color replies through. Set it only
+	// for a tmux 3.4+ client: it queries the host terminal's colors, consumes
+	// every reply, and answers its panes' OSC 11 queries from them.
+	ForwardColorReplies bool
+
 	mode                filterMode
 	pendingEsc          bool
 	escapeSeenInDiscard bool
@@ -158,6 +168,21 @@ func isTmuxCapabilityReplyCSIFinalByte(b byte) bool {
 	}
 }
 
+func mayBeColorReply(seq []byte) bool {
+	for _, prefix := range colorReplyPrefixes {
+		n := min(len(seq), len(prefix))
+		if string(seq[:n]) == prefix[:n] {
+			return true
+		}
+	}
+	return false
+}
+
+func isEscapeStringTerminated(seq []byte) bool {
+	n := len(seq)
+	return seq[n-1] == bellByte || (n >= 2 && seq[n-2] == escapeByte && seq[n-1] == stringTerminatorByte)
+}
+
 func flushSequence(out []byte, seq []byte) []byte {
 	return append(out, seq...)
 }
@@ -173,11 +198,20 @@ func (f *Filter) resetSequenceState() {
 	f.escapeSeenInDiscard = false
 }
 
+func (f *Filter) discardRestOfEscapeString(lastByte byte) {
+	terminated := isEscapeStringTerminated(f.sequenceBuf)
+	f.resetSequenceState()
+	if !terminated {
+		f.mode = filterModeDiscardEscapeString
+		f.escapeSeenInDiscard = lastByte == escapeByte
+	}
+}
+
 // Consume filters a chunk of bytes. Escape-string replies (OSC/DCS/APC/PM/SOS)
 // are discarded unconditionally — they have no keyboard overlap, so a human
 // cannot produce them, and leaking them to the inner PTY has real-world
 // failure modes (see #731: iTerm2 XTVERSION DCS leaking as `TERM2 3.6.10n`
-// input into the wrapped agent).
+// input into the wrapped agent), except as ForwardColorReplies allows.
 //
 // CSI sequences are handled by final-byte whitelist:
 //
@@ -276,11 +310,26 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 			out = flushSequence(out, f.sequenceBuf)
 			f.resetSequenceState()
 			continue
+
+		case filterModeCollectColorReply:
+			f.sequenceBuf = append(f.sequenceBuf, b)
+			if !mayBeColorReply(f.sequenceBuf) || len(f.sequenceBuf) > colorReplyMaxLen {
+				f.discardRestOfEscapeString(b)
+				continue
+			}
+			if isEscapeStringTerminated(f.sequenceBuf) {
+				out = flushSequence(out, f.sequenceBuf)
+				f.resetSequenceState()
+			}
+			continue
 		}
 
 		if f.pendingEsc {
 			f.pendingEsc = false
 			switch {
+			case b == operatingSystemCommandByte && f.ForwardColorReplies:
+				f.beginSequence(filterModeCollectColorReply, escapeByte, operatingSystemCommandByte)
+				continue
 			case isEscapeStringIntroducer(b):
 				// Escape-string replies (DCS/OSC/APC/PM/SOS) are never
 				// legitimate keyboard input — strip regardless of armed

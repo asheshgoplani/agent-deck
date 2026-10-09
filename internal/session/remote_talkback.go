@@ -273,22 +273,40 @@ func readExportJournals(since time.Time) ([]exportJournal, error) {
 // Only children whose parent this host cannot resolve (the cross-host
 // conductor) and orphans cross. Both skipped journals still enter the cursor,
 // so a later reparent to the cross-host conductor ships only new turns.
-func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
+//
+// Issue #2539: as ExportPendingRecords, the export is scoped to one profile.
+// Journals, ledger entries and _unowned records of any other profile (or of
+// none) are dropped as they are read, before the cursor is built, so neither
+// a record nor the next cursor names another profile's child. The _unowned
+// read position counts this profile's records only.
+func ExportRecordsAfter(profile string, cursor RemoteCursor) (RemoteExport, error) {
+	profile, err := exportProfile(profile)
+	if err != nil {
+		return RemoteExport{}, err
+	}
 	horizon := time.Now().Add(-remoteTalkbackHorizon)
 	next := RemoteCursor{Seqs: map[string]int64{}, TS: cursor.TS}
 
-	journals, err := readExportJournals(horizon)
+	allJournals, err := readExportJournals(horizon)
 	if err != nil {
 		return RemoteExport{}, err
+	}
+	journals := allJournals[:0]
+	for _, j := range allJournals {
+		if strings.TrimSpace(j.profile) == profile {
+			journals = append(journals, j)
+		}
 	}
 	ledger, err := exportLedgerRecordsSince(horizon)
 	if err != nil {
 		return RemoteExport{}, err
 	}
+	ledger = KeepProfileRecords(ledger, profile)
 	unowned, err := ReadInboxEvents(UnownedInboxID)
 	if err != nil {
 		return RemoteExport{}, fmt.Errorf("export: unreadable inbox %s: %w", UnownedInboxID, err)
 	}
+	unowned = KeepProfileRecords(unowned, profile)
 	// The _unowned records this batch considers: appended since the cursor's
 	// position and inside the horizon.
 	start := 0
@@ -301,17 +319,11 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 			pendingUnowned = append(pendingUnowned, ev)
 		}
 	}
-	// Only the profiles these records name are opened, so an old record of a
-	// deleted profile never recreates its store.
+	// Only the exported profile's registry is opened, and only when a record
+	// names it, so an export with nothing to say never creates a store.
 	profiles := map[string]struct{}{}
-	for _, j := range journals {
-		profiles[j.profile] = struct{}{}
-	}
-	for _, ev := range ledger {
-		profiles[ev.Profile] = struct{}{}
-	}
-	for _, ev := range pendingUnowned {
-		profiles[ev.Profile] = struct{}{}
+	if len(journals)+len(ledger)+len(pendingUnowned) > 0 {
+		profiles[profile] = struct{}{}
 	}
 	reg, err := loadExportRegistry(profiles)
 	if err != nil {
@@ -431,7 +443,7 @@ func ExportRecordsAfter(cursor RemoteCursor) (RemoteExport, error) {
 	}
 	exp := RemoteExport{Records: out, CursorNext: next}
 	if cursor.Comms != nil {
-		cx := exportCommsAfter(*cursor.Comms, time.Now())
+		cx := exportCommsAfter(profile, *cursor.Comms, time.Now())
 		exp.Comms = &cx
 		exp.CursorNext.Comms = &RemoteCommsCursor{Store: cx.Store, Epoch: cx.Epoch, After: cx.Through}
 	}
@@ -753,11 +765,14 @@ func (e *RemoteTalkbackError) Unwrap() error { return e.Err }
 // may be nil (legacy only). Parent resolves the receiving parent for the wake
 // lazily, so a drain with nothing fresh never loads the registry.
 type RemoteTalkbackDeps struct {
-	FetchAfter  func(ctx context.Context, cursor RemoteCursor) (RemoteExport, error)
-	FetchAll    func(ctx context.Context) ([]TransitionNotificationEvent, error)
-	WriterProbe func(ctx context.Context) (WriterStatus, error)
-	Parent      func() (*Instance, string)
-	Wake        func(parent *Instance, profile string, ev TransitionNotificationEvent)
+	// RemoteProfile is the remote's configured profile (RemoteConfig.GetProfile).
+	// Only records of that profile are ingested (#2539); it is required.
+	RemoteProfile string
+	FetchAfter    func(ctx context.Context, cursor RemoteCursor) (RemoteExport, error)
+	FetchAll      func(ctx context.Context) ([]TransitionNotificationEvent, error)
+	WriterProbe   func(ctx context.Context) (WriterStatus, error)
+	Parent        func() (*Instance, string)
+	Wake          func(parent *Instance, profile string, ev TransitionNotificationEvent)
 }
 
 // RemoteTalkbackResult is one drain's outcome. CursorBefore/After are nil
@@ -769,15 +784,19 @@ type RemoteTalkbackResult struct {
 	CursorBefore *RemoteCursor
 	CursorAfter  *RemoteCursor
 	Woke         bool
+	// ForeignDropped counts fetched records of another profile (or none) that
+	// were dropped before ingest (#2539). Only the count is ever reported.
+	ForeignDropped int
 }
 
 // SSHTalkbackDeps wires the real ssh transport for one remote.
 func SSHTalkbackDeps(name string, rc RemoteConfig) RemoteTalkbackDeps {
 	runner := NewSSHRunner(name, rc)
 	return RemoteTalkbackDeps{
-		FetchAfter:  runner.FetchRecordsAfter,
-		FetchAll:    runner.FetchPendingRecords,
-		WriterProbe: runner.FetchWriterStatus,
+		RemoteProfile: rc.GetProfile(),
+		FetchAfter:    runner.FetchRecordsAfter,
+		FetchAll:      runner.FetchPendingRecords,
+		WriterProbe:   runner.FetchWriterStatus,
 	}
 }
 
@@ -788,6 +807,11 @@ func SSHTalkbackDeps(name string, rc RemoteConfig) RemoteTalkbackDeps {
 // tier wakes it. Shared by `remote drain` and the notify-daemon scheduler.
 func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps RemoteTalkbackDeps) (RemoteTalkbackResult, error) {
 	var res RemoteTalkbackResult
+	remoteProfile := strings.TrimSpace(deps.RemoteProfile)
+	if remoteProfile == "" {
+		return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageFetch,
+			Err: fmt.Errorf("remote %s: no remote profile to scope the drain to", remote)}
+	}
 	cursor, cursorFound, cerr := LoadRemoteCursor(remote, targetID)
 	if cerr != nil {
 		// A corrupt cursor only costs a larger refetch; dedup absorbs it.
@@ -831,6 +855,14 @@ func RunRemoteTalkback(ctx context.Context, remote, targetID string, deps Remote
 		if records, err = deps.FetchAll(ctx); err != nil {
 			return res, &RemoteTalkbackError{Stage: RemoteTalkbackStageFetch, Err: err}
 		}
+	}
+	// #2539: the remote export is already scoped to remoteProfile; this second
+	// filter protects against a remote that ignores the scope.
+	kept := KeepProfileRecords(records, remoteProfile)
+	res.ForeignDropped = len(records) - len(kept)
+	records = kept
+	if res.ForeignDropped > 0 {
+		commsLog.Warn("remote_talkback_foreign_profile_dropped", "remote", remote, "profile", remoteProfile, "dropped", res.ForeignDropped)
 	}
 	if res.Writer == nil {
 		ws, err := deps.WriterProbe(ctx)
