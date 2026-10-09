@@ -415,7 +415,10 @@ func spawnSendWatcher(profile, sendID string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, profileArgs(profile, "session", "send-worker", "--watch", sendID)...)
+	// exe is this agent-deck binary (os.Executable) and argv goes straight to
+	// execve with no shell: every flag is a literal and profile and sendID are
+	// single values of those flags.
+	cmd := exec.Command(exe, profileArgs(profile, "session", "send-worker", "--watch", sendID)...) //nolint:gosec // G702: own binary, literal flags, no shell (see above)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
