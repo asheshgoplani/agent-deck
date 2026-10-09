@@ -305,14 +305,16 @@ func TestExecuteSend_NoWaitStillGuardsComposer(t *testing.T) {
 }
 
 func TestExecuteSend_NonClaudeToolSkipsGuard(t *testing.T) {
-	// Composer introspection is Claude-shaped; non-Claude tools must not pay
-	// the guard (no captures-before-send semantics change, no Ctrl+C).
+	// Tools without an introspectable composer must not pay the guard (no
+	// captures-before-send semantics change, no Ctrl+C). Codex is guarded
+	// since issue #2536 (issue2536_codex_send_guard_test.go); gemini stands
+	// in for the remaining unguarded tools.
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
 		panes:    []string{claudeComposer("looks like a draft")},
 	}
 	tun := testGuardTuning(sendRetryOptions{maxRetries: 2, checkDelay: 0})
-	res, err := executeSend(mock, "codex", "run tests", false, tun)
+	res, err := executeSend(mock, "gemini", "run tests", false, tun)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Scope `inbox export` and `remote drain` to one profile: the export returns only the invoking (or `--profile`) profile's records, never a record without a profile, and the drain always names the remote's configured profile and drops any other profile's record before it is written. A drain against a remote too old for `inbox export --profile` now fails instead of receiving every profile's records (#2539, reported by @jwr456).
+
 ## [1.16.26] - 2026-10-04
 
 - Write terminal-output event ticks only while a follower needs them, reducing background disk writes (#2490).

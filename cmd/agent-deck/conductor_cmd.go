@@ -445,7 +445,7 @@ func handleConductorSetup(profile string, args []string) {
 						os.Exit(1)
 					}
 
-					settings.Slack = session.SlackSettings{BotToken: botToken, AppToken: appToken, ChannelID: channelID}
+					settings.Slack = withSlackCredentials(settings.Slack, botToken, appToken, channelID)
 					configChanged = true
 				}
 			}
@@ -1879,4 +1879,15 @@ func handleConductorMove(sourceProfile string, args []string) {
 			"meta_updated":   result.MetaUpdated,
 		},
 	)
+}
+
+// withSlackCredentials returns s with the tokens and channel the setup wizard
+// collected, keeping every other [conductor.slack] key the user already set
+// (default_conductor #2547, allowed_user_ids, listen_mode) instead of
+// replacing the whole table and dropping them on save.
+func withSlackCredentials(s session.SlackSettings, botToken, appToken, channelID string) session.SlackSettings {
+	s.BotToken = botToken
+	s.AppToken = appToken
+	s.ChannelID = channelID
+	return s
 }

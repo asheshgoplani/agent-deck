@@ -96,6 +96,10 @@ type Record struct {
 	// Settled marks a typed/submitted send whose text was not found in the
 	// transcript within the watch window: it is never typed again.
 	Settled bool `json:"settled,omitempty"`
+	// UnavailableRefusals counts consecutive refusals that said the target's
+	// Codex identity is provably unavailable; the worker fails the send once
+	// they persist instead of retrying for the whole budget (#2549).
+	UnavailableRefusals int `json:"unavailable_refusals,omitempty"`
 }
 
 // Final reports whether the worker is done with the record.

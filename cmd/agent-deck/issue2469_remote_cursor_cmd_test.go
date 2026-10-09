@@ -109,7 +109,7 @@ func TestIssue2469PR3_InboxExportAfterAndCursorCLI(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runInbox(&out, []string{"export", "--json", "--after", "{}", "--with-writer"}); err != nil {
+	if err := runInbox(&out, []string{"export", "--profile", "default", "--json", "--after", "{}", "--with-writer"}); err != nil {
 		t.Fatalf("export --after: %v", err)
 	}
 	var exp session.RemoteExport
@@ -121,13 +121,13 @@ func TestIssue2469PR3_InboxExportAfterAndCursorCLI(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runInbox(&out, []string{"export", "--json"}); err != nil || !strings.HasPrefix(strings.TrimSpace(out.String()), "[") {
+	if err := runInbox(&out, []string{"export", "--profile", "default", "--json"}); err != nil || !strings.HasPrefix(strings.TrimSpace(out.String()), "[") {
 		t.Fatalf("without --after the export must stay a bare array: %v %s", err, out.String())
 	}
-	if err := runInbox(&bytes.Buffer{}, []string{"export", "--after", "{}"}); err == nil {
+	if err := runInbox(&bytes.Buffer{}, []string{"export", "--profile", "default", "--after", "{}"}); err == nil {
 		t.Fatal("--after without --json must be refused")
 	}
-	if err := runInbox(&bytes.Buffer{}, []string{"export", "--json", "--after", "garbage"}); err == nil {
+	if err := runInbox(&bytes.Buffer{}, []string{"export", "--profile", "default", "--json", "--after", "garbage"}); err == nil {
 		t.Fatal("a corrupt cursor must be refused, not treated as empty")
 	}
 
@@ -167,7 +167,7 @@ func TestIssue2469PR3_InboxExportAfterReadsCursorFromStdin(t *testing.T) {
 	inboxExportStdin = func() io.Reader { return strings.NewReader(`{"w7": 1}`) }
 
 	var out bytes.Buffer
-	if err := runInbox(&out, []string{"export", "--json", "--after", "-", "--with-writer"}); err != nil {
+	if err := runInbox(&out, []string{"export", "--profile", "default", "--json", "--after", "-", "--with-writer"}); err != nil {
 		t.Fatalf("export --after -: %v", err)
 	}
 	var exp session.RemoteExport
