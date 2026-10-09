@@ -27,7 +27,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ -f bench/baseline/github-ubuntu-latest.json ]; then
-            docker run --rm --network none --cap-drop ALL -u "$(id -u):$(id -g)" -v "$PWD":/src -w /src -e HOME=/tmp/h -e GOCACHE=/tmp/cache -e GOTOOLCHAIN=local -e GOFLAGS=-p=2 -e GOPROXY=off -e GOSUMDB=off agentdeck-bench:go1.25 go run ./tools/bench compare -baseline bench/baseline/github-ubuntu-latest.json -run bench/ci.json -threshold 0.25
+            docker run --rm --network none --cap-drop ALL -u "$(id -u):$(id -g)" -v "$PWD":/src -w /src -e HOME=/tmp/h -e GOCACHE=/tmp/cache -e GOTOOLCHAIN=local -e GOFLAGS=-p=2 -e GOPROXY=off -e GOSUMDB=off agentdeck-bench:go1.26.9 go run ./tools/bench compare -baseline bench/baseline/github-ubuntu-latest.json -run bench/ci.json -threshold 0.25
           else
             echo 'Advisory capture only: no comparable GitHub runner baseline committed yet.' >> "$GITHUB_STEP_SUMMARY"
           fi
