@@ -68,8 +68,7 @@ func TestTelemetryTUIInsertModeSendCountsSendDaily(t *testing.T) {
 	runTelemetryCmd(cmd)
 
 	// A bare Enter (menu confirmation, nothing typed) is not a message.
-	model, cmd = home.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	home = model.(*Home)
+	_, cmd = home.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	runTelemetryCmd(cmd)
 	if len(capture.calls) == 0 {
 		t.Fatal("harness: nothing reached the session")
