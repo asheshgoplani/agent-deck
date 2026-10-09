@@ -16,7 +16,9 @@ import (
 // escaped its pane, the operator needs three things and nothing else: see what
 // is claimed, reap what is provably ours, and — only as a deliberate act —
 // discard a claim that can no longer be verified. Everything here goes through
-// the receipt; none of it matches on names, paths or command lines.
+// the receipt; nothing is claimed or signalled by matching names, paths or
+// command lines. The one command-line check (a host-wide shared service, see
+// procowner/shared_service.go) only ever leaves a process alone.
 
 func handleSessionOwnership(profile string, args []string) {
 	if len(args) == 0 {

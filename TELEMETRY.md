@@ -42,7 +42,7 @@ More:   github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md
 
 Accepting works only when the whole question is visible (terminal at least 78×22); otherwise the dialog says so and only `n`, Esc and Ctrl-C act. Your answer is written to disk before anything is recorded. After a yes: `Sharing is on. Nothing is sent before tomorrow. Turn off: agent-deck telemetry off`. After a no: `Telemetry stays off. You will not be asked again. Change later: agent-deck telemetry on`.
 
-The question is never shown in CLI-only use, when stdin or stdout is not a terminal, in CI, in tests, inside an agent-deck session, under a coding agent (`CLAUDECODE`, `GEMINI_CLI`, `CURSOR_AGENT` or `CODEX_*` set), in `web --no-tui`, over SSH on a remote, or when any off switch below is set. If you answered no to the earlier, smaller schema 1 question (which counted every key, even Enter, as no), you are asked once more, with the line `You said no to an earlier, smaller version of this question.`; a no to this question is final. Anyone who said yes to schema 1 or schema 2 is asked again, because consent is bound to the schema and the destination. Schema-2 refusals remain final. Schema 3 adds the daily install tick and its daily nonce disclosure; no tick or detailed event is sent until fresh consent and the following local day.
+The question is never shown in CLI-only use, when stdin or stdout is not a terminal, in CI, in tests, inside an agent-deck session, under a coding agent (`CLAUDECODE`, `GEMINI_CLI`, `CURSOR_AGENT` or `CODEX_*` set), in `web --no-tui`, over SSH on a remote, or when any off switch below is set. If you answered no to the earlier, smaller schema 1 question (which counted every key, even Enter, as no), you are asked once more, with the line `You said no to an earlier, smaller version of this question.`; a no to this question is final. Anyone who said yes to schema 1 or schema 2 is asked again, because consent is bound to the schema and the destination. If you already have an install id (for example after a schema 2 yes), the question adds the line `Your anonymous ID is kept; unsent data from before will be sent.` above the buttons, in the TUI and in `agent-deck telemetry on`. Saying yes again keeps your anonymous install id: it survives upgrades and re-consent, `reset-id` is the only thing that rotates it, and only a no or `off` deletes it. Events recorded under your earlier consent that were not sent yet stay in the local spool and are sent after the yes (from the next local day) under the same id. If the configured destination changed since your earlier yes, the line reads `Your anonymous ID is kept; unsent data for the old endpoint is deleted.` instead, and that data is deleted, never sent to the new destination. The id itself, its event sequence and the onboarding steps already reported carry over, so the old and the new destination see the same install id. Schema-2 refusals remain final. Schema 3 adds the daily install tick and its daily nonce disclosure; no tick or detailed event is sent until fresh consent and the following local day.
 
 `agent-deck telemetry on` asks the same question in a shell; there it takes an explicit `y` (Enter and end-of-input mean no). In the TUI, **Settings → Privacy → Usage data** shows the state; Enter turns it off immediately or opens the question.
 
@@ -87,6 +87,8 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 
 `[telemetry] level = "basic"` in `config.toml` can lower the level but never raise it.
 
+Lowering the level also covers data already waiting in the local spool, including events kept across a re-consent: at the next upload (and in `telemetry preview`), events that `basic` does not record are deleted unsent, and the rest are sent without `hour_local`, `weekday_local` or `ds_session`, with the timestamp pinned to 12:00.
+
 ## When and where data is sent
 
 - **Recording** happens in every agent-deck process where a person is at a terminal: never in CI, tests, non-TTY runs (scripts, cron, SSH commands on a remote) or before consent. Commands run by a coding agent at a terminal are recorded with `actor = agent`. At most 60 events per local day are recorded (daily rollups are exempt); the rest are counted as `dropped`.
@@ -128,7 +130,7 @@ Owner installs opt out of **only the tick** with `[telemetry] owner = true` in c
 - Anything from CI, tests, non-TTY runs, or remotes whose own user did not consent (consent is per machine; `remote add`, `remote update` and sweeps never copy it).
 - A "no" answer: declining sends nothing.
 
-Two ids exist, both random and local: `install_id` (32 random hex characters, created on consent, rotated by `reset-id`, deleted by `off`) and `ds_session`, the first 16 hex characters of HMAC-SHA256 over the agent-deck session id with a 32-byte random salt that never leaves your machine. The real session id is never sent.
+Two ids exist, both random and local: `install_id` (32 random hex characters, created on consent, kept across upgrades and re-consent, rotated only by `reset-id`, deleted by `off` or a no) and `ds_session`, the first 16 hex characters of HMAC-SHA256 over the agent-deck session id with a 32-byte random salt that never leaves your machine. The real session id is never sent.
 
 ## Wiring the PostHog project key (maintainer, one time)
 
@@ -329,7 +331,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `previous` | enum: `none`, `v1_granted`, `v1_declined`, `v1_undecided`, `v2_granted`, `v2_declined`, `v2_undecided` |
 | `prompt_variant` | enum: `v3a` |
 
-**`onboard.baseline`** (tier 1, call sites 1.16.18): once, right after consent, computed from existing local state
+**`onboard.baseline`** (tier 1, call sites 1.16.18): once per install id, right after its first consent, computed from existing local state
 
 | Property | Type |
 |---|---|

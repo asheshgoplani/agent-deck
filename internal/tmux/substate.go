@@ -44,11 +44,14 @@ const (
 	// over (empty prompt, Stop hook fired) while work it started is still in
 	// flight: a Workflow ("◯ name ▰▰▱ 3/5 · 18m32s" under the footer), background
 	// agents ("Waiting for N background agents to finish"), run_in_background
-	// shells or Monitors ("· 2 shells, 1 monitor ·" in the footer), or the
+	// shells ("· 2 shells ·" in the footer), or the
 	// same evidence in the transcript. Pairs with status "running" (issue
 	// #2473: a running workflow means a running session); the session settles
 	// to waiting only once nothing is in flight. See background_work.go.
 	SubstateBackgroundWork Substate = "background-work"
+
+	// SubstateWatching is an idle prompt with an armed watcher.
+	SubstateWatching Substate = "watching"
 
 	// SubstateModelUnavailable marks the Fable-down no-op loop: the model
 	// reports unavailable ("X is currently unavailable", "Crunched for 0s")
@@ -135,7 +138,8 @@ const crunchedNoopMarker = "Crunched for 0s"
 //     hasClaudePrompt true, but a menu awaiting a choice is blocked-on-input,
 //     not idle (#2185).
 //  5. background-work — at the prompt, but a workflow / background agent /
-//     shell / monitor started by the session is still in flight (#2473).
+//     finite shell started by the session is still in flight (#2473).
+//     Passive monitor-only evidence reads watching.
 //  6. idle-at-empty-prompt — sitting at the prompt with nothing happening.
 //  7. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
@@ -159,7 +163,7 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 // comms-followon-round3 3/5 · 18m32s", issue #2473).
 func (d *PromptDetector) SubstateDetail(content string) string {
 	if d.tool == "claude" {
-		if d.classifyClaudeSubstate(content) == SubstateBackgroundWork {
+		if sub := d.classifyClaudeSubstate(content); sub == SubstateBackgroundWork || sub == SubstateWatching {
 			return ParseClaudeBackgroundWork(content).Summary()
 		}
 		return ""
@@ -221,8 +225,8 @@ func (d *PromptDetector) classifyClaudeSubstate(content string) Substate {
 		if hasOpenInteractiveMenu(content) {
 			return SubstateInteractiveMenu
 		}
-		if claudeBackgroundWorkPending(content) {
-			return SubstateBackgroundWork
+		if work := ParseClaudeBackgroundWork(content); work.InFlight() {
+			return work.Substate()
 		}
 		return SubstateIdleAtEmptyPrompt
 	}

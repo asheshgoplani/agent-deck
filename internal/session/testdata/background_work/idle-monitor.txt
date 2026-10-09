@@ -1,0 +1,7 @@
+⏺ Observer armed. Waiting for the next event.
+
+✻ Baked for 13s · 1 monitor still running
+────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 1 monitor · ← for agents

@@ -129,7 +129,7 @@ func MaybeUpload(ctx context.Context) UploadResult {
 		lines = append(lines, l)
 		return nil
 	})
-	lines = trimSpool(lines, now)
+	lines = atLevel(trimSpool(lines, now), EffectiveLevel(s))
 	s.dropExpiredDaily(now)
 	if s.Upload.RejectedVersion != "" && s.Upload.RejectedVersion == safeVersion(processVersion) {
 		return s.handleRejected(lines, now)
@@ -372,7 +372,7 @@ func PreviewBatch() ([][]byte, error) {
 	}
 	now := nowFn()
 	s.emitOpenHour(now, func(l spoolLine) error { lines = append(lines, l); return nil })
-	bodies, _ := chunk(s.pending(trimSpool(lines, now), now))
+	bodies, _ := chunk(s.pending(atLevel(trimSpool(lines, now), EffectiveLevel(s)), now))
 	// Preview never reserves a nonce. Show a pending tick only if the TUI
 	// could send it today; basic level does not suppress the daily tick.
 	if ok, _ := Enabled(s); ok && !tickOwner() && !LogMode() && uploadDestinationGate() == "" && s.ConsentDay < dayOf(now) {

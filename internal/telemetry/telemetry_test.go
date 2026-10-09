@@ -160,9 +160,10 @@ func TestShouldPrompt(t *testing.T) {
 	}
 }
 
-// TestRegrantAfterEndpointChangeDropsOldSpool: events recorded under one
-// consent and destination never reach another one under a new install id.
-func TestRegrantAfterEndpointChangeDropsOldSpool(t *testing.T) {
+// TestRegrantAfterEndpointChangeKeepsIDDropsOldSpool: a yes for a new
+// destination keeps the install id, but events recorded for the old
+// destination never reach the new one.
+func TestRegrantAfterEndpointChangeKeepsIDDropsOldSpool(t *testing.T) {
 	c := env(t)
 	old := grant(t, c)
 	SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaTUINew, SessionID: "s1"})
@@ -171,8 +172,8 @@ func TestRegrantAfterEndpointChangeDropsOldSpool(t *testing.T) {
 	}
 	fake := newFakePostHog(t) // a different endpoint: the old grant is stale
 	s := grant(t, c)
-	if s.InstallID == old.InstallID {
-		t.Fatal("a new endpoint must mint a new install id")
+	if s.InstallID != old.InstallID || s.Salt != old.Salt {
+		t.Fatal("a new endpoint must keep the install id and salt (only reset-id rotates them)")
 	}
 	if n := len(spoolBytes(t)); n != 0 {
 		t.Fatalf("spool kept %d bytes across re-consent", n)
