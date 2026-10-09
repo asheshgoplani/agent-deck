@@ -54,7 +54,7 @@ func DescriptorBudgetFor(sessions int, limit uint64) int {
 	}
 	budget := DescriptorBudget + DescriptorsPerSession*sessions
 	if ceiling := limit - limit/5; limit > 0 && ceiling < uint64(budget) {
-		budget = int(ceiling)
+		budget = int(ceiling) //nolint:gosec // G115: ceiling < budget, which is an int
 	}
 	return budget
 }
