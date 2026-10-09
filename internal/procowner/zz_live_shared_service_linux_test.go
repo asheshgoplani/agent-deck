@@ -44,7 +44,6 @@ func TestMaint2514_LiveSharedServiceSurvivesVerifyAndReap(t *testing.T) {
 
 	table, _ := commandsForCheck()
 	role := map[int]string{}
-	var servicePIDs []int
 	for _, m := range r.Members {
 		row := table[m.PID]
 		role[m.PID] = fmt.Sprint(row.Args)
@@ -69,7 +68,6 @@ func TestMaint2514_LiveSharedServiceSurvivesVerifyAndReap(t *testing.T) {
 		switch string(s.State) {
 		case "shared":
 			shared++
-			servicePIDs = append(servicePIDs, s.Member.PID)
 		case "owned":
 			owned++
 		}
