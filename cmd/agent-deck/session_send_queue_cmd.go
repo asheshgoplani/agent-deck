@@ -471,6 +471,15 @@ var notSentDeliveries = map[string]bool{
 	deliveryAcceptanceRefused: true,
 }
 
+// codexUnavailableRefusalLimit is how many consecutive "Codex identity
+// provably unavailable" refusals end a queued send. Contention (a busy target,
+// another send's acceptance lock) resolves by waiting; an identity that is
+// still unavailable after a few backed-off attempts does not, so retrying it
+// for the whole budget only hides the failure (#2549: 26 attempts). The first
+// refusals still retry, so a fresh composer that has not taken its thread yet
+// gets about fifteen seconds at the default poll.
+const codexUnavailableRefusalLimit = 5
+
 // classifyChild reads a `session send --json` result. Only a refusal that
 // guarantees nothing was typed may be retried. Every other failure — an open
 // menu, a readiness timeout, no_evidence, a crash — may have typed the text,
@@ -645,6 +654,17 @@ func applyChildResult(rec *sendqueue.Record, result map[string]interface{}, code
 			}
 		case childNotSent:
 			r.State, r.Reason, r.Verdict = sendqueue.StateQueued, "retrying: "+reason, "queued"
+			streak := r.UnavailableRefusals + 1
+			r.UnavailableRefusals = 0
+			if unavailable, _ := result["acceptance_unavailable"].(bool); unavailable {
+				r.UnavailableRefusals = streak
+				if r.UnavailableRefusals >= codexUnavailableRefusalLimit {
+					detail, _ := result["error"].(string)
+					r.State, r.Verdict = sendqueue.StateFailed, "unknown"
+					r.Reason = fmt.Sprintf("not delivered: the Codex session identity stayed unavailable for %d attempts (%s); "+
+						"nothing was typed. Restart the session, or resend with --codex-composer-fallback", r.UnavailableRefusals, detail)
+				}
+			}
 		default:
 			r.State, r.Reason, r.Verdict = sendqueue.StateTyped, "outcome unknown ("+reason+"); not retyped, watching the transcript", "unknown"
 		}

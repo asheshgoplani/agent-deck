@@ -189,6 +189,38 @@ func (p LinuxProber) Descendants(root ProcInfo) ([]ProcInfo, error) {
 	return descendantsOf(p, root, table)
 }
 
+// Commands implements CommandReader with one pass over /proc. A process that
+// vanishes or cannot be read mid-scan is skipped, which only ever leaves a
+// member classified as it would have been without this reader.
+func (LinuxProber) Commands() (map[int]ProcCommand, error) {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil, fmt.Errorf("%w: read %s: %v", ErrUnreadable, procRoot, err)
+	}
+	table := make(map[int]ProcCommand, len(entries))
+	for _, entry := range entries {
+		pid, convErr := strconv.Atoi(entry.Name())
+		if convErr != nil || pid <= 0 || !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(procRoot, entry.Name())
+		stat, statErr := os.ReadFile(filepath.Join(dir, "stat"))
+		if statErr != nil {
+			continue
+		}
+		info, parseErr := parseProcStat(stat)
+		if parseErr != nil {
+			continue
+		}
+		cmdline, cmdErr := os.ReadFile(filepath.Join(dir, "cmdline"))
+		if cmdErr != nil {
+			continue
+		}
+		table[pid] = ProcCommand{PPID: info.PPID, Args: parseProcCmdline(cmdline)}
+	}
+	return table, nil
+}
+
 // CompareStart implements StartComparer. Linux start identities are clock ticks
 // since boot, so they order numerically within a boot — and a receipt only ever
 // compares identities from one boot, because BootID scopes it.

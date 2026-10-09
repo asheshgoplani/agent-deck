@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Scope `inbox export` and `remote drain` to one profile: the export returns only the invoking (or `--profile`) profile's records, never a record without a profile, and the drain always names the remote's configured profile and drops any other profile's record before it is written. A drain against a remote too old for `inbox export --profile` now fails instead of receiving every profile's records (#2539, reported by @jwr456).
 - Count CLI telemetry features after the command finishes, with failures as errors and without first-use milestones; `fleet status` and `fleet recover` are no longer reported as fleet launches, mistyped flags are still counted, and `uninstall` no longer recreates the telemetry directory. See "How CLI commands are counted" in TELEMETRY.md for the effect on trends.
 
 ## [1.16.26] - 2026-10-04

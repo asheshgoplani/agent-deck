@@ -231,7 +231,11 @@ func telemetryEnableCmd(version string, in io.Reader, out, errOut io.Writer, jso
 	}
 	// The CLI keeps v1 strictness: there is no highlighted button in a plain
 	// shell prompt, so only an explicit y enables; Enter or EOF is no.
-	if _, err := fmt.Fprintf(disclosure, "%s\n\nShare anonymous usage data? [y/N]: ", telemetry.PromptText(shownEndpoint)); err != nil {
+	question := telemetry.PromptText(shownEndpoint)
+	if note := telemetry.ReconsentNote(s, shownEndpoint); note != "" {
+		question += "\n\n" + note
+	}
+	if _, err := fmt.Fprintf(disclosure, "%s\n\nShare anonymous usage data? [y/N]: ", question); err != nil {
 		return 1
 	}
 	line, readErr := bufio.NewReader(in).ReadString('\n')

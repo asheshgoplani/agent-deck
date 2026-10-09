@@ -1,6 +1,7 @@
 package termreply
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -97,6 +98,75 @@ func TestFilterDiscardsSplitDCSReplyWhenNotArmed(t *testing.T) {
 
 	got = f.Consume([]byte("3.6.10n\x1b\\rest"), false, false)
 	require.Equal(t, []byte("rest"), got)
+	require.False(t, f.Active())
+}
+
+func TestFilterForwardsColorRepliesWhenEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply string
+		armed bool
+	}{
+		{"osc11_st_armed", "\x1b]11;rgb:fefe/ffff/ffff\x1b\\", true},
+		{"osc11_st_not_armed", "\x1b]11;rgb:fefe/ffff/ffff\x1b\\", false},
+		{"osc11_bel_armed", "\x1b]11;rgb:0000/0000/0000\x07", true},
+		{"osc10_st_armed", "\x1b]10;rgb:1d1d/1f1f/2121\x1b\\", true},
+		{"osc10_bel_not_armed", "\x1b]10;#1d1f21\x07", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := Filter{ForwardColorReplies: true}
+
+			got := f.Consume([]byte(tc.reply+"k"), tc.armed, false)
+			require.Equal(t, []byte(tc.reply+"k"), got)
+			require.False(t, f.Active())
+		})
+	}
+}
+
+func TestFilterForwardsColorReplySplitAcrossChunks(t *testing.T) {
+	f := Filter{ForwardColorReplies: true}
+
+	got := f.Consume([]byte("\x1b]11;rgb:fefe/"), true, false)
+	require.Empty(t, got)
+	require.True(t, f.Active())
+
+	got = f.Consume([]byte("ffff/ffff\x1b"), true, false)
+	require.Empty(t, got)
+	require.True(t, f.Active())
+
+	got = f.Consume([]byte("\\j"), true, false)
+	require.Equal(t, []byte("\x1b]11;rgb:fefe/ffff/ffff\x1b\\j"), got)
+	require.False(t, f.Active())
+}
+
+func TestFilterDiscardsOtherEscapeStringsWhenForwardingColorReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"osc4_palette", "\x1b]4;1;rgb:cdcd/0000/0000\x07"},
+		{"osc52_clipboard", "\x1b]52;c;aGVsbG8=\x1b\\"},
+		{"osc110_reset", "\x1b]110\x07"},
+		{"osc1_title", "\x1b]1;title\x1b\\"},
+		{"osc_esc_in_prefix", "\x1b]1\x1b\\"},
+		{"dcs_xtversion", "\x1bP>|iTerm2 3.6.10n\x1b\\"},
+		{"oversized_osc11", "\x1b]11;rgb:" + strings.Repeat("f", 64) + "\x1b\\"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := Filter{ForwardColorReplies: true}
+
+			got := f.Consume([]byte(tc.input+"k"), true, false)
+			require.Equal(t, []byte("k"), got)
+			require.False(t, f.Active())
+		})
+	}
+}
+
+func TestFilterDropsIncompleteColorReplyOnFinal(t *testing.T) {
+	f := Filter{ForwardColorReplies: true}
+
+	got := f.Consume([]byte("\x1b]11;rgb:fefe"), true, true)
+	require.Empty(t, got)
 	require.False(t, f.Active())
 }
 

@@ -145,7 +145,7 @@ func staleRemoteBinaryHint(remoteName, remoteVersion string, found bool) string 
 		return fmt.Sprintf("No agent-deck answered `--version` on that host. Install it with `agent-deck remote update %s`.", remoteName)
 	}
 	if update.CompareVersions(remoteVersion, Version) < 0 {
-		return fmt.Sprintf("The remote runs v%s, older than this build (v%s). `inbox export` — the read this drain performs — exists only in newer builds; update it with `agent-deck remote update %s`.",
+		return fmt.Sprintf("The remote runs v%s, older than this build (v%s). `inbox export --profile`, the profile-scoped read this drain performs, exists only in newer builds; update it with `agent-deck remote update %s`.",
 			remoteVersion, Version, remoteName)
 	}
 	return ""
@@ -175,6 +175,9 @@ type remoteDrainResult struct {
 	// Woke reports that an ingested record of a waking tier nudged the
 	// receiving conductor (once per drain).
 	Woke bool `json:"woke,omitempty"`
+	// ForeignDropped counts fetched records of a profile other than the
+	// remote's configured one, dropped before ingest (#2539).
+	ForeignDropped int `json:"foreign_dropped,omitempty"`
 }
 
 func printRemoteDrainUsage(w io.Writer) {
@@ -245,6 +248,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 
 	ctx := context.Background()
 	res, err := session.RunRemoteTalkback(ctx, name, targetID, session.RemoteTalkbackDeps{
+		RemoteProfile: rc.GetProfile(),
 		FetchAfter: func(ctx context.Context, cursor session.RemoteCursor) (session.RemoteExport, error) {
 			return remoteCursorFetch(ctx, name, rc, cursor)
 		},
@@ -292,6 +296,11 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 	if res.RestoreDetected {
 		fmt.Fprintf(stderr, "Warning: detected consumed-ledger restore for inbox %s; forgotten window-inside records are unknown, never new.\n", targetID)
 	}
+	if res.ForeignDropped > 0 {
+		// #2539: the count only; a record of another profile is never shown.
+		fmt.Fprintf(stderr, "Warning: dropped %d record(s) of a profile other than %q; the remote's export is not scoped to it.\n",
+			res.ForeignDropped, rc.GetProfile())
+	}
 	if !res.Legacy && unknown > 0 {
 		fmt.Fprintf(stderr, "Cursor not advanced: %d record(s) could not be confirmed as landed; the next drain refetches them.\n", unknown)
 	}
@@ -314,6 +323,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 			CursorAfter:     res.CursorAfter,
 			LegacyExport:    res.Legacy,
 			Woke:            res.Woke,
+			ForeignDropped:  res.ForeignDropped,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)

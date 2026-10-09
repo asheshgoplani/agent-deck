@@ -86,6 +86,10 @@ func cliSessionStart(profile string, args []string) {
 		return
 	}
 
+	if started.Warning != "" && !jsonOutput.enabled() {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", started.Warning)
+	}
+
 	// --attach suspends the CLI into tmux until the user detaches, so the
 	// success output is skipped. Refused loudly without a terminal or under
 	// --json; the session stays started in both cases.
@@ -112,6 +116,9 @@ func cliSessionStart(profile string, args []string) {
 		"success": true,
 		"id":      started.ID,
 		"title":   started.Title,
+	}
+	if started.Warning != "" {
+		jsonData["warning"] = started.Warning
 	}
 	if started.Tmux != "" {
 		jsonData["tmux"] = started.Tmux

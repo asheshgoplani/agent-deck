@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -20,16 +21,24 @@ const installTickTimeout = 2 * time.Second
 
 var configOwner bool
 
+// tickGOOS and tickGOARCH are the raw platform values a reservation maps
+// through the detailed allow-lists; tests override them.
+var tickGOOS, tickGOARCH = runtime.GOOS, runtime.GOARCH
+
 // SetConfigOwner records [telemetry].owner at process startup.
 func SetConfigOwner(owner bool) { configOwner = owner }
 
 // installTick is separate from State: old binaries discard unknown State
 // fields. Keep this ledger across disable and reset-id to retain the day's
 // nonce even after a lost acknowledgment. It contains no install identity.
+// OS and Arch are the allow-listed values fixed at reservation; ledgers
+// written by older releases have neither.
 type installTick struct {
 	Day         string `json:"day"`
 	TickID      string `json:"tick_id"`
 	Version     string `json:"v"`
+	OS          string `json:"os,omitempty"`
+	Arch        string `json:"arch,omitempty"`
 	Sent        bool   `json:"sent"`
 	LastSentDay string `json:"last_sent_day,omitempty"`
 }
@@ -107,7 +116,9 @@ func readInstallTick() (installTick, error) {
 	}
 	if !validTickDay(tick.Day) || !validTickID(tick.TickID) || safeVersion(tick.Version) == "dev" ||
 		(tick.LastSentDay != "" && (!validTickDay(tick.LastSentDay) || tick.LastSentDay > tick.Day)) ||
-		(tick.Sent && tick.LastSentDay != tick.Day) {
+		(tick.Sent && tick.LastSentDay != tick.Day) ||
+		(tick.OS == "") != (tick.Arch == "") ||
+		(tick.OS != "" && (!contains(osValues, tick.OS) || !contains(archValues, tick.Arch))) {
 		return tick, errors.New("telemetry: invalid tick ledger; refusing to replace its nonce")
 	}
 	return tick, nil
@@ -145,11 +156,18 @@ func saveInstallTick(tick installTick) error {
 
 func tickBody(tick installTick) ([]byte, error) {
 	// PostHog requires a distinct_id. Use only this day's random event nonce,
-	// never State.InstallID. It cannot join days or detailed telemetry.
+	// never State.InstallID, so no identifier links days or detailed
+	// telemetry. day, v, os and arch are still coarse quasi-identifiers: on a
+	// rare platform and version they narrow a tick to few installs.
+	// Everything here is fixed at reservation, so retries resend the same
+	// body; a reservation from an older release has no os/arch and keeps none.
+	props := map[string]any{"day": tick.Day, "v": tick.Version, "consent_state": string(ConsentGranted), "tick_id": tick.TickID,
+		"$geoip_disable": true, "$process_person_profile": false}
+	if tick.OS != "" {
+		props["os"], props["arch"] = tick.OS, tick.Arch
+	}
 	return json.Marshal(phBatch{APIKey: redactedAPIKey, Batch: []phEvent{{ //nolint:gosec // G117: only the redacted placeholder; post() inserts the key
-		Event: "install.tick", UUID: tick.TickID, DistinctID: tick.TickID, Timestamp: tick.Day + "T12:00:00Z",
-		Properties: map[string]any{"day": tick.Day, "v": tick.Version, "consent_state": string(ConsentGranted), "tick_id": tick.TickID,
-			"$geoip_disable": true, "$process_person_profile": false},
+		Event: "install.tick", UUID: tick.TickID, DistinctID: tick.TickID, Timestamp: tick.Day + "T12:00:00Z", Properties: props,
 	}}})
 }
 
@@ -193,7 +211,8 @@ func maybeInstallTick(ctx context.Context, send func(context.Context, []byte, ti
 		if err != nil {
 			return UploadResult{Reason: err.Error()}
 		}
-		tick = installTick{Day: today, TickID: tickID(nonce), Version: safeVersion(processVersion), LastSentDay: tick.LastSentDay}
+		tick = installTick{Day: today, TickID: tickID(nonce), Version: safeVersion(processVersion),
+			OS: oneOf(tickGOOS, osValues), Arch: oneOf(tickGOARCH, archValues), LastSentDay: tick.LastSentDay}
 	}
 	// Confirm the nonce is durable on every attempt, including when a previous
 	// reservation renamed successfully but its directory sync failed.

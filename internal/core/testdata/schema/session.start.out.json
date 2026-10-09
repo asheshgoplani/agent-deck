@@ -32,6 +32,10 @@
     "tmux": {
       "description": "tmux session name",
       "type": "string"
+    },
+    "warning": {
+      "description": "Recovery was not sent or submission is uncertain",
+      "type": "string"
     }
   },
   "required": [

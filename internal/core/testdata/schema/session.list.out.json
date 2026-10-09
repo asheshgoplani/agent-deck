@@ -201,6 +201,9 @@
     "tmux.BackgroundWork": {
       "type": "object",
       "properties": {
+        "count": {
+          "type": "integer"
+        },
         "elapsed": {
           "type": "string"
         },

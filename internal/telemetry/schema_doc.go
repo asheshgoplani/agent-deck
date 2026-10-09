@@ -44,7 +44,11 @@ func SchemaMarkdown() string {
 	fmt.Fprintf(&b, "\nFunnel step bits (`milestones_before`): %s.\n", bitDoc(milestoneNames))
 	b.WriteString("\n#### Events\n\n")
 	for _, e := range Events {
-		flags := []string{fmt.Sprintf("tier %d", e.Tier), "call sites " + e.Ships}
+		ships := "call sites " + e.Ships
+		if e.Ships == shipsLater {
+			ships = "planned, not emitted yet"
+		}
+		flags := []string{fmt.Sprintf("tier %d", e.Tier), ships}
 		if e.Basic {
 			flags = append(flags, "also at level basic")
 		}
@@ -131,7 +135,7 @@ func SchemaJSON() ([]byte, error) {
 	}{Schema: SchemaVersion, Buckets: map[string][]string{}, ToolBits: toolBits,
 		InstallTick: map[string]any{
 			"event": "install.tick", "detailed_envelope": false,
-			"properties": map[string]any{"day": "YYYY-MM-DD", "v": "release version at reservation", "consent_state": []string{"granted"}, "tick_id": "random 128-bit UUID-formatted nonce per local day", "$process_person_profile": false, "$geoip_disable": true},
+			"properties": map[string]any{"day": "YYYY-MM-DD", "v": "release version at reservation", "os": osValues, "arch": archValues, "consent_state": []string{"granted"}, "tick_id": "random 128-bit UUID-formatted nonce per local day", "$process_person_profile": false, "$geoip_disable": true},
 			"uuid":       "tick_id", "distinct_id": "tick_id", "timestamp": "day at 12:00 labelled UTC", "counting": "DISTINCT tick_id per day",
 		}}
 	for _, p := range Envelope {
@@ -158,10 +162,14 @@ const installTickSchemaMarkdown = "#### Anonymous daily install tick\n" +
 	"|---|---|\n" +
 	"| `day` | Local calendar day, YYYY-MM-DD |\n" +
 	"| `v` | Release version when the daily nonce was reserved |\n" +
+	"| `os` | Go GOOS at reservation, same allow-list as the detailed envelope; no OS version; absent on ticks reserved by older releases |\n" +
+	"| `arch` | Go GOARCH at reservation, same allow-list as the detailed envelope; absent on ticks reserved by older releases |\n" +
 	"| `consent_state` | `granted`; undecided and declined never send |\n" +
 	"| `tick_id` | Random 128-bit daily nonce formatted as a UUID; reused on retries |\n" +
 	"| `$process_person_profile` | `false` |\n" +
 	"| `$geoip_disable` | `true` |\n" +
 	"\n" +
 	"The PostHog event `uuid` and required `distinct_id` both equal `tick_id`. No persistent install ID or detailed envelope is attached. Timestamp is the local day at 12:00 labelled UTC. The dashboard must count DISTINCT `tick_id` per `day`; retries may produce multiple rows. The nonce links only retries of one daily event.\n" +
+	"\n" +
+	"`os` and `arch` were added to the tick in schema 3 without a schema version change. This is a recorded decision: every detailed schema 3 event already sends both values under the same grant, and a bump would ask every install for consent again.\n" +
 	"\n"

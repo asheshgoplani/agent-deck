@@ -77,11 +77,11 @@ func TestIssue2469PR3R3_StaleSignalTurnSameBatch(t *testing.T) {
 	cursorTestHome(t)
 	unownedTurn(t, "ws", "U1", "same", time.Now().Add(-3*time.Hour), false, 0)
 	unownedTurn(t, "ws", "U1", "same", time.Now().Add(-time.Minute), true, 0)
-	full, err := ExportPendingRecords()
+	full, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exp, err := ExportRecordsAfter(RemoteCursor{})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,14 +103,14 @@ func TestIssue2469PR3R3_JournalTrimGapShipsFromUnowned(t *testing.T) {
 		unownedTurn(t, "wg", fmt.Sprintf("u%d", i), fmt.Sprintf("t%d", i), base.Add(time.Duration(i)*time.Second), false, 4)
 	}
 	add(1)
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 {
 		t.Fatalf("drain 1: %+v %v", first.Records, err)
 	}
 	for i := 2; i <= 10; i++ {
 		add(i)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestIssue2469PR3R3_JournalTrimGapShipsFromUnowned(t *testing.T) {
 			t.Fatalf("want seqs 2..10 in order, got %v", got)
 		}
 	}
-	third, err := ExportRecordsAfter(second.CursorNext)
+	third, err := ExportRecordsAfter(DefaultProfile, second.CursorNext)
 	if err != nil || len(third.Records) != 0 {
 		t.Fatalf("the gap must cross once, not on every drain: %v %v", exportSeqs(third), err)
 	}
@@ -135,7 +135,7 @@ func TestIssue2469PR3R3_FailedJournalAppendTurnCrosses(t *testing.T) {
 	cursorTestHome(t)
 	at := time.Now().Add(-10 * time.Minute)
 	unownedTurn(t, "wf", "u1", "one", at, false, 0)
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 {
 		t.Fatalf("drain 1: %+v %v", first.Records, err)
 	}
@@ -145,7 +145,7 @@ func TestIssue2469PR3R3_FailedJournalAppendTurnCrosses(t *testing.T) {
 	// Turn three journals as seq 2.
 	unownedTurn(t, "wf", "u3", "three", at.Add(2*time.Minute), false, 0)
 
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestIssue2469PR3R3_CursorTravelsOnStdin(t *testing.T) {
 	// The fake remote binary answers with the cursor it read from stdin.
 	bin := filepath.Join(t.TempDir(), "agent-deck")
 	script := `#!/bin/sh
-[ "$4" = "--after" ] && [ "$5" = "-" ] || { echo "unexpected args: $*" >&2; exit 2; }
+[ "$4" = "--profile" ] && [ "$5" = "default" ] && [ "$6" = "--after" ] && [ "$7" = "-" ] || { echo "unexpected args: $*" >&2; exit 2; }
 printf '{"records":[],"writer":{"running":true},"cursor_next":'
 cat
 printf '}\n'
@@ -227,7 +227,7 @@ func TestIssue2469PR3R3_IdleChildrenLeaveTheCursor(t *testing.T) {
 	journalTurn(t, "live", TurnTierUrgent, "now", time.Now().Add(-time.Minute))
 
 	held := RemoteCursor{Seqs: map[string]int64{"idle": 1}, Ledger: map[string]string{"idle-done": "x"}}
-	exp, err := ExportRecordsAfter(held)
+	exp, err := ExportRecordsAfter(DefaultProfile, held)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestIssue2469PR3R3_IdleChildrenLeaveTheCursor(t *testing.T) {
 		t.Fatalf("the live child must still ship and stay tracked: %+v %+v", exp.CursorNext, exp.Records)
 	}
 	// Forgotten is not re-shipped: the next drain ships nothing.
-	again, err := ExportRecordsAfter(exp.CursorNext)
+	again, err := ExportRecordsAfter(DefaultProfile, exp.CursorNext)
 	if err != nil || len(again.Records) != 0 {
 		t.Fatalf("a pruned child came back: %+v %v", again.Records, err)
 	}
@@ -255,7 +255,7 @@ func TestIssue2469PR3R3_RemovedChildLeavesTheCursor(t *testing.T) {
 	journalTurn(t, "here", TurnTierUrgent, "still here", at)
 	journalTurn(t, "gone", TurnTierUrgent, "last words", at.Add(time.Second))
 
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestIssue2469PR3R3_RemovedChildLeavesTheCursor(t *testing.T) {
 	if _, err := SweepInboxesForChildSession("gone"); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,14 +282,14 @@ func TestIssue2469PR3R3_LedgerRewriteWithSameStampCrosses(t *testing.T) {
 	if err := WriteLedgerEntry(CompletionLedgerEntry{ChildID: "wl", Profile: "default", Status: "fail", Summary: "first", FinishedAt: at}); err != nil {
 		t.Fatal(err)
 	}
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 {
 		t.Fatalf("drain 1: %+v %v", first.Records, err)
 	}
 	if err := WriteLedgerEntry(CompletionLedgerEntry{ChildID: "wl", Profile: "default", Status: "ok", Summary: "later sentinel", FinishedAt: at}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,7 +56,7 @@ func handleInbox(profile string, args []string) {
 func printInboxUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: agent-deck inbox <session-id>")
 	fmt.Fprintln(w, "       agent-deck inbox drain [--json] <session-id>")
-	fmt.Fprintln(w, "       agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]")
+	fmt.Fprintln(w, "       agent-deck inbox export [--json] [--profile <name>] [--after '<cursor-json>' [--with-writer]]")
 	fmt.Fprintln(w, "       agent-deck inbox cursor [--json] [<remote>]")
 	fmt.Fprintln(w, "       agent-deck inbox writer-status [--json]")
 	fmt.Fprintln(w, "       agent-deck inbox peek [--json] [<session-id>|self]")
@@ -78,8 +78,10 @@ func printInboxUsage(w io.Writer) {
 }
 
 func printInboxExportUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]")
+	fmt.Fprintln(w, "Usage: agent-deck inbox export [--json] [--profile <name>] [--after '<cursor-json>' [--with-writer]]")
 	fmt.Fprintln(w, "Print this host's completion/transition records without consuming them.")
+	fmt.Fprintln(w, "Only records of one profile are exported: --profile, else the invoking profile")
+	fmt.Fprintln(w, "(-p). A --profile that differs from -p is an error.")
 	fmt.Fprintln(w, "--after (requires --json) returns only what the cursor does not hold yet:")
 	fmt.Fprintln(w, "turn-journal lines past each child's seq, changed completion-ledger entries")
 	fmt.Fprintln(w, "and _unowned records past its read position, as")
@@ -199,7 +201,7 @@ func runInboxWithProfile(stdout io.Writer, args []string, explicitProfile string
 		return runInboxDrain(stdout, args[1:], explicitProfile)
 	}
 	if len(args) > 0 && args[0] == "export" {
-		return runInboxExport(stdout, args[1:])
+		return runInboxExport(stdout, args[1:], explicitProfile)
 	}
 	if len(args) > 0 && args[0] == "writer-status" {
 		return runInboxWriterStatus(stdout, args[1:])
@@ -544,9 +546,10 @@ var inboxExportStdin = func() io.Reader { return os.Stdin }
 // remote child active within the talkback horizon, about 80 bytes each).
 const maxInboxExportCursorBytes = 64 << 20
 
-func runInboxExport(stdout io.Writer, args []string) error {
+func runInboxExport(stdout io.Writer, args []string, explicitProfile string) error {
 	fs := flag.NewFlagSet("inbox export", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the records as a JSON array")
+	scope := fs.String("profile", "", "export only this profile's records (default: the invoking profile)")
 	after := fs.String("after", "", "incremental export: only records past this cursor JSON, or - to read it from stdin (wrapped with cursor_next)")
 	withWriter := fs.Bool("with-writer", false, "with --after: include the writer status in the reply")
 	fs.Usage = func() { printInboxExportUsage(stdout) }
@@ -556,6 +559,10 @@ func runInboxExport(stdout io.Writer, args []string) error {
 	if fs.NArg() != 0 {
 		fs.Usage()
 		return fmt.Errorf("inbox export takes no positional arguments")
+	}
+	profile, err := inboxExportProfile(*scope, explicitProfile)
+	if err != nil {
+		return err
 	}
 	afterSet := false
 	fs.Visit(func(f *flag.Flag) { afterSet = afterSet || f.Name == "after" })
@@ -579,7 +586,7 @@ func runInboxExport(stdout io.Writer, args []string) error {
 		if err != nil {
 			return err
 		}
-		exp, err := session.ExportRecordsAfter(cursor)
+		exp, err := session.ExportRecordsAfter(profile, cursor)
 		if err != nil {
 			return fmt.Errorf("export inbox records: %w", err)
 		}
@@ -593,7 +600,7 @@ func runInboxExport(stdout io.Writer, args []string) error {
 		return fmt.Errorf("inbox export --with-writer requires --after")
 	}
 
-	records, err := session.ExportPendingRecords()
+	records, err := session.ExportPendingRecords(profile)
 	if err != nil {
 		return fmt.Errorf("export inbox records: %w", err)
 	}
@@ -612,6 +619,29 @@ func runInboxExport(stdout io.Writer, args []string) error {
 	printInboxEventLines(stdout, records)
 	fmt.Fprintf(stdout, "\nExported %d record(s). Nothing was consumed.\n", len(records))
 	return nil
+}
+
+// inboxExportProfile is the one profile an export is scoped to (#2539): the
+// --profile flag, else the invoking profile. The host-wide inbox, journal and
+// ledger directories hold every profile's records, so there is no unscoped
+// export, and a --profile that disagrees with -p is refused rather than
+// silently preferring one of them.
+func inboxExportProfile(flagProfile, explicitProfile string) (string, error) {
+	flagProfile, explicitProfile = strings.TrimSpace(flagProfile), strings.TrimSpace(explicitProfile)
+	if flagProfile != "" {
+		if explicitProfile != "" && explicitProfile != flagProfile {
+			return "", fmt.Errorf("inbox export: --profile %q disagrees with -p %q", flagProfile, explicitProfile)
+		}
+		return flagProfile, nil
+	}
+	profile, err := session.ResolveProfileForStorage(explicitProfile)
+	if err != nil {
+		return "", fmt.Errorf("inbox export: resolve profile: %w", err)
+	}
+	if strings.TrimSpace(profile) == "" {
+		return "", fmt.Errorf("inbox export: no profile to scope the export to")
+	}
+	return profile, nil
 }
 
 // runInboxWriterStatus answers the question an empty export cannot: is anything
