@@ -48,23 +48,23 @@ the brief tier.`)
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 1 {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *into != "" && *jsonOutput {
 		out.Error("--json and --into cannot be combined: the delivery result is the output", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	target, err := resolveIntoTarget(*into)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	env := openRecallEnv(profile, out)
 	if target != "" && !env.cfg.Recall.GetRemoteCards() {
 		if err := refuseRemoteIntoTarget(profile, target); err != nil {
 			env.close()
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(2)
+			exitCLI(2)
 		}
 	}
 	res, err := query.New(env.st, env.stateDB).Context(context.Background(), fs.Arg(0), *tier, *budget)
@@ -73,9 +73,9 @@ the brief tier.`)
 		code := recallLookupCode(err)
 		out.Error(err.Error(), code)
 		if errors.Is(err, query.ErrNotFound) || errors.Is(err, query.ErrTier) || errors.Is(err, query.ErrDigestOnly) {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if target == "" {
 		if *jsonOutput {
@@ -182,7 +182,7 @@ rules change.`)
 		n, err := d.RetryFailed()
 		if err != nil {
 			out.Error("recall enrich: "+err.Error(), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		retried = n
 	}
@@ -192,10 +192,10 @@ rules change.`)
 	if err != nil {
 		if errors.Is(err, ingest.ErrGated) {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(3)
+			exitCLI(3)
 		}
 		out.Error("recall enrich: "+err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *jsonOutput {
 		out.printJSON(map[string]any{"success": true, "result": res, "retried": retried})

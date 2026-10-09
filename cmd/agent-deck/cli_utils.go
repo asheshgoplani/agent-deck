@@ -678,7 +678,7 @@ func (c *CLIOutput) printJSON(data interface{}) {
 	output, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(output))
 }

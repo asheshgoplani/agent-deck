@@ -18,7 +18,7 @@ import (
 // (asserted by TestCoreRegistryMatchesLegacyHandlers).
 
 func cliList(profile string, args []string) {
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
@@ -43,8 +43,8 @@ func cliList(profile string, args []string) {
 		fmt.Println("  agent-deck list --all              # List from all profiles")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	if !*allProfiles {
@@ -60,13 +60,13 @@ func cliList(profile string, args []string) {
 	if jsonOutput.envelope() {
 		printEnvelope(res)
 		if res.Err != nil {
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
 	if res.Err != nil {
 		fmt.Printf("Error: %s\n", core.AsError(res.Err).Message)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	listed := res.Out.(core.SessionListOut)
 
@@ -97,7 +97,7 @@ func cliList(profile string, args []string) {
 		output, err := json.MarshalIndent(rows, "", "  ")
 		if err != nil {
 			fmt.Printf("Error: failed to format JSON output: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Print(string(append(output, '\n')))
 		return
@@ -180,7 +180,7 @@ func renderListAllProfiles(listed core.SessionListOut, jsonOutput bool) {
 		output, err := json.MarshalIndent(all, "", "  ")
 		if err != nil {
 			fmt.Printf("Error: failed to format JSON output: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println(string(output))
 		return
@@ -202,7 +202,7 @@ func renderListAllProfiles(listed core.SessionListOut, jsonOutput bool) {
 }
 
 func cliGroupList(profile string, args []string) {
-	fs := flag.NewFlagSet("group list", flag.ExitOnError)
+	fs := flag.NewFlagSet("group list", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -217,8 +217,8 @@ func cliGroupList(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -238,7 +238,7 @@ func cliGroupList(profile string, args []string) {
 		output, err := json.MarshalIndent(listed, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to format JSON: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if !quietMode {
 			fmt.Print(string(append(output, '\n')))

@@ -56,6 +56,19 @@ func formatUUID(h string) string {
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
+// lineUUID is random, except for activity.hourly at full: there it is
+// deterministic per (install salt, day, local hour), so a residual second row
+// for an hour (a spool append whose state save failed, a row rebuilt after a
+// lost acknowledgement) is deduplicated by PostHog. The salt never leaves the
+// machine and the day is part of the key, so rows of different days share
+// nothing.
+func (s *State) lineUUID(name string, at time.Time, level Level) string {
+	if name == "activity.hourly" && level == LevelFull {
+		return s.rollupUUID(dayOf(at), name, strconv.Itoa(at.Local().Hour()))
+	}
+	return newUUID()
+}
+
 func actor() string {
 	if AgentActor() {
 		return "agent"
@@ -179,14 +192,18 @@ func record(name string, props map[string]any, sessionID string) {
 	recordFrom(surface, name, props, sessionID, time.Time{})
 }
 
-// recordAt spools one event with its time fields taken from at (zero = now).
-func recordAt(name string, props map[string]any, sessionID string, at time.Time) {
-	recordFrom(surface, name, props, sessionID, at)
-}
-
 // recordFrom spools one event from surface sf, which differs from the
 // process surface for web requests served by a TUI process.
 func recordFrom(sf Surface, name string, props map[string]any, sessionID string, at time.Time) {
+	recordLocked(name, props, at, func(s *State, at time.Time) bool {
+		return s.spoolFrom(sf, name, props, sessionID, at)
+	})
+}
+
+// recordLocked runs spool on the loaded state under a non-blocking state
+// lock when consent is granted, and saves when spool reports a change. In log
+// mode without consent it logs name and props instead. A zero at means now.
+func recordLocked(name string, props map[string]any, at time.Time, spool func(s *State, at time.Time) bool) {
 	if !canRecord() {
 		return
 	}
@@ -208,7 +225,7 @@ func recordFrom(sf Surface, name string, props map[string]any, sessionID string,
 		return
 	}
 	dropped := s.flushLockDrops(now)
-	if s.spoolFrom(sf, name, props, sessionID, at) || dropped {
+	if spool(s, at) || dropped {
 		_ = saveStateFast(s)
 	}
 }
@@ -221,6 +238,12 @@ func (s *State) spool(name string, props map[string]any, sessionID string, at ti
 
 // spoolFrom is spool for an event from surface sf.
 func (s *State) spoolFrom(sf Surface, name string, props map[string]any, sessionID string, at time.Time) bool {
+	return s.spoolTo(appendSpool, sf, name, props, sessionID, at)
+}
+
+// spoolTo is spoolFrom with the line written by write, so PreviewBatch can
+// build a line exactly as recording would without touching the spool.
+func (s *State) spoolTo(write func(spoolLine) error, sf Surface, name string, props map[string]any, sessionID string, at time.Time) bool {
 	def, ok := LookupEvent(name)
 	if !ok {
 		return false
@@ -244,7 +267,7 @@ func (s *State) spoolFrom(sf Surface, name string, props map[string]any, session
 		inc(&r.Dropped)
 		return true
 	}
-	if appendSpool(s.newLine(name, props, at, level, sf)) != nil {
+	if write(s.newLine(name, props, at, level, sf)) != nil {
 		return true
 	}
 	r.Emitted++
@@ -255,7 +278,7 @@ func (s *State) spoolFrom(sf Surface, name string, props map[string]any, session
 func (s *State) newLine(name string, props map[string]any, at time.Time, level Level, sf Surface) spoolLine {
 	s.Seq++
 	l := spoolLine{
-		E: name, U: newUUID(), D: dayOf(at), S: s.Seq, V: safeVersion(processVersion),
+		E: name, U: s.lineUUID(name, at, level), D: dayOf(at), S: s.Seq, V: safeVersion(processVersion),
 		A: actor(), SF: string(sf), L: string(level), P: props,
 	}
 	if level == LevelFull {
@@ -315,6 +338,7 @@ const (
 	ViaTUIFork   CreateVia = "tui_fork"
 	ViaTUIQuick  CreateVia = "tui_quick"
 	ViaCLIAdd    CreateVia = "cli_add"
+	ViaCLIFork   CreateVia = "cli_fork"
 	ViaCLILaunch CreateVia = "cli_launch"
 	ViaTry       CreateVia = "try"
 	ViaFleet     CreateVia = "fleet"
@@ -375,6 +399,7 @@ const (
 	AreaWeb          ErrArea = "web"
 	AreaConductor    ErrArea = "conductor"
 	AreaTelemetry    ErrArea = "telemetry"
+	AreaTUI          ErrArea = "tui"
 
 	KindTmuxMissing    ErrKind = "tmux_missing"
 	KindTmuxTooOld     ErrKind = "tmux_too_old"
@@ -478,15 +503,17 @@ func TUIExited(openFor time.Duration, kind ExitKind) {
 	})
 }
 
-// CLICommand counts a human CLI command and its feature, and records
-// app.start at most once per local hour for the CLI surface.
-func CLICommand(f Feature) {
+// CLICommand counts a finished human CLI command and its feature, and records
+// app.start at most once per local hour for the CLI surface. failed counts a
+// feature error and withholds the first-use milestone; an empty f counts the
+// invocation only.
+func CLICommand(f Feature, failed bool) {
 	withState(func(s *State, now time.Time) bool {
 		r := s.day(dayOf(now))
 		inc(&r.CLICmds)
 		s.markActive(now)
 		if f != "" {
-			s.countFeature(r, f, false, now)
+			s.countFeature(r, f, failed, now)
 		}
 		if bit := HourBit(now.Local().Hour()); r.CLIStarts&bit == 0 {
 			r.CLIStarts |= bit

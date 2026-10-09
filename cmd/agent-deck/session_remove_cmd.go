@@ -18,7 +18,7 @@ import (
 //
 // Claude transcripts under ~/.claude/projects/<slug>/ are never touched.
 func handleSessionRemove(profile string, args []string) {
-	fs := flag.NewFlagSet("session remove", flag.ExitOnError)
+	fs := flag.NewFlagSet("session remove", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -41,8 +41,8 @@ func handleSessionRemove(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -51,7 +51,7 @@ func handleSessionRemove(profile string, args []string) {
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *allErrored {
@@ -62,16 +62,16 @@ func handleSessionRemove(profile string, args []string) {
 	identifier := fs.Arg(0)
 	if identifier == "" {
 		out.Error("usage: session remove <id|title> OR --all-errored", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return
 	}
 
@@ -83,7 +83,7 @@ func handleSessionRemove(profile string, args []string) {
 			),
 			ErrCodeInvalidOperation,
 		)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Always kill the tmux scope + its process tree before deleting the
@@ -111,7 +111,7 @@ func handleSessionRemove(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	if err := storage.RemoveSessionAndVerify(inst.ID, instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Best-effort transition-notifier cleanup for issue #910 — see the
@@ -216,7 +216,7 @@ func bulkRemoveSessions(
 		}
 		if err := storage.DeleteInstance(inst.ID); err != nil {
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		removedIDs = append(removedIDs, inst.ID)
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
@@ -231,7 +231,7 @@ func bulkRemoveSessions(
 	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
 	if err := storage.SaveGroupsOnly(groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	for _, id := range removedIDs {

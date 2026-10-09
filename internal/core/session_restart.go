@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
@@ -97,7 +98,7 @@ func (deps Deps) sessionRestart(ctx context.Context, in SessionRestartIn) (Sessi
 	// A warning is both part of the typed result and an envelope warning;
 	// the duplication is intentional (typed field for the CLI shape, generic
 	// list for any client).
-	if warning := inst.ConsumeCodexRestartWarning(); warning != "" {
+	if warning := strings.TrimSpace(inst.ConsumeCodexRestartWarning() + "\n" + inst.ConductorRecoveryWarning()); warning != "" {
 		out.Warning = warning
 		Warn(ctx, warning)
 		Emit(ctx, Event{Kind: EventRestartWarning, ID: inst.ID, Title: inst.Title, Message: warning})
@@ -151,7 +152,7 @@ func (d *sessionData) restartAll(ctx context.Context, in SessionRestartIn) (*Res
 		inst.LastStartedAt = time.Now()
 		restarted = append(restarted, inst.ID)
 
-		warning := inst.ConsumeCodexRestartWarning()
+		warning := strings.TrimSpace(inst.ConsumeCodexRestartWarning() + "\n" + inst.ConductorRecoveryWarning())
 		if warning != "" {
 			Warn(ctx, warning)
 			Emit(ctx, Event{Kind: EventRestartWarning, ID: inst.ID, Title: inst.Title, Message: warning})

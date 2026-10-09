@@ -32,7 +32,7 @@ func handleRecallTimeline(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 	if !*jsonOutput || (fs.NArg() != 1 && *rf.transcript == "") {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if !*rf.v1 {
 		requireRecallEnabled(out)
@@ -44,7 +44,7 @@ func handleRecallTimeline(profile string, args []string) {
 	result, err := query.New(env.st, env.stateDB).Timeline(context.Background(), fs.Arg(0))
 	if err != nil {
 		out.Error(err.Error(), recallLookupCode(err))
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out.printJSON(result)
 }
@@ -65,7 +65,7 @@ func handleRecallFollow(profile string, args []string) {
 	}
 	if *after == "" || !*jsonl || (fs.NArg() != 1 && *rf.transcript == "") {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	out := NewCLIOutput(true, false)
 	if !*rf.v1 {
@@ -83,6 +83,6 @@ func handleRecallFollow(profile string, args []string) {
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "recall follow:", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }

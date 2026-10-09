@@ -41,8 +41,14 @@ const (
 	LevelBasic Level = "basic"
 )
 
-// SchemaVersion must change with the event schema and TELEMETRY.md. A change
-// turns every existing grant back into "undecided" (consent binds to it).
+// SchemaVersion must change with the event schema and TELEMETRY.md whenever a
+// change sends a new kind of data or a new way to link it. A change turns
+// every existing grant back into "undecided" (consent binds to it). Copying a
+// value that every detailed event of this schema already sends onto
+// install.tick, under the same grant, is not such a change: the tick gained os
+// and arch in schema 3 without a bump. TELEMETRY.md records that decision and
+// TestInstallTickAllowListStaysWithinGrantedEnvelope enforces its limit;
+// TestInstallTickOSArchKeepsSchemaVersion pins the version.
 const SchemaVersion = 3
 
 // StateFileName is the state file, stored in the agent-deck data directory.
@@ -85,6 +91,8 @@ type State struct {
 	Upload         UploadState             `json:"upload,omitempty"`
 	TUIOpen        bool                    `json:"tui_open,omitempty"`
 	LastVersion    string                  `json:"last_version,omitempty"`
+	// OpenHour is the unfinished activity hour of the last sampling TUI.
+	OpenHour *hourSample `json:"open_hour,omitempty"`
 
 	// Earlier-schema answers found on load, never serialized or confused with each other.
 	prevV1 Consent

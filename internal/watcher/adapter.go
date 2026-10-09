@@ -19,6 +19,13 @@ type AdapterConfig struct {
 
 	// Settings holds adapter-specific key-value pairs from the watcher.toml [source] section.
 	Settings map[string]string
+
+	// ResumeSince is where a resumable adapter (ntfy, slack) starts its first
+	// subscription: an ntfy message ID or a unix timestamp, both valid values
+	// of ntfy's `since` parameter. The engine fills it from the persisted
+	// state.json before Setup so messages published while agent-deck was down
+	// are fetched on restart (#2538). Empty means stream only new messages.
+	ResumeSince string
 }
 
 // WatcherAdapter is the interface that all event source adapters must implement.
@@ -74,6 +81,13 @@ type Event struct {
 	// from Router.Match(Sender), or "triage" / "" when no rule matches.
 	// Consumed by the TUI to deliver events into the conductor's tmux pane.
 	RoutedTo string `json:"routed_to,omitempty"`
+
+	// Cursor is the source's resume position for this event (the ntfy message
+	// ID for the ntfy and slack adapters). The engine persists it as
+	// WatcherState.DedupCursor only after the event is stored, so a restart
+	// resumes after the last event the engine actually handled (#2538). It is
+	// process-internal and never serialized.
+	Cursor string `json:"-"`
 }
 
 // DedupKey returns a deterministic hex-encoded SHA-256 hash of the event's

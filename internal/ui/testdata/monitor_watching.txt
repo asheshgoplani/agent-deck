@@ -1,0 +1,4 @@
+   └─ ◐ Observer claude
+watching: 1 · Observe a fixture event
+   └─ ○ Observer claude
+watching: 1 · Observe a fixture event

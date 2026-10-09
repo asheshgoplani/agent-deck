@@ -191,7 +191,7 @@ func TestPastDayWriteDuringUploadIsNotResent(t *testing.T) {
 	fake, done, release := blockedUpload(t, c)
 	t.Cleanup(release)
 	day0 := dayOf(at(0, 0, 0))
-	recordAt("activity.hourly", map[string]any{"running": CountBucket(1), "human_active": true}, "", at(0, 23, 0))
+	recordFrom(surface, "activity.hourly", map[string]any{"running": CountBucket(1), "human_active": true}, "", at(0, 23, 0))
 	release()
 	if r := <-done; !r.Sent {
 		t.Fatalf("upload: %+v", r)
