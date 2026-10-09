@@ -59,6 +59,18 @@ def _receipt(**overrides):
     return receipt
 
 
+def _claude_receipt(**overrides):
+    receipt = {
+        "receipt_id": "turn-claude-1",
+        "instance_id": "instance-claude",
+        "claude_session_id": "claude-thread-1",
+        "turn_uuid": "turn-claude-1",
+        "turn_start_offset": 512,
+    }
+    receipt.update(overrides)
+    return receipt
+
+
 def _run(coro):
     with mock.patch("bridge.asyncio.sleep", new=_no_sleep):
         return asyncio.run(coro)
@@ -104,6 +116,15 @@ def test_wait_genuine_failure_is_not_still_running():
     assert pending is False
 
 
+def test_wait_not_ready_before_submission_requests_queue_retry():
+    with mock.patch(
+        "bridge.run_cli", return_value=_completed(1, stderr="conductor not ready"),
+    ):
+        assert send_to_conductor(
+            "conductor-ops", "hi", profile="work", wait_for_reply=True,
+        ) == (False, "", bridge._WAIT_SEND_QUEUE_REQUIRED)
+
+
 def test_wait_unverified_timeout_does_not_acquire_reply_ownership():
     payload = json.dumps({
         "success": False,
@@ -145,6 +166,20 @@ def test_codex_timeout_without_exact_receipt_fails_closed():
         ) == (False, "", False)
 
 
+def test_claude_timeout_without_exact_receipt_fails_closed():
+    payload = json.dumps({
+        "success": False,
+        "completion": "timeout",
+        "delivery": "submitted",
+        "submitted": True,
+        "accepted_turn_kind": "claude_transcript",
+    })
+    with mock.patch("bridge.run_cli", return_value=_completed(1, stdout=payload)):
+        assert send_to_conductor(
+            "conductor-claude", "hi", profile="work", wait_for_reply=True,
+        ) == (False, "", False)
+
+
 def test_wait_success_returns_output():
     with mock.patch(
         "bridge.run_cli", return_value=_completed(0, stdout=json.dumps({
@@ -157,6 +192,31 @@ def test_wait_success_returns_output():
     assert (ok, response, pending) == (True, "the answer", False)
     cli.assert_called_once()
     output.assert_not_called()
+
+
+def test_claude_exact_output_query_carries_the_receipt_identity():
+    receipt = _claude_receipt()
+    payload = json.dumps({
+        "success": True,
+        "completion": "complete",
+        "content": "the exact answer",
+        "claude_session_id": "claude-thread-1",
+        "claude_turn_uuid": "turn-claude-1",
+    })
+    with mock.patch(
+        "bridge.run_cli", return_value=_completed(0, stdout=payload),
+    ) as cli:
+        assert bridge.get_claude_turn_output_state(
+            "conductor-claude", receipt, profile="work",
+        ) == ("the exact answer", True)
+
+    assert cli.call_args.args == (
+        "session", "output", "conductor-claude", "--json",
+        "--claude-turn-uuid", "turn-claude-1",
+        "--claude-turn-start-offset", "512",
+        "--claude-turn-session-id", "claude-thread-1",
+    )
+    assert cli.call_args.kwargs == {"profile": "work", "timeout": 30}
 
 
 # --- the reply-only watcher ------------------------------------------------
@@ -211,6 +271,30 @@ def test_legacy_watcher_remains_available_for_receiptless_tools():
         _run(_watch_pending_reply("conductor-legacy", "work", None, cb))
 
     assert delivered == ["legacy answer"]
+
+
+def test_claude_watcher_reads_the_exact_turn_instead_of_latest_output():
+    delivered: list[str] = []
+
+    async def cb(text: str) -> None:
+        delivered.append(text)
+
+    with mock.patch(
+        "bridge.get_claude_turn_output_state",
+        side_effect=[("", False), ("exact delayed reply", True)],
+    ) as exact_output, mock.patch(
+        "bridge.get_session_output",
+        return_value="later unrelated reply",
+    ) as latest_output:
+        _run(
+            _watch_pending_reply(
+                "conductor-claude", "work", _claude_receipt(), cb,
+            )
+        )
+
+    assert delivered == ["exact delayed reply"]
+    assert exact_output.call_count == 2
+    latest_output.assert_not_called()
 
 
 def test_watcher_handles_race_already_idle_on_first_poll():

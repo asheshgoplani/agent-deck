@@ -71,7 +71,7 @@ func TestIssue1978_WaitReplyBelongsToQueuedTurnNotInFlightOne(t *testing.T) {
 	// the prompt reappearing immediately, which is also what happens when
 	// the spike-filtered heuristic reads idle mid-turn (#1578) — the reply
 	// phase must still wait for THIS turn.
-	resp, _, identityErr, completionErr, responseErr := awaitClaudeWaitReply(session.TurnQuery{
+	resp, _, _, identityErr, completionErr, responseErr := awaitClaudeWaitReply(session.TurnQuery{
 		Path: path, Prompt: queued, Cursor: cursor,
 	}, deadline, func(time.Duration) (string, error) {
 		return "waiting", nil
@@ -97,7 +97,7 @@ func TestIssue1978_WaitReplyHonoursOneDeadline(t *testing.T) {
 	deadline := time.Now().Add(300 * time.Millisecond)
 	var completionBudget time.Duration
 	start := time.Now()
-	resp, _, identityErr, completionErr, responseErr := awaitClaudeWaitReply(session.TurnQuery{
+	resp, _, _, identityErr, completionErr, responseErr := awaitClaudeWaitReply(session.TurnQuery{
 		Path: path, Prompt: "q", Cursor: 0,
 	}, deadline, func(remaining time.Duration) (string, error) {
 		completionBudget = remaining
