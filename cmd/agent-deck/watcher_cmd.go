@@ -272,7 +272,7 @@ func handleWatcherCreate(profile string, args []string) {
 		claimedName, err = writeWebhookWatcherSource(configPath, *port)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing watcher config: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case "github":
 		// Audit M2: persist the resolved HMAC secret at 0600, never to a
