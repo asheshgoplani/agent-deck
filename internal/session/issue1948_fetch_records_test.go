@@ -26,7 +26,7 @@ func TestIssue1948_FetchPendingRecords_UsesExistingSSHPathAndParsesRecords(t *te
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	if strings.Join(gotArgs, " ") != "inbox export --json" {
+	if strings.Join(gotArgs, " ") != "inbox export --json --profile default" { // #2539: always profile-scoped
 		t.Fatalf("must call the remote's read-only export, called: %v", gotArgs)
 	}
 	if len(records) != 1 || records[0].ChildSessionID != "w1" || records[0].DoneStatus != "ok" {

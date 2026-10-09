@@ -183,6 +183,9 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			BusyPatterns: []string{
 				"ctrl+c to interrupt",
 				"esc to interrupt",
+				// Pi 1.0.x renders this shortcut bar above the composer, outside
+				// the bottom-three-line window used for plain interrupt strings.
+				`re:(?m)^[ \t]*escape interrupt(?:[ \t]+·[ \t]+ctrl\+c/ctrl\+d clear/exit)?[ \t]*$`,
 				// Subagent activity: pi writes task markers to the pane
 				// when subagents are actively running. These patterns are
 				// specific enough to NOT match the idle status bar or
@@ -210,6 +213,9 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				// the idle-prompt marker (busy is checked first, so a live pi
 				// spinner banner still wins).
 				`re:(?m)^↑[\d.]+[kMG]?\s+↓[\d.]+[kMG]?\s`,
+				// Pi 1.0.x replaced the arrow-token footer with context usage,
+				// e.g. "0.0%/1.0M (auto) (provider) model • max" (#2521).
+				`re:(?m)^[ \t]*\d+(?:\.\d+)?%/\d+(?:\.\d+)?[kMG]?[ \t]+\(auto\)(?:[ \t]|$)`,
 			},
 			SpinnerChars: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 		}

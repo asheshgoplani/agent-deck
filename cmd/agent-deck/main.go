@@ -167,13 +167,14 @@ func promptForUpdate() bool {
 	}
 
 	fmt.Println()
-	release, err := update.FetchReleaseByTag(info.LatestVersion)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Update failed: failed to fetch release info: %v\n", err)
-		return false
-	}
-	warnIfLaunchctlUnavailable()
-	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
+	if err := recordUpdateAttempt(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, func() error {
+		release, err := update.FetchReleaseByTag(info.LatestVersion)
+		if err != nil {
+			return fmt.Errorf("failed to fetch release info: %w", err)
+		}
+		warnIfLaunchctlUnavailable()
+		return update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH)
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 		return false
 	}
@@ -2714,6 +2715,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		return
 	}
 
+	// add without --attach only registers the session, and the later
+	// `session start` has no create hook, so record the create here: a
+	// session is counted when it is created, once, on every add path.
+	newInstance.RecordTelemetryCreate(telemetry.ViaCLIAdd)
+
 	// Build human-readable output
 	var humanLines []string
 	humanLines = append(humanLines, fmt.Sprintf("Added session: %s", sessionTitle))
@@ -4183,31 +4189,27 @@ func handleUpdate(args []string) {
 	// Perform update (direct binary replacement or Homebrew upgrade)
 	fmt.Println()
 	warnIfLaunchctlUnavailable()
-	// Opt-in telemetry: the outcome of this manual update (no-op without consent).
-	updateFailed := func() {
-		telemetry.UpdateAttempted(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, telemetry.UpdateError, false)
-		telemetry.ErrorOccurred(telemetry.AreaUpdate, telemetry.KindOther, "")
-	}
-	if homebrewManaged {
-		if err := runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd); err != nil {
-			updateFailed()
-			fmt.Printf("Error installing update via Homebrew: %v\n", err)
-			os.Exit(1)
+	if err := recordUpdateAttempt(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, func() error {
+		if homebrewManaged {
+			if err := runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd); err != nil {
+				fmt.Printf("Error installing update via Homebrew: %v\n", err)
+				return err
+			}
+			return nil
 		}
-	} else {
 		release, err := update.FetchReleaseByTag(info.LatestVersion)
 		if err != nil {
-			updateFailed()
 			fmt.Printf("Error installing update: failed to fetch release info: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
-			updateFailed()
 			fmt.Printf("Error installing update: %v\n", err)
-			os.Exit(1)
+			return err
 		}
+		return nil
+	}); err != nil {
+		os.Exit(1)
 	}
-	telemetry.UpdateAttempted(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, telemetry.UpdateOK, false)
 
 	// Update bridge.py if conductor is installed
 	if err := update.UpdateBridgePy(); err != nil {
@@ -4299,7 +4301,9 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 
 	fmt.Println()
 	warnIfLaunchctlUnavailable()
-	if err := update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH); err != nil {
+	if err := recordUpdateAttempt(Version, targetVersion, telemetry.UpdateManual, func() error {
+		return update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH)
+	}); err != nil {
 		fmt.Printf("Error installing v%s: %v\n", targetVersion, err)
 		os.Exit(1)
 	}
