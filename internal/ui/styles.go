@@ -771,20 +771,3 @@ func RenderLogoCompact(running, waiting, idle int) string {
 		RenderLogoIndicator(indicators[2]) + " " +
 		bracketStyle.Render("⟩")
 }
-
-// RenderLogoLarge renders the large logo for empty state
-// Shows REAL status: running=●, waiting=◐, idle=○
-// Format:
-//
-//	┌──┬──┬──┐
-//	│● │◐ │○ │
-//	└──┴──┴──┘
-func RenderLogoLarge(running, waiting, idle int) string {
-	indicators := getLogoIndicators(running, waiting, idle)
-	top := LogoBorderStyle.Render("┌──┬──┬──┐")
-	mid := LogoBorderStyle.Render("│") + RenderLogoIndicator(indicators[0]) + LogoBorderStyle.Render(" │") +
-		RenderLogoIndicator(indicators[1]) + LogoBorderStyle.Render(" │") +
-		RenderLogoIndicator(indicators[2]) + LogoBorderStyle.Render(" │")
-	bot := LogoBorderStyle.Render("└──┴──┴──┘")
-	return top + "\n" + mid + "\n" + bot
-}

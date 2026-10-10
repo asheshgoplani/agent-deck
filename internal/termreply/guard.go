@@ -49,12 +49,6 @@ func State() (bool, uint64) {
 	return time.Now().UnixNano() < current.until, current.window
 }
 
-// Active reports whether terminal replies should currently be discarded.
-func Active() bool {
-	active, _ := State()
-	return active
-}
-
 // Clear removes any active quarantine window. Intended for tests.
 func Clear() {
 	for {

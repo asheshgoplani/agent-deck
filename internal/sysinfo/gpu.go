@@ -123,9 +123,3 @@ func collectGPURocm() GPUStat {
 
 	return GPUStat{Available: true, UsagePercent: usage}
 }
-
-// GPUAvailable returns whether a GPU monitoring tool was detected.
-func GPUAvailable() bool {
-	probeGPU()
-	return gpuProbe.available
-}
