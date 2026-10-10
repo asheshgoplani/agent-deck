@@ -1,14 +1,22 @@
-package ui
+package watcher
 
 import (
+	"io"
+	"log/slog"
 	"strconv"
 	"testing"
 	"time"
-
-	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/tmux"
-	"github.com/asheshgoplani/agent-deck/internal/watcher"
 )
+
+// startTestRelay runs relayEngine with 1-slot panel channels, the size an
+// EngineHost gives them.
+func startTestRelay(events <-chan Event, health <-chan HealthState, deliverEvent func(Event), deliverHealth func(HealthState)) (<-chan Event, <-chan HealthState, <-chan struct{}) {
+	panelEvents := make(chan Event, 1)
+	panelHealth := make(chan HealthState, 1)
+	done := relayEngine(events, health, deliverEvent, deliverHealth, panelEvents, panelHealth,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return panelEvents, panelHealth, done
+}
 
 // relaySend sends on an unbuffered channel the relay reads, failing the test
 // if the relay stops receiving.
@@ -46,23 +54,23 @@ func relayWait(t *testing.T, done <-chan struct{}) {
 	}
 }
 
-// TestRelayWatcherEngine_DeliversWhileThePanelIsNotRead covers #2524 at the
+// TestRelayEngine_DeliversWhileThePanelIsNotRead covers #2524 at the
 // relay: while the TUI is attached nobody reads the panel channels, yet every
 // event and health state is delivered, once and in order, beyond the engine's
 // 64-event buffer; the panel keeps one pending item to refresh from.
-func TestRelayWatcherEngine_DeliversWhileThePanelIsNotRead(t *testing.T) {
-	events := make(chan watcher.Event)
-	health := make(chan watcher.HealthState)
+func TestRelayEngine_DeliversWhileThePanelIsNotRead(t *testing.T) {
+	events := make(chan Event)
+	health := make(chan HealthState)
 	var gotEvents, gotHealth []string // appended on the relay goroutines; read after they finish
-	panelEvents, panelHealth, done := relayWatcherEngine(events, health,
-		func(e watcher.Event) { gotEvents = append(gotEvents, e.Sender) },
-		func(s watcher.HealthState) { gotHealth = append(gotHealth, s.WatcherName) })
+	panelEvents, panelHealth, done := startTestRelay(events, health,
+		func(e Event) { gotEvents = append(gotEvents, e.Sender) },
+		func(s HealthState) { gotHealth = append(gotHealth, s.WatcherName) })
 
 	for i := 0; i < 100; i++ {
-		relaySend(t, events, watcher.Event{Sender: strconv.Itoa(i), RoutedTo: "demo"})
+		relaySend(t, events, Event{Sender: strconv.Itoa(i), RoutedTo: "demo"})
 	}
 	for i := 0; i < 20; i++ {
-		relaySend(t, health, watcher.HealthState{WatcherName: strconv.Itoa(i), Status: watcher.HealthStatusError})
+		relaySend(t, health, HealthState{WatcherName: strconv.Itoa(i), Status: HealthStatusError})
 	}
 	// Nothing has read the panel: it holds exactly the first item of each.
 	if n := len(panelEvents); n != 1 {
@@ -90,30 +98,30 @@ func TestRelayWatcherEngine_DeliversWhileThePanelIsNotRead(t *testing.T) {
 	}
 }
 
-// TestRelayWatcherEngine_SurvivesAPanickingDelivery: one bad item must not end
+// TestRelayEngine_SurvivesAPanickingDelivery: one bad item must not end
 // the relay, or every later event would go undelivered again.
-func TestRelayWatcherEngine_SurvivesAPanickingDelivery(t *testing.T) {
-	events := make(chan watcher.Event)
-	health := make(chan watcher.HealthState)
+func TestRelayEngine_SurvivesAPanickingDelivery(t *testing.T) {
+	events := make(chan Event)
+	health := make(chan HealthState)
 	delivered := make(chan string, 4)
-	panelEvents, panelHealth, done := relayWatcherEngine(events, health,
-		func(e watcher.Event) {
+	panelEvents, panelHealth, done := startTestRelay(events, health,
+		func(e Event) {
 			if e.Sender == "bad" {
 				panic("boom")
 			}
 			delivered <- e.Sender
 		},
-		func(s watcher.HealthState) {
+		func(s HealthState) {
 			if s.WatcherName == "bad" {
 				panic("boom")
 			}
 			delivered <- "health:" + s.WatcherName
 		})
 
-	relaySend(t, events, watcher.Event{Sender: "bad"})
-	relaySend(t, events, watcher.Event{Sender: "good"})
-	relaySend(t, health, watcher.HealthState{WatcherName: "bad"})
-	relaySend(t, health, watcher.HealthState{WatcherName: "good"})
+	relaySend(t, events, Event{Sender: "bad"})
+	relaySend(t, events, Event{Sender: "good"})
+	relaySend(t, health, HealthState{WatcherName: "bad"})
+	relaySend(t, health, HealthState{WatcherName: "good"})
 	close(events)
 	close(health)
 	relayWait(t, done)
@@ -127,41 +135,5 @@ func TestRelayWatcherEngine_SurvivesAPanickingDelivery(t *testing.T) {
 	}
 	if len(got) != 2 || !got["good"] || !got["health:good"] {
 		t.Fatalf("delivered %v after a panic, want the good event and the good health state", got)
-	}
-}
-
-// TestConductorTmuxSession_ReadsTitleUnderInstanceLock: the relay looks the
-// conductor up off the UI goroutine while renames and title sync write Title
-// under the instance's own lock. Run with -race: a plain Title read races.
-func TestConductorTmuxSession_ReadsTitleUnderInstanceLock(t *testing.T) {
-	inst := session.NewInstanceWithTool(session.ConductorSessionTitle("demo"), t.TempDir(), "shell")
-	ts := tmux.NewSession("conductor-demo", t.TempDir())
-	inst.SetTmuxSessionForTest(ts)
-	home := NewHome()
-	home.instancesMu.Lock()
-	home.instances = []*session.Instance{inst}
-	home.instancesMu.Unlock()
-
-	stop := make(chan struct{})
-	renamed := make(chan struct{})
-	go func() {
-		defer close(renamed)
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				inst.SetTitleThreadSafe(session.ConductorSessionTitle("demo"))
-				return
-			default:
-			}
-			inst.SetTitleThreadSafe(session.ConductorSessionTitle("demo-" + strconv.Itoa(i%2)))
-		}
-	}()
-	for i := 0; i < 1000; i++ {
-		_ = home.conductorTmuxSession("demo")
-	}
-	close(stop)
-	<-renamed
-	if got := home.conductorTmuxSession("demo"); got != ts {
-		t.Fatalf("conductor lookup returned %v, want the conductor's tmux session", got)
 	}
 }

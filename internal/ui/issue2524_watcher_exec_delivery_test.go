@@ -191,7 +191,7 @@ func newIssue2524Env(t *testing.T, watcherName string, source map[string]string,
 func (e *issue2524Env) run(t *testing.T) *tea.Program {
 	t.Helper()
 	initCmd := e.home.startWatcherEngine()
-	if e.home.watcherEngine == nil {
+	if host := e.home.watcherHost.Load(); host == nil || host.Engine() == nil {
 		t.Fatal("startWatcherEngine did not start an engine")
 	}
 	model := &issue2524Model{home: e.home, init: initCmd, handled: e.handled}
@@ -217,7 +217,7 @@ func (e *issue2524Env) run(t *testing.T) *tea.Program {
 		}
 		_ = inW.Close()
 		_ = inR.Close()
-		e.home.watcherEngine.Stop()
+		e.home.StopWatcherEngine()
 	})
 	return prog
 }

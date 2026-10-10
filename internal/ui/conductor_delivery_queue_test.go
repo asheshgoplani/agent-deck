@@ -455,6 +455,9 @@ func TestConductorQueue_StopLeavesAHungAlertOutOfTheReport(t *testing.T) {
 	if undelivered, unconfirmed, _ := q.stop(50 * time.Millisecond); len(undelivered) != 0 || len(unconfirmed) != 0 {
 		t.Fatalf("stop reported undelivered %v, unconfirmed %v; want nothing for an alert", texts(undelivered), texts(unconfirmed))
 	}
+	if q.finished() == nil {
+		t.Fatal("finished reported nothing in flight while an alert was being sent")
+	}
 }
 
 // TestWatcherDeliveries_QuitFinishesTheDeliveryInFlightAndStartsNoOther: on

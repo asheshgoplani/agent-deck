@@ -102,6 +102,20 @@ func closeTelemetryOnSignal() {
 	}
 }
 
+// watcherEngineSignalStop stops the watcher engine this process owns and
+// releases its owner lock when a signal ends the process, so another TUI or
+// web process of the profile takes over without waiting for the kernel to
+// close both (#2530); set once the home model exists.
+var watcherEngineSignalStop atomic.Pointer[func()]
+
+func setWatcherEngineSignalStop(fn func()) { watcherEngineSignalStop.Store(&fn) }
+
+func stopWatcherEngineOnSignal() {
+	if fn := watcherEngineSignalStop.Load(); fn != nil {
+		(*fn)()
+	}
+}
+
 // writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending
 // ` (update available: vA.B.C)` when the on-disk cache says the user
 // is behind. Offline — never touches the network. Conductor task #45.
@@ -926,6 +940,7 @@ func main() {
 		if hooks := intervalhook.GetGlobal(); hooks != nil {
 			hooks.Stop()
 		}
+		stopWatcherEngineOnSignal()
 		// Close control-mode pipes so their tmux clients detach cleanly instead
 		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
 		// avoids the signal-driven detach that races tmux/tmux#4980. The clean
@@ -1053,6 +1068,7 @@ func main() {
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
 	setTelemetrySignalClose(homeModel.CloseTelemetry)
+	setWatcherEngineSignalStop(homeModel.StopWatcherEngine)
 	// --group / --select were already extracted and validated above, before
 	// the no-TTY gate; apply them to the model now that it exists.
 	if groupScope != "" {
@@ -1206,6 +1222,11 @@ func main() {
 				defer cancel()
 				_ = server.Shutdown(ctx)
 			}()
+			// Run the profile's watcher engine here, or take it over once
+			// the TUI or web process that owns it exits (#2530). No Bubble
+			// Tea loop runs, so Home's conductor lookup reads storage.
+			homeModel.StartWatcherEngine()
+			defer homeModel.StopWatcherEngineAndDeliveries(5 * time.Second)
 			watchCtx, stopWatch := context.WithCancel(context.Background())
 			defer stopWatch()
 			startHeadlessAutoInstall(watchCtx)
@@ -1214,6 +1235,9 @@ func main() {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
 					slog.String("error", err.Error()))
 				fmt.Fprintf(os.Stderr, "Error: web server: %v\n", err)
+				// exitCLI skips the deferred stop, and the engine may already
+				// be receiving events: stop it and its deliveries first.
+				homeModel.StopWatcherEngineAndDeliveries(5 * time.Second)
 				exitCLI(1)
 			}
 			return
