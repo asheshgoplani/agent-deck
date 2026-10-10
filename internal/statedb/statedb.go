@@ -617,6 +617,10 @@ func (s *StateDB) Migrate() error {
 		return err
 	}
 
+	if _, err := tx.Exec(claudeStatuslineSchema); err != nil {
+		return fmt.Errorf("statedb: create Claude statusline cache: %w", err)
+	}
+
 	// ALTER TABLE migrations for existing databases.
 	// CREATE TABLE IF NOT EXISTS won't add new columns to tables that already exist.
 	// Each migration is idempotent: errors from "duplicate column" are silently ignored.

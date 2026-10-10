@@ -70,7 +70,7 @@ func recordTransport(t *testing.T) *[]*tmuxCall {
 		calls = append(calls, call)
 		mu.Unlock()
 		if len(args) > 0 && args[0] == "load-buffer" {
-			// cat copies the staged payload from stdin (set by pasteToTarget
+			// cat copies the staged payload from stdin (set by pasteToTargetChecked
 			// after we return) into our buffer. cmd.Wait waits for that copy,
 			// so the buffer is complete once runSendKeysBounded returns.
 			cmd := exec.Command("cat")

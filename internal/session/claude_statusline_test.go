@@ -59,7 +59,7 @@ func TestInstallUsageFeed_WrapsExistingStatusLine(t *testing.T) {
 		t.Fatalf("InstallUsageFeed = %v, %v; want changed", changed, err)
 	}
 	cmd, sl := statusLineCommand(t, path)
-	want := "/opt/homebrew/bin/agent-deck -p personal usage ingest claude -- ~/.claude/statusline.sh"
+	want := "/opt/homebrew/bin/agent-deck -p personal usage statusline-wrap -- sh -c '~/.claude/statusline.sh'"
 	if cmd != want {
 		t.Fatalf("command = %q, want %q", cmd, want)
 	}
@@ -100,7 +100,7 @@ func TestInstallUsageFeed_NoStatusLine(t *testing.T) {
 		t.Fatalf("InstallUsageFeed = %v, %v", changed, err)
 	}
 	cmd, sl := statusLineCommand(t, path)
-	if want := "/usr/local/bin/agent-deck -p bob-team-a usage ingest claude"; cmd != want {
+	if want := "/usr/local/bin/agent-deck -p bob-team-a usage statusline-wrap"; cmd != want {
 		t.Fatalf("command = %q, want %q", cmd, want)
 	}
 	if string(sl["type"]) != `"command"` {
@@ -117,7 +117,7 @@ func TestInstallUsageFeed_MissingSettings(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("InstallUsageFeed = %v, %v", changed, err)
 	}
-	if cmd, _ := statusLineCommand(t, filepath.Join(dir, "settings.json")); cmd != "/usr/local/bin/agent-deck -p new usage ingest claude" {
+	if cmd, _ := statusLineCommand(t, filepath.Join(dir, "settings.json")); cmd != "/usr/local/bin/agent-deck -p new usage statusline-wrap" {
 		t.Fatalf("command = %q", cmd)
 	}
 }
@@ -175,7 +175,7 @@ func TestInstallUsageFeed_ShellCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd, _ := statusLineCommand(t, path)
-	want := "/usr/local/bin/agent-deck -p work usage ingest claude -- sh -c 'FOO=1 bun run ~/sl.ts | head -1'"
+	want := "/usr/local/bin/agent-deck -p work usage statusline-wrap -- sh -c 'FOO=1 bun run ~/sl.ts | head -1'"
 	if cmd != want {
 		t.Fatalf("command = %q, want %q", cmd, want)
 	}
@@ -197,7 +197,7 @@ func TestInstallUsageFeed_RepinsOtherBinary(t *testing.T) {
 		t.Fatalf("InstallUsageFeed = %v, %v", changed, err)
 	}
 	cmd, _ := statusLineCommand(t, path)
-	if want := "/opt/homebrew/bin/agent-deck -p personal usage ingest claude -- ~/.claude/statusline.sh --fancy"; cmd != want {
+	if want := "/opt/homebrew/bin/agent-deck -p personal usage statusline-wrap -- sh -c '~/.claude/statusline.sh --fancy'"; cmd != want {
 		t.Fatalf("command = %q, want %q", cmd, want)
 	}
 }
@@ -212,7 +212,7 @@ func TestInstallUsageFeed_UnpinnableKeepsProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd, _ := statusLineCommand(t, path)
-	if want := "agent-deck -p personal usage ingest claude -- ~/.claude/statusline.sh"; cmd != want {
+	if want := "agent-deck -p personal usage statusline-wrap -- sh -c '~/.claude/statusline.sh'"; cmd != want {
 		t.Fatalf("command = %q, want %q", cmd, want)
 	}
 }
@@ -265,14 +265,13 @@ func TestRemoveUsageFeed(t *testing.T) {
 
 	// Review finding 7: an object install only added a command to comes
 	// back as it was; only what install itself writes (the command and a
-	// "type": "command") goes. A pre-existing {"type": "command"} with no
-	// command, which shows nothing in Claude Code either way, is the one
-	// shape not told apart from install's own.
+	// "type": "command") goes. The backup distinguishes pre-existing
+	// type-only entries from the type added by installation.
 	for _, c := range []struct{ before, after string }{
-		{`{"statusLine":{"type":"static","text":"hello"},"model":"opus"}`, `{"statusLine":{"type":"static","text":"hello"},"model":"opus"}`},
+
 		{`{"statusLine":{"padding":0},"model":"opus"}`, `{"statusLine":{"padding":0},"model":"opus"}`},
-		{`{"statusLine":{"type":"command"},"model":"opus"}`, `{"model":"opus"}`},
-		{`{"statusLine":{"type":"command","padding":0},"model":"opus"}`, `{"statusLine":{"padding":0},"model":"opus"}`},
+		{`{"statusLine":{"type":"command"},"model":"opus"}`, `{"statusLine":{"type":"command"},"model":"opus"}`},
+		{`{"statusLine":{"type":"command","padding":0},"model":"opus"}`, `{"statusLine":{"type":"command","padding":0},"model":"opus"}`},
 	} {
 		dir := t.TempDir()
 		path := writeSettings(t, dir, c.before)
@@ -391,6 +390,7 @@ func TestCollectAccountUsage_Reasons(t *testing.T) {
 
 // TestInstallUsageFeeds wires every configured slot and reports each.
 func TestInstallUsageFeeds(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "absent"))
 	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
 	root := t.TempDir()
 	a := filepath.Join(root, "a")
@@ -418,5 +418,197 @@ func TestInstallUsageFeeds(t *testing.T) {
 	}
 	if results[0].Feed.Inner != "~/sl.sh" || results[1].Feed.Inner != "" {
 		t.Errorf("inner commands: %+v", results)
+	}
+}
+
+func TestUsageFeedDiscoveryDefaultAndAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &UserConfig{Profiles: map[string]ProfileSettings{}}
+	slots := ClaudeUsageFeedSlots(cfg)
+	if len(slots) != 1 || slots[0].Name != "default" || slots[0].ConfigDir != dir {
+		t.Fatalf("default discovery: %+v", slots)
+	}
+	alias := filepath.Join(home, "alias")
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Profiles["work"] = ProfileSettings{Claude: ProfileClaudeSettings{ConfigDir: alias}}
+	slots = ClaudeUsageFeedSlots(cfg)
+	if len(slots) != 1 || slots[0].Name != "work" {
+		t.Fatalf("alias must own default: %+v", slots)
+	}
+	cfg.Profiles["default"] = ProfileSettings{Claude: ProfileClaudeSettings{ConfigDir: filepath.Join(home, "elsewhere")}}
+	delete(cfg.Profiles, "work")
+	slots = ClaudeUsageFeedSlots(cfg)
+	if len(slots) != 2 || slots[1].Name != "default-claude-1" {
+		t.Fatalf("collision: %+v", slots)
+	}
+}
+
+func TestUsageFeedPreservesUnsupportedAndUserReplacement(t *testing.T) {
+	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
+	dir := t.TempDir()
+	original := `{"statusLine":{"type":"static","text":"hello"}}`
+	path := writeSettings(t, dir, original)
+	if changed, err := InstallUsageFeed(dir, "default"); changed || err == nil {
+		t.Fatalf("unsupported changed=%v err=%v", changed, err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != original {
+		t.Fatal("unsupported statusline was changed")
+	}
+	writeSettings(t, dir, `{"statusLine":{"command":"echo old"}}`)
+	if _, err := InstallUsageFeed(dir, "default"); err != nil {
+		t.Fatal(err)
+	}
+	replacement := `{"statusLine":{"command":"echo new","padding":2}}`
+	writeSettings(t, dir, replacement)
+	if changed, err := RemoveUsageFeed(dir); changed || err != nil {
+		t.Fatalf("user replacement changed=%v err=%v", changed, err)
+	}
+	data, _ = os.ReadFile(path)
+	if string(data) != replacement {
+		t.Fatal("user replacement was changed")
+	}
+}
+
+func TestUsageFeedInterruptedRepinPreservesOriginal(t *testing.T) {
+	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
+	dir := t.TempDir()
+	path := writeSettings(t, dir, `{"statusLine":{"command":"echo original","padding":0}}`)
+	if _, err := InstallUsageFeed(dir, "default"); err != nil {
+		t.Fatal(err)
+	}
+	root, _, err := readSettingsObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, _, err := statusLineObject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the boundary where the backup was prepared but replacing
+	// settings failed. Uninstall must still recognize the old generation.
+	current := obj.getString("command")
+	if err := saveUsageFeedBackup(dir, root, current, "/new/agent-deck -p default usage statusline-wrap -- sh -c 'echo original'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RemoveUsageFeed(dir); err != nil {
+		t.Fatal(err)
+	}
+	command, restored := statusLineCommand(t, path)
+	if command != "echo original" {
+		t.Fatalf("command = %q", command)
+	}
+	if _, exists := restored["type"]; exists {
+		t.Fatal("originally absent type was not preserved")
+	}
+}
+
+// The default Claude config is only wired unattended (daemon start-up, TUI
+// repair) when agent-deck's own hooks are installed there, so `hooks
+// uninstall` is never undone by the next heal. Named account slots keep their
+// existing unconditional heal.
+func TestHealUsageFeedsDefaultConfigNeedsHooks(t *testing.T) {
+	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := `{"statusLine":{"type":"command","command":"echo mine"},"model":"opus"}`
+	path := writeSettings(t, dir, original)
+	cfg := &UserConfig{Profiles: map[string]ProfileSettings{}}
+	for _, r := range HealUsageFeeds(cfg) {
+		if r.Changed {
+			t.Fatalf("heal wired the default config without agent-deck hooks: %+v", r)
+		}
+	}
+	if data, _ := os.ReadFile(path); string(data) != original {
+		t.Fatalf("settings changed without hooks:\n%s", data)
+	}
+	if _, err := InjectClaudeHooks(dir); err != nil {
+		t.Fatal(err)
+	}
+	results := HealUsageFeeds(cfg)
+	if len(results) != 1 || !results[0].Changed || results[0].Slot != "default" {
+		t.Fatalf("heal after hooks install: %+v", results)
+	}
+	if cmd, _ := statusLineCommand(t, path); cmd != "/usr/local/bin/agent-deck -p default usage statusline-wrap -- sh -c 'echo mine'" {
+		t.Fatalf("command = %q", cmd)
+	}
+}
+
+// [claude] statusline_feed = false is the opt-out: nothing installs or heals
+// a statusLine wrapper, while uninstall still restores an earlier one.
+func TestUsageFeedOptOut(t *testing.T) {
+	stubUsageFeedExecutable(t, "/usr/local/bin/agent-deck")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	slotDir := filepath.Join(home, "work")
+	if err := os.MkdirAll(slotDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := `{"statusLine":{"type":"command","command":"echo mine"}}`
+	path := writeSettings(t, dir, original)
+	slotPath := writeSettings(t, slotDir, original)
+	if _, err := InjectClaudeHooks(dir); err != nil {
+		t.Fatal(err)
+	}
+	withHooks, _ := os.ReadFile(path)
+	off := false
+	cfg := &UserConfig{
+		Claude:   ClaudeSettings{StatuslineFeed: &off},
+		Profiles: map[string]ProfileSettings{"work": {Claude: ProfileClaudeSettings{ConfigDir: slotDir}}},
+	}
+	if cfg.Claude.GetStatuslineFeed() {
+		t.Fatal("statusline_feed = false not honoured")
+	}
+	if got := HealUsageFeeds(cfg); len(got) != 0 {
+		t.Fatalf("heal with opt-out: %+v", got)
+	}
+	results := InstallUsageFeeds(cfg)
+	if len(results) != 2 {
+		t.Fatalf("install with opt-out: %+v", results)
+	}
+	for _, r := range results {
+		if r.Changed || r.Err != nil || !strings.Contains(r.Feed.Blocked, "statusline_feed") {
+			t.Fatalf("install with opt-out: %+v", r)
+		}
+	}
+	if data, _ := os.ReadFile(path); string(data) != string(withHooks) {
+		t.Fatalf("default settings changed under opt-out:\n%s", data)
+	}
+	if data, _ := os.ReadFile(slotPath); string(data) != original {
+		t.Fatalf("slot settings changed under opt-out:\n%s", data)
+	}
+	// Turning the feed off after it was installed: uninstall restores.
+	on := true
+	cfg.Claude.StatuslineFeed = &on
+	InstallUsageFeeds(cfg)
+	cfg.Claude.StatuslineFeed = &off
+	for _, r := range RemoveUsageFeeds(cfg) {
+		if r.Err != nil || !r.Changed {
+			t.Fatalf("remove under opt-out: %+v", r)
+		}
+	}
+	if cmd, _ := statusLineCommand(t, slotPath); cmd != "echo mine" {
+		t.Fatalf("slot command after remove = %q", cmd)
+	}
+	if cmd, _ := statusLineCommand(t, path); cmd != "echo mine" {
+		t.Fatalf("default command after remove = %q", cmd)
 	}
 }

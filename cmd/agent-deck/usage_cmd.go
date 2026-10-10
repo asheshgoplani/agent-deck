@@ -18,6 +18,7 @@ import (
 
 const usageUsage = `Usage: agent-deck usage [--json] [--refresh]
        agent-deck usage ingest claude [-- <command> [args...]]
+       agent-deck usage statusline --session <id|title> --json
 
 Show how much of each provider's subscription quota is left, from the
 provider's own numbers.
@@ -28,6 +29,8 @@ Options:
               cache. Claude is push-only (see ingest) and is unaffected.
 
 Subcommands:
+  statusline-wrap Ingest stdin and run the previous statusline or show a default.
+  statusline      Read the last Claude statusline record for a session.
   ingest claude   Read a Claude Code statusLine payload on stdin and cache the
                   rate_limits it carries. With a trailing "-- <command>", the
                   same bytes are passed to that command and its output and exit
@@ -35,6 +38,14 @@ Subcommands:
 
 // handleUsage is the `agent-deck usage` entry point.
 func handleUsage(profile string, args []string) {
+	if len(args) > 0 && args[0] == "statusline-wrap" {
+		handleUsageStatuslineWrap(profile, args[1:])
+		return
+	}
+	if len(args) > 0 && args[0] == "statusline" {
+		handleUsageStatusline(profile, args[1:])
+		return
+	}
 	if len(args) > 0 && args[0] == "ingest" {
 		handleUsageIngest(profile, args[1:])
 		return
@@ -269,8 +280,8 @@ func shortDuration(d time.Duration) string {
 const usageIngestUsage = `Usage: agent-deck usage ingest claude [-- <command> [args...]]
 
 Read a Claude Code statusLine payload on stdin and cache the rate_limits it
-carries. Only rate_limits is kept: the transcript path, cwd, prompt and model in
-that payload are never stored or printed.
+carries. Also keep and publish the latest session model, cwd, context and rate
+limits. Prompt text, transcript paths and other payload fields are never stored.
 
 Wire it into ~/.claude/settings.json:
 
@@ -283,7 +294,11 @@ If you already have a statusLine command, keep it by wrapping it:
 
 // handleUsageIngest implements `agent-deck usage ingest claude`.
 func handleUsageIngest(profile string, args []string) {
-	if len(args) == 0 || helpRequested(args) || args[0] == "help" {
+	handleUsageIngestMode(profile, args, false)
+}
+
+func handleUsageIngestMode(profile string, args []string, showDefault bool) {
+	if len(args) == 0 || statuslineHelpRequested(args) || args[0] == "help" {
 		fmt.Println(usageIngestUsage)
 		return
 	}
@@ -293,7 +308,7 @@ func handleUsageIngest(profile string, args []string) {
 		exitCLI(2)
 	}
 	rest := args[1:]
-	if helpRequested(rest) || (len(rest) > 0 && rest[0] == "help") {
+	if statuslineHelpRequested(rest) || (len(rest) > 0 && rest[0] == "help") {
 		fmt.Println(usageIngestUsage)
 		return
 	}
@@ -321,8 +336,10 @@ func handleUsageIngest(profile string, args []string) {
 	}
 
 	if len(wrapped) == 0 {
-		// Nothing is printed. A user with no statusLine before gets no status
-		// line now, which is the only non-surprising outcome.
+		if showDefault {
+			fmt.Println(defaultClaudeStatusline(payload))
+		}
+		// Plain ingest remains silent for existing script integrations.
 		return
 	}
 	runWrappedStatusLine(wrapped, payload)
@@ -341,7 +358,7 @@ func ingestClaudeStatusLine(profile string, payload []byte, readErr error) error
 		return fmt.Errorf("parsing statusLine payload: %w", err)
 	}
 	if !ok {
-		return nil
+		return cacheClaudeStatusline(profile, payload)
 	}
 	store, err := resolveQuotaStore(profile)
 	if err != nil {
@@ -350,7 +367,7 @@ func ingestClaudeStatusLine(profile string, payload []byte, readErr error) error
 	if err := store.Save(snapshot); err != nil {
 		return fmt.Errorf("caching Claude quota: %w", err)
 	}
-	return nil
+	return cacheClaudeStatusline(profile, payload)
 }
 
 // maxIngestBytes bounds the stdin read at the same size the parser accepts, so

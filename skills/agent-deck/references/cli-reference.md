@@ -433,6 +433,8 @@ Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANC
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
+`--require-input-prompt` (guarded send) refuses instead of typing into a harness menu. The pane is checked immediately before every keystroke batch (paste, each fallback chunk, every Enter) under the per-target send lock, and the send always takes the tmux transport. Before typing, an open menu exits 1 with `delivery: "menu_open"` and a missing input prompt with `delivery: "composer_blocked"` (error text `no keys typed`); after typing, only a real menu withholds Enter and reports `typed_not_submitted`. A menu needs picker evidence (a navigate / Enter to select / Enter to confirm instruction, or menu words beside two or more choices); text in the input box or a delivered message quoting "Allow once" is not one. `--draft`, `--no-wait` and the queue keep the guard; a remote that does not list the flag in its `session send --help` is refused before anything is sent.
+
 ```bash
 git diff | agent-deck session send my-project --message-file -
 agent-deck session send my-project --message-file task.md --wait
@@ -458,6 +460,14 @@ Delivery verdict (`--json` also carries `delivery` and a machine-checkable `subm
 With `--wait` or `--stream` on a Claude target, the reply is bound to the transcript record of this exact message: a message queued behind a live turn waits for its own turn to start, the read begins after that record, and it stops at the next human prompt (an interrupted turn is reported as incomplete or as a stream error, not as the next turn's answer). Slash commands and non-Claude tools keep the timestamp-based best-effort reply.
 
 Claude conversation identity (additive; Claude-compatible targets only, other tools' receipts are unchanged): `--json` receipts carry `claude_session_id`, the native Claude conversation the message went to (the same value `session show --json` and `session output --json` report), omitted while it is not known yet (a fresh session before Claude writes its transcript). The queued `--json` receipt and `session send-status --json` carry it too; once the send has `landed` it names the conversation whose transcript holds `landed_row_id`. A `--json --wait` reply bound to its transcript record also carries `claude_turn_uuid`, the uuid of that user record, and `claude_session_id` from the same record; it is the Claude counterpart of Codex's `accepted_turn.codex_session_id` + `codex_turn_generation`.
+
+### session image-upload
+
+```bash
+agent-deck session image-upload <id|title> --name <uuid>.<png|jpg|gif|webp|pdf> [--json] < file
+```
+
+Stages an attachment from stdin on the host that owns the session (works through `remote <host> session image-upload` too) and prints its absolute path (`--json`: `{"path": "...", "bytes": n}`). Pass that path to `session send <id> --image <path>` on the same host. At most 20 MiB; names with separators or traversal, empty input and existing targets are refused (exit 1). Files live in an owner-only `macapp-uploads/<session id>/` folder beside the profile's state database, removed with the session and pruned after 7 days.
 
 ### session approve
 
@@ -1134,7 +1144,7 @@ Renames a session on a remote instance.
 agent-deck remote <name> <command> [arguments]
 ```
 
-`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`. Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
+`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`, and the read-only `limits [--json]` (the remote's own accounts and 5h/7d windows; a remote whose agent-deck predates `limits` answers `unsupported remote command "limits" on remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}` under `--json`). Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
 
 `session switch`/`switch-preview` forwarded this way runs the remote's own switch engine with the same guards as a local switch (ownership revalidation, managed-source refusal, journaled account/harness moves) — the CLI only forwards a closed set of subcommands, so no local path or credential can reach it. `switch-preview --json` previews losses/warnings before committing; the confirmed switch reports `verified`, `pending`, or `failed` with `recovery_required` when applicable. This requires the remote to already be a target you can reach and administer — it does not let a controller switch accounts *for* a remote it doesn't own.
 

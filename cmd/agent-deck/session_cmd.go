@@ -109,6 +109,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSwitchPreview(profile, args[1:])
 	case "move", "mv":
 		handleSessionMove(profile, args[1:])
+	case "image-upload":
+		handleSessionImageUpload(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
 	case "send-status":
@@ -174,6 +176,7 @@ func printSessionHelp() {
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session (--queue: never silently lost, see send-status; --image <path>)")
+	fmt.Println("  image-upload <id>       Stage an attachment from stdin (--name <uuid>.png --json; max 20 MiB)")
 	fmt.Println("  send-status <send-id>   State of a queued send: queued, typed, submitted, landed or failed")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
@@ -3088,6 +3091,7 @@ func handleSessionSend(profile string, args []string) {
 	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle, at most once; every send ends landed, failed or settled with a reason (see session send-status)")
 	queueWorker := fs.Bool("queue-worker", false, "Internal: deliver a durable queued send directly")
 	noTag := fs.Bool("no-tag", false, "Do not prefix the [agent-deck from:<id>] envelope a send from inside a session gets by default ([send] tag_sends)")
+	requireInputPrompt := fs.Bool("require-input-prompt", false, "Refuse with menu_open unless an input prompt is visible immediately before each keystroke batch")
 	var images imageList
 	fs.Var(&images, "image", "Attach an image (repeatable): Claude Code and Gemini get @<copy under .agentdeck-images/>; Codex and other harnesses exit 2")
 
@@ -3247,7 +3251,7 @@ func handleSessionSend(profile string, args []string) {
 			if *noTag {
 				ledgerSender = "" // --no-tag: never attributed to an inherited session
 			}
-			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, out) // exits on failure
+			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, *requireInputPrompt, out) // exits on failure
 			recordSent()
 			return
 		}
@@ -3429,7 +3433,22 @@ func handleSessionSend(profile string, args []string) {
 	// --draft: type text into the prompt without pressing Enter, letting the
 	// user review and submit manually.
 	if *draft {
-		if err := executeDraft(tmuxSess, message); err != nil {
+		var draftTarget draftSender = tmuxSess
+		if *requireInputPrompt {
+			lock, err := session.AcquireSendLock(inst.ID, sendTargetLockWait)
+			if err != nil {
+				out.ErrorWithData(fmt.Sprintf("cannot guard draft: %v", err), ErrCodeDeliveryFailed, map[string]interface{}{"delivery": deliveryTargetBusy})
+				exitCLI(1)
+			}
+			defer lock.Release()
+			draftTarget = &promptGuardTarget{sendRetryTarget: tmuxSess, tool: inst.Tool}
+		}
+		if err := executeDraft(draftTarget, message); err != nil {
+			if guard, ok := draftTarget.(*promptGuardTarget); ok && guard.refused {
+				out.ErrorWithData(fmt.Sprintf("message not submitted to '%s': %v", inst.Title, err), ErrCodeDeliveryFailed,
+					map[string]interface{}{"delivery": deliveryMenuOpen})
+				exitCLI(1)
+			}
 			out.Error(fmt.Sprintf("failed to pre-fill prompt: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
@@ -3452,10 +3471,7 @@ func handleSessionSend(profile string, args []string) {
 	//
 	// Both modes run the composer-draft guard (issue #1409) and submit
 	// verification with a machine-checkable delivery status (issue #1413).
-	tun := defaultSendTuning()
-	if *noWait {
-		tun = noWaitSendTuning()
-	}
+	tun := sendTuning(*noWait, *requireInputPrompt)
 	if *queueWorker || busyAcceptsInput {
 		// A live Claude composer already exists. Startup preflight and the
 		// 30-check idle-turn probe add delay without proving this queued send.
@@ -4761,6 +4777,7 @@ func (r sendDeliveryResult) jsonFields() map[string]interface{} {
 // pipeline (preflight barrier, composer-draft guard, verification loop) so
 // tests can shrink them and production paths share one definition.
 type sendExecTuning struct {
+	requireInputPrompt bool
 	// guardHold bounds the #1409 hold-and-retry phase: how long an automated
 	// send waits for a non-empty operator draft to clear on its own before
 	// refusing delivery while preserving it.
@@ -4775,6 +4792,15 @@ type sendExecTuning struct {
 	settleDelay time.Duration
 	// retry is the verification-loop budget (issues #876, #1413).
 	retry sendRetryOptions
+}
+
+func sendTuning(noWait, requireInputPrompt bool) sendExecTuning {
+	tun := defaultSendTuning()
+	if noWait {
+		tun = noWaitSendTuning()
+	}
+	tun.requireInputPrompt = requireInputPrompt
+	return tun
 }
 
 // defaultSendTuning is the tuning for the default (readiness-waited) send
@@ -4827,6 +4853,11 @@ func noWaitSendTuning() sendExecTuning {
 // Codex since issue #2536 (composerDraftReaderFor).
 func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun sendExecTuning) (sendDeliveryResult, error) {
 	res := sendDeliveryResult{}
+	if tun.requireInputPrompt {
+		guard := &promptGuardTarget{sendRetryTarget: target, tool: tool}
+		target = guard
+		tun.retry.promptGuard = guard
+	}
 	claudeLike := session.IsClaudeCompatible(tool)
 
 	if noWait && claudeLike {
@@ -4836,6 +4867,12 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 			if tun.settleDelay > 0 {
 				time.Sleep(tun.settleDelay)
 			}
+		}
+	}
+	if guard := tun.retry.promptGuard; guard != nil {
+		if err := guard.beforeBatch(); err != nil {
+			res.delivery, err = guard.refusal()
+			return res, err
 		}
 	}
 
@@ -5008,6 +5045,7 @@ type sendRetryTarget interface {
 }
 
 type sendRetryOptions struct {
+	promptGuard    *promptGuardTarget
 	maxRetries     int
 	checkDelay     time.Duration
 	maxFullResends int // Legacy option; full-body interrupt/resend recovery is disabled.
@@ -5160,6 +5198,9 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	hookBusyBeforeSend := opts.hookBusyNow()
 
 	if err := sendInitialKeysChecked(target, message, opts.expectedPasteBreaks); err != nil {
+		if opts.promptGuard != nil && opts.promptGuard.refused {
+			return opts.promptGuard.refusal()
+		}
 		// A refused over-long line is a distinct, actionable outcome: the
 		// transport typed nothing, so the composer is untouched and the
 		// caller must not retry the same body against the same pane
@@ -5243,6 +5284,9 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// means.
 	obs := newSendObserver(opts.tool, message, arrivalBaseline, true, hookBusyBeforeSend)
 	for retry := 0; retry < opts.maxRetries; retry++ {
+		if opts.promptGuard != nil && opts.promptGuard.refused {
+			return opts.promptGuard.refusal()
+		}
 		time.Sleep(opts.checkDelay)
 
 		// Turn advancement in the harness's own transcript is the one
@@ -5362,6 +5406,9 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if retry < 4 {
 			attrib.NudgeEnter(target, paneNow, tmux.StripANSI)
 		}
+	}
+	if opts.promptGuard != nil && opts.promptGuard.refused {
+		return opts.promptGuard.refusal()
 	}
 
 	// Budget exhausted without a confirmed submit. The verdict follows the

@@ -300,6 +300,10 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		}
 	}
 
+	if err := pruneImageUploadsOnStartup(profileDir); err != nil {
+		storageLog.Warn("image_upload_cleanup_failed", slog.String("error", err.Error()))
+	}
+
 	if err := pruneHookArtifactsOnStartup(); err != nil {
 		storageLog.Warn("hook_cleanup_failed", slog.String("error", err.Error()))
 	}
@@ -618,7 +622,11 @@ func (s *Storage) DeleteInstanceDeferredCleanup(id string) (func(), error) {
 		return nil, fmt.Errorf("failed to delete instance %s: %w", id, err)
 	}
 	_ = s.db.Touch()
+	profileDir := filepath.Dir(s.dbPath)
 	return func() {
+		if err := cleanupImageUploads(profileDir, id); err != nil {
+			storageLog.Warn("image_upload_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+		}
 		if err := pruneHookArtifacts(id); err != nil {
 			storageLog.Warn("hook_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
 		}
