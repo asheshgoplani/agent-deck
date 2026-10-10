@@ -901,7 +901,10 @@ func startChildSendWithOptions(profile, id, message, resultPath string, opts chi
 	if err != nil {
 		return 0, nil, err
 	}
-	cmd := exec.Command(exe, childSendArgs(profile, id, msgPath, opts)...)
+	// exe is this agent-deck binary (os.Executable) and argv goes straight to
+	// execve with no shell: childSendArgs emits literal flags, and profile, id
+	// and msgPath are single positional or flag values.
+	cmd := exec.Command(exe, childSendArgs(profile, id, msgPath, opts)...) //nolint:gosec // G702: own binary, literal flags, no shell (see above)
 	// The send id rides in the environment, not argv: a binary that predates
 	// it ignores the variable instead of refusing an unknown flag. The rest
 	// of the environment is passed through unchanged, exactly as before
