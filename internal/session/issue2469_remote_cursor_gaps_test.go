@@ -33,7 +33,7 @@ func TestIssue2469PR3_LateStampedLedgerCompletionStillCrosses(t *testing.T) {
 		Summary: "a done", FinishedAt: base.Add(2 * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || !exportHasChild(first, "child-a") {
 		t.Fatalf("drain 1: %+v %v", first.Records, err)
 	}
@@ -42,7 +42,7 @@ func TestIssue2469PR3_LateStampedLedgerCompletionStillCrosses(t *testing.T) {
 		Summary: "b failed", FinishedAt: base}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,11 +56,11 @@ func TestIssue2469PR3_LateStampedLedgerCompletionStillCrosses(t *testing.T) {
 		Summary: "a again", FinishedAt: base.Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	third, err := ExportRecordsAfter(second.CursorNext)
+	third, err := ExportRecordsAfter(DefaultProfile, second.CursorNext)
 	if err != nil || len(third.Records) != 1 || third.Records[0].DoneSummary != "a again" {
 		t.Fatalf("clock-stepped completion lost: %+v %v", third.Records, err)
 	}
-	fourth, err := ExportRecordsAfter(third.CursorNext)
+	fourth, err := ExportRecordsAfter(DefaultProfile, third.CursorNext)
 	if err != nil || len(fourth.Records) != 0 {
 		t.Fatalf("an up-to-date cursor must fetch nothing: %+v %v", fourth.Records, err)
 	}
@@ -79,12 +79,12 @@ func TestIssue2469PR3_UnownedByPositionNotStamp(t *testing.T) {
 		}
 	}
 	unowned("u-new", base.Add(time.Minute))
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 || first.CursorNext.Unowned.N != 1 {
 		t.Fatalf("drain 1: %+v next=%+v %v", first.Records, first.CursorNext, err)
 	}
 	unowned("u-old", base)
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil || len(second.Records) != 1 || second.Records[0].ChildSessionID != "u-old" {
 		t.Fatalf("an older-stamped record appended later was lost: %+v %v", second.Records, err)
 	}
@@ -95,7 +95,7 @@ func TestIssue2469PR3_UnownedByPositionNotStamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	unowned("u-after-purge", base.Add(-time.Minute))
-	third, err := ExportRecordsAfter(second.CursorNext)
+	third, err := ExportRecordsAfter(DefaultProfile, second.CursorNext)
 	if err != nil || len(third.Records) != 1 || third.Records[0].ChildSessionID != "u-after-purge" {
 		t.Fatalf("record after a purge lost: %+v %v", third.Records, err)
 	}
@@ -113,7 +113,7 @@ func TestIssue2469PR3_UnjournaledUnownedRecordOfJournaledChildCrosses(t *testing
 		TurnUUID: line.UUID, TextHash: line.TextHash, Text: "classified"}); err != nil {
 		t.Fatal(err)
 	}
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 || first.Records[0].Seq != 1 {
 		t.Fatalf("want the journal line only: %+v %v", first.Records, err)
 	}
@@ -122,7 +122,7 @@ func TestIssue2469PR3_UnjournaledUnownedRecordOfJournaledChildCrosses(t *testing
 		FromStatus: "running", ToStatus: "error", Timestamp: at.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil || len(second.Records) != 1 || second.Records[0].ToStatus != "error" || second.Records[0].Seq != 0 {
 		t.Fatalf("an unclassified flip of a journaled child was lost: %+v %v", second.Records, err)
 	}
@@ -133,11 +133,12 @@ func TestIssue2469PR3_UnjournaledUnownedRecordOfJournaledChildCrosses(t *testing
 func TestIssue2469PR3_LegacyRemoteStaysEnrolledAfterConsume(t *testing.T) {
 	cursorTestHome(t)
 	deps := RemoteTalkbackDeps{
+		RemoteProfile: DefaultProfile,
 		FetchAfter: func(context.Context, RemoteCursor) (RemoteExport, error) {
 			return RemoteExport{}, ErrRemoteCursorUnsupported
 		},
 		FetchAll: func(context.Context) ([]TransitionNotificationEvent, error) {
-			return []TransitionNotificationEvent{{ChildSessionID: "w8", Kind: transitionKindFinished, DoneStatus: "ok",
+			return []TransitionNotificationEvent{{ChildSessionID: "w8", Profile: "default", Kind: transitionKindFinished, DoneStatus: "ok",
 				DoneSummary: "built", Timestamp: time.Now().Add(-time.Minute)}}, nil
 		},
 		WriterProbe: func(context.Context) (WriterStatus, error) { return WriterStatus{Running: true}, nil },

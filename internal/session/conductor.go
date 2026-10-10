@@ -98,6 +98,12 @@ type ConductorSettings struct {
 	// then dropped (issue #971). <= 0 = 3.
 	NeedRetireCycles int `toml:"need_retire_cycles,omitzero"`
 
+	// RecoveryTurn controls the one bounded recovery prompt a Claude or Codex
+	// conductor receives after an actual start or restart (issue #2518).
+	// nil = true (default on); false skips it for operators who would rather
+	// wake conductors themselves. Use RecoveryTurnEnabled to read it.
+	RecoveryTurn *bool `toml:"recovery_turn,omitempty"`
+
 	// Profiles is the list of agent-deck profiles to manage
 	// Kept for backward compat but ignored after migration to meta.json-based discovery
 	Profiles []string `toml:"profiles,omitempty"`
@@ -130,6 +136,17 @@ type ConductorSettings struct {
 	// 'conductor migrate-dir'). The bridge daemon similarly freezes
 	// AGENT_DECK_CONDUCTOR_DIR at install time.
 	Dir string `toml:"dir,omitempty"`
+
+	// PermissionAsk controls whether setup writes the mutating agent-deck
+	// commands into a Claude conductor's permissions.ask (#1358). Ask rules
+	// prompt even in auto mode. nil/absent = true; false = no ask list, and
+	// setup removes the entries it wrote before.
+	PermissionAsk *bool `toml:"permission_ask,omitempty"`
+}
+
+// PermissionAskEnabled reports whether setup writes the conductor ask list.
+func (c ConductorSettings) PermissionAskEnabled() bool {
+	return c.PermissionAsk == nil || *c.PermissionAsk
 }
 
 // GitHubWatcherMode values accepted by [conductor.github_watcher].mode.
@@ -347,6 +364,14 @@ type SlackSettings struct {
 	// If empty, all users are allowed (backward compatible).
 	// Get user ID from Slack: Right-click user → View profile → More → Copy member ID
 	AllowedUserIDs []string `toml:"allowed_user_ids,omitempty"`
+
+	// DefaultConductor controls where an unprefixed message routes (#2547).
+	//   explicit name -> that conductor is the default target
+	//   ""           -> no default: the bridge replies with the conductor
+	//                  list and the `name: message` syntax, routing nothing
+	//   absent (nil) -> legacy behavior: the alphabetically first conductor
+	// Pointer so an explicitly empty string is distinguishable from absent.
+	DefaultConductor *string `toml:"default_conductor,omitempty"`
 }
 
 // DiscordSettings defines Discord bot configuration for the conductor bridge
@@ -503,6 +528,12 @@ func (c *ConductorSettings) GetHumanDigestMinutes() int {
 		return 30
 	}
 	return max(*c.HumanDigestMinutes, 0)
+}
+
+// RecoveryTurnEnabled reports whether conductors get the automatic recovery
+// turn after start/restart (default true).
+func (c *ConductorSettings) RecoveryTurnEnabled() bool {
+	return c == nil || c.RecoveryTurn == nil || *c.RecoveryTurn
 }
 
 // GetNeedRetireCycles returns the urgent-line retire threshold (default 3).
@@ -1244,10 +1275,12 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	// Claude-only (codex/hermes don't use this file). Auto-allows read-only and
 	// safe CLI commands plus scoped data-file writes so the conductor's heartbeat
 	// read loop doesn't drown the user in permission prompts, while keeping
-	// lifecycle/mutating commands and executable/config writes behind prompts.
+	// lifecycle/mutating commands and executable/config writes behind prompts
+	// ([conductor] permission_ask = false drops the ask list and leaves the
+	// mutating commands to the conductor's permission mode).
 	// Non-fatal: setup still succeeds if this fails.
 	if spec.Agent == ConductorAgentClaude {
-		if err := writeConductorClaudeSettingsAt(dir); err != nil {
+		if err := writeConductorClaudeSettingsAt(dir, conductorPermissionAskEnabled()); err != nil {
 			sessionLog.Warn("conductor_claude_settings_failed",
 				slog.String("conductor", name),
 				slog.String("dir", dir),

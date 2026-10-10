@@ -6,7 +6,7 @@ Run the complete suite with one command:
 make bench-fleet BENCH_ARGS='-runs 3 -machine my-linux-class -out bench/run.json'
 ```
 
-The first invocation builds a Go 1.25 image with tmux and downloads modules. Subsequent invocations reuse the image layers and compiler cache. Networking is enabled only while building dependencies. The measurement container runs as the invoking nonroot UID and GID so bind-mounted reports are writable, with no network or capabilities, and only the checkout and a named compiler cache mounted. Its HOME is disposable. Do not run repository tests on a live maintainer host.
+The first invocation builds a Go 1.26.9 image (`golang:1.26.9`) with tmux and downloads modules. Subsequent invocations reuse the image layers and compiler cache. Networking is enabled only while building dependencies. The measurement container runs as the invoking nonroot UID and GID so bind-mounted reports are writable, with no network or capabilities, and only the checkout and a named compiler cache mounted. Its HOME is disposable. Do not run repository tests on a live maintainer host.
 
 The existing `make bench` advisory microbenchmarks and `make test-perf` budget tests remain intact. `PERF_BUDGET_MULTIPLIER` still controls those existing tests; it does not scale measured fleet values. The fleet comparison uses an explicit fractional threshold:
 

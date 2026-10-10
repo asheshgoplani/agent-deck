@@ -173,7 +173,7 @@ jobs:
         run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: Run tests
-        timeout-minutes: 30
+        timeout-minutes: 50
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
         run: |
@@ -194,7 +194,7 @@ jobs:
       - name: Run eval harness (full tier)
         timeout-minutes: 10
         env:
-          GOTOOLCHAIN: go1.25.13
+          GOTOOLCHAIN: go1.26.9
         # internal/ui is scoped to its eval cases (TestEval_*); the whole
         # internal/ui suite already ran in "Run tests" and under -race it
         # alone can outlast this step's 6m package timeout.

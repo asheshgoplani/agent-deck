@@ -13,7 +13,7 @@ import (
 
 func handleMigratePaths(args []string) {
 	if code := runMigratePaths(args, os.Stdout, os.Stderr); code != 0 {
-		os.Exit(code)
+		exitCLI(code)
 	}
 }
 

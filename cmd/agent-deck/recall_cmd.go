@@ -76,7 +76,7 @@ func handleRecall(profile string, args []string) {
 	if len(args) == 0 || helpRequested(args[:1]) || args[0] == "help" {
 		printRecallHelp()
 		if len(args) == 0 {
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -118,7 +118,7 @@ func handleRecall(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown recall command: %s\n\n", args[0])
 		printRecallHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -159,7 +159,7 @@ func requireRecallEnabled(out *CLIOutput) *session.UserConfig {
 	}
 	if !cfg.Recall.GetEnabled() {
 		out.Error("recall is off: set [recall] enabled = true in config.toml (docs/recall.md); hints and 'session annotate' work without it", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	return cfg
 }
@@ -169,12 +169,12 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 	dbPath, err := recall.DBPath()
 	if err != nil {
 		out.Error(fmt.Sprintf("recall: resolve data dir: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	lockPath, err := recall.LockPath()
 	if err != nil {
 		out.Error(fmt.Sprintf("recall: resolve lock: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	st, err := store.OpenCurrent(dbPath)
 	if errors.Is(err, store.ErrSchema) {
@@ -186,12 +186,12 @@ func openRecallEnv(profile string, out *CLIOutput) *recallEnv {
 	}
 	if err != nil {
 		out.Error(fmt.Sprintf("recall: open %s: %v", dbPath, err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	env := &recallEnv{profile: profile, cfg: cfg, st: st, dbPath: dbPath, lockPath: lockPath, roots: session.RecallRoots()}
 	if env.queuePath, err = recall.QueuePath(); err != nil {
 		out.Error(fmt.Sprintf("recall: resolve queue: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if storage, err := session.NewStorageWithProfile(profile); err == nil {
 		env.storage = storage
@@ -289,10 +289,10 @@ func (e *recallEnv) lock(out *CLIOutput) func() {
 	if err != nil {
 		if errors.Is(err, store.ErrLocked) {
 			out.Error("recall: another backfill or sweep is running (lock: "+e.lockPath+")", ErrCodeInvalidOperation)
-			os.Exit(3)
+			exitCLI(3)
 		}
 		out.Error("recall: lock: "+err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	return release
 }
@@ -313,7 +313,7 @@ func parseRecallFlags(fs *flag.FlagSet, args []string) bool {
 	if errors.Is(err, flag.ErrHelp) {
 		return false
 	}
-	os.Exit(2)
+	exitCLI(2)
 	return false
 }
 
@@ -513,12 +513,12 @@ is reported in one line and the command exits 1.`)
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	f, err := filters.filters()
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	forwarded := filters.forwardArgs()
 	forwarded = append(forwarded, fs.Arg(0), "--json", "--limit", strconv.Itoa(*limit))
@@ -537,7 +537,7 @@ is reported in one line and the command exits 1.`)
 		opts.Role = recall.RoleAssistant
 	default:
 		out.Error("--role must be user or assistant", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	env := openRecallEnv(profile, out)
 	defer env.close()
@@ -550,12 +550,12 @@ is reported in one line and the command exits 1.`)
 	res, err := query.New(env.st, env.stateDB).Search(ctx, opts)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	targets, err := resolveRemoteTargets(env.cfg, remotes, *allRemotes)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	var remoteResults []RemoteSearchResult
 	if len(targets) > 0 {
@@ -578,7 +578,7 @@ is reported in one line and the command exits 1.`)
 		printRemoteSearch(remoteResults)
 	}
 	if failed > 0 {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -699,7 +699,7 @@ func handleRecallSessions(profile string, args []string) {
 	f, err := filters.filters()
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	env := openRecallEnv(profile, out)
 	defer env.close()
@@ -712,7 +712,7 @@ func handleRecallSessions(profile string, args []string) {
 	rows, err := query.New(env.st, env.stateDB).Sessions(ctx, f, *limit)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *jsonOutput {
 		out.printJSON(map[string]any{"success": true, "sessions": rows, "index": note})
@@ -785,7 +785,7 @@ func handleRecallShow(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 1 {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	n := *turns
 	switch *tier {
@@ -799,7 +799,7 @@ func handleRecallShow(profile string, args []string) {
 		n = 0
 	default:
 		out.Error("--tier must be card, excerpt or raw", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	env := openRecallEnv(profile, out)
 	defer env.close()
@@ -807,9 +807,9 @@ func handleRecallShow(profile string, args []string) {
 	if err != nil {
 		out.Error(err.Error(), recallLookupCode(err))
 		if errors.Is(err, query.ErrNotFound) {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *jsonOutput {
 		out.printJSON(map[string]any{"success": true, "detail": d})
@@ -897,20 +897,20 @@ func handleRecallOpen(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 1 {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	env := openRecallEnv(profile, out)
 	sess, err := query.New(env.st, env.stateDB).Resolve(context.Background(), fs.Arg(0))
 	if err != nil {
 		env.close()
 		out.Error(err.Error(), recallLookupCode(err))
-		os.Exit(2)
+		exitCLI(2)
 	}
 	cmdArgs, action, err := recallOpenPlan(env, sess, *title)
 	env.close()
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *dryRun {
 		if *jsonOutput {
@@ -1024,7 +1024,7 @@ func handleRecallStatus(profile string, args []string) {
 	st, err := query.New(env.st, env.stateDB).Status(context.Background())
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	roots := make([]map[string]any, 0, len(env.roots))
 	scratch := 0
@@ -1147,7 +1147,7 @@ unless --force is given.`)
 		t, err := parseRecallSince(*since)
 		if err != nil {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		opts.Since = t
 	}
@@ -1208,7 +1208,7 @@ func runRecallSweepLocked(env *recallEnv, out *CLIOutput, opts ingest.Options, j
 	if err != nil {
 		if errors.Is(err, ingest.ErrGated) {
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(3)
+			exitCLI(3)
 		}
 		if ctx.Err() != nil {
 			if jsonOutput {
@@ -1216,10 +1216,10 @@ func runRecallSweepLocked(env *recallEnv, out *CLIOutput, opts ingest.Options, j
 			} else {
 				fmt.Printf("%s interrupted; %s\n", verb, recallResultLine(res))
 			}
-			os.Exit(130)
+			exitCLI(130)
 		}
 		out.Error(fmt.Sprintf("recall %s: %v", verb, err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if jsonOutput {
 		out.printJSON(map[string]any{"success": true, "result": res, "db_bytes": store.FileSize(env.dbPath)})
@@ -1270,7 +1270,7 @@ func handleRecallGC(profile string, args []string) {
 	res, err := ingest.New(env.st, env.ingestOptions(true)).GC(time.Duration(days) * 24 * time.Hour)
 	if err != nil {
 		out.Error("recall gc: "+err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *jsonOutput {
 		out.printJSON(map[string]any{"success": true, "result": res})
@@ -1298,11 +1298,11 @@ func handleRecallRebuild(profile string, args []string) {
 	opts := env.ingestOptions(*force)
 	if err := opts.Gate.Check(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(3)
+		exitCLI(3)
 	}
 	if err := env.st.Reset(); err != nil {
 		out.Error("recall rebuild: "+err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	runRecallSweepLocked(env, out, opts, *jsonOutput, *quiet, "rebuild")
 }

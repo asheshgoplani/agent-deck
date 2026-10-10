@@ -72,7 +72,7 @@ jobs:
             cp "$checkout/go.mod" "$checkout/go.sum" "$context/$checkout/"
           done
           cat > "$RUNNER_TEMP/hooks-test.Dockerfile" <<'DOCKERFILE'
-          FROM golang:1.25
+          FROM golang:1.26.9
           RUN apt-get update && apt-get install -y --no-install-recommends tmux
           ENV GOMODCACHE=/tmp/gomod
           WORKDIR /deps

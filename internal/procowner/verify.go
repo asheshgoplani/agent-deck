@@ -85,6 +85,11 @@ const (
 	// StateUnknown: identity could not be determined, or matched a process now
 	// running as a different user. Reported and left alone.
 	StateUnknown MemberState = "unknown"
+	// StateShared: the identity matches, but the process is a host-wide shared
+	// service (or runs under one) that other sessions depend on (see
+	// shared_service.go). It is not owned by this session: it never blocks a
+	// spawn and is never signalled.
+	StateShared MemberState = "shared"
 )
 
 // Verdict is the receipt-level answer.
@@ -244,11 +249,22 @@ func Verify(p Prober, r *Receipt) Report {
 
 	members := r.All()
 	statuses := make([]MemberStatus, 0, len(members))
-	counts := map[MemberState]int{}
+	var owned []Member
 	for _, m := range members {
 		status := VerifyMember(p, m)
 		statuses = append(statuses, status)
-		counts[status.State]++
+		if status.State == StateOwned {
+			owned = append(owned, m)
+		}
+	}
+	shared := sharedServiceMembers(p, r, owned)
+	counts := map[MemberState]int{}
+	for idx := range statuses {
+		if detail, ok := shared[statuses[idx].Member.Key()]; ok {
+			statuses[idx].State = StateShared
+			statuses[idx].Detail = detail
+		}
+		counts[statuses[idx].State]++
 	}
 
 	report := Report{Members: statuses}
@@ -263,10 +279,17 @@ func Verify(p Prober, r *Receipt) Report {
 	default:
 		report.Verdict = VerdictClear
 		report.Reason = "every recorded process is gone"
+		if counts[StateShared] > 0 {
+			report.Reason = "every process this session owns is gone"
+		}
 		if counts[StateStranger] > 0 {
-			report.Reason = fmt.Sprintf("every recorded process is gone (%d pid(s) have since been reused by unrelated processes, which were not signalled)",
+			report.Reason += fmt.Sprintf(" (%d pid(s) have since been reused by unrelated processes, which were not signalled)",
 				counts[StateStranger])
 		}
+	}
+	if counts[StateShared] > 0 {
+		report.Reason += fmt.Sprintf("; %d process(es) belong to a host-wide shared service and are not owned by this session",
+			counts[StateShared])
 	}
 	return report
 }

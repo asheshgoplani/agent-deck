@@ -26,7 +26,7 @@ var (
 func handleSessionWindow(profile string, args []string) {
 	if len(args) == 0 {
 		printSessionWindowHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "close", "kill":
@@ -36,7 +36,7 @@ func handleSessionWindow(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown session window command: %s\n", args[0])
 		printSessionWindowHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -76,17 +76,17 @@ func printSessionWindowCloseUsage() {
 // reports the outcome of closeSessionWindow, which carries the kill's
 // identity guard.
 func handleSessionWindowClose(profile string, args []string) {
-	fs := flag.NewFlagSet("session window close", flag.ExitOnError)
+	fs := flag.NewFlagSet("session window close", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	yes := fs.Bool("yes", false, "Actually kill the window (without this only the target is printed)")
 	force := fs.Bool("force", false, "Alias for --yes")
 	fs.Usage = printSessionWindowCloseUsage
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	if fs.NArg() < 2 {
 		printSessionWindowCloseUsage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	inst := resolveOwnershipTarget(profile, fs.Arg(0), out)
@@ -95,7 +95,7 @@ func handleSessionWindowClose(profile string, args []string) {
 	win, err := closeSessionWindow(inst, ref, *yes || *force)
 	if errors.Is(err, errSessionWindowNotFound) {
 		out.Error(fmt.Sprintf("window %s not found: %v", ref, err), ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if err != nil {
 		// Every remaining refusal names the window that was resolved.
@@ -113,7 +113,7 @@ func handleSessionWindowClose(profile string, args []string) {
 		default:
 			out.Error(fmt.Sprintf("kill %s: %v", label, err), ErrCodeInvalidOperation)
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out.Success(fmt.Sprintf("closed %s in session %s", describeSessionWindow(win), inst.Title), sessionWindowPayload(inst, win, true, ""))
 }

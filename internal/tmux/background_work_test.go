@@ -113,12 +113,7 @@ func TestClaudeBackgroundWorkPending_IgnoresScrollbackProse(t *testing.T) {
 	}
 }
 
-// Shells and monitors left alive at the prompt are background work in flight
-// (issue #2473): the frame is active and the substate background-work. Before
-// #2473 this test pinned the opposite (FrameWaiting): the 2026-09-23 audit
-// read every such row as a false green. Ashesh's ruling in #2473 reverses it
-// for work that is in flight; the footer counter Claude redraws live is what
-// proves it, so a finished shell drops out of the verdict by itself.
+// Finite shells and awaited agents remain running; armed monitors do not.
 func TestClaudeBackgroundShellsAreRunning(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -127,15 +122,15 @@ func TestClaudeBackgroundShellsAreRunning(t *testing.T) {
 	}{
 		{"shells still running (plural)", paneShellsStillRunning, true},
 		{"single shell footer", paneSingleShell, true},
-		{"monitor still running", "⏺ done\n✻ Baked for 13s · done 2:02 PM · 1 monitor still running\n───\n❯ plepa\n───\n  ⏵⏵ auto mode on · 1 monitor", true},
+		{"monitor still running", "⏺ done\n✻ Baked for 13s · done 2:02 PM · 1 monitor still running\n───\n❯ plepa\n───\n  ⏵⏵ auto mode on · 1 monitor", false},
 		{"awaiting background agent only", paneAwaitingAgent, true},
 		{"idle, nothing pending", paneIdleNoBackground, false},
 		{"empty", "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := ParseClaudeBackgroundWork(c.content).InFlight(); got != c.want {
-				t.Fatalf("ParseClaudeBackgroundWork(%s).InFlight() = %v, want %v", c.name, got, c.want)
+			if got := ParseClaudeBackgroundWork(c.content).Running(); got != c.want {
+				t.Fatalf("ParseClaudeBackgroundWork(%s).Running() = %v, want %v", c.name, got, c.want)
 			}
 		})
 	}

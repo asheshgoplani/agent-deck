@@ -21,21 +21,46 @@ func skipIfNoTmuxServer(t *testing.T) {
 	}
 }
 
-// buildBinary builds the agent-deck binary into a temp directory with GOTOOLCHAIN=go1.25.13.
-// Returns the path to the built binary.
+// pinnedToolchain returns the toolchain pinned by go.mod's go directive
+// (for example "go1.26.9") and its release line (for example "go1.26"), so the
+// smoke tests follow the pin instead of repeating it.
+func pinnedToolchain(t *testing.T) (exact, line string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "go.mod"))
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(l)
+		if len(fields) == 2 && fields[0] == "go" {
+			exact = "go" + fields[1]
+			parts := strings.SplitN(fields[1], ".", 3)
+			if len(parts) < 2 {
+				t.Fatalf("unexpected go directive %q in go.mod", l)
+			}
+			return exact, "go" + parts[0] + "." + parts[1]
+		}
+	}
+	t.Fatal("go.mod has no go directive")
+	return "", ""
+}
+
+// buildBinary builds the agent-deck binary into a temp directory with the
+// toolchain pinned by go.mod. Returns the path to the built binary.
 func buildBinary(t *testing.T) string {
 	t.Helper()
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "agent-deck")
+	exact, line := pinnedToolchain(t)
 
 	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/agent-deck")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = os.Environ()
-	// Pin the go1.25 toolchain only when the local go is not already 1.25.x:
-	// forcing an exact patch release makes go download it, which fails in
-	// an offline test container that already ships a newer go1.25.
-	if !strings.HasPrefix(runtime.Version(), "go1.25") {
-		cmd.Env = append(cmd.Env, "GOTOOLCHAIN=go1.25.13")
+	// Pin the go.mod toolchain only when the local go is on another release
+	// line: forcing an exact patch release makes go download it, which fails
+	// in an offline test container that already ships a newer patch.
+	if !strings.HasPrefix(runtime.Version(), line) {
+		cmd.Env = append(cmd.Env, "GOTOOLCHAIN="+exact)
 	}
 
 	out, err := cmd.CombinedOutput()
@@ -288,10 +313,10 @@ func TestSmoke_BuildVersion(t *testing.T) {
 
 	versionInfo := string(out)
 
-	// Verify built with go1.25.x (the pinned toolchain, bumped from 1.24 in #1054
-	// to close 17 Go stdlib CVEs and unblock dependabot bumps requiring Go 1.25+).
-	if !strings.Contains(versionInfo, "go1.25") {
-		t.Errorf("binary not built with go1.25.x toolchain:\n%s", versionInfo)
+	// Verify the binary was built on the release line pinned by go.mod.
+	_, line := pinnedToolchain(t)
+	if !strings.Contains(versionInfo, line) {
+		t.Errorf("binary not built with %s.x toolchain:\n%s", line, versionInfo)
 	}
 
 	// Warn (don't fail) if vcs.modified=true since tests run in a working tree

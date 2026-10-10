@@ -88,6 +88,7 @@ const (
 	SubstateIdleAtEmptyPrompt = tmux.SubstateIdleAtEmptyPrompt
 	SubstateInteractiveMenu   = tmux.SubstateInteractiveMenu
 	SubstateBackgroundWork    = tmux.SubstateBackgroundWork
+	SubstateWatching          = tmux.SubstateWatching
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
@@ -570,7 +571,8 @@ type Instance struct {
 	// JSON structure: {"tool": "claude", "options": {...}}
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
 
-	tmuxSession *tmux.Session // Internal tmux session
+	tmuxSession              *tmux.Session // Internal tmux session
+	conductorRecoveryWarning string        // protected by mu; latest spawn only
 	// Database that last loaded or saved this instance. Restart bookkeeping must
 	// return to that profile instead of whichever database is process-global.
 	restartDB atomic.Pointer[statedb.StateDB]
@@ -2560,23 +2562,33 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		ClearHookSessionAnchor(i.ID)
 	}
 
-	// Safety net (incident 2026-07-15): codex loads subagent-sourced threads
+	// Safety net (incident 2026-07-15): codex loads non-user child threads
 	// via `resume` but refuses user-initiated turns on them — the TUI exits
 	// status 1 with "turn/start failed in TUI" on the first typed message,
-	// killing the tmux session in an error loop. This bites bindings
-	// poisoned by a subagent turn-complete hook before the gate existed (or
-	// raced past it) AND sessions legitimately living on an adopted subagent
-	// thread from an earlier mid-flight restart. `codex fork` carries the
-	// thread's full context into a fresh thread_source=user thread that
-	// accepts input; the live-process probe then rebinds the instance to the
-	// fork's new id. See codex_subagent_gate.go.
+	// killing the tmux session in an error loop. Guardian review bindings
+	// resume their verified user ancestor. Other child bindings use `codex fork`
+	// to create a thread_source=user thread that accepts input. The live-process
+	// probe then rebinds the instance to the fork's new id. See
+	// codex_subagent_gate.go.
 	if i.CodexSessionID != "" && codexSessionNeedsFork(i.CodexSessionID, codexHome) {
-		sessionLog.Warn("codex_subagent_binding_forked",
-			slog.String("instance_id", i.ID),
-			slog.String("title", i.Title),
-			slog.String("sid", i.CodexSessionID))
-		return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s",
-			command, yoloFlag, modelFlag, reasoningFlag, identityFlag, i.CodexSessionID)
+		if parentID := codexGuardianParentThreadID(i.CodexSessionID, codexHome); parentID != "" {
+			oldID := i.CodexSessionID
+			if err := i.bindCodexSessionFromHook(parentID, "guardian_parent_recovery"); err != nil {
+				return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s",
+					command, yoloFlag, modelFlag, reasoningFlag, identityFlag, oldID)
+			}
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "rebind",
+				Source: "guardian_parent_recovery", OldID: oldID, NewID: parentID,
+			})
+		} else {
+			sessionLog.Warn("codex_subagent_binding_forked",
+				slog.String("instance_id", i.ID),
+				slog.String("title", i.Title),
+				slog.String("sid", i.CodexSessionID))
+			return envPrefix + fmt.Sprintf("%s%s%s%s%s fork %s",
+				command, yoloFlag, modelFlag, reasoningFlag, identityFlag, i.CodexSessionID)
+		}
 	}
 
 	if i.CodexSessionID != "" {
@@ -2929,6 +2941,7 @@ type openCodeSessionMetadata struct {
 
 type openCodeHTTPSessionMetadata struct {
 	ID        string `json:"id"`
+	ParentID  string `json:"parentID"`
 	Directory string `json:"directory"`
 	Path      string `json:"path"`
 	Location  struct {
@@ -2939,6 +2952,37 @@ type openCodeHTTPSessionMetadata struct {
 		Updated int64 `json:"updated"`
 	} `json:"time"`
 }
+
+func (s openCodeHTTPSessionMetadata) flatten() openCodeSessionMetadata {
+	directory := s.Directory
+	if directory == "" {
+		directory = s.Location.Directory
+	}
+	return openCodeSessionMetadata{
+		ID:        s.ID,
+		Directory: directory,
+		Path:      s.Path,
+		Created:   s.Time.Created,
+		Updated:   s.Time.Updated,
+	}
+}
+
+// openCodeServiceSessionPage is one page of `opencode api session.list` on
+// 2.x, where sessions live in the shared background service.
+type openCodeServiceSessionPage struct {
+	Data   []openCodeHTTPSessionMetadata `json:"data"`
+	Cursor struct {
+		Next string `json:"next"`
+	} `json:"cursor"`
+}
+
+// The service pages at 50 by default and the directory filter still returns
+// every sub-agent session, so one page can miss the root the TUI is in.
+const openCodeServiceSessionPageSize = 200
+
+// A page can be nothing but sub-agent sessions, so discovery follows the cursor
+// until it holds a root and the bound session; the cap bounds a runaway store.
+const openCodeServiceSessionMaxPages = 5
 
 type openCodeCLIQueryCacheEntry struct {
 	queriedAt time.Time
@@ -2952,7 +2996,15 @@ type openCodeCLIQueryCacheEntry struct {
 // rotate to a newer sibling when there was very recent local pane activity,
 // which approximates an intentional in-pane `/new` without stealing sessions
 // from other tabs in the same project.
-func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, currentID string, startedAt, activityAt int64) string {
+// sharedService is the OpenCode 2.x case: every TUI on the host shares one
+// service, so the directory listing holds sibling conversations that other
+// deck sessions are driving. An unbound instance then adopts only a session
+// created after its own spawn; a sibling's fresh activity is not evidence.
+func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, currentID string, startedAt, activityAt int64, sharedService bool) string {
+	if sharedService && currentID == "" && startedAt <= 0 {
+		// Without a spawn time an unbound instance cannot tell its conversation from a sibling's.
+		return ""
+	}
 	normalizedProjectPath := normalizePath(projectPath)
 
 	var bestMatch string
@@ -2991,8 +3043,20 @@ func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, cu
 			continue
 		}
 
-		if currentID == "" && startedAt > 0 && updatedAt < startupThreshold && sess.Created < startupThreshold {
+		if sharedService && currentID != "" {
+			// The shared service lists every deck session's conversation in this
+			// directory, so neither recent activity nor a missing binding makes a
+			// sibling ours: keep the binding, or report nothing.
 			continue
+		}
+
+		if currentID == "" && startedAt > 0 {
+			if sharedService && sess.Created < startupThreshold {
+				continue
+			}
+			if !sharedService && updatedAt < startupThreshold && sess.Created < startupThreshold {
+				continue
+			}
 		}
 
 		if currentID != "" && activityAt > 0 && (updatedAt >= activityThreshold || sess.Created >= activityThreshold) {
@@ -3038,7 +3102,20 @@ func (i *Instance) queryOpenCodeSession() string {
 	projectPath := i.ProjectPath
 	currentID := i.OpenCodeSessionID
 	startedAt := i.OpenCodeStartedAt
+	lastStartedAt := i.LastStartedAt
 	i.mu.RUnlock()
+
+	sharedService := port == 0 && i.openCodeRejectsV1LaunchFlags()
+	var minCreated int64
+	if sharedService && currentID == "" {
+		// OpenCodeStartedAt is not persisted, so a reloaded instance falls back to its last start.
+		if startedAt <= 0 && !lastStartedAt.IsZero() {
+			startedAt = lastStartedAt.UnixMilli()
+		}
+		if startedAt > 0 {
+			minCreated = startedAt - opencodeStartupTimeSkew.Milliseconds()
+		}
+	}
 
 	var sessions []openCodeSessionMetadata
 	if port > 0 {
@@ -3053,7 +3130,7 @@ func (i *Instance) queryOpenCodeSession() string {
 			return ""
 		}
 	} else {
-		sessions = i.queryOpenCodeSessionsCLI(projectPath)
+		sessions = i.queryOpenCodeSessionsCLI(projectPath, currentID, minCreated)
 	}
 
 	sessionLog.Debug("opencode_parsed_sessions", slog.Int("count", len(sessions)))
@@ -3066,7 +3143,7 @@ func (i *Instance) queryOpenCodeSession() string {
 		}
 	}
 
-	bestMatch := findBestOpenCodeSession(sessions, projectPath, currentID, startedAt, activityAt)
+	bestMatch := findBestOpenCodeSession(sessions, projectPath, currentID, startedAt, activityAt, sharedService)
 	sessionLog.Debug(
 		"opencode_best_match",
 		slog.String("session_id", bestMatch),
@@ -3108,23 +3185,18 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 
 	sessions := make([]openCodeSessionMetadata, 0, len(payload))
 	for _, session := range payload {
-		directory := session.Directory
-		if directory == "" {
-			directory = session.Location.Directory
-		}
-		sessions = append(sessions, openCodeSessionMetadata{
-			ID:        session.ID,
-			Directory: directory,
-			Path:      session.Path,
-			Created:   session.Time.Created,
-			Updated:   session.Time.Updated,
-		})
+		sessions = append(sessions, session.flatten())
 	}
 	return sessions, nil
 }
 
-func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
+// minCreated is the earliest creation time an unbound 2.x instance may adopt; 0 means any.
+func (i *Instance) queryOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
 	cacheKey := normalizePath(projectPath)
+	if i.openCodeRejectsV1LaunchFlags() {
+		// The 2.x pager stops at what this caller can use, so a page set is only complete for that caller.
+		cacheKey += "\x00" + currentID + "\x00" + strconv.FormatInt(minCreated, 10)
+	}
 	if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 		return sessions
 	}
@@ -3133,7 +3205,7 @@ func (i *Instance) queryOpenCodeSessionsCLI(projectPath string) []openCodeSessio
 		if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 			return sessions, nil
 		}
-		sessions := i.runOpenCodeSessionsCLI(projectPath)
+		sessions := i.runOpenCodeSessionsCLI(projectPath, currentID, minCreated)
 		cacheOpenCodeCLISessions(cacheKey, sessions)
 		return sessions, nil
 	})
@@ -3169,16 +3241,43 @@ func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadat
 	}
 }
 
-func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionMetadata {
+func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Run: opencode session list --format json
-	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
+	// On 2.x `session list` prints [] for a directory: the sessions live in the
+	// shared background service and `opencode api` is the CLI's door to it.
+	v2 := i.openCodeRejectsV1LaunchFlags()
+
+	sessionLog.Debug("opencode_query_sessions",
+		slog.String("dir", logging.SanitizeValue(projectPath)),
+		slog.Bool("service_api", v2),
+	)
+
+	if v2 {
+		return i.runOpenCodeServiceSessionPages(ctx, projectPath, currentID, minCreated)
+	}
+
+	output, ok := i.runOpenCodeCLI(ctx, projectPath, "opencode", "session", "list", "--format", "json")
+	if !ok {
+		return nil
+	}
+
+	// Parse JSON response
+	// Expected format: array of session objects with id, directory, created, updated fields
+	var sessions []openCodeSessionMetadata
+
+	if err := json.Unmarshal(output, &sessions); err != nil {
+		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+		return nil
+	}
+	return sessions
+}
+
+func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath, binary string, args ...string) ([]byte, bool) {
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = projectPath
 	cmd.WaitDelay = 500 * time.Millisecond
-
-	sessionLog.Debug("opencode_query_sessions", slog.String("dir", logging.SanitizeValue(projectPath)))
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -3190,20 +3289,78 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath string) []openCodeSessionM
 		} else {
 			sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
 		}
-		return nil
+		return nil, false
 	}
 
 	sessionLog.Debug("opencode_session_data_size", slog.Int("bytes", len(output)))
+	return output, true
+}
 
-	// Parse JSON response
-	// Expected format: array of session objects with id, directory, created, updated fields
+// runOpenCodeServiceSessionPages walks `session.list` pages newest first and
+// stops once it holds a root the caller can use: the bound session for a bound
+// instance, else a root created at or after minCreated. Returning before the
+// bound session is seen would rebind to a newer sibling.
+// A failed page, or hitting the page cap before the bound session, returns
+// nothing for the same reason.
+func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
+	// The version that picked this path came from the configured binary, which a bare name may not reach.
+	binary, ok := i.openCodeLaunchBinary()
+	if !ok {
+		return nil
+	}
+
 	var sessions []openCodeSessionMetadata
-
-	if err := json.Unmarshal(output, &sessions); err != nil {
-		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+	cursor := ""
+	usableSeen := false
+	for page := 0; page < openCodeServiceSessionMaxPages; page++ {
+		args := []string{"api", "session.list",
+			"--param", "directory=" + projectPath,
+			"--param", "limit=" + strconv.Itoa(openCodeServiceSessionPageSize)}
+		if cursor != "" {
+			args = append(args, "--param", "cursor="+cursor)
+		}
+		output, ok := i.runOpenCodeCLI(ctx, projectPath, binary, args...)
+		if !ok {
+			return nil
+		}
+		roots, next, ok := parseOpenCodeServiceSessionPage(output)
+		if !ok {
+			return nil
+		}
+		for _, root := range roots {
+			if (currentID != "" && root.ID == currentID) || (currentID == "" && root.Created >= minCreated) {
+				usableSeen = true
+			}
+		}
+		sessions = append(sessions, roots...)
+		if next == "" || usableSeen {
+			return sessions
+		}
+		cursor = next
+	}
+	if currentID != "" && !usableSeen {
 		return nil
 	}
 	return sessions
+}
+
+// parseOpenCodeServiceSessionPage keeps root sessions only: a sub-agent
+// session shares the directory and is updated more recently than the TUI's
+// own, so it would win the best-match rotation and rebind the instance.
+func parseOpenCodeServiceSessionPage(output []byte) ([]openCodeSessionMetadata, string, bool) {
+	var page openCodeServiceSessionPage
+	if err := json.Unmarshal(output, &page); err != nil {
+		sessionLog.Debug("opencode_parse_failed", slog.String("error", err.Error()))
+		return nil, "", false
+	}
+	sessions := make([]openCodeSessionMetadata, 0, len(page.Data))
+	for _, session := range page.Data {
+		if session.ParentID != "" {
+			continue
+		}
+		sessions = append(sessions, session.flatten())
+	}
+	return sessions, page.Cursor.Next, true
 }
 
 // normalizePath normalizes a file path for comparison
@@ -5091,7 +5248,8 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 // and gate are inlined here (rather than wrapping the whole body in a
 // SpawnAttempt helper) to preserve the structural-grep contract that
 // checks Start()'s body for the #745 IsForkAwaitingStart guard.
-func (i *Instance) Start() error {
+func (i *Instance) Start() (startErr error) {
+	defer func() { i.recordTelemetryStartError(startErr) }()
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -5452,6 +5610,7 @@ func (i *Instance) Start() error {
 		go i.detectCopilotSessionAsync()
 	}
 
+	i.recoverConductorAfterSpawn()
 	return nil
 }
 
@@ -5463,7 +5622,14 @@ func (i *Instance) Start() error {
 // Issue #1040: same per-instance spawn lock as Start() — a concurrent
 // `launch -m "..."` racing with a poller-triggered Start() must not
 // produce two parallel tmux sessions.
-func (i *Instance) StartWithMessage(message string) error {
+func (i *Instance) StartWithMessage(message string) (startErr error) {
+	// Conductor with no explicit message: Start() records its own telemetry
+	// start error, so return before installing the defer below or a failed
+	// start would be recorded twice.
+	if message == "" && i.IsConductor {
+		return i.Start()
+	}
+	defer func() { i.recordTelemetryStartError(startErr) }()
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -6293,6 +6459,9 @@ func (i *Instance) probeTmuxExists() (exists, current bool) {
 	return exists, i.tmuxSession == s && i.stopRevision == stopRevision
 }
 
+// updateStatus refreshes i.Status from tmux, hooks and the pane. A session
+// still queued for group capacity keeps StatusQueued until its tmux pane
+// exists; a missing pane is not an error for it (issue #2526).
 func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error {
 	// #1846: flush any unpersisted last-activity evidence once the lock is
 	// released (declared before Lock so it runs after the Unlock defer).
@@ -6311,6 +6480,19 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// Don't block status detection once tmux session exists
 	var exists bool
 	var checkedExists bool
+	if i.Status == StatusQueued {
+		// Waiting for group capacity is not a missing-pane error. Start may
+		// leave an interactive shell queued until this pass sees its pane.
+		if i.tmuxSession == nil {
+			return nil
+		}
+		var current bool
+		exists, current = i.probeTmuxExists()
+		if !current || !exists {
+			return nil
+		}
+		checkedExists = true
+	}
 	if time.Since(graceTime) < 1500*time.Millisecond {
 		// Only skip if tmux session doesn't exist yet
 		if i.tmuxSession == nil {
@@ -6465,6 +6647,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		i.hookLagFlipped = false
 		i.bgWorkActive = false
+		i.bgWork = tmux.BackgroundWork{}
 		if i.hookStatus != "running" {
 			// The hook moved on (Stop landed, or a new lifecycle event): any
 			// lag observed under the old running event is over.
@@ -6507,7 +6690,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
 				// ends, including the turn that launched a Workflow, background
-				// agents, run_in_background shells or a Monitor. Issue #2473: a
+				// agents or finite run_in_background shells. Issue #2473: a
 				// running workflow means a running session, so this "waiting"
 				// never overrides a pane or transcript that proves background
 				// work in flight (background_work.go has the merge rule); the
@@ -6548,7 +6731,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 					// A fresh waiting hook cannot override that frame (#2502).
 					i.Status = StatusRunning
 					i.tmuxSession.ResetAcknowledged()
-				case work.InFlight():
+				case work.Running():
 					i.Status = StatusRunning
 					i.bgWorkActive = true
 					// Output produced while the work ran is unseen: when it
@@ -6767,11 +6950,12 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// A frame that shows an open menu or an error is never promoted: the menu
 	// blocks the turn on the operator (#2185) and the error means no progress.
 	i.bgWorkActive = false
+	i.bgWork = tmux.BackgroundWork{}
 	if IsClaudeCompatible(i.Tool) && (status == "active" || status == "waiting" || status == "idle") &&
 		!backgroundWorkOutrankedBySubstate(i.tmuxSession) {
 		pane := i.tmuxSession.CachedBackgroundWork()
 		fromBackground := status != "active" ||
-			(pane.InFlight() && i.tmuxSession.CachedSubstate() == tmux.SubstateBackgroundWork)
+			(pane.InFlight() && (i.tmuxSession.CachedSubstate() == tmux.SubstateBackgroundWork || i.tmuxSession.CachedSubstate() == tmux.SubstateWatching))
 		if fromBackground {
 			i.mu.Unlock()
 			work := i.probeBackgroundWork(pane)
@@ -6780,7 +6964,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 				return nil
 			}
 			switch {
-			case work.InFlight():
+			case work.Running():
 				if status != "active" {
 					i.tmuxSession.ResetAcknowledged()
 				}
@@ -7273,7 +7457,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			})
 			return
 		}
-		i.bindCodexSessionFromHook(sessionID, status.Event)
+		_ = i.bindCodexSessionFromHook(sessionID, status.Event)
 	case i.Tool == "gemini":
 		if sessionID == i.GeminiSessionID {
 			return
@@ -7290,25 +7474,16 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 // bindClaudeSessionFromHook (see that function's doc comment for the
 // PERSIST-12 rationale). It performs the same bookkeeping that the
 // inlined pre-#1139 code did — debug log, in-memory mutation, tmux env
-// propagation — and then persists the new binding to SQLite so
+// propagation — after it persists the new binding to SQLite so
 // DB-direct consumers and peer agent-deck processes observe the new
 // codex_session_id immediately, instead of reloading the stale row and
 // clobbering the in-memory mutation on the next save cycle.
-func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) {
+func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) error {
 	sessionLog.Debug("codex_session_update_from_hook",
 		slog.String("old_id", i.CodexSessionID),
 		slog.String("new_id", sessionID),
 		slog.String("event", hookEvent),
 	)
-	i.CodexSessionID = sessionID
-	i.recordCodexOwnership(sessionID)
-	i.CodexDetectedAt = time.Now()
-	i.hookSessionID = sessionID
-
-	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
-	}
-
 	// Persist the rebind to SQLite. See bindClaudeSessionFromHook for the
 	// full rationale: none of the three UpdateHookStatus callers (TUI
 	// tick, web refresh, CLI status refresh) save after a hook-triggered
@@ -7318,14 +7493,41 @@ func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) {
 	// producing a runaway loop of fresh "rebind" decisions on every
 	// poll. WriteCodexSessionBinding rewrites only the typed schema
 	// fields via json_set, leaving every other tool_data key untouched.
-	if db := statedb.GetGlobal(); db != nil {
-		if err := db.WriteCodexSessionBinding(i.ID, sessionID, i.CodexDetectedAt); err != nil {
+	db := i.restartDB.Load()
+	if db == nil {
+		db = statedb.GetGlobal()
+	}
+	detectedAt := time.Now()
+	if db != nil {
+		err := db.WriteCodexSessionBinding(i.ID, sessionID, detectedAt)
+		// Web mutators save live instances through a short-lived Storage,
+		// which can leave restartDB closed. Retry through the saved owning
+		// path, never through an unrelated profile's global database.
+		if err != nil && db.DB().Ping() != nil && i.storageSnapshot != nil && i.storageSnapshot.dbPath != "" {
+			var retryDB *statedb.StateDB
+			retryDB, err = statedb.Open(i.storageSnapshot.dbPath)
+			if err == nil {
+				err = retryDB.WriteCodexSessionBinding(i.ID, sessionID, detectedAt)
+				_ = retryDB.Close()
+			}
+		}
+		if err != nil {
 			sessionLog.Warn("codex_session_rebind_persist_failed",
 				slog.String("instance_id", i.ID),
 				slog.String("new_id", sessionID),
 				slog.String("error", err.Error()))
+			return err
 		}
 	}
+	i.CodexSessionID = sessionID
+	i.recordCodexOwnership(sessionID)
+	i.CodexDetectedAt = detectedAt
+	i.hookSessionID = sessionID
+
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
+	}
+	return nil
 }
 
 // bindGeminiSessionFromHook is the Gemini counterpart of
@@ -9903,7 +10105,13 @@ func (i *Instance) killInternal(sync bool) error {
 // stamp generation from any prior spawn is already in the new caller's
 // pre-lock snapshot.
 func (i *Instance) Restart() error {
-	return i.restartRecorded(nil)
+	return i.restartRecorded(nil, "")
+}
+
+// RestartFrom is Restart with session.end recorded from surface sf ("" =
+// the process surface), for web requests served by a CLI or TUI process.
+func (i *Instance) RestartFrom(sf telemetry.Surface) error {
+	return i.restartRecorded(nil, sf)
 }
 
 // RestartWithEnv restarts the session with one-shot environment overrides.
@@ -9915,19 +10123,20 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 			return fmt.Errorf("invalid environment variable name %q", key)
 		}
 	}
-	return i.restartRecorded(env)
+	return i.restartRecorded(env, "")
 }
 
-// restartRecorded restarts and records session.end(restart) on success.
-func (i *Instance) restartRecorded(env map[string]string) error {
+// restartRecorded restarts and records session.end(restart) from surface sf
+// on success.
+func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) error {
 	err := i.restart(env)
 	if err == nil {
-		i.RecordTelemetryEnd(telemetry.EndRestart)
+		i.RecordTelemetryEndFrom(telemetry.EndRestart, sf)
 	}
 	return err
 }
 
-func (i *Instance) restart(env map[string]string) error {
+func (i *Instance) restart(env map[string]string) (err error) {
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -9964,6 +10173,13 @@ func (i *Instance) restart(env map[string]string) error {
 	// so it must not leave a spawn stamp that makes a concurrent caller believe
 	// a replacement is already running.
 	defer recordInstanceSpawn(i.ID)
+	// Cover every successful respawn/recreate branch while holding the spawn
+	// lock. Storm-suppressed calls and failed spawns never send recovery input.
+	defer func() {
+		if err == nil {
+			i.recoverConductorAfterSpawn()
+		}
+	}()
 	// Registered AFTER the gate and BEFORE the tmux work, so it runs on every
 	// exit of this function — including each per-tool respawn-pane fast path —
 	// while the spawn lock is still held (deferred release() was registered

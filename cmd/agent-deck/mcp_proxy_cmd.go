@@ -29,7 +29,7 @@ func runMCPProxy(socketPath string) {
 		if err != nil {
 			retries++
 			if retries >= maxRetries {
-				os.Exit(1)
+				exitCLI(1)
 			}
 			time.Sleep(retryDelay)
 			if retryDelay < maxRetryDelay {
