@@ -153,8 +153,8 @@ type runner struct {
 	confirmed bool // accepted the /model "Switch model?" confirmation
 	// /model picker navigation: picked = "s" sent on the requested entry;
 	// steps bounds the arrow keys; lastSel/stalled detect the list end.
-	picked  bool
-	steps   int
+	picked   bool
+	steps    int
 	lastSel  int
 	stalled  int
 	reversed bool

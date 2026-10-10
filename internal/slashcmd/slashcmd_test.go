@@ -40,7 +40,6 @@ func TestParse(t *testing.T) {
 	}
 }
 
-
 func TestRun_BareCommandGetsTrailingSpaceSoThePickerCloses(t *testing.T) {
 	f := newFakeClaude()
 	f.transcript = []string{"❯ hello", "⏺ hi"}
@@ -193,7 +192,6 @@ func TestRun_WaitIdleWaitsForTheTurnToEnd(t *testing.T) {
 	}
 }
 
-
 func TestRun_ExitIsVerifiedByThePaneGoingAway(t *testing.T) {
 	f := newFakeClaude()
 	cmd, _ := Parse("/exit")
@@ -245,7 +243,6 @@ func (i *interleaving) SendKeys(text string) error {
 	return i.fakeClaude.SendKeys(text)
 }
 
-
 func hasKey(keys []string, k string) bool {
 	for _, x := range keys {
 		if x == k {
@@ -290,7 +287,6 @@ func TestRun_KeysTypedRightBeforeEnterAreNotSubmitted(t *testing.T) {
 		t.Fatalf("want type_mismatch with no Enter or Ctrl+U, got %+v keys=%v", res, f.keys)
 	}
 }
-
 
 // Review S4: an error rendered a frame after the echo is still caught.
 func TestRun_LateUnknownCommandIsNotReportedAsSuccess(t *testing.T) {
