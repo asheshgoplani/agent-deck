@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
-	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
@@ -107,19 +106,12 @@ func sendQueueDir(storage *session.Storage) string {
 	return sendqueue.Dir(filepath.Dir(storage.Path()))
 }
 
-// publishSendState mirrors a queued send's state on the bus so a client
-// following `events follow --kind session.send` never polls send-status.
-// sender (additive) lets the sender pick out its own sends.
-func publishSendState(profile string, r *sendqueue.Record) {
-	events.PublishProfile(profile, "session.send", r.SessionID, map[string]string{"send_id": r.SendID, "state": r.State, "verdict": r.Verdict, "reason": r.Reason, "sender": r.Sender})
-}
-
 // queuedSendChanged is every state change of a queued send after it is
 // written: the bus frame, and once the send is final its terminal journal
 // record and, for a failure, a notice to the sender (issue #2481).
 func queuedSendChanged(profile string, prev, r *sendqueue.Record) {
 	if r.State != prev.State || r.Reason != prev.Reason || r.Verdict != prev.Verdict {
-		publishSendState(profile, r)
+		sendqueue.PublishState(profile, r)
 	}
 	if !prev.Final() && r.Final() {
 		finishQueuedSend(profile, r, true)
@@ -162,46 +154,30 @@ func ledgerQueuedSend(r *sendqueue.Record, inboxOwned bool) {
 // types anything itself; it returns at once.
 func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, tagged bool, ledgerSender string, requireInputPrompt bool, out *CLIOutput) {
 	now := time.Now()
-	dir := sendQueueDir(storage)
 	status := "unknown"
-	id, err := sendqueue.NextID(dir, now)
+	s := sendqueue.Send{
+		SessionID: inst.ID, SessionTitle: inst.Title, Tool: inst.Tool, Running: inst.Exists(),
+		Message: message, Images: images, RequireInputPrompt: requireInputPrompt,
+		Sender: ledgerSender, Deadline: now.Add(sendqueue.DefaultRetryBudget), Ledger: ledgerSendAllowed(),
+	}
+	if s.Sender == "" {
+		s.Sender = sendSenderCLI
+	}
+	if session.IsClaudeCompatible(inst.Tool) {
+		s.ClaudeSessionID = inst.ClaudeSessionID
+	}
+	rec, err := sendqueue.Enqueue(profile, sendQueueDir(storage), s, now)
 	if err != nil {
 		out.Error(fmt.Sprintf("cannot queue send: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
-	rec := &sendqueue.Record{
-		SendID: id, State: sendqueue.StateQueued, Verdict: "queued", TargetStatus: status,
-		SessionID: inst.ID, SessionTitle: inst.Title, Tool: inst.Tool, Message: message, Images: images,
-		RequireInputPrompt: requireInputPrompt,
-		CreatedAt:          now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
-		Deadline: now.Add(sendqueue.DefaultRetryBudget).UTC().Format(time.RFC3339Nano),
-		Sender:   ledgerSender,
-	}
-	if rec.Sender == "" {
-		rec.Sender = sendSenderCLI
-	}
-	if session.IsClaudeCompatible(inst.Tool) {
-		rec.ClaudeSessionID = inst.ClaudeSessionID
-	}
-	if !inst.Exists() {
-		rec.State, rec.Reason, rec.Verdict = sendqueue.StateFailed, "target not running", "unknown"
-	}
-	if err := sendqueue.Save(dir, rec); err != nil {
-		out.Error(fmt.Sprintf("cannot queue send: %v", err), ErrCodeInvalidOperation)
-		exitCLI(1)
-	}
-	// Comms Ledger (P3): reuse the queue's durable sender identity.
-	if ledgerSendAllowed() {
-		session.SpoolCommsSend(rec.Sender, inst.ID, message, "queue", rec.SendID)
-	}
-	publishSendState(profile, rec)
 	if rec.State == sendqueue.StateFailed {
 		out.ErrorWithData(fmt.Sprintf("send %s failed: %s", rec.SendID, rec.Reason), ErrCodeDeliveryFailed, queuedSendFields(rec))
 		// After the verdict; the exit code already tells the sender.
 		finishQueuedSend(profile, rec, false)
 		exitCLI(1)
 	}
-	if err := spawnSendWorker(profile, inst.ID); err != nil {
+	if err := sendqueue.SpawnWorker(profile, inst.ID); err != nil {
 		// The record stays queued; the next --queue or send-status for
 		// this target starts a worker again.
 		fmt.Fprintf(os.Stderr, "Warning: could not start the delivery worker yet: %v\n", err)
@@ -235,43 +211,6 @@ func recordFields(r *sendqueue.Record) map[string]interface{} {
 	var m map[string]interface{}
 	_ = json.Unmarshal(b, &m)
 	return m
-}
-
-// spawnSendWorker starts a detached worker for the target. A second worker
-// for the same target exits at once on the target lock. sessionID comes from
-// storage or an on-disk queue record, so it is checked against the same
-// instance-id guard the hook handler uses before it reaches argv.
-func spawnSendWorker(profile, sessionID string) error {
-	if !validInstanceID.MatchString(sessionID) || strings.Contains(sessionID, "..") {
-		return fmt.Errorf("invalid session id %q", sessionID)
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	// #nosec G702 -- exe is this binary (os.Executable), argv is passed as
-	// separate arguments with no shell, and sessionID was checked against
-	// validInstanceID above. gosec's taint analysis does not treat that check
-	// as a sanitizer and reaches this call through unrelated flows (#2411).
-	cmd := exec.Command(exe, profileArgs(profile, "session", "send-worker", "--target", sessionID)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	return cmd.Process.Release()
-}
-
-// kickPendingSendWorkers starts a worker for every target in the queue
-// directory dir (or only sessionID) that still has an unfinished queued
-// send, e.g. after a reboot killed the old workers. A live worker keeps its
-// target lock, so the extra one exits at once.
-func kickPendingSendWorkers(profile, dir, sessionID string) {
-	for _, target := range sendqueue.PendingTargets(dir) {
-		if sessionID == "" || target == sessionID {
-			_ = spawnSendWorker(profile, target)
-		}
-	}
 }
 
 // handleSessionSendStatus implements `agent-deck session send-status <send-id> --json`.
@@ -316,7 +255,7 @@ func handleSessionSendStatus(profile string, args []string) {
 	}
 	if !rec.Final() {
 		// A worker that died (reboot, kill) is restarted by any status read.
-		_ = spawnSendWorker(profile, rec.SessionID)
+		_ = sendqueue.SpawnWorker(profile, rec.SessionID)
 	}
 	out.Success(fmt.Sprintf("%s: %s %s", rec.SendID, rec.State, rec.Reason), recordFields(rec))
 }
@@ -946,7 +885,7 @@ func deliveryFrames(profile string, storage *session.Storage, sessionID string) 
 		return nil
 	}
 	dir := sendQueueDir(storage)
-	kickPendingSendWorkers(profile, dir, sessionID)
+	sendqueue.KickWorkers(profile, dir, sessionID)
 	seen := map[string]string{}
 	first := true
 	return func() []query.RowFrame {

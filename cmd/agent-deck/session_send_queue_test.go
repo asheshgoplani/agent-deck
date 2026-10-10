@@ -205,13 +205,3 @@ func TestSessionSendQueueDeliversThroughWorker(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 }
-
-// TestSpawnSendWorkerRejectsInvalidSessionID: a session id that is not a
-// plain instance id never reaches the worker's argv.
-func TestSpawnSendWorkerRejectsInvalidSessionID(t *testing.T) {
-	for _, id := range []string{"", "-p", "--target=x", "../etc", "a b", "a;rm", "a\nb"} {
-		if err := spawnSendWorker("", id); err == nil {
-			t.Errorf("spawnSendWorker(%q) = nil, want error", id)
-		}
-	}
-}
