@@ -162,7 +162,9 @@ func exitCLI(code int) {
 // parseCLIFlags parses a flag.ContinueOnError FlagSet with the exit codes of
 // flag.ExitOnError (0 for -help, 2 for a bad flag), but exits through exitCLI
 // so the invocation is still recorded. flag.ExitOnError calls os.Exit itself.
+// An explicit help request prints its usage to stdout (routeFlagHelp).
 func parseCLIFlags(fs *flag.FlagSet, args []string) error {
+	routeFlagHelp(fs, args)
 	exitOnFlagError(fs.Parse(args))
 	return nil
 }

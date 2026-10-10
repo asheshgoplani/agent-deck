@@ -19,23 +19,24 @@ func handleMigratePaths(args []string) {
 
 func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate-paths", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(helpOutput(args, stdout, stderr))
 	dryRun := fs.Bool("dry-run", false, "Show what would be copied without writing files")
 	force := fs.Bool("force", false, "Merge legacy into existing XDG locations (per-file conflicts preserve the existing XDG file and are reported)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: agent-deck migrate-paths [--dry-run] [--force]")
-		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Copy legacy ~/.agent-deck files into the XDG config/data/cache layout")
-		fmt.Fprintln(stderr, "and pin the XDG data dir as the active profile store root")
-		fmt.Fprintln(stderr, "(profiles/.active-root). An empty stray XDG profiles/ directory is")
-		fmt.Fprintln(stderr, "set aside as profiles.stray-<timestamp> first. The legacy directory")
-		fmt.Fprintln(stderr, "is left untouched.")
-		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Options:")
-		fmt.Fprintln(stderr, "  --dry-run  Show what would be copied without writing files")
-		fmt.Fprintln(stderr, "  --force    Merge legacy into existing XDG locations. Per-file")
-		fmt.Fprintln(stderr, "             conflicts PRESERVE the existing (newer) XDG file and")
-		fmt.Fprintln(stderr, "             are reported; XDG-only data is never deleted.")
+		w := fs.Output()
+		fmt.Fprintln(w, "Usage: agent-deck migrate-paths [--dry-run] [--force]")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Copy legacy ~/.agent-deck files into the XDG config/data/cache layout")
+		fmt.Fprintln(w, "and pin the XDG data dir as the active profile store root")
+		fmt.Fprintln(w, "(profiles/.active-root). An empty stray XDG profiles/ directory is")
+		fmt.Fprintln(w, "set aside as profiles.stray-<timestamp> first. The legacy directory")
+		fmt.Fprintln(w, "is left untouched.")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Options:")
+		fmt.Fprintln(w, "  --dry-run  Show what would be copied without writing files")
+		fmt.Fprintln(w, "  --force    Merge legacy into existing XDG locations. Per-file")
+		fmt.Fprintln(w, "             conflicts PRESERVE the existing (newer) XDG file and")
+		fmt.Fprintln(w, "             are reported; XDG-only data is never deleted.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

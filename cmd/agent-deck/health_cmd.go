@@ -81,7 +81,7 @@ func untrackedTmuxSessionsForHealth(profile string) []health.UntrackedTmuxSessio
 
 func handleHealth(profile string, args []string) {
 	fs := flag.NewFlagSet("health", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(helpOutput(args, os.Stdout, os.Stderr))
 	jsonOutput := fs.Bool("json", false, "Output runtime health as JSON")
 	since := fs.Duration("since", time.Hour, "History window (positive Go duration, e.g. 30m or 1h)")
 	fs.Usage = func() {

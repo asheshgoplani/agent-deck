@@ -62,7 +62,7 @@ func configuredAccountSlotsForHarness(config *session.UserConfig, harness string
 
 func handleAccounts(args []string) {
 	fs := flag.NewFlagSet("accounts", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(helpOutput(args, os.Stdout, os.Stderr))
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	harness := fs.String("harness", "claude", "Harness family whose slots to list: claude ([profiles.<name>.claude].config_dir) or codex ([profiles.<name>.codex].config_dir)")
 	fs.Usage = func() {

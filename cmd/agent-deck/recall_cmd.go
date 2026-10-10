@@ -311,8 +311,10 @@ func newRecallFlagSet(name string) *flag.FlagSet {
 }
 
 // parseRecallFlags parses args and reports whether the command should go
-// on: false after --help (usage already printed); a bad flag exits 2.
+// on: false after --help (usage already printed on stdout); a bad flag
+// exits 2.
 func parseRecallFlags(fs *flag.FlagSet, args []string) bool {
+	routeFlagHelp(fs, args)
 	err := fs.Parse(normalizeArgs(fs, args))
 	if err == nil {
 		return true

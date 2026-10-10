@@ -187,8 +187,9 @@ build it.
   profile per process.
 - Exit codes: 0 with the receipt, 1 with `Error: <reason>` on stderr.
 - Probe: `session image-upload --help` exits 0 and prints the Go flag
-  usage (`Usage of session image-upload:` with `-name` and `-json`). A
-  core without the command answers `unknown session command`.
+  usage (`Usage of session image-upload:` with `-name` and `-json`) on
+  stdout, with nothing on stderr. A core without the command answers
+  `unknown session command`.
 
 ## Guarded send
 

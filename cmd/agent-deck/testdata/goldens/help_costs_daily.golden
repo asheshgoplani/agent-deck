@@ -1,0 +1,1 @@
+Usage: agent-deck costs daily --json [--days N] (default 30, 1-365)

@@ -1,0 +1,12 @@
+Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]
+Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.
+  -data string
+    	JSON object payload
+  -data-file string
+    	read the JSON payload from this file, or - for stdin
+  -json
+    	print {ok, kind, session_id, cursor} as JSON
+  -kind string
+    	frame kind; must be in the macapp.* namespace
+  -session string
+    	session id the frame is about (default: the current session, $AGENTDECK_INSTANCE_ID)

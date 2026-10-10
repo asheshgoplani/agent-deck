@@ -68,7 +68,7 @@ func cacheClaudeStatusline(profile string, payload []byte) error {
 
 func usageStatusline(profile string, args []string, out, diagnostic io.Writer) int {
 	fs := flag.NewFlagSet("usage statusline", flag.ContinueOnError)
-	fs.SetOutput(diagnostic)
+	fs.SetOutput(helpOutput(args, out, diagnostic))
 	target := fs.String("session", "", "agent-deck session ID or title")
 	_ = fs.Bool("json", false, "print the last statusline record as JSON")
 	if err := fs.Parse(args); err != nil {

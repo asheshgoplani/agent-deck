@@ -90,7 +90,7 @@ func handleEventsFollow(profile string, args []string) {
 	busFlag := fs.String("bus", "events", busFlagHelp)
 	readOnlyFlag := fs.Bool("read-only", false, "observe only: no send-worker recovery, no writer handle, no demand lease (tmux.output frames appear only while another follower asks for them); fails if no writer has created the bus yet")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]")
 		fs.PrintDefaults()
 	}
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
@@ -199,10 +199,11 @@ func handleEventsPublish(profile string, args []string) {
 	dataFile := fs.String("data-file", "", "read the JSON payload from this file, or - for stdin")
 	jsonOut := fs.Bool("json", false, "print {ok, kind, session_id, cursor} as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]")
-		fmt.Fprintln(os.Stderr, "Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]")
+		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.")
 		fs.PrintDefaults()
 	}
+	routeFlagHelp(fs, args)
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
@@ -264,7 +265,7 @@ func handleEventsStats(args []string) {
 	busFlag := fs.String("bus", "events", busFlagHelp)
 	readOnlyFlag := fs.Bool("read-only", false, "read the existing event log without opening a writer; fails if no writer has created the bus yet")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck events stats [--json] [--bus events|comms] [--read-only]")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck events stats [--json] [--bus events|comms] [--read-only]")
 		fs.PrintDefaults()
 	}
 	if err := parseCLIFlags(fs, args); err != nil {

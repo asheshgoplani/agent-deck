@@ -1,0 +1,11 @@
+Usage: agent-deck session send-status <send-id> [--json]
+
+State of a `session send --queue` message: queued, typing, typed, submitted, landed or failed,
+with reason, target_status, attempts, and landed_row_id/landed_at once the text is
+in the transcript (the row id recall timeline/follow use). Exit 0 when found, 2 for an unknown id.
+
+landed is reported only on transcript evidence (a user row, or a queued message absorbed
+into the turn). failed means nothing was typed, so resending is safe. A send whose outcome
+could not be proven settles as typed/submitted (settled: true) and is never typed again.
+  -json
+    	Output as JSON

@@ -11,7 +11,7 @@ import (
 
 func runSessionImageUpload(profile string, args []string, input io.Reader, output io.Writer) error {
 	fs := flag.NewFlagSet("session image-upload", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(helpOutput(args, output, os.Stderr))
 	name := fs.String("name", "", "Attachment filename (png, jpg, gif, webp or pdf)")
 	jsonOutput := fs.Bool("json", false, "Output path and byte count as JSON")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -42,8 +42,9 @@ func runSessionImageUpload(profile string, args []string, input io.Reader, outpu
 
 func handleSessionImageUpload(profile string, args []string) {
 	if err := runSessionImageUpload(profile, args, os.Stdin, os.Stdout); err != nil {
-		// --help already printed the flag usage (the capability probe reads
-		// "Usage of session image-upload:"); it is not an error.
+		// --help already printed the flag usage on stdout (the capability
+		// probe reads "Usage of session image-upload:" there); it is not an
+		// error.
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}

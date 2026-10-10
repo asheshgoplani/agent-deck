@@ -23,7 +23,7 @@ func handleFile(profile string, args []string) {
 }
 
 func runFileBundle(_ string, args []string, out, diagnostics io.Writer) error {
-	if len(args) == 1 && helpRequested(args) {
+	if len(args) == 1 && (helpRequested(args) || args[0] == "help") {
 		fmt.Fprintln(out, fileBundleUsage)
 		return nil
 	}
@@ -31,9 +31,9 @@ func runFileBundle(_ string, args []string, out, diagnostics io.Writer) error {
 		return errors.New(fileBundleUsage)
 	}
 	flags := flag.NewFlagSet("file bundle", flag.ContinueOnError)
-	flags.SetOutput(diagnostics)
+	flags.SetOutput(helpOutput(args[1:], out, diagnostics))
 	sessionID := flags.String("session", "", "session routing context (required)")
-	flags.Usage = func() { fmt.Fprintln(diagnostics, fileBundleUsage) }
+	flags.Usage = func() { fmt.Fprintln(flags.Output(), fileBundleUsage) }
 	if err := flags.Parse(normalizeArgs(flags, args[1:])); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

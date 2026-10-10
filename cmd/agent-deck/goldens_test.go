@@ -287,7 +287,12 @@ func helpSpecs() []goldenSpec {
 		"watcher test", "watcher routes",
 		"agent adopt", "system stats",
 		"costs sync", "costs summary", "costs recompute",
+		"costs daily", "costs sessions", "costs models", "costs groups", "costs budgets",
 		"file bundle",
+		// Probed by clients (the macOS app) for feature detection.
+		"session image-upload", "session send-status", "session queue",
+		"usage statusline", "recall timeline", "recall follow",
+		"events follow", "events publish",
 	}
 
 	all := append(append([]string{}, topLevel...), subcommands...)

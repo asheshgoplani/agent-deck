@@ -1,6 +1,0 @@
-  -all
-    	Teardown all conductors
-  -json
-    	Output as JSON
-  -remove
-    	Remove conductor directories and sessions

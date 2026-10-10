@@ -1,0 +1,5 @@
+Usage of usage statusline:
+  -json
+    	print the last statusline record as JSON
+  -session string
+    	agent-deck session ID or title

@@ -1,0 +1,5 @@
+Usage of session image-upload:
+  -json
+    	Output path and byte count as JSON
+  -name string
+    	Attachment filename (png, jpg, gif, webp or pdf)

@@ -95,6 +95,7 @@ func parseWebCommandOptions(args []string) (webCommandOptions, error) {
 		fmt.Println("configured — an unauthenticated server keeps those routes unavailable.")
 	}
 
+	routeFlagHelp(fs, args)
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return webCommandOptions{}, err
 	}

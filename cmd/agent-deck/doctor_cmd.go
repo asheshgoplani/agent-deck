@@ -18,7 +18,7 @@ import (
 
 func handleDoctor(args []string) {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(helpOutput(args, os.Stdout, os.Stderr))
 	jsonOutput := fs.Bool("json", false, "Output account and runtime health diagnostics as JSON")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck doctor [--json]\n\nReport local runtime health and check named Claude slots configured as [profiles.<name>.claude].config_dir.\nWarn when slots share a directory; missing or unreadable paths remain unknown.\nAccount checks read directory metadata; health reads local samples. Neither verifies live login identities.\nAlso lists untracked tmux sessions (agentdeck_ prefix, not in `list --json`) so you can decide whether to keep or stop them; never stops any itself.")

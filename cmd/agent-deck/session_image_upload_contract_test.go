@@ -11,9 +11,11 @@ import (
 )
 
 // The macOS app feature-detects image upload by probing
-// `session image-upload --help` on the owning host: exit 0 or 1, never an
-// "unknown" command, and the Go flag usage naming -name. An older core must
-// keep answering "unknown session command" so the app leaves the button off.
+// `session image-upload --help` on the owning host: exit 0, never an
+// "unknown" command, and the Go flag usage naming -name. The app reads only
+// stdout on exit 0, so the usage must be there and stderr empty. An older
+// core must keep answering "unknown session command" so the app leaves the
+// button off.
 func TestSessionImageUploadHelpProbeContract(t *testing.T) {
 	home := t.TempDir()
 	stdout, stderr, code := runAgentDeck(t, home, "session", "image-upload", "--help")
@@ -21,12 +23,15 @@ func TestSessionImageUploadHelpProbeContract(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("help probe exit=%d, want 0\n%s", code, combined)
 	}
+	if stderr != "" {
+		t.Fatalf("help probe wrote to stderr (the app reads stdout on exit 0): %q", stderr)
+	}
 	if strings.Contains(strings.ToLower(combined), "unknown") {
 		t.Fatalf("help probe reads as unknown command:\n%s", combined)
 	}
 	for _, want := range []string{"Usage of session image-upload:", "-name", "-json"} {
-		if !strings.Contains(combined, want) {
-			t.Fatalf("help probe lacks %q:\n%s", want, combined)
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("help probe stdout lacks %q:\n%s", want, combined)
 		}
 	}
 	if strings.Contains(combined, "Error:") {

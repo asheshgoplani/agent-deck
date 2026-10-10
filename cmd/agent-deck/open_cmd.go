@@ -48,9 +48,9 @@ func handleOpen(profile string, args []string) {
 
 func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("open", flag.ContinueOnError)
-	fs.SetOutput(errOut)
+	fs.SetOutput(helpOutput(args, out, errOut))
 	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID)")
-	fs.Usage = func() { fmt.Fprintln(errOut, openUsage); fs.PrintDefaults() }
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), openUsage); fs.PrintDefaults() }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

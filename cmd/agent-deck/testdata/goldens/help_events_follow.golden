@@ -1,0 +1,17 @@
+Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]
+  -after uint
+    	resume after this cursor (0 = from the beginning of the retained log)
+  -bus string
+    	which log to read: events (the status bus, default) or comms (the comms ledger, docs/comms.md) (default "events")
+  -json
+    	stream NDJSON frames (always on; kept for CLI symmetry) (default true)
+  -jsonl
+    	stream NDJSON frames (alias for --json) (default true)
+  -kind string
+    	only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)
+  -read-only
+    	observe only: no send-worker recovery, no writer handle, no demand lease (tmux.output frames appear only while another follower asks for them); fails if no writer has created the bus yet
+  -session string
+    	only frames for this session id
+  -since uint
+    	alias for --after
