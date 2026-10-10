@@ -8,7 +8,7 @@
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
 import { Icon, ICONS, Dot, kindSigil } from './icons.js'
-import { menuModelSignal, sidebarRowsSignal, isGroupOpen, toggleGroupOpen, openCreateSessionForGroup, currentGroupPath } from './dataModel.js'
+import { menuModelSignal, sidebarRowsSignal, isGroupOpen, toggleGroupOpen, openCreateSessionForGroup, openRenameGroupDialog, currentGroupPath } from './dataModel.js'
 import {
   selectedIdSignal, selectedGroupSignal, selectSession, selectGroup,
   mutationsEnabledSignal, confirmDialogSignal,
@@ -279,6 +279,14 @@ export function Sidebar() {
               </button>
               <span class="name">${r.group.label}</span>
               <span class="badge">(${r.memberCount})</span>
+              ${mutationsEnabledSignal.value && !r.group.derived && html`
+                <button type="button" class="gact"
+                        data-testid=${`group-rename-${r.path}`}
+                        title="Rename group" aria-label="Rename group"
+                        onClick=${e => { e.stopPropagation(); openRenameGroupDialog(r.path) }}>
+                  <${Icon} d=${ICONS.edit} size=${11}/>
+                </button>
+              `}
             </div>
           `
           : html`

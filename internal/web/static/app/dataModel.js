@@ -8,7 +8,7 @@
 // so the design renders without inventing data. Components that need richer
 // data (e.g. RightRail Usage card) fall back to "no data" placeholders.
 import { computed, effect } from '@preact/signals'
-import { sessionsSignal, sessionCostsSignal, selectedIdSignal, selectedGroupSignal, createSessionDialogSignal, archivedSessionsSignal, mutationsEnabledSignal } from './state.js'
+import { sessionsSignal, sessionCostsSignal, selectedIdSignal, selectedGroupSignal, selectGroup, createSessionDialogSignal, groupNameDialogSignal, archivedSessionsSignal, mutationsEnabledSignal } from './state.js'
 import { sidebarFilterSignal, groupExpandedSignal, statusFiltersSignal } from './uiState.js'
 import { apiFetch } from './api.js'
 
@@ -297,6 +297,13 @@ const pendingGroupWrites = new Map()
 // state for every group they have not touched themselves.
 const localGroupOverrides = new Set()
 
+// The PATCH/DELETE route for one group. Encode per segment: '/' separates
+// real path segments and the handler takes everything after /api/groups/ as
+// the path, so it must survive unescaped.
+export function groupApiUrl(path) {
+  return '/api/groups/' + path.split('/').map(encodeURIComponent).join('/')
+}
+
 // Send the group's latest requested state, one request at a time per path.
 //
 // Collapse is a cheap-looking click on a genuinely expensive write:
@@ -312,9 +319,7 @@ const localGroupOverrides = new Set()
 // whatever they last asked for.
 function flushGroupWrite(path, entry) {
   const sending = entry.desired
-  // Encode per segment: '/' separates real path segments and the handler
-  // splits on it, so it must survive unescaped.
-  const url = '/api/groups/' + path.split('/').map(encodeURIComponent).join('/')
+  const url = groupApiUrl(path)
   let failed = false
   return apiFetch('PATCH', url, { expanded: sending })
     .catch(() => { failed = true })   // apiFetch already toasted
@@ -583,6 +588,35 @@ export function currentGroupPath() {
 // no group context (dialog opens blank, as it always did).
 export function openCreateSessionForGroup(groupPath) {
   createSessionDialogSignal.value = groupCreateDefaults(groupPath)
+}
+
+// The single entry point for opening the rename-group dialog (issue #2555),
+// used by the `r` key on a selected group and the group header's rename
+// button. Mirrors the TUI's `r` on a group row (GroupDialog.ShowRename).
+//
+// Returns false without opening anything on a read-only server, or for a
+// group the snapshot never sent (a client-synthesized placeholder has no
+// server record to PATCH).
+//
+// A rename can move the group to a new path (the server sanitizes the name
+// into the last path segment), so a selection on the old path would point at
+// a group that no longer exists. Follow the path the server reports.
+export function openRenameGroupDialog(groupPath) {
+  if (!groupPath || !mutationsEnabledSignal.value) return false
+  const group = (menuModelSignal.value.groups || []).find(g => g.path === groupPath)
+  if (!group || group.derived) return false
+  groupNameDialogSignal.value = {
+    mode: 'rename',
+    groupPath,
+    currentName: group.name,
+    onSubmit: (resp) => {
+      const newPath = resp && resp.newPath
+      if (newPath && newPath !== groupPath && selectedGroupSignal.peek() === groupPath) {
+        selectGroup(newPath)
+      }
+    },
+  }
+  return true
 }
 
 // Keep collapse state in step with the server. Reads menuModelSignal (which

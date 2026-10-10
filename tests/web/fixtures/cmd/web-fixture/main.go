@@ -680,15 +680,17 @@ func (s *fixtureStore) CreateGroup(name, parentPath string) (string, error) {
 	return path, nil
 }
 
-func (s *fixtureStore) RenameGroup(groupPath, newName string) error {
+// RenameGroup keeps the group at its path (only the display name changes),
+// so it reports that same path back.
+func (s *fixtureStore) RenameGroup(groupPath, newName string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.groups[groupPath]
 	if !ok {
-		return fmt.Errorf("group %q not found", groupPath)
+		return "", fmt.Errorf("group %q not found", groupPath)
 	}
 	g.Name = newName
-	return nil
+	return groupPath, nil
 }
 
 func (s *fixtureStore) SetGroupExpanded(groupPath string, expanded bool) error {

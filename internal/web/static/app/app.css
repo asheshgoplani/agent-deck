@@ -204,6 +204,20 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .side-group-head .name { flex: 1; }
 .side-group-head .badge { color: var(--muted); }
 .side-group-head.sel .badge { color: var(--accent); }
+/* Rename action on a group header (issue #2555). Hidden until the row is
+   hovered or selected, like the session row actions, so idle headers stay
+   uncluttered; a tap selects first on touch devices, which reveals it. */
+.side-group-head .gact {
+  display: none; width: 18px; height: 18px;
+  align-items: center; justify-content: center;
+  padding: 0; margin: 0;
+  background: none; border: 0; border-radius: 3px;
+  color: var(--text-dim); cursor: pointer;
+}
+.side-group-head:hover .gact,
+.side-group-head.sel .gact,
+.side-group-head .gact:focus-visible { display: inline-flex; }
+.side-group-head .gact:hover { background: var(--card); color: var(--text); }
 .side-group-head.conductor .name { color: var(--tn-purple); }
 .side-group-head.watcher .name { color: var(--tn-cyan); }
 

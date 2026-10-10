@@ -19,7 +19,7 @@ const BINDINGS = [
   { keys: ['Enter'],           label: 'Open focused session / toggle focused group' },
   { keys: ['Shift', 'Enter'],  label: 'Open focused session in new browser tab' },
   { keys: ['n'],               label: 'New session in the focused group' },
-  { keys: ['r'],               label: 'Rename focused session (TUI-only today)' },
+  { keys: ['r'],               label: 'Rename focused group (session rename is TUI-only today)' },
   { keys: ['Shift', 'D'],      label: 'Close focused session (stop process, keep metadata)' },
   { keys: ['Ctrl', 'Z'],       label: 'Undo last delete (within 30s)' },
   { keys: ['q'],               label: 'Close current modal / overlay' },

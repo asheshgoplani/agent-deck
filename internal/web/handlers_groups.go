@@ -129,7 +129,8 @@ func (s *Server) handleGroupByPath(w http.ResponseWriter, r *http.Request) {
 			resp["expanded"] = *req.Expanded
 		}
 		if req.Name != "" {
-			if err := s.mutator.RenameGroup(groupPath, req.Name); err != nil {
+			newPath, err := s.mutator.RenameGroup(groupPath, req.Name)
+			if err != nil {
 				if isGroupNotFound(err) {
 					writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "group not found")
 					return
@@ -138,6 +139,7 @@ func (s *Server) handleGroupByPath(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			resp["name"] = req.Name
+			resp["newPath"] = newPath
 		}
 		s.notifyMenuChanged()
 		writeJSON(w, http.StatusOK, resp)

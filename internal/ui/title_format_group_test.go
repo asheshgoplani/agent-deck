@@ -36,7 +36,7 @@ func TestTitleFormatWebAndTUIGroupPersistence(t *testing.T) {
 	if err := storage.SaveWithGroups([]*session.Instance{inst}, session.NewGroupTree([]*session.Instance{inst})); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewWebMutator(h).RenameGroup("before", "after"); err != nil {
+	if _, err := NewWebMutator(h).RenameGroup("before", "after"); err != nil {
 		t.Fatal(err)
 	}
 	if got := run("display-message", "-p", "-t", sess.Name, "#{E:set-titles-string}"); got != "after/nested/display" {

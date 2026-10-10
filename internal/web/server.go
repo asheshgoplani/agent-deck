@@ -150,7 +150,11 @@ type SessionMutator interface {
 	// errors (unknown field, invalid value) leave the session unchanged.
 	UpdateSession(sessionID string, updates map[string]string) (updatedFields []string, restartRequired bool, err error)
 	CreateGroup(name, parentPath string) (string, error)
-	RenameGroup(groupPath, newName string) error
+	// RenameGroup renames the group at groupPath and returns the path the
+	// group lives at afterwards. A rename can move the group (and its
+	// subtree) to a new path, so callers that hold the old path, such as a
+	// browser with the group selected, need it to follow along (issue #2555).
+	RenameGroup(groupPath, newName string) (string, error)
 	// MoveSessionToGroup moves a session to another group with the
 	// `agent-deck group move` semantics (see session.GroupTree.
 	// ResolveMoveTargetGroup): "" or "root" is the default group, and a

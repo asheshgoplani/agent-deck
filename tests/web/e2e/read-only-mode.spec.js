@@ -179,6 +179,17 @@ test.describe('read-only mode (webMutations=false)', () => {
     await expect(page.locator('.overlay .dialog')).toHaveCount(0)
   })
 
+  test('group rename is gated: no header button, and r toasts instead of opening the dialog (#2555)', async ({ page }) => {
+    await gotoHydratedReadOnlyApp(page)
+    const head = page.locator('[data-testid="group-head-work"]')
+    await head.hover()
+    await expect(page.locator('[data-testid="group-rename-work"]')).toHaveCount(0)
+    await head.locator('.name').click()
+    await page.keyboard.press('r')
+    await expect(page.locator('.toast', { hasText: 'mutations disabled' })).toBeVisible({ timeout: 2000 })
+    await expect(page.locator('.overlay .dialog')).toHaveCount(0)
+  })
+
   test('command palette omits the "New session" command', async ({ page }) => {
     await gotoHydratedReadOnlyApp(page)
     await page.keyboard.press('Control+k')

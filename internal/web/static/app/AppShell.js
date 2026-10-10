@@ -19,7 +19,7 @@ import { PANES, resolvePane } from './paneRegistry.js'
 import { Icon, ICONS } from './icons.js'
 import {
   menuModelSignal, sidebarRowsSignal, isGroupOpen, toggleGroupOpen,
-  openCreateSessionForGroup, currentGroupPath,
+  openCreateSessionForGroup, openRenameGroupDialog, currentGroupPath,
 } from './dataModel.js'
 import {
   selectedIdSignal, selectedGroupSignal, selectSession, selectGroup, createSessionDialogSignal, confirmDialogSignal,
@@ -423,6 +423,16 @@ export function AppShell() {
         e.preventDefault()
         openCreateSessionForGroup(currentGroupPath())
       } else if (e.key === 'r') {
+        // On a selected group, `r` renames it, like the TUI (issue #2555).
+        // preventDefault keeps the keystroke out of the dialog's autofocused
+        // name field.
+        const g = selectedGroupSignal.value
+        if (g) {
+          e.preventDefault()
+          if (!mutationsEnabledSignal.value) addToast('mutations disabled')
+          else openRenameGroupDialog(g)
+          return
+        }
         // Web has no session-rename API yet (matrix gap); surface the gap
         // honestly instead of silently no-op'ing.
         const s = focusedSession()
