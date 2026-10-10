@@ -82,13 +82,15 @@ func openFollowerBus(name string, readOnly bool) (*events.Bus, error) {
 func handleEventsFollow(profile string, args []string) {
 	fs := flag.NewFlagSet("agent-deck events follow", flag.ContinueOnError)
 	afterFlag := fs.Uint64("after", 0, "resume after this cursor (0 = from the beginning of the retained log)")
+	fs.Uint64Var(afterFlag, "since", 0, "alias for --after")
+	_ = fs.Bool("jsonl", true, "stream NDJSON frames (alias for --json)")
 	_ = fs.Bool("json", true, "stream NDJSON frames (always on; kept for CLI symmetry)")
 	kindFlag := fs.String("kind", "", "only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)")
 	sessionFlag := fs.String("session", "", "only frames for this session id")
 	busFlag := fs.String("bus", "events", busFlagHelp)
 	readOnlyFlag := fs.Bool("read-only", false, "observe only: no send-worker recovery, no writer handle, no demand lease (tmux.output frames appear only while another follower asks for them); fails if no writer has created the bus yet")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]")
+		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]")
 		fs.PrintDefaults()
 	}
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
@@ -198,7 +200,7 @@ func handleEventsPublish(profile string, args []string) {
 	jsonOut := fs.Bool("json", false, "print {ok, kind, session_id, cursor} as JSON")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]")
-		fmt.Fprintln(os.Stderr, "Needs [macapp] plugins = true in config.toml.")
+		fmt.Fprintln(os.Stderr, "Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -212,7 +214,7 @@ func handleEventsPublish(profile string, args []string) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	if cfg, _ := session.LoadUserConfig(); cfg == nil || !cfg.Macapp.Plugins {
+	if cfg, _ := session.LoadUserConfig(); *kind != "macapp.open" && *kind != "macapp.open.ack" && (cfg == nil || !cfg.Macapp.Plugins) {
 		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}

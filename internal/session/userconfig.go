@@ -2115,6 +2115,14 @@ type ClaudeSettings struct {
 	// Default: true (nil = use default true, set false to disable)
 	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
 
+	// StatuslineFeed lets `hooks install` (and the unattended heal) wrap the
+	// Claude statusLine with `agent-deck usage statusline-wrap`, so the core
+	// keeps each session's model, context and 5h/7d record. Set false to
+	// leave every statusLine untouched; `hooks uninstall` still restores one
+	// that was wrapped earlier.
+	// Default: true (nil = use default true, set false to disable)
+	StatuslineFeed *bool `toml:"statusline_feed,omitempty"`
+
 	// AutoResumeSummary auto-presses Enter on Claude's "Resume from summary"
 	// picker that appears after `claude --resume` on long-running sessions
 	// (>~250k tokens). Critical for unattended conductors which would
@@ -2471,6 +2479,15 @@ func (c *ClaudeSettings) GetHooksEnabled() bool {
 		return true
 	}
 	return *c.HooksEnabled
+}
+
+// GetStatuslineFeed returns whether agent-deck may wrap Claude's statusLine,
+// defaulting to true.
+func (c *ClaudeSettings) GetStatuslineFeed() bool {
+	if c.StatuslineFeed == nil {
+		return true
+	}
+	return *c.StatuslineFeed
 }
 
 // GetAutoResumeSummary returns whether the "Resume from summary" picker is
@@ -5919,6 +5936,7 @@ func GetPluginDef(name string) *PluginDef {
 
 // CostsSettings configures cost tracking, budgets, and pricing overrides.
 type CostsSettings struct {
+	Enabled       *bool  `toml:"enabled,omitempty"`
 	Currency      string `toml:"currency,omitempty"`
 	Timezone      string `toml:"timezone,omitempty"`
 	RetentionDays int    `toml:"retention_days,omitzero"`
@@ -5937,8 +5955,25 @@ type CostsSettings struct {
 // ProfileCosts holds per-profile overrides for cost-related settings.
 // Pointer fields use the same fall-through semantics as CostsSettings.
 type ProfileCosts struct {
+	Enabled              *bool   `toml:"enabled,omitempty"`
 	CostLineTemplate     *string `toml:"cost_line_template,omitempty"`
 	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero,omitempty"`
+}
+
+// ResolveCostTrackingEnabled applies profile, global, then default-on settings.
+func ResolveCostTrackingEnabled(cfg *UserConfig, profile string) bool {
+	if cfg == nil {
+		return true
+	}
+	if p, ok := cfg.Profiles[profile]; ok && p.Costs != nil && p.Costs.Enabled != nil {
+		return *p.Costs.Enabled
+	}
+	return cfg.Costs.Enabled == nil || *cfg.Costs.Enabled
+}
+
+func GetCostTrackingEnabled(profile string) bool {
+	cfg, _ := LoadUserConfig()
+	return ResolveCostTrackingEnabled(cfg, GetEffectiveProfile(profile))
 }
 
 // defaultCostLineTemplate is the hardcoded fallback that preserves the

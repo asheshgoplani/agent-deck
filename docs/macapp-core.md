@@ -9,18 +9,24 @@ read-only transcript and pane reads named below.
 
 | Need | Command | Gate | Reference |
 | --- | --- | --- | --- |
-| Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N]` | `[recall] enabled` | docs/recall-timeline.md, "Rows" |
+| Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N]`; older pages with `--before <before_cursor> --limit N` | `[recall] enabled` | docs/recall-timeline.md, "Rows" |
 | Live rows, status strip, send states | `recall follow <session> --after <cursor\|end> --jsonl [--status]` | `[recall] enabled` | same |
 | Status transitions without polling | `events follow --json --kind session.status,session.turn` | `[macapp] status_events` (status owners: TUI, notify daemon) | docs/events.md |
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |
+| Browser reports | `open <file\|url> [--session <id\|title>]`, `file bundle <dir\|file> --session <id>` | built-in | docs/macapp-open.md |
 | Plugin frames | `events publish --kind macapp.<name> --session <id> --data-file -` | `[macapp] plugins` | docs/events.md |
 | Send that is never silently lost | `session send <id> --message-file - --json --queue`, `session send-status <send-id> --json` | none | below |
+| Send that never types into a menu | `session send <id> … --require-input-prompt` (probe `session send --help`) | none | below |
+| Release or cancel a queued send | `session queue list <session> --json`, `session queue release <id> --json`, `session queue cancel <id> --json` | none | below |
 | Images | `session send <id> … --image <path>` | none | below |
+| Image staging (local or remote) | `session image-upload <id> --name <uuid>.<ext> --json` (bytes on stdin) | none | below |
 | Codex identity | `session show <id> --json` → `transcript_path`, `transcript_ids` | none | below |
 | Harness facts | `harness list --json`, `harness status <name> --json` | none | below |
 | Usage limits | `limits --json` | `[macapp] plugins` | below |
 | Preferences | `config get <key> --json`, `config set <key> <value> --json`, `config schema --json` | none | below |
 | Favourites | `session set <id> favorite true\|false`; `favorite` in `list --json` / `session show --json` | none | below |
+| Transcript location in listings | `transcript_path`, `claude_session_id` / `codex_session_id` in `list --json` and `remote sessions <name> --json` | none | docs/remote-recall.md |
+| Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json` | the owner host's own gates | docs/remote-recall.md |
 
 ## Queued send
 
@@ -86,6 +92,63 @@ for a send that is still in flight (after a reboot, say). Finished records
 are pruned after 7 days. Exit codes: 0 queued or sent, 1 delivery failed,
 2 usage error, unknown session, unknown send id or unsupported image.
 
+## Queue control
+
+```
+agent-deck session queue list <session> --json
+{"session_id":"…","queue":[{"id":"01K5…","text_preview":"…","enqueued_at":"…","state":"queued"}]}
+agent-deck session queue release 01K5… --json
+{"id":"01K5…","outcome":"delivered", … the send-status record, with "delivery_evidence" …}
+agent-deck session queue cancel 01K5… --json
+{"id":"01K5…","outcome":"cancelled","state":"cancelled", …}
+```
+
+`session show <id> --json` carries the same `queue` array. Entries are the
+durable queued sends of the session, oldest first, including finished ones
+until they are pruned; `text_preview` is the message with whitespace
+collapsed, at most 120 characters.
+
+`release` and `cancel` never type anything themselves. They file a request
+next to the record (`<send_id>.control`) and the target's worker answers it
+at the typing boundary, under the same per-target lock it holds for every
+delivery, also while it waits on an older entry or sits in a retry backoff.
+The call waits for that answer (3 minutes at most) and exits 0 with one of
+these `outcome` values:
+
+- `delivered`: release typed it and the harness confirmed submission (or
+  the row landed).
+- `unconfirmed`: release typed it but submission was not confirmed; the
+  transcript watch decides, and it is never typed again.
+- `refused`: release typed nothing (`reason` says why: the target is busy
+  and does not take input while busy, it is not running, or the composer
+  refused before typing). The entry stays queued and the worker goes on as
+  before.
+- `cancelled`: removed before any typing began. The record is final
+  (`state: "cancelled"`, attempts unchanged) and is never typed.
+- `already_sent`: the entry had left the queue and its delivering child
+  left evidence (`delivery_evidence`, the child's own `session send --json`
+  result). A call that meets an entry being typed waits for that evidence.
+- `not_found`: no pending entry with that id (unknown, or already failed
+  with nothing typed; `state` and `reason` say which).
+- `unknown`: the outcome could not be proven (a typing entry without child
+  evidence, or no answer before the timeout).
+
+Release goes through the same `session send` child the worker uses, always
+as a guarded send (`--require-input-prompt`, see "Guarded send") without
+the readiness wait; it skips the queue's own wait and backoff. A Codex,
+Pi, shell or unknown target that is busy is refused untyped rather than
+typed into, and so is a target showing a menu or no input prompt. A
+released entry stays guarded on any later attempt.
+Each answer is also a `queue.released` or `queue.cancelled` bus frame, and a
+cancellation is a `session.send` frame with `state: "cancelled"`; the health
+journal records it with `outcome: "cancelled"`.
+
+`remote <name> session queue list|release|cancel` forwards to the remote's
+own queue. A remote whose agent-deck predates the command answers with one
+refusal and nothing is run there: `session queue is unsupported on this
+remote "<name>" …` (under `--json`, `{"error","remote","remote_version"}`),
+exit 1.
+
 ## Images
 
 `--image <path>` (repeatable) copies the file to
@@ -94,8 +157,75 @@ name become dashes; the directory gets a `.gitignore` of `*`) and appends
 `@<copy>` to the message for Claude Code and Gemini CLI, which read `@path`
 from the composer. A queued record's `images` lists the copies. Codex takes images only at launch (`codex -i`), so a
 running Codex session exits 2 with `images not supported for codex in a
-running session`; other harnesses exit 2 too. Only png, jpg, jpeg, gif and
-webp files are accepted. `harness list` reports `images: true|false`.
+running session`; other harnesses exit 2 too. Only png, jpg, jpeg, gif,
+webp and pdf files are accepted. `harness list` reports `images: true|false`.
+
+### Staging an attachment on the owning host
+
+```
+agent-deck session image-upload <id|title> --name <uuid>.png --json < image.png
+agent-deck remote <host> session image-upload <id|title> --name <uuid>.pdf --json < document.pdf
+{"path":"/absolute/path/on/the/owning/host","bytes":123}
+```
+
+The bytes arrive on stdin (over the existing SSH route for a remote) and
+are written to `macapp-uploads/<session id>/<name>` beside the profile's
+state database, resolved by the core itself, never from the SSH user's
+HOME. Pass the returned path to `session send <id> --image <path>` on the
+same host and profile. Clients must use the returned path rather than
+build it.
+
+- Names: a plain file name ending in png, jpg, gif, webp or pdf; no
+  separators, no traversal, no leading dot, at most 200 bytes.
+- Size: 1 byte to 20 MiB; more is refused with an error and nothing is kept.
+- Safety: the directory is 0700 and the file 0600. The file is written to
+  a temporary name and published with an exclusive atomic rename, so an
+  existing target (including a symlink) is refused and never overwritten;
+  a retry with the same name fails. Symlinked upload directories are refused.
+- Cleanup: removing the session (CLI, TUI or web) removes its folder.
+  Opening writable storage prunes uploads older than 7 days, once per
+  profile per process.
+- Exit codes: 0 with the receipt, 1 with `Error: <reason>` on stderr.
+- Probe: `session image-upload --help` exits 0 and prints the Go flag
+  usage (`Usage of session image-upload:` with `-name` and `-json`). A
+  core without the command answers `unknown session command`.
+
+## Guarded send
+
+`session send <id> … --require-input-prompt` refuses rather than type into a
+harness menu (an AskUserQuestion picker, a permission dialog, a trust dialog,
+a Codex picker). It is advertised in `session send --help`; a client probes
+for it there and sends without it on an older core.
+
+Under the per-target send lock the core already holds, the pane is read
+immediately before every tmux keystroke batch: the paste or each fallback
+chunk, every Enter (including retry Enters) and every vim insert key. The
+send always uses the tmux transport, never the messaging socket, because a
+socket write has no keystroke boundary to check at.
+
+- Before anything is typed, an open menu refuses with `delivery: "menu_open"`
+  and a missing or unreadable input prompt with `delivery:
+  "composer_blocked"`. The error text says `no keys typed`; exit 1.
+- Once the body is typed, only a visible menu withholds Enter. A prompt
+  redraw, a wrapped input box or a pane read error does not, so the text is
+  never left typed and unsent on a false alarm. If a real menu opens between
+  the paste and Enter, the result is `delivery: "typed_not_submitted"` with
+  the number of typed batches and the pane tail in the error text. Nothing is
+  retyped.
+- A menu needs picker evidence: a picker instruction ("navigate", "Enter to
+  select", "Enter to confirm"), or other menu chrome ("Allow once", "Esc to
+  cancel", …) beside at least two selectable choices. Text inside the live
+  input box, a delivered message that quotes those words and question prose
+  without choices are not a menu. The same rule drives `session show`'s
+  `interactive-menu` substate and the plain send's `menu_open` verdict.
+- `--draft`, `--no-wait`, `--wait` and the queue keep the guard. A queued
+  send records `require_input_prompt: true`, its worker passes the flag to
+  the child that types it, and a refusal with `no keys typed` goes back to
+  `queued` for a later attempt.
+- `remote <name> session send … --require-input-prompt` first reads the
+  remote's `session send --help`; a remote that does not advertise the flag
+  is refused locally with `--require-input-prompt unsupported on this remote`
+  and nothing is sent.
 
 ## Codex identity
 
@@ -166,7 +296,11 @@ an unknown name).
 
 ## Limits
 
-`limits --json` (needs `[macapp] plugins = true`):
+`limits --json` (needs `[macapp] plugins = true`; `remote <name> limits
+--json` forwards it read-only and returns the remote's own accounts; a remote
+that predates `limits` exits 1 with `unsupported remote command "limits" on
+remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}`
+under `--json`):
 
 ```json
 { "accounts": [
@@ -187,6 +321,32 @@ rollouts: the same numbers the Codex footer shows. `error` explains an
 account with no windows (`no feed: run agent-deck hooks install`, `no data
 yet`, `no rate-limit frame in recent rollouts`); `stale` marks data older
 than 30 minutes.
+
+## Status line
+
+`usage statusline --session <id|title> --json` prints the last Claude
+status-line record for that session (exit 0), or
+`{"error":"no statusline record"}` with exit 1:
+
+```json
+{ "claude_session_id": "…", "captured_at": "2026-10-01T12:00:00.000Z",
+  "model": {"id": "claude-opus-4-6", "display_name": "Opus 4.6"}, "cwd": "/project",
+  "context_window": {"used_percentage": 37.5, "context_window_size": 200000,
+    "total_input_tokens": 75000, "total_output_tokens": 1234},
+  "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1790860000},
+    "seven_day": {"used_percentage": 48, "resets_at": 1791400000}},
+  "account": "work", "permission_mode": "acceptEdits" }
+```
+
+`account` (the configured Claude account slot the status line ran under) and
+`permission_mode` (from the payload, else the transcript's newest
+`permissionMode`) are omitted when unknown; never guessed.
+
+Each ingest also publishes the same record as a built-in `usage.statusline`
+event (no `[macapp] plugins` needed) whose `session_id` is the agent-deck
+session. `hooks install` wires the feed for the active Claude config and every
+account slot (`usage statusline-wrap`, opt out with `[claude] statusline_feed
+= false`). See [events.md](events.md#claude-statusline-metadata).
 
 ## Config
 

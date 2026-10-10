@@ -214,10 +214,14 @@ func remoteWarning(name string, r Remote) string {
 }
 
 func BudgetWarning(d time.Duration, sessions int, tmuxCalls int64) string {
-	if statusPassSustainedBreach(d) {
+	// Always record both series. Returning on the first breach would freeze
+	// the other tracker's consecutive count on a stale value.
+	durationBreach := statusPassSustainedBreach(d)
+	tmuxBreach := tmuxCallsSustainedBreach(sessions, tmuxCalls)
+	if durationBreach {
 		return "Health: status pass exceeds 250 ms budget"
 	}
-	if tmuxCalls > int64(2*sessions) {
+	if tmuxBreach {
 		return "Health: tmux calls exceed twice the session count"
 	}
 	return ""
@@ -263,12 +267,49 @@ func statusPassSustainedBreach(d time.Duration) bool {
 	return median >= budgetMS
 }
 
-// ResetStatusPassBreachState clears the sustained-breach tracker. Exposed for tests only.
+var tmuxBreach struct {
+	sync.Mutex
+	consecutiveOver int
+}
+
+// tmuxCallsSustainedBreach reports whether the footer should warn that a
+// status pass started more than twice as many tmux commands as it has
+// sessions. One over-budget pass is not enough: Ctrl+Q's detach
+// reconciliation and a refresh-client per attached viewer (including a web
+// terminal) land in the same process-wide window and used to flash the
+// warning for a single sample. Three consecutive breaches show it. Any
+// sample at or under budget, or a pass with no sessions to compare, clears
+// it immediately. A zero session count is not a breach: the ratio is
+// undefined, and the fixed cache probes would otherwise warn forever.
+func tmuxCallsSustainedBreach(sessions int, tmuxCalls int64) bool {
+	over := tmuxCallsOverBudget(sessions, tmuxCalls)
+	tmuxBreach.Lock()
+	defer tmuxBreach.Unlock()
+	if !over {
+		tmuxBreach.consecutiveOver = 0
+		return false
+	}
+	tmuxBreach.consecutiveOver++
+	return tmuxBreach.consecutiveOver >= statusConsecutiveBreach
+}
+
+// tmuxCallsOverBudget is the per-sample tmux budget shared by the footer and
+// the health report: more than twice as many tmux starts as sessions. With no
+// sessions the ratio is undefined, so the sample is not a breach.
+func tmuxCallsOverBudget(sessions int, tmuxCalls int64) bool {
+	return sessions > 0 && tmuxCalls > int64(2*sessions)
+}
+
+// ResetStatusPassBreachState clears the sustained-breach trackers. Exposed for tests only.
 func ResetStatusPassBreachState() {
 	statusBreach.Lock()
-	defer statusBreach.Unlock()
 	statusBreach.recent = nil
 	statusBreach.consecutiveOver = 0
+	statusBreach.Unlock()
+
+	tmuxBreach.Lock()
+	tmuxBreach.consecutiveOver = 0
+	tmuxBreach.Unlock()
 }
 
 // Start samples immediately and once per minute. The returned idempotent stop

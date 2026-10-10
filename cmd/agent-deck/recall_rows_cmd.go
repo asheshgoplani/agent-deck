@@ -233,6 +233,8 @@ func handleRecallTimelineRows(profile string, ref string, f rowsFlags, opts quer
 	var result query.RowsTimeline
 	if t.direct {
 		result, err = query.ReadRows(context.Background(), t.src, opts)
+	} else if opts.Before != "" {
+		err = fmt.Errorf("recall timeline: --before is unsupported for harness %s", t.src.Harness)
 	} else {
 		result.Turns, err = query.TimelineTurnsForSource(context.Background(), t.src.Harness, t.src.Path, t.native)
 		if err == nil && opts.Tail > 0 && len(result.Turns) > opts.Tail {

@@ -19,6 +19,7 @@ Run the same command through `remote lab`. Output, JSON fields, diagnostics and 
 | `session viewers task --json` | `remote lab session viewers task --json` |
 | `session output task` | `remote lab output task` |
 | `session send task --message-file prompt.md` | `remote lab send task --message-file prompt.md` |
+| `session image-upload task --name 0b7d.png --json < shot.png` | `remote lab session image-upload task --name 0b7d.png --json < shot.png` |
 | `add /srv/project --account alice` | `remote lab add /srv/project --account alice` |
 | `launch /srv/project -w repair -b --account alice` | `remote lab launch /srv/project -w repair -b --account alice` |
 | `session start task` | `remote lab session start task` |

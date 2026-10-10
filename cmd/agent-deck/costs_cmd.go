@@ -11,7 +11,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-const costsUsage = "Usage: agent-deck costs <sync|summary|recompute>"
+const costsUsage = "Usage: agent-deck costs <sync|summary|recompute|daily|sessions|models|groups|budgets>"
 
 func handleCosts(profile string, args []string) {
 	if len(args) > 0 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
@@ -24,6 +24,11 @@ func handleCosts(profile string, args []string) {
 	}
 
 	switch args[0] {
+	case "daily", "sessions", "models", "groups", "budgets":
+		if err := runCostsDashboard(profile, args[0], args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			exitCLI(1)
+		}
 	case "sync":
 		if helpRequested(args[1:]) || (len(args) == 2 && args[1] == "help") {
 			fmt.Println("Usage: agent-deck costs sync")
@@ -47,6 +52,10 @@ func handleCosts(profile string, args []string) {
 
 // openCostStore creates a cost store from the profile's database.
 func openCostStore(profile string) (*costs.Store, *session.Storage) {
+	if !session.GetCostTrackingEnabled(profile) {
+		fmt.Fprintln(os.Stderr, "cost tracking is off in this profile")
+		exitCLI(1)
+	}
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to open storage: %v\n", err)

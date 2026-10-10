@@ -196,7 +196,7 @@ func Report(dir string, since time.Duration) (Summary, error) {
 			}
 			sampledFDs = sampledFDs || s.OpenFDs != nil
 			unsupportedFDs = unsupportedFDs || s.OpenFDsSupport == OpenFDsUnsupported
-			if s.Sessions != nil && s.TmuxCalls != nil && *s.TmuxCalls > int64(2*(*s.Sessions)) {
+			if s.Sessions != nil && s.TmuxCalls != nil && tmuxCallsOverBudget(*s.Sessions, *s.TmuxCalls) {
 				add("tmux calls exceed twice the session count")
 			}
 			for name, r := range s.Remotes {

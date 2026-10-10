@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -30,8 +32,12 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		case "session":
 			if len(args) > 1 {
 				switch args[1] {
-				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers", "annotate":
+				case "show", "output", "send", "send-status", "image-upload", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers", "annotate":
 					return append([]string(nil), args...), nil
+				case "queue":
+					if remoteQueueArgs(args) {
+						return append([]string(nil), args...), nil
+					}
 				case "switch", "switch-preview", "switch-account":
 					if err := validateRemoteSwitchArgs(args[1], args[2:]); err != nil {
 						return nil, err
@@ -68,6 +74,17 @@ func remoteCommandArgs(args []string) ([]string, error) {
 					return append([]string(nil), args...), nil
 				}
 			}
+		case "limits":
+			// Read-only: the remote's own accounts and quota cache.
+			if err := validateRemoteLimitsArgs(args[1:]); err != nil {
+				return nil, err
+			}
+			return append([]string(nil), args...), nil
+		case "events":
+			if err := validateRemoteEventsArgs(args[1:]); err != nil {
+				return nil, err
+			}
+			return append([]string(nil), args...), nil
 		case "recall":
 			// Read-only forwards over the remote's own index; the option
 			// set is closed (remoteRecallOptions) so a delivery (--into),
@@ -180,7 +197,7 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	// The recall booleans (phrase, subagents, no-sweep, cards, full, raw,
 	// yes) are listed too, so a forwarded recall verb can never have one
 	// of them mis-shifted as value-taking.
-	boolOptions := " json quiet q no-wait no-tag wait stream draft defer-if-busy assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts run-hooks phrase subagents no-sweep cards full raw yes "
+	boolOptions := " json quiet q no-wait no-tag wait stream draft defer-if-busy require-input-prompt assert-done no-assert-done no-parent inherit-group no-transition-notify title-lock no-title-sync inherit-telegram-env no-identity b new-branch no-channel-link sandbox yolo gemini-yolo attach allow-repo-scripts run-hooks phrase subagents no-sweep cards full raw yes "
 	// Creation booleans come from the same registered parser as capabilities.
 	// Otherwise a new boolean can swallow --message-file as its apparent value.
 	if args[0] == "launch" {
@@ -279,7 +296,17 @@ func runRemoteExec(name string, args []string) (int, error) {
 	}
 	defer closeInput()
 	runner := session.NewSSHRunner(name, rc)
-	interactive, err := preflightRemoteCreationMode(context.Background(), runner, args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if remoteGuardedSend(args) {
+		if err := requireRemoteGuardSupport(ctx, runner, name); err != nil {
+			return 1, err
+		}
+	}
+	if isRemoteReadCapability(args) {
+		return runRemoteRead(ctx, runner, name, input, args)
+	}
+	interactive, err := preflightRemoteCreationMode(ctx, runner, args)
 	if err != nil {
 		return 2, err
 	}
@@ -297,13 +324,13 @@ func runRemoteExec(name string, args []string) (int, error) {
 	var stdout io.Writer = os.Stdout
 	var stderr io.Writer = os.Stderr
 	var capturedOut, capturedErr bytes.Buffer
-	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) || isSessionAnnotateArgs(args) || isRecallArgs(args) {
+	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) || isSessionAnnotateArgs(args) || isRecallArgs(args) || isRemoteLimitsArgs(args) || isSessionQueueArgs(args) {
 		stderr = &capturedErr
 	}
-	if isSessionAnnotateArgs(args) || isRecallArgs(args) {
+	if isSessionAnnotateArgs(args) || isRecallArgs(args) || isRemoteLimitsArgs(args) || isSessionQueueArgs(args) {
 		stdout = &capturedOut
 	}
-	err = runner.RunIO(context.Background(), input, stdout, stderr, args...)
+	err = runner.RunIO(ctx, input, stdout, stderr, args...)
 	var exitErr *exec.ExitError
 	remoteFailed := errors.As(err, &exitErr) && exitErr.ExitCode() > 0
 	if remoteFailed {
@@ -322,6 +349,22 @@ func runRemoteExec(name string, args []string) (int, error) {
 				return 1, nil
 			}
 			return 1, errors.New(remoteRecallUnsupportedMessage(name, remoteVersion, reason))
+		}
+		if remoteLimitsUnsupported(args, exitErr.ExitCode(), capturedOut.String(), capturedErr.String()) {
+			if wantsJSON(args) {
+				remoteVersion, _ := runner.CheckBinary(context.Background())
+				_, _ = os.Stdout.Write(remoteLimitsUnsupportedJSON(name, remoteVersion))
+				return 1, nil
+			}
+			return 1, errors.New(remoteLimitsUnsupportedMessage(name))
+		}
+		if remoteQueueUnsupported(args, exitErr.ExitCode(), capturedErr.String()) {
+			remoteVersion, _ := runner.CheckBinary(context.Background())
+			if wantsJSON(args) {
+				_, _ = os.Stdout.Write(remoteQueueUnsupportedJSON(name, remoteVersion))
+				return 1, nil
+			}
+			return 1, errors.New(remoteQueueUnsupportedMessage(name, remoteVersion))
 		}
 		if remoteAnnotateUnsupported(args, exitErr.ExitCode(), capturedErr.String()) {
 			// Only now is the extra round trip worth it: name the version the
@@ -343,6 +386,34 @@ func runRemoteExec(name string, args []string) (int, error) {
 		return 1, err
 	}
 	return 0, nil
+}
+
+func remoteGuardedSend(args []string) bool {
+	if len(args) < 2 || args[0] != "session" || args[1] != "send" {
+		return false
+	}
+	for _, arg := range args[2:] {
+		if arg == "--require-input-prompt" || strings.HasPrefix(arg, "--require-input-prompt=") {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteSendHelpSupportsGuard(help string) bool {
+	return strings.Contains(help, "-require-input-prompt")
+}
+
+type remoteGuardHelpRunner interface {
+	RunIO(context.Context, io.Reader, io.Writer, io.Writer, ...string) error
+}
+
+func requireRemoteGuardSupport(ctx context.Context, runner remoteGuardHelpRunner, name string) error {
+	var helpOut, helpErr bytes.Buffer
+	if err := runner.RunIO(ctx, nil, &helpOut, &helpErr, "session", "send", "--help"); err != nil || !remoteSendHelpSupportsGuard(helpOut.String()+helpErr.String()) {
+		return fmt.Errorf("--require-input-prompt unsupported on this remote %q", name)
+	}
+	return nil
 }
 
 // The public CLI and TUI negotiate the same owner-host flag catalog. Exact

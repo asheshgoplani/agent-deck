@@ -25,7 +25,7 @@ import (
 
 // remoteRecallVerbs are the read-only recall verbs a remote may be asked
 // to run. Nothing here writes on the remote or opens a controller path.
-var remoteRecallVerbs = map[string]bool{"search": true, "sessions": true, "show": true, "context": true, "export": true, "status": true}
+var remoteRecallVerbs = map[string]bool{"search": true, "sessions": true, "show": true, "context": true, "export": true, "status": true, "timeline": true, "follow": true}
 
 // remoteRecallOptions is the closed option set per verb (true: takes a
 // value), mirroring remoteSwitchOptions: an unknown option is refused
@@ -36,10 +36,12 @@ var remoteRecallOptions = map[string]map[string]bool{
 		"phrase-scan-limit": true, "limit": true, "subagents": false, "phrase": false, "no-sweep": false, "json": false},
 	"sessions": {"harness": true, "profile": true, "project": true, "since": true, "hint": true, "tag": true, "session": true, "limit": true,
 		"subagents": false, "no-sweep": false, "json": false},
-	"show":    {"tier": true, "turns": true, "json": false},
-	"context": {"tier": true, "budget": true, "json": false},
-	"export":  {"since": true, "cards": false, "json": false},
-	"status":  {"json": false},
+	"show":     {"tier": true, "turns": true, "json": false},
+	"context":  {"tier": true, "budget": true, "json": false},
+	"export":   {"since": true, "cards": false, "json": false},
+	"status":   {"json": false},
+	"timeline": {"json": false, "tail": true, "since": true, "before": true, "limit": true, "agent": true, "v1": false},
+	"follow":   {"jsonl": false, "after": true, "status": false, "agent": true, "v1": false},
 }
 
 // validateRemoteRecallArgs checks `recall <verb> ...` before it is
@@ -51,7 +53,7 @@ func validateRemoteRecallArgs(args []string) error {
 	}
 	verb := args[0]
 	if !remoteRecallVerbs[verb] {
-		return fmt.Errorf("unsupported remote command %q; remote recall forwards search, sessions, show, context, export and status only", "recall "+strings.Join(args, " "))
+		return fmt.Errorf("unsupported remote command %q; remote recall forwards search, sessions, show, context, export, status, timeline and follow only", "recall "+strings.Join(args, " "))
 	}
 	rest := args[1:]
 	if len(rest) == 1 && (rest[0] == "--help" || rest[0] == "-h") {

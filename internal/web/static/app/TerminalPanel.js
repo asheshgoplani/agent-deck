@@ -155,7 +155,8 @@ export function TerminalPanel() {
       macOptionClickForcesSelection: true,
       scrollback: 10000,
       theme: {
-        background: '#0a1220',
+        // Match .term-frame so the viewport doesn't look like a tinted patch.
+        background: '#0b0f1a',
         foreground: '#d9e2ec',
         cursor: '#9ecbff',
       },
