@@ -130,6 +130,7 @@ func NewGateHome(opts GateHomeOptions) *GateHome {
 		creatingSessions:          make(map[string]*CreatingSession),
 		lastLogActivity:           make(map[string]time.Time),
 		windowsCollapsed:          make(map[string]bool),
+		parentChildrenCollapsed:   make(map[string]bool),
 		worktreeDirtyCache:        make(map[string]bool),
 		worktreeDirtyCacheTs:      make(map[string]time.Time),
 		lastPersistedStatus:       make(map[string]string),

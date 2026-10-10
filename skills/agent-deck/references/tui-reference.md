@@ -30,8 +30,8 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `Home` / `End` | Jump to first / last item |
 | `gg` | Jump to top |
 | `G` | Recall search (see [Search & Filter](#search--filter)) |
-| `h` / `←` | Collapse group / go to parent |
-| `l` / `→` / `Tab` | Toggle expand/collapse group |
+| `h` / `←` | Collapse group, fold a parent session's child list, or go to parent |
+| `l` / `→` / `Tab` | Toggle expand/collapse group, or a parent session's child list |
 | `1-9` | Jump to Nth root group |
 | `Space` | Jump mode |
 | `Enter` | Attach to session OR toggle group |
@@ -90,7 +90,7 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `W` | Finish worktree — merge + cleanup (**rebindable**) |
 | `w` | Watcher panel (**rebindable**) |
 
-For remote group headers, `Enter`/`Tab` toggles collapse and `h`/Left collapses or moves to the parent. A remote host header shows `v1.15.0 ↑` after its count when the remote runs an older agent-deck than this controller (the version is asked once per hour per remote on the session poll); `u` on that header opens "Update remote <name> from v<old> to v<new>?" and runs the same verified deploy as `agent-deck remote update <name>`. A remote session whose parent (for example its conductor) is in the same remote group is shown one level under it, as local sub-sessions are; with the parent absent it is shown flat. Remote-session reorder keys move only within the current remote group (a child only among its parent's children); the order is saved on the viewing machine, while remote group headers remain name-sorted.
+Local parent rows with sub-sessions (for example a conductor and the sessions it spawned) carry a `▾N`/`▸N` child-fold badge after the row title. `Tab`/`l`/`→` toggles just that child list; `h`/`←` folds it shut, and on an already-folded parent walks to the parent group. Folded parents keep their own row, mirroring a collapsed group header, and the fold state persists per machine alongside the other view preferences.
 
 ### Copy & Text Selection
 

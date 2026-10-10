@@ -459,6 +459,8 @@ type Home struct {
 
 	// Window toggle state — sessions with collapsed window sub-items
 	windowsCollapsed map[string]bool // sessionID -> true if windows hidden
+	// Parent-child fold state (#2631): parent session ID -> child list folded
+	parentChildrenCollapsed map[string]bool
 
 	// Remote tree fold state — headers the user collapsed, keyed by Item.Path
 	// ("remotes/<name>" or "remotes/<name>/<group>"). Remote groups are
@@ -1081,6 +1083,12 @@ type uiState struct {
 	// are synthetic UI rows and have no home there.
 	RemoteGroupsCollapsed []string `json:"remote_groups_collapsed,omitempty"`
 
+	// Folded parent-child lists (#2631), as parent session IDs. Local group
+	// folds live in groupTree (persisted by saveGroupState) and window folds
+	// are session-scoped UI state that is not persisted at all; a parent fold is
+	// a view preference like the remote folds above, so it rides here.
+	ParentChildrenCollapsed []string `json:"parent_children_collapsed,omitempty"`
+
 	// RemoteSessionOrder is the manual order of remote session rows (#1875):
 	// remote -> group path -> session IDs. It rides in ui_state because it is
 	// a view preference of this machine, exactly like the preview mode and
@@ -1380,6 +1388,13 @@ func (h *Home) collapseOrNavUp() {
 	} else if item.Type == session.ItemTypeSession && h.sessionHasWindows(item) && !h.windowsCollapsed[item.Session.ID] {
 		h.windowsCollapsed[item.Session.ID] = true
 		h.rebuildFlatItems()
+	} else if item.Type == session.ItemTypeSession && h.sessionHasChildren(item) && !h.parentChildrenCollapsed[item.Session.ID] {
+		// Fold the child list shut (#2631); an already-folded parent falls
+		// through to the group-collapse branch below, keeping the
+		// collapse-or-parent navigation semantics.
+		h.parentChildrenCollapsed[item.Session.ID] = true
+		h.rebuildFlatItems()
+		_ = h.saveUIStateErr()
 	} else if item.Type == session.ItemTypeSession {
 		h.groupTree.CollapseGroup(item.Path)
 		h.rebuildFlatItems()
@@ -3118,7 +3133,33 @@ func (h *Home) sessionHasWindows(item session.Item) bool {
 	return len(tmux.GetCachedWindows(tmuxSess.Name)) >= 2
 }
 
-// moveCursorToSession moves the cursor to the flat item matching the given session ID.
+// sessionHasChildren reports whether the row's session is a parent with
+// sub-sessions nested under it in its group (#2631). Orphan sub-sessions
+// whose parent lives in another group render top-level and never fold.
+func (h *Home) sessionHasChildren(item session.Item) bool {
+	return h.sessionChildCount(item) > 0
+}
+
+// sessionChildCount counts the sub-sessions nested under a parent row.
+func (h *Home) sessionChildCount(item session.Item) int {
+	if item.Session == nil || h.groupTree == nil {
+		return 0
+	}
+	n := 0
+	for _, group := range h.groupTree.GroupList {
+		if group == nil || group.Path != item.Path {
+			continue
+		}
+		for _, s := range group.Sessions {
+			if s != nil && s.IsSubSession() && s.ParentSessionID == item.Session.ID {
+				n++
+			}
+		}
+		break
+	}
+	return n
+}
+
 func (h *Home) moveCursorToSession(sessionID string) {
 	for i, fi := range h.flatItems {
 		if fi.Type == session.ItemTypeSession && fi.Session != nil && fi.Session.ID == sessionID {
@@ -3322,7 +3363,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	h.jumpMode = false
 	h.jumpBuffer = ""
 
-	allItems := h.groupTree.Flatten()
+	allItems := h.groupTree.FlattenWithParentFolds(h.parentChildrenCollapsed)
 	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
 		allItems = flatSidebarItemsFromTree(h.groupTree)
 	}
@@ -11834,6 +11875,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.windowsCollapsed[sid] = !h.windowsCollapsed[sid]
 				h.rebuildFlatItems()
 				h.moveCursorToSession(sid)
+			} else if item.Type == session.ItemTypeSession && h.sessionHasChildren(item) {
+				// Parent-child fold toggle (#2631). Children win over window
+				// sub-items when a row has both: the fold hides the whole subtree
+				// including any window rows the children would show.
+				sid := item.Session.ID
+				h.parentChildrenCollapsed[sid] = !h.parentChildrenCollapsed[sid]
+				h.rebuildFlatItems()
+				h.moveCursorToSession(sid)
+				_ = h.saveUIStateErr() // view preference; a dropped save self-heals next toggle
 			}
 		}
 		return h, nil
@@ -15274,6 +15324,17 @@ func (h *Home) saveUIStateErr() error {
 		state.RemoteGroupsCollapsed = paths
 	}
 
+	// Parent-child folds (#2631), as parent session IDs.
+	if len(h.parentChildrenCollapsed) > 0 {
+		foldedIDs := make([]string, 0, len(h.parentChildrenCollapsed))
+		for sid, isFolded := range h.parentChildrenCollapsed {
+			if isFolded {
+				foldedIDs = append(foldedIDs, sid)
+			}
+		}
+		sort.Strings(foldedIDs)
+		state.ParentChildrenCollapsed = foldedIDs
+	}
 	// Capture cursor position
 	if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
@@ -15331,6 +15392,15 @@ func (h *Home) loadUIState() {
 	}
 	for _, path := range state.RemoteGroupsCollapsed {
 		h.remoteGroupsCollapsed[path] = true
+	}
+
+	// Parent-child folds (#2631): IDs for sessions that no longer exist are
+	// harmless — a key nobody renders as a parent is never read.
+	if h.parentChildrenCollapsed == nil {
+		h.parentChildrenCollapsed = make(map[string]bool)
+	}
+	for _, sid := range state.ParentChildrenCollapsed {
+		h.parentChildrenCollapsed[sid] = true
 	}
 
 	// Apply preview mode, status filter, and group view mode immediately
@@ -22220,6 +22290,21 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
+	// Parent-child fold badge (#2631): chevron + child count on a parent row,
+	// so a folded subtree is discoverable the same way a collapsed group is.
+	childFoldBadge := ""
+	if h.sessionHasChildren(item) {
+		foldChar := "▾"
+		if h.parentChildrenCollapsed[inst.ID] {
+			foldChar = "▸"
+		}
+		foldStyle := TreeConnectorStyle
+		if selected {
+			foldStyle = TreeConnectorSelStyle
+		}
+		childFoldBadge = foldStyle.Render(fmt.Sprintf(" %s%d", foldChar, h.sessionChildCount(item)))
+	}
+
 	// The session name stays first. A useful pane or saved task description is
 	// the optional dim suffix, including for auto-named quick sessions.
 	// Snapshot form only here: the per-row Instance.mu reads the inst-based
@@ -22240,7 +22325,7 @@ func (h *Home) renderSessionItem(
 	// Include the stored slot in the existing badge/title cell budget. Normal
 	// titles need the same reservation as auto-names so the badge stays visible.
 	reserved := leftGutterWidth + cellWidth(baseIndent) + cellWidth(selectionPrefix) +
-		cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
+		cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) + cellWidth(childFoldBadge) +
 		cellWidth(status) + 1 + cellWidth(tool) +
 		cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
 		cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
@@ -22302,7 +22387,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -22321,6 +22406,7 @@ func (h *Home) renderSessionItem(
 		viewersBadgeText,
 		accountBadge,
 		timestampBadge,
+		childFoldBadge,
 	)
 
 	// Append pane title filling remaining row space (only for the selected item).

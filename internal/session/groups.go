@@ -648,11 +648,24 @@ func (t *GroupTree) ancestorsExpanded(path string, memo map[string]bool) bool {
 }
 
 // Flatten returns a flat list of items for cursor navigation
-func (t *GroupTree) Flatten() []Item {
-	items := []Item{}
+// Flatten emits every item with all parent-child lists expanded — the
+// historical behavior every caller predates #2631 with. Equivalent to
+// FlattenWithParentFolds(nil).
 
-	// Visibility memo shared by every group in this pass (see ancestorsExpanded).
-	// Flatten runs on every render, so it is only allocated when some group is
+func (t *GroupTree) Flatten() []Item {
+	return t.flatten(nil)
+}
+
+// FlattenWithParentFolds is Flatten with parent-child list folds (#2631):
+// a session whose ID is true in foldedParents renders without its
+// sub-sessions. The parent row itself always renders, mirroring how a
+// collapsed group keeps its header while hiding its sessions.
+func (t *GroupTree) FlattenWithParentFolds(foldedParents map[string]bool) []Item {
+	return t.flatten(foldedParents)
+}
+
+func (t *GroupTree) flatten(foldedParents map[string]bool) []Item {
+	items := []Item{}
 	// actually collapsed: with nothing collapsed anywhere, every group is
 	// visible and the ancestor walk is skipped entirely.
 	var visibleMemo map[string]bool
@@ -731,8 +744,18 @@ func (t *GroupTree) Flatten() []Item {
 
 				// Get sub-sessions for this parent
 				subs := subSessionsByParent[sess.ID]
+				// A folded parent (#2631) omits its children but keeps its own row —
+				// mirroring a collapsed group, which hides sessions and keeps the
+				// header. Tree connectors must then describe the visible list, so
+				// the fold zeroes the visual sub count rather than just skipping
+				// emission below.
+				visibleSubs := len(subs)
+				parentFolded := foldedParents != nil && foldedParents[sess.ID]
+				if parentFolded {
+					visibleSubs = 0
+				}
 				// If this session has sub-sessions, it's not the last in group visually
-				isLastInGroup := isLastTopLevel && len(subs) == 0
+				isLastInGroup := isLastTopLevel && visibleSubs == 0
 
 				items = append(items, Item{
 					Type:          ItemTypeSession,
@@ -742,8 +765,11 @@ func (t *GroupTree) Flatten() []Item {
 					IsLastInGroup: isLastInGroup,
 				})
 
-				// Add sub-sessions immediately after parent
+				// Add sub-sessions immediately after parent (skipped when folded)
 				for subIdx, sub := range subs {
+					if parentFolded {
+						break
+					}
 					isLastSub := subIdx == len(subs)-1
 					// Sub-session is last in group if parent was last top-level and this is last sub
 					isSubLastInGroup := isLastTopLevel && isLastSub
