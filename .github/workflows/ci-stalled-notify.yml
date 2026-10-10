@@ -3,10 +3,11 @@ name: CI stalled notify
 # Fork PRs from first-time contributors sit with every workflow at
 # `action_required` until a maintainer clicks "Approve and run". Nothing else
 # surfaces that state; the PR just looks like CI never reported. This workflow
-# listens to the gating workflows, labels the PR `needs-ci` while a gating run
-# on the PR's current head is waiting for approval, posts to the same ntfy
-# topic pr-notify.yml uses, and clears the label only when no gating run on
-# that head is waiting any more. It never comments on the PR.
+# listens to the gating workflows, labels the PR `ci:awaiting-approval` while a
+# gating run on the PR's current head is waiting for approval, posts to the
+# same ntfy topic pr-notify.yml uses, and clears the label only when no gating
+# run on that head is waiting any more. It never comments on the PR. The label
+# is distinct from `needs-ci`, which means the author still has to green CI.
 #
 # Reconciliation rules (decision logic lives in
 # .github/scripts/ci-stalled-notify.cjs, unit tested by
@@ -26,6 +27,7 @@ on:
       - '.github/workflows/ci-stalled-notify.yml'
       - '.github/scripts/ci-stalled-notify.cjs'
       - 'tests/ci/ci-stalled-notify.test.cjs'
+      - 'tests/ci/ci-stalled-notify-workflow.test.sh'
 
 permissions:
   pull-requests: write
@@ -33,7 +35,7 @@ permissions:
   contents: read
 
 env:
-  STALL_LABEL: needs-ci
+  STALL_LABEL: ci:awaiting-approval
   GATING_WORKFLOWS: '["Go tests", "golangci-lint", "CodeQL"]'
 
 jobs:
@@ -42,16 +44,27 @@ jobs:
   selftest:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Unit test the reconciliation logic
         run: node --test tests/ci/ci-stalled-notify.test.cjs
+      - name: Check the workflow event wiring
+        run: bash tests/ci/ci-stalled-notify-workflow.test.sh
 
   stalled:
-    # Only completed events carry a conclusion (action_required included);
-    # a plain `requested` event is a normal run start.
-    if: github.event_name == 'workflow_run' && github.event.action == 'completed'
+    # A run held for "Approve and run" is created already completed with
+    # conclusion action_required and emits only the `requested` event, never
+    # `completed`, so requested events are accepted when they carry that
+    # conclusion; any other requested event is a normal run start. Completed
+    # events still drive label removal. Only runs triggered by pull_request are
+    # reconciled: push and schedule runs have no PR to label.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.action == 'completed' || github.event.workflow_run.conclusion == 'action_required')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       # The script is read from the default branch, never from the PR head.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -92,6 +105,30 @@ jobs:
               return;
             }
 
+            // Create the label once with a meaningful description; addLabels
+            // would otherwise create it bare. A failure here only logs.
+            let labelReady = false;
+            async function ensureLabel() {
+              if (labelReady) return;
+              labelReady = true;
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: label });
+              } catch (err) {
+                if (err.status !== 404) {
+                  core.warning(`Could not look up label ${label}: ${err.message}`);
+                  return;
+                }
+                try {
+                  await github.rest.issues.createLabel({
+                    owner, repo, name: label, color: 'fbca04',
+                    description: 'CI held until a maintainer approves the run',
+                  });
+                } catch (createErr) {
+                  core.warning(`Could not create label ${label}: ${createErr.message}`);
+                }
+              }
+            }
+
             const notify = [];
             for (const number of prs) {
               const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
@@ -115,6 +152,7 @@ jobs:
               core.info(`#${number}: ${decision.action} (${decision.reason})`);
 
               if (decision.action === 'add') {
+                await ensureLabel();
                 await github.rest.issues.addLabels({ owner, repo, issue_number: number, labels: [label] });
                 notify.push({
                   type: 'ci_stalled',
