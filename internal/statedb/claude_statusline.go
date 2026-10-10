@@ -16,6 +16,12 @@ type ClaudeStatusline struct {
 	Cwd             string                   `json:"cwd"`
 	ContextWindow   *ClaudeStatuslineContext `json:"context_window"`
 	RateLimits      *ClaudeStatuslineLimits  `json:"rate_limits"`
+	// Account is the configured Claude account slot whose config dir the
+	// status line ran under; absent when that is not a configured slot.
+	Account string `json:"account,omitempty"`
+	// PermissionMode is Claude's current permission mode (from the payload,
+	// else the transcript's latest permissionMode); absent when unknown.
+	PermissionMode string `json:"permission_mode,omitempty"`
 }
 
 type ClaudeStatuslineModel struct {

@@ -68,6 +68,12 @@ func remoteCommandArgs(args []string) ([]string, error) {
 					return append([]string(nil), args...), nil
 				}
 			}
+		case "limits":
+			// Read-only: the remote's own accounts and quota cache.
+			if err := validateRemoteLimitsArgs(args[1:]); err != nil {
+				return nil, err
+			}
+			return append([]string(nil), args...), nil
 		case "recall":
 			// Read-only forwards over the remote's own index; the option
 			// set is closed (remoteRecallOptions) so a delivery (--into),
@@ -297,10 +303,10 @@ func runRemoteExec(name string, args []string) (int, error) {
 	var stdout io.Writer = os.Stdout
 	var stderr io.Writer = os.Stderr
 	var capturedOut, capturedErr bytes.Buffer
-	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) || isSessionAnnotateArgs(args) || isRecallArgs(args) {
+	if isSessionMetricsArgs(args) || isSessionPrimerArgs(args) || isSessionAnnotateArgs(args) || isRecallArgs(args) || isRemoteLimitsArgs(args) {
 		stderr = &capturedErr
 	}
-	if isSessionAnnotateArgs(args) || isRecallArgs(args) {
+	if isSessionAnnotateArgs(args) || isRecallArgs(args) || isRemoteLimitsArgs(args) {
 		stdout = &capturedOut
 	}
 	err = runner.RunIO(context.Background(), input, stdout, stderr, args...)
@@ -322,6 +328,14 @@ func runRemoteExec(name string, args []string) (int, error) {
 				return 1, nil
 			}
 			return 1, errors.New(remoteRecallUnsupportedMessage(name, remoteVersion, reason))
+		}
+		if remoteLimitsUnsupported(args, exitErr.ExitCode(), capturedOut.String(), capturedErr.String()) {
+			if wantsJSON(args) {
+				remoteVersion, _ := runner.CheckBinary(context.Background())
+				_, _ = os.Stdout.Write(remoteLimitsUnsupportedJSON(name, remoteVersion))
+				return 1, nil
+			}
+			return 1, errors.New(remoteLimitsUnsupportedMessage(name))
 		}
 		if remoteAnnotateUnsupported(args, exitErr.ExitCode(), capturedErr.String()) {
 			// Only now is the extra round trip worth it: name the version the

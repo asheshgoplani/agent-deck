@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -23,6 +26,9 @@ func cacheClaudeStatusline(profile string, payload []byte) error {
 		Cwd           string                           `json:"cwd"`
 		ContextWindow *statedb.ClaudeStatuslineContext `json:"context_window"`
 		RateLimits    *statedb.ClaudeStatuslineLimits  `json:"rate_limits"`
+		// Read for the permission mode only; never persisted.
+		PermissionMode string `json:"permission_mode"`
+		TranscriptPath string `json:"transcript_path"`
 	}
 	if err := json.Unmarshal(payload, &input); err != nil {
 		return fmt.Errorf("decoding statusline record: %w", err)
@@ -33,6 +39,10 @@ func cacheClaudeStatusline(profile string, payload []byte) error {
 	record := statedb.ClaudeStatusline{
 		ClaudeSessionID: input.SessionID, CapturedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 		Model: input.Model, Cwd: input.Cwd, ContextWindow: input.ContextWindow, RateLimits: input.RateLimits,
+		Account: statuslineAccount(profile), PermissionMode: validPermissionMode(input.PermissionMode),
+	}
+	if record.PermissionMode == "" {
+		record.PermissionMode = transcriptPermissionMode(input.TranscriptPath)
 	}
 	ownerProfile, ok, err := statuslineOwnerProfile(profile, input.SessionID)
 	if err != nil || !ok {
@@ -200,4 +210,100 @@ func statuslineHelpRequested(args []string) bool {
 		}
 	}
 	return false
+}
+
+// statuslineAccount names the configured Claude account slot whose config dir
+// the status line ran under: $CLAUDE_CONFIG_DIR when set (agent-deck exports
+// it for a slot's sessions), else ~/.claude. "" when no configured slot uses
+// that dir; the feed profile breaks a tie between slots sharing one dir.
+func statuslineAccount(feedProfile string) string {
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil {
+		return ""
+	}
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".claude")
+	}
+	canonical := func(path string) string {
+		path = session.ExpandPath(path)
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return filepath.Clean(path)
+	}
+	want := canonical(dir)
+	var matches []string
+	for _, slot := range session.ConfiguredClaudeAccountSlots(config) {
+		if slot.ConfigDir != "" && canonical(slot.ConfigDir) == want {
+			if slot.Name == feedProfile {
+				return slot.Name
+			}
+			matches = append(matches, slot.Name)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return ""
+}
+
+// permissionModePattern admits Claude's mode tokens (default, acceptEdits,
+// plan, auto, bypassPermissions, ...) and nothing else.
+var permissionModePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,31}$`)
+
+func validPermissionMode(mode string) string {
+	if permissionModePattern.MatchString(mode) {
+		return mode
+	}
+	return ""
+}
+
+// transcriptPermissionTail bounds how much of the transcript one ingest reads.
+const transcriptPermissionTail = 256 << 10
+
+// transcriptPermissionMode returns the newest permissionMode recorded in the
+// tail of a Claude transcript (user turns and permission-mode records carry
+// it), or "" when the path is not an absolute regular file or none is found.
+func transcriptPermissionMode(path string) string {
+	if path == "" || !filepath.IsAbs(path) {
+		return ""
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	offset := info.Size() - transcriptPermissionTail
+	if offset < 0 {
+		offset = 0
+	}
+	buf := make([]byte, info.Size()-offset)
+	n, err := file.ReadAt(buf, offset)
+	if err != nil && n < len(buf) {
+		return ""
+	}
+	lines := bytes.Split(buf[:n], []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !bytes.Contains(lines[i], []byte(`"permissionMode"`)) {
+			continue
+		}
+		var rec struct {
+			PermissionMode string `json:"permissionMode"`
+		}
+		if json.Unmarshal(lines[i], &rec) == nil {
+			if mode := validPermissionMode(rec.PermissionMode); mode != "" {
+				return mode
+			}
+		}
+	}
+	return ""
 }

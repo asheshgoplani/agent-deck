@@ -166,7 +166,11 @@ an unknown name).
 
 ## Limits
 
-`limits --json` (needs `[macapp] plugins = true`):
+`limits --json` (needs `[macapp] plugins = true`; `remote <name> limits
+--json` forwards it read-only and returns the remote's own accounts; a remote
+that predates `limits` exits 1 with `unsupported remote command "limits" on
+remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}`
+under `--json`):
 
 ```json
 { "accounts": [
@@ -200,8 +204,13 @@ status-line record for that session (exit 0), or
   "context_window": {"used_percentage": 37.5, "context_window_size": 200000,
     "total_input_tokens": 75000, "total_output_tokens": 1234},
   "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1790860000},
-    "seven_day": {"used_percentage": 48, "resets_at": 1791400000}} }
+    "seven_day": {"used_percentage": 48, "resets_at": 1791400000}},
+  "account": "work", "permission_mode": "acceptEdits" }
 ```
+
+`account` (the configured Claude account slot the status line ran under) and
+`permission_mode` (from the payload, else the transcript's newest
+`permissionMode`) are omitted when unknown; never guessed.
 
 Each ingest also publishes the same record as a built-in `usage.statusline`
 event (no `[macapp] plugins` needed) whose `session_id` is the agent-deck

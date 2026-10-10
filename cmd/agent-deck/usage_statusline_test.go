@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -358,4 +359,73 @@ func TestUsageStatuslineOptOutStatus(t *testing.T) {
 	require.Equal(t, 0, code, stderr)
 	require.Contains(t, stdout, "disabled by [claude] statusline_feed = false")
 	require.NotContains(t, stdout, "to wire the usage feed")
+}
+
+// CORE-CHANGES 21: the record names the configured account slot the status
+// line ran under and Claude's permission mode, and omits either when unknown.
+func TestUsageStatuslineAccountAndPermissionMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	workDir := filepath.Join(home, "claude-work")
+	require.NoError(t, os.MkdirAll(workDir, 0o700))
+	writeMacappConfig(t, home, "[profiles.work.claude]\nconfig_dir = '"+workDir+"'\n")
+	const profile = "status-test"
+	storage, err := session.NewStorageWithProfile(profile)
+	require.NoError(t, err)
+	defer storage.Close()
+	require.NoError(t, storage.GetDB().SaveInstance(&statedb.InstanceRow{ID: "deck-id", Title: "My Claude", ProjectPath: "/project", Tool: "claude", CreatedAt: time.Now(), ToolData: json.RawMessage(`{"claude_session_id":"claude-native"}`)}))
+	read := func() map[string]any {
+		t.Helper()
+		result := runUsageCLI(t, home, "", "-p", profile, "usage", "statusline", "--session", "deck-id", "--json")
+		require.Equal(t, 0, result.exitCode, result.stderr)
+		var record map[string]any
+		require.NoError(t, json.Unmarshal([]byte(result.stdout), &record), result.stdout)
+		return record
+	}
+	withMode := func(mode string) string {
+		return strings.Replace(statuslineFixture, `"prompt":"DO-NOT-STORE",`, `"prompt":"DO-NOT-STORE","permission_mode":`+mode+`,`, 1)
+	}
+
+	// The payload's permission_mode, and the slot whose config dir Claude ran
+	// under (the slot's own feed wrapper names it with -p).
+	result := runUsageCLIEnv(t, home, withMode(`"acceptEdits"`), []string{"CLAUDE_CONFIG_DIR=" + workDir}, "-p", "work", "usage", "ingest", "claude")
+	require.Equal(t, 0, result.exitCode, result.stderr)
+	record := read()
+	require.Equal(t, "work", record["account"])
+	require.Equal(t, "acceptEdits", record["permission_mode"])
+	require.Equal(t, "Opus 4.6", record["model"].(map[string]any)["display_name"])
+
+	// A user script without -p still gets the account from CLAUDE_CONFIG_DIR.
+	result = runUsageCLIEnv(t, home, withMode(`"plan"`), []string{"CLAUDE_CONFIG_DIR=" + workDir + "/"}, "-p", profile, "usage", "ingest", "claude")
+	require.Equal(t, 0, result.exitCode, result.stderr)
+	record = read()
+	require.Equal(t, "work", record["account"])
+	require.Equal(t, "plan", record["permission_mode"])
+
+	// No payload mode: the newest permissionMode in the transcript's tail.
+	// The default config (~/.claude) is no configured slot: no account.
+	transcript := filepath.Join(home, "transcript.jsonl")
+	require.NoError(t, os.WriteFile(transcript, []byte(
+		`{"type":"permission-mode","permissionMode":"default","sessionId":"claude-native"}`+"\n"+
+			`{"type":"user","message":{"role":"user","content":"hi"},"permissionMode":"bypassPermissions"}`+"\n"+
+			`{"type":"assistant","message":{"role":"assistant","content":"permissionMode is a word here"}}`+"\n"), 0o600))
+	payload := strings.Replace(statuslineFixture, `"transcript_path":"DO-NOT-STORE"`, `"transcript_path":"`+transcript+`"`, 1)
+	result = runUsageCLIEnv(t, home, payload, nil, "-p", profile, "usage", "ingest", "claude")
+	require.Equal(t, 0, result.exitCode, result.stderr)
+	record = read()
+	require.NotContains(t, record, "account")
+	require.Equal(t, "bypassPermissions", record["permission_mode"])
+	require.NotContains(t, result.stdout+fmt.Sprint(record), transcript)
+
+	// Unknown stays absent: a junk mode, a relative transcript path, and a
+	// config dir no slot uses are never turned into values.
+	result = runUsageCLIEnv(t, home, withMode(`"rm -rf /"`), []string{"CLAUDE_CONFIG_DIR=" + filepath.Join(home, "elsewhere")}, "-p", "work", "usage", "ingest", "claude")
+	require.Equal(t, 0, result.exitCode, result.stderr)
+	record = read()
+	require.NotContains(t, record, "account")
+	require.NotContains(t, record, "permission_mode")
 }

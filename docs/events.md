@@ -174,8 +174,12 @@ or an empty string when it cannot be resolved. The data object contains only
 (`id`, `display_name`), `cwd`, `context_window` (`used_percentage`,
 `context_window_size`, `total_input_tokens`, `total_output_tokens`) and
 `rate_limits` (`five_hour`, `seven_day`, each with `used_percentage` and epoch
-seconds `resets_at`). Unreported objects and numeric fields are null. Prompt
-text, transcript paths, cost data and additional payload keys are not retained.
+seconds `resets_at`). Unreported objects and numeric fields are null. Two
+string fields appear only when known: `account`, the configured Claude account
+slot whose config dir the status line ran under (`$CLAUDE_CONFIG_DIR`, else
+`~/.claude`), and `permission_mode`, the payload's `permission_mode` or else the
+newest `permissionMode` in the last 256 KiB of the transcript. Prompt text,
+transcript paths, cost data and additional payload keys are not retained.
 
 Use `usage statusline --session <id|title> --json` to read the current native
 conversation's last record. Missing or ambiguous records return
