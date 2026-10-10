@@ -558,6 +558,10 @@ type Home struct {
 	// ("" disables it); heartbeatWrittenAt is the last write.
 	heartbeatDir       string
 	heartbeatWrittenAt time.Time
+	// heartbeatFile is what the event loop and the attach worker share
+	// (see heartbeat.go); attachedSince belongs to the worker goroutine.
+	heartbeatFile heartbeatFile
+	attachedSince time.Time
 	// binaryOrphanReason is set while the executable this process started
 	// from is gone or in the Trash: the deck cannot update or restart
 	// itself then, says so in the banner, and both auto paths stay off.
@@ -4072,6 +4076,7 @@ func (h *Home) Init() tea.Cmd {
 	if h.autoUpdateSuppressedReason == "" {
 		if dir, err := agentpaths.CacheDir(); err == nil {
 			h.heartbeatDir = dir
+			h.startAttachedHeartbeat()
 		}
 	}
 
