@@ -8165,7 +8165,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Pick up where the process we were exec'd from left off.
 			if firstLoad {
-				h.applyRestartHandoff()
+				if cmd := h.applyRestartHandoff(); cmd != nil {
+					detectionCmds = append(detectionCmds, cmd)
+				}
 				if cmd := h.telemetryFirstLoad(); cmd != nil {
 					detectionCmds = append(detectionCmds, cmd)
 				}
@@ -8795,6 +8797,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateTimerEnsuredMsg:
 		h.handleUpdateTimerEnsured(msg)
+		return h, nil
+
+	case pathShadowMsg:
+		h.applyPathShadow(msg)
 		return h, nil
 
 	case binaryVersionProbedMsg:

@@ -92,6 +92,9 @@ type updateCheckJSON struct {
 	// RemoteNudges is each configured remote's latest auto_update_remotes
 	// nudge outcome (#2472); omitted when this host never nudged.
 	RemoteNudges []session.RemoteNudgeRecord `json:"remote_nudges,omitempty"`
+	// ShadowedBy lists the older agent-deck copies earlier on PATH than
+	// this executable: shells run those instead. Empty when PATH is clean.
+	ShadowedBy []update.ShadowCopy `json:"shadowed_by"`
 }
 
 func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus, onDisk string, tuis []update.TUIReport, pending []update.PendingAgent, nudges ...session.RemoteNudgeRecord) updateCheckJSON {
@@ -114,6 +117,7 @@ func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettin
 		RunningTUIs:         tuis,
 		PendingLaunchAgents: pending,
 		RemoteNudges:        nudges,
+		ShadowedBy:          []update.ShadowCopy{},
 	}
 }
 
@@ -184,6 +188,10 @@ type unattendedDeps struct {
 	// [updates] auto_update_remotes is on (#2166); it never prompts and
 	// its failures are per-remote, never this run's.
 	sweepRemotes func(latest string)
+	// shadowCheck lists older agent-deck copies that come before the
+	// installed binary on PATH; warned about after an install, never
+	// touched. nil skips the check.
+	shadowCheck func(installed string) []update.ShadowCopy
 }
 
 // runUnattendedUpdate is `agent-deck update --unattended`: no prompts, no
@@ -303,6 +311,9 @@ func runUnattendedUpdate(d unattendedDeps) int {
 
 	fmt.Fprintf(d.out, "✓ Updated to v%s (unattended); running agent-deck processes restart themselves\n", info.LatestVersion)
 	log.Info("unattended_update_done", slog.String("installed", info.LatestVersion))
+	if d.shadowCheck != nil {
+		printPathShadowing(d.out, d.shadowCheck(info.LatestVersion), log)
+	}
 
 	if d.sweepRemotes != nil {
 		d.sweepRemotes(info.LatestVersion)
@@ -353,6 +364,7 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 		drainPending: func() error { return drainPendingLaunchAgents(log) },
 		ensureTimer:  func() (update.TimerEnsureResult, error) { return session.AutoEnsureUpdateTimer(log) },
 		sweepRemotes: remoteFollowUpForTrigger(trigger, log),
+		shadowCheck:  pathShadowCopies,
 	}, closeLog
 }
 
