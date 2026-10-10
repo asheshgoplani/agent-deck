@@ -180,3 +180,61 @@ func TestPollingCloseWithUnreadEvents(t *testing.T) {
 	for range w.Errors {
 	}
 }
+
+// An idle directory must cost the poller O(1) per scan, not one Lstat (and its
+// allocations) per entry: macOS polls the shared hooks directory, which keeps
+// several artifacts for every registered session, four times a second.
+func TestPollingIdleDirectoryScanIsConstant(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 2000; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("session-%04d.json", i)), []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Older than the coarse-timestamp window, as an idle directory is.
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatal(err)
+	}
+	w := newPollingWatcher(time.Hour) // scans run only when the test calls scan
+	defer w.Close()
+	if err := w.Add(dir); err != nil {
+		t.Fatal(err)
+	}
+	allocs := testing.AllocsPerRun(5, func() {
+		if events, errs := w.scan(); len(events) != 0 || len(errs) != 0 {
+			t.Fatalf("idle scan reported events=%v errors=%v", events, errs)
+		}
+	})
+	t.Logf("idle scan of 2000 entries: %.0f allocations", allocs)
+	if allocs > 20 {
+		t.Fatalf("idle scan of 2000 entries made %.0f allocations, want O(1) (at most 20)", allocs)
+	}
+}
+
+// A file system with whole-second timestamps can leave a directory's mtime
+// unchanged by a second change in the same second; a recent whole-second mtime
+// must not hide that change.
+func TestPollingCoarseDirectoryMtimeStillSeesChange(t *testing.T) {
+	dir := t.TempDir()
+	coarse := time.Now().Truncate(time.Second)
+	if err := os.Chtimes(dir, coarse, coarse); err != nil {
+		t.Fatal(err)
+	}
+	w := newPollingWatcher(time.Hour) // scans run only when the test calls scan
+	defer w.Close()
+	if err := w.Add(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "event.json")
+	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dir, coarse, coarse); err != nil {
+		t.Fatal(err)
+	}
+	events, errs := w.scan()
+	if len(errs) != 0 || len(events) != 1 || events[0].Name != path || events[0].Op != fsnotify.Create {
+		t.Fatalf("got events=%v errors=%v, want one Create for %s", events, errs, path)
+	}
+}

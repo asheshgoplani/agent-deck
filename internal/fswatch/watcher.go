@@ -22,11 +22,17 @@ type Watcher struct {
 	Errors chan error
 	native *fsnotify.Watcher
 	mu     sync.Mutex
-	paths  map[string]map[string]os.FileInfo
+	paths  map[string]snapshot
 	closed bool
 	stop   chan struct{}
 	done   chan struct{}
 }
+
+const pollInterval = 250 * time.Millisecond
+
+// forcePolling selects the polling watcher on every platform (fswatchpoll
+// build tag, for tests).
+var forcePolling bool
 
 // NewWatcher uses polling where native directory watches retain per-file fds.
 func NewWatcher() (*Watcher, error) {
@@ -36,8 +42,11 @@ func NewWatcher() (*Watcher, error) {
 func newWatcher(goos string) (*Watcher, error) {
 	switch goos {
 	case "darwin", "freebsd", "openbsd", "netbsd", "dragonfly":
-		return newPollingWatcher(250 * time.Millisecond), nil
+		return newPollingWatcher(pollInterval), nil
 	default:
+		if forcePolling {
+			return newPollingWatcher(pollInterval), nil
+		}
 		native, err := fsnotify.NewWatcher()
 		if err != nil {
 			return nil, err
@@ -49,7 +58,7 @@ func newWatcher(goos string) (*Watcher, error) {
 func newPollingWatcher(interval time.Duration) *Watcher {
 	w := &Watcher{
 		Events: make(chan fsnotify.Event, 64), Errors: make(chan error, 1),
-		paths: make(map[string]map[string]os.FileInfo),
+		paths: make(map[string]snapshot),
 		stop:  make(chan struct{}), done: make(chan struct{}),
 	}
 	go w.poll(interval)
@@ -70,11 +79,11 @@ func (w *Watcher) Add(path string) error {
 	if _, exists := w.paths[path]; exists {
 		return nil
 	}
-	snapshot, err := snapshotPath(path)
+	current, err := snapshotPath(path)
 	if err != nil {
 		return err
 	}
-	w.paths[path] = snapshot
+	w.paths[path] = current
 	return nil
 }
 
@@ -128,20 +137,28 @@ func (w *Watcher) Close() error {
 	return nil
 }
 
+// snapshot is a watched path as last read: its own info and, for a
+// directory, its immediate entries, keyed by full path.
+type snapshot struct {
+	entries map[string]os.FileInfo
+	readAt  time.Time // taken before the path itself was read
+}
+
 // snapshotPath uses Lstat for both the target and its immediate entries. A
 // symlink is observed as a link, never expanded into the target's contents.
-func snapshotPath(path string) (map[string]os.FileInfo, error) {
+func snapshotPath(path string) (snapshot, error) {
+	readAt := time.Now()
 	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, err
+		return snapshot{}, err
 	}
-	snapshot := map[string]os.FileInfo{path: info}
+	current := snapshot{entries: map[string]os.FileInfo{path: info}, readAt: readAt}
 	if !info.IsDir() {
-		return snapshot, nil
+		return current, nil
 	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return nil, err
+		return snapshot{}, err
 	}
 	for _, entry := range entries {
 		child := filepath.Join(path, entry.Name())
@@ -150,25 +167,33 @@ func snapshotPath(path string) (map[string]os.FileInfo, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return snapshot{}, err
 		}
-		snapshot[child] = info
+		current.entries[child] = info
 	}
-	return snapshot, nil
+	return current, nil
 }
+
+// scanShare caps the time spent reading at 1/scanShare of the time between
+// reads: a large directory that keeps changing (hook writes while agents
+// work) is read less often instead of costing a share of a core that grows
+// with its size.
+const scanShare = 25
 
 func (w *Watcher) poll(interval time.Duration) {
 	defer close(w.done)
 	defer close(w.Events)
 	defer close(w.Errors)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-w.stop:
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			start := time.Now()
 			events, errors := w.scan()
+			timer.Reset(max(interval, scanShare*time.Since(start)))
 			for _, err := range errors {
 				select {
 				case w.Errors <- err:
@@ -192,6 +217,9 @@ func (w *Watcher) scan() ([]fsnotify.Event, []error) {
 	var events []fsnotify.Event
 	var errors []error
 	for path, previous := range w.paths {
+		if dirUnchanged(path, previous) {
+			continue
+		}
 		current, err := snapshotPath(path)
 		if os.IsNotExist(err) {
 			events = append(events, fsnotify.Event{Name: path, Op: fsnotify.Remove})
@@ -202,22 +230,48 @@ func (w *Watcher) scan() ([]fsnotify.Event, []error) {
 			errors = append(errors, err)
 			continue
 		}
-		for name, info := range current {
-			old, exists := previous[name]
+		for name, info := range current.entries {
+			old, exists := previous.entries[name]
 			if !exists {
 				events = append(events, fsnotify.Event{Name: name, Op: fsnotify.Create})
 			} else if changed(old, info) {
 				events = append(events, fsnotify.Event{Name: name, Op: fsnotify.Write})
 			}
 		}
-		for name := range previous {
-			if _, exists := current[name]; !exists {
+		for name := range previous.entries {
+			if _, exists := current.entries[name]; !exists {
 				events = append(events, fsnotify.Event{Name: name, Op: fsnotify.Remove})
 			}
 		}
 		w.paths[path] = current
 	}
 	return events, errors
+}
+
+// dirUnchanged reports whether path is still the directory last read with the
+// same mtime, so its entries need no Lstat each: creating, removing or renaming
+// an entry (atomic writers replace files by rename) updates the directory's
+// mtime. An in-place write to an existing entry does not, so it is reported
+// with the directory's next change; watch the file itself to see it at once.
+//
+// File systems stamp times at a coarse granularity (a kernel tick on Linux,
+// whole seconds on some), so a change made right after the last read can
+// keep the same mtime. An mtime is trusted only once the last read came
+// clearly after it; until then the directory is read in full.
+func dirUnchanged(path string, last snapshot) bool {
+	prev := last.entries[path]
+	if prev == nil || !prev.IsDir() {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || changed(prev, info) || !info.ModTime().Equal(prev.ModTime()) {
+		return false
+	}
+	granularity := 100 * time.Millisecond
+	if info.ModTime().Nanosecond() == 0 {
+		granularity = 2 * time.Second // whole-second (or FAT's 2 s) timestamps
+	}
+	return info.ModTime().Add(granularity).Before(last.readAt)
 }
 
 func changed(old, current os.FileInfo) bool {
