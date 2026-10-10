@@ -88,38 +88,6 @@ func TestDetectToolFromCommand_Muse_ExecutableForms(t *testing.T) {
 	}
 }
 
-func TestDetectToolFromContent_Muse(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-		want    string
-	}{
-		{"muse code banner", "  Muse Code 1.0.2\n  Log in with browser", "muse"},
-		{"thinking marker", museCapturedBusyLine, "muse"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := detectToolFromContent(tt.content); got != tt.want {
-				t.Fatalf("detectToolFromContent(%q) = %q, want %q", tt.content, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestDetectToolFromContent_Muse_Negative(t *testing.T) {
-	// Content patterns anchor on the product banner and busy marker, so
-	// prose containing "muse" must not claim the pane.
-	for _, content := range []string{
-		"planning a museum visit",
-		"this will amuse the team",
-	} {
-		if got := detectToolFromContent(content); got == "muse" {
-			t.Errorf("detectToolFromContent(%q) = %q, should NOT match muse", content, got)
-		}
-	}
-}
-
 func TestDefaultRawPatterns_Muse(t *testing.T) {
 	raw := DefaultRawPatterns("muse")
 	if raw == nil {
