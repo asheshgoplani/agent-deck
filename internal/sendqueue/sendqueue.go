@@ -33,6 +33,7 @@ const (
 	StateSubmitted = "submitted" // submission confirmed by the harness
 	StateLanded    = "landed"    // the text is in the transcript (landed_row_id)
 	StateFailed    = "failed"    // gave up; reason says why
+	StateCancelled = "cancelled" // removed by `session queue cancel` before any typing began
 )
 
 // DefaultRetryBudget is how long a send may wait for a busy target.
@@ -100,14 +101,28 @@ type Record struct {
 	// Codex identity is provably unavailable; the worker fails the send once
 	// they persist instead of retrying for the whole budget (#2549).
 	UnavailableRefusals int `json:"unavailable_refusals,omitempty"`
+	// DeliveryEvidence is the delivering child's own `session send --json`
+	// result, kept so `session queue release/cancel` can report what the
+	// harness confirmed instead of a bare state.
+	DeliveryEvidence map[string]interface{} `json:"delivery_evidence,omitempty"`
 }
 
 // Final reports whether the worker is done with the record.
-func (r *Record) Final() bool { return r.State == StateLanded || r.State == StateFailed || r.Settled }
+func (r *Record) Final() bool {
+	return r.State == StateLanded || r.State == StateFailed || r.State == StateCancelled || r.Settled
+}
 
 // ResultPath is where the delivering `session send` child writes its JSON
 // result, so a worker restarted mid-send can still read the outcome.
 func ResultPath(dir, id string) string { return filepath.Join(dir, id+".result") }
+
+// ControlPath is where `session queue release|cancel` asks the target's
+// worker to act on a queued record. It is a file of its own, so a record
+// Save in flight can never erase the request.
+func ControlPath(dir, id string) string { return filepath.Join(dir, id+".control") }
+
+// ControlResultPath is where the worker answers a control request.
+func ControlResultPath(dir, id string) string { return filepath.Join(dir, id+".control-result") }
 
 // Dir is the queue directory of a profile.
 func Dir(profileDir string) string { return filepath.Join(profileDir, "sendqueue") }
@@ -304,6 +319,8 @@ func Prune(dir string, cutoff time.Time) {
 			continue
 		}
 		_ = os.Remove(ResultPath(dir, r.SendID))
+		_ = os.Remove(ControlPath(dir, r.SendID))
+		_ = os.Remove(ControlResultPath(dir, r.SendID))
 		_ = os.Remove(filepath.Join(dir, r.SendID+".message"))
 		_ = os.Remove(filepath.Join(dir, r.SendID+".json"))
 	}

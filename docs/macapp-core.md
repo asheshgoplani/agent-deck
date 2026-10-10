@@ -15,6 +15,7 @@ read-only transcript and pane reads named below.
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |
 | Plugin frames | `events publish --kind macapp.<name> --session <id> --data-file -` | `[macapp] plugins` | docs/events.md |
 | Send that is never silently lost | `session send <id> --message-file - --json --queue`, `session send-status <send-id> --json` | none | below |
+| Release or cancel a queued send | `session queue list <session> --json`, `session queue release <id> --json`, `session queue cancel <id> --json` | none | below |
 | Images | `session send <id> … --image <path>` | none | below |
 | Codex identity | `session show <id> --json` → `transcript_path`, `transcript_ids` | none | below |
 | Harness facts | `harness list --json`, `harness status <name> --json` | none | below |
@@ -85,6 +86,60 @@ line. `send-status`, `events follow` and `recall follow` restart the worker
 for a send that is still in flight (after a reboot, say). Finished records
 are pruned after 7 days. Exit codes: 0 queued or sent, 1 delivery failed,
 2 usage error, unknown session, unknown send id or unsupported image.
+
+## Queue control
+
+```
+agent-deck session queue list <session> --json
+{"session_id":"…","queue":[{"id":"01K5…","text_preview":"…","enqueued_at":"…","state":"queued"}]}
+agent-deck session queue release 01K5… --json
+{"id":"01K5…","outcome":"delivered", … the send-status record, with "delivery_evidence" …}
+agent-deck session queue cancel 01K5… --json
+{"id":"01K5…","outcome":"cancelled","state":"cancelled", …}
+```
+
+`session show <id> --json` carries the same `queue` array. Entries are the
+durable queued sends of the session, oldest first, including finished ones
+until they are pruned; `text_preview` is the message with whitespace
+collapsed, at most 120 characters.
+
+`release` and `cancel` never type anything themselves. They file a request
+next to the record (`<send_id>.control`) and the target's worker answers it
+at the typing boundary, under the same per-target lock it holds for every
+delivery, also while it waits on an older entry or sits in a retry backoff.
+The call waits for that answer (3 minutes at most) and exits 0 with one of
+these `outcome` values:
+
+- `delivered`: release typed it and the harness confirmed submission (or
+  the row landed).
+- `unconfirmed`: release typed it but submission was not confirmed; the
+  transcript watch decides, and it is never typed again.
+- `refused`: release typed nothing (`reason` says why: the target is busy
+  and does not take input while busy, it is not running, or the composer
+  refused before typing). The entry stays queued and the worker goes on as
+  before.
+- `cancelled`: removed before any typing began. The record is final
+  (`state: "cancelled"`, attempts unchanged) and is never typed.
+- `already_sent`: the entry had left the queue and its delivering child
+  left evidence (`delivery_evidence`, the child's own `session send --json`
+  result). A call that meets an entry being typed waits for that evidence.
+- `not_found`: no pending entry with that id (unknown, or already failed
+  with nothing typed; `state` and `reason` say which).
+- `unknown`: the outcome could not be proven (a typing entry without child
+  evidence, or no answer before the timeout).
+
+Release goes through the same `session send` child and guards the worker
+uses; it only skips the queue's own wait and backoff. A Codex, Pi, shell or
+unknown target that is busy is refused untyped rather than typed into.
+Each answer is also a `queue.released` or `queue.cancelled` bus frame, and a
+cancellation is a `session.send` frame with `state: "cancelled"`; the health
+journal records it with `outcome: "cancelled"`.
+
+`remote <name> session queue list|release|cancel` forwards to the remote's
+own queue. A remote whose agent-deck predates the command answers with one
+refusal and nothing is run there: `session queue is unsupported on this
+remote "<name>" …` (under `--json`, `{"error","remote","remote_version"}`),
+exit 1.
 
 ## Images
 

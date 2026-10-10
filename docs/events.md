@@ -34,6 +34,7 @@ trailing spaces).
 | `internal/tmux/pipemanager.go` | tmux `%output`, only while a follower demands it (see below) | `tmux.output` |
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |
 | `internal/watcher/engine.go` | `healthLoop` (health snapshot) | `watcher.health` |
+| `cmd/agent-deck/session_queue_cmd.go` | the queue worker answered `session queue release` or `cancel` | `queue.released`, `queue.cancelled` |
 
 Frame data for the session kinds (`session_id` is the agent-deck session id):
 
@@ -42,6 +43,8 @@ Frame data for the session kinds (`session_id` is the agent-deck session id):
 | `session.status` | `{from, to, tool, tmux_session, substate, changed_at}` (`changed_at` RFC 3339, the frame `ts` is the same instant in ms) |
 | `session.turn` | `{phase: "started"}` or `{phase: "ended", to, duration_ms}` (duration measured by the publishing process; omitted when it did not see the start) |
 | `session.transcript` | `{path, bytes_appended, size}` |
+| `queue.released` | `{id, state, outcome, reason}` (`outcome` as `session queue release --json` reports it) |
+| `queue.cancelled` | `{id, state: "cancelled"}` |
 | `tmux.output` | none: `session_id` is the tmux session name; the frame has no `data` key (never `"data": null`) |
 
 A producer that passes nil data publishes a frame without `data`; a stored

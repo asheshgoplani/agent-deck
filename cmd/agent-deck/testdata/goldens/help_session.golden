@@ -27,6 +27,9 @@ Commands:
   move <id> <path>        Move session to a new path (migrates Claude history)
   send <id> <message>     Send a message to a running session (--queue: never silently lost, see send-status; --image <path>)
   send-status <send-id>   State of a queued send: queued, typed, submitted, landed or failed
+  queue list <session>    List durable queued sends (--json)
+  queue release <id>      Send a queued entry now, with confirmed delivery evidence (--json)
+  queue cancel <id>       Cancel an unsent entry or report its delivery (--json)
   approve <id> [choice]   Resolve a visible Codex approval prompt
   output <id>             Get the last response from a session
   context [id]            Show what is loaded into the agent's context, ranked by cost

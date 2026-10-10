@@ -140,7 +140,8 @@ func ledgerQueuedSend(r *sendqueue.Record, inboxOwned bool) {
 		state = comms.StateLanded
 	case sendqueue.StateTyped:
 		state = comms.StateTyped
-	case sendqueue.StateFailed:
+	case sendqueue.StateFailed, sendqueue.StateCancelled:
+		// Cancelled is not delivered: nothing was typed.
 		state = comms.StateFailed
 	default:
 		return // No final delivery evidence to publish.
@@ -510,6 +511,10 @@ func classifyChild(result map[string]interface{}, code int) (childOutcome, strin
 // sendChild starts the child that types one queued message; tests replace it.
 var sendChild = startChildSend
 
+// sendChildRelease types an entry released by `session queue release`. It is
+// the same guarded child the worker uses; tests replace it.
+var sendChildRelease = startChildSend
+
 // deliverQueued drives one record to landed, failed (only when nothing was
 // typed), or settled typed/submitted.
 func deliverQueued(profile, dir string, rec *sendqueue.Record) {
@@ -541,6 +546,12 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 		reconcileTyping(dir, rec, set)
 	}
 	for rec.State == sendqueue.StateQueued {
+		// session queue release|cancel: the worker answers at the typing
+		// boundary, for this entry and for later ones waiting behind it.
+		if processQueueControl(profile, dir, rec) && rec.State != sendqueue.StateQueued {
+			break
+		}
+		serviceOtherQueueControls(profile, dir, rec.SessionID, rec.SendID)
 		_, instances, _, err := loadSessionData(profile)
 		if err != nil {
 			fail("cannot load sessions: " + err.Error())
@@ -562,7 +573,10 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 				return
 			}
 			_ = set(func(r *sendqueue.Record) { r.TargetStatus = status })
-			time.Sleep(poll)
+			sleepUnlessQueueControl(dir, rec.SessionID, poll)
+			continue
+		}
+		if processQueueControl(profile, dir, rec) {
 			continue
 		}
 		path := session.LiveTranscriptPath(inst, instances)
@@ -586,7 +600,7 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 			if left := time.Until(deadline); !deadline.IsZero() && left < wait {
 				wait = left // one last attempt at the end of the budget
 			}
-			time.Sleep(wait)
+			sleepUnlessQueueControl(dir, rec.SessionID, wait)
 		}
 	}
 	if rec.Final() {
@@ -611,13 +625,18 @@ func typeQueued(profile, dir string, rec *sendqueue.Record, status, path string,
 	_ = os.Remove(result)
 	if err := set(func(r *sendqueue.Record) {
 		r.State, r.Reason, r.ChildPID = sendqueue.StateTyping, "", 0
+		r.DeliveryEvidence = nil // evidence belongs to one attempt
 		r.Attempts++
 		r.TargetStatus, r.TranscriptPath, r.TranscriptFrom = status, path, from
 		r.SentAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}); err != nil {
 		return false
 	}
-	pid, wait, err := sendChild(profile, rec.SessionID, rec.Message, result)
+	child := sendChild
+	if status == queueReleaseStatus {
+		child = sendChildRelease
+	}
+	pid, wait, err := child(profile, rec.SessionID, rec.Message, result)
 	if err != nil {
 		// The child never started, so nothing was typed.
 		_ = set(func(r *sendqueue.Record) {
@@ -639,6 +658,9 @@ func applyChildResult(rec *sendqueue.Record, result map[string]interface{}, code
 	}
 	_ = set(func(r *sendqueue.Record) {
 		r.ChildPID = 0
+		if haveResult && len(result) > 0 {
+			r.DeliveryEvidence = result
+		}
 		if id, _ := result["claude_session_id"].(string); id != "" {
 			r.ClaudeSessionID = id
 		}

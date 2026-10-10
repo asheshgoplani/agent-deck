@@ -431,6 +431,8 @@ Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANC
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
+`session queue list <session> --json` lists those durable queued sends (`id`, `text_preview`, `enqueued_at`, `state`; also the `queue` array of `session show --json`). `session queue release <id> --json` asks the target's worker to send a still queued entry now, and `session queue cancel <id> --json` removes it before any typing. Both report an `outcome`: `delivered`, `unconfirmed`, `refused` (nothing typed), `cancelled`, `already_sent` (with the child's `delivery_evidence`), `not_found` or `unknown`; see docs/macapp-core.md "Queue control". `remote <name> session queue …` forwards to the remote; an older remote answers `session queue is unsupported on this remote`.
+
 ```bash
 git diff | agent-deck session send my-project --message-file -
 agent-deck session send my-project --message-file task.md --wait
