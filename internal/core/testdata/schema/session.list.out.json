@@ -75,6 +75,9 @@
             "type": "string"
           }
         },
+        "claude_session_id": {
+          "type": "string"
+        },
         "codex_session_id": {
           "type": "string"
         },
@@ -174,6 +177,9 @@
           "type": "string"
         },
         "tool": {
+          "type": "string"
+        },
+        "transcript_path": {
           "type": "string"
         },
         "viewers": {

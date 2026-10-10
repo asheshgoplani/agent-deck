@@ -9,7 +9,7 @@ read-only transcript and pane reads named below.
 
 | Need | Command | Gate | Reference |
 | --- | --- | --- | --- |
-| Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N]` | `[recall] enabled` | docs/recall-timeline.md, "Rows" |
+| Conversation rows for live and busy sessions | `recall timeline <session> --json [--since c] [--limit N] [--tail N]`; older pages with `--before <before_cursor> --limit N` | `[recall] enabled` | docs/recall-timeline.md, "Rows" |
 | Live rows, status strip, send states | `recall follow <session> --after <cursor\|end> --jsonl [--status]` | `[recall] enabled` | same |
 | Status transitions without polling | `events follow --json --kind session.status,session.turn` | `[macapp] status_events` (status owners: TUI, notify daemon) | docs/events.md |
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |
@@ -21,6 +21,8 @@ read-only transcript and pane reads named below.
 | Usage limits | `limits --json` | `[macapp] plugins` | below |
 | Preferences | `config get <key> --json`, `config set <key> <value> --json`, `config schema --json` | none | below |
 | Favourites | `session set <id> favorite true\|false`; `favorite` in `list --json` / `session show --json` | none | below |
+| Transcript location in listings | `transcript_path`, `claude_session_id` / `codex_session_id` in `list --json` and `remote sessions <name> --json` | none | docs/remote-recall.md |
+| Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json` | the owner host's own gates | docs/remote-recall.md |
 
 ## Queued send
 

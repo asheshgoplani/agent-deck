@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -30,7 +32,7 @@ func remoteCommandArgs(args []string) ([]string, error) {
 		case "session":
 			if len(args) > 1 {
 				switch args[1] {
-				case "show", "output", "send", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers", "annotate":
+				case "show", "output", "send", "send-status", "start", "stop", "restart", "fork", "archive", "unarchive", "set", "context", "metrics", "viewers", "annotate":
 					return append([]string(nil), args...), nil
 				case "switch", "switch-preview", "switch-account":
 					if err := validateRemoteSwitchArgs(args[1], args[2:]); err != nil {
@@ -68,6 +70,11 @@ func remoteCommandArgs(args []string) ([]string, error) {
 					return append([]string(nil), args...), nil
 				}
 			}
+		case "events":
+			if err := validateRemoteEventsArgs(args[1:]); err != nil {
+				return nil, err
+			}
+			return append([]string(nil), args...), nil
 		case "recall":
 			// Read-only forwards over the remote's own index; the option
 			// set is closed (remoteRecallOptions) so a delivery (--into),
@@ -279,7 +286,12 @@ func runRemoteExec(name string, args []string) (int, error) {
 	}
 	defer closeInput()
 	runner := session.NewSSHRunner(name, rc)
-	interactive, err := preflightRemoteCreationMode(context.Background(), runner, args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if isRemoteReadCapability(args) {
+		return runRemoteRead(ctx, runner, name, input, args)
+	}
+	interactive, err := preflightRemoteCreationMode(ctx, runner, args)
 	if err != nil {
 		return 2, err
 	}
@@ -303,7 +315,7 @@ func runRemoteExec(name string, args []string) (int, error) {
 	if isSessionAnnotateArgs(args) || isRecallArgs(args) {
 		stdout = &capturedOut
 	}
-	err = runner.RunIO(context.Background(), input, stdout, stderr, args...)
+	err = runner.RunIO(ctx, input, stdout, stderr, args...)
 	var exitErr *exec.ExitError
 	remoteFailed := errors.As(err, &exitErr) && exitErr.ExitCode() > 0
 	if remoteFailed {

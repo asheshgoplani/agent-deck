@@ -1,6 +1,7 @@
 Usage: agent-deck list [options]
 
 List all sessions.
+JSON includes transcript_path and native IDs when known; paths belong to the session host.
 ACCOUNT shows the quoted stored account slot, not a resolved account or login identity.
 JSON always includes the raw "account" string, including "" when no slot is stored.
 

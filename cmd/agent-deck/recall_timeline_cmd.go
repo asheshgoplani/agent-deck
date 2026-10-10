@@ -15,11 +15,12 @@ func handleRecallTimeline(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output canonical JSON")
 	rf := registerRowsFlags(fs)
 	since := fs.String("since", "", "Only what changed after this cursor: new rows in turns, changes to earlier rows in updates/removed")
-	limit := fs.Int("limit", 0, "Stop after N rows; through_cursor points there, so --since pages forward")
+	before := fs.String("before", "", "Return older rows before this before_cursor (requires --limit N)")
+	limit := fs.Int("limit", 0, "Maximum older rows with --before; otherwise stop after N new rows and resume with --since")
 	tail := fs.Int("tail", 0, "Only the last N rows, read from the end of the transcript (fast first paint)")
 	agentID := fs.String("agent", "", "One Claude Code sub-agent sidechain by agent id")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json [--since <cursor>] [--limit N] [--tail N] [--agent <id>]")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]")
 		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline --json --transcript <file> --harness claude|codex")
 		fmt.Fprintln(fs.Output(), "       agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)")
 		fmt.Fprintln(fs.Output(), "<session>: deck session id, title or id prefix; a Claude/Codex conversation id; or #n / any id the index knows.")
@@ -34,9 +35,18 @@ func handleRecallTimeline(profile string, args []string) {
 		fs.Usage()
 		exitCLI(2)
 	}
+	opts := query.RowsOptions{Since: *since, Before: *before, Limit: *limit, Tail: *tail, AgentID: *agentID}
+	if err := query.ValidateRowsOptions(opts); err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
+		exitCLI(2)
+	}
+	if *rf.v1 && *before != "" {
+		out.Error("recall timeline: --before is unsupported with --v1", ErrCodeInvalidOperation)
+		exitCLI(2)
+	}
 	if !*rf.v1 {
 		requireRecallEnabled(out)
-		handleRecallTimelineRows(profile, fs.Arg(0), rf, query.RowsOptions{Since: *since, Limit: *limit, Tail: *tail, AgentID: *agentID})
+		handleRecallTimelineRows(profile, fs.Arg(0), rf, opts)
 		return
 	}
 	env := openRecallEnv(profile, out)

@@ -47,7 +47,7 @@ of the background index sweep and meets the two second local append target.
 ## Rows (default, schema `agent-deck.recall.rows/v2`)
 
 ```
-agent-deck recall timeline <session> --json [--since <cursor>] [--limit N] [--tail N] [--agent <id>]
+agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]
 agent-deck recall follow   <session> --after <cursor|end> --jsonl [--status]
 agent-deck recall timeline --json --transcript <file> --harness claude|codex
 ```
@@ -70,6 +70,7 @@ Timeline:
   "source": "native",
   "turns": [ Row, … ],
   "through_cursor": "<opaque>",
+  "before_cursor": "<opaque older-history boundary>",
   "status": { "session_id": "…", "running": true, "session_status": "running", "verb": "Cogitating…", "elapsed_s": 72, … } }
 ```
 
@@ -80,6 +81,24 @@ changed after a cursor: new rows in `turns`, changes to earlier rows in
 `updates` (merge by id) and ids to drop in `removed`. Paging with
 `--limit`/`--since` until the cursor stops moving yields exactly the full
 timeline. `--agent <id>` returns one Claude sub-agent sidechain.
+
+For older history, begin with `--tail N`, then request
+`--before <before_cursor> --limit N`. Each page contains at most N rows in
+source order, exclusively before the first row of the preceding page. The
+cursor preserves boundaries within multi-block native records. An empty page
+has no `before_cursor`, so paging stops. A `through_cursor` can also bootstrap
+an older-history read from that snapshot's end. Appended records do not move
+the historical snapshot; rewritten, truncated or moved sources require resync.
+`--before` requires a positive limit, cannot combine with `--since`, `--tail`,
+`--agent` or `--v1`, and is supported for directly read Claude/Codex transcripts.
+Older cores reject the unknown option, allowing clients to fall back to tail
+pagination. Pages transmit only the requested rows. The native parser still
+uses growing windows through the snapshot end to preserve later tool results
+and queue updates. A first pass retains lightweight row identities and ordering;
+a second pass retains bodies only for the requested page. Memory still grows
+with the number of identities in the window, and backward paging still reparses
+the previously shown suffix. Attached sub-agent children retain their existing
+behavior and can independently contain a large transcript.
 
 Row:
 

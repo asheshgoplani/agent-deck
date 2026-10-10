@@ -75,6 +75,8 @@ type SessionRow struct {
 	SupersededBy      string         `json:"superseded_by,omitempty" doc:"live"`
 	Supersedes        string         `json:"supersedes,omitempty" doc:"live"`
 	CodexSessionID    string         `json:"codex_session_id,omitempty"`
+	ClaudeSessionID   string         `json:"claude_session_id,omitempty"`
+	TranscriptPath    string         `json:"transcript_path,omitempty"`
 	ResolvedCodexHome string         `json:"resolved_codex_home,omitempty"`
 	LastActivityAt    string         `json:"last_activity_at,omitempty" doc:"live"`
 	Viewers           *[]tmux.Viewer `json:"viewers,omitempty" doc:"live; absent when tmux could not be asked"`
@@ -103,9 +105,10 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 	if len(instances) == 0 {
 		return out, nil
 	}
+	transcripts := session.ListedTranscriptPaths(instances)
 	if !in.LiveStatus {
 		for _, inst := range instances {
-			out.Sessions = append(out.Sessions, staticSessionRow(inst, instances, out.Profile))
+			out.Sessions = append(out.Sessions, staticSessionRow(inst, instances, out.Profile, transcripts))
 		}
 		return out, nil
 	}
@@ -116,7 +119,7 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 	tmuxBefore := tmux.SubprocessStarts()
 	refresh, cached := session.CLIStatusCandidates(instances)
 	session.RefreshInstancesForCLIStatus(refresh)
-	out.Sessions = liveSessionRows(ctx, out.Profile, instances, cached)
+	out.Sessions = liveSessionRows(ctx, out.Profile, instances, cached, transcripts)
 	elapsed := time.Since(started)
 	tmuxCalls := tmux.SubprocessStarts() - tmuxBefore
 	health.RecordStatusPass(elapsed, len(instances), tmuxCalls)
@@ -125,7 +128,7 @@ func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) 
 }
 
 // staticSessionRow fills the stored fields only; no tmux or pane access.
-func staticSessionRow(inst *session.Instance, instances []*session.Instance, profile string) SessionRow {
+func staticSessionRow(inst *session.Instance, instances []*session.Instance, profile string, transcripts map[*session.Instance]string) SessionRow {
 	return SessionRow{
 		ID:                inst.ID,
 		ParentSessionID:   inst.ParentSessionID,
@@ -142,13 +145,15 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 		SSHHost:           inst.SSHHost,
 		SSHRemotePath:     inst.SSHRemotePath,
 		CodexSessionID:    inst.CodexSessionID,
+		ClaudeSessionID:   inst.ClaudeSessionID,
+		TranscriptPath:    transcripts[inst],
 		ResolvedCodexHome: inst.ResolvedCodexHome(),
 	}
 }
 
 // liveSessionRows refreshes each session's status and fills every field.
 // Callers warm the status caches first.
-func liveSessionRows(ctx context.Context, profile string, instances []*session.Instance, cached map[*session.Instance]bool) []SessionRow {
+func liveSessionRows(ctx context.Context, profile string, instances []*session.Instance, cached map[*session.Instance]bool, transcripts map[*session.Instance]string) []SessionRow {
 	rows := make([]SessionRow, len(instances))
 	viewers := session.ViewersByTmuxSession(ctx, instances)
 	var pass session.StatusUpdatePass
@@ -163,7 +168,7 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		if !cached[inst] {
 			substate = string(inst.Substate())
 		}
-		row := staticSessionRow(inst, instances, profile)
+		row := staticSessionRow(inst, instances, profile, transcripts)
 		row.StatusSource = "live"
 		if cached[inst] {
 			row.StatusSource = "cached"
@@ -216,9 +221,10 @@ func listAllProfiles(in SessionListIn) (SessionListOut, error) {
 		if !in.IncludeSuperseded {
 			instances = session.VisibleInstances(instances)
 		}
+		transcripts := session.ListedTranscriptPaths(instances)
 		ps := ProfileSessions{Profile: name, Sessions: make([]SessionRow, 0, len(instances))}
 		for _, inst := range instances {
-			ps.Sessions = append(ps.Sessions, staticSessionRow(inst, instances, name))
+			ps.Sessions = append(ps.Sessions, staticSessionRow(inst, instances, name, transcripts))
 		}
 		out.Profiles = append(out.Profiles, ps)
 	}

@@ -73,12 +73,14 @@ func openBusForRead(name string) (*events.Bus, error) {
 func handleEventsFollow(profile string, args []string) {
 	fs := flag.NewFlagSet("agent-deck events follow", flag.ContinueOnError)
 	afterFlag := fs.Uint64("after", 0, "resume after this cursor (0 = from the beginning of the retained log)")
+	fs.Uint64Var(afterFlag, "since", 0, "alias for --after")
+	_ = fs.Bool("jsonl", true, "stream NDJSON frames (alias for --json)")
 	_ = fs.Bool("json", true, "stream NDJSON frames (always on; kept for CLI symmetry)")
 	kindFlag := fs.String("kind", "", "only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)")
 	sessionFlag := fs.String("session", "", "only frames for this session id")
 	busFlag := fs.String("bus", "events", busFlagHelp)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms]")
+		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {

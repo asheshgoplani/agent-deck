@@ -122,6 +122,8 @@ agent-deck ls  # Alias
 
 Both JSON forms always include `account`: the exact stored per-session slot, including an empty string when no slot is explicitly stored. Human tables show the slot in a quoted `ACCOUNT` column, escaping controls. This is stored metadata, not a resolved account or login identity.
 
+`list --json`, `list --all --json` and `remote sessions <name> --json` also carry `transcript_path` and the harness native id (`claude_session_id` or `codex_session_id`) when the core knows them. The path belongs to the host that owns the session. A missing field means unknown: the listing never inspects panes or scans conversation bodies to find it, and an SSH session never resolves a transcript on the controller.
+
 ### remove - Remove session
 
 ```bash
@@ -620,7 +622,7 @@ agent-deck recall export --cards [--since 30d] [--json]
 agent-deck recall import --host <alias> [file|-] [--json]
 agent-deck recall pull <host> [--full] [--json]
 agent-deck recall mcp
-agent-deck remote <host> recall search|sessions|show|context|export|status ...
+agent-deck remote <host> recall search|sessions|show|context|export|status|timeline|follow ...
 ```
 
 The transcript index over every harness on the machine (`docs/recall.md`); every command needs `[recall] enabled = true` and exits 2 otherwise. `<session>` is the `#number` from a listing, a harness conversation id or unique prefix, or an agent-deck session id. The TUI `G` key is the same search over the same index (typing = `search`, the preview = `show`, Enter = `open`). `backfill`/`sweep`/`rebuild` exit 3 while a session of the active profile is `running` or the load is above `max_loadavg` (`--force` overrides) and while another sweep holds the lock. `search` ranks sessions (title/hint/tag hits first, then body hit count, then recency), AND-s terms, keeps identifiers like `SB-412` whole, joins `--hint`/`--tag` against `state.db` live, applies the structural filters before the 5,000-message body ceiling (newest matches first), runs a 150 ms / 32 MB sweep first and reports what it deferred; `--phrase` verifies the literal phrase and reports how many candidates it checked. `open` starts the bound session (any harness, under the profile whose `state.db` holds the link) or re-registers a Claude transcript with `add --resume-session`; an unowned Codex/pi/Gemini/OpenCode/Hermes conversation exits 2 with the `recall show` command to read it. Sweeps read links, hints and tags from every profile's `state.db` and write cost events to the profile that holds the link. Every `sweep` drains `recall/queue.jsonl` (the lines Claude hooks, `session stop`, `worker_done` and the daemon's turn-end edge append) and parses those files first; `status` reports `queued`, `by_harness` and the harness roots. `--json` returns `result` (search: `hits`, `candidates`, `ceiling_hit`, `scanned`, `verified`) plus an `index` note (`swept`, `deferred`, `deferred_bytes`).
@@ -1070,6 +1072,17 @@ Fetches active sessions from all remotes, or from a specific remote if `name` is
 To also see fetch failures in JSON, add `--with-errors` (or the equivalent `--json-envelope`, which implies `--json`): the output becomes `{"sessions": [...], "errors": [{"name", "host", "error"}]}` and the command exits `1` if any remote failed. This envelope is always opt-in, so the plain `--json` shape stays stable for existing scripts.
 
 In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
+
+### remote conversation and status reads
+
+```bash
+agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
+agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
+agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>]
+agent-deck remote <name> session send-status <send-id> --json
+```
+
+Forwards the local read to the owner host and prints its output unchanged (rows v2 snapshots, follow frames, event frames, send-status records), in one SSH round trip on a dedicated channel; one-shot calls never open the persistent remote channel. Flags are checked on the owner host inside that same channel: an owner whose core predates the verb or flag answers exit 1 and, for `--json`/`--jsonl`, one `{error, remote, remote_version}` object whose `error` contains `unsupported remote command`, so clients fall back. Snapshots and send-status have a five minute deadline. A follow streams until the controller's stdin closes or the controller is terminated; the owner host then terminates and reaps its own reader. It never retries: resume with the last processed cursor. See `docs/remote-recall.md`.
 
 ### remote drain
 

@@ -2873,6 +2873,7 @@ func handleList(profile string, args []string) {
 		fmt.Println("Usage: agent-deck list [options]")
 		fmt.Println()
 		fmt.Println("List all sessions.")
+		fmt.Println("JSON includes transcript_path and native IDs when known; paths belong to the session host.")
 		fmt.Println("ACCOUNT shows the quoted stored account slot, not a resolved account or login identity.")
 		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
@@ -3030,6 +3031,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		SupersededBy      string    `json:"superseded_by,omitempty"`
 		Supersedes        string    `json:"supersedes,omitempty"`
 		CodexSessionID    string    `json:"codex_session_id,omitempty"`
+		ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+		TranscriptPath    string    `json:"transcript_path,omitempty"`
 		ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
 		// apply the local recency filter (session.TimeFilterMode) to this
@@ -3047,6 +3050,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
+	transcripts := session.ListedTranscriptPaths(instances)
 	viewers := session.ViewersByTmuxSession(context.Background(), instances)
 	var pass session.StatusUpdatePass
 	for i, inst := range instances {
@@ -3091,6 +3095,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			SupersededBy:      inst.SupersededBy,
 			Supersedes:        inst.Supersedes,
 			CodexSessionID:    inst.CodexSessionID,
+			ClaudeSessionID:   inst.ClaudeSessionID,
+			TranscriptPath:    transcripts[inst],
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 		}
@@ -3146,6 +3152,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 			SSHHost           string    `json:"ssh_host,omitempty"`
 			SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
 			CodexSessionID    string    `json:"codex_session_id,omitempty"`
+			ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+			TranscriptPath    string    `json:"transcript_path,omitempty"`
 			ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		}
 		// Non-nil so an empty result marshals as [] rather than null.
@@ -3163,6 +3171,7 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 			if !includeSuperseded {
 				instances = defaultListInstances(instances)
 			}
+			transcripts := session.ListedTranscriptPaths(instances)
 			for _, inst := range instances {
 				allSessions = append(allSessions, sessionJSON{
 					ID:                inst.ID,
@@ -3179,6 +3188,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 					SSHHost:           inst.SSHHost,
 					SSHRemotePath:     inst.SSHRemotePath,
 					CodexSessionID:    inst.CodexSessionID,
+					ClaudeSessionID:   inst.ClaudeSessionID,
+					TranscriptPath:    transcripts[inst],
 					ResolvedCodexHome: inst.ResolvedCodexHome(),
 				})
 			}

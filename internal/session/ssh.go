@@ -2900,13 +2900,16 @@ func (r *SSHRunner) ForkSession(ctx context.Context, sessionID string) (string, 
 
 // RemoteSessionInfo represents a session from a remote agent-deck instance.
 type RemoteSessionInfo struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Path      string `json:"path"`
-	Group     string `json:"group"`
-	Tool      string `json:"tool"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
+	CodexSessionID  string `json:"codex_session_id,omitempty"`
+	TranscriptPath  string `json:"transcript_path,omitempty"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Path            string `json:"path"`
+	Group           string `json:"group"`
+	Tool            string `json:"tool"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"created_at"`
 
 	// Account is the stored account slot on the remote ("" = default). It
 	// names the remote's own [profiles.<name>] slot; the Edit Session dialog
