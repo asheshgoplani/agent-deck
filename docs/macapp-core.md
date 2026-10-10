@@ -26,7 +26,7 @@ read-only transcript and pane reads named below.
 | Preferences | `config get <key> --json`, `config set <key> <value> --json`, `config schema --json` | none | below |
 | Favourites | `session set <id> favorite true\|false`; `favorite` in `list --json` / `session show --json` | none | below |
 | Transcript location in listings | `transcript_path`, `claude_session_id` / `codex_session_id` in `list --json` and `remote sessions <name> --json` | none | docs/remote-recall.md |
-| Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json` | the owner host's own gates | docs/remote-recall.md |
+| Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json`; a forwarded follow ends (exit 0) when its stdin closes, so hold stdin open | the owner host's own gates | docs/remote-recall.md |
 
 ## Queued send
 
