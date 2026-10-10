@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update
+.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
