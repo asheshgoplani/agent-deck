@@ -316,7 +316,12 @@ under `--json`):
 
 Claude figures come per account slot from the quota cache that
 `agent-deck hooks install` wires (the statusLine ingester), with `resets_at`
-as Claude reported it. Codex figures come per CODEX_HOME from the newest
+as Claude reported it. The active default login (`~/.claude`, or the resolved
+`CLAUDE_CONFIG_DIR`) that no `[profiles.<name>.claude]` slot owns is listed
+too, as `"name": "default"` with `"default": true` (`default-claude-N` when a
+slot is already named `default`), read from the same cache its statusLine
+feed fills; it is never turned into a slot, and a login a slot owns is listed
+once, under the slot. Codex figures come per CODEX_HOME from the newest
 `token_count` frame with `rate_limits` in its five most recently written
 rollouts: the same numbers the Codex footer shows. `error` explains an
 account with no windows (`no feed: run agent-deck hooks install`, `no data
