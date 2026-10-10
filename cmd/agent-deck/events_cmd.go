@@ -181,7 +181,7 @@ func handleEventsPublish(profile string, args []string) {
 	jsonOut := fs.Bool("json", false, "print {ok, kind, session_id, cursor} as JSON")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]")
-		fmt.Fprintln(os.Stderr, "Needs [macapp] plugins = true in config.toml.")
+		fmt.Fprintln(os.Stderr, "Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -195,7 +195,7 @@ func handleEventsPublish(profile string, args []string) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	if cfg, _ := session.LoadUserConfig(); cfg == nil || !cfg.Macapp.Plugins {
+	if cfg, _ := session.LoadUserConfig(); *kind != "macapp.open" && *kind != "macapp.open.ack" && (cfg == nil || !cfg.Macapp.Plugins) {
 		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}

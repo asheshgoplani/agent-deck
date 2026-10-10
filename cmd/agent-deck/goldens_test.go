@@ -256,7 +256,7 @@ func helpSpecs() []goldenSpec {
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
 		"uninstall", "completion", "costs", "config", "inbox", "feedback",
 		"watcher", "openclaw", "system", "mcp-proxy", "hooks", "hook-handler", "codex-notify",
-		"notify-daemon", "run-task",
+		"notify-daemon", "run-task", "open", "file",
 	}
 
 	subcommands := []string{
@@ -287,6 +287,7 @@ func helpSpecs() []goldenSpec {
 		"watcher test", "watcher routes",
 		"agent adopt", "system stats",
 		"costs sync", "costs summary", "costs recompute",
+		"file bundle",
 	}
 
 	all := append(append([]string{}, topLevel...), subcommands...)

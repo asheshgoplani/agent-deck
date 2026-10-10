@@ -28,7 +28,7 @@ _agent_deck_completion() {
         return 0
     fi
     if ((cword == start)); then
-        COMPREPLY=($(compgen -W 'add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek' -- "$cur"))
+        COMPREPLY=($(compgen -W 'add list ls remove rm rename mv status update launch try accounts web debug-dump migrate-paths uninstall run-task feedback telegram-doctor version help completion profile inbox msg session fleet mcp plugin skill group conductor agents agent watcher openclaw oc remote worktree wt open file costs hooks codex-hooks gemini-hooks hermes-hooks cursor-hooks tmux-hooks pi-hooks deepseek' -- "$cur"))
         return 0
     fi
 
@@ -184,6 +184,14 @@ _agent_deck_completion() {
         wt)
             if ((cword == start + 1)); then
                 COMPREPLY=($(compgen -W 'list info cleanup finish trust-hooks' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
+        file)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W bundle -- "$cur"))
                 return 0
             fi
             sub=${words[start+1]}

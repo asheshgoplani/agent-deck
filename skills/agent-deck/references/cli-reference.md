@@ -661,6 +661,24 @@ agent-deck session switch-account "My Project" work
 
 Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
 
+### open - Show a page in the macOS app Browser panel
+
+```bash
+agent-deck open report.html                       # from inside a session
+agent-deck open ./site/ --session "My Project"    # a directory opens its index.html
+agent-deck open https://example.com/dashboard
+```
+
+Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within 3 s, else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
+
+### file bundle - Export a page folder (read-only)
+
+```bash
+agent-deck file bundle /abs/report/index.html --session <id> > report.tar
+```
+
+Streams an uncompressed tar of the folder (a file argument exports its parent folder, so relative assets keep their paths). Capped at 20 MiB including tar overhead; symlinks and special files are refused; nothing is written on the host and no partial archive is emitted on failure.
+
 ## Fleet Recovery Commands
 
 Recovery from a *fleet-wide* session death: every managed pane on the host gone

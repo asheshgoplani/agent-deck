@@ -252,6 +252,8 @@ var completionTree = []completionNode{
 			"finish": {argSession},
 		},
 	},
+	{name: "open"},
+	{name: "file", subs: []string{"bundle"}},
 	{name: "costs", subs: []string{"sync", "summary", "recompute"}},
 	{name: "hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "codex-hooks", subs: []string{"install", "uninstall", "status"}},
