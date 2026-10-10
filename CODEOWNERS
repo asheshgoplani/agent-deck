@@ -10,6 +10,5 @@ go.sum              @asheshgoplani
 .golangci.yml       @asheshgoplani
 SECURITY.md         @asheshgoplani
 CODEOWNERS          @asheshgoplani
-internal/auth/      @asheshgoplani
 internal/tmux/      @asheshgoplani
 internal/session/   @asheshgoplani
