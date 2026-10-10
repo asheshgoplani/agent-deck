@@ -188,6 +188,27 @@ account with no windows (`no feed: run agent-deck hooks install`, `no data
 yet`, `no rate-limit frame in recent rollouts`); `stale` marks data older
 than 30 minutes.
 
+## Status line
+
+`usage statusline --session <id|title> --json` prints the last Claude
+status-line record for that session (exit 0), or
+`{"error":"no statusline record"}` with exit 1:
+
+```json
+{ "claude_session_id": "…", "captured_at": "2026-10-01T12:00:00.000Z",
+  "model": {"id": "claude-opus-4-6", "display_name": "Opus 4.6"}, "cwd": "/project",
+  "context_window": {"used_percentage": 37.5, "context_window_size": 200000,
+    "total_input_tokens": 75000, "total_output_tokens": 1234},
+  "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": 1790860000},
+    "seven_day": {"used_percentage": 48, "resets_at": 1791400000}} }
+```
+
+Each ingest also publishes the same record as a built-in `usage.statusline`
+event (no `[macapp] plugins` needed) whose `session_id` is the agent-deck
+session. `hooks install` wires the feed for the active Claude config and every
+account slot (`usage statusline-wrap`, opt out with `[claude] statusline_feed
+= false`). See [events.md](events.md#claude-statusline-metadata).
+
 ## Config
 
 `config schema --json` lists every settable key: `key`, `section`, `label`,

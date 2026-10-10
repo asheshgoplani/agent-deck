@@ -948,8 +948,44 @@ passed through and your command's output and exit status are forwarded verbatim:
                 "command": "agent-deck usage ingest claude -- your-existing-command"}}
 ```
 
-Only `rate_limits` is kept. The transcript path, cwd, prompt and model in that
-payload are never stored or printed.
+The quota cache keeps its existing `rate_limits` format. The latest statusline
+record also keeps the Claude session ID, capture time, model ID/display name,
+cwd, context percentage/capacity/input/output tokens, and five-hour/seven-day
+limits. Prompt text, transcript paths and all other fields are discarded.
+
+Run `agent-deck hooks install` to wire this automatically. No custom script or
+named account is required: it includes the active Claude config directory and
+configured account directories, deduplicating aliases. The installed
+`usage statusline-wrap` command ingests stdin and then runs your previous command
+with the same stdin, stdout, stderr and exit status. With no previous command it
+prints the model plus any reported context, five-hour and seven-day percentages.
+Repeated installation does not nest wrappers. `agent-deck hooks uninstall`
+restores the previous command and statusline type using a private
+`agent-deck-statusline-backup.json` file beside Claude's settings. Other settings
+and later padding edits are retained. Unsupported or malformed statusline
+settings are left unchanged with a diagnostic. The same installation works on
+remote hosts after their core is upgraded and hooks are installed there.
+
+The notify daemon and the TUI keep the wrapper current. They wire the active
+Claude config only while agent-deck's hooks are installed in it, so
+`hooks uninstall` stays uninstalled. To opt out entirely, set
+
+```toml
+[claude]
+statusline_feed = false
+```
+
+Then no statusLine is wrapped by `hooks install` or the automatic repair, and
+`hooks uninstall` still restores one wrapped earlier.
+
+Read the last record with `agent-deck usage statusline --session <id|title> --json`.
+Each ingest publishes a built-in `usage.statusline` event on the owning session's
+profile bus, without requiring Mac app plugins. Follow it with
+`agent-deck events follow --json --kind usage.statusline`.
+Linked records are pruned with their sessions; unlinked records are capped at
+128 per profile and publish with an empty agent-deck session ID. An unlinked
+record goes to the feed profile or the configured default profile, only when
+that profile already exists; statusline updates never create a profile.
 
 The wrapper never fails closed: whatever goes wrong on agent-deck's side
 (reading or parsing the payload, opening or writing the cache) is a warning on
