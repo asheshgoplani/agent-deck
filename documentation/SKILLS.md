@@ -150,5 +150,5 @@ A skill can start in the pool, prove itself useful, and get promoted to user-lev
 
 ## Related docs
 
-- [CONDUCTOR.md](CONDUCTOR.md): conductors lean heavily on skills for policy and routines.
+- [Conductor guide](../docs/conductor/README.md): conductors lean heavily on skills for policy and routines.
 - [WATCHDOG.md](WATCHDOG.md): the watchdog itself has no skill, but conductors it restarts typically do.
