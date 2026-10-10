@@ -62,7 +62,7 @@
     "tool": "shell",
     "account": "",
     "status": "error",
-    "status_source": "live",
+    "status_source": "cached",
     "tmux_session": "ad-golden-sess-4",
     "profile": "goldens",
     "created_at": "<TIMESTAMP>",

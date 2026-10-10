@@ -2,9 +2,12 @@ package session
 
 import "github.com/asheshgoplani/agent-deck/internal/tmux"
 
-// CLIStatusCandidates avoids probing each stopped session separately. A stopped
-// row with no tmux session in a complete socket listing retains its stored
-// status; an indeterminate listing also retains it, marked as cached.
+var listStatusSessionNames = tmux.ListSessionNamesOnSocket
+
+// CLIStatusCandidates avoids probing each historical session separately. A
+// stopped or error row absent from a complete socket listing retains its stored
+// status. Failed inventory retains stopped history but refreshes error rows,
+// which may still have a live pane.
 func CLIStatusCandidates(instances []*Instance) ([]*Instance, map[*Instance]bool) {
 	refresh := make([]*Instance, 0, len(instances))
 	cached := make(map[*Instance]bool)
@@ -13,7 +16,7 @@ func CLIStatusCandidates(instances []*Instance) ([]*Instance, map[*Instance]bool
 		if inst == nil {
 			continue
 		}
-		if inst.Status != StatusStopped {
+		if inst.Status != StatusStopped && inst.Status != StatusError {
 			refresh = append(refresh, inst)
 			continue
 		}
@@ -25,11 +28,15 @@ func CLIStatusCandidates(instances []*Instance) ([]*Instance, map[*Instance]bool
 		names, ok := bySocket[sess.SocketName]
 		if !ok {
 			var err error
-			names, err = tmux.ListSessionNamesOnSocket(sess.SocketName)
+			names, err = listStatusSessionNames(sess.SocketName)
 			if err != nil {
 				names = nil
 			}
 			bySocket[sess.SocketName] = names
+		}
+		if names == nil && inst.Status == StatusError {
+			refresh = append(refresh, inst)
+			continue
 		}
 		if _, exists := names[sess.Name]; !exists {
 			cached[inst] = true

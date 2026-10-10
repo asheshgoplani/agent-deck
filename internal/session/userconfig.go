@@ -459,7 +459,23 @@ type PerformanceSettings struct {
 	//
 	//	[performance]
 	//	claim_polling = true
-	ClaimPolling *bool `toml:"claim_polling,omitempty"`
+	ClaimPolling          *bool `toml:"claim_polling,omitempty"`
+	StatusIntervalSeconds int   `toml:"status_interval_seconds,omitempty"`
+}
+
+// StatusInterval bounds local TUI sweep frequency while preserving the two-second default.
+func (c *UserConfig) StatusInterval() time.Duration {
+	if c == nil || c.Performance.StatusIntervalSeconds == 0 {
+		return 2 * time.Second
+	}
+	seconds := c.Performance.StatusIntervalSeconds
+	if seconds < 1 {
+		seconds = 1
+	}
+	if seconds > 10 {
+		seconds = 10
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // ClaimPollingEnabled reports whether claim-based polling is enabled.

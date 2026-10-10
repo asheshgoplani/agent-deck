@@ -1080,11 +1080,19 @@ Background-work sharing between concurrent agent-deck instances (e.g. multiple `
 ```toml
 [performance]
 claim_polling = true   # Opt-in: dedupe status polling across concurrent instances
+status_interval_seconds = 2 # Local TUI sweeps, clamped to 1-10 seconds
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `claim_polling` | bool | `false` | When `true`, each session is actively polled (tmux status scan, live pipe attach) by exactly one instance instead of every open instance polling every session redundantly. Instances take ownership of sessions in their `-g` scope via a `session_claims` table in `state.db`, refreshing a heartbeat each sweep; a session with no live claim (owner heartbeat older than 15s, or no claim row at all) is up for grabs by the next instance that sees it in scope. Every 30s the elected primary instance additionally slow-polls **orphaned** sessions — those no scoped instance currently claims — so their statuses and notifications keep working even with no dedicated owner. Claims for sessions no longer present in the `instances` table (deleted, or archived-then-purged) are pruned periodically so the table cannot grow unbounded over a long-lived process. Default `false` preserves today's behavior: every instance polls every session it can see. |
+
+`status_interval_seconds` controls only local TUI status sweeps. Zero/unset uses
+2 seconds; nonzero values are clamped to 1-10 seconds. Immediate refresh requests
+remain immediate, and slow sweeps retain the existing backoff ceiling.
+Remote sessions use the separate `fetchRemoteSessions` path controlled by
+`[ui] remote_session_refresh_secs`; notifier and preview cadences are unchanged.
+The setting is loaded when the TUI starts, not dynamically by active sessions.
 
 ## [core] Section
 
