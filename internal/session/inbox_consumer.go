@@ -363,8 +363,10 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 	}
 
 	now := time.Now().Unix()
+	reads := loadResultReads(parentID)
 	var out []TransitionNotificationEvent
 	dirty := false
+	withdrawn := 0
 	for _, ev := range collapsed {
 		fp := ev.TurnFingerprint
 		if fp == "" {
@@ -375,6 +377,12 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 		}
 		consumed[fp] = now
 		dirty = true
+		if reads.covers(ev) {
+			// The parent already read this result: the notice withdraws
+			// itself (consumed, never shown). See inbox_result_read.go.
+			withdrawn++
+			continue
+		}
 		out = append(out, ev)
 	}
 	if dirty {
@@ -409,6 +417,9 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 	inboxWriteMu.Lock()
 	removeInflightLocked(parentID)
 	inboxWriteMu.Unlock()
+	if withdrawn > 0 {
+		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.RecordsWithdrawn += int64(withdrawn) })
+	}
 	return out, nil
 }
 
@@ -615,15 +626,25 @@ func DrainInboxForParentWhere(parentID string, choose func(pending []TransitionN
 	consumedTurnsMu.Lock()
 	consumed := loadConsumedTurnsLocked(parentID)
 	consumedTurnsMu.Unlock()
-	var pending []TransitionNotificationEvent
+	reads := loadResultReads(parentID)
+	var pending, withdrawn []TransitionNotificationEvent
 	for _, ev := range collapseTurnRetries(staged) {
-		if _, seen := consumed[turnFingerprintOf(ev)]; !seen {
-			pending = append(pending, ev)
+		if _, seen := consumed[turnFingerprintOf(ev)]; seen {
+			continue
 		}
+		if reads.covers(ev) {
+			// Already read by the parent: retired by finalize, never offered.
+			withdrawn = append(withdrawn, ev)
+			continue
+		}
+		pending = append(pending, ev)
 	}
 	take := choose(pending)
-	taken := make(map[string]bool, len(take))
+	taken := make(map[string]bool, len(take)+len(withdrawn))
 	for _, ev := range take {
+		taken[turnFingerprintOf(ev)] = true
+	}
+	for _, ev := range withdrawn {
 		taken[turnFingerprintOf(ev)] = true
 	}
 	inboxWriteMu.Lock()
@@ -639,7 +660,7 @@ func DrainInboxForParentWhere(parentID string, choose func(pending []TransitionN
 		}
 	}
 	inboxWriteMu.Unlock()
-	return finalizeInboxDrain(parentID, take)
+	return finalizeInboxDrain(parentID, append(take, withdrawn...))
 }
 
 func turnFingerprintOf(ev TransitionNotificationEvent) string {

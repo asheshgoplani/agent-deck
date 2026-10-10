@@ -6712,6 +6712,10 @@ func handleSessionOutput(profile string, args []string) {
 		exitCLI(1)
 	}
 	bounded := boundSessionOutputOrExit(out, profile, inst.ID, "response", response.Content, *maxTokens, boundAgentOutput)
+	if !*copyFlag && bounded == response.Content {
+		// Only an unclipped transcript read names the turn it showed.
+		noteResultRead(inst.ID, response.AssistantUUID)
+	}
 
 	// Copy to clipboard mode
 	if *copyFlag {

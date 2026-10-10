@@ -236,6 +236,22 @@ func recordOutputRead(profile string, event outputReadEvent) error {
 	return writeOutputReadLine(f, append(line, '\n'))
 }
 
+// noteResultRead remembers that the calling session was shown target's
+// turn turnUUID (the transcript uuid of the assistant record it read), so
+// the inbox notice for that exact turn withdraws itself
+// (internal/session/inbox_result_read.go). Only a read made from inside
+// another session that names its turn counts; a failure is reported on
+// stderr and never fails the read.
+func noteResultRead(target, turnUUID string) {
+	caller := callerSessionID()
+	if caller == "" || caller == target || turnUUID == "" {
+		return
+	}
+	if err := session.NoteResultRead(caller, target, turnUUID, time.Now()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record result read: %v\n", err)
+	}
+}
+
 type outputReadWriteCloser interface {
 	io.Writer
 	io.Closer
