@@ -63,7 +63,11 @@ func (f *fakeClaude) CapturePaneFresh() (string, error) {
 		f.beforeCapture(f, f.captures)
 	}
 	if f.lateError && len(f.transcript) > 0 && strings.HasPrefix(f.transcript[len(f.transcript)-1], "❯ /") {
-		defer func() { f.transcript = append(f.transcript, "  ⎿  Unknown command: "+strings.TrimPrefix(f.transcript[len(f.transcript)-1], "❯ ")) }()
+		// The error renders after this frame was drawn.
+		cmd := strings.TrimPrefix(f.transcript[len(f.transcript)-1], "❯ ")
+		defer func() {
+			f.transcript = append(f.transcript, "  ⎿  Unknown command: "+cmd)
+		}()
 	}
 	if f.gone {
 		return "", errors.New("can't find pane")
