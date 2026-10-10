@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -23,6 +24,9 @@ type ConfigKey struct {
 	Default         any      `json:"default"`
 	RestartRequired bool     `json:"restart_required"`
 	Aliases         []string `json:"aliases,omitempty"`
+	// Consent, when set, is what turning the key on allows; `config set`
+	// refuses to turn it on without the user's explicit consent.
+	Consent string `json:"consent,omitempty"`
 
 	get func(*UserConfig) any
 	set func(*UserConfig, any)
@@ -156,8 +160,9 @@ var configKeys = []ConfigKey{
 		get: func(c *UserConfig) any { return c.Recall.GetEnabled() },
 		set: func(c *UserConfig, v any) { c.Recall.Enabled = boolRef(v.(bool)) }},
 	{Key: "macapp.plugins", Section: "Advanced", Label: "Mac app plugins", Help: "Enable limits --json and events publish for macapp.* (docs/macapp-core.md)", Type: "bool",
-		get: func(c *UserConfig) any { return c.Macapp.Plugins },
-		set: func(c *UserConfig, v any) { c.Macapp.Plugins = v.(bool) }},
+		Consent: MacappPluginsConsent,
+		get:     func(c *UserConfig) any { return c.Macapp.Plugins },
+		set:     func(c *UserConfig, v any) { c.Macapp.Plugins = v.(bool) }},
 	{Key: "macapp.transcript_events", Section: "Advanced", Label: "Transcript events", Help: "Notify daemon publishes session.transcript frames when a transcript grows", Type: "bool", RestartRequired: true,
 		get: func(c *UserConfig) any { return c.Macapp.TranscriptEvents },
 		set: func(c *UserConfig, v any) { c.Macapp.TranscriptEvents = v.(bool) }},
@@ -274,12 +279,24 @@ func configValueIndex(list []string, v string) int {
 	return len(list)
 }
 
+// MacappPluginsConsent is what turning [macapp] plugins on allows.
+const MacappPluginsConsent = "Turning on [macapp] plugins lets `agent-deck limits` read the usage of every Claude and Codex account on this machine, and lets any local process that can run agent-deck publish macapp.* frames that the Mac app acts on."
+
+// ErrConsentRequired: the value turns on a key that needs explicit consent.
+var ErrConsentRequired = errors.New("consent required")
+
+// NeedsConsent reports whether setting v needs explicit consent: turning on a
+// key that carries a Consent text. Turning it off never does.
+func (k ConfigKey) NeedsConsent(v any) bool { return k.Consent != "" && v == true }
+
 // Set writes a typed value into the config.
 func (k ConfigKey) Set(c *UserConfig, v any) { k.set(c, v) }
 
 // SetConfigValue loads config.toml, sets one key and saves it through the
-// TUI's writer. It returns the value read back after the save.
-func SetConfigValue(name, raw string) (ConfigKey, any, error) {
+// TUI's writer. It returns the value read back after the save. A value
+// that needs consent (NeedsConsent) is refused with ErrConsentRequired,
+// returning the parsed value, unless consented is true.
+func SetConfigValue(name, raw string, consented bool) (ConfigKey, any, error) {
 	k, ok := LookupConfigKey(name)
 	if !ok {
 		return ConfigKey{}, nil, fmt.Errorf("unknown config key %q (see agent-deck config schema)", name)
@@ -287,6 +304,9 @@ func SetConfigValue(name, raw string) (ConfigKey, any, error) {
 	v, err := k.Parse(raw)
 	if err != nil {
 		return k, nil, err
+	}
+	if k.NeedsConsent(v) && !consented {
+		return k, v, ErrConsentRequired
 	}
 	ClearUserConfigCache()
 	cfg, err := LoadUserConfig()

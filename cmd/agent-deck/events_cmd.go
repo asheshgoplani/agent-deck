@@ -216,8 +216,7 @@ func handleEventsPublish(profile string, args []string) {
 		exitCLI(2)
 	}
 	if cfg, _ := session.LoadUserConfig(); *kind != "macapp.open" && *kind != "macapp.open.ack" && (cfg == nil || !cfg.Macapp.Plugins) {
-		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		exitCLI(2)
+		exitMacappPluginsOff(out, "events publish")
 	}
 	raw := []byte(*data)
 	if *dataFile != "" {
