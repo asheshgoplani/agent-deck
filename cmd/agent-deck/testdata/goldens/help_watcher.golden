@@ -9,7 +9,7 @@ Commands:
   start <name>                  Mark a watcher as running (run by the profile's watcher engine)
   stop <name>                   Mark a watcher as stopped
   list [--json]                 List all watchers with status and event rate
-  status <name> [--json]        Show detailed watcher info including recent events
+  status <name> [--json]        Show watcher info, recent events and events not delivered yet
   test <name>                   Route a synthetic event to verify routing config
   routes [--json]               Show all routing rules from clients.json
   import <path>                 Migrate bash issue-watcher channels.json to Go watcher config
