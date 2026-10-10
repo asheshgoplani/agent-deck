@@ -12932,6 +12932,11 @@ var builtinAgentTools = map[string]bool{
 	"hermes":   true,
 	"crush":    true,
 	"muse":     true,
+	// pi and omp (Oh My Pi) launch with the same `<env>; AGENTDECK_... pi
+	// --continue ...` shape; they were left out of this list, so exit_to_shell
+	// silently skipped them (issue #2556).
+	"pi":  true,
+	"omp": true,
 }
 
 // isBuiltinAgentTool reports whether tool is a first-party agent (or a custom
@@ -12965,10 +12970,12 @@ func (i *Instance) exitToShellEnabled() bool {
 //
 // with the agent's own `exec ` launcher neutralised — claude execs itself for
 // job control, which would replace the wrapping bash and prevent the trailing
-// shell exec from ever running. Only the first `exec ` (the launcher) is
-// stripped; any later "exec " lives inside a shell-quoted startup-query suffix.
-// Agents that do not exec (gemini, codex, …) are unaffected by the strip and
-// simply get the suffix appended.
+// shell exec from ever running. Only the first `exec ` in command position
+// (the launcher) is stripped; any later "exec " lives inside a shell-quoted
+// startup-query suffix. An "exec " that is part of a longer word, such as the
+// `find ... -exec ls` in a pi/omp fork command, is not a launcher and is kept
+// (issue #2556). Agents that do not exec (gemini, codex, pi, …) are
+// unaffected by the strip and simply get the suffix appended.
 //
 // No-op when the flag is off, the command is empty, the session is sandboxed
 // (docker exec owns the in-container process), or the tool is not a built-in
@@ -12979,9 +12986,17 @@ func (i *Instance) wrapExitToShell(command string) string {
 	if command == "" || i.IsSandboxed() || !i.exitToShellEnabled() || !isBuiltinAgentTool(i.Tool) {
 		return command
 	}
-	rewritten := strings.Replace(command, "exec ", "", 1)
+	rewritten := command
+	if loc := execLauncherRe.FindStringSubmatchIndex(command); loc != nil {
+		rewritten = command[:loc[2]] + command[loc[3]:]
+	}
 	return rewritten + `; exec "$SHELL" -i`
 }
+
+// execLauncherRe matches the first `exec ` in shell command position: at the
+// start of the command or after whitespace or a separator. Group 1 is the
+// `exec ` to strip.
+var execLauncherRe = regexp.MustCompile(`(?:^|[\s;&|(])(exec )`)
 
 // launchShellEnabled returns whether the session should wrap agent commands
 // with a shell invocation that loads startup files before launching the agent.
