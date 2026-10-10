@@ -4230,7 +4230,7 @@ func handleUpdate(args []string) {
 			printOutdatedTUIs(onDisk)
 			printPendingLaunchAgents()
 			printFailedRemoteNudges(os.Stdout, session.LoadRemoteNudges())
-			printPathShadowing(os.Stdout, pathShadowCopies(onDisk), updateCLILog)
+			printPathShadowing(os.Stdout, update.FindShadowingCopies(onDisk), updateCLILog)
 			return
 		}
 		// Nothing to install, but a launch agent an earlier run left
@@ -4269,7 +4269,7 @@ func handleUpdate(args []string) {
 		printOutdatedTUIs(onDisk)
 		printPendingLaunchAgents()
 		printFailedRemoteNudges(os.Stdout, session.LoadRemoteNudges())
-		printPathShadowing(os.Stdout, pathShadowCopies(onDisk), updateCLILog)
+		printPathShadowing(os.Stdout, update.FindShadowingCopies(onDisk), updateCLILog)
 		return
 	}
 
@@ -4330,7 +4330,7 @@ func handleUpdate(args []string) {
 
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
 	fmt.Println("  Restart agent-deck to use the new version.")
-	printPathShadowing(os.Stdout, pathShadowCopies(info.LatestVersion), updateCLILog)
+	printPathShadowing(os.Stdout, update.FindShadowingCopies(info.LatestVersion), updateCLILog)
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
@@ -4427,7 +4427,7 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 
 	fmt.Printf("\n✓ Installed v%s\n", targetVersion)
 	fmt.Println("  Restart agent-deck to use this version.")
-	printPathShadowing(os.Stdout, pathShadowCopies(targetVersion), updateCLILog)
+	printPathShadowing(os.Stdout, update.FindShadowingCopies(targetVersion), updateCLILog)
 }
 
 // brewRunner abstracts `brew <args...>` so tests can inject canned output

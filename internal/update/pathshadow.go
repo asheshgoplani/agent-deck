@@ -63,8 +63,6 @@ type ShadowScan struct {
 	SelfVersion string
 	// PathEnv is the PATH to walk, in order.
 	PathEnv string
-	// Probe reads a binary's version (default ProbeBinaryVersion).
-	Probe func(path string) (string, error)
 	// Writable reports whether the current user may remove entries in
 	// dir (default access(2) W_OK).
 	Writable func(dir string) bool
@@ -97,10 +95,6 @@ func (s ShadowScan) Find() []ShadowCopy {
 	selfInfo, err := os.Stat(self)
 	if err != nil {
 		return nil
-	}
-	probe := s.Probe
-	if probe == nil {
-		probe = ProbeBinaryVersion
 	}
 	writable := s.Writable
 	if writable == nil {
@@ -140,7 +134,7 @@ func (s ShadowScan) Find() []ShadowCopy {
 
 	var out []ShadowCopy
 	for _, path := range found {
-		version, err := probe(path)
+		version, err := ProbeBinaryVersion(path)
 		version = strings.TrimPrefix(strings.TrimSpace(version), "v")
 		if err == nil && version != "" && CompareVersions(version, selfVersion) >= 0 {
 			continue
@@ -171,11 +165,7 @@ func (s ShadowScan) Find() []ShadowCopy {
 // Warning is the human text for one shadowing copy: what shadows what,
 // both versions, and the two fixes.
 func (c ShadowCopy) Warning() string {
-	version := "unknown version"
-	if c.Version != "" {
-		version = "v" + c.Version
-	}
-	what := version
+	what := c.VersionLabel()
 	if c.Target != "" {
 		what += ", symlink to " + c.Target
 	}
@@ -198,15 +188,30 @@ func (c ShadowCopy) Warning() string {
 	return b.String()
 }
 
-// LogAttrs are the structured fields of a path_shadowed log line.
-func (c ShadowCopy) LogAttrs() []any {
-	return []any{
-		slog.String("path", c.Path),
-		slog.String("target", c.Target),
-		slog.String("version", c.Version),
-		slog.String("installed", c.Installed),
-		slog.String("installed_path", c.InstalledPath),
-		slog.Bool("needs_sudo", c.NeedsSudo),
+// VersionLabel is the copy's version as shown to the user ("v1.2.3", or
+// "unknown version" when it could not be read).
+func (c ShadowCopy) VersionLabel() string {
+	if c.Version == "" {
+		return "unknown version"
+	}
+	return "v" + c.Version
+}
+
+// LogShadowCopies writes one path_shadowed warning per copy to log (a nil
+// log is skipped).
+func LogShadowCopies(log *slog.Logger, copies []ShadowCopy) {
+	if log == nil {
+		return
+	}
+	for _, c := range copies {
+		log.Warn("path_shadowed",
+			slog.String("path", c.Path),
+			slog.String("target", c.Target),
+			slog.String("version", c.Version),
+			slog.String("installed", c.Installed),
+			slog.String("installed_path", c.InstalledPath),
+			slog.Bool("needs_sudo", c.NeedsSudo),
+		)
 	}
 }
 

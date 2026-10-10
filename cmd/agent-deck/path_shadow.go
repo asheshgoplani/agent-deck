@@ -8,14 +8,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
-// pathShadowCopies scans PATH for older agent-deck copies that shadow the
-// executable this process runs from; a seam so tests can drive it.
-var pathShadowCopies = update.FindShadowingCopies
-
 // shadowedBy is the PATH scan against version (the version of this
 // executable on disk), never nil so JSON shows an empty list.
 func shadowedBy(version string) []update.ShadowCopy {
-	copies := pathShadowCopies(version)
+	copies := update.FindShadowingCopies(version)
 	if copies == nil {
 		return []update.ShadowCopy{}
 	}
@@ -29,10 +25,5 @@ func printPathShadowing(w io.Writer, copies []update.ShadowCopy, log *slog.Logge
 		return
 	}
 	fmt.Fprint(w, "\n"+update.ShadowWarnings(copies))
-	if log == nil {
-		return
-	}
-	for _, c := range copies {
-		log.Warn("path_shadowed", c.LogAttrs()...)
-	}
+	update.LogShadowCopies(log, copies)
 }

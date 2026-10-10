@@ -364,7 +364,7 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 		drainPending: func() error { return drainPendingLaunchAgents(log) },
 		ensureTimer:  func() (update.TimerEnsureResult, error) { return session.AutoEnsureUpdateTimer(log) },
 		sweepRemotes: remoteFollowUpForTrigger(trigger, log),
-		shadowCheck:  pathShadowCopies,
+		shadowCheck:  update.FindShadowingCopies,
 	}, closeLog
 }
 

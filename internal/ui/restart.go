@@ -436,15 +436,9 @@ func (h *Home) applyPathShadow(msg pathShadowMsg) {
 	if len(msg.copies) == 0 {
 		return
 	}
-	for _, c := range msg.copies {
-		uiLog.Warn("path_shadowed", c.LogAttrs()...)
-	}
+	update.LogShadowCopies(uiLog, msg.copies)
 	c := msg.copies[0]
-	version := "unknown version"
-	if c.Version != "" {
-		version = "v" + c.Version
-	}
-	h.setError(fmt.Errorf("restarted into v%s, but %s (%s) comes first on PATH: shells run that copy; fix: %s (see agent-deck doctor)", Version, c.Path, version, c.Remove))
+	h.setError(fmt.Errorf("restarted into v%s, but %s (%s) comes first on PATH: shells run that copy; fix: %s (see agent-deck doctor)", Version, c.Path, c.VersionLabel(), c.Remove))
 }
 
 // ExecSelf replaces the current process with exe, keeping os.Args and the
