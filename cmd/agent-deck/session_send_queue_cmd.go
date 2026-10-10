@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/comms"
+	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
@@ -736,6 +737,18 @@ func shouldWaitForIdle(tool, status string) bool {
 // record no later worker types again. It returns false only when that
 // write failed, in which case nothing was typed.
 func typeQueued(profile, dir string, rec *sendqueue.Record, status, path string, from int64, set func(func(*sendqueue.Record)) error) bool {
+	// Budget gate at the typing boundary: a queued send or a released entry
+	// whose target went over a cost budget while it waited fails untyped.
+	if budget := budgetForSend(profile, rec.SessionID, nil, nil); budget.Action == costs.BudgetActionStop {
+		if err := set(func(r *sendqueue.Record) {
+			r.State, r.Verdict = sendqueue.StateFailed, "unknown"
+			r.Reason = "budget exceeded: " + budget.Describe() + "; nothing was typed"
+		}); err != nil {
+			return false
+		}
+		publishBudgetExceeded(profile, rec.SessionID, "queue", budget)
+		return true
+	}
 	result := sendqueue.ResultPath(dir, rec.SendID)
 	_ = os.Remove(result)
 	if err := set(func(r *sendqueue.Record) {

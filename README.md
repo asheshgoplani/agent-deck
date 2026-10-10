@@ -900,9 +900,14 @@ Track token usage and costs across all your AI agent sessions in real-time.
 enabled = true        # default; false turns cost tracking off (also [profiles.<name>.costs])
 retention_days = 90
 
-[costs.budgets]
+[costs.budgets]        # enforced: a send or wake to an over-budget target is refused
 daily_limit = 50.00
 weekly_limit = 200.00
+
+[costs.run_budget]     # per-run defaults for goals (0 = no cap)
+max_tokens = 80000
+max_turns = 12
+max_minutes = 30
 
 [costs.pricing.overrides]
 "custom-model" = { input_per_mtok = 1.0, output_per_mtok = 5.0 }

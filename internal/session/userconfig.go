@@ -6004,6 +6004,18 @@ type CostsSettings struct {
 	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero,omitempty"`
 	Budgets              BudgetSettings  `toml:"budgets,omitempty"`
 	Pricing              PricingSettings `toml:"pricing,omitempty"`
+	// RunBudget holds the per-run defaults every new autonomous run (a
+	// goal started by skills/agent-deck/scripts/goal/goal.sh) starts with.
+	RunBudget RunBudgetSettings `toml:"run_budget,omitempty"`
+}
+
+// RunBudgetSettings are per-run caps for autonomous runs. 0 means no cap
+// (max_turns 0 keeps the goal's own default of 24 cycles). A goal's
+// --max-tokens/--max-turns/--max-minutes flags override them.
+type RunBudgetSettings struct {
+	MaxTokens  int `toml:"max_tokens,omitzero"`
+	MaxTurns   int `toml:"max_turns,omitzero"`
+	MaxMinutes int `toml:"max_minutes,omitzero"`
 }
 
 // ProfileCosts holds per-profile overrides for cost-related settings.

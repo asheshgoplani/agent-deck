@@ -109,7 +109,9 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
     "escalate_after_stuck_nudges": 3,
     "no_progress_cap": 3,
     "no_progress_backoff_base_seconds": 3600,
-    "worktree_gate": false
+    "worktree_gate": false,
+    "max_tokens": 0,
+    "max_minutes": 0
   },
 
   "state": {
@@ -271,6 +273,22 @@ for goal_file in glob("~/.agent-deck/goals/*.json"):
 
     save(goal_file, goal)
 ```
+
+### Run budget
+
+`max_cycles` (turns), `max_tokens` and `max_minutes` are the goal's run budget.
+`goal.sh --max-turns N --max-tokens N --max-minutes N` sets them; unset flags take
+`[costs.run_budget]` from config.toml (`max_turns`, `max_tokens`, `max_minutes`),
+then `MAX_CYCLES` / `MAX_TOKENS` / `MAX_MINUTES` from the environment, then 24 / 0 / 0
+(0 = no cap). On every tick, after the verifier and before reading receipts or
+nudging, the manager compares the worker session's tokens (input, output, cache
+read and cache write, from `agent-deck costs sessions --json`) and the minutes since
+`created_at` against the caps. A spent cap finalizes the goal as `failed` with
+`ended_reason` `budget_exceeded: max_tokens: used N of M tokens` (or
+`max_minutes: ran N of M minutes`), records a `budget_exceeded` event, and stops
+the worker. A token cap that cannot be read (cost tracking off) is recorded as
+`budget_unmeasured` and not enforced. A nudge that `session send` refuses because a
+`[costs.budgets]` limit is spent ends the goal the same way, without retries.
 
 ## Nudge generator — context-aware
 

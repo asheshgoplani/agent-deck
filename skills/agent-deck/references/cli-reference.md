@@ -1358,6 +1358,19 @@ use `[costs] timezone` (default `Local`), matching BudgetChecker; sessions use l
 Group membership uses the current exact group path. Prices come from stored events,
 just as on the web; use `costs recompute` explicitly to apply changed pricing overrides.
 
+Budgets are enforced on every send and wake. When a limit that applies to the target
+(its session limit, its group's daily limit, or a daily, weekly or monthly global limit)
+is spent, `session send` (and so `--queue`, goal nudges, conductor heartbeats, bridge
+and inbox wakes, which all go through it) refuses before anything is queued or typed:
+exit 1, `Error: budget exceeded: <limit> ($used of $limit); nothing was sent to '<title>'`,
+under `--json` `code: "BUDGET_EXCEEDED"`, `delivery: "budget_exceeded"`, `budget_reason`,
+`used_usd`, `limit_usd`, and a `session.budget_exceeded` frame on the events bus
+(`reason`, `used_usd`, `limit_usd`, `via`). A queued send or a `session queue release`
+whose target went over budget while it waited fails untyped with reason
+`budget exceeded: ...`. At 80% of a limit the send goes through with a stderr note.
+`--draft` only pre-fills and is not checked. With cost tracking off or no limit set, sends
+are unchanged and the cost store is not opened. A failed budget query warns and sends.
+
 Tracking defaults on. Set `[costs] enabled = false` globally or
 `[profiles.<name>.costs] enabled = false` for a profile. Explicit profile values override
 the global value. Disabled cost commands exit nonzero with exactly

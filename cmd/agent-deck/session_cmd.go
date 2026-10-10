@@ -3418,6 +3418,13 @@ func handleSessionSend(profile string, args []string) {
 		enabled:    !*noTag && !*queueWorker && sendTagsEnabled(),
 		draft:      *draft,
 	})
+	// Cost budgets (prime-agent adoption C9): every send and wake is
+	// refused before anything is queued or typed when a [costs.budgets]
+	// limit that applies to the target is spent. A draft only pre-fills the
+	// prompt; the queue worker's child was checked by the worker itself.
+	if !*queueWorker && !*draft {
+		enforceSendBudget(profile, storage, inst, instances, out, *quiet)
+	}
 	if len(images) > 0 || *queue || asyncJSON {
 		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
 			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)

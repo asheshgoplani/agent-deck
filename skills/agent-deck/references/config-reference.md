@@ -35,6 +35,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[inbox] Section](#inbox-section)
 - [[comms] Section](#comms-section)
 - [[send] Section](#send-section)
+- [[costs.budgets] and [costs.run_budget]](#costsbudgets-and-costsrun_budget)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
@@ -1061,6 +1062,41 @@ Tunes `agent-deck session send` (comms redesign PR5).
 ```toml
 [send]
 tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
+## [costs.budgets] and [costs.run_budget]
+
+`[costs.budgets]` limits are in dollars and are enforced on every send and wake: a
+`session send` (also `--queue`, goal nudges, conductor heartbeats, bridge and inbox
+wakes) to a target whose session, group or global limit is spent is refused before
+anything is typed, with code `BUDGET_EXCEEDED` and a `session.budget_exceeded` event
+(see the costs section of cli-reference.md). `[costs.run_budget]` holds the per-run
+defaults every new goal (`skills/agent-deck/scripts/goal/goal.sh`) starts with; the
+goal manager stops the run and its worker when one is spent, before it wakes the
+worker again.
+
+```toml
+[costs.budgets]
+daily_limit = 50.00            # global, per day in [costs] timezone
+weekly_limit = 200.00
+[costs.budgets.groups.work]
+daily_limit = 20.00
+[costs.budgets.sessions.<session-id>]
+total_limit = 5.00             # lifetime of one session
+
+[costs.run_budget]
+max_tokens = 80000             # tokens the goal's worker session may use
+max_turns = 12                 # progress cycles (receipts) per goal
+max_minutes = 30               # wall time per goal
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `run_budget.max_tokens` | int | `0` (no cap) | Input, output, cache read and cache write tokens of the worker session, read from `agent-deck costs sessions --json`. When cost tracking is off the cap is recorded as unmeasured and not enforced. `goal.sh --max-tokens N` overrides. |
+| `run_budget.max_turns` | int | `0` (goal default 24) | Progress cycles before the goal ends as failed (`max_cycles`). `goal.sh --max-turns N` overrides. |
+| `run_budget.max_minutes` | int | `0` (no cap) | Minutes since the goal was created. `goal.sh --max-minutes N` overrides. |
+
+The three keys are also readable and settable with `agent-deck config get|set costs.run_budget.<key>`.
+The values above are the prime-agent defaults for short autonomous runs; long goals want larger caps.
+
 ## [remotes.<name>] Talkback
 
 Remotes are added with `agent-deck remote add <name> <user@host>`; this key makes the notify-daemon pull a remote's child records on its own instead of waiting for a conductor to run `agent-deck remote drain`.
