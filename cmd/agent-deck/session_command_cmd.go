@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -176,8 +177,15 @@ func handleSessionCommand(profile string, args []string) {
 		exitCLI(1)
 	}
 
+	// The session's Claude config dir holds the default model for new
+	// sessions (settings.json "model"); no command run here may change it.
+	configDir := session.ClaudeConfigDirForSend(inst)
+	defaultBefore := readDefaultModel(configDir)
 	run := slashcmd.Run(tmuxSess, cmd, slashcmd.Options{Timeout: *timeout, WaitIdle: *waitIdle, DryRun: *dryRun})
 	run.Session, run.ID = inst.Title, inst.ID
+	if !*dryRun && cmd.Kind != slashcmd.KindExit {
+		guardDefaultModel(&run, configDir, defaultBefore)
+	}
 
 	if run.OK && cmd.Kind == slashcmd.KindExit && !*dryRun {
 		// Claude exited; finish with the same stop path as `session stop`
@@ -305,4 +313,38 @@ func truncateDescription(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// defaultModel is the "model" key of a Claude config dir's settings.json,
+// the default for new sessions that typed "/model <id>" overwrites.
+type defaultModel struct {
+	value string
+	found bool
+}
+
+func readDefaultModel(configDir string) defaultModel {
+	var settings struct {
+		Model *string `json:"model"`
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "settings.json"))
+	if err != nil || json.Unmarshal(data, &settings) != nil || settings.Model == nil {
+		return defaultModel{}
+	}
+	return defaultModel{value: *settings.Model, found: true}
+}
+
+// guardDefaultModel fails res when the default model changed while the
+// command ran, naming the file, key and both values so it can be restored.
+func guardDefaultModel(res *slashcmd.Result, configDir string, before defaultModel) {
+	after := readDefaultModel(configDir)
+	path := filepath.Join(configDir, "settings.json")
+	if after == before {
+		if before.found {
+			res.Evidence = append(res.Evidence, fmt.Sprintf(`settings.json "model" unchanged (%q)`, before.value))
+		}
+		return
+	}
+	res.OK, res.Code = false, "default_changed"
+	res.Error = fmt.Sprintf(`the default model for new sessions changed; restore "model" to %q in %s`, before.value, path)
+	res.Evidence = append(res.Evidence, fmt.Sprintf(`settings.json "model": %q -> %q (%s)`, before.value, after.value, path))
 }

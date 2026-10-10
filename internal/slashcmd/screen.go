@@ -1,6 +1,7 @@
 package slashcmd
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -194,17 +195,99 @@ func modelKey(s string) string {
 	return s
 }
 
-// isRequestedModel reports whether display names the model requested by
-// /model <args>. An alias ("haiku") matches any version of it.
+// isRequestedModel reports whether display names exactly the model requested
+// by /model <args>: "claude-opus-5" is "Opus 5", never "Opus 5.5".
 func (r *runner) isRequestedModel(display string) bool {
 	want, got := modelKey(r.cmd.Args), modelKey(display)
-	return want != "" && got != "" && (strings.HasPrefix(got, want) || strings.HasPrefix(want, got))
+	return want != "" && want == got
+}
+
+// modelPickerRow matches a /model picker entry such as
+// "  ❯ 3.  Fable 5.1 ✔            For your toughest challenges" or
+// "  ↓ 10. Opus 4.8               Best for everyday, complex tasks".
+var modelPickerRow = regexp.MustCompile(`^\s*(?:[↓↑]\s*)?(❯\s*)?(\d+)\.\s+(.+?)(?:\s+✔)?(?:\s{2,}\S.*)?$`)
+
+type pickerRowT struct {
+	num      int
+	label    string
+	selected bool
+}
+
+// modelPickerRows parses the visible rows of the /model picker.
+func modelPickerRows(content string) []pickerRowT {
+	var rows []pickerRowT
+	for _, line := range strings.Split(content, "\n") {
+		m := modelPickerRow.FindStringSubmatch(strings.TrimRight(line, " "))
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[2])
+		rows = append(rows, pickerRowT{num: n, label: strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(m[3]), "✔")), selected: m[1] != ""})
+	}
+	return rows
+}
+
+// maxPickerSteps bounds the arrow keys sent while looking for the entry.
+const maxPickerSteps = 40
+
+// navigatePicker moves the /model picker to the requested entry one row at a
+// time and presses "s" (use this session only). It never presses Enter in
+// the picker: Enter saves the model as the default for new sessions.
+func (r *runner) navigatePicker(content string) (Result, bool) {
+	rows := modelPickerRows(content)
+	var sel *pickerRowT
+	target := -1
+	for i := range rows {
+		if rows[i].selected {
+			sel = &rows[i]
+		}
+		if r.isRequestedModel(rows[i].label) {
+			target = rows[i].num
+		}
+	}
+	if sel == nil || r.picked {
+		return Result{}, false // frame still drawing, or "s" sent and the picker is closing
+	}
+	if r.isRequestedModel(sel.label) {
+		r.picked = true
+		_ = r.p.SendKeys("s")
+		r.step(fmt.Sprintf("picker: %q highlighted, pressed s (this session only)", sel.label))
+		return Result{}, false
+	}
+	if r.steps > 0 && sel.num == r.lastSel {
+		// The highlight has not moved yet: wait a few frames, then treat it
+		// as the end of the list and search the other way once.
+		if r.stalled++; r.stalled < 4 {
+			return Result{}, false
+		}
+		if r.reversed {
+			r.steps = maxPickerSteps // both ends reached: not in the list
+		}
+		r.reversed = true
+	}
+	r.stalled = 0
+	if r.steps >= maxPickerSteps {
+		_ = r.p.SendNamedKey("Escape")
+		r.step("cancelled the model picker (Escape)")
+		return r.fail(CodeUnknownModel, fmt.Sprintf("the /model picker has no entry named like %s; cancelled, nothing changed", r.cmd.Args)), true
+	}
+	key := "Down"
+	switch {
+	case target > 0 && target < sel.num:
+		key = "Up"
+	case target < 0 && r.reversed:
+		key = "Up" // not visible below: look above
+	}
+	r.lastSel = sel.num
+	r.steps++
+	_ = r.p.SendNamedKey(key)
+	return Result{}, false
 }
 
 func verifyDescription(k Kind) string {
 	switch k {
 	case KindModel:
-		return `"Set model to <name>" echo`
+		return `"Set model to <name> for this session only" echo (a "saved as your default" echo fails)`
 	case KindCompact:
 		return `"Compacted" notice`
 	case KindClear:
@@ -320,8 +403,11 @@ func (r *runner) check(raw, content, baseline string) (Result, bool) {
 			if m == nil {
 				continue
 			}
-			if !r.isRequestedModel(m[2]) {
-				return r.fail(CodeCommandError, "Claude reports "+t+", not the requested model", t), true
+			if strings.Contains(t, "saved as your default") {
+				return r.fail(CodeDefaultSaved, "Claude saved "+m[2]+" as the default for new sessions (settings.json \"model\"); restore it", t), true
+			}
+			if !r.isRequestedModel(m[2]) || !strings.Contains(t, "for this session only") {
+				return r.fail(CodeCommandError, "Claude reports "+t+", not a session-only switch to the requested model", t), true
 			}
 			return r.ok(m[2], t), true
 		}
@@ -358,14 +444,17 @@ func (r *runner) check(raw, content, baseline string) (Result, bool) {
 	return Result{}, false
 }
 
-// modelDialog handles a dialog after /model. With a cached conversation
-// Claude asks "Switch model?"; only "Yes, switch to <the requested model>" is
-// accepted, once. Any other dialog (bare /model opens the model picker) is
-// cancelled.
+// modelDialog handles the dialogs after /model: the model picker (navigated
+// to the requested entry, then "s"), and with a cached conversation the
+// "Switch model?" confirmation, answered only with "Yes, switch to <the
+// requested model>" after our session-only pick. Anything else is cancelled.
 func (r *runner) modelDialog(content string) (Result, bool) {
+	if strings.Contains(content, "Select model") && !strings.Contains(content, "Switch model?") {
+		return r.navigatePicker(content)
+	}
 	sel, _ := send.DialogSelection(content)
 	target, isSwitch := strings.CutPrefix(sel, "Yes, switch to ")
-	if isSwitch && r.isRequestedModel(target) {
+	if isSwitch && r.picked && r.isRequestedModel(target) {
 		if !r.confirmed {
 			r.confirmed = true
 			_ = r.p.SendNamedKey("Enter")
