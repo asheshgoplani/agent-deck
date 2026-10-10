@@ -4648,8 +4648,8 @@ func (s *Session) GetStatus() (string, error) {
 			// Foreground turn ended by handing off to a background agent
 			// ("Waiting for N background agent to finish"): Claude resumes by
 			// itself, no spinner is drawn, so the busy check above misses it.
-			// Keep it green until the agent reports back. Background shells at
-			// the prompt are deliberately NOT in this rule (background_work.go).
+			// Keep it green until the agent reports back. A shell counter at
+			// the prompt is deliberately NOT in this rule (A5, background_work.go).
 			if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
 				return "active", nil
 			}
@@ -4827,7 +4827,7 @@ func (s *Session) GetStatus() (string, error) {
 					}
 
 					// Background work in flight keeps the session green here too:
-					// a bg shell's output drives the spike, so without this the
+					// the workflow row's redraws drive the spike, so without this the
 					// prompt check below would flip it to waiting and fire a
 					// premature completion (mirrors the busy-check path above).
 					if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
@@ -5314,16 +5314,18 @@ func (s *Session) isClaudeTool() bool {
 const bgWorkCacheTTL = 500 * time.Millisecond
 
 // BackgroundWorkPending reports whether a Claude session at the prompt still has
-// background work in flight. See BackgroundWorkSince.
+// background work in flight that the pane alone proves (a shell counter does
+// not, A5). See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
 	work, blocked, _ := s.BackgroundWorkSince(time.Time{})
-	return work.Running() && !blocked
+	return work.WithoutShells().Running() && !blocked
 }
 
 // BackgroundWorkSince returns the background work (issue #2473) a Claude
 // session's pane shows in flight: a workflow row short of its last step, a turn
 // awaiting background agents / workflows, or live shells / monitors in the
-// footer. It captures the pane itself — for the UpdateStatus hook fast path,
+// footer (shells recorded raw: the session layer decides them against the
+// transcript, A5). It captures the pane itself — for the UpdateStatus hook fast path,
 // which short-circuits before GetStatus and so has no captured content — and
 // caches the result briefly (bgWorkCacheTTL). A cached verdict older than
 // notBefore is not reused: the caller passes the hook event time, so a Stop
@@ -5406,8 +5408,11 @@ func (s *Session) backgroundWorkOutrankedLocked(content string) bool {
 
 // markBackgroundWorkActiveLocked applies the "keep green while background work is
 // in flight" state update when a Claude session is at the prompt but work it
-// started is still running: a workflow, background agents, run_in_background
-// shells or a Monitor (issue #2473). Returns true when it fired (caller should
+// started is still running: a workflow or background agents (issue #2473).
+// A footer shell counter alone never fires it (A5): Claude Code never reaps a
+// long-lived run_in_background shell, so only the session layer, with a fresh
+// background Bash launch in the transcript, may keep such a frame running.
+// Monitors are watching and never fire it either. Returns true when it fired (caller should
 // return "active"). The verdict comes from the frame prepareFrame recorded
 // (the untrimmed frame) or, failing that, from content itself (raw or
 // stripped; StripANSI is idempotent). Never fires on a frame that shows an
@@ -5418,7 +5423,7 @@ func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64
 		return false
 	}
 	stripped := StripANSI(content)
-	if !s.lastBackgroundWork.Running() && !claudeBackgroundWorkPending(stripped) {
+	if !s.lastBackgroundWork.WithoutShells().Running() && !claudeBackgroundWorkPending(stripped) {
 		return false
 	}
 	// An open menu or an error outranks background work: the frame stays
@@ -5860,11 +5865,12 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	// otherwise at the prompt. prepareFrame read it from the untrimmed frame,
 	// which still carries the workflow row the roster trim removes. A live
 	// foreground cue (running), an error, or an open menu keeps its verdict.
-	if s.isClaudeTool() && s.lastBackgroundWork.InFlight() && !s.lastBackgroundBlocked {
+	// A shell counter alone refines nothing (A5, WithoutShells).
+	if work := s.lastBackgroundWork.WithoutShells(); s.isClaudeTool() && work.InFlight() && !s.lastBackgroundBlocked {
 		switch s.lastSubstate {
 		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching:
-			s.lastSubstate = s.lastBackgroundWork.Substate()
-			s.lastSubstateDetail = s.lastBackgroundWork.Summary()
+			s.lastSubstate = work.Substate()
+			s.lastSubstateDetail = work.Summary()
 		}
 	}
 	s.recordCompletedTurnSampleLocked(content)

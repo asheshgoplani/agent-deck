@@ -16,6 +16,14 @@ import (
 // always wins. Transcript-backed sleep-only watchers are resolved at the
 // session layer, where their launch receipts can be correlated.
 //
+// Shells are the exception (A5): Claude Code never reaps a long-lived
+// run_in_background shell (a dev server, a tail -f), so the footer's
+// "· 1 shell ·" counter can stay drawn for hours after the work it stood for
+// ended. The pane alone therefore never proves a shell is finite work:
+// WithoutShells is the pane-only verdict every tmux-layer rule uses, and the
+// session layer keeps a shell running only while the transcript shows a
+// fresh background Bash launch (session/background_work.go).
+//
 // The pane shows the work in four shapes (Claude Code 2.1.288, captured live
 // into testdata and the fixtures in background_work_test.go):
 //
@@ -37,6 +45,8 @@ import (
 //   - the shell / monitor counter counts only on the footer line, which
 //     Claude redraws live (the "N shells still running" text on a turn's
 //     completion line is printed once and goes stale, so it is not used).
+//     Its shells are recorded but are not running on the pane's word alone
+//     (WithoutShells, A5).
 //
 // The detector reads the pane frame BEFORE the agent-roster trim
 // (trimClaudeTrailingRoster): the workflow row is drawn under the footer
@@ -134,6 +144,30 @@ func (b BackgroundWork) Watching() bool {
 
 // Running excludes passive watchers from the work that holds a turn open.
 func (b BackgroundWork) Running() bool { return b.InFlight() && !b.Watching() }
+
+// WithoutShells is what the pane alone proves (A5): a footer counter that
+// names shells keeps only its monitors (watching), or nothing when it has
+// none; every other item is returned unchanged. The shells themselves are
+// decided by the session layer against the transcript.
+func (b BackgroundWork) WithoutShells() BackgroundWork {
+	if b.Kind != BackgroundKindBash {
+		return b
+	}
+	monitors := 0
+	for _, part := range claudeCounterPartRe.FindAllStringSubmatch(b.Task, -1) {
+		if n, err := strconv.Atoi(part[1]); err == nil && !strings.HasPrefix(strings.ToLower(part[2]), "shell") {
+			monitors += n
+		}
+	}
+	if monitors == 0 {
+		return BackgroundWork{}
+	}
+	task := fmt.Sprintf("%d monitor", monitors)
+	if monitors > 1 {
+		task += "s"
+	}
+	return BackgroundWork{Kind: BackgroundKindMonitor, Count: monitors, Task: task, Source: b.Source}
+}
 
 func (b BackgroundWork) Substate() Substate {
 	if b.Watching() {
@@ -323,9 +357,10 @@ func claudeFooterCounter(content string) (BackgroundWork, bool) {
 }
 
 // claudeBackgroundWorkPending reports whether the (ANSI-stripped) Claude pane
-// shows background work in flight: a workflow row short of its last step, a
-// turn awaiting background agents / workflows, or live shells / monitors in
-// the footer. Pure and Claude-shaped; callers gate it to Claude sessions.
+// alone proves finite background work in flight: a workflow row short of its
+// last step or a turn awaiting background agents / workflows. A shell counter
+// on the footer does not (A5, WithoutShells) and monitors are watching. Pure
+// and Claude-shaped; callers gate it to Claude sessions.
 func claudeBackgroundWorkPending(content string) bool {
-	return ParseClaudeBackgroundWork(content).Running()
+	return ParseClaudeBackgroundWork(content).WithoutShells().Running()
 }

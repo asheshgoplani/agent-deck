@@ -7078,10 +7078,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
 				// ends, including the turn that launched a Workflow, background
-				// agents or finite run_in_background shells. Issue #2473: a
-				// running workflow means a running session, so this "waiting"
-				// never overrides a pane or transcript that proves background
-				// work in flight (background_work.go has the merge rule); the
+				// agents or a run_in_background shell. Issue #2473: a running
+				// workflow means a running session, so this "waiting" never
+				// overrides a pane or transcript that proves background work in
+				// flight (background_work.go has the merge rule; a shell counter
+				// counts only while the transcript shows a fresh launch, A5); the
 				// session stays running with substate background-work until the
 				// work reports back. BackgroundWorkSince captures the pane (the
 				// fast path has no captured content; a probe older than this
@@ -7307,7 +7308,9 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// work (background_work.go). A pane at the prompt with work in flight is
 	// already "active" from tmux; the transcript can veto a stale workflow row
 	// there, and can hold a waiting/idle pane running while the footer is
-	// briefly not visible (redraw, resize).
+	// briefly not visible (redraw, resize). A shell counter never makes the
+	// pane "active" (A5): the frame reads waiting/idle and only a fresh
+	// background Bash launch in the transcript promotes it here.
 	// A frame that shows an open menu or an error is never promoted: the menu
 	// blocks the turn on the operator (#2185) and the error means no progress.
 	i.bgWorkActive = false

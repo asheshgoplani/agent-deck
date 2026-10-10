@@ -22,7 +22,8 @@ import (
 //   - the pane (tmux.ParseClaudeBackgroundWork): the workflow progress row
 //     under the footer ("◯ name ▰▰▱ 3/5 · 18m32s"), "Waiting for N background
 //     agents / dynamic workflows to finish" as the turn's last line, and the
-//     live "· 2 shells, 1 monitor ·" counter on the footer;
+//     live "· 2 shells, 1 monitor ·" counter on the footer (its shells only
+//     with the transcript, see the shell rule below);
 //   - the transcript (scanTranscriptBackground): a Workflow / background
 //     Agent / background Bash / Monitor launch whose terminal
 //     <task-notification> has not arrived, and the pending counts Claude Code
@@ -38,6 +39,18 @@ import (
 // Claude process), and a held light must never turn into a stuck one. The
 // transcript also VETOES a stale pane row: a workflow row whose task has
 // already reported a terminal status is history.
+//
+// Shell rule (A5, partly reversing #2473 for shells only): Claude Code never
+// reaps a long-lived run_in_background shell (a dev server, a tail -f), so the
+// footer's shell counter can outlive the turn by hours and the pane alone
+// never proves a shell is finite work. A shell counter keeps the session
+// running only while the transcript shows a pending background Bash launch
+// within backgroundTranscriptHold of its newest launch receipt; pane sightings
+// of the counter never refresh that hold, and neither do they extend a
+// transcript-only shell. Past it, or with no transcript, the counter's
+// monitors (if any) are watching and the session reads as the prompt it
+// shows: waiting / idle with the idle substate. Workflow rows, "Waiting for N
+// … to finish" lines and monitors are unchanged.
 //
 // Precedence with the hook (documented in docs/status-detection.md): the
 // Stop hook writes "waiting" at the end of EVERY foreground turn, including the
@@ -347,22 +360,24 @@ func (sc transcriptBackgroundScan) inFlight() (tmux.BackgroundWork, time.Time) {
 // mergeBackgroundWork applies the merge rule (see the file comment). pane is
 // the pane's in-flight item (zero when none); sc/scOK the transcript scan.
 // paneShown reports whether the pane itself proved the work (the caller
-// stamps that sighting for the transcript hold).
+// stamps that sighting for the transcript hold); never for shells, whose hold
+// runs from their launch alone.
 func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, scOK bool, lastPaneSeen, now time.Time) (work tmux.BackgroundWork, paneShown bool) {
 	if pane.InFlight() && scOK && pane.Kind == tmux.BackgroundKindWorkflow && pane.Steps > 0 &&
 		sc.FinishedWorkflows[pane.Task] && !sc.pendingNamed(tmux.BackgroundKindWorkflow, pane.Task) {
 		// The row outlived its workflow: the task already reported back.
 		pane = tmux.BackgroundWork{}
 	}
+	if pane.Kind == tmux.BackgroundKindBash {
+		pane = settleShellCounter(pane, sc, scOK, now)
+		if pane.Kind == tmux.BackgroundKindBash {
+			return pane, false // proven by its launch, not by this sighting
+		}
+	}
 	if scOK {
 		tx, at := sc.inFlight()
 		if pane.Watching() && tx.Running() && now.Sub(at) <= backgroundTranscriptHold {
 			return tx, false
-		}
-		if count := sc.passiveShellCount(pane.Task, now); pane.Kind == tmux.BackgroundKindBash && count > 0 {
-			pane.Kind = tmux.BackgroundKindWatcher
-			pane.Count = count
-			pane.Source = "pane+transcript"
 		}
 	}
 	if pane.InFlight() {
@@ -382,13 +397,46 @@ func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, 
 	if !tx.InFlight() {
 		return tmux.BackgroundWork{}, false
 	}
-	if lastPaneSeen.After(at) {
+	if lastPaneSeen.After(at) && tx.Kind != tmux.BackgroundKindBash {
 		at = lastPaneSeen
 	}
 	if now.Sub(at) > backgroundTranscriptHold {
 		return tmux.BackgroundWork{}, false
 	}
 	return tx, false
+}
+
+// settleShellCounter decides a footer counter that names shells (the shell
+// rule in the file comment): watcher when fresh sleep-only receipts account
+// for every shell, bash (running) while a pending background Bash launch is
+// inside the hold, else only what the pane proves without its shells.
+func settleShellCounter(pane tmux.BackgroundWork, sc transcriptBackgroundScan, scOK bool, now time.Time) tmux.BackgroundWork {
+	if scOK {
+		if count := sc.passiveShellCount(pane.Task, now); count > 0 {
+			pane.Kind = tmux.BackgroundKindWatcher
+			pane.Count = count
+			pane.Source = "pane+transcript"
+			return pane
+		}
+		if launch, ok := sc.freshShell(now); ok {
+			pane.Task = launch.Name
+			pane.Source = "pane+transcript"
+			return pane
+		}
+	}
+	return pane.WithoutShells()
+}
+
+// freshShell returns the newest pending background Bash launch whose receipt
+// is inside backgroundTranscriptHold.
+func (sc transcriptBackgroundScan) freshShell(now time.Time) (transcriptBackgroundTask, bool) {
+	for idx := len(sc.Pending) - 1; idx >= 0; idx-- {
+		task := sc.Pending[idx]
+		if task.Kind == tmux.BackgroundKindBash && !task.At.IsZero() && now.Sub(task.At) <= backgroundTranscriptHold {
+			return task, true
+		}
+	}
+	return transcriptBackgroundTask{}, false
 }
 
 func (sc transcriptBackgroundScan) passiveCount() int {

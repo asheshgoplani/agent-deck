@@ -151,8 +151,10 @@ func TestMonitorWatchingUntilCountAndAge(t *testing.T) {
 		pane := tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell, 2 monitors", Source: "pane"}
 		got, _ := mergeBackgroundWork(pane, sc, true, time.Time{}, now)
 		if age > backgroundTranscriptHold {
-			if got.Watching() {
-				t.Fatalf("stale receipt hid unknown shell: %+v", got)
+			// A5: a stale receipt proves nothing about the shell, which is no
+			// longer running on the pane's word; the monitors stay watching.
+			if got.Kind != tmux.BackgroundKindMonitor || got.Count != 2 {
+				t.Fatalf("stale receipt = %+v, want the 2 monitors watching", got)
 			}
 		} else if !got.Watching() || got.Count != 3 {
 			t.Fatalf("watcher count = %+v, want 3", got)
