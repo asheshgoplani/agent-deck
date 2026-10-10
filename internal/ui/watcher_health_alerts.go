@@ -60,7 +60,8 @@ func isTriageRoute(routedTo string) bool {
 // again. A watcher that stays in the same state sends nothing further, and a
 // change between warning and error is a new alert. If no conductor can be
 // named, the alert is retried on later reports, so it goes out once routing
-// names one. Called by relayWatcherEngine, off the Bubble Tea loop (#2524).
+// names one. Called by the watcher host's relay, off the Bubble Tea loop
+// (#2524).
 func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
 	prev := h.watcherHealth.get(state.WatcherName)
 

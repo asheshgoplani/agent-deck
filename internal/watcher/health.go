@@ -40,6 +40,11 @@ type HealthState struct {
 
 	// Message is a human-readable explanation for Warning or Error states
 	Message string
+
+	// Undelivered is the routed events of this watcher still waiting in
+	// the send queue for their conductor, per conductor (#2537). Set by the
+	// engine's health loop when it delivers through an Outbox.
+	Undelivered []PendingDelivery `json:",omitempty"`
 }
 
 // HealthTracker is a passive (no goroutine) health monitor for a single watcher.

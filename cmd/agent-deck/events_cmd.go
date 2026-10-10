@@ -109,7 +109,7 @@ func handleEventsFollow(profile string, args []string) {
 	// A client that only follows the bus still gets queued sends that a
 	// reboot left unfinished delivered: their workers restart here.
 	// Read-only: the queue directory is only looked at, never created.
-	recoverFollowerWorkers(profile, *readOnlyFlag, kickPendingSendWorkers)
+	recoverFollowerWorkers(profile, *readOnlyFlag, sendqueue.KickWorkers)
 
 	bus, err := openFollowerBus(*busFlag, *readOnlyFlag)
 	if err != nil {

@@ -106,6 +106,12 @@ type Record struct {
 	// result, kept so `session queue release/cancel` can report what the
 	// harness confirmed instead of a bare state.
 	DeliveryEvidence map[string]interface{} `json:"delivery_evidence,omitempty"`
+	// Key is the idempotency key the send was queued under (EnqueueOnce),
+	// e.g. a routed watcher event's.
+	Key string `json:"key,omitempty"`
+	// WaitWhileStopped: the worker waits for a target that is not running,
+	// until the deadline if there is one, instead of failing the send.
+	WaitWhileStopped bool `json:"wait_while_stopped,omitempty"`
 }
 
 // Final reports whether the worker is done with the record.
@@ -324,6 +330,12 @@ func Prune(dir string, cutoff time.Time) {
 		_ = os.Remove(ControlResultPath(dir, r.SendID))
 		_ = os.Remove(filepath.Join(dir, r.SendID+".message"))
 		_ = os.Remove(filepath.Join(dir, r.SendID+".json"))
+		if r.Key != "" {
+			// The key goes with its record: the same key queues anew after.
+			if b, err := os.ReadFile(KeyPath(dir, r.Key)); err == nil && strings.TrimSpace(string(b)) == r.SendID {
+				_ = os.Remove(KeyPath(dir, r.Key))
+			}
+		}
 	}
 }
 
