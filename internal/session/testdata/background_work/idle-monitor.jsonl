@@ -1,0 +1,3 @@
+{"type":"assistant","timestamp":"2026-10-07T08:00:00Z","message":{"content":[{"type":"tool_use","id":"monitor-use","name":"Monitor","input":{"description":"Observe a fixture event","command":"tail -f /tmp/fixture-events"}}]}}
+{"type":"user","timestamp":"2026-10-07T08:00:00Z","toolUseResult":{"taskId":"fixture-monitor","persistent":true,"timeoutMs":0},"message":{"content":[{"type":"tool_result","tool_use_id":"monitor-use","content":"Monitor started"}]}}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-10-07T08:00:00Z","pendingWorkflowCount":0,"pendingBackgroundAgentCount":0}

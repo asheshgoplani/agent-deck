@@ -40,7 +40,7 @@ func handleMsg(profile string, args []string) {
 	}
 	if err := runMsg(os.Stdout, args, profile); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

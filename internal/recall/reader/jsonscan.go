@@ -16,6 +16,12 @@ import (
 type jsonScanner struct {
 	br  *bufio.Reader
 	off int64 // bytes consumed so far
+	// buf is the one buffer every kept value is read into. It is reused
+	// across values and grows by doubling up to the largest limit asked
+	// for, so a document with several oversize values allocates it once
+	// instead of regrowing a fresh slice (and leaving its discarded
+	// backing arrays as garbage) for each one.
+	buf []byte
 }
 
 var errJSONShape = errors.New("recall: unexpected JSON shape")
@@ -64,26 +70,35 @@ func (s *jsonScanner) expect(want byte) error {
 // value consumes one JSON value and returns its bytes when it is at most
 // limit bytes long; longer values are consumed but not kept (tooLong). A
 // limit of 0 keeps nothing: the value is skipped structurally. start is
-// the value's byte offset in the document and n its length.
+// the value's byte offset in the document and n its length. raw aliases
+// the scanner's buffer: it is valid only until the next call to value.
 func (s *jsonScanner) value(limit int) (raw []byte, start, n int64, tooLong bool, err error) {
 	if _, err = s.skipWS(); err != nil {
 		return nil, 0, 0, false, err
 	}
 	start = s.off
-	var buf []byte
-	if limit > 0 {
-		buf = make([]byte, 0, min(limit, 512))
-	}
+	buf := s.buf[:0]
+	defer func() { s.buf = buf[:0] }()
 	keep := func(b byte) {
 		if tooLong {
 			return
 		}
 		if len(buf) >= limit {
 			tooLong = true
-			buf = nil
 			return
 		}
+		if len(buf) == cap(buf) {
+			grown := make([]byte, len(buf), min(max(2*cap(buf), 512), limit))
+			copy(grown, buf)
+			buf = grown
+		}
 		buf = append(buf, b)
+	}
+	kept := func() []byte {
+		if tooLong {
+			return nil
+		}
+		return buf
 	}
 	depth := 0
 	inStr, esc := false, false
@@ -102,7 +117,7 @@ func (s *jsonScanner) value(limit int) (raw []byte, start, n int64, tooLong bool
 			case b == '"':
 				inStr = false
 				if depth == 0 {
-					return buf, start, s.off - start, tooLong, nil
+					return kept(), start, s.off - start, tooLong, nil
 				}
 			}
 			continue
@@ -115,7 +130,7 @@ func (s *jsonScanner) value(limit int) (raw []byte, start, n int64, tooLong bool
 		case '}', ']':
 			depth--
 			if depth == 0 {
-				return buf, start, s.off - start, tooLong, nil
+				return kept(), start, s.off - start, tooLong, nil
 			}
 			if depth < 0 {
 				return nil, start, s.off - start, tooLong, errJSONShape
@@ -127,14 +142,14 @@ func (s *jsonScanner) value(limit int) (raw []byte, start, n int64, tooLong bool
 				if len(buf) > 0 {
 					buf = buf[:len(buf)-1]
 				}
-				return buf, start, s.off - start, tooLong, s.br.UnreadByte()
+				return kept(), start, s.off - start, tooLong, s.br.UnreadByte()
 			}
 		default:
 			if depth == 0 {
 				// Scalars (numbers, true/false/null) end at whitespace or a
 				// closing bracket of the parent.
 				if next, err := s.br.Peek(1); err == nil && (next[0] == ',' || next[0] == '}' || next[0] == ']' || next[0] == ' ' || next[0] == '\n' || next[0] == '\r' || next[0] == '\t') {
-					return buf, start, s.off - start, tooLong, nil
+					return kept(), start, s.off - start, tooLong, nil
 				}
 			}
 		}

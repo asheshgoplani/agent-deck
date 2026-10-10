@@ -31,7 +31,7 @@ import (
 // trivial and avoids encoding ordering ("text then enter? enter then named?")
 // at the CLI boundary — the TUI calls once per logical key it wants to send.
 func handleSessionSendKeys(profile string, args []string) {
-	fs := flag.NewFlagSet("session send-keys", flag.ExitOnError)
+	fs := flag.NewFlagSet("session send-keys", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	text := fs.String("text", "", "Literal text to type (tmux send-keys -l)")
 	namedKey := fs.String("named-key", "", "Tmux named key (e.g. BSpace, Up, C-c)")
@@ -59,8 +59,8 @@ func handleSessionSendKeys(profile string, args []string) {
 		fmt.Println("  agent-deck session send-keys my-project --enter")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	remaining := fs.Args()
 
@@ -69,7 +69,7 @@ func handleSessionSendKeys(profile string, args []string) {
 	if len(remaining) < 1 {
 		fs.Usage()
 		out.Error("session id or title is required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Validate exactly one dispatch flag (or --stream).
@@ -86,11 +86,11 @@ func handleSessionSendKeys(profile string, args []string) {
 	if *stream {
 		if count != 0 {
 			out.Error("--stream is mutually exclusive with --text/--named-key/--enter", ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	} else if count != 1 {
 		out.Error("exactly one of --text, --named-key, --enter, or --stream required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionRef := remaining[0]
@@ -98,28 +98,28 @@ func handleSessionSendKeys(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(sessionRef, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return
 	}
 
 	if !inst.Exists() {
 		out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	tmuxSess := inst.GetTmuxSession()
 	if tmuxSess == nil {
 		out.Error(fmt.Sprintf("session '%s' has no tmux pane", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	var sink streamKeySink = tmuxSess
 	if *primary {
@@ -140,22 +140,22 @@ func handleSessionSendKeys(profile string, args []string) {
 		// resilient to forward-compatible extensions.
 		if err := runSendKeysStream(os.Stdin, sink); err != nil {
 			out.Error(fmt.Sprintf("send-keys stream: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case *text != "":
 		if err := sink.SendKeys(*text); err != nil {
 			out.Error(fmt.Sprintf("send-keys failed: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case *namedKey != "":
 		if err := sink.SendNamedKey(*namedKey); err != nil {
 			out.Error(fmt.Sprintf("send-named-key failed: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case *sendEnter:
 		if err := sink.SendEnter(); err != nil {
 			out.Error(fmt.Sprintf("send-enter failed: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 

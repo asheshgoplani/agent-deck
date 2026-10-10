@@ -53,12 +53,12 @@ func handleUsage(profile string, args []string) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if flags.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "Unknown usage argument: %s\n", flags.Arg(0))
 		fmt.Fprintln(os.Stderr, usageUsage)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	store := openQuotaStore(profile)
@@ -68,7 +68,7 @@ func handleUsage(profile string, args []string) {
 		encoded, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encoding usage report: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println(string(encoded))
 		return
@@ -86,7 +86,7 @@ func openQuotaStore(profile string) *quota.Store {
 	store, err := resolveQuotaStore(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	return store
 }
@@ -290,7 +290,7 @@ func handleUsageIngest(profile string, args []string) {
 	if args[0] != "claude" {
 		fmt.Fprintf(os.Stderr, "Unknown ingest source: %s\n", args[0])
 		fmt.Fprintln(os.Stderr, usageIngestUsage)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	rest := args[1:]
 	if helpRequested(rest) || (len(rest) > 0 && rest[0] == "help") {
@@ -303,7 +303,7 @@ func handleUsageIngest(profile string, args []string) {
 		if rest[0] != "--" {
 			fmt.Fprintf(os.Stderr, "Unknown ingest argument: %s\n", rest[0])
 			fmt.Fprintln(os.Stderr, usageIngestUsage)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		wrapped = rest[1:]
 	}
@@ -399,9 +399,9 @@ func runWrappedStatusLine(argv []string, payload []byte) {
 	if err := command.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
+			exitCLI(exitErr.ExitCode())
 		}
 		fmt.Fprintf(os.Stderr, "agent-deck: running statusLine command: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }

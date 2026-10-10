@@ -166,7 +166,7 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 	id, err := sendqueue.NextID(dir, now)
 	if err != nil {
 		out.Error(fmt.Sprintf("cannot queue send: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	rec := &sendqueue.Record{
 		SendID: id, State: sendqueue.StateQueued, Verdict: "queued", TargetStatus: status,
@@ -186,7 +186,7 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 	}
 	if err := sendqueue.Save(dir, rec); err != nil {
 		out.Error(fmt.Sprintf("cannot queue send: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// Comms Ledger (P3): reuse the queue's durable sender identity.
 	if ledgerSendAllowed() {
@@ -197,7 +197,7 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 		out.ErrorWithData(fmt.Sprintf("send %s failed: %s", rec.SendID, rec.Reason), ErrCodeDeliveryFailed, queuedSendFields(rec))
 		// After the verdict; the exit code already tells the sender.
 		finishQueuedSend(profile, rec, false)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if err := spawnSendWorker(profile, inst.ID); err != nil {
 		// The record stays queued; the next --queue or send-status for
@@ -293,24 +293,24 @@ func handleSessionSendStatus(profile string, args []string) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 1 {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer storage.Close()
 	dir := sendQueueDir(storage)
 	rec, err := sendqueue.Load(dir, fs.Arg(0))
 	if err != nil {
 		out.Error(fmt.Sprintf("send %s: %v", fs.Arg(0), err), ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if !rec.Final() {
 		// A worker that died (reboot, kill) is restarted by any status read.
@@ -353,11 +353,11 @@ func handleSessionSendWorker(profile string, args []string) {
 	target := fs.String("target", "", "deck session id")
 	watch := fs.String("watch", "", "send id whose transcript is being watched")
 	if err := fs.Parse(args); err != nil || (*target == "" && *watch == "") {
-		os.Exit(2)
+		exitCLI(2)
 	}
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 	dir := sendQueueDir(storage)
 	storage.Close()
@@ -470,6 +470,15 @@ var notSentDeliveries = map[string]bool{
 	deliveryComposerBlocked:   true,
 	deliveryAcceptanceRefused: true,
 }
+
+// codexUnavailableRefusalLimit is how many consecutive "Codex identity
+// provably unavailable" refusals end a queued send. Contention (a busy target,
+// another send's acceptance lock) resolves by waiting; an identity that is
+// still unavailable after a few backed-off attempts does not, so retrying it
+// for the whole budget only hides the failure (#2549: 26 attempts). The first
+// refusals still retry, so a fresh composer that has not taken its thread yet
+// gets about fifteen seconds at the default poll.
+const codexUnavailableRefusalLimit = 5
 
 // classifyChild reads a `session send --json` result. Only a refusal that
 // guarantees nothing was typed may be retried. Every other failure — an open
@@ -645,6 +654,17 @@ func applyChildResult(rec *sendqueue.Record, result map[string]interface{}, code
 			}
 		case childNotSent:
 			r.State, r.Reason, r.Verdict = sendqueue.StateQueued, "retrying: "+reason, "queued"
+			streak := r.UnavailableRefusals + 1
+			r.UnavailableRefusals = 0
+			if unavailable, _ := result["acceptance_unavailable"].(bool); unavailable {
+				r.UnavailableRefusals = streak
+				if r.UnavailableRefusals >= codexUnavailableRefusalLimit {
+					detail, _ := result["error"].(string)
+					r.State, r.Verdict = sendqueue.StateFailed, "unknown"
+					r.Reason = fmt.Sprintf("not delivered: the Codex session identity stayed unavailable for %d attempts (%s); "+
+						"nothing was typed. Restart the session, or resend with --codex-composer-fallback", r.UnavailableRefusals, detail)
+				}
+			}
 		default:
 			r.State, r.Reason, r.Verdict = sendqueue.StateTyped, "outcome unknown ("+reason+"); not retyped, watching the transcript", "unknown"
 		}

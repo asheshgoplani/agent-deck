@@ -280,7 +280,7 @@ func printRemoteSearch(remotes []RemoteSearchResult) {
 
 func recallRemoteCardsOff(out *CLIOutput, verb string) {
 	out.Error(fmt.Sprintf("recall %s: card sync is off: set [recall] remote_cards = true in config.toml (docs/recall.md \"Remote\"); the federated query (recall search --remote) works without it", verb), ErrCodeInvalidOperation)
-	os.Exit(2)
+	exitCLI(2)
 }
 
 func handleRecallExport(profile string, args []string) {
@@ -304,7 +304,7 @@ message body, byte offset, span or filesystem path is ever written. Needs
 	out := NewCLIOutput(*jsonOutput, false)
 	if !*cardsOnly {
 		out.Error("recall export: --cards=false is not a thing; only cards are ever exported", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	env := openRecallEnv(profile, out)
 	defer env.close()
@@ -318,7 +318,7 @@ message body, byte offset, span or filesystem path is ever written. Needs
 			var ts int64
 			if _, serr := fmt.Sscan(*since, &ts); serr != nil || ts <= 0 {
 				out.Error(err.Error(), ErrCodeInvalidOperation)
-				os.Exit(2)
+				exitCLI(2)
 			}
 			t = time.Unix(ts, 0)
 		}
@@ -327,7 +327,7 @@ message body, byte offset, span or filesystem path is ever written. Needs
 	tr, err := cards.Export(os.Stdout, env.st, sinceT, time.Now())
 	if err != nil {
 		out.Error("recall export: "+err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "exported %d session(s), %d card(s), %d artifact(s), %d edge(s)\n", tr.Sessions, tr.Cards, tr.Artifacts, tr.Edges)
@@ -355,20 +355,20 @@ rows are cards only (digest_only) and every listing says so. Needs
 	out := NewCLIOutput(*jsonOutput, false)
 	if strings.TrimSpace(*host) == "" {
 		out.Error(cards.ErrNoHost.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	var in io.Reader = os.Stdin
 	if fs.NArg() == 1 && fs.Arg(0) != "-" {
 		f, err := os.Open(fs.Arg(0))
 		if err != nil {
 			out.Error("recall import: "+err.Error(), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		defer f.Close()
 		in = f
 	} else if fs.NArg() > 1 {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	env := openRecallEnv(profile, out)
 	defer env.close()
@@ -380,7 +380,7 @@ rows are cards only (digest_only) and every listing says so. Needs
 	res, err := cards.Import(in, env.st, *host, time.Now())
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *jsonOutput {
 		out.printJSON(map[string]any{"success": true, "import": res})
@@ -410,7 +410,7 @@ stops at the brief tier.`)
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 1 {
 		fs.Usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	name := fs.Arg(0)
 	env := openRecallEnv(profile, out)
@@ -421,7 +421,7 @@ stops at the brief tier.`)
 	rc, ok := env.cfg.Remotes[name]
 	if !ok {
 		out.Error(fmt.Sprintf("remote %q not found", name), ErrCodeNotFound)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	exportArgs := []string{"recall", "export", "--cards"}
 	if !*full {
@@ -437,24 +437,24 @@ stops at the brief tier.`)
 			version, _ := runner.CheckBinary(ctx)
 			if *jsonOutput {
 				_, _ = os.Stdout.Write(remoteRecallUnsupportedJSON(name, version, reason))
-				os.Exit(1)
+				exitCLI(1)
 			}
 			out.Error(remoteRecallUnsupportedMessage(name, version, reason), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		if strings.Contains(string(stdout)+err.Error(), "card sync is off") {
 			out.Error(fmt.Sprintf("remote %q has [recall] remote_cards = false; nothing was pulled", name), ErrCodeInvalidOperation)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		out.Error(fmt.Sprintf("recall pull %s: %v", name, err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	release := env.lock(out)
 	defer release()
 	res, err := cards.Import(bytes.NewReader(stdout), env.st, name, time.Now())
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *jsonOutput {
 		out.printJSON(map[string]any{"success": true, "import": res})

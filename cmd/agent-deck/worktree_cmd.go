@@ -31,13 +31,13 @@ func handleWorktree(profile string, args []string) {
 	case "finish":
 		handleWorktreeFinish(profile, args[1:])
 	case "trust-hooks", "trust-scripts": // trust-scripts: pre-1.16.22 name
-		os.Exit(runWorktreeTrustHooks(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinStdoutIsTerminal()))
+		exitCLI(runWorktreeTrustHooks(args[1:], os.Stdin, os.Stdout, os.Stderr, stdinStdoutIsTerminal()))
 	case "help", "-h", "--help":
 		printWorktreeUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown worktree command: %s\n", args[0])
 		printWorktreeUsage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -222,7 +222,7 @@ func runWorktreeTrustHooks(args []string, in io.Reader, out, errOut io.Writer, i
 
 // handleWorktreeList lists all worktrees with session associations
 func handleWorktreeList(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree list", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -234,8 +234,8 @@ func handleWorktreeList(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, false)
@@ -244,13 +244,13 @@ func handleWorktreeList(profile string, args []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to get current directory: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	backend, err := detectAndCreateBackend(cwd)
 	if err != nil {
 		out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	repoRoot := backend.RepoDir()
 
@@ -258,14 +258,14 @@ func handleWorktreeList(profile string, args []string) {
 	worktrees, err := backend.ListWorktrees()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to list worktrees: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load sessions
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Build session map: LOCAL path -> session. A remote session contributes
@@ -349,7 +349,7 @@ func handleWorktreeList(profile string, args []string) {
 
 // handleWorktreeInfo shows worktree info for a specific session
 func handleWorktreeInfo(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree info", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree info", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -364,8 +364,8 @@ func handleWorktreeInfo(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -375,28 +375,28 @@ func handleWorktreeInfo(profile string, args []string) {
 		out.Error("session identifier is required", ErrCodeNotFound)
 		fmt.Println()
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load sessions
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(1)
+		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
 	// Check if session has worktree info
 	if !inst.IsWorktree() {
 		out.Error(fmt.Sprintf("session '%s' is not in a worktree", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Check if worktree still exists
@@ -432,7 +432,7 @@ func handleWorktreeInfo(profile string, args []string) {
 
 // handleWorktreeCleanup finds and removes orphaned worktrees and sessions
 func handleWorktreeCleanup(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree cleanup", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree cleanup", flag.ContinueOnError)
 	force := fs.Bool("force", false, "Actually remove orphans (default is dry-run)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
@@ -452,8 +452,8 @@ func handleWorktreeCleanup(profile string, args []string) {
 		fmt.Println("Use --force to actually perform the cleanup.")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, false)
@@ -462,7 +462,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Find orphaned sessions (WorktreePath set but directory doesn't exist)
@@ -479,7 +479,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to get current directory: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Find orphaned worktrees (exist but no session points to them)
@@ -498,7 +498,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 			sessionPaths, err := allProfileSessionPaths(profile, instances)
 			if err != nil {
 				out.Error(err.Error(), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 
 			orphanedWorktrees, protectedWorktrees = classifyUnregisteredWorktrees(worktrees, sessionPaths)
@@ -622,7 +622,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 		// Save updated session data
 		if err := saveSessionData(storage, remaining, groups); err != nil {
 			out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -662,7 +662,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 
 // handleWorktreeFinish merges a worktree branch, removes the worktree, and deletes the session
 func handleWorktreeFinish(profile string, args []string) {
-	fs := flag.NewFlagSet("worktree finish", flag.ExitOnError)
+	fs := flag.NewFlagSet("worktree finish", flag.ContinueOnError)
 	into := fs.String("into", "", "Target branch to merge into (default: auto-detect)")
 	noMerge := fs.Bool("no-merge", false, "Skip merge (e.g. for PR workflows)")
 	keepBranch := fs.Bool("keep-branch", false, "Don't delete local branch after finish")
@@ -687,8 +687,8 @@ func handleWorktreeFinish(profile string, args []string) {
 		fmt.Println("  agent-deck worktree finish \"My Feature\" --no-merge --force")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
@@ -698,28 +698,28 @@ func handleWorktreeFinish(profile string, args []string) {
 		out.Error("session identifier is required", ErrCodeNotFound)
 		fmt.Println()
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load sessions
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Resolve session
 	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(1)
+		exitCLI(1)
 		return
 	}
 
 	// Validate it's a worktree session
 	if !inst.IsWorktree() {
 		out.Error(fmt.Sprintf("session '%s' is not in a worktree", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	repoRoot := inst.WorktreeRepoRoot
@@ -729,7 +729,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	finishBackend, err := detectAndCreateBackend(repoRoot)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize VCS: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Check for uncommitted changes (uses worktree path, not repoDir — stays standalone)
@@ -742,12 +742,12 @@ func handleWorktreeFinish(profile string, args []string) {
 				dirty = false
 			} else {
 				out.Error(fmt.Sprintf("failed to check worktree status: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		}
 		if dirty {
 			out.Error("worktree has uncommitted changes (use --force to override)", ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -757,14 +757,14 @@ func handleWorktreeFinish(profile string, args []string) {
 		targetBranch, err = finishBackend.GetDefaultBranch()
 		if err != nil {
 			out.Error(fmt.Sprintf("could not determine target branch: %v\nUse --into <branch> to specify", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
 	// Validate target != source
 	if !*noMerge && targetBranch == worktreeBranch {
 		out.Error(fmt.Sprintf("cannot merge branch '%s' into itself", worktreeBranch), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Show summary and confirm
@@ -804,7 +804,7 @@ func handleWorktreeFinish(profile string, args []string) {
 		checkoutOutput, err := cmd.CombinedOutput()
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to checkout %s: %s", targetBranch, strings.TrimSpace(string(checkoutOutput))), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 
 		// Merge the worktree branch
@@ -815,7 +815,7 @@ func handleWorktreeFinish(profile string, args []string) {
 				_ = abortCmd.Run()
 			}
 			out.Error(fmt.Sprintf("merge failed (aborted): %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Printf("  %s Merged successfully\n", successSymbol)
 	}
@@ -860,7 +860,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
 	if err := storage.RemoveSessionAndVerify(inst.ID, remaining, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Issue #1576: sweep transition-notifier state for the removed session,

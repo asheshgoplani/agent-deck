@@ -39,11 +39,11 @@ func remoteTurnCounts(t *testing.T, f *turnTestFixture) (journal, legacy, cursor
 	if err != nil {
 		t.Fatal(err)
 	}
-	full, err := ExportPendingRecords()
+	full, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exp, err := ExportRecordsAfter(RemoteCursor{})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}

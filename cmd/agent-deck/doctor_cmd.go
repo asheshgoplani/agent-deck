@@ -28,16 +28,16 @@ func handleDoctor(args []string) {
 		if err == flag.ErrHelp {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "doctor does not accept positional arguments")
-		os.Exit(2)
+		exitCLI(2)
 	}
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: load config: %q\n", err.Error())
-		os.Exit(1)
+		exitCLI(1)
 	}
 	runtimeHealth, err := readRuntimeHealth("", time.Hour)
 	if err != nil {
@@ -82,7 +82,7 @@ func handleDoctor(args []string) {
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encode diagnostics: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}

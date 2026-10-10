@@ -5422,7 +5422,7 @@ const bgWorkCacheTTL = 500 * time.Millisecond
 // background work in flight. See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
 	work, blocked, _ := s.BackgroundWorkSince(time.Time{})
-	return work.InFlight() && !blocked
+	return work.Running() && !blocked
 }
 
 // BackgroundWorkSince returns the background work (issue #2473) a Claude
@@ -5523,7 +5523,7 @@ func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64
 		return false
 	}
 	stripped := StripANSI(content)
-	if !s.lastBackgroundWork.InFlight() && !claudeBackgroundWorkPending(stripped) {
+	if !s.lastBackgroundWork.Running() && !claudeBackgroundWorkPending(stripped) {
 		return false
 	}
 	// An open menu or an error outranks background work: the frame stays
@@ -5622,6 +5622,44 @@ func hasInterruptBusyContext(lines []string, phrase string, spinnerChars []strin
 	return false
 }
 
+// isOpenCodeBlockArtLine recognizes rows made only of logo blocks and spaces.
+// Solid or shaded pulses remain possible live spinners. Logo rows also
+// contain partial blocks (such as ▀), which distinguish them from those pulses.
+func isOpenCodeBlockArtLine(line string) bool {
+	blocks := 0
+	hasPartialBlock := false
+	for _, r := range strings.TrimSpace(StripANSI(line)) {
+		switch {
+		case r == ' ' || r == '\t':
+		case r >= '▀' && r <= '▟' && r != '░' && r != '▒' && r != '▓':
+			blocks++
+			hasPartialBlock = hasPartialBlock || r != '█'
+		default:
+			return false
+		}
+	}
+	return blocks > 1 && hasPartialBlock
+}
+
+// blankOpenCodeBlockArtLines empties OpenCode logo rows so the spinner scan
+// does not read the welcome logo as a pulse frame.
+func blankOpenCodeBlockArtLines(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if isOpenCodeBlockArtLine(line) {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// hasOpenCodeQuestionUI reports whether OpenCode's question or permission help
+// bar ("enter submit", "esc dismiss") is visible near the bottom of the pane.
+func hasOpenCodeQuestionUI(content string) bool {
+	recent := strings.ToLower(StripANSI(strings.Join(lastNLines(content, 25), "\n")))
+	return strings.Contains(recent, "enter submit") || strings.Contains(recent, "esc dismiss")
+}
+
 // hasBusyIndicatorResolved detects active work with a pattern-first strategy:
 //  1. Busy regex/string patterns (tool-specific, e.g. Claude ellipsis/interrupt lines)
 //  2. Spinner fallback (strict for Claude; permissive for other tools)
@@ -5646,8 +5684,14 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 		spinnerChars = patterns.SpinnerChars
 	}
 
-	// Find spinner in terminal content
-	char, spinnerLine, found := findSpinnerInContent(content, spinnerChars)
+	// Find spinner in terminal content. OpenCode's welcome logo uses the same
+	// full blocks as its pulse spinner, so its block-art rows are left out of
+	// the spinner scan only; busy patterns below still see the whole pane.
+	spinnerContent := content
+	if strings.EqualFold(tool, "opencode") {
+		spinnerContent = blankOpenCodeBlockArtLines(content)
+	}
+	char, spinnerLine, found := findSpinnerInContent(spinnerContent, spinnerChars)
 
 	// Get or create spinner tracker
 	s.ensureStateTrackerLocked()
@@ -5664,8 +5708,12 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	if patterns != nil {
 		recentLines := lastNLines(content, 25)
 		recentContent := strings.Join(recentLines, "\n")
+		regexContent := recentContent
+		if tool == "pi" {
+			regexContent = piBusyPatternContent(content)
+		}
 		for _, re := range patterns.BusyRegexps {
-			if re.MatchString(recentContent) {
+			if re.MatchString(regexContent) {
 				tracker.MarkBusy()
 				statusLog.Debug(
 					"busy_pattern_match",
@@ -5705,6 +5753,15 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 		}
 	}
 	isClaude := strings.EqualFold(tool, "claude")
+
+	// OpenCode's question and permission UI can draw pulse glyphs in static
+	// progress bars (#255). That UI waits for the user, so its help bar makes
+	// the glyphs decorative. Busy patterns above remain authoritative. The
+	// composer placeholder ("Ask anything") stays visible while OpenCode works,
+	// so it must not hide a live pulse.
+	if found && strings.EqualFold(tool, "opencode") && hasOpenCodeQuestionUI(content) {
+		found = false
+	}
 
 	if found {
 		// For Claude, braille spinner frames are authoritative.
@@ -5910,8 +5967,8 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	// foreground cue (running), an error, or an open menu keeps its verdict.
 	if s.isClaudeTool() && s.lastBackgroundWork.InFlight() && !s.lastBackgroundBlocked {
 		switch s.lastSubstate {
-		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork:
-			s.lastSubstate = SubstateBackgroundWork
+		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching:
+			s.lastSubstate = s.lastBackgroundWork.Substate()
 			s.lastSubstateDetail = s.lastBackgroundWork.Summary()
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 )
 
@@ -47,8 +48,10 @@ type EventDef struct {
 }
 
 const (
-	shipsNow   = "1.16.18"
-	shipsLater = "1.16.19+"
+	shipsNow = "1.16.18"
+	// shipsLater marks Tier 2/3 events that are specified but have no call
+	// site in any release yet; the catalog publishes them as planned.
+	shipsLater = "planned"
 	toolOther  = "other"
 )
 
@@ -71,11 +74,11 @@ var (
 	toolValues      = append(append([]string{}, toolBits...), toolOther)
 	startKinds      = []string{"first_ever", "normal", "after_update", "after_crash"}
 	exitKinds       = []string{"quit", "signal", "update_restart", "panic"}
-	createVias      = []string{"tui_new", "tui_fork", "tui_quick", "cli_add", "cli_launch", "try", "fleet", "conductor", "web"}
+	createVias      = []string{"tui_new", "tui_fork", "tui_quick", "cli_add", "cli_fork", "cli_launch", "try", "fleet", "conductor", "web"}
 	endKinds        = []string{"stop", "delete", "tool_exit", "crash", "restart"}
 	sendVias        = []string{"tui", "cli_send", "conductor", "inbox", "telegram", "web"}
 	attachVias      = []string{"tui", "cli", "web", "remote"}
-	errorAreas      = []string{"tmux", "session_start", "send", "worktree", "mcp", "remote", "update", "config", "hook", "db", "web", "conductor", "telemetry"}
+	errorAreas      = []string{"tmux", "session_start", "send", "worktree", "mcp", "remote", "update", "config", "hook", "db", "web", "conductor", "telemetry", "tui"}
 	errorKinds      = []string{"tmux_missing", "tmux_too_old", "tool_not_found", "tool_auth", "worktree_dirty", "mcp_spawn_failed", "ssh_auth", "ssh_unreachable", "config_parse", "db_locked", "timeout", "permission", "disk_full", "panic", "other"}
 	updateKinds     = []string{"auto", "manual", "timer", "remote_sweep"}
 	updateOutcomes  = []string{"ok", "error", "rolled_back"}
@@ -101,22 +104,24 @@ var (
 	keybindActions  = []string{"new_session", "quick_new", "fork", "delete", "restart", "rename", "move", "attach", "search", "filter", "group_create", "mcp_manager", "skill_manager", "settings", "help", "send", "preview_toggle", "worktree_finish", "collapse_group", "quit", "other"}
 	perfOps         = []string{"tui_start", "session_start", "list", "status_poll"}
 	panicTypes      = []string{"nil_deref", "index", "slice", "map_concurrent", "closed_chan", "custom", "other"}
-	actorValues     = []string{"human", "agent"}
+	actorValues     = []string{"human", "agent"} // recorded events; see rollupActor
 	osValues        = []string{"darwin", "linux", "freebsd", "openbsd", "netbsd", "windows", "other"}
 	archValues      = []string{"amd64", "arm64", "386", "arm", "riscv64", "other"}
-	surfaceValues   = []string{"tui", "cli", "web"}
+	surfaceValues   = []string{"tui", "cli", "web"} // recorded events; see rollupSurface
 	levelValues     = []string{"full", "basic"}
 	onboardingSteps = append([]string{"none"}, milestoneNames[:6]...)
 )
 
 // FeatureValues is the feature enum (feature.daily). "creds_refresh" is
 // deprecated: the command was removed, but older clients still send it, so it
-// stays valid here.
+// stays valid here. "fleet_launch" is likewise kept for older clients, which
+// sent it for `agent-deck fleet`; that command is counted as fleet_status or
+// fleet_recover now.
 var FeatureValues = []string{
 	"fork", "restart", "restart_all", "rename", "move_group", "group_create", "search", "filter",
 	"worktree_create", "worktree_finish", "mcp_attach", "mcp_detach", "skill_attach", "plugin_install",
 	"session_send", "send_keys", "send_queue", "session_children", "session_handoff", "session_context",
-	"session_annotate", "session_approve", "inbox_drain", "fleet_launch", "launch", "try", "conductor_start",
+	"session_annotate", "session_approve", "inbox_drain", "fleet_launch", "fleet_status", "fleet_recover", "launch", "try", "conductor_start",
 	"conductor_telegram", "watcher", "remote_add", "remote_attach", "remote_agent", "recall_search",
 	"recall_timeline", "costs", "usage", "limits", "accounts_switch", "creds_refresh", "web_ui", "daemon",
 	"notify_daemon", "openclaw", "deepseek", "harness", "doctor", "health", "update", "migrate_paths",
@@ -137,19 +142,27 @@ var (
 	propOutcome   = enum("outcome", outcomes...)
 )
 
+// A daily rollup aggregates every actor and surface of its day (the split is
+// in usage.daily's own properties), so it carries these neutral envelope
+// values. They are never valid on a recorded (spooled) event.
+const (
+	rollupActor   = "mixed"
+	rollupSurface = "rollup"
+)
+
 // Envelope lists the properties added to every event by the client.
 var Envelope = []Prop{
 	{Key: "install_id", Kind: KindHash, HexLen: 32, Doc: "random, created on consent, rotatable; sent as PostHog distinct_id"},
 	{Key: "schema", Kind: KindInt, Min: SchemaVersion, Max: SchemaVersion, Doc: "constant"},
-	{Key: "v", Kind: KindPattern, Pattern: reVersion, Doc: "release X.Y.Z or dev"},
+	{Key: "v", Kind: KindPattern, Pattern: reVersion, Doc: "release X.Y.Z or dev; on daily rollups, the release that last recorded that day"},
 	enum("os", osValues...).doc("Go GOOS; no OS version"),
 	enum("arch", archValues...).doc("Go GOARCH"),
 	{Key: "day", Kind: KindPattern, Pattern: reDay, Doc: "local YYYY-MM-DD"},
 	{Key: "hour_local", Kind: KindInt, Min: 0, Max: 23, Doc: "local hour; omitted at level basic"},
 	{Key: "weekday_local", Kind: KindInt, Min: 0, Max: 6, Doc: "0 = Sunday; omitted at level basic"},
 	{Key: "seq", Kind: KindInt, Min: 0, Max: 1 << 30, Doc: "per-install counter, ordering only, resets on reset-id"},
-	enum("actor", actorValues...).doc("human (TTY, not in a session) or agent (TTY inside an agent session)"),
-	enum("surface", surfaceValues...),
+	enum("actor", slices.Concat(actorValues, []string{rollupActor})...).doc("human (TTY, not in a session) or agent (TTY inside an agent session); mixed on daily rollups"),
+	enum("surface", slices.Concat(surfaceValues, []string{rollupSurface})...).doc("rollup on daily rollups"),
 	enum("level", levelValues...),
 	bucket("install_age", BucketAge).doc("from the local first-seen day; the date is never sent"),
 	{Key: "install_week", Kind: KindPattern, Pattern: reWeek, Doc: "ISO week of first seen, e.g. 2026-W39"},
@@ -190,7 +203,7 @@ var Events = []EventDef{
 		Props:   []Prop{propTool, enum("via", attachVias...), bucket("count", BucketN), bucket("total_dur", BucketDur)},
 		Emitted: "one per (tool, via) that day", Question: "Time inside sessions vs on the dashboard"},
 	{Name: "error", Tier: 1, Ships: shipsNow,
-		Props: []Prop{enum("area", errorAreas...), enum("kind", errorKinds...), propTool, boolean("before_first_success"),
+		Props: []Prop{enum("area", errorAreas...).doc("tui means a recovered TUI panic or a terminal the TUI could not set up"), enum("kind", errorKinds...), propTool, boolean("before_first_success"),
 			enum("onboarding_step", onboardingSteps...)},
 		Emitted: "per occurrence, deduped per (area, kind) per hour, max 20/day", Question: "Top errors, regressions per version"},
 	{Name: "update", Tier: 1, Ships: shipsNow,
@@ -208,7 +221,7 @@ var Events = []EventDef{
 	{Name: "onboard.baseline", Tier: 1, Ships: shipsNow,
 		Props: []Prop{enum("install_method", installMethods...), boolean("tmux_ok"), bitmask("tools_found", 32), boolean("had_config"),
 			bitmask("milestones_before", 16), bucket("sessions_total", BucketN)},
-		Emitted: "once, right after consent, computed from existing local state", Question: "What a new install looks like; how far upgraders got"},
+		Emitted: "once per install id, right after its first consent, computed from existing local state", Question: "What a new install looks like; how far upgraders got"},
 	{Name: "onboard.milestone", Tier: 1, Ships: shipsNow,
 		Props:   []Prop{enum("step", milestoneNames...), propTool, enum("via", createVias...), bucket("since", BucketSince), boolean("before_consent")},
 		Emitted: "the first time each funnel step is reached", Question: "Time to first value, where people get stuck"},

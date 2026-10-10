@@ -41,7 +41,7 @@ genuine no-human-behind-it submissions).
 
 | Criterion | What it does | How you pre-pass it |
 |---|---|---|
-| Build + test | applies your diff, builds, runs touched packages sandboxed | `self-check.sh` runs the identical invocation: `HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...` |
+| Build + test | applies your diff, builds, runs touched packages sandboxed | `self-check.sh` runs the identical invocation: `HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...`, inside a container only; on a host it prints the `docker run` command instead |
 | **Revert-check (centerpiece)** | reverts your non-test hunks and re-runs your tests; a test that still passes proves nothing | write the test first, watch it fail, then fix; `self-check.sh` automates this and put the result in `## Evidence` |
 | Diff-coverage spot-check | which changed hunks are exercised by ANY test; untested hunks become named flags | every changed hunk behind at least one test, or say in the body why a hunk is untestable |
 

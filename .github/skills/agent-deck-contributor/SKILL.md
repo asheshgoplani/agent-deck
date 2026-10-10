@@ -141,6 +141,14 @@ For a bug fix, include the local manifest produced by deck-repro:
 REPRO_REPORT=/path/to/report.json .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
 ```
 
+`go test` (the sandboxed tests and the revert-check) runs only inside a container,
+because agent-deck tests start real tmux servers and processes. The script detects
+`/.dockerenv`, `/run/.containerenv` or `AGENTDECK_TEST_CONTAINER=1`. On a host it
+still runs gofmt, vet and build, reports both test checks as WARN, and prints the
+exact `docker run` command (read-only source mount, throwaway HOME) that reruns it
+inside a container. Run that command before opening; set `SELF_CHECK_IMAGE` to use
+your own image instead of `golang:<version>`.
+
 The receipt validator requires `fixed` for this bug-fix gate and checks artifact integrity; it does
 not execute commands from the manifest or replace a review of the evidence.
 Leave private logs local and put only sanitized evidence in the PR body.

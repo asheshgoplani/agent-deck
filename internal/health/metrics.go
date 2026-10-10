@@ -163,12 +163,21 @@ func (f sessionFold) classifiedSends() int {
 	return f.sends.Confirmed + f.sends.Unconfirmed + f.sends.Failed
 }
 
+// foldSession makes one pass over a session's time-ordered events. Status
+// records whose From equals To (substate-only changes) still count as events
+// but never open, close or split a turn or a waiting span (issue #2525). An
+// open waiting span is closed at until.
 func foldSession(events []Event, until time.Time) sessionFold {
 	var f sessionFold
 	var runStart, waitStart time.Time
 	for i, e := range events {
 		switch e.Kind {
 		case KindStatus:
+			// The daemon also journals substate-only changes. They are not
+			// coarse status boundaries and must not reset or finish a turn.
+			if e.From == e.To {
+				continue
+			}
 			if !waitStart.IsZero() {
 				f.waiting += e.TS.Sub(waitStart)
 				waitStart = time.Time{}

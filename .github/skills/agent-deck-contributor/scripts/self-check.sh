@@ -13,9 +13,20 @@
 #          FULL_TESTS=1           run the whole suite, not just touched packages
 #          LINKED_ISSUE=<n|url>   set when a >3000-line diff has an agreed issue/Discussion
 #          SKIP_REVERT_CHECK=1    skip the revert-check (e.g. pure test-infra PRs)
+#          AGENTDECK_TEST_CONTAINER=1  declare that this runs inside a container
+#          SELF_CHECK_IMAGE=<img> image for the printed Docker command (default golang:<go.mod version>)
+#          SELF_CHECK_CONTAINER_MARKERS="<paths>"  marker files that prove a container;
+#                                 default "/.dockerenv /run/.containerenv". Test hook only:
+#                                 tests point it at a temp path to fake or hide a container.
+#
+# Container guard: go test (sandboxed tests and the revert-check) runs only inside
+# a container. agent-deck tests start real tmux servers and processes, so on a host
+# they can touch your live sessions. Outside a container both checks report WARN,
+# never PASS, and the script prints the exact Docker command that reruns it inside
+# one. gofmt, vet and build still run on the host.
 #
 # Needs: git, grep, awk, perl. Go checks are skipped automatically on non-Go diffs.
-# Exit 0 = no FAIL.
+# Exit 0 = no FAIL. Tests skipped by the container guard are WARN, not FAIL.
 
 set -u
 
@@ -48,6 +59,47 @@ ADDED_CODE=$(git diff "$MB" HEAD -- . ':!*.md' ":!$SELF_REL" | grep '^+' | grep 
 
 HAVE_GO=1
 command -v go >/dev/null 2>&1 || HAVE_GO=0
+
+in_container() {
+  [ "${AGENTDECK_TEST_CONTAINER:-0}" = 1 ] && return 0
+  for m in ${SELF_CHECK_CONTAINER_MARKERS-/.dockerenv /run/.containerenv}; do
+    [ -e "$m" ] && return 0
+  done
+  return 1
+}
+IN_CONTAINER=0
+in_container && IN_CONTAINER=1
+TESTS_GATED=0
+NO_CONTAINER_MSG="not run: no container detected; go test only runs in a container, use the Docker command printed below"
+
+# Print a copy-paste command that reruns this script inside a throwaway container:
+# read-only source mount copied to /tmp, throwaway HOME and XDG dirs.
+docker_command() {
+  local img gover body_mount="" body_arg="" common_mount="" envs="" v
+  gover=$(awk '$1 == "go" { split($2, p, "."); print p[1] "." p[2]; exit }' "$ROOT/go.mod" 2>/dev/null)
+  img="${SELF_CHECK_IMAGE:-golang:${gover:-latest}}"
+  if [ -f "$BODY_FILE" ]; then
+    body_mount=" --mount type=bind,src=$(printf '%q' "$(cd "$(dirname "$BODY_FILE")" && pwd)/$(basename "$BODY_FILE")"),dst=/tmp/pr-body.md,readonly"
+    body_arg=" /tmp/pr-body.md"
+  fi
+  # A linked worktree's .git file points into the main clone's git dir: mount it at the same path.
+  local gitdir commondir
+  gitdir=$(cd "$(git rev-parse --git-dir)" && pwd); commondir=$(cd "$(git rev-parse --git-common-dir)" && pwd)
+  if [ "$gitdir" != "$commondir" ]; then
+    common_mount=" --mount type=bind,src=$(printf '%q' "$commondir"),dst=$(printf '%q' "$commondir"),readonly"
+  fi
+  for v in FULL_TESTS LINKED_ISSUE SKIP_REVERT_CHECK; do
+    [ -n "${!v:-}" ] && envs="$envs -e $v=$(printf '%q' "${!v}")"
+  done
+  printf '  docker run --rm \\\n'
+  printf '    --mount type=bind,src=%s,dst=/src,readonly%s%s \\\n' "$(printf '%q' "$ROOT")" "$common_mount" "$body_mount"
+  printf '    -e AGENTDECK_TEST_CONTAINER=1 -e HOME=/tmp/home -e XDG_CONFIG_HOME=/tmp/xdg/config \\\n'
+  printf '    -e XDG_DATA_HOME=/tmp/xdg/data -e XDG_CACHE_HOME=/tmp/xdg/cache -e XDG_STATE_HOME=/tmp/xdg/state \\\n'
+  printf "    -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \\\\\n"
+  printf '    -e BASE_REF=%s%s \\\n' "$(printf '%q' "$BASE_REF")" "$envs"
+  printf "    %s bash -c 'mkdir -p \"\$HOME\" && cp -R /src /tmp/src && cd /tmp/src && (command -v tmux >/dev/null || (apt-get update -qq && apt-get install -y -qq tmux >/dev/null)) && %s%s'\n" \
+    "$img" "$SELF_REL" "$body_arg"
+}
 
 # Sandbox: throwaway HOME + cleared XDG, but keep Go caches so runs stay fast.
 SANDBOX_HOME=$(mktemp -d)
@@ -87,7 +139,9 @@ if [ -n "$GO_CHANGED" ] && [ "$HAVE_GO" = 1 ]; then
   else
     PKGS=$(printf '%s\n' "$GO_CHANGED" | xargs -n1 dirname | sort -u | sed 's|^|./|' | tr '\n' ' ')
   fi
-  if OUT=$(sandboxed go test $PKGS 2>&1); then PASS sandboxed-tests "$PKGS"
+  if [ "$IN_CONTAINER" != 1 ]; then
+    WARN sandboxed-tests "$NO_CONTAINER_MSG"; TESTS_GATED=1
+  elif OUT=$(sandboxed go test $PKGS 2>&1); then PASS sandboxed-tests "$PKGS"
   else FAIL sandboxed-tests "$(echo "$OUT" | grep -E '^(--- FAIL|FAIL|# )' | head -5 | tr '\n' ' | ')"; fi
 
   # 5. a test exists for production changes, in a package you actually touched
@@ -107,7 +161,9 @@ if [ -n "$GO_CHANGED" ] && [ "$HAVE_GO" = 1 ]; then
 
   # 6. revert-check — your changed tests must FAIL on the base without your fix.
   #    (Mirrors the correctness lens: revert the core hunks, re-run the tests.)
-  if [ -n "$GO_PROD_CHANGED" ] && [ -n "$GO_TESTS_CHANGED" ] && [ "${SKIP_REVERT_CHECK:-0}" != 1 ]; then
+  if [ -n "$GO_PROD_CHANGED" ] && [ -n "$GO_TESTS_CHANGED" ] && [ "${SKIP_REVERT_CHECK:-0}" != 1 ] && [ "$IN_CONTAINER" != 1 ]; then
+    WARN revert-check "$NO_CONTAINER_MSG"; TESTS_GATED=1
+  elif [ -n "$GO_PROD_CHANGED" ] && [ -n "$GO_TESTS_CHANGED" ] && [ "${SKIP_REVERT_CHECK:-0}" != 1 ]; then
     WT=$(mktemp -d)/wt
     if git worktree add -q "$WT" "$MB" 2>/dev/null; then
       RC_OK=1
@@ -292,6 +348,11 @@ else
 fi
 
 # ----------------------------------------------------------------- summary
+if [ "$TESTS_GATED" = 1 ]; then
+  echo
+  echo "go test was NOT run on this host. Rerun this check inside a container:"
+  docker_command
+fi
 echo
 echo "== summary: $pass PASS, $fail FAIL, $warn WARN, $skip skipped =="
 if [ "$fail" -gt 0 ]; then
@@ -301,5 +362,9 @@ fi
 if [ "$warn" -gt 0 ]; then
   echo "Resolve each WARN or explain it honestly in the PR body — stated imperfections pass; silent ones become review flags."
 fi
-echo "Ready to open. Use the PR body you just linted, marker line last."
+if [ "$TESTS_GATED" = 1 ]; then
+  echo "Not ready yet: go test has not run. Run the Docker command above, then open."
+else
+  echo "Ready to open. Use the PR body you just linted, marker line last."
+fi
 exit 0

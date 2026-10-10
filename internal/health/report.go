@@ -25,8 +25,11 @@ type ProcessReport struct {
 	Flags  []string                `json:"flags"`
 }
 type Budgets struct {
-	StatusPassMS        float64 `json:"status_pass_ms_exclusive"`
-	OpenFDs             int     `json:"open_fds_exclusive"`
+	StatusPassMS float64 `json:"status_pass_ms_exclusive"`
+	OpenFDs      int     `json:"open_fds_exclusive"`
+	// OpenFDsPerSession is added to OpenFDs for each session the process
+	// manages (capped at four fifths of its RLIMIT_NOFILE).
+	OpenFDsPerSession   int     `json:"open_fds_per_session"`
 	TmuxCallsPerSession int     `json:"tmux_calls_per_session"`
 	RemotePollMS        float64 `json:"remote_poll_ms_exclusive"`
 	// OpenFDsSupport is OpenFDsSampled when any sample in the window counted
@@ -106,7 +109,7 @@ func numeric(s Sample) map[string]float64 {
 // final line. Missing and corrupt data are explicitly reported as unknown.
 func Report(dir string, since time.Duration) (Summary, error) {
 	now := time.Now().UTC()
-	result := Summary{Budgets: Budgets{StatusPassMS: float64(StatusPassBudget / time.Millisecond), OpenFDs: DescriptorBudget, TmuxCallsPerSession: 2, RemotePollMS: float64(RemotePollBudget / time.Millisecond)}, Version: 1, Since: now.Add(-since), Processes: []ProcessReport{}, Flags: []string{}}
+	result := Summary{Budgets: Budgets{StatusPassMS: float64(StatusPassBudget / time.Millisecond), OpenFDs: DescriptorBudget, OpenFDsPerSession: DescriptorsPerSession, TmuxCallsPerSession: 2, RemotePollMS: float64(RemotePollBudget / time.Millisecond)}, Version: 1, Since: now.Add(-since), Processes: []ProcessReport{}, Flags: []string{}}
 	if since <= 0 {
 		return result, fmt.Errorf("since must be a positive duration")
 	}
@@ -175,6 +178,9 @@ func Report(dir string, since time.Duration) (Summary, error) {
 		values := map[string][]float64{}
 		flagSet := map[string]bool{}
 		add := func(s string) { flagSet[s] = true }
+		// worstFDs is the sample furthest over its descriptor budget.
+		var worstFDs *Sample
+		worstOver := 0
 		for _, s := range samples {
 			for name, value := range numeric(s) {
 				values[name] = append(values[name], value)
@@ -182,8 +188,11 @@ func Report(dir string, since time.Duration) (Summary, error) {
 			if s.StatusPassMS != nil && *s.StatusPassMS >= float64(StatusPassBudget/time.Millisecond) {
 				add("status pass exceeds 250 ms budget")
 			}
-			if s.OpenFDs != nil && *s.OpenFDs >= DescriptorBudget {
-				add("descriptor count exceeds 512 budget")
+			if s.OpenFDs != nil {
+				if over := *s.OpenFDs - descriptorBudgetOf(s); over >= 0 && (worstFDs == nil || over > worstOver) {
+					worst := s
+					worstFDs, worstOver = &worst, over
+				}
 			}
 			sampledFDs = sampledFDs || s.OpenFDs != nil
 			unsupportedFDs = unsupportedFDs || s.OpenFDsSupport == OpenFDsUnsupported
@@ -198,6 +207,9 @@ func Report(dir string, since time.Duration) (Summary, error) {
 					add(fmt.Sprintf("remote %s poll outcome: %s", strconv.QuoteToASCII(name), strconv.QuoteToASCII(r.Outcome)))
 				}
 			}
+		}
+		if worstFDs != nil {
+			add(fmt.Sprintf("descriptor count exceeds budget (%d open, budget %d)", *worstFDs.OpenFDs, descriptorBudgetOf(*worstFDs)))
 		}
 		if now.Sub(p.Latest.Timestamp) > 2*time.Minute {
 			add("stale: latest sample is older than 2 minutes")
@@ -234,6 +246,9 @@ func Format(s Summary) string {
 	var b strings.Builder
 	b.WriteString("Runtime health\n")
 	descriptors := fmt.Sprintf("descriptors <%d", s.Budgets.OpenFDs)
+	if s.Budgets.OpenFDsPerSession > 0 {
+		descriptors += fmt.Sprintf(" + %d per session", s.Budgets.OpenFDsPerSession)
+	}
 	if s.Budgets.OpenFDsSupport == OpenFDsUnsupported {
 		descriptors = "descriptors unsupported on this platform"
 	}

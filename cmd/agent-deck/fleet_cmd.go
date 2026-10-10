@@ -21,7 +21,7 @@ import (
 func handleFleet(profile string, args []string) {
 	if len(args) == 0 {
 		printFleetHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "status":
@@ -33,7 +33,7 @@ func handleFleet(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown fleet command: %s\n", args[0])
 		printFleetHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -95,7 +95,7 @@ func (f fleetDetectorFlags) detector() *fleet.Detector {
 // all — safe to run on a live host, and the thing to run first when the TUI
 // looks wrong.
 func handleFleetStatus(profile string, args []string) {
-	fs := flag.NewFlagSet("fleet status", flag.ExitOnError)
+	fs := flag.NewFlagSet("fleet status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -118,8 +118,8 @@ func handleFleetStatus(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	// See handleFleetRecover: -q must not silence a --json payload.
@@ -128,7 +128,7 @@ func handleFleetStatus(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	as := det.detector().Assess(instances)
@@ -227,7 +227,7 @@ func fleetAuthCredentialsJSON(sum fleet.AuthCredentialSummary) map[string]interf
 
 // handleFleetRecover plans (default) or runs the recovery sweep.
 func handleFleetRecover(profile string, args []string) {
-	fs := flag.NewFlagSet("fleet recover", flag.ExitOnError)
+	fs := flag.NewFlagSet("fleet recover", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -273,8 +273,8 @@ func handleFleetRecover(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -286,7 +286,7 @@ func handleFleetRecover(profile string, args []string) {
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	as := det.detector().Assess(instances)
@@ -347,7 +347,7 @@ func handleFleetRecover(profile string, args []string) {
 	// the exit status, so that path must not be the one that reports a halted
 	// fleet as success.
 	if summary.Halted {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

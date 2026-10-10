@@ -45,7 +45,7 @@ func TestIssue2469PR3R4_SnapshotEdgeRepeatShipsOnce(t *testing.T) {
 	if err != nil || len(journal) != 1 || len(local) != 1 {
 		t.Fatalf("setup: want 1 local record and 1 journal line, got %d and %d (%v)", len(local), len(journal), err)
 	}
-	exp, err := ExportRecordsAfter(RemoteCursor{})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestIssue2469PR3R4_StaleRepeatPastTTLCrossesDroppedRepeatDoesNot(t *testing
 	line("U1", base.Add(time.Second))           // dropped duplicate
 	line("U1", base.Add(3*time.Hour))           // stale: past the TTL of the last commit
 	line("U1", base.Add(3*time.Hour+time.Hour)) // dropped: within the TTL of the stale commit
-	exp, err := ExportRecordsAfter(RemoteCursor{})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestIssue2469PR3R4_StaleRepeatAtTrimBoundaryCrosses(t *testing.T) {
 		recordUnownedCopy(t, l, stale)
 	}
 	add("u1", base, false)
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 {
 		t.Fatalf("drain 1: %v %v", first.Records, err)
 	}
@@ -182,14 +182,14 @@ func TestIssue2469PR3R4_StaleRepeatAtTrimBoundaryCrosses(t *testing.T) {
 	for i := 4; i <= 6; i++ {
 		add(fmt.Sprintf("u%d", i), base.Add(3*time.Hour+time.Duration(i)*time.Minute), false)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := exportSeqs(second); len(got) != 5 {
 		t.Fatalf("want turns 2..6 (5), got %v", got)
 	}
-	third, err := ExportRecordsAfter(second.CursorNext)
+	third, err := ExportRecordsAfter(DefaultProfile, second.CursorNext)
 	if err != nil || len(third.Records) != 0 {
 		t.Fatalf("the boundary turns must cross once: %v %v", exportSeqs(third), err)
 	}
@@ -212,7 +212,7 @@ func TestIssue2469PR3R4_DroppedRepeatAtTrimBoundaryStaysHome(t *testing.T) {
 		}
 	}
 	add("u1", TurnTierUrgent, base, true)
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 {
 		t.Fatalf("drain 1: %v %v", first.Records, err)
 	}
@@ -220,7 +220,7 @@ func TestIssue2469PR3R4_DroppedRepeatAtTrimBoundaryStaysHome(t *testing.T) {
 	add("u2", TurnTierUrgent, base.Add(time.Minute+time.Second), false) // the snapshot edge's repeat
 	add("u3", TurnTierInfo, base.Add(2*time.Minute), true)
 	add("u4", TurnTierInfo, base.Add(3*time.Minute), true) // trims seqs 1 and 2
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestIssue2469PR3R4_StaleUnownedCopyCrossesWhenRenderCannotTell(t *testing.T
 	add("u1", base) // its _unowned copy was swept
 	recordUnownedCopy(t, add("u1", base.Add(3*time.Hour)), true)
 	recordUnownedCopy(t, add("u3", base.Add(3*time.Hour+time.Minute)), false)
-	exp, err := ExportRecordsAfter(RemoteCursor{})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}

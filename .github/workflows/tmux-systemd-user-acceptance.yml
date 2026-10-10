@@ -90,7 +90,7 @@ jobs:
         shell: bash
         env:
           AGENT_DECK_SYSTEMD_USER_ACCEPTANCE: '1'
-          GOTOOLCHAIN: go1.25.13
+          GOTOOLCHAIN: go1.26.9
         run: |
           set -euo pipefail
           receipt="$TMUX_SYSTEMD_ACCEPTANCE_RECEIPTS/go-test.json"

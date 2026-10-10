@@ -27,7 +27,7 @@ import (
 func handleDeepSeek(args []string) {
 	if len(args) == 0 {
 		printDeepSeekUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if helpRequested(args) {
 		printDeepSeekUsage(os.Stdout)
@@ -63,7 +63,7 @@ func handleDeepSeek(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown deepseek subcommand: %s\n", sub)
 		printDeepSeekUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -356,6 +356,6 @@ func emitDeepSeekJSON(payload any) {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(payload); err != nil {
 		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }

@@ -729,7 +729,7 @@ func cleanStaleHookFiles() {
 func handleHooks(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck hooks <install|uninstall|status>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -753,7 +753,7 @@ func handleHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown hooks subcommand: %s\n", args[0])
 		printClaudeHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -774,7 +774,7 @@ func handleHooksInstall() {
 	installed, err := session.InjectClaudeHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if installed {
 		fmt.Println("Claude Code hooks installed successfully.")
@@ -901,7 +901,7 @@ func handleHooksUninstall() {
 	removed, err := session.RemoveClaudeHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error removing hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if removed {
 		fmt.Println("Claude Code hooks removed successfully.")
