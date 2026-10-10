@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1056,7 +1055,7 @@ func main() {
 	// Cost Tracking Initialization
 	// ═══════════════════════════════════════════════════════════════════
 	var costStore *costs.Store
-	if db := statedb.GetGlobal(); db != nil {
+	if db := statedb.GetGlobal(); db != nil && session.GetCostTrackingEnabled(profile) {
 		costStore = costs.NewStore(db.DB())
 
 		// Load user config for pricing overrides and budgets
@@ -1094,18 +1093,11 @@ func main() {
 		}
 
 		// Set up budget checker
-		var budgetCfg costs.BudgetConfig
-		if userCfg != nil {
-			bc := userCfg.Costs.Budgets
-			budgetCfg.DailyLimit = int64(math.Round(bc.DailyLimit * 1_000_000))
-			budgetCfg.WeeklyLimit = int64(math.Round(bc.WeeklyLimit * 1_000_000))
-			budgetCfg.MonthlyLimit = int64(math.Round(bc.MonthlyLimit * 1_000_000))
-			if len(bc.Groups) > 0 {
-				budgetCfg.GroupLimits = make(map[string]int64)
-				for name, g := range bc.Groups {
-					budgetCfg.GroupLimits[name] = int64(math.Round(g.DailyLimit * 1_000_000))
-				}
-			}
+		// An invalid costs timezone must not keep the TUI from starting:
+		// budgets then fall back to local time, as before.
+		budgetCfg, budgetErr := costBudgetConfig(userCfg)
+		if budgetErr != nil {
+			slog.Warn("cost budgets use local time", "error", budgetErr)
 		}
 		budgetChecker := costs.NewBudgetChecker(budgetCfg, costStore)
 

@@ -252,7 +252,7 @@ var completionTree = []completionNode{
 			"finish": {argSession},
 		},
 	},
-	{name: "costs", subs: []string{"sync", "summary", "recompute"}},
+	{name: "costs", subs: []string{"sync", "summary", "recompute", "daily", "sessions", "models", "groups", "budgets"}},
 	{name: "hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "codex-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "gemini-hooks", subs: []string{"install", "uninstall", "status"}},

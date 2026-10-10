@@ -1,0 +1,1 @@
+[{"session_id":"golden-sess-1","title":"claude idle","group":"my-sessions","cost_usd":3.5,"events":3,"input_tokens":111,"output_tokens":222,"cache_read":333,"cache_write":444,"model":"model-b"},{"session_id":"golden-sess-3","title":"gemini waiting","group":"backend","cost_usd":0.5,"events":1,"input_tokens":5,"output_tokens":6,"cache_read":7,"cache_write":8,"model":"model-a"}]

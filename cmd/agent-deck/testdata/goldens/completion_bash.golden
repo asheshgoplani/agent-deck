@@ -191,7 +191,7 @@ _agent_deck_completion() {
             ;;
         costs)
             if ((cword == start + 1)); then
-                COMPREPLY=($(compgen -W 'sync summary recompute' -- "$cur"))
+                COMPREPLY=($(compgen -W 'sync summary recompute daily sessions models groups budgets' -- "$cur"))
                 return 0
             fi
             sub=${words[start+1]}

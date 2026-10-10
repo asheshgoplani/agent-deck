@@ -866,11 +866,13 @@ Track token usage and costs across all your AI agent sessions in real-time.
 - **Historical sync** — `agent-deck costs sync` backfills cost data from existing Claude transcript files
 - **Recompute costs** — `agent-deck costs recompute` recalculates `cost_microdollars` for every cost event using current pricing data. Useful after a pricing-data update to retroactively price events that landed at $0 because the model was missing from the pricer. Pass `--dry-run` to preview.
 - **Export** — CSV/JSON export from web dashboard
+- **Dashboard data from the CLI** — `agent-deck costs daily|sessions|models|groups|budgets --json` returns the same figures and shapes as the web dashboard (`sessions`, `models` and `groups` take `--period today|7d|30d|all`). See the CLI reference for the JSON fields.
 
 ```toml
 # Optional config ($XDG_CONFIG_HOME/agent-deck/config.toml;
 # default ~/.config/agent-deck/config.toml)
 [costs]
+enabled = true        # default; false turns cost tracking off (also [profiles.<name>.costs])
 retention_days = 90
 
 [costs.budgets]

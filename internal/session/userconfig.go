@@ -5903,6 +5903,7 @@ func GetPluginDef(name string) *PluginDef {
 
 // CostsSettings configures cost tracking, budgets, and pricing overrides.
 type CostsSettings struct {
+	Enabled       *bool  `toml:"enabled,omitempty"`
 	Currency      string `toml:"currency,omitempty"`
 	Timezone      string `toml:"timezone,omitempty"`
 	RetentionDays int    `toml:"retention_days,omitzero"`
@@ -5921,8 +5922,25 @@ type CostsSettings struct {
 // ProfileCosts holds per-profile overrides for cost-related settings.
 // Pointer fields use the same fall-through semantics as CostsSettings.
 type ProfileCosts struct {
+	Enabled              *bool   `toml:"enabled,omitempty"`
 	CostLineTemplate     *string `toml:"cost_line_template,omitempty"`
 	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero,omitempty"`
+}
+
+// ResolveCostTrackingEnabled applies profile, global, then default-on settings.
+func ResolveCostTrackingEnabled(cfg *UserConfig, profile string) bool {
+	if cfg == nil {
+		return true
+	}
+	if p, ok := cfg.Profiles[profile]; ok && p.Costs != nil && p.Costs.Enabled != nil {
+		return *p.Costs.Enabled
+	}
+	return cfg.Costs.Enabled == nil || *cfg.Costs.Enabled
+}
+
+func GetCostTrackingEnabled(profile string) bool {
+	cfg, _ := LoadUserConfig()
+	return ResolveCostTrackingEnabled(cfg, GetEffectiveProfile(profile))
 }
 
 // defaultCostLineTemplate is the hardcoded fallback that preserves the

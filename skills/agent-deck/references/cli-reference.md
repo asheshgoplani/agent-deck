@@ -1256,3 +1256,51 @@ Commands accept:
 | 0 | Success |
 | 1 | Error |
 | 2 | Not found |
+
+## Costs
+
+Cost commands use the selected profile (`-p <name>`) and its stored, priced cost events.
+
+```bash
+agent-deck costs sync
+agent-deck costs summary [--json]
+agent-deck costs recompute [--dry-run]
+agent-deck costs daily --json [--days N]
+agent-deck costs sessions --json [--limit N] [--period today|7d|30d|all]
+agent-deck costs models --json [--period today|7d|30d|all]
+agent-deck costs groups --json [--period today|7d|30d|all]
+agent-deck costs budgets --json
+```
+
+The five dashboard commands require `--json`. Success exits 0 with JSON on stdout;
+invalid flags, unavailable storage, or query errors exit nonzero with a message on stderr.
+Each accepts `--help` without opening storage.
+
+| Command | JSON response |
+| --- | --- |
+| `daily` | `[{"date":"YYYY-MM-DD","cost_usd":1.23}]`; `--days` defaults to 30, range 1 through 365. Matches the web UTC range from N days ago through today. Days with no events are absent. |
+| `sessions` | `[{"session_id","title","group","cost_usd","events","input_tokens","output_tokens","cache_read","cache_write","model"}]`; descending cost, stable session ID tie order. Default limit 100, range 1 through 500. Default period `all`; `today`, `week`, and `month` retain the same windows as `summary`. Model is the highest-cost model within the chosen period, ties resolved by model name. |
+| `models` | `{"<model>":cost_usd}` for the selected period. |
+| `groups` | `[{"group","cost_usd","events","sessions"}]`, sorted by group, empty group displayed as `(ungrouped)`. Mirrors the web's top 1000 sessions. |
+| `budgets` | Optional `daily`, `weekly`, `monthly`, `groups.<name>`, `sessions.<id>` objects, each with `used_usd` and `limit_usd`. Only positive configured limits appear; no limits yields `{}`. |
+
+Sessions, models and groups accept `--period today|7d|30d|all` (default `all`),
+with `week` and `month` also retained for calendar windows. `7d` and `30d`
+are rolling windows from the current instant, inclusive at the cutoff, shared
+with the web endpoints through their `period` query parameter. Today retains
+the existing summary day boundary. Group ranking uses the selected period
+before applying the existing top-1000-session cap.
+
+Budgets read `[costs.budgets]`, `[costs.budgets.groups.<name>]` (`daily_limit`),
+and `[costs.budgets.sessions.<id>]` (`total_limit`). Global and group budget windows
+use `[costs] timezone` (default `Local`), matching BudgetChecker; sessions use lifetime totals.
+Group membership uses the current exact group path. Prices come from stored events,
+just as on the web; use `costs recompute` explicitly to apply changed pricing overrides.
+
+Tracking defaults on. Set `[costs] enabled = false` globally or
+`[profiles.<name>.costs] enabled = false` for a profile. Explicit profile values override
+the global value. Disabled cost commands exit nonzero with exactly
+`cost tracking is off in this profile` on stderr. Existing historical events are retained.
+
+The Dashboard Today tile must keep using `cost_today_microdollars` from
+`costs summary --json`; never sum the all-time session table for Today.

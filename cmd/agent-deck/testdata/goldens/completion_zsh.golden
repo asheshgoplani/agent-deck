@@ -207,7 +207,7 @@ _agent_deck() {
         ;;
     costs)
         if (( CURRENT == start + 1 )); then
-            subs=(sync summary recompute)
+            subs=(sync summary recompute daily sessions models groups budgets)
             compadd -a subs
             return
         fi

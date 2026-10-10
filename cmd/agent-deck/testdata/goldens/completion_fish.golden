@@ -69,7 +69,7 @@ complete -c agent-deck -f -n "__agent_deck_at oc '' 2" -a "sync bridge status li
 complete -c agent-deck -f -n "__agent_deck_at remote '' 2" -a "add remove list sessions drain attach rename update"
 complete -c agent-deck -f -n "__agent_deck_at worktree '' 2" -a "list info cleanup finish trust-hooks"
 complete -c agent-deck -f -n "__agent_deck_at wt '' 2" -a "list info cleanup finish trust-hooks"
-complete -c agent-deck -f -n "__agent_deck_at costs '' 2" -a "sync summary recompute"
+complete -c agent-deck -f -n "__agent_deck_at costs '' 2" -a "sync summary recompute daily sessions models groups budgets"
 complete -c agent-deck -f -n "__agent_deck_at hooks '' 2" -a "install uninstall status"
 complete -c agent-deck -f -n "__agent_deck_at codex-hooks '' 2" -a "install uninstall status"
 complete -c agent-deck -f -n "__agent_deck_at gemini-hooks '' 2" -a "install uninstall status"
