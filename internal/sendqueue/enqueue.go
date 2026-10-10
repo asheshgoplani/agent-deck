@@ -1,9 +1,13 @@
 package sendqueue
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -33,13 +37,73 @@ type Send struct {
 	Deadline time.Time
 	// Ledger also records the send in the Comms Ledger.
 	Ledger bool
+	// Key makes the send idempotent (EnqueueOnce): while a record queued
+	// under the same key is kept, the send is not queued again.
+	Key string
+	// WaitWhileStopped makes the worker wait for a target that is not
+	// running, until Deadline if one is set, instead of failing the send.
+	WaitWhileStopped bool
 }
 
 // Enqueue writes s to dir as a new record: queued, or failed at once when
-// the target is not running. It records the send in the Comms Ledger when
-// asked and publishes the record's state on the profile's event bus. It
-// types nothing and starts no worker (SpawnWorker does).
+// the target is not running (unless s.WaitWhileStopped). It records the send
+// in the Comms Ledger when asked and publishes the record's state on the
+// profile's event bus. It types nothing and starts no worker (SpawnWorker
+// does).
 func Enqueue(profile, dir string, s Send, now time.Time) (*Record, error) {
+	rec, err := newRecord(dir, s, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := Save(dir, rec); err != nil {
+		return nil, err
+	}
+	announce(profile, rec, s.Ledger)
+	return rec, nil
+}
+
+// EnqueueOnce is Enqueue for a send with a Key. When a record queued under
+// that key is still kept (RetainFinished after it ends), it returns that
+// record with created false and writes nothing.
+func EnqueueOnce(profile, dir string, s Send, now time.Time) (_ *Record, created bool, err error) {
+	if s.Key == "" {
+		return nil, false, errors.New("sendqueue: EnqueueOnce needs a key")
+	}
+	unlock, err := lockFile(filepath.Join(dir, ".keys.lock"))
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
+	keyPath := KeyPath(dir, s.Key)
+	if b, err := os.ReadFile(keyPath); err == nil {
+		if rec, err := Load(dir, strings.TrimSpace(string(b))); err == nil && rec.Key == s.Key {
+			return rec, false, nil
+		}
+	}
+	rec, err := newRecord(dir, s, now)
+	if err != nil {
+		return nil, false, err
+	}
+	// The key is written first: a crash before the record is saved leaves
+	// a key naming no record, which the next call replaces, never a record
+	// without its key, which a second call would queue again.
+	if err := writeFileAtomic(keyPath, []byte(rec.SendID)); err != nil {
+		return nil, false, err
+	}
+	if err := Save(dir, rec); err != nil {
+		return nil, false, err
+	}
+	announce(profile, rec, s.Ledger)
+	return rec, true, nil
+}
+
+// KeyPath is the file naming the record queued under key.
+func KeyPath(dir, key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return filepath.Join(dir, "keys", hex.EncodeToString(sum[:16]))
+}
+
+func newRecord(dir string, s Send, now time.Time) (*Record, error) {
 	id, err := NextID(dir, now)
 	if err != nil {
 		return nil, err
@@ -51,22 +115,56 @@ func Enqueue(profile, dir string, s Send, now time.Time) (*Record, error) {
 		CreatedAt:          now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
 		Sender:          s.Sender,
 		ClaudeSessionID: s.ClaudeSessionID,
+		Key:             s.Key, WaitWhileStopped: s.WaitWhileStopped,
 	}
 	if !s.Deadline.IsZero() {
 		rec.Deadline = s.Deadline.UTC().Format(time.RFC3339Nano)
 	}
-	if !s.Running {
+	if !s.Running && !s.WaitWhileStopped {
 		rec.State, rec.Reason, rec.Verdict = StateFailed, "target not running", "unknown"
 	}
-	if err := Save(dir, rec); err != nil {
-		return nil, err
-	}
+	return rec, nil
+}
+
+// announce spools a new record to the Comms Ledger (when ledger is set) and
+// publishes its state.
+func announce(profile string, rec *Record, ledger bool) {
 	// Comms Ledger (P3): reuse the queue's durable sender identity.
-	if s.Ledger {
-		session.SpoolCommsSend(rec.Sender, s.SessionID, s.Message, "queue", rec.SendID)
+	if ledger {
+		session.SpoolCommsSend(rec.Sender, rec.SessionID, rec.Message, "queue", rec.SendID)
 	}
 	PublishState(profile, rec)
-	return rec, nil
+}
+
+// lockFile takes an exclusive flock on path, creating it.
+func lockFile(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
+// writeFileAtomic writes b to path through a temporary file and a rename.
+func writeFileAtomic(path string, b []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // PublishState mirrors a queued send's state on the bus so a client
