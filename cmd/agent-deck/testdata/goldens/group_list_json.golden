@@ -20,7 +20,7 @@
         "running": 0,
         "waiting": 0,
         "idle": 0,
-        "error": 3,
+        "error": 2,
         "stopped": 1
       },
       "children": [
@@ -32,7 +32,7 @@
             "running": 0,
             "waiting": 0,
             "idle": 0,
-            "error": 1,
+            "error": 0,
             "stopped": 1
           }
         }

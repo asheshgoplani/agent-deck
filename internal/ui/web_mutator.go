@@ -188,7 +188,11 @@ func (m *WebMutator) StopSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	return inst.Kill()
+	if err := inst.Kill(); err != nil {
+		return err
+	}
+	inst.RecordTelemetryEndFrom(telemetry.EndStop, telemetry.SurfaceWeb)
+	return nil
 }
 
 // RestartSession restarts a session by ID.
@@ -204,7 +208,7 @@ func (m *WebMutator) RestartSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	return inst.Restart()
+	return inst.RestartFrom(telemetry.SurfaceWeb)
 }
 
 // DeleteSession kills a session and removes it from persistent storage.

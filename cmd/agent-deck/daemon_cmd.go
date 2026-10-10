@@ -34,7 +34,7 @@ Commands:
 func handleDaemon(profile string, args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, daemonUsage)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "serve":
@@ -47,7 +47,7 @@ func handleDaemon(profile string, args []string) {
 		fmt.Println(daemonUsage)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown daemon command: %s\n\n%s\n", args[0], daemonUsage)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -62,7 +62,7 @@ func daemonPaths(profile string) (string, daemon.Paths, error) {
 }
 
 func parseDaemonFlags(name string, args []string, setup func(fs *flag.FlagSet)) {
-	fs := flag.NewFlagSet("daemon "+name, flag.ExitOnError)
+	fs := flag.NewFlagSet("daemon "+name, flag.ContinueOnError)
 	if setup != nil {
 		setup(fs)
 	}
@@ -70,12 +70,12 @@ func parseDaemonFlags(name string, args []string, setup func(fs *flag.FlagSet)) 
 		fmt.Println(daemonUsage)
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(1)
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "Error: daemon %s takes no arguments\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -84,12 +84,12 @@ func daemonServe(profile string, args []string) {
 	resolved, paths, err := daemonPaths(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	owner, err := daemon.Acquire(paths)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer owner.Close()
 
@@ -108,7 +108,7 @@ func daemonServe(profile string, args []string) {
 	fmt.Printf("agent-deck daemon serving profile %s on %s (pid %d)\n", resolved, paths.Socket, os.Getpid())
 	if err := srv.Serve(ctx, owner.Listener()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: daemon: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -126,7 +126,7 @@ func daemonStatusCmd(profile string, args []string) {
 	_, paths, err := daemonPaths(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	probe := daemon.Probe(paths)
 	out := daemonStatusOut{State: probe.State, PID: probe.PID, Socket: paths.Socket}
@@ -151,7 +151,7 @@ func daemonStatusCmd(profile string, args []string) {
 		}
 	}
 	if probe.State != daemon.StateRunning {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -160,12 +160,12 @@ func daemonStop(profile string, args []string) {
 	_, paths, err := daemonPaths(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	probe := daemon.Probe(paths)
 	if probe.State == daemon.StateUnknown {
 		fmt.Fprintf(os.Stderr, "Error: daemon socket %s accepts connections but did not answer; cannot confirm stop\n", paths.Socket)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if probe.State != daemon.StateRunning {
 		fmt.Println("daemon not running")
@@ -180,13 +180,13 @@ func daemonStop(profile string, args []string) {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: stop daemon: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for daemon.Probe(paths).State == daemon.StateRunning {
 		if time.Now().After(deadline) {
 			fmt.Fprintf(os.Stderr, "Error: daemon (pid %d) still running after 5s\n", probe.PID)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

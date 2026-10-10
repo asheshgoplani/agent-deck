@@ -12,7 +12,7 @@ GOLANGCI_LINT_VERSION=v2.14.0
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Keep local and CI builds on the version required by go.mod.
-export GOTOOLCHAIN=go1.25.13
+export GOTOOLCHAIN=go1.26.9
 
 # Build the binary (requires compiled CSS via `make css`)
 build: css
@@ -244,12 +244,12 @@ dist-local:
 	go run ./tools/dist-local -version "$(DIST_VERSION)" -output "$(DIST_OUTPUT)"
 
 # Functional checks run in Docker locally. Native execution is CI-only.
-FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.25.13
+FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.26.9
 FUNCCHECK_BINARY ?=
 FUNCCHECK_MODE ?= docker
 .PHONY: check-functional funccheck-image
 funccheck-image:
-	@printf '%s\n' 'FROM golang:1.25.13-bookworm' \
+	@printf '%s\n' 'FROM golang:1.26.9-bookworm' \
 		'RUN apt-get update -qq && apt-get install -y --no-install-recommends tmux git' \
 		'WORKDIR /deps' 'COPY go.mod go.sum ./' \
 		'RUN go mod download && chmod -R a+rX /go/pkg/mod' \

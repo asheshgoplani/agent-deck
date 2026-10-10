@@ -160,9 +160,10 @@ func TestShouldPrompt(t *testing.T) {
 	}
 }
 
-// TestRegrantAfterEndpointChangeDropsOldSpool: events recorded under one
-// consent and destination never reach another one under a new install id.
-func TestRegrantAfterEndpointChangeDropsOldSpool(t *testing.T) {
+// TestRegrantAfterEndpointChangeKeepsIDDropsOldSpool: a yes for a new
+// destination keeps the install id, but events recorded for the old
+// destination never reach the new one.
+func TestRegrantAfterEndpointChangeKeepsIDDropsOldSpool(t *testing.T) {
 	c := env(t)
 	old := grant(t, c)
 	SessionCreated(SessionCreateInfo{Tool: "claude", Via: ViaTUINew, SessionID: "s1"})
@@ -171,8 +172,8 @@ func TestRegrantAfterEndpointChangeDropsOldSpool(t *testing.T) {
 	}
 	fake := newFakePostHog(t) // a different endpoint: the old grant is stale
 	s := grant(t, c)
-	if s.InstallID == old.InstallID {
-		t.Fatal("a new endpoint must mint a new install id")
+	if s.InstallID != old.InstallID || s.Salt != old.Salt {
+		t.Fatal("a new endpoint must keep the install id and salt (only reset-id rotates them)")
 	}
 	if n := len(spoolBytes(t)); n != 0 {
 		t.Fatalf("spool kept %d bytes across re-consent", n)
@@ -398,8 +399,8 @@ func recordEveryEvent(t *testing.T, c *clock) {
 	ErrorOccurred(AreaTmux, KindTmuxTooOld, "")
 	UpdateAttempted("1.16.17", "1.16.18", UpdateManual, UpdateOK, false)
 	FeatureUsed("mcp_attach", false)
-	CLICommand("costs")
-	sp := &Sampler{now: c.now, emit: func(p map[string]any, at time.Time) { recordAt("activity.hourly", p, "", at) }}
+	CLICommand("costs", false)
+	sp := &Sampler{now: c.now, emit: recordHour}
 	sp.Observe(func() []SessionSample {
 		return []SessionSample{{Tool: "claude", Status: StatusRunning}, {Tool: "codex", Status: StatusIdle}}
 	})
@@ -509,7 +510,7 @@ func TestRedactionCanaries(t *testing.T) {
 		ErrorOccurred(ErrArea(cn), ErrKind(cn), cn)
 		ErrorOccurred(AreaConfig, KindOther, cn)
 		FeatureUsed(Feature(cn), false)
-		CLICommand(Feature(cn))
+		CLICommand(Feature(cn), false)
 		UpdateAttempted(cn, cn, UpdateKind(cn), UpdateOutcome(cn), true)
 		EnvSnapshot(EnvInfo{Terminal: cn, TmuxMinor: cn, Shell: cn, InstallMethod: cn, Color: cn})
 		c.add(time.Hour)
@@ -760,7 +761,7 @@ func running(n int) func() []SessionSample {
 // mid-hour grant never reach that hour's activity.hourly.
 func TestSamplerResetOnGrantDropsPreConsentMinutes(t *testing.T) {
 	c := env(t)
-	sp := &Sampler{now: c.now, emit: func(p map[string]any, at time.Time) { recordAt("activity.hourly", p, "", at) }}
+	sp := &Sampler{now: c.now, emit: recordHour}
 	for i := 0; i < 5; i++ {
 		sp.Observe(running(9))
 		sp.KeyPressed()
@@ -788,7 +789,7 @@ func TestSamplerUsesLocalHourBoundaries(t *testing.T) {
 	t.Cleanup(func() { time.Local = prev })
 	c := env(t)
 	grant(t, c)
-	sp := &Sampler{now: c.now, emit: func(p map[string]any, at time.Time) { recordAt("activity.hourly", p, "", at) }}
+	sp := &Sampler{now: c.now, emit: recordHour}
 	c.set(at(1, 14, 10))
 	sp.Observe(running(1))
 	c.set(at(1, 14, 50))
@@ -809,7 +810,7 @@ func TestSamplerUsesLocalHourBoundaries(t *testing.T) {
 func TestSamplerCloseRacesObserve(t *testing.T) {
 	c := env(t)
 	grant(t, c)
-	sp := &Sampler{now: c.now, emit: func(map[string]any, time.Time) {}}
+	sp := &Sampler{now: c.now, emit: func(hourSample) {}}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

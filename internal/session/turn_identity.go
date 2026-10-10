@@ -77,6 +77,7 @@ type turnRecord struct {
 }
 
 type turnMessage struct {
+	ID         string          `json:"id"`
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content"`
 	StopReason *string         `json:"stop_reason"`
@@ -231,13 +232,13 @@ func AwaitTurnIdentity(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, 
 	return TurnIdentity{}, fmt.Errorf("turn identity not established within %s", timeout)
 }
 
-func assistantText(rec turnRecord) (string, bool, string) {
+func assistantText(rec turnRecord) (text string, assistant bool, stopReason, messageID string) {
 	if rec.Type != "assistant" || rec.IsSidechain {
-		return "", false, ""
+		return "", false, "", ""
 	}
 	var msg turnMessage
 	if json.Unmarshal(rec.Message, &msg) != nil || msg.Role != "assistant" {
-		return "", false, ""
+		return "", false, "", ""
 	}
 	var out strings.Builder
 	var plain string
@@ -260,7 +261,7 @@ func assistantText(rec turnRecord) (string, bool, string) {
 	if msg.StopReason != nil {
 		reason = *msg.StopReason
 	}
-	return out.String(), true, reason
+	return out.String(), true, reason, msg.ID
 }
 
 // turnEnded mirrors the streamer: Claude closes a turn with end_turn,
@@ -272,6 +273,41 @@ func turnEnded(reason string) bool {
 		return true
 	}
 	return false
+}
+
+// turnStop decides when a stop_reason record really ends the turn. Claude
+// writes each content block of a message as its own record, and every record
+// carries the message's stop_reason, so the final message's thinking block
+// arrives marked end_turn before the text block that holds the reply. A stop
+// is therefore held open until a record from another message follows, or the
+// transcript ends after the stopping message has produced text.
+type turnStop struct {
+	pending   bool
+	messageID string
+	hasText   bool
+}
+
+func (s *turnStop) observe(messageID string, hasText bool) {
+	if !s.pending || messageID == "" || messageID != s.messageID {
+		*s = turnStop{pending: true, messageID: messageID}
+	}
+	s.hasText = s.hasText || hasText
+}
+
+// endedBefore reports whether a pending stop is confirmed by the next record:
+// anything other than another block of the stopping message.
+func (s *turnStop) endedBefore(assistant bool, messageID string) bool {
+	if !s.pending {
+		return false
+	}
+	return !assistant || messageID == "" || messageID != s.messageID
+}
+
+// endedAtEOF reports whether the transcript, read to its current end, holds
+// the stopping message's reply. Without a message ID no later block can be
+// matched to the stop, so the stop is final as it stands.
+func (s *turnStop) endedAtEOF() bool {
+	return s.pending && (s.hasText || s.messageID == "")
 }
 
 // AwaitTurnResponse returns only assistant text after id's user record and
@@ -324,6 +360,8 @@ func readTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
 	var text strings.Builder
 	lastTS := ""
 	ended := false
+	var stop turnStop
+	textMessageID := ""
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -331,19 +369,31 @@ func readTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
 		if json.Unmarshal(sc.Bytes(), &rec) != nil {
 			continue
 		}
-		if _, human := humanPrompt(rec); human {
-			return nil, false, fmt.Errorf("turn %s produced no end_turn before the next submitted prompt", id.UUID)
-		}
-		chunk, assistant, reason := assistantText(rec)
-		if !assistant {
-			continue
-		}
-		text.WriteString(chunk)
-		lastTS = rec.Timestamp
-		if turnEnded(reason) {
+		chunk, assistant, reason, messageID := assistantText(rec)
+		if stop.endedBefore(assistant, messageID) {
 			ended = true
 			break
 		}
+		if _, human := humanPrompt(rec); human {
+			return nil, false, fmt.Errorf("turn %s produced no end_turn before the next submitted prompt", id.UUID)
+		}
+		if !assistant {
+			continue
+		}
+		if chunk != "" {
+			if text.Len() > 0 && messageID != textMessageID {
+				text.WriteString("\n\n")
+			}
+			text.WriteString(chunk)
+			textMessageID = messageID
+		}
+		lastTS = rec.Timestamp
+		if turnEnded(reason) {
+			stop.observe(messageID, chunk != "")
+		}
+	}
+	if !ended && stop.endedAtEOF() {
+		ended = true
 	}
 	if !ended && text.Len() == 0 {
 		return nil, false, nil

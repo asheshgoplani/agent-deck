@@ -81,28 +81,28 @@ func handleAccounts(args []string) {
 		if err == flag.ErrHelp {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "accounts does not accept positional arguments: %s\n", strings.Join(fs.Args(), " "))
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	harnessFamily, err := accountsHarnessOK(*harness)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: load config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	accounts := configuredAccountSlotsForHarness(config, harnessFamily)
 	if *jsonOutput {
 		if err := json.NewEncoder(os.Stdout).Encode(accounts); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encode accounts: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}

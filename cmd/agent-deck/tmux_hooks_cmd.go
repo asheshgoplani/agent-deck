@@ -15,7 +15,7 @@ import (
 func handleTmuxHooks(args []string) {
 	if len(args) == 0 {
 		printTmuxHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -37,7 +37,7 @@ func handleTmuxHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown tmux-hooks subcommand: %s\n", args[0])
 		printTmuxHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -100,7 +100,7 @@ func handleTmuxHooksStatus() {
 func exitOnTmuxHookError(verb string, err error) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error %s the tmux hook (is a tmux server running?): %v\n", verb, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

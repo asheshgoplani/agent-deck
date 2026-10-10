@@ -65,7 +65,8 @@ const spawnVerifyTick = 100 * time.Millisecond
 // exists but whose primary pane is already dead is treated exactly like a
 // missing session, so the loop below waits for the fast-death watcher's
 // record instead of returning early.
-func (i *Instance) VerifySpawned(maxWait time.Duration) error {
+func (i *Instance) VerifySpawned(maxWait time.Duration) (verifyErr error) {
+	defer func() { i.recordTelemetryStartError(verifyErr) }()
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}

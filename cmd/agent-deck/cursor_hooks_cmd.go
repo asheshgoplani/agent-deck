@@ -12,7 +12,7 @@ import (
 func handleCursorHooks(args []string) {
 	if len(args) == 0 {
 		printCursorHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -34,7 +34,7 @@ func handleCursorHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown cursor-hooks subcommand: %s\n", args[0])
 		printCursorHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -54,7 +54,7 @@ func handleCursorHooksInstall() {
 	installed, err := session.InjectCursorHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing Cursor hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if installed {
 		fmt.Println("Cursor hooks installed successfully.")
@@ -68,7 +68,7 @@ func handleCursorHooksInstall() {
 	// cannot reason about, so it is a hard error.
 	if err := session.SetCursorHooksEnabled(true); err != nil {
 		fmt.Fprintf(os.Stderr, "Error clearing [cursor] hooks_enabled opt-out in config.toml: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -81,7 +81,7 @@ func handleCursorHooksUninstall() {
 		fmt.Fprintf(os.Stderr, "Error persisting opt-out to config.toml: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Hooks were NOT removed (TUI startup would reinstall them).")
 		fmt.Fprintln(os.Stderr, "Set [cursor] hooks_enabled = false manually, then rerun uninstall.")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println("Auto-install disabled ([cursor] hooks_enabled = false in config.toml).")
 	fmt.Println("Run 'agent-deck cursor-hooks install' to re-enable.")
@@ -90,7 +90,7 @@ func handleCursorHooksUninstall() {
 	removed, err := session.RemoveCursorHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error removing Cursor hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if removed {
 		fmt.Println("Cursor hooks removed successfully.")

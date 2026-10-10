@@ -133,7 +133,7 @@ func TestBackgroundWork_LiveFixtures(t *testing.T) {
 		{"workflow-finished.txt", FrameWaiting, SubstateIdleAtEmptyPrompt, "", ""},
 		{"agent-and-shells.txt", FrameActive, SubstateBackgroundWork, BackgroundKindBash, "bash 2 shells, 1 monitor"},
 		// A live spinner is foreground work: running, not background-work.
-		{"monitor-footer-busy-turn.txt", FrameActive, SubstateRunning, BackgroundKindMonitor, "monitor 1 monitor"},
+		{"monitor-footer-busy-turn.txt", FrameActive, SubstateRunning, BackgroundKindMonitor, "1 watching · 1 monitor"},
 		// The old 20-line scan matched the stale "Waiting for 1 background
 		// agent" line here and kept a finished session green.
 		{"all-finished-stale-waiting-line.txt", FrameWaiting, SubstateIdleAtEmptyPrompt, "", ""},

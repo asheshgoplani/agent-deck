@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.27] - 2026-10-09
+
+### Fixes
+
+- `inbox export` and `remote drain` stay inside one profile. The export returns only the invoking profile's records (never a record without a profile), including on the `--after` cursor path, and a drain always names the remote's configured profile and drops any other profile's record before it is written (#2539, reported by @jwr456).
+- `session send --wait` and `--stream` return the reply when Claude writes its final message as separate thinking and text records, instead of an earlier sentence from the same turn (#2543, fixes #2540, thanks @wallacms).
+- A Codex Guardian review thread no longer replaces a session's saved Codex id, and restart resumes the user's own thread (#2546, fixes #2529, thanks @seanfreiburg, and @tomasaschan for the report).
+- `session send` to Codex adopts the live user thread when the stored id has gone stale, so sends are no longer refused forever. Ambiguous, sub-agent, Guardian and peer-owned threads are never adopted. A refused send reports `acceptance_unavailable`, and a queued send fails after 5 consecutive refusals (about 15 seconds) with the reason (#2549, reported by @Abeansits).
+- Codex sends respect an unsent draft in the composer: the send waits, then is refused with `composer_blocked` without typing anything, and the queue retries it later (#2536, reported by @cherninely).
+- Capacity-queued sessions stay `queued` instead of being reported and persisted as `error`, so stopping a running session drains the queue again (#2528, fixes #2526, thanks @jtymas-preiss).
+- Session metrics and `health --json` ignore substate-only journal changes, so turn counts are no longer inflated and turn durations no longer reset (#2527, fixes #2525, thanks @jtymas-preiss).
+- `agent-deck attach` forwards OSC 10/11 color replies, so tmux can answer a pane's foreground and background color queries (#2522, fixes #2520, thanks @AKarbas).
+- A fresh OpenCode session reads as waiting instead of running forever (the home-screen logo no longer matches the spinner rule), so gated sends are delivered; live pulses still read as busy while the composer is visible (#2523, fixes #2519, thanks @Skadoge, and @tedmellors for the report and macOS testing).
+- pi 1.0.x panes are recognised: the context-usage footer counts as ready and the escape-interrupt bar as busy, so `launch --message-file` delivers and the startup watchdog no longer kills a healthy pi session (#2521, reported by @koenzhao).
+- The open-descriptor budget grows with the fleet (512 plus 16 per managed session, capped at four fifths of the soft open-file limit). The footer warns only after two consecutive over-budget samples and names the count, the budget and `agent-deck health` (#2535, reported by @netllama).
+
+### Features
+
+- A Claude session idle at its prompt with an armed Monitor shows as waiting with a `watching` substate and a watcher count, instead of running. A finite Workflow, background agent or shell still keeps the session running.
+- `inbox export --profile <name>` selects the profile to export. It defaults to the invoking profile and refuses a value that disagrees with `-p` (#2539).
+
+### Conductor
+
+- A conductor start or restart sends one recovery turn, so the conductor resumes its durable work instead of sitting idle. On by default; set `[conductor] recovery_turn = false` to turn it off (#2518, reported by @kaneda-fr).
+- Slack routing gains `default_conductor` for unprefixed messages and thread affinity, so replies in a conductor's thread (including NEED alert threads) reach that conductor. `conductor setup` keeps existing Slack keys when it adds tokens (#2548, fixes #2547, thanks @koenzhao).
+- `[conductor] permission_ask = false` drops the managed ask list from the conductor's Claude settings on the next `agent-deck conductor setup <name>`, so auto mode decides on mutating commands. The default stays `true` (#2544, fixes #2541, thanks @wallacms).
+
+### OpenCode 2.x
+
+- Sessions are discovered through the shared service API: listing follows the pagination cursor, sub-agent roots are skipped, an unbound session adopts only a conversation created after it started, and a bound session keeps its id instead of switching to a newer sibling (#2512, thanks @3rwww1).
+- The shared `opencode serve --service` process is never owned or reaped by a deck session, while 1.x per-session servers are still cleaned up (#2514, thanks @3rwww1). Forks and status over the service event stream (#2513, #2515) follow in a later release; tracking issue: #2511.
+
+### Watchers
+
+- Routed watcher events and health alerts reach the conductor while the TUI is attached to a session. Delivery to each conductor pane is one event at a time and in order, the backlog is bounded and kept across a quit, and quit reports what is still undelivered (#2534, fixes #2524, thanks @AndreIntelas).
+- `watcher create webhook --port N` writes the port into the watcher config, so the engine listens on it, and create refuses to overwrite an existing watcher config (#2532, reported by @AndreIntelas).
+- ntfy and Slack watchers keep their resume position across restarts and catch up on messages published while agent-deck was down. Replay is bounded to 24 hours by default (`[source] resume_max_age`, `"0"` turns the bound off), and bursts over 64 messages are no longer dropped (#2538, reported by @AndreIntelas).
+- Watcher health alerts go to the conductor the watcher routes to, once per change into warning or error, followed by one recovery notice (#2531, reported by @AndreIntelas).
+
+### Internal
+
+- Opt-in telemetry only (nothing changes while telemetry is off):
+  - Saying yes again after the schema 3 re-prompt keeps the existing install id and sends data recorded before the yes instead of deleting it; the prompt says so. A lowered level never sends events recorded earlier at `full`.
+  - CLI features are counted after the command finishes, with failures as errors and without first-use milestones; `fleet status` and `fleet recover` are no longer reported as fleet launches, mistyped flags are still counted, and `uninstall` no longer recreates the telemetry directory. See "How CLI commands are counted" in TELEMETRY.md for the effect on trends.
+  - `activity.hourly` is sent once per local hour across TUI runs; `install.tick` carries the coarse `os` and `arch` (schema stays 3, no new prompt); daily rollups carry the release that recorded the day and a neutral actor and surface.
+  - TUI sends, rename, group create and move to group are counted; plain `add` records its session create and a CLI fork is labelled `cli_fork`; the default CLI `session stop` and web stop and restart record session end; every update install path records its outcome; real failures (session start, send, MCP config, worktree, web 5xx, TUI exit) are recorded as error events. 13 events that no release emits are listed as planned.
+  - An upload no longer holds the telemetry state lock during the network send, so the TUI start that uploads keeps its own start events.
+- A UI test no longer leaks XDG directories into later tests (#2533, reported by @AndreIntelas).
+- Regression tests for #2529, #2541, #2543 and the OpenCode shared service (#2514) are part of the repository.
+- The contributor self-check runs Go tests only inside a container and otherwise prints the Docker command.
+
+### Upgrading
+
+- #2539: a drain from an upgraded host against a remote that is still on 1.16.26 or older now fails with `flag provided but not defined: -profile` instead of receiving every profile's records. Update the remote (`agent-deck remote update <name>`) first. `inbox export` run by hand returns only the invoking profile's records; export each profile separately if you relied on the host-wide output.
+- #2518: the recovery turn is on by default and costs one turn per conductor start or restart. Opt out with `[conductor] recovery_turn = false`.
+- #2544: `[conductor] permission_ask` defaults to `true` (unchanged behavior). Setting it to `false` takes effect when you run `agent-deck conductor setup <name>` again, and it also removes a user ask rule that is identical to a managed entry.
+- #2548: `default_conductor` and thread affinity are Slack only; Telegram, Discord and `/ad-restart` still route an unprefixed message to the first conductor.
+- #2536: a Codex send into a pane showing an approval menu or the transcript overlay is now held and then refused instead of typed into it.
+
+### Known issues
+
+- govulncheck reports GO-2026-6617 (HTTP/2 server crash in golang.org/x/net and net/http); agent-deck serves no HTTP/2 (plain http.Server, no TLS, no h2c), so it is not reachable; the Go 1.26.9 and x/net 0.60.0 move ships in the next release.
+
+Thanks to @wallacms, @jtymas-preiss, @AndreIntelas, @3rwww1, @koenzhao, @seanfreiburg, @Skadoge and @AKarbas for their pull requests, and to @jwr456, @tomasaschan, @Abeansits, @cherninely, @tedmellors, @netllama and @kaneda-fr for their reports.
+
 ## [1.16.26] - 2026-10-04
 
 - Write terminal-output event ticks only while a follower needs them, reducing background disk writes (#2490).

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -123,15 +124,48 @@ func (h *Home) telemetryAttachEnd() tea.Cmd {
 }
 
 // CloseTelemetry flushes the current activity hour and app.exit to the
-// local spool. It never touches the network and runs at most once.
+// local spool. It never touches the network and runs at most once. A panic
+// exit is also an error (area tui, kind panic), so it shows in error counts.
 func (h *Home) CloseTelemetry(kind telemetry.ExitKind) {
 	h.tel.closeOnce.Do(func() {
+		if kind == telemetry.ExitPanic {
+			telemetry.ErrorOccurred(telemetry.AreaTUI, telemetry.KindPanic, "")
+		}
 		if !h.tel.started {
 			return
 		}
 		h.tel.sampler.Close()
 		telemetry.TUIExited(time.Since(h.tel.startedAt), kind)
 	})
+}
+
+// CloseTelemetryAfterRun records how tea.Program.Run ended, from its error.
+// bubbletea returns ErrProgramPanic (wrapped in ErrProgramKilled) after it
+// recovers a panic in Update, View or a Cmd: that is the one panic report,
+// app.exit kind=panic plus error area=tui kind=panic. ErrInterrupted is a
+// SIGINT bubbletea saw first, recorded like agent-deck's own signal close.
+// Any other error means the terminal could not be run (TTY or raw mode
+// setup); it is an error classified by type, and app.exit is left out
+// because none of its kinds describe it. All paths share CloseTelemetry's
+// once guard, so a signal close racing behind adds nothing.
+func (h *Home) CloseTelemetryAfterRun(err error) {
+	switch {
+	case err == nil:
+		kind := telemetry.ExitQuit
+		if _, ok := h.RestartTarget(); ok {
+			kind = telemetry.ExitUpdateRestart
+		}
+		h.CloseTelemetry(kind)
+	case errors.Is(err, tea.ErrProgramPanic):
+		h.CloseTelemetry(telemetry.ExitPanic)
+	case errors.Is(err, tea.ErrInterrupted):
+		h.CloseTelemetry(telemetry.ExitSignal)
+	default:
+		h.tel.closeOnce.Do(func() {
+			telemetry.ErrorOccurred(telemetry.AreaTUI, telemetry.ErrKindOf(err), "")
+			h.tel.sampler.Close()
+		})
+	}
 }
 
 // telemetryDisabledMsg carries the result of turning telemetry off from
@@ -143,7 +177,7 @@ var telemetryDisable = telemetry.Disable
 
 // togglePrivacyFromSettings handles the Settings Privacy row: turning off is
 // immediate; turning on opens the same consent question as the first run.
-// Disable can wait for an in-flight upload's state lock, so it runs off the
+// Disable can wait for an in-flight send's send lock, so it runs off the
 // TUI goroutine.
 func (h *Home) togglePrivacyFromSettings() tea.Cmd {
 	st := telemetry.LoadState()
@@ -156,4 +190,23 @@ func (h *Home) togglePrivacyFromSettings() tea.Cmd {
 		h.telemetryDialog.SetSize(h.width, h.height)
 	}
 	return nil
+}
+
+// telemetryFeatureFromTUI counts one TUI feature use (feature.daily) after
+// its outcome is known. It runs off the TUI goroutine like the other
+// telemetry writes; without consent it is a no-op.
+func telemetryFeatureFromTUI(f telemetry.Feature, failed bool) tea.Cmd {
+	return func() tea.Msg {
+		telemetry.FeatureUsed(f, failed)
+		return nil
+	}
+}
+
+// telemetrySentFromTUI counts one message typed in the TUI and submitted to
+// a session (send.daily, via=tui). Only the length bucket of chars is kept.
+func telemetrySentFromTUI(tool string, chars int) tea.Cmd {
+	return func() tea.Msg {
+		telemetry.MessageSent(tool, telemetry.SendTUI, chars, false)
+		return nil
+	}
 }

@@ -127,7 +127,7 @@ func printEnvelope(res *core.Result) {
 	output, err := json.MarshalIndent(res.Envelope(""), "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(output))
 }
@@ -156,7 +156,7 @@ func exitCoreError(out *CLIOutput, mode *jsonModeFlag, res *core.Result, usage f
 	legacy, exit := legacyErrorCode(ce.Code)
 	if mode.envelope() {
 		printEnvelope(res)
-		os.Exit(exit)
+		exitCLI(exit)
 	}
 	if sf, ok := ce.Data.(*core.SpawnFailure); ok && ce.Code == core.CodeSpawnFailed {
 		if sf.SaveErr != nil && !out.jsonMode {
@@ -166,13 +166,13 @@ func exitCoreError(out *CLIOutput, mode *jsonModeFlag, res *core.Result, usage f
 		// carrying those two renders exactly what the legacy handler printed.
 		msg, data := spawnFailureOutput(sf.Verb, &session.Instance{ID: sf.ID, Title: sf.Title}, ce.Cause)
 		out.ErrorWithData(msg, ErrCodeInvalidOperation, data)
-		os.Exit(exit)
+		exitCLI(exit)
 	}
 	out.Error(ce.Message, legacy)
 	if ce.Code == core.CodeMissingArg && usage != nil {
 		usage()
 	}
-	os.Exit(exit)
+	exitCLI(exit)
 }
 
 // exitCLIError reports an adapter-side failure (before or after the command
@@ -180,9 +180,9 @@ func exitCoreError(out *CLIOutput, mode *jsonModeFlag, res *core.Result, usage f
 func exitCLIError(out *CLIOutput, mode *jsonModeFlag, id, code, msg string, exit int) {
 	if mode.envelope() {
 		printEnvelope(&core.Result{ID: id, Err: &core.Error{Code: code, Message: msg}})
-		os.Exit(exit)
+		exitCLI(exit)
 	}
 	legacy, _ := legacyErrorCode(code)
 	out.Error(msg, legacy)
-	os.Exit(exit)
+	exitCLI(exit)
 }

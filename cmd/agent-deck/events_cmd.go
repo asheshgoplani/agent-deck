@@ -26,7 +26,7 @@ const eventsUsage = "Usage: agent-deck events <follow|stats|publish>"
 func handleEvents(profile string, args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, eventsUsage)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "--help", "-h", "help":
@@ -41,7 +41,7 @@ func handleEvents(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown events subcommand: %s\n", args[0])
 		fmt.Fprintln(os.Stderr, eventsUsage)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -71,7 +71,7 @@ func openBusForRead(name string) (*events.Bus, error) {
 // only output shape this command has, so the flag doesn't change anything.
 // --kind and --session only filter what is printed; cursors stay the bus's.
 func handleEventsFollow(profile string, args []string) {
-	fs := flag.NewFlagSet("agent-deck events follow", flag.ExitOnError)
+	fs := flag.NewFlagSet("agent-deck events follow", flag.ContinueOnError)
 	afterFlag := fs.Uint64("after", 0, "resume after this cursor (0 = from the beginning of the retained log)")
 	_ = fs.Bool("json", true, "stream NDJSON frames (always on; kept for CLI symmetry)")
 	kindFlag := fs.String("kind", "", "only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)")
@@ -81,8 +81,8 @@ func handleEventsFollow(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	var kinds []string
 	for _, k := range strings.Split(*kindFlag, ",") {
@@ -106,7 +106,7 @@ func handleEventsFollow(profile string, args []string) {
 	bus, err := openBusForRead(*busFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if bus.ReadOnly() {
 		defer bus.Close()
@@ -115,7 +115,7 @@ func handleEventsFollow(profile string, args []string) {
 	sub, err := bus.Subscribe(ctx, events.Cursor(*afterFlag))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	for frame := range sub.Frames() {
@@ -128,12 +128,12 @@ func handleEventsFollow(profile string, args []string) {
 		}
 		line = append(line, '\n')
 		if _, err := os.Stdout.Write(line); err != nil {
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 	if err := sub.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -188,16 +188,16 @@ func handleEventsPublish(profile string, args []string) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	out := NewCLIOutput(*jsonOut, false)
 	if !strings.HasPrefix(*kind, macappKindPrefix) || len(*kind) == len(macappKindPrefix) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if cfg, _ := session.LoadUserConfig(); cfg == nil || !cfg.Macapp.Plugins {
 		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	raw := []byte(*data)
 	if *dataFile != "" {
@@ -209,14 +209,14 @@ func handleEventsPublish(profile string, args []string) {
 		}
 		if err != nil {
 			out.Error(fmt.Sprintf("events publish: read data: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 	var payload any
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			out.Error(fmt.Sprintf("events publish: data is not JSON: %v", err), ErrCodeInvalidOperation)
-			os.Exit(2)
+			exitCLI(2)
 		}
 	}
 	sid := *sessionID
@@ -228,33 +228,33 @@ func handleEventsPublish(profile string, args []string) {
 	bus.Publish(*kind, sid, payload)
 	if !bus.Flush(2 * time.Second) {
 		out.Error("events publish: bus did not commit the frame within 2s", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	cursor := bus.Cursor()
 	if cursor <= before {
 		out.Error("events publish: bus is disabled or dropped the frame (see events stats)", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out.Success(fmt.Sprintf("published %s at cursor %d", *kind, cursor), map[string]any{"ok": true, "kind": *kind, "session_id": sid, "cursor": uint64(cursor), "profile": profile})
 }
 
 // handleEventsStats implements `agent-deck events stats [--json] [--bus events|comms]`.
 func handleEventsStats(args []string) {
-	fs := flag.NewFlagSet("agent-deck events stats", flag.ExitOnError)
+	fs := flag.NewFlagSet("agent-deck events stats", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print stats as JSON")
 	busFlag := fs.String("bus", "events", busFlagHelp)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck events stats [--json] [--bus events|comms]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(1)
 	}
 
 	bus, err := openBusForRead(*busFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: events stats: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if bus.ReadOnly() {
 		defer bus.Close()
@@ -270,7 +270,7 @@ func handleEventsStats(args []string) {
 		}{stats, kinds}
 		if err := enc.Encode(payload); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encode stats: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}

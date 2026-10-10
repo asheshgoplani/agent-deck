@@ -176,7 +176,7 @@ func (s *Session) recordCompletedTurnSampleLocked(content string) {
 	// the trimmed frame no longer shows it (the workflow row lives under the
 	// footer): a hook that still says running over such a frame is not lagging.
 	s.completedTurnIdle = s.cachedPromptDetector != nil && s.cachedPromptDetector.CompletedTurnAtIdlePrompt(content) &&
-		!s.lastBackgroundWork.InFlight()
+		!s.lastBackgroundWork.Running()
 	s.completedTurnSampledAt = time.Now()
 }
 

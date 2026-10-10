@@ -12,7 +12,7 @@ import (
 func handleHermesHooks(args []string) {
 	if len(args) == 0 {
 		printHermesHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -34,7 +34,7 @@ func handleHermesHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown hermes-hooks subcommand: %s\n", args[0])
 		printHermesHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -55,7 +55,7 @@ func handleHermesHooksInstall() {
 	installed, err := session.InjectHermesHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing Hermes hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if installed {
 		fmt.Println("Hermes hooks installed successfully.")
@@ -70,7 +70,7 @@ func handleHermesHooksUninstall() {
 	removed, err := session.RemoveHermesHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error removing Hermes hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if removed {
 		fmt.Println("Hermes hooks removed successfully.")

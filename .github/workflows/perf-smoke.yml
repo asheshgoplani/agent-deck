@@ -101,7 +101,7 @@ jobs:
   runtime-health:
     name: Runtime health (100 sessions)
     runs-on: ubuntu-latest
-    container: golang:1.25
+    container: golang:1.26.9
     env:
       PERF_BUDGET_MULTIPLIER: '2.0'
     steps:

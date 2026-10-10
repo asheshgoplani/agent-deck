@@ -43,7 +43,7 @@ jobs:
           docker run --rm --init -u 1000:1000 --network none --cap-drop ALL \
             -v "$PWD:/src" -w /src -e HOME=/tmp/h -e GOCACHE=/tmp/h/.cache \
             -e GOMODCACHE=/go/pkg/mod -e GOTOOLCHAIN=local \
-            agentdeck-funccheck:go1.25.13 \
+            agentdeck-funccheck:go1.26.9 \
             go test -count=1 -v -timeout=2m ./tools/funccheck | tee funccheck-tests.log
       - name: Check the build against a disposable fleet
         id: fleet
