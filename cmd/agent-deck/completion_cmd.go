@@ -134,7 +134,7 @@ var completionTree = []completionNode{
 			"restart", "revive", "fork", "handoff", "attach", "focus", "show",
 			"viewers", "current", "primer", "set-parent", "unset-parent", "update", "set-transition-notify",
 			"set-title-lock", "set", "switch-account", "move", "send", "approve",
-			"send-keys", "output", "children", "search",
+			"send-keys", "command", "commands", "output", "children", "search",
 		},
 		args: map[string][]argKind{
 			"start":                 {argSession},
@@ -161,6 +161,8 @@ var completionTree = []completionNode{
 			"send":                  {argSession},
 			"approve":               {argSession},
 			"send-keys":             {argSession},
+			"command":               {argSession},
+			"commands":              {argSession},
 			"output":                {argSession},
 			"children":              {argSession},
 		},
