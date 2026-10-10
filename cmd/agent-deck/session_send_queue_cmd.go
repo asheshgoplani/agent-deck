@@ -517,9 +517,13 @@ func classifyChild(result map[string]interface{}, code int) (childOutcome, strin
 // sendChild starts the child that types one queued message; tests replace it.
 var sendChild = startChildSend
 
-// sendChildRelease types an entry released by `session queue release`. It is
-// the same guarded child the worker uses; tests replace it.
-var sendChildRelease = startChildSend
+// sendChildRelease types an entry released by `session queue release`: the
+// guarded child (--require-input-prompt) without the readiness wait
+// (--no-wait), so a released entry is typed now only when an input prompt is
+// visible and is refused untyped otherwise. Tests replace it.
+var sendChildRelease = func(profile, id, message, resultPath string) (int, func() int, error) {
+	return startChildSendWithOptions(profile, id, message, resultPath, releaseChildOptions)
+}
 
 // deliverQueued drives one record to landed, failed (only when nothing was
 // typed), or settled typed/submitted.
@@ -635,15 +639,18 @@ func typeQueued(profile, dir string, rec *sendqueue.Record, status, path string,
 		r.Attempts++
 		r.TargetStatus, r.TranscriptPath, r.TranscriptFrom = status, path, from
 		r.SentAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if status == queueReleaseStatus {
+			// A released entry keeps the guard on any later attempt too.
+			r.RequireInputPrompt = true
+		}
 	}); err != nil {
 		return false
 	}
 	child := sendChild
-	if rec.RequireInputPrompt {
-		child = sendChildGuarded
-	}
 	if status == queueReleaseStatus {
 		child = sendChildRelease
+	} else if rec.RequireInputPrompt {
+		child = sendChildGuarded
 	}
 	pid, wait, err := child(profile, rec.SessionID, rec.Message, result)
 	if err != nil {
@@ -852,14 +859,36 @@ func waitTurnStarted(profile, id string, max time.Duration) {
 // dies, reads the whole message regardless, and the next worker reads the
 // outcome from resultPath.
 var sendChildGuarded = func(profile, id, message, resultPath string) (int, func() int, error) {
-	return startChildSendWithGuard(profile, id, message, resultPath, true)
+	return startChildSendWithOptions(profile, id, message, resultPath, childSendOptions{requireInputPrompt: true})
 }
 
 func startChildSend(profile, id, message, resultPath string) (int, func() int, error) {
-	return startChildSendWithGuard(profile, id, message, resultPath, false)
+	return startChildSendWithOptions(profile, id, message, resultPath, childSendOptions{})
 }
 
-func startChildSendWithGuard(profile, id, message, resultPath string, requireInputPrompt bool) (int, func() int, error) {
+// childSendOptions are the extra `session send` flags a queue child carries.
+type childSendOptions struct {
+	requireInputPrompt bool // --require-input-prompt: refuse untyped without an input prompt
+	noWait             bool // --no-wait: skip the readiness wait
+}
+
+// releaseChildOptions: `session queue release` forces the guarded send and
+// skips the readiness wait, as in the lab core.
+var releaseChildOptions = childSendOptions{requireInputPrompt: true, noWait: true}
+
+// childSendArgs is the argv (after the executable) of a queue child.
+func childSendArgs(profile, id, msgPath string, opts childSendOptions) []string {
+	args := profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")
+	if opts.requireInputPrompt {
+		args = append(args, "--require-input-prompt")
+	}
+	if opts.noWait {
+		args = append(args, "--no-wait")
+	}
+	return args
+}
+
+func startChildSendWithOptions(profile, id, message, resultPath string, opts childSendOptions) (int, func() int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, nil, err
@@ -872,11 +901,7 @@ func startChildSendWithGuard(profile, id, message, resultPath string, requireInp
 	if err != nil {
 		return 0, nil, err
 	}
-	args := profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")
-	if requireInputPrompt {
-		args = append(args, "--require-input-prompt")
-	}
-	cmd := exec.Command(exe, args...)
+	cmd := exec.Command(exe, childSendArgs(profile, id, msgPath, opts)...)
 	// The send id rides in the environment, not argv: a binary that predates
 	// it ignores the variable instead of refusing an unknown flag. The rest
 	// of the environment is passed through unchanged, exactly as before

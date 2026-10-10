@@ -133,9 +133,12 @@ these `outcome` values:
 - `unknown`: the outcome could not be proven (a typing entry without child
   evidence, or no answer before the timeout).
 
-Release goes through the same `session send` child and guards the worker
-uses; it only skips the queue's own wait and backoff. A Codex, Pi, shell or
-unknown target that is busy is refused untyped rather than typed into.
+Release goes through the same `session send` child the worker uses, always
+as a guarded send (`--require-input-prompt`, see "Guarded send") without
+the readiness wait; it skips the queue's own wait and backoff. A Codex,
+Pi, shell or unknown target that is busy is refused untyped rather than
+typed into, and so is a target showing a menu or no input prompt. A
+released entry stays guarded on any later attempt.
 Each answer is also a `queue.released` or `queue.cancelled` bus frame, and a
 cancellation is a `session.send` frame with `state: "cancelled"`; the health
 journal records it with `outcome: "cancelled"`.
