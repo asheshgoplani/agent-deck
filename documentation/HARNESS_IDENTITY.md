@@ -38,8 +38,17 @@ You are running inside agent-deck, a terminal session manager for AI coding agen
 When a task you were given by a parent is fully done, end your final message with exactly one line:
 ===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>
 ...
+
+## Working style
+Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered.
+
 This block is at $AGENTDECK_IDENTITY_FILE and is regenerated on every start/restart.
 ```
+
+The "Working style" line is the fan-out hint. It is on by default and is
+also added to the `primer` block; `[launch] fanout_hint = false` removes it
+from both and leaves the rest of the block as it was. The skill's worker
+prompt conventions and `launch-subagent.sh` carry the same line.
 
 The block is written to `<data-dir>/agent-deck/runtime/identity/<session-id>/identity.md`
 (plus a `GEMINI.md` copy for gemini). Its path is exported to the session as

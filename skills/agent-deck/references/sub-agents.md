@@ -7,7 +7,7 @@ Launching child sessions, worker prompt conventions, the completion sentinel, co
 **Use when:** User says "launch sub-agent", "create sub-agent", "spawn agent"
 
 ```bash
-$SKILL_DIR/scripts/launch-subagent.sh "Title" "Prompt" [--mcp name] [--wait]
+$SKILL_DIR/scripts/launch-subagent.sh "Title" "Prompt" [--mcp name] [--wait] [--no-fanout-hint]
 ```
 
 The script auto-detects current session/profile and creates a child session.
@@ -33,6 +33,15 @@ This section covers **one** child (launch + one of the three retrieval modes). F
 | Complex reasoning | `sequential-thinking` |
 
 ### Worker Prompt Conventions
+
+Every worker prompt carries this line (fan-out by default):
+
+```
+Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered.
+```
+
+You rarely need to type it: `launch-subagent.sh` appends it to the prompt (`--no-fanout-hint` skips it), and the identity block agent-deck injects into every launched session carries it (`[launch] fanout_hint = true`, the default; `fanout_hint = false` or `--no-identity` leaves it out). Add it yourself when you launch with `--no-identity` or hand a prompt to a harness that gets no identity block.
+
 
 When the prompt asks the worker to `Edit` or `Write` any **existing** file, include an explicit **prelude-read** as the first step. Claude Code's tool guard rejects `Edit`/`Write` before `Read` of the same path, and conductor-spawned workers hit this mid-task (#968) when their prompt jumps straight into the change. The interruption forces the worker to backfill reads inside its main loop, breaking flow and burning cycles.
 

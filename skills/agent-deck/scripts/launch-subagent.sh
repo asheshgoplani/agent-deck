@@ -9,6 +9,11 @@
 #   --path <dir>     Working directory for the agent (default: /tmp/<title>)
 #   --wait           Poll until complete, return output
 #   --timeout <sec>  Wait timeout (default: 300)
+#   --no-fanout-hint Do not append the fan-out line to the prompt
+#
+# Every prompt ends with this line unless --no-fanout-hint is given or the
+# prompt already contains it:
+#   Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered.
 #
 # Examples:
 #   launch-subagent.sh "Research" "Find info about X"
@@ -27,6 +32,8 @@ WORK_PATH=""
 MCPS=()
 WAIT=false
 TIMEOUT=300
+FANOUT_HINT="Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered."
+ADD_FANOUT_HINT=true
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -50,6 +57,10 @@ while [ $# -gt 0 ]; do
             TIMEOUT="$2"
             shift 2
             ;;
+        --no-fanout-hint)
+            ADD_FANOUT_HINT=false
+            shift
+            ;;
         *)
             if [ -z "$TITLE" ]; then
                 TITLE="$1"
@@ -62,8 +73,14 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$TITLE" ] || [ -z "$PROMPT" ]; then
-    echo "Usage: launch-subagent.sh \"Title\" \"Prompt\" [--tool codex] [--path /dir] [--mcp name] [--wait]" >&2
+    echo "Usage: launch-subagent.sh \"Title\" \"Prompt\" [--tool codex] [--path /dir] [--mcp name] [--wait] [--no-fanout-hint]" >&2
     exit 1
+fi
+
+if [ "$ADD_FANOUT_HINT" = "true" ] && [[ "$PROMPT" != *"$FANOUT_HINT"* ]]; then
+    PROMPT="${PROMPT}
+
+${FANOUT_HINT}"
 fi
 
 # Detect current session (filter out log lines starting with year)
