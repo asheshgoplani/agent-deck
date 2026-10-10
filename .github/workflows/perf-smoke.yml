@@ -40,10 +40,15 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   perf-tests:
     name: TestPerf_ walltime regressions (-race, multiplier=2.0)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -75,6 +80,7 @@ jobs:
   perf-bench-trend:
     name: Benchmark ns/op trend (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     continue-on-error: true
     steps:
       - name: Checkout
@@ -101,6 +107,7 @@ jobs:
   runtime-health:
     name: Runtime health (100 sessions)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container: golang:1.26.9
     env:
       PERF_BUDGET_MULTIPLIER: '2.0'

@@ -59,6 +59,7 @@ jobs:
   lighthouse:
     name: Performance Budget
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       MAX_BYTE_WEIGHT_DELTA_PCT: 5
       MAX_SCRIPT_SIZE_DELTA_PCT: 5
