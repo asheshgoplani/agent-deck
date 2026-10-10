@@ -153,12 +153,7 @@ func (b BackgroundWork) WithoutShells() BackgroundWork {
 	if b.Kind != BackgroundKindBash {
 		return b
 	}
-	monitors := 0
-	for _, part := range claudeCounterPartRe.FindAllStringSubmatch(b.Task, -1) {
-		if n, err := strconv.Atoi(part[1]); err == nil && !strings.HasPrefix(strings.ToLower(part[2]), "shell") {
-			monitors += n
-		}
-	}
+	_, monitors := countFooterCounter(b.Task)
 	if monitors == 0 {
 		return BackgroundWork{}
 	}
@@ -330,16 +325,7 @@ func claudeFooterCounter(content string) (BackgroundWork, bool) {
 		if m == nil {
 			continue
 		}
-		shells, monitors := 0, 0
-		for _, part := range claudeCounterPartRe.FindAllStringSubmatch(m[1], -1) {
-			if n, err := strconv.Atoi(part[1]); err == nil {
-				if strings.HasPrefix(strings.ToLower(part[2]), "shell") {
-					shells += n
-				} else {
-					monitors += n
-				}
-			}
-		}
+		shells, monitors := countFooterCounter(m[1])
 		kind := BackgroundKindMonitor
 		if shells > 0 {
 			kind = BackgroundKindBash
@@ -354,6 +340,21 @@ func claudeFooterCounter(content string) (BackgroundWork, bool) {
 		return BackgroundWork{Kind: kind, Count: count, Task: strings.TrimSpace(m[1]), Source: "pane"}, true
 	}
 	return BackgroundWork{}, false
+}
+
+// countFooterCounter sums the shells and monitors a footer counter names
+// ("2 shells, 1 monitor").
+func countFooterCounter(counter string) (shells, monitors int) {
+	for _, part := range claudeCounterPartRe.FindAllStringSubmatch(counter, -1) {
+		if n, err := strconv.Atoi(part[1]); err == nil {
+			if strings.HasPrefix(strings.ToLower(part[2]), "shell") {
+				shells += n
+			} else {
+				monitors += n
+			}
+		}
+	}
+	return shells, monitors
 }
 
 // claudeBackgroundWorkPending reports whether the (ANSI-stripped) Claude pane
