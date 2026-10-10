@@ -81,6 +81,14 @@ func (i *Instance) VerifySpawned(maxWait time.Duration) (verifyErr error) {
 		if exists && !i.tmuxSession.IsPaneDead() {
 			return nil
 		}
+		// A tracked one-shot command that already finished is a completed
+		// run, not a failed spawn: remain-on-exit keeps its dead pane so the
+		// exit status can be reported (process-exited + exit_code). The
+		// command's own failure, if any, surfaces there, the same way it did
+		// when the command was typed into an interactive shell.
+		if exists && trackedCommandExitObserved(i.tmuxSession, i.trackedCommandExitReceiptPath()) {
+			return nil
+		}
 		expired := time.Now().After(deadline)
 		if probeErr == nil {
 			rec := i.SpawnFailure()

@@ -1048,6 +1048,9 @@ type transcriptMessage struct {
 
 // writeCostEvent reads usage from the Claude transcript file on Stop events.
 func writeCostEvent(instanceID string, rawPayload []byte) {
+	if !session.GetCostTrackingEnabled("") {
+		return
+	}
 	logCostDebug("writeCostEvent called for instance=%s", instanceID)
 
 	var stop stopHookPayload

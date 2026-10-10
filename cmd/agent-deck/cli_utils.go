@@ -931,6 +931,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "working"
 	case session.SubstateHookLag:
 		return "turn done, hook lagging"
+	case session.SubstateProcessExited:
+		return "process exited"
 	default:
 		return ""
 	}

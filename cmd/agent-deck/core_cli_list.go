@@ -31,6 +31,7 @@ func cliList(profile string, args []string) {
 		fmt.Println("Usage: agent-deck list [options]")
 		fmt.Println()
 		fmt.Println("List all sessions.")
+		fmt.Println("JSON includes transcript_path and native IDs when known; paths belong to the session host.")
 		fmt.Println("ACCOUNT shows the quoted stored account slot, not a resolved account or login identity.")
 		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
@@ -144,6 +145,8 @@ type allProfilesSessionJSON struct {
 	SSHHost           string    `json:"ssh_host,omitempty"`
 	SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
 	CodexSessionID    string    `json:"codex_session_id,omitempty"`
+	ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+	TranscriptPath    string    `json:"transcript_path,omitempty"`
 	ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 }
 
@@ -173,6 +176,8 @@ func renderListAllProfiles(listed core.SessionListOut, jsonOutput bool) {
 					SSHHost:           row.SSHHost,
 					SSHRemotePath:     row.SSHRemotePath,
 					CodexSessionID:    row.CodexSessionID,
+					ClaudeSessionID:   row.ClaudeSessionID,
+					TranscriptPath:    row.TranscriptPath,
 					ResolvedCodexHome: row.ResolvedCodexHome,
 				})
 			}

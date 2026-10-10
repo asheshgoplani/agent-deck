@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1067,7 +1066,7 @@ func main() {
 	// Cost Tracking Initialization
 	// ═══════════════════════════════════════════════════════════════════
 	var costStore *costs.Store
-	if db := statedb.GetGlobal(); db != nil {
+	if db := statedb.GetGlobal(); db != nil && session.GetCostTrackingEnabled(profile) {
 		costStore = costs.NewStore(db.DB())
 
 		// Load user config for pricing overrides and budgets
@@ -1105,18 +1104,11 @@ func main() {
 		}
 
 		// Set up budget checker
-		var budgetCfg costs.BudgetConfig
-		if userCfg != nil {
-			bc := userCfg.Costs.Budgets
-			budgetCfg.DailyLimit = int64(math.Round(bc.DailyLimit * 1_000_000))
-			budgetCfg.WeeklyLimit = int64(math.Round(bc.WeeklyLimit * 1_000_000))
-			budgetCfg.MonthlyLimit = int64(math.Round(bc.MonthlyLimit * 1_000_000))
-			if len(bc.Groups) > 0 {
-				budgetCfg.GroupLimits = make(map[string]int64)
-				for name, g := range bc.Groups {
-					budgetCfg.GroupLimits[name] = int64(math.Round(g.DailyLimit * 1_000_000))
-				}
-			}
+		// An invalid costs timezone must not keep the TUI from starting:
+		// budgets then fall back to local time, as before.
+		budgetCfg, budgetErr := costBudgetConfig(userCfg)
+		if budgetErr != nil {
+			slog.Warn("cost budgets use local time", "error", budgetErr)
 		}
 		budgetChecker := costs.NewBudgetChecker(budgetCfg, costStore)
 
@@ -2502,6 +2494,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		newInstance.Command = sessionCommandResolved
 		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
+		newInstance.TrackCommandExit = newInstance.Tool == "shell" && !sessionCommandIsPassthrough
 	}
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
@@ -2884,6 +2877,7 @@ func handleList(profile string, args []string) {
 		fmt.Println("Usage: agent-deck list [options]")
 		fmt.Println()
 		fmt.Println("List all sessions.")
+		fmt.Println("JSON includes transcript_path and native IDs when known; paths belong to the session host.")
 		fmt.Println("ACCOUNT shows the quoted stored account slot, not a resolved account or login identity.")
 		fmt.Println(`JSON always includes the raw "account" string, including "" when no slot is stored.`)
 		fmt.Println()
@@ -3025,7 +3019,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		ModelVersion      string    `json:"model_version,omitempty"`
 		Status            string    `json:"status"`
 		StatusSource      string    `json:"status_source,omitempty"`
-		Substate          string    `json:"substate,omitempty"`        // Honest Status v2: additive refinement
+		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
+		ExitCode          *int      `json:"exit_code,omitempty"`
 		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
 		Profile           string    `json:"profile"`
@@ -3041,6 +3036,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		SupersededBy      string    `json:"superseded_by,omitempty"`
 		Supersedes        string    `json:"supersedes,omitempty"`
 		CodexSessionID    string    `json:"codex_session_id,omitempty"`
+		ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+		TranscriptPath    string    `json:"transcript_path,omitempty"`
 		ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
 		// apply the local recency filter (session.TimeFilterMode) to this
@@ -3058,6 +3055,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
+	transcripts := session.ListedTranscriptPaths(instances)
 	viewers := session.ViewersByTmuxSession(context.Background(), instances)
 	var pass session.StatusUpdatePass
 	for i, inst := range instances {
@@ -3087,6 +3085,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			Status:            StatusString(inst.Status),
 			StatusSource:      "live",
 			Substate:          substate,
+			ExitCode:          inst.ExitCode(),
 			SubstateDetail:    inst.SubstateDetail(),
 			BackgroundWork:    inst.BackgroundWorkJSON(),
 			Profile:           profileName,
@@ -3102,6 +3101,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			SupersededBy:      inst.SupersededBy,
 			Supersedes:        inst.Supersedes,
 			CodexSessionID:    inst.CodexSessionID,
+			ClaudeSessionID:   inst.ClaudeSessionID,
+			TranscriptPath:    transcripts[inst],
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 		}
@@ -3157,6 +3158,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 			SSHHost           string    `json:"ssh_host,omitempty"`
 			SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
 			CodexSessionID    string    `json:"codex_session_id,omitempty"`
+			ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+			TranscriptPath    string    `json:"transcript_path,omitempty"`
 			ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		}
 		// Non-nil so an empty result marshals as [] rather than null.
@@ -3174,6 +3177,7 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 			if !includeSuperseded {
 				instances = defaultListInstances(instances)
 			}
+			transcripts := session.ListedTranscriptPaths(instances)
 			for _, inst := range instances {
 				allSessions = append(allSessions, sessionJSON{
 					ID:                inst.ID,
@@ -3190,6 +3194,8 @@ func handleListAllProfiles(jsonOutput, includeSuperseded bool) {
 					SSHHost:           inst.SSHHost,
 					SSHRemotePath:     inst.SSHRemotePath,
 					CodexSessionID:    inst.CodexSessionID,
+					ClaudeSessionID:   inst.ClaudeSessionID,
+					TranscriptPath:    transcripts[inst],
 					ResolvedCodexHome: inst.ResolvedCodexHome(),
 				})
 			}
@@ -3660,6 +3666,7 @@ func handleStatus(profile string, args []string) {
 			// ADDED, never renamed: existing fields stay byte-stable; omitempty
 			// so the default "" never appears in output.
 			Substate string `json:"substate,omitempty"`
+			ExitCode *int   `json:"exit_code,omitempty"`
 			// SubstateDetail is free text for the substate (today the codex
 			// usage-limit retry time). Same omitempty contract.
 			SubstateDetail string `json:"substate_detail,omitempty"`
@@ -3697,6 +3704,7 @@ func handleStatus(profile string, args []string) {
 					Tool:           inst.Tool,
 					Status:         StatusString(inst.Status),
 					Substate:       substate,
+					ExitCode:       inst.ExitCode(),
 					SubstateDetail: inst.SubstateDetail(),
 					BackgroundWork: inst.BackgroundWorkJSON(),
 					Path:           inst.ProjectPath,
@@ -3738,6 +3746,9 @@ func handleStatus(profile string, args []string) {
 						lbl += ": " + work.Summary() // issue #2473
 					}
 					suffix = "  [" + lbl + "]"
+					if exitCode := inst.ExitCode(); exitCode != nil {
+						suffix = fmt.Sprintf("  [%s: %d]", lbl, *exitCode)
+					}
 				}
 				fmt.Printf("  %s %-16s %-10s %-22s %s%s\n", symbol, inst.Title, inst.Tool, truncate(modelStatusDisplay(inst), 22), path, suffix)
 			}

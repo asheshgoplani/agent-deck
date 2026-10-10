@@ -153,7 +153,7 @@ a drop; the directory must already exist (`ErrNoBus` otherwise).
 
 | Command | Output |
 |---|---|
-| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events\|comms]` | NDJSON frames, oldest first, streams live until killed. `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. `--bus comms` follows the comms ledger (read-only; docs/comms.md). |
+| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events\|comms]` | NDJSON frames, oldest first, streams live until killed. `--jsonl` and `--since` are aliases of `--json` and `--after`; `agent-deck remote <name> events follow --jsonl --since <cursor>` forwards the same stream from a registered remote (docs/remote-recall.md). `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. `--bus comms` follows the comms ledger (read-only; docs/comms.md). |
 | `agent-deck events stats --json [--bus events\|comms]` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap, kinds: {kind: retained count}}`. |
 | `agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> \| --data-file <path\|->] [--json]` | Publishes one frame and waits (≤ 2 s) until it is committed; prints `{ok, kind, session_id, cursor, profile}`. Only the `macapp.*` namespace, with `[macapp] plugins = true` required except for built-in `macapp.open` and `macapp.open.ack` (exit 2 otherwise). `--session` defaults to `$AGENTDECK_INSTANCE_ID`. |
 
@@ -168,3 +168,36 @@ registry is absent from this branch. Integration belongs to the later branch
 that combines the two slices.
 
 Browser requests, acknowledgments, local launch fallback, and remote tar export are documented in [macapp-open.md](macapp-open.md).
+
+## Claude statusline metadata
+
+`usage ingest claude` and the installed `usage statusline-wrap` publish
+`usage.statusline` without the Mac app plugins gate. The frame's `session_id`
+is the owning agent-deck session ID when the native Claude ID resolves uniquely,
+or an empty string when it cannot be resolved. The data object contains only
+`claude_session_id`, `captured_at` (UTC RFC3339 with milliseconds), `model`
+(`id`, `display_name`), `cwd`, `context_window` (`used_percentage`,
+`context_window_size`, `total_input_tokens`, `total_output_tokens`) and
+`rate_limits` (`five_hour`, `seven_day`, each with `used_percentage` and epoch
+seconds `resets_at`). Unreported objects and numeric fields are null. Two
+string fields appear only when known: `account`, the configured Claude account
+slot whose config dir the status line ran under (`$CLAUDE_CONFIG_DIR`, else
+`~/.claude`), and `permission_mode`, the payload's `permission_mode` or else the
+newest `permissionMode` in the last 256 KiB of the transcript. Prompt text,
+transcript paths, cost data and additional payload keys are not retained.
+
+Use `usage statusline --session <id|title> --json` to read the current native
+conversation's last record. Missing or ambiguous records return
+`{"error":"no statusline record"}` with exit 1. Records are replaced per native
+ID; a known session retains only its latest native conversation. Registry
+removal prunes linked records. At most 128 unlinked records remain per
+profile. An unlinked record is kept in the feed profile when that profile
+already has a store, otherwise in the configured default profile when it has
+one; if neither exists, only the quota cache is written and no event is
+published, so a statusline update never creates a profile. The event log keeps
+its existing bounded retention.
+
+`events follow --json --kind usage.statusline` streams these records from the
+host that ran the ingest. Account-named hook feeds keep their original quota
+cache while statusline events go to the owning session's profile bus. The
+wrapper is not installed when `[claude] statusline_feed = false`.

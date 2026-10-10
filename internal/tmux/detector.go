@@ -172,14 +172,7 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 		return false
 	}
 	// Get last 15 lines for analysis (increased from 10 for better context)
-	lines := strings.Split(content, "\n")
-	var lastLines []string
-	for i := len(lines) - 1; i >= 0 && len(lastLines) < 15; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line != "" {
-			lastLines = append([]string{lines[i]}, lastLines...)
-		}
-	}
+	lastLines := recentTailLines(content, 15)
 	recentContent := strings.Join(lastLines, "\n")
 	recentLower := strings.ToLower(recentContent)
 
@@ -332,26 +325,23 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 	// line, mode line, update notice, compaction hint, /rc), as captured on
 	// live sessions in the status-light audit.
 	// ═══════════════════════════════════════════════════════════════════════
+	// A typed draft may wrap across several two-space-indented rows before
+	// the lower box rule. Keep that whole box in view while still requiring
+	// its closing rule near the live footer.
+	if hasClaudeDraftBox(lastLines) {
+		return true
+	}
 	checkLines := lastLines
 	if len(checkLines) > 8 {
 		checkLines = checkLines[len(checkLines)-8:]
 	}
-	for idx, line := range checkLines {
+	for _, line := range checkLines {
 		cleanLine := strings.TrimSpace(StripANSI(line))
 		// Normalize non-breaking spaces (U+00A0) to regular spaces
 		// Claude Code uses NBSP after the prompt character
 		cleanLine = strings.ReplaceAll(cleanLine, "\u00A0", " ")
 		// Check for standalone prompt character (user hasn't typed yet)
 		if cleanLine == ">" || cleanLine == "❯" || cleanLine == "> " || cleanLine == "❯ " {
-			return true
-		}
-		// Prompt with an unsent draft: "❯ migrate all" drawn between the two
-		// horizontal rules of the input box. The rules tell it apart from an
-		// echoed earlier prompt ("❯ text" followed by a ⏺ reply) and from a
-		// menu option ("❯ 1. Leave it"). 11 of 46 audited idle Claude panes
-		// carried a draft; without this they had no prompt verdict at all.
-		if strings.HasPrefix(cleanLine, "❯ ") && idx > 0 && idx+1 < len(checkLines) &&
-			isHorizontalRuleLine(checkLines[idx-1]) && isHorizontalRuleLine(checkLines[idx+1]) {
 			return true
 		}
 		// Check for prompt with suggestion (Claude shows "❯ Try..." when waiting)
@@ -419,6 +409,38 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 	}
 
 	return false
+}
+
+// hasClaudeDraftBox accepts a live input box even when its typed text wraps.
+// The composer glyph must follow an upper rule, continuation rows must keep
+// Claude's two-space indent, and the lower rule must be in the recent footer.
+func hasClaudeDraftBox(lines []string) bool {
+	_, _, ok := claudeDraftBoxBounds(lines)
+	return ok
+}
+
+func claudeDraftBoxBounds(lines []string) (int, int, bool) {
+	for i := 0; i+2 < len(lines); i++ {
+		if !isHorizontalRuleLine(lines[i]) {
+			continue
+		}
+		prompt := strings.ReplaceAll(strings.TrimSpace(StripANSI(lines[i+1])), "\u00a0", " ")
+		if !strings.HasPrefix(prompt, "❯ ") {
+			continue
+		}
+		for j := i + 2; j < len(lines); j++ {
+			if isHorizontalRuleLine(lines[j]) {
+				if j >= len(lines)-8 {
+					return i, j, true
+				}
+				break
+			}
+			if !strings.HasPrefix(StripANSI(lines[j]), "  ") {
+				break
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 // =============================================================================

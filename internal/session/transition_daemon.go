@@ -769,6 +769,9 @@ func (d *TransitionDaemon) journalStatusChanges(profile string, byID map[string]
 		if substate != "" {
 			detail["substate"] = substate
 		}
+		if exitCode := byID[id].ExitCode(); exitCode != nil {
+			detail["exit_code"] = *exitCode
+		}
 		if fromSubstate != "" {
 			detail["substate_from"] = fromSubstate
 		}

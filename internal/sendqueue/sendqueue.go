@@ -64,21 +64,22 @@ const RetainFinished = 7 * 24 * time.Hour
 
 // Record is one queued send. It is also the `send-status --json` object.
 type Record struct {
-	SendID       string   `json:"send_id"`
-	Verdict      string   `json:"verdict"`
-	State        string   `json:"state"`
-	Reason       string   `json:"reason"`
-	TargetStatus string   `json:"target_status"`
-	SessionID    string   `json:"session_id"`
-	SessionTitle string   `json:"session_title,omitempty"`
-	Tool         string   `json:"tool,omitempty"`
-	Message      string   `json:"message"`
-	Images       []string `json:"images,omitempty"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
-	Deadline     string   `json:"deadline"`
-	Attempts     int      `json:"attempts"`
-	SentAt       string   `json:"sent_at,omitempty"`
+	SendID             string   `json:"send_id"`
+	Verdict            string   `json:"verdict"`
+	State              string   `json:"state"`
+	Reason             string   `json:"reason"`
+	TargetStatus       string   `json:"target_status"`
+	SessionID          string   `json:"session_id"`
+	SessionTitle       string   `json:"session_title,omitempty"`
+	Tool               string   `json:"tool,omitempty"`
+	Message            string   `json:"message"`
+	RequireInputPrompt bool     `json:"require_input_prompt,omitempty"`
+	Images             []string `json:"images,omitempty"`
+	CreatedAt          string   `json:"created_at"`
+	UpdatedAt          string   `json:"updated_at"`
+	Deadline           string   `json:"deadline"`
+	Attempts           int      `json:"attempts"`
+	SentAt             string   `json:"sent_at,omitempty"`
 	// Sender is who queued the send: the calling session's id, or "cli".
 	// The delivering child journals it as the send's sender.
 	Sender string `json:"sender,omitempty"`

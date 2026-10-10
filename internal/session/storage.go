@@ -52,6 +52,7 @@ type InstanceData struct {
 	// WriteSubcommandPassthroughToToolData), not a dedicated SQL column, so
 	// it round-trips across binary versions without a schema migration.
 	SubcommandPassthrough bool      `json:"subcommand_passthrough,omitempty"`
+	TrackCommandExit      bool      `json:"track_command_exit,omitempty"`
 	AutoName              bool      `json:"auto_name,omitempty"`             // marks Title as a machine-generated quick-session handle
 	AutoNameDescription   string    `json:"auto_name_description,omitempty"` // last captured Claude task description for an AutoName session
 	Command               string    `json:"command"`
@@ -298,6 +299,10 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 				}
 			}
 		}
+	}
+
+	if err := pruneImageUploadsOnStartup(profileDir); err != nil {
+		storageLog.Warn("image_upload_cleanup_failed", slog.String("error", err.Error()))
 	}
 
 	if err := pruneHookArtifactsOnStartup(); err != nil {
@@ -618,7 +623,11 @@ func (s *Storage) DeleteInstanceDeferredCleanup(id string) (func(), error) {
 		return nil, fmt.Errorf("failed to delete instance %s: %w", id, err)
 	}
 	_ = s.db.Touch()
+	profileDir := filepath.Dir(s.dbPath)
 	return func() {
+		if err := cleanupImageUploads(profileDir, id); err != nil {
+			storageLog.Warn("image_upload_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+		}
 		if err := pruneHookArtifacts(id); err != nil {
 			storageLog.Warn("hook_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
 		}
@@ -1074,6 +1083,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// never silently re-enable claude/codex account-routing treatment for a
 	// command that was never explicitly validated as one.
 	toolData = WriteSubcommandPassthroughToToolData(toolData, inst.SubcommandPassthrough)
+	toolData = writeTrackCommandExitToToolData(toolData, inst.TrackCommandExit)
 	// Identity-injection opt-out lives in the same extras zone so a restart
 	// from any process honours `--no-identity`.
 	toolData = WriteIdentityInjectionDisabledToToolData(toolData, inst.IdentityInjectionDisabled)
@@ -1286,6 +1296,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 			Favorite:                  ReadFavoriteFromToolData(r.ToolData),
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
+			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1425,6 +1436,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 			Favorite:                  ReadFavoriteFromToolData(r.ToolData),
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
+			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1734,6 +1746,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Favorite:                     instData.Favorite,
 			DeepSeekTask:                 instData.DeepSeekTask,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
+			TrackCommandExit:             instData.TrackCommandExit,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
 			ContextLevel:                 instData.ContextLevel,
 			LastStartedAt:                instData.LastStartedAt,

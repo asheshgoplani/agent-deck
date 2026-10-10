@@ -32,6 +32,8 @@
 - A Home `Update` plus `View` benchmark measures model work. For an incident reported in the terminal, add a real PTY redraw measurement over the same private socket and name both metrics separately.
 - On a build Mac with no `go` on PATH, place the toolchain and committed source under the task sandbox. Include `/usr/sbin` in the isolated PATH so process identity checks can run `sysctl`; preserve full-suite failures separately from focused results.
 - A route coverage test that calls an SSE endpoint through `ServeHTTP` must cancel its request context before invoking the handler; an allowed stream otherwise stays open and stalls the entire package gate.
+- A feature flag supplied by a downstream app must use that app's exact spelling in the CLI parser and help. For a guarded send, inspect the pane before the composer-draft guard as well as before each keystroke batch, or an open menu can be misreported as `composer_blocked`.
+- When a mode replaces a tuning struct, apply new safety fields after choosing that mode. A `--no-wait` replacement silently reset the guarded-send flag; the only decisive evidence was a real pane showing the supposedly guarded marker typed into the menu.
 - When a middleware validates HTTP Host, direct-handler tests must send a realistic local Host: `httptest.NewRequest` defaults to `example.com` for relative URLs, causing unrelated route assertions to fail with 421. Keep an explicit test request helper and preserve absolute-URL Hosts for authority tests.
 - Host validation spans the CLI-built server as well as `internal/web`: update direct-handler fixtures in both packages. A web-package-only green result cannot clear the CLI package gate.
 

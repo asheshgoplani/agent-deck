@@ -145,6 +145,7 @@ config_dir = "~/.claude-team"      # Optional override for profile "work"
 | `extra_args` | array of strings | `[]` | Extra Claude CLI flags remembered from the New Session dialog and appended to new/restarted Claude sessions. Do not store secrets here. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 | `hooks_enabled` | bool | `true` | Enables Claude Code lifecycle hooks for real-time status detection. Set `false` to opt out of hook-based detection and the TUI install prompt. |
+| `statusline_feed` | bool | `true` | Lets `agent-deck hooks install` and the automatic repair wrap Claude's `statusLine` with `agent-deck usage statusline-wrap`, which records each session's model, context and 5h/7d (`usage statusline`, `usage.statusline` events) and then runs your previous command unchanged (or prints a short default line when there was none). The active Claude config is wrapped only while agent-deck's hooks are installed there; named account slots are always wrapped. Set `false` to leave every `statusLine` untouched; `hooks uninstall` still restores one that was wrapped earlier from `agent-deck-statusline-backup.json`. |
 | `command` | string | `"claude"` | Override the binary/invocation (e.g., `"cdw"` for a wrapper that sets `CLAUDE_CONFIG_DIR`). |
 
 Config resolution order for Claude config dir:
