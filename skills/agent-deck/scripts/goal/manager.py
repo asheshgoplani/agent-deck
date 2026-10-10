@@ -101,6 +101,10 @@ def record_event(goal: dict, event: str, detail: str) -> None:
         goal["history"] = history[-200:]
 
 
+# run_done_cmd's return code for a verifier that timed out (no verdict).
+VERIFIER_TIMEOUT_RC = 124
+
+
 def run_done_cmd(done_cmd: str, timeout_s: int = 30) -> tuple[int, str]:
     """Run the external verifier. Returns (returncode, combined_output)."""
     try:
@@ -110,7 +114,7 @@ def run_done_cmd(done_cmd: str, timeout_s: int = 30) -> tuple[int, str]:
         out = (r.stdout or "") + (r.stderr or "")
         return r.returncode, out.strip()[:500]
     except subprocess.TimeoutExpired:
-        return 124, "verifier timed out"
+        return VERIFIER_TIMEOUT_RC, "verifier timed out"
     except Exception as e:  # noqa: BLE001  (defensive at boundary)
         return 1, f"verifier raised: {e}"
 
@@ -160,18 +164,18 @@ def worktree_tree_hash(workdir: Path, timeout_s: int = 30) -> str | None:
         if not workdir.is_dir() or workdir.resolve() == Path.home().resolve():
             return None
 
-        def git(*args: str) -> str | None:
+        def git(*args: str) -> bytes | None:
             r = subprocess.run(
                 ["git", "--no-optional-locks", "-C", str(workdir), *args],
                 capture_output=True, timeout=timeout_s,
             )
-            return r.stdout.decode("utf-8", "surrogateescape") if r.returncode == 0 else None
+            return r.stdout if r.returncode == 0 else None
 
         pathspec = ("--", ".", f":(exclude){TASK_LOG_NAME}")
         top = git("rev-parse", "--show-toplevel")
         if top is None:
             return None
-        root = Path(top.strip())  # porcelain paths are relative to the top
+        root = Path(top.strip().decode("utf-8", "surrogateescape"))  # porcelain paths are relative to the top
         base = git("rev-parse", "--verify", "-q", "HEAD^{tree}")
         if base is None:  # unborn branch: diff against the empty tree
             base = git("hash-object", "-t", "tree", "/dev/null")
@@ -179,15 +183,18 @@ def worktree_tree_hash(workdir: Path, timeout_s: int = 30) -> str | None:
             return None
         base = base.strip()
         status = git("status", "--porcelain=v1", "-z", "-uall", "--no-renames", *pathspec)
-        diff = git("diff", "--binary", "--no-ext-diff", base, *pathspec)
+        diff = git("diff", "--binary", "--no-ext-diff", base.decode(), *pathspec)
         if status is None or diff is None:
             return None
 
         h = hashlib.sha256()
         for part in (base, status, diff):
-            h.update(part.encode("utf-8", "surrogateescape"))
+            h.update(part)
             h.update(b"\0")
-        untracked = [e[3:] for e in status.split("\0") if e.startswith("?? ")]
+        untracked = [
+            e[3:].decode("utf-8", "surrogateescape")
+            for e in status.split(b"\0") if e.startswith(b"?? ")
+        ]
         if len(untracked) > MAX_SNAPSHOT_UNTRACKED_FILES:
             return None
         for rel in sorted(untracked):
@@ -369,18 +376,18 @@ def check_verifier(goal: dict, tree_hash: str | None, verbose: bool) -> int:
     timeout is not a verdict, so it never arms the skip.
     """
     state = goal["state"]
-    rc, _out = run_done_cmd(goal["done_cmd"], timeout_s=30)
+    rc, _out = run_done_cmd(goal["done_cmd"])
     state["last_verified_at"] = now_iso()
     record_event(goal, "verifier_check", f"rc={rc}")
     vlog(verbose, f"verifier rc={rc}")
     if rc != 0:
-        state["last_failed_tree_hash"] = tree_hash if rc != 124 else None
+        state["last_failed_tree_hash"] = tree_hash if rc != VERIFIER_TIMEOUT_RC else None
     return rc
 
 
-def finish_done(goal: dict, path: Path, dry_run: bool, verbose: bool) -> None:
+def finish_done(goal: dict, path: Path, worker: str, dry_run: bool, verbose: bool) -> None:
     finalize(goal, "done", "verifier passed")
-    agent_deck_stop(goal["worker_session_title"] or goal["worker_session_id"], dry_run, verbose)
+    agent_deck_stop(worker, dry_run, verbose)
     write_history_artifact(goal)
     print(f"[manager] DONE: {goal['id']} ({goal['goal']})", file=sys.stderr)
     save_goal(path, goal, dry_run)
@@ -403,7 +410,7 @@ def wake_backoff_seconds(base: int, streak: int) -> int:
     return min(base * 2 ** min(streak - 1, 32), MAX_WAKE_BACKOFF_SECONDS)
 
 
-def end_no_progress(goal: dict, path: Path, streak: int, idle_minutes: int,
+def end_no_progress(goal: dict, path: Path, worker: str, streak: int, idle_minutes: int,
                     dry_run: bool, verbose: bool) -> None:
     """End the goal as failed after the no-progress cap and page the user."""
     finalize(goal, "failed", "no_progress_cap")
@@ -413,7 +420,7 @@ def end_no_progress(goal: dict, path: Path, streak: int, idle_minutes: int,
     )
     goal["state"]["escalated_at"] = now_iso()
     record_event(goal, "escalated", str(bundle))
-    agent_deck_stop(goal.get("worker_session_title") or goal["worker_session_id"], dry_run, verbose)
+    agent_deck_stop(worker, dry_run, verbose)
     write_history_artifact(goal)
     print(f"[manager] FAILED (no progress in {streak} turns): {goal['id']}; bundle at {bundle}", file=sys.stderr)
     save_goal(path, goal, dry_run)
@@ -460,7 +467,7 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
         verified = True
         if check_verifier(goal, tree_hash, verbose) != 0:
             return False
-        finish_done(goal, path, dry_run, verbose)
+        finish_done(goal, path, worker, dry_run, verbose)
         return True
 
     if (new_receipts or not unchanged_failed) and verify_done():
@@ -508,12 +515,11 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
     if tree_hash is None:
         progressed = bool(new_receipts)
     else:
-        progressed = not baseline_tick and tree_hash != baseline
-        if baseline_tick:
-            state["progress_tree_hash"] = tree_hash
+        progressed = baseline is not None and tree_hash != baseline
+    if progressed or baseline_tick:
+        state["progress_tree_hash"] = tree_hash
 
     if progressed:
-        state["progress_tree_hash"] = tree_hash
         state["last_progress_at"] = now_iso()
         state["no_progress_streak"] = 0
         state["next_wake_at"] = None
@@ -532,7 +538,8 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
     vlog(verbose, f"idle={int(idle_seconds)}s, max_idle={max_idle}s, next_wake_at={state.get('next_wake_at')}")
 
     # On the baseline tick a receipt cannot be judged; an idle wake can.
-    if (wake_due or (new_receipts and not baseline_tick)) and not progressed:
+    turn_closed = wake_due or (new_receipts and not baseline_tick)
+    if turn_closed and not progressed:
         streak = state.get("no_progress_streak", 0) + 1
         state["no_progress_streak"] = streak
         record_event(goal, "no_progress_turn", f"{streak}/{cap}")
@@ -543,7 +550,7 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
             # the worktree.
             if verify_done():
                 return
-            end_no_progress(goal, path, streak, idle_minutes, dry_run, verbose)
+            end_no_progress(goal, path, worker, streak, idle_minutes, dry_run, verbose)
             return
 
         state["next_wake_at"] = (
@@ -554,19 +561,15 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
         # failed worktree is skipped: it cannot change the verdict, and the
         # empty turn still counts toward the cap. With the cap off nothing
         # would end the goal, so every due wake goes out.
-        skip_wake = (
-            cap > 0
-            and unchanged_failed
-            and tree_hash == state.get("last_wake_tree_hash")
-        )
-        if wake_due and skip_wake:
-            record_event(goal, "wake_skipped", "worktree unchanged since the last wake and failed verdict")
-            vlog(verbose, "wake skipped: worktree unchanged since the last wake")
-        elif wake_due:
-            if verify_done():
-                return
-            send_wake(goal, idle_minutes, dry_run, verbose)
-            state["last_wake_tree_hash"] = tree_hash
+        if wake_due:
+            if cap > 0 and unchanged_failed and tree_hash == state.get("last_wake_tree_hash"):
+                record_event(goal, "wake_skipped", "worktree unchanged since the last wake and failed verdict")
+                vlog(verbose, "wake skipped: worktree unchanged since the last wake")
+            else:
+                if verify_done():
+                    return
+                send_wake(goal, worker, idle_minutes, dry_run, verbose)
+                state["last_wake_tree_hash"] = tree_hash
 
     if not verified:
         record_event(goal, "verifier_skipped", f"worktree unchanged since last failure ({tree_hash[:12]})")
@@ -582,13 +585,12 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
     save_goal(path, goal, dry_run)
 
 
-def send_wake(goal: dict, idle_minutes: int, dry_run: bool, verbose: bool) -> None:
+def send_wake(goal: dict, worker: str, idle_minutes: int, dry_run: bool, verbose: bool) -> None:
     """Nudge the worker and escalate once nudge attempts reach the limit."""
     state = goal["state"]
     schedule = goal["schedule"]
-    target = goal.get("worker_session_title") or goal["worker_session_id"]
     nudge_text = build_nudge(goal, idle_minutes)
-    sent_ok = agent_deck_send(target, nudge_text, dry_run, verbose)
+    sent_ok = agent_deck_send(worker, nudge_text, dry_run, verbose)
     # Count attempts, not just successes: N failed nudges = N signals
     # that something is wrong, and the user deserves to be paged.
     state["nudges_sent"] = state.get("nudges_sent", 0) + 1
