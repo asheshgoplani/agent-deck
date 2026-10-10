@@ -172,7 +172,7 @@ phone, and never lets a `waiting` worker rot.
 Two short guides to read next:
 
 - [**`docs/conductor/`**](docs/conductor/) — two-minute local quickstart, architecture,
-  state files, lifecycle, remote channel setup (Telegram/Slack/Discord), gotchas.
+  state files, lifecycle, remote channel setup (Telegram/Slack/Discord/Mattermost), gotchas.
 - [**`docs/WATCHER-SETUP.md`**](docs/WATCHER-SETUP.md) — add "doorbells" so the outside world
   (GitHub events, gmail, ntfy pushes, meetings) can wake the conductor up.
 
