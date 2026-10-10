@@ -279,13 +279,6 @@ func FindWorktreeDestructionScript(repoDir string) (string, os.FileMode) {
 	return "", 0
 }
 
-// RunWorktreeDestructionScript executes the destruction script with the same
-// environment, working directory (worktreePath, which still exists at call
-// time), shebang dispatch and timeout semantics as the setup script.
-func RunWorktreeDestructionScript(scriptPath string, scriptMode os.FileMode, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
-	return runWorktreeScript("destruction", scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, timeout)
-}
-
 // RunWorktreeDestructionBeforeRemove runs the destruction script (if present)
 // just before a worktree is removed. Failure is non-fatal: removal proceeds
 // regardless, mirroring setup's "hook failure doesn't block the operation".
