@@ -17,7 +17,7 @@ func validateRemoteEventsArgs(args []string) error {
 	if len(args) == 0 || args[0] != "follow" {
 		return fmt.Errorf("unsupported remote command: events forwards follow only")
 	}
-	fs := map[string]bool{"json": false, "jsonl": false, "since": true, "after": true, "kind": true, "session": true, "help": false, "h": false}
+	fs := map[string]bool{"json": false, "jsonl": false, "since": true, "after": true, "kind": true, "session": true, "read-only": false, "help": false, "h": false}
 	for i := 1; i < len(args); i++ {
 		name, _, inline := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
 		value, known := fs[name]

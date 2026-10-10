@@ -51,8 +51,12 @@ thread; Recall resolves those cases when opened.
 One events stream per host forwards status deltas without full-list polling.
 The owner host must enable `[macapp] status_events = true` and have an active
 status producer (TUI or notify daemon). Forwarding does not change the owner
-configuration or create status transitions. Transcript notifications similarly
-require the existing `transcript_events` setting.
+configuration or create status transitions. Add `--read-only` to observe the
+remote bus without restarting its queued send workers, opening a writer or
+taking a demand lease (docs/events.md); a remote whose agent-deck predates the
+flag rejects it.
+Transcript notifications similarly require the existing `transcript_events`
+setting.
 Optional `remote sessions --since` delta snapshots are not implemented. Initial
 session metadata still requires a list snapshot. Deep history pages transmit
 only the requested rows and retain only those row bodies, but parser identity
