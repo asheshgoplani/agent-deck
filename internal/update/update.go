@@ -35,8 +35,8 @@ const (
 	DefaultCheckInterval = 1 * time.Hour
 )
 
-// checkInterval stores the configurable interval (set via SetCheckInterval
-// or SetCheckIntervalDuration)
+// checkInterval stores the configurable interval (set via
+// SetCheckIntervalDuration)
 var checkInterval = DefaultCheckInterval
 
 // apiBaseURL is the base URL for GitHub API calls. Overridable in tests, and
@@ -67,13 +67,6 @@ var bridgeScriptInstaller func() error
 // internal/session and avoids an import cycle. When nil (non-CLI callers),
 // UpdateBridgePy falls back to the default XDG/legacy resolution.
 var conductorDirResolver func() (string, error)
-
-// SetCheckInterval sets the update check interval from config, in hours.
-func SetCheckInterval(hours int) {
-	if hours > 0 {
-		checkInterval = time.Duration(hours) * time.Hour
-	}
-}
 
 // SetCheckIntervalDuration sets the update check interval directly. Used to
 // wire [updates].check_interval (a duration string, default 90s) so the
@@ -725,78 +718,6 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 	return info, nil
 }
 
-// CheckForUpdateAsync checks for updates in the background
-// Returns a channel that will receive the result
-func CheckForUpdateAsync(currentVersion string) <-chan *UpdateInfo {
-	ch := make(chan *UpdateInfo, 1)
-
-	go func() {
-		info, err := CheckForUpdate(currentVersion, false)
-		if err != nil {
-			// On error, return no update available
-			ch <- &UpdateInfo{Available: false, CurrentVersion: currentVersion}
-		} else {
-			ch <- info
-		}
-		close(ch)
-	}()
-
-	return ch
-}
-
-// PerformUpdate downloads and installs the latest version
-func PerformUpdate(downloadURL string) error {
-	if downloadURL == "" {
-		return fmt.Errorf("no download URL available for %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
-
-	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
-	if err != nil {
-		return fmt.Errorf("failed to detect install type: %w", err)
-	}
-	if managed {
-		return fmt.Errorf("homebrew-managed install detected at %s; use `%s`", execPath, upgradeCmd)
-	}
-
-	// Download the release
-	fmt.Printf("Downloading from %s...\n", downloadURL)
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Create temp file for download
-	tmpFile, err := os.CreateTemp("", "agent-deck-update-*.tar.gz")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	// Copy download to temp file
-	fmt.Println("Downloading...")
-	_, err = io.Copy(tmpFile, resp.Body)
-	tmpFile.Close()
-	if err != nil {
-		return fmt.Errorf("failed to save download: %w", err)
-	}
-
-	// Extract the binary from tarball
-	fmt.Println("Extracting...")
-	binaryData, err := extractBinaryFromTarGz(tmpPath)
-	if err != nil {
-		return fmt.Errorf("failed to extract: %w", err)
-	}
-
-	return installSelfUpdateBinary(execPath, binaryData)
-}
-
 // PerformVerifiedUpdate downloads, verifies, extracts, and installs a release
 // binary for the requested platform. It fails closed: checksum download,
 // missing-entry, or hash mismatch errors occur before the installed binary is
@@ -1065,16 +986,6 @@ func FormatChangelogForDisplay(entries []ChangelogEntry) string {
 
 	sb.WriteString("\n━━━━━━━━━━━━━━━━━━\n")
 	return sb.String()
-}
-
-// extractBinaryFromTarGz extracts the agent-deck binary from a .tar.gz file.
-func extractBinaryFromTarGz(tarPath string) ([]byte, error) {
-	file, err := os.Open(tarPath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	return extractBinaryFromTarGzReader(file)
 }
 
 // extractBinaryFromTarGzBytes extracts the agent-deck binary from an in-memory
