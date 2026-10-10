@@ -16,6 +16,7 @@ read-only transcript and pane reads named below.
 | Plugin frames | `events publish --kind macapp.<name> --session <id> --data-file -` | `[macapp] plugins` | docs/events.md |
 | Send that is never silently lost | `session send <id> --message-file - --json --queue`, `session send-status <send-id> --json` | none | below |
 | Images | `session send <id> … --image <path>` | none | below |
+| Image staging (local or remote) | `session image-upload <id> --name <uuid>.<ext> --json` (bytes on stdin) | none | below |
 | Codex identity | `session show <id> --json` → `transcript_path`, `transcript_ids` | none | below |
 | Harness facts | `harness list --json`, `harness status <name> --json` | none | below |
 | Usage limits | `limits --json` | `[macapp] plugins` | below |
@@ -94,8 +95,38 @@ name become dashes; the directory gets a `.gitignore` of `*`) and appends
 `@<copy>` to the message for Claude Code and Gemini CLI, which read `@path`
 from the composer. A queued record's `images` lists the copies. Codex takes images only at launch (`codex -i`), so a
 running Codex session exits 2 with `images not supported for codex in a
-running session`; other harnesses exit 2 too. Only png, jpg, jpeg, gif and
-webp files are accepted. `harness list` reports `images: true|false`.
+running session`; other harnesses exit 2 too. Only png, jpg, jpeg, gif,
+webp and pdf files are accepted. `harness list` reports `images: true|false`.
+
+### Staging an attachment on the owning host
+
+```
+agent-deck session image-upload <id|title> --name <uuid>.png --json < image.png
+agent-deck remote <host> session image-upload <id|title> --name <uuid>.pdf --json < document.pdf
+{"path":"/absolute/path/on/the/owning/host","bytes":123}
+```
+
+The bytes arrive on stdin (over the existing SSH route for a remote) and
+are written to `macapp-uploads/<session id>/<name>` beside the profile's
+state database, resolved by the core itself, never from the SSH user's
+HOME. Pass the returned path to `session send <id> --image <path>` on the
+same host and profile. Clients must use the returned path rather than
+build it.
+
+- Names: a plain file name ending in png, jpg, gif, webp or pdf; no
+  separators, no traversal, no leading dot, at most 200 bytes.
+- Size: 1 byte to 20 MiB; more is refused with an error and nothing is kept.
+- Safety: the directory is 0700 and the file 0600. The file is written to
+  a temporary name and published with an exclusive atomic rename, so an
+  existing target (including a symlink) is refused and never overwritten;
+  a retry with the same name fails. Symlinked upload directories are refused.
+- Cleanup: removing the session (CLI, TUI or web) removes its folder.
+  Opening writable storage prunes uploads older than 7 days, once per
+  profile per process.
+- Exit codes: 0 with the receipt, 1 with `Error: <reason>` on stderr.
+- Probe: `session image-upload --help` exits 0 and prints the Go flag
+  usage (`Usage of session image-upload:` with `-name` and `-json`). A
+  core without the command answers `unknown session command`.
 
 ## Codex identity
 

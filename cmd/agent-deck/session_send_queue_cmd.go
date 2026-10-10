@@ -29,7 +29,7 @@ type imageList []string
 func (l *imageList) String() string     { return strings.Join(*l, ",") }
 func (l *imageList) Set(v string) error { *l = append(*l, v); return nil }
 
-var imageExtensions = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true}
+var imageExtensions = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".pdf": true}
 
 // errImagesUnsupported marks a harness that cannot take an image in a
 // running session; the CLI exits 2 for it.
@@ -63,7 +63,7 @@ func attachImages(inst *session.Instance, message string, images []string, now t
 	refs := []string{strings.TrimSpace(message)}
 	for i, src := range images {
 		if !imageExtensions[strings.ToLower(filepath.Ext(src))] {
-			return "", nil, fmt.Errorf("%s: not an image (png, jpg, jpeg, gif, webp)", src)
+			return "", nil, fmt.Errorf("%s: not an attachment (png, jpg, jpeg, gif, webp, pdf)", src)
 		}
 		in, err := os.Open(src)
 		if err != nil {
