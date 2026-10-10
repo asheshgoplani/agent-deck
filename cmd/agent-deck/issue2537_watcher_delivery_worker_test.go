@@ -1,13 +1,17 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/watcher"
 )
 
 // The send worker's side of durable watcher delivery (#2537): a routed
@@ -162,5 +166,127 @@ func TestIssue2537_AWorkerThatDiedMidDeliveryNeverTypesTheEventAgain(t *testing.
 	}
 	if next := nextPending(f.dir, f.target.ID); next != nil {
 		t.Fatalf("the settled event is still pending: %+v", next)
+	}
+}
+
+// composerGuardChild stands in for the `session send` child at a conductor
+// whose composer is occupied: while occupied it answers what the child
+// answers when the composer guard refuses (nothing typed, the draft kept);
+// once the composer is free it types the message and reports it submitted.
+type composerGuardChild struct {
+	mu       sync.Mutex
+	occupied bool
+	refusals int
+	typed    []string
+}
+
+func (c *composerGuardChild) send(_, _, message, resultPath string) (int, func() int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.occupied {
+		c.refusals++
+		_ = os.WriteFile(resultPath, []byte(`{"success":false,"error":"message not delivered to 'conductor-demo': message not sent: composer is occupied or unreadable; existing draft preserved","code":"DELIVERY_FAILED","delivery":"composer_blocked","submitted":false,"confirmation":"failed"}`), 0o600)
+		return 4242, func() int { return 1 }, nil
+	}
+	c.typed = append(c.typed, message)
+	_ = os.WriteFile(resultPath, []byte(`{"success":true,"delivery":"submitted","submitted":true,"confirmation":"confirmed"}`), 0o600)
+	return 4242, func() int { return 0 }, nil
+}
+
+func (c *composerGuardChild) state() (refusals int, typed []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.refusals, append([]string(nil), c.typed...)
+}
+
+func (c *composerGuardChild) free() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.occupied = false
+}
+
+// TestIssue2537_ARoutedEventTheComposerGuardRefusesIsDeliveredOnceItClears:
+// the case behind #2537 that the composer guard (#1409) used to end. The
+// engine routes an event to a conductor whose composer stays occupied, so
+// every delivery attempt is refused with nothing typed. Before, the relay
+// dropped the event on the first refusal. Now it stays queued, the worker
+// retries it with the capped backoff, with no deadline by default, and types
+// it exactly once when the composer clears, with no manual step.
+func TestIssue2537_ARoutedEventTheComposerGuardRefusesIsDeliveredOnceItClears(t *testing.T) {
+	t.Setenv("AGENTDECK_EVENTS_BUS", "off")
+	t.Setenv("AGENTDECK_SEND_WORKER_POLL", "40ms")
+	t.Setenv("AGENTDECK_SEND_RETRY_BACKOFF_MAX", "200ms")
+	t.Setenv("AGENTDECK_SEND_LAND_WINDOW", "300ms")
+	// A profile of its own per run: the outbox finds the conductor by its
+	// title, and a rerun must not find the previous run's session.
+	f := newStoppedTargetFixture(t, "_test_2537_composer_guard_"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := f.target.GetTmuxSession().Start("bash"); err != nil {
+		t.Fatalf("start the conductor's pane: %v", err)
+	}
+	child := &composerGuardChild{occupied: true}
+	prev := sendChild
+	sendChild = child.send
+	t.Cleanup(func() { sendChild = prev })
+
+	// The engine's outbox queues the routed event for the conductor.
+	storage, err := session.NewStorageWithProfile(f.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	outbox := watcher.NewConductorOutbox(watcher.OutboxConfig{
+		Profile: f.profile, Dir: f.dir, DB: storage.GetDB(),
+		SpawnWorker: func(string, string) error { return nil },
+	})
+	evt := watcher.Event{Source: "slack", Sender: "slack:alice", Subject: "deploy", Body: "can you check the deploy?", RoutedTo: "demo"}
+	if err := outbox.Enqueue("w-slack", "slack", evt); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := sendqueue.List(f.dir, f.target.ID)
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("queued %d records (%v), want the routed event", len(recs), err)
+	}
+	rec := recs[0]
+	if rec.Deadline != "" {
+		t.Fatalf("deadline %q: a routed event must not run out while the composer stays occupied", rec.Deadline)
+	}
+	id := rec.SendID
+
+	done := make(chan struct{})
+	go func() { deliverQueued(f.profile, f.dir, rec); close(done) }()
+	// Several refused attempts, each back to queued (between attempts the
+	// record is typing while the child runs).
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		n, typed := child.state()
+		if len(typed) != 0 {
+			t.Fatalf("typed %q while the composer was occupied", typed)
+		}
+		if waiting, err := sendqueue.Load(f.dir, id); err == nil && n >= 3 &&
+			waiting.State == sendqueue.StateQueued && strings.Contains(waiting.Reason, "composer_blocked") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker stopped retrying the refused event after %d refusals", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	child.free() // the composer clears; nobody touches the queue
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the event was not delivered after the composer cleared")
+	}
+	refusals, typed := child.state()
+	if len(typed) != 1 || typed[0] != watcher.ConductorMessage(evt) {
+		t.Fatalf("typed %q, want the routed event once", typed)
+	}
+	got, err := sendqueue.Load(f.dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != sendqueue.StateSubmitted || !got.Final() || got.Attempts != refusals+1 {
+		t.Fatalf("record = %+v after %d refusals, want submitted on the attempt after them", got, refusals)
 	}
 }
