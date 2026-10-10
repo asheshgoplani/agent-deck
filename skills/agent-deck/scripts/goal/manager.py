@@ -456,7 +456,9 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
     # unchanged since the last failed verdict. A new receipt, a wake that is
     # actually sent and the no-progress cap always get a fresh verdict, so
     # completion outside the worktree is still seen and a worker is never
-    # told NOT YET MET from a stale verdict.
+    # told NOT YET MET from a stale verdict. done_cmd runs at most once per
+    # tick: a verdict from earlier in the same tick was taken on the same
+    # tree hash, so it is fresh.
     unchanged_failed = tree_hash is not None and tree_hash == state.get("last_failed_tree_hash")
     verified = False
 

@@ -346,16 +346,37 @@ class TestUnchangedWorktreeGate(GoalSandbox):
         self.assertEqual(self.sends, [], "no NOT YET MET nudge once the goal is met")
 
     def test_every_sent_wake_follows_a_fresh_verdict(self):
+        """Every sent wake has a failed done_cmd verdict from its own tick.
+
+        Fresh means taken in the same tick, before the send, on the same
+        worktree hash. On the first tick that verdict comes from Step 2,
+        so other events (no_progress_turn) can sit between it and the send.
+        """
         repo = init_repo(self.tmp / "repo")
         path = self.write_goal(workdir=repo, cap=0)
-        for _ in range(4):
-            self.tick(path)
-            self.expire_backoff(path)
-        g = json.loads(path.read_text())
-        events = self.events(g)
-        for i, e in enumerate(events):
-            if e == "nudge_sent":
-                self.assertEqual(events[i - 1], "verifier_check", events)
+        runs_at_send: list[int] = []
+
+        def send(_title, message, _dry_run, _verbose):
+            runs_at_send.append(self.done_runs())
+            self.sends.append(message)
+            return True
+
+        with patch("manager.agent_deck_send", side_effect=send):
+            for tick in range(4):
+                runs_before = self.done_runs()
+                seen = len(json.loads(path.read_text())["history"])
+                g = self.tick(path)
+                self.expire_backoff(path)
+                history = g["history"][seen:]
+                events = [e["event"] for e in history]
+                self.assertEqual(events.count("nudge_sent"), 1, (tick, events))
+                self.assertEqual(runs_at_send[-1], runs_before + 1,
+                                 f"tick {tick}: done_cmd must run once in this tick, before the wake")
+                self.assertEqual(events.count("verifier_check"), 1, (tick, events))
+                check = events.index("verifier_check")
+                self.assertLess(check, events.index("nudge_sent"), (tick, events))
+                self.assertNotEqual(history[check]["detail"], "rc=0", (tick, events))
+        self.assertEqual(len(runs_at_send), 4)
 
     def test_cap_off_never_skips_wakes(self):
         """Review N1: with the cap off a silent worker must still escalate."""
