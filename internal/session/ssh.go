@@ -2921,6 +2921,7 @@ type RemoteSessionInfo struct {
 	// too old to send them omits the keys, which unmarshal to ""/false and
 	// degrade to the coarse-status glyph.
 	Substate string `json:"substate"`
+	ExitCode *int   `json:"exit_code,omitempty"`
 	Archived bool   `json:"archived"`
 	// SubstateDetail is the free text `list --json` emits beside Substate
 	// (the codex usage-limit retry time), so a remote codex session's retry

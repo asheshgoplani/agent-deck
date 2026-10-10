@@ -47,6 +47,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		ToStatus:       to,
 		Timestamp:      ts,
 		Substate:       string(inst.CachedSubstate()),
+		ExitCode:       inst.ExitCode(),
 	}
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()

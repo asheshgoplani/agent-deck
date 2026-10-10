@@ -105,6 +105,12 @@ still in flight; pairs with `running`, detail in `substate_detail` and the
 `watching` (armed Monitor or proven sleep-only until loop; waiting/idle,
 watcher count in `background_work.count`),
 `auth-401`, `usage-limit`, `model-unavailable`, `unknown-exit`, `hook-lag`.
+`process-exited` (a custom command started with `add -cmd` / `launch -cmd`
+has exited: status `idle` for exit 0, `error` for a non-zero exit, and the
+code is reported as `exit_code` in `list --json`, `status -v --json`,
+`session show --json`, remote rows, the status event detail and the
+transition notification; a deliberate stop clears it and reads `stopped`; `session start` of such a command that finishes at once
+still reports a successful start, whatever its exit code).
 
 ## Who computes, how often, what persists
 

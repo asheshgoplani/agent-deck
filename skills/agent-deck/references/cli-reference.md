@@ -325,6 +325,8 @@ Auto-detects current session if no ID provided.
 
 `list --json`, `status --json -v` and `session children --json` carry the same `background_work` object (omitted when nothing is in flight). When the work reports back the session settles to `waiting` (then `idle` once acknowledged) within one poll (#2473). An open menu (permission prompt, question) or an error banner outranks the work: such a session reads `waiting` / `interactive-menu` or `error` / `auth-401`, never `running`. A question in Claude's reply text ("Would you like me to ...?") is not a menu and does not stop the work from reading `running`.
 
+`exit_code` (integer, omitted when unknown) appears with substate `process-exited` when a custom command session (`add -cmd` / `launch -cmd`) has exited: status `idle` for exit 0, `error` for a non-zero exit. `list --json` and `status -v --json` carry the same field; interactive shell sessions never report it, and a stopped session drops it. `session start` of a command that finishes at once still exits 0 (the result is the `process-exited` row, not a start failure). The command runs as `bash -c` as the pane's first process, so it does not load interactive shell rc files, and its pane stays dead after it exits; `session restart` runs it again. Older cores omit the field.
+
 ### session current
 
 ```bash

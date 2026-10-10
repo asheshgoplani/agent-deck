@@ -89,6 +89,10 @@
           "type": "string",
           "format": "date-time"
         },
+        "exit_code": {
+          "description": "live",
+          "type": "integer"
+        },
         "extra_args": {
           "description": "live",
           "type": "array",

@@ -60,6 +60,7 @@ type SessionRow struct {
 	Status            string         `json:"status"`
 	StatusSource      string         `json:"status_source,omitempty" doc:"cached for a stopped row whose stored status was used; live after a status refresh"`
 	Substate          string         `json:"substate,omitempty" doc:"live"`
+	ExitCode          *int           `json:"exit_code,omitempty" doc:"live"`
 	SubstateDetail    string         `json:"substate_detail,omitempty" doc:"live"`
 	TmuxSession       string         `json:"tmux_session,omitempty" doc:"live"`
 	Profile           string         `json:"profile"`
@@ -169,6 +170,7 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 			row.StatusSource = "cached"
 		}
 		row.Substate = substate
+		row.ExitCode = inst.ExitCode()
 		row.SubstateDetail = inst.SubstateDetail()
 		row.BackgroundWork = inst.BackgroundWorkJSON()
 		row.Channels = inst.Channels

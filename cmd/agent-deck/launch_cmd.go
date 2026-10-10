@@ -585,6 +585,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		newInstance.Command = sessionCommandResolved
 		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
+		newInstance.TrackCommandExit = newInstance.Tool == "shell" && !sessionCommandIsPassthrough
 	}
 	if err := newInstance.ValidateAccount(); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)

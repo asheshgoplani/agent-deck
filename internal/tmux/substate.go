@@ -89,6 +89,9 @@ const (
 	// and hold off rather than act on an unverified crash.
 	SubstateUnknownExit Substate = "unknown-exit"
 
+	// SubstateProcessExited records the observed exit of an explicit command.
+	SubstateProcessExited Substate = "process-exited"
+
 	// SubstateHookLag marks a Claude session whose lifecycle hook still says
 	// "running" while the pane has shown a completed turn at an idle prompt
 	// (no spinner, no interrupt hint, no background work) on two or more

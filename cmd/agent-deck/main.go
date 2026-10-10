@@ -2491,6 +2491,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		newInstance.Tool = firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		newInstance.Command = sessionCommandResolved
 		newInstance.SubcommandPassthrough = sessionCommandIsPassthrough
+		newInstance.TrackCommandExit = newInstance.Tool == "shell" && !sessionCommandIsPassthrough
 	}
 
 	// Apply --channel flags (claude only — channels is a Claude Code CLI flag).
@@ -3014,7 +3015,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		ModelVersion      string    `json:"model_version,omitempty"`
 		Status            string    `json:"status"`
 		StatusSource      string    `json:"status_source,omitempty"`
-		Substate          string    `json:"substate,omitempty"`        // Honest Status v2: additive refinement
+		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
+		ExitCode          *int      `json:"exit_code,omitempty"`
 		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
 		Profile           string    `json:"profile"`
@@ -3076,6 +3078,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			Status:            StatusString(inst.Status),
 			StatusSource:      "live",
 			Substate:          substate,
+			ExitCode:          inst.ExitCode(),
 			SubstateDetail:    inst.SubstateDetail(),
 			BackgroundWork:    inst.BackgroundWorkJSON(),
 			Profile:           profileName,
@@ -3649,6 +3652,7 @@ func handleStatus(profile string, args []string) {
 			// ADDED, never renamed: existing fields stay byte-stable; omitempty
 			// so the default "" never appears in output.
 			Substate string `json:"substate,omitempty"`
+			ExitCode *int   `json:"exit_code,omitempty"`
 			// SubstateDetail is free text for the substate (today the codex
 			// usage-limit retry time). Same omitempty contract.
 			SubstateDetail string `json:"substate_detail,omitempty"`
@@ -3686,6 +3690,7 @@ func handleStatus(profile string, args []string) {
 					Tool:           inst.Tool,
 					Status:         StatusString(inst.Status),
 					Substate:       substate,
+					ExitCode:       inst.ExitCode(),
 					SubstateDetail: inst.SubstateDetail(),
 					BackgroundWork: inst.BackgroundWorkJSON(),
 					Path:           inst.ProjectPath,
@@ -3727,6 +3732,9 @@ func handleStatus(profile string, args []string) {
 						lbl += ": " + work.Summary() // issue #2473
 					}
 					suffix = "  [" + lbl + "]"
+					if exitCode := inst.ExitCode(); exitCode != nil {
+						suffix = fmt.Sprintf("  [%s: %d]", lbl, *exitCode)
+					}
 				}
 				fmt.Printf("  %s %-16s %-10s %-22s %s%s\n", symbol, inst.Title, inst.Tool, truncate(modelStatusDisplay(inst), 22), path, suffix)
 			}

@@ -93,6 +93,7 @@ const (
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
 	SubstateUnknownExit       = tmux.SubstateUnknownExit
+	SubstateProcessExited     = tmux.SubstateProcessExited
 	SubstateHookLag           = tmux.SubstateHookLag
 )
 
@@ -181,6 +182,9 @@ type Instance struct {
 	// match can never fake: real provenance from the route that actually
 	// checked.
 	SubcommandPassthrough bool `json:"subcommand_passthrough,omitempty"`
+	// TrackCommandExit records an explicit shell command created by the CLI.
+	// Older interactive shell sessions keep their shell after a typed command.
+	TrackCommandExit bool `json:"track_command_exit,omitempty"`
 
 	// AutoName, when true, marks Title as a machine-generated adjective-noun
 	// handle (from a --quick / TUI-Q create). The TUI then displays the
@@ -588,6 +592,7 @@ type Instance struct {
 	// so it never persists across a lost process (a cold reload recomputes it
 	// from the same exit-code/hook-file evidence, no disk state needed).
 	terminatedPaneSubstate Substate
+	terminatedPaneExitCode *int
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
@@ -5005,7 +5010,7 @@ func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 	// its answer and exits BY DESIGN, and without remain-on-exit tmux tears the
 	// pane down with the answer still in it — the user asked a question and got
 	// a closed window. Keeping the pane is what makes a one-shot readable.
-	if i.IsSandboxed() || i.expectsFastExit() {
+	if i.IsSandboxed() || i.expectsFastExit() || i.tracksCommandExit() {
 		if overrides == nil {
 			overrides = make(map[string]string)
 		}
@@ -5464,7 +5469,7 @@ func (i *Instance) Start() (startErr error) {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell" || i.tracksCommandExit()
 	i.applyLaunchSettingsFromConfig()
 
 	// Re-assert the declarative per-group/per-conductor skill+mcp loadout
@@ -5475,6 +5480,10 @@ func (i *Instance) Start() (startErr error) {
 	i.preAcceptCursorWorkspaceTrust()
 
 	// Start the tmux session
+	command, err = i.wrapTrackedCommandExit(command)
+	if err != nil {
+		return err
+	}
 	if err := i.tmuxSession.Start(command); err != nil {
 		// #1580: persist the tmux-level failure so the preview / session show /
 		// lifecycle log can surface it instead of a bare "error".
@@ -5853,7 +5862,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell" || i.tracksCommandExit()
 	i.applyLaunchSettingsFromConfig()
 
 	// Re-assert the declarative skill+mcp loadout before spawn — sister
@@ -5863,6 +5872,10 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	i.preAcceptCursorWorkspaceTrust()
 
 	// Start the tmux session
+	command, err = i.wrapTrackedCommandExit(command)
+	if err != nil {
+		return err
+	}
 	if err := i.tmuxSession.Start(command); err != nil {
 		// #1580: persist the tmux-level failure (sister path to Start()).
 		i.recordTmuxStartFailure(diagnosticCommand, err)
@@ -6356,8 +6369,13 @@ func (i *Instance) terminatedPaneStatus() Status {
 	if i.tmuxSession != nil {
 		exitCode, haveExitCode = i.tmuxSession.PaneDeadExitStatus()
 	}
+	if !haveExitCode {
+		exitCode, haveExitCode = i.trackedCommandExitReceipt()
+	}
 	status, substate := classifyTerminatedPane(exitCode, haveExitCode, i.Tool, i.hookStatus)
+	status, substate = i.classifyCustomCommandExit(status, substate, exitCode, haveExitCode)
 	i.terminatedPaneSubstate = substate
+	i.setTerminatedPaneExitCode(exitCode, haveExitCode)
 	return status
 }
 
@@ -6377,6 +6395,7 @@ func (i *Instance) terminatedPaneStatus() Status {
 func (i *Instance) applyTerminatedPaneStatus() {
 	tmuxSession := i.tmuxSession
 	tool := i.Tool
+	receiptPath := i.trackedCommandExitReceiptPath()
 	paneDeadExitStatus := i.paneDeadExitStatusForTest
 	hookStatus := i.hookStatus
 
@@ -6388,13 +6407,57 @@ func (i *Instance) applyTerminatedPaneStatus() {
 		}
 		exitCode, haveExitCode = paneDeadExitStatus()
 	}
+	if !haveExitCode && receiptPath != "" {
+		exitCode, haveExitCode = readCommandExitReceipt(receiptPath)
+	}
 	status, substate := classifyTerminatedPane(exitCode, haveExitCode, tool, hookStatus)
 	i.mu.Lock()
 
 	if i.Status != StatusStopped {
+		status, substate = i.classifyCustomCommandExit(status, substate, exitCode, haveExitCode)
 		i.Status = status
 		i.terminatedPaneSubstate = substate
+		i.setTerminatedPaneExitCode(exitCode, haveExitCode)
 	}
+}
+
+// classifyCustomCommandExit uses tmux's retained pane status for an explicit
+// shell command. A successful command is idle; a failed command needs attention.
+func (i *Instance) tracksCommandExit() bool {
+	return i.Tool == "shell" && i.Command != "" && i.TrackCommandExit
+}
+
+func (i *Instance) classifyCustomCommandExit(status Status, substate Substate, code int, known bool) (Status, Substate) {
+	if !i.tracksCommandExit() || !known {
+		return status, substate
+	}
+	if code == 0 {
+		return StatusIdle, SubstateProcessExited
+	}
+	return StatusError, SubstateProcessExited
+}
+
+func (i *Instance) setTerminatedPaneExitCode(code int, known bool) {
+	i.terminatedPaneExitCode = nil
+	if known && i.tracksCommandExit() {
+		i.terminatedPaneExitCode = &code
+	}
+}
+
+// ExitCode returns the observed custom-command exit code, including zero.
+// The result is absent while the command is running or the pane has no exit evidence.
+func (i *Instance) ExitCode() *int {
+	if i == nil {
+		return nil
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.terminatedPaneSubstate != SubstateProcessExited ||
+		(i.Status != StatusIdle && i.Status != StatusError) || i.terminatedPaneExitCode == nil {
+		return nil
+	}
+	code := *i.terminatedPaneExitCode
+	return &code
 }
 
 // classifyTerminatedPane is the pure decision behind terminatedPaneStatus,
@@ -6895,6 +6958,10 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 
 	// Map tmux status to instance status
+	if status != "inactive" {
+		i.terminatedPaneSubstate = SubstateNone
+		i.terminatedPaneExitCode = nil
+	}
 	switch status {
 	case "active":
 		i.Status = StatusRunning
@@ -10722,7 +10789,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell" || i.tracksCommandExit()
 	i.applyLaunchSettingsFromConfig()
 
 	// Re-assert the declarative skill+mcp loadout before respawn — sister
@@ -10730,6 +10797,10 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	ApplyConfiguredLoadout(i)
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
+	command, err = i.wrapTrackedCommandExit(command)
+	if err != nil {
+		return err
+	}
 
 	if err := i.tmuxSession.Start(command); err != nil {
 		mcpLog.Debug("restart_start_failed", slog.String("error", err.Error()))
@@ -11899,7 +11970,7 @@ func (i *Instance) SubstateDetail() string {
 func (i *Instance) getTerminatedPaneSubstate() Substate {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	if i.Status != StatusError {
+	if i.Status != StatusError && i.Status != StatusIdle {
 		return SubstateNone
 	}
 	return i.terminatedPaneSubstate

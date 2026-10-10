@@ -1830,6 +1830,9 @@ func sessionShowStatusFields(inst *session.Instance) map[string]interface{} {
 	if substate != "" {
 		fields["substate"] = substate
 	}
+	if exitCode := inst.ExitCode(); exitCode != nil {
+		fields["exit_code"] = *exitCode
+	}
 	if detail := inst.SubstateDetail(); detail != "" {
 		fields["substate_detail"] = detail
 	}
@@ -2074,6 +2077,9 @@ func handleSessionShow(profile string, args []string) {
 	sb.WriteString(fmt.Sprintf("Profile: %s\n", profile))
 	sb.WriteString(fmt.Sprintf("ID:      %s\n", inst.ID))
 	sb.WriteString(fmt.Sprintf("Status:  %s %s\n", StatusSymbol(inst.Status), StatusString(inst.Status)))
+	if exitCode := inst.ExitCode(); exitCode != nil {
+		sb.WriteString(fmt.Sprintf("Exit:    process exited (%d)\n", *exitCode))
+	}
 	sb.WriteString(fmt.Sprintf("Path:    %s\n", FormatPath(inst.ProjectPath)))
 
 	if inst.GroupPath != "" {

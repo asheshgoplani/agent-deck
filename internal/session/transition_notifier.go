@@ -57,6 +57,7 @@ type TransitionNotificationEvent struct {
 	// no-op loop from a genuinely-running session. Empty when no refinement
 	// applies. Observability hook only — does not affect delivery/dedup.
 	Substate string `json:"substate,omitempty"`
+	ExitCode *int   `json:"exit_code,omitempty"`
 
 	// LastOutputHash is a stable per-turn signal used by the notifier's #1142
 	// deduplication. Claude uses a transcript-derived signal; Codex uses its
