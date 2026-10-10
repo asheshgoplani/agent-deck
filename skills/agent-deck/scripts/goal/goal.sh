@@ -39,7 +39,7 @@ PROMPT_TEMPLATE="$SCRIPT_DIR/prompts/worker.md"
 GOALS_DIR="${GOALS_DIR:-$HOME/.agent-deck/goals}"
 
 usage() {
-    sed -n '3,/^set -uo/p' "$0" | sed -n '3,/^set -uo/p' | head -32
+    sed -n '5,/^set -uo/p' "$0"
     exit 2
 }
 

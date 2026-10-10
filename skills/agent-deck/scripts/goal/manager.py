@@ -311,6 +311,10 @@ def agent_deck_stop(session_id_or_title: str, dry_run: bool, verbose: bool) -> b
         return False
 
 
+# Row cap for `costs sessions`; a full page means the worker may be cut off.
+COST_ROWS_LIMIT = 500
+
+
 def worker_tokens(goal: dict) -> int | None:
     """Tokens the worker session used so far (input, output, cache read and
     cache write), read from `agent-deck costs sessions --json`. 0 when the
@@ -319,7 +323,7 @@ def worker_tokens(goal: dict) -> int | None:
     cmd = ["agent-deck"]
     if goal.get("profile"):
         cmd += ["-p", goal["profile"]]
-    cmd += ["costs", "sessions", "--json", "--period", "all", "--limit", "500"]
+    cmd += ["costs", "sessions", "--json", "--period", "all", "--limit", str(COST_ROWS_LIMIT)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
@@ -332,7 +336,7 @@ def worker_tokens(goal: dict) -> int | None:
     for row in rows:
         if isinstance(row, dict) and row.get("session_id") == goal.get("worker_session_id"):
             return sum(int(row.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_read", "cache_write"))
-    return 0 if len(rows) < 500 else None
+    return 0 if len(rows) < COST_ROWS_LIMIT else None
 
 
 def run_budget_exceeded(goal: dict) -> str | None:

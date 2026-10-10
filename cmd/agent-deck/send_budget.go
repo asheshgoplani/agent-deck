@@ -75,8 +75,8 @@ func budgetRefusal(title string, r costs.BudgetResult) string {
 func publishBudgetExceeded(profile, sessionID, via string, r costs.BudgetResult) {
 	events.PublishProfile(profile, budgetEventKind, sessionID, map[string]any{
 		"reason":    r.Reason,
-		"used_usd":  float64(r.UsedMicro) / 1e6,
-		"limit_usd": float64(r.LimitMicro) / 1e6,
+		"used_usd":  r.UsedUSD(),
+		"limit_usd": r.LimitUSD(),
 		"via":       via,
 	})
 }
@@ -94,8 +94,8 @@ func enforceSendBudget(profile string, storage *session.Storage, inst *session.I
 			"delivery":      deliveryBudgetExceeded,
 			"session_id":    inst.ID,
 			"budget_reason": r.Reason,
-			"used_usd":      float64(r.UsedMicro) / 1e6,
-			"limit_usd":     float64(r.LimitMicro) / 1e6,
+			"used_usd":      r.UsedUSD(),
+			"limit_usd":     r.LimitUSD(),
 		})
 		// exitCLI skips main's deferred bus close; flush the frame first.
 		_ = events.CloseDefault()

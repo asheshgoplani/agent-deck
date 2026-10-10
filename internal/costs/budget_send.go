@@ -42,5 +42,11 @@ func (r BudgetResult) Describe() string {
 	if r.Action == BudgetActionWarn {
 		reason = strings.Replace(reason, "exceeded", "almost reached", 1)
 	}
-	return fmt.Sprintf("%s ($%.2f used of $%.2f)", reason, float64(r.UsedMicro)/1e6, float64(r.LimitMicro)/1e6)
+	return fmt.Sprintf("%s (%s used of %s)", reason, FormatUSD(r.UsedMicro), FormatUSD(r.LimitMicro))
 }
+
+// UsedUSD is the spend counted against the limit, in dollars.
+func (r BudgetResult) UsedUSD() float64 { return microToUSD(r.UsedMicro) }
+
+// LimitUSD is the limit that was checked, in dollars.
+func (r BudgetResult) LimitUSD() float64 { return microToUSD(r.LimitMicro) }
