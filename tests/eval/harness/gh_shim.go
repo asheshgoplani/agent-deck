@@ -11,7 +11,7 @@ import (
 )
 
 // GhShim is a recorder + scriptable stub installed at $ShimDir/gh. Tests
-// configure ScriptSuccess / ScriptFailure before the binary runs, then
+// configure ScriptSuccess before the binary runs, then
 // inspect recorded calls after.
 type GhShim struct {
 	t *testing.T
@@ -91,9 +91,6 @@ exit 0
 
 // ScriptSuccess sets the shim to exit 0 on every call (default).
 func (g *GhShim) ScriptSuccess() { g.setMode("success") }
-
-// ScriptFailure sets the shim to exit 1 with a scripted stderr line.
-func (g *GhShim) ScriptFailure() { g.setMode("failure") }
 
 func (g *GhShim) setMode(s string) {
 	g.t.Helper()

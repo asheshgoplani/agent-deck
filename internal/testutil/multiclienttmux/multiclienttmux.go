@@ -240,20 +240,6 @@ func (h *Harness) WindowSize() (int, int, error) {
 	return w, r, nil
 }
 
-// ClientCount returns the number of currently attached clients per tmux.
-func (h *Harness) ClientCount() (int, error) {
-	out, err := exec.Command("tmux", "-S", h.SocketPath,
-		"list-clients", "-t", h.SessionName,
-	).CombinedOutput()
-	if err != nil {
-		return 0, fmt.Errorf("multiclienttmux: list-clients: %w (%s)", err, out)
-	}
-	if len(strings.TrimSpace(string(out))) == 0 {
-		return 0, nil
-	}
-	return strings.Count(string(out), "\n"), nil
-}
-
 // cleanup tears down every client pty, then kills the server.
 func (h *Harness) cleanup() {
 	h.mu.Lock()

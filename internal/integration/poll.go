@@ -63,16 +63,3 @@ func WaitForPaneContent(t TestingT, inst *session.Instance, contains string, tim
 		},
 	)
 }
-
-// WaitForStatus polls until the instance reaches the expected status.
-// Uses a 200ms poll interval.
-func WaitForStatus(t TestingT, inst *session.Instance, status session.Status, timeout time.Duration) {
-	t.Helper()
-
-	WaitForCondition(t, timeout, 200*time.Millisecond,
-		fmt.Sprintf("status == %q", status),
-		func() bool {
-			return inst.GetStatusThreadSafe() == status
-		},
-	)
-}

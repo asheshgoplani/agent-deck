@@ -45,11 +45,6 @@ func WithSize(w, h int) Option {
 	return func(c *config) { c.width, c.height = w, h }
 }
 
-// WithTimeout overrides the FinalOutput / FinalModel deadline.
-func WithTimeout(d time.Duration) Option {
-	return func(c *config) { c.timeout = d }
-}
-
 // Program is the test handle returned by NewProgram.
 type Program struct {
 	tm  *teatest.TestModel
@@ -79,9 +74,6 @@ func (p *Program) SendKey(r rune) {
 func (p *Program) SendKeyType(kt tea.KeyType) {
 	p.tm.Send(tea.KeyMsg{Type: kt})
 }
-
-// SendMsg forwards an arbitrary tea.Msg.
-func (p *Program) SendMsg(msg tea.Msg) { p.tm.Send(msg) }
 
 // WaitForBytes polls Output until it contains substr or timeout elapses.
 // Returns true on hit, false on timeout. Use this instead of teatest's
