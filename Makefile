@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update
+.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -177,6 +177,13 @@ fmt:
 # Lint
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
+
+# Reproduce the CI Go checks in Docker: gofmt, build, vet, golangci-lint and
+# the gotestsum race suite, with versions read from go.mod, this Makefile and
+# go-test.yml. Pass VERIFY_ARGS, e.g.
+#   make verify-docker VERIFY_ARGS="--stages test --pkgs ./internal/session/..."
+verify-docker:
+	./scripts/verify-docker.sh $(VERIFY_ARGS)
 
 # Run local CI checks (same as pre-push hook: lint + test + build in parallel)
 ci:

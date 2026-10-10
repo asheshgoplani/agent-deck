@@ -126,9 +126,22 @@ git remote add upstream https://github.com/asheshgoplani/agent-deck.git
 ```bash
 make build      # Build binary to ./build/agent-deck
 make test       # Run tests (sandbox HOME first; see above)
-make lint       # Run linter (requires golangci-lint)
+make lint       # Run golangci-lint at the pinned version (fetched with go run; no install needed)
 make fmt        # Format code
+make verify-docker  # Reproduce the CI Go checks in Docker (needs only Docker)
 ```
+
+### Reproducing CI locally
+
+`make verify-docker` runs `scripts/verify-docker.sh`, which repeats the CI Go checks in throwaway Docker containers: gofmt, `go build`, `go vet`, golangci-lint with the repo's `.golangci.yml`, and the race test suite through gotestsum with the same flags as the `Full test suite (PR gate)` job. The PR gate's shared state ordering proof (`scripts/ci-shared-state-proof.sh`) is not part of it. The Go, golangci-lint and gotestsum versions are read from `go.mod`, the `Makefile` and `.github/workflows/go-test.yml`, so the script pins nothing itself and follows those files when they are bumped. Tests run as a non-root user with a fresh `HOME`, and the source tree is mounted read-only, so your own agent-deck state is never touched. Each stage prints `STAGE <name> OK` or `STAGE <name> FAIL`, and the run ends with `VERIFY_RC=<n>`.
+
+```bash
+make verify-docker                                                    # every stage
+make verify-docker VERIFY_ARGS="--stages gofmt,build,vet,lint"         # skip the tests
+make verify-docker VERIFY_ARGS="--stages test --pkgs ./internal/session/..."
+```
+
+Run it before pushing when you touch Go code: lint findings such as gosec or staticcheck reports otherwise only show up in CI.
 
 ### Running locally
 
@@ -166,7 +179,7 @@ EOF
 
 - `feature/description`, `fix/description`, `perf/description`, `docs/description`, `refactor/description`
 - Clear conventional messages: `feat: ...`, `fix: ...`, `docs: ...`, `refactor: ...`
-- Run `make fmt` and `make lint` before pushing; CI enforces gofmt.
+- Run `make fmt` and `make lint` (or `make verify-docker` for the full CI set) before pushing; CI enforces gofmt.
 
 ## Project structure
 
