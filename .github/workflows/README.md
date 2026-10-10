@@ -98,8 +98,8 @@ token), not that the release is bad.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `issue-notify.yml` | issue opened | Posts issue context (title, body, labels, related issues, recent commits) to the configured ntfy topic so the conductor picks it up. |
-| `pr-notify.yml` | PR opened or marked ready-for-review | Posts PR context (files, commits, reviews, comments) to the same ntfy topic. |
+| `issue-notify.yml` | issue opened | Posts issue context (title, body, labels, related issues, recent commits) to the configured ntfy topic so the conductor picks it up. **Disabled on GitHub (`disabled_manually`); kept for reference, re-enable with `gh workflow enable`.** |
+| `pr-notify.yml` | PR opened or marked ready-for-review | Posts PR context (files, commits, reviews, comments) to the same ntfy topic. **Disabled on GitHub (`disabled_manually`); kept for reference, re-enable with `gh workflow enable`.** |
 | `issue-intake.yml` | issue opened | Adds `triage` plus one advisory type label (`bug`, `feature`, `documentation`, `question`) from the same keyword heuristic as `issue-notify.yml`, only when the issue has no labels at all. Never removes labels, never comments. Needs no secret. (#2128) |
 | `ci-stalled-notify.yml` | `workflow_run` (completed) for `Go tests`, `golangci-lint`, `CodeQL`; plus a `selftest` job on PRs touching it | When a gating run for an open PR's current head is `action_required` (fork PR waiting for "Approve and run"), adds the `needs-ci` label and posts `CI needs approval: #<n>` to the same ntfy topic; removes the label only when no gating run for that head is still waiting. Stale events for an older head are ignored. Never comments on the PR. (#2130) |
 
