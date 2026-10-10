@@ -2952,6 +2952,15 @@ type RemoteSessionInfo struct {
 	// row renders flat.
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 
+	// Favorite is the remote session's favourite flag, as `list --json` on
+	// the remote reports it, so a remote favourite reaches the controller
+	// (and `remote sessions --json`) without a second `remote <name> list
+	// --json` call. The remote's `list --json` emits the key only when the
+	// session is a favourite, and a remote too old to send it omits it too:
+	// both decode to nil and are forwarded without the key, so consumers
+	// read a missing key as "not a favourite".
+	Favorite *bool `json:"favorite,omitempty"`
+
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
 }
