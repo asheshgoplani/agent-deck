@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
@@ -547,6 +548,7 @@ func TestInstallBinary_NothingOnPathStillDeploysConfigured(t *testing.T) {
 // would not own the file), and a chgrp that fails aborts with the original
 // in place. stat is shadowed to report a foreign group deterministically.
 func TestDeployScript_NonRootKeepsGroup(t *testing.T) {
+	testutil.SkipIfRoot(t, "as root the deploy script keeps ownership with chown, never the chgrp these tests shadow")
 	dir := t.TempDir()
 	target := filepath.Join(dir, "agent-deck")
 	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
@@ -570,6 +572,7 @@ func TestDeployScript_NonRootKeepsGroup(t *testing.T) {
 }
 
 func TestDeployScript_NonRootGroupFailureAborts(t *testing.T) {
+	testutil.SkipIfRoot(t, "as root the deploy script keeps ownership with chown, never the chgrp these tests shadow")
 	dir := t.TempDir()
 	target := filepath.Join(dir, "agent-deck")
 	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {

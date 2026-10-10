@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestWriteJSONFileAtomic_AppendsTrailingNewline verifies the helper always
@@ -56,6 +58,7 @@ func TestWriteJSONFileAtomic_PreservesExistingNewline(t *testing.T) {
 // would fail — a successful (nil) second call with identical content proves the
 // write was skipped, while a call with different content must fail.
 func TestWriteJSONFileAtomic_SkipsUnchangedWrite(t *testing.T) {
+	testutil.SkipIfRoot(t, "root creates files in a mode 0o500 directory")
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".mcp.json")
 

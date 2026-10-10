@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -169,6 +170,7 @@ func TestStartupNameAccountCommand(t *testing.T) {
 }
 
 func TestStartupNamePermissionChangeFailsClosed(t *testing.T) {
+	testutil.SkipIfRoot(t, "root reads a mode 0 config file")
 	path := startupNameConfig(t, "push_title=true")
 	inst := &Instance{Tool: "claude", Title: "Title"}
 	if inst.ClaudeLaunchName() == "" {

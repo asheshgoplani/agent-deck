@@ -33,8 +33,16 @@ var scrubRules = []scrubRule{
 	// environment (the sandboxed HOME has no rc files of its own, but the
 	// image's /etc/profile / /etc/bashrc sets PS1 unconditionally). The
 	// session title "shell-live" is a fixed seed constant, so it anchors
-	// the match precisely instead of a loose host:dir pattern.
-	{"shell-prompt", regexp.MustCompile(`(?m)^\S*:shell-live \S+\$`), "<shell-prompt>$"},
+	// the match precisely instead of a loose host:dir pattern. A root
+	// shell ends the prompt with # instead of $; both scrub to the same
+	// text so goldens do not depend on the sandbox user.
+	{"shell-prompt", regexp.MustCompile(`(?m)^\S*:shell-live \S+[$#]`), "<shell-prompt>$"},
+	// The sandbox's plain /bin/sh prints a bare "$ " prompt, or "# " when
+	// the run is root (a root container). The committed goldens hold "$",
+	// so the root marker is scrubbed to the user one where it is the whole
+	// line (the attach frame) or the whole preview column after the "│ "
+	// divider (the detach frame mirrors the cleared shell pane there).
+	{"sh-root-prompt", regexp.MustCompile(`(?m)(^|│ )#( *)$`), "${1}$$${2}"},
 	{"shell-tmux-label", regexp.MustCompile(`agentdeck_shell-live_[0-9a-f]{8}`), "agentdeck_shell-live_<id>"},
 	// The preview pane's "Output" summary for a shell session reads raw
 	// scrollback, bypassing the attach step's `clear` (that only clears the
