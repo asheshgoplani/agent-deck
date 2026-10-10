@@ -323,6 +323,10 @@ type Home struct {
 	// and otherwise waits to take it over (#2530). Set once by
 	// StartWatcherEngine; read by the signal handler too, hence atomic.
 	watcherHost atomic.Pointer[watcher.EngineHost]
+	// spawnSendWorker starts the send worker that delivers a routed event to
+	// its conductor; nil runs this binary's `session send-worker`. Tests
+	// replace it before StartWatcherEngine.
+	spawnSendWorker func(profile, sessionID string) error
 
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
@@ -4198,8 +4202,9 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 // StartWatcherEngine joins the profile's watcher engine election (#2530). The
 // process that takes the engine owner lock runs the engine; any other TUI,
 // `web` or `web --no-tui` process of the profile waits and takes over when
-// the owner exits. Events and health alerts go to this Home's conductor
-// dispatchers. Init calls it for the TUI and the headless web server calls it
+// the owner exits. The engine queues each routed event for its conductor in
+// the profile's send queue (#2537); health alerts go to this Home's conductor
+// dispatcher. Init calls it for the TUI and the headless web server calls it
 // directly, since it runs no Bubble Tea loop. Returns nil without a state
 // database; a second call returns the running host.
 func (h *Home) StartWatcherEngine() *watcher.EngineHost {
@@ -4211,11 +4216,11 @@ func (h *Home) StartWatcherEngine() *watcher.EngineHost {
 		return nil
 	}
 	host := watcher.NewEngineHost(watcher.HostConfig{
-		Profile:       h.profile,
-		DB:            db,
-		DeliverEvent:  h.dispatchWatcherEvent,
-		DeliverHealth: h.dispatchHealthAlert,
-		Logger:        watcherHostLog,
+		Profile:         h.profile,
+		DB:              db,
+		DeliverHealth:   h.dispatchHealthAlert,
+		SpawnSendWorker: h.spawnSendWorker,
+		Logger:          watcherHostLog,
 	})
 	if !h.watcherHost.CompareAndSwap(nil, host) {
 		return h.watcherHost.Load()
@@ -13814,22 +13819,6 @@ func (h *Home) refreshWatcherPanel() {
 	}
 }
 
-// formatWatcherDispatchMsg builds the single line delivered into the conductor
-// pane for a routed watcher event. It prefers the full message Body (so the
-// conductor receives the complete text, not the first-line/200-byte Subject
-// label) and falls back to Subject when Body is empty (e.g. v1 events). Newlines
-// are collapsed to spaces because the delivery uses tmux send-keys, where a
-// literal '\n' is sent as Enter and would submit the line prematurely.
-func formatWatcherDispatchMsg(evt watcher.Event) string {
-	text := strings.TrimSpace(evt.Body)
-	if text == "" {
-		text = evt.Subject
-	}
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\n", " ")
-	return fmt.Sprintf("[%s] %s: %s", evt.Source, evt.Sender, text)
-}
-
 // dispatchWatcherEvent queues a routed watcher event for the conductor's tmux pane.
 // Skipped for triage and unrouted events (RoutedTo empty or "triage") since those have no
 // concrete delivery target yet. Mirrors dispatchHealthAlert: sendToConductor looks up the
@@ -13841,7 +13830,7 @@ func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
 	}
 	h.deliveryQueue().enqueue(conductorDelivery{
 		Conductor: evt.RoutedTo,
-		Text:      formatWatcherDispatchMsg(evt),
+		Text:      watcher.ConductorMessage(evt),
 		QueuedAt:  time.Now(),
 	})
 }

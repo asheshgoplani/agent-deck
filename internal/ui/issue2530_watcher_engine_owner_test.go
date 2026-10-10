@@ -26,10 +26,10 @@ func captureStopLogs(t *testing.T) *logassert.Capture {
 
 // TestIssue2530_SecondTUIWaitsAndTakesOverTheEngine: two TUIs of one profile
 // (allow_multiple). The first owns the watcher engine. The second runs none,
-// so the webhook port is bound once and the conductor gets each event once,
-// and its panel feed stays quiet; its panel re-reads statedb. When the first
-// quits, the second takes over: it delivers, and its panel feed gets the
-// events on the channels it has listened on since Init.
+// so the webhook port is bound once and each event is queued for the
+// conductor once, and its panel feed stays quiet; its panel re-reads statedb.
+// When the first quits, the second takes over: it queues, and its panel feed
+// gets the events on the channels it has listened on since Init.
 func TestIssue2530_SecondTUIWaitsAndTakesOverTheEngine(t *testing.T) {
 	port := issue2524FreePort(t)
 	env := newIssue2524Env(t, "hook-2530", map[string]string{"bind": "127.0.0.1", "port": port}, "", "")
@@ -44,6 +44,7 @@ func TestIssue2530_SecondTUIWaitsAndTakesOverTheEngine(t *testing.T) {
 	}
 
 	second := NewHome()
+	second.spawnSendWorker = env.spawned.spawn
 	first.instancesMu.RLock()
 	instances := append([]*session.Instance(nil), first.instances...)
 	first.instancesMu.RUnlock()
@@ -62,8 +63,8 @@ func TestIssue2530_SecondTUIWaitsAndTakesOverTheEngine(t *testing.T) {
 	before := fmt.Sprintf("issue-2530-before-%d", time.Now().UnixNano())
 	postWebhook(t, port, "alice@example.com", before)
 	wantBefore := "[webhook] alice@example.com: " + before
-	if !env.waitForPane(wantBefore, 5*time.Second) {
-		t.Fatal("the owner did not deliver the event")
+	if !env.waitQueued(t, wantBefore, 5*time.Second) {
+		t.Fatal("the owner did not queue the event for the conductor")
 	}
 	select {
 	case evt := <-second.watcherPanelEvents:
@@ -84,8 +85,8 @@ func TestIssue2530_SecondTUIWaitsAndTakesOverTheEngine(t *testing.T) {
 	after := fmt.Sprintf("issue-2530-after-%d", time.Now().UnixNano())
 	postWebhook(t, port, "alice@example.com", after)
 	wantAfter := "[webhook] alice@example.com: " + after
-	if !env.waitForPane(wantAfter, 5*time.Second) {
-		t.Fatal("the TUI that took over did not deliver the event")
+	if !env.waitQueued(t, wantAfter, 5*time.Second) {
+		t.Fatal("the TUI that took over did not queue the event for the conductor")
 	}
 	select {
 	case evt, ok := <-second.watcherPanelEvents:
@@ -95,19 +96,19 @@ func TestIssue2530_SecondTUIWaitsAndTakesOverTheEngine(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the panel feed the second TUI listened on since Init got nothing after the takeover")
 	}
-	if n := env.paneCount(wantBefore); n != 1 {
-		t.Fatalf("event before the takeover delivered %d times, want once", n)
+	if n := len(env.queued(t, wantBefore)); n != 1 {
+		t.Fatalf("event before the takeover queued %d times, want once", n)
 	}
-	if n := env.paneCount(wantAfter); n != 1 {
-		t.Fatalf("event after the takeover delivered %d times, want once", n)
+	if n := len(env.queued(t, wantAfter)); n != 1 {
+		t.Fatalf("event after the takeover queued %d times, want once", n)
 	}
 }
 
 // TestIssue2530_QuitKeepsTheEngineLockWhileADeliveryIsInFlight: a quit waits
-// a bounded time for the conductor delivery in flight, which can take longer
-// (the verify loop runs up to about 10 s). The owner lock must outlive that
-// delivery, or a standby TUI could take over and type into the same pane next
-// to it (review on #2638).
+// a bounded time for the conductor delivery in flight (a health alert since
+// #2537), which can take longer (the verify loop runs up to about 10 s). The
+// owner lock must outlive that delivery, or a standby TUI could take over and
+// type into the same pane next to it (review on #2638).
 func TestIssue2530_QuitKeepsTheEngineLockWhileADeliveryIsInFlight(t *testing.T) {
 	logs := captureStopLogs(t)
 	port := issue2524FreePort(t)
@@ -119,16 +120,19 @@ func TestIssue2530_QuitKeepsTheEngineLockWhileADeliveryIsInFlight(t *testing.T) 
 		t.Fatal("the TUI did not start the watcher host")
 	}
 	t.Cleanup(home.StopWatcherEngine)
+	if host := home.watcherHost.Load(); !host.IsOwner() {
+		t.Fatal("the TUI does not own the engine")
+	}
 	lockPath, err := watcher.EngineLockPath(home.profile)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	postWebhook(t, port, "alice@example.com", "in-flight")
+	home.deliveryQueue().enqueue(conductorDelivery{Conductor: "demo", Text: "alert", Alert: "hook-2530-inflight", QueuedAt: time.Now()})
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the routed event never reached the conductor delivery")
+		t.Fatal("the alert never reached the conductor delivery")
 	}
 	home.StopWatcherEngineAndDeliveries(50 * time.Millisecond) // gives up on the hung delivery
 
@@ -177,11 +181,11 @@ func TestIssue2530_ASignalExitWithNothingInFlightLogsNoTimeoutOrDeferral(t *test
 		t.Fatal(err)
 	}
 
-	postWebhook(t, port, "alice@example.com", "delivered")
+	home.deliveryQueue().enqueue(conductorDelivery{Conductor: "demo", Text: "alert", Alert: "hook-2530-signal-exit", QueuedAt: time.Now()})
 	deadline := time.Now().Add(5 * time.Second)
 	for len(sent.texts()) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("the routed event never reached the conductor delivery")
+			t.Fatal("the alert never reached the conductor delivery")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

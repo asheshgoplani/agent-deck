@@ -9,13 +9,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -23,7 +26,7 @@ import (
 )
 
 // Issue #2524: a routed watcher event (and a watcher health alert) must reach
-// the conductor pane while the TUI is attached to a session. Attaching goes
+// the conductor while the TUI is attached to a session. Attaching goes
 // through tea.Exec, and Bubble Tea runs an exec message synchronously on its
 // event loop, so no message reaches Home.Update until the attach returns.
 //
@@ -33,6 +36,12 @@ import (
 // watcher messages to Home.Update, and the conductor is a real tmux pane on a
 // dedicated socket. The program then blocks in tea.Exec, exactly as an attach
 // does, while the watcher produces the event.
+//
+// Since #2537 the engine queues a routed event for its conductor in the
+// profile's send queue, and a detached `session send-worker` types it (the
+// cmd/agent-deck TestIssue2537_* tests deliver through the real binary). Here
+// the worker start is recorded instead, so the event tests check the queue;
+// health alerts still go to the pane from this process.
 
 const issue2524Conductor = "demo"
 
@@ -85,10 +94,32 @@ func (m *issue2524Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 type issue2524Env struct {
-	home    *Home
-	socket  string
-	pane    string
-	handled chan tea.Msg
+	home      *Home
+	db        *statedb.StateDB
+	conductor *session.Instance
+	socket    string
+	pane      string
+	handled   chan tea.Msg
+	spawned   *issue2524Spawns
+}
+
+// issue2524Spawns records the send workers the engine starts.
+type issue2524Spawns struct {
+	mu      sync.Mutex
+	targets []string
+}
+
+func (s *issue2524Spawns) spawn(_, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.targets = append(s.targets, sessionID)
+	return nil
+}
+
+func (s *issue2524Spawns) started(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Contains(s.targets, sessionID)
 }
 
 // newIssue2524Env prepares an isolated profile with one webhook watcher whose
@@ -177,13 +208,52 @@ func newIssue2524Env(t *testing.T, watcherName string, source map[string]string,
 
 	inst := session.NewInstanceWithTool(session.ConductorSessionTitle(issue2524Conductor), t.TempDir(), "shell")
 	inst.SetTmuxSessionForTest(ts)
+	// The engine finds the conductor to queue for in storage (#2537).
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, Tool: inst.Tool, ProjectPath: inst.ProjectPath, GroupPath: "conductors",
+		Status: "running", TmuxSession: ts.Name, TmuxSocketName: socket, CreatedAt: now, LastAccessed: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	spawned := &issue2524Spawns{}
 	home := NewHome()
+	home.spawnSendWorker = spawned.spawn
 	home.instancesMu.Lock()
 	home.instances = []*session.Instance{inst}
 	home.instanceByID = map[string]*session.Instance{inst.ID: inst}
 	home.instancesMu.Unlock()
 
-	return &issue2524Env{home: home, socket: socket, pane: ts.Name, handled: make(chan tea.Msg, 64)}
+	return &issue2524Env{home: home, db: db, conductor: inst, socket: socket, pane: ts.Name, handled: make(chan tea.Msg, 64), spawned: spawned}
+}
+
+// queued returns the send queue records whose message is want, oldest first.
+func (e *issue2524Env) queued(t *testing.T, want string) []*sendqueue.Record {
+	t.Helper()
+	recs, err := sendqueue.List(sendqueue.Dir(filepath.Dir(e.db.Path())), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []*sendqueue.Record
+	for _, r := range recs {
+		if r.Message == want {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// waitQueued reports whether the message want is queued for the conductor,
+// with its worker started, in time.
+func (e *issue2524Env) waitQueued(t *testing.T, want string, within time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if recs := e.queued(t, want); len(recs) > 0 && recs[0].SessionID == e.conductor.ID && e.spawned.started(e.conductor.ID) {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 // run starts the watcher engine through Home and a Bubble Tea program around
@@ -301,7 +371,7 @@ func postWebhook(t *testing.T, port, sender, body string) {
 	}
 }
 
-func TestIssue2524_WatcherEventReachesConductorWhileHomeIsInExec(t *testing.T) {
+func TestIssue2524_WatcherEventIsQueuedForTheConductorWhileHomeIsInExec(t *testing.T) {
 	port := issue2524FreePort(t)
 	env := newIssue2524Env(t, "hook-2524", map[string]string{"bind": "127.0.0.1", "port": port}, "", "")
 	prog := env.run(t)
@@ -311,18 +381,12 @@ func TestIssue2524_WatcherEventReachesConductorWhileHomeIsInExec(t *testing.T) {
 	postWebhook(t, port, "alice@example.com", marker)
 	want := "[webhook] alice@example.com: " + marker
 
-	if !env.waitForPane(want, 5*time.Second) {
-		detached := time.Now()
-		detach()
-		late := "never"
-		if env.waitForPane(want, 5*time.Second) {
-			late = time.Since(detached).Round(10*time.Millisecond).String() + " after the attach ended"
-		}
-		t.Fatalf("routed watcher event did not reach the conductor pane within 5s while Home was in tea.Exec (attached); it arrived %s", late)
+	if !env.waitQueued(t, want, 5*time.Second) {
+		t.Fatal("routed watcher event was not queued for the conductor within 5s while Home was in tea.Exec (attached)")
 	}
 
 	// Ending the attach lets Home.Update see the queued watcherEventMsg. It
-	// may refresh the panel, but the event must not be delivered again.
+	// may refresh the panel, but the event must not be queued again.
 	detach()
 	select {
 	case <-env.handled:
@@ -330,8 +394,8 @@ func TestIssue2524_WatcherEventReachesConductorWhileHomeIsInExec(t *testing.T) {
 		t.Fatal("Home.Update never received the watcher event after the attach ended")
 	}
 	time.Sleep(time.Second)
-	if n := env.paneCount(want); n != 1 {
-		t.Fatalf("watcher event delivered %d times, want exactly once", n)
+	if n := len(env.queued(t, want)); n != 1 {
+		t.Fatalf("watcher event queued %d times, want exactly once", n)
 	}
 }
 
@@ -351,33 +415,16 @@ func TestIssue2524_HealthAlertReachesConductorWhileHomeIsInExec(t *testing.T) {
 	}
 }
 
-// TestIssue2524_EventBurstReachesConductorAsSeparateSubmissionsInOrder: the
-// relay dispatches a burst of routed events within microseconds. Each delivery
-// runs the composer guard, pastes the text and presses Enter 100 ms later, so
-// deliveries running side by side can all pass the guard on an empty composer
-// and land their text before any Enter, merging several events into one
-// conductor command. The conductor here is a prompt that logs every submitted
-// line; each event must arrive as its own line, in the order it was sent.
-func TestIssue2524_EventBurstReachesConductorAsSeparateSubmissionsInOrder(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("bash not installed")
-	}
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "submitted.log")
-	script := filepath.Join(dir, "conductor.sh")
-	// A composer the delivery path recognizes ("❯ " prompt), which records
-	// each submitted line.
-	if err := os.WriteFile(script, []byte("#!/bin/bash\nwhile IFS= read -r -p '❯ ' line; do printf '%s\\n' \"$line\" >> \"$1\"; done\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+// TestIssue2524_EventBurstIsQueuedInOrderOncePerEvent: the engine routes a
+// burst of events within microseconds. Each becomes its own record, in the
+// order it arrived: the conductor's send worker types one record at a time
+// (under the target's send lock), so they reach the conductor as separate
+// submissions in that order instead of merging into one command.
+func TestIssue2524_EventBurstIsQueuedInOrderOncePerEvent(t *testing.T) {
 	port := issue2524FreePort(t)
-	env := newIssue2524Env(t, "hook-2524-burst", map[string]string{"bind": "127.0.0.1", "port": port}, "",
-		fmt.Sprintf("bash %q %q", script, logPath))
+	env := newIssue2524Env(t, "hook-2524-burst", map[string]string{"bind": "127.0.0.1", "port": port}, "", "")
 	prog := env.run(t)
 	env.attach(t, prog)
-	if !env.waitForPane("❯", 5*time.Second) {
-		t.Fatal("conductor prompt never appeared")
-	}
 
 	const burst = 5
 	var want []string
@@ -387,24 +434,19 @@ func TestIssue2524_EventBurstReachesConductorAsSeparateSubmissionsInOrder(t *tes
 		postWebhook(t, port, "alice@example.com", marker)
 		want = append(want, "[webhook] alice@example.com: "+marker)
 	}
-
+	if !env.waitQueued(t, want[burst-1], 10*time.Second) {
+		t.Fatal("the last event of the burst was not queued")
+	}
+	recs, err := sendqueue.List(sendqueue.Dir(filepath.Dir(env.db.Path())), env.conductor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var got []string
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		data, _ := os.ReadFile(logPath)
-		got = nil
-		for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
-			if line != "" {
-				got = append(got, line)
-			}
-		}
-		if len(got) >= burst || strings.Count(string(data), "[webhook]") >= burst {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
+	for _, r := range recs {
+		got = append(got, r.Message)
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("conductor received %d submissions, want %d separate ones in order:\ngot:\n  %s\nwant:\n  %s",
+		t.Fatalf("queued %d records, want %d, one per event in order:\ngot:\n  %s\nwant:\n  %s",
 			len(got), burst, strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
 }

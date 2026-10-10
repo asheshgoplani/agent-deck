@@ -12,6 +12,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
@@ -34,11 +35,15 @@ type HostConfig struct {
 	// events are stored.
 	DB *statedb.StateDB
 
-	// DeliverEvent and DeliverHealth receive every routed event and health
-	// state of an engine this host runs, on the relay's goroutines (see
-	// relayEngine). Either may be nil.
-	DeliverEvent  func(Event)
+	// DeliverHealth receives every health state of an engine this host
+	// runs, on the relay's goroutine (see relayEngine). It may be nil. Routed
+	// events are delivered by the engine itself, through a ConductorOutbox
+	// writing to the profile's send queue (#2537).
 	DeliverHealth func(HealthState)
+
+	// SpawnSendWorker starts a conductor's send worker for the outbox; nil
+	// uses sendqueue.SpawnWorker. Tests replace it.
+	SpawnSendWorker func(profile, sessionID string) error
 
 	// RetryInterval is how often a standby host tries to take the engine
 	// over. Defaults to DefaultEngineRetryInterval.
@@ -84,7 +89,7 @@ type EngineHost struct {
 	sawOwner bool
 
 	// start builds and starts the engine (startEngine; tests replace it).
-	start func(*statedb.StateDB, *slog.Logger) *Engine
+	start func(HostConfig, *slog.Logger) *Engine
 }
 
 // NewEngineHost returns a host that has not joined the election yet.
@@ -187,7 +192,7 @@ func (h *EngineHost) tryOwn() bool {
 		return false
 	}
 
-	eng := h.start(h.cfg.DB, h.log)
+	eng := h.start(h.cfg, h.log)
 	if eng == nil {
 		// The engine did not start, or its watchers were stopped meanwhile:
 		// give the lock back and try again on the next tick.
@@ -205,7 +210,7 @@ func (h *EngineHost) tryOwn() bool {
 		slog.String("profile", h.cfg.Profile),
 		slog.Int("pid", os.Getpid()),
 		slog.String("lock", path))
-	h.relayDone = relayEngine(eng.EventCh(), eng.HealthCh(), h.cfg.DeliverEvent, h.cfg.DeliverHealth,
+	h.relayDone = relayEngine(eng.EventCh(), eng.HealthCh(), h.cfg.DeliverHealth,
 		h.panelEvents, h.panelHealth, h.log)
 	return true
 }
@@ -321,7 +326,8 @@ func runningWatchers(db *statedb.StateDB) (int, error) {
 // startEngine builds the watcher engine from the state database and starts
 // it: every watcher marked running gets its adapter. It returns nil when db
 // is nil or no watcher is running.
-func startEngine(db *statedb.StateDB, log *slog.Logger) *Engine {
+func startEngine(host HostConfig, log *slog.Logger) *Engine {
+	db := host.DB
 	if db == nil {
 		return nil
 	}
@@ -346,6 +352,10 @@ func startEngine(db *statedb.StateDB, log *slog.Logger) *Engine {
 		Router:              router,
 		MaxEventsPerWatcher: watcherCfg.GetMaxEventsPerWatcher(),
 		HealthCheckInterval: healthInterval,
+	}
+	outbox := newHostOutbox(host, watcherCfg, log)
+	if outbox != nil {
+		engineCfg.Outbox = outbox
 	}
 	eng := NewEngine(engineCfg)
 
@@ -386,7 +396,40 @@ func startEngine(db *statedb.StateDB, log *slog.Logger) *Engine {
 	log.Info("watcher_engine_started",
 		slog.Int("watcher_count", len(rows)),
 		slog.Int("running_count", runningCount(rows)))
+	if outbox != nil {
+		// A reboot or a kill may have ended the workers of routed events
+		// still queued: this process owns the profile's watchers now.
+		outbox.Resume()
+	}
 	return eng
+}
+
+// newHostOutbox returns the outbox an engine delivers its routed events
+// through: the send queue next to the profile's state database, read by the
+// same `session send-worker` as `session send --queue`. Nil (and an error in
+// the log) for a database with no file, which has no profile directory.
+func newHostOutbox(host HostConfig, watcherCfg session.WatcherSettings, log *slog.Logger) *ConductorOutbox {
+	path := host.DB.Path()
+	if path == "" {
+		log.Error("watcher_delivery_outbox_unavailable",
+			slog.String("profile", host.Profile),
+			slog.String("reason", "the state database has no file"))
+		return nil
+	}
+	deadline, err := watcherCfg.GetDeliveryDeadline()
+	if err != nil {
+		log.Warn("watcher_delivery_deadline_invalid",
+			slog.String("value", watcherCfg.DeliveryDeadline),
+			slog.String("error", err.Error()))
+	}
+	return NewConductorOutbox(OutboxConfig{
+		Profile:     host.Profile,
+		Dir:         sendqueue.Dir(filepath.Dir(path)),
+		DB:          host.DB,
+		Deadline:    deadline,
+		SpawnWorker: host.SpawnSendWorker,
+		Logger:      log,
+	})
 }
 
 // runningCount returns how many watcher rows are in the "running" state.

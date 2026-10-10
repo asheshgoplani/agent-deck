@@ -210,8 +210,9 @@ func (e *issue2530Env) waitRecorded(body string) {
 
 // TestIssue2530_HeadlessWebRunsTheWatcherEngine: with a webhook watcher
 // created and started from the CLI, `web --no-tui` listens on the watcher's
-// port, records and routes a POSTed event, and delivers it to the conductor's
-// pane, which it finds in storage since no TUI loads the sessions.
+// port, records and routes a POSTed event, and queues it for the conductor,
+// which it finds in storage since no TUI loads the sessions; the conductor's
+// send worker types it into the pane (#2537).
 func TestIssue2530_HeadlessWebRunsTheWatcherEngine(t *testing.T) {
 	e := newIssue2530Env(t)
 	if _, err := exec.LookPath("tmux"); err != nil {

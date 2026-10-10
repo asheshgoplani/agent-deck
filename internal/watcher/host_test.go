@@ -13,23 +13,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // hostTestEnv is one profile's state for EngineHost tests: a database with a
-// running webhook watcher on a free loopback port, and a clients.json that
-// routes its sender to a conductor, so no event goes to triage.
+// running webhook watcher on a free loopback port, a clients.json that routes
+// its sender to the conductor demo, so no event goes to triage, and demo's
+// session. Routed events land in the send queue next to the database; no
+// worker is started.
 type hostTestEnv struct {
 	db      *statedb.StateDB
 	profile string
 	port    string
+	spawned *spawnRecorder
 }
 
 func newHostTestEnv(t *testing.T, profile string) *hostTestEnv {
 	t.Helper()
+	t.Setenv("AGENTDECK_EVENTS_BUS", "off")
 	db := newTestDB(t)
 	saveTestWatcher(t, db, "w-hook", "hook", "webhook")
+	saveTestConductor(t, db, "demo")
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -52,22 +58,46 @@ func newHostTestEnv(t *testing.T, profile string) *hostTestEnv {
 	if err := os.WriteFile(filepath.Join(filepath.Dir(dir), "clients.json"), clients, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return &hostTestEnv{db: db, profile: profile, port: port}
+	return &hostTestEnv{db: db, profile: profile, port: port, spawned: &spawnRecorder{}}
 }
 
-// host returns a host for the env's profile whose routed events land on the
-// returned channel. Cleanup stops it.
+// host returns a host for the env's profile and its panel event feed, which
+// gets each event its engine routes. Cleanup stops it.
 func (e *hostTestEnv) host(t *testing.T) (*EngineHost, <-chan Event) {
 	t.Helper()
-	got := make(chan Event, 16)
 	h := NewEngineHost(HostConfig{
-		Profile:       e.profile,
-		DB:            e.db,
-		DeliverEvent:  func(evt Event) { got <- evt },
-		RetryInterval: 20 * time.Millisecond,
+		Profile:         e.profile,
+		DB:              e.db,
+		SpawnSendWorker: e.spawned.spawn,
+		RetryInterval:   20 * time.Millisecond,
 	})
 	t.Cleanup(func() { h.Stop(nil) })
-	return h, got
+	return h, h.PanelEvents()
+}
+
+// queuedOnce checks that the event with body is queued once for demo, and
+// that demo's worker was started for it.
+func (e *hostTestEnv) queuedOnce(t *testing.T, body string) {
+	t.Helper()
+	recs, err := sendqueue.List(sendqueue.Dir(filepath.Dir(e.db.Path())), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, r := range recs {
+		if strings.HasSuffix(r.Message, ": "+body) {
+			n++
+			if r.SessionID != "cond-demo" || !r.WaitWhileStopped || !strings.HasPrefix(r.Key, "watcher:w-hook:") {
+				t.Fatalf("record for %q = %+v, want a keyed delivery to cond-demo that waits for it", body, r)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("event %q queued %d times, want once", body, n)
+	}
+	if !e.spawned.started("cond-demo") {
+		t.Fatalf("no worker started for the conductor after %q", body)
+	}
 }
 
 // post sends one event to the webhook watcher, retrying while nothing listens.
@@ -141,6 +171,7 @@ func TestEngineHost_OneEnginePerProfileAndTakeover(t *testing.T) {
 	if evt := waitDelivered(t, firstGot, "before-takeover"); evt.RoutedTo != "demo" {
 		t.Fatalf("routed to %q, want demo", evt.RoutedTo)
 	}
+	env.queuedOnce(t, "before-takeover")
 	if n := countWatcherEvents(t, env.db, "w-hook"); n != 1 {
 		t.Fatalf("watcher_events holds %d rows, want 1", n)
 	}
@@ -165,13 +196,13 @@ func TestEngineHost_OneEnginePerProfileAndTakeover(t *testing.T) {
 
 	env.post(t, "after-takeover")
 	waitDelivered(t, secondGot, "after-takeover")
+	env.queuedOnce(t, "after-takeover")
+	env.queuedOnce(t, "before-takeover")
 	if n := countWatcherEvents(t, env.db, "w-hook"); n != 2 {
 		t.Fatalf("watcher_events holds %d rows, want 2", n)
 	}
-	select {
-	case evt := <-firstGot:
-		t.Fatalf("the stopped host delivered %q", evt.Body)
-	default:
+	if evt, ok := <-firstGot; ok {
+		t.Fatalf("the stopped host routed %q", evt.Body)
 	}
 }
 
@@ -355,6 +386,7 @@ func TestEngineHost_IdleWithoutARunningWatcher(t *testing.T) {
 	}
 	env.post(t, "first-watcher")
 	waitDelivered(t, got, "first-watcher")
+	env.queuedOnce(t, "first-watcher")
 }
 
 // TestEngineHost_GivesTheLockBackWhenNoEngineStarts: when the engine does
@@ -368,7 +400,7 @@ func TestEngineHost_GivesTheLockBackWhenNoEngineStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	h, got := env.host(t)
-	h.start = func(*statedb.StateDB, *slog.Logger) *Engine { return nil }
+	h.start = func(HostConfig, *slog.Logger) *Engine { return nil }
 	h.Start()
 	if h.IsOwner() || h.Engine() != nil {
 		t.Fatal("host reports an engine although none started")
@@ -391,6 +423,7 @@ func TestEngineHost_GivesTheLockBackWhenNoEngineStarts(t *testing.T) {
 	}
 	env.post(t, "after-retry")
 	waitDelivered(t, got, "after-retry")
+	env.queuedOnce(t, "after-retry")
 }
 
 // TestEngineHost_StopIsIdempotent: quit and a signal can both stop the host.
