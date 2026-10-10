@@ -514,7 +514,7 @@ func handleConductorSetup(profile string, args []string) {
 					mm, err := promptMattermostSettings(reader, os.Stdout)
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						os.Exit(1)
+						exitCLI(1)
 					}
 					settings.Mattermost = mm
 					configChanged = true
