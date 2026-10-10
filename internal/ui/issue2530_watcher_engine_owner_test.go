@@ -204,19 +204,19 @@ func TestIssue2530_ASignalExitWithNothingInFlightLogsNoTimeoutOrDeferral(t *test
 }
 
 // TestIssue2530_ADeliveryArrivingAfterQuitStartsNothing: the queue is created
-// on first use. If no delivery had created it by the time of a quit, a relay
+// on first use. If no alert had created it by the time of a quit, a relay
 // callback still running past the engine's stop (Stop gives the relay 5 s)
 // must not create it afterwards and start delivering once the owner lock is
 // released (review on #2638).
 func TestIssue2530_ADeliveryArrivingAfterQuitStartsNothing(t *testing.T) {
 	home := NewHome()
 	home.StopWatcherEngineAndDeliveries(50 * time.Millisecond)
-	home.dispatchWatcherEvent(watcher.Event{Source: "slack", Sender: "alice", Body: "late", RoutedTo: "demo"})
+	home.deliveryQueue().enqueue(alert("demo", "w1", "late"))
 	q := home.deliveryQueue()
 	q.mu.Lock()
 	started := q.started
 	q.mu.Unlock()
 	if started != 0 {
-		t.Fatalf("a delivery dispatched after quit started %d runner(s), want none", started)
+		t.Fatalf("a delivery queued after quit started %d runner(s), want none", started)
 	}
 }

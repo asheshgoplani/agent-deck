@@ -9,10 +9,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// TestConductorTmuxSession_ReadsTitleUnderInstanceLock: the relay looks the
+// TestConductorPane_ReadsTitleUnderInstanceLock: the relay looks the
 // conductor up off the UI goroutine while renames and title sync write Title
 // under the instance's own lock. Run with -race: a plain Title read races.
-func TestConductorTmuxSession_ReadsTitleUnderInstanceLock(t *testing.T) {
+func TestConductorPane_ReadsTitleUnderInstanceLock(t *testing.T) {
 	inst := session.NewInstanceWithTool(session.ConductorSessionTitle("demo"), t.TempDir(), "shell")
 	ts := tmux.NewSession("conductor-demo", t.TempDir())
 	inst.SetTmuxSessionForTest(ts)
@@ -36,21 +36,21 @@ func TestConductorTmuxSession_ReadsTitleUnderInstanceLock(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 1000; i++ {
-		_ = home.conductorTmuxSession("demo")
+		_, _ = home.conductorPane("demo")
 	}
 	close(stop)
 	<-renamed
-	if got := home.conductorTmuxSession("demo"); got != ts {
-		t.Fatalf("conductor lookup returned %v, want the conductor's tmux session", got)
+	if id, got := home.conductorPane("demo"); got != ts || id != inst.ID {
+		t.Fatalf("conductor lookup returned %q %v, want the conductor's id and tmux session", id, got)
 	}
 }
 
-// TestConductorTmuxSession_HeadlessReadsStorage covers the headless engine
+// TestConductorPane_HeadlessReadsStorage covers the headless engine
 // owner (#2530): `web --no-tui` runs no Bubble Tea loop, so h.instances stays
 // empty, and the conductor is found in storage on every delivery. The lookup
 // leaves h.instances alone (a web mutation may be using it) and sees a
 // conductor restarted on a new tmux session since the last delivery.
-func TestConductorTmuxSession_HeadlessReadsStorage(t *testing.T) {
+func TestConductorPane_HeadlessReadsStorage(t *testing.T) {
 	home, storage := newHeadlessHomeForTest(t, "_test_2530_lookup_"+strconv.FormatInt(time.Now().UnixNano(), 36))
 	inst := &session.Instance{
 		ID:          "conductor-demo-id",
@@ -70,18 +70,18 @@ func TestConductorTmuxSession_HeadlessReadsStorage(t *testing.T) {
 		}
 	}
 
-	if got := home.conductorTmuxSession("demo"); got != nil {
+	if _, got := home.conductorPane("demo"); got != nil {
 		t.Fatalf("lookup before the conductor exists = %q, want nil", got.Name)
 	}
 	save("agentdeck_conductor-demo_1")
-	if got := home.conductorTmuxSession("demo"); got == nil || got.Name != "agentdeck_conductor-demo_1" {
-		t.Fatalf("headless lookup = %v, want the conductor's tmux session from storage", got)
+	if id, got := home.conductorPane("demo"); got == nil || got.Name != "agentdeck_conductor-demo_1" || id != "conductor-demo-id" {
+		t.Fatalf("headless lookup = %q %v, want the conductor's id and tmux session from storage", id, got)
 	}
 	save("agentdeck_conductor-demo_2")
-	if got := home.conductorTmuxSession("demo"); got == nil || got.Name != "agentdeck_conductor-demo_2" {
+	if _, got := home.conductorPane("demo"); got == nil || got.Name != "agentdeck_conductor-demo_2" {
 		t.Fatalf("headless lookup after a restart = %v, want the new tmux session", got)
 	}
-	if got := home.conductorTmuxSession("other"); got != nil {
+	if _, got := home.conductorPane("other"); got != nil {
 		t.Fatalf("lookup of an unknown conductor = %q, want nil", got.Name)
 	}
 	home.instancesMu.RLock()
@@ -119,12 +119,12 @@ func TestConductorTmuxSession_SkipsAnArchivedConductor(t *testing.T) {
 		archived := conductor("conductor-demo-old", "agentdeck_conductor-demo_old", true)
 		live := conductor("conductor-demo-id", "agentdeck_conductor-demo_live", false)
 		set(archived)
-		if got := home.conductorTmuxSession("demo"); got != nil {
+		if _, got := home.conductorPane("demo"); got != nil {
 			t.Fatalf("lookup with only an archived conductor = %q, want nil", got.Name)
 		}
 		set(archived, live)
-		if got := home.conductorTmuxSession("demo"); got == nil || got.Name != "agentdeck_conductor-demo_live" {
-			t.Fatalf("lookup with an archived conductor first = %v, want the live one's tmux session", got)
+		if id, got := home.conductorPane("demo"); got == nil || got.Name != "agentdeck_conductor-demo_live" || id != "conductor-demo-id" {
+			t.Fatalf("lookup with an archived conductor first = %q %v, want the live one's id and tmux session", id, got)
 		}
 	}
 
