@@ -15,6 +15,7 @@ read-only transcript and pane reads named below.
 | Transcript growth frames | `session.transcript` on the bus | `[macapp] transcript_events` (notify daemon) | docs/events.md |
 | Plugin frames | `events publish --kind macapp.<name> --session <id> --data-file -` | `[macapp] plugins` | docs/events.md |
 | Send that is never silently lost | `session send <id> --message-file - --json --queue`, `session send-status <send-id> --json` | none | below |
+| Send that never types into a menu | `session send <id> … --require-input-prompt` (probe `session send --help`) | none | below |
 | Images | `session send <id> … --image <path>` | none | below |
 | Codex identity | `session show <id> --json` → `transcript_path`, `transcript_ids` | none | below |
 | Harness facts | `harness list --json`, `harness status <name> --json` | none | below |
@@ -96,6 +97,43 @@ from the composer. A queued record's `images` lists the copies. Codex takes imag
 running Codex session exits 2 with `images not supported for codex in a
 running session`; other harnesses exit 2 too. Only png, jpg, jpeg, gif and
 webp files are accepted. `harness list` reports `images: true|false`.
+
+## Guarded send
+
+`session send <id> … --require-input-prompt` refuses rather than type into a
+harness menu (an AskUserQuestion picker, a permission dialog, a trust dialog,
+a Codex picker). It is advertised in `session send --help`; a client probes
+for it there and sends without it on an older core.
+
+Under the per-target send lock the core already holds, the pane is read
+immediately before every tmux keystroke batch: the paste or each fallback
+chunk, every Enter (including retry Enters) and every vim insert key. The
+send always uses the tmux transport, never the messaging socket, because a
+socket write has no keystroke boundary to check at.
+
+- Before anything is typed, an open menu refuses with `delivery: "menu_open"`
+  and a missing or unreadable input prompt with `delivery:
+  "composer_blocked"`. The error text says `no keys typed`; exit 1.
+- Once the body is typed, only a visible menu withholds Enter. A prompt
+  redraw, a wrapped input box or a pane read error does not, so the text is
+  never left typed and unsent on a false alarm. If a real menu opens between
+  the paste and Enter, the result is `delivery: "typed_not_submitted"` with
+  the number of typed batches and the pane tail in the error text. Nothing is
+  retyped.
+- A menu needs picker evidence: a picker instruction ("navigate", "Enter to
+  select", "Enter to confirm"), or other menu chrome ("Allow once", "Esc to
+  cancel", …) beside at least two selectable choices. Text inside the live
+  input box, a delivered message that quotes those words and question prose
+  without choices are not a menu. The same rule drives `session show`'s
+  `interactive-menu` substate and the plain send's `menu_open` verdict.
+- `--draft`, `--no-wait`, `--wait` and the queue keep the guard. A queued
+  send records `require_input_prompt: true`, its worker passes the flag to
+  the child that types it, and a refusal with `no keys typed` goes back to
+  `queued` for a later attempt.
+- `remote <name> session send … --require-input-prompt` first reads the
+  remote's `session send --help`; a remote that does not advertise the flag
+  is refused locally with `--require-input-prompt unsupported on this remote`
+  and nothing is sent.
 
 ## Codex identity
 

@@ -431,6 +431,8 @@ Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANC
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
+`--require-input-prompt` (guarded send) refuses instead of typing into a harness menu. The pane is checked immediately before every keystroke batch (paste, each fallback chunk, every Enter) under the per-target send lock, and the send always takes the tmux transport. Before typing, an open menu exits 1 with `delivery: "menu_open"` and a missing input prompt with `delivery: "composer_blocked"` (error text `no keys typed`); after typing, only a real menu withholds Enter and reports `typed_not_submitted`. A menu needs picker evidence (a navigate / Enter to select / Enter to confirm instruction, or menu words beside two or more choices); text in the input box or a delivered message quoting "Allow once" is not one. `--draft`, `--no-wait` and the queue keep the guard; a remote that does not list the flag in its `session send --help` is refused before anything is sent.
+
 ```bash
 git diff | agent-deck session send my-project --message-file -
 agent-deck session send my-project --message-file task.md --wait

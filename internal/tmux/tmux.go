@@ -6258,13 +6258,31 @@ func (s *Session) ensureInsertMode() {
 
 // ensureInsertModeOnTarget is ensureInsertMode against an explicit tmux target.
 func (s *Session) ensureInsertModeOnTarget(target string) {
+	_ = s.ensureInsertModeOnTargetChecked(target, nil)
+}
+
+func (s *Session) ensureInsertModeOnTargetChecked(target string, before func() error) error {
 	if !s.VimMode {
-		return
+		return nil
 	}
 	// Escape: guarantee normal mode regardless of current state.
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	_ = runSendKeysBounded(keySenderExec(s.SocketName, "send-keys", "-t", target, "Escape"))
 	// i: enter insert mode so the following paste/Enter are taken literally.
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	_ = runSendKeysBounded(keySenderExec(s.SocketName, "send-keys", "-t", target, "i"))
+	return nil
+}
+
+func beforeKeyBatch(before func() error) error {
+	if before != nil {
+		return before()
+	}
+	return nil
 }
 
 // sendEnterRaw emits a single Enter keystroke without the vim-mode insert
@@ -6290,6 +6308,18 @@ func (s *Session) sendEnterRawToTarget(target string) error {
 // otherwise all no-op in normal mode.
 func (s *Session) SendEnter() error {
 	s.ensureInsertMode()
+	return s.sendEnterRaw()
+}
+
+// SendEnterChecked checks the pane immediately before every key in the
+// optional vim insert sequence and before the final Enter.
+func (s *Session) SendEnterChecked(before func() error) error {
+	if err := s.ensureInsertModeOnTargetChecked(s.Name, before); err != nil {
+		return err
+	}
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	return s.sendEnterRaw()
 }
 
@@ -6337,7 +6367,7 @@ func (s *Session) SendNamedKeyToPrimaryWindow(key string) error {
 // bracketed paste, contrary to what this comment previously claimed — only
 // `paste-buffer -p` frames, and only when the pane app has enabled it.)
 func (s *Session) SendKeysAndEnter(keys string) error {
-	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, nil, nil)
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, nil, nil, nil)
 }
 
 // SendKeysAndEnterToWindow is SendKeysAndEnter aimed at a specific tmux window
@@ -6345,7 +6375,7 @@ func (s *Session) SendKeysAndEnter(keys string) error {
 // to deliver "1"+Enter to the exact window showing a Claude prompt, which is
 // often not the active one in a multi-window session.
 func (s *Session) SendKeysAndEnterToWindow(windowIndex int, keys string) error {
-	return s.sendKeysAndEnterCheckedToTarget(s.windowTarget(windowIndex), keys, nil, nil)
+	return s.sendKeysAndEnterCheckedToTarget(s.windowTarget(windowIndex), keys, nil, nil, nil)
 }
 
 // PostPasteCheck inspects the pane immediately after the body has been staged
@@ -6370,12 +6400,19 @@ type PostPasteCheck func(pane string, captureErr error) (ok bool, err error)
 // check == nil (capture is then never called) reproduces SendKeysAndEnter's
 // unconditional behavior exactly, so every existing caller is unaffected.
 func (s *Session) SendKeysAndEnterChecked(keys string, capture func() (string, error), check PostPasteCheck) error {
-	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check)
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check, nil)
+}
+
+// SendKeysAndEnterCheckedGuarded keeps the ordinary paste check and calls
+// before immediately before every tmux keystroke batch, including fallback
+// chunks and the final Enter.
+func (s *Session) SendKeysAndEnterCheckedGuarded(keys string, capture func() (string, error), check PostPasteCheck, before func() error) error {
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check, before)
 }
 
 // sendKeysAndEnterCheckedToTarget is the shared implementation behind
 // SendKeysAndEnter, SendKeysAndEnterToWindow and SendKeysAndEnterChecked.
-func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture func() (string, error), check PostPasteCheck) error {
+func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture func() (string, error), check PostPasteCheck, before func() error) error {
 	s.invalidateCache()
 	// Pin the pane before anything else touches it. A session-name target is
 	// re-resolved by tmux on EVERY command, so the probe, the body and the
@@ -6394,9 +6431,11 @@ func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture f
 	// Guarantee the composer is in insert mode BEFORE the paste so a vim
 	// normal-mode prompt doesn't interpret the message body as motion/command
 	// keystrokes (issue #1264). No-op unless VimMode is set.
-	s.ensureInsertModeOnTarget(target)
+	if err := s.ensureInsertModeOnTargetChecked(target, before); err != nil {
+		return err
+	}
 	// Use chunked sending for large messages to avoid tmux buffer limits
-	if err := s.sendKeysChunkedToTarget(target, keys); err != nil {
+	if err := s.sendKeysChunkedToTargetChecked(target, keys, before); err != nil {
 		return err
 	}
 	// Delay for TUI apps (Ink, curses) to finish processing bracketed paste
@@ -6421,6 +6460,9 @@ func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture f
 	// sendEnterRaw (not SendEnter): we already guaranteed insert mode above and
 	// the paste keeps us in insert; re-escaping here would drop back to normal
 	// mode and swallow the submit.
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	return s.sendEnterRawToTarget(target)
 }
 
@@ -6429,10 +6471,14 @@ func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture f
 // `send-keys -l`, exactly as before. Multi-line payloads of any size, and
 // larger single-line payloads, take the paste transport (load-buffer from
 // stdin + paste-buffer -p -r) — the only transport that preserves line
-// structure into a TUI composer; see sendKeysChunkedToTarget, pasteToTarget
+// structure into a TUI composer; see sendKeysChunkedToTarget, pasteToTargetChecked
 // and canonical_line.go.
 func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
+}
+
+func (s *Session) SendKeysChunkedChecked(content string, before func() error) error {
+	return s.sendKeysChunkedToTargetChecked(s.Name, content, before)
 }
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
@@ -6476,6 +6522,10 @@ func (s *Session) SendKeysChunked(content string) error {
 // to fall off the identical cliff (canonical_line.go). Only the refusal, and
 // the caller's post-send verification, make the outcome honest.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
+	return s.sendKeysChunkedToTargetChecked(target, content, nil)
+}
+
+func (s *Session) sendKeysChunkedToTargetChecked(target, content string, before func() error) error {
 	// A CR is a line break to everything downstream of this transport — the
 	// tty's ICRNL default turns an incoming CR into NL before the line
 	// discipline sees it (the same reason longestMessageLineBytes counts \r
@@ -6491,6 +6541,9 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 		content = strings.ReplaceAll(content, "\r", "\n")
 	}
 	if len(content) <= canonicalSafeBytes && !strings.Contains(content, "\n") {
+		if err := beforeKeyBatch(before); err != nil {
+			return err
+		}
 		return s.sendKeysToTarget(target, content)
 	}
 
@@ -6512,7 +6565,7 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 		}
 	}
 
-	err := s.pasteToTarget(target, content)
+	err := s.pasteToTargetChecked(target, content, before)
 	if err == nil {
 		return nil
 	}
@@ -6536,7 +6589,7 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 			slog.Bool("multiline", strings.Contains(content, "\n")),
 			slog.Int("payload_bytes", len(content)),
 			slog.String("error", err.Error()))
-		return s.sendKeysChunkedFallback(target, content)
+		return s.sendKeysChunkedFallbackChecked(target, content, before)
 	}
 	return err
 }
@@ -6575,7 +6628,7 @@ func pasteBufferName() string {
 	return fmt.Sprintf("agent-deck-send-%d-%d", os.Getpid(), pasteBufferSeq.Add(1))
 }
 
-// pasteToTarget delivers content through tmux's paste path: `load-buffer -`
+// pasteToTargetChecked delivers content through tmux's paste path: `load-buffer -`
 // reads the body from this process's stdin (no argv size limit, no shell
 // quoting), then `paste-buffer -p -r -d` writes it to the pane and drops the
 // buffer.
@@ -6592,7 +6645,9 @@ func pasteBufferName() string {
 //	    keystroke and the lines fuse. Apps that never requested bracketed
 //	    paste (a cooked-mode shell) receive the bare body unchanged, so the
 //	    flag is safe for every consumer.
-func (s *Session) pasteToTarget(target, content string) error {
+//
+// before runs ahead of the paste (see beforeKeyBatch); nil skips the check.
+func (s *Session) pasteToTargetChecked(target, content string, before func() error) error {
 	s.invalidateCache()
 
 	buf := pasteBufferName()
@@ -6608,6 +6663,10 @@ func (s *Session) pasteToTarget(target, content string) error {
 		return fmt.Errorf("load-buffer: %v: %w", err, errPasteNotStaged)
 	}
 
+	if err := beforeKeyBatch(before); err != nil {
+		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", buf))
+		return err
+	}
 	paste := keySenderExec(s.SocketName, "paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", target)
 	if err := runSendKeysBounded(paste); err != nil {
 		// -d never ran, so the staged buffer would linger. Drop it before
@@ -6623,18 +6682,25 @@ func (s *Session) pasteToTarget(target, content string) error {
 	return nil
 }
 
-// sendKeysChunkedFallback is the historical paced `send-keys -l` transport,
-// kept as the fallback for tmux builds where the paste path fails.
-func (s *Session) sendKeysChunkedFallback(target, content string) error {
+// sendKeysChunkedFallbackChecked is the historical paced `send-keys -l`
+// transport, kept as the fallback for tmux builds where the paste path fails.
+// before runs ahead of every batch (see beforeKeyBatch); nil skips the check.
+func (s *Session) sendKeysChunkedFallbackChecked(target, content string, before func() error) error {
 	const chunkSize = 4096
 	const chunkDelay = 50 * time.Millisecond
 
 	if len(content) <= chunkSize {
+		if err := beforeKeyBatch(before); err != nil {
+			return err
+		}
 		return s.sendKeysToTarget(target, content)
 	}
 
 	chunks := splitIntoChunks(content, chunkSize)
 	for i, chunk := range chunks {
+		if err := beforeKeyBatch(before); err != nil {
+			return err
+		}
 		if err := s.sendKeysToTarget(target, chunk); err != nil {
 			return fmt.Errorf("failed to send chunk %d/%d: %w", i+1, len(chunks), err)
 		}
