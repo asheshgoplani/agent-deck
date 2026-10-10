@@ -20,21 +20,13 @@ func TestFanoutHint_DocsAndScriptCarryTheLine(t *testing.T) {
 		"skills/agent-deck/scripts/launch-subagent.sh",
 		"documentation/HARNESS_IDENTITY.md",
 	} {
-		path := filepath.Join("..", "..", filepath.FromSlash(rel))
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
-		}
-		if !strings.Contains(string(data), session.FanoutHint) {
+		data := readAcceptanceFixture(t, "..", "..", filepath.FromSlash(rel))
+		if !strings.Contains(data, session.FanoutHint) {
 			t.Errorf("%s must carry the fan-out line %q", rel, session.FanoutHint)
 		}
-	}
-	ref, err := os.ReadFile(filepath.Join("..", "..", "skills", "agent-deck", "references", "config-reference.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(ref), "| `fanout_hint` | bool | `true` |") {
-		t.Error("config-reference.md must document [launch] fanout_hint with default true")
+		if strings.HasSuffix(rel, "config-reference.md") && !strings.Contains(data, "| `fanout_hint` | bool | `true` |") {
+			t.Error("config-reference.md must document [launch] fanout_hint with default true")
+		}
 	}
 }
 

@@ -11,9 +11,8 @@
 #   --timeout <sec>  Wait timeout (default: 300)
 #   --no-fanout-hint Do not append the fan-out line to the prompt
 #
-# Every prompt ends with this line unless --no-fanout-hint is given or the
-# prompt already contains it:
-#   Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered.
+# Every prompt ends with $FANOUT_HINT (set below) unless --no-fanout-hint is
+# given or the prompt already contains it.
 #
 # Examples:
 #   launch-subagent.sh "Research" "Find info about X"

@@ -1892,9 +1892,8 @@ type LaunchSettings struct {
 	// for every Claude session. See prompt_suggestions.go.
 	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
 
-	// FanoutHint adds the FanoutHint line ("Use a dynamic Workflow (fan-out
-	// agents) for every set of independent steps; ...") to the injected
-	// identity block at the primer and full context levels. nil => true.
+	// FanoutHint adds the FanoutHint constant line to the injected identity
+	// block at the primer and full context levels. nil => true.
 	// It rides on identity injection: --no-identity, inject_identity=false
 	// or context_level "none" leave no block to carry it.
 	FanoutHint *bool `toml:"fanout_hint,omitempty"`
