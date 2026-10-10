@@ -33,6 +33,17 @@ The Enter is idempotent — if already submitted, it's just a no-op newline. Use
 
 **Alternative:** omit `--no-wait` so the built-in 60s readiness wait kicks in before submitting.
 
+### Slash commands typed with `session send` are unsafe
+
+`session send <id> "/model haiku"` (or `tmux send-keys`) types the text and presses Enter with no check of Claude Code's autocomplete picker or composer. On Claude Code 2.1.296:
+
+- A partial or unknown command followed by a space (`/mod `) leaves the picker open with the closest entry highlighted; Enter runs THAT entry. This once opened `/model` and changed the owner's default model.
+- A non-empty composer means Enter submits the user's unsent draft together with your text.
+- Empty composers can show a grey ghost suggestion (`❯ add a subtract function` in dim text). Escape does NOT clear it; typed text replaces it. Never accept it with Tab or Right.
+- A trust or selection dialog (`❯ No, exit` ... `Enter to confirm · Esc to cancel`) turns Enter into a choice, possibly exiting Claude.
+
+**Use `agent-deck session command --json <session> "/model claude-haiku-5-5"`** (see [cli-reference](cli-reference.md#session-command)). It treats a ghost suggestion as an empty composer, refuses a draft (`composer_draft`) or a dialog (`dialog_open`) before typing, aborts with `unknown_command` when the picker would pick another entry, and verifies the outcome. `session commands --json <session>` lists what a session can run without typing anything. Conductors expose it as the `/cmd` quick command ([conductors.md](conductors.md#running-slash-commands-from-a-channel-cmd)).
+
 ### Replacing the binary while agent-deck is running (`text file busy`)
 
 If `/usr/local/bin/agent-deck` is a symlink to a build artifact and the binary is currently running (any tmux session, any daemon), a direct `cp` over it fails with `Text file busy`.
@@ -162,7 +173,7 @@ These were surfaced by mining real conductor transcripts (see [Self-Improvement]
 | Parallel `agent-deck launch` cascade → swap thrash → workers + conductor die | Sequential launches; cap parallelism; don't reach for `vm.overcommit_memory=2` (worsens it) | [#964](https://github.com/asheshgoplani/agent-deck/issues/964) |
 | Orphaned context7 MCP procs (PPID=1) accumulating; `pkill -f context7-mcp` from inside the conductor self-immolates | Guard with `$$` check: `grep -q $$ <(pgrep -f "<pat>") \|\| pkill -f "<pat>"` | [#965](https://github.com/asheshgoplani/agent-deck/issues/965) |
 | `launch-subagent.sh` puts children in parent's `conductor` group instead of project group | Always pass `-g <project-group>` explicitly | [#972](https://github.com/asheshgoplani/agent-deck/issues/972) |
-| Bare slash commands sent via `session send` ignored on a freshly restarted child | Wrap conversationally: `"Please run /cmd …"` | [#966](https://github.com/asheshgoplani/agent-deck/issues/966) |
+| Bare slash commands sent via `session send` ignored on a freshly restarted child | Run client commands with `session command` (it waits for the prompt and verifies); for a skill the agent should invoke itself, wrap conversationally: `"Please run /cmd …"` | [#966](https://github.com/asheshgoplani/agent-deck/issues/966) |
 | `.mcp.json` plugin version pins go stale after plugin upgrade | After `/mcp` reload, rewrite `.mcp.json` from current plugin spec | [#960](https://github.com/asheshgoplani/agent-deck/issues/960) |
 | Cron heartbeat `NEED:` lines repeat unchanged for 12-21h with no auto-retire | After 3 repeats, change tactic — escalate explicitly or spawn a different worker | [#971](https://github.com/asheshgoplani/agent-deck/issues/971) |
 | `agent-deck launch -m "<rich text>"` short-flag parser misroutes — text after `-m` becomes positional `[path]` | Use long-form flags: `--message`, `--title`, `--group`, `--parent` | (filed in batch) |

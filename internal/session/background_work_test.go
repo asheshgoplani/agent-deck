@@ -407,9 +407,9 @@ func TestBackgroundWork2473_ConductorTemplateMigratesV1624(t *testing.T) {
 		t.Fatal(err)
 	}
 	current := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-	// Rebuilt from what shipped: the no-op notice rule came after this
-	// sentence, so the old file does not have it.
-	v1624 := renderConductorInstructionsTemplate(preBackgroundWorkConductorInstructionsTemplate(preNoOpNoticeRuleConductorInstructionsTemplate(conductorSharedClaudeMDTemplate)), "", DefaultProfile, spec)
+	// Rebuilt from what shipped: the /cmd quick command and the no-op
+	// notice rule came after this sentence, so the old file has neither.
+	v1624 := renderConductorInstructionsTemplate(preBackgroundWorkConductorInstructionsTemplate(preNoOpNoticeRuleConductorInstructionsTemplate(preHarnessControlConductorInstructionsTemplate(conductorSharedClaudeMDTemplate))), "", DefaultProfile, spec)
 	if v1624 == current || strings.Contains(v1624, "background-work") {
 		t.Fatal("reconstructed v1.16.24 template still carries the new sentence")
 	}

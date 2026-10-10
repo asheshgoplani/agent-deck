@@ -53,7 +53,7 @@ func loadShippedConductorTemplates(t *testing.T) []shippedConductorTemplate {
 // alone.
 //
 // Fixture rows span exactly 4 distinct blobs: v1.16.28/v1.16.29 (the shared
-// template before the no-op notice rule), v1.16.24 (the shared template
+// template before the /cmd quick command and no-op notice rule), v1.16.24 (the shared template
 // before the #2469 human-tier reply format), v1.11.0-v1.16.10 share one, and
 // v1.10.9-v1.10.11 share the other (predating #1814's substate-guidance row).
 // v1.9.73 and v1.9.70 are intentionally not covered; see the tsv header.
@@ -154,5 +154,44 @@ func TestShippedV11624PerNameTemplatesAreCurrent(t *testing.T) {
 		if got := fmtHash(renderConductorInstructionsTemplate(template, "upgrade-"+agent, DefaultProfile, spec)); got != want {
 			t.Fatalf("%s per-name template changed since v1.16.24 (%s): add a fixture generation for it", agent, got)
 		}
+	}
+}
+
+// TestShippedV11628SharedTemplateMigratesToHarnessControl pins that the shared
+// instructions file v1.16.25 through v1.16.29 wrote (hash rendered from the
+// v1.16.28 and v1.16.29 tags' source, identical for every agent) is the newest
+// reconstructed generation, so adding the `/cmd` quick command migrates those
+// conductors in place instead of treating them as user-edited.
+func TestShippedV11628SharedTemplateMigratesToHarnessControl(t *testing.T) {
+	const v11628Shared = "ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377"
+	for _, agent := range []string{ConductorAgentClaude, ConductorAgentCodex, ConductorAgentHermes} {
+		t.Run(agent, func(t *testing.T) {
+			spec, err := GetConductorAgentSpec(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
+			if !strings.Contains(current, "`/cmd <session> <slash command>`") || !strings.Contains(current, "session command --json --wait-idle 60s") {
+				t.Fatal("current shared template lacks the /cmd quick command")
+			}
+			oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
+			if got := fmtHash(oldGenerations[0]); got != v11628Shared {
+				t.Fatalf("newest reconstructed generation = %s, want what v1.16.28 shipped %s", got, v11628Shared)
+			}
+			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)
+			if err := os.WriteFile(path, []byte(oldGenerations[0]), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeGeneratedFileOrMigrate(path, oldGenerations, current, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !matchesTemplateContent(string(got), current) {
+				t.Fatal("v1.16.28 shared instructions were not migrated to the /cmd template")
+			}
+		})
 	}
 }
