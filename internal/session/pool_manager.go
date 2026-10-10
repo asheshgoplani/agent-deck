@@ -257,17 +257,6 @@ func StartHTTPServer(name string, def *MCPDef) error {
 	return nil
 }
 
-// IsHTTPServerRunning checks if an HTTP MCP server is running
-func IsHTTPServerRunning(name string) bool {
-	globalPoolMu.RLock()
-	defer globalPoolMu.RUnlock()
-
-	if globalHTTPPool == nil {
-		return false
-	}
-	return globalHTTPPool.IsRunning(name)
-}
-
 // GetHTTPServerStatus returns the status of an HTTP MCP server
 func GetHTTPServerStatus(name string) string {
 	globalPoolMu.RLock()

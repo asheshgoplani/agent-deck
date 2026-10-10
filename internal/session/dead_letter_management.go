@@ -166,12 +166,6 @@ func findDeadLetterEntry(id string) (deadLetterEntry, error) {
 	return matches[0], nil
 }
 
-// GetDeadLetter returns one operator-safe record by full ID or unique prefix.
-func GetDeadLetter(id string) (DeadLetterRecord, error) {
-	entry, err := findDeadLetterEntry(id)
-	return entry.record, err
-}
-
 func removeDeadLetterEntry(entry deadLetterEntry) error {
 	lock, err := AcquireConfigFileLock(entry.path)
 	if err != nil {

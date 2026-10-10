@@ -205,8 +205,9 @@ func TestSyncProfileSkipsWhenInstanceNoTransitionNotify(t *testing.T) {
 // one dropping the event — even when (a) parent exists, (b) parent is
 // live (StatusWaiting, not running → no defer), and (c) the event passes
 // every earlier filter in NotifyTransition. Without the dispatch guard,
-// SendSessionMessageReliable would fire and the event would come back as
-// transitionDeliverySent, not transitionDeliveryDropped.
+// commitEventToInbox would commit the event to the parent's durable inbox
+// and it would come back as transitionDeliveryCommitted, not
+// transitionDeliveryDropped.
 func TestDispatchDropsEventWhenChildNoTransitionNotify(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -267,8 +268,8 @@ func TestDispatchDropsEventWhenChildNoTransitionNotify(t *testing.T) {
 
 	// The guard at transition_notifier.go:147 must short-circuit to dropped.
 	// If a future refactor removes that guard, dispatch would proceed to
-	// SendSessionMessageReliable (which returns sent or failed depending on
-	// tmux availability in the test env), making this test fail.
+	// commitEventToInbox (which returns committed or failed depending on the
+	// test env), making this test fail.
 	if got.DeliveryResult != transitionDeliveryDropped {
 		t.Fatalf("dispatch must drop event when child.NoTransitionNotify=true, got DeliveryResult=%q", got.DeliveryResult)
 	}

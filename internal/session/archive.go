@@ -1,7 +1,5 @@
 package session
 
-import "time"
-
 // IsArchived reports whether the session is in the user archive.
 func (i *Instance) IsArchived() bool {
 	return i != nil && !i.ArchivedAt.IsZero()
@@ -37,14 +35,6 @@ func VisibleInstances(instances []*Instance) []*Instance {
 		}
 	}
 	return visible
-}
-
-// ArchiveTimeUTC returns the archive timestamp in UTC, or zero when not archived.
-func ArchiveTimeUTC(t time.Time) time.Time {
-	if t.IsZero() {
-		return time.Time{}
-	}
-	return t.UTC()
 }
 
 // SameArchivePartition reports whether two sessions sit in the same archive

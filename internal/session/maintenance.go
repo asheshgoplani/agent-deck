@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -246,45 +245,6 @@ func archiveBloatedSessions(baseDir string) int {
 	}
 
 	return archived
-}
-
-// RestoreFromArchive moves all files from archive/ subdirectories back to
-// their parent directories under baseDir/profiles/*/.
-func RestoreFromArchive(baseDir string) error {
-	archiveDirs, err := filepath.Glob(filepath.Join(baseDir, "profiles", "*", "archive"))
-	if err != nil {
-		return fmt.Errorf("glob error: %w", err)
-	}
-
-	for _, archiveDir := range archiveDirs {
-		info, err := os.Stat(archiveDir)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-
-		parentDir := filepath.Dir(archiveDir)
-
-		entries, err := os.ReadDir(archiveDir)
-		if err != nil {
-			return fmt.Errorf("reading archive dir %s: %w", archiveDir, err)
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			src := filepath.Join(archiveDir, entry.Name())
-			dest := filepath.Join(parentDir, entry.Name())
-			if err := os.Rename(src, dest); err != nil {
-				return fmt.Errorf("restoring %s: %w", src, err)
-			}
-		}
-
-		// Remove the now-empty archive directory.
-		_ = os.Remove(archiveDir)
-	}
-
-	return nil
 }
 
 // cleanupOrphanContainers removes stopped agent-deck containers.
