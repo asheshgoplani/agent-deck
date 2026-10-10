@@ -497,6 +497,7 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 		// The previous worker died while its child was delivering.
 		reconcileTyping(dir, rec, set)
 	}
+	stoppedPolls := 0
 	for rec.State == sendqueue.StateQueued {
 		// session queue release|cancel: the worker answers at the typing
 		// boundary, for this entry and for later ones waiting behind it.
@@ -515,9 +516,29 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 			return
 		}
 		if !inst.Exists() {
-			fail("target not running")
-			return
+			if !rec.WaitWhileStopped {
+				fail("target not running")
+				return
+			}
+			// A routed watcher event waits for its stopped conductor
+			// (#2537), up to the deadline if it has one, polling less often
+			// the longer it stays down.
+			if pastDeadline() {
+				fail("target not running when the delivery deadline passed")
+				return
+			}
+			stoppedPolls++
+			if rec.TargetStatus != targetStatusStopped {
+				_ = set(func(r *sendqueue.Record) { r.TargetStatus = targetStatusStopped })
+			}
+			wait := sendqueue.RetryDelay(poll, sendRetryBackoffMax(), stoppedPolls)
+			if left := time.Until(deadline); !deadline.IsZero() && left < wait {
+				wait = left
+			}
+			sleepUnlessQueueControl(dir, rec.SessionID, wait)
+			continue
 		}
+		stoppedPolls = 0
 		status, _ := fetchHookDrivenStatus(profile, inst.ID)
 		if shouldWaitForIdle(inst.Tool, status) {
 			if pastDeadline() {
@@ -562,6 +583,10 @@ func deliverQueuedMode(profile, dir string, rec *sendqueue.Record, watch bool) {
 		watchLanded(profile, rec, set)
 	}
 }
+
+// targetStatusStopped is the target_status of a send waiting for a target
+// that is not running (Record.WaitWhileStopped).
+const targetStatusStopped = "stopped"
 
 func shouldWaitForIdle(tool, status string) bool {
 	return status == "" || status == "unknown" || status == "starting" || (status == "running" && !session.AcceptsInputWhileBusy(tool))
