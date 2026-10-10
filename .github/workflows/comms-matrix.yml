@@ -2,7 +2,19 @@ name: Comms matrix
 
 on:
   workflow_call:
+    inputs:
+      # When true a failing rig leg is reported as a warning instead of
+      # failing the caller (go-test.yml runs this leg as advisory).
+      advisory:
+        type: boolean
+        default: false
+        required: false
   workflow_dispatch:
+    inputs:
+      advisory:
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -22,7 +34,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Run isolated local and SSH rig
+        id: rig
+        continue-on-error: ${{ inputs.advisory }}
         run: bash tests/comms_matrix/run.sh "${{ matrix.group }}" "$RUNNER_TEMP/comms-${{ matrix.group }}"
+      - name: Report advisory failure
+        if: always() && inputs.advisory && steps.rig.outcome == 'failure'
+        run: |
+          echo "::warning::Comms matrix leg failed (advisory)"
+          echo "Comms matrix leg (${{ matrix.group }}) failed; advisory, so the caller stays green." >> "$GITHUB_STEP_SUMMARY"
       - name: Summarize target gaps
         if: always()
         run: |
