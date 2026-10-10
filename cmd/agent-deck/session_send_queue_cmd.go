@@ -29,7 +29,7 @@ type imageList []string
 func (l *imageList) String() string     { return strings.Join(*l, ",") }
 func (l *imageList) Set(v string) error { *l = append(*l, v); return nil }
 
-var imageExtensions = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true}
+var imageExtensions = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".pdf": true}
 
 // errImagesUnsupported marks a harness that cannot take an image in a
 // running session; the CLI exits 2 for it.
@@ -63,7 +63,7 @@ func attachImages(inst *session.Instance, message string, images []string, now t
 	refs := []string{strings.TrimSpace(message)}
 	for i, src := range images {
 		if !imageExtensions[strings.ToLower(filepath.Ext(src))] {
-			return "", nil, fmt.Errorf("%s: not an image (png, jpg, jpeg, gif, webp)", src)
+			return "", nil, fmt.Errorf("%s: not an attachment (png, jpg, jpeg, gif, webp, pdf)", src)
 		}
 		in, err := os.Open(src)
 		if err != nil {
@@ -160,7 +160,7 @@ func ledgerQueuedSend(r *sendqueue.Record, inboxOwned bool) {
 
 // queueSend records the send and hands it to the target's worker. It never
 // types anything itself; it returns at once.
-func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, tagged bool, ledgerSender string, out *CLIOutput) {
+func queueSend(profile string, storage *session.Storage, inst *session.Instance, message string, images []string, tagged bool, ledgerSender string, requireInputPrompt bool, out *CLIOutput) {
 	now := time.Now()
 	dir := sendQueueDir(storage)
 	status := "unknown"
@@ -172,7 +172,8 @@ func queueSend(profile string, storage *session.Storage, inst *session.Instance,
 	rec := &sendqueue.Record{
 		SendID: id, State: sendqueue.StateQueued, Verdict: "queued", TargetStatus: status,
 		SessionID: inst.ID, SessionTitle: inst.Title, Tool: inst.Tool, Message: message, Images: images,
-		CreatedAt: now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
+		RequireInputPrompt: requireInputPrompt,
+		CreatedAt:          now.UTC().Format(time.RFC3339Nano), UpdatedAt: now.UTC().Format(time.RFC3339Nano),
 		Deadline: now.Add(sendqueue.DefaultRetryBudget).UTC().Format(time.RFC3339Nano),
 		Sender:   ledgerSender,
 	}
@@ -498,6 +499,11 @@ func classifyChild(result map[string]interface{}, code int) (childOutcome, strin
 	if notSentDeliveries[delivery] {
 		return childNotSent, delivery
 	}
+	if delivery == deliveryMenuOpen {
+		if reason, _ := result["error"].(string); strings.Contains(reason, "no keys typed") {
+			return childNotSent, delivery
+		}
+	}
 	reason, _ := result["error"].(string)
 	if reason == "" {
 		reason = fmt.Sprintf("session send exited %d", code)
@@ -633,6 +639,9 @@ func typeQueued(profile, dir string, rec *sendqueue.Record, status, path string,
 		return false
 	}
 	child := sendChild
+	if rec.RequireInputPrompt {
+		child = sendChildGuarded
+	}
 	if status == queueReleaseStatus {
 		child = sendChildRelease
 	}
@@ -842,7 +851,15 @@ func waitTurnStarted(profile, id string, max time.Duration) {
 // and JSON result are files, not pipes: the child outlives a worker that
 // dies, reads the whole message regardless, and the next worker reads the
 // outcome from resultPath.
+var sendChildGuarded = func(profile, id, message, resultPath string) (int, func() int, error) {
+	return startChildSendWithGuard(profile, id, message, resultPath, true)
+}
+
 func startChildSend(profile, id, message, resultPath string) (int, func() int, error) {
+	return startChildSendWithGuard(profile, id, message, resultPath, false)
+}
+
+func startChildSendWithGuard(profile, id, message, resultPath string, requireInputPrompt bool) (int, func() int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, nil, err
@@ -855,7 +872,11 @@ func startChildSend(profile, id, message, resultPath string) (int, func() int, e
 	if err != nil {
 		return 0, nil, err
 	}
-	cmd := exec.Command(exe, profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")...)
+	args := profileArgs(profile, "session", "send", id, "--message-file", msgPath, "--json", "--queue-worker")
+	if requireInputPrompt {
+		args = append(args, "--require-input-prompt")
+	}
+	cmd := exec.Command(exe, args...)
 	// The send id rides in the environment, not argv: a binary that predates
 	// it ignores the variable instead of refusing an unknown flag. The rest
 	// of the environment is passed through unchanged, exactly as before

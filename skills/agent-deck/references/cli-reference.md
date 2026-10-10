@@ -122,6 +122,8 @@ agent-deck ls  # Alias
 
 Both JSON forms always include `account`: the exact stored per-session slot, including an empty string when no slot is explicitly stored. Human tables show the slot in a quoted `ACCOUNT` column, escaping controls. This is stored metadata, not a resolved account or login identity.
 
+`list --json`, `list --all --json` and `remote sessions <name> --json` also carry `transcript_path` and the harness native id (`claude_session_id` or `codex_session_id`) when the core knows them. The path belongs to the host that owns the session. A missing field means unknown: the listing never inspects panes or scans conversation bodies to find it, and an SSH session never resolves a transcript on the controller.
+
 ### remove - Remove session
 
 ```bash
@@ -325,6 +327,8 @@ Auto-detects current session if no ID provided.
 
 `list --json`, `status --json -v` and `session children --json` carry the same `background_work` object (omitted when nothing is in flight). When the work reports back the session settles to `waiting` (then `idle` once acknowledged) within one poll (#2473). An open menu (permission prompt, question) or an error banner outranks the work: such a session reads `waiting` / `interactive-menu` or `error` / `auth-401`, never `running`. A question in Claude's reply text ("Would you like me to ...?") is not a menu and does not stop the work from reading `running`.
 
+`exit_code` (integer, omitted when unknown) appears with substate `process-exited` when a custom command session (`add -cmd` / `launch -cmd`) has exited: status `idle` for exit 0, `error` for a non-zero exit. `list --json` and `status -v --json` carry the same field; interactive shell sessions never report it, and a stopped session drops it. `session start` of a command that finishes at once still exits 0 (the result is the `process-exited` row, not a start failure). The command runs as `bash -c` as the pane's first process, so it does not load interactive shell rc files, and its pane stays dead after it exits; `session restart` runs it again. Older cores omit the field.
+
 ### session current
 
 ```bash
@@ -431,6 +435,8 @@ Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANC
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
+`--require-input-prompt` (guarded send) refuses instead of typing into a harness menu. The pane is checked immediately before every keystroke batch (paste, each fallback chunk, every Enter) under the per-target send lock, and the send always takes the tmux transport. Before typing, an open menu exits 1 with `delivery: "menu_open"` and a missing input prompt with `delivery: "composer_blocked"` (error text `no keys typed`); after typing, only a real menu withholds Enter and reports `typed_not_submitted`. A menu needs picker evidence (a navigate / Enter to select / Enter to confirm instruction, or menu words beside two or more choices); text in the input box or a delivered message quoting "Allow once" is not one. `--draft`, `--no-wait` and the queue keep the guard; a remote that does not list the flag in its `session send --help` is refused before anything is sent.
+
 `session queue list <session> --json` lists those durable queued sends (`id`, `text_preview`, `enqueued_at`, `state`; also the `queue` array of `session show --json`). `session queue release <id> --json` asks the target's worker to send a still queued entry now, and `session queue cancel <id> --json` removes it before any typing. Both report an `outcome`: `delivered`, `unconfirmed`, `refused` (nothing typed), `cancelled`, `already_sent` (with the child's `delivery_evidence`), `not_found` or `unknown`; see docs/macapp-core.md "Queue control". `remote <name> session queue …` forwards to the remote; an older remote answers `session queue is unsupported on this remote`.
 
 ```bash
@@ -458,6 +464,14 @@ Delivery verdict (`--json` also carries `delivery` and a machine-checkable `subm
 With `--wait` or `--stream` on a Claude target, the reply is bound to the transcript record of this exact message: a message queued behind a live turn waits for its own turn to start, the read begins after that record, and it stops at the next human prompt (an interrupted turn is reported as incomplete or as a stream error, not as the next turn's answer). Slash commands and non-Claude tools keep the timestamp-based best-effort reply.
 
 Claude conversation identity (additive; Claude-compatible targets only, other tools' receipts are unchanged): `--json` receipts carry `claude_session_id`, the native Claude conversation the message went to (the same value `session show --json` and `session output --json` report), omitted while it is not known yet (a fresh session before Claude writes its transcript). The queued `--json` receipt and `session send-status --json` carry it too; once the send has `landed` it names the conversation whose transcript holds `landed_row_id`. A `--json --wait` reply bound to its transcript record also carries `claude_turn_uuid`, the uuid of that user record, and `claude_session_id` from the same record; it is the Claude counterpart of Codex's `accepted_turn.codex_session_id` + `codex_turn_generation`.
+
+### session image-upload
+
+```bash
+agent-deck session image-upload <id|title> --name <uuid>.<png|jpg|gif|webp|pdf> [--json] < file
+```
+
+Stages an attachment from stdin on the host that owns the session (works through `remote <host> session image-upload` too) and prints its absolute path (`--json`: `{"path": "...", "bytes": n}`). Pass that path to `session send <id> --image <path>` on the same host. At most 20 MiB; names with separators or traversal, empty input and existing targets are refused (exit 1). Files live in an owner-only `macapp-uploads/<session id>/` folder beside the profile's state database, removed with the session and pruned after 7 days.
 
 ### session approve
 
@@ -622,7 +636,7 @@ agent-deck recall export --cards [--since 30d] [--json]
 agent-deck recall import --host <alias> [file|-] [--json]
 agent-deck recall pull <host> [--full] [--json]
 agent-deck recall mcp
-agent-deck remote <host> recall search|sessions|show|context|export|status ...
+agent-deck remote <host> recall search|sessions|show|context|export|status|timeline|follow ...
 ```
 
 The transcript index over every harness on the machine (`docs/recall.md`); every command needs `[recall] enabled = true` and exits 2 otherwise. `<session>` is the `#number` from a listing, a harness conversation id or unique prefix, or an agent-deck session id. The TUI `G` key is the same search over the same index (typing = `search`, the preview = `show`, Enter = `open`). `backfill`/`sweep`/`rebuild` exit 3 while a session of the active profile is `running` or the load is above `max_loadavg` (`--force` overrides) and while another sweep holds the lock. `search` ranks sessions (title/hint/tag hits first, then body hit count, then recency), AND-s terms, keeps identifiers like `SB-412` whole, joins `--hint`/`--tag` against `state.db` live, applies the structural filters before the 5,000-message body ceiling (newest matches first), runs a 150 ms / 32 MB sweep first and reports what it deferred; `--phrase` verifies the literal phrase and reports how many candidates it checked. `open` starts the bound session (any harness, under the profile whose `state.db` holds the link) or re-registers a Claude transcript with `add --resume-session`; an unowned Codex/pi/Gemini/OpenCode/Hermes conversation exits 2 with the `recall show` command to read it. Sweeps read links, hints and tags from every profile's `state.db` and write cost events to the profile that holds the link. Every `sweep` drains `recall/queue.jsonl` (the lines Claude hooks, `session stop`, `worker_done` and the daemon's turn-end edge append) and parses those files first; `status` reports `queued`, `by_harness` and the harness roots. `--json` returns `result` (search: `hits`, `candidates`, `ceiling_hit`, `scanned`, `verified`) plus an `index` note (`swept`, `deferred`, `deferred_bytes`).
@@ -662,6 +676,24 @@ agent-deck session switch-account "My Project" work
 ```
 
 Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
+
+### open - Show a page in the macOS app Browser panel
+
+```bash
+agent-deck open report.html                       # from inside a session
+agent-deck open ./site/ --session "My Project"    # a directory opens its index.html
+agent-deck open https://example.com/dashboard
+```
+
+Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within 3 s, else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
+
+### file bundle - Export a page folder (read-only)
+
+```bash
+agent-deck file bundle /abs/report/index.html --session <id> > report.tar
+```
+
+Streams an uncompressed tar of the folder (a file argument exports its parent folder, so relative assets keep their paths). Capped at 20 MiB including tar overhead; symlinks and special files are refused; nothing is written on the host and no partial archive is emitted on failure.
 
 ## Fleet Recovery Commands
 
@@ -1071,7 +1103,18 @@ Fetches active sessions from all remotes, or from a specific remote if `name` is
 
 To also see fetch failures in JSON, add `--with-errors` (or the equivalent `--json-envelope`, which implies `--json`): the output becomes `{"sessions": [...], "errors": [{"name", "host", "error"}]}` and the command exits `1` if any remote failed. This envelope is always opt-in, so the plain `--json` shape stays stable for existing scripts.
 
-In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
+In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Each `--json` row also carries `favorite: true` when the session is a favourite on the remote (the key is absent otherwise, and from remotes too old to report it), so a remote favourite needs no separate `remote <name> list --json` call. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
+
+### remote conversation and status reads
+
+```bash
+agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
+agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
+agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>]
+agent-deck remote <name> session send-status <send-id> --json
+```
+
+Forwards the local read to the owner host and prints its output unchanged (rows v2 snapshots, follow frames, event frames, send-status records), in one SSH round trip on a dedicated channel; one-shot calls never open the persistent remote channel. Flags are checked on the owner host inside that same channel: an owner whose core predates the verb or flag answers exit 1 and, for `--json`/`--jsonl`, one `{error, remote, remote_version}` object whose `error` contains `unsupported remote command`, so clients fall back. Snapshots and send-status have a five minute deadline. A follow streams until the controller's stdin closes or the controller is terminated; the owner host then terminates and reaps its own reader. It never retries: resume with the last processed cursor. See `docs/remote-recall.md`.
 
 ### remote drain
 
@@ -1123,7 +1166,7 @@ Renames a session on a remote instance.
 agent-deck remote <name> <command> [arguments]
 ```
 
-`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`. Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
+`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`, and the read-only `limits [--json]` (the remote's own accounts and 5h/7d windows; a remote whose agent-deck predates `limits` answers `unsupported remote command "limits" on remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}` under `--json`). Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
 
 `session switch`/`switch-preview` forwarded this way runs the remote's own switch engine with the same guards as a local switch (ownership revalidation, managed-source refusal, journaled account/harness moves) — the CLI only forwards a closed set of subcommands, so no local path or credential can reach it. `switch-preview --json` previews losses/warnings before committing; the confirmed switch reports `verified`, `pending`, or `failed` with `recovery_required` when applicable. This requires the remote to already be a target you can reach and administer — it does not let a controller switch accounts *for* a remote it doesn't own.
 
@@ -1258,3 +1301,51 @@ Commands accept:
 | 0 | Success |
 | 1 | Error |
 | 2 | Not found |
+
+## Costs
+
+Cost commands use the selected profile (`-p <name>`) and its stored, priced cost events.
+
+```bash
+agent-deck costs sync
+agent-deck costs summary [--json]
+agent-deck costs recompute [--dry-run]
+agent-deck costs daily --json [--days N]
+agent-deck costs sessions --json [--limit N] [--period today|7d|30d|all]
+agent-deck costs models --json [--period today|7d|30d|all]
+agent-deck costs groups --json [--period today|7d|30d|all]
+agent-deck costs budgets --json
+```
+
+The five dashboard commands require `--json`. Success exits 0 with JSON on stdout;
+invalid flags, unavailable storage, or query errors exit nonzero with a message on stderr.
+Each accepts `--help` without opening storage.
+
+| Command | JSON response |
+| --- | --- |
+| `daily` | `[{"date":"YYYY-MM-DD","cost_usd":1.23}]`; `--days` defaults to 30, range 1 through 365. Matches the web UTC range from N days ago through today. Days with no events are absent. |
+| `sessions` | `[{"session_id","title","group","cost_usd","events","input_tokens","output_tokens","cache_read","cache_write","model"}]`; descending cost, stable session ID tie order. Default limit 100, range 1 through 500. Default period `all`; `today`, `week`, and `month` retain the same windows as `summary`. Model is the highest-cost model within the chosen period, ties resolved by model name. |
+| `models` | `{"<model>":cost_usd}` for the selected period. |
+| `groups` | `[{"group","cost_usd","events","sessions"}]`, sorted by group, empty group displayed as `(ungrouped)`. Mirrors the web's top 1000 sessions. |
+| `budgets` | Optional `daily`, `weekly`, `monthly`, `groups.<name>`, `sessions.<id>` objects, each with `used_usd` and `limit_usd`. Only positive configured limits appear; no limits yields `{}`. |
+
+Sessions, models and groups accept `--period today|7d|30d|all` (default `all`),
+with `week` and `month` also retained for calendar windows. `7d` and `30d`
+are rolling windows from the current instant, inclusive at the cutoff, shared
+with the web endpoints through their `period` query parameter. Today retains
+the existing summary day boundary. Group ranking uses the selected period
+before applying the existing top-1000-session cap.
+
+Budgets read `[costs.budgets]`, `[costs.budgets.groups.<name>]` (`daily_limit`),
+and `[costs.budgets.sessions.<id>]` (`total_limit`). Global and group budget windows
+use `[costs] timezone` (default `Local`), matching BudgetChecker; sessions use lifetime totals.
+Group membership uses the current exact group path. Prices come from stored events,
+just as on the web; use `costs recompute` explicitly to apply changed pricing overrides.
+
+Tracking defaults on. Set `[costs] enabled = false` globally or
+`[profiles.<name>.costs] enabled = false` for a profile. Explicit profile values override
+the global value. Disabled cost commands exit nonzero with exactly
+`cost tracking is off in this profile` on stderr. Existing historical events are retained.
+
+The Dashboard Today tile must keep using `cost_today_microdollars` from
+`costs summary --json`; never sum the all-time session table for Today.

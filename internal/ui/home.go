@@ -22472,7 +22472,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
 	// The archived override swaps the glyph to ■ regardless of the stale live
 	// Status, so the label has to follow it or the row reads "■ running".
-	statusLabel := rs.Status
+	statusLabel := processExitLabel(rs.Status, session.Substate(rs.Substate), rs.ExitCode)
 	if rs.Archived {
 		statusLabel = "archived"
 	}
@@ -23231,7 +23231,7 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 		statusColor = ColorTextDim
 	}
 	statusStyle := lipgloss.NewStyle().Foreground(statusColor)
-	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Status:"), statusStyle.Render(string(cardStatus))))
+	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Status:"), statusStyle.Render(processExitLabel(string(cardStatus), inst.CachedSubstate(), inst.ExitCode()))))
 
 	// Tool
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
@@ -23452,7 +23452,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 
 	// Header with session name and status
-	statusBadge := lipgloss.NewStyle().Foreground(statusColor).Render(statusIcon + " " + string(selectedStatus))
+	statusBadge := lipgloss.NewStyle().Foreground(statusColor).Render(statusIcon + " " + processExitLabel(string(selectedStatus), selected.CachedSubstate(), selected.ExitCode()))
 	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 	b.WriteString(nameStyle.Render(selected.Title))
 	b.WriteString("  ")

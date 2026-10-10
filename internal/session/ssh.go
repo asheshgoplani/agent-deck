@@ -2900,13 +2900,16 @@ func (r *SSHRunner) ForkSession(ctx context.Context, sessionID string) (string, 
 
 // RemoteSessionInfo represents a session from a remote agent-deck instance.
 type RemoteSessionInfo struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Path      string `json:"path"`
-	Group     string `json:"group"`
-	Tool      string `json:"tool"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
+	CodexSessionID  string `json:"codex_session_id,omitempty"`
+	TranscriptPath  string `json:"transcript_path,omitempty"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Path            string `json:"path"`
+	Group           string `json:"group"`
+	Tool            string `json:"tool"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"created_at"`
 
 	// Account is the stored account slot on the remote ("" = default). It
 	// names the remote's own [profiles.<name>] slot; the Edit Session dialog
@@ -2921,6 +2924,7 @@ type RemoteSessionInfo struct {
 	// too old to send them omits the keys, which unmarshal to ""/false and
 	// degrade to the coarse-status glyph.
 	Substate string `json:"substate"`
+	ExitCode *int   `json:"exit_code,omitempty"`
 	Archived bool   `json:"archived"`
 	// SubstateDetail is the free text `list --json` emits beside Substate
 	// (the codex usage-limit retry time), so a remote codex session's retry
@@ -2951,6 +2955,15 @@ type RemoteSessionInfo struct {
 	// session, or a remote too old to send the key, decodes to "" and the
 	// row renders flat.
 	ParentSessionID string `json:"parent_session_id,omitempty"`
+
+	// Favorite is the remote session's favourite flag, as `list --json` on
+	// the remote reports it, so a remote favourite reaches the controller
+	// (and `remote sessions --json`) without a second `remote <name> list
+	// --json` call. The remote's `list --json` emits the key only when the
+	// session is a favourite, and a remote too old to send it omits it too:
+	// both decode to nil and are forwarded without the key, so consumers
+	// read a missing key as "not a favourite".
+	Favorite *bool `json:"favorite,omitempty"`
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`

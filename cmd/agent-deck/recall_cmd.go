@@ -223,6 +223,13 @@ func (r *recallRegistry) close() { r.Close() }
 // Usage implements ingest.UsageSink: cost events go to the state.db that
 // holds the deck session's link, whichever profile that is.
 func (r *recallRegistry) Usage(profile, deck string, events []reader.Usage) error {
+	owner := r.OwnerProfile(deck)
+	if owner == "" {
+		owner = r.Profile()
+	}
+	if !session.GetCostTrackingEnabled(owner) {
+		return nil
+	}
 	db := r.DB(r.OwnerProfile(deck))
 	if db == nil {
 		db = r.DB(r.Profile())

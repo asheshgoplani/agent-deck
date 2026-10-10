@@ -840,3 +840,5 @@ remote_cards = false     # let cards (never bodies or paths) cross SSH: export /
 - The excerpt tier reads at most the newest 400 conversational rows
   before the character budget trims them, so a 100 MB conductor
   transcript is never decompressed whole for a 4,000-token excerpt.
+
+Conversation timeline/follow, host event streams, send-status and list transcript metadata are described in [Remote conversation and status reads](remote-recall.md).

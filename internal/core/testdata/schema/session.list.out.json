@@ -75,6 +75,9 @@
             "type": "string"
           }
         },
+        "claude_session_id": {
+          "type": "string"
+        },
         "codex_session_id": {
           "type": "string"
         },
@@ -88,6 +91,10 @@
         "created_at": {
           "type": "string",
           "format": "date-time"
+        },
+        "exit_code": {
+          "description": "live",
+          "type": "integer"
         },
         "extra_args": {
           "description": "live",
@@ -174,6 +181,9 @@
           "type": "string"
         },
         "tool": {
+          "type": "string"
+        },
+        "transcript_path": {
           "type": "string"
         },
         "viewers": {

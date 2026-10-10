@@ -1,1 +1,1 @@
-Usage: agent-deck costs <sync|summary|recompute>
+Usage: agent-deck costs <sync|summary|recompute|daily|sessions|models|groups|budgets>

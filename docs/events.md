@@ -13,7 +13,7 @@ trailing spaces).
 | Field | Type | Meaning |
 |---|---|---|
 | `cursor` | uint64 | Durable, monotonic, per-profile. Never reused. 0 means "no frame". |
-| `event_id` | string | Random, informational only. Not the ordering/identity key. |
+| `event_id` | string | Random request/ack correlation and deduplication ID. Not the ordering key. |
 | `ts` | int64 | Unix milliseconds. |
 | `kind` | string | Producer-defined, dotted (`session.status`, `tmux.output`, ...). |
 | `session_id` | string | The instance/session this event is about, when applicable. |
@@ -27,7 +27,9 @@ trailing spaces).
 | `internal/statedb` `WriteStatus` via `internal/session/status_bus.go` (only with `[macapp] status_events = true`) | every status row transition, from whichever process owns the status (TUI poller, notify daemon); one frame per edge, even when two owners write the same transition | `session.status` |
 | same | entering `running` / leaving `running` | `session.turn` |
 | `internal/session/transition_daemon.go` (only with `[macapp] transcript_events = true`) | a live session's native transcript grew | `session.transcript` |
-| `agent-deck events publish` (only with `[macapp] plugins = true`) | a client/plugin frame | `macapp.*` |
+| `agent-deck open` | Browser request | `macapp.open` |
+| `agent-deck events publish --kind macapp.open.ack` | Built-in Browser acknowledgment | `macapp.open.ack` |
+| `agent-deck events publish` (other kinds require `[macapp] plugins = true`) | a client/plugin frame | `macapp.*` |
 | `internal/session/transition_notifier.go` | `NotifyTransition` | `session.transition` |
 | `internal/session/transition_daemon_turns.go` | a top-level conductor's own turn, dropped (`self_conductor`) before the notifier; one frame per turn or observed flip | `session.transition` |
 | `internal/session/transition_notifier.go` | `NotifyFinished` | `session.finished` |
@@ -117,6 +119,7 @@ PublishDefault(kind, sessionID string, data any)  // bounded, no disk on produce
 PublishProfile(profile, kind, sessionID string, data any) // per-profile transition tap
 OpenProfile(profile string) *Bus                  // component owned
 (*Bus) Publish(kind, sessionID string, data any)  // never blocks
+(*Bus) PublishWithID(kind, sessionID string, data any) string // accepted frame ID; Flush confirms durability
 (*Bus) Subscribe(ctx, after Cursor) (*Subscription, error)
 (*Bus) Cursor() Cursor
 (*Bus) Stats() Stats
@@ -153,9 +156,9 @@ a drop; the directory must already exist (`ErrNoBus` otherwise).
 
 | Command | Output |
 |---|---|
-| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events\|comms]` | NDJSON frames, oldest first, streams live until killed. `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. `--bus comms` follows the comms ledger (read-only; docs/comms.md). |
+| `agent-deck events follow --json [--after <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events\|comms]` | NDJSON frames, oldest first, streams live until killed. `--jsonl` and `--since` are aliases of `--json` and `--after`; `agent-deck remote <name> events follow --jsonl --since <cursor>` forwards the same stream from a registered remote (docs/remote-recall.md). `--kind session` matches `session.*`; `--kind macapp.` matches the namespace; filters never change cursors. `--bus comms` follows the comms ledger (read-only; docs/comms.md). |
 | `agent-deck events stats --json [--bus events\|comms]` | `{enabled, dir, cursor, published, written, synced, dropped, queue_len, queue_cap, kinds: {kind: retained count}}`. |
-| `agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> \| --data-file <path\|->] [--json]` | Publishes one frame and waits (≤ 2 s) until it is committed; prints `{ok, kind, session_id, cursor, profile}`. Only the `macapp.*` namespace, only with `[macapp] plugins = true` (exit 2 otherwise). `--session` defaults to `$AGENTDECK_INSTANCE_ID`. |
+| `agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> \| --data-file <path\|->] [--json]` | Publishes one frame and waits (≤ 2 s) until it is committed; prints `{ok, kind, session_id, cursor, profile}`. Only the `macapp.*` namespace, with `[macapp] plugins = true` required except for built-in `macapp.open` and `macapp.open.ack` (exit 2 otherwise). `--session` defaults to `$AGENTDECK_INSTANCE_ID`. |
 
 `cursor` and `dropped` reflect the profile across processes. `published`,
 `written`, `synced` and queue occupancy describe the process running the
@@ -166,3 +169,38 @@ The slice-1 registry bundle and this branch now share `origin/main` at
 `3b41e36d`, and both bundles verify. Slice 1 remains a separate branch; its
 registry is absent from this branch. Integration belongs to the later branch
 that combines the two slices.
+
+Browser requests, acknowledgments, local launch fallback, and remote tar export are documented in [macapp-open.md](macapp-open.md).
+
+## Claude statusline metadata
+
+`usage ingest claude` and the installed `usage statusline-wrap` publish
+`usage.statusline` without the Mac app plugins gate. The frame's `session_id`
+is the owning agent-deck session ID when the native Claude ID resolves uniquely,
+or an empty string when it cannot be resolved. The data object contains only
+`claude_session_id`, `captured_at` (UTC RFC3339 with milliseconds), `model`
+(`id`, `display_name`), `cwd`, `context_window` (`used_percentage`,
+`context_window_size`, `total_input_tokens`, `total_output_tokens`) and
+`rate_limits` (`five_hour`, `seven_day`, each with `used_percentage` and epoch
+seconds `resets_at`). Unreported objects and numeric fields are null. Two
+string fields appear only when known: `account`, the configured Claude account
+slot whose config dir the status line ran under (`$CLAUDE_CONFIG_DIR`, else
+`~/.claude`), and `permission_mode`, the payload's `permission_mode` or else the
+newest `permissionMode` in the last 256 KiB of the transcript. Prompt text,
+transcript paths, cost data and additional payload keys are not retained.
+
+Use `usage statusline --session <id|title> --json` to read the current native
+conversation's last record. Missing or ambiguous records return
+`{"error":"no statusline record"}` with exit 1. Records are replaced per native
+ID; a known session retains only its latest native conversation. Registry
+removal prunes linked records. At most 128 unlinked records remain per
+profile. An unlinked record is kept in the feed profile when that profile
+already has a store, otherwise in the configured default profile when it has
+one; if neither exists, only the quota cache is written and no event is
+published, so a statusline update never creates a profile. The event log keeps
+its existing bounded retention.
+
+`events follow --json --kind usage.statusline` streams these records from the
+host that ran the ingest. Account-named hook feeds keep their original quota
+cache while statusline events go to the owning session's profile bus. The
+wrapper is not installed when `[claude] statusline_feed = false`.

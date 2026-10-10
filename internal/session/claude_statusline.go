@@ -16,24 +16,14 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
 
-// The "accounts" field reads each slot's quota file
-// (~/.cache/agent-deck/quota/<slot>/claude.json), which only
-// `agent-deck usage ingest claude` writes, from a Claude Code statusLine.
-// rc.6 documented that wiring and left it to the operator; no slot on any
-// host had it, so every slot read "usage unknown". The usage feed is now
-// installed by construction: `hooks install` (and the daemon's start-up
-// heal) wraps every configured slot's statusLine command as
-//
-//	<agent-deck> -p <slot> usage ingest claude -- <existing command>
-//
-// or installs the plain ingester when the slot has none. The wrapped
-// command's bytes are passed through verbatim (usage_cmd.go
-// runWrappedStatusLine), the slot is named explicitly so the file lands
-// under the slot's own name whatever CLAUDE_CONFIG_DIR says, and the binary
-// is the same stable path the hook entries pin (hookExecutablePath).
+// Hook installation wires a statusline feed for named account configurations
+// and the active default Claude config. The managed wrapper ingests metadata
+// before running the previous command, or renders a default when none exists.
+// Account quota files retain their existing format and cache keys.
 
 // usageIngestWords is the subcommand the feed wrapper runs.
 var usageIngestWords = []string{"usage", "ingest", "claude"}
+var usageWrapWords = []string{"usage", "statusline-wrap"}
 
 // usageFeedSeparator separates the wrapper from the wrapped command.
 const usageFeedSeparator = " -- "
@@ -104,14 +94,15 @@ func parseUsageFeedCommand(command string) (feed UsageFeed, ok bool) {
 	case len(words) >= 1 && strings.HasPrefix(words[0], "--profile="):
 		feed.FeedSlot, words = strings.TrimPrefix(words[0], "--profile="), words[1:]
 	}
-	if !slices.Equal(words, usageIngestWords) {
+	modern := slices.Equal(words, usageWrapWords)
+	if !modern && !slices.Equal(words, usageIngestWords) {
 		return feed, false
 	}
 	feed.Inner = strings.TrimSpace(inner)
 	// sh -c '<cmd>' is how a command with shell syntax was wrapped; report
 	// the command itself (only for a command this wrapper would have quoted
 	// that way, so a user's own `sh -c` round-trips untouched).
-	if innerWords, ok := shellwords.Split(feed.Inner); ok && len(innerWords) == 3 && innerWords[0] == "sh" && innerWords[1] == "-c" && shellSyntax(innerWords[2]) {
+	if innerWords, ok := shellwords.Split(feed.Inner); ok && len(innerWords) == 3 && innerWords[0] == "sh" && innerWords[1] == "-c" && (modern || shellSyntax(innerWords[2])) {
 		feed.Inner = innerWords[2]
 	}
 	return feed, true
@@ -138,15 +129,12 @@ func shellSyntax(command string) bool {
 // wrapper already names, else the bare "agent-deck" (see hookHandlerCommandFor).
 func usageFeedCommand(slot, inner, existingProgram string) string {
 	program := agentDeckHookCommandProgram(existingProgram)
-	cmd := program + " -p " + shellescape.Quote(slot) + " " + strings.Join(usageIngestWords, " ")
+	cmd := program + " -p " + shellescape.Quote(slot) + " " + strings.Join(usageWrapWords, " ")
 	inner = strings.TrimSpace(inner)
 	if inner == "" {
 		return cmd
 	}
-	if shellSyntax(inner) {
-		return cmd + usageFeedSeparator + "sh -c " + shellescape.Quote(inner)
-	}
-	return cmd + usageFeedSeparator + inner
+	return cmd + usageFeedSeparator + "sh -c " + shellescape.Quote(inner)
 }
 
 // agentDeckHookCommandProgram is the program word a fresh agent-deck entry
@@ -202,7 +190,7 @@ func UsageFeedStatus(configDir, slot string) UsageFeed {
 // InstallUsageFeed wires slot's statusLine under configDir to the usage
 // ingester, idempotently: an existing command is wrapped once (never twice),
 // a wrapper naming another binary or slot is rewritten around the same
-// inner command, and a slot with no statusLine gets the plain ingester.
+// inner command, and a slot with no statusLine gets a default display.
 // Every other key and the statusLine's own siblings (padding, type) survive
 // verbatim; nothing is written when nothing changes, and malformed JSON is
 // an error, never overwritten. A slot that cannot be wired (usageFeedBlocker:
@@ -221,6 +209,15 @@ func InstallUsageFeed(configDir, slot string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if kind := obj.getString("type"); kind != "" && kind != "command" {
+		return false, fmt.Errorf("unsupported statusLine type %q; left unchanged", kind)
+	}
+	if raw, exists := obj.get("command"); exists {
+		var command string
+		if err := json.Unmarshal(raw, &command); err != nil {
+			return false, fmt.Errorf("invalid statusLine command; left unchanged: %w", err)
+		}
+	}
 	current := obj.getString("command")
 	inner, existingProgram := current, ""
 	if parsed, ok := parseUsageFeedCommand(current); ok {
@@ -229,6 +226,9 @@ func InstallUsageFeed(configDir, slot string) (bool, error) {
 	want := usageFeedCommand(slot, inner, existingProgram)
 	if current == want {
 		return false, nil
+	}
+	if err := saveUsageFeedBackup(configDir, root, current, want); err != nil {
+		return false, err
 	}
 	if _, has := obj.get("type"); !has {
 		obj.set("type", mustMarshal("command"))
@@ -270,7 +270,13 @@ func RemoveUsageFeed(configDir string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if parsed.Inner != "" {
+	restored, err := restoreUsageFeedBackup(configDir, &root, obj)
+	if err != nil {
+		return false, err
+	}
+	if restored {
+		// The original command and type were restored from the managed backup.
+	} else if parsed.Inner != "" {
 		obj.set("command", mustMarshal(parsed.Inner))
 		root.set("statusLine", mustMarshal(obj))
 	} else {
@@ -290,6 +296,9 @@ func RemoveUsageFeed(configDir string) (bool, error) {
 	}
 	if err := atomicfile.WriteFile(settingsPath, finalData, 0o644); err != nil {
 		return false, fmt.Errorf("write settings.json: %w", err)
+	}
+	if restored {
+		_ = os.Remove(usageFeedBackupPath(configDir))
 	}
 	sessionLog.Info("claude_usage_feed_removed", slog.String("config_dir", configDir))
 	return true, nil
@@ -322,12 +331,18 @@ type UsageFeedResult struct {
 	Feed    UsageFeed
 }
 
-// InstallUsageFeeds wires the usage feed for every configured slot and
+// InstallUsageFeeds wires each configured slot and the active default config and
 // reports each; one slot's failure does not stop the others.
 func InstallUsageFeeds(config *UserConfig) []UsageFeedResult {
-	slots := ConfiguredClaudeAccountSlots(config)
+	slots := ClaudeUsageFeedSlots(config)
 	results := make([]UsageFeedResult, 0, len(slots))
 	for _, slot := range slots {
+		if config != nil && !config.Claude.GetStatuslineFeed() {
+			feed := UsageFeedStatus(slot.ConfigDir, slot.Name)
+			feed.Blocked = usageFeedOptedOut
+			results = append(results, UsageFeedResult{Slot: slot.Name, Feed: feed})
+			continue
+		}
 		changed, err := InstallUsageFeed(slot.ConfigDir, slot.Name)
 		results = append(results, UsageFeedResult{
 			Slot: slot.Name, Changed: changed, Err: err,
@@ -339,7 +354,7 @@ func InstallUsageFeeds(config *UserConfig) []UsageFeedResult {
 
 // RemoveUsageFeeds undoes InstallUsageFeeds for every configured slot.
 func RemoveUsageFeeds(config *UserConfig) []UsageFeedResult {
-	slots := ConfiguredClaudeAccountSlots(config)
+	slots := ClaudeUsageFeedSlots(config)
 	results := make([]UsageFeedResult, 0, len(slots))
 	for _, slot := range slots {
 		changed, err := RemoveUsageFeed(slot.ConfigDir)
@@ -348,12 +363,17 @@ func RemoveUsageFeeds(config *UserConfig) []UsageFeedResult {
 	return results
 }
 
-// UsageFeedStatuses reports every configured slot's wiring, read-only.
+// UsageFeedStatuses reports each discovered config's wiring, read-only.
 func UsageFeedStatuses(config *UserConfig) []UsageFeed {
-	slots := ConfiguredClaudeAccountSlots(config)
+	slots := ClaudeUsageFeedSlots(config)
 	feeds := make([]UsageFeed, 0, len(slots))
+	optedOut := config != nil && !config.Claude.GetStatuslineFeed()
 	for _, slot := range slots {
-		feeds = append(feeds, UsageFeedStatus(slot.ConfigDir, slot.Name))
+		feed := UsageFeedStatus(slot.ConfigDir, slot.Name)
+		if optedOut && !feed.Wired && feed.Blocked == "" {
+			feed.Blocked = usageFeedOptedOut
+		}
+		feeds = append(feeds, feed)
 	}
 	return feeds
 }
@@ -366,8 +386,72 @@ func HealUsageFeeds(config *UserConfig) []UsageFeedResult {
 	if config == nil {
 		return nil
 	}
+	if !config.Claude.GetStatuslineFeed() {
+		return nil
+	}
 	if exe, err := hookExecutablePath(); err != nil || exe == "" {
 		return nil
 	}
-	return InstallUsageFeeds(config)
+	// A named account slot is wired by construction (its config binding is
+	// the operator's consent). The active default config is wired only while
+	// agent-deck's own hooks are installed there, so `hooks uninstall`
+	// (which restores the statusLine) is not undone by the next heal.
+	named := map[string]bool{}
+	for _, slot := range ConfiguredClaudeAccountSlots(config) {
+		named[slot.Name] = true
+	}
+	var results []UsageFeedResult
+	for _, slot := range ClaudeUsageFeedSlots(config) {
+		if !named[slot.Name] && !agentDeckHooksInstalled(slot.ConfigDir) {
+			continue
+		}
+		changed, err := InstallUsageFeed(slot.ConfigDir, slot.Name)
+		results = append(results, UsageFeedResult{
+			Slot: slot.Name, Changed: changed, Err: err,
+			Feed: UsageFeedStatus(slot.ConfigDir, slot.Name),
+		})
+	}
+	return results
+}
+
+// usageFeedOptedOut is UsageFeed.Blocked when [claude] statusline_feed = false.
+const usageFeedOptedOut = "disabled by [claude] statusline_feed = false"
+
+// agentDeckHooksInstalled reports whether configDir's settings.json carries
+// at least one agent-deck hook entry.
+func agentDeckHooksInstalled(configDir string) bool {
+	hooks, err := readClaudeHooksSection(configDir)
+	return err == nil && len(distinctAgentDeckHookCommands(hooks)) > 0
+}
+
+// ClaudeUsageFeedSlots adds the active default config without inventing an
+// account slot. Canonical paths prevent aliases from wrapping a file twice.
+func ClaudeUsageFeedSlots(config *UserConfig) []ClaudeAccountSlot {
+	slots := ConfiguredClaudeAccountSlots(config)
+	seen := map[string]bool{}
+	names := map[string]bool{}
+	canonical := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return filepath.Clean(path)
+	}
+	out := make([]ClaudeAccountSlot, 0, len(slots)+1)
+	for _, slot := range slots {
+		names[slot.Name] = true
+		path := canonical(slot.ConfigDir)
+		if !seen[path] {
+			out = append(out, slot)
+			seen[path] = true
+		}
+	}
+	dir := GetClaudeConfigDir()
+	if info, err := os.Stat(dir); err == nil && info.IsDir() && !seen[canonical(dir)] {
+		name := "default"
+		for i := 1; names[name]; i++ {
+			name = fmt.Sprintf("default-claude-%d", i)
+		}
+		out = append(out, ClaudeAccountSlot{Name: name, ConfigDir: dir})
+	}
+	return out
 }
