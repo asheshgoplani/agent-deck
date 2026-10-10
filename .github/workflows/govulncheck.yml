@@ -6,21 +6,47 @@ on:
 permissions:
   contents: read
   security-events: write
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   govulncheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Keep the scan on the application's Go version so standard-library
     # findings describe the shipped toolchain. v1.7.0 matches the local
     # Docker check and still reads the current vulnerability DB.
     env:
       GOTOOLCHAIN: local
+      GOVULNCHECK_VERSION: v1.7.0
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.9'
           check-latest: false
+      # setup-go's "go" problem matcher turns every indented example trace
+      # into its own error annotation (38 for one OSV). The summary step
+      # below emits exactly one annotation per OSV instead.
+      - name: Remove Go problem matcher
+        run: echo '::remove-matcher owner=go::'
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-      - name: Run govulncheck (strict — fails on any reachable vuln)
-        run: govulncheck ./...
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+      - name: Self-test summary script
+        run: bash tests/ci/govulncheck-split.test.sh
+      # In JSON mode govulncheck exits 0 whatever it finds, so a non-zero
+      # exit here is a scan error and fails the job.
+      - name: Scan (JSON)
+        run: govulncheck -format json ./... > vuln.json
+      - name: Scan (SARIF)
+        continue-on-error: true
+        run: govulncheck -format sarif ./... > vuln.sarif || true
+      - name: Upload SARIF to code scanning
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: vuln.sarif
+          category: govulncheck
+      - name: Summarise and gate (strict, fails on any called vuln)
+        run: bash .github/scripts/govulncheck-split.sh vuln.json

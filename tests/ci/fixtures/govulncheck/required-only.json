@@ -1,0 +1,46 @@
+{
+  "config": {
+    "protocol_version": "v1.0.0",
+    "scanner_name": "govulncheck",
+    "scanner_version": "v1.7.0",
+    "go_version": "go1.25.13",
+    "scan_level": "symbol",
+    "scan_mode": "source"
+  }
+}
+{
+  "osv": {
+    "id": "GO-2026-0003",
+    "summary": "Denial of service in example.com/required"
+  }
+}
+{
+  "osv": {
+    "id": "GO-2026-0004",
+    "summary": "Path traversal in example.com/imported"
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-0003",
+    "fixed_version": "v1.2.4",
+    "trace": [
+      {
+        "module": "example.com/required",
+        "version": "v1.2.3"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-0004",
+    "trace": [
+      {
+        "module": "example.com/imported",
+        "version": "v0.1.0",
+        "package": "example.com/imported/fs"
+      }
+    ]
+  }
+}
