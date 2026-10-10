@@ -67,24 +67,6 @@ func (p *HTTPPool) Stop(name string) error {
 	return server.Stop()
 }
 
-// StopIfStartedByUs stops a server only if we started it (not external)
-func (p *HTTPPool) StopIfStartedByUs(name string) error {
-	p.mu.RLock()
-	server, exists := p.servers[name]
-	p.mu.RUnlock()
-
-	if !exists {
-		return nil // Not managed by us
-	}
-
-	if !server.StartedByUs() {
-		httpPoolLog.Info("external_server_skip_stop", slog.String("mcp", name))
-		return nil
-	}
-
-	return server.Stop()
-}
-
 // IsRunning checks if an HTTP server is running
 func (p *HTTPPool) IsRunning(name string) bool {
 	p.mu.RLock()
@@ -103,18 +85,6 @@ func (p *HTTPPool) GetServer(name string) *HTTPServer {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.servers[name]
-}
-
-// GetURL returns the URL for an HTTP server
-func (p *HTTPPool) GetURL(name string) string {
-	p.mu.RLock()
-	server, exists := p.servers[name]
-	p.mu.RUnlock()
-
-	if !exists {
-		return ""
-	}
-	return server.GetURL()
 }
 
 // Shutdown stops all HTTP servers
