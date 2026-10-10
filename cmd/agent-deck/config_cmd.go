@@ -165,11 +165,15 @@ type configValueJSON struct {
 }
 
 func configKeyFlags(name string, args []string) (*flag.FlagSet, *bool) {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(os.Stdout)
-	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	fs, jsonOutput := newConfigFlagSet(name)
 	parseConfigFlags(fs, args)
 	return fs, jsonOutput
+}
+
+func newConfigFlagSet(name string) (*flag.FlagSet, *bool) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	return fs, fs.Bool("json", false, "Output as JSON")
 }
 
 func parseConfigFlags(fs *flag.FlagSet, args []string) {
@@ -223,9 +227,7 @@ func handleConfigGet(args []string) {
 }
 
 func handleConfigSet(args []string) {
-	fs := flag.NewFlagSet("config set", flag.ContinueOnError)
-	fs.SetOutput(os.Stdout)
-	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	fs, jsonOutput := newConfigFlagSet("config set")
 	yes := fs.Bool("yes", false, "Consent to turning on a key that needs it (macapp.plugins)")
 	fs.BoolVar(yes, "y", false, "Short for --yes")
 	parseConfigFlags(fs, args)
@@ -236,7 +238,13 @@ func handleConfigSet(args []string) {
 	}
 	name, raw := fs.Arg(0), fs.Arg(1)
 	k, v, err := session.SetConfigValue(name, raw, *yes)
-	if errors.Is(err, session.ErrConsentRequired) && !*jsonOutput && stdinStdoutIsTerminal() {
+	if errors.Is(err, session.ErrConsentRequired) {
+		if *jsonOutput || !stdinStdoutIsTerminal() {
+			argv, cmd := consentCommand(k.Key)
+			out.ErrorWithData(fmt.Sprintf("turning on %s needs your consent: %s Run %s to confirm.", k.Key, k.Consent, cmd), ErrCodeConsentRequired,
+				map[string]any{"key": k.Key, "value": v, "consent": k.Consent, "confirm_command": cmd, "confirm_argv": argv})
+			exitCLI(2)
+		}
 		fmt.Printf("%s\n\nTurn on %s? [y/N]: ", k.Consent, k.Key)
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if !isYesConfirmation(line) {
@@ -244,13 +252,6 @@ func handleConfigSet(args []string) {
 			exitCLI(1)
 		}
 		k, v, err = session.SetConfigValue(name, raw, true)
-	}
-	if errors.Is(err, session.ErrConsentRequired) {
-		argv := consentArgv(k.Key)
-		cmd := "agent-deck " + strings.Join(argv, " ")
-		out.ErrorWithData(fmt.Sprintf("turning on %s needs your consent: %s Run %s to confirm.", k.Key, k.Consent, cmd), ErrCodeConsentRequired,
-			map[string]any{"key": k.Key, "value": v, "consent": k.Consent, "confirm_command": cmd, "confirm_argv": argv})
-		exitCLI(2)
 	}
 	if err != nil {
 		code := ErrCodeInvalidOperation
@@ -263,17 +264,18 @@ func handleConfigSet(args []string) {
 	printConfigValue(k, v, *jsonOutput)
 }
 
-// consentArgv is the agent-deck argv that turns a consent-gated key on.
-func consentArgv(key string) []string {
-	return []string{"config", "set", key, "true", "--yes"}
+// consentCommand is the agent-deck argv, and its shell form, that turns a
+// consent-gated key on.
+func consentCommand(key string) (argv []string, cmd string) {
+	argv = []string{"config", "set", key, "true", "--yes"}
+	return argv, "agent-deck " + strings.Join(argv, " ")
 }
 
 // exitMacappPluginsOff exits 2 because what needs [macapp] plugins: the error
 // names the exact command that turns it on, and its JSON form carries a hint
 // the Mac app shows as a consent prompt before it runs hint.argv.
 func exitMacappPluginsOff(out *CLIOutput, what string) {
-	argv := consentArgv("macapp.plugins")
-	cmd := "agent-deck " + strings.Join(argv, " ")
+	argv, cmd := consentCommand("macapp.plugins")
 	out.ErrorWithData(fmt.Sprintf("%s is off: it needs [macapp] plugins = true in config.toml. To enable it, run: %s (docs/macapp-core.md)", what, cmd), ErrCodeInvalidOperation,
 		map[string]any{"hint": map[string]any{"key": "macapp.plugins", "value": true, "command": cmd, "argv": argv, "consent": session.MacappPluginsConsent, "docs": "docs/macapp-core.md"}})
 	exitCLI(2)
