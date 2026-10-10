@@ -65,8 +65,9 @@ func newFakeClaude() *fakeClaude {
 	}
 }
 
-// fakeModels is the live 2.1.296 /model picker list (lab evidence exp20).
-var fakeModels = []string{"Default (recommended)", "Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Sonnet 4.5", "Opus 4.1"}
+// fakeModels is the live 2.1.296 /model picker list (lab evidence exp20,
+// exp25); the live list wraps around at both ends.
+var fakeModels = []string{"Default (recommended)", "Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"}
 
 // pickerLines renders the picker with a ten-row window that follows the
 // selection, the current model ticked, like the live one.
@@ -236,12 +237,12 @@ func (f *fakeClaude) SendNamedKey(key string) error {
 		}
 		f.escaped = true
 	case "Down":
-		if f.picker && f.pickerSel < len(fakeModels)-1 {
-			f.pickerSel++
+		if f.picker {
+			f.pickerSel = (f.pickerSel + 1) % len(fakeModels)
 		}
 	case "Up":
-		if f.picker && f.pickerSel > 0 {
-			f.pickerSel--
+		if f.picker {
+			f.pickerSel = (f.pickerSel + len(fakeModels) - 1) % len(fakeModels)
 		}
 	case "C-u":
 		f.composer = ""

@@ -401,9 +401,9 @@ func TestRun_ModelSwitchWithCachedConversationStaysSessionOnly(t *testing.T) {
 
 func TestRun_ModelBelowThePickerWindowIsReached(t *testing.T) {
 	f := newFakeClaude()
-	cmd, _ := Parse("/model claude-opus-4-1")
+	cmd, _ := Parse("/model claude-opus-4-6")
 	res := Run(f, cmd, fastOpts())
-	if !res.OK || f.model != "Opus 4.1" || len(f.savedDefault) != 0 {
+	if !res.OK || f.model != "Opus 4.6" || len(f.savedDefault) != 0 {
 		t.Fatalf("scrolling pick: %+v model=%q saved=%v", res, f.model, f.savedDefault)
 	}
 }
@@ -466,7 +466,7 @@ func TestRun_SavedDefaultEchoIsAFailure(t *testing.T) {
 
 func TestRun_ModelAboveTheVisibleWindowIsFound(t *testing.T) {
 	f := newFakeClaude()
-	f.model = "Opus 4.1" // last entry: the window shows rows 4-13, Opus 5.5 is row 2
+	f.model = "Sonnet 4.6" // last entry: the window shows rows 4-13, Opus 5.5 is row 2
 	cmd, _ := Parse("/model claude-opus-5-5")
 	res := Run(f, cmd, fastOpts())
 	if !res.OK || f.model != "Opus 5.5" || len(f.savedDefault) != 0 {
