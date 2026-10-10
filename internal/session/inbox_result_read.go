@@ -41,12 +41,8 @@ import (
 // lock is held for one small read-modify-write.
 const resultReadsLockWait = 2 * time.Second
 
-func resultReadsDir() string {
-	return runtimeDirOrTemp("result-reads")
-}
-
 func resultReadsPath(readerID string) string {
-	return filepath.Join(resultReadsDir(), sanitizeInboxName(readerID)+".json")
+	return filepath.Join(runtimeDirOrTemp("result-reads"), sanitizeInboxName(readerID)+".json")
 }
 
 // resultReadTurnsKept bounds the turn uuids remembered per child: enough
@@ -141,21 +137,8 @@ func noticeCarriesResult(ev TransitionNotificationEvent) bool {
 		strings.TrimSpace(ev.ChildSessionID) == "" || strings.TrimSpace(ev.TurnUUID) == "" {
 		return false
 	}
-	if ev.Kind == transitionKindFinished {
-		return true
-	}
 	if ev.Kind != "" {
-		return false
+		return ev.Kind == transitionKindFinished
 	}
-	switch ev.ToStatus {
-	case string(StatusWaiting), string(StatusIdle):
-		return true
-	}
-	return false
-}
-
-// resultAlreadyRead reports whether readerID already read the result ev
-// announces, so the notice withdraws itself.
-func resultAlreadyRead(readerID string, ev TransitionNotificationEvent) bool {
-	return loadResultReads(readerID).covers(ev)
+	return ev.ToStatus == string(StatusWaiting) || ev.ToStatus == string(StatusIdle)
 }

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -639,12 +640,9 @@ func DrainInboxForParentWhere(parentID string, choose func(pending []TransitionN
 		}
 		pending = append(pending, ev)
 	}
-	take := choose(pending)
-	taken := make(map[string]bool, len(take)+len(withdrawn))
-	for _, ev := range take {
-		taken[turnFingerprintOf(ev)] = true
-	}
-	for _, ev := range withdrawn {
+	retire := slices.Concat(choose(pending), withdrawn)
+	taken := make(map[string]bool, len(retire))
+	for _, ev := range retire {
 		taken[turnFingerprintOf(ev)] = true
 	}
 	inboxWriteMu.Lock()
@@ -660,7 +658,7 @@ func DrainInboxForParentWhere(parentID string, choose func(pending []TransitionN
 		}
 	}
 	inboxWriteMu.Unlock()
-	return finalizeInboxDrain(parentID, append(take, withdrawn...))
+	return finalizeInboxDrain(parentID, retire)
 }
 
 func turnFingerprintOf(ev TransitionNotificationEvent) string {
