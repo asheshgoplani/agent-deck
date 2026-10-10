@@ -29,6 +29,17 @@ type MCPServerConfig struct {
 	Env     map[string]string `json:"env,omitempty"`
 	URL     string            `json:"url,omitempty"`     // For HTTP transport
 	Headers map[string]string `json:"headers,omitempty"` // For HTTP transport (e.g., Authorization)
+	OAuth   *MCPOAuthConfig   `json:"oauth,omitempty"`   // For HTTP transport with a pre-registered OAuth client
+}
+
+// httpMCPServerConfig builds the Claude-format entry for an HTTP/SSE MCP.
+func httpMCPServerConfig(def MCPDef) MCPServerConfig {
+	return MCPServerConfig{
+		Type:    def.GetTransport(),
+		URL:     def.URL,
+		Headers: def.Headers,
+		OAuth:   def.OAuth.claudeOAuth(),
+	}
 }
 
 // getExternalSocketPath returns the socket path if an external pool socket exists and is alive
@@ -216,16 +227,9 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 					}
 				}
 
-				transport := def.Transport
-				if transport == "" {
-					transport = "http"
-				}
-				agentDeckServers[name] = MCPServerConfig{
-					Type:    transport,
-					URL:     def.URL,
-					Headers: def.Headers,
-				}
-				mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", "local"), slog.String("transport", transport), slog.String("url", def.URL))
+				cfg := httpMCPServerConfig(def)
+				agentDeckServers[name] = cfg
+				mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", "local"), slog.String("transport", cfg.Type), slog.String("url", def.URL))
 				continue
 			}
 
@@ -606,12 +610,9 @@ func buildManagedMCPServers(enabledNames []string, scope string) map[string]MCPS
 					mcpCatLog.Warn("http_server_start_failed", slog.String("mcp", name), slog.String("scope", scope), slog.Any("error", err))
 				}
 			}
-			transport := def.Transport
-			if transport == "" {
-				transport = "http"
-			}
-			mcpServers[name] = MCPServerConfig{Type: transport, URL: def.URL, Headers: def.Headers}
-			mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", scope), slog.String("transport", transport), slog.String("url", def.URL))
+			cfg := httpMCPServerConfig(def)
+			mcpServers[name] = cfg
+			mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", scope), slog.String("transport", cfg.Type), slog.String("url", def.URL))
 			continue
 		}
 		if socketCfg, used := tryPoolSocket(pool, name, scope); used {
@@ -764,16 +765,9 @@ func writeUserMCPLocked(enabledNames []string) error {
 					}
 				}
 
-				transport := def.Transport
-				if transport == "" {
-					transport = "http" // default to http if URL is set
-				}
-				mcpServers[name] = MCPServerConfig{
-					Type:    transport,
-					URL:     def.URL,
-					Headers: def.Headers,
-				}
-				mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", "user"), slog.String("transport", transport), slog.String("url", def.URL))
+				cfg := httpMCPServerConfig(def)
+				mcpServers[name] = cfg
+				mcpCatLog.Info("transport_http", slog.String("mcp", name), slog.String("scope", "user"), slog.String("transport", cfg.Type), slog.String("url", def.URL))
 				continue
 			}
 

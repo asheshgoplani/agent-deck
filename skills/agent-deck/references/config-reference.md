@@ -1270,6 +1270,28 @@ description = "Remote MCP server"
 | `headers` | map | No | HTTP headers (e.g., Authorization). |
 | `description` | string | No | Help text in MCP Manager. |
 
+### HTTP MCPs with OAuth Client Parameters
+
+For servers that need a pre-registered OAuth client (the equivalent of `claude mcp add --transport http --client-id <id> <url>`), add a `[mcps.NAME.oauth]` table. agent-deck writes it as the `oauth` object of the generated Claude MCP config; Claude Code then runs the OAuth flow itself.
+
+```toml
+[mcps.work-api]
+url = "https://mcp.example.com/mcp"
+transport = "http"
+[mcps.work-api.oauth]
+  client_id = "your-client-id"
+  callback_port = 8080
+```
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `client_id` | string | No | Pre-registered OAuth client id (Claude `clientId`). |
+| `callback_port` | int | No | Fixed local redirect port (Claude `callbackPort`). |
+| `auth_server_metadata_url` | string | No | https URL overriding auth server discovery (Claude `authServerMetadataUrl`). |
+| `scopes` | string | No | Space separated scopes to request (Claude `scopes`). |
+
+The client secret is not a config key: Claude Code stores it in the system keychain. The `oauth` table currently applies to Claude sessions only; Codex, Cursor and OpenCode MCP configs ignore it.
+
 ### HTTP MCPs with Auto-Start Server
 
 For MCPs that require a local server process (e.g., `piekstra/slack-mcp-server`), add a `[mcps.NAME.server]` block:

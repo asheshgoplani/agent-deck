@@ -3329,10 +3329,45 @@ type MCPDef struct {
 	// Example: { Authorization = "Bearer token123" }
 	Headers map[string]string `toml:"headers,omitempty"`
 
+	// OAuth holds OAuth client parameters for HTTP/SSE MCPs whose server
+	// requires a pre-registered client (Claude Code's `claude mcp add
+	// --client-id ... --callback-port ...`). Written as the "oauth" object of
+	// the generated Claude MCP config. Issue #2552.
+	OAuth *MCPOAuthConfig `toml:"oauth,omitempty"`
+
 	// Server defines how to auto-start an HTTP MCP server process
 	// When set, agent-deck will start the server before connecting via HTTP
 	// This is optional - you can also connect to externally managed servers
 	Server *HTTPServerConfig `toml:"server,omitempty"`
+}
+
+// MCPOAuthConfig is the [mcps.NAME.oauth] table. Field names mirror the
+// "oauth" object Claude Code reads from .mcp.json / ~/.claude.json. The
+// client secret is deliberately absent: Claude Code keeps it in the system
+// keychain, never in a config file.
+type MCPOAuthConfig struct {
+	// ClientID is the pre-registered OAuth client id.
+	ClientID string `toml:"client_id,omitempty" json:"clientId,omitempty"`
+
+	// CallbackPort fixes the local redirect port when the client was
+	// registered with a specific redirect URI.
+	CallbackPort int `toml:"callback_port,omitzero" json:"callbackPort,omitempty"`
+
+	// AuthServerMetadataURL overrides OAuth authorization server discovery
+	// (must be https).
+	AuthServerMetadataURL string `toml:"auth_server_metadata_url,omitempty" json:"authServerMetadataUrl,omitempty"`
+
+	// Scopes is the space separated scope string to request.
+	Scopes string `toml:"scopes,omitempty" json:"scopes,omitempty"`
+}
+
+// claudeOAuth returns the oauth object to emit, or nil when nothing is set.
+func (o *MCPOAuthConfig) claudeOAuth() *MCPOAuthConfig {
+	if o == nil || *o == (MCPOAuthConfig{}) {
+		return nil
+	}
+	c := *o
+	return &c
 }
 
 // GetStartupTimeout returns the startup timeout in milliseconds, defaulting to 5000ms
@@ -4300,7 +4335,7 @@ func guardConfigSectionDrop(configPath string, newContent []byte) error {
 func countFunctionalMCPs(mcps map[string]MCPDef) int {
 	count := 0
 	for _, m := range mcps {
-		if m.Command != "" || m.URL != "" || len(m.Args) > 0 || len(m.Env) > 0 || m.Description != "" || len(m.Headers) > 0 || m.Transport != "" || m.Server != nil {
+		if m.Command != "" || m.URL != "" || len(m.Args) > 0 || len(m.Env) > 0 || m.Description != "" || len(m.Headers) > 0 || m.Transport != "" || m.Server != nil || m.OAuth != nil {
 			count++
 		}
 	}
@@ -5622,6 +5657,17 @@ auto_cleanup = true
 # transport = "http"
 # headers = { Authorization = "Bearer your-token-here", "X-API-Key" = "your-api-key" }
 # description = "HTTP MCP with auth headers"
+
+# Example: HTTP MCP that needs a pre-registered OAuth client
+# (same as: claude mcp add --transport http --client-id ...; Claude only)
+# [mcps.work-api]
+# url = "https://mcp.example.com/mcp"
+# transport = "http"
+# [mcps.work-api.oauth]
+#   client_id = "your-client-id"
+#   callback_port = 8080                 # optional fixed redirect port
+#   # auth_server_metadata_url = "https://auth.example.com/.well-known/oauth-authorization-server"
+#   # scopes = "read write"
 
 # Example: SSE MCP server
 # [mcps.remote-sse]
