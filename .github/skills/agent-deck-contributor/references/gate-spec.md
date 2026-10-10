@@ -1,19 +1,27 @@
 # gate-spec.md — every check your PR will face, and the exact fix
 
-> Machine-readable companion to [`.github/INTAKE.md`](../../../INTAKE.md). Field
-> names and heading strings are exact; the intake Action parses them literally.
+> Machine-readable companion to [`.github/INTAKE.md`](../../../INTAKE.md). Copy
+> field names and heading strings exactly; that is the safe path. The intake
+> Action matches each required heading as a `#`, `##` or `###` heading at the
+> start of a line, case-insensitively with punctuation and emoji ignored, and
+> skips headings inside code fences.
 > Layers run in order: **intake gate** (instant, on open/edit) → **review
 > machine** (four lenses, within ~a day) → **security gates** (merge time) →
 > **human merge** (always). A green earlier layer is necessary, never sufficient.
 
 ## Layer 1 — intake gate (`.github/workflows/pr-intake.yml`, instant)
 
-Observe-only today: labels + one kind comment, never closes on content. Editing
-the PR description re-runs it automatically.
+Observe-only today: labels + one kind comment, its check reports green either
+way, and it never closes anything. Editing the PR description re-runs it
+automatically. It has no size or urgency checks (those live in the Layer 2
+pre-gate and in `self-check.sh`). While a maintainer's `bad-gate` label is on
+the PR it leaves labels and comment as they are. Maintainer (owner, member,
+collaborator) and bot PRs are evaluated too, but get a workflow notice instead
+of `needs-info` and the comment.
 
 | Check | Condition that fails it | Label | Exact fix |
 |---|---|---|---|
-| Required headings | any of `## What problem does this solve?`, `## Why this change`, `## User impact`, `## AI disclosure`, `## What actually bothered you`, `## Checklist` absent | `needs-info` | Use `.github/PULL_REQUEST_TEMPLATE.md` verbatim; headings must match character-for-character at `## ` level |
+| Required headings | any of `## What problem does this solve?`, `## Why this change`, `## User impact`, `## AI disclosure`, `## What actually bothered you`, `## Checklist` absent or empty | `needs-info` | Use `.github/PULL_REQUEST_TEMPLATE.md` verbatim and copy its headings exactly (safe path). Intake matches a `#` to `###` heading at line start, case-insensitively with punctuation and emoji ignored, outside code fences |
 | AI-disclosure box | zero or 2+ checked `- [x]` boxes inside the `## AI disclosure` section | `needs-info` | Check exactly one of Human-written / AI-assisted / AI-authored |
 | Human intent | `## What actually bothered you` empty after stripping HTML comments and checkbox lines | `needs-info` | One real sentence. Agent-opened PR: quote the human's ask verbatim. This is the one field intake cannot accept blank |
 | Gate marker (informational) | trailing `<!-- gate:ai=... model=... intent=... -->` missing or placeholder | none (slows routing) | Last line of the body, real values, agreeing with the visible checkboxes |
@@ -41,7 +49,7 @@ genuine no-human-behind-it submissions).
 
 | Criterion | What it does | How you pre-pass it |
 |---|---|---|
-| Build + test | applies your diff, builds, runs touched packages sandboxed | `self-check.sh` runs the identical invocation: `HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...`, inside a container only; on a host it prints the `docker run` command instead |
+| Build + test | applies your diff, builds, runs touched packages sandboxed | `self-check.sh` runs `go test` with the same sandbox (throwaway `HOME`, cleared `XDG_*` dirs) on the touched packages, or `./...` with `FULL_TESTS=1`, inside a container only; on a host it refuses and prints the `docker run` command instead |
 | **Revert-check (centerpiece)** | reverts your non-test hunks and re-runs your tests; a test that still passes proves nothing | write the test first, watch it fail, then fix; `self-check.sh` automates this and put the result in `## Evidence` |
 | Diff-coverage spot-check | which changed hunks are exercised by ANY test; untested hunks become named flags | every changed hunk behind at least one test, or say in the body why a hunk is untestable |
 
@@ -88,7 +96,7 @@ it does not establish reproduction or fixed status.
 | Rule | Number | Source |
 |---|---|---|
 | Open-PR cap | max 5 per author | CONTRIBUTING / INTAKE house rules |
-| Big-diff discussion | > 3000 added lines needs linked issue/Discussion | intake pre-gate |
+| Big-diff discussion | > 3000 added lines needs linked issue/Discussion | review pre-gate (Layer 2) and `self-check.sh` diff-size FAIL; `pr-intake.yml` does not check size |
 | One problem per PR | 1 | fit lens |
 | CHANGELOG untouched | always | house rules |
 | Hot-path timing | before/after timing when touching list, status, session output, startup, tmux layer | PR template checklist |
@@ -100,11 +108,12 @@ it does not establish reproduction or fixed status.
   triggers re-review. Batch fixes into one push.
 - **Rank-up:** `needs-work` always names 1–3 concrete upgrading actions. Doing
   exactly those and saying so is the fastest path to `good`.
-- **Silence-only close:** nothing closes on content; only ~2 weeks of author
-  silence on a `needs-*` PR closes it, and reopening is always available. Any
-  reply resets the clock.
-- **Misfire path:** the gate is biased toward false-clean; if it wrongs a
-  good-faith PR, say so with evidence — humans override (`bad-gate`) and the
-  heuristic gets tuned.
+- **No auto-close:** nothing closes a PR automatically. After 10 days with no
+  activity (body edit, push, or author comment) on a `needs-info` PR,
+  `.github/workflows/needs-info-nudge.yml` posts one reminder comment; it never
+  changes labels or closes anything, and a `keep-open` label suppresses it.
+- **Misfire path:** if the gate wrongs a good-faith PR, say so with evidence in
+  a comment. The maintainer fixes labels by hand and may add `bad-gate`, which
+  makes intake leave labels and comment untouched; the heuristic gets tuned.
 - **Merge:** two independent AI reviews clean AND CI green AND the human
   maintainer lands it. No bot merges. Ever.

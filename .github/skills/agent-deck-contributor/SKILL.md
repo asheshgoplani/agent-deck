@@ -69,7 +69,8 @@ on the phases below and preserve the contributor's authorship and credit.
      without demonstrated demand. If your idea adds a new integration surface, open
      a Discussion and get a yes before writing it.
    - Anticipated diff over ~3000 added lines? Link an issue or Discussion agreeing
-     the shape first, or the gate flags it `needs-discussion`.
+     the shape first. `self-check.sh` fails such a diff unless `LINKED_ISSUE` is
+     set, and the review pre-gate asks for that conversation before any review.
    - You may have at most 5 open PRs on the repo at a time.
    - Security issues go through the private advisory route in `SECURITY.md`, never
      a public issue or PR.
@@ -94,13 +95,15 @@ on the phases below and preserve the contributor's authorship and credit.
    `scripts/self-check.sh` also runs its existing revert-check where applicable.
 4. **Every changed hunk should be exercised by some test.** The correctness lens
    spot-checks changed-lines coverage and names untested hunks as flags.
-5. **Run the exact CI sandbox invocation.** agent-deck tests must never run against
-   a real home directory (they can destroy live user data), and CI runs them
-   sandboxed. Use precisely:
-
-   ```bash
-   HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...
-   ```
+5. **Run the tests sandboxed, and only inside a container.** agent-deck tests
+   must never run against a real home directory (they can destroy live user
+   data), and they start real tmux servers and processes that can touch your live
+   sessions, so never run `go test` on your host. CI runs them on disposable
+   runners with a throwaway `HOME` and cleared `XDG_*` dirs. Locally, let
+   `scripts/self-check.sh` do it: on a host it refuses to run `go test` and
+   prints the exact `docker run` command that reruns it inside a throwaway
+   container, where it runs the same sandboxed invocation (see Phase 3). Set
+   `FULL_TESTS=1` to test every package instead of only the touched ones.
 
 6. **Format and vet before every push:**
 
@@ -141,13 +144,27 @@ For a bug fix, include the local manifest produced by deck-repro:
 REPRO_REPORT=/path/to/report.json .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
 ```
 
-`go test` (the sandboxed tests and the revert-check) runs only inside a container,
-because agent-deck tests start real tmux servers and processes. The script detects
-`/.dockerenv`, `/run/.containerenv` or `AGENTDECK_TEST_CONTAINER=1`. On a host it
-still runs gofmt, vet and build, reports both test checks as WARN, and prints the
-exact `docker run` command (read-only source mount, throwaway HOME) that reruns it
-inside a container. Run that command before opening; set `SELF_CHECK_IMAGE` to use
-your own image instead of `golang:<version>`.
+**`self-check.sh` refuses to run `go test` on your host.** The sandboxed tests and
+the revert-check run only inside a container, because agent-deck tests start real
+tmux servers and processes. The script treats itself as inside a container when
+`/.dockerenv` or `/run/.containerenv` exists or `AGENTDECK_TEST_CONTAINER=1` is set.
+On a host it still runs gofmt, vet and build, reports both test checks as WARN
+(never PASS), ends with `Not ready yet: go test has not run`, and prints the exact
+`docker run` command to use. To run the tests inside the container:
+
+1. Run `self-check.sh` on the host as above and copy the `docker run --rm ...`
+   command it prints after `go test was NOT run on this host`.
+2. Run that command from the same checkout. It mounts your source (and your PR
+   body, if the file exists) read-only, copies it to `/tmp/src`, sets
+   `AGENTDECK_TEST_CONTAINER=1` with a throwaway `HOME` and `XDG_*` dirs,
+   installs tmux if the image lacks it, and reruns `self-check.sh` there. Set
+   `FULL_TESTS=1` before step 1 to carry the whole suite into the container;
+   set `SELF_CHECK_IMAGE` to use your own image instead of
+   `golang:<go.mod version>`.
+3. Open the PR only when that container run ends with `Ready to open`.
+
+If you already work inside a disposable container, run `self-check.sh` there
+directly; it detects the container and runs `go test` itself.
 
 The receipt validator requires `fixed` for this bug-fix gate and checks artifact integrity; it does
 not execute commands from the manifest or replace a review of the evidence.
@@ -166,10 +183,14 @@ is in `references/gate-spec.md`.
 
 ## Phase 4 — Open the PR
 
-1. Use `.github/PULL_REQUEST_TEMPLATE.md` verbatim — the intake Action parses the
-   body by exact `## ` headings. Fill every required section:
+1. Use `.github/PULL_REQUEST_TEMPLATE.md` verbatim and copy its headings exactly;
+   that is the safe path. The intake Action finds each required section by a
+   `#`, `##` or `###` heading at the start of a line, compared case-insensitively
+   with punctuation and emoji ignored; headings inside code fences do not count,
+   and a section with nothing under it counts as missing. Fill every section:
    `What problem does this solve?`, `Why this change`, `User impact`, `Evidence`,
-   `AI disclosure`, `What actually bothered you`, `Checklist`.
+   `AI disclosure`, `What actually bothered you`, `Checklist`. Intake checks all
+   of them except `Evidence`, which the review reads instead.
 2. **AI disclosure:** check exactly one box, and if AI helped, name the model(s)
    (e.g. `claude-opus-4-x`, `gpt-5-codex`). `unsure` is a valid answer; blank is
    not. Disclosure is a quality signal that feeds a per-model track record — models
@@ -214,13 +235,16 @@ Within about a day the PR gets a structured validation result. The loop from her
    conditions, and the third is that you (or your human) can defend the change when
    asked. The intent lens explicitly scores author understanding.
 5. **If the gate misfires on your good-faith PR**, say so plainly in a comment and
-   point at the evidence — the maintainer overrides bot mistakes by hand (there is
-   a `bad-gate` label for exactly this) and the heuristic gets tuned. The gate is
-   deliberately biased toward false-clean, so a wrong flag is rare and taken
-   seriously.
-6. **Silence is the only thing that auto-closes.** Any reply from you resets the
-   clock. If life intervenes, one comment keeps the PR open; a closed PR can be
-   reopened the moment you can add the missing piece.
+   point at the evidence. The intake gate only labels and comments: its check
+   reports green either way and it never closes or requests changes. The
+   maintainer corrects a wrong label by hand and may add the `bad-gate` label;
+   while it is present, intake leaves the PR's labels and comment exactly as
+   they are on every re-run, and the misfire gets the heuristic tuned.
+6. **Nothing closes your PR automatically.** If a `needs-info` PR sees no
+   activity (body edit, push, or comment from you) for 10 days, the
+   `needs-info-nudge` workflow posts one reminder comment. It never changes
+   labels and never closes anything; there is no auto-close, and a `keep-open`
+   label suppresses the nudge. If life intervenes, pick it up whenever you can.
 7. **If your diff is declined but the problem is real**, the fleet may reimplement
    the intent with credit to you. A rejected diff is never a rejected idea — a
    well-evidenced problem statement is the most valuable thing you can leave
@@ -232,8 +256,9 @@ Within about a day the PR gets a structured validation result. The loop from her
   section. One real, quoted human sentence.
 - Never claim AI-free authorship when a model wrote the code. Undisclosed
   bulk-generated PRs get closed; disclosed AI PRs get equal standing.
-- Never run agent-deck tests against a real `$HOME` — always the sandbox
-  invocation above.
+- Never run agent-deck tests against a real `$HOME` or on your host. Run them
+  only inside a container, through the `docker run` command `self-check.sh`
+  prints.
 - Never edit `CHANGELOG.md`; never fold `.github/` changes into an unrelated PR.
 - Never add or bump a dependency without stating why in the PR body; never add
   `replace` directives or proxy overrides.
@@ -262,13 +287,13 @@ changes, this skill changes with it — they are one spec.
 | Gate marker as last line, consistent | `INTAKE.md` §Machine-readable marker; `pr-intake.yml` marker parse |
 | Test fails without the change (revert-check) | review machine, correctness lens: revert-check centerpiece |
 | Changed hunks exercised by tests | review machine, correctness lens: diff-coverage spot-check |
-| Exact sandbox test invocation | CONTRIBUTING §What makes a PR land fast; security gates: sandbox-everything rule (Gate 6) |
+| Sandboxed tests, inside a container only | CONTRIBUTING §What makes a PR land fast; `self-check.sh` container guard; security gates: sandbox-everything rule (Gate 6) |
 | gofmt + go vet before push | maintainer shipping rule (lint CI fails on formatting) |
 | Scoped diff; ~400-line oversize flag | review machine, fit lens: oversized-pr flag |
-| >3000 added lines needs linked discussion | intake gate: giant-undiscussed-diff check; `INTAKE.md` house rules |
+| >3000 added lines needs linked discussion | review machine pre-gate: giant-undiscussed-diff check; `INTAKE.md` house rules; `self-check.sh` diff-size FAIL (author side). `pr-intake.yml` has no size check |
 | Lean-scope check before new adapters/UIs | review machine, fit lens: lean-scope line |
 | Real repro/evidence, mock-only insufficient | review machine, intent lens: behavior-evidence test; `INTAKE.md` Evidence row |
-| No urgency language without repro | intake gate: urgency-scanner-slop check |
+| No urgency language without repro | review machine pre-gate: urgency-scanner-slop check; `INTAKE.md` house rules; `self-check.sh` urgency-language WARN (author side). `pr-intake.yml` does not scan for it |
 | Dependency changes justified; no replace/GOPROXY | security gates, Gate 1 (dependency vet) + Gate 6 red flags |
 | `.github/` changes always human-gated | security gates, Gate 2 |
 | Hidden-logic self-scan (network/exec/homoglyph/perms/time-bomb/crypto) | security gates, Gate 3 sweep + Gate 6 red flags (author-side version: `references/security-self-scan.md`) |
@@ -276,8 +301,8 @@ changes, this skill changes with it — they are one spec.
 | Hot-path timing evidence | PR template checklist (hot-path row); CONTRIBUTING rule 6 |
 | SHA-bound verdicts; push = re-review | review machine: SHA binding invariant |
 | Rank-up loop on needs-work | review machine: rank-up doctrine (needs-work is a loop, not a wall) |
-| Misfire → say so, human overrides | gate design: `bad-gate` override; false-clean bias |
-| Silence-only close; reply resets clock | gate design: reaction ladder |
+| Misfire → say so, human overrides | `pr-intake.yml` only labels and comments, check always green; maintainer fixes labels by hand; a `bad-gate` label makes intake leave labels and comment untouched |
+| No auto-close; one nudge after 10 silent days | `needs-info-nudge.yml` (comment only, never closes; `keep-open` suppresses) |
 | Merges always human | branch protection + CODEOWNERS; every gate necessary-not-sufficient |
 
 ## References

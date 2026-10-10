@@ -24,9 +24,9 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 ## What makes a PR land fast
 
 1. **A targeted diff.** One problem per PR. Small diffs validate in one pass; a 3k-line diff without prior discussion gets flagged for a conversation first.
-2. **Tests.** New behavior needs a test. Run the suite sandboxed (this matters, see below):
+2. **Tests.** New behavior needs a test. Run the suite sandboxed and only inside a container. This matters: agent-deck tests start real tmux servers and processes, so never run `go test` on your host. Run the contributor self-check, which refuses to run `go test` outside a container and prints the exact `docker run` command that reruns it, sandboxed tests included, inside a throwaway container:
    ```bash
-   HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...
+   FULL_TESTS=1 .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
    ```
 3. **Evidence.** For behavior changes, show real output: a terminal capture, logs, or before/after behavior. Mock-only proof is not enough for changes users will feel.
 4. **The human need behind the diff.** The single highest-signal thing you can write is one real sentence about what you were doing when you hit this. It is what separates a real fix from a speculative one, and it is the first thing a reviewer reads.
@@ -125,7 +125,7 @@ git remote add upstream https://github.com/asheshgoplani/agent-deck.git
 
 ```bash
 make build      # Build binary to ./build/agent-deck
-make test       # Run tests (sandbox HOME first; see above)
+make test       # Run tests: only inside a container with a sandboxed HOME (see above), never on your host
 make lint       # Run golangci-lint at the pinned version (fetched with go run; no install needed)
 make fmt        # Format code
 make verify-docker  # Reproduce the CI Go checks in Docker (needs only Docker)
