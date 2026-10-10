@@ -106,7 +106,10 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
     "check_interval_seconds": 300,
     "max_idle_seconds": 3600,
     "max_cycles": 24,
-    "escalate_after_stuck_nudges": 3
+    "escalate_after_stuck_nudges": 3,
+    "no_progress_cap": 3,
+    "no_progress_backoff_base_seconds": 3600,
+    "worktree_gate": false
   },
 
   "state": {
@@ -117,6 +120,9 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
     "last_receipt_text": "Tagged v1.6.0 locally, pushed to origin",
     "cycles_completed": 4,
     "nudges_sent": 0,
+    "no_progress_streak": 0,
+    "next_wake_at": null,
+    "last_failed_tree_hash": null,
     "escalated_at": null,
     "ended_at": null,
     "ended_reason": null
@@ -132,6 +138,20 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
 ```
 
 Status values: `active`, `done`, `failed`, `escalated`, `stopped_by_user`.
+
+The manager also keeps `progress_tree_hash`, `last_progress_at` and `last_wake_tree_hash` in `state`. Goal files without the new keys get `no_progress_cap: 3`, `no_progress_backoff_base_seconds` equal to `max_idle_seconds`, and `worktree_gate: false`, so goals created before the gate existed keep running `done_cmd` every tick. `goal.sh` writes `worktree_gate: true` unless `WORKTREE_GATE=0`.
+
+### No-progress cap and unchanged-worktree gate
+
+Both run inside `manager.py`, cost no tokens, and are tuned per goal through the `schedule` keys above (or the `NO_PROGRESS_CAP`, `NO_PROGRESS_BACKOFF_BASE_SECONDS` and `WORKTREE_GATE` environment variables of `goal.sh`).
+
+- **Worktree hash.** With `worktree_gate: true` and a git worktree as `workdir` (not your home directory), each tick hashes its content read-only: the HEAD tree, the diff of tracked files, and the bytes of every untracked, non-ignored file. `task-log.md` and gitignored files are excluded, so appending a receipt or rebuilding an ignored `bin/` does not change it. Nothing is written to the repository.
+- **Gate skip.** On a quiet tick (no new receipt, no wake going out) `done_cmd` is not rerun while the hash equals the one it last failed on (`verifier_skipped` in history). A new receipt, every wake that is actually sent and the cap check always get a fresh verdict, so the worker is never told NOT YET MET from a stale result. A timeout never arms the skip.
+- **Progress.** With a worktree hash, progress means the hash changed; a receipt alone is not progress. Without one (plain directory, `worktree_gate: false`), a new receipt is progress.
+- **Turns.** A turn closes when a new receipt arrives or an idle wake falls due. A turn without progress is empty (`no_progress_turn`). Wakes wait a doubling window after each empty turn: base, 2x base, 4x base (base defaults to `max_idle_seconds`, one window is capped at 7 days). With the cap on, a second wake over the same unchanged, failed worktree is skipped (`wake_skipped`) along with its `done_cmd` run, and still counts as a turn.
+- **Cap.** After `no_progress_cap` consecutive empty turns (default 3) `done_cmd` runs once more; if it still fails, the goal ends as `failed` with reason `no_progress_cap`, an escalation bundle is written and the worker is stopped. `0` turns the cap off; wakes are then never skipped, so a silent worker still escalates after `escalate_after_stuck_nudges` nudges.
+- **External verifiers.** If `done_cmd` checks state outside the worktree (for example `gh release view`, a merged PR or CI status), set `worktree_gate: false` (`WORKTREE_GATE=0`): `done_cmd` then runs every tick and receipts count as progress. With the gate on, such a goal is still finished on the next receipt, wake or cap check, but not on a quiet tick.
+- **Waiting workers.** With the gate on, a worker that only waits (on review, CI, a merge) changes nothing in the worktree, so its turns are empty and the cap ends the goal after 3 of them. Use `worktree_gate: false` for goals that are mostly waiting.
 
 ## Worker contract — the launch prompt
 
@@ -198,6 +218,8 @@ RECEIPT PATH: {workdir}/task-log.md
 `─────────────────────────────────────────────────`
 
 ## Manager loop — exact algorithm
+
+The pseudocode below is the original Phase 1 loop. `manager.py` adds the no-progress cap, the doubling wake backoff and the unchanged-worktree gate skip described under the registry schema.
 
 ```python
 # Pseudocode for the manager daemon (cron'd every check_interval)

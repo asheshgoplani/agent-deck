@@ -13,7 +13,8 @@
 #       "Create a test marker file" \
 #       'test -f /tmp/goal-test-marker.txt'
 #
-#   goal.sh v160-release \
+#   # done_cmd checks GitHub, not the workdir: turn the worktree gate off.
+#   WORKTREE_GATE=0 goal.sh v160-release \
 #       "Ship agent-deck v1.6.0 to GitHub Releases" \
 #       'gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e ".publishedAt != null"' \
 #       my-v160-worker \
@@ -45,6 +46,9 @@ CHECK_INTERVAL_SECONDS="${CHECK_INTERVAL_SECONDS:-300}"     # manager polls ever
 MAX_IDLE_SECONDS="${MAX_IDLE_SECONDS:-3600}"               # nudge after 1h of silence
 MAX_CYCLES="${MAX_CYCLES:-24}"                             # hard stop after 24 receipts
 ESCALATE_AFTER="${ESCALATE_AFTER:-3}"                      # nudges before paging user
+NO_PROGRESS_CAP="${NO_PROGRESS_CAP:-3}"                    # empty turns that end the goal (0 = off)
+NO_PROGRESS_BACKOFF_BASE_SECONDS="${NO_PROGRESS_BACKOFF_BASE_SECONDS:-$MAX_IDLE_SECONDS}"  # doubling wake backoff base
+WORKTREE_GATE="${WORKTREE_GATE:-1}"                        # skip quiet-tick done_cmd reruns on an unchanged failed worktree; 0 when done_cmd checks state outside the workdir
 CONDUCTOR="${CONDUCTOR:-agent-deck}"
 PROFILE="${PROFILE:-personal}"
 
@@ -121,7 +125,8 @@ rm -f "$PROMPT_FILE"
 
 # Write the goal JSON
 python3 - "$GOAL_PATH" "$ID" "$GOAL" "$DONE_CMD" "$WORKER_TITLE" "$SESSION_ID" "$WORKDIR" "$CONDUCTOR" \
-        "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" <<'PYEOF'
+        "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" \
+        "$NO_PROGRESS_CAP" "$NO_PROGRESS_BACKOFF_BASE_SECONDS" "$WORKTREE_GATE" <<'PYEOF'
 import json
 import sys
 
@@ -139,6 +144,9 @@ data = {
         "max_idle_seconds": int(sys.argv[10]),
         "max_cycles": int(sys.argv[11]),
         "escalate_after_stuck_nudges": int(sys.argv[12]),
+        "no_progress_cap": int(sys.argv[14]),
+        "no_progress_backoff_base_seconds": int(sys.argv[15]),
+        "worktree_gate": sys.argv[16] not in ("0", "false", "no", ""),
     },
     "state": {
         "status": "active",
@@ -148,6 +156,9 @@ data = {
         "last_receipt_text": None,
         "cycles_completed": 0,
         "nudges_sent": 0,
+        "no_progress_streak": 0,
+        "next_wake_at": None,
+        "last_failed_tree_hash": None,
         "escalated_at": None,
         "ended_at": None,
         "ended_reason": None,
