@@ -380,7 +380,8 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		if selectErr != nil {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("final shared source export failed: %w", selectErr))
 		}
-		if finalChoice == nil || finalChoice.SharedProjectsRoot != sharedRoot {
+		if finalChoice == nil || finalChoice.SharedProjectsRoot != sharedRoot ||
+			!os.SameFile(choice.sharedProjectsInfo, finalChoice.sharedProjectsInfo) {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("shared transcript store changed during account switch"))
 		}
 		choice = finalChoice

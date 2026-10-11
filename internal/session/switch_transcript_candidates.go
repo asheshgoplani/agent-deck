@@ -45,6 +45,7 @@ type TranscriptChoice struct {
 	// SharedProjectsRoot is set only when both accounts already resolve to
 	// one projects directory. Its transcripts are read, never migrated.
 	SharedProjectsRoot string `json:"shared_projects_root,omitempty"`
+	sharedProjectsInfo os.FileInfo
 	// Installed lists destination paths that received the chosen copy
 	// (new files and replaced files); keys already holding identical bytes
 	// are not listed.
@@ -292,6 +293,10 @@ func selectSwitchTranscript(inst *Instance, sourceDir, targetDir string, archive
 		return nil, fmt.Errorf("source Claude effective working directory is empty")
 	}
 	if shared := sharedClaudeProjectsRoot(sourceDir, targetDir); shared != "" {
+		info, err := os.Stat(shared)
+		if err != nil {
+			return nil, fmt.Errorf("inspect shared projects directory: %w", err)
+		}
 		copies, err := claudeTranscriptCopiesFromProjects(shared, keys, sid, "source")
 		if err != nil {
 			return nil, err
@@ -300,7 +305,7 @@ func selectSwitchTranscript(inst *Instance, sourceDir, targetDir string, archive
 		if !ok {
 			return nil, fmt.Errorf("%w: looked for %s.jsonl in shared store %s", errNoTranscriptCopy, sid, shared)
 		}
-		return &TranscriptChoice{Chosen: chosen, Candidates: copies, SharedProjectsRoot: shared}, nil
+		return &TranscriptChoice{Chosen: chosen, Candidates: copies, SharedProjectsRoot: shared, sharedProjectsInfo: info}, nil
 	}
 	source, err := claudeTranscriptCopies(sourceDir, keys, sid, "source")
 	if err != nil {

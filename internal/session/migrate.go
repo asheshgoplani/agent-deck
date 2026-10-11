@@ -81,14 +81,21 @@ func MigrateConversationFromSized(inst *Instance, srcConfigDir, targetConfigDir 
 	if filepath.Clean(src) == filepath.Clean(dst) || resolveRealPath(src) == resolveRealPath(dst) {
 		return "", 0, nil
 	}
-	if sharedClaudeProjectsRoot(src, dst) != "" {
-		return "", 0, nil
-	}
+	sharedRoot := sharedClaudeProjectsRoot(src, dst)
 
 	projDirName := ConvertToClaudeDirName(inst.ProjectPath)
 	srcProjDir, err := containedConversationPath(src, "projects", projDirName)
 	if err != nil {
 		return "", 0, fmt.Errorf("source project dir: %w", err)
+	}
+	if sharedRoot != "" {
+		srcProjDir, err = containedConversationPath(sharedRoot, projDirName)
+		if err != nil {
+			return "", 0, fmt.Errorf("shared source project dir: %w", err)
+		}
+		if err := ensureNoSymlinkPath(srcProjDir); err != nil {
+			return "", 0, fmt.Errorf("unsafe shared source project dir: %w", err)
+		}
 	}
 
 	sid := inst.ClaudeSessionID
@@ -134,6 +141,12 @@ func MigrateConversationFromSized(inst *Instance, srcConfigDir, targetConfigDir 
 	}
 	if _, err := conversationPathComponent(sid + ".jsonl"); err != nil {
 		return "", 0, fmt.Errorf("source conversation: %w", err)
+	}
+	if sharedRoot != "" {
+		if err := ensureNoSymlinkPath(srcFile); err != nil {
+			return "", 0, fmt.Errorf("unsafe shared source conversation: %w", err)
+		}
+		return "", 0, nil
 	}
 
 	dstProjDir, err := containedConversationPath(dst, "projects", projDirName)
