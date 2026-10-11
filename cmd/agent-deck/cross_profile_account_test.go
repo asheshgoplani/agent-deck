@@ -44,7 +44,8 @@ func TestCrossProfileAccountEnvironment(t *testing.T) {
 			}
 			t.Setenv("AGENTDECK_ACCOUNT", "it")
 			t.Setenv("CLAUDE_CONFIG_DIR", "/caller/claude")
-			for _, key := range []string{"AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR"} {
+			t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/caller/claude")
+			for _, key := range []string{"AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
 				if tc.unsetAccount {
 					if err := os.Unsetenv(key); err != nil {
 						t.Fatal(err)
@@ -58,12 +59,12 @@ func TestCrossProfileAccountEnvironment(t *testing.T) {
 				set  bool
 			}
 			before := make(map[string]value)
-			for _, key := range []string{"AGENTDECK_PROFILE", "AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR"} {
+			for _, key := range []string{"AGENTDECK_PROFILE", "AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
 				text, set := os.LookupEnv(key)
 				before[key] = value{text, set}
 			}
 			applyProfileFlag(tc.profile)
-			for _, key := range []string{"AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR"} {
+			for _, key := range []string{"AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
 				text, set := os.LookupEnv(key)
 				want := before[key]
 				if tc.clear {
@@ -110,11 +111,11 @@ func TestCrossProfileLaunchUsesSelectedAccount(t *testing.T) {
 				t.Fatal(err)
 			}
 			marker := filepath.Join(home, "child-config-dir")
-			shim := "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo 2.0.0; exit 0; fi\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > \"$HOME/child-config-dir\"\nexec sleep 60\n"
+			shim := "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo 2.0.0; exit 0; fi\nprintf '%s' \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" > \"$HOME/child-secure-dir\"\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > \"$HOME/child-config-dir\"\nexec sleep 60\n"
 			if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(shim), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			env := []string{"AGENTDECK_PROFILE=it", "AGENTDECK_ACCOUNT=it", "CLAUDE_CONFIG_DIR=" + filepath.Join(home, ".claude-it"), "PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+			env := []string{"AGENTDECK_PROFILE=it", "AGENTDECK_ACCOUNT=it", "CLAUDE_CONFIG_DIR=" + filepath.Join(home, ".claude-it"), "CLAUDE_SECURESTORAGE_CONFIG_DIR=" + filepath.Join(home, ".claude-it"), "PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
 			args := []string{"-p", tc.profile, "launch", home, "--title", "cross-profile", "--cmd", "claude", "--no-parent", "--no-wait", "--no-assert-done", "--json"}
 			if tc.explicit != "" {
 				args = append(args, "--account", tc.explicit)
@@ -141,6 +142,17 @@ func TestCrossProfileLaunchUsesSelectedAccount(t *testing.T) {
 			}
 			if string(childDir) != wantDir {
 				t.Errorf("launched Claude config_dir=%q, want %q", childDir, wantDir)
+			}
+			secureDir, err := os.ReadFile(filepath.Join(home, "child-secure-dir"))
+			if err != nil {
+				t.Fatalf("child secure-storage marker unavailable: %v", err)
+			}
+			wantSecure := ""
+			if tc.wantAccount != "" {
+				wantSecure = wantDir
+			}
+			if string(secureDir) != wantSecure {
+				t.Errorf("caller secure-storage selector leaked: got %q, want %q", secureDir, wantSecure)
 			}
 			t.Setenv("HOME", home)
 			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
