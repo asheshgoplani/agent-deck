@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestSessionSwitchAccount_SharedProjectsStore(t *testing.T) {
@@ -51,7 +53,7 @@ func TestSessionSwitchAccount_SharedProjectsStore(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("seed session ID: exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 			}
-			p := filepath.Join(shared, claudeProjectSlugForTest(project), sid+".jsonl")
+			p := filepath.Join(shared, session.ConvertToClaudeDirName(project), sid+".jsonl")
 			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 				t.Fatal(err)
 			}
