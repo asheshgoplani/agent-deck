@@ -48,7 +48,13 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
    short of its last step (`○ name ▰▰▱ 3/5 · 18m32s`; a finished row stays at
    n/n), `Waiting for N background agents / dynamic workflows to finish` as
    the last turn line above the input box (an older one further up is
-   history). A shell counter on the footer (`· 1 shell ·`) does not promote
+   history). Claude Code can leave that line on screen after the work is
+   gone, so the instance layer vetoes it when the transcript proves the work
+   done: the last turn's pending count of that kind (`pendingBackgroundAgentCount`
+   or `pendingWorkflowCount`, omitted when zero) is zero once the terminal
+   notifications since are taken off, and no launch of that kind came after
+   it. A positive count is never vetoed, and a tail that never shows the field
+   proves nothing. A shell counter on the footer (`· 1 shell ·`) does not promote
    the frame (A5): Claude Code never reaps a long-lived `run_in_background`
    shell (a dev server, a `tail -f`), so the counter can outlive the work by
    hours and only the instance layer, with the transcript, may keep a shell
