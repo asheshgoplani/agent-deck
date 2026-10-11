@@ -43,6 +43,7 @@ func TestSwitchSharedProjectsStore(t *testing.T) {
 			require.Empty(t, result.Transcript.BackedUp)
 			require.Empty(t, result.DestinationArchived)
 			require.Contains(t, result.Conversation, "already present")
+			require.NotContains(t, result.Conversation, "conversation migrated")
 			require.Equal(t, newest, readFile(t, latestPath))
 			require.Equal(t, stale, readFile(t, stalePath), "no alias is overwritten")
 			require.Equal(t, "sidechain\n", readFile(t, sidecar))

@@ -488,7 +488,11 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 
 	migrated := "conversation migrated"
 	if choice != nil {
-		migrated += ": " + choice.Summary()
+		if sharedRoot != "" {
+			migrated = choice.Summary()
+		} else {
+			migrated += ": " + choice.Summary()
+		}
 	}
 	conversation := migrated + "; native destination readiness has not yet been asserted"
 	if sourcePath == "" {
