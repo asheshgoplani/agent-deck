@@ -6002,12 +6002,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// The same capture tells whether the composer shows a Claude prompt
 	// suggestion. Typing replaces it; the Enter after typing is then gated
 	// on the composer holding our message rather than the suggestion.
-	composerPasteFreeBeforeSend := false
-	suggestionShownBeforeSend := false
-	if raw, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-		composerPasteFreeBeforeSend = !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
-		suggestionShownBeforeSend = UsesClaudeDeliveryVerify(i.Tool) && send.ComposerBodyIsSuggestion(raw)
-	}
+	composerPasteFreeBeforeSend, suggestionShownBeforeSend := send.ProbeComposerBeforeSend(i.tmuxSession.CapturePaneFresh, UsesClaudeDeliveryVerify(i.Tool))
 
 	// Issue #2079: a large or slow-mounting composer can swallow the leading
 	// bytes of a paste, submitting a truncated tail that the agent answers as

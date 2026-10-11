@@ -5156,18 +5156,6 @@ func (o sendRetryOptions) hookBusyNow() bool {
 	return known && busy
 }
 
-// composerPasteFree captures the pane and reports whether the composer is
-// currently free of a "[Pasted text …]" marker — the pre-send provenance
-// probe for sendRetryOptions.composerPasteFreeBeforeSend (issue #1777). A
-// capture failure returns false (fail safe: no evidence, no attribution).
-func composerPasteFree(target sendRetryTarget) bool {
-	raw, err := target.CapturePaneFresh()
-	if err != nil {
-		return false
-	}
-	return !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
-}
-
 // sendInitialKeysChecked is the initial submit of `session send`:
 // send.TypeAndSubmit, shared with the launch path (#2148 item 4b).
 func sendInitialKeysChecked(target sendRetryTarget, message string, expectedBreaks int, suggestionShown bool) error {

@@ -207,6 +207,12 @@ socket write has no keystroke boundary to check at.
 - Before anything is typed, an open menu refuses with `delivery: "menu_open"`
   and a missing or unreadable input prompt with `delivery:
   "composer_blocked"`. The error text says `no keys typed`; exit 1.
+- A busy Claude takes the send: Claude Code queues input typed while a turn
+  runs, so a running turn above an empty framed composer (a divider above and
+  below the prompt line) is a ready input prompt. A busy composer holding an
+  operator draft or a paste marker refuses with `composer_blocked`, and a menu,
+  picker or permission dialog with `menu_open`. Harnesses that do not queue
+  busy input (Codex, pi, shell) keep refusing while busy.
 - Once the body is typed, only a visible menu withholds Enter. A prompt
   redraw, a wrapped input box or a pane read error does not, so the text is
   never left typed and unsent on a false alarm. If a real menu opens between
