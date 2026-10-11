@@ -81,6 +81,9 @@ func MigrateConversationFromSized(inst *Instance, srcConfigDir, targetConfigDir 
 	if filepath.Clean(src) == filepath.Clean(dst) || resolveRealPath(src) == resolveRealPath(dst) {
 		return "", 0, nil
 	}
+	if sharedClaudeProjectsRoot(src, dst) != "" {
+		return "", 0, nil
+	}
 
 	projDirName := ConvertToClaudeDirName(inst.ProjectPath)
 	srcProjDir, err := containedConversationPath(src, "projects", projDirName)

@@ -104,3 +104,66 @@ func TestMigrateSharedProjectsStoreIsNoOp(t *testing.T) {
 	require.Zero(t, size)
 	require.Equal(t, body, readFile(t, p))
 }
+
+func TestSwitchSharedProjectsStoreRechecksAfterStop(t *testing.T) {
+	for _, rebind := range []bool{false, true} {
+		t.Run(map[bool]string{false: "flush", true: "rebind"}[rebind], func(t *testing.T) {
+			f := newSwitchKeysFixture(t)
+			shared := filepath.Join(f.home, "shared")
+			require.NoError(t, os.MkdirAll(shared, 0o700))
+			for _, account := range []string{"personal", "work"} {
+				root := filepath.Join(f.home, ".claude-"+account)
+				require.NoError(t, os.MkdirAll(root, 0o700))
+				require.NoError(t, os.Symlink(shared, filepath.Join(root, "projects")))
+			}
+			original := transcriptBody(keysSID, octOne, 1, "before-stop")
+			flushed := transcriptBody(keysSID, octTwo, 2, "after-stop")
+			p := f.write(t, "personal", f.keys[0], keysSID, original)
+			inst, storage := f.instance(t, keysSID)
+			running := true
+			nativeSwitchRunning = func(*Instance) bool { return running }
+			var stops, starts int
+			nativeSwitchStop = func(*Instance) error {
+				stops++
+				running = false
+				if !rebind {
+					return os.WriteFile(p, []byte(flushed), 0o600)
+				}
+				other := filepath.Join(f.home, "other-shared-store")
+				otherFile := filepath.Join(other, f.keys[0], keysSID+".jsonl")
+				require.NoError(t, os.MkdirAll(filepath.Dir(otherFile), 0o700))
+				require.NoError(t, os.WriteFile(otherFile, []byte(flushed), 0o600))
+				for _, account := range []string{"personal", "work"} {
+					link := filepath.Join(f.home, ".claude-"+account, "projects")
+					require.NoError(t, os.Remove(link))
+					require.NoError(t, os.Symlink(other, link))
+				}
+				return nil
+			}
+			nativeSwitchStart = func(got *Instance) error {
+				starts++
+				require.Equal(t, "personal", got.Account, "refusal restores the source account")
+				running = true
+				return nil
+			}
+			result, err := SwitchAccount(f.cfg, inst, "work", AccountSwitchOptions{Storage: storage, NoRestart: true})
+			require.Equal(t, 1, stops)
+			if rebind {
+				require.ErrorContains(t, err, "shared transcript store changed")
+				require.Nil(t, result)
+				require.Equal(t, "personal", inst.Account)
+				require.Equal(t, 1, starts)
+				require.Equal(t, original, readFile(t, filepath.Join(shared, f.keys[0], keysSID+".jsonl")))
+			} else {
+				require.NoError(t, err)
+				require.NoError(t, CommitAccountSwitch(storage, inst, result))
+				require.Equal(t, "work", inst.Account)
+				require.Equal(t, 0, starts)
+				require.Equal(t, flushed, readFile(t, p))
+				hash, err := sha256File(p)
+				require.NoError(t, err)
+				require.Equal(t, hash, result.Transcript.Chosen.SHA256, "receipt covers the final flushed bytes")
+			}
+		})
+	}
+}
