@@ -82,6 +82,14 @@ func MigrateConversationFromSized(inst *Instance, srcConfigDir, targetConfigDir 
 		return "", 0, nil
 	}
 	sharedRoot := sharedClaudeProjectsRoot(src, dst)
+	var sharedInfo os.FileInfo
+	if sharedRoot != "" {
+		info, err := os.Stat(sharedRoot)
+		if err != nil {
+			return "", 0, fmt.Errorf("inspect shared transcript store: %w", err)
+		}
+		sharedInfo = info
+	}
 
 	projDirName := ConvertToClaudeDirName(inst.ProjectPath)
 	srcProjDir, err := containedConversationPath(src, "projects", projDirName)
@@ -145,6 +153,15 @@ func MigrateConversationFromSized(inst *Instance, srcConfigDir, targetConfigDir 
 	if sharedRoot != "" {
 		if err := ensureNoSymlinkPath(srcFile); err != nil {
 			return "", 0, fmt.Errorf("unsafe shared source conversation: %w", err)
+		}
+		// Source discovery can race with an operator rebinding either account's
+		// projects link, including replacement of the directory at the same path.
+		if sharedClaudeProjectsRoot(src, dst) != sharedRoot {
+			return "", 0, fmt.Errorf("shared transcript store changed during conversation migration")
+		}
+		info, err := os.Stat(sharedRoot)
+		if err != nil || !os.SameFile(sharedInfo, info) {
+			return "", 0, fmt.Errorf("shared transcript store changed during conversation migration")
 		}
 		return "", 0, nil
 	}
