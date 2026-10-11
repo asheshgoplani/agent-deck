@@ -3,7 +3,10 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -142,6 +145,99 @@ func TestMigrateSharedProjectsStoreIdentity(t *testing.T) {
 			require.Empty(t, destination)
 			require.Zero(t, size)
 			require.Equal(t, body, readFile(t, p))
+		})
+	}
+}
+
+func TestMigrateSharedProjectsStoreRechecksBeforeSuccess(t *testing.T) {
+	for _, mode := range []string{"unchanged", "target-link", "source-link", "both-links", "replace-directory"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newSwitchKeysFixture(t)
+			shared := filepath.Join(f.home, "shared")
+			require.NoError(t, os.MkdirAll(shared, 0o700))
+			for _, account := range []string{"personal", "work"} {
+				root := filepath.Join(f.home, ".claude-"+account)
+				require.NoError(t, os.MkdirAll(root, 0o700))
+				require.NoError(t, os.Symlink(shared, filepath.Join(root, "projects")))
+			}
+			body := transcriptBody(keysSID, octTwo, 2, "original")
+			f.write(t, "personal", f.keys[0], keysSID, body)
+			inst, _ := f.instance(t, "")
+			type outcome struct {
+				destination string
+				size        int64
+				err         error
+			}
+			done := make(chan outcome, 1)
+			// Source discovery adopts the sole ID under this existing mutex.
+			// Holding it parks migration after root selection, without a test hook.
+			inst.claudeSessionIDsFromDiskScanMu.Lock()
+			locked := true
+			t.Cleanup(func() {
+				if locked {
+					inst.claudeSessionIDsFromDiskScanMu.Unlock()
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+						t.Error("migration did not finish after cleanup unlocked source discovery")
+					}
+				}
+			})
+			go func() {
+				destination, size, err := MigrateConversationFromSized(inst,
+					filepath.Join(f.home, ".claude-personal"), filepath.Join(f.home, ".claude-work"))
+				done <- outcome{destination, size, err}
+			}()
+			require.Eventually(t, func() bool {
+				stacks := make([]byte, 1<<20)
+				n := runtime.Stack(stacks, true)
+				for _, stack := range strings.Split(string(stacks[:n]), "\n\n") {
+					if strings.Contains(stack, ".markClaudeSessionIDFromDiskScan(") &&
+						strings.Contains(stack, ".MigrateConversationFromSized(") {
+						return true
+					}
+				}
+				return false
+			}, 5*time.Second, time.Millisecond, "migration must be parked after selecting the original shared store")
+
+			originalRoot := shared
+			other := filepath.Join(f.home, "other-store")
+			if mode == "replace-directory" {
+				originalRoot = shared + "-original"
+				require.NoError(t, os.Rename(shared, originalRoot))
+				other = shared
+			}
+			if mode != "unchanged" {
+				require.NoError(t, os.MkdirAll(other, 0o700))
+				for _, account := range []string{"personal", "work"} {
+					if mode != "both-links" && mode != map[string]string{"personal": "source-link", "work": "target-link"}[account] {
+						continue
+					}
+					link := filepath.Join(f.home, ".claude-"+account, "projects")
+					require.NoError(t, os.Remove(link))
+					require.NoError(t, os.Symlink(other, link))
+				}
+			}
+			inst.claudeSessionIDsFromDiskScanMu.Unlock()
+			locked = false
+			select {
+			case got := <-done:
+				if mode == "unchanged" {
+					require.NoError(t, got.err)
+				} else {
+					require.ErrorContains(t, got.err, "shared transcript store changed")
+				}
+				require.Empty(t, got.destination)
+				require.Zero(t, got.size)
+			case <-time.After(5 * time.Second):
+				t.Fatal("migration did not finish after source discovery resumed")
+			}
+			require.Equal(t, body, readFile(t, filepath.Join(originalRoot, f.keys[0], keysSID+".jsonl")))
+			if mode != "unchanged" {
+				entries, err := os.ReadDir(other)
+				require.NoError(t, err)
+				require.Empty(t, entries, "the replacement store must remain untouched")
+			}
 		})
 	}
 }
