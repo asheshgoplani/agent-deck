@@ -287,7 +287,7 @@ func applyProfileFlag(profile string) {
 	if accountEnvOverridden {
 		// These variables select the caller's account, not the explicitly
 		// selected profile. Keep their original presence/values for wrappers.
-		for _, key := range []string{"AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR"} {
+		for _, key := range []string{"AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
 			if value, set := os.LookupEnv(key); set {
 				inheritedAccountEnv = append(inheritedAccountEnv, key+"="+value)
 			}
@@ -314,7 +314,8 @@ func inheritedEnviron() []string {
 		if strings.HasPrefix(kv, "AGENTDECK_PROFILE=") {
 			continue
 		}
-		if accountEnvOverridden && (strings.HasPrefix(kv, "AGENTDECK_ACCOUNT=") || strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=")) {
+		if accountEnvOverridden && (strings.HasPrefix(kv, "AGENTDECK_ACCOUNT=") ||
+			strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") || strings.HasPrefix(kv, "CLAUDE_SECURESTORAGE_CONFIG_DIR=")) {
 			continue
 		}
 		env = append(env, kv)
@@ -4499,6 +4500,9 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("Global Options:")
 	fmt.Println("  -p, --profile <name>   Use specific profile (default: 'default')")
+	fmt.Println("    When -p differs from a nonempty AGENTDECK_PROFILE, inherited")
+	fmt.Println("    AGENTDECK_ACCOUNT, CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	fmt.Println("    are ignored. Explicit --account still overrides the selected profile.")
 	fmt.Println("  -g, --group <name>     Launch TUI scoped to a specific group")
 	fmt.Println("  --select <id|title>    Launch TUI with cursor on a specific session (all groups stay visible)")
 	fmt.Println()
