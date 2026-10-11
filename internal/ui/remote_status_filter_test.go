@@ -121,3 +121,59 @@ func TestTimeFilterFallbackRespectsStatusFilter(t *testing.T) {
 		t.Fatalf("row matching both filters must stay visible, kept %q", got)
 	}
 }
+// The empty-filter fallback predates this PR: with no LOCAL match it cleared
+// the status filter, which would then bypass the remote filtering added for
+// #2627 and show every remote row. Remote matches now count toward the
+// fallback the way local matches do (CodeRabbit, PR #2645).
+func TestEmptyFilterFallbackCountsRemoteMatches(t *testing.T) {
+	// No local session matches; a remote error row does. The filter must
+	// survive — the local list stays empty and the remote match renders.
+	local := session.NewInstanceWithTool("local-ok", "/tmp/local-ok", "claude")
+	local.ID = "local-ok"
+	local.GroupPath = "alpha"
+	local.Status = session.StatusIdle
+	h := makeRemoteFilterHome(
+		session.RemoteSessionInfo{ID: "r1", Title: "broken", Status: "error", Group: "alpha"},
+	)
+	h.groupTree = session.NewGroupTree([]*session.Instance{local})
+	h.statusFilter = session.StatusError
+	h.rebuildFlatItems()
+	if h.statusFilter == "" {
+		t.Fatal("fallback cleared the filter despite a remote match")
+	}
+	got := strings.Join(remoteRowTitles(h), ",")
+	if got != "broken" {
+		t.Fatalf("remote match hidden by the fallback, kept %q", got)
+	}
+
+	// No match anywhere: the fallback still clears (pre-existing behavior).
+	h2 := makeRemoteFilterHome(
+		session.RemoteSessionInfo{ID: "r1", Title: "running", Status: "running", Group: "alpha"},
+	)
+	h2.groupTree = session.NewGroupTree([]*session.Instance{local})
+	h2.statusFilter = session.StatusError
+	h2.rebuildFlatItems()
+	if h2.statusFilter != "" {
+		t.Fatalf("fallback should clear the filter with no matches anywhere, got %q", h2.statusFilter)
+	}
+}
+
+func TestEmptyFilterFallbackKeepsArchivedViewWithRemoteArchived(t *testing.T) {
+	local := session.NewInstanceWithTool("local-ok", "/tmp/local-ok", "claude")
+	local.ID = "local-ok"
+	local.GroupPath = "alpha"
+	local.Status = session.StatusIdle
+	h := makeRemoteFilterHome(
+		session.RemoteSessionInfo{ID: "r1", Title: "old", Status: "error", Group: "alpha", Archived: true},
+	)
+	h.groupTree = session.NewGroupTree([]*session.Instance{local})
+	h.statusFilter = FilterModeArchived
+	h.rebuildFlatItems()
+	if h.statusFilter == "" {
+		t.Fatal("fallback cleared the archived view despite a remote archived row")
+	}
+	got := strings.Join(remoteRowTitles(h), ",")
+	if got != "old" {
+		t.Fatalf("remote archived row hidden by the fallback, kept %q", got)
+	}
+}

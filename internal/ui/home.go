@@ -3392,8 +3392,36 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			}
 		}
 		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter && h.statusFilter != FilterModeActive {
-			h.statusFilter = ""
-			h.flatItems = allItems
+			// #2627 (CodeRabbit): remote rows count toward the fallback too —
+			// clearing the filter because no LOCAL row matches would bypass
+			// the remote filtering this PR adds, showing every remote row.
+			// Clear only when neither local nor remote rows match; keep the
+			// local list empty-but-filtered when a remote match survives.
+			remoteHasMatch := false
+			for _, remoteSessions := range h.remoteSessions {
+				for _, remote := range remoteSessions {
+					if remote.Archived != viewArchived {
+						continue
+					}
+					if viewArchived {
+						// Archived view: the partition itself is the match — an
+						// archived remote row keeps the archived view alive the same
+						// way a local archived row would.
+						remoteHasMatch = true
+					} else if h.remoteMatchesStatus(h.statusFilter, remote) {
+						remoteHasMatch = true
+					}
+				}
+				if remoteHasMatch {
+					break
+				}
+			}
+			if remoteHasMatch {
+				h.flatItems = filtered
+			} else {
+				h.statusFilter = ""
+				h.flatItems = allItems
+			}
 		} else {
 			h.flatItems = filtered
 		}
