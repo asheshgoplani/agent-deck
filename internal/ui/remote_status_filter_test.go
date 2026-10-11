@@ -121,6 +121,7 @@ func TestTimeFilterFallbackRespectsStatusFilter(t *testing.T) {
 		t.Fatalf("row matching both filters must stay visible, kept %q", got)
 	}
 }
+
 // The empty-filter fallback predates this PR: with no LOCAL match it cleared
 // the status filter, which would then bypass the remote filtering added for
 // #2627 and show every remote row. Remote matches now count toward the
