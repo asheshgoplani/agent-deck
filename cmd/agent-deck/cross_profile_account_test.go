@@ -171,3 +171,19 @@ func TestCrossProfileLaunchUsesSelectedAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestCrossProfileHelpPrecedence(t *testing.T) {
+	stdout, stderr, code := runAgentDeck(t, t.TempDir(), "--help")
+	if code != 0 || stderr != "" {
+		t.Fatalf("help exit=%d stderr=%q", code, stderr)
+	}
+	for _, text := range []string{
+		"When -p differs from a nonempty AGENTDECK_PROFILE",
+		"CLAUDE_SECURESTORAGE_CONFIG_DIR",
+		"Explicit --account still overrides the selected profile",
+	} {
+		if !strings.Contains(stdout, text) {
+			t.Errorf("profile/account help is missing %q", text)
+		}
+	}
+}
