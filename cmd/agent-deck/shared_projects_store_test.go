@@ -71,7 +71,7 @@ func TestSessionSwitchAccount_SharedProjectsStore(t *testing.T) {
 						if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 							t.Fatal(err)
 						}
-						config := fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nagent_deck_path = %q\n", channelsCLIBinary(t))
+						config := fmt.Sprintf("[remotes.lab]\nhost = 'test-host'\nprofile = 'ch_support_test'\nagent_deck_path = %q\n", channelsCLIBinary(t))
 						if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 							t.Fatal(err)
 						}
