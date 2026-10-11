@@ -10,8 +10,9 @@ package ui
 //
 //	UPDATE_GOLDEN=1 go test ./internal/ui/ -run 'TestNewDialog_DarkThemeViewGolden_Issue2449'
 //
-// and review the diff like any other test change. It pins the dark theme as
-// byte-identical: the #2449 fix is light-theme only.
+// and review the diff like any other test change. The #2449 fix was light-theme
+// only; the later inter-option gap fix intentionally adds surface backgrounds
+// to dark-theme pill separators without changing visible content.
 
 import (
 	"os"
