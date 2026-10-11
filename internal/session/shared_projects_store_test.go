@@ -106,9 +106,49 @@ func TestMigrateSharedProjectsStoreIsNoOp(t *testing.T) {
 	require.Equal(t, body, readFile(t, p))
 }
 
+func TestMigrateSharedProjectsStoreIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, stored, want string
+		ambiguous          bool
+	}{
+		{name: "stale", stored: "11111111-2222-3333-4444-555555555555", want: keysSID},
+		{name: "uncaptured", want: keysSID},
+		{name: "ambiguous", stored: "11111111-2222-3333-4444-555555555555", ambiguous: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSwitchKeysFixture(t)
+			shared := filepath.Join(f.home, "shared")
+			require.NoError(t, os.MkdirAll(shared, 0o700))
+			for _, account := range []string{"personal", "work"} {
+				root := filepath.Join(f.home, ".claude-"+account)
+				require.NoError(t, os.MkdirAll(root, 0o700))
+				require.NoError(t, os.Symlink(shared, filepath.Join(root, "projects")))
+			}
+			body := transcriptBody(keysSID, octTwo, 2, "shared")
+			p := f.write(t, "personal", f.keys[0], keysSID, body)
+			if tc.ambiguous {
+				f.write(t, "personal", f.keys[0], "66666666-7777-8888-9999-aaaaaaaaaaaa", body)
+			}
+			inst, _ := f.instance(t, tc.stored)
+			destination, size, err := MigrateConversationFromSized(inst,
+				filepath.Join(f.home, ".claude-personal"), filepath.Join(f.home, ".claude-work"))
+			if tc.ambiguous {
+				require.ErrorIs(t, err, ErrAmbiguousConversation)
+				require.Equal(t, tc.stored, inst.ClaudeSessionID)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.want, inst.ClaudeSessionID, "shared-store no-op must still repair the source identity")
+			}
+			require.Empty(t, destination)
+			require.Zero(t, size)
+			require.Equal(t, body, readFile(t, p))
+		})
+	}
+}
+
 func TestSwitchSharedProjectsStoreRechecksAfterStop(t *testing.T) {
-	for _, rebind := range []bool{false, true} {
-		t.Run(map[bool]string{false: "flush", true: "rebind"}[rebind], func(t *testing.T) {
+	for _, mode := range []string{"flush", "rebind", "replace-directory"} {
+		t.Run(mode, func(t *testing.T) {
 			f := newSwitchKeysFixture(t)
 			shared := filepath.Join(f.home, "shared")
 			require.NoError(t, os.MkdirAll(shared, 0o700))
@@ -127,14 +167,21 @@ func TestSwitchSharedProjectsStoreRechecksAfterStop(t *testing.T) {
 			nativeSwitchStop = func(*Instance) error {
 				stops++
 				running = false
-				if !rebind {
+				if mode == "flush" {
 					return os.WriteFile(p, []byte(flushed), 0o600)
 				}
 				other := filepath.Join(f.home, "other-shared-store")
+				if mode == "replace-directory" {
+					require.NoError(t, os.Rename(shared, shared+"-original"))
+					other = shared
+				}
 				otherFile := filepath.Join(other, f.keys[0], keysSID+".jsonl")
 				require.NoError(t, os.MkdirAll(filepath.Dir(otherFile), 0o700))
 				require.NoError(t, os.WriteFile(otherFile, []byte(flushed), 0o600))
 				for _, account := range []string{"personal", "work"} {
+					if mode == "replace-directory" {
+						break
+					}
 					link := filepath.Join(f.home, ".claude-"+account, "projects")
 					require.NoError(t, os.Remove(link))
 					require.NoError(t, os.Symlink(other, link))
@@ -149,12 +196,17 @@ func TestSwitchSharedProjectsStoreRechecksAfterStop(t *testing.T) {
 			}
 			result, err := SwitchAccount(f.cfg, inst, "work", AccountSwitchOptions{Storage: storage, NoRestart: true})
 			require.Equal(t, 1, stops)
-			if rebind {
+			if mode != "flush" {
 				require.ErrorContains(t, err, "shared transcript store changed")
 				require.Nil(t, result)
 				require.Equal(t, "personal", inst.Account)
 				require.Equal(t, 1, starts)
-				require.Equal(t, original, readFile(t, filepath.Join(shared, f.keys[0], keysSID+".jsonl")))
+				originalRoot := shared
+				if mode == "replace-directory" {
+					originalRoot += "-original"
+					require.Equal(t, flushed, readFile(t, p), "replacement store is left untouched")
+				}
+				require.Equal(t, original, readFile(t, filepath.Join(originalRoot, f.keys[0], keysSID+".jsonl")))
 			} else {
 				require.NoError(t, err)
 				require.NoError(t, CommitAccountSwitch(storage, inst, result))
