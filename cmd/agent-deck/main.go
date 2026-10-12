@@ -3468,6 +3468,7 @@ func handleRemove(profile string, args []string) {
 	if _, err := session.RemoveNotifyStateRecord(removedID); err != nil && !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", removedID, err)
 	}
+	publishSessionClosed(storage.Profile(), removedID)
 
 	out.Success(
 		fmt.Sprintf("Removed session: %s (from profile '%s')", removedTitle, storage.Profile()),

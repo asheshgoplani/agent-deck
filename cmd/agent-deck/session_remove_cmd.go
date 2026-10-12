@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
@@ -118,6 +119,7 @@ func handleSessionRemove(profile string, args []string) {
 	// matching block in handleRemove for rationale.
 	_, _ = session.SweepInboxesForChildSession(inst.ID)
 	_, _ = session.RemoveNotifyStateRecord(inst.ID)
+	publishSessionClosed(storage.Profile(), inst.ID)
 
 	out.Success(fmt.Sprintf("Removed session: %s", inst.Title), map[string]interface{}{
 		"success": true,
@@ -241,8 +243,16 @@ func bulkRemoveSessions(
 		// Best-effort transition-notifier cleanup (issue #910).
 		_, _ = session.SweepInboxesForChildSession(id)
 		_, _ = session.RemoveNotifyStateRecord(id)
+		publishSessionClosed(storage.Profile(), id)
 	}
 	return removed
+}
+
+// publishSessionClosed tells a following Mac app that the session is gone so
+// it can forget that session's Browser state. Best effort: the tap never
+// blocks or fails the remove, and the CLI drains it on exit.
+func publishSessionClosed(profile, id string) {
+	events.PublishProfile(profile, events.KindMacappSessionClosed, id, map[string]string{"reason": "removed"})
 }
 
 // pruneSessionWorktree kills the session and removes its git worktree (if any).
