@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,12 +50,7 @@ var Ops = []Op{OpOpen, OpTabs, OpClose, OpClick, OpType, OpRead, OpShot}
 
 // Valid reports whether op is part of the contract.
 func (op Op) Valid() bool {
-	for _, known := range Ops {
-		if op == known {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(Ops, op)
 }
 
 // Read modes.
@@ -257,17 +253,7 @@ func (a BrowserArgs) fieldsOutside(op Op) []string {
 	}
 	var extra []string
 	for _, field := range set {
-		if !field.on {
-			continue
-		}
-		found := false
-		for _, name := range accepts {
-			if name == field.name {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if field.on && !slices.Contains(accepts, field.name) {
 			extra = append(extra, field.name)
 		}
 	}

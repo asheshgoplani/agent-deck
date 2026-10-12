@@ -312,26 +312,7 @@ func writeBrowserJSON(out io.Writer, v any) error {
 func writeBrowserResult(out io.Writer, op macapp.Op, resp macapp.BrowserResponse, shotPath string, asJSON bool) error {
 	switch op {
 	case macapp.OpShot:
-		shot, image, err := macapp.DecodeShot(resp.Result)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(shotPath), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(shotPath, image, 0o600); err != nil {
-			return err
-		}
-		if !asJSON {
-			_, err = fmt.Fprintln(out, shotPath)
-			return err
-		}
-		result, err := json.Marshal(map[string]any{"mime": shot.MIME, "width": shot.Width, "height": shot.Height, "path": shotPath})
-		if err != nil {
-			return err
-		}
-		resp.Result = result
-		return writeBrowserJSON(out, resp)
+		return writeBrowserShot(out, resp, shotPath, asJSON)
 	case macapp.OpRead:
 		read, err := macapp.DecodeRead(resp.Result)
 		if err != nil {
@@ -348,24 +329,7 @@ func writeBrowserResult(out io.Writer, op macapp.Op, resp macapp.BrowserResponse
 	}
 	switch op {
 	case macapp.OpTabs:
-		var tabs macapp.TabsResult
-		if err := json.Unmarshal(resp.Result, &tabs); err != nil {
-			return fmt.Errorf("tabs result: %w", err)
-		}
-		for _, tab := range tabs.Tabs {
-			marker := " "
-			if tab.Active {
-				marker = "*"
-			}
-			if _, err := fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, tab.TabID, tab.URL, tab.Title); err != nil {
-				return err
-			}
-		}
-		if tabs.Driver != "" {
-			_, err := fmt.Fprintf(out, "driver: %s\n", tabs.Driver)
-			return err
-		}
-		return nil
+		return writeBrowserTabs(out, resp.Result)
 	case macapp.OpClose:
 		_, err := fmt.Fprintln(out, "Closed")
 		return err
@@ -382,4 +346,53 @@ func writeBrowserResult(out io.Writer, op macapp.Op, resp macapp.BrowserResponse
 	}
 	_, err := fmt.Fprintln(out, page.URL)
 	return err
+}
+
+// writeBrowserShot saves the decoded image to shotPath and prints the path,
+// or with asJSON the response whose result carries the path instead of the
+// image.
+func writeBrowserShot(out io.Writer, resp macapp.BrowserResponse, shotPath string, asJSON bool) error {
+	shot, image, err := macapp.DecodeShot(resp.Result)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(shotPath), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(shotPath, image, 0o600); err != nil {
+		return err
+	}
+	if !asJSON {
+		_, err = fmt.Fprintln(out, shotPath)
+		return err
+	}
+	result, err := json.Marshal(map[string]any{"mime": shot.MIME, "width": shot.Width, "height": shot.Height, "path": shotPath})
+	if err != nil {
+		return err
+	}
+	resp.Result = result
+	return writeBrowserJSON(out, resp)
+}
+
+// writeBrowserTabs prints one line per tab, the active one marked "*",
+// then the current driver when the app reports one.
+func writeBrowserTabs(out io.Writer, raw json.RawMessage) error {
+	var tabs macapp.TabsResult
+	if err := json.Unmarshal(raw, &tabs); err != nil {
+		return fmt.Errorf("tabs result: %w", err)
+	}
+	for _, tab := range tabs.Tabs {
+		marker := " "
+		if tab.Active {
+			marker = "*"
+		}
+		if _, err := fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, tab.TabID, tab.URL, tab.Title); err != nil {
+			return err
+		}
+	}
+	if tabs.Driver != "" {
+		_, err := fmt.Fprintf(out, "driver: %s\n", tabs.Driver)
+		return err
+	}
+	return nil
 }
