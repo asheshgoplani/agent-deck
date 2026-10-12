@@ -10276,19 +10276,8 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		selected := h.search.Selected()
 		if selected != nil {
-			// Ensure the session's group AND all parent groups are expanded so it's visible
-			if selected.GroupPath != "" {
-				h.groupTree.ExpandGroupWithParents(selected.GroupPath)
-			}
-			h.rebuildFlatItems()
-
-			// Find the session in flatItems (not instances) and set cursor
-			for i, item := range h.flatItems {
-				if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == selected.ID {
-					h.cursor = i
-					h.syncViewport() // Ensure the cursor is visible in the viewport
-					break
-				}
+			if !h.jumpToSessionByID(selected.ID, selected.GroupPath) {
+				h.setError(fmt.Errorf("'%s' not visible after clearing filters (session may be gone)", selected.Title))
 			}
 		}
 		h.search.Hide()
@@ -10308,6 +10297,50 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return h, cmd
+}
+
+// jumpToSessionByID moves the cursor to the session with the given ID,
+// expanding its group first. When the session is hidden by the active
+// status or time filter (the search indexes every instance, not the
+// filtered view), it clears those filters the same way the empty-view
+// fallbacks do and retries; the filters are restored untouched only when
+// the session is genuinely not present. Returns false in that last case.
+// Issue #2655.
+func (h *Home) jumpToSessionByID(id, groupPath string) bool {
+	expand := func() {
+		if groupPath != "" {
+			h.groupTree.ExpandGroupWithParents(groupPath)
+		}
+		h.rebuildFlatItems()
+	}
+	find := func() bool {
+		for i, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == id {
+				h.cursor = i
+				h.syncViewport()
+				return true
+			}
+		}
+		return false
+	}
+
+	expand()
+	if find() {
+		return true
+	}
+	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		return false
+	}
+	prevFilter, prevTime := h.statusFilter, h.timeFilter
+	h.statusFilter = ""
+	h.timeFilter = session.TimeFilterAll
+	expand()
+	if find() {
+		return true
+	}
+	h.statusFilter, h.timeFilter = prevFilter, prevTime
+	expand()
+	return false
 }
 
 // handleGlobalSearchKey handles keys when global search is visible
