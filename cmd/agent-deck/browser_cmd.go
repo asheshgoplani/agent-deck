@@ -121,7 +121,7 @@ func runBrowserOp(profile string, op macapp.Op, args []string, out, errOut io.Wr
 	if err != nil {
 		return browserExitError, err
 	}
-	inst, err := readBrowserSession(profile, f.session, os.Getenv("AGENTDECK_INSTANCE_ID"), currentTmuxSessionName)
+	inst, err := resolveCallingSession(profile, f.session, os.Getenv("AGENTDECK_INSTANCE_ID"), currentTmuxSessionName)
 	if err != nil {
 		return browserExitError, err
 	}
@@ -230,42 +230,6 @@ func newBrowserReqID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b[:]), nil
-}
-
-// readBrowserSession resolves the calling session: --session, then
-// $AGENTDECK_INSTANCE_ID (both through the open command's resolver), then
-// the agent-deck session that owns the calling tmux session.
-func readBrowserSession(profile, explicit, current string, tmuxName func() string) (*session.InstanceData, error) {
-	if explicit != "" || current != "" {
-		identifier, err := openSessionIdentifier(explicit, current)
-		if err != nil {
-			return nil, err
-		}
-		return readOpenSession(profile, identifier)
-	}
-	if name := tmuxName(); name != "" {
-		instances, err := loadOpenSessions(profile)
-		if err != nil {
-			return nil, err
-		}
-		for _, inst := range instances {
-			if inst.TmuxSession == name {
-				return inst, nil
-			}
-		}
-	}
-	return nil, errors.New("--session is required outside an agent-deck session")
-}
-
-func currentTmuxSessionName() string {
-	if os.Getenv("TMUX") == "" {
-		return ""
-	}
-	name, err := getCurrentTmuxSessionName()
-	if err != nil {
-		return ""
-	}
-	return name
 }
 
 func browserShotPath(out, sessionID, reqID string) (string, error) {

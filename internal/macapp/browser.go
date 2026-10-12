@@ -8,23 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/events"
 )
 
-// Frame kinds of the remote browser contract. internal/events carries the
-// same strings as KindMacapp* constants; these copies keep this package free
-// of that dependency until the two are deduplicated.
+// Frame kinds of the remote browser contract. They alias the built-in Mac
+// app kinds in internal/events so the strings live in one place.
 const (
-	kindBrowserRequest  = "macapp.browser.request"
-	kindBrowserResponse = "macapp.browser.response"
-	kindAppFocus        = "macapp.app.focus"
-	kindSessionClosed   = "macapp.session.closed"
-)
-
-const (
-	KindBrowserRequest  = kindBrowserRequest
-	KindBrowserResponse = kindBrowserResponse
-	KindAppFocus        = kindAppFocus
-	KindSessionClosed   = kindSessionClosed
+	KindBrowserRequest  = events.KindMacappBrowserRequest
+	KindBrowserResponse = events.KindMacappBrowserResponse
+	KindAppFocus        = events.KindMacappAppFocus
+	KindSessionClosed   = events.KindMacappSessionClosed
 )
 
 // ProtocolVersion is the v field of browser requests and responses.

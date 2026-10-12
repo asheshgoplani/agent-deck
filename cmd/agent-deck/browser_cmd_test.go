@@ -329,24 +329,24 @@ func TestBrowserSessionResolution(t *testing.T) {
 		t.Fatal("tmux consulted although a session was named")
 		return ""
 	}
-	if got, err := readBrowserSession(profile, "", id, noTmux); err != nil || got.ID != id {
+	if got, err := resolveCallingSession(profile, "", id, noTmux); err != nil || got.ID != id {
 		t.Fatalf("env id: %v %v", got, err)
 	}
-	if got, err := readBrowserSession(profile, "Tmux caller", "stale-env-id", noTmux); err != nil || got.ID != id {
+	if got, err := resolveCallingSession(profile, "Tmux caller", "stale-env-id", noTmux); err != nil || got.ID != id {
 		t.Fatalf("--session title over env: %v %v", got, err)
 	}
-	if _, err := readBrowserSession(profile, "nobody", "", noTmux); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := resolveCallingSession(profile, "nobody", "", noTmux); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("unknown session: %v", err)
 	}
 	for _, name := range []string{"", "some-other-tmux-session"} {
-		if _, err := readBrowserSession(profile, "", "", func() string { return name }); err == nil || !strings.Contains(err.Error(), "--session is required") {
+		if _, err := resolveCallingSession(profile, "", "", func() string { return name }); err == nil || !strings.Contains(err.Error(), "--session is required") {
 			t.Fatalf("tmux %q: %v", name, err)
 		}
 	}
 	if tmuxName == "" {
 		t.Skip("add recorded no tmux session name; tmux fallback covered only by refusal cases")
 	}
-	if got, err := readBrowserSession(profile, "", "", func() string { return tmuxName }); err != nil || got.ID != id {
+	if got, err := resolveCallingSession(profile, "", "", func() string { return tmuxName }); err != nil || got.ID != id {
 		t.Fatalf("tmux %q: %v %v", tmuxName, got, err)
 	}
 }

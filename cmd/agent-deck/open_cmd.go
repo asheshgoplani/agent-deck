@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
@@ -54,7 +55,7 @@ func handleOpen(profile string, args []string) {
 func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("open", flag.ContinueOnError)
 	fs.SetOutput(helpOutput(args, out, errOut))
-	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID)")
+	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID, then the calling tmux session)")
 	panelProfile := fs.String("profile", "", "Browser panel profile in the app (optional)")
 	wait := fs.Duration("wait", openAckTimeout, "how long to wait for the app to acknowledge before reporting Queued")
 	fs.Usage = func() { fmt.Fprintln(fs.Output(), openUsage); fs.PrintDefaults() }
@@ -73,15 +74,11 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	if strings.ContainsAny(*panelProfile, "\x00\r\n") {
 		return errors.New("--profile must not contain control characters")
 	}
-	sid, err := openSessionIdentifier(*identifier, os.Getenv("AGENTDECK_INSTANCE_ID"))
+	profile, err := session.ResolveProfileForStorage(profile)
 	if err != nil {
 		return err
 	}
-	profile, err = session.ResolveProfileForStorage(profile)
-	if err != nil {
-		return err
-	}
-	inst, err := readOpenSession(profile, sid)
+	inst, err := resolveCallingSession(profile, *identifier, os.Getenv("AGENTDECK_INSTANCE_ID"), currentTmuxSessionName)
 	if err != nil {
 		return err
 	}
@@ -108,6 +105,42 @@ func openSessionIdentifier(explicit, current string) (string, error) {
 		return current, nil
 	}
 	return "", errors.New("--session is required outside an agent-deck session")
+}
+
+// resolveCallingSession is the one session resolver of open and browser:
+// --session, then $AGENTDECK_INSTANCE_ID, then the agent-deck session that
+// owns the calling tmux session.
+func resolveCallingSession(profile, explicit, current string, tmuxName func() string) (*session.InstanceData, error) {
+	if explicit != "" || current != "" {
+		identifier, err := openSessionIdentifier(explicit, current)
+		if err != nil {
+			return nil, err
+		}
+		return readOpenSession(profile, identifier)
+	}
+	if name := tmuxName(); name != "" {
+		instances, err := loadOpenSessions(profile)
+		if err != nil {
+			return nil, err
+		}
+		for _, inst := range instances {
+			if inst.TmuxSession == name {
+				return inst, nil
+			}
+		}
+	}
+	return nil, errors.New("--session is required outside an agent-deck session")
+}
+
+func currentTmuxSessionName() string {
+	if os.Getenv("TMUX") == "" {
+		return ""
+	}
+	name, err := getCurrentTmuxSessionName()
+	if err != nil {
+		return ""
+	}
+	return name
 }
 
 // Metadata only: no tmux reconnection, migration, or writes to the session DB.

@@ -2,6 +2,6 @@ Usage: agent-deck open <file|url> [--session <id|title>] [--profile <panel profi
   -profile string
     	Browser panel profile in the app (optional)
   -session string
-    	session id or title (default: $AGENTDECK_INSTANCE_ID)
+    	session id or title (default: $AGENTDECK_INSTANCE_ID, then the calling tmux session)
   -wait duration
     	how long to wait for the app to acknowledge before reporting Queued (default 3s)
