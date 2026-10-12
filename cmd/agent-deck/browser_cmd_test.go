@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -174,7 +175,13 @@ func TestBrowserRequestFrameShape(t *testing.T) {
 	if err := json.Unmarshal(frame.Data, &data); err != nil {
 		t.Fatal(err)
 	}
-	if len(data) != 7 || string(data["v"]) != "1" || string(data["op"]) != `"type"` || string(data["args"]) != `{"tab_id":"t1","selector":"#q","text":"hi","submit":true}` {
+	// The bus re-encodes data, so compare args by value, not by key order.
+	var args map[string]any
+	if err := json.Unmarshal(data["args"], &args); err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := map[string]any{"tab_id": "t1", "selector": "#q", "text": "hi", "submit": true}
+	if len(data) != 7 || string(data["v"]) != "1" || string(data["op"]) != `"type"` || !reflect.DeepEqual(args, wantArgs) {
 		t.Fatalf("data: %s", frame.Data)
 	}
 	var got macapp.BrowserRequest

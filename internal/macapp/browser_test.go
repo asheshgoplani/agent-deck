@@ -193,7 +193,7 @@ func TestDecodeReadAndShotCaps(t *testing.T) {
 			t.Errorf("bad shot accepted: %d bytes of base64", len(bad.ImageB64))
 		}
 	}
-	if _, _, err := DecodeShot(json.RawMessage(`{"image_b64":`+`"`+base64.StdEncoding.EncodeToString(make([]byte, MaxShotBytes))+`"}`)); err != nil {
+	if _, _, err := DecodeShot(json.RawMessage(`{"image_b64":` + `"` + base64.StdEncoding.EncodeToString(make([]byte, MaxShotBytes)) + `"}`)); err != nil {
 		t.Fatalf("shot at the cap refused: %v", err)
 	}
 }
