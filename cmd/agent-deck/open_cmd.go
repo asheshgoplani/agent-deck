@@ -19,7 +19,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>]"
+const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>] [--profile <panel profile>] [--wait <duration>]"
 const openAckTimeout = 3 * time.Second
 const openQueuedMessage = "Queued for AgentDeck: it opens when the app is connected"
 
@@ -30,6 +30,9 @@ const openCommitTimeout = 10 * time.Second
 
 // MacappOpenRequest is carried in the existing profile event bus. The app
 // echoes the frame event_id as open_event_id with opened=true after display.
+// RequestID lets the app drop a request it already handled (for example one
+// replayed from a saved cursor); Profile names an optional Browser panel
+// profile in the app.
 type MacappOpenRequest struct {
 	EventID     string `json:"-"`
 	SessionID   string `json:"-"`
@@ -37,6 +40,8 @@ type MacappOpenRequest struct {
 	Path        string `json:"path,omitempty"`
 	URL         string `json:"url,omitempty"`
 	RequestedAt string `json:"requested_at"`
+	RequestID   string `json:"request_id"`
+	Profile     string `json:"profile,omitempty"`
 }
 
 func handleOpen(profile string, args []string) {
@@ -50,6 +55,8 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("open", flag.ContinueOnError)
 	fs.SetOutput(helpOutput(args, out, errOut))
 	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID)")
+	panelProfile := fs.String("profile", "", "Browser panel profile in the app (optional)")
+	wait := fs.Duration("wait", openAckTimeout, "how long to wait for the app to acknowledge before reporting Queued")
 	fs.Usage = func() { fmt.Fprintln(fs.Output(), openUsage); fs.PrintDefaults() }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -59,6 +66,12 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	}
 	if fs.NArg() != 1 {
 		return errors.New(openUsage)
+	}
+	if *wait < 0 {
+		return errors.New("--wait must not be negative")
+	}
+	if strings.ContainsAny(*panelProfile, "\x00\r\n") {
+		return errors.New("--profile must not contain control characters")
 	}
 	sid, err := openSessionIdentifier(*identifier, os.Getenv("AGENTDECK_INSTANCE_ID"))
 	if err != nil {
@@ -76,9 +89,10 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	if err != nil {
 		return err
 	}
+	req.Profile = *panelProfile
 	bus := events.OpenProfile(profile)
 	defer bus.Close()
-	acknowledged, err := publishOpenRequest(bus, req, openAckTimeout, func(req MacappOpenRequest) { launchLocalMacapp(profile, req) })
+	acknowledged, err := publishOpenRequest(bus, req, *wait, func(req MacappOpenRequest) { launchLocalMacapp(profile, req) })
 	if err != nil {
 		return err
 	}
@@ -129,7 +143,7 @@ func readOpenSession(profile, identifier string) (*session.InstanceData, error) 
 }
 
 func newOpenRequest(sessionID, target string) (MacappOpenRequest, error) {
-	req := MacappOpenRequest{SessionID: sessionID, RequestedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	req := MacappOpenRequest{SessionID: sessionID, RequestedAt: time.Now().UTC().Format(time.RFC3339Nano), RequestID: events.NewID()}
 	var err error
 	req.Host, err = os.Hostname()
 	if err != nil {
@@ -185,7 +199,7 @@ func publishOpenRequest(bus *events.Bus, req MacappOpenRequest, timeout time.Dur
 	if err != nil {
 		return false, err
 	}
-	req.EventID = bus.PublishWithID("macapp.open", req.SessionID, req)
+	req.EventID = bus.PublishWithID(events.KindMacappOpen, req.SessionID, req)
 	if req.EventID == "" || !bus.Flush(openCommitTimeout) || bus.Stats().Written <= before.Written {
 		return false, errors.New("events bus did not commit the request; request was not queued")
 	}
@@ -210,7 +224,7 @@ func publishOpenRequest(bus *events.Bus, req MacappOpenRequest, timeout time.Dur
 }
 
 func openAcknowledged(frame events.Frame, req MacappOpenRequest) (bool, error) {
-	if frame.Kind != "macapp.open.ack" || frame.SessionID != req.SessionID {
+	if frame.Kind != events.KindMacappOpenAck || frame.SessionID != req.SessionID {
 		return false, nil
 	}
 	var ack struct {

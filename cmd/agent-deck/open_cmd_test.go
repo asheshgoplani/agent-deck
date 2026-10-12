@@ -103,7 +103,7 @@ func TestOpenEventAndAck(t *testing.T) {
 	if err := json.Unmarshal(frame.Data, &data); err != nil {
 		t.Fatal(err)
 	}
-	if frame.SessionID != req.SessionID || data["session_id"] != "" || data["host"] == "" || data["url"] != req.URL || data["path"] != "" || len(data) != 3 || frame.EventID == "" {
+	if frame.SessionID != req.SessionID || data["session_id"] != "" || data["host"] == "" || data["url"] != req.URL || data["path"] != "" || data["request_id"] != req.RequestID || req.RequestID == "" || len(data) != 4 || frame.EventID == "" {
 		t.Fatalf("event: %s", frame.Data)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, data["requested_at"]); err != nil {
@@ -298,7 +298,7 @@ func TestOpenLinkMatchesPersistedEventID(t *testing.T) {
 	if err := json.Unmarshal(frame.Data, &data); err != nil {
 		t.Fatal(err)
 	}
-	if frame.Kind != "macapp.open" || frame.SessionID != req.SessionID || frame.EventID == "" || len(data) != 3 || data["path"] != page || !filepath.IsAbs(data["path"]) || data["host"] == "" || data["requested_at"] == "" {
+	if frame.Kind != "macapp.open" || frame.SessionID != req.SessionID || frame.EventID == "" || len(data) != 4 || data["request_id"] == "" || data["path"] != page || !filepath.IsAbs(data["path"]) || data["host"] == "" || data["requested_at"] == "" {
 		t.Fatalf("app frame contract: %+v %s", frame, frame.Data)
 	}
 	if _, err := time.Parse(time.RFC3339, data["requested_at"]); err != nil {
@@ -328,5 +328,113 @@ func TestOpenPublishBuiltinsWithoutPluginGate(t *testing.T) {
 		if code != 2 || !strings.Contains(out+stderr, "plugins = true") {
 			t.Fatalf("plugin gate %s: %d %s %s", kind, code, out, stderr)
 		}
+	}
+}
+
+// T1: the open frame carries a fresh request_id and the optional panel
+// profile, and the ack still matches on open_event_id alone.
+func TestOpenFrameRequestIDProfileAndAck(t *testing.T) {
+	bus, err := events.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	responder, err := events.Open(bus.Stats().Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer responder.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, err := responder.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := newOpenRequest("s", "https://example.com/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := newOpenRequest("s", "https://example.com/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.RequestID == "" || req.RequestID == other.RequestID {
+		t.Fatalf("request ids: %q %q", req.RequestID, other.RequestID)
+	}
+	req.Profile = "Research"
+	seen := make(chan events.Frame, 1)
+	go func() {
+		for frame := range sub.Frames() {
+			if frame.Kind == events.KindMacappOpen {
+				seen <- frame
+				// An ack naming only the request_id is not the app's receipt.
+				responder.Publish(events.KindMacappOpenAck, req.SessionID, map[string]any{"request_id": req.RequestID, "opened": true})
+				responder.Publish(events.KindMacappOpenAck, req.SessionID, map[string]any{"open_event_id": frame.EventID, "opened": true, "tab_id": "t1", "app_id": "mac-1"})
+				return
+			}
+		}
+	}()
+	ack, err := publishOpenRequest(bus, req, 3*time.Second, nil)
+	if err != nil || !ack {
+		t.Fatalf("ack=%v err=%v", ack, err)
+	}
+	frame := <-seen
+	var data map[string]string
+	if err := json.Unmarshal(frame.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data["request_id"] != req.RequestID || data["profile"] != "Research" || data["url"] != "https://example.com/a" || len(data) != 5 {
+		t.Fatalf("frame data: %s", frame.Data)
+	}
+}
+
+// T1 (CLI): --profile lands in the frame, --wait bounds the ack wait, and a
+// negative --wait or a control character in --profile is refused unqueued.
+func TestOpenCLIProfileAndWaitFlags(t *testing.T) {
+	home := t.TempDir()
+	id := addOpenTestSession(t, home, "Profile writer")
+	env := []string{"AGENTDECK_INSTANCE_ID=" + id, "SSH_CONNECTION=fake-remote 1 2 3"}
+	stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "open", "https://example.com/p", "--profile", "Research", "--wait", "200ms")
+	if code != 0 || strings.TrimSpace(stdout) != openQueuedMessage {
+		t.Fatalf("open: exit=%d %q %q", code, stdout, stderr)
+	}
+	stats := openTestBusDir(t, home)
+	if stats.Kinds[events.KindMacappOpen] != 1 {
+		t.Fatalf("frames: %+v", stats.Kinds)
+	}
+	reader, err := events.Open(stats.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, err := reader.Subscribe(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]string
+	for frame := range sub.Frames() {
+		if frame.Kind == events.KindMacappOpen {
+			if err := json.Unmarshal(frame.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if data["profile"] != "Research" || data["request_id"] == "" {
+		t.Fatalf("frame data: %v", data)
+	}
+	for _, args := range [][]string{
+		{"open", "https://example.com/p", "--wait", "-1s"},
+		{"open", "https://example.com/p", "--profile", "a\nb"},
+	} {
+		stdout, stderr, code := runAgentDeckEnv(t, home, "", env, args...)
+		if code == 0 || strings.Contains(stdout, "Queued") {
+			t.Fatalf("%q accepted: exit=%d %q %q", args, code, stdout, stderr)
+		}
+	}
+	if got := openTestBusDir(t, home).Kinds[events.KindMacappOpen]; got != 1 {
+		t.Fatalf("refused requests were queued: %d", got)
 	}
 }
