@@ -704,6 +704,20 @@ agent-deck open report.html --profile work --wait 10s  # Browser panel profile; 
 
 Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within `--wait` (default 3 s), else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
 
+### browser - Drive the session's Browser panel in the macOS app
+
+```bash
+agent-deck browser open https://example.com/dashboard --new-tab
+agent-deck browser tabs
+agent-deck browser read --outline              # text, or an outline with element refs
+agent-deck browser click --ref e12             # or --selector S, or --text T
+agent-deck browser type --selector 'input[name=q]' --text 'query' --submit
+agent-deck browser shot --full                 # prints the image path; --out FILE to choose it
+agent-deck browser close --tab t2
+```
+
+The op comes first. Common flags: `--session <id|title>` (default `$AGENTDECK_INSTANCE_ID`, then the agent-deck session owning the calling tmux session), `--json` (print the app's response), `--timeout` (default 30 s; 120 s for `click` and `type`). Each request is a `macapp.browser.request` frame on the host's own event bus, answered by the owner's app with `macapp.browser.response`, so it works the same on remote boxes; the URL scheme is never used. `open` targets follow the `open` rules. Exit codes: 0 ok (an unanswered `open` prints `Queued for AgentDeck: it opens when the app is connected`), 1 error (refused args, unknown session, `not_your_tab`, `bad_args`, `unknown_session`, `refused_url`), 3 `not_connected` (no answer in time), 4 `owner_driving`. Shots go to `<data dir>/runtime/browser-shots/<session id>/<req_id>.jpg` unless `--out` is given. Details: `docs/macapp-browser.md`.
+
 ### file bundle - Export a page folder (read-only)
 
 ```bash
