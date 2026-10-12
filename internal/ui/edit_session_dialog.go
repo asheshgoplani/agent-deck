@@ -752,10 +752,9 @@ func (d *EditSessionDialog) View() string {
 			}
 			// Wrap here instead of leaving the containing lipgloss style to
 			// reflow ANSI-styled separators, which can split a pill mid-label.
-			// The first row keeps the field's two-cell indent; continuation
-			// rows remain aligned with the existing dialog goldens.
-			content.WriteString("  ")
-			content.WriteString(renderPills(labels, cursor, "", lineWidth-2))
+			// Pass the field indent into the renderer so continuation rows
+			// stay aligned with the first row.
+			content.WriteString(renderPills(labels, cursor, "  ", lineWidth))
 		}
 		sections.body = append(sections.body, content.String())
 	}
