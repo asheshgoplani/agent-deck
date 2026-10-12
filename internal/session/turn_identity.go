@@ -244,7 +244,7 @@ func awaitTurn(q TurnQuery, timeout, poll time.Duration, matchPrompt bool) (Turn
 			return id, nil
 		}
 		cursor = next
-		time.Sleep(poll)
+		time.Sleep(min(poll, time.Until(deadline)))
 	}
 	if matchPrompt {
 		return TurnIdentity{}, fmt.Errorf("turn identity not established within %s", timeout)
@@ -354,7 +354,7 @@ func AwaitTurnResponse(id TurnIdentity, timeout, poll time.Duration) (*ResponseO
 		if !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(poll)
+		time.Sleep(min(poll, time.Until(deadline)))
 	}
 	if partial != nil {
 		return partial, fmt.Errorf("turn %s: %w after %s", id.UUID, ErrTurnResponseIncomplete, timeout)

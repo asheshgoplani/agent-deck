@@ -3101,7 +3101,7 @@ func handleSessionSend(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode: nothing on a confirmed delivery; one stderr line when delivery is unconfirmed or queued; errors as usual")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
-	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (on a socket send, first waits up to 30s for the turn to start; returns immediately with wait_outcome=unverified_busy_target/unverified_busy_probe_failed if the target could not be shown idle)")
+	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output (Claude socket waits share --timeout between observing a fresh turn and its completed reply; returns immediately with wait_outcome=unverified_busy_target/unverified_busy_probe_failed if the target could not be shown idle)")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
 	messageFile := fs.String("message-file", "", "Read the message from a file ('-' for stdin) instead of a positional argument; avoids shell quoting of long prompts")
@@ -3806,11 +3806,7 @@ func handleSessionSend(profile string, args []string) {
 	if useTurnIdentity {
 		var identityErr, completionErr error
 		if sendRes.transport == "socket" {
-			response, finalStatus, identityErr, completionErr, responseErr = awaitClaudeObservedReply(turnQuery, waitDeadline, func(remaining time.Duration) (string, error) {
-				// The new user record proves a turn started, even if a fast
-				// response completed before any pane poll saw it active.
-				return waitForCompletion(tmuxSess, remaining)
-			})
+			response, finalStatus, identityErr, completionErr, responseErr = awaitClaudeObservedReply(turnQuery, waitDeadline)
 		} else {
 			response, finalStatus, identityErr, completionErr, responseErr = awaitClaudeWaitReply(turnQuery, waitDeadline, func(remaining time.Duration) (string, error) {
 				return waitAfterSend(tmuxSess, sendRes.transport, remaining)
@@ -3953,7 +3949,7 @@ func handleSessionSend(profile string, args []string) {
 }
 
 // awaitClaudeWaitReply is the whole Claude --wait reply path after delivery,
-// and the only place handleSessionSend obtains a Claude reply from: establish
+// for exact-prompt sends: establish
 // the turn identity (blocking until the message's own user record exists —
 // a message queued behind a live turn waits here for its turn to start),
 // observe completion (the UI prompt reappearing), then read THIS turn's
@@ -3972,8 +3968,16 @@ func awaitClaudeWaitReply(q session.TurnQuery, deadline time.Time, completion fu
 	return awaitClaudeReply(q, deadline, session.AwaitTurnIdentity, completion)
 }
 
-func awaitClaudeObservedReply(q session.TurnQuery, deadline time.Time, completion func(remaining time.Duration) (string, error)) (resp *session.ResponseOutput, finalStatus string, identityErr, completionErr, responseErr error) {
-	return awaitClaudeReply(q, deadline, session.AwaitObservedTurn, completion)
+// awaitClaudeObservedReply waits for the selected transcript turn's end record,
+// not pane-global status, which may already describe a later unrelated turn.
+// Observation and reply polling share one deadline without a completion grace.
+func awaitClaudeObservedReply(q session.TurnQuery, deadline time.Time) (resp *session.ResponseOutput, finalStatus string, identityErr, completionErr, responseErr error) {
+	turnID, identityErr := session.AwaitObservedTurn(q, time.Until(deadline), 100*time.Millisecond)
+	if identityErr != nil {
+		return nil, "", identityErr, nil, nil
+	}
+	resp, responseErr = session.AwaitTurnResponse(turnID, time.Until(deadline), 100*time.Millisecond)
+	return resp, "waiting", nil, nil, responseErr
 }
 
 func awaitClaudeReply(q session.TurnQuery, deadline time.Time, turn func(session.TurnQuery, time.Duration, time.Duration) (session.TurnIdentity, error), completion func(remaining time.Duration) (string, error)) (resp *session.ResponseOutput, finalStatus string, identityErr, completionErr, responseErr error) {

@@ -15,18 +15,11 @@ func TestSocketWaitObservedReply_OneBudgetAndPartialRefusal(t *testing.T) {
 		jsonlAssistant("partial", "", "partial reply", "tool_use"))
 	start := time.Now()
 	resp, _, identityErr, completionErr, responseErr := awaitClaudeObservedReply(
-		session.TurnQuery{Path: path, Prompt: "unwrapped text"}, start.Add(300*time.Millisecond),
-		func(remaining time.Duration) (string, error) {
-			if remaining <= 0 || remaining > 300*time.Millisecond {
-				t.Fatalf("completion received a fresh/expired budget: %s", remaining)
-			}
-			time.Sleep(100 * time.Millisecond)
-			return "waiting", nil
-		})
+		session.TurnQuery{Path: path, Prompt: "unwrapped text"}, start.Add(300*time.Millisecond))
 	if identityErr != nil || completionErr != nil || !errors.Is(responseErr, session.ErrTurnResponseIncomplete) || resp == nil || resp.Content != "partial reply" {
 		t.Fatalf("response=%+v identity=%v completion=%v read=%v", resp, identityErr, completionErr, responseErr)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > 600*time.Millisecond {
 		t.Fatalf("observed reply exceeded one budget: %s", elapsed)
 	}
 }
