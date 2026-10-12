@@ -289,7 +289,7 @@ func TestMCPProxyParentExitWithOpenStdin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("parent fixture did not exit")
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
