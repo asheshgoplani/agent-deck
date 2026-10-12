@@ -1,5 +1,6 @@
-Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]
-Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.
+Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--profile <name>] [--json]
+Needs [macapp] plugins = true, except built-in macapp.open, macapp.open.ack,
+macapp.browser.request, macapp.browser.response, macapp.app.focus and macapp.session.closed.
   -data string
     	JSON object payload
   -data-file string
@@ -8,5 +9,7 @@ Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.
     	print {ok, kind, session_id, cursor} as JSON
   -kind string
     	frame kind; must be in the macapp.* namespace
+  -profile string
+    	publish on this existing profile's log instead of the process profile
   -session string
     	session id the frame is about (default: the current session, $AGENTDECK_INSTANCE_ID)

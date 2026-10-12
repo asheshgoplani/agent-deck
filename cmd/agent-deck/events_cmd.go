@@ -71,6 +71,37 @@ func openFollowerBus(name string, readOnly bool) (*events.Bus, error) {
 	return openBusForRead(name)
 }
 
+// openProfileFollowerBus is openFollowerBus for an explicit --profile. The
+// caller owns (and closes) the returned bus.
+func openProfileFollowerBus(name, profile string, readOnly bool) (*events.Bus, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "events":
+		if readOnly {
+			return events.OpenReader(profile)
+		}
+		return events.OpenProfile(profile), nil
+	case "comms":
+		return comms.OpenReader(profile)
+	default:
+		return nil, fmt.Errorf("unknown --bus %q (events or comms)", name)
+	}
+}
+
+// resolveEventsProfile checks an explicit `events follow|publish --profile`.
+// The global -p of a forwarded `remote <name> events ...` is fixed by the
+// remote's config, so this flag is how a caller reaches another profile's log
+// on that host. It must name an existing profile: a typo never creates a bus.
+func resolveEventsProfile(name string) (string, error) {
+	exists, err := session.ProfileExists(name)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("profile %q does not exist", name)
+	}
+	return name, nil
+}
+
 // handleEventsFollow implements `agent-deck events follow --json [--after <cursor>]
 // [--kind <prefix>[,<prefix>]] [--session <id>] [--bus events|comms]`. It streams one canonical-JSON
 // frame per line to stdout, oldest first, and keeps streaming newly published
@@ -89,8 +120,9 @@ func handleEventsFollow(profile string, args []string) {
 	sessionFlag := fs.String("session", "", "only frames for this session id")
 	busFlag := fs.String("bus", "events", busFlagHelp)
 	readOnlyFlag := fs.Bool("read-only", false, "observe only: no send-worker recovery, no writer handle, no demand lease (tmux.output frames appear only while another follower asks for them); fails if no writer has created the bus yet")
+	profileFlag := fs.String("profile", "", "read this existing profile's log instead of the process profile")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only] [--profile <name>]")
 		fs.PrintDefaults()
 	}
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
@@ -103,6 +135,15 @@ func handleEventsFollow(profile string, args []string) {
 		}
 	}
 
+	if *profileFlag != "" {
+		p, err := resolveEventsProfile(*profileFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)
+			exitCLI(1)
+		}
+		profile = p
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -111,12 +152,18 @@ func handleEventsFollow(profile string, args []string) {
 	// Read-only: the queue directory is only looked at, never created.
 	recoverFollowerWorkers(profile, *readOnlyFlag, sendqueue.KickWorkers)
 
-	bus, err := openFollowerBus(*busFlag, *readOnlyFlag)
+	var bus *events.Bus
+	var err error
+	if *profileFlag != "" {
+		bus, err = openProfileFollowerBus(*busFlag, profile, *readOnlyFlag)
+	} else {
+		bus, err = openFollowerBus(*busFlag, *readOnlyFlag)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: events follow: %v\n", err)
 		exitCLI(1)
 	}
-	if bus.ReadOnly() {
+	if bus.ReadOnly() || *profileFlag != "" {
 		defer bus.Close()
 	}
 	defer bus.Want(followDemandKinds(kinds)...)()
@@ -186,7 +233,7 @@ func eventMatches(f events.Frame, kinds []string, sessionID string) bool {
 
 // macappKindPrefix is the only namespace a client may publish from the CLI.
 // macapp.* frames drive Mac app plugins (docs/macapp-core.md) and need
-// [macapp] plugins = true.
+// [macapp] plugins = true, except the built-in kinds (events.IsMacappBuiltinKind).
 const macappKindPrefix = "macapp."
 
 // handleEventsPublish implements `agent-deck events publish --kind <kind>
@@ -198,9 +245,11 @@ func handleEventsPublish(profile string, args []string) {
 	data := fs.String("data", "", "JSON object payload")
 	dataFile := fs.String("data-file", "", "read the JSON payload from this file, or - for stdin")
 	jsonOut := fs.Bool("json", false, "print {ok, kind, session_id, cursor} as JSON")
+	profileFlag := fs.String("profile", "", "publish on this existing profile's log instead of the process profile")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]")
-		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.")
+		fmt.Fprintln(fs.Output(), "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--profile <name>] [--json]")
+		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except built-in macapp.open, macapp.open.ack,")
+		fmt.Fprintln(fs.Output(), "macapp.browser.request, macapp.browser.response, macapp.app.focus and macapp.session.closed.")
 		fs.PrintDefaults()
 	}
 	routeFlagHelp(fs, args)
@@ -215,7 +264,7 @@ func handleEventsPublish(profile string, args []string) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	if cfg, _ := session.LoadUserConfig(); *kind != "macapp.open" && *kind != "macapp.open.ack" && (cfg == nil || !cfg.Macapp.Plugins) {
+	if cfg, _ := session.LoadUserConfig(); !events.IsMacappBuiltinKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
 		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
@@ -243,7 +292,19 @@ func handleEventsPublish(profile string, args []string) {
 	if sid == "" {
 		sid = os.Getenv("AGENTDECK_INSTANCE_ID")
 	}
-	bus := events.Default()
+	var bus *events.Bus
+	if *profileFlag != "" {
+		p, err := resolveEventsProfile(*profileFlag)
+		if err != nil {
+			out.Error(fmt.Sprintf("events publish: %v", err), ErrCodeInvalidOperation)
+			exitCLI(2)
+		}
+		profile = p
+		bus = events.OpenProfile(p)
+		defer bus.Close()
+	} else {
+		bus = events.Default()
+	}
 	before := bus.Cursor()
 	bus.Publish(*kind, sid, payload)
 	if !bus.Flush(2 * time.Second) {
