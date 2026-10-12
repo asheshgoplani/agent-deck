@@ -29,7 +29,8 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 			t.Cleanup(func() { _ = os.RemoveAll(home) })
 			config := filepath.Join(home, ".config", "agent-deck")
 			binDir := filepath.Join(home, "bin")
-			for _, dir := range []string{config, binDir} {
+			tmuxDir := filepath.Join(home, "tmux")
+			for _, dir := range []string{config, binDir, tmuxDir} {
 				if err := os.MkdirAll(dir, 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -37,12 +38,15 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(config, "config.toml"), []byte("send_transport = 'auto'\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			shim := "#!/bin/sh\nexec \"$SOCKET_WAIT_TEST_BINARY\" -test.run=^TestSocketWaitClaudeFixture$ -- \"$@\"\n"
+			shim := "#!/bin/sh\nexec \"$SOCKET_WAIT_TEST_BINARY\" -test.run=^TestSocketWaitClaudeFixture$ -- \"$@\" 2>\"$HOME/socket-wait-helper.stderr\"\n"
 			if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(shim), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			env := []string{
 				"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				// A reused tmux server retains the first launch's environment.
+				// Each fixture needs its own HOME, helper and mode in that env.
+				"TMUX_TMPDIR=" + tmuxDir,
 				"SOCKET_WAIT_TEST_BINARY=" + os.Args[0], "SOCKET_WAIT_FIXTURE=" + mode,
 				"AGENT_DECK_TASK6_HELPER_PROCESS=1",
 			}
@@ -58,7 +62,8 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatal("fixture did not publish its verified socket record")
+					diagnostic, _ := os.ReadFile(filepath.Join(home, "socket-wait-helper.stderr"))
+					t.Fatalf("fixture did not publish its verified socket record: helper stderr=%s", diagnostic)
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
