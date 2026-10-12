@@ -41,6 +41,13 @@ func TestSystemdInstallCreatesLogDirectoryBeforeActivation(t *testing.T) {
 				if err != nil {
 					t.Fatalf("log directory must exist before service activation: %v", err)
 				}
+				info, err := os.Stat(logDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0o700 {
+					t.Fatalf("new log directory must be owner-only, got %04o", info.Mode().Perm())
+				}
 				unit, err := os.ReadFile(unitPath)
 				if err != nil {
 					t.Fatal(err)
