@@ -19,7 +19,7 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux unavailable")
 	}
-	for _, mode := range []string{"idle", "fast", "dropped", "busy", "partial"} {
+	for _, mode := range []string{"idle", "fast", "dropped", "busy", "partial", "next-turn", "short-fast", "short-partial", "late-turn"} {
 		t.Run(mode, func(t *testing.T) {
 			// Short HOME keeps the Unix socket below the platform path limit.
 			home, err := os.MkdirTemp("", "socket-wait-")
@@ -67,8 +67,13 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
+			budget := "5s"
+			if strings.HasPrefix(mode, "short-") || mode == "late-turn" {
+				budget = "300ms"
+			}
 			out, stderr, code = runAgentDeckEnv(t, home, "", env, "session", "send", "socket-wait",
-				"--no-tag", "--no-wait", "--wait", "--timeout", "5s", "--json", "reply ok")
+				"--no-tag", "--no-wait", "--wait", "--timeout", budget, "--json", "reply ok")
+			finished := time.Now()
 			t.Logf("send exit=%d stdout=%s stderr=%s", code, out, stderr)
 			// Busy waits may return before the receiver flushes its frame marker.
 			deadline = time.Now().Add(time.Second)
@@ -83,11 +88,21 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 			if err != nil || !strings.Contains(string(frame), `"content":"reply ok"`) {
 				t.Fatalf("fixture did not receive the actual socket message: %s %v", frame, err)
 			}
+			if budget == "300ms" {
+				info, err := os.Stat(filepath.Join(home, "socket-wait-frame"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Start at socket receipt, excluding unrelated CLI startup work.
+				if elapsed := finished.Sub(info.ModTime()); elapsed > 600*time.Millisecond {
+					t.Fatalf("socket wait exceeded its shared 300ms budget: %s", elapsed)
+				}
+			}
 			var result map[string]interface{}
 			if err := json.Unmarshal([]byte(out), &result); err != nil {
 				t.Fatalf("socket --wait did not emit one JSON result: %v", err)
 			}
-			if mode == "dropped" || mode == "partial" {
+			if mode == "dropped" || mode == "partial" || mode == "short-partial" {
 				if code != 1 || result["success"] != false || result["content"] != nil || strings.Contains(out, "STALE REPLY") {
 					t.Fatalf("unanswered socket message returned stale/partial success: %d %s", code, out)
 				}
@@ -202,18 +217,36 @@ func TestSocketWaitClaudeFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	if mode != "dropped" && mode != "busy" {
+		if mode == "late-turn" {
+			time.Sleep(200 * time.Millisecond)
+		}
 		ts := time.Now().UTC().Format(time.RFC3339Nano)
 		appendJSONL(t, transcript, fmt.Sprintf(`{"type":"user","uuid":"peer-user","sessionId":%q,"timestamp":%q,"isMeta":true,"origin":{"kind":"peer"},"message":{"role":"user","content":"Another Claude session sent a message:\nreply ok\n\nThis came from another Claude session, not typed by your user."}}`, sid, ts))
-		if mode != "fast" {
+		if mode == "idle" || mode == "partial" {
 			paint(true)
 			time.Sleep(time.Second)
 		}
 		stopReason := "end_turn"
-		if mode == "partial" {
+		if mode == "partial" || mode == "short-partial" {
 			stopReason = "tool_use"
 		}
 		appendJSONL(t, transcript, jsonlAssistant("peer-reply", time.Now().UTC().Format(time.RFC3339Nano), "PEER REPLY", stopReason))
-		paint(false)
+		if mode == "next-turn" {
+			appendJSONL(t, transcript, jsonlUser("later-user", time.Now().UTC().Format(time.RFC3339Nano), "unrelated follow-up"))
+			paint(true)
+		} else {
+			paint(false)
+		}
 	}
 	time.Sleep(30 * time.Second)
+}
+
+func TestSessionSendSocketWaitHelpDescribesSharedBudget(t *testing.T) {
+	out, stderr, code := runAgentDeckEnv(t, t.TempDir(), "", nil, "session", "send", "--help")
+	if code != 0 {
+		t.Fatalf("help failed: %d %s %s", code, out, stderr)
+	}
+	if !strings.Contains(out, "Claude socket waits share --timeout") || strings.Contains(out, "first waits up to 30s for the turn to start") {
+		t.Fatalf("help must describe socket observation/reply budget, not the old 30s bound: %s", out)
+	}
 }
