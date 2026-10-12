@@ -137,6 +137,14 @@ func assertMCPProxyEOFExit(t *testing.T, f *mcpProxyFixture) {
 	}
 }
 
+func TestMCPProxyBidirectionalFlow(t *testing.T) {
+	listener, path := mcpProxySocket(t)
+	f := newMCPProxyFixture(t, path)
+	conn := acceptMCPProxy(t, listener)
+	exchangeMCPProxy(t, f, conn, "first")
+	exchangeMCPProxy(t, f, conn, "second")
+}
+
 func TestMCPProxyStdinEOF(t *testing.T) {
 	for _, mode := range []string{"connected", "dial-backoff", "backend-disconnected"} {
 		t.Run(mode, func(t *testing.T) {
