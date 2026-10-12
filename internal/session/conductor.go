@@ -2781,7 +2781,7 @@ func installBridgeDaemonSystemd() (string, error) {
 		return "", fmt.Errorf("failed to get bridge log dir: %w", err)
 	}
 	// systemd opens append output before ExecStartPre, so prepare it here.
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create bridge log dir: %w", err)
 	}
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
@@ -2901,7 +2901,7 @@ func installTransitionNotifierSystemd() (string, error) {
 		return "", fmt.Errorf("failed to get notifier log path: %w", err)
 	}
 	// ExecStartPre cannot create this directory before its own output opens.
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return "", fmt.Errorf("failed to create notifier log dir: %w", err)
 	}
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
