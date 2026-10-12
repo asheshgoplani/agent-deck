@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -176,6 +177,58 @@ func TestMCPProxyReconnectKeepsInput(t *testing.T) {
 		conn := acceptMCPProxy(t, listener)
 		exchangeMCPProxy(t, f, conn, fmt.Sprintf("request-%d", i))
 		_ = conn.Close()
+	}
+	assertMCPProxyEOFExit(t, f)
+}
+
+func TestMCPProxyEOFWithInputBackpressure(t *testing.T) {
+	for _, mode := range []string{"dial-backoff", "blocked-backend"} {
+		t.Run(mode, func(t *testing.T) {
+			listener, path := mcpProxySocket(t)
+			if mode == "dial-backoff" {
+				_ = listener.Close()
+			}
+			f := newMCPProxyFixture(t, path)
+			if mode == "blocked-backend" {
+				conn := acceptMCPProxy(t, listener)
+				exchangeMCPProxy(t, f, conn, "before-backpressure")
+			}
+			written := make(chan error, 1)
+			go func() {
+				_, err := f.input.Write(bytes.Repeat([]byte("x"), 4<<20))
+				written <- err
+			}()
+			time.Sleep(100 * time.Millisecond)
+			select {
+			case err := <-written:
+				t.Fatalf("fixture did not exercise input backpressure: %v", err)
+			default:
+			}
+			assertMCPProxyEOFExit(t, f)
+			select {
+			case <-written:
+			case <-time.After(time.Second):
+				t.Fatal("fixture stdin writer did not stop after close")
+			}
+		})
+	}
+}
+
+func TestMCPProxyEOFWithOutputBackpressure(t *testing.T) {
+	listener, path := mcpProxySocket(t)
+	f := newMCPProxyFixture(t, path)
+	conn := acceptMCPProxy(t, listener)
+	exchangeMCPProxy(t, f, conn, "before-backpressure")
+	written := make(chan error, 1)
+	go func() {
+		_, err := conn.Write(bytes.Repeat([]byte("x"), 4<<20))
+		written <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case err := <-written:
+		t.Fatalf("fixture did not exercise output backpressure: %v", err)
+	default:
 	}
 	assertMCPProxyEOFExit(t, f)
 }
