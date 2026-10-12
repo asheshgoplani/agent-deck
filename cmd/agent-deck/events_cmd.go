@@ -271,11 +271,7 @@ func handleEventsPublish(profile string, args []string) {
 	raw := []byte(*data)
 	if *dataFile != "" {
 		var err error
-		if *dataFile == "-" {
-			raw, err = io.ReadAll(os.Stdin)
-		} else {
-			raw, err = os.ReadFile(*dataFile)
-		}
+		raw, err = readPublishData(*dataFile)
 		if err != nil {
 			out.Error(fmt.Sprintf("events publish: read data: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
@@ -375,4 +371,27 @@ func handleEventsStats(args []string) {
 			fmt.Printf("kind:      %-24s %d\n", k, kinds[k])
 		}
 	}
+}
+
+// readPublishData reads a publish payload from a file, or stdin for "-",
+// refusing anything over remotePublishDataCap so a box never buffers an
+// unbounded payload whichever way it arrives.
+func readPublishData(name string) ([]byte, error) {
+	var r io.Reader = os.Stdin
+	if name != "-" {
+		f, err := os.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		r = f
+	}
+	raw, err := io.ReadAll(io.LimitReader(r, remotePublishDataCap+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > remotePublishDataCap {
+		return nil, fmt.Errorf("payload over %d bytes", remotePublishDataCap)
+	}
+	return raw, nil
 }

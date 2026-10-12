@@ -133,3 +133,33 @@ func TestRemoteEventsPublishCLIStdinPassthrough(t *testing.T) {
 		t.Fatalf("stdin not forwarded unchanged: %q", got)
 	}
 }
+
+// T7: the box side caps the payload too, for stdin and files alike.
+func TestReadPublishDataCap(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "ok.json")
+	big := filepath.Join(dir, "big.json")
+	if err := os.WriteFile(ok, bytes.Repeat([]byte(" "), remotePublishDataCap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(big, bytes.Repeat([]byte(" "), remotePublishDataCap+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := readPublishData(ok); err != nil || len(raw) != remotePublishDataCap {
+		t.Fatalf("at the cap: %d %v", len(raw), err)
+	}
+	if _, err := readPublishData(big); err == nil {
+		t.Fatal("over the cap accepted from a file")
+	}
+	f, err := os.Open(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	stdin := os.Stdin
+	os.Stdin = f
+	defer func() { os.Stdin = stdin }()
+	if _, err := readPublishData("-"); err == nil {
+		t.Fatal("over the cap accepted from stdin")
+	}
+}
