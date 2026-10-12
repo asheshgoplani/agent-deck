@@ -12,10 +12,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
+	"github.com/asheshgoplani/agent-deck/internal/macapp"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -112,12 +112,7 @@ func openSessionIdentifier(explicit, current string) (string, error) {
 
 // Metadata only: no tmux reconnection, migration, or writes to the session DB.
 func readOpenSession(profile, identifier string) (*session.InstanceData, error) {
-	storage, err := session.NewLiveReadOnlyStorageWithProfile(profile)
-	if err != nil {
-		return nil, err
-	}
-	defer storage.Close()
-	instances, _, err := storage.LoadLite()
+	instances, err := loadOpenSessions(profile)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +137,17 @@ func readOpenSession(profile, identifier string) (*session.InstanceData, error) 
 	return match, nil
 }
 
+// loadOpenSessions reads session metadata only, like readOpenSession.
+func loadOpenSessions(profile string) ([]*session.InstanceData, error) {
+	storage, err := session.NewLiveReadOnlyStorageWithProfile(profile)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadLite()
+	return instances, err
+}
+
 func newOpenRequest(sessionID, target string) (MacappOpenRequest, error) {
 	req := MacappOpenRequest{SessionID: sessionID, RequestedAt: time.Now().UTC().Format(time.RFC3339Nano), RequestID: events.NewID()}
 	var err error
@@ -154,18 +160,12 @@ func newOpenRequest(sessionID, target string) (MacappOpenRequest, error) {
 }
 
 func resolveOpenTarget(target string) (path, webURL string, err error) {
-	if strings.ContainsAny(target, "\x00\r\n") || strings.TrimSpace(target) == "" {
-		return "", "", errors.New("empty target or control characters in target")
+	webURL, err = macapp.ValidateURL(target)
+	if err == nil {
+		return "", webURL, nil
 	}
-	u, parseErr := url.Parse(target)
-	if parseErr == nil && u.Scheme != "" {
-		if (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil {
-			return "", "", errors.New("URL must be an absolute http or https URL without credentials")
-		}
-		return "", u.String(), nil
-	}
-	if strings.Contains(target, "://") {
-		return "", "", fmt.Errorf("invalid URL: %q", target)
+	if !errors.Is(err, macapp.ErrNotURL) {
+		return "", "", err
 	}
 	path, err = filepath.Abs(target)
 	if err != nil {
