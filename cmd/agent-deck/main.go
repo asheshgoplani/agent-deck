@@ -983,6 +983,7 @@ func main() {
 		// Hand the outer terminal's cursor and pointer back if the embedded
 		// terminal owned them; deferred releases do not survive os.Exit.
 		runEmbeddedTerminalCleanup()
+		ui.ResetTerminalAfterAbort(os.Stdout)
 		_ = events.CloseDefault()
 		exitCLI(0)
 	}()
@@ -1386,6 +1387,9 @@ func main() {
 	homeModel.CloseTelemetryAfterRun(runErr)
 	if runErr != nil {
 		runEmbeddedTerminalCleanup()
+		// A panic or kill skips Bubble Tea's full restore and exitCLI skips
+		// the deferred keyboard restores: give the shell back a sane terminal.
+		ui.ResetTerminalAfterAbort(os.Stdout)
 		fmt.Printf("Error: %v\n", runErr)
 		exitCLI(1)
 	}

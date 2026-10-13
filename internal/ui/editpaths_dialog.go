@@ -357,9 +357,7 @@ func (d *EditPathsDialog) View() string {
 	content.WriteString(titleStyle.Render("Edit Multi-Repo Paths"))
 	content.WriteString("\n")
 	sessionLabel := fmt.Sprintf("  session: %s", d.sessionTitle)
-	if len(sessionLabel) > innerWidth {
-		sessionLabel = sessionLabel[:innerWidth-1] + "…"
-	}
+	sessionLabel = truncateDisplay(sessionLabel, innerWidth, "…")
 	content.WriteString(dimStyle.Render(sessionLabel))
 	content.WriteString("\n\n")
 
