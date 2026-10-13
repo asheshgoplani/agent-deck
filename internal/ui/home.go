@@ -10307,12 +10307,6 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // the session is genuinely not present. Returns false in that last case.
 // Issue #2655.
 func (h *Home) jumpToSessionByID(id, groupPath string) bool {
-	expand := func() {
-		if groupPath != "" {
-			h.groupTree.ExpandGroupWithParents(groupPath)
-		}
-		h.rebuildFlatItems()
-	}
 	find := func() bool {
 		for i, item := range h.flatItems {
 			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == id {
@@ -10324,22 +10318,48 @@ func (h *Home) jumpToSessionByID(id, groupPath string) bool {
 		return false
 	}
 
-	expand()
+	// Capture the pre-jump fold state of the target group and its ancestors
+	// so a failed jump restores them (#2656, CodeRabbit). Expansion runs
+	// once here; the retry path below only rebuilds.
+	prevExpanded := map[string]bool{}
+	if groupPath != "" {
+		for _, g := range h.groupTree.GroupList {
+			if g == nil {
+				continue
+			}
+			if g.Path == groupPath || strings.HasPrefix(groupPath, g.Path+"/") {
+				prevExpanded[g.Path] = g.Expanded
+			}
+		}
+		h.groupTree.ExpandGroupWithParents(groupPath)
+	}
+	restoreFolds := func() {
+		for path, expanded := range prevExpanded {
+			if !expanded {
+				h.groupTree.CollapseGroup(path)
+			}
+		}
+	}
+
+	h.rebuildFlatItems()
 	if find() {
 		return true
 	}
 	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		restoreFolds()
+		h.rebuildFlatItems()
 		return false
 	}
 	prevFilter, prevTime := h.statusFilter, h.timeFilter
 	h.statusFilter = ""
 	h.timeFilter = session.TimeFilterAll
-	expand()
+	h.rebuildFlatItems()
 	if find() {
 		return true
 	}
 	h.statusFilter, h.timeFilter = prevFilter, prevTime
-	expand()
+	restoreFolds()
+	h.rebuildFlatItems()
 	return false
 }
 

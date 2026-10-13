@@ -110,3 +110,41 @@ func TestSearchJumpExpandsCollapsedGroup(t *testing.T) {
 		t.Fatalf("cursor landed on %q, want live", got)
 	}
 }
+
+// CodeRabbit (PR #2656): a failed jump must restore the target group's fold
+// state too — expanding it for the scan must not leak when the session turns
+// out to be missing.
+func TestSearchJumpRestoresGroupFoldsOnMiss(t *testing.T) {
+	h := makeSearchJumpHome()
+	h.groupTree.CollapseGroup("alpha")
+	h.rebuildFlatItems()
+	h.statusFilter = FilterModeActive
+	h.rebuildFlatItems()
+
+	if h.jumpToSessionByID("nonexistent", "alpha") {
+		t.Fatal("jump to a missing session must fail")
+	}
+	for _, g := range h.groupTree.GroupList {
+		if g.Path == "alpha" && g.Expanded {
+			t.Fatal("failed jump must re-collapse the target group")
+		}
+	}
+	if h.statusFilter != FilterModeActive {
+		t.Fatalf("filters should also be restored, got %q", h.statusFilter)
+	}
+}
+
+func TestSearchJumpRestoresFoldsWithoutFilters(t *testing.T) {
+	h := makeSearchJumpHome()
+	h.groupTree.CollapseGroup("alpha")
+	h.rebuildFlatItems()
+
+	if h.jumpToSessionByID("nonexistent", "alpha") {
+		t.Fatal("jump to a missing session must fail")
+	}
+	for _, g := range h.groupTree.GroupList {
+		if g.Path == "alpha" && g.Expanded {
+			t.Fatal("failed jump must re-collapse the target group")
+		}
+	}
+}
