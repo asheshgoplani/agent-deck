@@ -11679,7 +11679,8 @@ func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 // which branches the parent transcript into a fresh session while leaving the
 // parent intact, plus any model/agent flags.
 func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (string, error) {
-	return i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
+	cmd, _, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
+	return cmd, err
 }
 
 // forkOpenCodeWithOptionsInWorkDir builds the one-time `cd <workDir> &&
@@ -11698,12 +11699,42 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 // picks up; the previous export/import clone relied on the same path (and the
 // same `cd`), so no id is pre-assigned here. The env prefix is applied once by
 // buildOpenCodeCommand at start time.
-func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, error) {
+func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, string, error) {
 	if !i.CanForkOpenCode() {
-		return "", fmt.Errorf("cannot fork: no active OpenCode session")
+		return "", "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
+	}
+
+	if i.openCodeRejectsV1LaunchFlags() {
+		serviceOpts := opts
+		if serviceOpts == nil {
+			if config, err := LoadUserConfig(); err == nil && config != nil {
+				serviceOpts = NewOpenCodeOptions(config)
+			}
+		}
+		if serviceOpts != nil && serviceOpts.Model != "" {
+			if _, err := openCodeModelRef(serviceOpts.Model); err != nil {
+				return "", "", err
+			}
+		}
+		// The 2.x verdict came from the configured binary, which a bare name may not reach.
+		binary, ok := i.openCodeLaunchBinary()
+		if !ok {
+			return "", "", fmt.Errorf("opencode fork: cannot resolve the configured opencode binary")
+		}
+		childID, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir)
+		if err != nil {
+			return "", "", err
+		}
+		if err := applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts); err != nil {
+			if _, rmErr := runOpenCodeServiceCall(binary, workDir, "session.remove", childID, ""); rmErr != nil {
+				return "", "", fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
+			}
+			return "", "", err
+		}
+		return fmt.Sprintf("cd %s && opencode -s %s", shellescape.Quote(workDir), childID), childID, nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -11722,7 +11753,110 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 	// workDir and the session id are shell-quoted to keep the launch command
 	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
 	return fmt.Sprintf("cd %s && opencode -s %s --fork%s",
-		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), nil
+		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", nil
+}
+
+// forkOpenCodeSessionViaService forks parentID in the OpenCode 2.x shared
+// service, where `--fork` no longer exists, and returns the new session id.
+// The child is a root session in the same directory, so the forked instance
+// resumes it with a plain `-s` and a later restart does the same. The 1.x
+// -m/--agent fork flags are not emitted: 2.x exits on them, so model and agent
+// overrides are applied to the child session by applyOpenCodeForkOverridesViaService.
+func (i *Instance) forkOpenCodeSessionViaService(binary, parentID, workDir string) (string, error) {
+	output, err := runOpenCodeServiceCall(binary, workDir, "session.fork", parentID, "{}")
+	if err != nil {
+		return "", fmt.Errorf("opencode fork via service failed: %w", err)
+	}
+
+	var reply struct {
+		Data openCodeHTTPSessionMetadata `json:"data"`
+	}
+	if err := json.Unmarshal(output, &reply); err != nil {
+		return "", fmt.Errorf("opencode fork via service: unexpected reply: %w", err)
+	}
+	childID, err := normalizeToolSessionID(FieldOpenCodeSessionID, reply.Data.ID)
+	if err != nil {
+		return "", fmt.Errorf("opencode fork via service: %w", err)
+	}
+	if childID == "" {
+		return "", fmt.Errorf("opencode fork via service: reply carries no session id")
+	}
+	sessionLog.Info("opencode_forked_via_service",
+		slog.String("instance_id", i.ID),
+		slog.String("parent_session_id", parentID),
+		slog.String("child_session_id", childID))
+	return childID, nil
+}
+
+// applyOpenCodeForkOverridesViaService sets the fork's model and agent
+// overrides on the 2.x child session. The service stores both on the session,
+// so the first launch and every later `-s` resume pick them up.
+func applyOpenCodeForkOverridesViaService(binary, childID, workDir string, opts *OpenCodeOptions) error {
+	if opts == nil {
+		return nil
+	}
+	if opts.Model != "" {
+		ref, err := openCodeModelRef(opts.Model)
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(map[string]any{"model": ref})
+		if err != nil {
+			return fmt.Errorf("opencode fork: encode model override: %w", err)
+		}
+		if _, err := runOpenCodeServiceCall(binary, workDir, "session.switchModel", childID, string(body)); err != nil {
+			return fmt.Errorf("opencode fork: set model on child session %s: %w", childID, err)
+		}
+	}
+	if opts.Agent != "" {
+		body, err := json.Marshal(map[string]string{"agent": opts.Agent})
+		if err != nil {
+			return fmt.Errorf("opencode fork: encode agent override: %w", err)
+		}
+		if _, err := runOpenCodeServiceCall(binary, workDir, "session.switchAgent", childID, string(body)); err != nil {
+			return fmt.Errorf("opencode fork: set agent on child session %s: %w", childID, err)
+		}
+	}
+	return nil
+}
+
+// openCodeModelRef splits a provider/model string into the 2.x service's
+// model reference.
+func openCodeModelRef(model string) (map[string]string, error) {
+	providerID, modelID, ok := strings.Cut(model, "/")
+	if !ok || providerID == "" || modelID == "" {
+		return nil, fmt.Errorf("opencode fork: model %q is not in provider/model form", model)
+	}
+	return map[string]string{"providerID": providerID, "id": modelID}, nil
+}
+
+// runOpenCodeServiceCall runs one `opencode api <operation>` request with the
+// resolved opencode binary against the 2.x shared service for sessionID and
+// returns its stdout. An empty body sends no request body.
+func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// #nosec G204 -- binary is the configured opencode resolved by
+	// openCodeLaunchBinary, operation is a constant at every call site,
+	// sessionID passed a shell-safe identifier check, and the JSON body is
+	// passed as a single argv element.
+	args := []string{"api", operation, "--param", "sessionID=" + sessionID}
+	if body != "" {
+		args = append(args, "-d", body)
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = workDir
+	cmd.WaitDelay = 500 * time.Millisecond
+	output, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return nil, errors.New(strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, err
+	}
+	return output, nil
 }
 
 // CreateForkedOpenCodeInstance creates a new Instance configured for forking an OpenCode session
@@ -11749,12 +11883,16 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	if strings.TrimSpace(workDir) == "" {
 		workDir = i.ProjectPath
 	}
-	cmd, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
+	cmd, childID, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
 	if err != nil {
 		return nil, "", err
 	}
 
 	forked := NewInstance(newTitle, workDir)
+	if childID != "" {
+		forked.OpenCodeSessionID = childID
+		forked.OpenCodeDetectedAt = time.Now()
+	}
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
