@@ -12,8 +12,8 @@ import (
 
 // Detection reports what is running. It must not rewrite the configured tool
 // Restart launches. A shell-created session that was previously labeled claude
-// stays claude for restart when the only sample is a child shell, and a nested
-// OpenCode is observed without becoming the launch identity.
+// stays claude for restart when the only sample is a child shell, and a
+// foreground OpenCode is observed without becoming the launch identity.
 func TestUpdateStatus_ObservedRuntimeDoesNotRewriteLaunchTool(t *testing.T) {
 	skipIfNoTmuxBinary(t)
 
@@ -28,31 +28,23 @@ func TestUpdateStatus_ObservedRuntimeDoesNotRewriteLaunchTool(t *testing.T) {
 
 	t.Run("child shell does not demote a persisted agent", func(t *testing.T) {
 		inst.SetToolThreadSafe("claude")
-		inst.tmuxSession.SetAgentTreeForTest(t, 10, []tmux.PaneProcess{
-			{PID: 10, PPID: 1, Comm: "bash"},
-		})
 		tmux.SeedPaneInfoCacheForTest(t, map[string]tmux.PaneInfo{
 			inst.tmuxSession.Name: {CurrentCommand: "bash"},
 		})
 
 		require.NoError(t, inst.UpdateStatus())
 		assert.Equal(t, "claude", inst.GetToolThreadSafe(),
-			"launch identity must survive a shell sample with no agent in the tree")
+			"launch identity must survive an unrecognized foreground sample")
 		assert.Equal(t, "shell", inst.ObservedTool())
 		assert.Equal(t, "claude", inst.DisplayToolThreadSafe(),
 			"a shell observation must not hide the configured agent")
 	})
 
-	t.Run("nested opencode is observed and does not become the launch tool", func(t *testing.T) {
+	t.Run("foreground opencode is observed and does not become the launch tool", func(t *testing.T) {
 		inst.SetToolThreadSafe("shell")
 		tmux.ExpireToolDetectionForTest(inst.tmuxSession)
-		inst.tmuxSession.SetAgentTreeForTest(t, 10, []tmux.PaneProcess{
-			{PID: 10, PPID: 1, Comm: "bash"},
-			{PID: 11, PPID: 10, Comm: "nvim"},
-			{PID: 12, PPID: 11, Comm: "opencode", StartID: "42"},
-		})
 		tmux.SeedPaneInfoCacheForTest(t, map[string]tmux.PaneInfo{
-			inst.tmuxSession.Name: {CurrentCommand: "nvim"},
+			inst.tmuxSession.Name: {CurrentCommand: "opencode"},
 		})
 
 		require.NoError(t, inst.UpdateStatus())

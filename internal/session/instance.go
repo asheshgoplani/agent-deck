@@ -226,8 +226,8 @@ type Instance struct {
 	Command string `json:"command"`
 	Wrapper string `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
 	Tool    string `json:"tool"`
-	// observedTool is the runtime DetectTool last reported (a nested agent
-	// inside Neovim, a foreground CLI, or shell). It is not persisted and is
+	// observedTool is the runtime DetectTool last reported (a foreground CLI
+	// or shell). It is not persisted and is
 	// not consulted by Start/Restart: detection must not change what restarts.
 	// Empty until the first status sample that reaches DetectTool.
 	observedTool string
@@ -1045,7 +1045,7 @@ func (inst *Instance) ObservedTool() string {
 	return inst.observedTool
 }
 
-// DisplayToolThreadSafe is the tool to show. A nested or foreground agent
+// DisplayToolThreadSafe is the tool to show. A foreground agent
 // wins over the configured shell so the list matches what is actually running;
 // a shell observation does not hide a configured agent, and neither value is
 // what Restart launches.
@@ -4854,11 +4854,11 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 }
 
 // noteObservedRuntimeLocked records a DetectTool result without changing Tool.
-// Status patterns follow the observed agent so a nested OpenCode pane is
+// Status patterns follow the observed agent so a foreground OpenCode pane is
 // classified with OpenCode's busy/prompt rules; they are restored to the
 // configured tool when the observation drops back to shell. Caller holds i.mu.
 // SetDetectPatterns is deliberately not used: it would pin customToolName and
-// make the next DetectTool skip the process tree.
+// make the next DetectTool skip command-based observation.
 func (i *Instance) noteObservedRuntimeLocked(observed string) {
 	if observed == "" {
 		return
@@ -6926,7 +6926,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 
 	// Observed runtime is separate from the configured launch identity. A shell
-	// session that later runs OpenCode inside Neovim is observed as opencode
+	// session that later runs OpenCode in the foreground is observed as opencode
 	// for status patterns and the list icon, but Restart still launches the
 	// configured command. Writing the observation back onto Tool is what made
 	// a screen-text guess sticky and then resumed the wrong agent.
