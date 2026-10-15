@@ -351,3 +351,39 @@ func TestOpenCode2RestartAndToolMutationKeepLauncher(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCode2ToolMutationClearsLauncherWhenLeavingOpenCode(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	for _, tool := range []string{"shell", "claude", "gemini", "codex"} {
+		t.Run(tool, func(t *testing.T) {
+			inst := NewInstanceWithTool("switch", t.TempDir(), "opencode2")
+			if _, _, err := SetField(inst, FieldTool, tool, nil); err != nil {
+				t.Fatal(err)
+			}
+			if inst.Tool != tool || inst.Command != "" {
+				t.Fatalf("leaving OpenCode must discard its launcher: tool=%q command=%q", inst.Tool, inst.Command)
+			}
+		})
+	}
+}
+
+func TestOpenCode2SSETargetExcludesNonlocalSessions(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	for _, remote := range []string{"ssh", "sandbox"} {
+		for _, port := range []int{0, 4242} {
+			t.Run(fmt.Sprintf("%s/port=%d", remote, port), func(t *testing.T) {
+				inst := NewInstanceWithTool("nonlocal", t.TempDir(), "opencode2")
+				inst.OpenCodeSessionID = "ses_remote"
+				inst.OpenCodePort = port
+				if remote == "ssh" {
+					inst.SSHHost = "remote.invalid"
+				} else {
+					inst.Sandbox = &SandboxConfig{Enabled: true}
+				}
+				if target, ok := inst.OpenCodeSSETarget(); ok {
+					t.Fatalf("nonlocal session must not select a local SSE endpoint: %+v", target)
+				}
+			})
+		}
+	}
+}

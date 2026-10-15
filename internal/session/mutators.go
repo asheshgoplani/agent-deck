@@ -213,6 +213,8 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.Tool = CanonicalToolName(value)
 		if value == "opencode2" || (oldValue == "opencode2" && value == "opencode") {
 			inst.Command = value
+		} else if oldValue == "opencode2" && inst.Tool != "opencode" {
+			inst.Command = ""
 		}
 		inst.TrackCommandExit = false
 		// Leaving claude → drop encoded ClaudeOptions so a same-submit

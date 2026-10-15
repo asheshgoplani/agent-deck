@@ -21,7 +21,9 @@ import (
 // The 2.x check is the memoised version probe the launch already used; the
 // service itself is looked up later, inside the stream goroutine.
 func (i *Instance) OpenCodeSSETarget() (SSETarget, bool) {
-	if i.Tool != "opencode" {
+	// Both endpoints are local to this process. A target-host session must
+	// retain terminal status rather than observe an unrelated local service.
+	if i.Tool != "opencode" || i.IsSSH() || i.IsSandboxed() {
 		return SSETarget{}, false
 	}
 	if port := i.GetOpenCodePort(); port > 0 {
