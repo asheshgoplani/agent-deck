@@ -56,33 +56,57 @@ turn. The temporary session was deleted afterward.
   gofmt, and `git diff --check` pass. The editor's intentional user-controlled
   shell command has a documented G204/G702 trust-boundary annotation; neither
   draft text nor the generated filename is interpolated as executable content.
-- Full `go test ./internal/ui` runs on this branch and unchanged upstream
-  `8d0f1fe1` were interrupted after discovering the current contributor policy
-  requires container-only tests. The initial runs used disposable HOME and
-  private TMUX_TMPDIR directories but were not container-isolated. Both runs
-  had already reported the following failures:
+- Full container-isolated UI race runs now complete on both unchanged upstream
+  `8d0f1fe1` and this PR, using identical dependencies and configuration:
+
+  ```text
+  go test -race ./internal/ui -timeout 12m -count=1 -json
+  main: 216.715s, FAIL
+  PR:   214.916s, FAIL
+  PR-only failures: []
+  Main-only failures: []
+  Race reports: none
+  Timeouts: none
+  ```
+
+  Both runs fail exactly the same seven top-level tests (and the same subtests):
   `TestDialogFitFramesGolden`, `TestRemoteLegacyDialog_Golden`,
   `TestRemoteSwitch_ShiftPOpensRemoteEditDialog`,
   `TestIssue2388_ModelChangeDropsUnsupportedEffort`,
   `TestIssue2388_DialogUsesProbedCodexCatalog`,
   `TestNewDialog_DarkThemeViewGolden_Issue2449`, and
-  `TestNewSessionFlow_Golden`. The three review-mentioned goldens now differ
-  in the Cursor label (`cursor agent` versus `agent`), not an `opencode2` row.
-  No unrelated golden files were regenerated. These interrupted runs do not
-  establish the complete suite outcome. Docker is unavailable on this host
-  (no daemon socket); further tests use a disposable Bubblewrap container with
-  separate PID/IPC/mount namespaces, private HOME and /tmp, and no host tmux
-  sockets or session data.
-- An additional container-isolated run of all seven named tests on unchanged
-  `8d0f1fe1` reproduces every failure, including the three review-mentioned
-  goldens' Cursor-label mismatches.
-- The full container-isolated `go test -race ./internal/ui -timeout 4m -count=1`
-  did not pass: it reported those failures plus embedded-terminal, dedicated
-  socket, watcher/health-alert, background-status ownership, and group-persistence
-  integration failures, then reached the four-minute package timeout while
-  `TestUpdateBannerWidthSweep` was running. The additional failures and timeout
-  have not been baseline-classified; no claim is made that all failures are
-  pre-existing or that the full UI suite passes in this container.
+  `TestNewSessionFlow_Golden`. These are confirmed pre-existing failures, not
+  composer regressions. The three review-mentioned goldens differ in the Cursor
+  label (`cursor agent` versus `agent`), not an `opencode2` row. No unrelated
+  golden files were regenerated.
+- The complete PR UI suite passes with only those seven confirmed baseline
+  failures excluded:
+
+  ```text
+  go test ./internal/ui -skip '^Test(DialogFitFramesGolden|RemoteLegacyDialog_Golden|RemoteSwitch_ShiftPOpensRemoteEditDialog|Issue2388_ModelChangeDropsUnsupportedEffort|Issue2388_DialogUsesProbedCodexCatalog|NewDialog_DarkThemeViewGolden_Issue2449|NewSessionFlow_Golden)$' -timeout 12m -count=1
+  ok .../internal/ui 115.344s
+  ```
+
+- Earlier host UI runs were stopped after discovering the container-only test
+  policy. Docker is unavailable (no daemon socket), so subsequent runs use
+  disposable Bubblewrap containers with separate PID/IPC/mount namespaces,
+  private HOME and /tmp, and no host tmux sockets or session data.
+  An initial container run also lacked `/bin` in PATH, a valid SHELL, and usable
+  fixture utilities; it produced integration failures and exhausted a four-minute
+  package budget. Supplying Bash/coreutils/git/sed/grep and correcting PATH/SHELL
+  resolves all those additional integration failures on **both** revisions:
+
+  ```text
+  go test -race ./internal/ui -run 'Test(EmbeddedRemoteAttach_ToleratesConfigErrorAndLeadingOutput|EmbeddedMoshCloseQuitsGracefully|EmbeddedTerminal_HonoursTmuxOptionOverrides|Issue1595CaptureVisiblePaneDedicatedSocket|Issue2524_|Issue2531_|BackgroundStatusPassOwnershipLinear|TitleFormatWebAndTUIGroupPersistence)' -timeout 3m -count=1
+  PR:   ok .../internal/ui 39.160s
+  main: ok .../internal/ui 39.112s
+  ```
+
+  `TestUpdateBannerWidthSweep` also passes separately on both revisions
+  (PR: 5.348s; main: 5.345s). Its presence in the earlier timeout stack was not
+  evidence of a failing or hanging test; the four-minute package budget expired
+  after earlier tests had consumed it. No production fix is needed for these
+  container-setup failures.
 - The remote composer remains explicitly unsupported and its transport test
   skipped; an executable regression prevents remote rows targeting local input.
 - The full repository test suite was not run for this revision. Durable queue
