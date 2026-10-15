@@ -14121,10 +14121,12 @@ func deliverToConductorPaneAttributed(p conductorPane, msg string, ownPasteMarke
 		content := tmux.StripANSI(raw)
 
 		switch {
-		case send.HasUnsentComposerPrompt(content, msg):
+		case send.ComposerHoldsUnsentMessage(raw, msg, tmux.StripANSI):
 			// Introspectable composer still holds the message: the trailing
 			// Enter was swallowed, so re-press it. Surface a tmux rejection
-			// immediately rather than letting it masquerade as a timeout.
+			// immediately rather than letting it masquerade as a timeout. A
+			// prompt suggestion that echoes msg is not our stuck message: it
+			// falls through to the "composer rendered" arm, never an Enter.
 			sawUnsent = true
 			if err := p.SendEnter(); err != nil {
 				return fmt.Errorf("retry enter: %w", err)
@@ -16317,7 +16319,7 @@ func defaultForkWithStateWorktreeDeps(sparseSourceDir string) forkWithStateWorkt
 // rollback steps of forkSessionCmdWithOptions so the three rollback paths are
 // behaviorally testable (review finding G1).
 type forkInstanceDeps struct {
-	createInstance     func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error)
+	createInstance     func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions, parent session.ForkParent) (*session.Instance, error)
 	createMultiRepoDir func(inst, source *session.Instance) error
 	startInstance      func(inst *session.Instance) error
 	rollback           func(repoRoot, worktreePath, branch string)
@@ -16325,8 +16327,8 @@ type forkInstanceDeps struct {
 
 func defaultForkInstanceDeps() forkInstanceDeps {
 	return forkInstanceDeps{
-		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error) {
-			inst, _, err := source.CreateForkedInstanceForTool(title, groupPath, opts)
+		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions, parent session.ForkParent) (*session.Instance, error) {
+			inst, _, err := source.CreateForkedInstanceForToolUnder(title, groupPath, opts, parent)
 			return inst, err
 		},
 		createMultiRepoDir: func(inst, source *session.Instance) error {
@@ -16407,7 +16409,11 @@ func completeFork(
 	withStateWorktreeCreated bool,
 	deps forkInstanceDeps,
 ) (*session.Instance, error) {
-	inst, err := deps.createInstance(source, title, groupPath, opts)
+	// The parent goes into the fork's construction, not onto the finished
+	// instance: a Claude fork's first start runs the command baked here, and
+	// its launch env depends on the parent.
+	parent := session.ForkParent{SessionID: parentSessionID, ProjectPath: parentProjectPath}
+	inst, err := deps.createInstance(source, title, groupPath, opts, parent)
 	if err != nil {
 		if withStateWorktreeCreated {
 			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
@@ -16428,10 +16434,6 @@ func completeFork(
 			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
 		}
 		return nil, err
-	}
-
-	if parentSessionID != "" {
-		inst.SetParentWithPath(parentSessionID, parentProjectPath)
 	}
 
 	if err := deps.startInstance(inst); err != nil {

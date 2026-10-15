@@ -641,6 +641,12 @@ func crossHarnessPlanCommand(target *Instance, plan *FreshTargetLaunchPlan, _ st
 	for _, key := range keys {
 		prefix += key + "=" + shellescape.Quote(plan.Environment[key]) + " "
 	}
+	// A Claude target keeps the source's parent, so its first launch follows
+	// the same prompt-suggestion policy as every other Claude launch
+	// (prompt_suggestions.go); later restarts get it from the resume path.
+	if _, planned := plan.Environment[promptSuggestionEnvVar]; !planned && target.PromptSuggestionsDisabled() {
+		prefix += promptSuggestionOffEnv + " "
+	}
 	// The shell receives only fixed script text and quoted plan values. It reads
 	// the handoff file into one quoted argv element; payload bytes are never
 	// parsed as shell syntax or embedded in the tmux start command.

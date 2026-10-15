@@ -61,7 +61,7 @@ func TestForkInstanceDeps_OpenCodeUsesResolvedWorktreeDir(t *testing.T) {
 	// lean: no DetectOpenCodeSession goroutine and no start/multi-repo machinery.
 	// The OpenCode fork command is built in-process (no temp script), so this works under any HOME.
 	deps := defaultForkInstanceDeps()
-	inst, err := deps.createInstance(source, "oc parent (fork)", "", opts)
+	inst, err := deps.createInstance(source, "oc parent (fork)", "", opts, session.ForkParent{})
 	if err != nil {
 		t.Fatalf("createInstance: %v", err)
 	}

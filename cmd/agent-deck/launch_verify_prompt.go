@@ -114,7 +114,9 @@ func verifyPromptConsumedAfterLaunchAttributed(
 		// prompt behind the marker and submit both.
 		_ = target.SendEnter()
 	} else {
-		_ = target.SendKeysAndEnter(message)
+		// Typing replaces a prompt suggestion; with one shown, Enter follows
+		// only once the composer holds our message instead of it.
+		_ = send.TypeAndSubmit(target, message, 0, send.ComposerBodyIsSuggestion(capture.Raw))
 	}
 	switch pollPromptConsumed(target, message, maxWait, pollInterval) {
 	case promptConsumed:
