@@ -12272,6 +12272,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		// The quick local title filter; Tab from it reaches Recall, and G
 		// opens Recall directly.
+		h.search.SetScopedGroup("")
+		h.search.SetItems(h.instances)
 		h.search.Show()
 		return h, nil
 
