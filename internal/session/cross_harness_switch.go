@@ -386,6 +386,12 @@ func ExecuteCrossHarnessSwitch(ctx context.Context, cfg *UserConfig, source *Ins
 			return nil, err
 		}
 		uncertainLaunch = true
+		// Best-effort, like every other launch path: a Claude target in a
+		// never-trusted directory would otherwise sit at the folder-trust
+		// prompt and never become ready (#2677).
+		if err := preSeedCrossHarnessClaudeTrust(cfg, target); err != nil {
+			journal.Failure = "folder trust pre-seed: " + err.Error()
+		}
 		if err := deps.Lifecycle.StartTarget(ctx, target, plan); err != nil {
 			journal.Failure = "launch result uncertain: " + err.Error()
 			if writeErr := writeCrossHarnessJournal(journalPath, journal); writeErr != nil {
@@ -665,6 +671,28 @@ func crossHarnessPlanCommand(target *Instance, plan *FreshTargetLaunchPlan, _ st
 	readPayload := shellescape.Quote(`payload=$(cat "$1") || exit 1; shift; command=$1; shift; exec "$command" "$@" "$payload"`)
 	command := prefix + "sh -c " + readPayload + " agent-deck-handoff " + strings.Join(args, " ")
 	return command, true, nil
+}
+
+// preSeedCrossHarnessClaudeTrust marks a Claude target's working directory as
+// trusted before its first launch, mirroring the launch and account-switch
+// paths. The trust entry is keyed by the realpath (Claude resolves symlinks)
+// and written to the .claude.json Claude reads for the target account: the
+// account's config dir when one is bound, otherwise ~/.claude.json.
+func preSeedCrossHarnessClaudeTrust(cfg *UserConfig, target *Instance) error {
+	if target == nil || !IsClaudeCompatible(target.Tool) {
+		return nil
+	}
+	dir := target.EffectiveWorkingDir()
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	path := GetUserMCPRootPath()
+	if target.Account != "" {
+		if accountDir := cfg.GetProfileClaudeConfigDir(target.Account); accountDir != "" {
+			path = filepath.Join(accountDir, ".claude.json")
+		}
+	}
+	return PreAcceptClaudeTrust(path, dir)
 }
 
 func newCrossHarnessTarget(plan *FreshTargetLaunchPlan) *Instance {
