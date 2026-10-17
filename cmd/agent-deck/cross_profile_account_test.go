@@ -30,8 +30,10 @@ func TestCrossProfileAccountEnvironment(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			oldProfile, oldSet, oldOverridden := inheritedProfileEnv, inheritedProfileEnvSet, profileEnvOverridden
+			oldAccountEnv, oldAccountOverridden := inheritedAccountEnv, accountEnvOverridden
 			t.Cleanup(func() {
 				inheritedProfileEnv, inheritedProfileEnvSet, profileEnvOverridden = oldProfile, oldSet, oldOverridden
+				inheritedAccountEnv, accountEnvOverridden = oldAccountEnv, oldAccountOverridden
 			})
 			profileEnvOverridden = false
 			t.Setenv("AGENTDECK_PROFILE", "it")
