@@ -17,24 +17,7 @@ const toolDataContextLevelKey = "context_level"
 // into the given tool_data blob, removing the key when level is empty.
 // Sibling keys are preserved.
 func WriteContextLevelToToolData(td json.RawMessage, level string) json.RawMessage {
-	m := map[string]json.RawMessage{}
-	if len(td) > 0 {
-		_ = json.Unmarshal(td, &m)
-	}
-	if level == "" {
-		delete(m, toolDataContextLevelKey)
-	} else {
-		raw, err := json.Marshal(level)
-		if err != nil {
-			return td
-		}
-		m[toolDataContextLevelKey] = raw
-	}
-	out, err := json.Marshal(m)
-	if err != nil {
-		return td
-	}
-	return out
+	return writeToolDataString(td, toolDataContextLevelKey, level)
 }
 
 // ReadContextLevelFromToolData extracts the per-session context-level
@@ -49,4 +32,28 @@ func ReadContextLevelFromToolData(td json.RawMessage) string {
 	}
 	_ = json.Unmarshal(td, &blob)
 	return blob.ContextLevel
+}
+
+// writeToolDataString merges a string-valued extras key into the tool_data
+// blob, removing the key when value is empty (unset). Sibling keys are
+// preserved; a blob that cannot be re-encoded is returned unchanged.
+func writeToolDataString(td json.RawMessage, key, value string) json.RawMessage {
+	m := map[string]json.RawMessage{}
+	if len(td) > 0 {
+		_ = json.Unmarshal(td, &m)
+	}
+	if value == "" {
+		delete(m, key)
+	} else {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return td
+		}
+		m[key] = raw
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return td
+	}
+	return out
 }

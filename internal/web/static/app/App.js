@@ -8,7 +8,8 @@ import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
 import { AppShell } from './AppShell.js'
 import { selectedIdSignal, selectedGroupSignal, selectSession, selectGroup } from './state.js'
-import { activeTabSignal, hadStoredTab } from './uiState.js'
+import { activeTabSignal } from './uiState.js'
+import { PANES } from './paneRegistry.js'
 
 // Map a pathname onto the selection. encodeURIComponent turns a nested group
 // path ("work/innotrade") into "work%2Finnotrade", which keeps the no-slash
@@ -16,9 +17,10 @@ import { activeTabSignal, hadStoredTab } from './uiState.js'
 // A URL-driven selection must SHOW what it selected without overruling a pane
 // the viewer chose. Groups need no tab handling — Panes renders the group panel
 // over whatever tab is active. Sessions live in the terminal pane, which is
-// hidden unless the tab is 'terminal', so a COLD /s/{id} link must steer; one
-// from a viewer with a stored pane choice must not (PR #2047 review item 1:
-// forcing it broke Skills). Not done in selectSession/selectGroup — j/k call
+// hidden unless the tab is 'terminal'. A /s/{id} link must leave global panes
+// such as Fleet, but preserve session-scoped panes such as Skills (PR #2047).
+// Inspect the current pane for both cold loads and browser history navigation.
+// Not done in selectSession/selectGroup — j/k call
 // those and must not switch tabs, or xterm eats the next key (issue #780).
 export function applyPath(path) {
   if (path.startsWith('/s/')) {
@@ -26,7 +28,10 @@ export function applyPath(path) {
     if (raw && !raw.includes('/')) {
       try {
         selectSession(decodeURIComponent(raw))
-        if (!hadStoredTab) activeTabSignal.value = 'terminal'
+        const tab = activeTabSignal.value
+        if (typeof tab !== 'string' || !PANES[tab]?.sessionScoped) {
+          activeTabSignal.value = 'terminal'
+        }
       } catch (_) { selectSession(null) }
       return
     }

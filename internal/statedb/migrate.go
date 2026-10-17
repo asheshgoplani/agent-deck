@@ -113,6 +113,10 @@ type toolDataBlob struct {
 	// struct do — MergeToolDataExtras would otherwise treat the omission as
 	// "a binary that doesn't know this key" and resurrect the old value.
 	ContextLevel string `json:"context_level,omitempty"`
+	// PromptSuggestions is the per-session prompt-suggestions override
+	// (internal/session/prompt_suggestions.go), listed for the same reason as
+	// ContextLevel: clearing it must not be undone by MergeToolDataExtras.
+	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 }
 
 // multiRepoWorktreeBlob is the JSON representation of a multi-repo worktree in tool_data.

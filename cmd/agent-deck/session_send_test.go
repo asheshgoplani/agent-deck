@@ -1645,7 +1645,7 @@ func TestNoWaitSendOptions_EnablesVerifyDelivery(t *testing.T) {
 
 func TestSendInitialKeysChecked_SingleLineMessageSendsUnchecked(t *testing.T) {
 	mock := &mockSendRetryTarget{}
-	if err := sendInitialKeysChecked(mock, "one line", send.ExpectedPasteMarkerLineBreaks("one line")); err != nil {
+	if err := sendInitialKeysChecked(mock, "one line", send.ExpectedPasteMarkerLineBreaks("one line"), false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
@@ -1657,7 +1657,7 @@ func TestSendInitialKeysChecked_WithholdsEnterOnTruncatedMarker(t *testing.T) {
 	message := "line one\nline two\nline three"
 	expected := send.ExpectedPasteMarkerLineBreaks(message)
 	mock := &mockSendRetryTarget{panes: []string{"❯ [Pasted text #1 +1 lines]\n"}}
-	err := sendInitialKeysChecked(mock, message, expected)
+	err := sendInitialKeysChecked(mock, message, expected, false)
 	if err == nil || !strings.Contains(err.Error(), "prompt truncated in transit") {
 		t.Fatalf("want a truncation error, got %v", err)
 	}
@@ -1667,7 +1667,7 @@ func TestSendInitialKeysChecked_IntactMarkerSendsCleanly(t *testing.T) {
 	message := "line one\nline two\nline three"
 	expected := send.ExpectedPasteMarkerLineBreaks(message)
 	mock := &mockSendRetryTarget{panes: []string{"❯ [Pasted text #1 +2 lines]\n"}}
-	if err := sendInitialKeysChecked(mock, message, expected); err != nil {
+	if err := sendInitialKeysChecked(mock, message, expected, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
