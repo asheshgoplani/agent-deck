@@ -2868,46 +2868,10 @@ func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarg
 	}
 	content.WriteString("\n")
 
-	// Render command options as consistent pill buttons.
-	var cmdButtons []string
-	for i, cmd := range d.presetCommands {
-		displayName := cmd
-		if displayName == "" {
-			displayName = "shell"
-		} else {
-			displayName = displayCommandPreset(cmd)
-		}
-		// Prepend icon for custom tools.
-		if icon := session.GetToolIcon(cmd); cmd != "" && icon != "" {
-			if toolDef := session.GetToolDef(cmd); toolDef != nil && toolDef.Icon != "" {
-				displayName = icon + " " + displayName
-			}
-		}
-
-		var btnStyle lipgloss.Style
-		if i == d.commandCursor {
-			btnStyle = lipgloss.NewStyle().
-				Foreground(ColorBg).
-				Background(ColorAccent).
-				Bold(true).
-				Padding(0, 2)
-		} else {
-			btnStyle = lipgloss.NewStyle().
-				Foreground(ColorTextDim).
-				Background(ColorSurface).
-				Padding(0, 2)
-		}
-
-		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
-	}
-	// Wrapped here (not left to the outer viewportDialogContent Width-render)
-	// so every continuation line keeps the same 2-column indent as the first.
-	// lipgloss's word-wrap reflows the whole logical line as plain text and
-	// has no notion of "this line's indent" to carry over, so a row wrapped
-	// by it alone lands flush against the left edge (finding #3, cosmetic TUI
-	// review: the Command row wrapped with a different indent).
+	// The shared pill renderer owns spacing and wraps whole tool names with
+	// the same indent on continuation lines.
 	innerWidth := dialogWidth - 8 // Padding(2,4) → 4 columns each side.
-	content.WriteString(wrapIndented(cmdButtons, " ", "  ", innerWidth))
+	content.WriteString(renderPills(toolPillLabels(d.presetCommands), d.commandCursor, "  ", innerWidth))
 	content.WriteString("\n")
 
 	// show_only_installed_tools empty-fallback hint (issue #1259).

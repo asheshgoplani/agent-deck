@@ -1,0 +1,21 @@
+{
+  "type": "turn_end",
+  "turnIndex": 0,
+  "session_id": "matrix-pi-session",
+  "session_file": "/tmp/matrix-pi.jsonl",
+  "message": {
+    "role": "assistant",
+    "content": [
+      {
+        "type": "text",
+        "text": "Matrix Pi finished its assigned task."
+      }
+    ],
+    "stopReason": "stop",
+    "timestamp": 1791072000000
+  },
+  "toolResults": [],
+  "messageEntryId": "matrix-pi-entry-1",
+  "toolResultEntryIds": [],
+  "outcome": "completed"
+}

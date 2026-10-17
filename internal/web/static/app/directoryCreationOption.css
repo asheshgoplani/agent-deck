@@ -1,0 +1,93 @@
+/* Missing-directory consent only; keep PathInput and other form styles separate. */
+.dir-create-panel {
+  min-width: 0;
+  margin-top: 4px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+}
+.dir-create-panel--selected { border-color: var(--accent); }
+.dir-create-heading { display: flex; align-items: flex-start; gap: 8px; }
+.dir-create-mark {
+  flex: 0 0 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.dir-create-title { font-size: 12px; font-weight: 600; color: var(--text-hi); }
+.dir-create-hint { margin-top: 2px; font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+.dir-create-panel .dir-create-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--text-hi);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: pointer;
+}
+.dir-create-panel .dir-create-choice:hover,
+.dir-create-panel--selected .dir-create-choice { border-color: var(--accent); background: var(--accent-soft); }
+.dir-create-panel .dir-create-choice:focus-within { border-color: var(--accent); }
+.dir-create-panel .dir-create-check {
+  appearance: auto;
+  accent-color: var(--accent);
+  color-scheme: dark;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.dir-create-panel .dir-create-check:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+:root[data-theme="light"] .dir-create-panel .dir-create-check,
+:root.light .dir-create-panel .dir-create-check { color-scheme: light; }
+.dir-create-caption { margin-bottom: 4px; font-size: 10.5px; color: var(--text-dim); }
+.dir-create-paths { list-style: none; margin: 0; padding: 0; }
+.dir-create-path-row {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 5px 0;
+}
+.dir-create-path-row + .dir-create-path-row { border-top: 1px solid var(--border); }
+.dir-create-path-icon { color: var(--accent); display: flex; padding-top: 2px; }
+.dir-create-path {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.dir-create-error {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--red);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

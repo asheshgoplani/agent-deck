@@ -190,3 +190,18 @@ func TypeAndSubmit(t TypedSender, message string, expectedBreaks int, suggestion
 	}
 	return err
 }
+
+// ProbeComposerBeforeSend reads one pane capture taken immediately before an
+// initial submit and returns the two facts TypeAndSubmit and its verify loop
+// need from it: pasteMarkerFree (no "[Pasted text …]" marker, so a marker seen
+// later is our own collapsed payload, issue #1777) and suggestionShown (a
+// Claude prompt suggestion is painted, so Enter waits until our typed text
+// replaced it). claude says the target is a Claude composer; the suggestion
+// rule applies to nothing else. A capture failure reports both false.
+func ProbeComposerBeforeSend(capture func() (string, error), claude bool) (pasteMarkerFree, suggestionShown bool) {
+	raw, err := capture()
+	if err != nil {
+		return false, false
+	}
+	return !ComposerHoldsPasteMarker(raw, tmux.StripANSI), claude && ComposerBodyIsSuggestion(raw)
+}
