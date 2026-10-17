@@ -13,6 +13,7 @@ package session
 import (
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,13 +66,29 @@ func ReadHermesSessionIDFromToolData(td json.RawMessage) string {
 }
 
 // persistHermesSessionBinding writes the binding straight to SQLite, because
-// UpdateHookStatus callers do not save afterwards (same gap as #1139).
+// UpdateHookStatus callers do not save afterwards (same gap as #1139). It uses
+// the owning database with the same closed-handle retry as the Codex binding,
+// so a web mutator's short-lived Storage never drops the write and an
+// unrelated profile's global database is never written.
 func (i *Instance) persistHermesSessionBinding(sessionID string) {
-	db := statedb.GetGlobal()
+	db := i.restartDB.Load()
+	if db == nil {
+		db = statedb.GetGlobal()
+	}
 	if db == nil {
 		return
 	}
-	if err := db.WriteHermesSessionBinding(i.ID, sessionID, time.Now()); err != nil {
+	now := time.Now()
+	err := db.WriteHermesSessionBinding(i.ID, sessionID, now)
+	if err != nil && db.DB().Ping() != nil && i.storageSnapshot != nil && i.storageSnapshot.dbPath != "" {
+		var retryDB *statedb.StateDB
+		retryDB, err = statedb.Open(i.storageSnapshot.dbPath)
+		if err == nil {
+			err = retryDB.WriteHermesSessionBinding(i.ID, sessionID, now)
+			_ = retryDB.Close()
+		}
+	}
+	if err != nil {
 		sessionLog.Warn("hermes_session_bind_persist_failed",
 			slog.String("instance_id", i.ID),
 			slog.String("new_id", sessionID),
@@ -79,27 +96,60 @@ func (i *Instance) persistHermesSessionBinding(sessionID string) {
 	}
 }
 
+// hermesBindsOnEvent reports whether a hook event may bind or rotate the
+// entry's Hermes session id. Only the parent conversation's turn edges
+// qualify: on_session_start, pre_llm_call and post_llm_call. Tool, API and
+// session-end events also fire for delegate_task children running inside the
+// same process with their own session ids, so they never bind.
+func hermesBindsOnEvent(event string) bool {
+	switch event {
+	case "on_session_start", "pre_llm_call", "post_llm_call":
+		return true
+	}
+	return false
+}
+
 // bindHermesSessionFromHook records the session id reported by this entry's
 // own hook events. Caller holds i.mu.
 //
-// Only the first id seen while no id is recorded is accepted. Hermes runs
-// delegated agents (delegate_task) inside the same process, and their hooks
-// carry their own session ids; the parent always reports first (its turn
-// starts before it can delegate), so later different ids are delegated
-// agents and are ignored. The one legitimate change of id inside a process
-// is a /new or /reset, which ends the owned session with on_session_finalize
-// first; UpdateHookStatus sets hermesRebindAllowed on that edge.
-func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent string) {
+// Hook events arrive as samples (the latest hook file per tick, or only the
+// last event on a cold load), so "first id seen" is not evidence of
+// ownership: the first sample may be a delegate's tool call. Instead, only a
+// parent-only edge (hermesBindsOnEvent) carrying the id in its own payload
+// binds, and a different id on such an edge is a rotation of this entry's
+// conversation and replaces the recorded one. That covers /new and /reset
+// (new session id) and context compression, where Hermes rotates session_id
+// without on_session_finalize and links the new session back through
+// parent_session_id: the next turn edge of the continued conversation carries
+// the new id. A rotation older than the current binding is a stale sample and
+// is ignored.
+func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent string, at time.Time) {
 	if sessionID == i.HermesSessionID {
-		i.hermesRebindAllowed = false
+		if at.After(i.hermesBoundAt) {
+			i.hermesBoundAt = at
+		}
 		return
 	}
-	if i.HermesSessionID != "" && !i.hermesRebindAllowed {
-		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-			InstanceID: i.ID, Tool: i.Tool, Action: "reject",
-			Source: hookSource, OldID: i.HermesSessionID, Candidate: sessionID,
-			HookEvent: hookEvent, Reason: "candidate_is_not_owned_session",
-		})
+	reason := ""
+	switch {
+	case hookSource != "hook_payload":
+		reason = "candidate_not_in_hook_payload"
+	case !hermesBindsOnEvent(hookEvent):
+		reason = "candidate_from_non_parent_edge"
+	case i.HermesSessionID != "" && at.Before(i.hermesBoundAt):
+		reason = "candidate_older_than_binding"
+	}
+	if reason != "" {
+		// One lifecycle line per distinct candidate: a delegate fires a hook
+		// on every tool and API call, which must not flood the log.
+		if i.hermesLastRejected != sessionID {
+			i.hermesLastRejected = sessionID
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.HermesSessionID, Candidate: sessionID,
+				HookEvent: hookEvent, Reason: reason,
+			})
+		}
 		return
 	}
 	action := "bind"
@@ -112,25 +162,73 @@ func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent st
 		HookEvent: hookEvent,
 	})
 	i.HermesSessionID = sessionID
-	i.hermesRebindAllowed = false
+	i.hermesBoundAt = at
+	i.hermesLastRejected = ""
 	i.persistHermesSessionBinding(sessionID)
 }
 
-// prepareHermesResume runs on Restart, before buildHermesCommand. It keeps the
-// recorded id as the only resume target. A shared working directory is not
-// evidence of ownership, so with no recorded id the restart starts a new
-// conversation and says so, rather than resuming the newest conversation in
-// the directory, which may belong to another entry.
+// prepareHermesResume runs on Restart, before buildHermesCommand. The
+// recorded id is the resume target. With no recorded id (an entry created
+// before ids were recorded, or one whose parent never completed a turn edge),
+// the newest conversation in the directory is used only when no other Hermes
+// entry shares that directory, which is the single-entry behaviour from
+// before #2582. In a shared directory that guess may be another entry's
+// conversation, so the restart starts a new one and says so.
 func (i *Instance) prepareHermesResume() {
-	warning := ""
-	if i.HermesSessionID == "" {
-		warning = hermesResumeUnknownWarning(i.EffectiveWorkingDir())
-		sessionLog.Warn("hermes_resume_ownership_unknown", slog.String("instance_id", i.ID))
-	}
 	i.mu.Lock()
-	i.hermesRebindAllowed = false
+	recorded := i.HermesSessionID
+	i.mu.Unlock()
+
+	resume, warning := recorded, ""
+	if recorded == "" {
+		workspace := i.EffectiveWorkingDir()
+		if i.hermesWorkspaceShared(workspace) {
+			warning = hermesResumeUnknownWarning(workspace)
+			sessionLog.Warn("hermes_resume_ownership_unknown", slog.String("instance_id", i.ID))
+		} else {
+			resume = captureHermesSessionID(workspace)
+		}
+	}
+
+	i.mu.Lock()
+	i.HermesSessionID = resume
+	i.hermesBoundAt = time.Time{}
+	i.hermesLastRejected = ""
 	i.pendingCodexRestartWarning = warning
 	i.mu.Unlock()
+}
+
+// hermesWorkspaceShared reports whether another Hermes entry in the owning
+// database uses this entry's project or working directory. It fails closed
+// (true) when the database cannot be read, since a wrong guess resumes
+// another entry's conversation.
+func (i *Instance) hermesWorkspaceShared(workspace string) bool {
+	db := i.restartDB.Load()
+	if db == nil {
+		db = statedb.GetGlobal()
+	}
+	if db == nil {
+		return true
+	}
+	rows, err := db.LoadInstances()
+	if err != nil {
+		return true
+	}
+	mine := map[string]bool{}
+	for _, p := range []string{i.ProjectPath, workspace} {
+		if strings.TrimSpace(p) != "" {
+			mine[filepath.Clean(p)] = true
+		}
+	}
+	for _, r := range rows {
+		if r.ID == i.ID || r.Tool != "hermes" || strings.TrimSpace(r.ProjectPath) == "" {
+			continue
+		}
+		if mine[filepath.Clean(r.ProjectPath)] {
+			return true
+		}
+	}
+	return false
 }
 
 // hermesResumeUnknownWarning explains a restart that started a new Hermes

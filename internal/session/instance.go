@@ -349,11 +349,13 @@ type Instance struct {
 	// entry's OWN hook events reported (issue #2582); restart resumes exactly
 	// that id with --resume. Persisted in the tool_data extras zone
 	// (hermes_session_persist.go), not through this struct's JSON.
-	// hermesRebindAllowed is set when the owned session finalizes (/new,
-	// /reset, exit), so the next session id the process reports may replace it.
+	// Only parent-only hook edges bind or rotate it (hermesBindsOnEvent);
+	// hermesBoundAt orders rebinds against stale samples, and
+	// hermesLastRejected rate-limits the reject lifecycle line.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
-	hermesRebindAllowed  bool
+	hermesBoundAt        time.Time
+	hermesLastRejected   string
 
 	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
 	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
@@ -7385,12 +7387,6 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// the session is already gone, so binding its (possibly reused) id onto a
 	// now-dead instance is the corruption we are preventing, not a feature.
 	if isTerminalHookEvent(status.Event) {
-		// Issue #2582: the owned Hermes session ending (/new, /reset, exit)
-		// is the one edge after which a different id is this entry's own.
-		if i.Tool == "hermes" && i.HermesSessionID != "" &&
-			strings.TrimSpace(status.SessionID) == i.HermesSessionID {
-			i.hermesRebindAllowed = true
-		}
 		return
 	}
 
@@ -7407,7 +7403,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	switch {
 	case i.Tool == "hermes":
-		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event)
+		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.UpdatedAt)
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
@@ -8288,7 +8284,8 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		// Drop the recorded resume ID so the next launch starts a new session;
 		// its first hook event records the new id.
 		i.HermesSessionID = ""
-		i.hermesRebindAllowed = false
+		i.hermesBoundAt = time.Time{}
+		i.hermesLastRejected = ""
 		i.persistHermesSessionBinding("")
 	}
 

@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,37 @@ const (
 func hermesHook(inst *Instance, event, sid string) {
 	inst.UpdateHookStatus(&HookStatus{Status: "running", SessionID: sid, Event: event, UpdatedAt: time.Now()})
 }
+
+func hermesHookAt(inst *Instance, event, sid string, at time.Time) {
+	inst.UpdateHookStatus(&HookStatus{Status: "running", SessionID: sid, Event: event, UpdatedAt: at})
+}
+
+func saveHermesRow(t *testing.T, db *statedb.StateDB, inst *Instance) {
+	t.Helper()
+	if err := db.SaveInstance(&statedb.InstanceRow{ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath,
+		Tool: "hermes", Status: "idle", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("SaveInstance: %v", err)
+	}
+}
+
+func persistedHermesID(t *testing.T, db *statedb.StateDB, id string) string {
+	t.Helper()
+	rows, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances: %v", err)
+	}
+	for _, r := range rows {
+		if r.ID == id {
+			return ReadHermesSessionIDFromToolData(r.ToolData)
+		}
+	}
+	return ""
+}
+
+const (
+	hermesSIDCompressed = "20261011_120000_c0ffee"
+	hermesSIDNew        = "20261012_130000_be11ed"
+)
 
 func TestHermesRestartResumesOwnSessionInSharedWorkspace(t *testing.T) {
 	db := withTempGlobalStateDB(t)
@@ -120,5 +152,162 @@ func TestHermesSessionIDToolDataRoundTrip(t *testing.T) {
 	merged := statedb.MergeToolDataExtras(json.RawMessage(`{"hermes_session_id":"`+hermesSIDA+`"}`), json.RawMessage(`{}`))
 	if got := ReadHermesSessionIDFromToolData(merged); got != hermesSIDA {
 		t.Fatalf("full save dropped the binding: %s", merged)
+	}
+}
+
+// Review blocker 1 on #2696: hook events arrive as samples, so the first id an
+// entry sees may be a delegate_task child's. A delegate's tool call seen first
+// must not bind; the parent's next turn edge must.
+func TestHermesDelegateEventSeenFirstDoesNotBind(t *testing.T) {
+	db := withTempGlobalStateDB(t)
+	a := NewInstanceWithTool("hermes-a", t.TempDir(), "hermes")
+	saveHermesRow(t, db, a)
+
+	hermesHook(a, "pre_tool_call", hermesSIDDelegate)
+	hermesHook(a, "post_api_request", hermesSIDDelegate)
+	if a.HermesSessionID != "" {
+		t.Fatalf("delegate tool/api event bound the entry: got %q", a.HermesSessionID)
+	}
+	hermesHook(a, "post_llm_call", hermesSIDA)
+	if a.HermesSessionID != hermesSIDA {
+		t.Fatalf("parent turn edge must bind: got %q, want %q", a.HermesSessionID, hermesSIDA)
+	}
+	if got := persistedHermesID(t, db, a.ID); got != hermesSIDA {
+		t.Fatalf("persisted id = %q, want %q", got, hermesSIDA)
+	}
+}
+
+// An entry saved before ids were recorded: the first sample after upgrade is a
+// delegate's, then the parent speaks. Same contract as above, starting from a
+// persisted row with no id.
+func TestHermesExistingEntryWithoutIDAfterUpgrade(t *testing.T) {
+	db := withTempGlobalStateDB(t)
+	workspace := t.TempDir()
+	a := NewInstanceWithTool("hermes-a", workspace, "hermes")
+	saveHermesRow(t, db, a)
+	if got := persistedHermesID(t, db, a.ID); got != "" {
+		t.Fatalf("precondition: upgraded row has id %q", got)
+	}
+	hermesHook(a, "pre_tool_call", hermesSIDDelegate)
+	hermesHook(a, "pre_llm_call", hermesSIDA)
+	hermesHook(a, "pre_tool_call", hermesSIDDelegate)
+	if a.HermesSessionID != hermesSIDA || persistedHermesID(t, db, a.ID) != hermesSIDA {
+		t.Fatalf("upgraded entry bound %q (persisted %q), want %q",
+			a.HermesSessionID, persistedHermesID(t, db, a.ID), hermesSIDA)
+	}
+}
+
+// Before any parent edge is seen, a lone entry in its directory restarts into
+// the newest conversation there, as it did before #2582, so upgrading does not
+// regress the single-entry case.
+func TestHermesRestartWithoutIDSingleEntryResumesNewest(t *testing.T) {
+	db := withTempGlobalStateDB(t)
+	workspace := t.TempDir()
+	withFakeHermes(t, `printf 'Title Workspace LastActive ID\n--- --- --- ---\nA ws 1m `+hermesSIDA+`\n'`)
+	a := NewInstanceWithTool("hermes-a", workspace, "hermes")
+	saveHermesRow(t, db, a)
+	other := NewInstanceWithTool("other-dir", t.TempDir(), "hermes")
+	saveHermesRow(t, db, other)
+
+	a.prepareHermesResume()
+	if cmd := a.buildHermesCommand("hermes"); !strings.Contains(cmd, "--resume "+hermesSIDA) {
+		t.Fatalf("lone entry must resume the newest conversation in its directory, got %q", cmd)
+	}
+	if w := a.ConsumeCodexRestartWarning(); w != "" {
+		t.Fatalf("unexpected warning for a lone entry: %q", w)
+	}
+}
+
+// Same restart with a second Hermes entry in the directory: the newest
+// conversation may be the neighbour's, so start fresh and warn.
+func TestHermesRestartWithoutIDSharedWorkspaceStartsFresh(t *testing.T) {
+	db := withTempGlobalStateDB(t)
+	workspace := t.TempDir()
+	withFakeHermes(t, `printf 'Title Workspace LastActive ID\n--- --- --- ---\nB ws 1m `+hermesSIDB+`\n'`)
+	a := NewInstanceWithTool("hermes-a", workspace, "hermes")
+	b := NewInstanceWithTool("hermes-b", workspace, "hermes")
+	saveHermesRow(t, db, a)
+	saveHermesRow(t, db, b)
+
+	a.prepareHermesResume()
+	if cmd := a.buildHermesCommand("hermes"); strings.Contains(cmd, "--resume") {
+		t.Fatalf("shared directory: must not resume a neighbour's session, got %q", cmd)
+	}
+	if w := a.ConsumeCodexRestartWarning(); !strings.Contains(w, "no conversation is recorded") {
+		t.Fatalf("missing ownership warning, got %q", w)
+	}
+}
+
+// Review blocker 2 on #2696: context compression rotates session_id without
+// on_session_finalize (the new session links back through parent_session_id).
+// The continued conversation's next turn edge must move the binding, then a
+// later /new must bind too, and restart must resume the latest one.
+func TestHermesCompressionRotationThenNewRebinds(t *testing.T) {
+	db := withTempGlobalStateDB(t)
+	workspace := t.TempDir()
+	a := NewInstanceWithTool("hermes-a", workspace, "hermes")
+	saveHermesRow(t, db, a)
+
+	hermesHook(a, "pre_llm_call", hermesSIDA)
+	hermesHook(a, "pre_tool_call", hermesSIDDelegate)
+	// Compression mid-turn: no finalize, the turn ends under the new id.
+	hermesHook(a, "post_api_request", hermesSIDCompressed)
+	hermesHook(a, "post_llm_call", hermesSIDCompressed)
+	if a.HermesSessionID != hermesSIDCompressed {
+		t.Fatalf("compression rotation not followed: got %q, want %q", a.HermesSessionID, hermesSIDCompressed)
+	}
+	hermesHook(a, "pre_tool_call", hermesSIDDelegate)
+	if a.HermesSessionID != hermesSIDCompressed {
+		t.Fatalf("delegate took over after compression: got %q", a.HermesSessionID)
+	}
+
+	// /new after the compression.
+	hermesHook(a, "on_session_start", hermesSIDNew)
+	if a.HermesSessionID != hermesSIDNew {
+		t.Fatalf("/new after compression not bound: got %q, want %q", a.HermesSessionID, hermesSIDNew)
+	}
+	if got := persistedHermesID(t, db, a.ID); got != hermesSIDNew {
+		t.Fatalf("persisted id = %q, want %q", got, hermesSIDNew)
+	}
+
+	reloaded := NewInstanceWithTool("hermes-a", workspace, "hermes")
+	reloaded.ID = a.ID
+	reloaded.HermesSessionID = persistedHermesID(t, db, a.ID)
+	reloaded.prepareHermesResume()
+	if cmd := reloaded.buildHermesCommand("hermes"); !strings.Contains(cmd, "--resume "+hermesSIDNew) {
+		t.Fatalf("restart must resume the latest conversation %s, got %q", hermesSIDNew, cmd)
+	}
+}
+
+// A re-fed sample older than the current binding must not roll it back.
+func TestHermesStaleParentSampleDoesNotRollBack(t *testing.T) {
+	a := NewInstanceWithTool("hermes-a", t.TempDir(), "hermes")
+	now := time.Now()
+	hermesHookAt(a, "post_llm_call", hermesSIDA, now.Add(-time.Minute))
+	hermesHookAt(a, "pre_llm_call", hermesSIDB, now)
+	hermesHookAt(a, "post_llm_call", hermesSIDA, now.Add(-time.Minute))
+	if a.HermesSessionID != hermesSIDB {
+		t.Fatalf("stale sample rolled the binding back: got %q, want %q", a.HermesSessionID, hermesSIDB)
+	}
+}
+
+// A delegate fires a hook per tool and API call; the reject line is written
+// once per distinct candidate, not once per event.
+func TestHermesRejectLogIsRateLimited(t *testing.T) {
+	a := NewInstanceWithTool("hermes-a", t.TempDir(), "hermes")
+	hermesHook(a, "pre_llm_call", hermesSIDA)
+	for n := 0; n < 5; n++ {
+		hermesHook(a, "pre_tool_call", hermesSIDDelegate)
+		hermesHook(a, "post_tool_call", hermesSIDDelegate)
+	}
+	data, _ := os.ReadFile(GetSessionIDLifecycleLogPath())
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, a.ID) && strings.Contains(line, `"reject"`) && strings.Contains(line, hermesSIDDelegate) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("reject lines for the delegate = %d, want 1", count)
 	}
 }
