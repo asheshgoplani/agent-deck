@@ -12,13 +12,16 @@
 // with the matrix).
 
 import { test, expect } from '@playwright/test'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { loadMatrix, inferMissingProbe } from '../helpers/parity-matrix.js'
 
 const MATRIX = loadMatrix()
 
 // Pinned row counts. If the matrix grows or shrinks, these MUST be updated
 // in the same PR — the failure is the point.
-const EXPECTED_ACTION_ROWS = 55
+const EXPECTED_ACTION_ROWS = 56
 // Probeable = MISSING rows that inferMissingProbe() maps to a URL. Decremented
 // as endpoints land and their matrix rows flip MISSING → Present:
 //   15 (PR-A #804) → 9 (#1124 skills+MCP, 6 closed) → 7 (#1129 Close + Undo
@@ -85,6 +88,26 @@ test.describe('parity: matrix structural invariants', () => {
 test.describe('parity: session lifecycle', () => {
   test.beforeEach(async ({ request }) => {
     await resetFixture(request)
+  })
+
+  test('preview missing directories - matches TUI confirmation without creating folders', async ({ request }) => {
+    const root = mkdtempSync(join(tmpdir(), 'parity-directory-'))
+    const parent = join(root, 'parent')
+    const projectPath = join(parent, 'project')
+    try {
+      const before = await snapshot(request)
+      const res = await request.get('/api/session-directory', { params: { path: projectPath } })
+      expect(res.status()).toBe(200)
+      expect(await res.json()).toEqual({ path: projectPath, missing: [parent, projectPath] })
+      expect(existsSync(parent)).toBe(false)
+      expect(existsSync(projectPath)).toBe(false)
+      const after = await snapshot(request)
+      expect(after.items).toEqual(before.items)
+      expect(after.totalSessions).toBe(before.totalSessions)
+      expect(after.totalGroups).toBe(before.totalGroups)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test('create session — web POST mirrors TUI New action', async ({ request }) => {

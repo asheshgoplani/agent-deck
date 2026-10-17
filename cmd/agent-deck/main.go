@@ -259,16 +259,20 @@ func initColorProfile() {
 // inheritedProfileEnv is AGENTDECK_PROFILE as this process inherited it,
 // before -p/--profile overwrote it (inheritedProfileEnvSet false: it was
 // unset). profileEnvOverridden records that -p actually overwrote it; the
-// bare form (no -p) leaves the environment alone. See inheritedEnviron.
+// bare form (no -p) leaves the environment alone. Account variables are also
+// retained when an explicit cross-profile selection removes them.
+// See inheritedEnviron.
 var (
 	inheritedProfileEnv    string
 	inheritedProfileEnvSet bool
 	profileEnvOverridden   bool
+	inheritedAccountEnv    []string
+	accountEnvOverridden   bool
 )
 
 // applyProfileFlag propagates an explicit -p/--profile selection so config
 // lookups (e.g., per-profile Claude config) resolve consistently across all
-// command paths in this process. The inherited value is kept so a child
+// command paths without inheriting another profile's account. Values are kept so a child
 // this process runs on the user's behalf (the wrapped statusLine command)
 // sees the environment it would have seen without the flag.
 func applyProfileFlag(profile string) {
@@ -277,10 +281,23 @@ func applyProfileFlag(profile string) {
 	}
 	inheritedProfileEnv, inheritedProfileEnvSet = os.LookupEnv("AGENTDECK_PROFILE")
 	profileEnvOverridden = true
+	inheritedAccountEnv = nil
+	callerProfile := strings.TrimSpace(inheritedProfileEnv)
+	accountEnvOverridden = callerProfile != "" && callerProfile != strings.TrimSpace(profile)
+	if accountEnvOverridden {
+		// These variables select the caller's account, not the explicitly
+		// selected profile. Keep their original presence/values for wrappers.
+		for _, key := range []string{"AGENTDECK_ACCOUNT", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"} {
+			if value, set := os.LookupEnv(key); set {
+				inheritedAccountEnv = append(inheritedAccountEnv, key+"="+value)
+			}
+			_ = os.Unsetenv(key)
+		}
+	}
 	_ = os.Setenv("AGENTDECK_PROFILE", profile)
 }
 
-// inheritedEnviron is os.Environ with AGENTDECK_PROFILE as it was inherited:
+// inheritedEnviron restores the profile and account variables as inherited:
 // the -p flag selects a profile for THIS process, not for a command it runs
 // on the user's behalf. A statusLine script that itself calls agent-deck
 // keeps resolving the profile it always did. Without -p nothing was
@@ -294,14 +311,19 @@ func inheritedEnviron() []string {
 	}
 	env := make([]string, 0, len(os.Environ())+1) //nolint:forbidigo // see above
 	for _, kv := range os.Environ() {             //nolint:forbidigo // see above
-		if !strings.HasPrefix(kv, "AGENTDECK_PROFILE=") {
-			env = append(env, kv)
+		if strings.HasPrefix(kv, "AGENTDECK_PROFILE=") {
+			continue
 		}
+		if accountEnvOverridden && (strings.HasPrefix(kv, "AGENTDECK_ACCOUNT=") ||
+			strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") || strings.HasPrefix(kv, "CLAUDE_SECURESTORAGE_CONFIG_DIR=")) {
+			continue
+		}
+		env = append(env, kv)
 	}
 	if inheritedProfileEnvSet {
 		env = append(env, "AGENTDECK_PROFILE="+inheritedProfileEnv)
 	}
-	return env
+	return append(env, inheritedAccountEnv...)
 }
 
 func configureEventProfile(profile string) error {
@@ -4478,6 +4500,9 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("Global Options:")
 	fmt.Println("  -p, --profile <name>   Use specific profile (default: 'default')")
+	fmt.Println("    When -p differs from a nonempty AGENTDECK_PROFILE, inherited")
+	fmt.Println("    AGENTDECK_ACCOUNT, CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	fmt.Println("    are ignored. Explicit --account still overrides the selected profile.")
 	fmt.Println("  -g, --group <name>     Launch TUI scoped to a specific group")
 	fmt.Println("  --select <id|title>    Launch TUI with cursor on a specific session (all groups stay visible)")
 	fmt.Println()
