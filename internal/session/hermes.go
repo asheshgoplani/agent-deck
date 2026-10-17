@@ -397,10 +397,10 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 
 	cmd := GetToolCommand("hermes")
 
-	// Resume the captured hermes session when known. Hermes mints a fresh ID per
-	// launch and never exports it, so HermesSessionID is captured from
-	// `hermes sessions list` at restart time (see Instance.Restart). Empty on a
-	// first launch or an intentional fresh restart, which starts a new session.
+	// Resume this entry's own hermes session when known. HermesSessionID is
+	// recorded from the entry's own hook events (issue #2582, see
+	// hermes_session_persist.go). Empty on a first launch, an intentional fresh
+	// restart, or when ownership was never established: a new session starts.
 	if i.HermesSessionID != "" {
 		cmd += " --resume " + shellescape.Quote(i.HermesSessionID)
 	}

@@ -345,14 +345,15 @@ type Instance struct {
 	PiSessionID   string `json:"pi_session_id,omitempty"`
 	PiSessionPath string `json:"pi_session_path,omitempty"`
 
-	// Hermes CLI integration. Hermes mints a new session ID each launch and does
-	// not export it (no env var / hook), so agent-deck captures it from
-	// `hermes sessions list` at restart time and resumes with --resume. Not
-	// persisted (json:"-"): it is re-captured on every restart, so it needs no
-	// lifetime beyond a single Restart() call — which also keeps it out of the
-	// JSON marshaling that could otherwise race the restart-time write.
+	// Hermes CLI integration. HermesSessionID is the native session id this
+	// entry's OWN hook events reported (issue #2582); restart resumes exactly
+	// that id with --resume. Persisted in the tool_data extras zone
+	// (hermes_session_persist.go), not through this struct's JSON.
+	// hermesRebindAllowed is set when the owned session finalizes (/new,
+	// /reset, exit), so the next session id the process reports may replace it.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
+	hermesRebindAllowed  bool
 
 	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
 	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
@@ -7384,6 +7385,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	// the session is already gone, so binding its (possibly reused) id onto a
 	// now-dead instance is the corruption we are preventing, not a feature.
 	if isTerminalHookEvent(status.Event) {
+		// Issue #2582: the owned Hermes session ending (/new, /reset, exit)
+		// is the one edge after which a different id is this entry's own.
+		if i.Tool == "hermes" && i.HermesSessionID != "" &&
+			strings.TrimSpace(status.SessionID) == i.HermesSessionID {
+			i.hermesRebindAllowed = true
+		}
 		return
 	}
 
@@ -7399,6 +7406,8 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	}
 
 	switch {
+	case i.Tool == "hermes":
+		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event)
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
@@ -8276,9 +8285,11 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	}
 
 	if i.Tool == "hermes" {
-		// Drop the captured resume ID so the next launch starts a new session
-		// and Restart() re-captures rather than resuming the old conversation.
+		// Drop the recorded resume ID so the next launch starts a new session;
+		// its first hook event records the new id.
 		i.HermesSessionID = ""
+		i.hermesRebindAllowed = false
+		i.persistHermesSessionBinding("")
 	}
 
 	if i.Tool == "deepseek" {
@@ -10698,13 +10709,8 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	} else if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
 		command = i.buildCodexCommand(i.Command)
 	} else if i.Tool == "hermes" {
-		// Re-capture the pane's hermes session ID on EVERY restart (hermes
-		// doesn't export it). Overwriting rather than caching once self-heals a
-		// stale ID: if the previously-resumed session was pruned, the query
-		// returns the current most-recent session, or "" — in which case
-		// buildHermesCommand starts fresh instead of resuming a dead ID forever.
-		// Scoped to the working dir to avoid picking up an unrelated session.
-		i.HermesSessionID = captureHermesSessionID(i.EffectiveWorkingDir())
+		// Issue #2582: resume only the id this entry's own hooks recorded.
+		i.prepareHermesResume()
 		// Drop any stale hook state from the previous process, then seed a
 		// synthetic "waiting" baseline. Hermes fires on_session_start only at
 		// the FIRST TURN of a brand-new session (not at process launch), so
@@ -11259,9 +11265,9 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
-	// Hermes resumes via `--resume <id>`; the ID is captured from
-	// `hermes sessions list` at restart time. Always restartable (resumes when a
-	// session is found, else starts fresh) rather than only when dead/errored,
+	// Hermes resumes via `--resume <id>`, the id its own hooks recorded
+	// (#2582). Always restartable (resumes when an id is recorded, else starts
+	// fresh) rather than only when dead/errored,
 	// which left a live hermes session silently un-restartable.
 	if i.Tool == "hermes" {
 		return true
