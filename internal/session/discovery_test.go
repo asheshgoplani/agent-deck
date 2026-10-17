@@ -175,6 +175,29 @@ func TestFilterByQueryFuzzyFieldsAndStatus(t *testing.T) {
 	}
 }
 
+func TestFilterByQueryRanksExactBeforeFuzzy(t *testing.T) {
+	// Enter in local search jumps to results[0], so a fully typed session
+	// name must rank ahead of earlier sessions that only match fuzzily.
+	api := &Instance{Title: "deploy-api"}
+	app := &Instance{Title: "deploy-app"}
+	far := &Instance{Title: "deploy-abc"}
+	items := []*Instance{far, api, app}
+
+	got := FilterByQuery(items, "deploy-app")
+	if len(got) == 0 || got[0] != app {
+		t.Fatalf("FilterByQuery(deploy-app)[0] = %v, want the exact match deploy-app", got)
+	}
+	want := []*Instance{app, api, far}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("result %d = %q, want %q (ordered by edit distance)", i, got[i].Title, want[i].Title)
+		}
+	}
+}
+
 func TestDetectToolFromName(t *testing.T) {
 	tests := []struct {
 		name     string
