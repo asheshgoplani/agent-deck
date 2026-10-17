@@ -269,3 +269,48 @@ func TestParentFoldIgnoresChildrenInOtherArchivePartition(t *testing.T) {
 		}
 	}
 }
+
+// A fold only applies in the archive partition where its parent row is
+// drawn. Flatten runs before the active/archived partition, so a fold on a
+// parent that was archived afterwards must not hide its still-active
+// children from the active view, where no parent row or badge exists to
+// unfold them.
+func TestParentFoldOnArchivedParentKeepsActiveChildrenVisible(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	h.instances = []*session.Instance{parent, child}
+	h.parentChildrenCollapsed["parent"] = true
+	parent.ArchivedAt = time.Now()
+	h.rebuildFlatItems()
+
+	if got := strings.Join(flatSessionTitles(h), ","); got != "child" {
+		t.Fatalf("active view list = %s, want child (fold belongs to the archived parent)", got)
+	}
+
+	h.statusFilter = FilterModeArchived
+	h.rebuildFlatItems()
+	if got := strings.Join(flatSessionTitles(h), ","); got != "parent" {
+		t.Fatalf("archived view list = %s, want parent", got)
+	}
+}
+
+// The mirror case: a fold on an active parent must not drop that parent's
+// archived children from the ^ archived view, where the active parent row
+// is not drawn.
+func TestParentFoldOnActiveParentKeepsArchivedChildrenVisible(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	h.instances = []*session.Instance{parent, child}
+	h.parentChildrenCollapsed["parent"] = true
+	child.ArchivedAt = time.Now()
+
+	h.statusFilter = FilterModeArchived
+	h.rebuildFlatItems()
+	if got := strings.Join(flatSessionTitles(h), ","); got != "child" {
+		t.Fatalf("archived view list = %s, want child (fold belongs to the active parent)", got)
+	}
+
+	h.statusFilter = ""
+	h.rebuildFlatItems()
+	if got := strings.Join(flatSessionTitles(h), ","); got != "parent" {
+		t.Fatalf("active view list = %s, want parent", got)
+	}
+}

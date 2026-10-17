@@ -3178,6 +3178,32 @@ func (h *Home) sessionChildCount(item session.Item) int {
 	return n
 }
 
+// partitionParentFolds returns the parent folds (#2631) that apply to the
+// archive partition on screen. Flatten runs before the active/archived
+// partition, so a fold must only hide children when its parent row is drawn
+// in this view: a folded parent that was later archived would otherwise hide
+// its still-active children from the active list, and a folded active parent
+// would hide its archived children from the ^ view. In both cases the parent
+// row (and its fold badge) is absent, so nothing on screen could unfold them.
+func (h *Home) partitionParentFolds() map[string]bool {
+	if len(h.parentChildrenCollapsed) == 0 || h.groupTree == nil {
+		return nil
+	}
+	viewArchived := h.statusFilter == FilterModeArchived
+	folds := make(map[string]bool, len(h.parentChildrenCollapsed))
+	for _, group := range h.groupTree.GroupList {
+		if group == nil {
+			continue
+		}
+		for _, s := range group.Sessions {
+			if s != nil && h.parentChildrenCollapsed[s.ID] && s.IsArchived() == viewArchived {
+				folds[s.ID] = true
+			}
+		}
+	}
+	return folds
+}
+
 // revealParentFold opens the folded child list (#2631) that would hide inst,
 // so the reveal paths (search jump, focus request, session switch, new or
 // restored session) land on the row instead of silently finding nothing.
@@ -3393,7 +3419,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	h.jumpMode = false
 	h.jumpBuffer = ""
 
-	allItems := h.groupTree.FlattenWithParentFolds(h.parentChildrenCollapsed)
+	allItems := h.groupTree.FlattenWithParentFolds(h.partitionParentFolds())
 	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
 		allItems = flatSidebarItemsFromTree(h.groupTree)
 	}
