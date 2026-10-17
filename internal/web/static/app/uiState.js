@@ -22,21 +22,6 @@ function persist(sig, key) {
 }
 
 // Active tab in main work surface.
-// Bundle ships 8 tabs: fleet, terminal, mcp, skills, conductor, watchers, costs, search.
-// Only `fleet | terminal | costs | search` have data (search filters local sessions only).
-// MCP/Skills/Conductor/Watchers render informative stubs because the API doesn't expose them.
-// Whether the VIEWER had already chosen a pane. Captured BEFORE persist()
-// below, which writes the default back immediately — after that, "is the key
-// set?" cannot tell a real choice from our own write. App.js reads this to
-// decide whether a /s/{id} link may steer the pane (only on a cold visit).
-export const hadStoredTab = (() => {
-  try {
-    return localStorage.getItem('agentdeck.tab') != null
-  } catch (_) {
-    return false   // private mode: treat as cold rather than trapping the link
-  }
-})()
-
 export const activeTabSignal = signal(loadJSON('agentdeck.tab', 'fleet'))
 persist(activeTabSignal, 'agentdeck.tab')
 
