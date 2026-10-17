@@ -158,6 +158,10 @@ func recordTooOld(rec turnRecord, notBefore time.Time) bool {
 // resumes: past every complete line examined, and never past a partial
 // trailing line, which Claude may still be writing.
 func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, error) {
+	return scanTurn(q, cursor, true)
+}
+
+func scanTurn(q TurnQuery, cursor int64, matchPrompt bool) (TurnIdentity, int64, bool, error) {
 	want := normalizeTurnPrompt(q.Prompt)
 	f, err := os.Open(q.Path)
 	if err != nil {
@@ -187,11 +191,11 @@ func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, err
 			continue
 		}
 		body, human := humanPrompt(rec)
-		if !human || !promptMatches(body, want) || recordTooOld(rec, q.NotBefore) {
+		if !human || (matchPrompt && !promptMatches(body, want)) || recordTooOld(rec, q.NotBefore) {
 			continue
 		}
 		if rec.UUID == "" {
-			return TurnIdentity{}, cursor, false, fmt.Errorf("submitted prompt has no transcript UUID; refusing to guess turn identity")
+			return TurnIdentity{}, cursor, false, fmt.Errorf("user record has no transcript UUID; refusing to guess turn identity")
 		}
 		return TurnIdentity{UUID: rec.UUID, Path: q.Path, StartOffset: cursor, SessionID: rec.SessionID}, cursor, true, nil
 	}
@@ -216,10 +220,23 @@ func TurnAdvanced(q TurnQuery) bool {
 // --stream until then — the in-flight turn's output can never be consumed as
 // the queued message's reply.
 func AwaitTurnIdentity(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, error) {
+	return awaitTurn(q, timeout, poll, true)
+}
+
+// AwaitObservedTurn waits for the first new main-chain user record after the
+// pre-send boundary. It observes a turn, not acceptance of q.Prompt: a socket
+// inbox has no receipt and Claude may wrap its content. Callers must label the
+// output uncorrelated and must not use this as submission or delivery proof.
+// Cursor, NotBefore, complete-record and UUID guards still apply.
+func AwaitObservedTurn(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, error) {
+	return awaitTurn(q, timeout, poll, false)
+}
+
+func awaitTurn(q TurnQuery, timeout, poll time.Duration, matchPrompt bool) (TurnIdentity, error) {
 	cursor := q.Cursor
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		id, next, found, err := scanTurnIdentity(q, cursor)
+		id, next, found, err := scanTurn(q, cursor, matchPrompt)
 		if err != nil {
 			return TurnIdentity{}, err
 		}
@@ -227,9 +244,12 @@ func AwaitTurnIdentity(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, 
 			return id, nil
 		}
 		cursor = next
-		time.Sleep(poll)
+		time.Sleep(min(poll, time.Until(deadline)))
 	}
-	return TurnIdentity{}, fmt.Errorf("turn identity not established within %s", timeout)
+	if matchPrompt {
+		return TurnIdentity{}, fmt.Errorf("turn identity not established within %s", timeout)
+	}
+	return TurnIdentity{}, fmt.Errorf("new transcript turn not observed within %s", timeout)
 }
 
 func assistantText(rec turnRecord) (text string, assistant bool, stopReason, messageID string) {
@@ -334,7 +354,7 @@ func AwaitTurnResponse(id TurnIdentity, timeout, poll time.Duration) (*ResponseO
 		if !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(poll)
+		time.Sleep(min(poll, time.Until(deadline)))
 	}
 	if partial != nil {
 		return partial, fmt.Errorf("turn %s: %w after %s", id.UUID, ErrTurnResponseIncomplete, timeout)

@@ -87,6 +87,7 @@ func TestPool_RestartLoop_ProducesOneChild(t *testing.T) {
 	cmd := []string{"-c", "while read line; do echo $line; done"}
 
 	baselineLive := len(liveDirectChildrenMatching(t, os.Getpid(), "sh"))
+	baselineZombies := countZombieChildrenOfPid(t, os.Getpid())
 	require.NoError(t, pool.Start(name, "sh", cmd, nil))
 
 	// Wait until child actually exists.
@@ -103,6 +104,8 @@ func TestPool_RestartLoop_ProducesOneChild(t *testing.T) {
 
 	live := liveDirectChildrenMatching(t, os.Getpid(), "sh")
 	delta := len(live) - baselineLive
+	assert.LessOrEqual(t, countZombieChildrenOfPid(t, os.Getpid())-baselineZombies, 0,
+		"pool restarts must reap replaced children")
 	assert.Equal(t, 1, delta,
 		"expected exactly 1 live MCP child after 5 restarts (baseline=%d, observed=%v)",
 		baselineLive, live)
