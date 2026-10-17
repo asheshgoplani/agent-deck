@@ -136,6 +136,8 @@ func TestCodexFreshProcess_HookAndPaneTable(t *testing.T) {
 		{"no hook, busy pane", codexBusyFrame, "", 0, StatusRunning},
 		{"fresh completion hook pins waiting over a busy pane (#2190)", codexBusyFrame, "waiting", 2, StatusWaiting},
 		{"stale completion hook yields to the busy pane (#2189)", codexBusyFrame, "waiting", 6, StatusRunning},
+		{"stale completion hook yields to working with queued questions", codexBusyFrame + "\n• Queued follow-up inputs\n  ? 1 question\n    shift+← to answer\n\n" + codexIdleFrame, "waiting", 6, StatusRunning},
+		{"stale completion hook with idle queued questions", "• Queued follow-up inputs\n  ? 1 question\n    shift+← to answer\n\n" + codexIdleFrame, "waiting", 6, StatusWaiting},
 		{"stale completion hook, idle prompt", codexIdleFrame, "waiting", 6, StatusWaiting},
 		{"fresh running hook pins running over an idle prompt", codexIdleFrame, "running", 5, StatusRunning},
 		{"stale running hook yields to the idle prompt", codexIdleFrame, "running", 30, StatusWaiting},

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -76,6 +78,32 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 		if err := session.ValidateLaunchReasoningEffortForModel(req.Tool, req.ModelID, req.ReasoningEffort); err != nil {
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 			return
+		}
+		if req.CreateDir {
+			preview, err := inspectSessionDirectory(req.ProjectPath)
+			if err != nil {
+				writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+				return
+			}
+			for _, dir := range preview.Missing {
+				if req.CreateDirPaths != nil && !slices.Contains(req.CreateDirPaths, dir) {
+					writeAPIError(w, http.StatusConflict, ErrCodeBadRequest, "directory list changed; review the folders and select Create this folder again")
+					return
+				}
+			}
+			// Create only the inspected parents. If an earlier parent disappears
+			// during creation, fail rather than recreate unlisted directories.
+			for _, dir := range preview.Missing {
+				if err := os.Mkdir(dir, 0o755); err != nil {
+					info, statErr := os.Stat(dir)
+					if !os.IsExist(err) || statErr != nil || !info.IsDir() {
+						writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, fmt.Sprintf("failed to create directory %s: %v", dir, err))
+						return
+					}
+				}
+			}
+			// Keep the original input for the mutator's expansion. Re-expanding
+			// the resolved path would interpret literal dollars in env values.
 		}
 		sessionID, err := s.mutator.CreateSession(req.Title, req.Tool, req.ProjectPath, req.GroupPath, req.ModelID, req.ReasoningEffort)
 		if err != nil {

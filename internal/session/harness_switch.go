@@ -317,13 +317,15 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		}
 		return switchFailedNative(journalPath, j, err)
 	}
+	sharedRoot := ""
 	if choice != nil {
 		sourcePath, sourceHash = choice.Chosen.Path, choice.Chosen.SHA256
+		sharedRoot = choice.SharedProjectsRoot
 	}
 	if sourcePath != "" {
 		j.SourcePath, j.SourceSHA256 = sourcePath, sourceHash
 	}
-	if j.StageDir == "" {
+	if j.StageDir == "" && sharedRoot == "" {
 		stageRoot, err := switchStageRoot(inst.ID)
 		if err != nil {
 			return nil, err
@@ -336,7 +338,7 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 			return nil, fmt.Errorf("create switch staging directory: %w", err)
 		}
 	}
-	if sourcePath != "" {
+	if sourcePath != "" && sharedRoot == "" {
 		stagePath := filepath.Join(j.StageDir, filepath.Base(sourcePath))
 		if _, err := os.Stat(stagePath); os.IsNotExist(err) {
 			if err := copyFileVerified(sourcePath, stagePath); err != nil {
@@ -371,11 +373,30 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 			return switchFailedNative(journalPath, j, fmt.Errorf("stop source before install: %w", err))
 		}
 	}
+	if sharedRoot != "" {
+		// A stop may flush the transcript or an operator may rebind projects.
+		// Re-read the exact shared store, but never stage, install or archive it.
+		finalChoice, selectErr := selectSwitchTranscript(inst, sourceDir, targetDir, opts.ArchiveDestination)
+		if selectErr != nil {
+			return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("final shared source export failed: %w", selectErr))
+		}
+		if finalChoice == nil || finalChoice.SharedProjectsRoot != sharedRoot ||
+			!os.SameFile(choice.sharedProjectsInfo, finalChoice.sharedProjectsInfo) {
+			return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("shared transcript store changed during account switch"))
+		}
+		choice = finalChoice
+		sourcePath, sourceHash = choice.Chosen.Path, choice.Chosen.SHA256
+		j.SourcePath, j.SourceSHA256, j.Destination = sourcePath, sourceHash, sourcePath
+		j.State = switchInstalled
+		if err := writeSwitchJournal(journalPath, j); err != nil {
+			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
+		}
+	}
 	// KillAndWait flushes the source and confirms the old pane is gone. The
 	// provisional pre-copy above is only a rollback snapshot: select and stage
 	// the final bytes now, before installing anything. A changed identity is a
 	// failure, never permission to fall back to an mtime scan.
-	if sourcePath != "" {
+	if sourcePath != "" && sharedRoot == "" {
 		finalChoice, selectErr := selectSwitchTranscript(inst, sourceDir, targetDir, opts.ArchiveDestination)
 		if selectErr != nil {
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, fmt.Errorf("final source export failed: %w", selectErr))
@@ -468,7 +489,11 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 
 	migrated := "conversation migrated"
 	if choice != nil {
-		migrated += ": " + choice.Summary()
+		if sharedRoot != "" {
+			migrated = choice.Summary()
+		} else {
+			migrated += ": " + choice.Summary()
+		}
 	}
 	conversation := migrated + "; native destination readiness has not yet been asserted"
 	if sourcePath == "" {
