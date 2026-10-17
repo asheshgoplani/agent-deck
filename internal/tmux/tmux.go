@@ -891,7 +891,7 @@ func detectToolFromCommand(command string) string {
 			return "claude"
 		case "gemini":
 			return "gemini"
-		case "opencode", "open-code":
+		case "opencode", "opencode2", "open-code":
 			return "opencode"
 		case "codex":
 			return "codex"

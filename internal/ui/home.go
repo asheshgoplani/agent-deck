@@ -6544,8 +6544,8 @@ func (h *Home) backgroundStatusUpdate() {
 			if st == session.StatusStopped {
 				continue
 			}
-			if port := inst.GetOpenCodePort(); port > 0 {
-				targets = append(targets, session.SSETarget{InstanceID: inst.ID, Port: port})
+			if target, ok := inst.OpenCodeSSETarget(); ok {
+				targets = append(targets, target)
 				if ss := h.sseWatcher.GetStatus(inst.ID); ss != nil {
 					inst.UpdateOpenCodeSSEStatus(ss.Status, ss.UpdatedAt)
 				}
@@ -14367,7 +14367,7 @@ func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if c.Field == session.FieldAccount && strings.TrimSpace(c.Value) != "" {
 				accountSwitch, switchAccount = c.Value, true
 			}
-			if c.Field == session.FieldTool && strings.TrimSpace(c.Value) != "" && c.Value != inst.Tool {
+			if c.Field == session.FieldTool && strings.TrimSpace(c.Value) != "" && session.CanonicalToolName(c.Value) != session.CanonicalToolName(inst.Tool) {
 				switchHarness = c.Value
 			}
 		}
