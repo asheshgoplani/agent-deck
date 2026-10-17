@@ -1190,6 +1190,9 @@ type ProfileSettings struct {
 type ProfileClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this profile only.
 	ConfigDir string `toml:"config_dir,omitempty"`
+	// PromptSuggestions overrides [launch].prompt_suggestions for sessions
+	// of this agent-deck profile.
+	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
 }
 
 // ProfileCodexSettings defines profile-specific Codex overrides.
@@ -1879,6 +1882,14 @@ type LaunchSettings struct {
 	// sub-session out of it: the new session starts top-level in the
 	// folder-derived group, with no parent link and no note.
 	NestUnderParent bool `toml:"nest_under_parent,omitempty"`
+
+	// PromptSuggestions controls Claude Code prompt suggestions (the dim
+	// predicted next message in an empty composer) in sessions agent-deck
+	// launches: "children-off" (default) starts parented sessions (workers, a
+	// conductor's children) with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+	// and leaves root sessions alone; "on" never sets the env; "off" sets it
+	// for every Claude session. See prompt_suggestions.go.
+	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting

@@ -26,7 +26,8 @@ var codexStatusLineRe = regexp.MustCompile(`^(?:[•◦]\s+)?\p{Lu}.*\((?:\d+[hm
 // While a turn runs, Codex 0.155 lists the operator's queued messages between
 // the status line and the composer ("• Queued follow-up inputs", one
 // "  ↳ <message>" row each with indented continuations, then "    shift + ←
-// edit last queued message"). That block is skipped whole, and only when it
+// edit last queued message"). Collapsed questions use "  ? N question(s)"
+// instead of an arrow entry. That block is skipped whole, and only when it
 // ends at its own header, so the status line above it still counts.
 func codexLiveStatusLine(content string) bool {
 	lines := lastNLines(content, 60)
@@ -78,16 +79,19 @@ func codexStatusDetailsStart(lines []string, end int) int {
 
 const codexQueuedInputsTitle = "• Queued follow-up inputs"
 
+// Match only the rendered count summary, never arbitrary question text.
+var codexQueuedQuestionLineRe = regexp.MustCompile(`^  \? (?:1 question|(?:[2-9]|[1-9][0-9]+) questions)$`)
+
 // codexQueuedInputsHeader returns the index of the "• Queued follow-up inputs"
 // header when lines[end] is the last row of that block, or -1. Every row
-// between the header and end must be a "  ↳ " entry or an indented
-// continuation, and at least one entry must exist.
+// between the header and end must be a "  ↳ " entry, a question-count summary,
+// or an indented continuation, and at least one entry must exist.
 func codexQueuedInputsHeader(lines []string, end int) int {
 	entries := 0
 	for i := end; i >= 0; i-- {
 		line := lines[i]
 		switch {
-		case strings.HasPrefix(line, "  ↳ "):
+		case strings.HasPrefix(line, "  ↳ ") || codexQueuedQuestionLineRe.MatchString(strings.TrimRight(line, " \t")):
 			entries++
 		case strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "":
 			// Continuation row of an entry, or the "shift + ←" hint.
