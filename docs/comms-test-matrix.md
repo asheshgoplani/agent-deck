@@ -40,8 +40,8 @@ Timing: `latency_ms` (signal to commit) is on every record; P2 adds
 | Cursor | local | urgent | **status-only in P1** (text producer specified: beforeSubmitPrompt, afterAgentResponse `text`, which needs one more event in the installed hooks.json and a lossless merge; deferred) | stop `followup_message` / typed nudge (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
 | Cursor | local | info | n/a until the producer is enabled | | deferred | |
 | Cursor | remote | urgent, info | as local + import | as local | P3 | matrix row only |
-| Pi | local | urgent | **status-only in P1** (text producer specified: extension v3 with `input` prompt and `agent_settled` text; deferred, needs the re-versioned extension and lab L1) | extension `pi.sendUserMessage()` (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
-| Pi | local | info | n/a until the producer is enabled | | deferred | |
+| Pi | local | urgent | extension v3: the last `input` is the prompt, `agent_settled` carries the run's last `turn_end` text; a run without text is one status edge | extension `pi.sendUserMessage()` (P2) | **auto** | `TestHookHandler_PiSettleSpoolsOneTurnEnd`, `TestHookHandler_PiNoTextSettleSpoolsOneStatusEdge`, `TestPiHookExtension_*`, `TestCommsIngest_Pi*`; matrix pi cells |
+| Pi | local | info | as urgent; `<task-notification>` prompt is tier info | | **auto** | `TestCommsIngest_PiTurnTiersFromThePromptAndSentinel` |
 | Pi | remote | urgent, info | as local + import | as local | P3 | matrix row only |
 | Hermes | local | urgent | **status-only in P1** (text producer specified: pre_llm_call `user_message`, post_llm_call `assistant_response`; the shell-hook payload shape is unverified) | pre_llm_call `{context}` / typed nudge (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
 | Hermes | local | info | n/a until the producer is enabled | | deferred | |
@@ -71,15 +71,16 @@ Run on a machine with the built binary and the harness installed, with
 `[comms] ledger = true`, the notify daemon restarted, and a conductor plus
 one child of the harness under test.
 
-Lab L1 and L2 apply once the pi and OpenCode producers are enabled (not in P1).
+Lab L2 applies once the OpenCode producer is enabled (not in P1). Lab L1 applies to the pi producer.
 
-**L1 pi (urgent, local)**
+**L1 pi (info, local)**
 ```
 agent-deck launch /tmp/lab-pi -t lab-pi -c pi -m "Reply with exactly: PI READY"
 agent-deck events follow --bus comms --json --session <lab-pi id>
 ```
 Expect within 10 s of pi's prompt returning: one `turn` record, `tool: pi`,
-`trigger: human`, `tier: urgent`, `text: PI READY`, `latency_ms` < 5000.
+`trigger: human`, `tier: info` (a plain reply; urgent needs a done sentinel,
+an error, or a question), `text: PI READY`, `latency_ms` < 5000.
 
 **L2 opencode (urgent, local)**
 ```
