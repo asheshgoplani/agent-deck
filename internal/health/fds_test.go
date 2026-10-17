@@ -73,11 +73,13 @@ func TestSamplerPopulatesOpenFDsOnThisPlatform(t *testing.T) {
 
 func TestDescriptorBudgetBreachWithInjectedCount(t *testing.T) {
 	withOpenFDs(t, func() (*int, bool) { return ptr(DescriptorBudget + 88), true })
+	RecordStatusPass(time.Millisecond, 0, 0)
 	d := t.TempDir()
 	stop := Start(d, "tui", t.TempDir(), "test")
-	if got, want := CurrentWarning(), "Health: descriptor count exceeds 512 budget"; got != want {
+	// One sample over budget is recorded but does not light the footer (#2535).
+	if got := CurrentWarning(); got != "" {
 		stop()
-		t.Fatalf("warning = %q, want %q", got, want)
+		t.Fatalf("single over-budget sample warned: %q", got)
 	}
 	stop()
 	r := reportOf(t, d)
@@ -85,15 +87,18 @@ func TestDescriptorBudgetBreachWithInjectedCount(t *testing.T) {
 	if p.Latest.OpenFDs == nil || *p.Latest.OpenFDs != DescriptorBudget+88 {
 		t.Fatalf("injected count not recorded: %v", p.Latest.OpenFDs)
 	}
+	if p.Latest.OpenFDsBudget == nil || *p.Latest.OpenFDsBudget != DescriptorBudget {
+		t.Fatalf("budget not recorded: %v", p.Latest.OpenFDsBudget)
+	}
 	found := false
 	for _, flag := range p.Flags {
-		found = found || flag == "descriptor count exceeds 512 budget"
+		found = found || flag == "descriptor count exceeds budget (600 open, budget 512)"
 	}
 	if !found {
 		t.Fatalf("budget breach not flagged: %v", p.Flags)
 	}
 	text := Format(r)
-	if !strings.Contains(text, "descriptors <512") || strings.Contains(text, "unsupported") {
+	if !strings.Contains(text, "descriptors <512 + 16 per session") || strings.Contains(text, "unsupported") {
 		t.Fatalf("sampled budget misreported:\n%s", text)
 	}
 }

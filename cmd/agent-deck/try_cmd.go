@@ -14,7 +14,7 @@ import (
 
 // handleTry handles the 'try' subcommand for quick experiments
 func handleTry(profile string, args []string) {
-	fs := flag.NewFlagSet("try", flag.ExitOnError)
+	fs := flag.NewFlagSet("try", flag.ContinueOnError)
 	listOnly := fs.Bool("list", false, "List experiments without creating session")
 	listShort := fs.Bool("l", false, "List experiments (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -56,8 +56,8 @@ func handleTry(profile string, args []string) {
 	// This allows: "try myproject --no-session" to work same as "try --no-session myproject"
 	args = reorderArgsForTryCommand(args)
 
-	if err := fs.Parse(args); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(1)
 	}
 
 	// Get settings
@@ -84,14 +84,14 @@ func handleTry(profile string, args []string) {
 	name := fs.Arg(0)
 	if name == "" {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Find or create experiment
 	exp, created, err := experiments.FindOrCreate(settings.Directory, name, settings.GetDatePrefix())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *noSession {
@@ -115,7 +115,7 @@ func handleTry(profile string, args []string) {
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Check if a session already exists for this path. localSessionsAtPath, not
@@ -128,7 +128,7 @@ func handleTry(profile string, args []string) {
 			if !inst.Exists() {
 				if err := inst.Start(); err != nil {
 					out.Error(fmt.Sprintf("starting session: %v", err), ErrCodeInvalidOperation)
-					os.Exit(1)
+					exitCLI(1)
 				}
 				inst.PostStartSync(3 * time.Second)
 				// Save updated state with session ID
@@ -163,13 +163,13 @@ func handleTry(profile string, args []string) {
 	// Save using helper (rebuilds group tree including "experiments" group from instance)
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Start the session
 	if err := newInst.Start(); err != nil {
 		out.Error(fmt.Sprintf("starting session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	newInst.RecordTelemetryCreate(telemetry.ViaTry)
 
@@ -200,7 +200,7 @@ func handleTryList(dir, query string, jsonOutput bool) {
 	exps, err := experiments.ListExperiments(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if query != "" {

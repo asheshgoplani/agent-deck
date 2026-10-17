@@ -48,7 +48,7 @@ func TestIssue2469PR3R6_RemoteLocalParentChildStaysHome(t *testing.T) {
 	if cursor != 0 || written != 0 || wakes != 0 {
 		t.Fatalf("a remote-local parent's child crossed: cursor export=%d written=%d wakes=%d", cursor, written, wakes)
 	}
-	exp, err := ExportRecordsAfter(RemoteCursor{})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || exp.CursorNext.Seqs[f.child.ID] != 1 {
 		t.Fatalf("the cursor must still move past its lines: %+v %v", exp.CursorNext, err)
 	}
@@ -90,11 +90,11 @@ func TestIssue2469PR3R6_LedgerMirrorOfLocalParentChildStaysHome(t *testing.T) {
 		}
 	}
 
-	full, err := ExportPendingRecords()
+	full, err := ExportPendingRecords(DefaultProfile)
 	if err != nil || len(full) != 2 {
 		t.Fatalf("legacy export must keep shipping both completions: %+v %v", full, err)
 	}
-	exp, err := ExportRecordsAfter(RemoteCursor{})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,12 @@ func TestIssue2469PR3R6_ExportOpensOnlyConsideredProfiles(t *testing.T) {
 
 	unowned("w-ancient", "gone-old", time.Now().Add(-2*remoteTalkbackHorizon))
 	unowned("w-recent", "gone-recent", time.Now().Add(-time.Minute))
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	// #2539: an export is scoped to one profile; the ancient record's own
+	// profile, asked directly, still has nothing in the horizon to open.
+	if old, err := ExportRecordsAfter("gone-old", RemoteCursor{}); err != nil || len(old.Records) != 0 {
+		t.Fatalf("drain 0: the ancient record is past the horizon: %+v %v", old.Records, err)
+	}
+	first, err := ExportRecordsAfter("gone-recent", RemoteCursor{})
 	if err != nil || len(first.Records) != 1 || first.Records[0].ChildSessionID != "w-recent" {
 		t.Fatalf("drain 1: want only the in-horizon record, got %+v %v", first.Records, err)
 	}
@@ -173,7 +178,7 @@ func TestIssue2469PR3R6_ExportOpensOnlyConsideredProfiles(t *testing.T) {
 	if err := os.RemoveAll(storeOf("gone-recent")); err != nil {
 		t.Fatal(err)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter("gone-recent", first.CursorNext)
 	if err != nil || len(second.Records) != 0 {
 		t.Fatalf("drain 2: %+v %v", second.Records, err)
 	}

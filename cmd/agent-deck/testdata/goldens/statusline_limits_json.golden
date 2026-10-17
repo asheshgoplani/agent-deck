@@ -1,0 +1,27 @@
+{
+  "accounts": [
+    {
+      "harness": "claude",
+      "name": "work",
+      "windows": [
+        {
+          "window": "5h",
+          "used_pct": 23.5,
+          "resets_at": "2026-10-01T13:06:40Z"
+        },
+        {
+          "window": "7d",
+          "used_pct": 48,
+          "resets_at": "2026-10-07T19:06:40Z"
+        },
+        {
+          "window": "spend",
+          "used_pct": 101
+        }
+      ],
+      "source": "quota cache (statusLine ingester)",
+      "updated_at": "CAPTURED_AT",
+      "stale": false
+    }
+  ]
+}

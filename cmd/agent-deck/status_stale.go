@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -224,13 +223,13 @@ func runStatusStale(profile string, threshold time.Duration, jsonOutput bool) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		fmt.Printf("Error: failed to initialize storage: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Refresh status the same way `status`/`status -v` does (issue #610 parity)

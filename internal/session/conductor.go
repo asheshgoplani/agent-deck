@@ -98,6 +98,12 @@ type ConductorSettings struct {
 	// then dropped (issue #971). <= 0 = 3.
 	NeedRetireCycles int `toml:"need_retire_cycles,omitzero"`
 
+	// RecoveryTurn controls the one bounded recovery prompt a Claude or Codex
+	// conductor receives after an actual start or restart (issue #2518).
+	// nil = true (default on); false skips it for operators who would rather
+	// wake conductors themselves. Use RecoveryTurnEnabled to read it.
+	RecoveryTurn *bool `toml:"recovery_turn,omitempty"`
+
 	// Profiles is the list of agent-deck profiles to manage
 	// Kept for backward compat but ignored after migration to meta.json-based discovery
 	Profiles []string `toml:"profiles,omitempty"`
@@ -130,6 +136,17 @@ type ConductorSettings struct {
 	// 'conductor migrate-dir'). The bridge daemon similarly freezes
 	// AGENT_DECK_CONDUCTOR_DIR at install time.
 	Dir string `toml:"dir,omitempty"`
+
+	// PermissionAsk controls whether setup writes the mutating agent-deck
+	// commands into a Claude conductor's permissions.ask (#1358). Ask rules
+	// prompt even in auto mode. nil/absent = true; false = no ask list, and
+	// setup removes the entries it wrote before.
+	PermissionAsk *bool `toml:"permission_ask,omitempty"`
+}
+
+// PermissionAskEnabled reports whether setup writes the conductor ask list.
+func (c ConductorSettings) PermissionAskEnabled() bool {
+	return c.PermissionAsk == nil || *c.PermissionAsk
 }
 
 // GitHubWatcherMode values accepted by [conductor.github_watcher].mode.
@@ -347,6 +364,14 @@ type SlackSettings struct {
 	// If empty, all users are allowed (backward compatible).
 	// Get user ID from Slack: Right-click user → View profile → More → Copy member ID
 	AllowedUserIDs []string `toml:"allowed_user_ids,omitempty"`
+
+	// DefaultConductor controls where an unprefixed message routes (#2547).
+	//   explicit name -> that conductor is the default target
+	//   ""           -> no default: the bridge replies with the conductor
+	//                  list and the `name: message` syntax, routing nothing
+	//   absent (nil) -> legacy behavior: the alphabetically first conductor
+	// Pointer so an explicitly empty string is distinguishable from absent.
+	DefaultConductor *string `toml:"default_conductor,omitempty"`
 }
 
 // DiscordSettings defines Discord bot configuration for the conductor bridge
@@ -505,6 +530,12 @@ func (c *ConductorSettings) GetHumanDigestMinutes() int {
 	return max(*c.HumanDigestMinutes, 0)
 }
 
+// RecoveryTurnEnabled reports whether conductors get the automatic recovery
+// turn after start/restart (default true).
+func (c *ConductorSettings) RecoveryTurnEnabled() bool {
+	return c == nil || c.RecoveryTurn == nil || *c.RecoveryTurn
+}
+
 // GetNeedRetireCycles returns the urgent-line retire threshold (default 3).
 func (c *ConductorSettings) GetNeedRetireCycles() int {
 	if c.NeedRetireCycles <= 0 {
@@ -661,12 +692,6 @@ func validateConductorDirName(name string) error {
 		return fmt.Errorf("invalid conductor name %q: must be a single directory name", name)
 	}
 	return nil
-}
-
-// ConductorProfileDir returns the per-profile conductor directory.
-// Deprecated: Use ConductorNameDir instead. Kept for backward compatibility.
-func ConductorProfileDir(profile string) (string, error) {
-	return ConductorNameDir(profile)
 }
 
 // ConductorSessionTitle returns the session title for a named conductor
@@ -1244,10 +1269,12 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	// Claude-only (codex/hermes don't use this file). Auto-allows read-only and
 	// safe CLI commands plus scoped data-file writes so the conductor's heartbeat
 	// read loop doesn't drown the user in permission prompts, while keeping
-	// lifecycle/mutating commands and executable/config writes behind prompts.
+	// lifecycle/mutating commands and executable/config writes behind prompts
+	// ([conductor] permission_ask = false drops the ask list and leaves the
+	// mutating commands to the conductor's permission mode).
 	// Non-fatal: setup still succeeds if this fails.
 	if spec.Agent == ConductorAgentClaude {
-		if err := writeConductorClaudeSettingsAt(dir); err != nil {
+		if err := writeConductorClaudeSettingsAt(dir, conductorPermissionAskEnabled()); err != nil {
 			sessionLog.Warn("conductor_claude_settings_failed",
 				slog.String("conductor", name),
 				slog.String("dir", dir),
@@ -1643,12 +1670,6 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// SetupConductorProfile creates a default Claude conductor for a profile.
-// Deprecated: Use SetupConductor instead. Kept for backward compatibility.
-func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, true, "", "", "", "", nil, "")
-}
-
 // createSymlinkWithExpansion creates a symlink from target to source, with ~ expansion and validation.
 // target: the generated instructions path (e.g., ~/.agent-deck/conductor/CLAUDE.md)
 // source: the user's custom file path (e.g., ~/my/custom.md)
@@ -1897,12 +1918,6 @@ func TeardownConductor(name string) error {
 		return nil // Already removed
 	}
 	return os.RemoveAll(dir)
-}
-
-// TeardownConductorProfile removes the conductor directory for a profile.
-// Deprecated: Use TeardownConductor instead. Kept for backward compatibility.
-func TeardownConductorProfile(profile string) error {
-	return TeardownConductor(profile)
 }
 
 // MigrateLegacyConductors scans for conductor dirs that have CLAUDE.md but no meta.json,
@@ -2427,7 +2442,6 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/mkdir -p "__LOG_DIR__"
 ExecStart="__PYTHON3__" "__BRIDGE_PATH__"
 Restart=always
 RestartSec=10
@@ -2462,7 +2476,6 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/mkdir -p "__LOG_DIR__"
 ExecStart="__AGENT_DECK__" notify-daemon
 Restart=always
 RestartSec=5
@@ -2591,7 +2604,6 @@ func GenerateSystemdBridgeService() (string, error) {
 	unit := strings.ReplaceAll(systemdBridgeServiceTemplate, "__PYTHON3__", python3Path)
 	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
-	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	unit = strings.ReplaceAll(unit, "__XDG_ENV__", xdgEnv)
 	agentDeckPath := FindAgentDeck()
@@ -2649,7 +2661,6 @@ func GenerateSystemdTransitionNotifierService() (string, error) {
 
 	unit := strings.ReplaceAll(systemdTransitionNotifierServiceTemplate, "__AGENT_DECK__", execPath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
-	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
 	return unit, nil
@@ -2765,6 +2776,14 @@ func installBridgeDaemonSystemd() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create systemd user dir: %w", err)
 	}
+	logDir, err := ConductorDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get bridge log dir: %w", err)
+	}
+	// systemd opens append output before ExecStartPre, so prepare it here.
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create bridge log dir: %w", err)
+	}
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write systemd unit: %w", err)
 	}
@@ -2876,6 +2895,14 @@ func installTransitionNotifierSystemd() (string, error) {
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create systemd user dir: %w", err)
+	}
+	logPath, err := logDataPath("transition-notifier.log")
+	if err != nil {
+		return "", fmt.Errorf("failed to get notifier log path: %w", err)
+	}
+	// ExecStartPre cannot create this directory before its own output opens.
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return "", fmt.Errorf("failed to create notifier log dir: %w", err)
 	}
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write notifier unit: %w", err)

@@ -16,6 +16,7 @@
   "path": "/repo/app",
   "pin": "",
   "profile": "goldens",
+  "queue": [],
   "status": "error",
   "substate": "unknown-exit",
   "title": "claude idle",

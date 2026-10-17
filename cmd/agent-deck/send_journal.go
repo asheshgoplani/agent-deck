@@ -158,9 +158,15 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	return got, nil
 }
 
+// queuedOutcomeCancelled is the final journal outcome of a send removed by
+// `session queue cancel` before any typing: neither delivered nor failed.
+const queuedOutcomeCancelled = "cancelled"
+
 // queuedOutcome maps a final queue state onto the journal's send outcomes.
 func queuedOutcome(r *sendqueue.Record) string {
 	switch {
+	case r.State == sendqueue.StateCancelled:
+		return queuedOutcomeCancelled
 	case r.State == sendqueue.StateFailed:
 		return health.SendFailed
 	case r.State == sendqueue.StateLanded, r.State == sendqueue.StateSubmitted:

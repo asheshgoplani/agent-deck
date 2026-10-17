@@ -211,6 +211,6 @@ Any change to `scripts/watchdog/watchdog.py` or its helpers needs the full suite
 
 ## Related docs
 
-- [CONDUCTOR.md](CONDUCTOR.md): the sessions the watchdog primarily protects.
+- [Conductor guide](../docs/conductor/README.md): the sessions the watchdog primarily protects.
 - `scripts/watchdog/DESIGN.md`: architecture, guardrails, decision log. Read this before modifying the daemon.
 - `scripts/watchdog/README.md`: operational quickstart that lives next to the daemon.

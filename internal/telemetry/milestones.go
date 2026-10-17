@@ -175,11 +175,15 @@ func AfterConsent(src ConsentSource, prev string, b Baseline, fleet *FleetCounts
 			"answer": "yes", "source": string(src), "previous": oneOf(prev, consentPrevious), "prompt_variant": "v3a",
 		}, "", now)
 		before := b.milestones(tuiSeen)
-		s.spool("onboard.baseline", map[string]any{
-			"install_method": oneOf(b.InstallMethod, installMethods), "tmux_ok": b.TmuxOK,
-			"tools_found": int(b.ToolsFound), "had_config": b.HadConfig,
-			"milestones_before": int(before), "sessions_total": CountBucket(b.Sessions),
-		}, "", now)
+		// One baseline per install id: a yes that keeps an id which already
+		// consented (a re-ask after an upgrade) does not send a second one.
+		if s.Milestones&milestoneBit(stepConsented) == 0 {
+			s.spool("onboard.baseline", map[string]any{
+				"install_method": oneOf(b.InstallMethod, installMethods), "tmux_ok": b.TmuxOK,
+				"tools_found": int(b.ToolsFound), "had_config": b.HadConfig,
+				"milestones_before": int(before), "sessions_total": CountBucket(b.Sessions),
+			}, "", now)
+		}
 		f := &s.Funnel
 		f.Created = max(f.Created, min(b.Sessions, maxCounter))
 		f.ToolsUsed |= ToolMask(b.ToolsUsed...)

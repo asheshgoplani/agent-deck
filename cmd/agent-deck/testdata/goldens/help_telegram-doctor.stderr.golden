@@ -1,5 +1,0 @@
-Usage of telegram-doctor:
-  -json
-    	emit machine-readable JSON output
-  -quiet
-    	suppress healthy lines; only print drift

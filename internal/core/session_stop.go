@@ -6,6 +6,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
 // SessionStopIn is the input of session.stop.
@@ -53,9 +54,12 @@ func (deps Deps) sessionStop(ctx context.Context, in SessionStopIn) (SessionStop
 		out.DrainedTitle = drained.Title
 	}
 	// Journaled after the verdict: RecordSessionEvent writes synchronously
-	// and a slow health volume must not delay the answer.
+	// and a slow health volume must not delay the answer. session.end is
+	// recorded here so the default CLI and daemon stops are counted like
+	// the TUI, web and legacy CLI stops.
 	AfterFunc(ctx, func() {
 		session.RecordSessionEvent(in.Profile, inst.ID, health.KindStop, nil)
+		inst.RecordTelemetryEnd(telemetry.EndStop)
 		session.RecallNotifyInstance(inst, health.KindStop)
 	})
 	return out, nil

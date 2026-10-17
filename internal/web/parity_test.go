@@ -158,7 +158,7 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 				if w.Code != http.StatusOK {
 					t.Fatalf("web PATCH /api/groups/work: status=%d body=%s", w.Code, w.Body.String())
 				}
-				if err := directFx.store.RenameGroup("work", "home"); err != nil {
+				if _, err := directFx.store.RenameGroup("work", "home"); err != nil {
 					t.Fatalf("direct RenameGroup: %v", err)
 				}
 				return "group:work"
@@ -645,15 +645,15 @@ func (s *parityStore) CreateGroup(name, parentPath string) (string, error) {
 	return path, nil
 }
 
-func (s *parityStore) RenameGroup(groupPath, newName string) error {
+func (s *parityStore) RenameGroup(groupPath, newName string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g, ok := s.groups[groupPath]
 	if !ok {
-		return errNotFound(groupPath)
+		return "", errNotFound(groupPath)
 	}
 	g.Name = newName
-	return nil
+	return groupPath, nil
 }
 
 func (s *parityStore) SetGroupExpanded(groupPath string, expanded bool) error {

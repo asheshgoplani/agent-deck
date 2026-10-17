@@ -110,6 +110,7 @@ type Bus struct {
 }
 
 type queuedFrame struct {
+	eventID   string
 	profile   string
 	kind      string
 	sessionID string
@@ -450,9 +451,8 @@ func listSealedSegments(dir string) ([]sealedSegment, error) {
 	return out, nil
 }
 
-// genEventID returns a short, unique-enough random id. Collisions are
-// harmless (EventID is informational; Cursor is the ordering/identity key),
-// so 8 random bytes is ample.
+// genEventID returns a random id for correlation and deduplication. Cursor
+// remains the durable ordering key.
 func genEventID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -480,25 +480,42 @@ func (b *Bus) Publish(kind, sessionID string, data any) {
 	b.enqueue(qf)
 }
 
-func (b *Bus) enqueue(qf queuedFrame) {
+// PublishWithID enqueues a frame and returns its event_id for request/ack
+// correlation. An empty ID means the frame was not accepted. Call Flush to
+// confirm durability before reporting the request as queued.
+func (b *Bus) PublishWithID(kind, sessionID string, data any) string {
+	raw, err := marshalData(data)
+	if err != nil {
+		return ""
+	}
+	id := genEventID()
+	if !b.enqueue(queuedFrame{eventID: id, kind: kind, sessionID: sessionID, data: raw, ts: time.Now()}) {
+		return ""
+	}
+	return id
+}
+
+func (b *Bus) enqueue(qf queuedFrame) bool {
 	if b == nil || !b.enabled || b.closed.Load() || b.failed.Load() {
-		return
+		return false
 	}
 	b.publishMu.RLock()
 	defer b.publishMu.RUnlock()
 	if b.abandoned.Load() {
 		b.dropped.Add(1)
-		return
+		return false
 	}
 	if b.closed.Load() || b.failed.Load() {
-		return
+		return false
 	}
 	select {
 	case b.queue <- qf:
 		b.published.Add(1)
 		b.enqueued.Add(1)
+		return true
 	default:
 		b.dropped.Add(1)
+		return false
 	}
 }
 
@@ -723,9 +740,12 @@ func (b *Bus) dropAccepted(n uint64) {
 // appendFrameLocked runs inside one batch's disk and in-process locks.
 func (b *Bus) appendFrameLocked(qf queuedFrame) error {
 	next := b.cursor + 1
+	if qf.eventID == "" {
+		qf.eventID = genEventID()
+	}
 	f := Frame{
 		Cursor:    next,
-		EventID:   genEventID(),
+		EventID:   qf.eventID,
 		TS:        qf.ts.UnixMilli(),
 		Kind:      qf.kind,
 		SessionID: qf.sessionID,

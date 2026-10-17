@@ -74,6 +74,7 @@ type rowsTimelineJSON struct {
 		Kind string `json:"kind"`
 	} `json:"turns"`
 	ThroughCursor string `json:"through_cursor"`
+	BeforeCursor  string `json:"before_cursor"`
 	Status        *struct {
 		SessionID     string `json:"session_id"`
 		SessionStatus string `json:"session_status"`
@@ -131,7 +132,7 @@ func TestRecallRowsTranscriptFlagAndErrors(t *testing.T) {
 		t.Fatal("unknown session accepted")
 	}
 	stdout, stderr, _ = runAgentDeck(t, home, "recall", "timeline", "--help")
-	for _, flag := range []string{"--since", "--limit", "--tail", "--v1"} {
+	for _, flag := range []string{"--since", "--before", "--limit", "--tail", "--v1"} {
 		if !strings.Contains(stdout+stderr, flag) {
 			t.Fatalf("help does not document %s: %s %s", flag, stdout, stderr)
 		}
@@ -253,5 +254,25 @@ func TestSessionShowTranscriptPathAndIDs(t *testing.T) {
 	}
 	if show.TranscriptPath != transcript || len(show.TranscriptIDs) != 1 || show.TranscriptIDs[0] != "11111111-2222-3333-4444-555555555555" {
 		t.Fatalf("show: %+v", show)
+	}
+}
+
+func TestRecallRowsBeforeCLI(t *testing.T) {
+	home, id, _ := rowsTestSession(t)
+	stdout, stderr, code := runAgentDeck(t, home, "recall", "timeline", id, "--json", "--tail", "1")
+	var tail rowsTimelineJSON
+	if code != 0 || json.Unmarshal([]byte(stdout), &tail) != nil || tail.BeforeCursor == "" {
+		t.Fatalf("tail cursor: %d %s %s", code, stdout, stderr)
+	}
+	stdout, stderr, code = runAgentDeck(t, home, "recall", "timeline", id, "--json", "--before", tail.BeforeCursor, "--limit", "1")
+	var page rowsTimelineJSON
+	if code != 0 || json.Unmarshal([]byte(stdout), &page) != nil || len(page.Turns) != 1 || page.Turns[0].ID == tail.Turns[0].ID {
+		t.Fatalf("older page: %d %s %s", code, stdout, stderr)
+	}
+	for _, flags := range [][]string{{"--before", tail.BeforeCursor}, {"--before", tail.BeforeCursor, "--limit", "1", "--v1"}} {
+		args := append([]string{"recall", "timeline", id, "--json"}, flags...)
+		if _, _, code := runAgentDeck(t, home, args...); code != 2 {
+			t.Fatalf("invalid paging accepted: %v exit %d", flags, code)
+		}
 	}
 }

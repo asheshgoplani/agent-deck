@@ -65,7 +65,8 @@ const spawnVerifyTick = 100 * time.Millisecond
 // exists but whose primary pane is already dead is treated exactly like a
 // missing session, so the loop below waits for the fast-death watcher's
 // record instead of returning early.
-func (i *Instance) VerifySpawned(maxWait time.Duration) error {
+func (i *Instance) VerifySpawned(maxWait time.Duration) (verifyErr error) {
+	defer func() { i.recordTelemetryStartError(verifyErr) }()
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
@@ -78,6 +79,14 @@ func (i *Instance) VerifySpawned(maxWait time.Duration) error {
 		// fail a session that is demonstrably up.
 		exists, probeErr := i.tmuxSession.ProbeExists()
 		if exists && !i.tmuxSession.IsPaneDead() {
+			return nil
+		}
+		// A tracked one-shot command that already finished is a completed
+		// run, not a failed spawn: remain-on-exit keeps its dead pane so the
+		// exit status can be reported (process-exited + exit_code). The
+		// command's own failure, if any, surfaces there, the same way it did
+		// when the command was typed into an interactive shell.
+		if exists && trackedCommandExitObserved(i.tmuxSession, i.trackedCommandExitReceiptPath()) {
 			return nil
 		}
 		expired := time.Now().After(deadline)

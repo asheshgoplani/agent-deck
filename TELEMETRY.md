@@ -42,7 +42,7 @@ More:   github.com/asheshgoplani/agent-deck/blob/main/TELEMETRY.md
 
 Accepting works only when the whole question is visible (terminal at least 78×22); otherwise the dialog says so and only `n`, Esc and Ctrl-C act. Your answer is written to disk before anything is recorded. After a yes: `Sharing is on. Nothing is sent before tomorrow. Turn off: agent-deck telemetry off`. After a no: `Telemetry stays off. You will not be asked again. Change later: agent-deck telemetry on`.
 
-The question is never shown in CLI-only use, when stdin or stdout is not a terminal, in CI, in tests, inside an agent-deck session, under a coding agent (`CLAUDECODE`, `GEMINI_CLI`, `CURSOR_AGENT` or `CODEX_*` set), in `web --no-tui`, over SSH on a remote, or when any off switch below is set. If you answered no to the earlier, smaller schema 1 question (which counted every key, even Enter, as no), you are asked once more, with the line `You said no to an earlier, smaller version of this question.`; a no to this question is final. Anyone who said yes to schema 1 or schema 2 is asked again, because consent is bound to the schema and the destination. Schema-2 refusals remain final. Schema 3 adds the daily install tick and its daily nonce disclosure; no tick or detailed event is sent until fresh consent and the following local day.
+The question is never shown in CLI-only use, when stdin or stdout is not a terminal, in CI, in tests, inside an agent-deck session, under a coding agent (`CLAUDECODE`, `GEMINI_CLI`, `CURSOR_AGENT` or `CODEX_*` set), in `web --no-tui`, over SSH on a remote, or when any off switch below is set. If you answered no to the earlier, smaller schema 1 question (which counted every key, even Enter, as no), you are asked once more, with the line `You said no to an earlier, smaller version of this question.`; a no to this question is final. Anyone who said yes to schema 1 or schema 2 is asked again, because consent is bound to the schema and the destination. If you already have an install id (for example after a schema 2 yes), the question adds the line `Your anonymous ID is kept; unsent data from before will be sent.` above the buttons, in the TUI and in `agent-deck telemetry on`. Saying yes again keeps your anonymous install id: it survives upgrades and re-consent, `reset-id` is the only thing that rotates it, and only a no or `off` deletes it. Events recorded under your earlier consent that were not sent yet stay in the local spool and are sent after the yes (from the next local day) under the same id. If the configured destination changed since your earlier yes, the line reads `Your anonymous ID is kept; unsent data for the old endpoint is deleted.` instead, and that data is deleted, never sent to the new destination. The id itself, its event sequence and the onboarding steps already reported carry over, so the old and the new destination see the same install id. Schema-2 refusals remain final. Schema 3 adds the daily install tick and its daily nonce disclosure; no tick or detailed event is sent until fresh consent and the following local day.
 
 `agent-deck telemetry on` asks the same question in a shell; there it takes an explicit `y` (Enter and end-of-input mean no). In the TUI, **Settings → Privacy → Usage data** shows the state; Enter turns it off immediately or opens the question.
 
@@ -52,7 +52,7 @@ Any of these, at any time:
 
 | Switch | Effect |
 |---|---|
-| `agent-deck telemetry off` | Records a no, deletes the install id, salt, local spool and counters. It waits for an upload already in flight (at most 8 seconds); once it returns nothing further is sent. From the TUI Settings row it runs in the background, so the screen never freezes. |
+| `agent-deck telemetry off` | Records a no, deletes the install id, salt, local spool and counters. It waits for an upload or tick send already in flight: its network requests stop within 8 seconds, and the short local steps before and after them can take longer while the state lock is held elsewhere. Once it returns nothing further is sent (except when the `off` comes from agent-deck 1.16.26 or earlier while a newer agent-deck is sending; see **Upload** below). From the TUI Settings row it runs in the background, so the screen never freezes. |
 | `DO_NOT_TRACK=1` | Any truthy value turns everything off ([Console Do Not Track](https://consoledonottrack.com)). |
 | `AGENTDECK_TELEMETRY=0` | Any value other than `1`, `true`, `yes`, `on` or `log` turns everything off. None of these values turns telemetry on. |
 | `[telemetry] disabled = true` | In `config.toml`. An unreadable config also counts as off. |
@@ -87,11 +87,14 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 
 `[telemetry] level = "basic"` in `config.toml` can lower the level but never raise it.
 
+Lowering the level also covers data already waiting in the local spool, including events kept across a re-consent: at the next upload (and in `telemetry preview`), events that `basic` does not record are deleted unsent, and the rest are sent without `hour_local`, `weekday_local` or `ds_session`, with the timestamp pinned to 12:00.
+
 ## When and where data is sent
 
 - **Recording** happens in every agent-deck process where a person is at a terminal: never in CI, tests, non-TTY runs (scripts, cron, SSH commands on a remote) or before consent. Commands run by a coding agent at a terminal are recorded with `actor = agent`. At most 60 events per local day are recorded (daily rollups are exempt); the rest are counted as `dropped`.
+- **Lock contention.** Recording and uploading share one local state lock, which in this version is held only for local reads and writes, never during a network send (an uploader or tick from 1.16.26 or earlier still holds it during its send). Recording retries a busy lock every 10 ms for about 50 ms. An update that still finds it busy is lost. The loss is counted, in that process's memory only, if consent was granted at that moment. An event recorded on its own (for example `session.create`) is counted only if the current level records that event; an update of the local state (counters, one or more events, or both, for example a TUI start, `app.exit`, `error` or `env.snapshot`) is counted whatever the level, so at basic level a lost `app.exit` still counts. The count is added to `dropped` for the current local day by the same process's next update that gets the lock while consent is granted, even if that update is not itself recorded (for example an event over the daily cap, or a full-only event at basic level). It is forgotten if the process exits first, if that next update finds consent off or lapsed, or if the install id has changed (`reset-id`, or a new grant after `off`). So `dropped` is the events over the daily cap plus an approximate count of contended updates. That part counts one per lost update, however many events it would have written. It can include updates that would have changed nothing (an `env.snapshot` already taken that day, a repeated error) or would not have been recorded (an event over the cap, or `app.exit` or `error` at basic level), and it misses losses that were forgotten. It is neither a lower nor an upper bound on lost events.
 - **Local spool.** Events are appended to `telemetry-spool.ndjson` (mode 0600) in the agent-deck data directory. It holds at most 512 KiB and 5,000 lines; days older than 14 are dropped unsent. `telemetry off` and `reset-id` delete it.
-- **Upload.** Only the interactive TUI uploads: at start and then hourly it checks whether an upload is due. An upload happens at most every 6 hours, never on the day you said yes, and contains only **completed local hours** of events and **completed local days** of daily counters. Failed uploads retry after 5 minutes, 30 minutes, 2 hours, then the next day (at most 4 attempts a day, honouring `Retry-After` up to 6 hours). A rejected upload (other 4xx) stops until the next agent-deck version and its data is dropped after 3 days. `agent-deck uninstall` is the one exception: with consent it sends one `uninstall` event immediately (2 s timeout) and asks one optional question with a single key.
+- **Upload.** Only the interactive TUI uploads: at start and then hourly it checks whether an upload is due. An upload happens at most every 6 hours, never on the day you said yes, and contains only **completed local hours** of events and **completed local days** of daily counters. Failed uploads retry after 5 minutes, 30 minutes, 2 hours, then the next day (at most 4 attempts a day, honouring `Retry-After` up to 6 hours). A rejected upload (other 4xx) stops until the next agent-deck version and its data is dropped after 3 days. `agent-deck uninstall` is the one exception: with consent it sends one `uninstall` event immediately (2 s timeout) and asks one optional question with a single key. During an upload or tick send only a separate, empty `telemetry-send.lock` (mode 0600, next to the state) is held; its network requests are bounded by 8 s for an upload and 2 s for a tick. The state lock is taken only to prepare the send and to record its result, so events recorded during the send stay in the spool for the next upload. An upload waits for the state lock without a time limit before and after its requests; a tick skips the attempt if the state lock is busy when it reserves the nonce and waits without a time limit to record the acknowledgment. So the send lock can be held longer than 8 s while another process holds the state lock. `telemetry off`, `reset-id` and `telemetry level` wait for an in-flight upload or tick send, so nothing built before them is sent after they return (the synchronous `uninstall` send is not waited for), and an upload result that arrives after consent or the install id changed is discarded. This wait holds only between versions that have the send lock (later than 1.16.26). `telemetry off` in 1.16.26 or earlier takes only the state lock, so when such a binary runs next to a newer one, its `off` can return while the newer process's send is still in flight. That send still goes out with data recorded before the `off`; its result is then discarded and nothing is written back.
 - **Destination.** PostHog Cloud, EU region (Frankfurt), via its public capture API: `POST <endpoint>/batch/` with `Content-Type: application/json`, hand-encoded without any SDK. The client follows no redirects, ignores proxy environment variables, sends no cookies and reads at most 1 KiB of the response. At most 500 events and 256 KiB per request, 5 requests per upload.
 - **Processor.** PostHog processes the data on the maintainer's behalf. The project is configured to discard client IP addresses, GeoIP enrichment is disabled at project level and on every event (`$geoip_disable: true`), and events are personless (`$process_person_profile: false`): PostHog creates no person profiles. Data is kept for 1 year (PostHog free-plan retention). Only the maintainer has access; no dashboard is public.
 - **Floating time.** Each event's `timestamp` is its local day and hour labelled as UTC (for example `2026-09-26T14:00:00Z` for 14:00 wherever you are). It reveals no timezone, and hour-of-day charts show local hours. PostHog also stores the time it received the upload, which is the upload time, not the activity time.
@@ -100,11 +103,13 @@ The project key never appears in `preview`, `show-last` or log-mode output: thos
 
 After the consent day, the interactive human TUI checks `install.tick` in the background at startup and hourly, including across midnight. CLI-only use, noninteractive daemons, CI, agents, tests and non-release builds do not send ticks. This preserves existing upload eligibility; it measures reporting installs using the TUI, not every installed copy or people. The tick also runs at basic level and is independent of the detailed six-hour upload schedule.
 
-Each local day gets a fresh cryptographically random 128-bit `tick_id`. The client durably reserves it in `telemetry-tick.json` (mode 0600), next to the telemetry state, before sending. The existing state lock serializes reservation, sending and acknowledgment across processes. Old binaries can rewrite the main state without erasing this sibling ledger. Neither `off` nor `reset-id` deletes the nonce, so disable/re-enable and lost acknowledgments cannot mint a second nonce that day. The ledger contains only day, nonce, release version, acknowledgment flag and last acknowledged day.
+Each local day gets a fresh cryptographically random 128-bit `tick_id`. The client durably reserves it in `telemetry-tick.json` (mode 0600), next to the telemetry state, before sending. Reservation and acknowledgment happen under the state lock; the POST holds only the send lock, which serializes it with other sends, `off`, `reset-id` and `telemetry level` across processes. Old binaries can rewrite the main state without erasing this sibling ledger. Neither `off` nor `reset-id` deletes the nonce, so disable/re-enable and lost acknowledgments cannot mint a second nonce that day. The ledger contains only day, nonce, release version, `os` and `arch`, acknowledgment flag and last acknowledged day. Version, `os` and `arch` are fixed when the nonce is reserved, using the same allow-lists as the detailed envelope, so a retry from a process on another architecture resends the reserved values.
 
-An attempt has a two-second deadline. Lock contention skips the attempt; failed sends retry on a later TUI start or hourly check with the same nonce and body. The dashboard must count **DISTINCT `tick_id` per `day`**, not rows. There is no historical backfill after the local day ends. Offline use, consent gates and stopped processes can leave days unreported; delivery is retried, not guaranteed. Corrupt/unreadable ledgers fail closed rather than replacing an unknown nonce. Clock rollback suppresses earlier days until the last reserved day is reached.
+The tick's POST has a two-second deadline; recording the acknowledgment afterwards waits for the state lock without a time limit. If the send lock is busy (another send, or `off`, `reset-id` or `telemetry level` in progress) or the state lock is busy when the nonce is reserved, the attempt is skipped; failed sends retry on a later TUI start or hourly check with the same nonce and body. Ticks reserved by releases before tick `os`/`arch` carry neither field, and so does a pending tick retried by such a release; treat a missing `os` on `install.tick` as unknown. The dashboard must count **DISTINCT `tick_id` per `day`**, not rows. There is no historical backfill after the local day ends. Offline use, consent gates and stopped processes can leave days unreported; delivery is retried, not guaranteed. Corrupt/unreadable ledgers fail closed rather than replacing an unknown nonce. Clock rollback suppresses earlier days until the last reserved day is reached.
 
-The complete tick property allow-list is below. The PostHog event UUID and its required `distinct_id` both use the daily nonce, never the detailed telemetry install ID. It links only retries of that day's event; no stable identity links days or joins detailed telemetry. The existing personless and GeoIP-disabled controls remain. As with any HTTP request, the receiver sees the connection's source IP; this client code alone does not establish backend log deletion.
+The complete tick property allow-list is below. The PostHog event UUID and its required `distinct_id` both use the daily nonce, never the detailed telemetry install ID. It links only retries of that day's event; no identifier links days or joins detailed telemetry. The coarse values `day`, `v`, `os` and `arch` are not identifiers, but they narrow a tick: on a rare platform and version only a few installs share them, so such a tick can be narrowed to those few detailed installs, and ticks with the same rare values on consecutive days may come from the same install.
+
+**Decision: `os` and `arch` ship on the tick without a schema version change.** The schema version stays at 3, so existing grants are not asked again. The consent question already lists version and OS, and every detailed schema 3 event already sends both values under the same grant. Another bump would send every install back through consent, and in 1.16.26 a re-grant after a bump also restarted the install under a new anonymous id. A tick field that detailed events do not already send would still change the schema version. The existing personless and GeoIP-disabled controls remain. As with any HTTP request, the receiver sees the connection's source IP; this client code alone does not establish backend log deletion.
 
 Owner installs opt out of **only the tick** with `[telemetry] owner = true` in config.toml or `AGENTDECK_TELEMETRY_OWNER=1`. The environment switch cannot override a true config setting; false/0/no/off are false. Restart the TUI after editing configuration, as with the existing telemetry settings. All existing telemetry off switches still take precedence, and none of these options grants consent.
 
@@ -128,7 +133,7 @@ Owner installs opt out of **only the tick** with `[telemetry] owner = true` in c
 - Anything from CI, tests, non-TTY runs, or remotes whose own user did not consent (consent is per machine; `remote add`, `remote update` and sweeps never copy it).
 - A "no" answer: declining sends nothing.
 
-Two ids exist, both random and local: `install_id` (32 random hex characters, created on consent, rotated by `reset-id`, deleted by `off`) and `ds_session`, the first 16 hex characters of HMAC-SHA256 over the agent-deck session id with a 32-byte random salt that never leaves your machine. The real session id is never sent.
+Two ids exist, both random and local: `install_id` (32 random hex characters, created on consent, kept across upgrades and re-consent, rotated only by `reset-id`, deleted by `off` or a no) and `ds_session`, the first 16 hex characters of HMAC-SHA256 over the agent-deck session id with a 32-byte random salt that never leaves your machine. The real session id is never sent.
 
 ## Wiring the PostHog project key (maintainer, one time)
 
@@ -146,6 +151,17 @@ Builds without a project key record locally (with consent) but **never upload**;
 
 **Volume and billing.** The free plan includes 1M events a month. The client caps each install at 60 events a day plus about a dozen daily rollups. A hard spending cap is a PostHog setting, not client code: in PostHog, Billing → set a billing limit (for example $20/month) once the dashboard shows 70% of the free quota, and a billing alert at 800k events/month.
 
+## How CLI commands are counted
+
+Starting with the release after 1.16.26, a CLI command's feature is counted when the command finishes, with its outcome. Older clients counted it before the command ran. Read trends across that release with these changes in mind:
+
+- Any non-zero exit counts as a feature error, including a mistyped flag and commands that use exit codes for status (`health` reporting unhealthy, for example). Feature error counts become non-zero from this release on; before, every CLI use counted as a success.
+- A failed command does not reach its first-use funnel milestone.
+- A command that does nothing (a `session restart` skipped by the freshness guard, a `-help` request) counts as an invocation in `cli_cmds` but not as a use of its feature.
+- `fleet status` and `fleet recover` count as `fleet_status` and `fleet_recover`. The CLI no longer emits `fleet_launch` or the `first_fleet` milestone; both stay in the schema for older clients.
+- `web` counts as a `web_ui` use once its server listens, and as an error when it fails before that.
+- An invocation killed by a signal before it finishes is not counted at all.
+
 ## Published field list
 
 <!-- schema:begin (generated by `agent-deck telemetry schema --markdown`; do not edit) -->
@@ -157,15 +173,15 @@ Schema version: 3. Detailed events carry the envelope; install.tick uses only it
 |---|---|---|
 | `install_id` | 32 hex | random, created on consent, rotatable; sent as PostHog distinct_id |
 | `schema` | int 3-3 | constant |
-| `v` | pattern `^([0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\|dev)$` | release X.Y.Z or dev |
+| `v` | pattern `^([0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\|dev)$` | release X.Y.Z or dev; on daily rollups, the release that last recorded that day |
 | `os` | enum: `darwin`, `linux`, `freebsd`, `openbsd`, `netbsd`, `windows`, `other` | Go GOOS; no OS version |
 | `arch` | enum: `amd64`, `arm64`, `386`, `arm`, `riscv64`, `other` | Go GOARCH |
 | `day` | pattern `^[0-9]{4}-[0-9]{2}-[0-9]{2}$` | local YYYY-MM-DD |
 | `hour_local` | int 0-23 | local hour; omitted at level basic |
 | `weekday_local` | int 0-6 | 0 = Sunday; omitted at level basic |
 | `seq` | int 0-1073741824 | per-install counter, ordering only, resets on reset-id |
-| `actor` | enum: `human`, `agent` | human (TTY, not in a session) or agent (TTY inside an agent session) |
-| `surface` | enum: `tui`, `cli`, `web` |  |
+| `actor` | enum: `human`, `agent`, `mixed` | human (TTY, not in a session) or agent (TTY inside an agent session); mixed on daily rollups |
+| `surface` | enum: `tui`, `cli`, `web`, `rollup` | rollup on daily rollups |
 | `level` | enum: `full`, `basic` |  |
 | `install_age` | bucket `install_age` | from the local first-seen day; the date is never sent |
 | `install_week` | pattern `^[0-9]{4}-W[0-9]{2}$` | ISO week of first seen, e.g. 2026-W39 |
@@ -218,7 +234,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | Property | Type |
 |---|---|
 | `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
-| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
+| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_fork`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
 | `worktree` | bool |
 | `mcps` | bucket `n` |
 | `skills` | bucket `n` |
@@ -265,7 +281,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `feature` | enum: `fork`, `restart`, `restart_all`, `rename`, `move_group`, `group_create`, `search`, `filter`, `worktree_create`, `worktree_finish`, `mcp_attach`, `mcp_detach`, `skill_attach`, `plugin_install`, `session_send`, `send_keys`, `send_queue`, `session_children`, `session_handoff`, `session_context`, `session_annotate`, `session_approve`, `inbox_drain`, `fleet_launch`, `launch`, `try`, `conductor_start`, `conductor_telegram`, `watcher`, `remote_add`, `remote_attach`, `remote_agent`, `recall_search`, `recall_timeline`, `costs`, `usage`, `limits`, `accounts_switch`, `creds_refresh`, `web_ui`, `daemon`, `notify_daemon`, `openclaw`, `deepseek`, `harness`, `doctor`, `health`, `update`, `migrate_paths`, `config_edit`, `profile_switch`, `theme_change`, `feedback`, `events`, `revive`, `session_cleanup`, `window`, `hooks_install`, `other` |
+| `feature` | enum: `fork`, `restart`, `restart_all`, `rename`, `move_group`, `group_create`, `search`, `filter`, `worktree_create`, `worktree_finish`, `mcp_attach`, `mcp_detach`, `skill_attach`, `plugin_install`, `session_send`, `send_keys`, `send_queue`, `session_children`, `session_handoff`, `session_context`, `session_annotate`, `session_approve`, `inbox_drain`, `fleet_launch`, `fleet_status`, `fleet_recover`, `launch`, `try`, `conductor_start`, `conductor_telegram`, `watcher`, `remote_add`, `remote_attach`, `remote_agent`, `recall_search`, `recall_timeline`, `costs`, `usage`, `limits`, `accounts_switch`, `creds_refresh`, `web_ui`, `daemon`, `notify_daemon`, `openclaw`, `deepseek`, `harness`, `doctor`, `health`, `update`, `migrate_paths`, `config_edit`, `profile_switch`, `theme_change`, `feedback`, `events`, `revive`, `session_cleanup`, `window`, `hooks_install`, `other` |
 | `count` | bucket `n` |
 | `errors` | bucket `n` |
 
@@ -292,7 +308,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 
 | Property | Type |
 |---|---|
-| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry` |
+| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry`, `tui` (tui means a recovered TUI panic or a terminal the TUI could not set up) |
 | `kind` | enum: `tmux_missing`, `tmux_too_old`, `tool_not_found`, `tool_auth`, `worktree_dirty`, `mcp_spawn_failed`, `ssh_auth`, `ssh_unreachable`, `config_parse`, `db_locked`, `timeout`, `permission`, `disk_full`, `panic`, `other` |
 | `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
 | `before_first_success` | bool |
@@ -329,7 +345,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `previous` | enum: `none`, `v1_granted`, `v1_declined`, `v1_undecided`, `v2_granted`, `v2_declined`, `v2_undecided` |
 | `prompt_variant` | enum: `v3a` |
 
-**`onboard.baseline`** (tier 1, call sites 1.16.18): once, right after consent, computed from existing local state
+**`onboard.baseline`** (tier 1, call sites 1.16.18): once per install id, right after its first consent, computed from existing local state
 
 | Property | Type |
 |---|---|
@@ -346,7 +362,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 |---|---|
 | `step` | enum: `first_run`, `consented`, `first_session_created`, `first_session_running`, `first_attach`, `first_send`, `second_session`, `second_tool`, `first_fork`, `first_worktree`, `first_mcp_attach`, `first_group`, `first_conductor`, `first_remote`, `first_fleet`, `activated` |
 | `tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` (built-in tool, else other) |
-| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
+| `via` | enum: `tui_new`, `tui_fork`, `tui_quick`, `cli_add`, `cli_fork`, `cli_launch`, `try`, `fleet`, `conductor`, `web` |
 | `since` | bucket `since` |
 | `before_consent` | bool |
 
@@ -358,7 +374,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `last_tool` | enum: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot`, `crush`, `cursor`, `hermes`, `deepseek`, `aider`, `shell`, `other` |
 | `reason` | enum: `not_needed`, `too_complex`, `bugs`, `switching_tool`, `skip` |
 
-**`fleet.launch`** (tier 2, call sites 1.16.19+)
+**`fleet.launch`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -366,7 +382,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `tools_mix` | bitmask (32 bits) |
 | `worktrees` | bool |
 
-**`conductor.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`conductor.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
@@ -375,7 +391,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `heartbeats` | bucket `n` |
 | `telegram` | bool |
 
-**`remote.op`** (tier 2, call sites 1.16.19+)
+**`remote.op`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -383,7 +399,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `remotes` | bucket `n` |
 | `outcome` | enum: `ok`, `error` |
 
-**`worktree.op`** (tier 2, call sites 1.16.19+)
+**`worktree.op`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -391,7 +407,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `vcs` | enum: `git`, `jj` |
 | `outcome` | enum: `ok`, `error` |
 
-**`ext.op`** (tier 2, call sites 1.16.19+)
+**`ext.op`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -401,7 +417,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `source` | enum: `builtin`, `pool`, `custom` |
 | `count` | bucket `n` |
 
-**`account.switch`** (tier 2, call sites 1.16.19+)
+**`account.switch`** (tier 2, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -409,7 +425,7 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `trigger` | enum: `rate_limit`, `auth`, `manual` |
 | `accounts` | bucket `n` |
 
-**`search.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`search.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
@@ -417,42 +433,42 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 | `count` | bucket `n` |
 | `zero_results` | bucket `n` |
 
-**`tui.view.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`tui.view.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
 | `view` | enum: `home`, `new`, `fork`, `mcp`, `skill`, `group`, `settings`, `help`, `worktree_finish`, `session_picker`, `costs`, `usage`, `recall`, `inbox`, `other` |
 | `count` | bucket `n` |
 
-**`keybind.daily`** (tier 2, call sites 1.16.19+, daily rollup)
+**`keybind.daily`** (tier 2, planned, not emitted yet, daily rollup)
 
 | Property | Type |
 |---|---|
 | `action` | enum: `new_session`, `quick_new`, `fork`, `delete`, `restart`, `rename`, `move`, `attach`, `search`, `filter`, `group_create`, `mcp_manager`, `skill_manager`, `settings`, `help`, `send`, `preview_toggle`, `worktree_finish`, `collapse_group`, `quit`, `other` |
 | `count` | bucket `n` |
 
-**`perf`** (tier 3, call sites 1.16.19+): sampled at 10% locally
+**`perf`** (tier 3, planned, not emitted yet): sampled at 10% locally
 
 | Property | Type |
 |---|---|
 | `op` | enum: `tui_start`, `session_start`, `list`, `status_poll` |
 | `ms` | bucket `ms` |
 
-**`crash`** (tier 3, call sites 1.16.19+)
+**`crash`** (tier 3, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
-| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry` |
+| `area` | enum: `tmux`, `session_start`, `send`, `worktree`, `mcp`, `remote`, `update`, `config`, `hook`, `db`, `web`, `conductor`, `telemetry`, `tui` |
 | `panic_type` | enum: `nil_deref`, `index`, `slice`, `map_concurrent`, `closed_chan`, `custom`, `other` |
 | `frames_hash` | 12 hex (SHA-256 over agent-deck function names of the top 8 frames; no paths, lines or values) |
 
-**`doctor.run`** (tier 3, call sites 1.16.19+)
+**`doctor.run`** (tier 3, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
 | `checks_failed` | bitmask (32 bits) |
 
-**`feedback.rating`** (tier 3, call sites 1.16.19+)
+**`feedback.rating`** (tier 3, planned, not emitted yet)
 
 | Property | Type |
 |---|---|
@@ -466,12 +482,16 @@ Funnel step bits (`milestones_before`): `first_run` = 0, `consented` = 1, `first
 |---|---|
 | `day` | Local calendar day, YYYY-MM-DD |
 | `v` | Release version when the daily nonce was reserved |
+| `os` | Go GOOS at reservation, same allow-list as the detailed envelope; no OS version; absent on ticks reserved by older releases |
+| `arch` | Go GOARCH at reservation, same allow-list as the detailed envelope; absent on ticks reserved by older releases |
 | `consent_state` | `granted`; undecided and declined never send |
 | `tick_id` | Random 128-bit daily nonce formatted as a UUID; reused on retries |
 | `$process_person_profile` | `false` |
 | `$geoip_disable` | `true` |
 
 The PostHog event `uuid` and required `distinct_id` both equal `tick_id`. No persistent install ID or detailed envelope is attached. Timestamp is the local day at 12:00 labelled UTC. The dashboard must count DISTINCT `tick_id` per `day`; retries may produce multiple rows. The nonce links only retries of one daily event.
+
+`os` and `arch` were added to the tick in schema 3 without a schema version change. This is a recorded decision: every detailed schema 3 event already sends both values under the same grant, and a bump would ask every install for consent again.
 
 <!-- schema:end -->
 

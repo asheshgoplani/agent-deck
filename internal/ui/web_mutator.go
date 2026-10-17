@@ -188,7 +188,11 @@ func (m *WebMutator) StopSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	return inst.Kill()
+	if err := inst.Kill(); err != nil {
+		return err
+	}
+	inst.RecordTelemetryEndFrom(telemetry.EndStop, telemetry.SurfaceWeb)
+	return nil
 }
 
 // RestartSession restarts a session by ID.
@@ -204,7 +208,7 @@ func (m *WebMutator) RestartSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	return inst.Restart()
+	return inst.RestartFrom(telemetry.SurfaceWeb)
 }
 
 // DeleteSession kills a session and removes it from persistent storage.
@@ -564,20 +568,22 @@ func (m *WebMutator) CreateGroup(name, parentPath string) (string, error) {
 	return grp.Path, nil
 }
 
-// RenameGroup renames a group identified by groupPath to newName and persists.
-func (m *WebMutator) RenameGroup(groupPath, newName string) error {
+// RenameGroup renames a group identified by groupPath to newName, persists,
+// and returns the group's path after the rename.
+func (m *WebMutator) RenameGroup(groupPath, newName string) (string, error) {
 	unlock, err := m.beginHeadlessTx()
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
+	newPath := m.h.groupTree.RenameTargetPath(groupPath, newName)
 	if err := m.h.groupTree.RenameGroup(groupPath, newName); err != nil {
-		return err
+		return "", err
 	}
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
 	if err != nil {
-		return fmt.Errorf("open storage: %w", err)
+		return "", fmt.Errorf("open storage: %w", err)
 	}
 	defer storage.Close()
 
@@ -586,7 +592,10 @@ func (m *WebMutator) RenameGroup(groupPath, newName string) error {
 	copy(instances, m.h.instances)
 	m.h.instancesMu.RUnlock()
 
-	return storage.SaveWithGroups(instances, m.h.groupTree)
+	if err := storage.SaveWithGroups(instances, m.h.groupTree); err != nil {
+		return "", err
+	}
+	return newPath, nil
 }
 
 // SetGroupExpanded persists a group's collapse state, so the web sidebar and

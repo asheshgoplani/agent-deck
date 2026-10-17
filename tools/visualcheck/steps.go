@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -555,7 +556,7 @@ func stepAttachShell(w *widthRun) error {
 	}
 	if err := w.waitFor(func() (bool, error) {
 		pane, err := w.s.capturePane(w.sd.shellLive.tmuxName)
-		return err == nil && strings.Contains(pane, "$") &&
+		return err == nil && shellPromptReady(pane) &&
 			!strings.Contains(pane, "export AGENTDECK"), err
 	}, 5*time.Second); err != nil {
 		return err
@@ -663,3 +664,14 @@ func stepFork(w *widthRun) error {
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
+
+// shellPromptRe matches a shell prompt marker at the end of a line: $ for a
+// regular user, # for root (a root container's sandbox shell).
+var shellPromptRe = regexp.MustCompile(`[$#]\s*$`)
+
+// shellPromptReady reports whether the last non-empty line of pane ends in a
+// shell prompt marker.
+func shellPromptReady(pane string) bool {
+	lines := strings.Split(strings.TrimRight(pane, " \t\r\n"), "\n")
+	return shellPromptRe.MatchString(lines[len(lines)-1])
+}

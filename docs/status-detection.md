@@ -20,7 +20,7 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
 
 | Harness | Live signal (wins while fresh) | Frame cues for running | Frame cues for waiting | Frame cues for error |
 |---|---|---|---|---|
-| claude | Hooks: UserPromptSubmit → running, Stop / PermissionRequest / Notification(permission) → waiting, SessionEnd → dead. Fresh for 2 min. No tool-use hooks, so a long turn falls back to the pane after 2 min. | Spinner line `^[✳✽✶✻✢·] Word… (…)`, `esc to interrupt`, Braille spinner in pane title, `Waiting for N background agent to finish` | Bare `❯`, `❯ draft` between the two input-box rules, menu footers (`Enter to select`, `Enter to confirm`, `Allow once`, feedback picker), trust prompt | `API Error: 401`, `Please run /login`, `socket connection closed`, `Crunched for 0s` model-unavailable no-op |
+| claude | Hooks: UserPromptSubmit / PreToolUse → running, Stop / PermissionRequest / Notification(permission) → waiting, SessionEnd → dead. Fresh for 2 min. PreToolUse (synchronous, status only) also covers turns that start without a typed prompt; PostToolUse is not subscribed, so a long tool or a long thinking phase falls back to the pane 2 min after its last hook. See [Claude status hooks](claude-status-hooks.md). | Spinner line `^[✳✽✶✻✢·] Word… (…)`, `esc to interrupt`, Braille spinner in pane title, `Waiting for N background agent to finish` | Bare `❯`, `❯ draft` between the two input-box rules, menu footers (`Enter to select`, `Enter to confirm`, `Allow once`, feedback picker), trust prompt | `API Error: 401`, `Please run /login`, `socket connection closed`, `Crunched for 0s` model-unavailable no-op |
 | codex | `codex-notify` hook: turn start → running (fresh 20 s), turn end → waiting (fresh 5 s). Absent unless `codex-hooks install` ran. Pane title Braille spinner. | `• Word (9m 41s • esc to interrupt)` status line in the live slot (the last `•` block above the `› ` composer, only blank and `  └ …` lines between; `codexLiveStatusLine`), `esc to interrupt` within the last 3 lines, Braille spinner | `› ` composer (`Ask Codex to do anything`), `Press enter to confirm or esc to go back` | Column-0 `■` banners: usage limit, not logged in |
 | gemini | Hooks BeforeAgent / AfterAgent (2 min) | `esc to cancel` | `gemini>`, `Type your message`, line ending in `>` | none |
 | opencode | SSE `/event` stream, TUI only (30 s) | `thinking...`, `generating...`, pulse glyphs `█▓▒░` | `Ask anything`, `enter submit` | none |
@@ -48,7 +48,8 @@ corpus in `internal/tmux/testdata/status_corpus` by `pane_corpus_test.go`.
    short of its last step (`○ name ▰▰▱ 3/5 · 18m32s`; a finished row stays at
    n/n), `Waiting for N background agents / dynamic workflows to finish` as
    the last turn line above the input box (an older one further up is
-   history), or the live `· N shells, M monitors ·` counter on the footer.
+   history), or the live shell count on the footer. Monitor-only counters
+   are passive watchers and do not promote the session.
    Never over an open menu, an error banner or the model-unavailable no-op
    (`backgroundWorkOutrankedLocked`): a menu blocks the turn on the operator
    and an error means no progress, so such a frame keeps its waiting / error
@@ -66,7 +67,7 @@ Instance layer on top: a fresh hook verdict short-circuits the pane, except
 that a `waiting` hook (the Stop that ends every foreground turn) never
 overrides background work in flight: the pane (captured for the hook path,
 never reusing a probe older than the hook event) OR the transcript (pending
-Workflow / background Agent / background Bash / Monitor launch with no
+Workflow / background Agent / background Bash launch with no
 terminal `<task-notification>` yet, or Claude Code's `pendingWorkflowCount`
 / `pendingBackgroundAgentCount` on the last `turn_duration`) keeps the
 session `running` with substate `background-work`. Transcript-only evidence
@@ -98,10 +99,18 @@ completion evidence bypasses that hold.
 ## Substates (additive, never change the colour except model-unavailable)
 
 `running`, `idle-at-empty-prompt`, `interactive-menu`, `background-work`
-(Claude at the prompt with a workflow, background agents, shells or a monitor
+(Claude at the prompt with a workflow, background agents or finite shells
 still in flight; pairs with `running`, detail in `substate_detail` and the
 `background_work` JSON object),
+`watching` (armed Monitor or proven sleep-only until loop; waiting/idle,
+watcher count in `background_work.count`),
 `auth-401`, `usage-limit`, `model-unavailable`, `unknown-exit`, `hook-lag`.
+`process-exited` (a custom command started with `add -cmd` / `launch -cmd`
+has exited: status `idle` for exit 0, `error` for a non-zero exit, and the
+code is reported as `exit_code` in `list --json`, `status -v --json`,
+`session show --json`, remote rows, the status event detail and the
+transition notification; a deliberate stop clears it and reads `stopped`; `session start` of such a command that finishes at once
+still reports a successful start, whatever its exit code).
 
 ## Who computes, how often, what persists
 
@@ -133,8 +142,10 @@ running rows out):
 
 ## Known blind spots
 
-- Claude hooks give no signal between UserPromptSubmit and Stop; after 2 min
-  the pane decides. A Claude turn that redraws without its spinner for more
+- Claude hooks give no signal between the last PreToolUse (or
+  UserPromptSubmit) and Stop; after 2 min the pane decides. A self-started
+  turn that thinks before its first tool keeps the previous Stop's waiting
+  until the pane shows a live spinner above the composer or the hook ages out. A Claude turn that redraws without its spinner for more
   than the 6 s grace plus one debounce sample reads as waiting.
 - Codex without `codex-hooks install` is pane-only; its title spinner and the
   `• Working (…)` line are the only running cues.
@@ -149,3 +160,22 @@ running rows out):
   running whatever the controller runs, until the remote is updated.
 - A Codex live status line pushed out of the live slot (a popup drawn between
   it and the composer) is not seen; the pane-title spinner still is.
+
+### Passive watchers
+
+Monitor tool receipts and the harness's live monitor-kind footer counter establish
+an armed watcher. They do not keep a completed turn open or reset acknowledgment.
+Finite transcript work wins over a monitor-only footer. A new foreground spinner
+or running hook still means running. Menus and errors keep their existing priority.
+
+A background Bash receipt is passive only when its correlated `tool_use.input.command`
+is exactly `until [ -e|-f|-d PATH ]; do sleep SECONDS; done` (literal simple path,
+no substitutions or trailing commands). Every shell in the footer must be accounted
+for by such a pending receipt. Missing receipts, unmatched counts, arbitrary polling
+commands and work after the loop remain running. This deliberately covers the
+provable sleep-only form; it does not guess the purpose of general shell scripts.
+The pane and transcript evidence source is retained in `background_work.source`.
+Watcher-only transcript evidence uses the existing three-minute freshness bound.
+Until-loop reclassification also requires receipts within that bound even when a
+shell footer remains visible. Long-lived until loops revert to running unless fresh
+identity evidence is available; Monitor-kind footer evidence does not expire.

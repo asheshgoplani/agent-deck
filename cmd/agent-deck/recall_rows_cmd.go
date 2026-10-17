@@ -227,12 +227,14 @@ func handleRecallTimelineRows(profile string, ref string, f rowsFlags, opts quer
 	t, err := resolveRowsTarget(profile, ref, f)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer t.close()
 	var result query.RowsTimeline
 	if t.direct {
 		result, err = query.ReadRows(context.Background(), t.src, opts)
+	} else if opts.Before != "" {
+		err = fmt.Errorf("recall timeline: --before is unsupported for harness %s", t.src.Harness)
 	} else {
 		result.Turns, err = query.TimelineTurnsForSource(context.Background(), t.src.Harness, t.src.Path, t.native)
 		if err == nil && opts.Tail > 0 && len(result.Turns) > opts.Tail {
@@ -249,7 +251,7 @@ func handleRecallTimelineRows(profile string, ref string, f rowsFlags, opts quer
 			code = "RESYNC_REQUIRED"
 		}
 		out.Error(err.Error(), code)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	result.Schema, result.Session = query.RowsSchema, t.session
 	result.Source = "native"
@@ -269,12 +271,12 @@ func handleRecallFollowRows(profile, ref, after string, f rowsFlags, withStatus 
 	t, err := resolveRowsTarget(profile, ref, f)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "recall follow:", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer t.close()
 	if !t.direct {
 		fmt.Fprintf(os.Stderr, "recall follow: %s transcripts are streamed with --v1\n", t.src.Harness)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	ctx, cancel := interruptibleContext()
 	defer cancel()
@@ -284,7 +286,7 @@ func handleRecallFollowRows(profile, ref, after string, f rowsFlags, withStatus 
 		tl, err := query.ReadRows(ctx, t.src, query.RowsOptions{Tail: 1})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "recall follow:", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		after = tl.ThroughCursor
 	}
@@ -302,6 +304,6 @@ func handleRecallFollowRows(profile, ref, after string, f rowsFlags, withStatus 
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "recall follow:", strings.TrimSpace(err.Error()))
-		os.Exit(1)
+		exitCLI(1)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/procowner"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
@@ -37,6 +38,35 @@ func updateTrigger(flagValue string) string {
 		return v
 	}
 	return "manual"
+}
+
+// recordUpdateAttempt runs install and records its outcome as one opt-in
+// update event (plus the update error on failure), so every install path
+// reports the same way. Telemetry is a no-op without consent, and it records
+// only with a person at a terminal (telemetry's canRecord): unattended runs
+// from the timer or a remote nudge have no TTY and so still record nothing.
+func recordUpdateAttempt(from, to string, kind telemetry.UpdateKind, install func() error) error {
+	if err := install(); err != nil {
+		telemetry.UpdateAttempted(from, to, kind, telemetry.UpdateError, false)
+		telemetry.ErrorOccurred(telemetry.AreaUpdate, telemetry.KindOther, "")
+		return err
+	}
+	telemetry.UpdateAttempted(from, to, kind, telemetry.UpdateOK, false)
+	return nil
+}
+
+// updateKindForTrigger maps an unattended run's trigger to its telemetry
+// update kind: the timer, the TUI's auto install, or a controller's nudge.
+func updateKindForTrigger(trigger string) telemetry.UpdateKind {
+	switch trigger {
+	case "timer":
+		return telemetry.UpdateTimer
+	case "tui":
+		return telemetry.UpdateAuto
+	case "nudge", "nudge-fallback":
+		return telemetry.UpdateRemoteSweep
+	}
+	return telemetry.UpdateManual
 }
 
 // updateCheckJSON is the --check --json document.
@@ -251,7 +281,9 @@ func runUnattendedUpdate(d unattendedDeps) int {
 	}
 
 	log.Info("unattended_install_start", slog.String("latest", info.LatestVersion))
-	if err := d.install(info.LatestVersion); err != nil {
+	if err := recordUpdateAttempt(d.version, info.LatestVersion, updateKindForTrigger(d.trigger), func() error {
+		return d.install(info.LatestVersion)
+	}); err != nil {
 		fmt.Fprintf(d.out, "Error installing v%s: %v\n", info.LatestVersion, err)
 		log.Error("unattended_install_failed", slog.String("err", err.Error()))
 		return exitUpdateFailed

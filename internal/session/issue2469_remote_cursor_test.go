@@ -55,7 +55,7 @@ func TestIssue2469PR3_ExportAfterReturnsOnlyNewerLinesAndStableCursor(t *testing
 		t.Fatal(err)
 	}
 
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -89,14 +89,14 @@ func TestIssue2469PR3_ExportAfterReturnsOnlyNewerLinesAndStableCursor(t *testing
 	}
 
 	journalTurn(t, "w1", TurnTierUrgent, "four", base.Add(4*time.Second))
-	second, err := ExportRecordsAfter(cursor)
+	second, err := ExportRecordsAfter(DefaultProfile, cursor)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(second.Records) != 1 || second.Records[0].Seq != 4 || second.Records[0].Text != "four" {
 		t.Fatalf("want only seq 4, got %+v", second.Records)
 	}
-	third, err := ExportRecordsAfter(second.CursorNext)
+	third, err := ExportRecordsAfter(DefaultProfile, second.CursorNext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +123,11 @@ func TestIssue2469PR3_ExportAfterLedgerCopyOfJournaledDoneCrossesOnce(t *testing
 		Summary: "built", FinishedAt: at}); err != nil {
 		t.Fatal(err)
 	}
-	first, err := ExportRecordsAfter(RemoteCursor{})
+	first, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{})
 	if err != nil || len(first.Records) != 1 || first.Records[0].Seq != 1 {
 		t.Fatalf("want the journal line only: %+v %v", first.Records, err)
 	}
-	second, err := ExportRecordsAfter(first.CursorNext)
+	second, err := ExportRecordsAfter(DefaultProfile, first.CursorNext)
 	if err != nil || len(second.Records) != 0 {
 		t.Fatalf("the ledger copy was re-shipped: %+v %v", second.Records, err)
 	}
@@ -138,7 +138,7 @@ func TestIssue2469PR3_ExportAfterLedgerCopyOfJournaledDoneCrossesOnce(t *testing
 func TestIssue2469PR3_ExportAfterJournalResetBelowCursorShipsTail(t *testing.T) {
 	cursorTestHome(t)
 	journalTurn(t, "w2", TurnTierUrgent, "fresh", time.Now().Add(-time.Minute))
-	exp, err := ExportRecordsAfter(RemoteCursor{Seqs: map[string]int64{"w2": 40}})
+	exp, err := ExportRecordsAfter(DefaultProfile, RemoteCursor{Seqs: map[string]int64{"w2": 40}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,9 +163,10 @@ func TestIssue2469PR3_ParseRemoteCursorRejectsGarbage(t *testing.T) {
 // real incremental export, the writer is alive.
 func localTalkbackDeps(fetches *[]RemoteCursor) RemoteTalkbackDeps {
 	return RemoteTalkbackDeps{
+		RemoteProfile: DefaultProfile,
 		FetchAfter: func(_ context.Context, c RemoteCursor) (RemoteExport, error) {
 			*fetches = append(*fetches, c)
-			exp, err := ExportRecordsAfter(c)
+			exp, err := ExportRecordsAfter(DefaultProfile, c)
 			exp.Writer = &WriterStatus{Running: true}
 			return exp, err
 		},
@@ -283,15 +284,15 @@ func TestIssue2469PR3_OldRemoteFallsBackToFullExport(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "--after"):
 			return nil, errors.New("ssh command failed: exit status 1: flag provided but not defined: -after")
-		case joined == "inbox export --json":
-			return []byte(`[{"child_session_id":"w5","kind":"finished","done_status":"ok","done_summary":"built",` +
+		case joined == "inbox export --json --profile default":
+			return []byte(`[{"child_session_id":"w5","profile":"default","kind":"finished","done_status":"ok","done_summary":"built",` +
 				`"timestamp":"` + time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) + `"}]`), nil
 		case joined == "inbox writer-status --json":
 			return []byte(`{"running":true,"detail":"ok"}`), nil
 		}
 		return nil, errors.New("unexpected " + joined)
 	})
-	deps := RemoteTalkbackDeps{FetchAfter: r.FetchRecordsAfter, FetchAll: r.FetchPendingRecords, WriterProbe: r.FetchWriterStatus}
+	deps := RemoteTalkbackDeps{RemoteProfile: DefaultProfile, FetchAfter: r.FetchRecordsAfter, FetchAll: r.FetchPendingRecords, WriterProbe: r.FetchWriterStatus}
 	res, err := RunRemoteTalkback(context.Background(), "boxb", "conductor-old", deps)
 	if err != nil {
 		t.Fatalf("fallback drain: %v (calls %v)", err, calls)

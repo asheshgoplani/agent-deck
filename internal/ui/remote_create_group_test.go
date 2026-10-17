@@ -184,8 +184,16 @@ func TestRemoteCreateGroup_LocalSessionStillCreatesLocally(t *testing.T) {
 
 	home.groupDialog.nameInput.SetValue("newgroup")
 	_, cmd := home.handleGroupDialogKey(tea.KeyMsg{Type: tea.KeyEnter})
+	// The only command a local create may return is the telemetry count
+	// (a no-op here, without consent); the create itself is synchronous
+	// and never goes over SSH.
 	if cmd != nil {
-		t.Fatalf("local group create returned a non-nil cmd %v; local creates are synchronous", cmd)
+		if msg := cmd(); msg != nil {
+			t.Fatalf("local group create returned a command producing %T; local creates are synchronous", msg)
+		}
+	}
+	if _, ok := home.groupTree.Groups["newgroup"]; !ok {
+		t.Fatal("local group create did not create the group locally")
 	}
 }
 

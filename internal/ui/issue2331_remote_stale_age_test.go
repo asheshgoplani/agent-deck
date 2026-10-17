@@ -9,7 +9,6 @@
 package ui
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -57,17 +56,16 @@ func TestRemoteRowStale_UnknownAgeNotStale(t *testing.T) {
 // stamp, so it drifts into "stale" on its own instead of being silently
 // refreshed by another remote's successful poll.
 func TestSaveRemoteSessionsCache_ResetsAgeForLiveFetchedOnly(t *testing.T) {
-	origHome := os.Getenv("HOME")
+	// t.Setenv restores (or unsets) every var after the test; a bare
+	// os.Setenv here leaked XDG_* into every later test in the package (#2533).
+	// Cleanups run last-in first-out, so registering the cache reset first
+	// makes it run after the env is restored.
+	t.Cleanup(session.ClearUserConfigCache)
 	tmp := t.TempDir()
-	os.Setenv("HOME", tmp)
-	os.Setenv("XDG_CONFIG_HOME", tmp)
-	os.Setenv("XDG_DATA_HOME", tmp)
-	os.Setenv("XDG_CACHE_HOME", tmp)
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"} {
+		t.Setenv(name, tmp)
+	}
 	session.ClearUserConfigCache()
-	t.Cleanup(func() {
-		os.Setenv("HOME", origHome)
-		session.ClearUserConfigCache()
-	})
 
 	storage, err := session.NewStorageWithProfile("_i2331stale")
 	if err != nil {

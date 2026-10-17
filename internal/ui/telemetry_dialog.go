@@ -60,11 +60,13 @@ type TelemetryDialog struct {
 	state      *telemetry.State
 	previous   string
 	v1Declined bool
-	source     telemetry.ConsentSource
-	saveErr    error
-	shownAt    time.Time
-	endpoint   string
-	canConsent func() bool
+	// reconsentNote says a yes keeps the existing install id ("" if none).
+	reconsentNote string
+	source        telemetry.ConsentSource
+	saveErr       error
+	shownAt       time.Time
+	endpoint      string
+	canConsent    func() bool
 
 	// Seams for tests.
 	saveState    func(*telemetry.State) error
@@ -134,6 +136,7 @@ func (d *TelemetryDialog) open(version string, st *telemetry.State, src telemetr
 	d.saveErr = nil
 	d.shownAt = d.now()
 	d.endpoint = telemetry.Endpoint()
+	d.reconsentNote = telemetry.ReconsentNote(st, d.endpoint)
 }
 
 // Hide closes the dialog.
@@ -190,16 +193,18 @@ func (d *TelemetryDialog) accept() tea.Cmd {
 	if !d.canConsent() || d.endpoint != telemetry.Endpoint() {
 		return nil
 	}
+	before := *d.state
 	if err := telemetry.Grant(d.state, d.version, d.now()); err != nil {
 		d.saveErr = err
+		*d.state = before
 		d.step = telemetryStepDeclined
 		return telemetryDismissAfter()
 	}
 	if err := d.saveState(d.state); err != nil {
-		// Consent that did not reach disk is not consent: stay off.
+		// Consent that did not reach disk is not consent: stay off, with
+		// the state (and any kept id and salt) exactly as it was before.
 		d.saveErr = err
-		d.state.Consent = telemetry.ConsentUndecided
-		d.state.InstallID = ""
+		*d.state = before
 		d.step = telemetryStepDeclined
 		return telemetryDismissAfter()
 	}
@@ -251,6 +256,10 @@ func (d *TelemetryDialog) View() string {
 		parts := []string{titleStyle.Render(lines[0]), textStyle.Render(strings.Join(lines[1:], "\n")), ""}
 		if d.v1Declined {
 			parts = append(parts, dimStyle.Render(telemetry.PromptV1Declined), "")
+			padV = 0
+		}
+		if d.reconsentNote != "" {
+			parts = append(parts, dimStyle.Render(d.reconsentNote), "")
 			padV = 0
 		}
 		parts = append(parts, d.buttons(), "", dimStyle.Render(" "+telemetry.PromptLegend))

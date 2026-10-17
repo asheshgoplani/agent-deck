@@ -29,9 +29,10 @@ import re
 import signal
 import subprocess
 import sys
+import contextvars
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -257,6 +258,9 @@ def load_config() -> dict:
     sl_channel_id = sl.get("channel_id", "")
     sl_listen_mode = sl.get("listen_mode", "mentions")  # "mentions" or "all"
     sl_allowed_users = sl.get("allowed_user_ids", [])  # List of authorized Slack user IDs
+    # default_conductor (#2547): None = key absent (legacy first-conductor
+    # routing), "" = no default (prompt with the conductor list), or a name.
+    sl_default_conductor = sl.get("default_conductor")
     sl_configured = bool(sl_bot_token and sl_app_token and sl_channel_id)
 
     # Discord config
@@ -289,6 +293,7 @@ def load_config() -> dict:
             "app_token": sl_app_token,
             "channel_id": sl_channel_id,
             "listen_mode": sl_listen_mode,
+            "default_conductor": sl_default_conductor,
             "allowed_user_ids": sl_allowed_users,
             "configured": sl_configured,
         },
@@ -1730,6 +1735,104 @@ def invoke_hook(
 # ---------------------------------------------------------------------------
 
 
+# Thread -> conductor affinity (#2547): a reply inside a thread the bridge
+# created for conductor X routes to X without a 'name:' prefix. Bounded FIFO.
+_THREAD_AFFINITY: OrderedDict[str, str] = OrderedDict()
+_THREAD_AFFINITY_CAP = 500
+# Conductor whose posts are in flight in this task (#2547): set by
+# deliver_tiered_reply / _human_outbox_send before any deliver() call so
+# _deliver_need_alert can tag the created thread with its conductor.
+_DELIVER_CONDUCTOR: contextvars.ContextVar = contextvars.ContextVar(
+    "conductor_delivery_name", default=None
+)
+
+
+@contextlib.contextmanager
+def _delivering_for(name: str):
+    """Tag every post made inside the block with conductor `name` (#2547),
+    restoring the previous tag on exit so it never leaks to later posts."""
+    token = _DELIVER_CONDUCTOR.set(name)
+    try:
+        yield
+    finally:
+        _DELIVER_CONDUCTOR.reset(token)
+
+
+def _slack_post_ts(resp) -> str | None:
+    """ts of an accepted chat_postMessage, else None.
+
+    slack_sdk's AsyncWebClient returns an AsyncSlackResponse, which is not a
+    dict: its parsed JSON body is the .data dict. Anything else yields None,
+    since affinity is bookkeeping and must never fail an accepted post.
+    """
+    data = resp if isinstance(resp, dict) else getattr(resp, "data", None)
+    if not isinstance(data, dict) or not data.get("ok"):
+        return None
+    ts = data.get("ts")
+    return ts if isinstance(ts, str) and ts else None
+
+
+def remember_thread_conductor(
+    ts: str | None, name: str, affinity: OrderedDict[str, str] | None = None,
+) -> None:
+    """Record thread_ts -> conductor so later replies in the thread route there."""
+    if not ts or not name:
+        return
+    if affinity is None:
+        affinity = _THREAD_AFFINITY
+    affinity[ts] = name
+    affinity.move_to_end(ts)
+    while len(affinity) > _THREAD_AFFINITY_CAP:
+        affinity.popitem(last=False)
+
+
+def resolve_slack_routing(
+    text: str,
+    thread_ts: str | None,
+    conductor_names: list[str],
+    conductors: list[dict],
+    default_conductor: str | None,
+    affinity: OrderedDict[str, str] | None = None,
+) -> tuple[dict | None, str, str]:
+    """Resolve the target conductor for one inbound Slack message (#2547).
+
+    Resolution order: explicit `name:` prefix, thread affinity, configured
+    default_conductor, legacy first conductor. Returns (target_or_None,
+    cleaned_message, reason) with reason one of: "prefix", "affinity",
+    "default", "legacy", "no_default", "misconfigured", "none". The
+    caller replies with the conductor list for "no_default"/
+    "misconfigured" and the no-conductors message for "none"; it never
+    silently picks a conductor the user did not address.
+    """
+    if affinity is None:
+        affinity = _THREAD_AFFINITY
+    target_name, cleaned_msg = parse_conductor_prefix(text, conductor_names)
+    if target_name:
+        for c in conductors:
+            if c["name"] == target_name:
+                return c, cleaned_msg, "prefix"
+    if thread_ts:
+        affinity_name = affinity.get(thread_ts)
+        if affinity_name:
+            for c in conductors:
+                if c["name"] == affinity_name:
+                    return c, text, "affinity"
+    if not conductors:
+        return None, text, "none"
+    if default_conductor is None:
+        # Key absent: unchanged historical behavior (first conductor).
+        return conductors[0], text, "legacy"
+    if default_conductor == "":
+        # Explicit opt-out: unprefixed messages get no default target.
+        return None, text, "no_default"
+    for c in conductors:
+        if c["name"] == default_conductor:
+            return c, text, "default"
+    # An unknown configured name must never fall back to the first
+    # conductor — that is exactly the silent surprise this resolves.
+    return None, text, "misconfigured"
+
+
 def parse_conductor_prefix(text: str, conductor_names: list[str]) -> tuple[str | None, str]:
     """Parse conductor name prefix from user message.
 
@@ -1984,6 +2087,13 @@ async def deliver_tiered_reply(loop, name: str, profile: str | None, filtered: d
     result when there are none), True when there was nothing to send; False
     means retry later.
     """
+    # Thread affinity (#2547): posts in this reply carry the conductor name
+    # (async-safe context var) so replies inside the thread route back to it.
+    with _delivering_for(name):
+        return await _deliver_tiered_reply(loop, name, profile, filtered, prefix, deliver)
+
+
+async def _deliver_tiered_reply(loop, name: str, profile: str | None, filtered: dict, prefix: str, deliver) -> bool:
     lines, digest = filtered["lines"], filtered["digest"]
     delivered = True
     if lines:
@@ -2046,6 +2156,11 @@ async def _human_outbox_send(loop, name: str, profile: str, deliver) -> None:
     others. Queued info leaves as digest message(s) when an urgent item went
     out this poll or the digest window is due.
     """
+    with _delivering_for(name):  # thread affinity (#2547)
+        await _human_outbox_send_items(loop, name, profile, deliver)
+
+
+async def _human_outbox_send_items(loop, name: str, profile: str, deliver) -> None:
     items = _cli_json_value(await loop.run_in_executor(None, functools.partial(
         run_cli, "conductor", "outbox", "--json", "--conductor", name,
         profile=profile, timeout=30,
@@ -2712,6 +2827,7 @@ def create_slack_app(config: dict):
 
     app = AsyncApp(token=bot_token, authorize=_cached_authorize)
     listen_mode = config["slack"].get("listen_mode", "mentions")
+    default_conductor = config["slack"].get("default_conductor")
 
     # Authorization setup
     allowed_users = config["slack"]["allowed_user_ids"]
@@ -2844,26 +2960,46 @@ def create_slack_app(config: dict):
         user_id: str = None, event_channel: str = None,
     ):
         """Shared handler for Slack messages and mentions."""
-        conductor_names = get_conductor_names()
+        # One discovery snapshot for both lists (CodeRabbit, #2548): two
+        # separate calls can race, leaving conductor_names empty while
+        # conductors is not — the no-default prompt would then IndexError on
+        # conductor_names[0].
         conductors = discover_conductors()
+        conductor_names = [c["name"] for c in conductors]
 
-        target_name, cleaned_msg = parse_conductor_prefix(text, conductor_names)
-
-        target = None
-        if target_name:
-            for c in conductors:
-                if c["name"] == target_name:
-                    target = c
-                    break
+        target, cleaned_msg, reason = resolve_slack_routing(
+            text, thread_ts, conductor_names, conductors, default_conductor,
+        )
         if target is None:
-            target = get_default_conductor()
-        if target is None:
+            if reason == "none":
+                await _safe_say(
+                    say,
+                    text="[No conductors configured. Run: agent-deck conductor setup <name>]",
+                    thread_ts=thread_ts,
+                )
+                return
+            # "no_default" (default_conductor = "") or "misconfigured"
+            # (default_conductor names an unknown conductor): reply with the
+            # routing syntax instead of silently picking a conductor.
+            if reason == "misconfigured":
+                log.warning(
+                    "Slack default_conductor %r is not a known conductor",
+                    default_conductor,
+                )
+            names = ", ".join(conductor_names)
             await _safe_say(
                 say,
-                text="[No conductors configured. Run: agent-deck conductor setup <name>]",
+                text=(
+                    "No conductor specified. Route a DM as `name: message`"
+                    f" (e.g. `{conductor_names[0]}: status`).\nConductors: {names}"
+                ),
                 thread_ts=thread_ts,
             )
+            log.info("Slack unprefixed message not routed (reason: %s)", reason)
             return
+        log.info("Slack routing -> [%s] (%s)", target["name"], reason)
+        if thread_ts:
+            remember_thread_conductor(thread_ts, target["name"])
 
         if not cleaned_msg:
             cleaned_msg = text
@@ -3801,8 +3937,11 @@ async def _deliver_need_alert(
             log.error("Failed to send Telegram notification: %s", e)
     if slack_app and slack_channel_id:
         try:
-            await slack_app.client.chat_postMessage(channel=slack_channel_id, text=alert_msg)
+            resp = await slack_app.client.chat_postMessage(channel=slack_channel_id, text=alert_msg)
             delivered = True
+            conductor_name = _DELIVER_CONDUCTOR.get()
+            if conductor_name:
+                remember_thread_conductor(_slack_post_ts(resp), conductor_name)
         except Exception as e:
             log.error("Failed to send Slack notification: %s", e)
     if discord_bot and discord_channel_id:

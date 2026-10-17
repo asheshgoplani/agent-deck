@@ -7,6 +7,148 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.28] - 2026-10-10
+
+### Security and toolchain
+
+- Release binaries are built with Go 1.26.9 and `golang.org/x/net` v0.60.0. This clears the 13 advisories govulncheck reported against 1.16.27: GO-2026-6617 (HTTP/2 server crash from an HPACK encoder race), GO-2026-6612, GO-2026-6611, GO-2026-6610 and GO-2026-6603 (HTTP/2, fixed in x/net v0.60.0 and Go 1.26.9), and GO-2026-6613, GO-2026-6609, GO-2026-6605, GO-2026-6608, GO-2026-6607, GO-2026-6604, GO-2026-6600 and GO-2026-6599 (net/http, net/textproto, crypto/tls, os and html/template, fixed in Go 1.26.9). agent-deck serves no HTTP/2, so GO-2026-6617 was not reachable in practice; 1.16.27 listed it as a known issue. The dependency updates from #2428 (thanks @dependabot) are included.
+
+### Fixes
+
+- The embedded terminal holds an incomplete key sequence until the rest of it arrives, so held arrow keys in application cursor mode and modified keys such as Ctrl+Right reach the pane as one key instead of a stray `ESC O` or a partial CSI. A lone Escape is still sent after the short quiet period (#2551, thanks @yalp).
+- The web terminal attaches with `TERM=xterm-256color` and `COLORTERM=truecolor` instead of the launching terminal's TERM, so tmux no longer sends colon-form RGB (for example under Ghostty) that the browser terminal draws in the wrong colours, and the terminal background matches its frame. Exact RGB needs tmux 3.6 or newer; older tmux sends the nearest 256-colour shade (#2553, thanks @dtvillafana).
+- The footer's tmux budget warning no longer flashes after Ctrl+Q: status bar refreshes for attached clients and the cache refreshes after an attach are not charged to the status pass, the warning needs three consecutive breaches like the duration warning, and `health` and `doctor` no longer flag samples taken with zero sessions (#2554, thanks @dtvillafana).
+- The web sidebar can rename a group again: press `r` on a selected group or use the new rename button on the group header. A rename that moves the group to a new path keeps it selected, and on a read-only server the button is hidden and `r` shows the usual notice (#2555, reported by @bautrey).
+- `[shell] exit_to_shell` now applies to pi and Oh My Pi (`omp`) sessions: `/exit` leaves the pane in your shell, and pi forks keep working with the setting on (#2556, reported by @Djeeteg007).
+- `update --check` and `update --check --json` tell a TUI that is attached to a session apart from a hung one: each TUI reports `attached` and `attached_since`, and the line reads "attached to a session since HH:MM: auto-update resumes on detach". After an unattended update by the notify daemon, its own launch agent no longer stays listed as pending once the daemon runs the new build.
+- Every explicit help request (`--help`, `-h`, `-help`, and `file help`) prints the whole usage on stdout with exit 0. About 50 older commands used to split their help across stdout and stderr or print all of it on stderr, and `file help` exited 1. This also covers the commands added in this release, such as `session image-upload --help`, locally and through `remote <name>`. Usage printed for a usage error stays on stderr with a non-zero exit.
+- A session restart no longer fails with a `tool_data.last_activity_at` conflict when a status write lands at the same moment: the later of the two timestamps is kept. A cleared or malformed value still conflicts (#2550, thanks @arnzchen).
+- Recall ingest of large Gemini transcripts uses less memory: the reader reuses one scan buffer instead of growing a new one for every long value.
+
+### Features
+
+- `[mcps.NAME.oauth]` gives Claude a pre-registered OAuth client for an HTTP or SSE MCP: `client_id`, `callback_port`, `auth_server_metadata_url` and `scopes` map onto Claude Code's `oauth` settings in every MCP scope agent-deck writes. The client secret stays in Claude's keychain; complete the login once with `/mcp`. Codex, Cursor and OpenCode configs are unchanged (#2552, reported by @BenjaminTanguay).
+- `events follow --read-only` and `events stats --read-only` watch a profile's event bus without side effects (no writer, no log repair, no demand lease, no queued send recovery); `remote <name> events follow` forwards the flag. `[performance] status_interval_seconds` (1 to 10, default 2) sets how often the TUI refreshes session status. `session show --json` includes `opencode_session_id` for OpenCode sessions (#2550, thanks @arnzchen).
+
+### Status line and usage
+
+- `usage statusline --session <id|title> --json` returns the last status-line record of a Claude session: model, working directory, context use and tokens, the 5h and 7d limits, and `account` and `permission_mode` when known. Each update is also published as a `usage.statusline` event. Only these fields are stored; prompt text and transcript content never are.
+- `limits --json` and `remote <name> limits --json` list the default Claude login (`~/.claude` or the resolved `CLAUDE_CONFIG_DIR`) when no `[profiles.<name>.claude]` slot owns it, named `default` and marked `"default": true`, with the 5h and 7d windows its statusLine feed caches. Without a feed it is listed with the `no feed: run agent-deck hooks install` error. A login that a slot owns is listed once, under the slot, and no slot is created.
+- `hooks install` wraps the statusLine of the active Claude config and of every configured account slot with `usage statusline-wrap`, which records the payload and then runs your previous command with the same output. Without a previous statusLine, a short default line (model, context, 5h, 7d) is shown. `hooks uninstall` restores the original from a backup next to `settings.json`. Opt out with `[claude] statusline_feed = false`.
+
+### Sending
+
+- `session send --require-input-prompt` types only into a ready input prompt. An open menu or picker is refused with `menu_open` and a missing prompt with `composer_blocked`, both before any key is typed; a menu that withholds Enter after typing is reported as `typed_not_submitted`. Queued sends keep the guard, and `remote <name> session send` refuses the flag against a remote that does not support it.
+- Menu detection needs real picker evidence (two or more selectable choices, or a picker instruction), so menu words in the input box or in a delivered message no longer read as an open menu. Plain sends see fewer false `interactive-menu` substates and `menu_open` refusals too.
+- `session queue list <session>`, `session queue release <id>` and `session queue cancel <id>` show, send now or drop a durable queued send. Release is a guarded send that skips only the wait; a busy Codex, Pi, shell or unknown target is still refused without typing. Every answer carries an `outcome`, `session show --json` lists the session's `queue`, and `remote <name> session queue ...` works on the remote's own queue.
+
+### Sessions
+
+- `session image-upload <id> --name <file> [--json]` stages an attachment read from stdin (png, jpg, gif, webp or pdf, up to 20 MiB) in an owner-only folder on the host that owns the session, never overwrites an existing file, and prints its absolute path. Staged files are removed with the session and pruned after 7 days. `remote <name> session image-upload` forwards stdin, and `session send --image` accepts pdf.
+- A tracked command started with `add -cmd` or `launch -cmd` reports the `process-exited` substate and its `exit_code` when it ends, in `list --json`, `status -v --json`, `session show --json`, remote rows and status events. Exit 0 reads idle, any other code reads error.
+- A Claude session running a tool in a turn it started itself shows running instead of waiting: `hooks install` adds a synchronous PreToolUse hook, one short handler run per tool call.
+- `agent-deck open <file|url> [--session <id|title>]` asks the macOS app to show a report or page in its Browser panel for that session, local or remote (`macapp.open` event, answered with `macapp.open.ack`). `agent-deck file bundle <dir|file> --session <id>` streams a folder as an uncompressed tar for the app to fetch.
+
+### Remotes
+
+- `remote <name> recall timeline`, `recall follow`, `events follow` and `session send-status` run on the remote host in one ssh round trip each, on their own channel. A remote without them answers `unsupported remote command` with its version.
+- A forwarded follow (`remote <name> events follow`, `remote <name> recall follow`) runs while its stdin stays open and ends with exit 0 when stdin closes; started with stdin from `/dev/null` it ends within seconds with no output. This was always the design; `remote --help` and the docs now say so. Long-lived consumers should hold a pipe on stdin and close it to stop. Local follows ignore stdin.
+- `remote <name> limits [--json]` returns the remote's own `limits` output.
+- `recall timeline --before <cursor> --limit N` pages back through older entries, and snapshots carry `before_cursor`. `events follow` accepts `--jsonl` and `--since` as aliases of `--json` and `--after`.
+- `list --json`, `list --all --json` and `remote sessions --json` rows carry `transcript_path` and `claude_session_id`, plus `codex_session_id` in all-profile and remote rows. Remote rows carry `"favorite": true` for favourite sessions.
+
+### Costs
+
+- `costs daily`, `costs sessions`, `costs models`, `costs groups` and `costs budgets` (with `--json`) return the data behind the costs dashboard. `sessions`, `models` and `groups` take `--period today|7d|30d|all|week|month`, and the web costs endpoints accept `?period=`. `[costs] enabled = false`, globally or under `[profiles.<name>.costs]`, turns cost tracking off.
+
+### Maintenance
+
+- Dead code and repo hygiene: unused helpers, wrappers, widgets, test helpers and fixtures are removed, stray files at the repo root and stale diagram copies are gone, broken conductor doc links are fixed, and `install-user` and `uninstall` are declared phony in the Makefile. Two removals are hardening: an unused self-update path that installed a downloaded binary without checksum verification, and an unused entry point that ran the worktree destruction hook without the consent check. Neither had a caller.
+- CI and contributor tooling: a guard keeps every Go toolchain pin in step with go.mod (and the golangci-lint and gotestsum versions in step across files); superseded PR runs are cancelled and every job has a timeout; govulncheck reports one annotation and summary row per advisory and uploads SARIF; the comms matrix and native SSH jobs run only for Go-relevant changes; the stalled-CI notifier fires on runs that wait for approval; the PR and issue notifiers are hardened and documented as disabled; the PR intake check parses headings tolerantly and exempts maintainers and bots (still observe-only); a maintainer script approves held fork runs on live heads (dry run by default); `testutil.SkipIfRoot` skips permission tests that cannot hold as root; `scripts/verify-docker.sh` and `make verify-docker` reproduce the CI Go checks in Docker; and the contributor docs match the self-check container guard and the intake gate.
+
+### Upgrading
+
+- Building from source needs Go 1.26.9; with the default `GOTOOLCHAIN=auto`, Go downloads it on first use. Locally built `agentdeck-funccheck` and `agentdeck-bench` images get new tags and are rebuilt on first use.
+- Status line: if agent-deck's Claude hooks are installed, the next `hooks install` (or the automatic hook repair at start) wraps the statusLine of the active Claude config, or adds the default line when there is none. Your existing status line prints exactly what it printed before. Opt out with `[claude] statusline_feed = false`, which also stops wiring named account slots. Run `agent-deck hooks uninstall` before downgrading, so the original statusLine is restored. If 1.16.27 and 1.16.28 are installed side by side (for example a local build next to the released one), run `hooks install` from one of them only: switching back and forth can wrap the statusLine twice. `hooks uninstall` from the version that installed it restores the original.
+- Hooks: `hooks install` adds a synchronous PreToolUse entry. Upgrade each host, remotes included, and run `agent-deck hooks install` there; run `agent-deck hooks uninstall` before downgrading. An AskUserQuestion picker in a turn Claude started itself now reads as running, as it already did in typed turns.
+- Tracked commands: an `add -cmd` or `launch -cmd` command now runs as the pane's first process under non-interactive `bash -c`, so interactive rc files are not loaded; an alias or an rc-only PATH entry can make it exit 127 (use a full path or a script). When the command exits or is interrupted, the pane stays closed instead of returning to a shell, and `session restart` runs it again. Shell sessions with a command created from the TUI are not tracked yet.
+- Sending: `--require-input-prompt` is opt-in, but the stricter menu detection applies to every send, and a queue release is always a guarded send.
+- Costs: with `[costs] enabled = false`, `costs summary` now exits 1 with `cost tracking is off in this profile` instead of printing stored totals, and a remote with tracking off shows no costs.
+- File bundle: a file argument exports its whole folder (up to 20 MiB; symlinks and special files are refused). Keep reports for `agent-deck open` in a folder of their own.
+- Help output: `<command> --help` now prints on stdout. A script that read help from stderr should read stdout (`2>&1` covers both).
+- Limits: on installs with account slots, `limits --json` gains one entry for the default login when it exists and no slot owns it. Treat entries with `"default": true` as the default account.
+- Known issue: `harness list --json` can report `limit_reached: false` for Claude while every configured account slot is at 100%, when the default login (no slot owns it) has a stale status-line record. Its stale windows count as not reached and mask the slots. A fix is planned for the next release; until then, read the per account windows in `limits --json`.
+- Update status: fleet watches that alert on `ticking: false` in `update --check --json` can skip TUIs with `attached: true`.
+- Web: the service worker cache version moves to v23, so installed web clients load the new assets once.
+- Remote reads and actions: forwarded `recall`, `events follow`, `session send-status`, `session queue`, `limits`, `session image-upload` and the guarded send need the remote to run 1.16.28 as well. Update it with `agent-deck remote update <name>`; until then the remote answers with an update hint.
+
+Thanks to @yalp, @dtvillafana and @arnzchen for their pull requests, to @BenjaminTanguay, @bautrey and @Djeeteg007 for their reports, and to @dependabot for the dependency updates.
+
+## [1.16.27] - 2026-10-09
+
+### Fixes
+
+- `inbox export` and `remote drain` stay inside one profile. The export returns only the invoking profile's records (never a record without a profile), including on the `--after` cursor path, and a drain always names the remote's configured profile and drops any other profile's record before it is written (#2539, reported by @jwr456).
+- `session send --wait` and `--stream` return the reply when Claude writes its final message as separate thinking and text records, instead of an earlier sentence from the same turn (#2543, fixes #2540, thanks @wallacms).
+- A Codex Guardian review thread no longer replaces a session's saved Codex id, and restart resumes the user's own thread (#2546, fixes #2529, thanks @seanfreiburg, and @tomasaschan for the report).
+- `session send` to Codex adopts the live user thread when the stored id has gone stale, so sends are no longer refused forever. Ambiguous, sub-agent, Guardian and peer-owned threads are never adopted. A refused send reports `acceptance_unavailable`, and a queued send fails after 5 consecutive refusals (about 15 seconds) with the reason (#2549, reported by @Abeansits).
+- Codex sends respect an unsent draft in the composer: the send waits, then is refused with `composer_blocked` without typing anything, and the queue retries it later (#2536, reported by @cherninely).
+- Capacity-queued sessions stay `queued` instead of being reported and persisted as `error`, so stopping a running session drains the queue again (#2528, fixes #2526, thanks @jtymas-preiss).
+- Session metrics and `health --json` ignore substate-only journal changes, so turn counts are no longer inflated and turn durations no longer reset (#2527, fixes #2525, thanks @jtymas-preiss).
+- `agent-deck attach` forwards OSC 10/11 color replies, so tmux can answer a pane's foreground and background color queries (#2522, fixes #2520, thanks @AKarbas).
+- A fresh OpenCode session reads as waiting instead of running forever (the home-screen logo no longer matches the spinner rule), so gated sends are delivered; live pulses still read as busy while the composer is visible (#2523, fixes #2519, thanks @Skadoge, and @tedmellors for the report and macOS testing).
+- pi 1.0.x panes are recognised: the context-usage footer counts as ready and the escape-interrupt bar as busy, so `launch --message-file` delivers and the startup watchdog no longer kills a healthy pi session (#2521, reported by @koenzhao).
+- The open-descriptor budget grows with the fleet (512 plus 16 per managed session, capped at four fifths of the soft open-file limit). The footer warns only after two consecutive over-budget samples and names the count, the budget and `agent-deck health` (#2535, reported by @netllama).
+
+### Features
+
+- A Claude session idle at its prompt with an armed Monitor shows as waiting with a `watching` substate and a watcher count, instead of running. A finite Workflow, background agent or shell still keeps the session running.
+- `inbox export --profile <name>` selects the profile to export. It defaults to the invoking profile and refuses a value that disagrees with `-p` (#2539).
+
+### Conductor
+
+- A conductor start or restart sends one recovery turn, so the conductor resumes its durable work instead of sitting idle. On by default; set `[conductor] recovery_turn = false` to turn it off (#2518, reported by @kaneda-fr).
+- Slack routing gains `default_conductor` for unprefixed messages and thread affinity, so replies in a conductor's thread (including NEED alert threads) reach that conductor. `conductor setup` keeps existing Slack keys when it adds tokens (#2548, fixes #2547, thanks @koenzhao).
+- `[conductor] permission_ask = false` drops the managed ask list from the conductor's Claude settings on the next `agent-deck conductor setup <name>`, so auto mode decides on mutating commands. The default stays `true` (#2544, fixes #2541, thanks @wallacms).
+
+### OpenCode 2.x
+
+- Sessions are discovered through the shared service API: listing follows the pagination cursor, sub-agent roots are skipped, an unbound session adopts only a conversation created after it started, and a bound session keeps its id instead of switching to a newer sibling (#2512, thanks @3rwww1).
+- The shared `opencode serve --service` process is never owned or reaped by a deck session, while 1.x per-session servers are still cleaned up (#2514, thanks @3rwww1). Forks and status over the service event stream (#2513, #2515) follow in a later release; tracking issue: #2511.
+
+### Watchers
+
+- Routed watcher events and health alerts reach the conductor while the TUI is attached to a session. Delivery to each conductor pane is one event at a time and in order, the backlog is bounded and kept across a quit, and quit reports what is still undelivered (#2534, fixes #2524, thanks @AndreIntelas).
+- `watcher create webhook --port N` writes the port into the watcher config, so the engine listens on it, and create refuses to overwrite an existing watcher config (#2532, reported by @AndreIntelas).
+- ntfy and Slack watchers keep their resume position across restarts and catch up on messages published while agent-deck was down. Replay is bounded to 24 hours by default (`[source] resume_max_age`, `"0"` turns the bound off), and bursts over 64 messages are no longer dropped (#2538, reported by @AndreIntelas).
+- Watcher health alerts go to the conductor the watcher routes to, once per change into warning or error, followed by one recovery notice (#2531, reported by @AndreIntelas).
+
+### Internal
+
+- Opt-in telemetry only (nothing changes while telemetry is off):
+  - Saying yes again after the schema 3 re-prompt keeps the existing install id and sends data recorded before the yes instead of deleting it; the prompt says so. A lowered level never sends events recorded earlier at `full`.
+  - CLI features are counted after the command finishes, with failures as errors and without first-use milestones; `fleet status` and `fleet recover` are no longer reported as fleet launches, mistyped flags are still counted, and `uninstall` no longer recreates the telemetry directory. See "How CLI commands are counted" in TELEMETRY.md for the effect on trends.
+  - `activity.hourly` is sent once per local hour across TUI runs; `install.tick` carries the coarse `os` and `arch` (schema stays 3, no new prompt); daily rollups carry the release that recorded the day and a neutral actor and surface.
+  - TUI sends, rename, group create and move to group are counted; plain `add` records its session create and a CLI fork is labelled `cli_fork`; the default CLI `session stop` and web stop and restart record session end; every update install path records its outcome; real failures (session start, send, MCP config, worktree, web 5xx, TUI exit) are recorded as error events. 13 events that no release emits are listed as planned.
+  - An upload no longer holds the telemetry state lock during the network send, so the TUI start that uploads keeps its own start events.
+- A UI test no longer leaks XDG directories into later tests (#2533, reported by @AndreIntelas).
+- Regression tests for #2529, #2541, #2543 and the OpenCode shared service (#2514) are part of the repository.
+- The contributor self-check runs Go tests only inside a container and otherwise prints the Docker command.
+
+### Upgrading
+
+- #2539: a drain from an upgraded host against a remote that is still on 1.16.26 or older now fails with `flag provided but not defined: -profile` instead of receiving every profile's records. Update the remote (`agent-deck remote update <name>`) first. `inbox export` run by hand returns only the invoking profile's records; export each profile separately if you relied on the host-wide output.
+- #2518: the recovery turn is on by default and costs one turn per conductor start or restart. Opt out with `[conductor] recovery_turn = false`.
+- #2544: `[conductor] permission_ask` defaults to `true` (unchanged behavior). Setting it to `false` takes effect when you run `agent-deck conductor setup <name>` again, and it also removes a user ask rule that is identical to a managed entry.
+- #2548: `default_conductor` and thread affinity are Slack only; Telegram, Discord and `/ad-restart` still route an unprefixed message to the first conductor.
+- #2536: a Codex send into a pane showing an approval menu or the transcript overlay is now held and then refused instead of typed into it.
+
+### Known issues
+
+- govulncheck reports GO-2026-6617 (HTTP/2 server crash in golang.org/x/net and net/http); agent-deck serves no HTTP/2 (plain http.Server, no TLS, no h2c), so it is not reachable; the Go 1.26.9 and x/net 0.60.0 move ships in the next release.
+
+Thanks to @wallacms, @jtymas-preiss, @AndreIntelas, @3rwww1, @koenzhao, @seanfreiburg, @Skadoge and @AKarbas for their pull requests, and to @jwr456, @tomasaschan, @Abeansits, @cherninely, @tedmellors, @netllama and @kaneda-fr for their reports.
+
 ## [1.16.26] - 2026-10-04
 
 - Write terminal-output event ticks only while a follower needs them, reducing background disk writes (#2490).

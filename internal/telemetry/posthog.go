@@ -60,6 +60,33 @@ func withAPIKey(body []byte) ([]byte, error) {
 	return append(out, rest...), nil
 }
 
+// atLevel reduces waiting spool lines to what level records now. A line
+// keeps the level it was recorded at, but a level lowered since then (by
+// `telemetry level basic` or the config ceiling) also covers data not sent
+// yet, including lines kept across a re-consent: at basic, events basic does
+// not record are dropped and the rest lose hour, weekday and ds_session,
+// exactly as if they had been recorded at basic.
+func atLevel(lines []spoolLine, level Level) []spoolLine {
+	if level != LevelBasic {
+		return lines
+	}
+	out := lines[:0:0]
+	for _, l := range lines {
+		if def, ok := LookupEvent(l.E); !ok || !def.Basic {
+			continue
+		}
+		p := make(map[string]any, len(l.P))
+		for k, v := range l.P {
+			if k != propDSSession.Key {
+				p[k] = v
+			}
+		}
+		l.P, l.H, l.W, l.L = p, nil, nil, string(LevelBasic)
+		out = append(out, l)
+	}
+	return out
+}
+
 // pendingEvent is one event ready to encode, with where it came from.
 type pendingEvent struct {
 	ev        phEvent
@@ -128,13 +155,17 @@ func (s *State) pending(lines []spoolLine, now time.Time) []pendingEvent {
 		if day >= today {
 			continue
 		}
+		v := safeVersion(processVersion) // a day stored by an older client has no V
+		if s.Daily[day].V != "" {
+			v = safeVersion(s.Daily[day].V)
+		}
 		for _, r := range rollupEvents(s.Daily[day], level) {
 			if Validate(r.name, r.props) != nil {
 				continue
 			}
 			s.Seq++
 			l := spoolLine{E: r.name, U: s.rollupUUID(day, r.name, r.key), D: day, S: s.Seq,
-				V: safeVersion(processVersion), A: "human", SF: string(SurfaceTUI), L: string(level), P: r.props}
+				V: v, A: rollupActor, SF: rollupSurface, L: string(level), P: r.props}
 			out = append(out, pendingEvent{ev: s.toPostHog(l), rollupDay: day})
 		}
 		out = append(out, pendingEvent{rollupDay: day}) // marks the day for removal even when empty

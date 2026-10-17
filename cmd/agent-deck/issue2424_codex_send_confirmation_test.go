@@ -121,7 +121,9 @@ func TestIssue2424_CodexSendConfirmation(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			mock := &mockSendRetryTarget{
 				statuses: []string{c.status},
-				panes:    append([]string{c.baseline}, c.frames...),
+				// The first capture is the composer-draft guard's (Codex is
+				// guarded since #2536); the arrival loop's baseline follows.
+				panes: append([]string{c.baseline, c.baseline}, c.frames...),
 			}
 			res, err := executeSend(mock, "codex", msg, true, sendExecTuning{retry: noWaitSendOptionsNoDelay()})
 			if (err != nil) != c.wantErr {

@@ -10,17 +10,11 @@ import (
 
 // Background work in a Claude pane (issue #2473).
 //
-// Rule in one line: a running workflow means a running session. Claude Code
-// can end its foreground turn and go back to an empty prompt while work it
-// started keeps running: a Workflow, background agents, run_in_background
-// shells and Monitors. Until that work reports back (a <task-notification>
-// turn), the session is RUNNING with substate background-work, whatever the
-// prompt or the Stop hook say. Only once nothing is in flight does the
-// session settle to waiting (and to idle after the operator acknowledged it).
-//
-// This reverses the 2026-09-23 audit ruling that read shells / Monitors left
-// at the prompt as "waiting, the shells are context, not activity". Ashesh's
-// ruling in #2473: work that is in flight is activity.
+// Finite work keeps a session running after its foreground turn ends.
+// Monitor counters describe armed subscriptions instead: they remain visible
+// as watching while the session waits or idles. A live foreground spinner
+// always wins. Transcript-backed sleep-only watchers are resolved at the
+// session layer, where their launch receipts can be correlated.
 //
 // The pane shows the work in four shapes (Claude Code 2.1.288, captured live
 // into testdata and the fixtures in background_work_test.go):
@@ -71,6 +65,7 @@ const (
 	BackgroundKindAgent    = "agent"
 	BackgroundKindBash     = "bash"
 	BackgroundKindMonitor  = "monitor"
+	BackgroundKindWatcher  = "watcher"
 )
 
 // backgroundWorkScanLines bounds the scan to the pane tail (completion line +
@@ -95,6 +90,8 @@ const backgroundPromptScanLines = 80
 type BackgroundWork struct {
 	// Kind is one of the BackgroundKind* constants, "" when nothing is in flight.
 	Kind string `json:"kind,omitempty"`
+	// Count is the number of armed watchers, omitted for active jobs.
+	Count int `json:"count,omitempty"`
 	// Task is the workflow name, agent / command description, or a count
 	// summary ("2 shells, 1 monitor") when no name is known.
 	Task string `json:"task,omitempty"`
@@ -118,22 +115,45 @@ func (b BackgroundWork) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		Kind    string `json:"kind,omitempty"`
+		Count   int    `json:"count,omitempty"`
 		Task    string `json:"task,omitempty"`
 		Step    *int   `json:"step,omitempty"`
 		Steps   int    `json:"steps,omitempty"`
 		Elapsed string `json:"elapsed,omitempty"`
 		Source  string `json:"source,omitempty"`
-	}{b.Kind, b.Task, step, b.Steps, b.Elapsed, b.Source})
+	}{b.Kind, b.Count, b.Task, step, b.Steps, b.Elapsed, b.Source})
 }
 
-// InFlight reports whether b describes work still running.
+// InFlight reports whether a background item exists, including an armed watcher.
 func (b BackgroundWork) InFlight() bool { return b.Kind != "" }
+
+// Watching identifies passive subscriptions and proven sleep-only wait loops.
+func (b BackgroundWork) Watching() bool {
+	return b.Kind == BackgroundKindMonitor || b.Kind == BackgroundKindWatcher
+}
+
+// Running excludes passive watchers from the work that holds a turn open.
+func (b BackgroundWork) Running() bool { return b.InFlight() && !b.Watching() }
+
+func (b BackgroundWork) Substate() Substate {
+	if b.Watching() {
+		return SubstateWatching
+	}
+	return SubstateBackgroundWork
+}
 
 // Summary is the one-line human form, e.g.
 // "workflow comms-followon-round3 3/5 · 18m32s". "" when nothing is in flight.
 func (b BackgroundWork) Summary() string {
 	if !b.InFlight() {
 		return ""
+	}
+	if b.Watching() {
+		count := b.Count
+		if count < 1 {
+			count = 1
+		}
+		return fmt.Sprintf("%d watching · %s", count, b.Task)
 	}
 	parts := []string{b.Kind}
 	if b.Task != "" {
@@ -276,17 +296,28 @@ func claudeFooterCounter(content string) (BackgroundWork, bool) {
 		if m == nil {
 			continue
 		}
-		shells := 0
+		shells, monitors := 0, 0
 		for _, part := range claudeCounterPartRe.FindAllStringSubmatch(m[1], -1) {
-			if n, err := strconv.Atoi(part[1]); err == nil && strings.HasPrefix(strings.ToLower(part[2]), "shell") {
-				shells += n
+			if n, err := strconv.Atoi(part[1]); err == nil {
+				if strings.HasPrefix(strings.ToLower(part[2]), "shell") {
+					shells += n
+				} else {
+					monitors += n
+				}
 			}
 		}
 		kind := BackgroundKindMonitor
 		if shells > 0 {
 			kind = BackgroundKindBash
 		}
-		return BackgroundWork{Kind: kind, Task: strings.TrimSpace(m[1]), Source: "pane"}, true
+		if shells == 0 && monitors == 0 {
+			continue
+		}
+		count := 0
+		if shells == 0 {
+			count = monitors
+		}
+		return BackgroundWork{Kind: kind, Count: count, Task: strings.TrimSpace(m[1]), Source: "pane"}, true
 	}
 	return BackgroundWork{}, false
 }
@@ -296,5 +327,5 @@ func claudeFooterCounter(content string) (BackgroundWork, bool) {
 // turn awaiting background agents / workflows, or live shells / monitors in
 // the footer. Pure and Claude-shaped; callers gate it to Claude sessions.
 func claudeBackgroundWorkPending(content string) bool {
-	return ParseClaudeBackgroundWork(content).InFlight()
+	return ParseClaudeBackgroundWork(content).Running()
 }

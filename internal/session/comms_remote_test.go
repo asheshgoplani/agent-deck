@@ -64,6 +64,7 @@ func TestRemoteLedgerRecordsRideTheTalkbackRoundTripOnce(t *testing.T) {
 	}
 	fetches := 0
 	deps := RemoteTalkbackDeps{
+		RemoteProfile: "remotehost",
 		FetchAfter: func(_ context.Context, cursor RemoteCursor) (RemoteExport, error) {
 			fetches++
 			t.Setenv("AGENTDECK_PROFILE", "remotehost")
@@ -77,7 +78,7 @@ func TestRemoteLedgerRecordsRideTheTalkbackRoundTripOnce(t *testing.T) {
 			if parsed.Comms == nil {
 				t.Fatal("a puller with the ledger on must send a _comms position")
 			}
-			return ExportRecordsAfter(parsed)
+			return ExportRecordsAfter("remotehost", parsed)
 		},
 		WriterProbe: func(context.Context) (WriterStatus, error) { return WriterStatus{Running: true}, nil },
 		Parent:      func() (*Instance, string) { return f.parent, "default" },
@@ -149,6 +150,7 @@ func TestRemoteLedgerRecordsRideTheTalkbackRoundTripOnce(t *testing.T) {
 func TestAnOlderRemoteWithoutTheCommsAnswerChangesNothing(t *testing.T) {
 	f := newCommsFixture(t)
 	deps := RemoteTalkbackDeps{
+		RemoteProfile: "default",
 		FetchAfter: func(_ context.Context, cursor RemoteCursor) (RemoteExport, error) {
 			return RemoteExport{CursorNext: RemoteCursor{Seqs: map[string]int64{}}}, nil // no "comms" key
 		},
@@ -215,12 +217,12 @@ func TestAnUncertainExportNeverMovesThePosition(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(SetCommsLedgerForTest(false))
-	out := exportCommsAfter(RemoteCommsCursor{Store: "old", Epoch: 1, After: 7}, time.Now())
+	out := exportCommsAfter("remotehost2", RemoteCommsCursor{Store: "old", Epoch: 1, After: 7}, time.Now())
 	if out.Ledger || out.Through != 7 || len(out.Records) != 0 {
 		t.Fatalf("switch off on the remote: %+v", out)
 	}
 	SetCommsLedgerForTest(true)
-	out = exportCommsAfter(RemoteCommsCursor{}, time.Now())
+	out = exportCommsAfter("remotehost2", RemoteCommsCursor{}, time.Now())
 	if !out.Ledger || len(out.Records) != 1 || out.Through < out.After {
 		t.Fatalf("a first pull exports the record: %+v", out)
 	}

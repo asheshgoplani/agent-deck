@@ -75,6 +75,9 @@
             "type": "string"
           }
         },
+        "claude_session_id": {
+          "type": "string"
+        },
         "codex_session_id": {
           "type": "string"
         },
@@ -88,6 +91,10 @@
         "created_at": {
           "type": "string",
           "format": "date-time"
+        },
+        "exit_code": {
+          "description": "live",
+          "type": "integer"
         },
         "extra_args": {
           "description": "live",
@@ -176,6 +183,9 @@
         "tool": {
           "type": "string"
         },
+        "transcript_path": {
+          "type": "string"
+        },
         "viewers": {
           "description": "live; absent when tmux could not be asked",
           "type": "array",
@@ -201,6 +211,9 @@
     "tmux.BackgroundWork": {
       "type": "object",
       "properties": {
+        "count": {
+          "type": "integer"
+        },
         "elapsed": {
           "type": "string"
         },

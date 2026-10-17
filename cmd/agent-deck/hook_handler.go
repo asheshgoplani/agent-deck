@@ -76,12 +76,15 @@ func rawString(raw json.RawMessage) string {
 }
 
 // commsSpoolEdge maps a Claude Code hook event to the comms spool edge it
-// carries. Empty edge: nothing to spool for this event. P1 enables two
-// producers only (docs/comms.md): Claude through this handler and Codex
-// through codex-notify. A Codex Stop hook (recognisable by its turn_id,
+// carries. Empty edge: nothing to spool for this event. P1 enabled two
+// producers (docs/comms.md), Claude through this handler and Codex through
+// codex-notify; pi through this handler followed. A Codex Stop hook (recognisable by its turn_id,
 // which Claude's Stop does not carry) is never spooled here, so a user who
 // also points Codex hooks at hook-handler cannot duplicate a turn the
-// notify line already produced. Every other harness is status-only in P1.
+// notify line already produced. pi's extension sends one agent_settled per
+// run: with the run's text it is the turn_end edge, without it (a tool-only,
+// aborted or failed run) it is a status edge. Every other harness is
+// status-only in P1.
 func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 	turnID := rawString(p.TurnID)
 	switch normalizeHookEventKey(p.HookEventName) {
@@ -95,6 +98,14 @@ func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 			return "", "", "", "" // Codex Stop (notify owns the turn) or Cursor stop (status only)
 		}
 		return "claude", session.CommsEdgeTurnEnd, rawString(p.LastAssistantMessage), ""
+	case "agentsettled":
+		if p.Source != "pi" {
+			return "", "", "", ""
+		}
+		if text := rawString(p.LastAssistantMessage); strings.TrimSpace(text) != "" {
+			return "pi", session.CommsEdgeTurnEnd, text, rawString(p.Prompt)
+		}
+		return "pi", session.CommsEdgeStatus, "", ""
 	}
 	return "", "", "", ""
 }
@@ -117,11 +128,15 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 			transcript = clean
 		}
 	}
-	if err := session.WriteCommsSpool(session.CommsSpoolEntry{
+	entry := session.CommsSpoolEntry{
 		Harness: harness, Event: p.HookEventName, Edge: edge, Instance: instanceID,
 		SessionID: sessionID, TurnID: strings.TrimSpace(rawString(p.TurnID)), Text: text, Prompt: prompt,
 		TranscriptPath: transcript, Cwd: strings.TrimSpace(p.Cwd), TSignal: time.Now().UnixMilli(),
-	}); err != nil {
+	}
+	if edge == session.CommsEdgeStatus {
+		entry.From, entry.State = "running", "waiting"
+	}
+	if err := session.WriteCommsSpool(entry); err != nil {
 		hookHandlerLog.Warn("comms_spool_write_failed",
 			slog.String("instance", instanceID), slog.String("event", p.HookEventName), slog.String("error", err.Error()))
 	}
@@ -142,6 +157,7 @@ type hookStatusFile struct {
 	SessionID                string `json:"session_id,omitempty"`
 	Event                    string `json:"event"`
 	Timestamp                int64  `json:"ts"`
+	ReceivedAt               int64  `json:"received_at_ns,omitempty"`
 	CodexStartedGeneration   string `json:"codex_started_generation,omitempty"`
 	CodexCompletedGeneration string `json:"codex_completed_generation,omitempty"`
 	CodexStartedSessionID    string `json:"codex_started_session_id,omitempty"`
@@ -268,6 +284,11 @@ func mapEventToStatus(event string) string {
 // Reads JSON from stdin, maps the event to a status, and writes a status file.
 // Always exits 0 to avoid blocking Claude Code.
 func handleHookHandler() {
+	handleHookHandlerReceivedAt(time.Now())
+}
+
+// Capture ordering before reading stdin or doing any event-specific work.
+func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	instanceID := os.Getenv("AGENTDECK_INSTANCE_ID")
 	if instanceID == "" {
 		// No instance ID means this Claude session isn't managed by agent-deck.
@@ -290,6 +311,12 @@ func handleHookHandler() {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return
 	}
+	if payload.HookEventName == "PreToolUse" && os.Getenv(session.PreToolHookSyncMarkerEnv) != "1" {
+		// An old async hook can first be scheduled after a newer Stop or
+		// permission event. No payload timestamp can recover that order.
+		// Only the installed synchronous receiver may publish this edge.
+		return
+	}
 
 	// Issue #1233: gracefully degrade when the session's working directory
 	// (PROJECT_DIR / cwd) has been renamed or removed out from under a running
@@ -303,7 +330,7 @@ func handleHookHandler() {
 	}
 
 	// Comms Ledger: spool the text this event carries (Claude Stop and
-	// UserPromptSubmit only in P1).
+	// UserPromptSubmit, pi agent_settled).
 	spoolCommsFromHook(instanceID, payload)
 
 	// Map event to status
@@ -340,10 +367,15 @@ func handleHookHandler() {
 		sessionID = strings.TrimSpace(payload.ConversationID)
 	}
 
+	scan := doneScanResult{}
 	if isStopHookEvent(payload.HookEventName) {
-		writeHookStatusWithScan(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, detectDoneSentinel(data))
-	} else {
-		writeHookStatus(instanceID, status, sessionID, payload.HookEventName, payload.Cwd)
+		scan = detectDoneSentinel(data)
+	}
+	writeHookStatusReceivedAt(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, scan, receivedAt)
+	if payload.HookEventName == "PreToolUse" {
+		// This high-frequency edge only publishes activity. Lifecycle hooks
+		// still own metadata reconciliation, costs, and Recall indexing.
+		return
 	}
 
 	// #572: Sync agent-deck title from Claude Code's --name / /rename value.
@@ -523,6 +555,10 @@ func writeHookStatus(instanceID, status, sessionID, event, cwd string, done ...s
 // unflushed tail persists as transcript_path so the daemon can finish the
 // scan (issue #1186 flush race).
 func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, scan doneScanResult) {
+	writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd, scan, time.Time{})
+}
+
+func writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd string, scan doneScanResult, receivedAt time.Time) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -551,23 +587,38 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 		statusFile.DoneSummary = scan.signal.Summary
 	}
 	statusFile.TranscriptPath = scan.pendingTranscript
+	if !receivedAt.IsZero() {
+		statusFile.ReceivedAt = receivedAt.UnixNano()
+	}
 	writeHookStatusFile(instanceID, statusFile, true)
 }
 
 func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnchor bool) bool {
 	hooksDir := getHooksDir()
 	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
-	if generation != "" {
+	if generation != "" || statusFile.ReceivedAt != 0 {
 		lockPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".lock")
 		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
 			return false
 		}
 		defer closeChecked(lock)
-		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		if err := lockHookStatus(lock, statusFile.Event == "PreToolUse"); err != nil {
 			return false
 		}
 		defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	}
+	// Compare under the same lock as publication, including when no launch
+	// generation is present. A delayed tool must not erase a newer lifecycle
+	// event. Other harnesses retain their existing publication semantics.
+	if statusFile.Event == "PreToolUse" && statusFile.ReceivedAt != 0 {
+		var previous hookStatusFile
+		data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json"))
+		if err == nil && json.Unmarshal(data, &previous) == nil && previous.ReceivedAt >= statusFile.ReceivedAt {
+			return false
+		}
+	}
+	if generation != "" {
 		controlPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")
 		var control hookGenerationControl
 		data, err := readHookFileBounded(controlPath)
@@ -620,6 +671,25 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 	}
 	appendHookEvent(instanceID, statusFile)
 	return true
+}
+
+const preToolLockBudget = 100 * time.Millisecond
+const preToolLockRetry = 2 * time.Millisecond
+
+// A tool must never queue indefinitely behind a stalled lifecycle writer.
+// Contention beyond the budget leaves the last status intact and fails open.
+func lockHookStatus(lock *os.File, bounded bool) error {
+	if !bounded {
+		return syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+	}
+	deadline := time.Now().Add(preToolLockBudget)
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil || !errors.Is(err, syscall.EWOULDBLOCK) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(preToolLockRetry)
+	}
 }
 
 func readHookFileBounded(path string) ([]byte, error) {
@@ -729,7 +799,7 @@ func cleanStaleHookFiles() {
 func handleHooks(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck hooks <install|uninstall|status>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -753,7 +823,7 @@ func handleHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown hooks subcommand: %s\n", args[0])
 		printClaudeHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -774,7 +844,7 @@ func handleHooksInstall() {
 	installed, err := session.InjectClaudeHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if installed {
 		fmt.Println("Claude Code hooks installed successfully.")
@@ -901,7 +971,7 @@ func handleHooksUninstall() {
 	removed, err := session.RemoveClaudeHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error removing hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if removed {
 		fmt.Println("Claude Code hooks removed successfully.")
@@ -1048,6 +1118,9 @@ type transcriptMessage struct {
 
 // writeCostEvent reads usage from the Claude transcript file on Stop events.
 func writeCostEvent(instanceID string, rawPayload []byte) {
+	if !session.GetCostTrackingEnabled("") {
+		return
+	}
 	logCostDebug("writeCostEvent called for instance=%s", instanceID)
 
 	var stop stopHookPayload

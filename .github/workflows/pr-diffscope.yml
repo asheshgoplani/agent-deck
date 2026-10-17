@@ -4,9 +4,14 @@ on:
 permissions:
   contents: read
   pull-requests: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   diffscope:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Count changed files
         env:

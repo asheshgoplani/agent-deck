@@ -19,6 +19,9 @@ func backgroundWorkLine(work tmux.BackgroundWork) string {
 		label = work.Kind
 	}
 	line := "background: " + label
+	if work.Watching() {
+		return fmt.Sprintf("watching: %d · %s", max(1, work.Count), label)
+	}
 	if work.Steps > 0 {
 		line += fmt.Sprintf(" %d/%d", work.Step, work.Steps)
 	}

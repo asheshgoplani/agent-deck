@@ -6,5 +6,7 @@ Options:
   --with-errors
         With --json, wrap output as {"sessions":[...],"errors":[...]} and
         exit 1 if any remote failed
+        JSON includes transcript_path and harness-native session IDs when known;
+        transcript_path belongs to the remote host.
   --json-envelope
         Alias for --json --with-errors

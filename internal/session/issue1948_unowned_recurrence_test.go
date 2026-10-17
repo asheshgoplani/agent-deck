@@ -68,7 +68,7 @@ func TestIssue1948P1_RecurringStallIsDrainableAgain(t *testing.T) {
 			"not collapsed onto the still-pending first record")
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(profile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}

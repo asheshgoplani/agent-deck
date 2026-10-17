@@ -122,6 +122,8 @@ agent-deck ls  # Alias
 
 Both JSON forms always include `account`: the exact stored per-session slot, including an empty string when no slot is explicitly stored. Human tables show the slot in a quoted `ACCOUNT` column, escaping controls. This is stored metadata, not a resolved account or login identity.
 
+`list --json`, `list --all --json` and `remote sessions <name> --json` also carry `transcript_path` and the harness native id (`claude_session_id` or `codex_session_id`) when the core knows them. The path belongs to the host that owns the session. A missing field means unknown: the listing never inspects panes or scans conversation bodies to find it, and an SSH session never resolves a transcript on the controller.
+
 ### remove - Remove session
 
 ```bash
@@ -311,6 +313,7 @@ Auto-detects current session if no ID provided.
 - Session details (id, title, status, path, group, tool)
 - `account`: the exact stored slot, always present including an empty string. Human output shows a quoted, control-escaped `Account:` field; neither form resolves login identity.
 - Claude/Gemini session ID
+- `opencode_session_id`: the native OpenCode conversation id, present for OpenCode sessions only (an empty string until one is known or set with `session set <id> opencode-session-id <ses_...>`)
 - Attached MCPs (local, global, project)
 - tmux session name
 - `substate` / `substate_detail` (omitted when none). Substate `background-work` (Claude) means the foreground turn ended but a Workflow, background agents, shells or a Monitor are still in flight: status is `running`, `substate_detail` reads e.g. `workflow comms-followon-round3 3/5 · 18m32s`, and a `background_work` object carries the structure:
@@ -324,6 +327,8 @@ Auto-detects current session if no ID provided.
 | `source` | `pane`, `transcript` or `pane+transcript`: which evidence proved the work in flight |
 
 `list --json`, `status --json -v` and `session children --json` carry the same `background_work` object (omitted when nothing is in flight). When the work reports back the session settles to `waiting` (then `idle` once acknowledged) within one poll (#2473). An open menu (permission prompt, question) or an error banner outranks the work: such a session reads `waiting` / `interactive-menu` or `error` / `auth-401`, never `running`. A question in Claude's reply text ("Would you like me to ...?") is not a menu and does not stop the work from reading `running`.
+
+`exit_code` (integer, omitted when unknown) appears with substate `process-exited` when a custom command session (`add -cmd` / `launch -cmd`) has exited: status `idle` for exit 0, `error` for a non-zero exit. `list --json` and `status -v --json` carry the same field; interactive shell sessions never report it, and a stopped session drops it. `session start` of a command that finishes at once still exits 0 (the result is the `process-exited` row, not a start failure). The command runs as `bash -c` as the pane's first process, so it does not load interactive shell rc files, and its pane stays dead after it exits; `session restart` runs it again. Older cores omit the field.
 
 ### session current
 
@@ -407,7 +412,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level
+**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level, prompt-suggestions
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -417,6 +422,21 @@ Setting `account` auto-migrates the Claude conversation into the target account'
 agent-deck session set my-project context-level primer
 agent-deck session set my-project context-level ""       # clear: inherit group/global
 ```
+
+`prompt-suggestions` sets the per-session override for Claude Code prompt suggestions: `children-off`, `on` or `off` (also `true`/`false`), applied on the next start/restart. `children-off` turns them off when the session has a parent and leaves a root session alone; an empty value clears the override so the session follows `[profiles.<profile>.claude].prompt_suggestions`, then `[launch].prompt_suggestions` (default `children-off`; see `config-reference.md`).
+
+```bash
+agent-deck session set my-worker prompt-suggestions on   # keep suggestions in a parented session
+agent-deck session set my-worker prompt-suggestions ""   # clear: follow profile, then [launch]
+```
+
+### session send-keys
+
+```bash
+agent-deck session send-keys <id|title> --text "TEXT" | --enter | --named-key KEY [--primary] [--json]
+```
+
+Low-level keystroke forwarding (exactly one of `--text`, `--enter`, `--named-key`; `--stream` is the TUI insert-mode transport). On a Claude session, `--enter`, `--named-key` Enter, Tab or Right, and a `--text` that is only a CR, a TAB or the cursor-right sequence are checked against the composer first. Key names match the way tmux reads them: in any case (`enter`, `TAB`, `right`), with `^X`, `C-X` and `c-x` as the same control key (`C-m`/`^M` is Enter, `C-i`/`^I` is Tab), plus `KPEnter` and the hex codes `0xd`/`0x9`; a key with another modifier (`S-Enter`, `M-Right`) is not checked. When the composer shows a prompt suggestion (or Claude's dim `Try "..."` placeholder, which uses the same renderer), Escape is pressed once (not while a turn is running, where Escape would interrupt it) and, because Claude does not clear a suggestion on Escape, the key is withheld with exit 1, `code: DELIVERY_FAILED`, `delivery: "composer_blocked"`, `reason: "prompt_suggestion"`. Type the text first (`--text`, then `--enter`) to submit. `--stream` and the TUI insert mode are a human at the keyboard and are not guarded. `--enter` is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft.
 
 ### session send
 
@@ -430,6 +450,10 @@ Use `--message-file` for long or multiline messages, or `--message-file -` for s
 Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANCE_ID` set) to a Claude target starts with one line `[agent-deck from:<your session id>]`. The receiver's reply turn is then classified as a `send` (not a human prompt); when you are not the receiver's parent, the reply is also committed to YOUR inbox (also when the receiver has no parent: a peer, or your top-level conductor) as an urgent record with `target_kind:"reply"` (rendered `- [urgent] reply from=<child id> <title>: <status>` by the prompt-time drain and `inbox drain`/`peek`), and an idle sender is woken for it whatever its title. The reply does not wait on the receiver's parent: it lands even while the parent's inbox is full (a stopped parent), and a retried turn never duplicates it or wakes you twice. The receiver's parent keeps its own copy; when the parent itself asked, that copy is its reply, and an idle Claude parent is woken for it whatever its title. `--no-tag` or `[send] tag_sends = false` turns tagging off; a human shell (no env), a sender that is not a Claude-compatible session in the target's profile (shell, Codex, Gemini: it has no prompt-time drain for the reply), `--draft`, a bare slash command, a conductor heartbeat, a send to yourself, a non-Claude target and an already-enveloped message are never tagged. Every `--json` receipt (sync, queued, draft, skipped) carries `"tagged": true|false`; the envelope counts toward `line_too_long` and every other delivery guard. A receiver with `no_transition_notify` never reports its turns, so its identity block tells it to answer with an explicit `session send` instead.
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
+
+`--require-input-prompt` (guarded send) refuses instead of typing into a harness menu. The pane is checked immediately before every keystroke batch (paste, each fallback chunk, every Enter) under the per-target send lock, and the send always takes the tmux transport. Before typing, an open menu exits 1 with `delivery: "menu_open"` and a missing input prompt with `delivery: "composer_blocked"` (error text `no keys typed`). A busy Claude whose framed composer is empty counts as a ready prompt (Claude Code queues the message); a busy composer holding a draft still refuses; after typing, only a real menu withholds Enter and reports `typed_not_submitted`. A menu needs picker evidence (a navigate / Enter to select / Enter to confirm instruction, or menu words beside two or more choices); text in the input box or a delivered message quoting "Allow once" is not one. `--draft`, `--no-wait` and the queue keep the guard; a remote that does not list the flag in its `session send --help` is refused before anything is sent.
+
+`session queue list <session> --json` lists those durable queued sends (`id`, `text_preview`, `enqueued_at`, `state`; also the `queue` array of `session show --json`). `session queue release <id> --json` asks the target's worker to send a still queued entry now, and `session queue cancel <id> --json` removes it before any typing. Both report an `outcome`: `delivered`, `unconfirmed`, `refused` (nothing typed), `cancelled`, `already_sent` (with the child's `delivery_evidence`), `not_found` or `unknown`; see docs/macapp-core.md "Queue control". `remote <name> session queue …` forwards to the remote; an older remote answers `session queue is unsupported on this remote`.
 
 ```bash
 git diff | agent-deck session send my-project --message-file -
@@ -456,6 +480,14 @@ Delivery verdict (`--json` also carries `delivery` and a machine-checkable `subm
 With `--wait` or `--stream` on a Claude target, the reply is bound to the transcript record of this exact message: a message queued behind a live turn waits for its own turn to start, the read begins after that record, and it stops at the next human prompt (an interrupted turn is reported as incomplete or as a stream error, not as the next turn's answer). Slash commands and non-Claude tools keep the timestamp-based best-effort reply.
 
 Claude conversation identity (additive; Claude-compatible targets only, other tools' receipts are unchanged): `--json` receipts carry `claude_session_id`, the native Claude conversation the message went to (the same value `session show --json` and `session output --json` report), omitted while it is not known yet (a fresh session before Claude writes its transcript). The queued `--json` receipt and `session send-status --json` carry it too; once the send has `landed` it names the conversation whose transcript holds `landed_row_id`. A `--json --wait` reply bound to its transcript record also carries `claude_turn_uuid`, the uuid of that user record, and `claude_session_id` from the same record; it is the Claude counterpart of Codex's `accepted_turn.codex_session_id` + `codex_turn_generation`.
+
+### session image-upload
+
+```bash
+agent-deck session image-upload <id|title> --name <uuid>.<png|jpg|gif|webp|pdf> [--json] < file
+```
+
+Stages an attachment from stdin on the host that owns the session (works through `remote <host> session image-upload` too) and prints its absolute path (`--json`: `{"path": "...", "bytes": n}`). Pass that path to `session send <id> --image <path>` on the same host. At most 20 MiB; names with separators or traversal, empty input and existing targets are refused (exit 1). Files live in an owner-only `macapp-uploads/<session id>/` folder beside the profile's state database, removed with the session and pruned after 7 days.
 
 ### session approve
 
@@ -620,7 +652,7 @@ agent-deck recall export --cards [--since 30d] [--json]
 agent-deck recall import --host <alias> [file|-] [--json]
 agent-deck recall pull <host> [--full] [--json]
 agent-deck recall mcp
-agent-deck remote <host> recall search|sessions|show|context|export|status ...
+agent-deck remote <host> recall search|sessions|show|context|export|status|timeline|follow ...
 ```
 
 The transcript index over every harness on the machine (`docs/recall.md`); every command needs `[recall] enabled = true` and exits 2 otherwise. `<session>` is the `#number` from a listing, a harness conversation id or unique prefix, or an agent-deck session id. The TUI `G` key is the same search over the same index (typing = `search`, the preview = `show`, Enter = `open`). `backfill`/`sweep`/`rebuild` exit 3 while a session of the active profile is `running` or the load is above `max_loadavg` (`--force` overrides) and while another sweep holds the lock. `search` ranks sessions (title/hint/tag hits first, then body hit count, then recency), AND-s terms, keeps identifiers like `SB-412` whole, joins `--hint`/`--tag` against `state.db` live, applies the structural filters before the 5,000-message body ceiling (newest matches first), runs a 150 ms / 32 MB sweep first and reports what it deferred; `--phrase` verifies the literal phrase and reports how many candidates it checked. `open` starts the bound session (any harness, under the profile whose `state.db` holds the link) or re-registers a Claude transcript with `add --resume-session`; an unowned Codex/pi/Gemini/OpenCode/Hermes conversation exits 2 with the `recall show` command to read it. Sweeps read links, hints and tags from every profile's `state.db` and write cost events to the profile that holds the link. Every `sweep` drains `recall/queue.jsonl` (the lines Claude hooks, `session stop`, `worker_done` and the daemon's turn-end edge append) and parses those files first; `status` reports `queued`, `by_harness` and the harness roots. `--json` returns `result` (search: `hits`, `candidates`, `ceiling_hit`, `scanned`, `verified`) plus an `index` note (`swept`, `deferred`, `deferred_bytes`).
@@ -660,6 +692,24 @@ agent-deck session switch-account "My Project" work
 ```
 
 Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
+
+### open - Show a page in the macOS app Browser panel
+
+```bash
+agent-deck open report.html                       # from inside a session
+agent-deck open ./site/ --session "My Project"    # a directory opens its index.html
+agent-deck open https://example.com/dashboard
+```
+
+Use this to show the user an HTML report. `--session` defaults to the calling session (`$AGENTDECK_INSTANCE_ID`) and is required outside one; ids match exactly and duplicate titles are refused. Paths are made absolute and must be regular files; URLs must be absolute `http`/`https` without credentials. The request is a `macapp.open` frame on the host's own event bus, so it works the same on remote hosts. Exit 0 prints `Opened in AgentDeck (session <title>)` when the app acknowledged within 3 s, else `Queued for AgentDeck: it opens when the app is connected`; a refused target, a disabled bus or an app rejection exits non-zero. Details: `docs/macapp-open.md`.
+
+### file bundle - Export a page folder (read-only)
+
+```bash
+agent-deck file bundle /abs/report/index.html --session <id> > report.tar
+```
+
+Streams an uncompressed tar of the folder (a file argument exports its parent folder, so relative assets keep their paths). Capped at 20 MiB including tar overhead; symlinks and special files are refused; nothing is written on the host and no partial archive is emitted on failure.
 
 ## Fleet Recovery Commands
 
@@ -1069,7 +1119,18 @@ Fetches active sessions from all remotes, or from a specific remote if `name` is
 
 To also see fetch failures in JSON, add `--with-errors` (or the equivalent `--json-envelope`, which implies `--json`): the output becomes `{"sessions": [...], "errors": [{"name", "host", "error"}]}` and the command exits `1` if any remote failed. This envelope is always opt-in, so the plain `--json` shape stays stable for existing scripts.
 
-In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
+In the TUI, remote sessions use the same status indicators and nested group tree as local sessions. A remote session whose `parent_session_id` (included in `--json` when set) names another session in the same remote group, such as a conductor's child, is shown one level under that parent; when the parent is not listed there it is shown flat. Each `--json` row also carries `favorite: true` when the session is a favourite on the remote (the key is absent otherwise, and from remotes too old to report it), so a remote favourite needs no separate `remote <name> list --json` call. Remote headers and groups can be collapsed, and `K`/`J` preserve a manual order within each remote group, moving a conductor's child only among its siblings. A session's location (local or SSH host plus remote path) is part of its identity, so identical titles at different locations do not collide.
+
+### remote conversation and status reads
+
+```bash
+agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
+agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
+agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>]
+agent-deck remote <name> session send-status <send-id> --json
+```
+
+Forwards the local read to the owner host and prints its output unchanged (rows v2 snapshots, follow frames, event frames, send-status records), in one SSH round trip on a dedicated channel; one-shot calls never open the persistent remote channel. Flags are checked on the owner host inside that same channel: an owner whose core predates the verb or flag answers exit 1 and, for `--json`/`--jsonl`, one `{error, remote, remote_version}` object whose `error` contains `unsupported remote command`, so clients fall back. Snapshots and send-status have a five minute deadline. A follow streams until the controller's stdin closes or the controller is terminated; the owner host then terminates and reaps its own reader. Stdin is the lifetime signal: a follow started with stdin from `/dev/null` (`</dev/null`, or a background job of a non-interactive shell) exits 0 within seconds with no output, so a long-lived consumer keeps a pipe to its stdin open and closes it to stop. Local `events follow` and `recall follow` ignore stdin. It never retries: resume with the last processed cursor. See `docs/remote-recall.md`.
 
 ### remote drain
 
@@ -1091,8 +1152,9 @@ Transition notifications are parent-linked, and a `parent_session_id` cannot poi
 - **Safe to repeat.** Records are written through the inbox's existing fingerprint dedup, so a second drain reports `0 new` and adds no duplicate line. Across a consumption boundary the `turn_fingerprint` consumed ledger collapses a re-pulled record instead.
 - **Records are stored under `<remote>:<child-id>`.** A child id is only unique on the host that minted it — `run-task --child <ID>` takes any string — so two hosts running the same named task would otherwise produce records that destroy each other in the conductor's inbox (every identity rule downstream keys on the child id). The stored id names its host, in the same `<remote>:<session>` spelling the TUI uses for remote sessions.
 - **Honest about failure.** Exit `0` = drained (a reachable remote with nothing pending says so explicitly), `2` = unknown remote / none configured, `3` = the remote could not be reached *or could not read its own records*. Neither an ssh failure nor an unreadable record file on the remote ever reads as "nothing to report".
-- The remote must run a build that has `inbox export`; an older one is reported as a version error pointing at `agent-deck remote update`.
-- **Incremental by cursor.** Each (remote, conductor) pair keeps a cursor in `runtime/remote-cursors/<remote>.<conductor>.json` (`agent-deck inbox cursor`): the newest turn-journal seq received per remote child, the completion-ledger entry received per child, and how far into the remote's `_unowned` ledger it has read. Positions follow write order, not timestamps, so a record stamped earlier than one already received (a completion stamped with the hook's time, a worker in another process, a clock step) still crosses. The drain sends it on stdin as `inbox export --json --after - --with-writer` (a cursor can outgrow a single command-line argument), so the remote answers only what is new, and export and writer status share one SSH round trip. The cursor names only remote children active within the last 14 days (the receiver's consumed-turn horizon, past which a record could not land anyway) whose turn journal still exists; removing a session on the remote removes its journal, so it drops out of the next cursor. The cursor advances only when every record of the batch was inserted or already present; a failed or unconfirmed write pins it, the next drain refetches the batch and the dedup absorbs the overlap. Other parents' inboxes on the remote are not shipped in this mode, and neither is any child whose parent is a session on the remote itself; only children of the conductor on the other machine (and orphans) cross. A remote too old for `--after` (it rejects the flag) gets today's full export; the first such drain saves a position-less `_legacy` cursor so the conductor stays enrolled for `talkback_interval_secs` after it consumes the records. Concurrent drains of one pair (CLI and daemon) serialise the cursor write under a file lock. An urgent record inserted before a later write in the same batch failed still wakes the conductor.
+- **Scoped to the remote's profile.** The inbox, journal and completion-ledger directories on a host are shared by all its profiles, so the export always runs as `inbox export --profile <name>` with the remote's configured `profile` (`default` when unset) and returns only that profile's records; a record without a profile is never exported. The drain filters again before writing anything and reports only the number of records it dropped (`foreign_dropped` in `--json`).
+- The remote must run a build that has `inbox export --profile`; an older one fails the drain (it would answer with every profile's records) and is reported as a version error pointing at `agent-deck remote update`.
+- **Incremental by cursor.** Each (remote, conductor) pair keeps a cursor in `runtime/remote-cursors/<remote>.<conductor>.json` (`agent-deck inbox cursor`): the newest turn-journal seq received per remote child, the completion-ledger entry received per child, and how far into the remote's `_unowned` ledger it has read. Positions follow write order, not timestamps, so a record stamped earlier than one already received (a completion stamped with the hook's time, a worker in another process, a clock step) still crosses. The drain sends it on stdin as `inbox export --json --profile <name> --after - --with-writer` (a cursor can outgrow a single command-line argument), so the remote answers only what is new, and export and writer status share one SSH round trip. The cursor names only remote children active within the last 14 days (the receiver's consumed-turn horizon, past which a record could not land anyway) whose turn journal still exists; removing a session on the remote removes its journal, so it drops out of the next cursor. The cursor advances only when every record of the batch was inserted or already present; a failed or unconfirmed write pins it, the next drain refetches the batch and the dedup absorbs the overlap. Other parents' inboxes on the remote are not shipped in this mode, and neither is any child whose parent is a session on the remote itself; only children of the conductor on the other machine (and orphans) cross. A remote too old for `--after` (it rejects the flag) gets today's full export; the first such drain saves a position-less `_legacy` cursor so the conductor stays enrolled for `talkback_interval_secs` after it consumes the records. Concurrent drains of one pair (CLI and daemon) serialise the cursor write under a file lock. An urgent record inserted before a later write in the same batch failed still wakes the conductor.
 - **Wakes like a local record.** Ingested records keep the tier the remote classified. If any fresh record has a tier in the conductor's `[inbox] wake_on` (default `urgent`), the idle conductor gets one wake per drain naming the newest one, through the same gate and headline as a local record. Info records never wake.
 - **Scheduled.** `[remotes.<name>] talkback_interval_secs` makes the notify-daemon run this drain on its own for every enrolled conductor (see config-reference.md).
 
@@ -1120,7 +1182,7 @@ Renames a session on a remote instance.
 agent-deck remote <name> <command> [arguments]
 ```
 
-`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`. Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
+`remote <name>` forwards a command to run *on* that remote, using the remote's own accounts, harnesses and worktrees rather than the controller's: `list/status/health`, `show/output/send`, `add/launch`, `session start/stop/restart/fork/archive/unarchive/set`, `session switch/switch-preview/switch-account`, `worktree list/info/cleanup`, `mcp list/attach`, `skill list/attached/attach/detach`, `group list/reorder`, and the read-only `limits [--json]` (the remote's own accounts and 5h/7d windows; a remote whose agent-deck predates `limits` answers `unsupported remote command "limits" on remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}` under `--json`). Use `remote exec <name> <command>` if `<command>` happens to collide with a top-level `remote` management verb (e.g. `list`).
 
 `session switch`/`switch-preview` forwarded this way runs the remote's own switch engine with the same guards as a local switch (ownership revalidation, managed-source refusal, journaled account/harness moves) — the CLI only forwards a closed set of subcommands, so no local path or credential can reach it. `switch-preview --json` previews losses/warnings before committing; the confirmed switch reports `verified`, `pending`, or `failed` with `recovery_required` when applicable. This requires the remote to already be a target you can reach and administer — it does not let a controller switch accounts *for* a remote it doesn't own.
 
@@ -1162,7 +1224,7 @@ SSH uses OpenSSH host-key verification and `BatchMode=yes`; unknown or changed h
 agent-deck health [--json] [--since <dur>]
 ```
 
-Reads local runtime health for the selected profile: no data leaves the host. Reports per-process (TUI, notify-daemon, web) samples — CPU%, RSS, open FDs, goroutines, hook files, status-pass latency, session count, tmux calls, session-list DB latency — against the fixed performance budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`). `--since <dur>` sets the history window (default `1h`; positive Go duration, e.g. `30m`). `--json` emits the same data machine-readably.
+Reads local runtime health for the selected profile: no data leaves the host. Reports per-process (TUI, notify-daemon, web) samples — CPU%, RSS, open FDs, goroutines, hook files, status-pass latency, session count, tmux calls, session-list DB latency — against the performance budgets (`status_pass_ms_exclusive`, `open_fds_exclusive`, `tmux_calls_per_session`, `remote_poll_ms_exclusive`). The descriptor budget grows by `open_fds_per_session` for each session the process manages, is capped at four fifths of its open-file limit, and each sample records the budget it was checked against (`open_fds_budget`). `--since <dur>` sets the history window (default `1h`; positive Go duration, e.g. `30m`). `--json` emits the same data machine-readably.
 
 Open FDs are counted natively for the sampling process itself (`/proc/self/fd` on Linux, `proc_pidinfo` on macOS; no `lsof`). Each sample's `open_fds_support` is `sampled` when `open_fds` holds a count, or `unsupported` on a platform with no native count; `open_fds` stays `null` then, and the text report prints the descriptor budget as unsupported (flagged once) instead of a budget it cannot check. The same value appears as `budgets.open_fds_support`.
 
@@ -1177,7 +1239,7 @@ agent-deck health --json --since 1h
 ```bash
 agent-deck inbox <session-id>                          # summary for a session's inbox
 agent-deck inbox drain [--json] <session-id>            # consume pending completion events
-agent-deck inbox export [--json]                        # read-only: this host's records, nothing consumed
+agent-deck inbox export [--json] [--profile <name>]     # read-only: this profile's records on this host, nothing consumed
 agent-deck inbox export --json --after '<cursor>' [--with-writer]  # read-only: only records newer than the cursor
 agent-deck inbox cursor [--json] [<remote>]             # the remote-talkback cursors this machine keeps
 agent-deck inbox dead-letter list|show [--json]         # inspect physical dead-letter / unowned-ledger records
@@ -1255,3 +1317,51 @@ Commands accept:
 | 0 | Success |
 | 1 | Error |
 | 2 | Not found |
+
+## Costs
+
+Cost commands use the selected profile (`-p <name>`) and its stored, priced cost events.
+
+```bash
+agent-deck costs sync
+agent-deck costs summary [--json]
+agent-deck costs recompute [--dry-run]
+agent-deck costs daily --json [--days N]
+agent-deck costs sessions --json [--limit N] [--period today|7d|30d|all]
+agent-deck costs models --json [--period today|7d|30d|all]
+agent-deck costs groups --json [--period today|7d|30d|all]
+agent-deck costs budgets --json
+```
+
+The five dashboard commands require `--json`. Success exits 0 with JSON on stdout;
+invalid flags, unavailable storage, or query errors exit nonzero with a message on stderr.
+Each accepts `--help` without opening storage.
+
+| Command | JSON response |
+| --- | --- |
+| `daily` | `[{"date":"YYYY-MM-DD","cost_usd":1.23}]`; `--days` defaults to 30, range 1 through 365. Matches the web UTC range from N days ago through today. Days with no events are absent. |
+| `sessions` | `[{"session_id","title","group","cost_usd","events","input_tokens","output_tokens","cache_read","cache_write","model"}]`; descending cost, stable session ID tie order. Default limit 100, range 1 through 500. Default period `all`; `today`, `week`, and `month` retain the same windows as `summary`. Model is the highest-cost model within the chosen period, ties resolved by model name. |
+| `models` | `{"<model>":cost_usd}` for the selected period. |
+| `groups` | `[{"group","cost_usd","events","sessions"}]`, sorted by group, empty group displayed as `(ungrouped)`. Mirrors the web's top 1000 sessions. |
+| `budgets` | Optional `daily`, `weekly`, `monthly`, `groups.<name>`, `sessions.<id>` objects, each with `used_usd` and `limit_usd`. Only positive configured limits appear; no limits yields `{}`. |
+
+Sessions, models and groups accept `--period today|7d|30d|all` (default `all`),
+with `week` and `month` also retained for calendar windows. `7d` and `30d`
+are rolling windows from the current instant, inclusive at the cutoff, shared
+with the web endpoints through their `period` query parameter. Today retains
+the existing summary day boundary. Group ranking uses the selected period
+before applying the existing top-1000-session cap.
+
+Budgets read `[costs.budgets]`, `[costs.budgets.groups.<name>]` (`daily_limit`),
+and `[costs.budgets.sessions.<id>]` (`total_limit`). Global and group budget windows
+use `[costs] timezone` (default `Local`), matching BudgetChecker; sessions use lifetime totals.
+Group membership uses the current exact group path. Prices come from stored events,
+just as on the web; use `costs recompute` explicitly to apply changed pricing overrides.
+
+Tracking defaults on. Set `[costs] enabled = false` globally or
+`[profiles.<name>.costs] enabled = false` for a profile. Explicit profile values override
+the global value. Disabled cost commands exit nonzero with exactly
+`cost tracking is off in this profile` on stderr. Existing historical events are retained.
+
+The Dashboard Today tile must keep using `cost_today_microdollars` from
+`costs summary --json`; never sum the all-time session table for Today.

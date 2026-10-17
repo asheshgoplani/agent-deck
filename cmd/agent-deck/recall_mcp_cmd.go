@@ -46,7 +46,7 @@ The server reads the same index the CLI does and exits when stdin closes.`)
 	srv := mcp.New(&recallMCPHandler{env: env}, Version, os.Stdin, os.Stdout)
 	if err := srv.Serve(ctx); err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, "recall mcp:", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

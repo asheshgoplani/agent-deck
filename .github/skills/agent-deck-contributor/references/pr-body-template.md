@@ -1,7 +1,8 @@
 # pr-body-template.md — one complete passing PR body
 
-> Copy the structure exactly: the intake gate parses `## ` headings
-> character-for-character, and the last line must be the gate marker. This
+> Copy the structure and headings exactly; that is the safe path. The intake
+> gate matches each heading at line start, case-insensitively with punctuation
+> ignored, and the last line must be the gate marker. This
 > example is a realistic bug-fix PR; replace the content, keep every heading.
 
 ```markdown
@@ -36,7 +37,7 @@ Reproduction on main (v1.9.71), then with this branch:
     $ agent-deck list
     opencode-fix   idle      ~/src/app      # 14:02:12
 
-Sandboxed suite: `HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...` → ok, all packages.
+Sandboxed suite, run inside the container with the `docker run` command that `FULL_TESTS=1 self-check.sh` printed: `PASS  sandboxed-tests ./...`.
 
 Revert-check: with the non-test hunks reverted, `TestOpenCodeStatusFromSSE`
 fails as expected (`status_test.go:88: got "running", want "idle"`), so the
@@ -59,7 +60,7 @@ they finish — can you fix the status so I stop attaching to dead sessions?"
 
 - [x] Targeted diff: one problem, no unrelated changes
 - [x] Tests added or updated for new behavior
-- [x] Test suite passes sandboxed: `HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...`
+- [x] Test suite passes sandboxed, inside a container: run `.github/skills/agent-deck-contributor/scripts/self-check.sh`, which prints the Docker command (never `go test` on your host)
 - [x] If this touches a hot path (list, status, session output, startup, tmux layer): before/after timing evidence included
 - [x] CHANGELOG.md untouched (entries are added at landing)
 - [x] AI-assisted? Disclosed above, with validation evidence, and I can answer questions about the code
@@ -70,7 +71,9 @@ they finish — can you fix the status so I stop attaching to dead sessions?"
 
 ## Rules the example demonstrates
 
-1. **Headings verbatim** — all six required sections present, exact `## ` text.
+1. **Headings copied exactly from the template**, the safe path: all six
+   sections intake requires are present, each with content. Intake matches a
+   `#` to `###` heading at line start, case-insensitively.
 2. **Exactly one AI-disclosure box checked**, model named (`unsure` is also
    valid; blank is not; `model=none` only when `ai=human`).
 3. **Intent is a real quoted human ask** — the one field intake cannot accept

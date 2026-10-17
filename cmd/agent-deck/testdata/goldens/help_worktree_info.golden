@@ -6,3 +6,5 @@ Arguments:
   session    Session title, ID prefix, or path
 
 Options:
+  -json
+    	Output as JSON

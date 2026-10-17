@@ -316,6 +316,11 @@ func performSend(
 		}
 		defer lock.Release()
 	}
+	// A guarded send must use the pane transport: the socket has no
+	// keystroke boundary at which to inspect the current input prompt.
+	if tun.requireInputPrompt {
+		return runTmuxSend(tmuxTarget, inst, message, noWait, tun, reasonConfigPinnedTmux)
+	}
 	transport, fallbackReason, target := chooseSendTransport(transportInputs{
 		tool:            inst.Tool,
 		configValue:     sendTransportValue,

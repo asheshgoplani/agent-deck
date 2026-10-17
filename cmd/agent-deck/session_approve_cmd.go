@@ -14,7 +14,7 @@ import (
 // a single keypress. It is intentionally separate from `session send`: an
 // approval is a TUI decision event, not composer text followed by Enter.
 func handleSessionApprove(profile string, args []string) {
-	fs := flag.NewFlagSet("session approve", flag.ExitOnError)
+	fs := flag.NewFlagSet("session approve", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	choiceFlag := fs.String("choice", "", "Approval choice: once, always, session, or displayed option number")
 	timeout := fs.Duration("timeout", 5*time.Second, "Max time to verify that the original approval prompt cleared")
@@ -42,8 +42,8 @@ func handleSessionApprove(profile string, args []string) {
 		fmt.Println("  agent-deck session approve worker 2 --json")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	remaining := fs.Args()
 	out := NewCLIOutput(*jsonOutput, *quiet)
@@ -51,16 +51,16 @@ func handleSessionApprove(profile string, args []string) {
 	if len(remaining) < 1 {
 		fs.Usage()
 		out.Error("session is required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if len(remaining) > 2 {
 		fs.Usage()
 		out.Error("at most one approval choice may be specified", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if *timeout <= 0 {
 		out.Error("--timeout must be greater than zero", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionRef := remaining[0]
@@ -68,7 +68,7 @@ func handleSessionApprove(profile string, args []string) {
 	if len(remaining) == 2 {
 		if choice != "" {
 			out.Error("approval choice must be provided either positionally or with --choice, not both", ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		choice = remaining[1]
 	}
@@ -79,16 +79,16 @@ func handleSessionApprove(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(sessionRef, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
-			os.Exit(2)
+			exitCLI(2)
 		}
-		os.Exit(1)
+		exitCLI(1)
 		return
 	}
 	if !session.IsCodexCompatible(inst.Tool) {
@@ -96,17 +96,17 @@ func handleSessionApprove(profile string, args []string) {
 			fmt.Sprintf("session approve currently supports Codex sessions; '%s' uses %s", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !inst.Exists() {
 		out.Error(fmt.Sprintf("session '%s' is not running", inst.Title), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	tmuxSess := inst.GetTmuxSession()
 	if tmuxSess == nil {
 		out.Error("could not determine tmux session", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	result, approveErr := send.ApproveCodexPrompt(tmuxSess, choice, send.CodexApprovalOptions{
@@ -129,7 +129,7 @@ func handleSessionApprove(profile string, args []string) {
 			code = ErrCodeDeliveryFailed
 		}
 		out.ErrorWithData(fmt.Sprintf("failed to approve Codex prompt: %v", approveErr), code, data)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	out.Success(

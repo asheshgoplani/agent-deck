@@ -19,6 +19,10 @@ const (
 	OutcomeNotSignalled = "not_signalled"
 	// OutcomeStillAlive: the process was ours and survived SIGTERM and SIGKILL.
 	OutcomeStillAlive = "still_alive"
+	// OutcomeSharedService: the process is a host-wide shared service, or runs
+	// under one, that other sessions depend on (see shared_service.go). It was
+	// left running and does not hold the receipt open.
+	OutcomeSharedService = "shared_service"
 )
 
 // Signaler delivers a signal to a pid. It is an interface so the escalation
@@ -207,6 +211,7 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 
 	outcomes := make(map[string]*ReapOutcome, len(ordered))
 	self := os.Getpid()
+	shared := sharedServiceMembers(p, r, ordered)
 	var pending []Member
 	for _, m := range ordered {
 		if m.PID <= 1 || m.PID == self {
@@ -215,6 +220,10 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 				Outcome: OutcomeNotSignalled,
 				Detail:  fmt.Sprintf("refusing to signal pid %d", m.PID),
 			}
+			continue
+		}
+		if detail, ok := shared[m.Key()]; ok {
+			outcomes[m.Key()] = &ReapOutcome{Member: m, Outcome: OutcomeSharedService, Detail: detail}
 			continue
 		}
 		pending = append(pending, m)
@@ -321,7 +330,7 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 	}
 
 	report := ReapReport{}
-	var stillAlive, notSignalled int
+	var stillAlive, notSignalled, sharedLeft int
 	for _, m := range ordered {
 		outcome := outcomes[m.Key()]
 		if outcome == nil {
@@ -334,6 +343,8 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 			stillAlive++
 		case OutcomeNotSignalled:
 			notSignalled++
+		case OutcomeSharedService:
+			sharedLeft++
 		}
 		report.Outcomes = append(report.Outcomes, *outcome)
 	}
@@ -347,6 +358,12 @@ func Reap(p Prober, s Signaler, r *Receipt, opts ReapOptions) ReapReport {
 	default:
 		report.Verdict = VerdictClear
 		report.Reason = "every recorded process is gone"
+		if sharedLeft > 0 {
+			report.Reason = "every process this session owns is gone"
+		}
+	}
+	if sharedLeft > 0 {
+		report.Reason += fmt.Sprintf("; %d process(es) of a host-wide shared service were left running", sharedLeft)
 	}
 	return report
 }

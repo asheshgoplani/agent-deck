@@ -24,7 +24,7 @@ func handleSystem(args []string) {
 		handleSystemStats(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown system subcommand: %s\n", args[0])
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -143,9 +143,9 @@ func collectSystemStatsAccounts() *[]systemStatsAccountJSON {
 // /proc, ...) are simply omitted, matching handleSystemStats in
 // internal/web/handlers_system.go so both callers degrade the same way.
 func handleSystemStats(args []string) {
-	fs := flag.NewFlagSet("system stats", flag.ExitOnError)
+	fs := flag.NewFlagSet("system stats", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	_ = fs.Parse(args)
+	_ = parseCLIFlags(fs, args)
 
 	stats := sysinfo.Collect()
 
@@ -232,7 +232,7 @@ func handleSystemStats(args []string) {
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		fmt.Printf("Error: failed to format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(data))
 }

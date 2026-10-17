@@ -5308,7 +5308,7 @@ const bgWorkCacheTTL = 500 * time.Millisecond
 // background work in flight. See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
 	work, blocked, _ := s.BackgroundWorkSince(time.Time{})
-	return work.InFlight() && !blocked
+	return work.Running() && !blocked
 }
 
 // BackgroundWorkSince returns the background work (issue #2473) a Claude
@@ -5409,7 +5409,7 @@ func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64
 		return false
 	}
 	stripped := StripANSI(content)
-	if !s.lastBackgroundWork.InFlight() && !claudeBackgroundWorkPending(stripped) {
+	if !s.lastBackgroundWork.Running() && !claudeBackgroundWorkPending(stripped) {
 		return false
 	}
 	// An open menu or an error outranks background work: the frame stays
@@ -5508,6 +5508,44 @@ func hasInterruptBusyContext(lines []string, phrase string, spinnerChars []strin
 	return false
 }
 
+// isOpenCodeBlockArtLine recognizes rows made only of logo blocks and spaces.
+// Solid or shaded pulses remain possible live spinners. Logo rows also
+// contain partial blocks (such as ▀), which distinguish them from those pulses.
+func isOpenCodeBlockArtLine(line string) bool {
+	blocks := 0
+	hasPartialBlock := false
+	for _, r := range strings.TrimSpace(StripANSI(line)) {
+		switch {
+		case r == ' ' || r == '\t':
+		case r >= '▀' && r <= '▟' && r != '░' && r != '▒' && r != '▓':
+			blocks++
+			hasPartialBlock = hasPartialBlock || r != '█'
+		default:
+			return false
+		}
+	}
+	return blocks > 1 && hasPartialBlock
+}
+
+// blankOpenCodeBlockArtLines empties OpenCode logo rows so the spinner scan
+// does not read the welcome logo as a pulse frame.
+func blankOpenCodeBlockArtLines(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if isOpenCodeBlockArtLine(line) {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// hasOpenCodeQuestionUI reports whether OpenCode's question or permission help
+// bar ("enter submit", "esc dismiss") is visible near the bottom of the pane.
+func hasOpenCodeQuestionUI(content string) bool {
+	recent := strings.ToLower(StripANSI(strings.Join(lastNLines(content, 25), "\n")))
+	return strings.Contains(recent, "enter submit") || strings.Contains(recent, "esc dismiss")
+}
+
 // hasBusyIndicatorResolved detects active work with a pattern-first strategy:
 //  1. Busy regex/string patterns (tool-specific, e.g. Claude ellipsis/interrupt lines)
 //  2. Spinner fallback (strict for Claude; permissive for other tools)
@@ -5532,8 +5570,14 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 		spinnerChars = patterns.SpinnerChars
 	}
 
-	// Find spinner in terminal content
-	char, spinnerLine, found := findSpinnerInContent(content, spinnerChars)
+	// Find spinner in terminal content. OpenCode's welcome logo uses the same
+	// full blocks as its pulse spinner, so its block-art rows are left out of
+	// the spinner scan only; busy patterns below still see the whole pane.
+	spinnerContent := content
+	if strings.EqualFold(tool, "opencode") {
+		spinnerContent = blankOpenCodeBlockArtLines(content)
+	}
+	char, spinnerLine, found := findSpinnerInContent(spinnerContent, spinnerChars)
 
 	// Get or create spinner tracker
 	s.ensureStateTrackerLocked()
@@ -5550,8 +5594,12 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	if patterns != nil {
 		recentLines := lastNLines(content, 25)
 		recentContent := strings.Join(recentLines, "\n")
+		regexContent := recentContent
+		if tool == "pi" {
+			regexContent = piBusyPatternContent(content)
+		}
 		for _, re := range patterns.BusyRegexps {
-			if re.MatchString(recentContent) {
+			if re.MatchString(regexContent) {
 				tracker.MarkBusy()
 				statusLog.Debug(
 					"busy_pattern_match",
@@ -5591,6 +5639,15 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 		}
 	}
 	isClaude := strings.EqualFold(tool, "claude")
+
+	// OpenCode's question and permission UI can draw pulse glyphs in static
+	// progress bars (#255). That UI waits for the user, so its help bar makes
+	// the glyphs decorative. Busy patterns above remain authoritative. The
+	// composer placeholder ("Ask anything") stays visible while OpenCode works,
+	// so it must not hide a live pulse.
+	if found && strings.EqualFold(tool, "opencode") && hasOpenCodeQuestionUI(content) {
+		found = false
+	}
 
 	if found {
 		// For Claude, braille spinner frames are authoritative.
@@ -5796,8 +5853,8 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	// foreground cue (running), an error, or an open menu keeps its verdict.
 	if s.isClaudeTool() && s.lastBackgroundWork.InFlight() && !s.lastBackgroundBlocked {
 		switch s.lastSubstate {
-		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork:
-			s.lastSubstate = SubstateBackgroundWork
+		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching:
+			s.lastSubstate = s.lastBackgroundWork.Substate()
 			s.lastSubstateDetail = s.lastBackgroundWork.Summary()
 		}
 	}
@@ -6087,13 +6144,31 @@ func (s *Session) ensureInsertMode() {
 
 // ensureInsertModeOnTarget is ensureInsertMode against an explicit tmux target.
 func (s *Session) ensureInsertModeOnTarget(target string) {
+	_ = s.ensureInsertModeOnTargetChecked(target, nil)
+}
+
+func (s *Session) ensureInsertModeOnTargetChecked(target string, before func() error) error {
 	if !s.VimMode {
-		return
+		return nil
 	}
 	// Escape: guarantee normal mode regardless of current state.
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	_ = runSendKeysBounded(keySenderExec(s.SocketName, "send-keys", "-t", target, "Escape"))
 	// i: enter insert mode so the following paste/Enter are taken literally.
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	_ = runSendKeysBounded(keySenderExec(s.SocketName, "send-keys", "-t", target, "i"))
+	return nil
+}
+
+func beforeKeyBatch(before func() error) error {
+	if before != nil {
+		return before()
+	}
+	return nil
 }
 
 // sendEnterRaw emits a single Enter keystroke without the vim-mode insert
@@ -6119,6 +6194,18 @@ func (s *Session) sendEnterRawToTarget(target string) error {
 // otherwise all no-op in normal mode.
 func (s *Session) SendEnter() error {
 	s.ensureInsertMode()
+	return s.sendEnterRaw()
+}
+
+// SendEnterChecked checks the pane immediately before every key in the
+// optional vim insert sequence and before the final Enter.
+func (s *Session) SendEnterChecked(before func() error) error {
+	if err := s.ensureInsertModeOnTargetChecked(s.Name, before); err != nil {
+		return err
+	}
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	return s.sendEnterRaw()
 }
 
@@ -6166,7 +6253,7 @@ func (s *Session) SendNamedKeyToPrimaryWindow(key string) error {
 // bracketed paste, contrary to what this comment previously claimed — only
 // `paste-buffer -p` frames, and only when the pane app has enabled it.)
 func (s *Session) SendKeysAndEnter(keys string) error {
-	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, nil, nil)
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, nil, nil, nil)
 }
 
 // SendKeysAndEnterToWindow is SendKeysAndEnter aimed at a specific tmux window
@@ -6174,7 +6261,7 @@ func (s *Session) SendKeysAndEnter(keys string) error {
 // to deliver "1"+Enter to the exact window showing a Claude prompt, which is
 // often not the active one in a multi-window session.
 func (s *Session) SendKeysAndEnterToWindow(windowIndex int, keys string) error {
-	return s.sendKeysAndEnterCheckedToTarget(s.windowTarget(windowIndex), keys, nil, nil)
+	return s.sendKeysAndEnterCheckedToTarget(s.windowTarget(windowIndex), keys, nil, nil, nil)
 }
 
 // PostPasteCheck inspects the pane immediately after the body has been staged
@@ -6199,12 +6286,19 @@ type PostPasteCheck func(pane string, captureErr error) (ok bool, err error)
 // check == nil (capture is then never called) reproduces SendKeysAndEnter's
 // unconditional behavior exactly, so every existing caller is unaffected.
 func (s *Session) SendKeysAndEnterChecked(keys string, capture func() (string, error), check PostPasteCheck) error {
-	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check)
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check, nil)
+}
+
+// SendKeysAndEnterCheckedGuarded keeps the ordinary paste check and calls
+// before immediately before every tmux keystroke batch, including fallback
+// chunks and the final Enter.
+func (s *Session) SendKeysAndEnterCheckedGuarded(keys string, capture func() (string, error), check PostPasteCheck, before func() error) error {
+	return s.sendKeysAndEnterCheckedToTarget(s.Name, keys, capture, check, before)
 }
 
 // sendKeysAndEnterCheckedToTarget is the shared implementation behind
 // SendKeysAndEnter, SendKeysAndEnterToWindow and SendKeysAndEnterChecked.
-func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture func() (string, error), check PostPasteCheck) error {
+func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture func() (string, error), check PostPasteCheck, before func() error) error {
 	s.invalidateCache()
 	// Pin the pane before anything else touches it. A session-name target is
 	// re-resolved by tmux on EVERY command, so the probe, the body and the
@@ -6223,9 +6317,11 @@ func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture f
 	// Guarantee the composer is in insert mode BEFORE the paste so a vim
 	// normal-mode prompt doesn't interpret the message body as motion/command
 	// keystrokes (issue #1264). No-op unless VimMode is set.
-	s.ensureInsertModeOnTarget(target)
+	if err := s.ensureInsertModeOnTargetChecked(target, before); err != nil {
+		return err
+	}
 	// Use chunked sending for large messages to avoid tmux buffer limits
-	if err := s.sendKeysChunkedToTarget(target, keys); err != nil {
+	if err := s.sendKeysChunkedToTargetChecked(target, keys, before); err != nil {
 		return err
 	}
 	// Delay for TUI apps (Ink, curses) to finish processing bracketed paste
@@ -6250,6 +6346,9 @@ func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture f
 	// sendEnterRaw (not SendEnter): we already guaranteed insert mode above and
 	// the paste keeps us in insert; re-escaping here would drop back to normal
 	// mode and swallow the submit.
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
 	return s.sendEnterRawToTarget(target)
 }
 
@@ -6258,10 +6357,14 @@ func (s *Session) sendKeysAndEnterCheckedToTarget(target, keys string, capture f
 // `send-keys -l`, exactly as before. Multi-line payloads of any size, and
 // larger single-line payloads, take the paste transport (load-buffer from
 // stdin + paste-buffer -p -r) — the only transport that preserves line
-// structure into a TUI composer; see sendKeysChunkedToTarget, pasteToTarget
+// structure into a TUI composer; see sendKeysChunkedToTarget, pasteToTargetChecked
 // and canonical_line.go.
 func (s *Session) SendKeysChunked(content string) error {
 	return s.sendKeysChunkedToTarget(s.Name, content)
+}
+
+func (s *Session) SendKeysChunkedChecked(content string, before func() error) error {
+	return s.sendKeysChunkedToTargetChecked(s.Name, content, before)
 }
 
 // sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
@@ -6305,6 +6408,10 @@ func (s *Session) SendKeysChunked(content string) error {
 // to fall off the identical cliff (canonical_line.go). Only the refusal, and
 // the caller's post-send verification, make the outcome honest.
 func (s *Session) sendKeysChunkedToTarget(target, content string) error {
+	return s.sendKeysChunkedToTargetChecked(target, content, nil)
+}
+
+func (s *Session) sendKeysChunkedToTargetChecked(target, content string, before func() error) error {
 	// A CR is a line break to everything downstream of this transport — the
 	// tty's ICRNL default turns an incoming CR into NL before the line
 	// discipline sees it (the same reason longestMessageLineBytes counts \r
@@ -6320,6 +6427,9 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 		content = strings.ReplaceAll(content, "\r", "\n")
 	}
 	if len(content) <= canonicalSafeBytes && !strings.Contains(content, "\n") {
+		if err := beforeKeyBatch(before); err != nil {
+			return err
+		}
 		return s.sendKeysToTarget(target, content)
 	}
 
@@ -6341,7 +6451,7 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 		}
 	}
 
-	err := s.pasteToTarget(target, content)
+	err := s.pasteToTargetChecked(target, content, before)
 	if err == nil {
 		return nil
 	}
@@ -6365,7 +6475,7 @@ func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 			slog.Bool("multiline", strings.Contains(content, "\n")),
 			slog.Int("payload_bytes", len(content)),
 			slog.String("error", err.Error()))
-		return s.sendKeysChunkedFallback(target, content)
+		return s.sendKeysChunkedFallbackChecked(target, content, before)
 	}
 	return err
 }
@@ -6404,7 +6514,7 @@ func pasteBufferName() string {
 	return fmt.Sprintf("agent-deck-send-%d-%d", os.Getpid(), pasteBufferSeq.Add(1))
 }
 
-// pasteToTarget delivers content through tmux's paste path: `load-buffer -`
+// pasteToTargetChecked delivers content through tmux's paste path: `load-buffer -`
 // reads the body from this process's stdin (no argv size limit, no shell
 // quoting), then `paste-buffer -p -r -d` writes it to the pane and drops the
 // buffer.
@@ -6421,7 +6531,9 @@ func pasteBufferName() string {
 //	    keystroke and the lines fuse. Apps that never requested bracketed
 //	    paste (a cooked-mode shell) receive the bare body unchanged, so the
 //	    flag is safe for every consumer.
-func (s *Session) pasteToTarget(target, content string) error {
+//
+// before runs ahead of the paste (see beforeKeyBatch); nil skips the check.
+func (s *Session) pasteToTargetChecked(target, content string, before func() error) error {
 	s.invalidateCache()
 
 	buf := pasteBufferName()
@@ -6437,6 +6549,10 @@ func (s *Session) pasteToTarget(target, content string) error {
 		return fmt.Errorf("load-buffer: %v: %w", err, errPasteNotStaged)
 	}
 
+	if err := beforeKeyBatch(before); err != nil {
+		_ = runSendKeysBounded(keySenderExec(s.SocketName, "delete-buffer", "-b", buf))
+		return err
+	}
 	paste := keySenderExec(s.SocketName, "paste-buffer", "-p", "-r", "-d", "-b", buf, "-t", target)
 	if err := runSendKeysBounded(paste); err != nil {
 		// -d never ran, so the staged buffer would linger. Drop it before
@@ -6452,18 +6568,25 @@ func (s *Session) pasteToTarget(target, content string) error {
 	return nil
 }
 
-// sendKeysChunkedFallback is the historical paced `send-keys -l` transport,
-// kept as the fallback for tmux builds where the paste path fails.
-func (s *Session) sendKeysChunkedFallback(target, content string) error {
+// sendKeysChunkedFallbackChecked is the historical paced `send-keys -l`
+// transport, kept as the fallback for tmux builds where the paste path fails.
+// before runs ahead of every batch (see beforeKeyBatch); nil skips the check.
+func (s *Session) sendKeysChunkedFallbackChecked(target, content string, before func() error) error {
 	const chunkSize = 4096
 	const chunkDelay = 50 * time.Millisecond
 
 	if len(content) <= chunkSize {
+		if err := beforeKeyBatch(before); err != nil {
+			return err
+		}
 		return s.sendKeysToTarget(target, content)
 	}
 
 	chunks := splitIntoChunks(content, chunkSize)
 	for i, chunk := range chunks {
+		if err := beforeKeyBatch(before); err != nil {
+			return err
+		}
 		if err := s.sendKeysToTarget(target, chunk); err != nil {
 			return fmt.Errorf("failed to send chunk %d/%d: %w", i+1, len(chunks), err)
 		}
@@ -7353,6 +7476,16 @@ func InitializeStatusBarOptions() error {
 // Uses -S flag which only refreshes the status line (lightweight operation ~1-2ms per client).
 // Filters out control mode clients (from PipeManager) which don't have a visible status bar.
 func RefreshStatusBarImmediate() error {
+	// One list-clients plus one refresh-client per attached client. A web
+	// terminal is another client, so this scales with viewers, not sessions.
+	// The status-pass budget is per session; charging this is what made
+	// Ctrl+Q (the bar changes as the attached session changes) exceed it.
+	var err error
+	RunUncounted(func() { err = refreshStatusBarImmediate() })
+	return err
+}
+
+func refreshStatusBarImmediate() error {
 	socket := DefaultSocketName()
 	// Get all connected clients, filtering out control mode clients
 	// client_name is free-text (a pts path) so it goes LAST, after the 0/1

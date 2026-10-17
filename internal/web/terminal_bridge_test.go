@@ -131,7 +131,7 @@ func TestResize_AcceptsReasonableDimensions(t *testing.T) {
 // daemon spawned by a supervisor inherits an environment with no TERM, and a
 // tmux attach client with an unset/empty TERM aborts with "open terminal
 // failed: terminal does not support clear". ensureTERM must guarantee a usable
-// TERM without clobbering one the daemon legitimately inherited.
+// TERM describing the browser, not the daemon's launching terminal.
 func TestEnsureTERM(t *testing.T) {
 	const fallback = "TERM=xterm-256color"
 
@@ -175,12 +175,33 @@ func TestEnsureTERM(t *testing.T) {
 		}
 	})
 
-	t.Run("inherited non-empty TERM is preserved untouched", func(t *testing.T) {
-		env := []string{"TERM=screen-256color", "PATH=/usr/bin"}
-		got := ensureTERM(env)
+	t.Run("inherited terminal types are replaced with the browser's type", func(t *testing.T) {
+		for _, term := range []string{"xterm-ghostty", "screen-256color", "dumb"} {
+			got := ensureTERM([]string{"TERM=" + term, "PATH=/usr/bin"})
+			n, last := countTERM(got)
+			if n != 1 || last != fallback {
+				t.Fatalf("browser must not inherit %s: got n=%d last=%q", term, n, last)
+			}
+		}
+	})
+
+	t.Run("truecolor is advertised without duplicate environment keys", func(t *testing.T) {
+		got := ensureTERM([]string{"TERM=xterm-ghostty", "TERM=dumb", "COLORTERM=", "COLORTERM=24bit", "PATH=/usr/bin"})
 		n, last := countTERM(got)
-		if n != 1 || last != "TERM=screen-256color" {
-			t.Fatalf("inherited TERM must be preserved: got n=%d last=%q", n, last)
+		if n != 1 || last != fallback {
+			t.Fatalf("want exactly one browser TERM, got %v", got)
+		}
+		colors := 0
+		for _, kv := range got {
+			if strings.HasPrefix(kv, "COLORTERM=") {
+				colors++
+				if kv != "COLORTERM=truecolor" {
+					t.Fatalf("browser supports RGB, got %q", kv)
+				}
+			}
+		}
+		if colors != 1 || !strings.Contains(strings.Join(got, "\n"), "PATH=/usr/bin") {
+			t.Fatalf("want truecolor and preserved PATH, got %v", got)
 		}
 	})
 
@@ -199,7 +220,8 @@ func TestEnsureTERM(t *testing.T) {
 // environment must always carry a non-empty TERM regardless of socket path, so
 // the bridge renders under a TERM-less supervisor.
 func TestTmuxAttachCommand_InjectsTERM(t *testing.T) {
-	t.Setenv("TERM", "") // simulate a launchd-spawned daemon with no TERM
+	t.Setenv("TERM", "xterm-ghostty") // launcher differs from the browser
+	t.Setenv("COLORTERM", "")
 
 	for _, tc := range []struct {
 		name       string
@@ -215,12 +237,12 @@ func TestTmuxAttachCommand_InjectsTERM(t *testing.T) {
 			cmd := tmuxAttachCommand("sess", tc.socketName)
 			found := false
 			for _, kv := range cmd.Env {
-				if strings.HasPrefix(kv, "TERM=") && strings.TrimSpace(kv[len("TERM="):]) != "" {
+				if kv == "TERM=xterm-256color" {
 					found = true
 				}
 			}
 			if !found {
-				t.Fatalf("attach command env must carry a non-empty TERM, got %v", cmd.Env)
+				t.Fatal("attach command env must carry TERM=xterm-256color")
 			}
 		})
 	}

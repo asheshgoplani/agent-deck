@@ -213,3 +213,26 @@ func statLine(pid, start string) string {
 	fields[19] = start
 	return pid + " (sh) " + strings.Join(fields, " ")
 }
+
+func TestLinuxProber_CommandsReadsArgvAndParent(t *testing.T) {
+	root := t.TempDir()
+	write := func(pid, name, content string) {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, pid), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, pid, name), []byte(content), 0o600))
+	}
+	write("4242", "stat", statLine("4242", "900"))
+	write("4242", "cmdline", "/usr/local/bin/opencode\x00serve\x00--service\x00")
+	write("4243", "stat", "garbage")
+	write("4243", "cmdline", "skipped\x00")
+	write("4244", "stat", statLine("4244", "901")) // no cmdline: vanished mid-scan
+
+	restore := procRoot
+	procRoot = root
+	t.Cleanup(func() { procRoot = restore })
+
+	table, err := LinuxProber{}.Commands()
+	require.NoError(t, err)
+	require.Len(t, table, 1)
+	assert.Equal(t, ProcCommand{PPID: 1, Args: []string{"/usr/local/bin/opencode", "serve", "--service"}}, table[4242])
+	assert.True(t, isOpenCodeSharedService(table[4242].Args))
+}

@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,8 +14,9 @@ import (
 //
 // A Claude session can end its foreground turn — empty prompt, Stop hook
 // written as "waiting" — while work it started keeps running: a Workflow,
-// background agents, run_in_background shells, Monitors. Until that work
-// reports back the session is RUNNING with substate background-work. Two
+// background agents and run_in_background shells. Until that finite work
+// reports back the session is RUNNING with substate background-work. Armed
+// Monitors and proven sleep-only until loops are watching, not running. Two
 // sources prove the work is in flight:
 //
 //   - the pane (tmux.ParseClaudeBackgroundWork): the workflow progress row
@@ -27,7 +29,7 @@ import (
 //     stamps on its turn_duration records (pendingWorkflowCount,
 //     pendingBackgroundAgentCount).
 //
-// Merge rule (mergeBackgroundWork): pane OR transcript in flight => running +
+// Merge rule (mergeBackgroundWork): pane OR transcript finite work => running +
 // background-work; neither => today's logic. The transcript is what keeps a
 // redraw, a resize or a capture that misses the footer from flipping the light,
 // so transcript-only evidence holds for backgroundTranscriptHold after the
@@ -111,7 +113,7 @@ type bgToolUseResult struct {
 
 // bgToolUse is the tool name and description of a tool_use block, keyed by
 // its id so the launch receipt (a later tool_result) can be named.
-type bgToolUse struct{ name, desc string }
+type bgToolUse struct{ name, desc, command string }
 
 type bgContentBlock struct {
 	Type      string `json:"type"`
@@ -125,8 +127,11 @@ type bgContentBlock struct {
 }
 
 var (
-	taskIDRe     = regexp.MustCompile(`<task-id>([^<]+)</task-id>`)
-	taskStatusRe = regexp.MustCompile(`<status>([^<]+)</status>`)
+	// Deliberately a full, narrow grammar: filesystem predicate + sleep only.
+	// Unknown shell programs remain running, including substitutions and trailing work.
+	passiveUntilWaitRe = regexp.MustCompile(`^\s*until\s+\[\s+-(?:e|f|d)\s+[a-zA-Z0-9_./-]+\s+\]\s*;\s*do\s+sleep\s+[0-9]+(?:\.[0-9]+)?\s*;\s*done\s*;?\s*$`)
+	taskIDRe           = regexp.MustCompile(`<task-id>([^<]+)</task-id>`)
+	taskStatusRe       = regexp.MustCompile(`<status>([^<]+)</status>`)
 )
 
 // taskNotificationBlocks splits a raw transcript line into the bodies of the
@@ -172,7 +177,7 @@ func scanTranscriptBackground(lines []string) transcriptBackgroundScan {
 						if desc == "" {
 							desc = b.Input.Command
 						}
-						uses[b.ID] = bgToolUse{name: b.Name, desc: desc}
+						uses[b.ID] = bgToolUse{name: b.Name, desc: desc, command: b.Input.Command}
 					}
 				}
 			}
@@ -284,10 +289,18 @@ func backgroundLaunch(rec bgTranscriptRecord, uses map[string]bgToolUse, at time
 			name = use.desc
 		}
 		return transcriptBackgroundTask{ID: r.AgentID, Kind: tmux.BackgroundKindAgent, Name: name, At: at}, true
+	case use.name == "Monitor" && (r.TaskID != "" || r.BackgroundTaskID != ""):
+		id := r.TaskID
+		if id == "" {
+			id = r.BackgroundTaskID
+		}
+		return transcriptBackgroundTask{ID: id, Kind: tmux.BackgroundKindMonitor, Name: use.desc, At: at}, true
 	case r.BackgroundTaskID != "":
-		return transcriptBackgroundTask{ID: r.BackgroundTaskID, Kind: tmux.BackgroundKindBash, Name: use.desc, At: at}, true
-	case use.name == "Monitor" && r.TaskID != "":
-		return transcriptBackgroundTask{ID: r.TaskID, Kind: tmux.BackgroundKindMonitor, Name: use.desc, At: at}, true
+		kind := tmux.BackgroundKindBash
+		if use.name == "Bash" && passiveUntilWaitRe.MatchString(use.command) {
+			kind = tmux.BackgroundKindWatcher
+		}
+		return transcriptBackgroundTask{ID: r.BackgroundTaskID, Kind: kind, Name: use.desc, At: at}, true
 	}
 	return transcriptBackgroundTask{}, false
 }
@@ -296,7 +309,7 @@ func backgroundLaunch(rec bgTranscriptRecord, uses map[string]bgToolUse, at time
 // (workflow, then agent, then bash, then monitor) and the time of its newest
 // evidence (launch record or the turn_duration that counted it).
 func (sc transcriptBackgroundScan) inFlight() (tmux.BackgroundWork, time.Time) {
-	for _, kind := range []string{tmux.BackgroundKindWorkflow, tmux.BackgroundKindAgent, tmux.BackgroundKindBash, tmux.BackgroundKindMonitor} {
+	for _, kind := range []string{tmux.BackgroundKindWorkflow, tmux.BackgroundKindAgent, tmux.BackgroundKindBash, tmux.BackgroundKindMonitor, tmux.BackgroundKindWatcher} {
 		var newest *transcriptBackgroundTask
 		for idx := range sc.Pending {
 			if sc.Pending[idx].Kind == kind {
@@ -314,6 +327,9 @@ func (sc transcriptBackgroundScan) inFlight() (tmux.BackgroundWork, time.Time) {
 			continue
 		}
 		work := tmux.BackgroundWork{Kind: kind, Source: "transcript"}
+		if work.Watching() {
+			work.Count = sc.passiveCount()
+		}
 		var at time.Time
 		if newest != nil {
 			work.Task, at = newest.Name, newest.At
@@ -338,10 +354,21 @@ func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, 
 		// The row outlived its workflow: the task already reported back.
 		pane = tmux.BackgroundWork{}
 	}
+	if scOK {
+		tx, at := sc.inFlight()
+		if pane.Watching() && tx.Running() && now.Sub(at) <= backgroundTranscriptHold {
+			return tx, false
+		}
+		if count := sc.passiveShellCount(pane.Task, now); pane.Kind == tmux.BackgroundKindBash && count > 0 {
+			pane.Kind = tmux.BackgroundKindWatcher
+			pane.Count = count
+			pane.Source = "pane+transcript"
+		}
+	}
 	if pane.InFlight() {
 		if scOK && pane.Steps == 0 {
 			// Counter or Waiting line: name the task from the transcript.
-			if tx, _ := sc.inFlight(); tx.Task != "" && sameBackgroundFamily(tx.Kind, pane.Kind) {
+			if tx, _ := sc.inFlight(); tx.Task != "" && tx.Kind == pane.Kind {
 				pane.Task = tx.Task
 				pane.Source = "pane+transcript"
 			}
@@ -364,6 +391,46 @@ func mergeBackgroundWork(pane tmux.BackgroundWork, sc transcriptBackgroundScan, 
 	return tx, false
 }
 
+func (sc transcriptBackgroundScan) passiveCount() int {
+	count := 0
+	for _, task := range sc.Pending {
+		if task.Kind == tmux.BackgroundKindMonitor || task.Kind == tmux.BackgroundKindWatcher {
+			count++
+		}
+	}
+	return count
+}
+
+var shellCountRe = regexp.MustCompile(`^(\d+) shells?(?:, (\d+) monitors?)?$`)
+
+// passiveShellCount requires fresh receipts accounting for every displayed
+// shell. Old or partial transcript tails cannot reclassify an unknown shell.
+func (sc transcriptBackgroundScan) passiveShellCount(summary string, now time.Time) int {
+	match := shellCountRe.FindStringSubmatch(summary)
+	if match == nil || sc.TurnWorkflows > 0 || sc.TurnAgents > 0 {
+		return 0
+	}
+	shells, _ := strconv.Atoi(match[1])
+	monitors, _ := strconv.Atoi(match[2])
+	watchers := 0
+	for _, task := range sc.Pending {
+		switch task.Kind {
+		case tmux.BackgroundKindWatcher:
+			if task.At.IsZero() || now.Sub(task.At) > backgroundTranscriptHold {
+				return 0
+			}
+			watchers++
+		case tmux.BackgroundKindMonitor:
+		default:
+			return 0
+		}
+	}
+	if shells > 0 && shells == watchers {
+		return shells + monitors
+	}
+	return 0
+}
+
 func (sc transcriptBackgroundScan) pendingNamed(kind, name string) bool {
 	for _, t := range sc.Pending {
 		if t.Kind == kind && t.Name == name {
@@ -371,16 +438,6 @@ func (sc transcriptBackgroundScan) pendingNamed(kind, name string) bool {
 		}
 	}
 	return false
-}
-
-// sameBackgroundFamily: the footer counter cannot tell a bash shell from a
-// monitor's shell, so bash and monitor name each other.
-func sameBackgroundFamily(a, b string) bool {
-	if a == b {
-		return true
-	}
-	shell := func(k string) bool { return k == tmux.BackgroundKindBash || k == tmux.BackgroundKindMonitor }
-	return shell(a) && shell(b)
 }
 
 // transcriptBackgroundScanFor returns the cached transcript scan for inst.
@@ -433,7 +490,7 @@ func (i *Instance) probeBackgroundWork(pane tmux.BackgroundWork) tmux.Background
 	i.mu.RUnlock()
 	work, paneShown := mergeBackgroundWork(pane, sc, scOK, seen, now)
 	i.mu.Lock()
-	if paneShown {
+	if paneShown && work.Running() {
 		i.bgWorkPaneSeenAt = now
 	}
 	i.bgWork = work
@@ -441,13 +498,12 @@ func (i *Instance) probeBackgroundWork(pane tmux.BackgroundWork) tmux.Background
 	return work
 }
 
-// BackgroundWork returns the background work that keeps this session running
-// (issue #2473): non-zero only while the status is running BECAUSE of work in
-// flight past an ended foreground turn. Never captures the pane.
+// BackgroundWork returns finite work holding a turn open, or passive watchers
+// while the session is waiting/idle. Never captures the pane.
 func (i *Instance) BackgroundWork() tmux.BackgroundWork {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	if i.bgWorkActive && i.Status == StatusRunning {
+	if (i.bgWorkActive && i.Status == StatusRunning) || (i.bgWork.Watching() && (i.Status == StatusWaiting || i.Status == StatusIdle)) {
 		return i.bgWork
 	}
 	return tmux.BackgroundWork{}
@@ -474,7 +530,7 @@ func backgroundWorkHoldsTurn(inst *Instance) bool {
 	if backgroundWorkOutrankedBySubstate(inst.GetTmuxSession()) {
 		return false
 	}
-	if inst.BackgroundWork().InFlight() {
+	if inst.BackgroundWork().Running() {
 		return true
 	}
 	sc, ok := transcriptBackgroundScanFor(inst)
@@ -485,7 +541,7 @@ func backgroundWorkHoldsTurn(inst *Instance) bool {
 	seen := inst.bgWorkPaneSeenAt
 	inst.mu.RUnlock()
 	work, _ := mergeBackgroundWork(tmux.BackgroundWork{}, sc, true, seen, time.Now())
-	return work.InFlight()
+	return work.Running()
 }
 
 // reconcileBackgroundSubstate names background work in the substate: a
@@ -496,7 +552,7 @@ func backgroundWorkHoldsTurn(inst *Instance) bool {
 func reconcileBackgroundSubstate(sub Substate, status Status, bgActive bool) Substate {
 	if bgActive && status == StatusRunning {
 		switch sub {
-		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateHookLag:
+		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching, SubstateHookLag:
 			return SubstateBackgroundWork
 		}
 		return sub

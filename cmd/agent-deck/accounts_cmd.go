@@ -62,7 +62,7 @@ func configuredAccountSlotsForHarness(config *session.UserConfig, harness string
 
 func handleAccounts(args []string) {
 	fs := flag.NewFlagSet("accounts", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(helpOutput(args, os.Stdout, os.Stderr))
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	harness := fs.String("harness", "claude", "Harness family whose slots to list: claude ([profiles.<name>.claude].config_dir) or codex ([profiles.<name>.codex].config_dir)")
 	fs.Usage = func() {
@@ -81,28 +81,28 @@ func handleAccounts(args []string) {
 		if err == flag.ErrHelp {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(os.Stderr, "accounts does not accept positional arguments: %s\n", strings.Join(fs.Args(), " "))
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	harnessFamily, err := accountsHarnessOK(*harness)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: load config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	accounts := configuredAccountSlotsForHarness(config, harnessFamily)
 	if *jsonOutput {
 		if err := json.NewEncoder(os.Stdout).Encode(accounts); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: encode accounts: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}

@@ -1,0 +1,23 @@
+Usage: agent-deck recall timeline <session> --json [--since <cursor> | --before <cursor> --limit N] [--limit N] [--tail N] [--agent <id>]
+       agent-deck recall timeline --json --transcript <file> --harness claude|codex
+       agent-deck recall timeline <session> --json --v1   (slice-6 turn shape)
+<session>: deck session id, title or id prefix; a Claude/Codex conversation id; or #n / any id the index knows.
+Rows are parsed from the native transcript directly, whatever the index or its deferral state. Needs [recall] enabled = true.
+  -agent string
+    	One Claude Code sub-agent sidechain by agent id
+  -before string
+    	Return older rows before this before_cursor (requires --limit N)
+  -harness string
+    	With --transcript: claude or codex
+  -json
+    	Output canonical JSON
+  -limit int
+    	Maximum older rows with --before; otherwise stop after N new rows and resume with --since
+  -since string
+    	Only what changed after this cursor: new rows in turns, changes to earlier rows in updates/removed
+  -tail int
+    	Only the last N rows, read from the end of the transcript (fast first paint)
+  -transcript string
+    	Read this Claude Code JSONL or Codex rollout instead of a session's
+  -v1
+    	Slice-6 output (turns with role/kind/text, turn frames) instead of rows

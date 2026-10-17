@@ -47,7 +47,7 @@ func TestIssue1948_Export_SurfacesLedgerCompletionWithNoLocalParent(t *testing.T
 		t.Fatalf("write ledger: %v", err)
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestIssue1948_Export_IncludesPendingInboxTransitions(t *testing.T) {
 		t.Fatalf("seed inbox: %v", err)
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -128,11 +128,11 @@ func TestIssue1948_Export_IsNonDestructive(t *testing.T) {
 	}
 	ledgerBefore := dirFingerprint(t, ledgerDir)
 
-	first, err := ExportPendingRecords()
+	first, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("first export: %v", err)
 	}
-	second, err := ExportPendingRecords()
+	second, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("second export: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestIssue1948_Export_DedupsLedgerAndInboxCopiesOfOneCompletion(t *testing.T
 		t.Fatalf("write ledger: %v", err)
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestIssue1948_Export_SkipsDeadLetterStore(t *testing.T) {
 		t.Fatalf("seed dead letter: %v", err)
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestIssue1948_ExportedRecordIsIdempotentOnTheReceivingInbox(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write ledger: %v", err)
 	}
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestIssue1948_ExportedRecordIsIdempotentOnTheReceivingInbox(t *testing.T) {
 	}
 	// Second drain of an unchanged remote: the export returns the identical
 	// record and the inbox refuses the duplicate.
-	again, err := ExportPendingRecords()
+	again, err := ExportPendingRecords(DefaultProfile)
 	if err != nil {
 		t.Fatalf("second export: %v", err)
 	}

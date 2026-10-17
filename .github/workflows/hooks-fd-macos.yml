@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cleanup-docker:
     name: Docker cleanup reviewed-base red and head green
@@ -72,7 +76,7 @@ jobs:
             cp "$checkout/go.mod" "$checkout/go.sum" "$context/$checkout/"
           done
           cat > "$RUNNER_TEMP/hooks-test.Dockerfile" <<'DOCKERFILE'
-          FROM golang:1.25
+          FROM golang:1.26.9
           RUN apt-get update && apt-get install -y --no-install-recommends tmux
           ENV GOMODCACHE=/tmp/gomod
           WORKDIR /deps

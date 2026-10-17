@@ -5,13 +5,13 @@
 # Usage: bash scripts/verify-watcher-framework.sh
 # Exit codes: 0 = all checks pass, 1 = one or more checks failed.
 #
-# Runs in <60s on macOS + Linux. Requires: go 1.24+, bash 4+.
+# Runs in <60s on macOS + Linux. Requires: go 1.26.9 (GOTOOLCHAIN defaults to go1.26.9), bash 4+.
 
 set -euo pipefail
 
 PASS_COUNT=0
 FAIL_COUNT=0
-GOTOOLCHAIN="${GOTOOLCHAIN:-go1.25.13}"
+GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.9}"
 export GOTOOLCHAIN
 
 pass() {

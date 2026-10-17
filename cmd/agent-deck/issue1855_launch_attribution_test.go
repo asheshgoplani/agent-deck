@@ -26,7 +26,7 @@ import (
 // so the gate read agent-deck's own collapse as a foreign draft and withheld
 // the one retry this function exists to make — permanently, for the common
 // multi-line prompt shape. The caller had the provenance all along
-// (composerPasteFree, launch_cmd.go) and simply did not pass it.
+// (launchPromptSendOptions, launch_cmd.go) and simply did not pass it.
 //
 // Second half of the fix: when the composer holds our own marker the body has
 // already arrived and only the Enter was lost, so the recovery must be a BARE
@@ -54,7 +54,7 @@ func TestIssue1855_LaunchRecoveryNudgesItsOwnPasteMarker(t *testing.T) {
 	var warn bytes.Buffer
 
 	verifyPromptConsumedAfterLaunchAttributed(
-		mock, multiLineLaunchPrompt, true,
+		mock, "claude", multiLineLaunchPrompt, true,
 		5*time.Millisecond, time.Millisecond, &warn)
 
 	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 1 {
@@ -78,7 +78,7 @@ func TestIssue1855_LaunchRecoveryWithholdsForeignPasteMarker(t *testing.T) {
 	var warn bytes.Buffer
 
 	verifyPromptConsumedAfterLaunchAttributed(
-		mock, multiLineLaunchPrompt, false,
+		mock, "claude", multiLineLaunchPrompt, false,
 		5*time.Millisecond, time.Millisecond, &warn)
 
 	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
@@ -103,7 +103,7 @@ func TestIssue1855_LaunchRecoveryStillRetypesAnUnsentPlainPrompt(t *testing.T) {
 	var warn bytes.Buffer
 
 	verifyPromptConsumedAfterLaunchAttributed(
-		mock, prompt, true,
+		mock, "claude", prompt, true,
 		5*time.Millisecond, time.Millisecond, &warn)
 
 	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {

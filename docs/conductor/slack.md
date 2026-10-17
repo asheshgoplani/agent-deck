@@ -72,6 +72,25 @@ Do not share a single bot across multiple conductors.
 Slack credentials are stored alongside other conductor settings.
 The bridge daemon handles Slack and Telegram concurrently — both can run simultaneously.
 
+### Routing messages without a prefix
+
+A Slack message is routed in this order:
+
+1. A `name: message` prefix always wins.
+2. A reply inside a thread the bridge already routed for a conductor (started by a message the bridge routed there, or by an alert, digest or outbox message it posted for that conductor) goes back to that conductor.
+3. Otherwise `default_conductor` decides:
+
+```toml
+[conductor.slack]
+default_conductor = "ops"   # unprefixed messages go to the "ops" conductor
+# default_conductor = ""    # no default: the bot replies with the conductor list and the prefix syntax
+```
+
+When the key is absent, unprefixed messages go to the alphabetically first conductor, as before.
+A name that matches no conductor routes nothing and logs a warning, so a typo never silently picks a conductor.
+Thread routing is kept in memory (the most recent 500 threads), so it starts empty after the bridge restarts.
+This applies to Slack only for now; Telegram and Discord still use the first conductor for unprefixed messages.
+
 ## Debugging tips
 
 ### Bot does not respond

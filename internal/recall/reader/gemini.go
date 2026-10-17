@@ -275,8 +275,16 @@ func (st *geminiState) messageObject(sc *jsonScanner) (raw []byte, start, n int6
 		}
 		wanted := geminiMessageKeys[key]
 		limit := 0 // consumed, never kept
+		mark := len(out)
 		if wanted {
 			limit = MaxLineBytes
+			// rawKey aliases the scanner's buffer, which the value read
+			// below reuses: copy the key out first.
+			if len(out) > 1 {
+				out = append(out, ',')
+			}
+			out = append(out, rawKey...)
+			out = append(out, ':')
 		}
 		val, _, _, valTooLong, err := sc.value(limit)
 		if err != nil {
@@ -285,13 +293,9 @@ func (st *geminiState) messageObject(sc *jsonScanner) (raw []byte, start, n int6
 		switch {
 		case !wanted:
 		case valTooLong:
+			out = out[:mark]
 			clipped = true
 		default:
-			if len(out) > 1 {
-				out = append(out, ',')
-			}
-			out = append(out, rawKey...)
-			out = append(out, ':')
 			out = append(out, val...)
 		}
 		if d, err := sc.delim(',', '}'); err != nil {

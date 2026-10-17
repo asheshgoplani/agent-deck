@@ -53,6 +53,10 @@ const (
 	// clears the override (back to group/global resolution). See
 	// Instance.EffectiveContextLevel.
 	FieldContextLevel = "context-level"
+	// FieldPromptSuggestions persists the per-session override for Claude
+	// Code prompt suggestions: children-off, on or off. Empty clears it (back
+	// to the profile/[launch] config). See prompt_suggestions.go.
+	FieldPromptSuggestions = "prompt-suggestions"
 	// FieldFavorite marks a session as a favourite (true/false). Live.
 	FieldFavorite = "favorite"
 )
@@ -82,6 +86,7 @@ var ValidMutableFields = []string{
 	FieldPin,
 	FieldModel,
 	FieldContextLevel,
+	FieldPromptSuggestions,
 	FieldFavorite,
 }
 
@@ -95,7 +100,7 @@ const (
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
-		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel, FieldContextLevel,
+		FieldSkipPermissions, FieldAutoMode, FieldAccount, FieldModel, FieldContextLevel, FieldPromptSuggestions,
 		// Resume flags are baked into the next spawn command.
 		FieldToolSessionID:
 		return FieldRestartRequired
@@ -198,10 +203,12 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		// flag can only become true again through the CLI passthrough
 		// route that actually validates it.
 		inst.SubcommandPassthrough = false
+		inst.TrackCommandExit = false
 
 	case FieldTool:
 		oldValue = inst.Tool
 		inst.Tool = value
+		inst.TrackCommandExit = false
 		// Leaving claude → drop encoded ClaudeOptions so a same-submit
 		// skip/auto toggle (Tool applies last) doesn't leave ghost flags
 		// for a future shell→claude switch. UnmarshalClaudeOptions
@@ -475,6 +482,18 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 				return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
 			}
 			inst.ContextLevel = norm
+		}
+
+	case FieldPromptSuggestions:
+		// Restart-required: the setting is an env var in the spawn command.
+		oldValue = inst.PromptSuggestions
+		inst.PromptSuggestions = ""
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			mode, perr := NormalizePromptSuggestions(trimmed)
+			if perr != nil {
+				return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
+			}
+			inst.PromptSuggestions = mode
 		}
 
 	case FieldModel:

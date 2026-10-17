@@ -558,6 +558,10 @@ type Home struct {
 	// ("" disables it); heartbeatWrittenAt is the last write.
 	heartbeatDir       string
 	heartbeatWrittenAt time.Time
+	// heartbeatFile is what the event loop and the attach worker share
+	// (see heartbeat.go); attachedSince belongs to the worker goroutine.
+	heartbeatFile heartbeatFile
+	attachedSince time.Time
 	// binaryOrphanReason is set while the executable this process started
 	// from is gone or in the Trash: the deck cannot update or restart
 	// itself then, says so in the banner, and both auto paths stay off.
@@ -646,10 +650,23 @@ type Home struct {
 	transitionTrackerOnce sync.Once
 	transitionTracker     *transitionTracker
 
-	// Logs once per engine instance when the first watcher event is consumed
-	// from the engine's EventCh. Helps diagnose listener-not-firing issues
-	// without needing to instrument every event.
-	firstWatcherEventOnce sync.Once
+	// The watcher panel's feed: routed events and health states that
+	// relayWatcherEngine has already dispatched to conductor panes, so the
+	// TUI only refreshes its panel from them (#2524). Nil until Init starts
+	// an engine.
+	watcherPanelEvents <-chan watcher.Event
+	watcherPanelHealth <-chan watcher.HealthState
+	// watcherRelayDone closes once the relay has dispatched everything the
+	// stopped engine had buffered.
+	watcherRelayDone <-chan struct{}
+	// conductorDeliveries delivers watcher messages to conductor panes, one
+	// at a time per conductor and in order (see conductorQueue). Created on
+	// first use by deliveryQueue.
+	conductorDeliveries     *conductorQueue
+	conductorDeliveriesOnce sync.Once
+	// watcherHealth remembers each watcher's last health status, so its
+	// conductor hears about a warning or error once per transition (#2531).
+	watcherHealth watcherHealthMemo
 
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
@@ -1017,6 +1034,11 @@ type Home struct {
 	insertBuf           strings.Builder
 	insertFlushPending  bool
 	insertBatchDuration time.Duration
+	// insertTool and insertTypedChars feed send.daily (via=tui): the
+	// target's tool and how many characters were typed since the last
+	// Enter. Only the length bucket is ever recorded, never the text.
+	insertTool       string
+	insertTypedChars int
 	// insertPreviewRefreshPending guards the fast preview-refresh tick armed
 	// after an insert keystroke (#1131). Only one tick is in flight at a time;
 	// see scheduleInsertPreviewRefresh.
@@ -3370,8 +3392,35 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			}
 		}
 		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter && h.statusFilter != FilterModeActive {
-			h.statusFilter = ""
-			h.flatItems = allItems
+			// #2627 (CodeRabbit): remote rows count toward the fallback too —
+			// clearing the filter because no LOCAL row matches would bypass
+			// the remote filtering this PR adds, showing every remote row.
+			// Clear only when neither local nor remote rows match; keep the
+			// local list empty-but-filtered when a remote match survives.
+			// This branch never runs in the ^ archived view (the enclosing
+			// block excludes FilterModeArchived), so only active-partition
+			// remote rows can match. Hold the read lock like the remote
+			// snapshot below does.
+			remoteHasMatch := false
+			h.remoteSessionsMu.RLock()
+			for _, remoteSessions := range h.remoteSessions {
+				for _, remote := range remoteSessions {
+					if !remote.Archived && h.remoteMatchesStatus(h.statusFilter, remote) {
+						remoteHasMatch = true
+						break
+					}
+				}
+				if remoteHasMatch {
+					break
+				}
+			}
+			h.remoteSessionsMu.RUnlock()
+			if remoteHasMatch {
+				h.flatItems = filtered
+			} else {
+				h.statusFilter = ""
+				h.flatItems = allItems
+			}
 		} else {
 			h.flatItems = filtered
 		}
@@ -3395,6 +3444,14 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		partitioned := make([]session.RemoteSessionInfo, 0, len(sessions))
 		for _, remote := range sessions {
 			if remote.Archived == viewArchived {
+				// #2627: remote rows honor the status filter the way local rows
+				// do. In the archived view the Archived partition IS the filter
+				// (same as local), so the predicate runs only outside it. Old
+				// remotes omit substate/archived — those decode to the zero
+				// status, degraded the same way the status glyph degrades it.
+				if h.statusFilter != "" && !viewArchived && !h.remoteMatchesStatus(h.statusFilter, remote) {
+					continue
+				}
 				partitioned = append(partitioned, remote)
 			}
 		}
@@ -3439,6 +3496,12 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		}
 		for _, sessions := range remotes {
 			for _, remote := range sessions {
+				// #2627: the status filter narrows the time-fallback the same
+				// way it narrows local sessions above — a row the filter hides
+				// is neither a candidate nor a match.
+				if h.statusFilter != "" && !viewArchived && !h.remoteMatchesStatus(h.statusFilter, remote) {
+					continue
+				}
 				hasCandidates = true
 				if remoteMatchesTime(remote) {
 					hasMatches = true
@@ -4054,6 +4117,7 @@ func (h *Home) Init() tea.Cmd {
 	if h.autoUpdateSuppressedReason == "" {
 		if dir, err := agentpaths.CacheDir(); err == nil {
 			h.heartbeatDir = dir
+			h.startAttachedHeartbeat()
 		}
 	}
 
@@ -4222,15 +4286,16 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 	}
 
 	h.watcherEngine = eng
-	h.firstWatcherEventOnce = sync.Once{}
+	h.watcherPanelEvents, h.watcherPanelHealth, h.watcherRelayDone = relayWatcherEngine(
+		eng.EventCh(), eng.HealthCh(), h.dispatchWatcherEvent, h.dispatchHealthAlert)
 
 	uiLog.Info("watcher_engine_started",
 		slog.Int("watcher_count", len(rows)),
 		slog.Int("running_count", runningCount(rows)))
 
 	return tea.Batch(
-		listenForWatcherEvent(eng.EventCh()),
-		listenForWatcherHealth(eng.HealthCh()),
+		listenForWatcherEvent(h.watcherPanelEvents),
+		listenForWatcherHealth(h.watcherPanelHealth),
 	)
 }
 
@@ -6207,7 +6272,20 @@ func (h *Home) statusWorker() {
 	// the Bubble Tea tick messages stop firing, but this goroutine keeps running.
 	// A timer (reset after each sweep) rather than a fixed ticker lets the cadence
 	// adapt when a sweep overruns the interval (#1366).
-	timer := time.NewTimer(baseStatusInterval)
+	base := statusWorkerInterval(session.LoadUserConfig)
+	h.statusWorkerLoop(base, h.backgroundStatusUpdate, h.processStatusUpdate)
+}
+
+func statusWorkerInterval(load func() (*session.UserConfig, error)) time.Duration {
+	if cfg, err := load(); err == nil {
+		return cfg.StatusInterval()
+	}
+	return baseStatusInterval
+}
+
+// Separate callbacks let tests exercise the real worker cadence without touching tmux.
+func (h *Home) statusWorkerLoop(base time.Duration, sweep func(), process func(statusUpdateRequest)) {
+	timer := time.NewTimer(base)
 	defer timer.Stop()
 
 	for {
@@ -6218,8 +6296,8 @@ func (h *Home) statusWorker() {
 		case <-timer.C:
 			// Self-triggered update - runs even when TUI is paused
 			sweepStart := time.Now()
-			h.backgroundStatusUpdate()
-			timer.Reset(nextStatusInterval(time.Since(sweepStart), baseStatusInterval, maxStatusInterval))
+			sweep()
+			timer.Reset(nextStatusInterval(time.Since(sweepStart), base, maxStatusInterval))
 			// Coalesce a queued immediate request after full sweep.
 			select {
 			case <-h.statusTrigger:
@@ -6235,7 +6313,7 @@ func (h *Home) statusWorker() {
 						statusLog.Error("worker_panic", slog.Any("panic", r))
 					}
 				}()
-				h.processStatusUpdate(req)
+				process(req)
 			}()
 		}
 	}
@@ -6393,10 +6471,14 @@ func (h *Home) backgroundStatusUpdate() {
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
 
-	tmuxBefore := tmux.SubprocessStarts()
+	// Charged omits RunUncounted work: the detach reconciliation and the
+	// per-client status-bar refresh. Those scale with viewers (a web
+	// terminal is another tmux client), not with the session count, and
+	// counting them is what flashed the footer on Ctrl+Q.
+	tmuxBefore := tmux.SnapshotStarts()
 	defer func() {
 		elapsed := time.Since(totalStart)
-		calls := tmux.SubprocessStarts() - tmuxBefore
+		calls := tmuxBefore.Charged()
 		// session_count must agree with list --json's tracked set (the same
 		// filter countByStatus/countSessionStatuses/renderGroupPreview use),
 		// not the raw snapshot: archived-cross-harness sources superseded by
@@ -7100,7 +7182,9 @@ func (h *Home) attachReturnSyncCmd(sessionID string) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		h.refreshAttachedSessionStatus(sessionID)
+		// Not a status-pass probe. Charging it made one Ctrl+Q exceed the
+		// per-session tmux budget and paint the footer warning.
+		tmux.RunUncounted(func() { h.refreshAttachedSessionStatus(sessionID) })
 		return attachReturnSyncedMsg{}
 	}
 }
@@ -7111,9 +7195,11 @@ func (h *Home) attachReturnSyncCmd(sessionID string) tea.Cmd {
 // as attachReturnSyncCmd: tmux work here, row rebuild on the event loop.
 func (h *Home) attachReturnRefreshCmd() tea.Cmd {
 	return func() tea.Msg {
-		tmux.RefreshSessionCache()
-		tmux.RefreshPaneInfoCache()
-		h.refreshSessionRenderSnapshot(nil)
+		tmux.RunUncounted(func() {
+			tmux.RefreshSessionCache()
+			tmux.RefreshPaneInfoCache()
+			h.refreshSessionRenderSnapshot(nil)
+		})
 		return attachReturnSyncedMsg{}
 	}
 }
@@ -9680,31 +9766,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case watcherEventMsg:
-		// One-shot log per engine instance to confirm the listener path is alive.
-		h.firstWatcherEventOnce.Do(func() {
-			uiLog.Info("watcher_event_first_received",
-				slog.String("sender", msg.event.Sender),
-				slog.String("routed_to", msg.event.RoutedTo))
-		})
 		// Refresh watcher panel data on new events and re-register listener.
+		// relayWatcherEngine already dispatched the event to its conductor's
+		// pane, off this loop (#2524); dispatching it here too would deliver
+		// it twice.
 		h.refreshWatcherPanel()
-		// Deliver event to the routed conductor's tmux pane (parity with
-		// dispatchHealthAlert). Skipped for triage and unrouted events.
-		h.dispatchWatcherEvent(msg.event)
-		if h.watcherEngine != nil {
-			return h, listenForWatcherEvent(h.watcherEngine.EventCh())
+		if h.watcherPanelEvents != nil {
+			return h, listenForWatcherEvent(h.watcherPanelEvents)
 		}
 		return h, nil
 
 	case watcherHealthMsg:
-		// Update health display and re-register listener.
+		// Update health display and re-register listener. Any health alert
+		// was already dispatched by relayWatcherEngine (#2524).
 		h.refreshWatcherPanel()
-		// Dispatch health alert to conductor session on warning/error transitions (D-22, D-23).
-		if msg.state.Status == watcher.HealthStatusWarning || msg.state.Status == watcher.HealthStatusError {
-			h.dispatchHealthAlert(msg.state)
-		}
-		if h.watcherEngine != nil {
-			return h, listenForWatcherHealth(h.watcherEngine.HealthCh())
+		if h.watcherPanelHealth != nil {
+			return h, listenForWatcherHealth(h.watcherPanelHealth)
 		}
 		return h, nil
 
@@ -10240,19 +10317,8 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		selected := h.search.Selected()
 		if selected != nil {
-			// Ensure the session's group AND all parent groups are expanded so it's visible
-			if selected.GroupPath != "" {
-				h.groupTree.ExpandGroupWithParents(selected.GroupPath)
-			}
-			h.rebuildFlatItems()
-
-			// Find the session in flatItems (not instances) and set cursor
-			for i, item := range h.flatItems {
-				if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == selected.ID {
-					h.cursor = i
-					h.syncViewport() // Ensure the cursor is visible in the viewport
-					break
-				}
+			if !h.jumpToSessionByID(selected.ID, selected.GroupPath) {
+				h.setError(fmt.Errorf("'%s' not visible after clearing filters (session may be gone)", selected.Title))
 			}
 		}
 		h.search.Hide()
@@ -10272,6 +10338,70 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return h, cmd
+}
+
+// jumpToSessionByID moves the cursor to the session with the given ID,
+// expanding its group first. When the session is hidden by the active
+// status or time filter (the search indexes every instance, not the
+// filtered view), it clears those filters the same way the empty-view
+// fallbacks do and retries; the filters are restored untouched only when
+// the session is genuinely not present. Returns false in that last case.
+// Issue #2655.
+func (h *Home) jumpToSessionByID(id, groupPath string) bool {
+	find := func() bool {
+		for i, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == id {
+				h.cursor = i
+				h.syncViewport()
+				return true
+			}
+		}
+		return false
+	}
+
+	// Capture the pre-jump fold state of the target group and its ancestors
+	// so a failed jump restores them (#2656, CodeRabbit). Expansion runs
+	// once here; the retry path below only rebuilds.
+	prevExpanded := map[string]bool{}
+	if groupPath != "" {
+		for _, g := range h.groupTree.GroupList {
+			if g == nil {
+				continue
+			}
+			if g.Path == groupPath || strings.HasPrefix(groupPath, g.Path+"/") {
+				prevExpanded[g.Path] = g.Expanded
+			}
+		}
+		h.groupTree.ExpandGroupWithParents(groupPath)
+	}
+	restoreFolds := func() {
+		for path, expanded := range prevExpanded {
+			if !expanded {
+				h.groupTree.CollapseGroup(path)
+			}
+		}
+	}
+
+	h.rebuildFlatItems()
+	if find() {
+		return true
+	}
+	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		restoreFolds()
+		h.rebuildFlatItems()
+		return false
+	}
+	prevFilter, prevTime := h.statusFilter, h.timeFilter
+	h.statusFilter = ""
+	h.timeFilter = session.TimeFilterAll
+	h.rebuildFlatItems()
+	if find() {
+		return true
+	}
+	h.statusFilter, h.timeFilter = prevFilter, prevTime
+	restoreFolds()
+	h.rebuildFlatItems()
+	return false
 }
 
 // handleGlobalSearchKey handles keys when global search is visible
@@ -13721,11 +13851,22 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		if h.recallSource != nil {
 			h.recallSource.Close()
 		}
-		// Stop watcher engine (D-07: lifecycle tied to TUI)
+		// Stop watcher engine (D-07: lifecycle tied to TUI). Stop closes its
+		// channels, which ends the delivery relay and the panel feed; the
+		// relay first dispatches whatever the engine had buffered.
 		if h.watcherEngine != nil {
 			h.watcherEngine.Stop()
 			h.watcherEngine = nil
+			select {
+			case <-h.watcherRelayDone:
+			case <-time.After(5 * time.Second):
+				uiLog.Warn("watcher_relay_stop_timeout")
+			}
+			h.watcherPanelEvents, h.watcherPanelHealth, h.watcherRelayDone = nil, nil, nil
 		}
+		// Finish the conductor delivery in flight and report what is left,
+		// instead of exiting mid-delivery.
+		h.stopConductorDeliveries(5 * time.Second)
 		// Shutdown or disconnect from MCP pool based on user choice
 		if err := session.ShutdownGlobalPool(shutdownPool); err != nil {
 			mcpUILog.Warn("pool_shutdown_error", slog.String("error", err.Error()))
@@ -13831,37 +13972,115 @@ func formatWatcherDispatchMsg(evt watcher.Event) string {
 	return fmt.Sprintf("[%s] %s: %s", evt.Source, evt.Sender, text)
 }
 
-// dispatchWatcherEvent sends a routed watcher event into the conductor's tmux pane.
+// dispatchWatcherEvent queues a routed watcher event for the conductor's tmux pane.
 // Skipped for triage and unrouted events (RoutedTo empty or "triage") since those have no
-// concrete delivery target yet. Mirrors dispatchHealthAlert: looks up the conductor session
-// by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
+// concrete delivery target yet. Mirrors dispatchHealthAlert: sendToConductor looks up the
+// conductor session by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
+// Called by relayWatcherEngine, off the Bubble Tea loop (#2524).
 func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
-	if evt.RoutedTo == "" || evt.RoutedTo == "triage" || strings.HasPrefix(evt.RoutedTo, "triage-") {
+	if evt.RoutedTo == "" || isTriageRoute(evt.RoutedTo) {
 		return
 	}
-	msg := formatWatcherDispatchMsg(evt)
-	sessionTitle := session.ConductorSessionTitle(evt.RoutedTo)
+	h.deliveryQueue().enqueue(conductorDelivery{
+		Conductor: evt.RoutedTo,
+		Text:      formatWatcherDispatchMsg(evt),
+		QueuedAt:  time.Now(),
+	})
+}
+
+// deliveryQueue returns the queue that delivers watcher messages to conductor
+// panes, creating it on first use.
+func (h *Home) deliveryQueue() *conductorQueue {
+	h.conductorDeliveriesOnce.Do(func() {
+		h.conductorDeliveries = newConductorQueue(h.sendToConductor)
+	})
+	return h.conductorDeliveries
+}
+
+// sendToConductor types one queued watcher message into its conductor's pane.
+// The pane is looked up when the message is sent, so a conductor restarted
+// meanwhile still gets it.
+func (h *Home) sendToConductor(d conductorDelivery) {
+	ts := h.conductorTmuxSession(d.Conductor)
+	if ts == nil {
+		uiLog.Warn("watcher_delivery_conductor_not_loaded", slog.String("conductor", d.Conductor))
+		return
+	}
+	if err := deliverToConductorPane(ts, d.text()); err != nil {
+		failed := "dispatch_watcher_event_send_failed"
+		if d.Alert != "" {
+			failed = "dispatch_health_alert_send_failed"
+		}
+		uiLog.Warn(failed,
+			slog.String("tmux_session", ts.Name),
+			slog.String("error", err.Error()))
+	}
+}
+
+// stopConductorDeliveries starts no further conductor delivery, waits up to
+// wait for the one in flight (so a quit does not leave a pasted message
+// without its Enter), and logs per conductor the routed events this session
+// did not get to it: undelivered (still queued), dropped from a full backlog
+// (overflow is also logged as it starts and when its notice goes out), and, if
+// the wait expired mid-delivery, the one still being sent, whose outcome is
+// unknown. They stay
+// in watcher_events and the watcher's task log (durable delivery is #2537).
+// It returns the three counts.
+func (h *Home) stopConductorDeliveries(wait time.Duration) (undelivered, dropped, unconfirmed int) {
+	if h.conductorDeliveries == nil {
+		return 0, 0, 0
+	}
+	type left struct{ undelivered, dropped, unconfirmed int }
+	per := map[string]*left{}
+	entry := func(conductor string) *left {
+		if per[conductor] == nil {
+			per[conductor] = &left{}
+		}
+		return per[conductor]
+	}
+	queued, inflight, drops := h.conductorDeliveries.stop(wait)
+	for _, d := range queued {
+		entry(d.Conductor).undelivered++
+		undelivered++
+	}
+	for _, d := range inflight {
+		entry(d.Conductor).unconfirmed++
+		unconfirmed++
+	}
+	for conductor, n := range drops {
+		entry(conductor).dropped += n
+		dropped += n
+	}
+	for conductor, l := range per {
+		uiLog.Warn("watcher_events_undelivered_at_quit",
+			slog.String("conductor", conductor),
+			slog.Int("undelivered", l.undelivered),
+			slog.Int("dropped_backlog_full", l.dropped),
+			slog.Int("in_flight_outcome_unknown", l.unconfirmed))
+	}
+	return undelivered, dropped, unconfirmed
+}
+
+// conductorTmuxSession returns the tmux session of the named conductor, or nil
+// when that conductor is not loaded or has no tmux session. Watcher deliveries
+// look it up off the UI goroutine while Update may rewrite h.instances, so the
+// lookup holds the read lock for the whole scan.
+func (h *Home) conductorTmuxSession(conductorName string) *tmux.Session {
+	sessionTitle := session.ConductorSessionTitle(conductorName)
 	h.instancesMu.RLock()
-	instances := h.instances
-	h.instancesMu.RUnlock()
-	for _, inst := range instances {
-		if inst.Title != sessionTitle {
+	defer h.instancesMu.RUnlock()
+	for _, inst := range h.instances {
+		// Title is written under the instance's own lock (SetTitleThreadSafe,
+		// renames and title sync), not instancesMu.
+		if inst.GetTitleThreadSafe() != sessionTitle {
 			continue
 		}
-		ts := inst.GetTmuxSession()
-		if ts == nil || ts.Name == "" {
-			return
+		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
+			return ts
 		}
-		tmuxName := ts.Name
-		go func() {
-			if err := deliverToConductorPane(ts, msg); err != nil {
-				uiLog.Warn("dispatch_watcher_event_send_failed",
-					slog.String("tmux_session", tmuxName),
-					slog.String("error", err.Error()))
-			}
-		}()
-		return
+		return nil
 	}
+	return nil
 }
 
 // deliverToConductorPane sends msg into a conductor's tmux pane and verifies it
@@ -13996,10 +14215,12 @@ func deliverToConductorPaneAttributed(p conductorPane, msg string, ownPasteMarke
 		content := tmux.StripANSI(raw)
 
 		switch {
-		case send.HasUnsentComposerPrompt(content, msg):
+		case send.ComposerHoldsUnsentMessage(raw, msg, tmux.StripANSI):
 			// Introspectable composer still holds the message: the trailing
 			// Enter was swallowed, so re-press it. Surface a tmux rejection
-			// immediately rather than letting it masquerade as a timeout.
+			// immediately rather than letting it masquerade as a timeout. A
+			// prompt suggestion that echoes msg is not our stuck message: it
+			// falls through to the "composer rendered" arm, never an Enter.
 			sawUnsent = true
 			if err := p.SendEnter(); err != nil {
 				return fmt.Errorf("retry enter: %w", err)
@@ -14037,57 +14258,6 @@ func deliverToConductorPaneAttributed(p conductorPane, msg string, ownPasteMarke
 		}
 	}
 	return fmt.Errorf("watcher dispatch not confirmed submitted (status never active, composer still pending) after %s", time.Duration(maxChecks)*checkDelay)
-}
-
-// dispatchHealthAlert sends a health alert message to the conductor session associated
-// with the watcher that entered warning or error state (D-22, D-23, TUI-03).
-func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
-	db := statedb.GetGlobal()
-	if db == nil {
-		return
-	}
-
-	watchers, err := db.LoadWatchers()
-	if err != nil {
-		return
-	}
-
-	var conductorName string
-	for _, w := range watchers {
-		if w.Name == state.WatcherName && w.Conductor != "" {
-			conductorName = w.Conductor
-			break
-		}
-	}
-	if conductorName == "" {
-		return // No conductor configured, skip alert.
-	}
-
-	// Build alert message (D-23): include name, status, reason, and suggested action.
-	alertMsg := fmt.Sprintf("[WATCHER HEALTH ALERT] Watcher %q transitioned to %s: %s. Suggested action: check watcher configuration and source connectivity.",
-		state.WatcherName, state.Status, state.Message)
-
-	// Find the conductor session by title and deliver via tmux send-keys (T-16-08).
-	sessionTitle := session.ConductorSessionTitle(conductorName)
-	h.instancesMu.RLock()
-	instances := h.instances
-	h.instancesMu.RUnlock()
-	for _, inst := range instances {
-		if inst.Title == sessionTitle {
-			ts := inst.GetTmuxSession()
-			if ts != nil && ts.Name != "" {
-				tmuxName := ts.Name
-				go func() {
-					if err := deliverToConductorPane(ts, alertMsg); err != nil {
-						uiLog.Warn("dispatch_health_alert_send_failed",
-							slog.String("tmux_session", tmuxName),
-							slog.String("error", err.Error()))
-					}
-				}()
-			}
-			break
-		}
-	}
 }
 
 // handleMCPDialogKey handles keys when MCP dialog is visible
@@ -14666,6 +14836,8 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// remote's own state DB (remote-session move, remote group create) and
 		// reports back via remoteMoveResultMsg / remoteGroupResultMsg.
 		var remoteCmd tea.Cmd
+		// telCmd counts a completed local action in feature.daily.
+		var telCmd tea.Cmd
 
 		switch h.groupDialog.Mode() {
 		case GroupDialogCreate:
@@ -14713,6 +14885,9 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if created != nil && defaultPath != "" {
 					h.groupTree.SetDefaultPathForGroup(created.Path, defaultPath)
 				}
+				if created != nil {
+					telCmd = telemetryFeatureFromTUI("group_create", false)
+				}
 				h.rebuildFlatItems()
 				h.saveInstances() // Persist the new group (reload-race safe via pendingGroupOps)
 			}
@@ -14746,6 +14921,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.pendingGroupOps = append(h.pendingGroupOps, pendingGroupOp{
 						kind: groupOpMove, sessionID: item.Session.ID, targetPath: targetGroupPath,
 					})
+					telCmd = telemetryFeatureFromTUI("move_group", false)
 					h.instancesMu.Lock()
 					h.instances = h.groupTree.GetAllInstances()
 					h.instancesMu.Unlock()
@@ -14793,6 +14969,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if inst := h.getInstanceByID(sessionID); inst != nil {
 						_, postCommit, setErr = session.SetField(inst, session.FieldTitle, newName, nil)
 						locked = inst.TitleLocked
+						telCmd = telemetryFeatureFromTUI("rename", setErr != nil)
 					}
 					h.instancesMu.Unlock()
 					if setErr != nil {
@@ -14823,7 +15000,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		h.groupDialog.Hide()
-		return h, remoteCmd
+		return h, tea.Batch(remoteCmd, telCmd)
 	case "esc":
 		// First Esc dismisses the path suggestion dropdown only; the dialog
 		// stays open (mirrors the model-picker Esc handling in #1162).
@@ -15604,6 +15781,7 @@ func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDi
 		wtSettings.CreateOptions(sourceDir),
 		&buf, &buf, wtSettings.SetupTimeout())
 	if err != nil {
+		telemetry.ErrorOccurred(telemetry.AreaWorktree, telemetry.ErrKindOf(err), "")
 		return nil, err
 	}
 	if setupErr != nil {
@@ -16235,7 +16413,7 @@ func defaultForkWithStateWorktreeDeps(sparseSourceDir string) forkWithStateWorkt
 // rollback steps of forkSessionCmdWithOptions so the three rollback paths are
 // behaviorally testable (review finding G1).
 type forkInstanceDeps struct {
-	createInstance     func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error)
+	createInstance     func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions, parent session.ForkParent) (*session.Instance, error)
 	createMultiRepoDir func(inst, source *session.Instance) error
 	startInstance      func(inst *session.Instance) error
 	rollback           func(repoRoot, worktreePath, branch string)
@@ -16243,8 +16421,8 @@ type forkInstanceDeps struct {
 
 func defaultForkInstanceDeps() forkInstanceDeps {
 	return forkInstanceDeps{
-		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error) {
-			inst, _, err := source.CreateForkedInstanceForTool(title, groupPath, opts)
+		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions, parent session.ForkParent) (*session.Instance, error) {
+			inst, _, err := source.CreateForkedInstanceForToolUnder(title, groupPath, opts, parent)
 			return inst, err
 		},
 		createMultiRepoDir: func(inst, source *session.Instance) error {
@@ -16325,7 +16503,11 @@ func completeFork(
 	withStateWorktreeCreated bool,
 	deps forkInstanceDeps,
 ) (*session.Instance, error) {
-	inst, err := deps.createInstance(source, title, groupPath, opts)
+	// The parent goes into the fork's construction, not onto the finished
+	// instance: a Claude fork's first start runs the command baked here, and
+	// its launch env depends on the parent.
+	parent := session.ForkParent{SessionID: parentSessionID, ProjectPath: parentProjectPath}
+	inst, err := deps.createInstance(source, title, groupPath, opts, parent)
 	if err != nil {
 		if withStateWorktreeCreated {
 			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
@@ -16346,10 +16528,6 @@ func completeFork(
 			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
 		}
 		return nil, err
-	}
-
-	if parentSessionID != "" {
-		inst.SetParentWithPath(parentSessionID, parentProjectPath)
 	}
 
 	if err := deps.startInstance(inst); err != nil {
@@ -22416,7 +22594,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	statusIcon, statusStyle := remoteRowStatusGlyph(rs.Status, rs.Substate, rs.Archived)
 	// The archived override swaps the glyph to ■ regardless of the stale live
 	// Status, so the label has to follow it or the row reads "■ running".
-	statusLabel := rs.Status
+	statusLabel := processExitLabel(rs.Status, session.Substate(rs.Substate), rs.ExitCode)
 	if rs.Archived {
 		statusLabel = "archived"
 	}
@@ -23175,7 +23353,7 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 		statusColor = ColorTextDim
 	}
 	statusStyle := lipgloss.NewStyle().Foreground(statusColor)
-	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Status:"), statusStyle.Render(string(cardStatus))))
+	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Status:"), statusStyle.Render(processExitLabel(string(cardStatus), inst.CachedSubstate(), inst.ExitCode()))))
 
 	// Tool
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
@@ -23396,7 +23574,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 
 	// Header with session name and status
-	statusBadge := lipgloss.NewStyle().Foreground(statusColor).Render(statusIcon + " " + string(selectedStatus))
+	statusBadge := lipgloss.NewStyle().Foreground(statusColor).Render(statusIcon + " " + processExitLabel(string(selectedStatus), selected.CachedSubstate(), selected.ExitCode()))
 	nameStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
 	b.WriteString(nameStyle.Render(selected.Title))
 	b.WriteString("  ")
@@ -25748,6 +25926,16 @@ func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 			!(h.activeFilterHideStopped && statusBucket(status) == session.StatusStopped)
 	}
 	return statusBucket(status) == filter
+}
+
+// remoteMatchesStatus applies the status-filter predicate to a remote row
+// (#2627). RemoteSessionInfo.Status is the wire string; converting it to
+// session.Status puts remote rows through the same statusBucket mapping the
+// local predicate uses. Old remotes omit substate/archived, and the wire
+// Status for those still decodes to a valid bucket — the row keeps the
+// coarse behavior its glyph already shows, as the issue requires.
+func (h *Home) remoteMatchesStatus(filter session.Status, remote session.RemoteSessionInfo) bool {
+	return h.matchesStatusFilter(filter, session.Status(remote.Status))
 }
 
 // renderFilterBarHint returns the filter bar's keyboard-shortcut hint as

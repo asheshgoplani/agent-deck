@@ -237,12 +237,12 @@ func handleRemoteAgent(profile string, args []string) {
 	dbPath, err := session.GetDBPathForProfile(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	self, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// The in-process probe refreshes statuses through tmux like `list` does,
 	// and `list` fixes up PATH for tmux before it starts.
@@ -252,12 +252,12 @@ func handleRemoteAgent(profile string, args []string) {
 	// must never be registered here.
 	if statedb.GetGlobal() != nil {
 		fmt.Fprintln(os.Stderr, "remote-agent: a global state DB is registered; the probe would write last-activity rows")
-		os.Exit(1)
+		exitCLI(1)
 	}
 	probe, closeProbe, err := newRemoteAgentProbe(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer closeProbe()
 	runner := func(ctx context.Context, reqArgs []string) (string, string, int) {

@@ -74,7 +74,17 @@ import (
 //
 // Records are ordered oldest-first (Timestamp, then child id) so the output is
 // stable across calls.
-func ExportPendingRecords() ([]TransitionNotificationEvent, error) {
+//
+// Issue #2539: every source above is host-wide, shared by all profiles on the
+// host, so the export is scoped to ONE profile. Only records whose profile is
+// exactly profile cross; the filter runs on the raw union, before dedup and
+// before dropSuppressedChildren, so no other profile's record or registry is
+// touched. There is no unscoped export: an empty profile is refused.
+func ExportPendingRecords(profile string) ([]TransitionNotificationEvent, error) {
+	profile, err := exportProfile(profile)
+	if err != nil {
+		return nil, err
+	}
 	ledger, err := exportLedgerRecords()
 	if err != nil {
 		return nil, err
@@ -87,6 +97,7 @@ func ExportPendingRecords() ([]TransitionNotificationEvent, error) {
 	out := make([]TransitionNotificationEvent, 0, len(ledger)+len(pending))
 	out = append(out, ledger...)
 	out = append(out, pending...)
+	out = KeepProfileRecords(out, profile)
 	out = dedupByEventFingerprint(out)
 	out, err = dropSuppressedChildren(out)
 	if err != nil {
@@ -100,6 +111,33 @@ func ExportPendingRecords() ([]TransitionNotificationEvent, error) {
 		return out[i].ChildSessionID < out[j].ChildSessionID
 	})
 	return out, nil
+}
+
+// KeepProfileRecords returns the records that belong to profile: an exact
+// match on the trimmed Profile field (issue #2539). A record with no profile
+// cannot prove whose it is and is never kept, and an empty profile keeps
+// nothing, so a caller that lost track of its profile fails closed.
+func KeepProfileRecords(events []TransitionNotificationEvent, profile string) []TransitionNotificationEvent {
+	profile = strings.TrimSpace(profile)
+	out := make([]TransitionNotificationEvent, 0, len(events))
+	if profile == "" {
+		return out
+	}
+	for _, ev := range events {
+		if strings.TrimSpace(ev.Profile) == profile {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// exportProfile validates the profile an export is scoped to.
+func exportProfile(profile string) (string, error) {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return "", errors.New("export: no profile given; an export is always scoped to one profile")
+	}
+	return profile, nil
 }
 
 // dedupByEventFingerprint collapses records that share an EventFingerprint,

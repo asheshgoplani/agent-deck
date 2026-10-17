@@ -1,6 +1,0 @@
-{
-  "access_token": "fake-access-token-stale",
-  "token_type": "Bearer",
-  "refresh_token": "fake-refresh-token",
-  "expiry": "2020-01-01T00:00:00Z"
-}

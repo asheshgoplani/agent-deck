@@ -68,8 +68,8 @@ type RemoteCommsExport struct {
 // exportCommsAfter answers the `_comms` position of a talkback cursor on
 // this host: the ledger records after it that are addressed to a session
 // this host does not have (scan progress moves over everything else).
-func exportCommsAfter(c RemoteCommsCursor, now time.Time) RemoteCommsExport {
-	out, ok := exportCommsBatch(c, now)
+func exportCommsAfter(profile string, c RemoteCommsCursor, now time.Time) RemoteCommsExport {
+	out, ok := exportCommsBatch(profile, c, now)
 	if !ok {
 		// Anything uncertain answers "no ledger": the puller keeps its
 		// position and asks again, never saving one ahead of what it holds.
@@ -78,13 +78,12 @@ func exportCommsAfter(c RemoteCommsCursor, now time.Time) RemoteCommsExport {
 	return out
 }
 
-func exportCommsBatch(c RemoteCommsCursor, now time.Time) (RemoteCommsExport, bool) {
+func exportCommsBatch(profile string, c RemoteCommsCursor, now time.Time) (RemoteCommsExport, bool) {
 	out := RemoteCommsExport{NowMS: now.UnixMilli(), After: c.After, Through: c.After, Records: []comms.Exported{}}
 	if !CommsLedgerEnabled() {
 		return out, false // the switch is off on this host: nothing is exported
 	}
-	profile := events.CurrentProfile()
-	dir, err := comms.Dir(profile)
+	dir, err := comms.Dir(profile) // the export's profile (#2539), not the process's
 	if err != nil {
 		return out, false
 	}

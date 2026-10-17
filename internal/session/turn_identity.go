@@ -77,6 +77,7 @@ type turnRecord struct {
 }
 
 type turnMessage struct {
+	ID         string          `json:"id"`
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content"`
 	StopReason *string         `json:"stop_reason"`
@@ -157,6 +158,10 @@ func recordTooOld(rec turnRecord, notBefore time.Time) bool {
 // resumes: past every complete line examined, and never past a partial
 // trailing line, which Claude may still be writing.
 func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, error) {
+	return scanTurn(q, cursor, true)
+}
+
+func scanTurn(q TurnQuery, cursor int64, matchPrompt bool) (TurnIdentity, int64, bool, error) {
 	want := normalizeTurnPrompt(q.Prompt)
 	f, err := os.Open(q.Path)
 	if err != nil {
@@ -186,11 +191,11 @@ func scanTurnIdentity(q TurnQuery, cursor int64) (TurnIdentity, int64, bool, err
 			continue
 		}
 		body, human := humanPrompt(rec)
-		if !human || !promptMatches(body, want) || recordTooOld(rec, q.NotBefore) {
+		if !human || (matchPrompt && !promptMatches(body, want)) || recordTooOld(rec, q.NotBefore) {
 			continue
 		}
 		if rec.UUID == "" {
-			return TurnIdentity{}, cursor, false, fmt.Errorf("submitted prompt has no transcript UUID; refusing to guess turn identity")
+			return TurnIdentity{}, cursor, false, fmt.Errorf("user record has no transcript UUID; refusing to guess turn identity")
 		}
 		return TurnIdentity{UUID: rec.UUID, Path: q.Path, StartOffset: cursor, SessionID: rec.SessionID}, cursor, true, nil
 	}
@@ -215,10 +220,23 @@ func TurnAdvanced(q TurnQuery) bool {
 // --stream until then — the in-flight turn's output can never be consumed as
 // the queued message's reply.
 func AwaitTurnIdentity(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, error) {
+	return awaitTurn(q, timeout, poll, true)
+}
+
+// AwaitObservedTurn waits for the first new main-chain user record after the
+// pre-send boundary. It observes a turn, not acceptance of q.Prompt: a socket
+// inbox has no receipt and Claude may wrap its content. Callers must label the
+// output uncorrelated and must not use this as submission or delivery proof.
+// Cursor, NotBefore, complete-record and UUID guards still apply.
+func AwaitObservedTurn(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, error) {
+	return awaitTurn(q, timeout, poll, false)
+}
+
+func awaitTurn(q TurnQuery, timeout, poll time.Duration, matchPrompt bool) (TurnIdentity, error) {
 	cursor := q.Cursor
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		id, next, found, err := scanTurnIdentity(q, cursor)
+		id, next, found, err := scanTurn(q, cursor, matchPrompt)
 		if err != nil {
 			return TurnIdentity{}, err
 		}
@@ -226,18 +244,21 @@ func AwaitTurnIdentity(q TurnQuery, timeout, poll time.Duration) (TurnIdentity, 
 			return id, nil
 		}
 		cursor = next
-		time.Sleep(poll)
+		time.Sleep(min(poll, time.Until(deadline)))
 	}
-	return TurnIdentity{}, fmt.Errorf("turn identity not established within %s", timeout)
+	if matchPrompt {
+		return TurnIdentity{}, fmt.Errorf("turn identity not established within %s", timeout)
+	}
+	return TurnIdentity{}, fmt.Errorf("new transcript turn not observed within %s", timeout)
 }
 
-func assistantText(rec turnRecord) (string, bool, string) {
+func assistantText(rec turnRecord) (text string, assistant bool, stopReason, messageID string) {
 	if rec.Type != "assistant" || rec.IsSidechain {
-		return "", false, ""
+		return "", false, "", ""
 	}
 	var msg turnMessage
 	if json.Unmarshal(rec.Message, &msg) != nil || msg.Role != "assistant" {
-		return "", false, ""
+		return "", false, "", ""
 	}
 	var out strings.Builder
 	var plain string
@@ -260,7 +281,7 @@ func assistantText(rec turnRecord) (string, bool, string) {
 	if msg.StopReason != nil {
 		reason = *msg.StopReason
 	}
-	return out.String(), true, reason
+	return out.String(), true, reason, msg.ID
 }
 
 // turnEnded mirrors the streamer: Claude closes a turn with end_turn,
@@ -272,6 +293,41 @@ func turnEnded(reason string) bool {
 		return true
 	}
 	return false
+}
+
+// turnStop decides when a stop_reason record really ends the turn. Claude
+// writes each content block of a message as its own record, and every record
+// carries the message's stop_reason, so the final message's thinking block
+// arrives marked end_turn before the text block that holds the reply. A stop
+// is therefore held open until a record from another message follows, or the
+// transcript ends after the stopping message has produced text.
+type turnStop struct {
+	pending   bool
+	messageID string
+	hasText   bool
+}
+
+func (s *turnStop) observe(messageID string, hasText bool) {
+	if !s.pending || messageID == "" || messageID != s.messageID {
+		*s = turnStop{pending: true, messageID: messageID}
+	}
+	s.hasText = s.hasText || hasText
+}
+
+// endedBefore reports whether a pending stop is confirmed by the next record:
+// anything other than another block of the stopping message.
+func (s *turnStop) endedBefore(assistant bool, messageID string) bool {
+	if !s.pending {
+		return false
+	}
+	return !assistant || messageID == "" || messageID != s.messageID
+}
+
+// endedAtEOF reports whether the transcript, read to its current end, holds
+// the stopping message's reply. Without a message ID no later block can be
+// matched to the stop, so the stop is final as it stands.
+func (s *turnStop) endedAtEOF() bool {
+	return s.pending && (s.hasText || s.messageID == "")
 }
 
 // AwaitTurnResponse returns only assistant text after id's user record and
@@ -298,7 +354,7 @@ func AwaitTurnResponse(id TurnIdentity, timeout, poll time.Duration) (*ResponseO
 		if !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(poll)
+		time.Sleep(min(poll, time.Until(deadline)))
 	}
 	if partial != nil {
 		return partial, fmt.Errorf("turn %s: %w after %s", id.UUID, ErrTurnResponseIncomplete, timeout)
@@ -324,6 +380,8 @@ func readTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
 	var text strings.Builder
 	lastTS := ""
 	ended := false
+	var stop turnStop
+	textMessageID := ""
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -331,19 +389,31 @@ func readTurnResponse(id TurnIdentity) (*ResponseOutput, bool, error) {
 		if json.Unmarshal(sc.Bytes(), &rec) != nil {
 			continue
 		}
-		if _, human := humanPrompt(rec); human {
-			return nil, false, fmt.Errorf("turn %s produced no end_turn before the next submitted prompt", id.UUID)
-		}
-		chunk, assistant, reason := assistantText(rec)
-		if !assistant {
-			continue
-		}
-		text.WriteString(chunk)
-		lastTS = rec.Timestamp
-		if turnEnded(reason) {
+		chunk, assistant, reason, messageID := assistantText(rec)
+		if stop.endedBefore(assistant, messageID) {
 			ended = true
 			break
 		}
+		if _, human := humanPrompt(rec); human {
+			return nil, false, fmt.Errorf("turn %s produced no end_turn before the next submitted prompt", id.UUID)
+		}
+		if !assistant {
+			continue
+		}
+		if chunk != "" {
+			if text.Len() > 0 && messageID != textMessageID {
+				text.WriteString("\n\n")
+			}
+			text.WriteString(chunk)
+			textMessageID = messageID
+		}
+		lastTS = rec.Timestamp
+		if turnEnded(reason) {
+			stop.observe(messageID, chunk != "")
+		}
+	}
+	if !ended && stop.endedAtEOF() {
+		ended = true
 	}
 	if !ended && text.Len() == 0 {
 		return nil, false, nil

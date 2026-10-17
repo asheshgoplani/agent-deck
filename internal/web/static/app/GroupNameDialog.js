@@ -6,6 +6,7 @@ import { useState } from 'preact/hooks'
 import { Icon, ICONS } from './icons.js'
 import { groupNameDialogSignal } from './state.js'
 import { apiFetch } from './api.js'
+import { groupApiUrl } from './dataModel.js'
 
 export function GroupNameDialog({ mode, groupPath, currentName, onSubmit }) {
   const [name, setName] = useState(currentName || '')
@@ -22,13 +23,11 @@ export function GroupNameDialog({ mode, groupPath, currentName, onSubmit }) {
     setError(null)
     setSubmitting(true)
     try {
-      if (isCreate) {
-        await apiFetch('POST', '/api/groups', { name })
-      } else {
-        await apiFetch('PATCH', '/api/groups/' + encodeURIComponent(groupPath), { name })
-      }
+      const resp = isCreate
+        ? await apiFetch('POST', '/api/groups', { name })
+        : await apiFetch('PATCH', groupApiUrl(groupPath), { name })
       groupNameDialogSignal.value = null
-      if (onSubmit) onSubmit()
+      if (onSubmit) onSubmit(resp)
     } catch (err) {
       setError(err.message)
     } finally {

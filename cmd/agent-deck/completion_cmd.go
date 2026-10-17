@@ -252,7 +252,9 @@ var completionTree = []completionNode{
 			"finish": {argSession},
 		},
 	},
-	{name: "costs", subs: []string{"sync", "summary", "recompute"}},
+	{name: "open"},
+	{name: "file", subs: []string{"bundle"}},
+	{name: "costs", subs: []string{"sync", "summary", "recompute", "daily", "sessions", "models", "groups", "budgets"}},
 	{name: "hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "codex-hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "gemini-hooks", subs: []string{"install", "uninstall", "status"}},
@@ -314,7 +316,7 @@ func completionRules() []completionRule {
 func handleCompletion(args []string) {
 	if len(args) == 0 {
 		printCompletionHelp(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "help", "--help", "-h":
@@ -328,7 +330,7 @@ func handleCompletion(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown shell %q (want bash, zsh, or fish)\n\n", args[0])
 		printCompletionHelp(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

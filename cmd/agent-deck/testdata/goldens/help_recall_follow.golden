@@ -1,0 +1,14 @@
+Usage: agent-deck recall follow <session> --after <cursor|end> --jsonl [--status]
+Frames: row, update, remove, status, delivery, resync_required (docs/recall-timeline.md). --v1 streams the slice-6 turn frames.
+  -after string
+    	Resume cursor from timeline or a prior follow frame; 'end' starts at the current end
+  -harness string
+    	With --transcript: claude or codex
+  -jsonl
+    	Stream newline-delimited JSON frames
+  -status
+    	Also emit status frames (verb, elapsed, tokens, current tool, footer facts) once a second while the session runs
+  -transcript string
+    	Read this Claude Code JSONL or Codex rollout instead of a session's
+  -v1
+    	Slice-6 output (turns with role/kind/text, turn frames) instead of rows

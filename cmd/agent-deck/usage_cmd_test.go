@@ -33,6 +33,13 @@ type usageResult struct {
 // guarantees it.
 func runUsageCLI(t *testing.T, home string, stdin string, args ...string) usageResult {
 	t.Helper()
+	return runUsageCLIEnv(t, home, stdin, nil, args...)
+}
+
+// runUsageCLIEnv is runUsageCLI with extra environment entries applied after
+// the isolation set (e.g. the CLAUDE_CONFIG_DIR a status line runs under).
+func runUsageCLIEnv(t *testing.T, home string, stdin string, env []string, args ...string) usageResult {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -51,6 +58,7 @@ func runUsageCLI(t *testing.T, home string, stdin string, args ...string) usageR
 		"ANTHROPIC_BASE_URL=",
 		"ANTHROPIC_AUTH_TOKEN="+usageSentinelToken,
 	)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

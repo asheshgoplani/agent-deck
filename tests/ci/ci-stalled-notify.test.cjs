@@ -24,6 +24,16 @@ test('stalled run on the current head adds the label', () => {
   assert.equal(r.action, 'add')
 })
 
+test('held run seen on its requested event (already action_required) adds the label', () => {
+  // A held fork run is created completed/action_required and emits only the
+  // `requested` workflow_run event; the listed runs carry no head_sha here.
+  const r = reconcile({
+    runHeadSha: A, runConclusion: 'action_required', prHeadSha: A, labeled: false,
+    currentHeadRuns: [{ name: 'Go tests', conclusion: 'action_required' }], gatingWorkflows: GATES,
+  })
+  assert.equal(r.action, 'add')
+})
+
 test('stalled run on an already labeled PR does nothing', () => {
   const r = reconcile({
     runHeadSha: A, runConclusion: 'action_required', prHeadSha: A, labeled: true,

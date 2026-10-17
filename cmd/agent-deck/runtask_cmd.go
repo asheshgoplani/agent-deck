@@ -75,11 +75,11 @@ func handleRunTask(args []string) {
 	// Same path-traversal guard the hook handler uses on the instance id.
 	if child == "" || !validInstanceID.MatchString(child) || strings.Contains(child, "..") {
 		fmt.Fprintln(os.Stderr, "run-task: missing or invalid child id (set AGENTDECK_INSTANCE_ID or pass --child)")
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if len(cmdArgs) == 0 {
 		runTaskUsage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 	ensureTmuxInPathOrExit()
 
@@ -102,7 +102,7 @@ func handleRunTask(args []string) {
 
 	// Mirror the worker's exit status so callers/tmux see the real outcome.
 	if rec.ExitCode > 0 {
-		os.Exit(rec.ExitCode)
+		exitCLI(rec.ExitCode)
 	}
 }
 

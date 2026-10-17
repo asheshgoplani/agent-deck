@@ -8,10 +8,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// Comms Ledger producers (docs/comms.md). P1 enables two: Claude through
-// hook-handler and Codex through codex-notify, each pinned by a versioned
-// payload fixture under testdata/comms. Every other harness payload
-// spools nothing (status-only in P1), and a Codex Stop hook never spools
+// Comms Ledger producers (docs/comms.md). P1 enabled Claude through
+// hook-handler and Codex through codex-notify; pi through hook-handler
+// followed. Each is pinned by a versioned payload fixture under testdata/comms. Every other harness
+// payload spools nothing (status-only in P1), and a Codex Stop hook never spools
 // here, so notify and Stop cannot produce one turn twice. The hook never
 // writes the ledger itself.
 
@@ -76,7 +76,7 @@ func TestHookHandler_OnlyClaudeSpoolsInP1(t *testing.T) {
 		"cursor afterAgentResponse":         `{"hook_event_name":"afterAgentResponse","conversation_id":"c1","text":"cursor a"}`,
 		"gemini AfterAgent":                 `{"hook_event_name":"AfterAgent","session_id":"g1","prompt":"q","prompt_response":"a"}`,
 		"hermes post_llm_call":              `{"hook_event_name":"post_llm_call","session_id":"h1","user_message":"q","assistant_response":"a"}`,
-		"pi turn_end":                       `{"hook_event_name":"turn_end","source":"pi","text":"a"}`,
+		"pi turn_end (v2 status-only)":      `{"hook_event_name":"turn_end","source":"pi","cwd":"/tmp"}`,
 		"claude tool event":                 `{"hook_event_name":"PreToolUse","session_id":"s1"}`,
 		"claude empty stop":                 `{"hook_event_name":"Stop","session_id":"s1","last_assistant_message":"   "}`,
 	} {
@@ -155,5 +155,40 @@ func TestCodexNotify_FixtureSpoolsLastAssistantMessageOnce(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(session.CommsSpoolDir()), "x")); err == nil {
 		t.Fatal("traversal id escaped the spool root")
+	}
+}
+
+func TestHookHandler_PiSettleSpoolsOneTurnEnd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-pi")
+	t.Cleanup(session.SetCommsLedgerForTest(true))
+
+	runHookHandlerWith(t, fixture(t, "pi_agentsettled_v3.json"))
+	entries, err := session.ReadCommsSpool("inst-pi")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries %+v err %v", entries, err)
+	}
+	e := entries[0]
+	if e.Harness != "pi" || e.Edge != session.CommsEdgeTurnEnd || e.Text != "Nothing new since the last check." || e.Prompt != "[HEARTBEAT] anything new?" ||
+		e.SessionID != "pi-sess-1" || e.TurnID != "entry-77" || e.Cwd != "/tmp" || e.TSignal == 0 {
+		t.Fatalf("spooled %+v", e)
+	}
+}
+
+func TestHookHandler_PiNoTextSettleSpoolsOneStatusEdge(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-pi-tool")
+	t.Cleanup(session.SetCommsLedgerForTest(true))
+
+	runHookHandlerWith(t, fixture(t, "pi_agentsettled_notext_v3.json"))
+	entries, err := session.ReadCommsSpool("inst-pi-tool")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries %+v err %v", entries, err)
+	}
+	e := entries[0]
+	if e.Harness != "pi" || e.Edge != session.CommsEdgeStatus || e.From != "running" || e.State != "waiting" || e.Text != "" || e.TSignal == 0 {
+		t.Fatalf("spooled %+v", e)
 	}
 }

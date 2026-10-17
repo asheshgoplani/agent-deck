@@ -1,8 +1,0 @@
-Usage: agent-deck doctor [--json]
-
-Report local runtime health and check named Claude slots configured as [profiles.<name>.claude].config_dir.
-Warn when slots share a directory; missing or unreadable paths remain unknown.
-Account checks read directory metadata; health reads local samples. Neither verifies live login identities.
-Also lists untracked tmux sessions (agentdeck_ prefix, not in `list --json`) so you can decide whether to keep or stop them; never stops any itself.
-  -json
-    	Output account and runtime health diagnostics as JSON

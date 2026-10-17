@@ -47,11 +47,13 @@ type RowsTimeline struct {
 	Updates       []Row       `json:"updates,omitempty"`
 	Removed       []string    `json:"removed,omitempty"`
 	ThroughCursor string      `json:"through_cursor,omitempty"`
+	BeforeCursor  string      `json:"before_cursor,omitempty"`
 	Status        *LiveStatus `json:"status,omitempty"`
 }
 
 // RowsOptions bounds a timeline read.
 //   - Since resumes after a cursor (incremental fetch).
+//   - Before returns Limit older rows before an exclusive row boundary.
 //   - Limit stops after that many new rows; the cursor points there, so the
 //     next call with --since pages forward.
 //   - Tail returns only the last N rows, reading backwards in growing byte
@@ -59,9 +61,21 @@ type RowsTimeline struct {
 //   - AgentID returns one Claude Code sub-agent sidechain.
 type RowsOptions struct {
 	Since   string
+	Before  string
 	Limit   int
 	Tail    int
 	AgentID string
+}
+
+// ValidateRowsOptions rejects combinations that cannot describe one page.
+func ValidateRowsOptions(opts RowsOptions) error {
+	if opts.Limit < 0 || opts.Tail < 0 {
+		return errors.New("recall rows: --limit and --tail must not be negative")
+	}
+	if opts.Before != "" && (opts.Limit <= 0 || opts.Since != "" || opts.Tail != 0 || opts.AgentID != "") {
+		return errors.New("recall rows: --before requires a positive --limit and cannot combine with --since, --tail or --agent")
+	}
+	return nil
 }
 
 // ErrRowsUnsupported is returned for a harness whose native format the rows
@@ -78,6 +92,7 @@ type rowsCursor struct {
 	O int64          `json:"o"`
 	A string         `json:"a"`
 	S rowParserState `json:"s"`
+	B string         `json:"b,omitempty"` // exclusive row boundary for older-history paging
 }
 
 func encodeRowsCursor(c rowsCursor) string {
@@ -302,6 +317,9 @@ func tailStart(f io.ReaderAt, size, tail int64) int64 {
 // cursor for FollowRows or a later --since read. It never touches the index.
 func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeline, error) {
 	var tl RowsTimeline
+	if err := ValidateRowsOptions(opts); err != nil {
+		return tl, err
+	}
 	if !SupportsDirectRows(src.Harness) {
 		return tl, fmt.Errorf("%w: %s", ErrRowsUnsupported, src.Harness)
 	}
@@ -317,8 +335,13 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	var size, start int64
 	st := rowParserState{}
 	set := newRowSet()
-	if opts.Since != "" {
-		c, err := decodeRowsCursor(opts.Since)
+	cursor := opts.Since
+	if opts.Before != "" {
+		cursor = opts.Before
+	}
+	var before *rowsCursor
+	if cursor != "" {
+		c, err := decodeRowsCursor(cursor)
 		if err != nil {
 			return tl, &ResyncError{"invalid_cursor"}
 		}
@@ -331,6 +354,10 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		}
 		f, size, start, st = file, info.Size(), c.O, c.S
 		set.keepForeign = true
+		if opts.Before != "" {
+			before = &c
+			size, start = c.O, 0
+		}
 	} else {
 		file, err := os.Open(src.Path)
 		if err != nil {
@@ -345,8 +372,11 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 	}
 	defer f.Close()
 	path := f.Name()
+	if before != nil {
+		return readOlderRows(ctx, src, f, size, opts.Limit, before)
+	}
 	if opts.Tail > 0 && opts.Since == "" {
-		return readTail(ctx, src, f, size, opts.Tail)
+		return readOlderRows(ctx, src, f, size, opts.Tail, nil)
 	}
 	p := newRowParser(src.Harness, st)
 	end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
@@ -372,25 +402,54 @@ func ReadRows(ctx context.Context, src RowsSource, opts RowsOptions) (RowsTimeli
 		return tl, err
 	}
 	tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, S: p.st})
+	if opts.Since == "" && len(tl.Turns) > 0 {
+		tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: path, O: end, A: anchor, B: tl.Turns[0].ID})
+	}
 	return tl, nil
 }
 
-// readTail parses growing windows from the end until n rows are found or
-// the whole file was read, then keeps the last n rows.
-func readTail(ctx context.Context, src RowsSource, f *os.File, size int64, n int) (RowsTimeline, error) {
+// readOlderRows parses growing windows through the snapshot end until n
+// rows before the boundary are found, preserving later updates to older rows.
+func readOlderRows(ctx context.Context, src RowsSource, f *os.File, size int64, n int, before *rowsCursor) (RowsTimeline, error) {
 	var tl RowsTimeline
 	for window := int64(256 << 10); ; window *= 4 {
 		start := tailStart(f, size, window)
 		p := newRowParser(src.Harness, rowParserState{})
 		set := newRowSet()
-		end, err := scanLines(ctx, f, start, size, applyLines(p, set))
+		// First establish final ordering with lightweight row identities only.
+		// Late results and queue moves can affect rows long before the boundary.
+		end, err := scanLines(ctx, f, start, size, func(line []byte, _ int64) error {
+			for _, frame := range p.line(line) {
+				if frame.Row != nil {
+					frame.Row = &Row{ID: frame.Row.ID, TS: frame.Row.TS, Queued: frame.Row.Queued}
+				}
+				set.apply(frame)
+			}
+			return nil
+		})
 		if err != nil {
 			return tl, err
 		}
 		rows := set.list()
-		if len(rows) >= n || start == 0 {
+		boundaryFound := before == nil || before.B == ""
+		if before != nil && before.B != "" {
+			for i, row := range rows {
+				if row.ID == before.B {
+					rows, boundaryFound = rows[:i], true
+					break
+				}
+			}
+		}
+		if start == 0 && !boundaryFound {
+			return tl, &ResyncError{"row_boundary_missing"}
+		}
+		if boundaryFound && (len(rows) >= n || start == 0) {
 			if len(rows) > n {
 				rows = rows[len(rows)-n:]
+			}
+			rows, err = materializeRowPage(ctx, src.Harness, f, start, end, rows)
+			if err != nil {
+				return tl, err
 			}
 			if src.Harness == "claude" {
 				rows = withClaudeSidechains(ctx, src.Path, rows)
@@ -401,9 +460,45 @@ func readTail(ctx context.Context, src RowsSource, f *os.File, size int64, n int
 			}
 			tl.Turns = rows
 			tl.ThroughCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, S: p.st})
+			if len(rows) > 0 {
+				tl.BeforeCursor = encodeRowsCursor(rowsCursor{P: f.Name(), O: end, A: anchor, B: rows[0].ID})
+			}
 			return tl, nil
 		}
 	}
+}
+
+// materializeRowPage retains bodies only for the selected page while replaying
+// every native frame, so tool results and queue patches still merge correctly.
+func materializeRowPage(ctx context.Context, harness string, f io.ReaderAt, start, end int64, identities []Row) ([]Row, error) {
+	wanted := make(map[string]bool, len(identities))
+	for _, row := range identities {
+		wanted[row.ID] = true
+	}
+	set := newRowSet()
+	p := newRowParser(harness, rowParserState{})
+	_, err := scanLines(ctx, f, start, end, func(line []byte, _ int64) error {
+		for _, frame := range p.line(line) {
+			id := frame.ID
+			if frame.Row != nil {
+				id = frame.Row.ID
+			}
+			if wanted[id] {
+				set.apply(frame)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]Row, 0, len(identities))
+	for _, identity := range identities {
+		if i, ok := set.idx[identity.ID]; ok {
+			rows = append(rows, set.rows[i])
+		}
+	}
+	return rows, nil
 }
 
 // ClaudeSidechainPath is where Claude Code writes a sub-agent's transcript:

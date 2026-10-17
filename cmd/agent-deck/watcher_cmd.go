@@ -96,7 +96,7 @@ func handleWatcher(profile string, args []string) {
 	case "install-skill":
 		if err := handleWatcherInstallSkill(profile, args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case "help", "--help", "-h":
 		printWatcherHelp()
@@ -104,7 +104,7 @@ func handleWatcher(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "Unknown watcher command: %s\n", args[0])
 		fmt.Fprintln(os.Stderr)
 		printWatcherHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -140,7 +140,7 @@ func isValidWatcherType(t string) bool {
 
 // handleWatcherCreate creates a new watcher entry in statedb and writes meta.json.
 func handleWatcherCreate(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher create", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher create", flag.ContinueOnError)
 	name := fs.String("name", "", "Watcher name (required)")
 	port := fs.Int("port", 0, "Port for webhook adapter")
 	topic := fs.String("topic", "", "Topic for ntfy or slack adapter")
@@ -164,8 +164,8 @@ func handleWatcherCreate(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	remaining := fs.Args()
@@ -173,19 +173,19 @@ func handleWatcherCreate(profile string, args []string) {
 		fmt.Fprintln(os.Stderr, "Error: adapter type is required")
 		fmt.Fprintln(os.Stderr)
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	adapterType := remaining[0]
 
 	// Validate type (T-16-01)
 	if !isValidWatcherType(adapterType) {
 		fmt.Fprintf(os.Stderr, "Error: unknown adapter type %q. Valid types: %v\n", adapterType, validWatcherTypes)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *name == "" {
 		fmt.Fprintln(os.Stderr, "Error: --name is required")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Validate type-specific required flags
@@ -194,39 +194,39 @@ func handleWatcherCreate(profile string, args []string) {
 	case "webhook":
 		if *port == 0 {
 			fmt.Fprintln(os.Stderr, "Error: --port is required for webhook adapter")
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case "ntfy":
 		if *topic == "" {
 			fmt.Fprintln(os.Stderr, "Error: --topic is required for ntfy adapter")
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case "github":
 		// Audit M2: never accept the HMAC secret as a process-visible CLI arg.
 		s, err := resolveGithubWebhookSecret(*secret, *secretFile, os.Getenv)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		githubSecret = s
 	case "slack":
 		if *topic == "" {
 			fmt.Fprintln(os.Stderr, "Error: --topic is required for slack adapter")
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
 	db, err := openWatcherDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer db.Close()
 
 	configPath, err := session.WatcherNameDir(*name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error resolving watcher dir: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A watcher is published as two artifacts that have to describe the same
@@ -243,13 +243,13 @@ func handleWatcherCreate(profile string, args []string) {
 	existing, err := db.LoadWatcherByName(*name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error checking for an existing watcher: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if existing != nil {
 		fmt.Fprintf(os.Stderr,
 			"Error: watcher %q already exists (type: %s). Edit %s to change its settings, or pick another --name.\n",
 			*name, existing.Type, filepath.Join(existing.ConfigPath, "watcher.toml"))
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Persist the adapter settings the runtime engine reads back from
@@ -264,23 +264,29 @@ func handleWatcherCreate(profile string, args []string) {
 	// the db check above cannot, because two concurrent creates of a fresh name
 	// both see no row. Creating watcher.toml is atomic and fails if the file
 	// exists, so at most one of them reaches the db and the surviving config and
-	// row always come from the same command. (webhook writes no [source] file
-	// and so has nothing that can disagree with its row.)
+	// row always come from the same command. Every adapter type writes one, so
+	// every create claims its name this way.
 	claimedName := true
 	switch adapterType {
+	case "webhook":
+		claimedName, err = writeWebhookWatcherSource(configPath, *port)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing watcher config: %v\n", err)
+			exitCLI(1)
+		}
 	case "github":
 		// Audit M2: persist the resolved HMAC secret at 0600, never to a
 		// process arg / state.db.
 		claimedName, err = writeGithubWatcherSecret(configPath, githubSecret, *port)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing watcher secret: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	case "ntfy", "slack":
 		claimedName, err = writeTopicWatcherSource(configPath, adapterType, *topic)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing watcher config: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 	if !claimedName {
@@ -299,7 +305,7 @@ func handleWatcherCreate(profile string, args []string) {
 			"Error: %s already exists and was left untouched; agent-deck never overwrites a watcher config.\n"+
 				"Set this watcher's values under [source] in that file, or remove the file and re-run to generate it.\n",
 			filepath.Join(configPath, "watcher.toml"))
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	now := time.Now()
@@ -316,7 +322,7 @@ func handleWatcherCreate(profile string, args []string) {
 
 	if err := db.SaveWatcher(&row); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving watcher: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := session.SaveWatcherMeta(&session.WatcherMeta{
@@ -325,7 +331,7 @@ func handleWatcherCreate(profile string, args []string) {
 		CreatedAt: now.Format(time.RFC3339),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving watcher meta: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("Created watcher: %s (type: %s)\n", *name, adapterType)
@@ -389,6 +395,16 @@ func writeGithubWatcherSecret(dir, secret string, port int) (bool, error) {
 		"# Auto-generated by: agent-deck watcher create github\n"+
 			"# Secret is stored here (chmod 600), never passed as a CLI arg.\n",
 		settings)
+}
+
+// writeWebhookWatcherSource persists the webhook --port into the [source]
+// table of watcher/<name>/watcher.toml. Without it the port given on the
+// command line never reaches the engine, and WebhookAdapter falls back to its
+// default 18460, so every webhook watcher contends for one port (#2532).
+func writeWebhookWatcherSource(dir string, port int) (bool, error) {
+	return createWatcherSourceToml(dir,
+		"# Auto-generated by: agent-deck watcher create webhook\n",
+		[][2]string{{"port", fmt.Sprintf("%d", port)}})
 }
 
 // writeTopicWatcherSource persists the ntfy/slack --topic into the [source]
@@ -466,40 +482,40 @@ func renderWatcherSourceToml(header string, settings [][2]string) string {
 
 // handleWatcherStart marks a watcher as running in statedb.
 func handleWatcherStart(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher start", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher start", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher start <name>")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "Error: watcher name is required")
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	name := fs.Arg(0)
 
 	db, err := openWatcherDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer db.Close()
 
 	w, err := db.LoadWatcherByName(name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if w == nil {
 		fmt.Fprintf(os.Stderr, "Error: watcher %q not found\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := db.UpdateWatcherStatus(w.ID, "running"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("Started watcher: %s (status will be picked up by TUI engine)\n", name)
@@ -507,40 +523,40 @@ func handleWatcherStart(profile string, args []string) {
 
 // handleWatcherStop marks a watcher as stopped in statedb.
 func handleWatcherStop(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher stop", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher stop", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher stop <name>")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "Error: watcher name is required")
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	name := fs.Arg(0)
 
 	db, err := openWatcherDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer db.Close()
 
 	w, err := db.LoadWatcherByName(name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if w == nil {
 		fmt.Fprintf(os.Stderr, "Error: watcher %q not found\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := db.UpdateWatcherStatus(w.ID, "stopped"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("Stopped watcher: %s\n", name)
@@ -548,26 +564,26 @@ func handleWatcherStop(profile string, args []string) {
 
 // handleWatcherList lists all watchers with name, type, status, event rate, and health.
 func handleWatcherList(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher list", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher list [--json]")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	db, err := openWatcherDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer db.Close()
 
 	watchers, err := db.LoadWatchers()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading watchers: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	cutoff := time.Now().Add(-time.Hour)
@@ -624,7 +640,7 @@ func handleWatcherList(profile string, args []string) {
 
 // handleWatcherStatus shows detailed info for a named watcher including recent events.
 func handleWatcherStatus(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher status", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher status", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher status <name> [--json]")
@@ -643,31 +659,31 @@ func handleWatcherStatus(profile string, args []string) {
 		}
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, flagArgs)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, flagArgs)); err != nil {
+		exitCLI(1)
 	}
 
 	if name == "" {
 		fmt.Fprintln(os.Stderr, "Error: watcher name is required")
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	db, err := openWatcherDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer db.Close()
 
 	w, err := db.LoadWatcherByName(name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if w == nil {
 		fmt.Fprintf(os.Stderr, "Error: watcher %q not found\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	meta, _ := session.LoadWatcherMeta(name)
@@ -743,35 +759,35 @@ func handleWatcherStatus(profile string, args []string) {
 
 // handleWatcherTest runs a synthetic event through the router for the named watcher.
 func handleWatcherTest(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher test", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher test", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher test <name>")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "Error: watcher name is required")
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	name := fs.Arg(0)
 
 	db, err := openWatcherDB(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer db.Close()
 
 	w, err := db.LoadWatcherByName(name)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if w == nil {
 		fmt.Fprintf(os.Stderr, "Error: watcher %q not found\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load clients.json and build router
@@ -806,20 +822,20 @@ func handleWatcherTest(profile string, args []string) {
 
 // handleWatcherRoutes lists all routing rules from clients.json.
 func handleWatcherRoutes(profile string, args []string) {
-	fs := flag.NewFlagSet("watcher routes", flag.ExitOnError)
+	fs := flag.NewFlagSet("watcher routes", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck watcher routes [--json]")
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	_ = profile
 
 	watcherDir, err := session.WatcherDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error resolving watcher directory: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	clientsPath := filepath.Join(watcherDir, "clients.json")
 
@@ -827,7 +843,7 @@ func handleWatcherRoutes(profile string, args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading clients.json: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Run 'agent-deck watcher import <channels.json>' to generate client routing rules.")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -862,7 +878,7 @@ func handleWatcherRoutes(profile string, args []string) {
 func handleWatcherImport(profile string, args []string) {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck watcher import <path-to-channels.json>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inputPath := filepath.Clean(args[0])
@@ -871,12 +887,12 @@ func handleWatcherImport(profile string, args []string) {
 	outputDir, err := session.WatcherDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error resolving watcher directory: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := importChannels(inputPath, outputDir); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

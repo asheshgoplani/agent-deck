@@ -35,7 +35,7 @@ var ghUserLogin = func() string {
 func handleFeedback(args []string) {
 	if err := handleFeedbackWithSender(args, Version, feedback.NewSender(), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -159,7 +159,7 @@ func handleFeedbackWithSender(args []string, version string, sender *feedback.Se
 
 	default:
 		fmt.Fprintln(os.Stderr, "Invalid input. Enter 1-5, n, or q.")
-		os.Exit(1)
+		exitCLI(1)
 		return nil // unreachable
 	}
 }

@@ -89,6 +89,18 @@ func isToolDataClear(value json.RawMessage) bool {
 // committed stamp wins only when both sides carry a stamp and the committed
 // paired session id is the one this caller believes it is stamping.
 func mergeLivenessToolData(key string, desired, actual map[string]json.RawMessage) (json.RawMessage, bool) {
+	if key == "last_activity_at" {
+		var mine, theirs int64
+		if json.Unmarshal(desired[key], &mine) != nil || json.Unmarshal(actual[key], &theirs) != nil ||
+			mine <= 0 || theirs <= 0 {
+			// Missing, malformed and explicit clears remain intent conflicts.
+			return nil, false
+		}
+		if mine > theirs {
+			return desired[key], true
+		}
+		return actual[key], true
+	}
 	idKey, ok := pairedSessionIDKey(key)
 	if !ok || !stickyToolDataKeys()[key] {
 		return nil, false

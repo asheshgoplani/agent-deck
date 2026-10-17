@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 	"sort"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 // storage — a separate process has no access to a running TUI's ring — which
 // is also what makes the ordering survive a restart.
 func handleSessionRecent(profile string, args []string) {
-	fs := flag.NewFlagSet("session recent", flag.ExitOnError)
+	fs := flag.NewFlagSet("session recent", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	limit := fs.Int("limit", 20, "Maximum number of sessions to list (0 = no limit)")
 
@@ -37,8 +36,8 @@ func handleSessionRecent(profile string, args []string) {
 		fmt.Println("  agent-deck session recent --json --limit 5")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(*jsonOutput, false)
@@ -46,7 +45,7 @@ func handleSessionRecent(profile string, args []string) {
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	recent := make([]*session.Instance, 0, len(instances))

@@ -214,17 +214,6 @@ func (h *Head) Anchorable() bool {
 	return h != nil && h.FirstTurn != nil && len(h.ResumeSignals) == 0
 }
 
-// PartsWithTag returns the injected parts carrying a tag.
-func (h *Head) PartsWithTag(tag string) []ContentPart {
-	var out []ContentPart
-	for _, p := range h.Prefix {
-		if p.Tag == tag {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
 // rawRecord is the envelope of one rollout line. The payload stays raw because
 // its shape depends on the record type.
 type rawRecord struct {

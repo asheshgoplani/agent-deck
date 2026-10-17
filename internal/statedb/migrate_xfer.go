@@ -192,7 +192,10 @@ func (s *StateDB) InsertInstanceRow(inst *InstanceRow) error {
 // can sequence cleanup with the target-write phase.
 func (s *StateDB) DeleteInstanceRow(id string) error {
 	return withBusyRetry(func() error {
-		_, err := s.db.Exec(`DELETE FROM instances WHERE id = ?`, id)
+		if _, err := s.db.Exec(`DELETE FROM instances WHERE id = ?`, id); err != nil {
+			return err
+		}
+		_, err := s.db.Exec(`DELETE FROM claude_statuslines WHERE session_id = ?`, id)
 		return err
 	})
 }

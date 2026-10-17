@@ -265,3 +265,36 @@ func TestSessionMetricsReportsDaemonObservedTurn(t *testing.T) {
 		t.Fatalf("last status change: %s", out)
 	}
 }
+
+// TestSessionMetricsCLISubstateEventsDoNotSplitTurns: the daemon journals
+// running -> running substate changes mid-turn. Through the CLI they must not
+// end the turn early or add a second one (issue #2525).
+func TestSessionMetricsCLISubstateEventsDoNotSplitTurns(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".local", "share", "agent-deck", "profiles", "ch_support_test", "logs", "health")
+	j := health.NewJournal(dir)
+	base := time.Now().UTC().Add(-30 * time.Minute)
+	for _, e := range []health.Event{
+		{TS: base, SessionID: "substate-s1", Kind: health.KindStatus, From: "idle", To: "running"},
+		{TS: base.Add(10 * time.Second), SessionID: "substate-s1", Kind: health.KindStatus, From: "running", To: "running", Detail: map[string]any{"substate": "tool-execution"}},
+		{TS: base.Add(20 * time.Second), SessionID: "substate-s1", Kind: health.KindStatus, From: "running", To: "idle"},
+	} {
+		if err := j.Append(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, stderr, code := runAgentDeck(t, home, "session", "metrics", "substate-s1", "--json", "--since", "1h")
+	if code != 0 {
+		t.Fatalf("exit %d: %s %s", code, out, stderr)
+	}
+	var m health.SessionMetrics
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Turns.Count != 1 || m.Turns.Measured != 1 || m.Turns.P50MS == nil || *m.Turns.P50MS != 20000 {
+		t.Fatalf("want one 20000ms turn: %s", out)
+	}
+	if m.Events != 3 {
+		t.Fatalf("substate record must stay in the event count: %s", out)
+	}
+}

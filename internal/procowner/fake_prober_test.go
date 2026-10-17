@@ -21,6 +21,10 @@ type fakeProber struct {
 	errs     map[int]error
 	children map[int][]int
 	descErr  error
+	// cmds and cmdsErr script the optional CommandReader: argv per pid, or a
+	// snapshot that fails as a whole.
+	cmds    map[int][]string
+	cmdsErr error
 	// onInspect fires before each Inspect, so a test can mutate the table
 	// mid-verification (pid reuse racing a signal).
 	onInspect func(pid int)
@@ -34,7 +38,28 @@ func newFakeProber() *fakeProber {
 		procs:    map[int]ProcInfo{},
 		errs:     map[int]error{},
 		children: map[int][]int{},
+		cmds:     map[int][]string{},
 	}
+}
+
+func (f *fakeProber) setArgs(pid int, args ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cmds[pid] = args
+}
+
+// Commands implements CommandReader over the scripted table.
+func (f *fakeProber) Commands() (map[int]ProcCommand, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cmdsErr != nil {
+		return nil, f.cmdsErr
+	}
+	out := make(map[int]ProcCommand, len(f.procs))
+	for pid, info := range f.procs {
+		out[pid] = ProcCommand{PPID: info.PPID, Args: f.cmds[pid]}
+	}
+	return out, nil
 }
 
 func (f *fakeProber) Name() string {

@@ -29,8 +29,27 @@ func tickEnv(t *testing.T) *clock {
 
 func tickOK(context.Context, []byte, time.Duration) postResult { return postResult{status: 200} }
 
+// setTickPlatform overrides the raw GOOS/GOARCH a tick reservation sees, so
+// tests assert literal allow-listed values instead of re-deriving them.
+func setTickPlatform(t *testing.T, goos, goarch string) {
+	t.Helper()
+	oldOS, oldArch := tickGOOS, tickGOARCH
+	tickGOOS, tickGOARCH = goos, goarch
+	t.Cleanup(func() { tickGOOS, tickGOARCH = oldOS, oldArch })
+}
+
+func tickProps(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var batch phBatch
+	if err := json.Unmarshal(body, &batch); err != nil || len(batch.Batch) != 1 {
+		t.Fatalf("batch %s %v", body, err)
+	}
+	return batch.Batch[0].Properties
+}
+
 func TestInstallTickRetryPrivacyAndRollover(t *testing.T) {
 	c := tickEnv(t)
+	setTickPlatform(t, "linux", "arm64")
 	var bodies [][]byte
 	sender := func(ctx context.Context, body []byte, timeout time.Duration) postResult {
 		if timeout > 2*time.Second {
@@ -73,7 +92,10 @@ func TestInstallTickRetryPrivacyAndRollover(t *testing.T) {
 	if event.Event != "install.tick" || event.UUID != first.TickID || event.DistinctID != first.TickID || event.Timestamp != first.Day+"T12:00:00Z" {
 		t.Fatalf("wire %+v", event)
 	}
-	expected := map[string]any{"day": first.Day, "v": "9.9.9", "consent_state": "granted", "tick_id": first.TickID, "$geoip_disable": true, "$process_person_profile": false}
+	// os and arch are the same coarse allow-listed values every detailed event
+	// carries; no install id, salt, schema or surface may join them.
+	expected := map[string]any{"day": first.Day, "v": "9.9.9", "os": "linux", "arch": "arm64",
+		"consent_state": "granted", "tick_id": first.TickID, "$geoip_disable": true, "$process_person_profile": false}
 	a, _ := json.Marshal(event.Properties)
 	b, _ := json.Marshal(expected)
 	if string(a) != string(b) {
@@ -182,7 +204,10 @@ func TestInstallTickGates(t *testing.T) {
 }
 
 func TestInstallTickMalformedLedgerFailsClosed(t *testing.T) {
-	for _, body := range []string{`{`, `{}`, `{"day":"2026-10-04","tick_id":"bad","sent":false}`, `{"day":"invalid","tick_id":"01234567-89ab-cdef-0123-456789abcdef","sent":false}`} {
+	for _, body := range []string{`{`, `{}`, `{"day":"2026-10-04","tick_id":"bad","sent":false}`, `{"day":"invalid","tick_id":"01234567-89ab-cdef-0123-456789abcdef","sent":false}`,
+		`{"day":"2026-10-04","tick_id":"01234567-89ab-cdef-0123-456789abcdef","v":"1.16.26","os":"plan9","arch":"arm64","sent":false}`,
+		`{"day":"2026-10-04","tick_id":"01234567-89ab-cdef-0123-456789abcdef","v":"1.16.26","os":"linux","arch":"mips","sent":false}`,
+		`{"day":"2026-10-04","tick_id":"01234567-89ab-cdef-0123-456789abcdef","v":"1.16.26","os":"linux","sent":false}`} {
 		t.Run(body, func(t *testing.T) {
 			tickEnv(t)
 			p, _ := siblingPath(installTickFileName)
@@ -587,7 +612,7 @@ func TestInstallTickSchemaUpgradeKeepsDeclinesFinal(t *testing.T) {
 	}
 }
 
-func TestInstallTickV2RegrantClearsDetailsPreservesLedger(t *testing.T) {
+func TestInstallTickV2RegrantKeepsIdentityAndLedger(t *testing.T) {
 	c := tickEnv(t)
 	maybeInstallTick(context.Background(), func(context.Context, []byte, time.Duration) postResult {
 		return postResult{err: errors.New("lost ack")}
@@ -613,17 +638,150 @@ func TestInstallTickV2RegrantClearsDetailsPreservesLedger(t *testing.T) {
 	if err := SaveState(migrated); err != nil {
 		t.Fatal(err)
 	}
-	if migrated.InstallID == oldID || migrated.Salt == oldSalt || migrated.Counters != nil {
-		t.Fatal("regrant retained old detailed data/identity")
+	if migrated.InstallID != oldID || migrated.Salt != oldSalt || migrated.Counters["legacy"] != 1 {
+		t.Fatal("schema-only regrant changed the identity or dropped recorded data")
 	}
 	if migrated.FirstSeenDay != firstDay || !migrated.FirstSeenAt.Equal(firstAt) || migrated.PreV2 {
 		t.Fatal("v2 regrant changed provenance")
 	}
-	if _, err := os.Stat(spool); !os.IsNotExist(err) {
-		t.Fatalf("old spool retained: %v", err)
+	if _, err := os.Stat(spool); err != nil {
+		t.Fatalf("schema-only regrant deleted the spool: %v", err)
 	}
 	tickAfter, _ := readInstallTick()
 	if tickAfter != tickBefore {
 		t.Fatal("regrant changed daily nonce ledger")
+	}
+}
+
+// The tick body is fixed when the nonce is reserved: os and arch are mapped
+// through the detailed allow-lists once, stored with the nonce, and reused on
+// every retry even if the sending process runs on another GOOS/GOARCH (for
+// example a Rosetta amd64 binary and a native arm64 binary on the same day).
+func TestInstallTickPlatformAllowListFixedAtReservation(t *testing.T) {
+	tickEnv(t)
+	setTickPlatform(t, "plan9", "mips")
+	var bodies [][]byte
+	sender := func(_ context.Context, body []byte, _ time.Duration) postResult {
+		bodies = append(bodies, append([]byte(nil), body...))
+		if len(bodies) == 1 {
+			return postResult{err: errors.New("lost ack")}
+		}
+		return postResult{status: 200}
+	}
+	maybeInstallTick(context.Background(), sender)
+	reserved, err := readInstallTick()
+	if err != nil || reserved.OS != "other" || reserved.Arch != "other" {
+		t.Fatalf("reservation did not store allow-listed platform: %+v %v", reserved, err)
+	}
+	if p := tickProps(t, bodies[0]); p["os"] != "other" || p["arch"] != "other" {
+		t.Fatalf("unlisted GOOS/GOARCH not mapped to other: %v", p)
+	}
+	setTickPlatform(t, "darwin", "arm64")
+	if r := maybeInstallTick(context.Background(), sender); !r.Sent {
+		t.Fatalf("retry %+v", r)
+	}
+	if len(bodies) != 2 || string(bodies[0]) != string(bodies[1]) {
+		t.Fatalf("retry body changed with the sending process's platform:\n%s\n%s", bodies[0], bodies[1])
+	}
+}
+
+// A pending nonce reserved by an older release has no stored os/arch. Its
+// retry keeps that older body rather than adding fields after the fact.
+func TestInstallTickLegacyPendingReservationKeepsItsBody(t *testing.T) {
+	c := tickEnv(t)
+	setTickPlatform(t, "linux", "amd64")
+	p, _ := siblingPath(installTickFileName)
+	legacy := `{"day":"` + dayOf(c.now()) + `","tick_id":"01234567-89ab-cdef-0123-456789abcdef","v":"1.16.26","sent":false}`
+	if err := os.WriteFile(p, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var body []byte
+	if r := maybeInstallTick(context.Background(), func(_ context.Context, b []byte, _ time.Duration) postResult {
+		body = b
+		return postResult{status: 200}
+	}); !r.Sent {
+		t.Fatalf("legacy retry %+v", r)
+	}
+	props := tickProps(t, body)
+	if _, ok := props["os"]; ok {
+		t.Fatalf("retry of a legacy reservation changed its body: %v", props)
+	}
+	if _, ok := props["arch"]; ok {
+		t.Fatalf("retry of a legacy reservation changed its body: %v", props)
+	}
+	if props["tick_id"] != "01234567-89ab-cdef-0123-456789abcdef" || props["v"] != "1.16.26" {
+		t.Fatalf("legacy nonce not reused: %v", props)
+	}
+}
+
+// Consent binds to SchemaVersion. The tick may carry, besides its own daily
+// nonce and the fixed controls, only envelope values that every detailed
+// schema event already sends under the same grant. A tick field outside that
+// set is new data and needs a SchemaVersion decision (state.go).
+func TestInstallTickAllowListStaysWithinGrantedEnvelope(t *testing.T) {
+	raw, err := SchemaJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		InstallTick struct {
+			Properties map[string]any `json:"properties"`
+		} `json:"install_tick"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	own := map[string]bool{"tick_id": true, "consent_state": true, "$geoip_disable": true, "$process_person_profile": true}
+	envelope := map[string]bool{}
+	for _, p := range Envelope {
+		envelope[p.Key] = true
+	}
+	for _, forbidden := range []string{"install_id", "schema", "seq", "surface", "install_age", "install_week", "pre_v2", "hour_local", "weekday_local"} {
+		if _, ok := doc.InstallTick.Properties[forbidden]; ok {
+			t.Fatalf("install.tick must not carry joinable or detailed envelope field %q", forbidden)
+		}
+	}
+	for key := range doc.InstallTick.Properties {
+		if !own[key] && !envelope[key] {
+			t.Fatalf("install.tick field %q is not already sent on detailed schema %d events; adding it needs a SchemaVersion decision", key, SchemaVersion)
+		}
+	}
+	if len(doc.InstallTick.Properties) == 0 {
+		t.Fatal("schema JSON has no install_tick properties")
+	}
+}
+
+// Decision (2026-10): os and arch ship on install.tick without a
+// SchemaVersion bump. v1.16.26 shipped schema 3; a bump turns every grant
+// back into undecided and asks every install again. This test pins schema 3
+// so the tick change cannot quietly force a new consent round.
+func TestInstallTickOSArchKeepsSchemaVersion(t *testing.T) {
+	const v11626SchemaVersion = 3
+	if SchemaVersion != v11626SchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d (unchanged from v1.16.26): os/arch on install.tick was approved without a bump", SchemaVersion, v11626SchemaVersion)
+	}
+	raw, err := SchemaJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Schema      int `json:"schema"`
+		InstallTick struct {
+			Properties map[string]any `json:"properties"`
+		} `json:"install_tick"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Schema != v11626SchemaVersion {
+		t.Fatalf("schema JSON reports schema %d, want %d", doc.Schema, v11626SchemaVersion)
+	}
+	for _, key := range []string{"os", "arch"} {
+		if _, ok := doc.InstallTick.Properties[key]; !ok {
+			t.Fatalf("schema JSON install_tick lacks %q", key)
+		}
+	}
+	if !strings.Contains(installTickSchemaMarkdown, "without a schema version change") {
+		t.Fatal("tick schema markdown does not record the no-bump decision")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -203,6 +204,40 @@ func helpRequested(args []string) bool {
 		}
 	}
 	return false
+}
+
+// flagHelpRequested reports whether args ask the flag package for help
+// (-h, -help, --h or --help) before a "--" terminator.
+func flagHelpRequested(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "--":
+			return false
+		case "-h", "-help", "--h", "--help":
+			return true
+		}
+	}
+	return false
+}
+
+// helpOutput picks the stream for a command's usage text. An explicit help
+// request is an answer: it goes to stdout and the command exits 0, so a
+// caller that reads stdout on success (the macOS app's capability probes)
+// sees it. Usage printed for a usage error goes to stderr.
+func helpOutput(args []string, stdout, stderr io.Writer) io.Writer {
+	if flagHelpRequested(args) {
+		return stdout
+	}
+	return stderr
+}
+
+// routeFlagHelp sends a FlagSet's usage to stdout for an explicit help
+// request. A FlagSet whose output was redirected elsewhere (for example
+// io.Discard) keeps it.
+func routeFlagHelp(fs *flag.FlagSet, args []string) {
+	if fs.Output() == os.Stderr {
+		fs.SetOutput(helpOutput(args, os.Stdout, os.Stderr))
+	}
 }
 
 // hooksHelpRequested preserves bare help for hook subcommands, which accept
@@ -678,7 +713,7 @@ func (c *CLIOutput) printJSON(data interface{}) {
 	output, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(output))
 }
@@ -931,6 +966,8 @@ func SubstateLabel(sub session.Substate) string {
 		return "working"
 	case session.SubstateHookLag:
 		return "turn done, hook lagging"
+	case session.SubstateProcessExited:
+		return "process exited"
 	default:
 		return ""
 	}

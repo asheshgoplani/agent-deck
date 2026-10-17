@@ -15,7 +15,7 @@ type Cursor uint64
 
 // Frame is one event on the bus: {cursor, event_id, ts, kind, session_id,
 // data}. TS is Unix milliseconds. Data is an arbitrary, producer-defined JSON
-// value (may be empty/omitted).
+// value (may be empty/omitted). EventID may correlate requests and acknowledgments.
 type Frame struct {
 	Cursor    Cursor          `json:"cursor"`
 	EventID   string          `json:"event_id"`

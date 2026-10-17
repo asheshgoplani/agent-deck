@@ -28,6 +28,9 @@ type fakeMutator struct {
 	updateSessionFn    func(id string, updates map[string]string) ([]string, bool, error)
 	createGroupFn      func(name, parentPath string) (string, error)
 	renameGroupFn      func(groupPath, newName string) error
+	// renamedPath, when set, is the post-rename path RenameGroup reports;
+	// otherwise the group keeps its path.
+	renamedPath        string
 	setGroupExpandedFn func(groupPath string, expanded bool) error
 	moveSessionFn      func(id, groupPath string) (string, bool, error)
 	deleteGroupFn      func(groupPath string) error
@@ -118,11 +121,17 @@ func (f *fakeMutator) CreateGroup(name, parentPath string) (string, error) {
 	return f.createGroupFn(name, parentPath)
 }
 
-func (f *fakeMutator) RenameGroup(groupPath, newName string) error {
+func (f *fakeMutator) RenameGroup(groupPath, newName string) (string, error) {
 	if f.renameGroupFn == nil {
-		return fmt.Errorf("renameGroup not configured")
+		return "", fmt.Errorf("renameGroup not configured")
 	}
-	return f.renameGroupFn(groupPath, newName)
+	if err := f.renameGroupFn(groupPath, newName); err != nil {
+		return "", err
+	}
+	if f.renamedPath != "" {
+		return f.renamedPath, nil
+	}
+	return groupPath, nil
 }
 
 func (f *fakeMutator) SetGroupExpanded(groupPath string, expanded bool) error {

@@ -1,5 +1,7 @@
-Usage: agent-deck inbox export [--json] [--after '<cursor-json>' [--with-writer]]
+Usage: agent-deck inbox export [--json] [--profile <name>] [--after '<cursor-json>' [--with-writer]]
 Print this host's completion/transition records without consuming them.
+Only records of one profile are exported: --profile, else the invoking profile
+(-p). A --profile that differs from -p is an error.
 --after (requires --json) returns only what the cursor does not hold yet:
 turn-journal lines past each child's seq, changed completion-ledger entries
 and _unowned records past its read position, as

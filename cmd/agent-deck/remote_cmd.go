@@ -54,7 +54,7 @@ func handleRemote(profile string, args []string) {
 		}
 		if len(args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: agent-deck remote exec <name> <command> [arguments]")
-			os.Exit(2)
+			exitCLI(2)
 		}
 		handleRemoteExec(args[1], args[2:])
 		return
@@ -70,7 +70,7 @@ func handleRemote(profile string, args []string) {
 	if config, err := session.LoadUserConfig(); err == nil {
 		if _, exists := config.Remotes[args[0]]; exists && isRemoteManagementCommand(args[0]) {
 			fmt.Fprintf(os.Stderr, "Ambiguous remote name %q; use 'agent-deck remote exec %s <command>' or rename this remote in config before managing remotes\n", args[0], args[0])
-			os.Exit(2)
+			exitCLI(2)
 		}
 	}
 
@@ -134,6 +134,8 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("  --with-errors")
 		fmt.Println("        With --json, wrap output as {\"sessions\":[...],\"errors\":[...]} and")
 		fmt.Println("        exit 1 if any remote failed")
+		fmt.Println("        JSON includes transcript_path and harness-native session IDs when known;")
+		fmt.Println("        transcript_path belongs to the remote host.")
 		fmt.Println("  --json-envelope")
 		fmt.Println("        Alias for --json --with-errors")
 	case "drain":
@@ -172,7 +174,13 @@ func printRemoteUsage() {
 	fmt.Println("  Use remote exec <name> <command> when a name matches a management command.")
 	fmt.Println("  list/status/health, show/output/send, add/launch, session start/stop/restart/fork/archive/unarchive/set,")
 	fmt.Println("  session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),")
-	fmt.Println("  worktree list/info/cleanup, mcp list/attach, skill list/attached/attach/detach, group list/reorder")
+	fmt.Println("  recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,")
+	fmt.Println("  session queue list/release/cancel (queue entry IDs; --json supported),")
+	fmt.Println("  Follow streams use --jsonl; events --since resumes a host cursor.")
+	fmt.Println("  A forwarded follow runs until its stdin closes, then exits 0. Stdin from /dev/null (</dev/null,")
+	fmt.Println("  a background job of a non-interactive shell) ends it within seconds with no output: hold a pipe open.")
+	fmt.Println("  worktree list/info/cleanup, mcp list/attach, skill list/attached/attach/detach, group list/reorder,")
+	fmt.Println("  limits [--json] (read-only: the remote's own accounts and 5h/7d windows)")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  add <name> <user@host>    Add a remote agent-deck instance")
@@ -194,6 +202,13 @@ func printRemoteUsage() {
 	fmt.Println("  agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck")
 	fmt.Println("  agent-deck remote list")
 	fmt.Println("  agent-deck remote sessions dev --json")
+	fmt.Println("  agent-deck remote dev recall timeline SESSION --json --tail 100")
+	fmt.Println("  agent-deck remote dev recall follow SESSION --after CURSOR --jsonl --status")
+	fmt.Println("  agent-deck remote dev events follow --jsonl --since 123")
+	fmt.Println("  agent-deck remote dev session send-status SEND_ID --json")
+	fmt.Println("  agent-deck remote dev session queue list --json SESSION")
+	fmt.Println("  agent-deck remote dev session queue release QUEUE_ID --json")
+	fmt.Println("  agent-deck remote dev session queue cancel QUEUE_ID --json")
 	fmt.Println("  agent-deck remote drain dev       # pull finished/stalled reports from dev")
 	fmt.Println("  agent-deck remote attach dev my-session")
 	fmt.Println("  agent-deck remote rename dev my-session new-name")
@@ -206,7 +221,7 @@ func isValidRemoteName(name string) bool {
 }
 
 func handleRemoteAdd(args []string) {
-	fs := flag.NewFlagSet("remote add", flag.ExitOnError)
+	fs := flag.NewFlagSet("remote add", flag.ContinueOnError)
 	agentDeckPath := fs.String("agent-deck-path", "", "Path to agent-deck on the remote (default: agent-deck)")
 	remoteProfile := fs.String("profile", "", "Remote profile to use (default: default)")
 
@@ -219,15 +234,15 @@ func handleRemoteAdd(args []string) {
 
 	// Reorder: move flags before positional args so Go's flag package sees them
 	reordered := reorderRemoteArgs(fs, args)
-	if err := fs.Parse(reordered); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, reordered); err != nil {
+		exitCLI(1)
 	}
 
 	remaining := fs.Args()
 	if len(remaining) < 2 {
 		fmt.Println("Error: requires <name> and <user@host> arguments")
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	// A bare trailing "help" is a consent request, not a third operand: this
 	// command takes exactly two positional values, so there is no legitimate
@@ -239,7 +254,7 @@ func handleRemoteAdd(args []string) {
 	if len(remaining) != 2 {
 		fmt.Printf("Error: unexpected extra argument(s): %s\n", strings.Join(remaining[2:], " "))
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	name := remaining[0]
@@ -249,7 +264,7 @@ func handleRemoteAdd(args []string) {
 	// Colon is reserved by the UI's internal remote session identifier format.
 	if !isValidRemoteName(name) {
 		fmt.Println("Error: remote name must not contain spaces, slashes, dots, or colons, or match a remote management command")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load existing config
@@ -264,7 +279,7 @@ func handleRemoteAdd(args []string) {
 
 	if _, exists := config.Remotes[name]; exists {
 		fmt.Printf("Error: remote '%s' already exists (use 'agent-deck remote remove %s' first)\n", name, name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	rc := session.RemoteConfig{
@@ -281,7 +296,7 @@ func handleRemoteAdd(args []string) {
 
 	if err := session.SaveUserConfig(config); err != nil {
 		fmt.Printf("Error: failed to save config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("Added remote '%s' (%s)\n", name, host)
@@ -310,7 +325,7 @@ func handleRemoteAdd(args []string) {
 func handleRemoteRemove(args []string) {
 	if len(args) < 1 {
 		fmt.Println("Usage: agent-deck remote remove <name>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	name := args[0]
@@ -318,17 +333,17 @@ func handleRemoteRemove(args []string) {
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Printf("Error: failed to load config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if config.Remotes == nil {
 		fmt.Printf("Error: remote '%s' not found\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if _, exists := config.Remotes[name]; !exists {
 		fmt.Printf("Error: remote '%s' not found\n", name)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	delete(config.Remotes, name)
@@ -340,23 +355,23 @@ func handleRemoteRemove(args []string) {
 
 	if err := session.SaveUserConfig(config); err != nil {
 		fmt.Printf("Error: failed to save config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("Removed remote '%s'\n", name)
 }
 
 func handleRemoteList(args []string) {
-	fs := flag.NewFlagSet("remote list", flag.ExitOnError)
+	fs := flag.NewFlagSet("remote list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	check := fs.Bool("check", false, "Ask each remote for its agent-deck version and update timer now")
 	retry := fs.Bool("retry", false, "Clear cached poll/authentication state for all configured remotes (no SSH unless --check)")
-	_ = fs.Parse(args)
+	_ = parseCLIFlags(fs, args)
 
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Printf("Error: failed to load config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if len(config.Remotes) == 0 {
@@ -369,7 +384,7 @@ func handleRemoteList(args []string) {
 		for name := range config.Remotes {
 			if err := session.ResetRemotePoll(name); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: failed to reset remote poll: %v\n", err)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		}
 	}
@@ -444,7 +459,7 @@ func handleRemoteList(args []string) {
 		output, err := json.MarshalIndent(remotes, "", "  ")
 		if err != nil {
 			fmt.Printf("Error: failed to format JSON: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		fmt.Println(string(output))
 		return
@@ -589,7 +604,7 @@ func writeRemoteSessionsJSON(output remoteSessionsOutput) {
 	encoded, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(encoded))
 }
@@ -607,7 +622,7 @@ func writeRemoteSessionsArray(sessions []session.RemoteSessionInfo) {
 	encoded, err := json.MarshalIndent(sessions, "", "  ")
 	if err != nil {
 		fmt.Printf("Error: failed to format JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(encoded))
 }
@@ -616,7 +631,7 @@ func handleRemoteSessions(args []string) {
 	remoteName, jsonOutput, envelope, err := parseRemoteSessionsArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: remote sessions flag parsing failed: %v\n", err)
-		os.Exit(2)
+		exitCLI(2)
 	}
 
 	config, err := session.LoadUserConfig()
@@ -630,7 +645,7 @@ func handleRemoteSessions(args []string) {
 			// since a config load failure has no session list to report.
 			fmt.Printf("Error: failed to load config: %v\n", err)
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if len(config.Remotes) == 0 {
@@ -656,7 +671,7 @@ func handleRemoteSessions(args []string) {
 			} else {
 				fmt.Printf("Error: remote '%s' not found\n", remoteName)
 			}
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -710,14 +725,14 @@ func handleRemoteSessions(args []string) {
 		writeRemoteSessionsArray(output.Sessions)
 	}
 	if envelope && len(output.Errors) != 0 {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
 func handleRemoteAttach(args []string) {
 	if len(args) < 2 {
 		fmt.Println("Usage: agent-deck remote attach <remote-name> <session-title-or-id>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	remoteName := args[0]
@@ -726,11 +741,11 @@ func handleRemoteAttach(args []string) {
 	rc, exists, err := resolveRemoteConfig(remoteName)
 	if err != nil {
 		fmt.Printf("Error: failed to load config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !exists {
 		fmt.Printf("Error: remote '%s' not found\n", remoteName)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Try to resolve session reference (could be title or ID)
@@ -740,7 +755,7 @@ func handleRemoteAttach(args []string) {
 	sessions, _, err := runner.FetchSessions(ctx)
 	if err != nil {
 		fmt.Printf("Error: failed to fetch remote sessions: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Find matching session by title or ID prefix
@@ -754,19 +769,19 @@ func handleRemoteAttach(args []string) {
 
 	if matchID == "" {
 		fmt.Printf("Error: session '%s' not found on remote '%s'\n", sessionRef, remoteName)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := runner.Attach(matchID); err != nil {
 		fmt.Printf("Error: failed to attach: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
 func handleRemoteRename(args []string) {
 	if len(args) < 3 {
 		fmt.Println("Usage: agent-deck remote rename <remote-name> <session-title-or-id> <new-title>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	remoteName := args[0]
@@ -776,11 +791,11 @@ func handleRemoteRename(args []string) {
 	rc, exists, err := resolveRemoteConfig(remoteName)
 	if err != nil {
 		fmt.Printf("Error: failed to load config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if !exists {
 		fmt.Printf("Error: remote '%s' not found\n", remoteName)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	runner := session.NewSSHRunner(remoteName, rc)
@@ -790,7 +805,7 @@ func handleRemoteRename(args []string) {
 	sessions, _, err := runner.FetchSessions(ctx)
 	if err != nil {
 		fmt.Printf("Error: failed to fetch remote sessions: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	var matchID, oldTitle string
@@ -804,34 +819,34 @@ func handleRemoteRename(args []string) {
 
 	if matchID == "" {
 		fmt.Printf("Error: session '%s' not found on remote '%s'\n", sessionRef, remoteName)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	_, err = runner.RunCommand(ctx, "rename", matchID, newTitle)
 	if err != nil {
 		fmt.Printf("Error: failed to rename session: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("Renamed '%s' → '%s' on remote '%s'\n", oldTitle, newTitle, remoteName)
 }
 
 func handleRemoteUpdate(args []string) {
-	fs := flag.NewFlagSet("remote update", flag.ExitOnError)
+	fs := flag.NewFlagSet("remote update", flag.ContinueOnError)
 	all := fs.Bool("all", false, "Update every configured remote that is older than this controller")
 	fromBuild := fs.String("from-build", "", "Install archives from a local build directory")
 	force := fs.Bool("force", false, "Allow reinstalling or downgrading")
 	dryRun := fs.Bool("dry-run", false, "Show the verified installation plan without changing remotes")
 	jsonOutput := fs.Bool("json", false, "Output every result as JSON")
 	installTimer := fs.Bool("install-timer", false, "Install or migrate each remote's own update timer (its `update --install-timer`) instead of updating its binary")
-	_ = fs.Parse(reorderRemoteArgs(fs, args))
+	_ = parseCLIFlags(fs, reorderRemoteArgs(fs, args))
 	if fs.NArg() > 1 {
 		fmt.Fprintln(os.Stderr, "Error: expected one remote name or --all")
-		os.Exit(2)
+		exitCLI(2)
 	}
 	if *installTimer && (*fromBuild != "" || *force || *dryRun) {
 		fmt.Fprintln(os.Stderr, "Error: --install-timer takes only a remote name or --all (and --json)")
-		os.Exit(2)
+		exitCLI(2)
 	}
 	// An explicit update also installs (or migrates) each updated remote's
 	// own timer, so it stops depending on this controller's nudge (#2472).
@@ -840,7 +855,7 @@ func handleRemoteUpdate(args []string) {
 		build, err := session.LoadLocalBuild(*fromBuild)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		opts.Update.LocalBuild = build
 	}
@@ -848,7 +863,7 @@ func handleRemoteUpdate(args []string) {
 	config, err := session.LoadUserConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to load config: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if len(config.Remotes) == 0 {
@@ -864,12 +879,12 @@ func handleRemoteUpdate(args []string) {
 	if name := fs.Arg(0); name != "" {
 		if *all {
 			fmt.Fprintln(os.Stderr, "Error: pass either a remote name or --all, not both")
-			os.Exit(2)
+			exitCLI(2)
 		}
 		rc, exists := config.Remotes[name]
 		if !exists {
 			fmt.Fprintf(os.Stderr, "Error: remote '%s' not found\n", name)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		remotes = map[string]session.RemoteConfig{name: rc}
 	}
@@ -877,7 +892,7 @@ func handleRemoteUpdate(args []string) {
 	if *installTimer {
 		results := runRemoteTimerInstall(context.Background(), remotes)
 		if printRemoteTimerInstall(os.Stdout, results, *jsonOutput) > 0 {
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -886,13 +901,13 @@ func handleRemoteUpdate(args []string) {
 	if *jsonOutput {
 		if err := writeRemoteUpdateJSON(os.Stdout, results); err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	} else {
 		printRemoteUpdateTable(os.Stdout, results)
 	}
 	if session.CountRemoteUpdateFailures(results) > 0 {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

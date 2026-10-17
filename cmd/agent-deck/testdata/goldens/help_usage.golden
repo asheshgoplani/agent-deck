@@ -1,5 +1,6 @@
 Usage: agent-deck usage [--json] [--refresh]
        agent-deck usage ingest claude [-- <command> [args...]]
+       agent-deck usage statusline --session <id|title> --json
 
 Show how much of each provider's subscription quota is left, from the
 provider's own numbers.
@@ -10,6 +11,8 @@ Options:
               cache. Claude is push-only (see ingest) and is unaffected.
 
 Subcommands:
+  statusline-wrap Ingest stdin and run the previous statusline or show a default.
+  statusline      Read the last Claude statusline record for a session.
   ingest claude   Read a Claude Code statusLine payload on stdin and cache the
                   rate_limits it carries. With a trailing "-- <command>", the
                   same bytes are passed to that command and its output and exit

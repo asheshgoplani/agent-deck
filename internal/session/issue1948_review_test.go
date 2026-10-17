@@ -89,7 +89,7 @@ func TestIssue1948P1_ParentlessStallIsDrainable(t *testing.T) {
 		t.Fatalf("expected the remote-parent record to commit, got %+v", res)
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(profile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestIssue1948P2a_SuppressedCompletionIsNotExported(t *testing.T) {
 		}
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(profile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestIssue1948P2b_LedgerAndInboxCopiesDedupeAcrossDifferentTimestamps(t *tes
 		t.Fatalf("commit: %v", err)
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(profile)
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestIssue1948P2c_CorruptLedgerFileFailsTheExport(t *testing.T) {
 		t.Fatalf("write corrupt: %v", err)
 	}
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(profile)
 	if err == nil {
 		t.Fatalf("an unreadable record file must fail the export, got %d records", len(records))
 	}
@@ -408,7 +408,7 @@ func TestIssue1948P2c_TruncatedLedgerFileFailsTheExport(t *testing.T) {
 		t.Fatalf("write empty: %v", err)
 	}
 
-	if _, err := ExportPendingRecords(); err == nil {
+	if _, err := ExportPendingRecords(profile); err == nil {
 		t.Fatalf("a truncated ledger file must fail the export rather than drain as empty")
 	}
 }
@@ -433,7 +433,7 @@ func TestIssue1948P2c_UnreadableInboxFailsTheExport(t *testing.T) {
 		t.Skip("this user ignores file permissions (root); the unreadable-file path is not exercisable")
 	}
 
-	if _, err := ExportPendingRecords(); err == nil {
+	if _, err := ExportPendingRecords(profile); err == nil {
 		t.Fatalf("an unreadable inbox must fail the export rather than drain as empty")
 	}
 }

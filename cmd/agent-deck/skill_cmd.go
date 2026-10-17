@@ -54,7 +54,7 @@ func restartProjectSkillsSession(inst *session.Instance, jsonOutput, quietMode b
 func handleSkill(profile string, args []string) {
 	if len(args) == 0 {
 		printSkillHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	switch args[0] {
@@ -73,7 +73,7 @@ func handleSkill(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown skill command '%s'\n", args[0])
 		printSkillHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -100,7 +100,7 @@ func printSkillHelp() {
 }
 
 func handleSkillList(args []string) {
-	fs := flag.NewFlagSet("skill list", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -115,8 +115,8 @@ func handleSkillList(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -125,7 +125,7 @@ func handleSkillList(args []string) {
 	skills, err := session.ListAvailableSkills()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to list skills: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if strings.TrimSpace(*source) != "" {
@@ -178,7 +178,7 @@ func handleSkillList(args []string) {
 }
 
 func handleSkillAttached(profile string, args []string) {
-	fs := flag.NewFlagSet("skill attached", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill attached", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -193,8 +193,8 @@ func handleSkillAttached(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -203,33 +203,33 @@ func handleSkillAttached(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	identifier := fs.Arg(0)
 	inst, errMsg, errCode := ResolveSessionOrCurrent(identifier, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return
 	}
 
 	attached, err := session.GetAttachedProjectSkills(inst.ProjectPath)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load attached skills: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	materialized, err := session.ListMaterializedProjectSkills(inst.ProjectPath)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to read project skills directory: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	managedTargets := make(map[string]bool)
@@ -310,7 +310,7 @@ func handleSkillAttached(profile string, args []string) {
 }
 
 func handleSkillAttach(profile string, args []string) {
-	fs := flag.NewFlagSet("skill attach", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill attach", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -326,8 +326,8 @@ func handleSkillAttach(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -338,7 +338,7 @@ func handleSkillAttach(profile string, args []string) {
 		if !*jsonOutput {
 			fmt.Println("\nUsage: agent-deck skill attach <session-id> <skill> [options]")
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -347,24 +347,24 @@ func handleSkillAttach(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return
 	}
 	if !session.SupportsProjectSkills(inst.Tool) {
 		out.Error(projectSkillsUnsupportedMessage(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	attachment, err := session.AttachSkillToProject(inst.ProjectPath, inst.Tool, skillRef, *sourceName)
@@ -372,19 +372,19 @@ func handleSkillAttach(profile string, args []string) {
 		switch {
 		case errors.Is(err, session.ErrSkillNotFound):
 			out.Error(err.Error(), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		case errors.Is(err, session.ErrSkillAmbiguous):
 			out.Error(err.Error(), ErrCodeAmbiguous)
-			os.Exit(2)
+			exitCLI(2)
 		case errors.Is(err, session.ErrSkillUnsupportedKind):
 			out.Error(err.Error(), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		case errors.Is(err, session.ErrSkillAlreadyAttached):
 			out.Error(err.Error(), ErrCodeAlreadyExists)
-			os.Exit(1)
+			exitCLI(1)
 		default:
 			out.Error(fmt.Sprintf("failed to attach skill: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -414,7 +414,7 @@ func handleSkillAttach(profile string, args []string) {
 }
 
 func handleSkillDetach(profile string, args []string) {
-	fs := flag.NewFlagSet("skill detach", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill detach", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -430,8 +430,8 @@ func handleSkillDetach(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -442,7 +442,7 @@ func handleSkillDetach(profile string, args []string) {
 		if !*jsonOutput {
 			fmt.Println("\nUsage: agent-deck skill detach <session-id> <skill> [options]")
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	sessionID := fs.Arg(0)
@@ -451,19 +451,19 @@ func handleSkillDetach(profile string, args []string) {
 	storage, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst, errMsg, errCode := ResolveSession(sessionID, instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(2)
+		exitCLI(2)
 		return
 	}
 	removed, err := session.DetachSkillFromProject(inst.ProjectPath, skillRef, *sourceName)
@@ -471,13 +471,13 @@ func handleSkillDetach(profile string, args []string) {
 		switch {
 		case errors.Is(err, session.ErrSkillNotAttached):
 			out.Error(err.Error(), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		case errors.Is(err, session.ErrSkillAmbiguous):
 			out.Error(err.Error(), ErrCodeAmbiguous)
-			os.Exit(2)
+			exitCLI(2)
 		default:
 			out.Error(fmt.Sprintf("failed to detach skill: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	}
 
@@ -509,7 +509,7 @@ func handleSkillDetach(profile string, args []string) {
 func handleSkillSource(args []string) {
 	if len(args) == 0 {
 		printSkillSourceHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	switch args[0] {
@@ -524,7 +524,7 @@ func handleSkillSource(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown skill source command '%s'\n", args[0])
 		printSkillSourceHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -540,13 +540,13 @@ func printSkillSourceHelp() {
 }
 
 func handleSkillSourceList(args []string) {
-	fs := flag.NewFlagSet("skill source list", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill source list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -555,7 +555,7 @@ func handleSkillSourceList(args []string) {
 	sources, err := session.ListSkillSources()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to list skill sources: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -593,14 +593,14 @@ func handleSkillSourceList(args []string) {
 }
 
 func handleSkillSourceAdd(args []string) {
-	fs := flag.NewFlagSet("skill source add", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill source add", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	description := fs.String("description", "", "Optional source description")
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -608,7 +608,7 @@ func handleSkillSourceAdd(args []string) {
 
 	if fs.NArg() < 2 {
 		out.Error("source name and path are required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	name := fs.Arg(0)
@@ -617,10 +617,10 @@ func handleSkillSourceAdd(args []string) {
 	if err := session.AddSkillSource(name, path, *description); err != nil {
 		if errors.Is(err, session.ErrSkillSourceExists) {
 			out.Error(err.Error(), ErrCodeAlreadyExists)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		out.Error(fmt.Sprintf("failed to add source: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -631,13 +631,13 @@ func handleSkillSourceAdd(args []string) {
 }
 
 func handleSkillSourceRemove(args []string) {
-	fs := flag.NewFlagSet("skill source remove", flag.ExitOnError)
+	fs := flag.NewFlagSet("skill source remove", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -645,17 +645,17 @@ func handleSkillSourceRemove(args []string) {
 
 	if fs.NArg() < 1 {
 		out.Error("source name is required", ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	name := fs.Arg(0)
 	if err := session.RemoveSkillSource(name); err != nil {
 		if errors.Is(err, session.ErrSkillSourceNotFound) {
 			out.Error(err.Error(), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		out.Error(fmt.Sprintf("failed to remove source: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {

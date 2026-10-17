@@ -158,6 +158,7 @@ func pruneOrphanedRecallRows(e execer) error {
 		`DELETE FROM session_tags WHERE scope_kind = '` + HintScopeInstance + `'
 		   AND scope_id NOT IN (SELECT id FROM instances)`,
 		`DELETE FROM session_links WHERE session_id NOT IN (SELECT id FROM instances)`,
+		`DELETE FROM claude_statuslines WHERE session_id IS NOT NULL AND session_id NOT IN (SELECT id FROM instances)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := e.Exec(stmt); err != nil {

@@ -24,7 +24,7 @@ type SlackAdapter struct {
 	topic  string       // topic name
 	client *http.Client // HTTP client for streaming requests
 
-	lastID string     // last received message ID for reconnect resumption
+	lastID string     // `since` for the next subscription: last handed-on message ID or the persisted resume position
 	mu     sync.Mutex // protects lastID
 
 	// initialBackoff and maxBackoff are configurable for testing.
@@ -68,6 +68,12 @@ func (a *SlackAdapter) Setup(_ context.Context, config AdapterConfig) error {
 
 	// Streaming client: no timeout on body reads (context handles cancellation).
 	a.client = &http.Client{Timeout: 0}
+
+	// Resume from the position the engine persisted, so messages published
+	// while agent-deck was down are fetched on the first subscription (#2538).
+	a.mu.Lock()
+	a.lastID = config.ResumeSince
+	a.mu.Unlock()
 
 	// Set defaults for backoff if not already set (tests may override before Listen).
 	if a.initialBackoff == 0 {
@@ -141,18 +147,22 @@ func (a *SlackAdapter) streamOnce(ctx context.Context, events chan<- Event) erro
 			continue // skip "open" and "keepalive" events
 		}
 
-		// Track last ID for reconnect resumption
+		// Copy the line: the scanner reuses its buffer, and the event can
+		// sit in a channel while the next line is read.
+		evt := a.normalizeSlackEvent(msg, append([]byte(nil), scanner.Bytes()...))
+		evt.Cursor = msg.ID
+
+		// Blocking send: the stream applies backpressure instead of dropping
+		// (a restart can replay a large backlog). The resume position only
+		// moves past a message once it was handed on (#2538).
+		select {
+		case events <- evt:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		a.mu.Lock()
 		a.lastID = msg.ID
 		a.mu.Unlock()
-
-		evt := a.normalizeSlackEvent(msg, scanner.Bytes())
-
-		// Non-blocking send (drop event if channel full)
-		select {
-		case events <- evt:
-		default:
-		}
 	}
 
 	return scanner.Err()

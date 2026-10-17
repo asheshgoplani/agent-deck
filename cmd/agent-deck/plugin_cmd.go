@@ -18,7 +18,7 @@ import (
 func handlePlugin(profile string, args []string) {
 	if len(args) == 0 {
 		printPluginHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	switch args[0] {
 	case "list", "ls":
@@ -34,7 +34,7 @@ func handlePlugin(profile string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown plugin command %q\n", args[0])
 		printPluginHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -120,13 +120,13 @@ func handlePluginAttached(profile string, args []string) {
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	_ = storage
 
 	inst := resolvePluginSession(out, instances, identifier)
 	if inst == nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if jsonOutput {
@@ -174,19 +174,19 @@ func pluginAttachOrDetach(profile string, args []string, op string) {
 
 	if len(pos) < 2 {
 		out.Error(fmt.Sprintf("Usage: agent-deck plugin %s <session-id|title> <plugin-name>", op), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	identifier, name := pos[0], pos[1]
 
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	inst := resolvePluginSession(out, instances, identifier)
 	if inst == nil {
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	current := append([]string(nil), inst.Plugins...)
@@ -214,12 +214,12 @@ func pluginAttachOrDetach(profile string, args []string, op string) {
 	old, _, mutErr := session.SetField(inst, session.FieldPlugins, strings.Join(updated, ","), nil)
 	if mutErr != nil {
 		out.Error(mutErr.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if err := saveSessionData(storage, instances, groupsData); err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if jsonOutput {
@@ -245,7 +245,7 @@ func pluginAttachOrDetach(profile string, args []string, op string) {
 		adoptStateDB(storage)
 		if err := inst.Restart(); err != nil {
 			out.Error(fmt.Sprintf("restart failed: %s", err.Error()), ErrCodeNotFound)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		// The save above ran BEFORE the restart, so it recorded the tmux name
 		// the restart then killed. The replacement name is recorded at the

@@ -211,6 +211,36 @@ func TestAttachStdinPump_SwallowsStaleDAReplyDuringQuarantine(t *testing.T) {
 	}
 }
 
+const hostColorReplies = "\x1b]10;rgb:0000/0000/0000\x1b\\\x1b]11;rgb:fefe/ffff/ffff\x1b\\"
+
+func TestAttachStdinPump_ForwardsColorReplyDuringQuarantine(t *testing.T) {
+	pump, w, out := newTestPump(t, AttachOptions{DetachByte: 17})
+
+	if got := tmuxInputFromArmedPump(t, pump, w, out, hostColorReplies); got != hostColorReplies {
+		t.Errorf("pane input = %q, want the color replies %q", got, hostColorReplies)
+	}
+}
+
+func tmuxInputFromArmedPump(t *testing.T, pump *attachStdinPump, w *os.File, out *bytes.Buffer, input string) string {
+	t.Helper()
+	pump.startTime = time.Now()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runPump(ctx, pump)
+
+	if _, err := w.Write([]byte(input + "\x11")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pump did not exit on the detach key")
+	}
+	return out.String()
+}
+
 func TestAttachStdinPump_ReportsSwitchIntent(t *testing.T) {
 	pump, w, _ := newTestPump(t, AttachOptions{DetachByte: 17, SwitchKeyByte: 19})
 

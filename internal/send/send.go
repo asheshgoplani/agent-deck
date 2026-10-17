@@ -320,33 +320,9 @@ func ParsePromptFromComposerBlock(lines []string) (string, bool) {
 // at the bottom of the terminal pane. It searches for the last two divider lines
 // and parses the prompt between them, with a fallback for layouts without dividers.
 func CurrentComposerPrompt(content string) (string, bool) {
-	lines := strings.Split(content, "\n")
-	if len(lines) > 240 {
-		lines = lines[len(lines)-240:]
-	}
-
-	// Primary path: parse the explicit composer region between the last two
-	// divider lines nearest the bottom of the pane.
-	lastDivider := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if IsComposerDividerLine(lines[i]) {
-			lastDivider = i
-			break
-		}
-	}
-	if lastDivider > 0 {
-		prevDivider := -1
-		for i := lastDivider - 1; i >= 0; i-- {
-			if IsComposerDividerLine(lines[i]) {
-				prevDivider = i
-				break
-			}
-		}
-		if prevDivider >= 0 && prevDivider+1 < lastDivider {
-			if body, ok := ParsePromptFromComposerBlock(lines[prevDivider+1 : lastDivider]); ok {
-				return body, true
-			}
-		}
+	lines := composerSearchLines(content)
+	if body, ok := framedComposerPrompt(lines); ok {
+		return body, true
 	}
 
 	// Fallback for layouts without clear divider lines: look near the bottom
@@ -367,6 +343,26 @@ func CurrentComposerPrompt(content string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// composerSearchLines is the bottom of content that composer parsing reads.
+func composerSearchLines(content string) []string {
+	lines := strings.Split(content, "\n")
+	if len(lines) > 240 {
+		lines = lines[len(lines)-240:]
+	}
+	return lines
+}
+
+// framedComposerPrompt is CurrentComposerPrompt's primary path: the prompt
+// between the composer's borders (ComposerBounds), which matches the top
+// border Claude 2.1.296 draws with the session name in it.
+func framedComposerPrompt(lines []string) (string, bool) {
+	top, bottom := ComposerBounds(lines)
+	if top < 0 || top+1 >= bottom {
+		return "", false
+	}
+	return ParsePromptFromComposerBlock(lines[top+1 : bottom])
 }
 
 // HasCurrentComposerPrompt returns true if a composer prompt is visible in the

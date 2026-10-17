@@ -19,6 +19,7 @@ func TestMapEventToStatus(t *testing.T) {
 		{"BeforeAgent", "running"},
 		{"AfterAgent", "waiting"},
 		{"UserPromptSubmit", "running"},
+		{"PreToolUse", "running"},
 		{"Stop", "waiting"},
 		{"PermissionRequest", "waiting"},
 		{"Notification", ""},

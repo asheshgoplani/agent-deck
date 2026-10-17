@@ -11,7 +11,7 @@ import (
 func handlePiHooks(args []string) {
 	if len(args) == 0 {
 		printPiHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -33,7 +33,7 @@ func handlePiHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown pi-hooks subcommand: %s\n", args[0])
 		printPiHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -57,7 +57,7 @@ func handlePiHooksInstall() {
 	installed, err := session.InstallPiHooks(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing pi hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if installed {
 		fmt.Println("pi hooks installed successfully.")
@@ -75,7 +75,7 @@ func handlePiHooksUninstall() {
 	removed, err := session.RemovePiHooks(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error removing pi hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if removed {
 		fmt.Println("pi hooks removed successfully.")

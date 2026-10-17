@@ -40,7 +40,7 @@ func TestInjectClaudeHooks_Fresh(t *testing.T) {
 	}
 
 	// Verify all expected events are present
-	expectedEvents := []string{"SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", "Notification", "SessionEnd", "PreCompact"}
+	expectedEvents := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "PermissionRequest", "Notification", "SessionEnd", "PreCompact"}
 	for _, event := range expectedEvents {
 		if _, ok := hooks[event]; !ok {
 			t.Errorf("Missing hook event: %s", event)

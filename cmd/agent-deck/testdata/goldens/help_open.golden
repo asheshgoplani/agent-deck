@@ -1,0 +1,3 @@
+Usage: agent-deck open <file|url> [--session <id|title>]
+  -session string
+    	session id or title (default: $AGENTDECK_INSTANCE_ID)

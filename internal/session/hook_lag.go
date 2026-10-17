@@ -304,6 +304,7 @@ func (i *Instance) reconcileSubstate(sub Substate) Substate {
 	i.mu.Lock()
 	status, lagged := i.Status, i.hookLag.observed(i.hookLastUpdate)
 	bgActive := i.bgWorkActive
+	watching := i.bgWork.Watching()
 	// A blocking hook can precede the menu paint. Both live and cached
 	// accessors must disclose the conflicting previous spinner as unknown.
 	if sub == SubstateRunning && (status == StatusWaiting || status == StatusIdle) &&
@@ -311,6 +312,15 @@ func (i *Instance) reconcileSubstate(sub Substate) Substate {
 		sub = SubstateNone
 	}
 	i.mu.Unlock()
+	if watching && (status == StatusWaiting || status == StatusIdle) {
+		switch sub {
+		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching, SubstateHookLag:
+			return SubstateWatching
+		}
+	}
+	if sub == SubstateWatching && status == StatusRunning && !bgActive {
+		sub = SubstateNone
+	}
 	return reconcileBackgroundSubstate(reconcileSubstateWithStatus(status, sub, lagged), status, bgActive)
 }
 

@@ -39,7 +39,7 @@ func handleOpenClaw(profile string, args []string) {
 		fmt.Fprintf(os.Stderr, "Unknown openclaw command: %s\n", args[0])
 		fmt.Fprintln(os.Stderr)
 		printOpenClawHelp()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -60,10 +60,10 @@ func printOpenClawHelp() {
 // --- sync ---
 
 func handleOpenClawSync(profile string, args []string) {
-	fs := flag.NewFlagSet("openclaw sync", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw sync", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(2)
 	}
 
 	cfg := loadOpenClawConfig()
@@ -74,21 +74,21 @@ func handleOpenClawSync(profile string, args []string) {
 	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to gateway: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer client.Close()
 
 	agentsResult, err := client.ListAgents(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to list agents: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// Load existing sessions
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load sessions: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	groupName := cfg.GroupName
@@ -143,7 +143,7 @@ func handleOpenClawSync(profile string, args []string) {
 	groupTree.CreateGroup(groupName)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to save sessions: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -156,7 +156,7 @@ func handleOpenClawSync(profile string, args []string) {
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to write JSON output: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 	} else {
 		fmt.Printf("Synced %d agents (%d new, %d updated)\n", len(agentsResult.Agents), created, updated)
@@ -176,23 +176,23 @@ func buildOpenClawBridgeCommand(agentID string) string {
 // --- bridge ---
 
 func handleOpenClawBridge(args []string) {
-	fs := flag.NewFlagSet("openclaw bridge", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw bridge", flag.ContinueOnError)
 	agentID := fs.String("agent", "", "Agent ID to bridge")
 	agentName := fs.String("name", "", "Agent display name (optional)")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(2)
 	}
 
 	if *agentID == "" {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck openclaw bridge --agent <id>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	cfg := loadOpenClawConfig()
 
 	if err := openclaw.RunBridge(cfg.GatewayURL, cfg.Password, *agentID, *agentName); err != nil {
 		fmt.Fprintf(os.Stderr, "Bridge error: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -225,7 +225,7 @@ func handleOpenClawStatus(args []string) {
 	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Gateway: OFFLINE (%v)\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer client.Close()
 
@@ -314,10 +314,10 @@ func handleOpenClawStatus(args []string) {
 // --- list ---
 
 func handleOpenClawList(args []string) {
-	fs := flag.NewFlagSet("openclaw list", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw list", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(2)
 	}
 
 	cfg := loadOpenClawConfig()
@@ -328,14 +328,14 @@ func handleOpenClawList(args []string) {
 	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to gateway: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer client.Close()
 
 	result, err := client.ListAgents(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to list agents: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	if *jsonOutput {
@@ -343,7 +343,7 @@ func handleOpenClawList(args []string) {
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(result); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to write JSON output: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -365,15 +365,15 @@ func handleOpenClawList(args []string) {
 // --- send ---
 
 func handleOpenClawSend(args []string) {
-	fs := flag.NewFlagSet("openclaw send", flag.ExitOnError)
+	fs := flag.NewFlagSet("openclaw send", flag.ContinueOnError)
 	agentID := fs.String("agent", "", "Agent ID to send to")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+	if err := parseCLIFlags(fs, args); err != nil {
+		exitCLI(2)
 	}
 
 	if *agentID == "" || fs.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck openclaw send --agent <id> <message>")
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	message := strings.Join(fs.Args(), " ")
@@ -386,7 +386,7 @@ func handleOpenClawSend(args []string) {
 	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
 	if err := client.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to gateway: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	defer client.Close()
 
@@ -400,7 +400,7 @@ func handleOpenClawSend(args []string) {
 
 	if err := client.AgentSend(ctx, params); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to send message: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	fmt.Printf("Message sent to %s\n", *agentID)

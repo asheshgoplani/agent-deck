@@ -40,7 +40,7 @@ func NewContainer(name string, image string) *Container {
 
 // FromName creates a container handle for an existing container by name.
 // The returned handle supports lifecycle operations (Exists, IsRunning, Start,
-// Stop, Remove, ExecPrefix) but not Create — use NewContainer for that.
+// Remove, ExecPrefix) but not Create — use NewContainer for that.
 func FromName(name string) *Container {
 	return &Container{name: name}
 }
@@ -231,15 +231,6 @@ func (c *Container) Start(ctx context.Context) error {
 			return nil
 		}
 		return fmt.Errorf("starting container %s: %s: %w", c.name, strings.TrimSpace(string(out)), err)
-	}
-	return nil
-}
-
-// Stop gracefully stops a running container.
-func (c *Container) Stop(ctx context.Context) error {
-	out, err := exec.CommandContext(ctx, "docker", "stop", c.name).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("stopping container %s: %s: %w", c.name, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

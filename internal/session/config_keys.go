@@ -167,6 +167,10 @@ var configKeys = []ConfigKey{
 	{Key: "core.daemon", Section: "Advanced", Label: "Core daemon", Help: "Route --json=envelope registry commands through agent-deck daemon serve (docs/daemon-protocol.md)", Type: "bool",
 		get: func(c *UserConfig) any { return c.Core.Daemon },
 		set: func(c *UserConfig, v any) { c.Core.Daemon = v.(bool) }},
+	// Not in the TUI panel: launch policy for Claude sessions.
+	{Key: "launch.prompt_suggestions", Section: "Sessions", Label: "Prompt suggestions", Help: "Claude prompt suggestions in launched sessions: children-off (off for sessions with a parent), on, or off; applies on the next session start; per profile via [profiles.<name>.claude]", Type: "enum", Values: []string{PromptSuggestionsChildrenOff, PromptSuggestionsOn, PromptSuggestionsOff},
+		get: func(c *UserConfig) any { return firstPromptSuggestionsMode(c.Launch.PromptSuggestions) },
+		set: func(c *UserConfig, v any) { c.Launch.PromptSuggestions = v.(string) }},
 }
 
 func positiveOr(v, def int) int {

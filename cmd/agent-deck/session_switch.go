@@ -18,7 +18,7 @@ import (
 // the TUI. It never infers an account or harness: both are explicit (an empty
 // value means the target default only where the preview says that is valid).
 func handleSessionSwitch(profile string, args []string) {
-	fs := flag.NewFlagSet("session switch", flag.ExitOnError)
+	fs := flag.NewFlagSet("session switch", flag.ContinueOnError)
 	toHarness := fs.String("to-harness", "", "Target harness (claude, codex, pi, …); empty keeps the source harness")
 	toAccount := fs.String("to-account", "", "Target configured account slot; empty means the target default")
 	maxBytes := fs.Int("max-bytes", session.DefaultHandoffMaxChars, "Maximum transferred context bytes for cross-harness handoff")
@@ -37,28 +37,28 @@ func handleSessionSwitch(profile string, args []string) {
 		fmt.Println()
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 	if fs.NArg() < 1 {
 		fs.Usage()
-		os.Exit(1)
+		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	inst, errMsg, errCode := ResolveSession(fs.Arg(0), instances)
 	if inst == nil {
 		out.Error(errMsg, errCode)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	cfg, cfgErr := session.LoadUserConfig()
 	if cfgErr != nil {
 		out.Error(fmt.Sprintf("load config: %v", cfgErr), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	target := session.SwitchPreviewTarget{Harness: strings.TrimSpace(*toHarness), Account: strings.TrimSpace(*toAccount)}
 	sourceSnapshot := switchSourceSnapshot(inst, instances)
@@ -69,7 +69,7 @@ func handleSessionSwitch(profile string, args []string) {
 	if preview.Execution == session.ExecutionPlanned && preview.Refusal == nil {
 		if !*confirmContextLoss {
 			out.Error("cross-harness transfer is lossy; review `session switch-preview` and repeat with --confirm-context-loss", ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		crossResult, switchErr = session.ExecuteCrossHarnessSwitch(context.Background(), cfg, inst, session.CrossHarnessSwitchOptions{
 			Target: target, MaxBytes: *maxBytes, NoStart: *noStart, SourceSnapshot: &sourceSnapshot,
@@ -90,7 +90,7 @@ func handleSessionSwitch(profile string, args []string) {
 			switchErr = fmt.Errorf("switch failed without a result")
 		}
 		out.Error(switchErr.Error(), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if switchErr != nil {
 		// A normal lack of readiness remains pending. A journal failure after a
@@ -132,7 +132,7 @@ func handleSessionSwitch(profile string, args []string) {
 				fmt.Fprintf(os.Stderr, "warning: persist native switch recovery failed: %v\n", saveErr)
 			}
 		}
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if crossResult != nil {
 		payload := crossHarnessSuccessPayload(inst, crossResult)
@@ -147,7 +147,7 @@ func handleSessionSwitch(profile string, args []string) {
 	}
 	if err := storage.CommitNativeHarnessSwitch(inst, result); err != nil {
 		out.Error(fmt.Sprintf("save switched session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	payload := map[string]any{
 		"success": result.Committed && result.DestinationReady, "status": switchPresentationStatus(result.Committed, result.DestinationReady), "pending": result.Committed && !result.DestinationReady,

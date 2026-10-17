@@ -24,7 +24,7 @@ const versionCheckInterval = 60 * time.Second
 
 // handleNotifyDaemon runs the always-on transition notifier daemon.
 func handleNotifyDaemon(args []string) {
-	fs := flag.NewFlagSet("notify-daemon", flag.ExitOnError)
+	fs := flag.NewFlagSet("notify-daemon", flag.ContinueOnError)
 	once := fs.Bool("once", false, "Run one sync pass and exit")
 
 	fs.Usage = func() {
@@ -40,8 +40,8 @@ func handleNotifyDaemon(args []string) {
 		return
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	// handleNotifyDaemon is dispatched from main()'s early command switch and
@@ -88,7 +88,7 @@ func handleNotifyDaemon(args []string) {
 	if err := daemon.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "notify-daemon error: %v\n", err)
 		_ = events.CloseDefault()
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -213,6 +213,9 @@ type notifyDaemonStart struct {
 	watchVersion        func(ctx context.Context, cancel context.CancelFunc)
 	headlessAutoInstall func(ctx context.Context)
 	healUpdateTimer     func()
+	// settlePending drops this service's own deferred launchd
+	// re-registration once launchd has started it again (nil: skipped).
+	settlePending func()
 }
 
 func realNotifyDaemonStart() notifyDaemonStart {
@@ -222,6 +225,34 @@ func realNotifyDaemonStart() notifyDaemonStart {
 		healUpdateTimer: func() {
 			healUpdateTimerAtDaemonStart(logging.ForComponent(logging.CompNotif))
 		},
+		settlePending: func() {
+			settleOwnPendingAtDaemonStart(os.Getppid(), daemonStartedAt, logging.ForComponent(logging.CompNotif))
+		},
+	}
+}
+
+// daemonStartedAt is when this process came up: a launchd deferral
+// recorded before it is one launchd has since answered by starting the
+// service again on the replaced binary.
+var daemonStartedAt = time.Now()
+
+// daemonSettlePending is update.SettleRespawnedService; a seam so tests
+// never read the host's pending marker.
+var daemonSettlePending = update.SettleRespawnedService
+
+// settleOwnPendingAtDaemonStart clears the daemon's own deferred launchd
+// re-registration once launchd has respawned it (2026-10-10: the notifier
+// stayed "pending" after it was already running the new build, because
+// every run inside it keeps the entry and the only run outside it, a TUI
+// tick, was parked in an attach all night). Only the service's main
+// process (parent launchd, pid 1) may settle: a child inheriting
+// XPC_SERVICE_NAME proves nothing about the service's own start.
+func settleOwnPendingAtDaemonStart(ppid int, startedAt time.Time, log *slog.Logger) {
+	if ppid != 1 {
+		return
+	}
+	if _, err := daemonSettlePending(update.RebootstrapOptions{Logger: log}, startedAt); err != nil {
+		log.Warn("launchagent_pending_settle_failed", "error", err.Error())
 	}
 }
 
@@ -244,6 +275,10 @@ func (s notifyDaemonStart) begin(ctx context.Context, cancel context.CancelFunc)
 	// The update timer heals the way the hooks do (#2472): once per daemon
 	// start, off the start path, gated by [updates] manage_timer.
 	go s.healUpdateTimer()
+
+	if s.settlePending != nil {
+		go s.settlePending()
+	}
 }
 
 // daemonEnsureUpdateTimer is the daemon's timer heal; a seam so tests never

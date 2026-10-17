@@ -799,7 +799,7 @@ func TestIssue1948_InboxExportCLI_EmitsArrayAndConsumesNothing(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := runInbox(&buf, []string{"export", "--json"}); err != nil {
+	if err := runInbox(&buf, []string{"export", "--profile", "default", "--json"}); err != nil {
 		t.Fatalf("inbox export: %v", err)
 	}
 	var records []session.TransitionNotificationEvent
@@ -826,7 +826,7 @@ func TestIssue1948_InboxExportCLI_EmptyIsAnEmptyArray(t *testing.T) {
 	drainTestHome(t)
 
 	var buf bytes.Buffer
-	if err := runInbox(&buf, []string{"export", "--json"}); err != nil {
+	if err := runInbox(&buf, []string{"export", "--profile", "default", "--json"}); err != nil {
 		t.Fatalf("inbox export: %v", err)
 	}
 	if strings.TrimSpace(buf.String()) != "[]" {
@@ -854,7 +854,7 @@ func TestIssue1948_InboxExportCLI_UnreadableRecordsFailLoudly(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := runInbox(&buf, []string{"export", "--json"}); err == nil {
+	if err := runInbox(&buf, []string{"export", "--profile", "default", "--json"}); err == nil {
 		t.Fatalf("export must fail when a record file cannot be read, printed: %s", buf.String())
 	}
 	if strings.TrimSpace(buf.String()) == "[]" {

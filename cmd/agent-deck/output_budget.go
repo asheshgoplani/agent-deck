@@ -83,13 +83,13 @@ func boundSessionOutputOrExit(out *CLIOutput, profile, sessionID, source, raw st
 		fullPath, err := outputSnapshotPath(sessionID, source)
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to resolve full-output path: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		emitted, truncated = prepareAgentBoundaryOutput(raw, maxTokens, fullPath)
 		if truncated {
 			if err := writeOutputSnapshot(fullPath, raw); err != nil {
 				out.Error(fmt.Sprintf("failed to retain full output: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
+				exitCLI(1)
 			}
 		}
 	}

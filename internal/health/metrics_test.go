@@ -167,3 +167,50 @@ func TestSessionMetricsSkipsFinalSendRecords(t *testing.T) {
 		t.Fatalf("sends = %+v, want the 2 attempts only", m.Sends)
 	}
 }
+
+// TestSessionMetricsSubstateEventsDoNotSplitTurns: running -> running and
+// waiting -> waiting substate records sit inside one turn and one waiting span;
+// they must not end the turn early or move the last coarse status change
+// (issue #2525).
+func TestSessionMetricsSubstateEventsDoNotSplitTurns(t *testing.T) {
+	events := []Event{
+		{TS: at(0), SessionID: "s", Kind: KindStatus, From: "idle", To: "running"},
+		{TS: at(10), SessionID: "s", Kind: KindStatus, From: "running", To: "running", Detail: map[string]any{"substate": "tool-execution"}},
+		{TS: at(20), SessionID: "s", Kind: KindStatus, From: "running", To: "waiting"},
+		{TS: at(30), SessionID: "s", Kind: KindStatus, From: "waiting", To: "waiting", Detail: map[string]any{"substate": "permission-prompt"}},
+		{TS: at(40), SessionID: "s", Kind: KindStatus, From: "waiting", To: "idle"},
+		{TS: at(50), SessionID: "s", Kind: KindStatus, From: "idle", To: "idle", Detail: map[string]any{"substate": "none"}},
+	}
+	m := ComputeSessionMetrics("s", events, at(0), at(60))
+	// Existing coarse terminal-edge counting is unchanged: waiting -> idle
+	// still counts as an unmeasured terminal edge; same-status events do not.
+	if m.Turns.Count != 2 || m.Turns.Measured != 1 {
+		t.Errorf("turns = %+v, want count=2 measured=1", m.Turns)
+	}
+	if m.Turns.P50MS == nil || *m.Turns.P50MS != 20000 {
+		t.Errorf("duration = %v, want 20000ms", m.Turns.P50MS)
+	}
+	if m.WaitingMS == nil || *m.WaitingMS != 20000 {
+		t.Errorf("waiting = %v, want 20000ms", m.WaitingMS)
+	}
+	if m.LastStatusChange == nil || m.LastStatusChange.At != at(40).Format(time.RFC3339) {
+		t.Errorf("last coarse status change = %+v, want event at 40s", m.LastStatusChange)
+	}
+	if m.Events != len(events) {
+		t.Errorf("events = %d, want %d (substate evidence retained)", m.Events, len(events))
+	}
+}
+
+// TestSessionMetricsSameStatusEventsDoNotCountTurns: a same-status record for
+// a terminal status is not a turn boundary, so it adds no turn (issue #2525).
+func TestSessionMetricsSameStatusEventsDoNotCountTurns(t *testing.T) {
+	for _, status := range []string{"waiting", "idle", "error", "stopped", "queued"} {
+		t.Run(status, func(t *testing.T) {
+			events := []Event{{TS: at(10), SessionID: "s", Kind: KindStatus, From: status, To: status, Detail: map[string]any{"substate": "none"}}}
+			m := ComputeSessionMetrics("s", events, at(0), at(60))
+			if m.Turns.Count != 0 || m.Turns.Measured != 0 {
+				t.Fatalf("same-status %s event counted as a turn: %+v", status, m.Turns)
+			}
+		})
+	}
+}

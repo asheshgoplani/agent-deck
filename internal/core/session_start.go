@@ -27,6 +27,7 @@ type SessionStartOut struct {
 	Tmux            string `json:"tmux,omitempty" doc:"tmux session name"`
 	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 	Message         string `json:"message,omitempty" doc:"Initial message that was sent"`
+	Warning         string `json:"warning,omitempty" doc:"Recovery was not sent or submission is uncertain"`
 	// Instance is the in-process handle of the started session (for a
 	// surface that attaches to it). Never serialized.
 	Instance *session.Instance `json:"-"`
@@ -91,6 +92,10 @@ func (deps Deps) sessionStart(ctx context.Context, in SessionStartIn) (SessionSt
 		return SessionStartOut{}, err
 	}
 
+	out.Warning = inst.ConductorRecoveryWarning()
+	if out.Warning != "" {
+		Warn(ctx, out.Warning)
+	}
 	out.Status = StartStatusStarted
 	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 		out.Tmux = tmuxSess.Name

@@ -8,7 +8,7 @@ work=$(cd "$work" && pwd)
 base=7d2302fb8a41c5fcab7a441d56729b4b6547885a
 reviewed=49d69b468a63529ca69611e3d8fc5ee6a5e3dde5
 head=$(git rev-parse HEAD)
-image=${STATUS_PASS_GO_IMAGE:-golang:1.25}
+image=${STATUS_PASS_GO_IMAGE:-golang:1.26.9}
 modules="$work/modules"
 cache="$work/cache"
 mkdir -p "$modules" "$cache"

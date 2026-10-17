@@ -1,0 +1,5 @@
+Usage: agent-deck session queue <list|release|cancel> [arguments] [--json]
+
+  list <session>  List durable queued sends by ID, preview, enqueue time, and state
+  release <id>    Send a queued entry now and report the confirmed outcome
+  cancel <id>     Cancel an unsent entry or report that it was already sent

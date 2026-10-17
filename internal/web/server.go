@@ -150,7 +150,11 @@ type SessionMutator interface {
 	// errors (unknown field, invalid value) leave the session unchanged.
 	UpdateSession(sessionID string, updates map[string]string) (updatedFields []string, restartRequired bool, err error)
 	CreateGroup(name, parentPath string) (string, error)
-	RenameGroup(groupPath, newName string) error
+	// RenameGroup renames the group at groupPath and returns the path the
+	// group lives at afterwards. A rename can move the group (and its
+	// subtree) to a new path, so callers that hold the old path, such as a
+	// browser with the group selected, need it to follow along (issue #2555).
+	RenameGroup(groupPath, newName string) (string, error)
 	// MoveSessionToGroup moves a session to another group with the
 	// `agent-deck group move` semantics (see session.GroupTree.
 	// ResolveMoveTargetGroup): "" or "root" is the default group, and a
@@ -184,6 +188,7 @@ type Server struct {
 	baseCtx     context.Context
 	cancelBase  context.CancelFunc
 	hookWatcher *session.StatusFileWatcher
+	onListening func()
 
 	menuSubscribersMu sync.Mutex
 	menuSubscribers   map[chan struct{}]struct{}
@@ -327,6 +332,12 @@ func (s *Server) Handler() http.Handler {
 	return s.httpServer.Handler
 }
 
+// SetOnListening sets fn to run once Start has bound the listen address,
+// before it serves requests. It is not called when binding fails.
+func (s *Server) SetOnListening(fn func()) {
+	s.onListening = fn
+}
+
 // Start starts the HTTP server and blocks until shutdown or error.
 // Returns nil on graceful shutdown.
 func (s *Server) Start() error {
@@ -355,7 +366,7 @@ func (s *Server) Start() error {
 	if s.push != nil {
 		s.push.Start(s.baseCtx)
 	}
-	err := s.httpServer.ListenAndServe()
+	err := s.listenAndServe()
 	if s.hookWatcher != nil {
 		s.hookWatcher.Stop()
 		s.hookWatcher = nil
@@ -370,6 +381,23 @@ func (s *Server) Start() error {
 		return err
 	}
 	return nil
+}
+
+// listenAndServe is http.Server.ListenAndServe with the onListening hook
+// between binding and serving.
+func (s *Server) listenAndServe() error {
+	addr := s.httpServer.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	if s.onListening != nil {
+		s.onListening()
+	}
+	return s.httpServer.Serve(ln)
 }
 
 // Shutdown gracefully stops the server.

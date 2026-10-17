@@ -417,7 +417,7 @@ func (r *SessionInputRouter) Read(p []byte) (int, error) {
 			r.mu.Unlock()
 			return copied, nil
 		}
-		partial := len(r.rawBuf) == 1 && r.rawBuf[0] == 0x1b && !r.inPaste
+		partial := !r.inPaste && isIncompleteKeySequence(r.rawBuf)
 		r.mu.Unlock()
 		if routeErr != nil {
 			return 0, routeErr
@@ -629,6 +629,9 @@ func (r *SessionInputRouter) routeEmbeddedLocked(final bool) (toDashboard, toChi
 			i += end
 			continue
 		}
+		if !final && isIncompleteKeySequence(data[i:]) {
+			break
+		}
 
 		child.WriteByte(data[i])
 		i++
@@ -719,6 +722,45 @@ func couldBeSidebarTogglePrefix(data []byte) bool {
 		if isIncompletePrefix(data, []byte(seq)) {
 			return true
 		}
+	}
+	return false
+}
+
+// maxHeldCSIBytes bounds how long an unterminated CSI may wait for its final
+// byte; anything longer is not a key and is forwarded as-is.
+const maxHeldCSIBytes = 32
+
+// isIncompleteKeySequence reports whether data starts with a key sequence
+// whose final byte has not arrived yet: a lone ESC, ESC O (SS3, sent for the
+// arrows in application cursor mode), or a CSI whose parameters are not yet
+// terminated (ESC [ 1 ; 5 for Ctrl+Right). The raw reader sees one byte at a
+// time; forwarding such a prefix in its own write lets tmux time it out as
+// Escape/Alt+<key> and type the rest into the pane ("C"/"D" for arrows).
+func isIncompleteKeySequence(data []byte) bool {
+	if len(data) == 0 || data[0] != 0x1b {
+		return false
+	}
+	if len(data) == 1 {
+		return true
+	}
+	switch data[1] {
+	case 0x1b:
+		// Legacy Alt+<key>: ESC followed by the key's own sequence.
+		return isIncompleteKeySequence(data[1:])
+	case 'O':
+		return len(data) == 2
+	case '[':
+		if len(data) > maxHeldCSIBytes {
+			return false
+		}
+		for _, b := range data[2:] {
+			if b < 0x20 || b > 0x3f {
+				// A final byte (0x40-0x7E) completes the sequence; anything
+				// else is not a CSI parameter/intermediate.
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

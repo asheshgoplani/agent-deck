@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // Tests for the codex subagent-thread rebind gate and restart safety net
@@ -34,6 +36,9 @@ func seedCodexRolloutWithMeta(t *testing.T, codexHome, sid, threadSource, parent
 	}
 	if parentID != "" {
 		payload["parent_thread_id"] = parentID
+	}
+	if threadSource == "guardian_review" {
+		payload["source"] = map[string]any{"subagent": map[string]any{"other": "guardian"}}
 	}
 	lines := []map[string]any{
 		{"timestamp": "2026-07-15T20:00:00.000Z", "type": "session_meta", "payload": payload},
@@ -135,6 +140,27 @@ func TestCodexHookRebind_RejectsSubagentThread(t *testing.T) {
 	if inst.CodexSessionID != mainSID {
 		t.Fatalf("subagent turn-complete hook must not usurp the binding: "+
 			"got %q, want %q (the 2026-07-15 poisoning)", inst.CodexSessionID, mainSID)
+	}
+}
+
+func TestCodexHookRebind_RejectsGuardianReviewThread(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+
+	inst.CodexSessionID = mainSID
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: guardianSID,
+		Event:     "agent-turn-complete",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.CodexSessionID != mainSID {
+		t.Fatalf("guardian review hook replaced the user thread: got %q, want %q", inst.CodexSessionID, mainSID)
 	}
 }
 
@@ -256,6 +282,261 @@ func TestBuildCodexCommand_ResumesUserThreadBinding(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_ResumesGuardianReviewParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	db := withTempGlobalStateDB(t)
+
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath,
+		GroupPath: inst.GroupPath, Command: inst.Command, Tool: "codex",
+		Status: "idle", CreatedAt: time.Now(),
+		ToolData: json.RawMessage(`{"codex_session_id":"` + guardianSID + `"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	inst.CodexSessionID = guardianSID
+	cmd := inst.buildCodexCommand("codex")
+
+	if !strings.Contains(cmd, "resume "+mainSID) || strings.Contains(cmd, "fork "+guardianSID) {
+		t.Fatalf("guardian review binding must resume its user parent: got %q", cmd)
+	}
+	if inst.CodexSessionID != mainSID {
+		t.Fatalf("guardian review binding was not repaired: got %q, want %q", inst.CodexSessionID, mainSID)
+	}
+	if got := readCodexSessionIDFromDB(t, db, inst.ID); got != mainSID {
+		t.Fatalf("guardian review binding persisted %q, want parent %q", got, mainSID)
+	}
+}
+
+func TestBuildCodexCommand_RepairsGuardianBindingInOwningDB(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	ownerDB := withTempGlobalStateDB(t)
+
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+	if err := ownerDB.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath,
+		GroupPath: inst.GroupPath, Command: inst.Command, Tool: "codex",
+		Status: "idle", CreatedAt: time.Now(),
+		ToolData: json.RawMessage(`{"codex_session_id":"` + guardianSID + `"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inst.restartDB.Store(ownerDB)
+	_ = withTempGlobalStateDB(t) // An unrelated profile is the process-wide database.
+
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("guardian binding must resume its user parent: got %q", cmd)
+	}
+	if got := readCodexSessionIDFromDB(t, ownerDB, inst.ID); got != mainSID {
+		t.Fatalf("owning database persisted %q, want parent %q", got, mainSID)
+	}
+}
+
+func TestBuildCodexCommand_ForksWhenGuardianRepairWriteFails(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := statedb.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: inst.ID, Title: inst.Title, ProjectPath: inst.ProjectPath,
+		GroupPath: inst.GroupPath, Command: inst.Command, Tool: "codex",
+		Status: "idle", CreatedAt: time.Now(),
+		ToolData: json.RawMessage(`{"codex_session_id":"` + guardianSID + `"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inst.restartDB.Store(db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = withTempGlobalStateDB(t) // The owning database is present but cannot accept writes.
+
+	inst.CodexSessionID = guardianSID
+	cmd := inst.buildCodexCommand("codex")
+	if !strings.Contains(cmd, "fork "+guardianSID) || strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("failed repair must use the existing fork fallback: got %q", cmd)
+	}
+	if inst.CodexSessionID != guardianSID {
+		t.Fatalf("failed repair changed in-memory binding to %q", inst.CodexSessionID)
+	}
+
+	reopened, err := statedb.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if got := readCodexSessionIDFromDB(t, reopened, inst.ID); got != guardianSID {
+		t.Fatalf("failed repair saved %q, want original guardian ID", got)
+	}
+}
+
+func TestCodexBindingAfterShortLivedStorageCloses(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		name := "hook"
+		if recovery {
+			name = "guardian_recovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			inst, codexHome := newCodexGateInstance(t)
+			owner := newTestStorage(t)
+			_ = withTempGlobalStateDB(t) // A different profile must not receive the repair.
+			mainSID, oldSID := uniqueSID(t), uniqueSID(t)
+			seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+			if recovery {
+				seedCodexRolloutWithMeta(t, codexHome, oldSID, "guardian_review", mainSID, true)
+			}
+			inst.CodexSessionID = oldSID
+			if err := owner.Save([]*Instance{inst}); err != nil {
+				t.Fatal(err)
+			}
+			webDB, err := statedb.Open(owner.dbPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			webStorage := &Storage{db: webDB, dbPath: owner.dbPath, profile: owner.profile}
+			if err := webStorage.Save([]*Instance{inst}); err != nil {
+				t.Fatal(err)
+			}
+			if err := webStorage.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if recovery {
+				if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+					t.Fatalf("closed storage must not prevent guardian recovery: got %q", cmd)
+				}
+			} else {
+				inst.UpdateHookStatus(&HookStatus{
+					Status: "waiting", SessionID: mainSID,
+					Event: "agent-turn-complete", UpdatedAt: time.Now(),
+				})
+			}
+			if inst.CodexSessionID != mainSID {
+				t.Fatalf("closed storage prevented rebind: got %q, want %q", inst.CodexSessionID, mainSID)
+			}
+			if got := readCodexSessionIDFromDB(t, owner.db, inst.ID); got != mainSID {
+				t.Fatalf("owning database saved %q, want %q", got, mainSID)
+			}
+		})
+	}
+}
+
+func TestBuildCodexCommand_DoesNotResumeGuardianExecParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	execSID, guardianSID := uniqueSID(t), uniqueSID(t)
+	path := seedCodexRolloutWithMeta(t, codexHome, execSID, "user", "", false)
+	head := fmt.Sprintf(`{"type":"session_meta","payload":{"id":%q,"cwd":"/tmp/project","thread_source":"user","source":"exec"}}`, execSID)
+	if err := os.WriteFile(path, []byte(head+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", execSID, true)
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "fork "+guardianSID) || strings.Contains(cmd, "resume "+execSID) {
+		t.Fatalf("guardian recovery must not resume a nested exec thread: got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotBypassReadOnlyOwningDB(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	owner := newTestStorage(t)
+	mainSID, guardianSID := uniqueSID(t), uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+	inst.CodexSessionID = guardianSID
+	if err := owner.Save([]*Instance{inst}); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := statedb.OpenReadOnlyLive(owner.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = readOnly.Close() })
+	inst.restartDB.Store(readOnly)
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "fork "+guardianSID) {
+		t.Fatalf("read-only storage must retain the failed-write fallback: got %q", cmd)
+	}
+	if got := readCodexSessionIDFromDB(t, owner.db, inst.ID); got != guardianSID {
+		t.Fatalf("read-only repair changed the saved binding to %q", got)
+	}
+}
+
+func TestBuildCodexCommand_ResumesGuardianReviewUserAncestor(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	mainSID := uniqueSID(t)
+	subagentSID := uniqueSID(t)
+	firstGuardianSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "user", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, subagentSID, "subagent", mainSID, false)
+	seedCodexRolloutWithMeta(t, codexHome, firstGuardianSID, "guardian_review", subagentSID, true)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", firstGuardianSID, true)
+
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("guardian review chain must resume its user ancestor: got %q", cmd)
+	}
+	if inst.CodexSessionID != mainSID {
+		t.Fatalf("guardian review chain bound %q, want user thread %q", inst.CodexSessionID, mainSID)
+	}
+}
+
+func TestBuildCodexCommand_ResumesLegacyCLIParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	mainSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, mainSID, "cli", "", false)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", mainSID, true)
+
+	inst.CodexSessionID = guardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "resume "+mainSID) {
+		t.Fatalf("guardian review must resume its legacy CLI parent: got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotFollowGuardianParentCycle(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	firstGuardianSID := uniqueSID(t)
+	secondGuardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, firstGuardianSID, "guardian_review", secondGuardianSID, true)
+	seedCodexRolloutWithMeta(t, codexHome, secondGuardianSID, "guardian_review", firstGuardianSID, true)
+
+	inst.CodexSessionID = firstGuardianSID
+	if cmd := inst.buildCodexCommand("codex"); !strings.Contains(cmd, "fork "+firstGuardianSID) {
+		t.Fatalf("guardian parent cycle must use the existing fallback: got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_DoesNotResumeMissingGuardianParent(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutWithMeta(t, codexHome, guardianSID, "guardian_review", uniqueSID(t), true)
+
+	inst.CodexSessionID = guardianSID
+	cmd := inst.buildCodexCommand("codex")
+
+	if !strings.Contains(cmd, "fork "+guardianSID) {
+		t.Fatalf("a missing guardian parent must not become a resume target: got %q", cmd)
+	}
+}
+
 func TestShouldRejectCodexSubagentRebind(t *testing.T) {
 	inst, codexHome := newCodexGateInstance(t)
 
@@ -310,6 +591,18 @@ func TestResolveCodexDetectionCandidateRejectsSubagent(t *testing.T) {
 
 	if got := inst.resolveCodexDetectionCandidate(subSID, nil); got != userSID {
 		t.Fatalf("async candidate resolution = %q, want user thread %q", got, userSID)
+	}
+}
+
+func TestResolveCodexDetectionCandidateRejectsGuardianReview(t *testing.T) {
+	inst, codexHome := newCodexGateInstance(t)
+	userSID := uniqueSID(t)
+	guardianSID := uniqueSID(t)
+	seedCodexRolloutCwd(t, codexHome, userSID, "user", inst.ProjectPath)
+	seedCodexRolloutCwd(t, codexHome, guardianSID, "guardian_review", inst.ProjectPath)
+
+	if got := inst.resolveCodexDetectionCandidate(guardianSID, nil); got != userSID {
+		t.Fatalf("guardian probe candidate resolved to %q, want user thread %q", got, userSID)
 	}
 }
 

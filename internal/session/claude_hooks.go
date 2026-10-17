@@ -214,6 +214,10 @@ type claudeHookMatcher struct {
 // the marker to such an entry on the daemon's next start.
 const StopHookSyncMarkerEnv = "AGENTDECK_STOP_SYNC"
 
+// PreToolHookSyncMarkerEnv identifies the ordered, status-only receiver.
+// Legacy async entries must be refreshed before they can publish activity.
+const PreToolHookSyncMarkerEnv = "AGENTDECK_PRETOOL_SYNC"
+
 // claudeHookEventConfig is one row of hookEventConfigs.
 type claudeHookEventConfig struct {
 	Event   string
@@ -256,6 +260,13 @@ var hookEventConfigs = []claudeHookEventConfig{
 	// fast-returns for every session with an empty inbox (two stats), so the
 	// flip costs a leaf session only the hook process itself.
 	{Event: "UserPromptSubmit", Async: false},
+	// Claude can resume after Stop without UserPromptSubmit (task notifications
+	// or a blocked Stop). Mark tool execution running for those turns too.
+	// Publish before returning so a later permission/Stop cannot overtake this
+	// edge. The receiver is status-only and has a bounded lock wait. Legacy
+	// async entries lack the marker and cannot publish out-of-order activity.
+	// Keep PostToolUse unsubscribed: the turn continues between tools.
+	{Event: "PreToolUse", Env: PreToolHookSyncMarkerEnv + "=1"},
 	// Issue #1225/#1226 ACTIVATION: Stop is SYNCHRONOUS so Claude Code reads the
 	// {decision:"block",reason} the hook emits to inject busy-parent completions.
 	// Audit B12 (global-flip risk) is mitigated by RUNTIME scope, not a per-session

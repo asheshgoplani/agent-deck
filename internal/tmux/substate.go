@@ -44,11 +44,14 @@ const (
 	// over (empty prompt, Stop hook fired) while work it started is still in
 	// flight: a Workflow ("◯ name ▰▰▱ 3/5 · 18m32s" under the footer), background
 	// agents ("Waiting for N background agents to finish"), run_in_background
-	// shells or Monitors ("· 2 shells, 1 monitor ·" in the footer), or the
+	// shells ("· 2 shells ·" in the footer), or the
 	// same evidence in the transcript. Pairs with status "running" (issue
 	// #2473: a running workflow means a running session); the session settles
 	// to waiting only once nothing is in flight. See background_work.go.
 	SubstateBackgroundWork Substate = "background-work"
+
+	// SubstateWatching is an idle prompt with an armed watcher.
+	SubstateWatching Substate = "watching"
 
 	// SubstateModelUnavailable marks the Fable-down no-op loop: the model
 	// reports unavailable ("X is currently unavailable", "Crunched for 0s")
@@ -85,6 +88,9 @@ const (
 	// (self-heal, auto-restart) must treat it like auth-401/model-unavailable
 	// and hold off rather than act on an unverified crash.
 	SubstateUnknownExit Substate = "unknown-exit"
+
+	// SubstateProcessExited records the observed exit of an explicit command.
+	SubstateProcessExited Substate = "process-exited"
 
 	// SubstateHookLag marks a Claude session whose lifecycle hook still says
 	// "running" while the pane has shown a completed turn at an idle prompt
@@ -135,7 +141,8 @@ const crunchedNoopMarker = "Crunched for 0s"
 //     hasClaudePrompt true, but a menu awaiting a choice is blocked-on-input,
 //     not idle (#2185).
 //  5. background-work — at the prompt, but a workflow / background agent /
-//     shell / monitor started by the session is still in flight (#2473).
+//     finite shell started by the session is still in flight (#2473).
+//     Passive monitor-only evidence reads watching.
 //  6. idle-at-empty-prompt — sitting at the prompt with nothing happening.
 //  7. none      — no distinct refinement.
 func (d *PromptDetector) ClassifySubstate(content string) Substate {
@@ -159,7 +166,7 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 // comms-followon-round3 3/5 · 18m32s", issue #2473).
 func (d *PromptDetector) SubstateDetail(content string) string {
 	if d.tool == "claude" {
-		if d.classifyClaudeSubstate(content) == SubstateBackgroundWork {
+		if sub := d.classifyClaudeSubstate(content); sub == SubstateBackgroundWork || sub == SubstateWatching {
 			return ParseClaudeBackgroundWork(content).Summary()
 		}
 		return ""
@@ -221,8 +228,8 @@ func (d *PromptDetector) classifyClaudeSubstate(content string) Substate {
 		if hasOpenInteractiveMenu(content) {
 			return SubstateInteractiveMenu
 		}
-		if claudeBackgroundWorkPending(content) {
-			return SubstateBackgroundWork
+		if work := ParseClaudeBackgroundWork(content); work.InFlight() {
+			return work.Substate()
 		}
 		return SubstateIdleAtEmptyPrompt
 	}
@@ -279,6 +286,23 @@ var interactiveMenuQuestions = []string{
 // no number.
 var menuOptionCursorRe = regexp.MustCompile(`^[\s│]*❯\s*\d+\.\s+\S`)
 
+// menuPickerInstructions are lowercased key hints drawn only under an open
+// picker or permission dialog. Unlike the rest of interactiveMenuMarkers
+// ("Allow once", "Esc to cancel", which a reply or a delivered message can
+// quote), each one is picker evidence on its own.
+var menuPickerInstructions = []string{
+	"use arrow keys to navigate",
+	"tab/arrow keys to navigate",
+	"enter to select",
+	"enter to confirm",
+	"tab to amend",
+}
+
+// menuYesNoChoiceRe matches a Yes/No option row ("Yes", "No, exit", "Yes, I
+// trust this folder") as a whole word, so prose rows that merely start with
+// "now", "note" or "nothing" are not counted as selectable choices.
+var menuYesNoChoiceRe = regexp.MustCompile(`^(yes|no)\b`)
+
 // codexInteractiveMenuMarkers are the footer strings codex renders under an
 // open picker (model switch on rate limit, approval choices). Captured from
 // a live codex session (audit E).
@@ -300,15 +324,49 @@ func hasCodexInteractiveMenu(content string) bool {
 
 // hasOpenInteractiveMenu reports whether the pane shows an open selection
 // menu awaiting the operator's choice, scoped to the recent tail so a stale
-// menu scrolled out of view does not keep matching forever. Menu chrome
-// (interactiveMenuMarkers) counts on its own; a dialog question
+// menu scrolled out of view does not keep matching forever. A picker
+// instruction (menuPickerInstructions) counts on its own; any other menu chrome (interactiveMenuMarkers, e.g. "Allow once"
+// or "Esc to cancel") counts only beside at least two selectable choices, so
+// a delivered message or a reply that merely quotes those words is not a
+// menu. Text inside the live input box is never evidence. A dialog question
 // (interactiveMenuQuestions) counts only when a selected numbered option
 // follows it, so a reply that ends in a prose question is not a menu.
 func hasOpenInteractiveMenu(content string) bool {
-	recent := recentTailLower(content, 15)
-	for _, marker := range interactiveMenuMarkers {
-		if strings.Contains(recent, strings.ToLower(marker)) {
+	lines := recentTailLines(content, 15)
+	if !mayShowInteractiveMenu(strings.ToLower(strings.Join(lines, "\n"))) {
+		return false // the common idle or busy frame: no menu word at all
+	}
+	if start, end, ok := claudeDraftBoxBounds(lines); ok {
+		// User text inside the input box is not picker evidence, even if
+		// the user typed a phrase that also appears in a permission dialog.
+		for i := start + 1; i < end; i++ {
+			lines[i] = ""
+		}
+	}
+	recent := strings.ToLower(strings.Join(lines, "\n"))
+	choices := 0
+	for _, line := range lines {
+		option := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "│"))
+		option = strings.TrimSpace(strings.TrimLeft(option, "❯>"))
+		lower := strings.ToLower(option)
+		if (len(option) >= 3 && option[0] >= '0' && option[0] <= '9' && (option[1] == '.' || option[1] == ':')) ||
+			menuYesNoChoiceRe.MatchString(lower) || strings.HasPrefix(lower, "allow once") || strings.HasPrefix(lower, "allow always") {
+			choices++
+		}
+		if strings.Contains(lower, "1: ") && strings.Contains(lower, "2: ") {
+			choices = 2 // Feedback survey options share one row.
+		}
+	}
+	for _, instruction := range menuPickerInstructions {
+		if strings.Contains(recent, instruction) {
 			return true
+		}
+	}
+	if choices >= 2 {
+		for _, marker := range interactiveMenuMarkers {
+			if strings.Contains(recent, strings.ToLower(marker)) {
+				return true
+			}
 		}
 	}
 	question := false
@@ -320,6 +378,25 @@ func hasOpenInteractiveMenu(content string) bool {
 			if strings.Contains(line, q) {
 				question = true
 			}
+		}
+	}
+	return false
+}
+
+// mayShowInteractiveMenu is a cheap pre-check on the lowercased tail: every
+// path below needs one of these words, and blanking the input box only
+// removes text, so a tail without any of them is never a menu.
+func mayShowInteractiveMenu(recent string) bool {
+	for _, words := range [][]string{menuPickerInstructions, interactiveMenuQuestions} {
+		for _, w := range words {
+			if strings.Contains(recent, w) {
+				return true
+			}
+		}
+	}
+	for _, marker := range interactiveMenuMarkers {
+		if strings.Contains(recent, strings.ToLower(marker)) {
+			return true
 		}
 	}
 	return false
@@ -416,6 +493,10 @@ func hasModelUnavailableNoop(content string) bool {
 
 // recentTailLower returns a lowercased join of the last n non-empty lines.
 func recentTailLower(content string, n int) string {
+	return strings.ToLower(strings.Join(recentTailLines(content, n), "\n"))
+}
+
+func recentTailLines(content string, n int) []string {
 	lines := strings.Split(content, "\n")
 	var tail []string
 	for i := len(lines) - 1; i >= 0 && len(tail) < n; i-- {
@@ -423,7 +504,7 @@ func recentTailLower(content string, n int) string {
 			tail = append([]string{lines[i]}, tail...)
 		}
 	}
-	return strings.ToLower(strings.Join(tail, "\n"))
+	return tail
 }
 
 // hasSameLineTimingCue reports whether any line of the (lowercased) tail carries

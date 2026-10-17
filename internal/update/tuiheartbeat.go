@@ -51,6 +51,12 @@ type TUIHeartbeat struct {
 	// BlockReason is why the restart has not happened (RestartState waiting
 	// or overdue).
 	BlockReason string `json:"block_reason,omitempty"`
+	// Attached is set while the loop is parked in tea.Exec (attached to a
+	// session): a worker off the event loop keeps UpdatedAt moving while
+	// LastTickAt stands still, so a parked deck never reads as a hung one.
+	Attached bool `json:"attached,omitempty"`
+	// AttachedSince is when that worker first saw the attach.
+	AttachedSince time.Time `json:"attached_since,omitempty"`
 }
 
 // TUIReport is a heartbeat as `update --check --json` reports it.
@@ -62,9 +68,15 @@ type TUIReport struct {
 	InstalledVersion string `json:"installed_version,omitempty"`
 	// Ticking is false when the loop has not ticked for a while: attached
 	// to a session, or hung. Nothing auto-update does runs meanwhile.
-	Ticking      bool   `json:"ticking"`
-	RestartState string `json:"restart_state,omitempty"`
-	BlockReason  string `json:"block_reason,omitempty"`
+	Ticking bool `json:"ticking"`
+	// Attached is true when the loop is not ticking because it is parked
+	// in an attach and its attach worker still reports (a fresh
+	// heartbeat): auto-update resumes on detach. Not ticking and not
+	// attached is a hung deck (or one too old to say).
+	Attached      bool   `json:"attached,omitempty"`
+	AttachedSince string `json:"attached_since,omitempty"`
+	RestartState  string `json:"restart_state,omitempty"`
+	BlockReason   string `json:"block_reason,omitempty"`
 	// OutdatedForSeconds is how long the newer version has been on disk.
 	OutdatedForSeconds int64  `json:"outdated_for_seconds,omitempty"`
 	StartedAt          string `json:"started_at"`
@@ -157,6 +169,10 @@ func ReportTUIs(hbs []TUIHeartbeat, onDisk string, now time.Time) []TUIReport {
 			StartedAt:        hb.StartedAt.Format(time.RFC3339),
 			UpdatedAt:        hb.UpdatedAt.Format(time.RFC3339),
 		}
+		if hb.Attached && !r.Ticking && !hb.UpdatedAt.IsZero() && now.Sub(hb.UpdatedAt) < TUIHeartbeatStaleAfter {
+			r.Attached = true
+			r.AttachedSince = hb.AttachedSince.Format(time.RFC3339)
+		}
 		if r.Outdated && !hb.InstalledSince.IsZero() {
 			r.OutdatedForSeconds = int64(now.Sub(hb.InstalledSince).Seconds())
 		}
@@ -172,7 +188,10 @@ func DescribeTUIReport(r TUIReport) string {
 		state = "outdated"
 	}
 	line := fmt.Sprintf("pid %d v%s (%s", r.PID, r.Version, state)
-	if !r.Ticking {
+	switch {
+	case r.Attached:
+		line += ", attached to a session since " + clockOf(r.AttachedSince) + ": auto-update resumes on detach"
+	case !r.Ticking:
 		line += ", not ticking: attached or hung"
 	}
 	if r.RestartState != "" && r.RestartState != "idle" {
@@ -182,4 +201,14 @@ func DescribeTUIReport(r TUIReport) string {
 		}
 	}
 	return line + ")"
+}
+
+// clockOf is the local HH:MM of an RFC 3339 stamp, or the stamp itself
+// when it does not parse.
+func clockOf(stamp string) string {
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return stamp
+	}
+	return t.Local().Format("15:04")
 }

@@ -35,7 +35,7 @@ func exitOnCLIError(err error) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-	os.Exit(1)
+	exitCLI(1)
 }
 
 // conductorTitleLookup returns the title of the session with this id, or ""

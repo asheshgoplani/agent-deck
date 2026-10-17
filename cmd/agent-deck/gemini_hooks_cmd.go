@@ -12,7 +12,7 @@ import (
 func handleGeminiHooks(args []string) {
 	if len(args) == 0 {
 		printGeminiHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 
 	// A help request anywhere in the argument list must print usage and exit
@@ -34,7 +34,7 @@ func handleGeminiHooks(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown gemini-hooks subcommand: %s\n", args[0])
 		printGeminiHooksUsage(os.Stderr)
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 
@@ -54,7 +54,7 @@ func handleGeminiHooksInstall() {
 	installed, err := session.InjectGeminiHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error installing Gemini hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if installed {
 		fmt.Println("Gemini hooks installed successfully.")
@@ -69,7 +69,7 @@ func handleGeminiHooksUninstall() {
 	removed, err := session.RemoveGeminiHooks(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error removing Gemini hooks: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	if removed {
 		fmt.Println("Gemini hooks removed successfully.")

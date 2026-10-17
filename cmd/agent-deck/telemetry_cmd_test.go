@@ -92,6 +92,31 @@ func TestTelemetryOnRequiresExplicitY(t *testing.T) {
 	}
 }
 
+// TestTelemetryOnReconsentSaysIDKept: answering the re-asked question in a
+// shell is told the id is kept and earlier unsent data will be sent, and a
+// yes keeps the id; a first ever question carries no such line.
+func TestTelemetryOnReconsentSaysIDKept(t *testing.T) {
+	isolateTelemetryHome(t)
+	if _, out, _ := runTel(t, "y\n", true, "on"); strings.Contains(out, telemetry.PromptKeepsID) {
+		t.Fatalf("first question claims an existing id:\n%s", out)
+	}
+	first := telemetry.LoadState()
+	first.SchemaVersion = 2
+	if err := telemetry.SaveState(first); err != nil {
+		t.Fatal(err)
+	}
+	if statusJSON(t).Enabled {
+		t.Fatal("a schema 2 grant must be asked again")
+	}
+	code, out, _ := runTel(t, "y\n", true, "on")
+	if code != 0 || !strings.Contains(out, telemetry.PromptKeepsID+"\n\nShare anonymous usage data? [y/N]") {
+		t.Fatalf("re-asked question lacks the kept-id line:\n%s", out)
+	}
+	if st := statusJSON(t); !st.Enabled || st.InstallID != first.InstallID {
+		t.Fatalf("re-consent changed the install id: %s -> %s", first.InstallID, st.InstallID)
+	}
+}
+
 func TestTelemetryOnRefusals(t *testing.T) {
 	cases := []struct {
 		name        string

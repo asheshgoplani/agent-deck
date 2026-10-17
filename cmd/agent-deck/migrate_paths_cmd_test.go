@@ -91,7 +91,7 @@ func TestMigratePathsCommand_HelpExitsSuccess(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("runMigratePaths --help exit = %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "Usage: agent-deck migrate-paths") {
-		t.Fatalf("help output missing usage:\n%s", stderr.String())
+	if !strings.Contains(stdout.String(), "Usage: agent-deck migrate-paths") || stderr.Len() != 0 {
+		t.Fatalf("help must print usage on stdout only:\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	}
 }

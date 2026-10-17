@@ -91,17 +91,20 @@ Two edges: `turn_end` (the harness's final assistant text, capped, plus
 the sha256/16 of the full text) and `prompt_start` (the prompt that started
 the turn, so the daemon knows why it ran; it is never stored on the record).
 
-P1 enables two producers, each pinned by a versioned payload fixture under
+P1 enabled two producers; the pi producer followed (#2482 Pi row). Each is pinned by a versioned payload fixture under
 `cmd/agent-deck/testdata/comms/` (G7 of the architecture review):
 
 | Harness | Producer | prompt_start | turn_end | Fixture |
 |---|---|---|---|---|
 | Claude Code | `hook-handler` | `UserPromptSubmit.prompt` | `Stop.last_assistant_message` + `transcript_path` | `claude_*_v1.json` |
 | Codex CLI | `codex-notify` (the existing `notify` line) | `input-messages` (last) on the same payload | `agent-turn-complete.last-assistant-message`, keyed by `turn-id` | `codex_notify_v1.json` |
+| pi | the pi extension (v3) through `hook-handler` | last `input` text, carried as `prompt` on the settle payload | last `turn_end` text of the run, sent on `agent_settled` when the run completed; keyed by session id and `messageEntryId`; tail-capped at 16 KiB | `pi_agentsettled_v3.json` |
 
 A Codex `Stop` hook pointed at `hook-handler` is recognised by its
 `turn_id` and never spooled, so notify and Stop cannot produce one turn
-twice (`codex_stop_v1.json`). Every other harness (Gemini, Cursor, pi,
+twice (`codex_stop_v1.json`). A pi run that settles without text (tool-only,
+aborted or failed) spools one `status` edge instead (`pi_agentsettled_notext_v3.json`);
+a v2 extension spools nothing. Every other harness (Gemini, Cursor,
 Hermes, OpenCode, shell) is **status-only** in P1: the daemon commits a
 `status` record on the observed edge, with no text, and the inbox's legacy
 record is unchanged. Their text producers are specified in the test
@@ -122,7 +125,7 @@ Not in P1 (notes):
 
 - Codex gets no new `hooks.json` installer (the budget allows only the
   hooks already installed; `notify` carries the text).
-- Gemini, Cursor, pi, Hermes and OpenCode producers: specified (matrix
+- Gemini, Cursor, Hermes and OpenCode producers: specified (matrix
   rows), not enabled. No installed file of theirs changes in this PR.
 - Dropped from the research row, for later: a `tools/replay2469` run
   against the ledger, Cursor transcript roots in `ValidateTranscriptPath`,

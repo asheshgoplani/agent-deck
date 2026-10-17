@@ -1,0 +1,6 @@
+Usage of skill source list:
+  -json
+    	Output as JSON
+  -q	Minimal output (short)
+  -quiet
+    	Minimal output

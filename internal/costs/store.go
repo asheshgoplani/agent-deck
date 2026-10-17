@@ -62,17 +62,20 @@ func (s *Store) TotalBySession(sessionID string) (CostSummary, error) {
 
 // TotalToday returns today's total costs.
 func (s *Store) TotalToday() (CostSummary, error) {
-	return s.querySum(`WHERE timestamp >= date('now', 'start of day')`)
+	where, _ := costPeriodWhere("today")
+	return s.querySum(string(where))
 }
 
 // TotalThisWeek returns this week's total costs (Monday start).
 func (s *Store) TotalThisWeek() (CostSummary, error) {
-	return s.querySum(`WHERE timestamp >= date('now', 'weekday 1', '-7 days')`)
+	where, _ := costPeriodWhere("week")
+	return s.querySum(string(where))
 }
 
 // TotalThisMonth returns this month's total costs.
 func (s *Store) TotalThisMonth() (CostSummary, error) {
-	return s.querySum(`WHERE timestamp >= date('now', 'start of month')`)
+	where, _ := costPeriodWhere("month")
+	return s.querySum(string(where))
 }
 
 // TotalYesterday returns the prior day's total costs (00:00:00 UTC of
@@ -106,11 +109,17 @@ func (s *Store) TotalLastMonth() (CostSummary, error) {
 // TopSessionsByCost returns the top N sessions by total cost.
 // Joins with instances table to get session titles and groups.
 func (s *Store) TopSessionsByCost(limit int) ([]SessionCost, error) {
+	return s.topSessionsByCost(limit, "")
+}
+
+func (s *Store) topSessionsByCost(limit int, where periodClause) ([]SessionCost, error) {
+	//nolint:gosec // G202: where is a periodClause, empty or a constant fragment from costPeriodWhere; limit is bound via ?
 	rows, err := s.db.Query(`
 		SELECT ce.session_id, COALESCE(i.title, ce.session_id), COALESCE(i.group_path, ''),
 			SUM(ce.cost_microdollars), COUNT(*)
 		FROM cost_events ce
 		LEFT JOIN instances i ON ce.session_id = i.id
+		`+string(where)+`
 		GROUP BY ce.session_id
 		ORDER BY SUM(ce.cost_microdollars) DESC
 		LIMIT ?`, limit)
@@ -132,9 +141,14 @@ func (s *Store) TopSessionsByCost(limit int) ([]SessionCost, error) {
 
 // CostByModel returns total cost per model.
 func (s *Store) CostByModel() (map[string]int64, error) {
+	return s.costByModel("")
+}
+
+func (s *Store) costByModel(where periodClause) (map[string]int64, error) {
+	//nolint:gosec // G202: where is a periodClause, empty or a constant fragment from costPeriodWhere
 	rows, err := s.db.Query(`
 		SELECT model, SUM(cost_microdollars)
-		FROM cost_events
+		FROM cost_events ` + string(where) + `
 		GROUP BY model`)
 	if err != nil {
 		return nil, err

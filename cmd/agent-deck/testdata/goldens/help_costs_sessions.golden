@@ -1,0 +1,1 @@
+Usage: agent-deck costs sessions --json [--limit N] [--period today|7d|30d|all|week|month] (default limit 100, maximum 500; period all)

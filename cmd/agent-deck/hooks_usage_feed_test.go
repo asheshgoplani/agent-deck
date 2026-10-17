@@ -69,7 +69,7 @@ func TestHooksInstall_WiresUsageFeedForEverySlot(t *testing.T) {
 	if !work.Wired || work.Inner != "" {
 		t.Errorf("work not wired: %+v", work)
 	}
-	for _, want := range []string{"Usage feed:", "personal", "work", "usage ingest claude"} {
+	for _, want := range []string{"Usage feed:", "personal", "work", "usage statusline-wrap"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("install output missing %q:\n%s", want, out)
 		}

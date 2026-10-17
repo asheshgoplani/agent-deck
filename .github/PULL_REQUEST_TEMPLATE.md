@@ -36,7 +36,7 @@ Quote them. This is the first thing a reviewer reads. A one-liner is fine; "" is
 
 - [ ] Targeted diff: one problem, no unrelated changes
 - [ ] Tests added or updated for new behavior
-- [ ] Test suite passes sandboxed: `HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...`
+- [ ] Test suite passes sandboxed, inside a container: run `.github/skills/agent-deck-contributor/scripts/self-check.sh`, which prints the Docker command (never `go test` on your host)
 - [ ] If this touches a hot path (list, status, session output, startup, tmux layer): before/after timing evidence included
 - [ ] CHANGELOG.md untouched (entries are added at landing)
 - [ ] AI-assisted? Disclosed above, with validation evidence, and I can answer questions about the code

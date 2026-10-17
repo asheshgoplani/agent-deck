@@ -1,6 +1,6 @@
 # Build the safe tooling stage from sandbox/Dockerfile first (see run.sh).
 ARG COMMS_BASE_IMAGE=agent-deck-comms-base:local
-FROM golang:1.25.13-bookworm AS build
+FROM golang:1.26.9-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

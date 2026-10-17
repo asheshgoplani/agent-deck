@@ -4,7 +4,7 @@ Thanks for being here. agent-deck ships community fixes in nearly every release,
 
 This page tells you how the project actually works, what makes a PR land fast, and where to start. If you are an AI agent contributing on a human's behalf, read [.github/INTAKE.md](.github/INTAKE.md): it is the field-level contract, and following it means you pass intake on the first try.
 
-**Contributing with an AI agent?** Point it at the [agent-deck contributor skill](.github/skills/agent-deck-contributor/SKILL.md). It packages this whole page, the intake contract, and the review criteria as an agent skill, including a `self-check.sh` that runs every gate check locally before you open the PR. An agent that follows it opens a PR we can merge on the first try.
+**Contributing with an AI agent?** Point it at the [agent-deck contributor skill](.github/skills/agent-deck-contributor/SKILL.md). It packages this whole page, the intake contract, and the review criteria as an agent skill, including a `self-check.sh` that runs every gate check locally before you open the PR. It runs `go test` only inside a container; on a host it prints the Docker command to use. An agent that follows it opens a PR we can merge on the first try.
 
 ## Start here
 
@@ -24,9 +24,9 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 ## What makes a PR land fast
 
 1. **A targeted diff.** One problem per PR. Small diffs validate in one pass; a 3k-line diff without prior discussion gets flagged for a conversation first.
-2. **Tests.** New behavior needs a test. Run the suite sandboxed (this matters, see below):
+2. **Tests.** New behavior needs a test. Run the suite sandboxed and only inside a container. This matters: agent-deck tests start real tmux servers and processes, so never run `go test` on your host. Run the contributor self-check, which refuses to run `go test` outside a container and prints the exact `docker run` command that reruns it, sandboxed tests included, inside a throwaway container:
    ```bash
-   HOME=$(mktemp -d) XDG_CONFIG_HOME= XDG_DATA_HOME= XDG_CACHE_HOME= go test ./...
+   FULL_TESTS=1 .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
    ```
 3. **Evidence.** For behavior changes, show real output: a terminal capture, logs, or before/after behavior. Mock-only proof is not enough for changes users will feel.
 4. **The human need behind the diff.** The single highest-signal thing you can write is one real sentence about what you were doing when you hit this. It is what separates a real fix from a speculative one, and it is the first thing a reviewer reads.
@@ -109,7 +109,7 @@ Tell us **which model** in the PR's AI-disclosure section (`claude-opus-4-x`, `g
 
 ### Prerequisites
 
-- Go 1.25.13
+- Go 1.26.9
 - tmux
 - Make
 
@@ -125,10 +125,23 @@ git remote add upstream https://github.com/asheshgoplani/agent-deck.git
 
 ```bash
 make build      # Build binary to ./build/agent-deck
-make test       # Run tests (sandbox HOME first; see above)
-make lint       # Run linter (requires golangci-lint)
+make test       # Run tests: only inside a container with a sandboxed HOME (see above), never on your host
+make lint       # Run golangci-lint at the pinned version (fetched with go run; no install needed)
 make fmt        # Format code
+make verify-docker  # Reproduce the CI Go checks in Docker (needs only Docker)
 ```
+
+### Reproducing CI locally
+
+`make verify-docker` runs `scripts/verify-docker.sh`, which repeats the CI Go checks in throwaway Docker containers: gofmt, `go build`, `go vet`, golangci-lint with the repo's `.golangci.yml`, and the race test suite through gotestsum with the same flags as the `Full test suite (PR gate)` job. The PR gate's shared state ordering proof (`scripts/ci-shared-state-proof.sh`) is not part of it. The Go, golangci-lint and gotestsum versions are read from `go.mod`, the `Makefile` and `.github/workflows/go-test.yml`, so the script pins nothing itself and follows those files when they are bumped. Tests run as a non-root user with a fresh `HOME`, and the source tree is mounted read-only, so your own agent-deck state is never touched. Each stage prints `STAGE <name> OK` or `STAGE <name> FAIL`, and the run ends with `VERIFY_RC=<n>`.
+
+```bash
+make verify-docker                                                    # every stage
+make verify-docker VERIFY_ARGS="--stages gofmt,build,vet,lint"         # skip the tests
+make verify-docker VERIFY_ARGS="--stages test --pkgs ./internal/session/..."
+```
+
+Run it before pushing when you touch Go code: lint findings such as gosec or staticcheck reports otherwise only show up in CI.
 
 ### Running locally
 
@@ -166,7 +179,7 @@ EOF
 
 - `feature/description`, `fix/description`, `perf/description`, `docs/description`, `refactor/description`
 - Clear conventional messages: `feat: ...`, `fix: ...`, `docs: ...`, `refactor: ...`
-- Run `make fmt` and `make lint` before pushing; CI enforces gofmt.
+- Run `make fmt` and `make lint` (or `make verify-docker` for the full CI set) before pushing; CI enforces gofmt.
 
 ## Project structure
 
@@ -181,6 +194,10 @@ agent-deck/
 ├── .github/workflows/  # CI/CD
 └── Makefile            # Build automation
 ```
+
+## Approving first-time contributor CI (maintainers)
+
+GitHub holds workflow runs from first-time fork contributors at "Approve and run". `scripts/maintainer/approve-fork-runs.sh` lists every held run on the current head of an open fork PR and marks PRs that touch CI plumbing (`.github/`, `Makefile`, lint and release config, `scripts/ci-*`, `tests/ci/`, `go.mod`, `go.sum`) as SENSITIVE. It is a dry run by default. `--approve` approves the safe PRs only; a SENSITIVE PR is approved only with `--include <pr>` after you have read its diff, and `--pr <n>` limits the run to one PR. Runs on superseded heads are never approved. Approved fork runs still get a read-only token and no repository secrets.
 
 ## License
 

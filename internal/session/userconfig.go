@@ -459,7 +459,23 @@ type PerformanceSettings struct {
 	//
 	//	[performance]
 	//	claim_polling = true
-	ClaimPolling *bool `toml:"claim_polling,omitempty"`
+	ClaimPolling          *bool `toml:"claim_polling,omitempty"`
+	StatusIntervalSeconds int   `toml:"status_interval_seconds,omitempty"`
+}
+
+// StatusInterval bounds local TUI sweep frequency while preserving the two-second default.
+func (c *UserConfig) StatusInterval() time.Duration {
+	if c == nil || c.Performance.StatusIntervalSeconds == 0 {
+		return 2 * time.Second
+	}
+	seconds := c.Performance.StatusIntervalSeconds
+	if seconds < 1 {
+		seconds = 1
+	}
+	if seconds > 10 {
+		seconds = 10
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // ClaimPollingEnabled reports whether claim-based polling is enabled.
@@ -1174,6 +1190,9 @@ type ProfileSettings struct {
 type ProfileClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this profile only.
 	ConfigDir string `toml:"config_dir,omitempty"`
+	// PromptSuggestions overrides [launch].prompt_suggestions for sessions
+	// of this agent-deck profile.
+	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
 }
 
 // ProfileCodexSettings defines profile-specific Codex overrides.
@@ -1863,6 +1882,14 @@ type LaunchSettings struct {
 	// sub-session out of it: the new session starts top-level in the
 	// folder-derived group, with no parent link and no note.
 	NestUnderParent bool `toml:"nest_under_parent,omitempty"`
+
+	// PromptSuggestions controls Claude Code prompt suggestions (the dim
+	// predicted next message in an empty composer) in sessions agent-deck
+	// launches: "children-off" (default) starts parented sessions (workers, a
+	// conductor's children) with CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+	// and leaves root sessions alone; "on" never sets the env; "off" sets it
+	// for every Claude session. See prompt_suggestions.go.
+	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting
@@ -2098,6 +2125,14 @@ type ClaudeSettings struct {
 	// for instant, deterministic status updates instead of polling tmux content.
 	// Default: true (nil = use default true, set false to disable)
 	HooksEnabled *bool `toml:"hooks_enabled,omitempty"`
+
+	// StatuslineFeed lets `hooks install` (and the unattended heal) wrap the
+	// Claude statusLine with `agent-deck usage statusline-wrap`, so the core
+	// keeps each session's model, context and 5h/7d record. Set false to
+	// leave every statusLine untouched; `hooks uninstall` still restores one
+	// that was wrapped earlier.
+	// Default: true (nil = use default true, set false to disable)
+	StatuslineFeed *bool `toml:"statusline_feed,omitempty"`
 
 	// AutoResumeSummary auto-presses Enter on Claude's "Resume from summary"
 	// picker that appears after `claude --resume` on long-running sessions
@@ -2455,6 +2490,15 @@ func (c *ClaudeSettings) GetHooksEnabled() bool {
 		return true
 	}
 	return *c.HooksEnabled
+}
+
+// GetStatuslineFeed returns whether agent-deck may wrap Claude's statusLine,
+// defaulting to true.
+func (c *ClaudeSettings) GetStatuslineFeed() bool {
+	if c.StatuslineFeed == nil {
+		return true
+	}
+	return *c.StatuslineFeed
 }
 
 // GetAutoResumeSummary returns whether the "Resume from summary" picker is
@@ -3329,10 +3373,45 @@ type MCPDef struct {
 	// Example: { Authorization = "Bearer token123" }
 	Headers map[string]string `toml:"headers,omitempty"`
 
+	// OAuth holds OAuth client parameters for HTTP/SSE MCPs whose server
+	// requires a pre-registered client (Claude Code's `claude mcp add
+	// --client-id ... --callback-port ...`). Written as the "oauth" object of
+	// the generated Claude MCP config. Issue #2552.
+	OAuth *MCPOAuthConfig `toml:"oauth,omitempty"`
+
 	// Server defines how to auto-start an HTTP MCP server process
 	// When set, agent-deck will start the server before connecting via HTTP
 	// This is optional - you can also connect to externally managed servers
 	Server *HTTPServerConfig `toml:"server,omitempty"`
+}
+
+// MCPOAuthConfig is the [mcps.NAME.oauth] table. Field names mirror the
+// "oauth" object Claude Code reads from .mcp.json / ~/.claude.json. The
+// client secret is deliberately absent: Claude Code keeps it in the system
+// keychain, never in a config file.
+type MCPOAuthConfig struct {
+	// ClientID is the pre-registered OAuth client id.
+	ClientID string `toml:"client_id,omitempty" json:"clientId,omitempty"`
+
+	// CallbackPort fixes the local redirect port when the client was
+	// registered with a specific redirect URI.
+	CallbackPort int `toml:"callback_port,omitzero" json:"callbackPort,omitempty"`
+
+	// AuthServerMetadataURL overrides OAuth authorization server discovery
+	// (must be https).
+	AuthServerMetadataURL string `toml:"auth_server_metadata_url,omitempty" json:"authServerMetadataUrl,omitempty"`
+
+	// Scopes is the space separated scope string to request.
+	Scopes string `toml:"scopes,omitempty" json:"scopes,omitempty"`
+}
+
+// claudeOAuth returns the oauth object to emit, or nil when nothing is set.
+func (o *MCPOAuthConfig) claudeOAuth() *MCPOAuthConfig {
+	if o == nil || *o == (MCPOAuthConfig{}) {
+		return nil
+	}
+	c := *o
+	return &c
 }
 
 // GetStartupTimeout returns the startup timeout in milliseconds, defaulting to 5000ms
@@ -4300,7 +4379,7 @@ func guardConfigSectionDrop(configPath string, newContent []byte) error {
 func countFunctionalMCPs(mcps map[string]MCPDef) int {
 	count := 0
 	for _, m := range mcps {
-		if m.Command != "" || m.URL != "" || len(m.Args) > 0 || len(m.Env) > 0 || m.Description != "" || len(m.Headers) > 0 || m.Transport != "" || m.Server != nil {
+		if m.Command != "" || m.URL != "" || len(m.Args) > 0 || len(m.Env) > 0 || m.Description != "" || len(m.Headers) > 0 || m.Transport != "" || m.Server != nil || m.OAuth != nil {
 			count++
 		}
 	}
@@ -5623,6 +5702,17 @@ auto_cleanup = true
 # headers = { Authorization = "Bearer your-token-here", "X-API-Key" = "your-api-key" }
 # description = "HTTP MCP with auth headers"
 
+# Example: HTTP MCP that needs a pre-registered OAuth client
+# (same as: claude mcp add --transport http --client-id ...; Claude only)
+# [mcps.work-api]
+# url = "https://mcp.example.com/mcp"
+# transport = "http"
+# [mcps.work-api.oauth]
+#   client_id = "your-client-id"
+#   callback_port = 8080                 # optional fixed redirect port
+#   # auth_server_metadata_url = "https://auth.example.com/.well-known/oauth-authorization-server"
+#   # scopes = "read write"
+
 # Example: SSE MCP server
 # [mcps.remote-sse]
 # url = "https://api.example.com/mcp/sse"
@@ -5903,6 +5993,7 @@ func GetPluginDef(name string) *PluginDef {
 
 // CostsSettings configures cost tracking, budgets, and pricing overrides.
 type CostsSettings struct {
+	Enabled       *bool  `toml:"enabled,omitempty"`
 	Currency      string `toml:"currency,omitempty"`
 	Timezone      string `toml:"timezone,omitempty"`
 	RetentionDays int    `toml:"retention_days,omitzero"`
@@ -5921,8 +6012,25 @@ type CostsSettings struct {
 // ProfileCosts holds per-profile overrides for cost-related settings.
 // Pointer fields use the same fall-through semantics as CostsSettings.
 type ProfileCosts struct {
+	Enabled              *bool   `toml:"enabled,omitempty"`
 	CostLineTemplate     *string `toml:"cost_line_template,omitempty"`
 	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero,omitempty"`
+}
+
+// ResolveCostTrackingEnabled applies profile, global, then default-on settings.
+func ResolveCostTrackingEnabled(cfg *UserConfig, profile string) bool {
+	if cfg == nil {
+		return true
+	}
+	if p, ok := cfg.Profiles[profile]; ok && p.Costs != nil && p.Costs.Enabled != nil {
+		return *p.Costs.Enabled
+	}
+	return cfg.Costs.Enabled == nil || *cfg.Costs.Enabled
+}
+
+func GetCostTrackingEnabled(profile string) bool {
+	cfg, _ := LoadUserConfig()
+	return ResolveCostTrackingEnabled(cfg, GetEffectiveProfile(profile))
 }
 
 // defaultCostLineTemplate is the hardcoded fallback that preserves the

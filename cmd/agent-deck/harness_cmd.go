@@ -257,7 +257,7 @@ func handleHarness(profile string, args []string) {
 	if len(args) == 0 || helpRequested(args[:1]) {
 		usage()
 		if len(args) == 0 {
-			os.Exit(2)
+			exitCLI(2)
 		}
 		return
 	}
@@ -269,7 +269,7 @@ func handleHarness(profile string, args []string) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	switch args[0] {
 	case "list":
@@ -284,12 +284,12 @@ func handleHarness(profile string, args []string) {
 	case "status":
 		if fs.NArg() != 1 {
 			usage()
-			os.Exit(2)
+			exitCLI(2)
 		}
 		list := collectHarnesses(profile, fs.Arg(0))
 		if len(list) == 0 {
 			NewCLIOutput(*jsonOutput, false).Error(fmt.Sprintf("unknown harness %q (known: %s)", fs.Arg(0), strings.Join(harness.Names(), ", ")), ErrCodeNotFound)
-			os.Exit(2)
+			exitCLI(2)
 		}
 		h := list[0]
 		if *jsonOutput {
@@ -306,7 +306,7 @@ func handleHarness(profile string, args []string) {
 		}
 	default:
 		usage()
-		os.Exit(2)
+		exitCLI(2)
 	}
 }
 
@@ -314,7 +314,7 @@ func printJSONValue(v any) {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: encode JSON: %v\n", err)
-		os.Exit(1)
+		exitCLI(1)
 	}
 	fmt.Println(string(b))
 }
@@ -335,6 +335,9 @@ type limitAccountJSON struct {
 	UpdatedAt string            `json:"updated_at,omitempty"`
 	Stale     bool              `json:"stale"`
 	Error     string            `json:"error,omitempty"`
+	// Default marks the active default Claude login (~/.claude or the
+	// resolved CLAUDE_CONFIG_DIR) that no [profiles.<name>.claude] slot owns.
+	Default bool `json:"default,omitempty"`
 }
 
 func epochRFC3339(sec *int64) string {
@@ -345,11 +348,25 @@ func epochRFC3339(sec *int64) string {
 }
 
 // claudeLimits reads each Claude account's quota cache (fed by the
-// statusLine ingester `agent-deck hooks install` wires).
+// statusLine ingester `agent-deck hooks install` wires): every configured
+// slot, then the active default login when no slot owns its config directory
+// (CORE-CHANGES 9), under the name hooks install wires its feed with, so the
+// same quota cache is read. The default login is never made a slot.
 func claudeLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 	var out []limitAccountJSON
+	slots := []session.ClaudeAccountSlot{}
+	named := map[string]bool{}
 	for _, a := range configuredAccountSlotsForHarness(cfg, "claude") {
-		acc := limitAccountJSON{Harness: "claude", Name: a.Name, Windows: []limitWindowJSON{}, Source: "quota cache (statusLine ingester)"}
+		slots = append(slots, session.ClaudeAccountSlot{Name: a.Name, ConfigDir: a.ConfigDir})
+		named[a.Name] = true
+	}
+	for _, s := range session.ClaudeUsageFeedSlots(cfg) {
+		if !named[s.Name] {
+			slots = append(slots, s)
+		}
+	}
+	for _, a := range slots {
+		acc := limitAccountJSON{Harness: "claude", Name: a.Name, Windows: []limitWindowJSON{}, Source: "quota cache (statusLine ingester)", Default: !named[a.Name]}
 		store, err := quota.NewStore(a.Name)
 		if err == nil {
 			snaps, _ := store.Load()
@@ -502,8 +519,22 @@ func codexLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 func limitReachedByHarness() map[string]bool {
 	cfg, _ := session.LoadUserConfig()
 	now := time.Now()
+	return limitReachedFrom([][]limitAccountJSON{claudeLimits(cfg, now), codexLimits(cfg, now)})
+}
+
+// limitReachedFrom is limitReachedByHarness over already collected accounts.
+// A default Claude login with no known windows (no feed or no data yet) is
+// left out, so it never masks the configured slots' verdict.
+func limitReachedFrom(groups [][]limitAccountJSON) map[string]bool {
 	out := map[string]bool{}
-	for _, accs := range [][]limitAccountJSON{claudeLimits(cfg, now), codexLimits(cfg, now)} {
+	for _, group := range groups {
+		var accs []limitAccountJSON
+		for _, a := range group {
+			if a.Default && len(a.Windows) == 0 {
+				continue
+			}
+			accs = append(accs, a)
+		}
 		if len(accs) == 0 {
 			continue
 		}
@@ -529,8 +560,9 @@ func handleLimits(args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck limits [--json]")
 		fmt.Println()
-		fmt.Println("Usage limits per account: Claude 5h and 7d windows per account slot (from the quota")
-		fmt.Println("cache the statusLine ingester fills; `agent-deck hooks install` wires it) and Codex")
+		fmt.Println("Usage limits per account: Claude 5h and 7d windows per account slot and for the")
+		fmt.Println("default login no slot owns (marked \"default\": true), from the quota cache the")
+		fmt.Println("statusLine ingester fills (`agent-deck hooks install` wires it), and Codex")
 		fmt.Println("weekly/5h windows per CODEX_HOME (from the newest token_count frame in its rollouts),")
 		fmt.Println("each with used_pct and resets_at. Needs [macapp] plugins = true (docs/macapp-core.md).")
 	}
@@ -538,13 +570,13 @@ func handleLimits(args []string) {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		os.Exit(2)
+		exitCLI(2)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
 	cfg, _ := session.LoadUserConfig()
 	if cfg == nil || !cfg.Macapp.Plugins {
 		out.Error("limits is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		os.Exit(2)
+		exitCLI(2)
 	}
 	now := time.Now()
 	accounts := append(claudeLimits(cfg, now), codexLimits(cfg, now)...)

@@ -21,6 +21,15 @@ import (
 //     session's stored command (which can be a permission-skipping wrapper) and
 //     start/restart accept -m/--message prompt injection. They go to the ask
 //     list so the user still confirms.
+//
+//     Ask rules prompt even in auto mode, overriding allow rules and the
+//     auto-mode classifier. Users who want the conductor's permission mode to
+//     decide set [conductor] permission_ask = false: setup then writes no ask
+//     list and removes the entries it wrote before, keeping any the user
+//     added. Setup does not track who wrote an entry, so a user rule that is
+//     character for character identical to a managed one is removed too. The
+//     commands stay off the allow list, so the default mode still prompts for
+//     them.
 //   - The write-allow is NOT a recursive /** over the conductor dir. A conductor
 //     dir holds executables/config that run on spawn/hook (.claude/settings.json
 //     = arbitrary hooks, .mcp.json = arbitrary stdio servers, .envrc = injected
@@ -52,7 +61,7 @@ var conductorAutoAllowCommands = []string{
 // conductorAskCommands are mutating / lifecycle / replay-risk commands that must
 // still prompt. Listed explicitly so the policy is auditable and so the user is
 // asked rather than silently denied. Wrapped in Bash(...) for the same reason as
-// the allow list.
+// the allow list. Written only while [conductor] permission_ask is on.
 var conductorAskCommands = []string{
 	"Bash(agent-deck session start *)",
 	"Bash(agent-deck session stop *)",
@@ -99,7 +108,8 @@ func conductorWriteDenyPatterns(dir string) []string {
 
 // WriteConductorClaudeSettings writes (or merges into) the conductor's
 // .claude/settings.json with the auto-allow/ask/deny permission policy from
-// #1358. Claude-only; other agents don't use this file.
+// #1358, honoring [conductor] permission_ask. Claude-only; other agents don't
+// use this file.
 //
 // Existing unmanaged keys in settings.json are preserved. Managed permission
 // entries are merged in idempotently: re-running setup keeps the policy current
@@ -109,10 +119,20 @@ func WriteConductorClaudeSettings(name string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get conductor dir: %w", err)
 	}
-	return writeConductorClaudeSettingsAt(dir)
+	return writeConductorClaudeSettingsAt(dir, conductorPermissionAskEnabled())
 }
 
-func writeConductorClaudeSettingsAt(dir string) error {
+// conductorPermissionAskEnabled reads [conductor] permission_ask. A config
+// that fails to load keeps the ask list, the stricter policy.
+func conductorPermissionAskEnabled() bool {
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return true
+	}
+	return cfg.Conductor.PermissionAskEnabled()
+}
+
+func writeConductorClaudeSettingsAt(dir string, permissionAsk bool) error {
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", claudeDir, err)
@@ -144,17 +164,29 @@ func writeConductorClaudeSettingsAt(dir string) error {
 	if err != nil {
 		return fmt.Errorf("merge permissions.allow in %s: %w", settingsPath, err)
 	}
-	ask, err := mergeUniqueRaw(permsObj["ask"], conductorAskCommands)
-	if err != nil {
-		return fmt.Errorf("merge permissions.ask in %s: %w", settingsPath, err)
-	}
 	deny, err := mergeUniqueRaw(permsObj["deny"], conductorWriteDenyPatterns(dir))
 	if err != nil {
 		return fmt.Errorf("merge permissions.deny in %s: %w", settingsPath, err)
 	}
 	permsObj["allow"] = allow
-	permsObj["ask"] = ask
 	permsObj["deny"] = deny
+	if permissionAsk {
+		ask, err := mergeUniqueRaw(permsObj["ask"], conductorAskCommands)
+		if err != nil {
+			return fmt.Errorf("merge permissions.ask in %s: %w", settingsPath, err)
+		}
+		permsObj["ask"] = ask
+	} else if raw, ok := permsObj["ask"]; ok {
+		ask, err := removeEntriesRaw(raw, conductorAskCommands)
+		if err != nil {
+			return fmt.Errorf("clean permissions.ask in %s: %w", settingsPath, err)
+		}
+		if ask == nil {
+			delete(permsObj, "ask")
+		} else {
+			permsObj["ask"] = ask
+		}
+	}
 
 	permsJSON, err := json.Marshal(permsObj)
 	if err != nil {
@@ -171,6 +203,29 @@ func writeConductorClaudeSettingsAt(dir string) error {
 		return fmt.Errorf("write %s: %w", settingsPath, err)
 	}
 	return nil
+}
+
+// removeEntriesRaw drops the given entries from a JSON string array, keeping the
+// rest in their original order. It returns nil when nothing is left.
+func removeEntriesRaw(existing json.RawMessage, remove []string) (json.RawMessage, error) {
+	var base []string
+	if err := json.Unmarshal(existing, &base); err != nil {
+		return nil, fmt.Errorf("not a JSON string array: %w", err)
+	}
+	drop := map[string]bool{}
+	for _, r := range remove {
+		drop[r] = true
+	}
+	kept := []string{}
+	for _, b := range base {
+		if !drop[b] {
+			kept = append(kept, b)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(kept)
 }
 
 // mergeUniqueRaw decodes an existing JSON string array (which may be nil/absent,

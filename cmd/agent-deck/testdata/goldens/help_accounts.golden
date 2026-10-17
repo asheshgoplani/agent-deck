@@ -1,0 +1,13 @@
+Usage: agent-deck accounts [--harness claude|codex] [--json]
+
+List named account slots configured as [profiles.<name>.claude].config_dir
+(or [profiles.<name>.codex].config_dir with --harness codex).
+
+These names are the valid values for `launch --account`, `session set <id>
+account` and `session switch-account`, and for the account row in the TUI's
+New Session and Edit Session dialogs.
+
+  -harness string
+    	Harness family whose slots to list: claude ([profiles.<name>.claude].config_dir) or codex ([profiles.<name>.codex].config_dir) (default "claude")
+  -json
+    	Output as JSON

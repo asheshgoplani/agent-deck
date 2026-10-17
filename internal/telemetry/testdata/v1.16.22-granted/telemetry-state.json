@@ -1,0 +1,31 @@
+{
+  "revision": 10,
+  "consent_endpoint": "http://127.0.0.1:8787",
+  "schema_version": 2,
+  "consent": "granted",
+  "consent_version": "1.16.22",
+  "consent_day": "2026-10-06",
+  "install_id": "1c9855e026efb875ce0d9f34863aab15",
+  "level": "full",
+  "salt": "f72d400027234a5a9c8d028d01581990202509664e91dbf8352cece7429998a9",
+  "seq": 12,
+  "first_seen_day": "2026-10-06",
+  "first_seen_at": "2026-10-06T22:12:40.345448466-12:00",
+  "milestones": 3,
+  "funnel": {},
+  "daily": {
+    "2026-10-06": {
+      "emitted": 12,
+      "human_hours": 4194304,
+      "cli_start_hours": 4194304,
+      "cli_cmds": 2,
+      "tui_starts": 2,
+      "env_snapshot": true
+    }
+  },
+  "upload": {
+    "next_try": "0001-01-01T00:00:00Z",
+    "last_at": "0001-01-01T00:00:00Z"
+  },
+  "last_version": "1.16.22"
+}

@@ -3,6 +3,7 @@ package telemetry
 import (
 	"errors"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -41,6 +42,12 @@ const (
 	// PromptV1Declined is shown above the buttons for installs that declined
 	// the schema 1 prompt, which counted every key as no.
 	PromptV1Declined = "You said no to an earlier, smaller version of this question."
+	// PromptKeepsID is shown above the buttons when a yes keeps an existing
+	// install id (asked again after an upgrade changed the question).
+	PromptKeepsID = "Your anonymous ID is kept; unsent data from before will be sent."
+	// PromptKeepsIDNewEndpoint is the same note when the destination changed:
+	// data recorded for the old destination is never sent to the new one.
+	PromptKeepsIDNewEndpoint = "Your anonymous ID is kept; unsent data for the old endpoint is deleted."
 	// PromptTooSmall replaces the question when the terminal is too small.
 	PromptTooSmall = "Telemetry is off. Enlarge the window to 78×22 to read the question, or run agent-deck telemetry on in a shell."
 
@@ -81,13 +88,40 @@ func ShouldPrompt(s *State) bool {
 	return Interactive()
 }
 
-// Grant records consent. A new install id and salt are created unless the
-// existing ones were granted for this exact endpoint and schema; a new
-// identity also deletes the spool, so events recorded under an earlier
-// consent or destination can never be sent under this one. Nothing records
-// into the spool meanwhile: the stale grant does not enable recording.
+// ReconsentNote returns the line the prompt adds when a yes would keep an
+// existing install id (a grant from an earlier schema, or for another
+// endpoint), or "" when a yes creates a new one.
+func ReconsentNote(s *State, endpoint string) string {
+	switch {
+	case s == nil || !hasIdentity(s):
+		return ""
+	case s.ConsentEndpoint != endpoint:
+		return PromptKeepsIDNewEndpoint
+	default:
+		return PromptKeepsID
+	}
+}
+
+// hasIdentity reports a usable install id and salt.
+func hasIdentity(s *State) bool {
+	return validInstallID(s.InstallID) && len(s.Salt) == 64
+}
+
+// Grant records consent. An existing install id and salt are always kept:
+// upgrades, a schema bump (which only asks again, see LoadState) and a new
+// destination never change who the install is. Only reset-id rotates them,
+// and only a no or off clears them; a new pair is created when none is
+// usable (after a no or off, or a v1 state without a salt). Unsent spool
+// lines and rollups recorded before the yes are kept and sent later under
+// the same id; they are re-validated against the current schema when read
+// and get os, arch and schema when sent. Data is dropped only with a new
+// identity or when the destination changed, so events recorded for one
+// destination are never sent to another; a kept id keeps its seq counter and
+// milestones even then. Nothing records meanwhile: a stale grant does not
+// enable recording.
 func Grant(s *State, version string, now time.Time) error {
-	if !validInstallID(s.InstallID) || len(s.Salt) != 64 || s.ConsentEndpoint != Endpoint() || s.SchemaVersion != SchemaVersion {
+	switch {
+	case !hasIdentity(s):
 		id, salt, err := newIdentity()
 		if err != nil {
 			return err
@@ -97,6 +131,11 @@ func Grant(s *State, version string, now time.Time) error {
 		}
 		s.resetCollected()
 		s.InstallID, s.Salt = id, salt
+	case s.ConsentEndpoint != Endpoint():
+		if err := DeleteSpool(); err != nil {
+			return err
+		}
+		s.dropUnsent()
 	}
 	s.SchemaVersion = SchemaVersion
 	s.ConsentEndpoint = Endpoint()
@@ -123,15 +162,23 @@ func newIdentity() (id, salt string, err error) {
 
 // resetCollected forgets everything recorded under an install id.
 func (s *State) resetCollected() {
+	s.dropUnsent()
+	s.Seq = 0
+	s.Milestones = 0
+	s.Funnel = FunnelState{}
+}
+
+// dropUnsent forgets the rollups waiting to be sent and the upload history
+// of one destination. The per-id sequence, milestones and funnel stay, so a
+// kept id never repeats a seq number or a one-time milestone.
+func (s *State) dropUnsent() {
 	s.Counters = nil
 	s.LastPayload = nil
 	s.LastSentDay = ""
-	s.Seq = 0
 	s.Daily = nil
 	s.Upload = UploadState{}
-	s.Milestones = 0
-	s.Funnel = FunnelState{}
 	s.TUIOpen = false
+	s.OpenHour = nil
 }
 
 // Decline records a refusal and forgets the id, salt and everything recorded.
@@ -158,13 +205,20 @@ func RotateInstallID(s *State) error {
 	s.InstallID, s.Salt = id, salt
 	s.Seq = 0
 	s.Daily = nil
+	s.OpenHour = nil
 	s.LastPayload = nil
 	s.LastSentDay = ""
 	return nil
 }
 
-// ResetID rotates the install id and deletes the spool, under the lock.
+// ResetID rotates the install id and deletes the spool, under the lock. It
+// waits for an in-flight send so no batch straddles the rotation.
 func ResetID() (*State, error) {
+	unlockSend, err := lockSend(syscall.LOCK_EX)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockSend()
 	unlock, err := lockState()
 	if err != nil {
 		return nil, err
@@ -194,7 +248,7 @@ func Enabled(s *State) (bool, DisableReason) {
 		if s.SchemaVersion != SchemaVersion || s.ConsentEndpoint != Endpoint() {
 			return false, DisableReason("endpoint or schema changed; interactive consent required")
 		}
-		if !validInstallID(s.InstallID) || len(s.Salt) != 64 {
+		if !hasIdentity(s) {
 			return false, DisableReason("invalid install id; interactive consent required")
 		}
 		return true, ReasonNone
@@ -206,9 +260,15 @@ func Enabled(s *State) (bool, DisableReason) {
 }
 
 // Disable commits a fresh refusal and deletes the spool under the lock. It
-// may wait for an in-flight upload (at most uploadDeadline); once it returns,
-// nothing further is sent and the spool is gone.
+// waits for an in-flight send through the send lock (its requests are bounded
+// by uploadDeadline, its state lock waits are not); once it returns, nothing
+// further is sent by a binary that takes the send lock, and the spool is gone.
 func Disable(version string, now time.Time) error {
+	unlockSend, err := lockSend(syscall.LOCK_EX)
+	if err != nil {
+		return err
+	}
+	defer unlockSend()
 	unlock, err := lockState()
 	if err != nil {
 		return err
@@ -223,14 +283,26 @@ func Disable(version string, now time.Time) error {
 }
 
 // SetLevel stores the recording level. Raising basic to full is a consent
-// decision; callers must confirm it interactively first.
+// decision; callers must confirm it interactively first. Unless the level
+// stays full, the stored open hour is forgotten, so an hour sampled at one
+// level never ships at another. Like Disable, it waits for an in-flight
+// send through the send lock, so once it returns no batch built at the
+// previous level is still going out.
 func SetLevel(l Level) (*State, error) {
+	unlockSend, err := lockSend(syscall.LOCK_EX)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockSend()
 	unlock, err := lockState()
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
 	s := LoadState()
+	if !s.keepsOpenHour() || l != LevelFull {
+		s.OpenHour = nil
+	}
 	s.Level = l
 	return s, saveStateLocked(s)
 }

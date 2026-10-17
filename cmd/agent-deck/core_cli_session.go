@@ -16,7 +16,7 @@ import (
 // TestCoreRegistryMatchesLegacyHandlers); the work itself runs in internal/core.
 
 func cliSessionStart(profile string, args []string) {
-	fs := flag.NewFlagSet("session start", flag.ExitOnError)
+	fs := flag.NewFlagSet("session start", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -44,8 +44,8 @@ func cliSessionStart(profile string, args []string) {
 		fmt.Println("  git diff | agent-deck session start my-project --message-file -   # initial message from stdin")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(jsonOutput.enabled(), *quiet || *quietShort)
@@ -86,6 +86,10 @@ func cliSessionStart(profile string, args []string) {
 		return
 	}
 
+	if started.Warning != "" && !jsonOutput.enabled() {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", started.Warning)
+	}
+
 	// --attach suspends the CLI into tmux until the user detaches, so the
 	// success output is skipped. Refused loudly without a terminal or under
 	// --json; the session stays started in both cases.
@@ -96,10 +100,10 @@ func cliSessionStart(profile string, args []string) {
 		if err := attachInstanceInteractive(started.Instance); err != nil {
 			if errors.Is(err, errAttachNoTTY) {
 				fmt.Fprintf(os.Stderr, "Error: %v; session was started\n", err)
-				os.Exit(3)
+				exitCLI(3)
 			}
 			fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
-			os.Exit(1)
+			exitCLI(1)
 		}
 		return
 	}
@@ -112,6 +116,9 @@ func cliSessionStart(profile string, args []string) {
 		"success": true,
 		"id":      started.ID,
 		"title":   started.Title,
+	}
+	if started.Warning != "" {
+		jsonData["warning"] = started.Warning
 	}
 	if started.Tmux != "" {
 		jsonData["tmux"] = started.Tmux
@@ -129,7 +136,7 @@ func cliSessionStart(profile string, args []string) {
 }
 
 func cliSessionStop(profile string, args []string) {
-	fs := flag.NewFlagSet("session stop", flag.ExitOnError)
+	fs := flag.NewFlagSet("session stop", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -144,8 +151,8 @@ func cliSessionStop(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	out := NewCLIOutput(jsonOutput.enabled(), *quiet || *quietShort)
@@ -179,7 +186,7 @@ func cliSessionStop(profile string, args []string) {
 }
 
 func cliSessionRestart(profile string, args []string) {
-	fs := flag.NewFlagSet("session restart", flag.ExitOnError)
+	fs := flag.NewFlagSet("session restart", flag.ContinueOnError)
 	var jsonOutput jsonModeFlag
 	fs.Var(&jsonOutput, "json", "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
@@ -218,8 +225,8 @@ func cliSessionRestart(profile string, args []string) {
 		fmt.Println("  agent-deck session restart --all")
 	}
 
-	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
 	}
 
 	quietMode := *quiet || *quietShort
@@ -259,6 +266,9 @@ func cliSessionRestart(profile string, args []string) {
 	if restarted.All != nil {
 		renderRestartAll(out, &jsonOutput, res, restarted.All)
 		return
+	}
+	if restarted.Skipped {
+		markCLINoop() // the freshness or auth guard skipped it: not a restart
 	}
 
 	switch {
@@ -323,7 +333,7 @@ func renderRestartAll(out *CLIOutput, mode *jsonModeFlag, res *core.Result, all 
 
 	res.Finish()
 	if !all.OK() {
-		os.Exit(1)
+		exitCLI(1)
 	}
 }
 

@@ -1,0 +1,1 @@
+The idle-monitor pane and JSONL are synthetic fixtures built from the 2026-10-07 bug description. They use the existing transcript scanner's tool_use/tool_result Monitor schema. They are not captures from a live observer and do not establish upstream harness schema compatibility beyond that existing schema.

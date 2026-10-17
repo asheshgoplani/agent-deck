@@ -126,7 +126,7 @@ is unavailable).
 1. PR touches `internal/web/**`, `.lighthouserc.json`, `tests/lighthouse/**`,
    or `.github/workflows/lighthouse-ci.yml`.
 2. The workflow checks out the PR head and the base ref into separate
-   directories and builds both binaries (`GOTOOLCHAIN=go1.25.13 make build`).
+   directories and builds both binaries (`GOTOOLCHAIN=go1.26.9 make build`).
 3. `lhci collect` runs against the PR-head server (with `--no-tui`).
 4. `lhci collect` runs against the base server (best-effort; failures are
    non-fatal so the PR still benefits from the absolute threshold check).
@@ -153,7 +153,7 @@ make build
 ./tests/lighthouse/budget-check.sh
 ```
 
-Prerequisites: Go 1.24.0, Node.js >= 18, Chrome/Chromium installed.
+Prerequisites: Go 1.26.9, Node.js >= 18, Chrome/Chromium installed.
 
 The script starts a test server on port 19999, runs `lhci collect` + `lhci assert`,
 and exits with the assertion result code.

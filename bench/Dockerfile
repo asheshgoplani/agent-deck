@@ -1,4 +1,4 @@
-FROM golang:1.25
+FROM golang:1.26.9
 RUN apt-get update && apt-get install -y --no-install-recommends tmux && apt-get clean
 WORKDIR /src
 COPY go.mod go.sum ./

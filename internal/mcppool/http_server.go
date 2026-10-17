@@ -113,23 +113,6 @@ func (s *HTTPServer) StartedByUs() bool {
 	return s.startedByUs
 }
 
-// GetURL returns the HTTP endpoint URL
-func (s *HTTPServer) GetURL() string {
-	return s.url
-}
-
-// GetName returns the server name
-func (s *HTTPServer) GetName() string {
-	return s.name
-}
-
-// GetLastError returns the last error encountered
-func (s *HTTPServer) GetLastError() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.lastError
-}
-
 // killLeftoverProcess SIGKILLs any previously-spawned child whose
 // reference is still in s.process and which has not been reaped yet.
 // Called at the top of Start (under startMu) so the new spawn cannot
@@ -407,14 +390,6 @@ func (s *HTTPServer) Stop() error {
 	}
 
 	s.status = StatusStopped
-	return nil
-}
-
-// HealthCheck checks if the server is responding
-func (s *HTTPServer) HealthCheck() error {
-	if !s.isURLReachable() {
-		return fmt.Errorf("server not responding at %s", s.healthCheckURL)
-	}
 	return nil
 }
 

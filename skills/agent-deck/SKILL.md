@@ -37,6 +37,7 @@ Plugin installs resolve to `~/.claude/plugins/cache/agent-deck/agent-deck/<hash>
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
+| `agent-deck open report.html` | Show an HTML report to the user in the macOS app Browser panel (works from remote sessions too) |
 | `agent-deck add --worktree <branch>` | Create session in git worktree |
 
 **Status:** `●` running | `◐` waiting | `○` idle | `✕` error

@@ -20,7 +20,7 @@ func TestIssue1952_OrdinaryWaitingTurnRemainsActionableAfterRemoteDrain(t *testi
 		map[string]*Instance{child.ID: child},
 		map[string]string{child.ID: string(StatusWaiting)}, nil)
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(profile)
 	if err != nil {
 		t.Fatalf("ExportPendingRecords: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestIssue1952_TerminalTurnRetriesAfterLivenessRecovery(t *testing.T) {
 	live = true
 	d.recordTerminalTurns(profile, byID, statuses, nil)
 
-	records, err := ExportPendingRecords()
+	records, err := ExportPendingRecords(profile)
 	if err != nil {
 		t.Fatalf("ExportPendingRecords: %v", err)
 	}

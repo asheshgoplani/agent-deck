@@ -680,3 +680,113 @@ func TestFindLandedIgnoresEarlierIdenticalText(t *testing.T) {
 		t.Fatalf("a row stamped after the send: %q %v", id, ok)
 	}
 }
+
+// Backward pages must reproduce the final row order, including multiple rows
+// on one native line, late tool results and queue movement/removal.
+func TestRowsBeforePages(t *testing.T) {
+	for _, harness := range []string{"claude", "codex"} {
+		t.Run(harness, func(t *testing.T) {
+			src := RowsSource{Harness: harness, Path: rowsFixture(t, harness)}
+			full, err := ReadRows(context.Background(), src, RowsOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, limit := range []int{1, 3, 7} {
+				page, err := ReadRows(context.Background(), src, RowsOptions{Tail: limit})
+				if err != nil {
+					t.Fatal(err)
+				}
+				rows := append([]Row(nil), page.Turns...)
+				for pages := 0; page.BeforeCursor != ""; pages++ {
+					if pages > len(full.Turns) {
+						t.Fatal("before cursor did not terminate")
+					}
+					page, err = ReadRows(context.Background(), src, RowsOptions{Before: page.BeforeCursor, Limit: limit})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(page.Turns) > limit || len(page.Updates) > 0 || len(page.Removed) > 0 {
+						t.Fatalf("unbounded page: %+v", page)
+					}
+					rows = append(page.Turns, rows...)
+				}
+				if !reflect.DeepEqual(rows, full.Turns) {
+					t.Fatalf("limit %d: backward pages differ from full timeline", limit)
+				}
+			}
+		})
+	}
+}
+
+func TestRowsBeforeValidationAndMutation(t *testing.T) {
+	src := RowsSource{Harness: "claude", Path: filepath.Join(t.TempDir(), "session.jsonl")}
+	line := `{"type":"user","uuid":"first","message":{"content":"first"}}` + "\n"
+	if err := os.WriteFile(src.Path, []byte(line), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tl, err := ReadRows(context.Background(), src, RowsOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opts := range []RowsOptions{
+		{Before: tl.BeforeCursor}, {Before: tl.BeforeCursor, Limit: -1},
+		{Before: tl.BeforeCursor, Limit: 2, Tail: 2},
+		{Before: tl.BeforeCursor, Limit: 2, Since: tl.ThroughCursor},
+		{Before: tl.BeforeCursor, Limit: 2, AgentID: "agent"},
+		{Before: "bad", Limit: 2},
+	} {
+		if _, err := ReadRows(context.Background(), src, opts); err == nil {
+			t.Fatalf("accepted invalid options: %+v", opts)
+		}
+	}
+	// A plain through cursor can bootstrap paging from its snapshot end.
+	page, err := ReadRows(context.Background(), src, RowsOptions{Before: tl.ThroughCursor, Limit: 1})
+	if err != nil || len(page.Turns) != 1 {
+		t.Fatalf("through cursor page: %+v %v", page, err)
+	}
+	if err := os.WriteFile(src.Path, []byte(strings.ReplaceAll(line, "first", "other")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReadRows(context.Background(), src, RowsOptions{Before: tl.BeforeCursor, Limit: 1})
+	var resync *ResyncError
+	if !errors.As(err, &resync) {
+		t.Fatalf("rewritten source did not require resync: %v", err)
+	}
+}
+
+func TestRowsBeforeSnapshotAppendAndMissingBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	data := `{"type":"user","uuid":"one","message":{"content":"one"}}` + "\n" +
+		`{"type":"user","uuid":"two","message":{"content":"two"}}` + "\n"
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	src := RowsSource{Harness: "claude", Path: path}
+	tail, err := ReadRows(context.Background(), src, RowsOptions{Tail: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString(`{"type":"user","uuid":"three","message":{"content":"three"}}` + "\n")
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := ReadRows(context.Background(), src, RowsOptions{Before: tail.BeforeCursor, Limit: 2})
+	if err != nil || len(page.Turns) != 1 || page.Turns[0].ID != "one" {
+		t.Fatalf("append changed older snapshot: %+v %v", page, err)
+	}
+	cursor, err := decodeRowsCursor(tail.BeforeCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor.B = "nonexistent"
+	_, err = ReadRows(context.Background(), src, RowsOptions{Before: encodeRowsCursor(cursor), Limit: 1})
+	var resync *ResyncError
+	if !errors.As(err, &resync) || resync.Reason != "row_boundary_missing" {
+		t.Fatalf("missing row boundary: %v", err)
+	}
+}

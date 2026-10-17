@@ -99,6 +99,14 @@ type claudeRecordHeader struct {
 	Message   json.RawMessage `json:"message"`
 }
 
+func (h claudeRecordHeader) messageID() string {
+	var msg struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(h.Message, &msg)
+	return msg.ID
+}
+
 type claudeMessageEnvelope struct {
 	ID         string          `json:"id"`
 	Role       string          `json:"role"`
@@ -242,6 +250,9 @@ type streamerState struct {
 	// directions: a later human prompt before end_turn is an interruption,
 	// never the continuation of this turn.
 	turnScoped bool
+
+	stop       turnStop
+	stopReason string
 }
 
 func newStreamerState(sentAt time.Time, cfg StreamConfig, enc *eventEncoder) *streamerState {
@@ -317,14 +328,13 @@ func (s *streamerState) consumeFile(path string, offset int64) (int64, bool, boo
 			continue
 		}
 
+		if s.stop.endedBefore(hdr.Type == "assistant", hdr.messageID()) {
+			return offset, progressed, true, s.stopReason, nil
+		}
+
 		switch hdr.Type {
 		case "assistant":
-			st, reason := s.handleAssistant(hdr)
-			if st {
-				stopped = true
-				stopReason = reason
-				return offset, progressed, stopped, stopReason, nil
-			}
+			s.handleAssistant(hdr)
 		case "user":
 			if s.turnScoped && s.isHumanPrompt(line) {
 				s.flushText("")
@@ -336,7 +346,11 @@ func (s *streamerState) consumeFile(path string, offset int64) (int64, bool, boo
 	if err := sc.Err(); err != nil {
 		return offset, progressed, false, "", err
 	}
-	return offset, progressed, false, "", nil
+	if s.stop.endedAtEOF() {
+		stopped = true
+		stopReason = s.stopReason
+	}
+	return offset, progressed, stopped, stopReason, nil
 }
 
 // isHumanPrompt reports whether a raw user record is a submitted prompt (as
@@ -368,19 +382,20 @@ func (s *streamerState) isFresh(ts string) bool {
 }
 
 // handleAssistant processes an assistant record, emits tool_use events,
-// buffers text, and signals stop when stop_reason == "end_turn".
-// Returns (stopped, reason).
-func (s *streamerState) handleAssistant(hdr claudeRecordHeader) (bool, string) {
+// buffers text, and records a stop when stop_reason == "end_turn"; s.stop
+// decides when that stop ends the stream.
+func (s *streamerState) handleAssistant(hdr claudeRecordHeader) {
 	if len(hdr.Message) == 0 {
-		return false, ""
+		return
 	}
 	var msg claudeMessageEnvelope
 	if err := json.Unmarshal(hdr.Message, &msg); err != nil {
-		return false, ""
+		return
 	}
 	if msg.Role != "assistant" {
-		return false, ""
+		return
 	}
+	hasText := false
 
 	// Extract blocks: content can be string OR array of typed blocks.
 	var blocks []map[string]json.RawMessage
@@ -389,6 +404,7 @@ func (s *streamerState) handleAssistant(hdr claudeRecordHeader) (bool, string) {
 		var s2 string
 		if err := json.Unmarshal(msg.Content, &s2); err == nil {
 			s.appendText(msg.ID, hdr.Timestamp, s2)
+			hasText = hasText || s2 != ""
 		}
 	} else {
 		for _, blk := range blocks {
@@ -399,6 +415,7 @@ func (s *streamerState) handleAssistant(hdr claudeRecordHeader) (bool, string) {
 				var txt string
 				_ = json.Unmarshal(blk["text"], &txt)
 				s.appendText(msg.ID, hdr.Timestamp, txt)
+				hasText = hasText || txt != ""
 			case "tool_use":
 				// Flush pending text before tool_use so consumer
 				// sees "reasoning then tool call" ordering.
@@ -427,17 +444,12 @@ func (s *streamerState) handleAssistant(hdr claudeRecordHeader) (bool, string) {
 		}
 	}
 
-	// Natural stop: end_turn.
-	if msg.StopReason != nil {
-		switch *msg.StopReason {
-		case "end_turn", "stop_sequence", "max_tokens":
-			return true, *msg.StopReason
-		case "tool_use":
-			// Assistant paused on tool_use; the tool_result will
-			// arrive in a later user record. Don't stop.
-		}
+	// Natural stop: end_turn. tool_use pauses for a tool_result in a
+	// later user record and the turn continues.
+	if msg.StopReason != nil && turnEnded(*msg.StopReason) {
+		s.stop.observe(msg.ID, hasText)
+		s.stopReason = *msg.StopReason
 	}
-	return false, ""
 }
 
 // handleUser processes a user record; only tool_result blocks are emitted.

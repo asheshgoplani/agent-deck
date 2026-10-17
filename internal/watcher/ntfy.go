@@ -21,7 +21,7 @@ type NtfyAdapter struct {
 	topic  string       // topic name
 	client *http.Client // HTTP client for requests
 
-	lastID string     // last received message ID for reconnect resumption
+	lastID string     // `since` for the next subscription: last handed-on message ID or the persisted resume position
 	mu     sync.Mutex // protects lastID
 
 	// initialBackoff and maxBackoff are configurable for testing.
@@ -61,6 +61,12 @@ func (a *NtfyAdapter) Setup(_ context.Context, config AdapterConfig) error {
 
 	// Streaming client: no timeout on body reads (context handles cancellation).
 	a.client = &http.Client{Timeout: 0}
+
+	// Resume from the position the engine persisted, so messages published
+	// while agent-deck was down are fetched on the first subscription (#2538).
+	a.mu.Lock()
+	a.lastID = config.ResumeSince
+	a.mu.Unlock()
 
 	// Set defaults for backoff if not already set (tests may override before Listen).
 	if a.initialBackoff == 0 {
@@ -139,11 +145,6 @@ func (a *NtfyAdapter) streamOnce(ctx context.Context, events chan<- Event) error
 			continue // skip "open" and "keepalive" events
 		}
 
-		// Track last ID for reconnect resumption
-		a.mu.Lock()
-		a.lastID = msg.ID
-		a.mu.Unlock()
-
 		// Normalize to Event
 		subject := msg.Title
 		if subject == "" {
@@ -159,14 +160,21 @@ func (a *NtfyAdapter) streamOnce(ctx context.Context, events chan<- Event) error
 			Subject:    subject,
 			Body:       msg.Message,
 			Timestamp:  time.Unix(msg.Time, 0),
-			RawPayload: json.RawMessage(scanner.Bytes()),
+			RawPayload: json.RawMessage(append([]byte(nil), scanner.Bytes()...)),
+			Cursor:     msg.ID,
 		}
 
-		// Non-blocking send (drop event if channel full)
+		// Blocking send: the stream applies backpressure instead of dropping
+		// (a restart can replay a large backlog). The resume position only
+		// moves past a message once it was handed on (#2538).
 		select {
 		case events <- evt:
-		default:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
+		a.mu.Lock()
+		a.lastID = msg.ID
+		a.mu.Unlock()
 	}
 
 	return scanner.Err()

@@ -38,7 +38,7 @@ test.beforeAll(async () => {
     execFileSync('go', ['build', '-o', BIN_PATH, './tests/web/fixtures/cmd/web-fixture/'], {
       cwd: REPO_ROOT,
       stdio: 'inherit',
-      env: { ...process.env, GOTOOLCHAIN: 'go1.25.13' },
+      env: { ...process.env, GOTOOLCHAIN: 'go1.26.9' },
     })
   }
 

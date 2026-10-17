@@ -1,6 +1,31 @@
 package tmux
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestWrappedClaudeDraftMenuWordsAreNotPickerEvidence(t *testing.T) {
+	rule := strings.Repeat("─", 60)
+	pane := rule + "\n❯ Do you want to proceed? This is user text that wraps across the pane width\n" +
+		"  and says Allow once without opening any menu.\n" + rule + "\n  Haiku 4.5\n"
+	d := NewPromptDetector("claude")
+	if !d.HasPrompt(pane) {
+		t.Fatal("wrapped composer was not recognized")
+	}
+	if got := d.ClassifySubstate(pane); got == SubstateInteractiveMenu {
+		t.Fatal("user text inside a wrapped composer was classified as an interactive menu")
+	}
+}
+
+func TestClaudeQuestionProseWithoutChoicesIsNotMenu(t *testing.T) {
+	rule := strings.Repeat("─", 60)
+	pane := "● Do you want to review the summary? I can help.\n" + rule +
+		"\n❯ \n" + rule + "\n  Haiku 4.5\n"
+	if got := NewPromptDetector("claude").ClassifySubstate(pane); got == SubstateInteractiveMenu {
+		t.Fatal("recent conversation prose without selectable choices was classified as a menu")
+	}
+}
 
 // Honest Status v2: ClassifySubstate distinguishes distinct session conditions
 // that all otherwise look like "running"/"waiting" to a coarse observer. The

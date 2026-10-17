@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,8 +41,14 @@ const (
 	LevelBasic Level = "basic"
 )
 
-// SchemaVersion must change with the event schema and TELEMETRY.md. A change
-// turns every existing grant back into "undecided" (consent binds to it).
+// SchemaVersion must change with the event schema and TELEMETRY.md whenever a
+// change sends a new kind of data or a new way to link it. A change turns
+// every existing grant back into "undecided" (consent binds to it). Copying a
+// value that every detailed event of this schema already sends onto
+// install.tick, under the same grant, is not such a change: the tick gained os
+// and arch in schema 3 without a bump. TELEMETRY.md records that decision and
+// TestInstallTickAllowListStaysWithinGrantedEnvelope enforces its limit;
+// TestInstallTickOSArchKeepsSchemaVersion pins the version.
 const SchemaVersion = 3
 
 // StateFileName is the state file, stored in the agent-deck data directory.
@@ -84,6 +91,8 @@ type State struct {
 	Upload         UploadState             `json:"upload,omitempty"`
 	TUIOpen        bool                    `json:"tui_open,omitempty"`
 	LastVersion    string                  `json:"last_version,omitempty"`
+	// OpenHour is the unfinished activity hour of the last sampling TUI.
+	OpenHour *hourSample `json:"open_hour,omitempty"`
 
 	// Earlier-schema answers found on load, never serialized or confused with each other.
 	prevV1 Consent
@@ -206,7 +215,39 @@ func SaveState(s *State) error {
 // lockState uses a stable sibling file because state is replaced atomically.
 // Separate open descriptions serialize goroutines and processes alike. The
 // same lock guards the spool, so recording, upload and disable never interleave.
+// It is held only around local reads and writes, never across the network.
 func lockState() (func(), error) { return lockStateWithFlags(syscall.LOCK_EX) }
+
+// Recording waits at most lockWaitTries*lockWaitStep for the state lock.
+const (
+	lockWaitTries = 5
+	lockWaitStep  = 10 * time.Millisecond
+)
+
+// lockStateBriefly takes the state lock, retrying a contended lock for a
+// short bounded time so recording never blocks the UI for long.
+func lockStateBriefly() (func(), error) {
+	for i := 0; ; i++ {
+		unlock, err := lockStateWithFlags(syscall.LOCK_EX | syscall.LOCK_NB)
+		if err == nil || i >= lockWaitTries || !errors.Is(err, syscall.EWOULDBLOCK) {
+			return unlock, err
+		}
+		time.Sleep(lockWaitStep)
+	}
+}
+
+// sendLockFileName serializes network sends with each other and with
+// `telemetry off`, reset-id and `telemetry level`, without holding the state
+// lock. Lock order: send lock, then state lock.
+const sendLockFileName = "telemetry-send.lock"
+
+func lockSend(flags int) (func(), error) {
+	path, err := siblingPath(sendLockFileName)
+	if err != nil {
+		return nil, err
+	}
+	return flockFile(path, flags)
+}
 
 func lockStateWithFlags(flags int) (func(), error) {
 	path, err := StatePath()

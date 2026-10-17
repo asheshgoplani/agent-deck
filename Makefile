@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update
+.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -12,7 +12,7 @@ GOLANGCI_LINT_VERSION=v2.14.0
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Keep local and CI builds on the version required by go.mod.
-export GOTOOLCHAIN=go1.25.13
+export GOTOOLCHAIN=go1.26.9
 
 # Build the binary (requires compiled CSS via `make css`)
 build: css
@@ -178,6 +178,13 @@ fmt:
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
 
+# Reproduce the CI Go checks in Docker: gofmt, build, vet, golangci-lint and
+# the gotestsum race suite, with versions read from go.mod, this Makefile and
+# go-test.yml. Pass VERIFY_ARGS, e.g.
+#   make verify-docker VERIFY_ARGS="--stages test --pkgs ./internal/session/..."
+verify-docker:
+	./scripts/verify-docker.sh $(VERIFY_ARGS)
+
 # Run local CI checks (same as pre-push hook: lint + test + build in parallel)
 ci:
 	@which lefthook > /dev/null || (echo "ERROR: lefthook not found. Run: brew install lefthook" && exit 1)
@@ -244,12 +251,12 @@ dist-local:
 	go run ./tools/dist-local -version "$(DIST_VERSION)" -output "$(DIST_OUTPUT)"
 
 # Functional checks run in Docker locally. Native execution is CI-only.
-FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.25.13
+FUNCCHECK_IMAGE ?= agentdeck-funccheck:go1.26.9
 FUNCCHECK_BINARY ?=
 FUNCCHECK_MODE ?= docker
 .PHONY: check-functional funccheck-image
 funccheck-image:
-	@printf '%s\n' 'FROM golang:1.25.13-bookworm' \
+	@printf '%s\n' 'FROM golang:1.26.9-bookworm' \
 		'RUN apt-get update -qq && apt-get install -y --no-install-recommends tmux git' \
 		'WORKDIR /deps' 'COPY go.mod go.sum ./' \
 		'RUN go mod download && chmod -R a+rX /go/pkg/mod' \

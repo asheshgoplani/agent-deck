@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -22,8 +23,10 @@ const (
 
 var retryBackoff = []time.Duration{5 * time.Minute, 30 * time.Minute, 2 * time.Hour}
 
-// uploadDeadline bounds a whole upload (every request of it), and so how
-// long `telemetry off` can wait for the state lock an upload holds.
+// uploadDeadline bounds the network requests of an upload, counted from when
+// the send lock is taken. It does not bound the blocking state lock waits that
+// prepare the batch and record the result, so `telemetry off` can wait for
+// the send lock longer than this while the state lock is busy.
 var uploadDeadline = 8 * time.Second
 
 // UploadResult describes what MaybeUpload did, for tests and `status`.
@@ -82,74 +85,37 @@ func uploadDestinationGate() string {
 
 // MaybeUpload sends detailed telemetry; install.tick has its own ledger. It sends the
 // completed hours and days waiting in the spool, at most every 6 hours,
-// never on the consent day, and holds the state lock for the whole send
-// (at most uploadDeadline) so `telemetry off` either waits for it or
-// prevents it.
+// never on the consent day. It holds the send lock for the whole send
+// (requests bounded by uploadDeadline) so `telemetry off` either waits for it
+// or prevents it, and the state lock only to prepare the batch and to record
+// the result, so events recorded meanwhile are kept.
 func MaybeUpload(ctx context.Context) UploadResult {
 	if reason := uploadGate(); reason != "" {
 		return UploadResult{Reason: reason}
 	}
-	unlock, err := lockState()
+	unlockSend, err := lockSend(syscall.LOCK_EX)
 	if err != nil {
 		return UploadResult{Reason: err.Error()}
 	}
-	defer unlock()
+	defer unlockSend()
 	ctx, cancel := context.WithTimeout(ctx, uploadDeadline)
 	defer cancel()
-	s := LoadState()
-	if ok, reason := Enabled(s); !ok {
-		return UploadResult{Reason: string(reason)}
-	}
-	now := nowFn()
-	today := dayOf(now)
-	switch {
-	case s.ConsentDay >= today:
-		return UploadResult{Reason: "nothing is sent on the consent day"}
-	case now.Before(s.Upload.NextTry):
-		return UploadResult{Reason: "next upload at " + s.Upload.NextTry.Format(time.RFC3339)}
-	}
-	if s.Upload.AttemptsDay != today {
-		s.Upload.AttemptsDay, s.Upload.AttemptsToday = today, 0
-	}
-	if s.Upload.AttemptsToday >= maxAttemptsPerDay {
-		return UploadResult{Reason: "attempt budget for today used"}
+	b, res := prepareUpload()
+	if b == nil {
+		return res
 	}
 
-	lines, err := readSpool()
-	if err != nil {
-		return UploadResult{Reason: err.Error()}
-	}
-	lines = trimSpool(lines, now)
-	s.dropExpiredDaily(now)
-	if s.Upload.RejectedVersion != "" && s.Upload.RejectedVersion == safeVersion(processVersion) {
-		return s.handleRejected(lines, now)
-	}
-	events := s.pending(lines, now)
-	if len(events) == 0 {
-		_ = writeSpool(lines)
-		_ = saveStateLocked(s)
-		return UploadResult{Reason: "nothing to send"}
-	}
-	bodies, groups := chunk(events)
-	if len(bodies) > maxBatchRequests {
-		bodies, groups = bodies[:maxBatchRequests], groups[:maxBatchRequests]
-	}
-
-	// Reserve the attempt durably before any request (v1 rule).
-	s.Upload.AttemptsToday++
-	if err := saveStateLocked(s); err != nil {
-		return UploadResult{Reason: err.Error()}
-	}
-
-	res := UploadResult{Attempted: true}
+	res = UploadResult{Attempted: true}
 	var failure postResult
+	var lastPayload json.RawMessage
+	payloadSet := false
 	okGroups := 0
-	for i, body := range bodies {
+	for i, body := range b.bodies {
 		if HardDisabled() {
 			failure = postResult{err: errors.New("disabled during upload")}
 			break
 		}
-		if n := realEvents(groups[i]); n > 0 {
+		if n := realEvents(b.groups[i]); n > 0 {
 			if LogMode() {
 				failure.err = appendLog(body)
 			} else {
@@ -159,9 +125,29 @@ func MaybeUpload(ctx context.Context) UploadResult {
 				break
 			}
 			res.Events += n
-			s.LastPayload = truncatedPayload(body)
+			lastPayload, payloadSet = truncatedPayload(body), true
 		}
 		okGroups++
+	}
+	res.Sent = failure.err == nil
+	if !res.Sent {
+		res.Reason = failure.err.Error()
+	}
+
+	unlock, err := lockState()
+	if err != nil {
+		if res.Reason == "" {
+			res.Reason = "sent; could not persist acknowledgement"
+		}
+		return res
+	}
+	defer unlock()
+	s := LoadState()
+	if ok, _ := Enabled(s); !ok || s.InstallID != b.installID {
+		if res.Reason == "" {
+			res.Reason = "consent or install id changed during upload; result discarded"
+		}
+		return res
 	}
 	// Remove what was acknowledged. A day's rollups go only when every one
 	// of them was acknowledged; a partial day is rebuilt with the same uuids.
@@ -169,7 +155,7 @@ func MaybeUpload(ctx context.Context) UploadResult {
 	sentDays := map[string]bool{}
 	unsentDays := map[string]bool{}
 	chunked := 0
-	for i, g := range groups {
+	for i, g := range b.groups {
 		chunked += len(g)
 		for _, p := range g {
 			switch {
@@ -182,7 +168,7 @@ func MaybeUpload(ctx context.Context) UploadResult {
 			}
 		}
 	}
-	for _, p := range events[chunked:] {
+	for _, p := range b.events[chunked:] {
 		if p.rollupDay != "" {
 			unsentDays[p.rollupDay] = true
 		}
@@ -192,24 +178,109 @@ func MaybeUpload(ctx context.Context) UploadResult {
 			delete(s.Daily, d)
 		}
 	}
-	kept := lines[:0:0]
-	for _, l := range lines {
-		if !sent[l.U] {
-			kept = append(kept, l)
+	// Re-read the spool: lines appended during the send must survive. Lines
+	// the current level does not record are deleted unsent, as when the batch
+	// was built.
+	lines, err := readSpool()
+	if err == nil {
+		kept := lines[:0:0]
+		for _, l := range atLevel(trimSpool(lines, b.now), EffectiveLevel(s)) {
+			if !sent[l.U] {
+				kept = append(kept, l)
+			}
 		}
+		err = writeSpool(kept)
 	}
-	if err := writeSpool(kept); err != nil {
+	if err != nil && res.Reason == "" {
 		res.Reason = err.Error()
 	}
-	s.recordOutcome(failure, now, res.Events)
-	res.Sent = failure.err == nil
-	if !res.Sent && res.Reason == "" {
-		res.Reason = failure.err.Error()
+	if payloadSet {
+		s.LastPayload = lastPayload
 	}
+	s.recordOutcome(failure, b.now, res.Events)
 	if err := saveStateLocked(s); err != nil && res.Reason == "" {
 		res.Reason = "sent; could not persist acknowledgement"
 	}
 	return res
+}
+
+// uploadBatch is what one upload sends, prepared under the state lock.
+type uploadBatch struct {
+	installID string
+	now       time.Time
+	events    []pendingEvent
+	bodies    [][]byte
+	groups    [][]pendingEvent
+}
+
+// prepareUpload checks the schedule, builds the pending batch and durably
+// reserves the attempt, under the state lock. A nil batch means nothing is
+// sent, for the returned reason.
+func prepareUpload() (*uploadBatch, UploadResult) {
+	unlock, err := lockState()
+	if err != nil {
+		return nil, UploadResult{Reason: err.Error()}
+	}
+	defer unlock()
+	s := LoadState()
+	if ok, reason := Enabled(s); !ok {
+		return nil, UploadResult{Reason: string(reason)}
+	}
+	now := nowFn()
+	today := dayOf(now)
+	switch {
+	case s.ConsentDay >= today:
+		return nil, UploadResult{Reason: "nothing is sent on the consent day"}
+	case now.Before(s.Upload.NextTry):
+		return nil, UploadResult{Reason: "next upload at " + s.Upload.NextTry.Format(time.RFC3339)}
+	}
+	if s.Upload.AttemptsDay != today {
+		s.Upload.AttemptsDay, s.Upload.AttemptsToday = today, 0
+	}
+	if s.Upload.AttemptsToday >= maxAttemptsPerDay {
+		return nil, UploadResult{Reason: "attempt budget for today used"}
+	}
+
+	lines, err := readSpool()
+	if err != nil {
+		return nil, UploadResult{Reason: err.Error()}
+	}
+	// A finished open hour joins the spool before its day's rollup is built.
+	// It is emitted only after the read, so every return below saves the
+	// state that records it as emitted.
+	s.emitOpenHour(now, func(l spoolLine) error {
+		if err := appendSpool(l); err != nil {
+			return err
+		}
+		lines = append(lines, l)
+		return nil
+	})
+	lines = atLevel(trimSpool(lines, now), EffectiveLevel(s))
+	s.dropExpiredDaily(now)
+	if s.Upload.RejectedVersion != "" && s.Upload.RejectedVersion == safeVersion(processVersion) {
+		return nil, s.handleRejected(lines, now)
+	}
+	events := s.pending(lines, now)
+	if len(events) == 0 {
+		_ = writeSpool(lines)
+		_ = saveStateLocked(s)
+		return nil, UploadResult{Reason: "nothing to send"}
+	}
+	bodies, groups := chunk(events)
+	if len(bodies) > maxBatchRequests {
+		bodies, groups = bodies[:maxBatchRequests], groups[:maxBatchRequests]
+	}
+
+	// Reserve the attempt durably before any request (v1 rule). The lease
+	// closes the NextTry gate that 1.16.26 and older check under the state
+	// lock, so an older binary running side by side does not send this
+	// spool again while the request is in flight; the outcome replaces it.
+	s.Upload.AttemptsToday++
+	s.Upload.NextTry = now.Add(uploadDeadline + time.Minute)
+	if err := saveStateLocked(s); err != nil {
+		return nil, UploadResult{Reason: err.Error()}
+	}
+	return &uploadBatch{installID: s.InstallID, now: now, events: events, bodies: bodies, groups: groups}, UploadResult{}
 }
 
 func realEvents(group []pendingEvent) int {
@@ -361,7 +432,8 @@ func PreviewBatch() ([][]byte, error) {
 		return nil, err
 	}
 	now := nowFn()
-	bodies, _ := chunk(s.pending(trimSpool(lines, now), now))
+	s.emitOpenHour(now, func(l spoolLine) error { lines = append(lines, l); return nil })
+	bodies, _ := chunk(s.pending(atLevel(trimSpool(lines, now), EffectiveLevel(s)), now))
 	// Preview never reserves a nonce. Show a pending tick only if the TUI
 	// could send it today; basic level does not suppress the daily tick.
 	if ok, _ := Enabled(s); ok && !tickOwner() && !LogMode() && uploadDestinationGate() == "" && s.ConsentDay < dayOf(now) {

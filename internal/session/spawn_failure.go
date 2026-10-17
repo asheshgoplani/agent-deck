@@ -311,10 +311,11 @@ const (
 func (i *Instance) startFastDeathWatcher(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, probeTool, probeMarker string) {
 	lifecycleLogPath := GetSessionIDLifecycleLogPath()
 	failureDir := spawnFailureDir()
+	exitReceiptPath := i.trackedCommandExitReceiptPath()
 	i.spawnWatchers.Add(1)
 	go func() {
 		defer i.spawnWatchers.Done()
-		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir, probeTool, probeMarker)
+		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir, probeTool, probeMarker, exitReceiptPath)
 	}()
 }
 
@@ -322,7 +323,7 @@ func (i *Instance) waitForFastDeathWatchers() {
 	i.spawnWatchers.Wait()
 }
 
-func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string, probeTool, probeMarker string) {
+func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string, probeTool, probeMarker, exitReceiptPath string) {
 	if sess == nil {
 		return
 	}
@@ -389,6 +390,12 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 			continue
 		}
 		if i.spawnGen.Load() != gen {
+			return
+		}
+		// A tracked one-shot command that ran to completion left its dead
+		// pane and exit status behind on purpose. That is the command's
+		// result, reported as process-exited, not a spawn failure.
+		if trackedCommandExitObserved(sess, exitReceiptPath) {
 			return
 		}
 

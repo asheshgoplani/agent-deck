@@ -1,5 +1,5 @@
 Runtime health
-  Budgets: status pass <250 ms; descriptors <512; tmux calls <=2 per session; remote poll <2000 ms
+  Budgets: status pass <250 ms; descriptors <512 + 16 per session; tmux calls <=2 per session; remote poll <2000 ms
   runtime health unknown: no samples
 Profile store: <SANDBOX_HOME>/.local/share/agent-deck (xdg, reason=xdg_only)
   legacy <SANDBOX_HOME>/.agent-deck: no profiles

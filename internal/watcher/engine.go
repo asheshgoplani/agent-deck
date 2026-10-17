@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -276,6 +277,7 @@ func (e *Engine) Start() error {
 // Stop to release.
 func (e *Engine) setupAdapter(entry *adapterEntry) bool {
 	entry.setupOK = false
+	entry.config.ResumeSince = e.resumeSince(entry.config)
 
 	if err := entry.adapter.Setup(e.ctx, entry.config); err != nil {
 		e.log.Warn("adapter_setup_failed",
@@ -337,11 +339,16 @@ func (e *Engine) runAdapter(ctx context.Context, entry *adapterEntry) {
 				watcherID: entry.watcherID,
 				tracker:   entry.tracker,
 			}
-			// Non-blocking send to prevent adapter goroutine hang if channel full (T-13-06).
+			// Wait for the writer instead of dropping on a full channel: the
+			// adapter's resume position has already moved past this event, so
+			// a drop would lose it for good (#2538). Cancellation still frees
+			// the adapter (T-13-06): once ctx is done the remaining events are
+			// discarded unpersisted, and the persisted cursor, which only the
+			// writer advances, makes the next start fetch them again.
 			select {
 			case e.eventCh <- env:
-			default:
-				e.log.Warn("event_channel_full",
+			case <-ctx.Done():
+				e.log.Debug("event_discarded_on_stop",
 					slog.String("watcher", entry.config.Name),
 					slog.String("sender", evt.Sender),
 				)
@@ -477,6 +484,13 @@ func (e *Engine) writerLoop() {
 					ErrorCount:     hs.ConsecutiveErrors,
 					AdapterHealthy: hs.Status != HealthStatusError,
 				}
+				if env.event.Cursor != "" {
+					snapshot.DedupCursor = env.event.Cursor
+					snapshot.DedupCursorTime = env.event.Timestamp.UTC()
+				} else if prev, err := LoadState(watcherName); err == nil && prev != nil {
+					snapshot.DedupCursor = prev.DedupCursor
+					snapshot.DedupCursorTime = prev.DedupCursorTime
+				}
 				if err := SaveState(watcherName, snapshot); err != nil {
 					e.log.Warn("state_save_failed",
 						slog.String("watcher", watcherName),
@@ -527,11 +541,91 @@ func (e *Engine) writerLoop() {
 						slog.String("sender", env.event.Sender),
 					)
 				}
+			} else if env.event.Cursor != "" {
+				// A duplicate (typically a message replayed after a restart)
+				// was already stored: only move the resume position past it.
+				e.advanceResumeCursor(env)
 			}
 
 		case <-e.ctx.Done():
 			return
 		}
+	}
+}
+
+// DefaultResumeMaxAge bounds how far back a restarted ntfy or slack watcher
+// replays. A watcher's [source] table can override it with "resume_max_age"
+// (a Go duration such as "6h"; "0" turns replay off).
+const DefaultResumeMaxAge = 24 * time.Hour
+
+// resumeSince computes AdapterConfig.ResumeSince from the persisted state.json
+// (#2538). A fresh watcher (no state) gets "" and streams only new messages,
+// as before. Otherwise it resumes after the persisted message ID; when that
+// position is older than the replay bound, or only the older last_event_ts is
+// known, it resumes from a unix timestamp no earlier than now minus the bound.
+// The server's message cache bounds the replay further, and the event dedup
+// key keeps anything already stored from being handled twice.
+func (e *Engine) resumeSince(cfg AdapterConfig) string {
+	maxAge := DefaultResumeMaxAge
+	if raw := cfg.Settings["resume_max_age"]; raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			e.log.Warn("watcher_resume_max_age_invalid",
+				slog.String("watcher", cfg.Name),
+				slog.String("value", raw),
+				slog.String("error", err.Error()),
+			)
+		} else {
+			maxAge = d
+		}
+	}
+	if maxAge <= 0 {
+		return ""
+	}
+
+	st, err := LoadState(cfg.Name)
+	if err != nil {
+		e.log.Warn("watcher_resume_state_unreadable",
+			slog.String("watcher", cfg.Name),
+			slog.String("error", err.Error()),
+		)
+		return ""
+	}
+	if st == nil {
+		return ""
+	}
+
+	floor := e.clock.Now().Add(-maxAge)
+	if st.DedupCursor != "" && (st.DedupCursorTime.IsZero() || st.DedupCursorTime.After(floor)) {
+		return st.DedupCursor
+	}
+	from := st.DedupCursorTime
+	if st.DedupCursor == "" {
+		from = st.LastEventTS
+	}
+	if from.IsZero() {
+		return ""
+	}
+	if from.Before(floor) {
+		from = floor
+	}
+	return strconv.FormatInt(from.Unix(), 10)
+}
+
+// advanceResumeCursor records env's resume position in state.json, keeping
+// the rest of the persisted snapshot.
+func (e *Engine) advanceResumeCursor(env eventEnvelope) {
+	name := env.tracker.Check().WatcherName
+	st, err := LoadState(name)
+	if err != nil || st == nil {
+		st = &WatcherState{}
+	}
+	st.DedupCursor = env.event.Cursor
+	st.DedupCursorTime = env.event.Timestamp.UTC()
+	if err := SaveState(name, st); err != nil {
+		e.log.Warn("state_save_failed",
+			slog.String("watcher", name),
+			slog.String("error", err.Error()))
 	}
 }
 
