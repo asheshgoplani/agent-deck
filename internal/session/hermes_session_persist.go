@@ -109,6 +109,13 @@ func hermesBindsOnEvent(event string) bool {
 	return false
 }
 
+// hermesSubagentPlatform is the platform Hermes gives a delegate_task child
+// (delegate_tool builds it as AIAgent(platform="subagent")). The child runs
+// its own turns in the parent's process, so it fires on_session_start,
+// pre_llm_call and post_llm_call with its own session id, and the hook
+// forwarder reports that platform in extra.platform.
+const hermesSubagentPlatform = "subagent"
+
 // bindHermesSessionFromHook records the session id reported by this entry's
 // own hook events. Caller holds i.mu.
 //
@@ -123,7 +130,14 @@ func hermesBindsOnEvent(event string) bool {
 // parent_session_id: the next turn edge of the continued conversation carries
 // the new id. A rotation older than the current binding is a stale sample and
 // is ignored.
-func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent string, at time.Time) {
+//
+// Delegate children fire the same turn edges with their own ids, so an event
+// whose platform is "subagent" never binds or rotates, on any edge. Without
+// that, a delegate's turn edge would rebind the entry to the child id, and
+// only a later successful parent post_llm_call would move it back: an
+// interrupted parent turn, a delegation outliving the parent turn, or a
+// restart mid-turn would then resume the delegate's session.
+func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent, platform string, at time.Time) {
 	if sessionID == i.HermesSessionID {
 		if at.After(i.hermesBoundAt) {
 			i.hermesBoundAt = at
@@ -134,6 +148,8 @@ func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent st
 	switch {
 	case hookSource != "hook_payload":
 		reason = "candidate_not_in_hook_payload"
+	case strings.EqualFold(strings.TrimSpace(platform), hermesSubagentPlatform):
+		reason = "candidate_from_subagent"
 	case !hermesBindsOnEvent(hookEvent):
 		reason = "candidate_from_non_parent_edge"
 	case i.HermesSessionID != "" && at.Before(i.hermesBoundAt):

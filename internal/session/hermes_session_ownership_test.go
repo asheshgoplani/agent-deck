@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -310,4 +311,83 @@ func TestHermesRejectLogIsRateLimited(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("reject lines for the delegate = %d, want 1", count)
 	}
+}
+
+func hermesSubagentHookAt(inst *Instance, event, sid string, at time.Time) {
+	inst.UpdateHookStatus(&HookStatus{Status: "running", SessionID: sid, Event: event, Platform: "subagent", UpdatedAt: at})
+}
+
+// Review blocker on #2696: a delegate_task child is AIAgent(platform="subagent")
+// running its own turns in the parent's process, so it fires on_session_start,
+// pre_llm_call and post_llm_call with its own id (extra.platform="subagent").
+// Those turn edges must never bind or rotate, and no parent post_llm_call
+// follows here (interrupted parent turn / delegation outliving it).
+func TestHermesSubagentTurnEdgesNeverBind(t *testing.T) {
+	db := withTempGlobalStateDB(t)
+	a := NewInstanceWithTool("hermes-a", t.TempDir(), "hermes")
+	saveHermesRow(t, db, a)
+	t0 := time.Now()
+
+	// Delegate turn edges arrive first, before the parent has bound.
+	hermesSubagentHookAt(a, "on_session_start", hermesSIDDelegate, t0)
+	hermesSubagentHookAt(a, "pre_llm_call", hermesSIDDelegate, t0.Add(time.Second))
+	if a.HermesSessionID != "" {
+		t.Fatalf("delegate turn edge bound an unbound entry: got %q", a.HermesSessionID)
+	}
+
+	a.UpdateHookStatus(&HookStatus{Status: "running", SessionID: hermesSIDA, Event: "pre_llm_call",
+		Platform: "cli", UpdatedAt: t0.Add(2 * time.Second)})
+	if a.HermesSessionID != hermesSIDA {
+		t.Fatalf("parent turn edge must bind: got %q, want %q", a.HermesSessionID, hermesSIDA)
+	}
+
+	// Delegate turn edges between parent turns, newer than the binding.
+	hermesSubagentHookAt(a, "pre_llm_call", hermesSIDDelegate, t0.Add(3*time.Second))
+	hermesSubagentHookAt(a, "post_llm_call", hermesSIDDelegate, t0.Add(4*time.Second))
+	hermesSubagentHookAt(a, "on_session_start", hermesSIDDelegate, t0.Add(5*time.Second))
+	if a.HermesSessionID != hermesSIDA {
+		t.Fatalf("delegate turn edge took over binding: got %s want %s", a.HermesSessionID, hermesSIDA)
+	}
+	if got := persistedHermesID(t, db, a.ID); got != hermesSIDA {
+		t.Fatalf("persisted id = %q, want %q", got, hermesSIDA)
+	}
+
+	// A real parent rotation (compression, /new) still rebinds afterwards.
+	hermesHookAt(a, "pre_llm_call", hermesSIDCompressed, t0.Add(6*time.Second))
+	if a.HermesSessionID != hermesSIDCompressed {
+		t.Fatalf("parent rotation after delegate events must rebind: got %q", a.HermesSessionID)
+	}
+}
+
+// The platform recorded by the hook handler must survive every reader that
+// feeds UpdateHookStatus: the watcher (processFile / scanDisk) and the
+// transition daemon's readHookStatusFile.
+func TestHookStatusReadersCarryPlatform(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	id := "hermes-platform-reader"
+	hooksDir := GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"status":"running","session_id":"` + hermesSIDDelegate + `","event":"pre_llm_call","ts":` +
+		jsonInt(time.Now().Unix()) + `,"platform":"subagent"}`
+	if err := os.WriteFile(filepath.Join(hooksDir, id+".json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if hs := readHookStatusFile(id); hs == nil || hs.Platform != "subagent" {
+		t.Fatalf("readHookStatusFile platform = %+v, want subagent", hs)
+	}
+	w := newTestWatcher(t, hooksDir)
+	w.processFile(filepath.Join(hooksDir, id+".json"))
+	if hs := w.GetHookStatus(id); hs == nil || hs.Platform != "subagent" {
+		t.Fatalf("watcher processFile platform = %+v, want subagent", hs)
+	}
+	if hs := w.scanDisk()[id]; hs == nil || hs.Platform != "subagent" {
+		t.Fatalf("watcher scanDisk platform = %+v, want subagent", hs)
+	}
+}
+
+func jsonInt(n int64) string {
+	b, _ := json.Marshal(n)
+	return string(b)
 }

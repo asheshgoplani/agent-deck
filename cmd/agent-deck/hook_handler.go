@@ -63,6 +63,34 @@ type hookPayload struct {
 	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
 	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
+
+	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
+	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
+	// extra}). Only extra.platform is read: "subagent" marks a delegate_task
+	// child's event (issue #2582). Raw so an unexpected shape never makes the
+	// payload undecodable.
+	Extra json.RawMessage `json:"extra,omitempty"`
+}
+
+// maxHookPlatformLen caps the platform string persisted to the status file.
+const maxHookPlatformLen = 64
+
+// hookPayloadPlatform returns extra.platform from a Hermes payload, or "".
+func hookPayloadPlatform(p hookPayload) string {
+	if len(p.Extra) == 0 {
+		return ""
+	}
+	var extra struct {
+		Platform json.RawMessage `json:"platform"`
+	}
+	if err := json.Unmarshal(p.Extra, &extra); err != nil {
+		return ""
+	}
+	platform := strings.TrimSpace(rawString(extra.Platform))
+	if len(platform) > maxHookPlatformLen {
+		platform = platform[:maxHookPlatformLen]
+	}
+	return platform
 }
 
 // rawString reads a leniently decoded field as a string ("" for anything
@@ -186,6 +214,11 @@ type hookStatusFile struct {
 	// inherited AGENTDECK_INSTANCE_ID) must never bind. omitempty keeps legacy
 	// files byte-identical when the agent sends no cwd.
 	Cwd string `json:"cwd,omitempty"`
+	// Platform is extra.platform from a Hermes payload. Issue #2582: an event
+	// with platform "subagent" comes from a delegate_task child and never
+	// binds the entry's Hermes session. omitempty keeps other agents' files
+	// unchanged.
+	Platform string `json:"platform,omitempty"`
 }
 
 type hookGenerationControl struct {
@@ -371,7 +404,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if isStopHookEvent(payload.HookEventName) {
 		scan = detectDoneSentinel(data)
 	}
-	writeHookStatusReceivedAt(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, scan, receivedAt)
+	writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt)
 	if payload.HookEventName == "PreToolUse" {
 		// This high-frequency edge only publishes activity. Lifecycle hooks
 		// still own metadata reconciliation, costs, and Recall indexing.
@@ -559,6 +592,12 @@ func writeHookStatusWithScan(instanceID, status, sessionID, event, cwd string, s
 }
 
 func writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd string, scan doneScanResult, receivedAt time.Time) {
+	writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd, "", scan, receivedAt)
+}
+
+// writeHookStatusReceivedAtPlatform also records the payload's platform
+// (Hermes extra.platform), used to keep delegate events from binding.
+func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -581,6 +620,7 @@ func writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd string,
 		Event:     event,
 		Timestamp: time.Now().Unix(),
 		Cwd:       strings.TrimSpace(cwd),
+		Platform:  platform,
 	}
 	if scan.signal != nil {
 		statusFile.DoneStatus = scan.signal.Status

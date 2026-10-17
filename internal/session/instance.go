@@ -7403,7 +7403,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	switch {
 	case i.Tool == "hermes":
-		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.UpdatedAt)
+		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.UpdatedAt)
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
