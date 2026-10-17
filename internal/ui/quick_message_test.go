@@ -184,3 +184,47 @@ func TestQuickMessageArgs(t *testing.T) {
 		}
 	}
 }
+
+// TestQuickMessageSendDoesNotInterruptBusyClaude pins that `o` on a busy Claude
+// session queues into its composer, as on main (#1410, #2652): no Escape (or any
+// other key) is sent from the UI, and delivery goes through session send, which
+// holds the per-session send lock and the draft guard.
+func TestQuickMessageSendDoesNotInterruptBusyClaude(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "tmux-calls")
+	t.Setenv("QUICK_MSG_TMUX_MARKER", marker)
+	// A fake tmux that records every call and shows an empty Claude composer,
+	// so a draft guard would pass and an Escape would be observable.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$QUICK_MSG_TMUX_MARKER\"\nif [ \"$1\" = capture-pane ]; then printf '\\342\\235\\257 \\n'; fi\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var gotArgs []string
+	var gotText string
+	calls := 0
+	orig := quickMessageRunSend
+	quickMessageRunSend = func(args []string, text string) error {
+		calls++
+		gotArgs, gotText = args, text
+		return nil
+	}
+	t.Cleanup(func() { quickMessageRunSend = orig })
+
+	_, inst := armHomeWithRunningClaudeSession(t, "claude")
+	inst.SetStatusThreadSafe(session.StatusRunning)
+	out := quickMessageCmd("work", inst, promptSubmitMsg{instanceID: inst.ID, text: "follow up"})().(promptDeliveryMsg)
+	if out.err != nil {
+		t.Fatalf("send failed: %v", out.err)
+	}
+	if calls != 1 || gotText != "follow up" {
+		t.Fatalf("session send calls = %d, text = %q", calls, gotText)
+	}
+	if args := strings.Join(gotArgs, " "); !strings.Contains(args, "session send "+inst.ID+" --message-file - --no-wait") {
+		t.Fatalf("send args = %q", args)
+	}
+	if data, err := os.ReadFile(marker); err == nil && strings.Contains(string(data), "Escape") {
+		t.Fatalf("busy Claude send interrupted the turn; tmux calls:\n%s", data)
+	}
+}

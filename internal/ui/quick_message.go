@@ -10,7 +10,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -21,8 +20,6 @@ type promptDeliveryMsg struct{ err error }
 // Other queue requests wait for turn end rather than using durable delivery retry.
 func quickMessageCmd(profile string, inst *session.Instance, msg promptSubmitMsg) tea.Cmd {
 	tool := inst.Tool
-	ts := inst.GetTmuxSession()
-	busy := inst.GetStatusThreadSafe() == session.StatusRunning
 	openCode2 := inst.SupportsOpenCodeQueue()
 	args := quickMessageArgs(profile, msg)
 	if msg.queue && session.IsClaudeCompatible(tool) {
@@ -37,29 +34,30 @@ func quickMessageCmd(profile string, inst *session.Instance, msg promptSubmitMsg
 			defer cancel()
 			return promptDeliveryMsg{err: inst.QueueOpenCodePrompt(ctx, msg.text)}
 		}
-		// Claude queues Enter during generation. Explicit steering interrupts
-		// first, but never clears or merges an existing operator draft.
-		if !msg.queue && busy && session.IsClaudeCompatible(tool) {
-			guard := send.GuardComposerDraft(ts, conductorComposerGuardOptions())
-			if guard.Refused {
-				return promptDeliveryMsg{err: fmt.Errorf("message not sent: composer is occupied or unreadable; existing draft preserved")}
-			}
-			if err := ts.SendNamedKeyToPrimaryWindow("Escape"); err != nil {
-				return promptDeliveryMsg{err: err}
-			}
-		}
-		exe, err := os.Executable()
-		if err != nil {
+		// Send never interrupts: a busy Claude composer queues the message, as
+		// `o` did before this composer existed (#1410, #2652). session send owns
+		// the draft guard and the per-session send lock, so no keys are sent here.
+		if err := quickMessageRunSend(args, msg.text); err != nil {
 			return promptDeliveryMsg{err: err}
-		}
-		cmd := exec.Command(exe, args...)
-		cmd.Stdin = strings.NewReader(msg.text)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return promptDeliveryMsg{err: fmt.Errorf("message delivery failed: %w: %s", err, strings.TrimSpace(string(output)))}
 		}
 		return promptDeliveryMsg{}
 	}
+}
+
+// quickMessageRunSend runs `agent-deck session send` with the message on
+// stdin. It is a variable so tests can observe delivery without a subprocess.
+var quickMessageRunSend = func(args []string, text string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = strings.NewReader(text)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("message delivery failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 // quickMessageArgs chooses immediate delivery or turn-end deferral for session send.

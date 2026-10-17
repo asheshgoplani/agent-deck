@@ -21050,7 +21050,7 @@ func (h *Home) renderHelpBarFull() string {
 			}
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				if key := h.actionKey(hotkeyPromptSession); key != "" {
-					primaryHints = append(primaryHints, h.helpKey(key, "Steer"))
+					primaryHints = append(primaryHints, h.helpKey(key, "Send"))
 				}
 				if key := h.actionKey(hotkeyQueueMessage); key != "" {
 					primaryHints = append(primaryHints, h.helpKey(key, "Queue"))

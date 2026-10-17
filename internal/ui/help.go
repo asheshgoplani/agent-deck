@@ -362,7 +362,7 @@ func (h *HelpOverlay) View() string {
 				{"< / >", "Shrink / grow preview pane by 5% (drag divider with mouse; vertical in below-orientation)"},
 				{unreadKey, "Mark unread"},
 				{quickApproveKey, "Quick approve (send '1' to Claude)"},
-				{promptSessionKey, "Send / steer session (Ctrl+X E opens editor)"},
+				{promptSessionKey, "Send a message (a busy Claude session queues it; Ctrl+X E opens editor)"},
 				{queueMessageKey, "Queue message for after the current turn"},
 				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
 				{reorderDownKeys, "Reorder down (auto-promote at edge)"},

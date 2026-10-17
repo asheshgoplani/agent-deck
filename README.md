@@ -140,7 +140,7 @@ The main-menu composer currently supports local sessions only, not remote-sessio
 | `A` / `Shift+U` | Archive / unarchive session |
 | `^` | Show archived sessions |
 | `m` | MCP Manager |
-| `o` | Send a message / steer the selected session |
+| `o` | Send a message to the selected session (a busy Claude session queues it, no interrupt) |
 | `Shift+Q` | Queue a message after the current turn |
 | `s` | Skills Manager |
 | `$` | Cost Dashboard |
