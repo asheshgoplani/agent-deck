@@ -97,7 +97,9 @@ func NewConductorOutbox(cfg OutboxConfig) *ConductorOutbox {
 
 // Enqueue queues evt for the conductor it is routed to (evt.RoutedTo) and
 // starts that conductor's worker. An event queued before under the same
-// key is not queued again. A conductor with no session cannot be queued
+// key is not queued again. The conductor's session is its non-archived one:
+// an archived session keeps its title in storage, but it is not the
+// conductor any more. A conductor with no such session cannot be queued
 // for: the error says so, and the event stays in watcher_events.
 func (o *ConductorOutbox) Enqueue(watcherID, watcherName string, evt Event) error {
 	title := session.ConductorSessionTitle(evt.RoutedTo)
@@ -107,13 +109,13 @@ func (o *ConductorOutbox) Enqueue(watcherID, watcherName string, evt Event) erro
 	}
 	var target *statedb.InstanceRow
 	for _, row := range rows {
-		if row.Title == title {
+		if row.Title == title && row.ArchivedAt.IsZero() {
 			target = row
 			break
 		}
 	}
 	if target == nil {
-		return fmt.Errorf("conductor %q has no session titled %q", evt.RoutedTo, title)
+		return fmt.Errorf("conductor %q has no session titled %q that is not archived", evt.RoutedTo, title)
 	}
 	now := time.Now()
 	s := sendqueue.Send{

@@ -142,6 +142,52 @@ func TestConductorOutbox_AConductorWithNoSessionQueuesNothing(t *testing.T) {
 	}
 }
 
+// TestConductorOutbox_SkipsAnArchivedConductorSession: an archived session
+// keeps the conductor's title in storage. An event is queued for the live
+// session even when the archived one comes first, and with only the archived
+// one nothing is queued.
+func TestConductorOutbox_SkipsAnArchivedConductorSession(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: "cond-demo-old", Title: session.ConductorSessionTitle("demo"), Tool: "claude",
+		ProjectPath: t.TempDir(), GroupPath: "conductors", Status: "stopped",
+		CreatedAt: now, LastAccessed: now, IsConductor: true, ArchivedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveInstance: %v", err)
+	}
+	outbox, dir, spawned := newTestOutbox(t, db, 0)
+
+	err := outbox.Enqueue("w1", "inbox", Event{Sender: "alice", Body: "only archived", RoutedTo: "demo"})
+	if err == nil || !strings.Contains(err.Error(), "not archived") {
+		t.Fatalf("Enqueue with only an archived conductor session: %v", err)
+	}
+	if recs, _ := sendqueue.List(dir, ""); len(recs) != 0 || len(spawned.targets) != 0 {
+		t.Fatalf("%d records, %d worker starts for an archived conductor, want none", len(recs), len(spawned.targets))
+	}
+
+	if err := db.SaveInstance(&statedb.InstanceRow{
+		ID: "cond-demo", Title: session.ConductorSessionTitle("demo"), Tool: "claude",
+		ProjectPath: t.TempDir(), GroupPath: "conductors", Status: "idle", Order: 1,
+		CreatedAt: now, LastAccessed: now, IsConductor: true,
+	}); err != nil {
+		t.Fatalf("SaveInstance: %v", err)
+	}
+	if err := outbox.Enqueue("w1", "inbox", Event{Sender: "alice", Body: "live", RoutedTo: "demo"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	recs, err := sendqueue.List(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].SessionID != "cond-demo" {
+		t.Fatalf("records %+v, want one for the live session cond-demo", recs)
+	}
+	if spawned.started("cond-demo-old") || !spawned.started("cond-demo") {
+		t.Fatalf("worker starts %v, want only cond-demo", spawned.targets)
+	}
+}
+
 // TestConductorOutbox_ResumeStartsTheWorkersOfWaitingEvents: after a
 // reboot, the conductors with routed events still waiting get a worker
 // again; finished deliveries and plain `session send --queue` records do
