@@ -12,6 +12,7 @@ func TestCodexReadyPromptUsesCurrentFrame(t *testing.T) {
 		{"quoted status example", "• The docs quote Working (12s • esc to interrupt) here.\n\n› Ask Codex to do anything\n\n  ? for shortcuts            100% context left", true},
 		{"working above composer", "• Working (0s • esc to interrupt)\n\n› Ask Codex to do anything\n\n  ? for shortcuts            100% context left", false},
 		{"ctrl-c above composer", "• Thinking (3s • ctrl + c to interrupt)\n\n› Ask Codex to do anything\n\n  ? for shortcuts            100% context left", false},
+		{"working above queued questions", "◦ Working (4m 12s • esc to interrupt)\n\n• Queued follow-up inputs\n  ? 1 question\n    shift+← to answer\n› Ask Codex to do anything\n\n  ? for shortcuts", false},
 		{"working above queued inputs", "• Working (32m 32s • esc to interrupt)\n\n• Queued follow-up inputs\n  ↳ check the tests\n    before sending\n    shift + ← edit last queued message\n› Ask Codex to do anything\n\n  ? for shortcuts            100% context left", false},
 	}
 	for _, tt := range tests {
