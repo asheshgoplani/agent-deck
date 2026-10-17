@@ -19,6 +19,7 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | **SESSION LIFECYCLE** |
 | Create session | `internal/ui/home.go:6179` (`n` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go` | NewDialog spawns, initiates session creation |
 | Quick create session | `internal/ui/home.go:6286` (`N` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go` | Auto-generated name, smart group context |
+| Complete working directory | `internal/ui/newdialog.go` (new-session dialog, `GetDirectoryCompletions`) | GET `/api/path-suggestions` | `session.GetDirectoryCompletions` (read-only) | `handlers_paths_test.go`, `tests/web/e2e/parity-actions.spec.js`, `tests/web/e2e/path-suggestions.spec.js` | Typed-prefix directory completion shared with the TUI; capped results, tilde expansion, hidden-directory filtering |
 | Start session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/start` | `StartSession` | `handlers_sessions_test.go` | Resumes stopped/idle session |
 | Stop session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/stop` | `StopSession` | `handlers_sessions_test.go` | Kills running tmux session |
 | Restart session | `internal/ui/home.go:6473` (`R` key) | POST `/api/sessions/{id}/restart` | `RestartSession` | `handlers_sessions_test.go` | Recreate tmux with resume |
