@@ -117,3 +117,40 @@ func TestCrossHarnessSwitch_NonClaudeTargetWritesNoClaudeTrust_2677(t *testing.T
 		t.Fatalf("claude->codex switch must not write ~/.claude.json (stat err=%v)", err)
 	}
 }
+
+// The target keeps the source's GroupPath, so a [groups.<g>.claude].config_dir
+// decides which .claude.json the target reads. Seeding ~/.claude.json there
+// leaves the target stuck at the trust prompt.
+func TestCrossHarnessSwitch_PreSeedsClaudeTrustInGroupConfigDir_2677(t *testing.T) {
+	cfg, source, home, realProject := seededCodexToClaudeSource(t, false)
+	groupDir := filepath.Join(home, "claude-group")
+	cfg.Groups = map[string]GroupSettings{source.GroupPath: {Claude: GroupClaudeSettings{ConfigDir: groupDir}}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	runCrossHarnessTrustSwitch(t, cfg, source, SwitchPreviewTarget{Harness: "claude"})
+	if !claudeTrustAccepted(t, filepath.Join(groupDir, ".claude.json"), realProject) {
+		t.Fatalf("group config dir .claude.json has no trust entry for target realpath %q", realProject)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude.json")); !os.IsNotExist(err) {
+		t.Fatalf("group-routed target must not seed ~/.claude.json (stat err=%v)", err)
+	}
+}
+
+func TestCrossHarnessSwitch_PreSeedsClaudeTrustInGlobalConfigDir_2677(t *testing.T) {
+	cfg, source, home, realProject := seededCodexToClaudeSource(t, false)
+	globalDir := filepath.Join(home, "claude-global")
+	cfg.Claude.ConfigDir = globalDir
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ClearUserConfigCache()
+	runCrossHarnessTrustSwitch(t, cfg, source, SwitchPreviewTarget{Harness: "claude"})
+	if !claudeTrustAccepted(t, filepath.Join(globalDir, ".claude.json"), realProject) {
+		t.Fatalf("[claude].config_dir .claude.json has no trust entry for target realpath %q", realProject)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude.json")); !os.IsNotExist(err) {
+		t.Fatalf("globally routed target must not seed ~/.claude.json (stat err=%v)", err)
+	}
+}
