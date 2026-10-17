@@ -794,89 +794,6 @@ func SupportsHyperlinks() bool {
 	return GetTerminalInfo().SupportsOSC8
 }
 
-// Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "pi", "omp"}
-
-var toolDetectionPatterns = map[string][]*regexp.Regexp{
-	"claude": {
-		// Avoid matching bare words like "claude-deck" in shell prompts/paths.
-		regexp.MustCompile(`(?i)\bclaude\s+code\b`),
-		regexp.MustCompile(`(?i)\bno,\s*and\s*tell\s+claude\s+what\s+to\s+do\s+differently\b`),
-		regexp.MustCompile(`(?i)\bdo you trust the files in this folder\??`),
-	},
-	"gemini": {
-		regexp.MustCompile(`(?i)gemini`),
-		regexp.MustCompile(`(?i)google ai`),
-	},
-	"opencode": {
-		regexp.MustCompile(`(?i)opencode`),
-		regexp.MustCompile(`(?i)open code`),
-	},
-	"codex": {
-		regexp.MustCompile(`(?i)codex`),
-		regexp.MustCompile(`(?i)openai`),
-	},
-	"copilot": {
-		// GitHub Copilot CLI (the `copilot` binary from @github/copilot,
-		// NOT the older `gh copilot` shell-suggestion extension). Issue #556.
-		regexp.MustCompile(`(?i)\bgithub\s+copilot\b`),
-		regexp.MustCompile(`(?i)\bcopilot\s+cli\b`),
-		regexp.MustCompile(`(?i)^copilot>\s*`),
-	},
-	"crush": {
-		// charmbracelet/crush — Charm's terminal-first AI assistant. Issue #940.
-		// Distinct phrases to avoid colliding with the English word "crush".
-		regexp.MustCompile(`(?i)\bcharm\s+crush\b`),
-		regexp.MustCompile(`(?i)\bcrush>\s*`),
-	},
-	"muse": {
-		// Muse Code CLI (`muse`). Anchored on the product banner and the
-		// busy marker so the English words "muse"/"amuse"/"museum" in a
-		// pane cannot claim it.
-		regexp.MustCompile(`(?i)\bmuse\s+code\b`),
-		regexp.MustCompile(`◈ Thinking \(`),
-	},
-	"hermes": {
-		// Hermes Agent CLI (github.com/NousResearch/hermes-agent).
-		regexp.MustCompile(`(?i)\bhermes\s+agent\b`),
-		regexp.MustCompile(`(?i)\bnous\s*research\b`),
-	},
-	"deepseek": {
-		// DeepSeek Harness (`dsh`, npm @deepseek-ai/dsh). Captured live from
-		// 0.1.0-rc.6 in a sandboxed HOME:
-		//   web ready banner: "dsh web: http://127.0.0.1:39949"
-		//   launcher help:    "dsh: boot a DeepSeek Harness profile"
-		//   headless usage:   "Usage: dsh --profile headless [options] [task...]"
-		//   credential error: "dsh: MISSING_CREDENTIAL: llm-deepseek: ..."
-		// Every pattern anchors on the "dsh" prefix or the product name, so the
-		// bare word "deepseek" in a model name (a codex pane running a DeepSeek
-		// model, say) cannot claim the pane.
-		regexp.MustCompile(`(?i)\bdeepseek\s+harness\b`),
-		regexp.MustCompile(`(?mi)^dsh(\s+web)?:\s`),
-		regexp.MustCompile(`(?i)\bdsh\s+--profile\b`),
-	},
-	"pi": {
-		regexp.MustCompile(`(?mi)^\s*pi>\s*`),
-		regexp.MustCompile(`(?i)\bpi\s+cli\b`),
-		regexp.MustCompile(`(?i)\bpi\s+code\b`),
-	},
-	"omp": {
-		// Oh My Pi (github.com/can1357/oh-my-pi). Captured LIVE against the
-		// real installed binary (v17.3.8) via a PTY: the busy/streaming
-		// status line always contains the literal "⟨esc⟩" marker (U+27E8/
-		// U+27E9 angle brackets — NOT ascii "<esc>"), and the tool-approval
-		// dialog always contains "Allow tool: ". Neither string collides with
-		// any other registered tool's vocabulary.
-		regexp.MustCompile(`⟨esc⟩`),
-		regexp.MustCompile(`(?m)^\s*Allow tool:\s`),
-	},
-	"cursor": {
-		// Cursor CLI agent TUI
-		regexp.MustCompile(`(?i)\bcursor\s+agent\b`),
-		regexp.MustCompile(`(?i)cursor\s+cli\b`),
-	},
-}
-
 func detectToolFromCommand(command string) string {
 	cmdLower := strings.ToLower(strings.TrimSpace(command))
 	if cmdLower == "" {
@@ -1023,21 +940,6 @@ func isShellAssignmentToken(token string) bool {
 		}
 	}
 	return true
-}
-
-func detectToolFromContent(cleanContent string) string {
-	for _, tool := range toolDetectionOrder {
-		patterns, ok := toolDetectionPatterns[tool]
-		if !ok {
-			continue
-		}
-		for _, pattern := range patterns {
-			if pattern.MatchString(cleanContent) {
-				return tool
-			}
-		}
-	}
-	return "shell"
 }
 
 // StateTracker tracks content changes for notification-style status detection
@@ -4365,12 +4267,12 @@ func (s *Session) HasUpdated() (bool, error) {
 // DetectTool detects which AI coding tool is running in the session
 // Uses caching to avoid re-detection on every call
 func (s *Session) DetectTool() string {
-	// Check cache first (read lock pattern for better concurrency)
+	// Check cache first without probing processes on the status hot path.
 	s.mu.Lock()
 	if s.detectedTool != "" && time.Since(s.toolDetectedAt) < s.toolDetectExpiry {
-		result := s.detectedTool
+		tool := s.detectedTool
 		s.mu.Unlock()
-		return result
+		return tool
 	}
 	s.mu.Unlock()
 
@@ -4379,32 +4281,25 @@ func (s *Session) DetectTool() string {
 	// runtime detection should preserve the custom name.
 	s.mu.Lock()
 	if s.customToolName != "" {
-		s.detectedTool = s.customToolName
+		name := s.customToolName
+		s.detectedTool = name
 		s.toolDetectedAt = time.Now()
 		s.mu.Unlock()
-		return s.customToolName
+		return name
 	}
 	s.mu.Unlock()
 
 	// Detect tool from command first (most reliable)
 	if tool := detectToolFromCommand(s.Command); tool != "" {
-		s.mu.Lock()
-		s.detectedTool = tool
-		s.toolDetectedAt = time.Now()
-		s.mu.Unlock()
+		// Configured launch identity. This is what a restart should run; it is
+		// not an observation of the pane, and a nested process must not replace it.
+		s.rememberTool(tool)
 		return tool
 	}
 
-	// Everything below is a promotion-only signal. tmux reports the pane's
-	// foreground process, which is frequently a child the agent spawned for a
-	// tool call (see AnalyzePaneTitle), and pane content routinely names other
-	// tools in ordinary conversation. Neither signal can tell "a different
-	// runtime is in charge now" apart from "the same runtime is running a
-	// subprocess", so they may only give a runtime identity to a session that
-	// has none yet ("" or "shell"). They never replace one that was already
-	// recognized. Cross-runtime switching needs a durable process-root identity
-	// rather than a single foreground sample (#1718). ForceDetectTool clears the
-	// previous detection, so an explicit re-detect still runs the full sequence.
+	// A foreground sample can be a child command of an already recognized
+	// agent. Preserve that runtime until an explicit ForceDetectTool instead
+	// of relabeling it from a single child-process sample.
 	s.mu.Lock()
 	if previous := s.detectedTool; previous != "" && previous != "shell" {
 		s.toolDetectedAt = time.Now()
@@ -4413,39 +4308,30 @@ func (s *Session) DetectTool() string {
 	}
 	s.mu.Unlock()
 
-	// A session created as "shell" can later launch a supported tool. Prefer the
-	// pane's current command over terminal content so conversation text that
-	// mentions another tool cannot rewrite the running tool's identity.
+	// A session created as "shell" can later launch a supported tool. Only
+	// promote it when the pane's current command identifies that tool.
 	if paneInfo, ok := GetCachedPaneInfo(s.Name); ok {
 		if tool := detectToolFromCommand(paneInfo.CurrentCommand); tool != "" {
-			s.mu.Lock()
-			s.detectedTool = tool
-			s.toolDetectedAt = time.Now()
-			s.mu.Unlock()
+			s.rememberTool(tool)
 			return tool
 		}
 	}
 
-	// Fallback to content detection
-	content, err := s.CapturePane()
-	if err != nil {
-		s.mu.Lock()
-		s.detectedTool = "shell"
-		s.toolDetectedAt = time.Now()
-		s.mu.Unlock()
-		return "shell"
-	}
+	// Screen text is not evidence of process identity. Shell output, editor
+	// buffers, and agent conversations can all contain another tool's banner
+	// or vendor name. In particular, an agent inside a Neovim terminal leaves
+	// nvim as tmux's foreground command. Without a process tree, failing closed
+	// to shell is safer than persisting an unrelated tool.
+	s.rememberTool("shell")
+	return "shell"
+}
 
-	// Strip ANSI codes for accurate matching
-	cleanContent := StripANSI(content)
-
-	detectedTool := detectToolFromContent(cleanContent)
-
+// rememberTool caches command-based detection without changing launch identity.
+func (s *Session) rememberTool(tool string) {
 	s.mu.Lock()
-	s.detectedTool = detectedTool
+	s.detectedTool = tool
 	s.toolDetectedAt = time.Now()
 	s.mu.Unlock()
-	return detectedTool
 }
 
 // ForceDetectTool forces a re-detection of the tool, ignoring cache

@@ -49,22 +49,3 @@ func TestDetectToolFromCommand_Crush_Negative(t *testing.T) {
 		})
 	}
 }
-
-func TestDetectToolFromContent_Crush(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-		want    string
-	}{
-		{"charm crush banner", "Welcome to Charm Crush", "crush"},
-		{"crush prompt", "> what should I do? crush>", "crush"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := detectToolFromContent(tt.content); got != tt.want {
-				t.Fatalf("detectToolFromContent(%q) = %q, want %q", tt.content, got, tt.want)
-			}
-		})
-	}
-}

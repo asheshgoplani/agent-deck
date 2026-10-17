@@ -6072,7 +6072,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		state := sessionRenderState{
 			status:             inst.GetStatusThreadSafe(),
 			substate:           inst.CachedSubstate(),
-			tool:               inst.GetToolThreadSafe(),
+			tool:               inst.DisplayToolThreadSafe(),
 			archivedSuperseded: inst.IsArchived() && inst.SupersededBy != "",
 			// Label fields: read here, on the refresher's goroutine, so the
 			// render path never takes Instance.mu per row (#1753). Title goes
@@ -6129,7 +6129,7 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	account := inst.GetAccountThreadSafe()
 	return sessionRenderState{
 		status:         inst.GetStatusThreadSafe(),
-		tool:           inst.GetToolThreadSafe(),
+		tool:           inst.DisplayToolThreadSafe(),
 		account:        account,
 		accountDisplay: newAccountPresentation(account, h.accountSlotsConfigured.Load()),
 		title:          inst.GetTitleThreadSafe(),
@@ -23227,7 +23227,7 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 
 	// Snapshot status/tool under read lock for thread safety
 	cardStatus := inst.GetStatusThreadSafe()
-	cardTool := inst.GetToolThreadSafe()
+	cardTool := inst.DisplayToolThreadSafe()
 
 	// Header with tool icon
 	icon := ToolIcon(cardTool)

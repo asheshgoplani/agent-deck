@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+// ExpireToolDetectionForTest clears a session's command-detection cache.
+func ExpireToolDetectionForTest(s *Session) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.detectedTool = ""
+	s.toolDetectedAt = time.Time{}
+	s.mu.Unlock()
+}
+
 // SeedPaneInfoCacheForTest replaces the package's pane info cache with the
 // supplied data and marks it fresh. Test cleanup wipes the cache back to its
 // pristine zero state so concurrent or follow-on tests do not see seeded data.
