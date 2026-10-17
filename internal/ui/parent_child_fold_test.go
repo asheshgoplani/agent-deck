@@ -314,3 +314,66 @@ func TestParentFoldOnActiveParentKeepsArchivedChildrenVisible(t *testing.T) {
 		t.Fatalf("active view list = %s, want parent", got)
 	}
 }
+
+// A fold only hides children while its parent row is drawn. The status
+// filter runs after Flatten, so a folded idle parent with a running child
+// must not take the child with it when the "running" filter drops the
+// parent row: the group header would stay with nothing under it and no
+// row to unfold.
+func TestParentFoldIgnoredWhenStatusFilterHidesParent(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	parent.Status = session.StatusIdle
+	child.Status = session.StatusRunning
+	h.instances = []*session.Instance{parent, child}
+	h.parentChildrenCollapsed["parent"] = true
+
+	h.statusFilter = session.StatusRunning
+	h.rebuildFlatItems()
+	if got := strings.Join(flatSessionTitles(h), ","); got != "child" {
+		t.Fatalf("running filter list = %s, want child (parent row is filtered out)", got)
+	}
+
+	// When the parent itself passes the filter, its fold applies again.
+	parent.Status = session.StatusRunning
+	h.rebuildFlatItems()
+	if got := strings.Join(flatSessionTitles(h), ","); got != "parent" {
+		t.Fatalf("running filter list with running parent = %s, want parent", got)
+	}
+}
+
+// The same for the time filter: an old folded parent with a recent child.
+func TestParentFoldIgnoredWhenTimeFilterHidesParent(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	now := time.Now()
+	parent.CreatedAt = now.AddDate(0, 0, -30)
+	parent.LastAccessedAt = now.AddDate(0, 0, -30)
+	child.LastAccessedAt = now
+	h.instances = []*session.Instance{parent, child}
+	h.parentChildrenCollapsed["parent"] = true
+
+	h.timeFilter = session.TimeFilterToday
+	h.rebuildFlatItemsAt(now)
+	if got := strings.Join(flatSessionTitles(h), ","); got != "child" {
+		t.Fatalf("today filter list = %s, want child (parent row is filtered out)", got)
+	}
+}
+
+// If no row matches a status filter, the filter clears and the full list
+// shows. A fold that the filter had suspended must apply again then, since
+// the parent row is back on screen.
+func TestParentFoldReappliedWhenStatusFilterFallsBack(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	parent.Status = session.StatusIdle
+	child.Status = session.StatusIdle
+	h.instances = []*session.Instance{parent, child}
+	h.parentChildrenCollapsed["parent"] = true
+
+	h.statusFilter = session.StatusRunning
+	h.rebuildFlatItems()
+	if h.statusFilter != "" {
+		t.Fatalf("test setup: filter should fall back when nothing matches, got %q", h.statusFilter)
+	}
+	if got := strings.Join(flatSessionTitles(h), ","); got != "parent" {
+		t.Fatalf("fallback list = %s, want parent (fold applies once the parent is drawn)", got)
+	}
+}

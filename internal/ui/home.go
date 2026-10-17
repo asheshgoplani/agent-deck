@@ -3185,23 +3185,39 @@ func (h *Home) sessionChildCount(item session.Item) int {
 // its still-active children from the active list, and a folded active parent
 // would hide its archived children from the ^ view. In both cases the parent
 // row (and its fold badge) is absent, so nothing on screen could unfold them.
-func (h *Home) partitionParentFolds() map[string]bool {
+//
+// The same holds for the status and time filters, which also run after
+// Flatten: a folded parent that the active filter hides must not take its
+// matching children with it, or filtering by running/waiting would drop a
+// child under a folded idle parent with no row left to unfold. filtered
+// reports whether a fold was skipped only because of a filter, so the caller
+// can rebuild if that filter is later cleared by the no-match fallback.
+func (h *Home) partitionParentFolds(now time.Time) (folds map[string]bool, filtered bool) {
 	if len(h.parentChildrenCollapsed) == 0 || h.groupTree == nil {
-		return nil
+		return nil, false
 	}
 	viewArchived := h.statusFilter == FilterModeArchived
-	folds := make(map[string]bool, len(h.parentChildrenCollapsed))
+	folds = make(map[string]bool, len(h.parentChildrenCollapsed))
 	for _, group := range h.groupTree.GroupList {
 		if group == nil {
 			continue
 		}
 		for _, s := range group.Sessions {
-			if s != nil && h.parentChildrenCollapsed[s.ID] && s.IsArchived() == viewArchived {
-				folds[s.ID] = true
+			if s == nil || !h.parentChildrenCollapsed[s.ID] || s.IsArchived() != viewArchived {
+				continue
 			}
+			if h.statusFilter != "" && !viewArchived && !h.matchesStatusFilter(h.statusFilter, s.Status) {
+				filtered = true
+				continue
+			}
+			if h.timeFilter != session.TimeFilterAll && !h.timeFilter.Matches(s.DisplayLastActivityTime(), now) {
+				filtered = true
+				continue
+			}
+			folds[s.ID] = true
 		}
 	}
-	return folds
+	return folds, filtered
 }
 
 // revealParentFold opens the folded child list (#2631) that would hide inst,
@@ -3419,7 +3435,9 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	h.jumpMode = false
 	h.jumpBuffer = ""
 
-	allItems := h.groupTree.FlattenWithParentFolds(h.partitionParentFolds())
+	startStatusFilter, startTimeFilter := h.statusFilter, h.timeFilter
+	parentFolds, foldsFiltered := h.partitionParentFolds(now)
+	allItems := h.groupTree.FlattenWithParentFolds(parentFolds)
 	if h.embeddedLayout && h.sidebarMode == sidebarFlat {
 		allItems = flatSidebarItemsFromTree(h.groupTree)
 	}
@@ -3617,6 +3635,15 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			}
 			h.flatItems = filtered
 		}
+	}
+
+	// A no-match fallback above cleared a filter that had kept some parent
+	// folds out of Flatten. The parent rows are drawn again now, so rebuild
+	// with the folds applied. Filters only ever clear here, so this recurses
+	// at most once per filter.
+	if foldsFiltered && (h.statusFilter != startStatusFilter || h.timeFilter != startTimeFilter) {
+		h.rebuildFlatItemsAt(now)
+		return
 	}
 
 	// Apply group scope filter (composes with status filter above)
