@@ -4,7 +4,6 @@
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
                              ╭────────────────────────────────────────────────────────────╮                             
                              │                                                            │                             
                              │                                                            │                             
@@ -20,7 +19,8 @@
                              │      Harness (choose destination first):                   │                             
                              │        shell     claude     gemini     opencode            │                             
                              │      opencode2     codex     pi     copilot     crush      │                             
-                             │      muse     agent     hermes     deepseek     omp        │                             
+                             │      muse     cursor agent     hermes     deepseek         │                             
+                             │      omp                                                   │                             
                              │      Account for selected harness (configured; auth u…:    │                             
                              │        inherit     personal     work                       │                             
                              │                                                            │                             
