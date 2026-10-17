@@ -39,10 +39,11 @@ import (
 // pass commits it with the inbox's own content rule.
 
 // commsHasTextProducer reports whether a harness spools turn text. P1
-// enables Claude (hook-handler) and Codex (codex-notify); every other
-// harness is status-only (docs/comms.md) and gets status records.
+// enables Claude (hook-handler), Codex (codex-notify) and pi (its extension
+// through hook-handler); every other harness is status-only (docs/comms.md)
+// and gets status records.
 func commsHasTextProducer(tool string) bool {
-	return IsClaudeCompatible(tool) || IsCodexCompatible(tool)
+	return IsClaudeCompatible(tool) || IsCodexCompatible(tool) || tool == "pi"
 }
 
 // commsToolName is the harness name stamped on a record's Tool field.

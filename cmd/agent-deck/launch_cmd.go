@@ -912,22 +912,10 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if initialMessage != "" && *noWait && !promptRidesArgv {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
-			// #1777 provenance probe: a freshly launched session has an
-			// empty composer, so a "[Pasted text …]" marker appearing
-			// during verification is this prompt's own collapse and the
-			// Enter nudge stays attributable. If the probe cannot confirm
-			// that, the gate withholds the nudge. Captured once, before the
-			// send, and shared with the v1.7.64 recovery pass below — a
-			// multi-line prompt collapses behind that marker as its normal
-			// delivered form (#1855), so the recovery retry needs the same
-			// provenance or its attribution gate withholds it forever.
-			pasteFreeBeforeSend := composerPasteFree(tmuxSess)
-			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), sendRetryOptions{
-				maxRetries:                  8,
-				checkDelay:                  150 * time.Millisecond,
-				tool:                        newInstance.Tool,
-				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
-			}); err != nil {
+			// One pre-send probe (#1777) shared with the recovery pass
+			// below, whose attribution gate needs the same provenance (#1855).
+			opts := launchPromptSendOptions(tmuxSess, newInstance.Tool)
+			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), opts); err != nil {
 				// Check whether the pane died before delivery was attempted.
 				// When it did, the paste-buffer failure is a symptom of the
 				// dead pane, not a transport fault. The spawn-failure sidecar
@@ -942,7 +930,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 				exitCLI(1)
 			}
 			verifyPromptConsumedAfterLaunchAttributed(
-				tmuxSess, initialMessage, pasteFreeBeforeSend,
+				tmuxSess, newInstance.Tool, initialMessage, opts.composerPasteFreeBeforeSend,
 				10*time.Second, 250*time.Millisecond,
 				os.Stderr,
 			)
