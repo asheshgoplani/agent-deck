@@ -6,8 +6,11 @@ package ui
 // the list, and the flat-sidebar opt-out.
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -74,25 +77,104 @@ func TestParentFoldBadgeRendersState(t *testing.T) {
 }
 
 func TestParentFoldStateRoundTripsThroughUIState(t *testing.T) {
-	h := seamBNewHome()
-	h.parentChildrenCollapsed = make(map[string]bool)
-	h.parentChildrenCollapsed["parent"] = true
-	h.parentChildrenCollapsed["ghost"] = true
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	session.ClearUserConfigCache()
+	t.Cleanup(func() { os.Setenv("HOME", origHome); session.ClearUserConfigCache() })
 
-	// saveUIStateErr needs storage; exercise the save/load mapping directly
-	// by replicating the same struct fields the two code paths use, so a
-	// regression in either side is caught here.
-	state := uiState{ParentChildrenCollapsed: []string{"ghost", "parent"}}
-	loaded := seamBNewHome()
-	loaded.parentChildrenCollapsed = nil
-	if loaded.parentChildrenCollapsed == nil {
-		loaded.parentChildrenCollapsed = make(map[string]bool)
+	storage, err := session.NewStorageWithProfile("_i2631fold")
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
 	}
-	for _, sid := range state.ParentChildrenCollapsed {
-		loaded.parentChildrenCollapsed[sid] = true
+	t.Cleanup(func() { storage.Close() })
+
+	before := NewHome()
+	before.storage = storage
+	before.profile = "_i2631fold"
+	before.storageWatcher = nil
+	before.parentChildrenCollapsed["parent"] = true
+	before.parentChildrenCollapsed["ghost"] = true
+	before.parentChildrenCollapsed["reopened"] = false
+	if err := before.saveUIStateErr(); err != nil {
+		t.Fatalf("saveUIStateErr: %v", err)
 	}
-	if !loaded.parentChildrenCollapsed["parent"] || !loaded.parentChildrenCollapsed["ghost"] {
-		t.Fatalf("fold state lost in roundtrip: %v", loaded.parentChildrenCollapsed)
+
+	// A fresh process: new Home, same on-disk state.
+	after := NewHome()
+	after.storage = storage
+	after.profile = "_i2631fold"
+	after.storageWatcher = nil
+	after.loadUIState()
+	if !after.parentChildrenCollapsed["parent"] || !after.parentChildrenCollapsed["ghost"] {
+		t.Fatalf("fold state lost in roundtrip: %v", after.parentChildrenCollapsed)
+	}
+	if after.parentChildrenCollapsed["reopened"] {
+		t.Fatalf("an unfolded parent must not come back folded: %v", after.parentChildrenCollapsed)
+	}
+}
+
+// A fresh install has no ui_state row, so loadUIState returns before it
+// allocates the fold map; the first Tab on a parent row must not write to a
+// nil map.
+func TestParentFoldToggleOnFreshHomeDoesNotPanic(t *testing.T) {
+	h := NewHome()
+	h.storage = nil
+	parent := session.NewInstanceWithTool("parent", "/tmp/parent", "claude")
+	parent.ID = "parent"
+	parent.GroupPath = "alpha"
+	child := session.NewInstanceWithTool("child", "/tmp/child", "claude")
+	child.ID = "child"
+	child.GroupPath = "alpha"
+	child.SetParent(parent.ID)
+	h.groupTree = session.NewGroupTree([]*session.Instance{parent, child})
+	h.rebuildFlatItems()
+	h.moveCursorToSession("parent")
+
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyTab})
+	if got := strings.Join(flatSessionTitles(h), ","); got != "parent" {
+		t.Fatalf("after Tab = %s, want parent", got)
+	}
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyTab})
+	if got := strings.Join(flatSessionTitles(h), ","); got != "parent,child" {
+		t.Fatalf("after second Tab = %s, want parent,child", got)
+	}
+}
+
+// Unfolding a parent reopens its window rows: with children present Tab
+// never reaches the window toggle, so windows folded by h/left would
+// otherwise stay shut for the rest of the run.
+func TestParentUnfoldReopensWindows(t *testing.T) {
+	h, _, _ := makeFoldTestHome()
+	h.parentChildrenCollapsed["parent"] = true
+	h.windowsCollapsed["parent"] = true
+	h.rebuildFlatItems()
+	h.moveCursorToSession("parent")
+
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyTab})
+	if h.parentChildrenCollapsed["parent"] {
+		t.Fatal("Tab on a folded parent should unfold it")
+	}
+	if h.windowsCollapsed["parent"] {
+		t.Fatal("unfolding a parent should reopen its window rows")
+	}
+}
+
+// Reveal paths must open a folded parent the way they expand a collapsed
+// group, or the cursor never reaches the hidden child.
+func TestSelectSessionByIDUnfoldsParent(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	h.instances = []*session.Instance{parent, child}
+	h.parentChildrenCollapsed["parent"] = true
+	h.rebuildFlatItems()
+
+	if !h.SelectSessionByID("child") {
+		t.Fatal("SelectSessionByID should reveal a child hidden by a parent fold")
+	}
+	if h.parentChildrenCollapsed["parent"] {
+		t.Fatal("parent fold should be opened by the reveal")
+	}
+	if it := h.flatItems[h.cursor]; it.Session == nil || it.Session.ID != "child" {
+		t.Fatalf("cursor not on child: %+v", it)
 	}
 }
 

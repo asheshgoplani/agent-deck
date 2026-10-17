@@ -2083,6 +2083,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		creatingSessions:          make(map[string]*CreatingSession),
 		lastLogActivity:           make(map[string]time.Time),
 		windowsCollapsed:          make(map[string]bool),
+		parentChildrenCollapsed:   make(map[string]bool),
 		remoteGroupsCollapsed:     make(map[string]bool),
 		remoteSessionOrder:        make(remoteOrder),
 		worktreeDirtyCache:        make(map[string]bool),
@@ -2564,6 +2565,7 @@ func (h *Home) SelectSessionByID(id string) bool {
 	if target.GroupPath != "" {
 		h.groupTree.ExpandGroupWithParents(target.GroupPath)
 	}
+	h.revealParentFold(target)
 	h.rebuildFlatItems()
 
 	if idx := h.flatItemIndexByID(id); idx >= 0 {
@@ -3165,6 +3167,18 @@ func (h *Home) sessionChildCount(item session.Item) int {
 		break
 	}
 	return n
+}
+
+// revealParentFold opens the folded child list (#2631) that would hide inst,
+// so the reveal paths (search jump, focus request, session switch, new or
+// restored session) land on the row instead of silently finding nothing.
+// They already expand collapsed groups the same way.
+func (h *Home) revealParentFold(inst *session.Instance) {
+	if inst == nil || inst.ParentSessionID == "" || !h.parentChildrenCollapsed[inst.ParentSessionID] {
+		return
+	}
+	delete(h.parentChildrenCollapsed, inst.ParentSessionID)
+	_ = h.saveUIStateErr() // view preference; a dropped save self-heals next toggle
 }
 
 func (h *Home) moveCursorToSession(sessionID string) {
@@ -8095,6 +8109,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.instance.GroupPath != "" {
 				h.groupTree.ExpandGroupWithParents(msg.instance.GroupPath)
 			}
+			h.revealParentFold(msg.instance)
 
 			// Add to existing group tree instead of rebuilding
 			h.groupTree.AddSession(msg.instance)
@@ -8188,6 +8203,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.instance.GroupPath != "" {
 				h.groupTree.ExpandGroupWithParents(msg.instance.GroupPath)
 			}
+			h.revealParentFold(msg.instance)
 
 			// Add to existing group tree instead of rebuilding
 			h.groupTree.AddSession(msg.instance)
@@ -8386,6 +8402,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.instance.GroupPath != "" {
 			h.groupTree.ExpandGroupWithParents(msg.instance.GroupPath)
 		}
+		h.revealParentFold(msg.instance)
 
 		// Add to group tree and rebuild
 		h.groupTree.AddSession(msg.instance)
@@ -9290,6 +9307,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.instancesMu.RUnlock()
 				if ok && inst.GroupPath != "" && h.groupTree != nil {
 					h.groupTree.ExpandGroupWithParents(inst.GroupPath)
+					h.revealParentFold(inst)
 					h.rebuildFlatItems()
 					for i, item := range h.flatItems {
 						if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == switchedID {
@@ -10323,6 +10341,7 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if selected.GroupPath != "" {
 				h.groupTree.ExpandGroupWithParents(selected.GroupPath)
 			}
+			h.revealParentFold(selected)
 			h.rebuildFlatItems()
 
 			// Find the session in flatItems (not instances) and set cursor
@@ -10438,6 +10457,7 @@ func (h *Home) jumpToSession(inst *session.Instance) {
 	if inst.GroupPath != "" {
 		h.groupTree.ExpandGroupWithParents(inst.GroupPath)
 	}
+	h.revealParentFold(inst)
 	h.rebuildFlatItems()
 
 	// Find and select the session
@@ -11884,6 +11904,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// window folding keeps h/left.
 				sid := item.Session.ID
 				h.parentChildrenCollapsed[sid] = !h.parentChildrenCollapsed[sid]
+				if !h.parentChildrenCollapsed[sid] {
+					// Unfolding re-opens the whole subtree, window rows included:
+					// with children present this key never reaches the window
+					// toggle below, so windows folded by h/left would otherwise
+					// stay shut for the rest of the run.
+					delete(h.windowsCollapsed, sid)
+				}
 				h.rebuildFlatItems()
 				h.moveCursorToSession(sid)
 				_ = h.saveUIStateErr() // view preference; a dropped save self-heals next toggle

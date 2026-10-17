@@ -647,11 +647,9 @@ func (t *GroupTree) ancestorsExpanded(path string, memo map[string]bool) bool {
 	return visible
 }
 
-// Flatten returns a flat list of items for cursor navigation
-// Flatten emits every item with all parent-child lists expanded — the
-// historical behavior every caller predates #2631 with. Equivalent to
+// Flatten returns a flat list of items for cursor navigation, with every
+// parent-child list expanded (the behavior before #2631). Equivalent to
 // FlattenWithParentFolds(nil).
-
 func (t *GroupTree) Flatten() []Item {
 	return t.flatten(nil)
 }
@@ -666,6 +664,9 @@ func (t *GroupTree) FlattenWithParentFolds(foldedParents map[string]bool) []Item
 
 func (t *GroupTree) flatten(foldedParents map[string]bool) []Item {
 	items := []Item{}
+
+	// Visibility memo shared by every group in this pass (see ancestorsExpanded).
+	// Flatten runs on every render, so it is only allocated when some group is
 	// actually collapsed: with nothing collapsed anywhere, every group is
 	// visible and the ancestor walk is skipped entirely.
 	var visibleMemo map[string]bool
