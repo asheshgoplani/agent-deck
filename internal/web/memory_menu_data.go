@@ -31,9 +31,10 @@ type MemoryMenuData struct {
 
 	// published holds the last complete snapshot without needing mu. It lets
 	// callers that only need a session lookup (the terminal websocket) skip
-	// waiting behind an inline fallback reload. InvalidateCache leaves it in
-	// place: a stale snapshot is still good enough for an id lookup, and
-	// callers fall back to LoadMenuSnapshot when the id is missing.
+	// waiting behind an inline fallback reload. InvalidateCache clears it:
+	// a mutation (restart, start) can recreate the tmux session under a new
+	// name, so callers must take the full LoadMenuSnapshot path until the
+	// next complete snapshot is published.
 	published atomic.Pointer[MenuSnapshot]
 }
 
@@ -196,6 +197,7 @@ func (m *MemoryMenuData) InvalidateCache() {
 	m.fallbackRevision = 0
 	m.lastRevisionCheck = time.Time{}
 	m.lastFallbackError = nil
+	m.published.Store(nil)
 	m.mu.Unlock()
 }
 

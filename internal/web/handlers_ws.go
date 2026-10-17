@@ -93,11 +93,13 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 		snapshot    *MenuSnapshot
 		menuSession *MenuSession
 		found       bool
+		fromCache   bool
 		err         error
 	)
 	if cached, ok := s.menuData.(interface{ CachedMenuSnapshot() *MenuSnapshot }); ok {
 		snapshot = cached.CachedMenuSnapshot()
 		menuSession, found = snapshotSessionByID(snapshot, sessionID)
+		fromCache = found
 	}
 	if !found {
 		snapshot, err = s.menuData.LoadMenuSnapshot()
@@ -173,7 +175,22 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	var bridge *tmuxPTYBridge
 	if menuSession.TmuxSession != "" {
-		bridge, err = newTmuxPTYBridge(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
+		bridge, err = attachTmuxPTYBridge(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
+		if err != nil && fromCache && errors.Is(err, ErrTmuxSessionNotFound) {
+			// The cached snapshot can name a tmux session that was replaced
+			// since it was published (restart/start recreate the tmux session
+			// under a new name, possibly from the CLI or TUI). Re-resolve
+			// through the full load and retry once if the target changed.
+			if fresh, loadErr := s.menuData.LoadMenuSnapshot(); loadErr == nil {
+				if freshSession, ok := snapshotSessionByID(fresh, sessionID); ok &&
+					freshSession.TmuxSession != "" &&
+					(freshSession.TmuxSession != menuSession.TmuxSession ||
+						freshSession.TmuxSocketName != menuSession.TmuxSocketName) {
+					menuSession = freshSession
+					bridge, err = attachTmuxPTYBridge(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
+				}
+			}
+		}
 		if err != nil {
 			logging.ForComponent(logging.CompWeb).Error("terminal_attach_failed",
 				slog.String("session_id", logSessionID),
