@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,6 +19,9 @@ import (
 func TestCleanupReviewCrossProfileBoundary(t *testing.T) {
 	for _, change := range []string{"owned before scan", "corrupt before scan", "unreadable before scan", "claimed after scan", "corrupt after scan", "unclaimed"} {
 		t.Run(change, func(t *testing.T) {
+			if strings.Contains(change, "unreadable") {
+				testutil.SkipIfRoot(t, "root reads a mode 0000 profile directory")
+			}
 			home := t.TempDir()
 			stdout, stderr, code := runAgentDeck(t, home, "list", "--json")
 			require.Zero(t, code, "%s %s", stdout, stderr)

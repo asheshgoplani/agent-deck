@@ -4,13 +4,19 @@ on:
   issues:
     types: [opened]
 
+# Read-only token: the job only reads issue data and posts to ntfy with a secret.
+permissions:
+  contents: read
+  issues: read
+
 jobs:
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Gather issue context
         id: context
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const issue = context.payload.issue;
@@ -96,7 +102,7 @@ jobs:
 
           # Parse for notification title
           ISSUE_NUM=$(echo "$ISSUE_CONTEXT" | jq -r '.number')
-          ISSUE_TITLE=$(echo "$ISSUE_CONTEXT" | jq -r '.title')
+          ISSUE_TITLE=$(echo "$ISSUE_CONTEXT" | jq -r '.title' | tr -d '\r\n')
           ISSUE_TYPE=$(echo "$ISSUE_CONTEXT" | jq -r '.detected_type')
 
           # Send to ntfy with full context in body

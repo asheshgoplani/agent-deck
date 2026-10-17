@@ -26,7 +26,7 @@ read-only transcript and pane reads named below.
 | Preferences | `config get <key> --json`, `config set <key> <value> --json`, `config schema --json` | none | below |
 | Favourites | `session set <id> favorite true\|false`; `favorite` in `list --json` / `session show --json` | none | below |
 | Transcript location in listings | `transcript_path`, `claude_session_id` / `codex_session_id` in `list --json` and `remote sessions <name> --json` | none | docs/remote-recall.md |
-| Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json` | the owner host's own gates | docs/remote-recall.md |
+| Remote conversations, status stream, send states | `remote <name> recall timeline\|follow …`, `remote <name> events follow --jsonl [--since c]`, `remote <name> session send-status <send-id> --json`; a forwarded follow ends (exit 0) when its stdin closes, so hold stdin open | the owner host's own gates | docs/remote-recall.md |
 
 ## Queued send
 
@@ -207,6 +207,12 @@ socket write has no keystroke boundary to check at.
 - Before anything is typed, an open menu refuses with `delivery: "menu_open"`
   and a missing or unreadable input prompt with `delivery:
   "composer_blocked"`. The error text says `no keys typed`; exit 1.
+- A busy Claude takes the send: Claude Code queues input typed while a turn
+  runs, so a running turn above an empty framed composer (a divider above and
+  below the prompt line) is a ready input prompt. A busy composer holding an
+  operator draft or a paste marker refuses with `composer_blocked`, and a menu,
+  picker or permission dialog with `menu_open`. Harnesses that do not queue
+  busy input (Codex, pi, shell) keep refusing while busy.
 - Once the body is typed, only a visible menu withholds Enter. A prompt
   redraw, a wrapped input box or a pane read error does not, so the text is
   never left typed and unsent on a false alarm. If a real menu opens between

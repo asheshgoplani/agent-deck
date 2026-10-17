@@ -445,7 +445,7 @@ func (c *csiuReader) consume(chunk []byte, final bool) []byte {
 		// Always run the reply filter. Escape-string families (DCS/OSC/
 		// APC/PM/SOS) are never keyboard input and can arrive outside
 		// any explicit quarantine window (e.g. iTerm2 XTVERSION reply on
-		// focus/resize — #731). `armed` stays tied to termreply.Active()
+		// focus/resize — #731). `armed` stays tied to termreply.State()
 		// so generic CSI pass-through works for keyboard input.
 		chunk = c.replyFilter.Consume(chunk, armed, false)
 		c.inBuf = append(c.inBuf, chunk...)

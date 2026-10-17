@@ -43,19 +43,6 @@ func (h *TmuxHarness) CreateSession(title, projectPath string) *session.Instance
 	return inst
 }
 
-// CreateSessionWithTool creates a session.Instance with a specific tool and the harness prefix.
-func (h *TmuxHarness) CreateSessionWithTool(title, projectPath, tool string) *session.Instance {
-	h.t.Helper()
-	inst := session.NewInstanceWithTool(h.prefix+title, projectPath, tool)
-	h.sessions = append(h.sessions, inst)
-	return inst
-}
-
-// SessionCount returns the number of sessions tracked by this harness.
-func (h *TmuxHarness) SessionCount() int {
-	return len(h.sessions)
-}
-
 // cleanup kills all tracked sessions in reverse order. Best-effort: errors are ignored.
 func (h *TmuxHarness) cleanup() {
 	for i := len(h.sessions) - 1; i >= 0; i-- {

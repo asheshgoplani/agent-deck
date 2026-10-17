@@ -33,8 +33,13 @@ Snapshots and send-status have a five-minute deadline. Capability negotiation
 has a twenty-second deadline. Connections use the existing SSH dial timeout,
 noninteractive authentication, and keepalives every fifteen seconds with three
 misses allowed. Follow owns one dedicated long-lived channel and does not retry;
-a consumer reconnects explicitly using its last processed cursor. Close the
-controller's stdin or terminate it to end the channel. The owner supervisor
+a consumer reconnects explicitly using its last processed cursor. The
+controller forwards its stdin over SSH as the lifetime signal, so a follow
+runs only while that stdin stays open: close it or terminate the controller to
+end the channel, which then exits 0. A follow started with stdin from
+`/dev/null` (`</dev/null`, or `cmd &` inside a non-interactive `sh -c`) ends
+within seconds with exit 0 and no output; a long-lived consumer holds a pipe
+to its stdin. Local `recall follow` and `events follow` ignore stdin. The owner supervisor
 terminates and reaps its own core child, with bounded escalation for a child
 that ignores TERM. Output streams directly through the controller.
 

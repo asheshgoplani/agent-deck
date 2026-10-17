@@ -21,7 +21,7 @@
 //	cf := crossfixture.New(t, crossfixture.Options{Profile: "test"})
 //	srv := bootMyWebServer(cf.AgentDeckDir)
 //	cf.AttachWeb(srv.URL)
-//	cf.AttachCLI(buildBinary(t))
+//	cf.CLIBinary = buildBinary(t)
 //
 //	web := cf.MustGetBytes(t, "/api/sessions")
 //	cli, _ := cf.RunCLI("list", "--json")
@@ -67,7 +67,7 @@ type Fixture struct {
 	Home         string // HOME for this test
 	AgentDeckDir string // <Home>/<AgentDeckSubdir>
 	WebURL       string // empty until AttachWeb
-	CLIBinary    string // empty until AttachCLI
+	CLIBinary    string // empty until set by the test
 
 	t *testing.T
 }
@@ -105,14 +105,6 @@ func New(t *testing.T, opts Options) *Fixture {
 // for GetJSON / GetBytes calls.
 func (f *Fixture) AttachWeb(baseURL string) {
 	f.WebURL = baseURL
-}
-
-// AttachCLI records the path of an already-built agent-deck binary.
-// Tests build it once via testing.Main / TestMain (or share a binary
-// across tests) and pass the path here so RunCLI can exec it under the
-// fixture's isolated env.
-func (f *Fixture) AttachCLI(binaryPath string) {
-	f.CLIBinary = binaryPath
 }
 
 // GetJSON GETs the path under WebURL and decodes into out. Fails the
@@ -156,7 +148,7 @@ func (f *Fixture) MustGetBytes(t TB, path string) []byte {
 // fixture's isolated env. Returns the combined stdout+stderr output.
 func (f *Fixture) RunCLI(args ...string) ([]byte, error) {
 	if f.CLIBinary == "" {
-		return nil, fmt.Errorf("crossfixture: no CLI binary attached (call AttachCLI first)")
+		return nil, fmt.Errorf("crossfixture: no CLI binary attached (set CLIBinary first)")
 	}
 	cmd := exec.Command(f.CLIBinary, args...)
 	// Inherit the test's env — t.Setenv has already injected HOME / profile.

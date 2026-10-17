@@ -1,7 +1,6 @@
 package sysinfo
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -92,12 +91,4 @@ func parseSysctlLoadavg(s string) LoadStat {
 		Load5:     load5,
 		Load15:    load15,
 	}
-}
-
-// FormatLoadavg formats load averages for display.
-func FormatLoadavg(l LoadStat) string {
-	if !l.Available {
-		return ""
-	}
-	return fmt.Sprintf("%.2f %.2f %.2f", l.Load1, l.Load5, l.Load15)
 }

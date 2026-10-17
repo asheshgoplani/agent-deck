@@ -186,3 +186,36 @@ func TestParentFoldOffInFlatSidebarMode(t *testing.T) {
 		t.Fatal("flat sidebar mode must disable parent-child folds")
 	}
 }
+
+// The `/`-search Enter path must compose the parent-fold reveal (#2631) with
+// the filter-clearing jump from #2655: a child that is both folded under its
+// parent and hidden by the active status filter still gets the cursor.
+func TestSearchJumpUnfoldsParentAndClearsFilter(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()
+	parent.Status = session.StatusRunning
+	child.Status = session.StatusStopped
+	h.instances = []*session.Instance{parent, child}
+	h.parentChildrenCollapsed["parent"] = true
+	h.statusFilter = FilterModeActive
+	h.rebuildFlatItems()
+	for _, title := range flatSessionTitles(h) {
+		if title == "child" {
+			t.Fatal("test setup: child should be hidden by fold and filter")
+		}
+	}
+
+	h.search.SetItems([]*session.Instance{child})
+	h.search.Show()
+	h.handleSearchKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if h.parentChildrenCollapsed["parent"] {
+		t.Fatal("search jump should open the parent fold")
+	}
+	if h.statusFilter != "" {
+		t.Fatalf("search jump should clear the hiding filter, got %q", h.statusFilter)
+	}
+	if got := cursorSessionID(h); got != "child" {
+		t.Fatalf("cursor landed on %q, want child", got)
+	}
+}

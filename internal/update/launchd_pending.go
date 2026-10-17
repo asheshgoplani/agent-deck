@@ -316,6 +316,50 @@ func DrainPendingRebootstrap(opts RebootstrapOptions) (RebootstrapResult, error)
 	return res, nil
 }
 
+// SettleRespawnedService drops the pending entry of the launchd service
+// this process runs inside (opts.ServiceLabel) when that entry is a
+// deferral (PendingReasonInsideService) recorded before startedAt, this
+// process's start. Call it only from the service's own main process,
+// never from a child that inherits XPC_SERVICE_NAME: launchd starting the
+// service from the replaced file after the deferral is exactly what the
+// deferred re-registration was for (it refuses an agent BTM no longer
+// recognises), so nothing is left to do. Without this, a run inside the
+// service keeps the entry forever and only a run outside it (the daily
+// timer, a ticking TUI) clears it (2026-10-10: the notifier sat
+// "pending" while the only TUI was attached all night). Returns whether
+// an entry was dropped. Not darwin, outside launchd, or nothing pending:
+// nothing to do.
+func SettleRespawnedService(opts RebootstrapOptions, startedAt time.Time) (bool, error) {
+	if err := opts.fill(); err != nil {
+		return false, err
+	}
+	if opts.GOOS != "darwin" || opts.ServiceLabel == "" {
+		return false, nil
+	}
+	agents, err := PendingRebootstrapAgents(opts.PendingPath)
+	if err != nil {
+		return false, err
+	}
+	for _, a := range agents {
+		if a.Label != opts.ServiceLabel || a.Reason != PendingReasonInsideService || !a.Since.Before(startedAt) {
+			continue
+		}
+		dropped, err := dropPendingRebootstrap(opts.PendingPath, a.Label)
+		if err != nil {
+			return false, err
+		}
+		if dropped {
+			opts.Logger.Info("launchagent_pending_settled",
+				slog.String("label", a.Label),
+				slog.Time("deferred_at", a.Since),
+				slog.Time("respawned_at", startedAt),
+				slog.String("reason", "launchd started the service again on the updated binary"))
+		}
+		return dropped, nil
+	}
+	return false, nil
+}
+
 // loadPendingAgent reads and parses <dir>/<label>.plist.
 func loadPendingAgent(dir, label string) (LaunchAgent, error) {
 	path := filepath.Join(dir, label+".plist")

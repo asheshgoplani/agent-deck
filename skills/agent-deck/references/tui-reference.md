@@ -74,6 +74,7 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `u` | Mark unread, idle -> waiting (**rebindable**) |
 | `a` | Quick approve — sends `1` to Claude (**rebindable**) |
 | `o` | Prompt session — send a one-line prompt without attaching (**rebindable**) |
+| `I` | Insert mode: keystrokes go straight to the selected session's pane until `Esc`; `Enter` submits. Insert mode is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft |
 | `y` | Toggle YOLO mode (**rebindable**) |
 | `+` / `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level at the parent's first child) |
 | `-` / `J` / `Shift+↓` | Move item down (auto-promotes a sub-session to top-level at the parent's last child) |

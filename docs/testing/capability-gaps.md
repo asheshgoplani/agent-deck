@@ -57,9 +57,9 @@ completion sentinel and persists a done outcome, and `notify-daemon --once`
 turns that into a distinct finished event (`TestCapability_Conductor_FinishedSignal`,
 issue #1186) and de-duplicates a repeated idle transition across polls
 (`TestCapability_Conductor_Dedup`, issue #1187). The notifier's actual
-`send-keys` into a live parent pane goes through `SendSessionMessageReliable`,
-whose timeout / Ctrl+C-resend behaviour is tuned for real agents; that final
-hop is exercised by the `internal/session` notifier unit tests (which inject a
+wake of a live parent pane goes through a best-effort `session send --no-wait`
+(`sendWakeNudge`), gated on the parent being idle and tuned for real agents;
+that final hop is exercised by the `internal/session` notifier unit tests (which inject a
 controllable sender) rather than re-driven here. The capability test asserts on
 the persisted hook status file and the `transition-notifier.log` event, which
 are the deterministic, disk-backed effects.

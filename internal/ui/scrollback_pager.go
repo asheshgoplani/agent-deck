@@ -287,3 +287,10 @@ func max0(n int) int {
 	}
 	return n
 }
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

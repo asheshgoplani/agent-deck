@@ -627,16 +627,3 @@ func (p *SocketProxy) GetClientCount() int {
 	defer p.clientsMu.RUnlock()
 	return len(p.clients)
 }
-
-func (p *SocketProxy) HealthCheck() error {
-	if p.mcpProcess == nil {
-		return fmt.Errorf("process not running")
-	}
-	if err := p.mcpProcess.Process.Signal(syscall.Signal(0)); err != nil {
-		return err
-	}
-	if _, err := os.Stat(p.socketPath); err != nil {
-		return err
-	}
-	return nil
-}

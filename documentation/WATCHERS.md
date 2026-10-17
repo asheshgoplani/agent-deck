@@ -197,7 +197,7 @@ The watcher does not know which of these happens. That is the separation of conc
 
 ## Related docs
 
-- [CONDUCTOR.md](CONDUCTOR.md) — what the watcher is ringing the doorbell *for*.
+- [Conductor guide](../docs/conductor/README.md) — what the watcher is ringing the doorbell *for*.
 - [WATCHDOG.md](WATCHDOG.md) — keeps the conductor alive so the doorbell gets answered.
 - [SKILLS.md](SKILLS.md) — `watcher-creator` is a pool skill; this doc explains the two tiers and how to install skills.
 - `internal/watcher/` — the code. Start at `adapter.go` and `engine.go` to understand the data flow.

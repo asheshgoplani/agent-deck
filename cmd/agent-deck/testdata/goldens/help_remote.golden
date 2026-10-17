@@ -7,7 +7,9 @@ Run commands: agent-deck remote <name> <command> [arguments]
   session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),
   recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,
   session queue list/release/cancel (queue entry IDs; --json supported),
-  Follow streams use --jsonl; events --since resumes a host cursor. Closing stdin stops the stream.
+  Follow streams use --jsonl; events --since resumes a host cursor.
+  A forwarded follow runs until its stdin closes, then exits 0. Stdin from /dev/null (</dev/null,
+  a background job of a non-interactive shell) ends it within seconds with no output: hold a pipe open.
   worktree list/info/cleanup, mcp list/attach, skill list/attached/attach/detach, group list/reorder,
   limits [--json] (read-only: the remote's own accounts and 5h/7d windows)
 

@@ -27,3 +27,25 @@ func TestCycleRestorePressesReturnsToDefault(t *testing.T) {
 		}
 	}
 }
+
+// TestShellPromptReady accepts the sandbox shell's prompt whether it runs as
+// a regular user ($) or as root (#), so the attach step works in a root
+// container. Only the last non-empty line counts.
+func TestShellPromptReady(t *testing.T) {
+	for _, c := range []struct {
+		pane string
+		want bool
+	}{
+		{"host:shell-live user$ \n\n", true},
+		{"host:shell-live root# \n", true},
+		{"$ ", true},
+		{"# ", true},
+		{"$ clear\n", false},
+		{"", false},
+		{"\n\n", false},
+	} {
+		if got := shellPromptReady(c.pane); got != c.want {
+			t.Errorf("shellPromptReady(%q) = %v, want %v", c.pane, got, c.want)
+		}
+	}
+}

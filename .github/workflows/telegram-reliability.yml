@@ -17,6 +17,15 @@ on:
       - '.github/workflows/telegram-reliability.yml'
   push:
     branches: [ main ]
+    paths:
+      - 'internal/session/worker_scratch*.go'
+      - 'internal/session/telegram_reliability.go'
+      - 'internal/session/telegram_validator.go'
+      - 'internal/session/env.go'
+      - 'internal/session/issue113*_*.go'
+      - 'cmd/agent-deck/cmd_telegram_doctor*.go'
+      - 'cmd/agent-deck/main.go'
+      - '.github/workflows/telegram-reliability.yml'
 
 # Every job here builds or launches the agent-deck binary. Since v1.16.7 a
 # TUI or daemon installs a newer release on its own and restarts in place;
@@ -25,6 +34,10 @@ on:
 # one switch that covers every spawn in this workflow.
 env:
   AGENTDECK_SKIP_UPDATE_CHECK: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

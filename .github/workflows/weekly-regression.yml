@@ -75,6 +75,7 @@ concurrency:
 jobs:
   regression-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -123,7 +124,7 @@ jobs:
           AGENTDECK_PROFILE=_ci_weekly \
             ./build/agent-deck web --no-tui --listen 127.0.0.1:18420 --token test &
           SERVER_PID=$!
-          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          echo "SERVER_PID=$SERVER_PID" >> "$GITHUB_ENV"
           # Wait for /healthz (up to 30 seconds)
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:18420/healthz > /dev/null 2>&1; then

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -42,11 +43,30 @@ func (g *promptGuardTarget) check(raw string, captureErr error) error {
 		}
 		return errInputPromptUnavailable
 	}
-	if !detector.HasPrompt(content) {
+	if detector.HasPrompt(content) {
+		return nil
+	}
+	if code := g.busyComposerRefusal(raw); code != "" {
+		if code == send.ComposerCodeDialog {
+			g.menuOpen = true // a menu drawn under a live spinner is still a menu
+		}
 		g.refused = true
 		return errInputPromptUnavailable
 	}
 	return nil
+}
+
+// busyComposerRefusal returns "" when a pane without an idle input prompt
+// still takes this send (send.ComposerEmptyWhileBusy, for a harness that
+// queues typed input during a turn), else a send.ComposerCode* refusal. A
+// shown prompt suggestion passes; the typed text check then holds Enter
+// until our message has replaced it.
+func (g *promptGuardTarget) busyComposerRefusal(raw string) string {
+	// The composer parser is Claude's, whatever other harness may queue.
+	if !session.IsClaudeCompatible(g.tool) || !session.AcceptsInputWhileBusy(g.tool) {
+		return send.ComposerCodeBusy
+	}
+	return send.ComposerEmptyWhileBusy(raw).Code
 }
 
 // Once a batch has been typed, a redraw or missing prompt cannot safely

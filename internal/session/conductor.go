@@ -694,12 +694,6 @@ func validateConductorDirName(name string) error {
 	return nil
 }
 
-// ConductorProfileDir returns the per-profile conductor directory.
-// Deprecated: Use ConductorNameDir instead. Kept for backward compatibility.
-func ConductorProfileDir(profile string) (string, error) {
-	return ConductorNameDir(profile)
-}
-
 // ConductorSessionTitle returns the session title for a named conductor
 func ConductorSessionTitle(name string) string {
 	return ConductorSessionTitlePrefix + name
@@ -1676,12 +1670,6 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// SetupConductorProfile creates a default Claude conductor for a profile.
-// Deprecated: Use SetupConductor instead. Kept for backward compatibility.
-func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, true, "", "", "", "", nil, "")
-}
-
 // createSymlinkWithExpansion creates a symlink from target to source, with ~ expansion and validation.
 // target: the generated instructions path (e.g., ~/.agent-deck/conductor/CLAUDE.md)
 // source: the user's custom file path (e.g., ~/my/custom.md)
@@ -1930,12 +1918,6 @@ func TeardownConductor(name string) error {
 		return nil // Already removed
 	}
 	return os.RemoveAll(dir)
-}
-
-// TeardownConductorProfile removes the conductor directory for a profile.
-// Deprecated: Use TeardownConductor instead. Kept for backward compatibility.
-func TeardownConductorProfile(profile string) error {
-	return TeardownConductor(profile)
 }
 
 // MigrateLegacyConductors scans for conductor dirs that have CLAUDE.md but no meta.json,
@@ -2460,7 +2442,6 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/mkdir -p "__LOG_DIR__"
 ExecStart="__PYTHON3__" "__BRIDGE_PATH__"
 Restart=always
 RestartSec=10
@@ -2495,7 +2476,6 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/mkdir -p "__LOG_DIR__"
 ExecStart="__AGENT_DECK__" notify-daemon
 Restart=always
 RestartSec=5
@@ -2624,7 +2604,6 @@ func GenerateSystemdBridgeService() (string, error) {
 	unit := strings.ReplaceAll(systemdBridgeServiceTemplate, "__PYTHON3__", python3Path)
 	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
-	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	unit = strings.ReplaceAll(unit, "__XDG_ENV__", xdgEnv)
 	agentDeckPath := FindAgentDeck()
@@ -2682,7 +2661,6 @@ func GenerateSystemdTransitionNotifierService() (string, error) {
 
 	unit := strings.ReplaceAll(systemdTransitionNotifierServiceTemplate, "__AGENT_DECK__", execPath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
-	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
 	return unit, nil
@@ -2798,6 +2776,14 @@ func installBridgeDaemonSystemd() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create systemd user dir: %w", err)
 	}
+	logDir, err := ConductorDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get bridge log dir: %w", err)
+	}
+	// systemd opens append output before ExecStartPre, so prepare it here.
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create bridge log dir: %w", err)
+	}
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write systemd unit: %w", err)
 	}
@@ -2909,6 +2895,14 @@ func installTransitionNotifierSystemd() (string, error) {
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create systemd user dir: %w", err)
+	}
+	logPath, err := logDataPath("transition-notifier.log")
+	if err != nil {
+		return "", fmt.Errorf("failed to get notifier log path: %w", err)
+	}
+	// ExecStartPre cannot create this directory before its own output opens.
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return "", fmt.Errorf("failed to create notifier log dir: %w", err)
 	}
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write notifier unit: %w", err)

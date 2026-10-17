@@ -86,11 +86,32 @@ func CaptureOutcome(raw string, err error) PaneCapture {
 // instead of SendEnter directly, so no future branch can reintroduce an
 // ungated press. c is this iteration's pane observation; strip removes ANSI
 // for text extraction (pass tmux.StripANSI; nil means identity).
+//
+// It also never presses while the composer shows a Claude prompt suggestion
+// (BareEnterBlocked): the suggestion is an instruction nobody wrote, one
+// accept key away from being submitted, and an empty composer has nothing of
+// ours left to submit anyway.
 func (a EnterAttribution) NudgeEnter(p EnterPresser, c PaneCapture, strip func(string) string) bool {
-	if p == nil || a.EnterWouldSubmitForeignDraft(c, strip) {
+	if p == nil || a.BareEnterBlocked(c, strip) {
 		return false
 	}
 	return p.SendEnter() == nil
+}
+
+// BareEnterBlocked reports whether an automated BARE Enter (one not preceded
+// by typing agent-deck's own text in the same operation) must be withheld:
+// the composer holds content agent-deck cannot attribute
+// (EnterWouldSubmitForeignDraft), or it shows a Claude prompt suggestion.
+//
+// A suggestion counts as an EMPTY composer everywhere else (guards, idle
+// detection, the "may I type here" question), because typing replaces it.
+// Only a key pressed with nothing typed first can act on it: Tab and Right
+// arrow accept it into the input, and an Enter there either submits nothing
+// (Claude Code 2.1.295) or, on a build or keybinding that accepts on Enter,
+// submits the suggestion as an instruction. Withholding costs nothing: with
+// a suggestion on screen the composer holds none of our text to submit.
+func (a EnterAttribution) BareEnterBlocked(c PaneCapture, strip func(string) string) bool {
+	return a.EnterWouldSubmitForeignDraft(c, strip) || ComposerBodyIsSuggestion(c.Raw)
 }
 
 // EnterWouldSubmitForeignDraft reports whether a bare Enter pressed into the
@@ -118,7 +139,9 @@ func (a EnterAttribution) EnterWouldSubmitForeignDraft(c PaneCapture, strip func
 	raw := c.Raw
 	draft, visible := ComposerDraft(raw, strip)
 	if !visible || draft == "" {
-		// Empty composer, suggestion, or placeholder: Enter submits nothing.
+		// Empty composer, suggestion, or placeholder: no foreign DRAFT. Typing
+		// our message replaces a suggestion, so a type-then-Enter retry is
+		// safe here; a bare Enter is not (BareEnterBlocked).
 		return false
 	}
 	if a.Message != "" && composerBodyIsOurMessage(strip(raw), a.Message) {
