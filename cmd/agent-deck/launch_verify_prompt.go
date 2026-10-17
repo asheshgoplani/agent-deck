@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/send"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -61,14 +62,32 @@ func verifyPromptConsumedAfterLaunch(
 	maxWait, pollInterval time.Duration,
 	warn io.Writer,
 ) {
-	verifyPromptConsumedAfterLaunchAttributed(target, message, false, maxWait, pollInterval, warn)
+	verifyPromptConsumedAfterLaunchAttributed(target, "claude", message, false, maxWait, pollInterval, warn)
+}
+
+// launchPromptSendOptions is the sendRetryOptions of the `launch -m …
+// --no-wait` initial send. Its pre-send provenance comes from one capture
+// taken before typing (send.ProbeComposerBeforeSend), the probe the waited
+// launch path runs too: a composer free of a paste marker, and whether a
+// Claude prompt suggestion is shown, so the submit confirms our typed text
+// replaced it before pressing Enter.
+func launchPromptSendOptions(target sendRetryTarget, tool string) sendRetryOptions {
+	pasteFree, suggestion := send.ProbeComposerBeforeSend(target.CapturePaneFresh, session.UsesClaudeDeliveryVerify(tool))
+	return sendRetryOptions{
+		maxRetries:                  8,
+		checkDelay:                  150 * time.Millisecond,
+		tool:                        tool,
+		composerPasteFreeBeforeSend: pasteFree,
+		suggestionShownBeforeSend:   suggestion,
+	}
 }
 
 // verifyPromptConsumedAfterLaunchAttributed is verifyPromptConsumedAfterLaunch
 // with the #1777 provenance made explicit. ownPasteMarker carries the caller's
 // pre-send observation that the composer held no "[Pasted text …]" marker
-// (composerPasteFree, captured before the initial send): a marker seen now can
-// then only be the collapsed rendering of our own prompt.
+// (launchPromptSendOptions, captured before the initial send): a marker seen
+// now can then only be the collapsed rendering of our own prompt. tool gates
+// the Claude prompt-suggestion rule of the retry, as on every other submit.
 //
 // This matters because the transport frames every multi-line body as a
 // bracketed paste (issue #1855), so Claude collapsing the launch prompt behind
@@ -79,6 +98,7 @@ func verifyPromptConsumedAfterLaunch(
 // leave every multi-line prompt sitting unsubmitted.
 func verifyPromptConsumedAfterLaunchAttributed(
 	target sendRetryTarget,
+	tool string,
 	message string,
 	ownPasteMarker bool,
 	maxWait, pollInterval time.Duration,
@@ -116,7 +136,7 @@ func verifyPromptConsumedAfterLaunchAttributed(
 	} else {
 		// Typing replaces a prompt suggestion; with one shown, Enter follows
 		// only once the composer holds our message instead of it.
-		_ = send.TypeAndSubmit(target, message, 0, send.ComposerBodyIsSuggestion(capture.Raw))
+		_ = send.TypeAndSubmit(target, message, 0, session.UsesClaudeDeliveryVerify(tool) && send.ComposerBodyIsSuggestion(capture.Raw))
 	}
 	switch pollPromptConsumed(target, message, maxWait, pollInterval) {
 	case promptConsumed:

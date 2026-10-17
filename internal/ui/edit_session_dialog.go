@@ -734,23 +734,27 @@ func (d *EditSessionDialog) View() string {
 		} else {
 			content.WriteString(labelStyle.Render("  " + fieldLabel + ":"))
 		}
-		content.WriteString("\n  ")
+		content.WriteString("\n")
 
 		switch f.kind {
 		case editFieldText:
+			content.WriteString("  ")
 			content.WriteString(f.input.View())
 		case editFieldPills:
-			if compact && f.pillCursor >= 0 {
-				if f.pillLabels != nil && f.pillCursor < len(f.pillLabels) {
-					content.WriteString(renderLabelPills([]string{f.pillLabels[f.pillCursor]}, 0))
-				} else if f.pillCursor < len(f.pillOptions) {
-					content.WriteString(renderToolPills([]string{f.pillOptions[f.pillCursor]}, 0))
-				}
-			} else if f.pillLabels != nil {
-				content.WriteString(renderLabelPills(f.pillLabels, f.pillCursor))
-			} else {
-				content.WriteString(renderToolPills(f.pillOptions, f.pillCursor))
+			labels := f.pillLabels
+			if labels == nil {
+				labels = toolPillLabels(f.pillOptions)
 			}
+			cursor := f.pillCursor
+			if compact && cursor >= 0 && cursor < len(labels) {
+				labels = labels[cursor : cursor+1]
+				cursor = 0
+			}
+			// Wrap here instead of leaving the containing lipgloss style to
+			// reflow ANSI-styled separators, which can split a pill mid-label.
+			// Pass the field indent into the renderer so continuation rows
+			// stay aligned with the first row.
+			content.WriteString(renderPills(labels, cursor, "  ", lineWidth))
 		}
 		sections.body = append(sections.body, content.String())
 	}
@@ -787,58 +791,4 @@ func (d *EditSessionDialog) View() string {
 
 	dialog := renderFittedDialog(dialogStyle, d.height, sections)
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)
-}
-
-// renderLabelPills renders a row of plain-text pills (no tool icons) for
-// fields whose options are simple labels, e.g. the pin position. Visual
-// styling matches renderToolPills so the two pill kinds read identically.
-//
-// Pills are joined with a literal space, not butted together: the dialog box
-// wraps this row with lipgloss's word-aware wrapping, which can only break at
-// an actual space. Without one, a too-narrow row wraps mid-label or renders
-// nothing at all.
-func renderLabelPills(labels []string, cursor int) string {
-	if len(labels) == 0 {
-		return ""
-	}
-	selected := lipgloss.NewStyle().Foreground(ColorBg).Background(ColorAccent).Bold(true).Padding(0, 2)
-	idle := lipgloss.NewStyle().Foreground(ColorTextDim).Background(ColorSurface).Padding(0, 2)
-	buttons := make([]string, len(labels))
-	for i, label := range labels {
-		if i == cursor {
-			buttons[i] = selected.Render(label)
-		} else {
-			buttons[i] = idle.Render(label)
-		}
-	}
-	return strings.Join(buttons, " ")
-}
-
-// renderToolPills mirrors newdialog's command pills (selected =
-// ColorAccent background) so the new/edit pair feels visually identical.
-// See renderLabelPills for why pills are joined with a literal space.
-func renderToolPills(presets []string, cursor int) string {
-	if len(presets) == 0 {
-		return ""
-	}
-	selected := lipgloss.NewStyle().Foreground(ColorBg).Background(ColorAccent).Bold(true).Padding(0, 2)
-	idle := lipgloss.NewStyle().Foreground(ColorTextDim).Background(ColorSurface).Padding(0, 2)
-	buttons := make([]string, len(presets))
-	for i, cmd := range presets {
-		name := cmd
-		if name == "" {
-			name = "shell"
-		} else {
-			name = displayCommandPreset(cmd)
-			if def := session.GetToolDef(cmd); def != nil && def.Icon != "" {
-				name = def.Icon + " " + name
-			}
-		}
-		if i == cursor {
-			buttons[i] = selected.Render(name)
-		} else {
-			buttons[i] = idle.Render(name)
-		}
-	}
-	return strings.Join(buttons, " ")
 }

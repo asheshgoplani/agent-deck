@@ -42,6 +42,10 @@ type TranscriptCandidate struct {
 type TranscriptChoice struct {
 	Chosen     TranscriptCandidate   `json:"chosen"`
 	Candidates []TranscriptCandidate `json:"candidates"`
+	// SharedProjectsRoot is set only when both accounts already resolve to
+	// one projects directory. Its transcripts are read, never migrated.
+	SharedProjectsRoot string `json:"shared_projects_root,omitempty"`
+	sharedProjectsInfo os.FileInfo
 	// Installed lists destination paths that received the chosen copy
 	// (new files and replaced files); keys already holding identical bytes
 	// are not listed.
@@ -62,6 +66,10 @@ func (c *TranscriptChoice) Summary() string {
 	}
 	candidates := len(c.Candidates)
 	installedKeys := len(c.Installed) + c.alreadyInstalled()
+	if c.SharedProjectsRoot != "" {
+		return fmt.Sprintf("conversation already present in shared transcript store; chose %s (%s, %d lines) from %d %s",
+			c.Chosen.Path, age, c.Chosen.Lines, candidates, pluralWord(candidates, "candidate", "candidates"))
+	}
 	s := fmt.Sprintf("chose the %s copy %s (%s, %d lines) from %d %s; installed under %d %s",
 		c.Chosen.Side, c.Chosen.Path, age, c.Chosen.Lines,
 		candidates, pluralWord(candidates, "candidate", "candidates"),
@@ -145,12 +153,16 @@ func claudeTranscriptCopies(configDir string, keys []string, sessionID, side str
 	if configDir == "" || sessionID == "" {
 		return nil, nil
 	}
+	return claudeTranscriptCopiesFromProjects(filepath.Join(configDir, "projects"), keys, sessionID, side)
+}
+
+func claudeTranscriptCopiesFromProjects(projectsRoot string, keys []string, sessionID, side string) ([]TranscriptCandidate, error) {
 	var found []TranscriptCandidate
 	for _, key := range keys {
-		dir, ok := claudeProjectDir(configDir, key)
-		if !ok {
+		if !claudeProjectDirNameRegex.MatchString(key) {
 			continue
 		}
+		dir := filepath.Join(projectsRoot, key)
 		path := filepath.Join(dir, sessionID+".jsonl")
 		if err := ensureNoSymlinkPath(path); err != nil {
 			return nil, fmt.Errorf("unsafe exact Claude %s path: %w", side, err)
@@ -176,6 +188,24 @@ func claudeTranscriptCopies(configDir string, keys []string, sessionID, side str
 		found = append(found, TranscriptCandidate{Path: path, Side: side, ProjectKey: key, NewestEvent: newest, Size: info.Size(), Lines: lines, SHA256: hash})
 	}
 	return found, nil
+}
+
+// Only a genuinely shared projects directory permits following an account's
+// projects symlink. Callers must still reject symlinks below the resolved root.
+func sharedClaudeProjectsRoot(sourceDir, targetDir string) string {
+	source, err := filepath.EvalSymlinks(filepath.Join(ExpandPath(sourceDir), "projects"))
+	if err != nil {
+		return ""
+	}
+	target, err := filepath.EvalSymlinks(filepath.Join(ExpandPath(targetDir), "projects"))
+	if err != nil || source != target {
+		return ""
+	}
+	info, err := os.Stat(source)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return source
 }
 
 // scanTranscriptEvents returns the newest "timestamp" across a JSONL file's
@@ -261,6 +291,21 @@ func selectSwitchTranscript(inst *Instance, sourceDir, targetDir string, archive
 	keys := claudeProjectKeyCandidates(inst.EffectiveWorkingDir())
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("source Claude effective working directory is empty")
+	}
+	if shared := sharedClaudeProjectsRoot(sourceDir, targetDir); shared != "" {
+		info, err := os.Stat(shared)
+		if err != nil {
+			return nil, fmt.Errorf("inspect shared projects directory: %w", err)
+		}
+		copies, err := claudeTranscriptCopiesFromProjects(shared, keys, sid, "source")
+		if err != nil {
+			return nil, err
+		}
+		chosen, ok := chooseNewestTranscript(copies)
+		if !ok {
+			return nil, fmt.Errorf("%w: looked for %s.jsonl in shared store %s", errNoTranscriptCopy, sid, shared)
+		}
+		return &TranscriptChoice{Chosen: chosen, Candidates: copies, SharedProjectsRoot: shared, sharedProjectsInfo: info}, nil
 	}
 	source, err := claudeTranscriptCopies(sourceDir, keys, sid, "source")
 	if err != nil {
