@@ -116,16 +116,19 @@ func TestSendWithRetryTarget_OwnPasteMarkerStillNudged(t *testing.T) {
 }
 
 func TestComposerPasteFree_ProbeIsFailSafe(t *testing.T) {
+	pasteFree := func(target sendRetryTarget) bool {
+		return launchPromptSendOptions(target, "claude").composerPasteFreeBeforeSend
+	}
 	clear := &mockSendRetryTarget{panes: []string{claudeComposerANSI("")}}
-	if !composerPasteFree(clear) {
+	if !pasteFree(clear) {
 		t.Fatal("an unmarked composer must report paste-free")
 	}
 	parked := &mockSendRetryTarget{panes: []string{claudeComposerANSI("[Pasted text #1 +89 lines]")}}
-	if composerPasteFree(parked) {
+	if pasteFree(parked) {
 		t.Fatal("a parked composer paste marker must not report paste-free")
 	}
 	broken := &mockSendRetryTarget{panes: []string{""}, paneErrs: []error{errors.New("pane gone")}}
-	if composerPasteFree(broken) {
+	if pasteFree(broken) {
 		t.Fatal("a capture failure must fail safe (no provenance evidence)")
 	}
 }
