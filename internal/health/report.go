@@ -209,7 +209,7 @@ func Report(dir string, since time.Duration) (Summary, error) {
 			}
 		}
 		if worstFDs != nil {
-			add(fmt.Sprintf("descriptor count exceeds budget (%d open, budget %d)", *worstFDs.OpenFDs, descriptorBudgetOf(*worstFDs)))
+			add(fmt.Sprintf(descriptorBudgetFlag+" (%d open, budget %d)", *worstFDs.OpenFDs, descriptorBudgetOf(*worstFDs)))
 		}
 		if now.Sub(p.Latest.Timestamp) > 2*time.Minute {
 			add("stale: latest sample is older than 2 minutes")
@@ -298,9 +298,32 @@ func Format(s Summary) string {
 		for _, name := range remoteNames {
 			fmt.Fprintf(&b, "    remote %s latest outcome: %s\n", strconv.QuoteToASCII(name), strconv.QuoteToASCII(p.Latest.Remotes[name].Outcome))
 		}
+		overBudget := false
 		for _, flag := range p.Flags {
 			fmt.Fprintf(&b, "    %s\n", flag)
+			overBudget = overBudget || strings.HasPrefix(flag, descriptorBudgetFlag)
+		}
+		if overBudget {
+			writeDescriptorHint(&b, p.Latest)
 		}
 	}
 	return b.String()
+}
+
+// descriptorBudgetFlag prefixes the flag a process gets when its descriptor
+// count stayed over budget; Format follows it with descriptorHint.
+const descriptorBudgetFlag = "descriptor count exceeds budget"
+
+// writeDescriptorHint explains what an over-budget descriptor count means
+// and how to find what holds the descriptors (#2668).
+func writeDescriptorHint(b *strings.Builder, latest Sample) {
+	limit := "the soft open-file limit (ulimit -n)"
+	if latest.OpenFDsLimit != nil {
+		limit = fmt.Sprintf("the soft open-file limit (ulimit -n = %d)", *latest.OpenFDsLimit)
+	}
+	fmt.Fprintf(b, "    hint: the budget is %d + %d per session, capped at 80%% of %s.\n", DescriptorBudget, DescriptorsPerSession, limit)
+	b.WriteString("      It is advisory: nothing fails until the count approaches that limit.\n")
+	b.WriteString("      Rerun agent-deck health later; a count that keeps growing points to a leak.\n")
+	fmt.Fprintf(b, "      See what holds them: lsof -p %d | awk 'NR>1 {print $5}' | sort | uniq -c | sort -rn\n", latest.PID)
+	b.WriteString("      Restarting the process resets the count. Details: docs/runtime-health.md#descriptor-budget\n")
 }
