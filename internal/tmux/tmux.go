@@ -504,7 +504,10 @@ func isEmptyTmuxServerResult(err error) bool {
 	if !errors.As(err, &exitErr) {
 		return false
 	}
-	stderr := strings.ToLower(string(exitErr.Stderr))
+	stderr := strings.ToLower(strings.TrimSpace(string(exitErr.Stderr)))
+	if strings.HasPrefix(stderr, "error connecting to ") {
+		return strings.HasSuffix(stderr, " (no such file or directory)")
+	}
 	return strings.Contains(stderr, "no server running") || strings.Contains(stderr, "no sessions")
 }
 

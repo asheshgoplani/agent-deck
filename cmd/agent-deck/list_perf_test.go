@@ -50,6 +50,90 @@ func TestPerf_ColdStart_List100(t *testing.T) {
 	}
 }
 
+func TestListJSON_HistoricalErrorRowsUseSocketInventory(t *testing.T) {
+	const count = 100
+	sb := harness.NewSandbox(t)
+	profileDir := filepath.Join(sb.Home, ".agent-deck", "profiles", "default")
+	if err := os.MkdirAll(profileDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := statedb.Open(filepath.Join(profileDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]*statedb.InstanceRow, count)
+	for n := range rows {
+		id := fmt.Sprintf("history-error-%03d", n)
+		rows[n] = &statedb.InstanceRow{
+			ID: id, Title: id, ProjectPath: sb.Home, GroupPath: "my-sessions",
+			Tool: "shell", Status: "error", TmuxSession: "agentdeck_" + id,
+			TmuxSocketName: "list-history-regression-absent",
+			CreatedAt:      time.Now().Add(-time.Hour), ToolData: json.RawMessage(`{}`),
+		}
+	}
+	if err := db.SaveInstances(rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := filepath.Join(sb.Home, "tmux-calls")
+	shim := `#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/tmux-calls"
+printf 'error connecting to /tmp/agent-deck-history.sock (No such file or directory)\n' >&2
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(sb.ShimDir, "tmux"), []byte(shim), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sb.BinPath, "list", "--json")
+	cmd.Env = perfEnv(sb)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list: %v\n%s", err, out)
+	}
+	var listed []struct {
+		Status       string `json:"status"`
+		StatusSource string `json:"status_source"`
+	}
+	if err := json.Unmarshal(out, &listed); err != nil {
+		t.Fatalf("list JSON: %v\n%s", err, out)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventories, probes := 0, 0
+	for _, call := range strings.Split(string(data), "\n") {
+		if strings.Contains(call, "list-history-regression-absent") && strings.Contains(call, "list-sessions") {
+			inventories++
+		}
+		if strings.Contains(call, "has-session") {
+			probes++
+		}
+	}
+	t.Logf("100 synthetic missing error sessions: list=%s socket-inventories=%d has-session-probes=%d", time.Since(started), inventories, probes)
+	if len(listed) != count {
+		t.Fatalf("rows=%d, want %d", len(listed), count)
+	}
+	for i, row := range listed {
+		if row.Status != "error" || row.StatusSource != "cached" {
+			t.Fatalf("row %d status/source=%q/%q, want error/cached", i, row.Status, row.StatusSource)
+		}
+	}
+	if inventories != 1 || probes != 0 {
+		t.Fatalf("socket inventories=%d has-session probes=%d, want 1 and 0", inventories, probes)
+	}
+}
+
 func listPerfFixture(t *testing.T) (*harness.Sandbox, []string, string) {
 	t.Helper()
 	sb := harness.NewSandbox(t)

@@ -58,7 +58,7 @@ type SessionRow struct {
 	Model             string         `json:"model,omitempty" doc:"live"`
 	ModelVersion      string         `json:"model_version,omitempty" doc:"live"`
 	Status            string         `json:"status"`
-	StatusSource      string         `json:"status_source,omitempty" doc:"cached for a stopped row whose stored status was used; live after a status refresh"`
+	StatusSource      string         `json:"status_source,omitempty" doc:"cached for an absent historical row whose stored status was used; live after a status refresh"`
 	Substate          string         `json:"substate,omitempty" doc:"live"`
 	ExitCode          *int           `json:"exit_code,omitempty" doc:"live"`
 	SubstateDetail    string         `json:"substate_detail,omitempty" doc:"live"`
@@ -168,6 +168,8 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		substate := ""
 		if !cached[inst] {
 			substate = string(inst.Substate())
+		} else {
+			substate = string(inst.HistoricalSubstate())
 		}
 		row := staticSessionRow(inst, instances, profile, transcripts)
 		row.StatusSource = "live"

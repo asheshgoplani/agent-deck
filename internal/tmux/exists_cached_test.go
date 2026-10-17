@@ -115,6 +115,8 @@ func TestIsEmptyTmuxServerResult_ClassifiesOnlyExpectedTmuxErrors(t *testing.T) 
 	}{
 		{name: "no server", stderr: "no server running on /tmp/tmux.sock", want: true},
 		{name: "no sessions", stderr: "no sessions", want: true},
+		{name: "missing socket", stderr: "error connecting to /tmp/tmux.sock (No such file or directory)", want: true},
+		{name: "permission failure", stderr: "error connecting to /tmp/no server running/socket (Permission denied)", want: false},
 		{name: "unexpected failure", stderr: "permission denied", want: false},
 	}
 

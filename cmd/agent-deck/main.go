@@ -3070,6 +3070,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		substate := ""
 		if !cached[inst] {
 			substate = string(inst.Substate())
+		} else {
+			substate = string(inst.HistoricalSubstate())
 		}
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
