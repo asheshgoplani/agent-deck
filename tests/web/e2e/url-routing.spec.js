@@ -90,9 +90,8 @@ test.describe('URL routing (/s/{id})', () => {
   })
 
   test('Shift+Enter new tab loads with the session selected', async ({ page, context }) => {
-    // Select sess-002 via deep link so the tab stays on fleet (no xterm
-    // focus-steal) and window.location.pathname is /s/sess-002 when
-    // AppShell builds the new-tab URL.
+    // Select sess-002 via deep link so window.location.pathname is
+    // /s/sess-002 when AppShell builds the new-tab URL.
     await page.goto('/s/sess-002')
     await waitForAppMount(page)
     await expect(page.locator('.sess.sel .tt')).toHaveText('frontend')
@@ -112,22 +111,87 @@ test.describe('URL routing (/s/{id})', () => {
     await expect(newPage.locator('.sess.sel .tt')).toHaveText('frontend')
     await newPage.close()
   })
+})
 
-  // PR #2047 review item 1: applyPath used to force the terminal pane for every
-  // /s/{id} URL, overruling a deliberately chosen session-scoped pane. Six
-  // skills.spec failures came from this. A cold link may steer; a viewer with a
-  // stored choice may not be overruled.
-  test('/s/{id} preserves an explicitly chosen pane', async ({ browser }) => {
-    const ctx = await browser.newContext()
-    const page = await ctx.newPage()
-    try {
+// Issue #2679: a session link must show session content, including on phones
+// where the sidebar is hidden. TerminalPane stays mounted behind other panes,
+// so checking its presence alone would miss the regression.
+test.describe('URL routing pane selection', () => {
+  test.beforeEach(async ({ request }) => {
+    await request.post('/__fixture/reset')
+  })
+
+  for (const tab of [null, 'fleet', 'command-center', 'unknown', { toString: null }]) {
+    const label = tab === null ? 'no' : typeof tab === 'string' ? tab : 'invalid'
+    test(`/s/{id} shows the terminal with ${label} stored pane`, async ({ page }) => {
+      await page.addInitScript(tab => {
+        if (tab === null) localStorage.removeItem('agentdeck.tab')
+        else localStorage.setItem('agentdeck.tab', JSON.stringify(tab))
+      }, tab)
+      await page.goto('/s/sess-002')
+      // Use the second session: the work header falls back to the first when
+      // no session is selected, which would otherwise give a false positive.
+      await expect(page.locator('.work-head .cur')).toHaveText('frontend')
+      await expect(page.locator('.term-wrap')).toBeVisible()
+      await expect(page.locator('[data-testid="fleet-pane"]')).not.toBeVisible()
+      expect(new URL(page.url()).pathname).toBe('/s/sess-002')
+    })
+  }
+
+  // PR #2047: preserving session-scoped panes matters too; forcing every
+  // session link to Terminal previously broke Skills management.
+  for (const tab of ['skills', 'mcp']) {
+    test(`/s/{id} preserves the stored ${tab} pane`, async ({ page }) => {
+      await page.addInitScript(tab => {
+        localStorage.setItem('agentdeck.tab', JSON.stringify(tab))
+      }, tab)
+      await page.goto('/s/sess-002')
+      await expect(page.locator('.work-head .cur')).toHaveText('frontend')
+      await expect(page.locator(`[data-testid="${tab}-pane"]`)).toBeVisible()
+      await expect(page.locator('.term-wrap')).not.toBeVisible()
+    })
+  }
+
+  test('bare / preserves the stored Fleet pane', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('agentdeck.tab', JSON.stringify('fleet'))
+    })
+    await page.goto('/')
+    await expect(page.locator('[data-testid="fleet-pane"]')).toBeVisible()
+    await expect(page.locator('.term-wrap')).not.toBeVisible()
+    expect(new URL(page.url()).pathname).toBe('/')
+  })
+
+  for (const tab of ['fleet', 'skills']) {
+    test(`back/forward uses the current ${tab} pane for session routes`, async ({ page }) => {
       await page.addInitScript(() => {
         localStorage.setItem('agentdeck.tab', JSON.stringify('skills'))
       })
       await page.goto('/s/sess-001')
-      await expect(page.locator('[data-testid="skills-pane"]')).toBeVisible({ timeout: 5000 })
-    } finally {
-      await ctx.close()
-    }
-  })
+      await expect(page.locator('[data-testid="skills-pane"]')).toBeVisible()
+
+      // Drive the real selection action so App.js pushes history on every
+      // viewport, then change the current pane independently of the boot value.
+      await page.evaluate(async tab => {
+        const { selectSession } = await import('/static/app/state.js')
+        const { activeTabSignal } = await import('/static/app/uiState.js')
+        selectSession('sess-002')
+        activeTabSignal.value = tab
+      }, tab)
+      await expect.poll(() => new URL(page.url()).pathname).toBe('/s/sess-002')
+      await expect(page.locator('.work-head .cur')).toHaveText('frontend')
+      await expect(page.locator(`[data-testid="${tab}-pane"]`)).toBeVisible()
+
+      await page.goBack()
+      await expect.poll(() => new URL(page.url()).pathname).toBe('/s/sess-001')
+      await expect(page.locator('.work-head .cur')).toHaveText('agent-deck')
+      const pane = tab === 'fleet' ? '.term-wrap' : '[data-testid="skills-pane"]'
+      await expect(page.locator(pane)).toBeVisible()
+
+      await page.goForward()
+      await expect.poll(() => new URL(page.url()).pathname).toBe('/s/sess-002')
+      await expect(page.locator('.work-head .cur')).toHaveText('frontend')
+      await expect(page.locator(pane)).toBeVisible()
+    })
+  }
 })
