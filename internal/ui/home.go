@@ -9716,7 +9716,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case worktreeSetupResultMsg:
 		delete(h.setupRunningSessions, msg.sessionID)
 		if msg.err != nil {
-			h.setError(msg.err)
+			// Same bounded, sanitized formatting as the create path, so the
+			// script's output tail is shown instead of a bare "exit status 1".
+			h.setError(errors.New(formatSetupWarning(msg.err)))
 		} else {
 			h.setError(fmt.Errorf("worktree setup completed for '%s'", msg.sessionTitle))
 		}
@@ -15847,6 +15849,7 @@ func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDi
 	}
 	if setupErr != nil {
 		uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", buf.String()))
+		setupErr = withSetupOutputTail(setupErr, buf.String())
 	}
 	return setupErr, nil
 }
@@ -15860,6 +15863,20 @@ const setupWarningMaxLen = 300
 // verbose output stays in the log (see createWorktreeWithSetupAndLog).
 func formatSetupWarning(setupErr error) string {
 	msg := strings.Join(strings.Fields(tmux.StripANSI(setupErr.Error())), " ")
+	// Append the last lines of the script's output (#2637) so the footer says
+	// why the script failed, not just "exit status 1". When the tail does not
+	// fit, it is cut from the front so the final (usually most telling) line
+	// survives.
+	var tailed *setupScriptError
+	if errors.As(setupErr, &tailed) && tailed.tail != "" && !errors.Is(setupErr, git.ErrWorktreeScriptNotApproved) {
+		tail := []rune(tailed.tail)
+		if budget := setupWarningMaxLen - len([]rune(msg)) - len([]rune(setupOutputSep)); budget > 1 {
+			if len(tail) > budget {
+				tail = append([]rune("…"), tail[len(tail)-(budget-1):]...)
+			}
+			msg += setupOutputSep + string(tail)
+		}
+	}
 	// Truncate by rune, not byte, so a multi-byte character is never split.
 	if runes := []rune(msg); len(runes) > setupWarningMaxLen {
 		msg = string(runes[:setupWarningMaxLen]) + "…"
@@ -15869,6 +15886,57 @@ func formatSetupWarning(setupErr error) string {
 		return msg
 	}
 	return "worktree setup script failed: " + msg
+}
+
+// setupScriptError carries the last lines of a failed setup script's output
+// alongside the error, so formatSetupWarning can show them. Error() is the
+// original message (logs are unchanged); Unwrap keeps errors.Is working.
+type setupScriptError struct {
+	err  error
+	tail string
+}
+
+func (e *setupScriptError) Error() string { return e.err.Error() }
+func (e *setupScriptError) Unwrap() error { return e.err }
+
+const (
+	setupOutputTailLines = 5
+	setupOutputSep       = " — "
+)
+
+// withSetupOutputTail attaches the tail of the captured script output to a
+// setup error. It returns err unchanged when there is no useful output.
+func withSetupOutputTail(err error, output string) error {
+	if err == nil {
+		return nil
+	}
+	tail := setupOutputTail(output, setupOutputTailLines)
+	if tail == "" {
+		return err
+	}
+	return &setupScriptError{err: err, tail: tail}
+}
+
+// setupOutputTail returns the last maxLines non-blank lines of script output,
+// ANSI-stripped, with whitespace collapsed, joined by " | ". Carriage returns
+// split lines too, so progress-bar redraws do not glue together. The
+// "Running worktree setup script..." preamble and the trailing "Worktree setup
+// script failed after ..." line are dropped: they carry nothing the warning
+// does not already say.
+func setupOutputTail(output string, maxLines int) string {
+	clean := strings.ReplaceAll(tmux.StripANSI(output), "\r", "\n")
+	var lines []string
+	for _, line := range strings.Split(clean, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" || line == "Running worktree setup script..." || strings.HasPrefix(line, "Worktree setup script failed after ") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, " | ")
 }
 
 // createSessionTool maps a free-form command to (tool, command). Built-in
@@ -16953,7 +17021,7 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 		// the whole fork. The full output is logged; the concise error is
 		// returned so the caller can surface it in the UI.
 		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", scriptErr.Error()), slog.String("output", setupBuf.String()))
-		return scriptErr, nil
+		return withSetupOutputTail(scriptErr, setupBuf.String()), nil
 	}
 	return nil, nil
 }
@@ -25698,7 +25766,8 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 		// same trust check as the automatic run at worktree-creation time.
 		err := git.GateAndRunWorktreeSetupScript(repoRoot, wtPath, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
 		if err != nil {
-			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: err}
+			uiLog.Warn("worktree_setup_rerun_failed", slog.String("error", err.Error()), slog.String("output", buf.String()))
+			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: withSetupOutputTail(err, buf.String())}
 		}
 		return worktreeSetupResultMsg{sessionID: id, sessionTitle: title}
 	}
