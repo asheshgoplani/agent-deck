@@ -72,6 +72,31 @@ func newOpenCodeResumeInstance(t *testing.T) *Instance {
 	return inst
 }
 
+func TestSupportsOpenCodeQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		major int
+		known bool
+		tool  string
+		want  bool
+	}{
+		{"v2", 2, true, "opencode", true},
+		{"v1", 1, true, "opencode", false},
+		{"unknown", 0, false, "opencode", false},
+		{"other-tool", 2, true, "shell", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pinOpenCodeMajorVersion(t, tc.major, tc.known)
+			if got := (&Instance{Tool: tc.tool}).SupportsOpenCodeQueue(); got != tc.want {
+				t.Fatalf("SupportsOpenCodeQueue() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if (*Instance)(nil).SupportsOpenCodeQueue() {
+		t.Fatal("nil instance supports queueing")
+	}
+}
+
 func TestParseOpenCodeMajorVersion(t *testing.T) {
 	tests := []struct {
 		out       string

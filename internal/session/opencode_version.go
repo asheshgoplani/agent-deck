@@ -164,3 +164,9 @@ func (i *Instance) openCodeRejectsV1LaunchFlags() bool {
 	major, ok := probeOpenCodeMajorVersion(i)
 	return ok && major >= 2
 }
+
+// SupportsOpenCodeQueue reports whether the configured local binary supports
+// OpenCode's session-bound native queue API, using the launch version probe.
+func (i *Instance) SupportsOpenCodeQueue() bool {
+	return i != nil && i.Tool == "opencode" && i.openCodeRejectsV1LaunchFlags()
+}
