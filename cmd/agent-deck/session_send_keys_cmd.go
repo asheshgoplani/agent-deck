@@ -3,12 +3,15 @@ package main
 import (
 	"bufio"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/send"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -49,6 +52,15 @@ func handleSessionSendKeys(profile string, args []string) {
 		fmt.Println("typically invoked by users directly.")
 		fmt.Println()
 		fmt.Println("Exactly one of --text, --named-key, or --enter must be specified.")
+		fmt.Println()
+		fmt.Println("For a Claude session, --enter and --named-key Tab/Right are withheld while")
+		fmt.Println("the composer shows a prompt suggestion: Escape is pressed once and the")
+		fmt.Println("command fails (delivery \"composer_blocked\") if the suggestion is still")
+		fmt.Println("shown. Key names match in any case and spelling tmux accepts (enter, TAB,")
+		fmt.Println("C-m, ^I, KPEnter); a --text of only CR, TAB or cursor-right is checked too.")
+		fmt.Println("Type text first with --text; --stream (TUI insert mode) is unguarded.")
+		fmt.Println("--enter is raw by design: it can submit unsent composer text, whatever is")
+		fmt.Println("in the composer, including an operator's unsent draft.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -121,7 +133,7 @@ func handleSessionSendKeys(profile string, args []string) {
 		out.Error(fmt.Sprintf("session '%s' has no tmux pane", inst.Title), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
-	var sink streamKeySink = tmuxSess
+	var sink keySink = tmuxSess
 	if *primary {
 		sink = primaryWindowKeySink{session: tmuxSess}
 	}
@@ -143,16 +155,19 @@ func handleSessionSendKeys(profile string, args []string) {
 			exitCLI(1)
 		}
 	case *text != "":
+		refuseIfSuggestionShown(out, inst, sink, send.LiteralTextKey(*text))
 		if err := sink.SendKeys(*text); err != nil {
 			out.Error(fmt.Sprintf("send-keys failed: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
 	case *namedKey != "":
+		refuseIfSuggestionShown(out, inst, sink, *namedKey)
 		if err := sink.SendNamedKey(*namedKey); err != nil {
 			out.Error(fmt.Sprintf("send-named-key failed: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
 	case *sendEnter:
+		refuseIfSuggestionShown(out, inst, sink, "Enter")
 		if err := sink.SendEnter(); err != nil {
 			out.Error(fmt.Sprintf("send-enter failed: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
@@ -175,8 +190,59 @@ type streamKeySink interface {
 	SendEnter() error
 }
 
+// keySink is a streamKeySink that can also read its pane, for the prompt
+// suggestion guard on single-key invocations.
+type keySink interface {
+	streamKeySink
+	CapturePaneFresh() (string, error)
+}
+
+// suggestionEscapeSettle is send.SuggestionEscapeSettle; tests shorten it.
+var suggestionEscapeSettle = send.SuggestionEscapeSettle
+
+// guardBareKey runs before a single --enter or --named-key invocation, and
+// before a --text that is only a CR, TAB or cursor-right sequence. Such a
+// key has no text typed before it, so at a Claude prompt suggestion it would
+// act on text nobody wrote: Tab and Right accept the suggestion, Enter
+// submits from it. It presses Escape once and returns send.ErrSuggestionShown
+// when the suggestion is still shown; the caller must not send the key.
+//
+// The --stream mode is not guarded: it is the remote half of TUI insert mode,
+// a human at the keyboard, the same as the local insert mode
+// (internal/ui/insert_mode.go). A human pressing Tab or Enter on a visible
+// suggestion is the owner's own choice.
+func guardBareKey(sink keySink, tool, key string) error {
+	if !session.IsClaudeCompatible(tool) || !send.BareKeyActsOnSuggestion(key) {
+		return nil
+	}
+	escape := func() error { return sink.SendNamedKey("Escape") }
+	return send.ClearSuggestionBeforeBareKey(sink.CapturePaneFresh, escape, suggestionEscapeSettle)
+}
+
+// refuseIfSuggestionShown exits through the same error contract as a refused
+// `session send` (exit 1, DELIVERY_FAILED, "delivery": "composer_blocked")
+// when guardBareKey withholds the key.
+func refuseIfSuggestionShown(out *CLIOutput, inst *session.Instance, sink keySink, key string) {
+	err := guardBareKey(sink, inst.Tool, key)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, send.ErrSuggestionShown) {
+		out.ErrorWithData(fmt.Sprintf("%s not sent to '%s': %v", key, inst.Title, err), ErrCodeDeliveryFailed,
+			map[string]interface{}{"delivery": deliveryComposerBlocked, "reason": "prompt_suggestion"})
+		exitCLI(1)
+	}
+	out.Error(fmt.Sprintf("send-keys failed: %v", err), ErrCodeInvalidOperation)
+	exitCLI(1)
+}
+
 type primaryWindowKeySink struct {
 	session *tmux.Session
+}
+
+// CapturePaneFresh reads the managed agent window, the window the keys go to.
+func (s primaryWindowKeySink) CapturePaneFresh() (string, error) {
+	return s.session.CapturePrimaryFullHistory()
 }
 
 func (s primaryWindowKeySink) SendKeys(text string) error {

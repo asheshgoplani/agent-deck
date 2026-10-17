@@ -412,7 +412,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level
+**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level, prompt-suggestions
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -422,6 +422,21 @@ Setting `account` auto-migrates the Claude conversation into the target account'
 agent-deck session set my-project context-level primer
 agent-deck session set my-project context-level ""       # clear: inherit group/global
 ```
+
+`prompt-suggestions` sets the per-session override for Claude Code prompt suggestions: `children-off`, `on` or `off` (also `true`/`false`), applied on the next start/restart. `children-off` turns them off when the session has a parent and leaves a root session alone; an empty value clears the override so the session follows `[profiles.<profile>.claude].prompt_suggestions`, then `[launch].prompt_suggestions` (default `children-off`; see `config-reference.md`).
+
+```bash
+agent-deck session set my-worker prompt-suggestions on   # keep suggestions in a parented session
+agent-deck session set my-worker prompt-suggestions ""   # clear: follow profile, then [launch]
+```
+
+### session send-keys
+
+```bash
+agent-deck session send-keys <id|title> --text "TEXT" | --enter | --named-key KEY [--primary] [--json]
+```
+
+Low-level keystroke forwarding (exactly one of `--text`, `--enter`, `--named-key`; `--stream` is the TUI insert-mode transport). On a Claude session, `--enter`, `--named-key` Enter, Tab or Right, and a `--text` that is only a CR, a TAB or the cursor-right sequence are checked against the composer first. Key names match the way tmux reads them: in any case (`enter`, `TAB`, `right`), with `^X`, `C-X` and `c-x` as the same control key (`C-m`/`^M` is Enter, `C-i`/`^I` is Tab), plus `KPEnter` and the hex codes `0xd`/`0x9`; a key with another modifier (`S-Enter`, `M-Right`) is not checked. When the composer shows a prompt suggestion (or Claude's dim `Try "..."` placeholder, which uses the same renderer), Escape is pressed once (not while a turn is running, where Escape would interrupt it) and, because Claude does not clear a suggestion on Escape, the key is withheld with exit 1, `code: DELIVERY_FAILED`, `delivery: "composer_blocked"`, `reason: "prompt_suggestion"`. Type the text first (`--text`, then `--enter`) to submit. `--stream` and the TUI insert mode are a human at the keyboard and are not guarded. `--enter` is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft.
 
 ### session send
 
@@ -436,7 +451,7 @@ Send envelope: a send made from inside an agent-deck session (`AGENTDECK_INSTANC
 
 `--json` on its own (no `--wait`, `--stream`, `--no-wait`, `--draft` or `--defer-if-busy`) returns at once with the queued record (`send_id`, `state`, `verdict`) plus the sync keys `success`, `delivery:"queued"`, `submitted:false`, `confirmation:"unknown"`; `session send-status <send_id> --json` follows it to `delivered`/`unknown`. Claude accepts the message while busy; Codex, Pi, shell and unknown harnesses are typed when idle.
 
-`--require-input-prompt` (guarded send) refuses instead of typing into a harness menu. The pane is checked immediately before every keystroke batch (paste, each fallback chunk, every Enter) under the per-target send lock, and the send always takes the tmux transport. Before typing, an open menu exits 1 with `delivery: "menu_open"` and a missing input prompt with `delivery: "composer_blocked"` (error text `no keys typed`); after typing, only a real menu withholds Enter and reports `typed_not_submitted`. A menu needs picker evidence (a navigate / Enter to select / Enter to confirm instruction, or menu words beside two or more choices); text in the input box or a delivered message quoting "Allow once" is not one. `--draft`, `--no-wait` and the queue keep the guard; a remote that does not list the flag in its `session send --help` is refused before anything is sent.
+`--require-input-prompt` (guarded send) refuses instead of typing into a harness menu. The pane is checked immediately before every keystroke batch (paste, each fallback chunk, every Enter) under the per-target send lock, and the send always takes the tmux transport. Before typing, an open menu exits 1 with `delivery: "menu_open"` and a missing input prompt with `delivery: "composer_blocked"` (error text `no keys typed`). A busy Claude whose framed composer is empty counts as a ready prompt (Claude Code queues the message); a busy composer holding a draft still refuses; after typing, only a real menu withholds Enter and reports `typed_not_submitted`. A menu needs picker evidence (a navigate / Enter to select / Enter to confirm instruction, or menu words beside two or more choices); text in the input box or a delivered message quoting "Allow once" is not one. `--draft`, `--no-wait` and the queue keep the guard; a remote that does not list the flag in its `session send --help` is refused before anything is sent.
 
 `session queue list <session> --json` lists those durable queued sends (`id`, `text_preview`, `enqueued_at`, `state`; also the `queue` array of `session show --json`). `session queue release <id> --json` asks the target's worker to send a still queued entry now, and `session queue cancel <id> --json` removes it before any typing. Both report an `outcome`: `delivered`, `unconfirmed`, `refused` (nothing typed), `cancelled`, `already_sent` (with the child's `delivery_evidence`), `not_found` or `unknown`; see docs/macapp-core.md "Queue control". `remote <name> session queue …` forwards to the remote; an older remote answers `session queue is unsupported on this remote`.
 

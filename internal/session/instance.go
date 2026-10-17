@@ -481,6 +481,13 @@ type Instance struct {
 	// `session set <id> context-level <none|primer|full>` (empty clears).
 	ContextLevel string `json:"context_level,omitempty"`
 
+	// PromptSuggestions is the per-session override for Claude Code prompt
+	// suggestions: "children-off", "on" or "off"; empty means unset (profile,
+	// then [launch] config, then children-off). See prompt_suggestions.go.
+	// CLI: `session set <id> prompt-suggestions <children-off|on|off>` (empty
+	// clears).
+	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT
@@ -1644,6 +1651,7 @@ func (i *Instance) buildBashExportPrefix(skipConfigDirForCustomCommand bool) str
 		prefix += fmt.Sprintf("export CLAUDE_SECURESTORAGE_CONFIG_DIR=%s; ", i.configDirShellExpr(GetClaudeConfigDirForInstance(i)))
 	}
 	prefix += i.buildResolvedAccountHintExports()
+	prefix += i.promptSuggestionExport()
 	return prefix
 }
 
@@ -5990,10 +5998,11 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// marker seen afterwards is OUR collapse and not a foreign paste parked
 	// there. A capture failure leaves it false, and the gate then withholds
 	// the nudge.
-	composerPasteFreeBeforeSend := false
-	if raw, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-		composerPasteFreeBeforeSend = !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
-	}
+	//
+	// The same capture tells whether the composer shows a Claude prompt
+	// suggestion. Typing replaces it; the Enter after typing is then gated
+	// on the composer holding our message rather than the suggestion.
+	composerPasteFreeBeforeSend, suggestionShownBeforeSend := send.ProbeComposerBeforeSend(i.tmuxSession.CapturePaneFresh, UsesClaudeDeliveryVerify(i.Tool))
 
 	// Issue #2079: a large or slow-mounting composer can swallow the leading
 	// bytes of a paste, submitting a truncated tail that the agent answers as
@@ -6011,12 +6020,15 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// shows "+5 lines"), not a line count and not the rows the pane wraps it
 	// to; comparing it with anything else refuses intact prompts (the rc.3
 	// launch regression). send.CheckPasteMarker owns that comparison.
-	var sendErr error
-	if expectedBreaks := send.ExpectedPasteMarkerLineBreaks(message); expectedBreaks > 0 && UsesClaudeDeliveryVerify(i.Tool) {
-		sendErr = i.tmuxSession.SendKeysAndEnterChecked(message, i.tmuxSession.CapturePaneFresh, send.PasteTruncationCheck(expectedBreaks))
-	} else {
-		sendErr = i.tmuxSession.SendKeysAndEnter(message)
+	//
+	// A deferred submit (the composer still painted the suggestion after
+	// typing) keeps the paste truncation check: send.TypeAndSubmit runs it on
+	// the frame it submits.
+	expectedBreaks := 0
+	if UsesClaudeDeliveryVerify(i.Tool) {
+		expectedBreaks = send.ExpectedPasteMarkerLineBreaks(message)
 	}
+	sendErr := send.TypeAndSubmit(i.tmuxSession, message, expectedBreaks, suggestionShownBeforeSend)
 	if sendErr != nil {
 		return fmt.Errorf("failed to send message: %w", sendErr)
 	}
@@ -6057,8 +6069,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 		captured, captureErr := i.tmuxSession.CapturePaneFresh()
 		paneNow := send.CaptureOutcome(captured, captureErr)
 		if paneNow.OK {
-			content := tmux.StripANSI(captured)
-			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
+			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.ComposerHoldsUnsentMessage(captured, message, tmux.StripANSI)
 		}
 		verifiedStatus, statusErr := i.tmuxSession.GetStatus()
 
@@ -11523,6 +11534,27 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	newTitle, newGroupPath string,
 	opts *ClaudeOptions,
 ) (*Instance, string, error) {
+	return i.createForkedClaudeInstance(newTitle, newGroupPath, opts, ForkParent{})
+}
+
+// ForkParent names the session a fork is nested under. The zero value is a
+// root fork.
+type ForkParent struct {
+	SessionID   string
+	ProjectPath string
+}
+
+func (p ForkParent) applyTo(inst *Instance) {
+	if p.SessionID != "" {
+		inst.SetParentWithPath(p.SessionID, p.ProjectPath)
+	}
+}
+
+func (i *Instance) createForkedClaudeInstance(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+	parent ForkParent,
+) (*Instance, string, error) {
 	// Create new instance - use worktree path if provided, otherwise parent's project path
 	projectPath := i.ProjectPath
 	if opts != nil && opts.WorkDir != "" {
@@ -11552,6 +11584,11 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	if len(i.ExtraArgs) > 0 {
 		forked.ExtraArgs = append([]string(nil), i.ExtraArgs...)
 	}
+
+	// The parent is set before the one-shot command is baked: the launch env
+	// depends on it (a parented Claude session starts with prompt
+	// suggestions off), and Start() runs the baked command verbatim.
+	parent.applyTo(forked)
 
 	cmd, err := i.buildClaudeForkCommandForTarget(forked, opts)
 	if err != nil {
@@ -11585,6 +11622,19 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 // tool-specific fork implementation. opts is the shared fork carrier for
 // worktree fields; non-Claude tool options continue to come from global config.
 func (i *Instance) CreateForkedInstanceForTool(newTitle, newGroupPath string, opts *ClaudeOptions) (*Instance, string, error) {
+	return i.CreateForkedInstanceForToolUnder(newTitle, newGroupPath, opts, ForkParent{})
+}
+
+// CreateForkedInstanceForToolUnder is CreateForkedInstanceForTool for a fork
+// nested under parent. A Claude fork gets the parent before its one-shot
+// command is built, so its first start already carries the parented launch
+// env; the other tools' fork commands do not depend on the parent.
+func (i *Instance) CreateForkedInstanceForToolUnder(newTitle, newGroupPath string, opts *ClaudeOptions, parent ForkParent) (*Instance, string, error) {
+	var (
+		forked *Instance
+		cmd    string
+		err    error
+	)
 	switch {
 	case i.Tool == "opencode":
 		workDir := i.ProjectPath
@@ -11595,16 +11645,20 @@ func (i *Instance) CreateForkedInstanceForTool(newTitle, newGroupPath string, op
 			repoRoot = opts.WorktreeRepoRoot
 			branch = opts.WorktreeBranch
 		}
-		return i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, nil, workDir, repoRoot, branch)
+		forked, cmd, err = i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, nil, workDir, repoRoot, branch)
 	case i.Tool == "pi":
-		return i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, opts)
+		forked, cmd, err = i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, opts)
 	case i.Tool == "omp":
-		return i.CreateForkedOMPInstanceWithOptions(newTitle, newGroupPath, opts)
+		forked, cmd, err = i.CreateForkedOMPInstanceWithOptions(newTitle, newGroupPath, opts)
 	case IsCodexCompatible(i.Tool):
-		return i.CreateForkedCodexInstanceWithOptions(newTitle, newGroupPath, opts)
+		forked, cmd, err = i.CreateForkedCodexInstanceWithOptions(newTitle, newGroupPath, opts)
 	default:
-		return i.CreateForkedInstanceWithOptions(newTitle, newGroupPath, opts)
+		return i.createForkedClaudeInstance(newTitle, newGroupPath, opts, parent)
 	}
+	if err == nil {
+		parent.applyTo(forked)
+	}
+	return forked, cmd, err
 }
 
 // ForkOpenCode returns the command to create a forked OpenCode session.

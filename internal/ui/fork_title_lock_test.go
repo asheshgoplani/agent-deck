@@ -14,7 +14,7 @@ import (
 
 func forkTitleLockDeps(fake *session.Instance) forkInstanceDeps {
 	return forkInstanceDeps{
-		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions, _ session.ForkParent) (*session.Instance, error) {
 			return fake, nil
 		},
 		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },

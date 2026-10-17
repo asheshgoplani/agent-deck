@@ -130,6 +130,7 @@ env_file = "~/.claude.env"         # .env file specific to Claude sessions
 
 [profiles.work.claude]
 config_dir = "~/.claude-team"      # Optional override for profile "work"
+prompt_suggestions = "on"          # Optional override of [launch].prompt_suggestions for profile "work"
 ```
 
 | Key | Type | Default | Description |
@@ -142,6 +143,7 @@ config_dir = "~/.claude-team"      # Optional override for profile "work"
 | `use_chrome` | bool | `false` | Adds `--chrome` to Claude sessions and is remembered from the New Session dialog. |
 | `use_teammate_mode` | bool | `false` | Adds `--teammate-mode tmux` to Claude sessions and is remembered from the New Session dialog. |
 | `vim_mode` | bool | `false` | Set when the inner Claude Code prompt uses vim keybindings (`"editorMode": "vim"`). Each `session send` then prepends an Escape + `i` insert-mode guarantee so a message sent while the prompt is in vim NORMAL mode actually submits instead of being typed-but-unsent (issue #1264). Only affects Claude-compatible tools. |
+| `profiles.<name>.claude.prompt_suggestions` | string | none | `children-off`, `on` or `off` for sessions of that agent-deck profile. Takes precedence over `[launch].prompt_suggestions` (profiles have no launch section, so the override lives here). See [Prompt suggestions](#prompt-suggestions-in-launched-sessions). |
 | `extra_args` | array of strings | `[]` | Extra Claude CLI flags remembered from the New Session dialog and appended to new/restarted Claude sessions. Do not store secrets here. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 | `hooks_enabled` | bool | `true` | Enables Claude Code lifecycle hooks for real-time status detection. Set `false` to opt out of hook-based detection and the TUI install prompt. |
@@ -687,6 +689,7 @@ Tool-agnostic spawn settings.
 inject_identity = true   # Default: true
 context_level = "primer" # none | primer | full — global default (issue #2260)
 nest_under_parent = false # Default: false
+prompt_suggestions = "children-off" # children-off | on | off
 ```
 
 | Key | Type | Default | Description |
@@ -694,6 +697,7 @@ nest_under_parent = false # Default: false
 | `inject_identity` | bool | `true` | Tell every spawned session, through its harness's own instruction mechanism, that it runs inside agent-deck: its session id, title, tool, group, profile, account, parent session and project path, the six most useful `agent-deck` commands, `session current --json` as the way to fetch the live record, and the `===AGENTDECK_DONE===` completion sentinel. The block (under 40 lines) is regenerated from the session record on every start/restart and written to `<data-dir>/agent-deck/runtime/identity/<session-id>/identity.md`; its path is exported as `AGENTDECK_IDENTITY_FILE`. Per-session opt-out: `agent-deck add|launch --no-identity`. `inject_identity = false` is the *global* layer's value only — a `context_level` set on a group or session still overrides it (global < group < session precedence; the per-session `--no-identity` opt-out is the one thing that keeps winning over everything). |
 | `context_level` | string | `""` (falls back to `full`) | Global default for how much of the identity block a spawned session's harness receives (issue #2260): `none` (no injection, same as `inject_identity = false`), `primer` (short session-identity block: id/title/tool/parent), or `full` (the complete block `inject_identity` describes). Overridden per group (`[groups."<path>"].context_level`, ancestor-walking) or per session (`agent-deck session set <id> context-level <level>`). Precedence: `--no-identity` (session) > session `context_level` > group `context_level` (nearest ancestor) > global `context_level` > global `inject_identity=false` > default `full`. Inspect what a session actually resolves to with `agent-deck session primer [id]`. |
 | `nest_under_parent` | bool | `false` | What `add` and `launch` do when run from inside a sub-session without `--parent`. `false` keeps the long-standing behaviour: the new session starts top-level, in the group derived from its folder, with no parent link and no note. `true` links it under the calling sub-session's own parent (one hop, never further), picks its group by the same rules as any child of that parent (`add` takes the parent's group; `launch` keeps the folder-derived group unless `--inherit-group` or a worktree child), prints a one-line note on stderr, and records the calling sub-session in a `launched-by` hint next to the `parent` hint (`launch --json` shows both under `hints`; `parent_id` is the session it was actually linked to). With `true`, a caller whose parent no longer exists starts top-level with a note instead of failing, a caller whose parent is itself a sub-session is refused naming both ids, and `--no-parent` from a sub-session prints where the session would otherwise have landed. An explicit `--parent <sub-session>` is refused either way (single level only). The `--startup-query` capacity pre-check follows the same rule. |
+| `prompt_suggestions` | string | `"children-off"` | Claude Code prompt suggestions (the dim predicted next message Claude paints in an empty composer) in sessions agent-deck launches. `children-off`: a session launched with a parent (a worker, a conductor's child) starts with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`; a root session, the kind a person attaches to and drives, is left alone. `on`: agent-deck never sets the variable, so Claude's own `promptSuggestionEnabled` setting decides. `off`: every Claude session starts with suggestions disabled. Also accepts `true`/`false`. Applied at start, restart and resume, on the first launch of a fork (a TUI fork with a parent chosen is a parented session; `session fork` from the CLI or the web makes a root fork) and on a cross-harness switch into Claude (the target keeps the source's parent). See [Prompt suggestions](#prompt-suggestions-in-launched-sessions). |
 
 How each harness receives the block (`documentation/HARNESS_IDENTITY.md` has the details):
 
@@ -706,6 +710,22 @@ How each harness receives the block (`documentation/HARNESS_IDENTITY.md` has the
 | anything else (`--cmd`, opencode, cursor, ...) | `AGENTDECK_IDENTITY_FILE` env var only | the file is still written and current |
 
 SSH (`--ssh`) and Docker-sandboxed sessions are skipped: the file lives on the controller host.
+
+### Prompt suggestions in launched sessions
+
+Precedence, most specific first: the session override (`agent-deck session set <id> prompt-suggestions children-off|on|off`, empty clears it) > `[profiles.<active-profile>.claude].prompt_suggestions` > `[launch].prompt_suggestions` > `children-off`. A malformed value at any layer is ignored and the next layer decides. Changes take effect on the session's next start or restart. `agent-deck config set launch.prompt_suggestions off` writes the global key.
+
+`children-off` keys on the parent link alone. A worker launched with `--no-parent`, or one a sub-session launches while `[launch] nest_under_parent = false` (it becomes a top-level session), is a root session and keeps suggestions on; set `off` globally or per profile if you want those off too. The per-session override is not copied to a fork or to a cross-harness switch target: the new session follows the profile, `[launch]` and `children-off` rules.
+
+```toml
+[launch]
+prompt_suggestions = "children-off"   # default: workers and children start with suggestions off
+
+[profiles.personal.claude]
+prompt_suggestions = "on"             # keep Claude's own setting for every session of this profile
+```
+
+Turning suggestions off is a convenience, not the safety net. A Claude Code plugin with a `prompt.suggest` hook can still paint ghost text whatever these settings say, so the send guard stays on everywhere: automated sends treat a suggestion as an empty composer, never press a bare Enter at one, and `session send-keys --enter` / `--named-key Tab|Right` (any spelling tmux accepts) press Escape and then refuse while one is shown.
 
 ## [logs] Section
 

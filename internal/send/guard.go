@@ -114,6 +114,12 @@ type ComposerGuardResult struct {
 	// marker still present), which fails safe — the gate then withholds the
 	// Enter nudge.
 	ComposerPasteMarkerFree bool
+	// SuggestionShown is true when the guard's last successful capture
+	// showed a Claude prompt suggestion in the (empty) composer. The caller
+	// types its message over it and must confirm, before pressing Enter,
+	// that the composer now holds that message rather than the suggestion
+	// (TypedComposerCheck).
+	SuggestionShown bool
 }
 
 // saveReconfirmDelay is the settle time before the save-step re-capture. A
@@ -173,7 +179,7 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 			return ComposerGuardResult{Held: time.Since(start), Refused: true}
 		}
 		if composerProvenanceFree(raw, strip, read) {
-			return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
+			return clearComposerResult(start, raw)
 		}
 		if !time.Now().Before(deadline) {
 			break
@@ -192,7 +198,12 @@ func GuardComposerDraft(t ComposerGuardTarget, opts ComposerGuardOptions) Compos
 	time.Sleep(saveReconfirmDelay)
 	raw, err := t.CapturePaneFresh()
 	if err == nil && composerProvenanceFree(raw, strip, read) {
-		return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true}
+		return clearComposerResult(start, raw)
 	}
 	return ComposerGuardResult{Held: time.Since(start), Refused: true}
+}
+
+// clearComposerResult is GuardComposerDraft's go-ahead for the capture raw.
+func clearComposerResult(start time.Time, raw string) ComposerGuardResult {
+	return ComposerGuardResult{Held: time.Since(start), ComposerPasteMarkerFree: true, SuggestionShown: ComposerBodyIsSuggestion(raw)}
 }
