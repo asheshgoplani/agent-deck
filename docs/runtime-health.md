@@ -35,7 +35,7 @@ Run tests inside Docker as required by the repository development workflow. `PER
 
 ## Descriptor budget
 
-The descriptor budget is 512 plus 16 per session, capped at 80% of the process's soft open-file limit (`ulimit -n`). The footer warns after two consecutive samples over budget, and `agent-deck health` flags the process with `descriptor count exceeds budget` followed by a hint. The warning is advisory: nothing fails until the count approaches the open-file limit. To act on it:
+The descriptor budget is 512 plus 16 per session, capped at 80% of the process's soft open-file limit (`ulimit -n`). The footer warns after two consecutive samples over budget, and `agent-deck health` flags the process with `descriptor count exceeds budget` followed by a hint. The warning is advisory: nothing fails until the count reaches the open-file limit, and past it opening files, sockets and tmux pipes fails. A count that stays over budget and keeps rising while the session count stays flat is a descriptor leak in that process, not a limit to raise; the hint says so when the count rose during the report window, and says the breach is historical when only earlier samples were over budget (a breakdown taken then cannot show what held them). To act on it:
 
 1. Rerun `agent-deck health` after a while. A count that stays flat while the session count is unchanged is the steady state of a busy deck; a count that keeps growing points to a leak.
 2. See what the process holds, using the PID from the report: `lsof -p <pid> | awk 'NR>1 {print $5}' | sort | uniq -c | sort -rn`. Attach that breakdown when reporting a leak.
