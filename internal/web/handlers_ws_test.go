@@ -419,3 +419,76 @@ func expectWSStatusEvent(t *testing.T, conn *websocket.Conn, event string) {
 		t.Fatalf("expected status=%q message, got: %+v", event, msg)
 	}
 }
+
+// TestSessionWSUpgradeDoesNotWaitOnMenuRefresh guards #2663: a terminal open
+// must not queue behind an inline menu-data refresh that holds the
+// MemoryMenuData lock. The lock is held here to stand in for that refresh.
+func TestSessionWSUpgradeDoesNotWaitOnMenuRefresh(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		Profile:    "work",
+	})
+	menu := NewMemoryMenuData(&fakeMenuDataLoader{
+		snapshot: &MenuSnapshot{
+			Profile: "work",
+			Items: []MenuItem{
+				{Type: MenuItemTypeSession, Session: &MenuSession{ID: "sess-1"}},
+			},
+		},
+	})
+	if _, err := menu.LoadMenuSnapshot(); err != nil {
+		t.Fatalf("prime snapshot: %v", err)
+	}
+	srv.menuData = menu
+
+	testServer := httptest.NewServer(srv.Handler())
+	defer testServer.Close()
+
+	menu.mu.Lock()
+	unlocked := false
+	unlock := func() {
+		if !unlocked {
+			unlocked = true
+			menu.mu.Unlock()
+		}
+	}
+	defer unlock()
+
+	dialer := *websocket.DefaultDialer
+	dialer.HandshakeTimeout = 2 * time.Second
+	start := time.Now()
+	conn, _, err := dialer.Dial(wsURL(testServer.URL, "/ws/session/sess-1"), nil)
+	elapsed := time.Since(start)
+	unlock()
+	if err != nil {
+		t.Fatalf("websocket upgrade blocked behind menu refresh (%s): %v", elapsed, err)
+	}
+	_ = conn.Close()
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("websocket upgrade took %s while menu refresh held the lock", elapsed)
+	}
+}
+
+func TestMemoryMenuDataCachedSnapshotDoesNotTakeLock(t *testing.T) {
+	menu := NewMemoryMenuData(nil)
+	if got := menu.CachedMenuSnapshot(); got != nil {
+		t.Fatalf("expected nil cached snapshot before publish, got %+v", got)
+	}
+	menu.SetSnapshot(&MenuSnapshot{Items: []MenuItem{
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "sess-1"}},
+	}})
+	menu.InvalidateCache()
+
+	menu.mu.Lock()
+	defer menu.mu.Unlock()
+	done := make(chan *MenuSnapshot, 1)
+	go func() { done <- menu.CachedMenuSnapshot() }()
+	select {
+	case got := <-done:
+		if _, ok := snapshotSessionByID(got, "sess-1"); !ok {
+			t.Fatalf("cached snapshot missing sess-1: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CachedMenuSnapshot blocked on the menu-data lock")
+	}
+}

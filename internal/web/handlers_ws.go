@@ -84,16 +84,32 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	// CRLF/control-char id can't forge fake log lines (go/log-injection).
 	logSessionID := logging.SanitizeValue(sessionID)
 
-	snapshot, err := s.menuData.LoadMenuSnapshot()
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load session data")
-		return
+	// Resolve the session from the cached snapshot first. LoadMenuSnapshot
+	// can hold the menu-data lock for a full inline refresh (seconds on a
+	// busy host with many sessions), and the terminal open only needs the
+	// tmux target. Unknown ids still go through the full load so new
+	// sessions and the 404 path behave as before (#2663).
+	var (
+		snapshot    *MenuSnapshot
+		menuSession *MenuSession
+		found       bool
+		err         error
+	)
+	if cached, ok := s.menuData.(interface{ CachedMenuSnapshot() *MenuSnapshot }); ok {
+		snapshot = cached.CachedMenuSnapshot()
+		menuSession, found = snapshotSessionByID(snapshot, sessionID)
 	}
-
-	menuSession, found := snapshotSessionByID(snapshot, sessionID)
 	if !found {
-		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
-		return
+		snapshot, err = s.menuData.LoadMenuSnapshot()
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load session data")
+			return
+		}
+		menuSession, found = snapshotSessionByID(snapshot, sessionID)
+		if !found {
+			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			return
+		}
 	}
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)

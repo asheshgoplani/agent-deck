@@ -3,6 +3,7 @@ package web
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -27,6 +28,13 @@ type MemoryMenuData struct {
 	fallbackRevision     int64
 	lastRevisionCheck    time.Time
 	lastFallbackError    error
+
+	// published holds the last complete snapshot without needing mu. It lets
+	// callers that only need a session lookup (the terminal websocket) skip
+	// waiting behind an inline fallback reload. InvalidateCache leaves it in
+	// place: a stale snapshot is still good enough for an id lookup, and
+	// callers fall back to LoadMenuSnapshot when the id is missing.
+	published atomic.Pointer[MenuSnapshot]
 }
 
 const (
@@ -148,6 +156,17 @@ func (m *MemoryMenuData) setFallbackSnapshotLocked(snapshot *MenuSnapshot, revis
 	m.snapshotFromFallback = true
 	m.fallbackRevision = revision
 	m.lastRevisionCheck = time.Now()
+	m.published.Store(cloneMenuSnapshot(m.snapshot))
+}
+
+// CachedMenuSnapshot returns the last published snapshot without taking the
+// mutex, so it never waits on a fallback reload. It may be stale and returns
+// nil before the first load. Callers must treat it as read-only.
+func (m *MemoryMenuData) CachedMenuSnapshot() *MenuSnapshot {
+	if m == nil {
+		return nil
+	}
+	return m.published.Load()
 }
 
 // LoadArchivedMenuSnapshot returns archived sessions from the storage fallback.
@@ -191,6 +210,7 @@ func (m *MemoryMenuData) SetSnapshot(snapshot *MenuSnapshot) {
 	m.fallbackRevision = 0
 	m.lastRevisionCheck = time.Time{}
 	m.lastFallbackError = nil
+	m.published.Store(cloneMenuSnapshot(m.snapshot))
 	m.mu.Unlock()
 }
 
