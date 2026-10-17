@@ -6,7 +6,6 @@ import asyncio
 import json
 import subprocess
 from collections import deque
-from pathlib import Path
 from unittest import mock
 
 import bridge
@@ -122,30 +121,40 @@ def test_queue_drain_transfers_accepted_timeout_to_reply_only_watcher():
         bridge._message_queue.clear()
 
 
-def test_queue_drain_routes_actual_claude_timeout_payload_to_late_reply():
+def test_queue_drain_never_resends_after_a_claude_wait_timeout():
+    """A Claude --wait that times out has already written the message.
+
+    `session send --wait --json` reports that timeout as a bare error with no
+    delivery fields. The old drain matched "timeout" on stderr, kept the item
+    and sent it again on the next cycle, so the conductor processed it twice.
+    """
     delivered: list[str] = []
-    payload = (
-        Path(__file__).parent / "fixtures" / "claude_completion_timeout.json"
-    ).read_text()
-    receipt = json.loads(payload)["accepted_turn"]
+    payload = json.dumps(
+        {
+            "success": False,
+            "error": "timeout waiting for completion: agent still running",
+            "code": "INVALID_OPERATION",
+        }
+    )
 
     async def callback(text: str) -> None:
         delivered.append(text)
-
-    async def fake_watcher(session, profile, receipt, reply_callback) -> None:
-        assert (session, profile, receipt) == (
-            "conductor-claude",
-            "work",
-            json.loads(payload)["accepted_turn"],
-        )
-        await reply_callback("late Claude reply")
 
     async def driver() -> None:
         bridge._message_queue.clear()
         bridge._message_queue["conductor-claude"] = deque(
             [("long job", "work", callback)]
         )
+        sleeps = 0
+
+        async def two_cycles(_seconds: float) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps > 2:
+                raise StopAsyncIteration
+
         with (
+            mock.patch("bridge.asyncio.sleep", new=two_cycles),
             mock.patch("bridge.get_session_status", return_value="waiting"),
             mock.patch(
                 "bridge.run_cli",
@@ -153,10 +162,58 @@ def test_queue_drain_routes_actual_claude_timeout_payload_to_late_reply():
                     ["agent-deck"],
                     1,
                     payload,
-                    "",
+                    "Error: timeout waiting for completion: agent still running",
                 ),
             ) as cli,
-            mock.patch("bridge._watch_pending_reply", new=fake_watcher),
+        ):
+            try:
+                await bridge._drain_queue()
+            except StopAsyncIteration:
+                pass
+            await _finish_scheduled_tasks()
+
+        cli.assert_called_once()
+        assert "conductor-claude" not in bridge._message_queue
+
+    try:
+        asyncio.run(driver())
+        assert len(delivered) == 1
+        assert "not resent" in delivered[0]
+        assert "could not be delivered" not in delivered[0]
+    finally:
+        bridge._message_queue.clear()
+
+
+def test_queue_drain_never_resends_an_unacknowledged_socket_write():
+    """A socket write to a busy target exits 0 with no completed reply."""
+    delivered: list[str] = []
+    payload = json.dumps(
+        {
+            "success": True,
+            "delivery": "queued_socket",
+            "submitted": False,
+            "acknowledged": False,
+            "confirmation": "unknown",
+            "transport": "socket",
+        }
+    )
+
+    async def callback(text: str) -> None:
+        delivered.append(text)
+
+    async def driver() -> None:
+        bridge._message_queue.clear()
+        bridge._message_queue["conductor-claude"] = deque(
+            [("ping", "work", callback)]
+        )
+        with (
+            mock.patch("bridge.get_session_status", return_value="waiting"),
+            mock.patch(
+                "bridge.run_cli",
+                return_value=subprocess.CompletedProcess(
+                    ["agent-deck"], 0, payload, "",
+                ),
+            ) as cli,
         ):
             await bridge._drain_queue()
             await _finish_scheduled_tasks()
@@ -166,8 +223,8 @@ def test_queue_drain_routes_actual_claude_timeout_payload_to_late_reply():
 
     try:
         _run(driver())
-        assert delivered == ["late Claude reply"]
-        assert receipt["turn_uuid"] == "turn-claude-1"
+        assert len(delivered) == 1
+        assert "not resent" in delivered[0]
     finally:
         bridge._message_queue.clear()
 
