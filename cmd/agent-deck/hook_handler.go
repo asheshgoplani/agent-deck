@@ -76,12 +76,15 @@ func rawString(raw json.RawMessage) string {
 }
 
 // commsSpoolEdge maps a Claude Code hook event to the comms spool edge it
-// carries. Empty edge: nothing to spool for this event. P1 enables two
-// producers only (docs/comms.md): Claude through this handler and Codex
-// through codex-notify. A Codex Stop hook (recognisable by its turn_id,
+// carries. Empty edge: nothing to spool for this event. P1 enabled two
+// producers (docs/comms.md), Claude through this handler and Codex through
+// codex-notify; pi through this handler followed. A Codex Stop hook (recognisable by its turn_id,
 // which Claude's Stop does not carry) is never spooled here, so a user who
 // also points Codex hooks at hook-handler cannot duplicate a turn the
-// notify line already produced. Every other harness is status-only in P1.
+// notify line already produced. pi's extension sends one agent_settled per
+// run: with the run's text it is the turn_end edge, without it (a tool-only,
+// aborted or failed run) it is a status edge. Every other harness is
+// status-only in P1.
 func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 	turnID := rawString(p.TurnID)
 	switch normalizeHookEventKey(p.HookEventName) {
@@ -95,6 +98,14 @@ func commsSpoolEdge(p hookPayload) (harness, edge, text, prompt string) {
 			return "", "", "", "" // Codex Stop (notify owns the turn) or Cursor stop (status only)
 		}
 		return "claude", session.CommsEdgeTurnEnd, rawString(p.LastAssistantMessage), ""
+	case "agentsettled":
+		if p.Source != "pi" {
+			return "", "", "", ""
+		}
+		if text := rawString(p.LastAssistantMessage); strings.TrimSpace(text) != "" {
+			return "pi", session.CommsEdgeTurnEnd, text, rawString(p.Prompt)
+		}
+		return "pi", session.CommsEdgeStatus, "", ""
 	}
 	return "", "", "", ""
 }
@@ -117,11 +128,15 @@ func spoolCommsFromHook(instanceID string, p hookPayload) {
 			transcript = clean
 		}
 	}
-	if err := session.WriteCommsSpool(session.CommsSpoolEntry{
+	entry := session.CommsSpoolEntry{
 		Harness: harness, Event: p.HookEventName, Edge: edge, Instance: instanceID,
 		SessionID: sessionID, TurnID: strings.TrimSpace(rawString(p.TurnID)), Text: text, Prompt: prompt,
 		TranscriptPath: transcript, Cwd: strings.TrimSpace(p.Cwd), TSignal: time.Now().UnixMilli(),
-	}); err != nil {
+	}
+	if edge == session.CommsEdgeStatus {
+		entry.From, entry.State = "running", "waiting"
+	}
+	if err := session.WriteCommsSpool(entry); err != nil {
 		hookHandlerLog.Warn("comms_spool_write_failed",
 			slog.String("instance", instanceID), slog.String("event", p.HookEventName), slog.String("error", err.Error()))
 	}
@@ -315,7 +330,7 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	}
 
 	// Comms Ledger: spool the text this event carries (Claude Stop and
-	// UserPromptSubmit only in P1).
+	// UserPromptSubmit, pi agent_settled).
 	spoolCommsFromHook(instanceID, payload)
 
 	// Map event to status
