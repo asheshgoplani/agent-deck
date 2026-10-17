@@ -10276,19 +10276,8 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		selected := h.search.Selected()
 		if selected != nil {
-			// Ensure the session's group AND all parent groups are expanded so it's visible
-			if selected.GroupPath != "" {
-				h.groupTree.ExpandGroupWithParents(selected.GroupPath)
-			}
-			h.rebuildFlatItems()
-
-			// Find the session in flatItems (not instances) and set cursor
-			for i, item := range h.flatItems {
-				if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == selected.ID {
-					h.cursor = i
-					h.syncViewport() // Ensure the cursor is visible in the viewport
-					break
-				}
+			if !h.jumpToSessionByID(selected.ID, selected.GroupPath) {
+				h.setError(fmt.Errorf("'%s' not visible after clearing filters (session may be gone)", selected.Title))
 			}
 		}
 		h.search.Hide()
@@ -10308,6 +10297,70 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return h, cmd
+}
+
+// jumpToSessionByID moves the cursor to the session with the given ID,
+// expanding its group first. When the session is hidden by the active
+// status or time filter (the search indexes every instance, not the
+// filtered view), it clears those filters the same way the empty-view
+// fallbacks do and retries; the filters are restored untouched only when
+// the session is genuinely not present. Returns false in that last case.
+// Issue #2655.
+func (h *Home) jumpToSessionByID(id, groupPath string) bool {
+	find := func() bool {
+		for i, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == id {
+				h.cursor = i
+				h.syncViewport()
+				return true
+			}
+		}
+		return false
+	}
+
+	// Capture the pre-jump fold state of the target group and its ancestors
+	// so a failed jump restores them (#2656, CodeRabbit). Expansion runs
+	// once here; the retry path below only rebuilds.
+	prevExpanded := map[string]bool{}
+	if groupPath != "" {
+		for _, g := range h.groupTree.GroupList {
+			if g == nil {
+				continue
+			}
+			if g.Path == groupPath || strings.HasPrefix(groupPath, g.Path+"/") {
+				prevExpanded[g.Path] = g.Expanded
+			}
+		}
+		h.groupTree.ExpandGroupWithParents(groupPath)
+	}
+	restoreFolds := func() {
+		for path, expanded := range prevExpanded {
+			if !expanded {
+				h.groupTree.CollapseGroup(path)
+			}
+		}
+	}
+
+	h.rebuildFlatItems()
+	if find() {
+		return true
+	}
+	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		restoreFolds()
+		h.rebuildFlatItems()
+		return false
+	}
+	prevFilter, prevTime := h.statusFilter, h.timeFilter
+	h.statusFilter = ""
+	h.timeFilter = session.TimeFilterAll
+	h.rebuildFlatItems()
+	if find() {
+		return true
+	}
+	h.statusFilter, h.timeFilter = prevFilter, prevTime
+	restoreFolds()
+	h.rebuildFlatItems()
+	return false
 }
 
 // handleGlobalSearchKey handles keys when global search is visible
