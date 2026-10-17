@@ -80,16 +80,17 @@ func ParseNetDev(content string) (rxTotal, txTotal uint64) {
 	return
 }
 
-// collectNetworkDarwin uses netstat -ib to get network counters on macOS.
-// netstat -ib was observed to intermittently wedge for tens of seconds (cause
-// unconfirmed; likely degraded interface state), so it is bounded by a context
-// timeout: on timeout the process is killed and the cycle reports stats
-// unavailable rather than hanging the collector.
+// collectNetworkDarwin uses netstat -ibn to get network counters on macOS.
+// Without -n, netstat -ib resolves every interface address (including
+// link-local IPv6) through reverse DNS, which was observed to wedge for
+// seconds to tens of seconds. -n keeps the output numeric; the run is still
+// bounded by a context timeout so a wedged netstat is killed and the cycle
+// reports stats unavailable rather than hanging the collector.
 func collectNetworkDarwin() NetworkStat {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "netstat", "-ib").Output()
+	out, err := exec.CommandContext(ctx, "netstat", "-ibn").Output()
 	if err != nil {
 		return NetworkStat{}
 	}
@@ -98,7 +99,7 @@ func collectNetworkDarwin() NetworkStat {
 	return computeNetworkDelta(rx, tx)
 }
 
-// parseNetstatDarwin parses `netstat -ib` output on macOS.
+// parseNetstatDarwin parses `netstat -ibn` output on macOS.
 // Returns total rx/tx bytes across non-loopback interfaces.
 func parseNetstatDarwin(output string) (rxTotal, txTotal uint64) {
 	lines := strings.Split(output, "\n")
