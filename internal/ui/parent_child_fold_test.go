@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -217,5 +218,54 @@ func TestSearchJumpUnfoldsParentAndClearsFilter(t *testing.T) {
 	}
 	if got := cursorSessionID(h); got != "child" {
 		t.Fatalf("cursor landed on %q, want child", got)
+	}
+}
+
+// The deck renders one archive partition at a time (#1987), so the fold
+// badge and the fold keys must count only children in the partition on
+// screen. A parent whose only child is archived shows no badge in the
+// active view, and Tab falls past the fold branch (toward the window
+// toggle) instead of flipping a fold that hides nothing.
+func TestParentFoldIgnoresChildrenInOtherArchivePartition(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	child.ArchivedAt = time.Now()
+	h.instances = []*session.Instance{parent, child}
+	h.width, h.height = 80, 24
+	h.rebuildFlatItems()
+
+	if got := strings.Join(flatSessionTitles(h), ","); got != "parent" {
+		t.Fatalf("active view list = %s, want parent", got)
+	}
+	parentItem := h.flatItems[0]
+	for _, it := range h.flatItems {
+		if it.Type == session.ItemTypeSession && it.Session != nil && it.Session.ID == "parent" {
+			parentItem = it
+		}
+	}
+	if h.sessionHasChildren(parentItem) {
+		t.Fatal("a parent whose only child is archived must not count as foldable in the active view")
+	}
+	frame := stripAnsi(h.renderSessionList(80, 24))
+	if strings.Contains(frame, "▾1") || strings.Contains(frame, "▸1") {
+		t.Fatalf("active view must not show a fold badge for an archived-only child, got:\n%s", frame)
+	}
+
+	h.moveCursorToSession("parent")
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyTab})
+	if h.parentChildrenCollapsed["parent"] {
+		t.Fatal("Tab must not toggle a fold over children that are not on screen")
+	}
+
+	// In the ^ archived view the archived child is on screen, so an
+	// archived parent counts it there.
+	parent.ArchivedAt = time.Now()
+	h.statusFilter = FilterModeArchived
+	h.rebuildFlatItems()
+	for _, it := range h.flatItems {
+		if it.Type == session.ItemTypeSession && it.Session != nil && it.Session.ID == "parent" {
+			if got := h.sessionChildCount(it); got != 1 {
+				t.Fatalf("archived view child count = %d, want 1", got)
+			}
+		}
 	}
 }

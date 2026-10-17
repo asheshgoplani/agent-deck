@@ -3153,18 +3153,23 @@ func (h *Home) sessionHasChildren(item session.Item) bool {
 	return h.sessionChildCount(item) > 0
 }
 
-// sessionChildCount counts the sub-sessions nested under a parent row.
+// sessionChildCount counts the sub-sessions nested under a parent row that
+// belong to the archive partition currently on screen. The deck renders one
+// partition at a time (#1987: active or ^ archived), so a child in the other
+// partition never appears under the parent and must not produce a fold badge
+// or capture the fold keys (Tab, l/right, h/left) from the window toggle.
 func (h *Home) sessionChildCount(item session.Item) int {
 	if item.Session == nil || h.groupTree == nil {
 		return 0
 	}
+	viewArchived := h.statusFilter == FilterModeArchived
 	n := 0
 	for _, group := range h.groupTree.GroupList {
 		if group == nil || group.Path != item.Path {
 			continue
 		}
 		for _, s := range group.Sessions {
-			if s != nil && s.IsSubSession() && s.ParentSessionID == item.Session.ID {
+			if s != nil && s.IsSubSession() && s.ParentSessionID == item.Session.ID && s.IsArchived() == viewArchived {
 				n++
 			}
 		}
