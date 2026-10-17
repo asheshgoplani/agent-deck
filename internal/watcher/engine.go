@@ -53,6 +53,12 @@ type EngineConfig struct {
 	// Profile is the agent-deck profile flag passed to spawned triage sessions.
 	// Defaults to the profile selected for this process.
 	Profile string
+
+	// Outbox, when set, takes every new event routed to a conductor for
+	// durable delivery (#2537), and its pending deliveries are reported in
+	// each HealthState. Without one, routed events are stored and sent on
+	// EventCh but delivered to no conductor.
+	Outbox Outbox
 }
 
 // eventEnvelope wraps an Event with metadata for the single-writer goroutine.
@@ -422,6 +428,10 @@ func (e *Engine) writerLoop() {
 				routedTo = "triage"
 			}
 
+			if e.cfg.Outbox != nil && routedTo != "" && !isTriage {
+				e.queueDelivery(env, routedTo)
+			}
+
 			// Persist with dedup via INSERT OR IGNORE (D-10, D-23).
 			inserted, err := e.cfg.DB.SaveWatcherEvent(
 				env.watcherID,
@@ -550,6 +560,37 @@ func (e *Engine) writerLoop() {
 		case <-e.ctx.Done():
 			return
 		}
+	}
+}
+
+// queueDelivery hands a new event routed to a conductor to the outbox
+// (#2537). It runs before the event is stored, so a crash in between cannot
+// leave a stored event that nothing delivers: a stored event is never routed
+// again. An event already stored is a replay, which the conductor got the
+// first time, and is not queued; the queue's key keeps an event stored again
+// after its row was pruned from being queued twice.
+func (e *Engine) queueDelivery(env eventEnvelope, conductor string) {
+	name := env.tracker.Check().WatcherName
+	stored, err := e.cfg.DB.HasWatcherEvent(env.watcherID, env.event.DedupKey())
+	if err != nil {
+		// Queue it anyway: the queue key catches a replay.
+		e.log.Warn("watcher_event_lookup_failed",
+			slog.String("watcher", name),
+			slog.String("error", err.Error()),
+		)
+	}
+	if stored {
+		return
+	}
+	evt := env.event
+	evt.RoutedTo = conductor
+	if err := e.cfg.Outbox.Enqueue(env.watcherID, name, evt); err != nil {
+		e.log.Warn("watcher_delivery_not_queued",
+			slog.String("watcher", name),
+			slog.String("conductor", conductor),
+			slog.String("sender", evt.Sender),
+			slog.String("error", err.Error()),
+		)
 	}
 }
 
@@ -736,6 +777,7 @@ func (e *Engine) healthLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			pending := e.pendingDeliveries()
 			for i := range e.adapters {
 				entry := &e.adapters[i]
 
@@ -753,6 +795,7 @@ func (e *Engine) healthLoop() {
 				}
 
 				state := entry.tracker.Check()
+				state.Undelivered = pending[entry.watcherID]
 
 				// Slice 4 (CORE-PLAN): additive tap onto the event bus —
 				// this is the "health journal" producer named in the plan.
@@ -772,6 +815,20 @@ func (e *Engine) healthLoop() {
 			return
 		}
 	}
+}
+
+// pendingDeliveries reads the outbox's undelivered events, per watcher id;
+// nil without an outbox or when the queue cannot be read.
+func (e *Engine) pendingDeliveries() map[string][]PendingDelivery {
+	if e.cfg.Outbox == nil {
+		return nil
+	}
+	pending, err := e.cfg.Outbox.Pending()
+	if err != nil {
+		e.log.Warn("watcher_pending_deliveries_unreadable", slog.String("error", err.Error()))
+		return nil
+	}
+	return pending
 }
 
 // Stop cancels all adapter contexts, calls Teardown on each adapter,

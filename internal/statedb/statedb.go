@@ -397,6 +397,9 @@ func openReadOnlyDatabase(dbPath string, immutable bool) (*StateDB, error) {
 	return &StateDB{db: db, pid: pid, path: dbPath, token: newOwnerToken(pid), readOnly: true}, nil
 }
 
+// Path is the on-disk path of the database file; empty for an in-memory one.
+func (s *StateDB) Path() string { return s.path }
+
 // Close checkpoints WAL and closes the database.
 func (s *StateDB) Close() error {
 	if s.readOnly {
@@ -2438,6 +2441,19 @@ func (s *StateDB) LookupWatcherEventSessionByDedupKey(watcherID, dedupKey string
 		return "", nil
 	}
 	return sessionID, err
+}
+
+// HasWatcherEvent reports whether the event (watcherID, dedupKey) is stored.
+func (s *StateDB) HasWatcherEvent(watcherID, dedupKey string) (bool, error) {
+	var one int
+	err := s.db.QueryRow(
+		`SELECT 1 FROM watcher_events WHERE watcher_id = ? AND dedup_key = ?`,
+		watcherID, dedupKey,
+	).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // UpdateWatcherEventSessionID sets the session_id on an existing watcher event.

@@ -78,8 +78,8 @@ type Event struct {
 	ThreadSessionID string `json:"thread_session_id,omitempty"`
 
 	// RoutedTo is populated by the engine's writerLoop with the conductor name
-	// from Router.Match(Sender), or "triage" / "" when no rule matches.
-	// Consumed by the TUI to deliver events into the conductor's tmux pane.
+	// from Router.Match(Sender), or "triage" / "" when no rule matches. The
+	// engine queues an event routed to a conductor for it (Outbox).
 	RoutedTo string `json:"routed_to,omitempty"`
 
 	// Cursor is the source's resume position for this event (the ntfy message

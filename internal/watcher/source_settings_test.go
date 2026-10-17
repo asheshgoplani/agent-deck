@@ -1,4 +1,4 @@
-package ui
+package watcher
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadWatcherSourceSettings_ReadsSourceTable(t *testing.T) {
+func TestLoadSourceSettings_ReadsSourceTable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -32,7 +32,7 @@ group = "conductor"
 		t.Fatalf("write: %v", err)
 	}
 
-	got := loadWatcherSourceSettings(name)
+	got := loadSourceSettings(name)
 	want := map[string]string{
 		"secret": "deadbeef",
 		"port":   "19999",
@@ -48,11 +48,11 @@ group = "conductor"
 	}
 }
 
-func TestLoadWatcherSourceSettings_MissingFileReturnsEmpty(t *testing.T) {
+func TestLoadSourceSettings_MissingFileReturnsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got := loadWatcherSourceSettings("does-not-exist")
+	got := loadSourceSettings("does-not-exist")
 	if got == nil {
 		t.Fatal("got nil; want non-nil empty map")
 	}
@@ -61,7 +61,7 @@ func TestLoadWatcherSourceSettings_MissingFileReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestLoadWatcherSourceSettings_NoSourceSectionReturnsEmpty(t *testing.T) {
+func TestLoadSourceSettings_NoSourceSectionReturnsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -82,7 +82,7 @@ group = "g"
 		t.Fatalf("write: %v", err)
 	}
 
-	got := loadWatcherSourceSettings(name)
+	got := loadSourceSettings(name)
 	if got == nil {
 		t.Fatal("got nil; want non-nil empty map")
 	}
@@ -91,7 +91,7 @@ group = "g"
 	}
 }
 
-func TestLoadWatcherSourceSettings_MalformedTOMLReturnsEmpty(t *testing.T) {
+func TestLoadSourceSettings_MalformedTOMLReturnsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -104,7 +104,7 @@ func TestLoadWatcherSourceSettings_MalformedTOMLReturnsEmpty(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	got := loadWatcherSourceSettings(name)
+	got := loadSourceSettings(name)
 	if got == nil {
 		t.Fatal("got nil; want non-nil empty map")
 	}

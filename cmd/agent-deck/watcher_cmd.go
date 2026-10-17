@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
@@ -253,7 +254,7 @@ func handleWatcherCreate(profile string, args []string) {
 	}
 
 	// Persist the adapter settings the runtime engine reads back from
-	// watcher.toml [source] (see internal/ui/home.go loadWatcherSourceSettings)
+	// watcher.toml [source] (see internal/watcher/host.go loadSourceSettings)
 	// BEFORE the watcher is published to the state db. Anything only held in a
 	// flag here is lost: the engine never sees it, the adapter's Setup fails at
 	// startup, and the watcher silently never runs. Writing first means a failed
@@ -380,7 +381,7 @@ func readSecretFile(path string) (string, error) {
 
 // writeGithubWatcherSecret writes the HMAC secret into the [source] table of
 // the effective watcher/<name>/watcher.toml at 0600, which is the location the
-// runtime engine loads it from (internal/ui/home.go loadWatcherSourceSettings).
+// runtime engine loads it from (internal/watcher/host.go loadSourceSettings).
 // Port is stored as a TOML string so it decodes into the engine's
 // map[string]string Settings. Audit M2.
 //
@@ -518,7 +519,9 @@ func handleWatcherStart(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	fmt.Printf("Started watcher: %s (status will be picked up by TUI engine)\n", name)
+	// One TUI, web or web --no-tui process per profile owns the watcher
+	// engine (#2530); the engine loads its watchers when it starts.
+	fmt.Printf("Started watcher: %s (an agent-deck TUI or web process runs it: within seconds if the profile has no watcher engine yet, else once the engine's process restarts)\n", name)
 }
 
 // handleWatcherStop marks a watcher as stopped in statedb.
@@ -688,6 +691,8 @@ func handleWatcherStatus(profile string, args []string) {
 
 	meta, _ := session.LoadWatcherMeta(name)
 	events, _ := db.LoadWatcherEvents(w.ID, 10)
+	undelivered, undeliveredErr := watcherUndelivered(profile, w.ID)
+	now := time.Now()
 
 	if *jsonOutput {
 		type eventOut struct {
@@ -695,6 +700,12 @@ func handleWatcherStatus(profile string, args []string) {
 			Sender    string `json:"sender"`
 			Subject   string `json:"subject"`
 			RoutedTo  string `json:"routed_to"`
+		}
+		type undeliveredOut struct {
+			Conductor        string `json:"conductor"`
+			Count            int    `json:"count"`
+			OldestQueuedAt   string `json:"oldest_queued_at"`
+			OldestAgeSeconds int64  `json:"oldest_age_seconds"`
 		}
 		type output struct {
 			ID         string     `json:"id"`
@@ -706,16 +717,28 @@ func handleWatcherStatus(profile string, args []string) {
 			CreatedAt  string     `json:"created_at"`
 			UpdatedAt  string     `json:"updated_at"`
 			Events     []eventOut `json:"recent_events"`
+			// Undelivered: routed events still waiting in the send queue for
+			// their conductor, per conductor (#2537).
+			Undelivered []undeliveredOut `json:"undelivered"`
 		}
 		out := output{
-			ID:         w.ID,
-			Name:       w.Name,
-			Type:       w.Type,
-			Status:     w.Status,
-			ConfigPath: w.ConfigPath,
-			Conductor:  w.Conductor,
-			CreatedAt:  w.CreatedAt.Format(time.RFC3339),
-			UpdatedAt:  w.UpdatedAt.Format(time.RFC3339),
+			ID:          w.ID,
+			Name:        w.Name,
+			Type:        w.Type,
+			Status:      w.Status,
+			ConfigPath:  w.ConfigPath,
+			Conductor:   w.Conductor,
+			CreatedAt:   w.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:   w.UpdatedAt.Format(time.RFC3339),
+			Undelivered: []undeliveredOut{},
+		}
+		for _, p := range undelivered {
+			out.Undelivered = append(out.Undelivered, undeliveredOut{
+				Conductor:        p.Conductor,
+				Count:            p.Count,
+				OldestQueuedAt:   p.Oldest.UTC().Format(time.RFC3339),
+				OldestAgeSeconds: int64(now.Sub(p.Oldest).Seconds()),
+			})
 		}
 		for _, e := range events {
 			out.Events = append(out.Events, eventOut{
@@ -740,6 +763,17 @@ func handleWatcherStatus(profile string, args []string) {
 	if w.Conductor != "" {
 		fmt.Printf("  Conductor: %s\n", w.Conductor)
 	}
+	switch {
+	case undeliveredErr != nil:
+		fmt.Printf("  Undelivered: unknown (%v)\n", undeliveredErr)
+	case len(undelivered) == 0:
+		fmt.Println("  Undelivered: none")
+	default:
+		for _, p := range undelivered {
+			fmt.Printf("  Undelivered: %d for %s, oldest queued %s ago\n",
+				p.Count, p.Conductor, now.Sub(p.Oldest).Round(time.Second))
+		}
+	}
 	fmt.Println()
 
 	if len(events) == 0 {
@@ -755,6 +789,20 @@ func handleWatcherStatus(profile string, args []string) {
 		}
 		tw.Flush()
 	}
+}
+
+// watcherUndelivered returns the watcher's routed events still waiting in the
+// profile's send queue for their conductor, per conductor (#2537).
+func watcherUndelivered(profile, watcherID string) ([]watcher.PendingDelivery, error) {
+	dbPath, err := session.GetDBPathForProfile(profile)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := watcher.PendingDeliveries(sendqueue.Dir(filepath.Dir(dbPath)))
+	if err != nil {
+		return nil, err
+	}
+	return pending[watcherID], nil
 }
 
 // handleWatcherTest runs a synthetic event through the router for the named watcher.
@@ -1082,10 +1130,10 @@ func printWatcherHelp() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  create <type> --name <name>   Create a new watcher (types: webhook, ntfy, github, slack)")
-	fmt.Println("  start <name>                  Mark a watcher as running (picked up by TUI engine)")
+	fmt.Println("  start <name>                  Mark a watcher as running (run by the profile's watcher engine)")
 	fmt.Println("  stop <name>                   Mark a watcher as stopped")
 	fmt.Println("  list [--json]                 List all watchers with status and event rate")
-	fmt.Println("  status <name> [--json]        Show detailed watcher info including recent events")
+	fmt.Println("  status <name> [--json]        Show watcher info, recent events and events not delivered yet")
 	fmt.Println("  test <name>                   Route a synthetic event to verify routing config")
 	fmt.Println("  routes [--json]               Show all routing rules from clients.json")
 	fmt.Println("  import <path>                 Migrate bash issue-watcher channels.json to Go watcher config")
