@@ -48,7 +48,7 @@ func CodexComposerDraft(raw string, strip func(string) string) (draft string, co
 			return "", true
 		}
 		if start < len(rawRows) && len(rawRows) == len(rows) {
-			if body, ok := composerMarkerBody(rawRows[start]); ok && bodyStartsDim(body) {
+			if body, ok := composerMarkerBody(rawRows[start]); ok && bodyIsPlaceholder(body) {
 				return "", true
 			}
 		}

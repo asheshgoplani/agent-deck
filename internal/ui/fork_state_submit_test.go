@@ -331,7 +331,7 @@ func TestCompleteFork_RollsBackOnInstanceCreateFailure(t *testing.T) {
 	createErr := errors.New("boom")
 
 	deps := forkInstanceDeps{
-		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions, _ session.ForkParent) (*session.Instance, error) {
 			return nil, createErr
 		},
 		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },
@@ -362,7 +362,7 @@ func TestCompleteFork_RollsBackOnMultiRepoDirFailure(t *testing.T) {
 	mrErr := errors.New("failed to create multi-repo dir: disk full")
 
 	deps := forkInstanceDeps{
-		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions, _ session.ForkParent) (*session.Instance, error) {
 			return fake, nil
 		},
 		createMultiRepoDir: func(_, _ *session.Instance) error { return mrErr },
@@ -393,7 +393,7 @@ func TestCompleteFork_RollsBackOnStartFailure(t *testing.T) {
 	startErr := errors.New("start failed")
 
 	deps := forkInstanceDeps{
-		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions, _ session.ForkParent) (*session.Instance, error) {
 			return fake, nil
 		},
 		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },
@@ -423,7 +423,7 @@ func TestCompleteFork_NoRollbackOnSuccess(t *testing.T) {
 	fake := &session.Instance{}
 
 	deps := forkInstanceDeps{
-		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions, _ session.ForkParent) (*session.Instance, error) {
 			return fake, nil
 		},
 		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },
@@ -449,7 +449,7 @@ func TestCompleteFork_NoRollbackWhenWorktreeNotCreated(t *testing.T) {
 	createErr := errors.New("boom")
 
 	deps := forkInstanceDeps{
-		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions, _ session.ForkParent) (*session.Instance, error) {
 			return nil, createErr
 		},
 		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },

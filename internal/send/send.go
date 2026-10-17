@@ -327,25 +327,11 @@ func CurrentComposerPrompt(content string) (string, bool) {
 
 	// Primary path: parse the explicit composer region between the last two
 	// divider lines nearest the bottom of the pane.
-	lastDivider := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if IsComposerDividerLine(lines[i]) {
-			lastDivider = i
-			break
-		}
-	}
-	if lastDivider > 0 {
-		prevDivider := -1
-		for i := lastDivider - 1; i >= 0; i-- {
-			if IsComposerDividerLine(lines[i]) {
-				prevDivider = i
-				break
-			}
-		}
-		if prevDivider >= 0 && prevDivider+1 < lastDivider {
-			if body, ok := ParsePromptFromComposerBlock(lines[prevDivider+1 : lastDivider]); ok {
-				return body, true
-			}
+	// Claude 2.1.296 draws the session name into the top border, so borders
+	// are matched with IsComposerBorderLine, not dashes-only dividers.
+	if top, bottom := ComposerBounds(lines); top >= 0 && top+1 < bottom {
+		if body, ok := ParsePromptFromComposerBlock(lines[top+1 : bottom]); ok {
+			return body, true
 		}
 	}
 
