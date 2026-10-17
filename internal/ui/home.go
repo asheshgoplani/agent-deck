@@ -3398,8 +3398,35 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			}
 		}
 		if len(filtered) == 0 && len(allItems) > 0 && !h.keepEmptyFilter && h.statusFilter != FilterModeActive {
-			h.statusFilter = ""
-			h.flatItems = allItems
+			// #2627 (CodeRabbit): remote rows count toward the fallback too —
+			// clearing the filter because no LOCAL row matches would bypass
+			// the remote filtering this PR adds, showing every remote row.
+			// Clear only when neither local nor remote rows match; keep the
+			// local list empty-but-filtered when a remote match survives.
+			// This branch never runs in the ^ archived view (the enclosing
+			// block excludes FilterModeArchived), so only active-partition
+			// remote rows can match. Hold the read lock like the remote
+			// snapshot below does.
+			remoteHasMatch := false
+			h.remoteSessionsMu.RLock()
+			for _, remoteSessions := range h.remoteSessions {
+				for _, remote := range remoteSessions {
+					if !remote.Archived && h.remoteMatchesStatus(h.statusFilter, remote) {
+						remoteHasMatch = true
+						break
+					}
+				}
+				if remoteHasMatch {
+					break
+				}
+			}
+			h.remoteSessionsMu.RUnlock()
+			if remoteHasMatch {
+				h.flatItems = filtered
+			} else {
+				h.statusFilter = ""
+				h.flatItems = allItems
+			}
 		} else {
 			h.flatItems = filtered
 		}
@@ -3423,6 +3450,14 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		partitioned := make([]session.RemoteSessionInfo, 0, len(sessions))
 		for _, remote := range sessions {
 			if remote.Archived == viewArchived {
+				// #2627: remote rows honor the status filter the way local rows
+				// do. In the archived view the Archived partition IS the filter
+				// (same as local), so the predicate runs only outside it. Old
+				// remotes omit substate/archived — those decode to the zero
+				// status, degraded the same way the status glyph degrades it.
+				if h.statusFilter != "" && !viewArchived && !h.remoteMatchesStatus(h.statusFilter, remote) {
+					continue
+				}
 				partitioned = append(partitioned, remote)
 			}
 		}
@@ -3467,6 +3502,12 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 		}
 		for _, sessions := range remotes {
 			for _, remote := range sessions {
+				// #2627: the status filter narrows the time-fallback the same
+				// way it narrows local sessions above — a row the filter hides
+				// is neither a candidate nor a match.
+				if h.statusFilter != "" && !viewArchived && !h.remoteMatchesStatus(h.statusFilter, remote) {
+					continue
+				}
 				hasCandidates = true
 				if remoteMatchesTime(remote) {
 					hasMatches = true
@@ -6550,8 +6591,8 @@ func (h *Home) backgroundStatusUpdate() {
 			if st == session.StatusStopped {
 				continue
 			}
-			if port := inst.GetOpenCodePort(); port > 0 {
-				targets = append(targets, session.SSETarget{InstanceID: inst.ID, Port: port})
+			if target, ok := inst.OpenCodeSSETarget(); ok {
+				targets = append(targets, target)
 				if ss := h.sseWatcher.GetStatus(inst.ID); ss != nil {
 					inst.UpdateOpenCodeSSEStatus(ss.Status, ss.UpdatedAt)
 				}
@@ -10284,19 +10325,8 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		selected := h.search.Selected()
 		if selected != nil {
-			// Ensure the session's group AND all parent groups are expanded so it's visible
-			if selected.GroupPath != "" {
-				h.groupTree.ExpandGroupWithParents(selected.GroupPath)
-			}
-			h.rebuildFlatItems()
-
-			// Find the session in flatItems (not instances) and set cursor
-			for i, item := range h.flatItems {
-				if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == selected.ID {
-					h.cursor = i
-					h.syncViewport() // Ensure the cursor is visible in the viewport
-					break
-				}
+			if !h.jumpToSessionByID(selected.ID, selected.GroupPath) {
+				h.setError(fmt.Errorf("'%s' not visible after clearing filters (session may be gone)", selected.Title))
 			}
 		}
 		h.search.Hide()
@@ -10316,6 +10346,70 @@ func (h *Home) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return h, cmd
+}
+
+// jumpToSessionByID moves the cursor to the session with the given ID,
+// expanding its group first. When the session is hidden by the active
+// status or time filter (the search indexes every instance, not the
+// filtered view), it clears those filters the same way the empty-view
+// fallbacks do and retries; the filters are restored untouched only when
+// the session is genuinely not present. Returns false in that last case.
+// Issue #2655.
+func (h *Home) jumpToSessionByID(id, groupPath string) bool {
+	find := func() bool {
+		for i, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == id {
+				h.cursor = i
+				h.syncViewport()
+				return true
+			}
+		}
+		return false
+	}
+
+	// Capture the pre-jump fold state of the target group and its ancestors
+	// so a failed jump restores them (#2656, CodeRabbit). Expansion runs
+	// once here; the retry path below only rebuilds.
+	prevExpanded := map[string]bool{}
+	if groupPath != "" {
+		for _, g := range h.groupTree.GroupList {
+			if g == nil {
+				continue
+			}
+			if g.Path == groupPath || strings.HasPrefix(groupPath, g.Path+"/") {
+				prevExpanded[g.Path] = g.Expanded
+			}
+		}
+		h.groupTree.ExpandGroupWithParents(groupPath)
+	}
+	restoreFolds := func() {
+		for path, expanded := range prevExpanded {
+			if !expanded {
+				h.groupTree.CollapseGroup(path)
+			}
+		}
+	}
+
+	h.rebuildFlatItems()
+	if find() {
+		return true
+	}
+	if h.statusFilter == "" && h.timeFilter == session.TimeFilterAll {
+		restoreFolds()
+		h.rebuildFlatItems()
+		return false
+	}
+	prevFilter, prevTime := h.statusFilter, h.timeFilter
+	h.statusFilter = ""
+	h.timeFilter = session.TimeFilterAll
+	h.rebuildFlatItems()
+	if find() {
+		return true
+	}
+	h.statusFilter, h.timeFilter = prevFilter, prevTime
+	restoreFolds()
+	h.rebuildFlatItems()
+	return false
 }
 
 // handleGlobalSearchKey handles keys when global search is visible
@@ -25844,6 +25938,16 @@ func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 			!(h.activeFilterHideStopped && statusBucket(status) == session.StatusStopped)
 	}
 	return statusBucket(status) == filter
+}
+
+// remoteMatchesStatus applies the status-filter predicate to a remote row
+// (#2627). RemoteSessionInfo.Status is the wire string; converting it to
+// session.Status puts remote rows through the same statusBucket mapping the
+// local predicate uses. Old remotes omit substate/archived, and the wire
+// Status for those still decodes to a valid bucket — the row keeps the
+// coarse behavior its glyph already shows, as the issue requires.
+func (h *Home) remoteMatchesStatus(filter session.Status, remote session.RemoteSessionInfo) bool {
+	return h.matchesStatusFilter(filter, session.Status(remote.Status))
 }
 
 // renderFilterBarHint returns the filter bar's keyboard-shortcut hint as

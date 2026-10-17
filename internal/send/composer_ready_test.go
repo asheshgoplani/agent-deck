@@ -1,6 +1,7 @@
 package send
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -210,5 +211,72 @@ func TestClaudeComposerReady_ComposerStates(t *testing.T) {
 				t.Fatalf("got %+v, want code %q ghost %v", r, tc.code, tc.ghost)
 			}
 		})
+	}
+}
+
+// ComposerEmptyWhileBusy is the guarded send's check for a Claude turn that is
+// running: Claude Code queues typed input, so a busy turn above an empty
+// framed composer is accepted, and every other reason ClaudeComposerReady
+// refuses for still refuses. The busy screen is the macOS app audit's
+// Claude-like fake (F1-DECIDER run3), which draws Claude 2.1's spinner line
+// without an "esc to interrupt" hint.
+func TestComposerEmptyWhileBusy(t *testing.T) {
+	const rule = "────────────────────────────────────────"
+	frame := func(above, composer string) string {
+		return above + "\n\n" + rule + "\n" + composer + "\n" + rule + "\n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+	}
+	busy := "⏺ Running the lanes.\n\n✽ Thundering… (34s · ↓ 135 tokens)"
+	legacyBusy := "⏺ Running the lanes.\n\n✻ Crunching… (12s · esc to interrupt)"
+	cases := []struct {
+		name  string
+		raw   string
+		code  string
+		ghost bool
+	}{
+		{"busy empty framed composer", frame(busy, "❯ "), "", false},
+		{"busy with esc to interrupt", frame(legacyBusy, "❯ "), "", false},
+		{"busy under a titled top border", busy + "\n\n" + rule + " my-session ─\n❯ \n" + rule + "\n", "", false},
+		{"idle empty composer", frame("⏺ Done.", "❯ "), "", false},
+		{"busy ghost suggestion", frame(busy, fixture2295GhostFocused), "", true},
+		{"busy operator draft", frame(busy, "❯ half typed operator note"), ComposerCodeDraft, false},
+		{"busy pasted draft", frame(busy, "❯ [Pasted text #1 +12 lines]"), ComposerCodeDraft, false},
+		{"busy permission dialog", busy + "\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel\n", ComposerCodeDialog, false},
+		{"busy picker", busy + "\n\nWhich approach should I take?\n❯ 1. Yes\n  2. No\nEnter to select · Esc to cancel\n", ComposerCodeDialog, false},
+		{"prompt glyph without a frame", busy + "\n\n❯ \n", ComposerCodeNoPrompt, false},
+		{"no composer", "$ ls\nREADME.md\n", ComposerCodeNoPrompt, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := ComposerEmptyWhileBusy(tc.raw)
+			if r.Code != tc.code || r.Ready != (tc.code == "") || r.Ghost != tc.ghost {
+				t.Fatalf("got %+v, want code %q ghost %v", r, tc.code, tc.ghost)
+			}
+		})
+	}
+	// The idle check keeps refusing a running turn it can see, with or
+	// without the interrupt hint.
+	for _, above := range []string{busy, legacyBusy} {
+		if r := ClaudeComposerReady(frame(above, "❯ ")); r.Code != ComposerCodeBusy {
+			t.Fatalf("ClaudeComposerReady on a running turn: got %+v, want %q", r, ComposerCodeBusy)
+		}
+	}
+}
+
+func TestProbeComposerBeforeSend(t *testing.T) {
+	const rule = "────────────────────────────────────────"
+	pane := func(row string) func() (string, error) {
+		return func() (string, error) { return "out\n" + rule + "\n" + row + "\n" + rule + "\n", nil }
+	}
+	if free, shown := ProbeComposerBeforeSend(pane(fixture2295GhostFocused), true); !free || !shown {
+		t.Fatalf("claude ghost: pasteFree=%v suggestion=%v, want true true", free, shown)
+	}
+	if _, shown := ProbeComposerBeforeSend(pane(fixture2295GhostFocused), false); shown {
+		t.Fatal("the suggestion rule must not apply to a non-Claude composer")
+	}
+	if free, _ := ProbeComposerBeforeSend(pane("❯ [Pasted text #1 +3 lines]"), true); free {
+		t.Fatal("a parked paste marker is not paste-free")
+	}
+	if free, shown := ProbeComposerBeforeSend(func() (string, error) { return "", errors.New("gone") }, true); free || shown {
+		t.Fatal("a capture failure must report nothing")
 	}
 }

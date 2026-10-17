@@ -221,7 +221,14 @@ func statuslineAccount(feedProfile string) string {
 	if err != nil || config == nil {
 		return ""
 	}
-	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	// A feed profile selects storage, not the account that produced this payload.
+	dir := ""
+	for _, kv := range inheritedEnviron() {
+		if value, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			dir = value
+			break
+		}
+	}
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

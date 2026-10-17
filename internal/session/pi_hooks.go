@@ -32,7 +32,7 @@ const (
 	// piHookExtensionVersion is bumped whenever the emitted event set or the
 	// payload shape changes, so `pi-hooks status` can report drift and
 	// `pi-hooks install` can upgrade in place.
-	piHookExtensionVersion = 2
+	piHookExtensionVersion = 3
 )
 
 var piHookExtensionVersionRe = regexp.MustCompile(piHookExtensionMarker + ` v(\d+)`)
