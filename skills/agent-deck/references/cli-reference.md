@@ -412,7 +412,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level
+**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level, prompt-suggestions
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -422,6 +422,21 @@ Setting `account` auto-migrates the Claude conversation into the target account'
 agent-deck session set my-project context-level primer
 agent-deck session set my-project context-level ""       # clear: inherit group/global
 ```
+
+`prompt-suggestions` sets the per-session override for Claude Code prompt suggestions: `children-off`, `on` or `off` (also `true`/`false`), applied on the next start/restart. `children-off` turns them off when the session has a parent and leaves a root session alone; an empty value clears the override so the session follows `[profiles.<profile>.claude].prompt_suggestions`, then `[launch].prompt_suggestions` (default `children-off`; see `config-reference.md`).
+
+```bash
+agent-deck session set my-worker prompt-suggestions on   # keep suggestions in a parented session
+agent-deck session set my-worker prompt-suggestions ""   # clear: follow profile, then [launch]
+```
+
+### session send-keys
+
+```bash
+agent-deck session send-keys <id|title> --text "TEXT" | --enter | --named-key KEY [--primary] [--json]
+```
+
+Low-level keystroke forwarding (exactly one of `--text`, `--enter`, `--named-key`; `--stream` is the TUI insert-mode transport). On a Claude session, `--enter`, `--named-key` Enter, Tab or Right, and a `--text` that is only a CR, a TAB or the cursor-right sequence are checked against the composer first. Key names match the way tmux reads them: in any case (`enter`, `TAB`, `right`), with `^X`, `C-X` and `c-x` as the same control key (`C-m`/`^M` is Enter, `C-i`/`^I` is Tab), plus `KPEnter` and the hex codes `0xd`/`0x9`; a key with another modifier (`S-Enter`, `M-Right`) is not checked. When the composer shows a prompt suggestion (or Claude's dim `Try "..."` placeholder, which uses the same renderer), Escape is pressed once (not while a turn is running, where Escape would interrupt it) and, because Claude does not clear a suggestion on Escape, the key is withheld with exit 1, `code: DELIVERY_FAILED`, `delivery: "composer_blocked"`, `reason: "prompt_suggestion"`. Type the text first (`--text`, then `--enter`) to submit. `--stream` and the TUI insert mode are a human at the keyboard and are not guarded. `--enter` is raw by design: it can submit unsent composer text, whatever is in the composer, including an operator's unsent draft.
 
 ### session send
 

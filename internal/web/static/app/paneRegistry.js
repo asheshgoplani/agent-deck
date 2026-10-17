@@ -7,6 +7,8 @@
 // requiresCapability names a backend capability the pane depends on. When
 // it is missing from the capability set the shell renders StubPane with the
 // entry's `props` (title, message, hotkey) instead of the component.
+// sessionScoped marks panes that can show the selected session. Session URLs
+// preserve these panes and steer global panes to Terminal.
 import { TerminalPane } from './panes/TerminalPane.js'
 import { CostsPane } from './panes/CostsPane.js'
 import { FleetPane } from './panes/FleetPane.js'
@@ -27,9 +29,9 @@ export const WEB_CAPABILITIES = new Set([
 export const PANES = {
   'command-center': { component: CommandCenterPane, label: 'Command Center', requiresCapability: 'command-center' },
   fleet:     { component: FleetPane,    label: 'Fleet',    requiresCapability: 'fleet' },
-  terminal:  { component: TerminalPane, label: 'Terminal', requiresCapability: 'terminal' },
-  mcp:       { component: McpPane,      label: 'MCPs',     requiresCapability: 'mcp' },
-  skills:    { component: SkillsPane,   label: 'Skills',   requiresCapability: 'skills' },
+  terminal:  { component: TerminalPane, label: 'Terminal', requiresCapability: 'terminal', sessionScoped: true },
+  mcp:       { component: McpPane,      label: 'MCPs',     requiresCapability: 'mcp', sessionScoped: true },
+  skills:    { component: SkillsPane,   label: 'Skills',   requiresCapability: 'skills', sessionScoped: true },
   conductor: {
     component: null, label: 'Conductor', requiresCapability: 'conductor',
     props: {

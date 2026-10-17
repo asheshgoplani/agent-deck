@@ -2247,6 +2247,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  account            Named account slot (#924) — resolves via [profiles.<account>.claude].config_dir; restart required")
 		fmt.Println("  idle-timeout       Auto-stop after no tmux output for this duration (#1143; Go duration: 30m, 1h, 24h; 0 disables)")
 		fmt.Println("  context-level      Harness context-level override: none, primer, or full (#2260; empty clears; global < group < session; see `session primer`); restart required")
+		fmt.Println("  prompt-suggestions Claude prompt suggestions: children-off (off when the session has a parent), on, or off (empty clears; session > profile > [launch]); restart required")
 		fmt.Println("  order              0-based position in the group (see `session show --json` .order); clamps to the end")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -4919,6 +4920,7 @@ func executeSend(target sendRetryTarget, tool, message string, noWait bool, tun 
 			// during verification is the collapsed form of our own payload
 			// and may be nudged.
 			tun.retry.composerPasteFreeBeforeSend = guard.ComposerPasteMarkerFree
+			tun.retry.suggestionShownBeforeSend = guard.SuggestionShown
 		}
 	}
 
@@ -5102,6 +5104,10 @@ type sendRetryOptions struct {
 	// the fail-safe default for callers that cannot establish provenance.
 	composerPasteFreeBeforeSend bool
 
+	// suggestionShownBeforeSend mirrors send.ComposerGuardResult.SuggestionShown
+	// for the initial submit (send.TypeAndSubmit).
+	suggestionShownBeforeSend bool
+
 	// targetBusyByHook, when non-nil, reports the target's hook-driven busy
 	// state (the #1578 `--defer-if-busy` signal) as (busy, known), read fresh
 	// from the hook file on every call. It is sampled once before the send
@@ -5162,21 +5168,10 @@ func composerPasteFree(target sendRetryTarget) bool {
 	return !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
 }
 
-// sendInitialKeysChecked sends message and presses Enter, routing the submit
-// through send.PasteTruncationCheck when expectedBreaks > 0 so a paste cut
-// short in transit withholds Enter instead of submitting a fragment (issue
-// #2079). expectedBreaks == 0 (a single-line message, or a non-Claude target
-// that never populates sendRetryOptions.expectedPasteBreaks) sends
-// unchecked, identical to plain SendKeysAndEnter.
-//
-// This gives `session send` and its `--message-file` form the same guard
-// Instance.sendMessageWhenReady has always applied on the launch path
-// (#2148 item 4b); before this they had no truncation guard of their own.
-func sendInitialKeysChecked(target sendRetryTarget, message string, expectedBreaks int) error {
-	if expectedBreaks <= 0 {
-		return target.SendKeysAndEnter(message)
-	}
-	return target.SendKeysAndEnterChecked(message, target.CapturePaneFresh, send.PasteTruncationCheck(expectedBreaks))
+// sendInitialKeysChecked is the initial submit of `session send`:
+// send.TypeAndSubmit, shared with the launch path (#2148 item 4b).
+func sendInitialKeysChecked(target sendRetryTarget, message string, expectedBreaks int, suggestionShown bool) error {
+	return send.TypeAndSubmit(target, message, expectedBreaks, suggestionShown)
 }
 
 // sendWithRetryTarget sends the message and runs the bounded submit
@@ -5220,7 +5215,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// is the target taking this message up (submitted).
 	hookBusyBeforeSend := opts.hookBusyNow()
 
-	if err := sendInitialKeysChecked(target, message, opts.expectedPasteBreaks); err != nil {
+	if err := sendInitialKeysChecked(target, message, opts.expectedPasteBreaks, opts.suggestionShownBeforeSend); err != nil {
 		if opts.promptGuard != nil && opts.promptGuard.refused {
 			return opts.promptGuard.refusal()
 		}
@@ -5327,7 +5322,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		obs.Observe(paneNow)
 		if paneNow.OK {
 			content := tmux.StripANSI(captured)
-			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.HasUnsentComposerPrompt(content, message)
+			unsentPromptDetected = send.ComposerHoldsPasteMarker(captured, tmux.StripANSI) || send.ComposerHoldsUnsentMessage(captured, message, tmux.StripANSI)
 			queueAcknowledged = claudeQueueAcknowledged(content)
 			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
 				sawDeliveryEvidence = true

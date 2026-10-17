@@ -69,7 +69,7 @@ func TestEnterWouldSubmitForeignDraft_EmptyAndGhostComposersAreSafe(t *testing.T
 		"grey 256":  fixtureGrey256Composer,
 	} {
 		if attrib().EnterWouldSubmitForeignDraft(Captured(pane(fixture)), stripANSI) {
-			t.Fatalf("%s composer must not block a nudge — Enter submits nothing", name)
+			t.Fatalf("%s composer is not a foreign draft (typing replaces it; bare Enter is gated separately by BareEnterBlocked)", name)
 		}
 	}
 }

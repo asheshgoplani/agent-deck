@@ -56,10 +56,12 @@ func TestSendWithRetryTarget_OwnParkedMessageStillNudged(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_GhostSuggestionDoesNotBlockNudges(t *testing.T) {
-	// A still-dim ghost (\e[2m) means the composer buffer is empty: nudges
-	// stay allowed (they submit nothing), so delivery recovery for panes
-	// showing only a suggestion is unchanged.
+func TestSendWithRetryTarget_GhostSuggestionWithholdsNudges(t *testing.T) {
+	// A still-dim ghost (\e[2m) means the composer buffer is empty, so none
+	// of our text is left to submit. It is also a suggestion one accept key
+	// away from being submitted as an instruction nobody wrote, so no bare
+	// Enter nudge may be pressed at it (this used to assert the opposite:
+	// "nudges stay allowed, they submit nothing").
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting"},
 		panes:    []string{claudeComposerANSI("\x1b[2mConfirm the audit row after the next heartbeat\x1b[0m")},
@@ -67,8 +69,8 @@ func TestSendWithRetryTarget_GhostSuggestionDoesNotBlockNudges(t *testing.T) {
 	_, _ = sendWithRetryTarget(mock, "status update please", false, sendRetryOptions{
 		maxRetries: 4, checkDelay: 0, maxFullResends: -1,
 	})
-	if got := atomic.LoadInt32(&mock.sendEnterCalls); got == 0 {
-		t.Fatal("a dim ghost holds no buffer content; Enter nudges must remain allowed")
+	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 0 {
+		t.Fatalf("bare Enter pressed %d time(s) while a suggestion was shown", got)
 	}
 }
 
