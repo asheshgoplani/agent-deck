@@ -3397,25 +3397,24 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			// the remote filtering this PR adds, showing every remote row.
 			// Clear only when neither local nor remote rows match; keep the
 			// local list empty-but-filtered when a remote match survives.
+			// This branch never runs in the ^ archived view (the enclosing
+			// block excludes FilterModeArchived), so only active-partition
+			// remote rows can match. Hold the read lock like the remote
+			// snapshot below does.
 			remoteHasMatch := false
+			h.remoteSessionsMu.RLock()
 			for _, remoteSessions := range h.remoteSessions {
 				for _, remote := range remoteSessions {
-					if remote.Archived != viewArchived {
-						continue
-					}
-					if viewArchived {
-						// Archived view: the partition itself is the match — an
-						// archived remote row keeps the archived view alive the same
-						// way a local archived row would.
+					if !remote.Archived && h.remoteMatchesStatus(h.statusFilter, remote) {
 						remoteHasMatch = true
-					} else if h.remoteMatchesStatus(h.statusFilter, remote) {
-						remoteHasMatch = true
+						break
 					}
 				}
 				if remoteHasMatch {
 					break
 				}
 			}
+			h.remoteSessionsMu.RUnlock()
 			if remoteHasMatch {
 				h.flatItems = filtered
 			} else {
