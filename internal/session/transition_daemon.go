@@ -1501,6 +1501,16 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		if event == "post_llm_call" || event == "postllmcall" || event == "onsessionend" || event == "on_session_end" {
 			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
 		}
+	case "pi":
+		// Issue #2665: pi's extension emits turn_end when a turn finishes.
+		// Without this case a pi turn reached the parent only through the
+		// snapshot edge, which needs a polled `running` status. A short turn
+		// answered between two polls (the common case, and every turn after a
+		// revive left the tracked status at error) never produced an event.
+		// session_start is excluded like Claude's SessionStart.
+		if event == "turn_end" || event == "turnend" {
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
+		}
 	}
 	return hookTransitionCandidate{}, false
 }
