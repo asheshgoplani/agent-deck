@@ -111,6 +111,8 @@ type conductorQueue struct {
 	stopped bool
 	started int // runners ever started; only grows
 	runners sync.WaitGroup
+	// done closes once every runner has returned after stop; nil before.
+	done chan struct{}
 	// warn logs overflow, never with mu held; tests replace it before use.
 	warn func(msg string, args ...any)
 }
@@ -200,6 +202,30 @@ func (q *conductorQueue) logOverflow(msg string, args ...any) {
 	warn(msg, args...)
 }
 
+// finished returns a channel that closes once the deliveries still running
+// when stop was called have returned, including one stop gave up waiting for.
+// It is nil before stop, and nil when no delivery is being sent: after stop a
+// runner with nothing in flight only exits, it types nothing more.
+func (q *conductorQueue) finished() <-chan struct{} {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.sending() == 0 {
+		return nil
+	}
+	return q.done
+}
+
+// sending counts the deliveries being sent. q.mu must be held.
+func (q *conductorQueue) sending() int {
+	n := 0
+	for _, b := range q.backlogs {
+		if b.inflight != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // deliver contains a panic in one delivery, so it cannot end the runner and
 // with it every later delivery to that conductor.
 func (q *conductorQueue) deliver(d conductorDelivery) {
@@ -222,6 +248,15 @@ func (q *conductorQueue) deliver(d conductorDelivery) {
 func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []conductorDelivery, dropped map[string]int) {
 	q.mu.Lock()
 	q.stopped = true
+	if q.done == nil {
+		// No runner starts after stopped is set, so Wait cannot race an Add.
+		q.done = make(chan struct{})
+		go func(done chan struct{}) {
+			q.runners.Wait()
+			close(done)
+		}(q.done)
+	}
+	done := q.done
 	conductors := make([]string, 0, len(q.backlogs))
 	for c := range q.backlogs {
 		conductors = append(conductors, c)
@@ -242,11 +277,6 @@ func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []co
 	}
 	q.mu.Unlock()
 
-	done := make(chan struct{})
-	go func() {
-		q.runners.Wait()
-		close(done)
-	}()
 	select {
 	case <-done:
 		return undelivered, nil, dropped
@@ -259,8 +289,13 @@ func (q *conductorQueue) stop(wait time.Duration) (undelivered, unconfirmed []co
 			unconfirmed = append(unconfirmed, *b.inflight)
 		}
 	}
+	sending := q.sending()
 	q.mu.Unlock()
-	uiLog.Warn("conductor_delivery_stop_timeout",
-		slog.Duration("waited", wait), slog.Int("in_flight", len(unconfirmed)))
+	// A wait that expired (at once, for a zero wait) with nothing in flight
+	// only caught the runners winding down: a normal stop, not a timeout.
+	if sending > 0 {
+		uiLog.Warn("conductor_delivery_stop_timeout",
+			slog.Duration("waited", wait), slog.Int("in_flight", sending))
+	}
 	return undelivered, unconfirmed, dropped
 }
