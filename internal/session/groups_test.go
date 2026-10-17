@@ -2732,3 +2732,60 @@ func TestSetSessionOrder_SubSessionKeepsParent(t *testing.T) {
 		t.Fatalf("rendered order = %s, want p,p2,p1,q", got)
 	}
 }
+
+// TestFlattenWithParentFolds (#2631): a folded parent keeps its own row and
+// omits its sub-sessions, while orphan sub-sessions (parent in another group)
+// and plain Flatten behavior stay untouched.
+func TestFlattenWithParentFolds(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent-1", GroupPath: "group-a"},
+		{ID: "c1", Title: "child-1", GroupPath: "group-a", ParentSessionID: "p1"},
+		{ID: "c2", Title: "child-2", GroupPath: "group-a", ParentSessionID: "p1"},
+		{ID: "o1", Title: "orphan", GroupPath: "group-b", ParentSessionID: "elsewhere"},
+		{ID: "s1", Title: "plain", GroupPath: "group-b"},
+	}
+
+	tree := NewGroupTree(instances)
+
+	titles := func(items []Item) string {
+		parts := make([]string, 0, len(items))
+		for _, it := range items {
+			if it.Type == ItemTypeSession {
+				parts = append(parts, it.Session.Title)
+			}
+		}
+		return strings.Join(parts, ",")
+	}
+
+	// Baseline: no folds — historical Flatten order.
+	plain := tree.Flatten()
+	if got := titles(plain); got != "parent-1,child-1,child-2,plain,orphan" {
+		t.Fatalf("Flatten() = %s, want parent-1,child-1,child-2,plain,orphan", got)
+	}
+
+	// Fold p1's child list: parent stays, children gone.
+	folded := tree.FlattenWithParentFolds(map[string]bool{"p1": true})
+	if got := titles(folded); got != "parent-1,plain,orphan" {
+		t.Fatalf("FlattenWithParentFolds = %s, want parent-1,plain,orphan", got)
+	}
+	// The folded parent's row must carry IsLastInGroup: it is visually the
+	// last row of its group when nothing renders under it.
+	for _, it := range folded {
+		if it.Type == ItemTypeSession && it.Session.ID == "p1" && !it.IsLastInGroup {
+			t.Fatal("folded parent should be IsLastInGroup in group-a")
+		}
+	}
+
+	// Fold of a nonexistent parent is a no-op.
+	if got := titles(tree.FlattenWithParentFolds(map[string]bool{"nope": true})); got != "parent-1,child-1,child-2,plain,orphan" {
+		t.Fatalf("fold of unknown parent = %s, want parent-1,child-1,child-2,plain,orphan", got)
+	}
+
+	// The group header itself is never affected by parent folds.
+	for _, it := range folded {
+		if it.Type == ItemTypeGroup && it.Group != nil && it.Group.Path == "group-a" {
+			return
+		}
+	}
+	t.Fatal("group-a header missing from folded output")
+}

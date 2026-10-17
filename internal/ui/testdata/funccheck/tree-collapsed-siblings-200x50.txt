@@ -1,5 +1,5 @@
 ▶ ▾ alpha (4)
-   └─ ○ visible-parent claude
+   └─ ○ visible-parent claude ▾2
      └─ ○ visible-child claude
     ▸ hidden (1)
     ▾ visible (1)
