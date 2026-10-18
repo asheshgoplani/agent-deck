@@ -43,6 +43,8 @@ Options:
     	Durable hint key=value for recall (repeatable; e.g. --hint purpose="fix flaky auth test")
   -idle-timeout string
     	Auto-stop session after this duration of no tmux output (Go duration: 30m, 1h, 24h). 0 or unset = disabled
+  -ignore-budget
+    	Send even when an enforced [costs.budgets] limit is spent (for messages a person starts)
   -inherit-group
     	Place the child in the parent session's group instead of the cwd-derived group (auto-applied for git worktree children; use this to force it for non-worktree paths)
   -inherit-telegram-env

@@ -19,6 +19,10 @@ type BudgetResult struct {
 	UsedMicro  int64
 	LimitMicro int64
 	Percentage float64
+	// ResetsAt is when the window of the limit that decided a warn or stop
+	// starts over (next day, week or month in the budget timezone). Zero for
+	// a session lifetime limit, which never resets.
+	ResetsAt time.Time
 }
 
 // BudgetConfig holds budget limits in microdollars.
@@ -29,6 +33,10 @@ type BudgetConfig struct {
 	GroupLimits   map[string]int64 // group name -> daily limit in microdollars
 	SessionLimits map[string]int64 // session ID -> total lifetime limit in microdollars
 	Timezone      *time.Location   // for determining day/week/month boundaries
+	// Enforce turns the limits into a gate on agent-initiated sends and
+	// wakes ([costs.budgets] enforce = true). Without it they are shown in
+	// the dashboard only.
+	Enforce bool
 }
 
 type BudgetChecker struct {
@@ -68,6 +76,7 @@ func (b *BudgetChecker) CheckTx(tx *sql.Tx, sessionID, groupName string, groupSe
 			return BudgetResult{Action: BudgetActionStop, Reason: "budget query failed"}, err
 		}
 		r := evaluate(total, b.cfg.DailyLimit, "daily global limit exceeded")
+		r.ResetsAt = startOfDay(tz).AddDate(0, 0, 1)
 		if r.Action > worst.Action {
 			worst = r
 		}
@@ -80,6 +89,7 @@ func (b *BudgetChecker) CheckTx(tx *sql.Tx, sessionID, groupName string, groupSe
 			return BudgetResult{Action: BudgetActionStop, Reason: "budget query failed"}, err
 		}
 		r := evaluate(total, b.cfg.WeeklyLimit, "weekly global limit exceeded")
+		r.ResetsAt = startOfWeek(tz).AddDate(0, 0, 7)
 		if r.Action > worst.Action {
 			worst = r
 		}
@@ -92,18 +102,21 @@ func (b *BudgetChecker) CheckTx(tx *sql.Tx, sessionID, groupName string, groupSe
 			return BudgetResult{Action: BudgetActionStop, Reason: "budget query failed"}, err
 		}
 		r := evaluate(total, b.cfg.MonthlyLimit, "monthly global limit exceeded")
+		r.ResetsAt = startOfMonth(tz).AddDate(0, 1, 0)
 		if r.Action > worst.Action {
 			worst = r
 		}
 	}
 
-	// Group daily limit
+	// Group daily limit. The group is matched exactly: a subgroup is its
+	// own group and needs its own [costs.budgets.groups] entry.
 	if limit, ok := b.cfg.GroupLimits[groupName]; ok && limit > 0 && len(groupSessionIDs) > 0 {
 		total, err := b.store.GroupRunningTotal(tx, groupSessionIDs, startOfDay(tz))
 		if err != nil {
 			return BudgetResult{Action: BudgetActionStop, Reason: "budget query failed"}, err
 		}
 		r := evaluate(total, limit, "group daily limit exceeded")
+		r.ResetsAt = startOfDay(tz).AddDate(0, 0, 1)
 		if r.Action > worst.Action {
 			worst = r
 		}

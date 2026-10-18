@@ -47,7 +47,7 @@ func TestHermesRestartResumesHookHandlerRecordOverSampledBinding(t *testing.T) {
 	saveHermesRow(t, db, b)
 
 	// No watcher sample bound A, but its hook handler recorded A's turn.
-	if err := WriteHermesOwnedSessionID(a.ID, hermesSIDA); err != nil {
+	if err := WriteHermesOwnedSessionID(a.ID, hermesSIDA, "", true, nil); err != nil {
 		t.Fatalf("WriteHermesOwnedSessionID: %v", err)
 	}
 	a.prepareHermesResume()
@@ -61,7 +61,7 @@ func TestHermesRestartResumesHookHandlerRecordOverSampledBinding(t *testing.T) {
 	// The record is newer than a sampled binding: after a rotation the
 	// sidecar holds the new id while the sample may still show the old one.
 	a.HermesSessionID = hermesSIDB
-	if err := WriteHermesOwnedSessionID(a.ID, hermesSIDNew); err != nil {
+	if err := WriteHermesOwnedSessionID(a.ID, hermesSIDNew, "", true, nil); err != nil {
 		t.Fatalf("WriteHermesOwnedSessionID: %v", err)
 	}
 	a.prepareHermesResume()
@@ -74,7 +74,7 @@ func TestHermesFreshRestartForgetsOwnedSessionRecord(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	withTempGlobalStateDB(t)
 	a := NewInstanceWithTool("hermes-a", t.TempDir(), "hermes")
-	if err := WriteHermesOwnedSessionID(a.ID, hermesSIDA); err != nil {
+	if err := WriteHermesOwnedSessionID(a.ID, hermesSIDA, "", true, nil); err != nil {
 		t.Fatalf("WriteHermesOwnedSessionID: %v", err)
 	}
 	if got := a.hermesOwnedSessionID(); got != hermesSIDA {
@@ -88,10 +88,10 @@ func TestHermesFreshRestartForgetsOwnedSessionRecord(t *testing.T) {
 
 func TestHermesOwnedSessionRecordRejectsBadInput(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if err := WriteHermesOwnedSessionID("../escape", hermesSIDA); err == nil {
+	if err := WriteHermesOwnedSessionID("../escape", hermesSIDA, "", true, nil); err == nil {
 		t.Fatal("path-like instance id accepted")
 	}
-	if err := WriteHermesOwnedSessionID("inst-1", "garbage id"); err == nil {
+	if err := WriteHermesOwnedSessionID("inst-1", "garbage id", "", true, nil); err == nil {
 		t.Fatal("non-Hermes session id accepted")
 	}
 	if _, err := os.Stat(filepath.Join(GetHooksDir(), "inst-1"+hermesOwnedSessionSuffix)); !os.IsNotExist(err) {

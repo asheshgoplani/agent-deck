@@ -658,7 +658,7 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 	// a wedged tmux) can't pile up orphaned processes if many asks fire.
 	// --no-tag: an operator's command-center message is not a send from
 	// whatever session the web server happened to be started in.
-	args := []string{"-p", s.cfg.Profile, "session", "send", resolved, msg, "--no-wait", "--no-tag"}
+	args := commandCenterSendArgs(s.cfg.Profile, resolved, msg)
 	cmdCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, exe, args...)
@@ -757,4 +757,13 @@ func firstNonEmptyString(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// commandCenterSendArgs is the `session send` argv of a Command Center ask.
+// --no-tag: an operator's message is not a send from whatever session the
+// web server happened to be started in. --ignore-budget: an operator's
+// message is never blocked by an enforced cost budget, which gates
+// agent-initiated sends only.
+func commandCenterSendArgs(profile, target, msg string) []string {
+	return []string{"-p", profile, "session", "send", target, msg, "--no-wait", "--no-tag", "--ignore-budget"}
 }

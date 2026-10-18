@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // forbidSendChild fails the test if anything would type the message.
@@ -154,7 +156,7 @@ func TestTypeQueuedPersistsTypingBeforeTheChild(t *testing.T) {
 		}
 		return err
 	}
-	if !typeQueued("", dir, rec, "waiting", "", 0, set) {
+	if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, "waiting", "", 0, set) {
 		t.Fatal("typeQueued reported a failed write")
 	}
 	// A readiness timeout after the hand-off is not a failure: unknown.

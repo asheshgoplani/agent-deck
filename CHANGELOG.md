@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Watchers
+
+- Without `-p`, the `watcher` commands now use the same profile as every other command: `AGENTDECK_PROFILE`, then the profile inferred from `CLAUDE_CONFIG_DIR`, then `default_profile`. Before, they always used the `default` profile, so with any of those set a watcher was written to `default` and the selected profile's engine never ran it. Such a watcher now shows only with `-p default`. To move one: `agent-deck -p default watcher list` to find it, `agent-deck -p default watcher stop <name>`, move its `watcher.toml` aside, run the same `watcher create` again without `-p`, copy any hand edits back into the new `watcher.toml`, then `watcher start <name>`. The stopped row stays in `default`. `watcher help`, `install-skill`, `import` and `routes` touch no profile state and do not resolve the profile (#2740, #2746, thanks @AndreIntelas).
+
 ### Models
 
 - OpenCode's model list comes from the installed CLI (`opencode models`, no prompt, about 3s timeout, cached per binary for up to a day), merged in front of the built-in list, so new models show up in the TUI and web pickers and `launch -capabilities --json` without an Agent Deck release. A failure keeps the built-in list. `[models.<tool>] list = [...]` pins a tool's suggestions and `[models.<tool>] extra = [...]` adds IDs in front, for `claude`, `codex`, `gemini` and `opencode` (#2664, thanks @koenzhao).

@@ -273,7 +273,7 @@ func processQueueControl(profile, dir string, rec *sendqueue.Record) bool {
 	if info, err := os.Stat(path); err == nil {
 		from = info.Size()
 	}
-	if !typeQueued(profile, dir, rec, queueReleaseStatus, path, from, set) {
+	if !typeQueued(profile, dir, rec, inst, instances, queueReleaseStatus, path, from, set) {
 		return refuse("could not record the typing transition; nothing was typed")
 	}
 	result := queueReleaseResult(rec)

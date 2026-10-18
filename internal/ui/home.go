@@ -6748,6 +6748,11 @@ func (h *Home) backgroundStatusUpdate() {
 			continue
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
+				uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
+					slog.String("instance", inst.ID), slog.String("reason", reason))
+				continue
+			}
 			h.clearOnCompactSent[inst.ID] = time.Now()
 			conductorName := conductorDisplayName(inst)
 			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
@@ -8199,7 +8204,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Pick up where the process we were exec'd from left off.
 			if firstLoad {
-				h.applyRestartHandoff()
+				if cmd := h.applyRestartHandoff(); cmd != nil {
+					detectionCmds = append(detectionCmds, cmd)
+				}
 				if cmd := h.telemetryFirstLoad(); cmd != nil {
 					detectionCmds = append(detectionCmds, cmd)
 				}
@@ -8829,6 +8836,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateTimerEnsuredMsg:
 		h.handleUpdateTimerEnsured(msg)
+		return h, nil
+
+	case pathShadowMsg:
+		h.applyPathShadow(msg)
 		return h, nil
 
 	case binaryVersionProbedMsg:
@@ -14168,6 +14179,12 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 		uiLog.Warn("watcher_delivery_conductor_not_loaded", slog.String("conductor", d.Conductor))
 		return
 	}
+	budgetSessions := h.budgetSessions()
+	if reason, refused := h.agentDeliveryOverBudget(sessionByID(budgetSessions, id), budgetSessions); refused {
+		uiLog.Warn("dispatch_health_alert_budget_exceeded",
+			slog.String("tmux_session", ts.Name), slog.String("reason", reason))
+		return
+	}
 	lock, err := session.AcquireSendLock(id, conductorSendLockWait)
 	if err != nil {
 		uiLog.Warn("dispatch_health_alert_send_busy",
@@ -14181,6 +14198,58 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
+}
+
+// agentDeliveryOverBudget reports whether an enforced cost budget
+// ([costs.budgets] enforce = true) refuses an agent-initiated delivery the
+// TUI types into inst's pane itself (the heartbeat after a clear-on-compact,
+// a watcher health alert), with the reason. Group limits sum the sessions of
+// instances in inst's exact group.
+func (h *Home) agentDeliveryOverBudget(inst *session.Instance, instances []*session.Instance) (string, bool) {
+	if inst == nil || !h.costBudget.Enforced() {
+		return "", false
+	}
+	ids := []string{inst.ID}
+	for _, other := range instances {
+		if other != nil && other.ID != inst.ID && other.GroupPath == inst.GroupPath {
+			ids = append(ids, other.ID)
+		}
+	}
+	r, err := h.costBudget.CheckSend(inst.ID, inst.GroupPath, ids)
+	if err != nil || r.Action != costs.BudgetActionStop {
+		return "", false
+	}
+	return r.Describe(), true
+}
+
+// budgetSessions returns the sessions the budget gate looks at: the loaded
+// ones, or for a headless engine owner (which loads none) the ones in
+// storage. Nil without an enforced budget, so nothing is read then.
+func (h *Home) budgetSessions() []*session.Instance {
+	if !h.costBudget.Enforced() {
+		return nil
+	}
+	h.instancesMu.RLock()
+	loaded := append([]*session.Instance(nil), h.instances...)
+	h.instancesMu.RUnlock()
+	if len(loaded) > 0 || !h.headless || h.storage == nil {
+		return loaded
+	}
+	instances, _, err := h.storage.LoadWithGroups()
+	if err != nil {
+		return nil
+	}
+	return instances
+}
+
+// sessionByID finds id in instances, or nil.
+func sessionByID(instances []*session.Instance, id string) *session.Instance {
+	for _, inst := range instances {
+		if inst != nil && inst.ID == id {
+			return inst
+		}
+	}
+	return nil
 }
 
 // conductorSendLockWait bounds how long a health alert waits for another
@@ -19877,13 +19946,7 @@ func overlayAtCells(base, overlay string, row, col int) string {
 // renderPanelTitle creates a styled section title with underline
 func (h *Home) renderPanelTitle(title string, width int) string {
 	// Truncate title if it exceeds width
-	if len(title) > width {
-		if width > 3 {
-			title = title[:width-3] + "..."
-		} else {
-			title = title[:width]
-		}
-	}
+	title = truncateDisplay(title, width, "...")
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(ColorCyan).
@@ -20153,15 +20216,13 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 	content.WriteString(titleStyle.Render(config.Title))
 
 	// Subtitle - shown in full and compact modes
+	// (padding and margins take hPad*2+4 columns; a pane too narrow for a
+	// shortened subtitle leaves it out).
 	if config.Subtitle != "" && (tier != "minimal" || config.ShowSubtitleMinimal) {
-		content.WriteString("\n")
-		// Truncate subtitle if width is tight
-		subtitle := config.Subtitle
-		maxSubtitleWidth := width - hPad*2 - 4 // Account for padding and margins
-		if maxSubtitleWidth > 0 && len(subtitle) > maxSubtitleWidth {
-			subtitle = subtitle[:maxSubtitleWidth-3] + "..."
+		if subtitle, ok := fitEmptyStateText(config.Subtitle, width-hPad*2-4); ok {
+			content.WriteString("\n")
+			content.WriteString(subtitleStyle.Render(subtitle))
 		}
-		content.WriteString(subtitleStyle.Render(subtitle))
 	}
 
 	// Body - extra plain lines, same tiers as Subtitle. Rendered as one
@@ -20194,22 +20255,24 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 		if tier == "minimal" && config.ShowAllHintsMinimal {
 			hintCount = len(config.Hints)
 		}
-		hintsToShow := config.Hints[:hintCount]
-
-		if tier == "full" {
-			content.WriteString("\n\n")
-		} else {
-			content.WriteString("\n")
+		// Each hint gets the width minus padding, margins and the "• "
+		// prefix (hPad*2+6); one that cannot be shortened usefully is left out.
+		var hintsToShow []string
+		for _, hint := range config.Hints[:hintCount] {
+			if displayHint, ok := fitEmptyStateText(hint, width-hPad*2-6); ok {
+				hintsToShow = append(hintsToShow, displayHint)
+			}
 		}
 
-		for i, hint := range hintsToShow {
-			// Truncate hint if width is tight
-			displayHint := hint
-			maxHintWidth := width - hPad*2 - 6 // Account for "• " prefix and margins
-			if maxHintWidth > 0 && len(displayHint) > maxHintWidth {
-				displayHint = displayHint[:maxHintWidth-3] + "..."
+		if len(hintsToShow) > 0 {
+			if tier == "full" {
+				content.WriteString("\n\n")
+			} else {
+				content.WriteString("\n")
 			}
-			content.WriteString(hintStyle.Render("• " + displayHint))
+		}
+		for i, hint := range hintsToShow {
+			content.WriteString(hintStyle.Render("• " + hint))
 			if i < len(hintsToShow)-1 {
 				content.WriteString("\n")
 			}
@@ -22513,9 +22576,7 @@ func (h *Home) renderSessionItem(
 	worktreeBadge := ""
 	if inst.IsWorktree() && inst.WorktreeBranch != "" {
 		branch := inst.WorktreeBranch
-		if len(branch) > 15 {
-			branch = branch[:12] + "..."
-		}
+		branch = truncateDisplay(branch, 15, "...")
 		wtStyle := lipgloss.NewStyle().Foreground(ColorCyan)
 		if selected {
 			wtStyle = SessionStatusSelStyle
@@ -22548,9 +22609,7 @@ func (h *Home) renderSessionItem(
 	sshBadge := ""
 	if inst.IsSSH() {
 		host := inst.SSHHost
-		if len(host) > 20 {
-			host = host[:17] + "..."
-		}
+		host = truncateDisplay(host, 20, "...")
 		sshStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
 		if selected {
 			sshStyle = SessionStatusSelStyle
@@ -23265,9 +23324,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	titleStr := rs.Title
-	if len(titleStr) > 25 {
-		titleStr = titleStr[:22] + "..."
-	}
+	titleStr = truncateDisplay(titleStr, 25, "...")
 
 	toolStr := ""
 	if rs.Tool != "" && !h.toolBadgeHidden(rs.Tool) {

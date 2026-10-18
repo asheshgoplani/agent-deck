@@ -7,6 +7,7 @@ import "strings"
 // before migrating, so any user customization is preserved.
 func previousConductorInstructionsTemplate(template string) string {
 	template = preHarnessControlConductorInstructionsTemplate(template)
+	template = prePlainReadConductorInstructionsTemplate(template)
 	template = preNoOpNoticeRuleConductorInstructionsTemplate(template)
 	template = preBackgroundWorkConductorInstructionsTemplate(template)
 	// Issue #2469 (comms redesign): the heartbeat section gained the
@@ -56,6 +57,26 @@ fallback — together they guarantee no completion is missed whether you are bus
 // conductorBackgroundWorkGuidance is the sentence issue #2473 added to the
 // shared template's substate paragraph.
 const conductorBackgroundWorkGuidance = " `background-work` (shown as coarse status `running`) means the child's turn ended but a Workflow, background agents, shells or a Monitor it started are still in flight (`background_work` in `session show --json` names the task and its n/m progress); leave it alone, it reports back and settles to `waiting` by itself."
+
+// The conductor reads a child with a plain `session output` (no -q): only a
+// plain read is remembered as the conductor having seen the result, so the
+// inbox notice for that turn withdraws itself. Earlier templates used -q,
+// which never counts (inbox_result_read.go).
+const (
+	conductorPlainReadRow  = "agent-deck -p <PROFILE> session output <id_or_title>"
+	conductorPlainCheckCmd = "agent-deck -p <PROFILE> session output <name>"
+	conductorPlainReadDoc  = " | Get the last response (plain read: the inbox notice for that turn withdraws itself; `-q` only for scripts that grep it) |"
+	conductorQuietReadDoc  = " | Get the last response (raw text, perfect for reading) |"
+)
+
+// prePlainReadConductorInstructionsTemplate reconstructs the template as it
+// was before the reads dropped -q, so a conductor file written then is
+// recognised as generated and migrated. Per-name templates carry neither
+// row: a no-op there.
+func prePlainReadConductorInstructionsTemplate(template string) string {
+	template = strings.Replace(template, "`"+conductorPlainReadRow+"`"+conductorPlainReadDoc, "`"+conductorPlainReadRow+" -q`"+conductorQuietReadDoc, 1)
+	return strings.Replace(template, "`"+conductorPlainCheckCmd+"` and summarize", "`"+conductorPlainCheckCmd+" -q` and summarize", 1)
+}
 
 // conductorNoOpNoticeRule is the paragraph added to the shared template
 // after v1.16.29: no reply to a notice that needs no action (prime-agent's
@@ -149,15 +170,19 @@ const (
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
 	var gens []string
-	// Newest first: a release with the no-op notice rule but without the
-	// /cmd quick command (the two landed separately), then what
-	// v1.16.25-v1.16.29 shipped (current minus both). Every older generation
-	// is reconstructed from the latter.
-	noCmd := preHarnessControlConductorInstructionsTemplate(template)
-	if noCmd != template && preNoOpNoticeRuleConductorInstructionsTemplate(noCmd) != noCmd {
+	// Newest first: main before the /cmd quick command, then the release
+	// with the no-op notice rule whose conductor reads still used -q, then
+	// what v1.16.25-v1.16.29 shipped (current minus all three). Every older
+	// generation is reconstructed from the latter.
+	if noCmd := preHarnessControlConductorInstructionsTemplate(template); noCmd != template {
 		gens = append(gens, noCmd)
+		template = noCmd
 	}
-	if shipped := preNoOpNoticeRuleConductorInstructionsTemplate(noCmd); shipped != template {
+	if quiet := prePlainReadConductorInstructionsTemplate(template); quiet != template {
+		gens = append(gens, quiet)
+		template = quiet
+	}
+	if shipped := preNoOpNoticeRuleConductorInstructionsTemplate(template); shipped != template {
 		gens = append(gens, shipped)
 		template = shipped
 	}
@@ -209,7 +234,7 @@ Each conductor has its own identity in its subdirectory and its own policy in PO
 ### Reading Session Output
 | Command | Description |
 |---------|-------------|
-| ` + "`" + `agent-deck -p <PROFILE> session output <id_or_title> -q` + "`" + ` | Get the last response (raw text, perfect for reading) |
+| ` + "`" + conductorPlainReadRow + "`" + ` | Get the last response (plain read: the inbox notice for that turn withdraws itself; ` + "`" + `-q` + "`" + ` only for scripts that grep it) |
 
 ### Sending Messages to Sessions
 | Command | Description |
@@ -365,7 +390,7 @@ You may receive these special commands (from remote channels or the CLI):
 |---------|------------|
 | ` + "`" + `/status` + "`" + ` | Run ` + "`" + `agent-deck -p <PROFILE> status --json` + "`" + ` and format a brief summary |
 | ` + "`" + `/sessions` + "`" + ` | Run ` + "`" + `agent-deck -p <PROFILE> list --json` + "`" + ` and list active sessions with status |
-| ` + "`" + `/check <name>` + "`" + ` | Run ` + "`" + `agent-deck -p <PROFILE> session output <name> -q` + "`" + ` and summarize what it's doing |
+| ` + "`" + `/check <name>` + "`" + ` | Run ` + "`" + conductorPlainCheckCmd + "`" + ` and summarize what it's doing |
 | ` + "`" + `/send <name> <msg>` + "`" + ` | Forward the message to that session via ` + "`" + `agent-deck -p <PROFILE> session send` + "`" + ` |
 ` + conductorHarnessControlQuickCommandRow + `| ` + "`" + `/help` + "`" + ` | List available commands |
 

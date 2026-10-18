@@ -214,6 +214,9 @@ type InstanceData struct {
 	// HermesSessionID mirrors Instance.HermesSessionID (issue #2582), stored in
 	// the tool_data extras zone (hermes_session_persist.go).
 	HermesSessionID string `json:"hermes_session_id,omitempty"`
+	// HermesDetectedAt is when the binding was recorded (tool_data
+	// hermes_detected_at); restart compares it with the hook record.
+	HermesDetectedAt time.Time `json:"-"`
 }
 
 // GroupData represents serializable group data
@@ -1362,6 +1365,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
+			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1507,6 +1511,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
+			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1808,6 +1813,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Favorite:                     instData.Favorite,
 			DeepSeekTask:                 instData.DeepSeekTask,
 			HermesSessionID:              instData.HermesSessionID,
+			hermesBoundAt:                instData.HermesDetectedAt,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,

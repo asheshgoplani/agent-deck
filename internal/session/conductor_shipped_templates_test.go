@@ -176,13 +176,13 @@ func TestShippedV11628SharedTemplateMigratesToHarnessControl(t *testing.T) {
 			}
 			oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
 			shipped := -1
-			for i, g := range oldGenerations[:2] {
+			for i, g := range oldGenerations[:3] {
 				if fmtHash(g) == v11628Shared {
 					shipped = i
 				}
 			}
 			if shipped < 0 {
-				t.Fatalf("none of the two newest reconstructed generations is what v1.16.28 shipped %s", v11628Shared)
+				t.Fatalf("none of the three newest reconstructed generations is what v1.16.28 shipped %s", v11628Shared)
 			}
 			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)
 			if err := os.WriteFile(path, []byte(oldGenerations[shipped]), 0o644); err != nil {

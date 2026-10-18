@@ -1,7 +1,9 @@
 package watcher
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -95,6 +97,20 @@ type adapterEntry struct {
 	watcherID string
 	tracker   *HealthTracker
 	cancel    context.CancelFunc
+	// done closes when the entry's runAdapter goroutine returns; nil while
+	// none was started (a failed Setup).
+	done chan struct{}
+
+	// mu serialises a health probe with the teardown of an entry removed
+	// while the engine runs (RemoveAdapter), so a removed adapter is never
+	// probed after its Teardown, and guards removed and listenErr.
+	mu sync.Mutex
+	// removed is set by RemoveAdapter: the health loop no longer reports
+	// the entry.
+	removed bool
+	// listenErr is why the adapter's Listen loop ended on its own (a busy
+	// port, say); runAdapter sets it before done closes.
+	listenErr string
 
 	// setupOK is true once Setup returned nil. An adapter whose Setup failed is
 	// half-constructed — NtfyAdapter and SlackAdapter, for instance, only build
@@ -103,11 +119,11 @@ type adapterEntry struct {
 	// immediately by setupAdapter, so Stop only tears down entries that are
 	// still holding a successful Setup.
 	//
-	// setupAdapter is the only writer, and Start calls it before healthLoop is
-	// launched, so the later reads are race-free. Stop must keep it that way:
-	// its teardown pass runs after cancel() but before wg.Wait() returns, so
-	// healthLoop may still be reading this field, and stopOnce — not clearing
-	// the flag — is what makes that pass run at most once.
+	// setupAdapter sets it before the entry is in the adapter list
+	// healthLoop reads (Start runs before healthLoop is launched; AddAdapter
+	// holds adaptersMu). Afterwards it is read and cleared under mu: Stop and
+	// RemoveAdapter clear it as they tear the adapter down, so whichever runs
+	// first tears it down and the other skips it.
 	setupOK bool
 }
 
@@ -115,11 +131,26 @@ type adapterEntry struct {
 // a single-writer goroutine serializes DB writes via a buffered channel, dedup is
 // handled by INSERT OR IGNORE, and the router determines event routing.
 //
-// Lifecycle: NewEngine -> RegisterAdapter (1..N) -> Start -> Stop.
+// Lifecycle: NewEngine -> RegisterAdapter (1..N) -> Start -> Stop. While it
+// runs, AddAdapter and RemoveAdapter change its adapters one at a time
+// (#2739), and ReloadRoutes re-reads clients.json.
 type Engine struct {
-	cfg      EngineConfig
-	adapters []adapterEntry
-	bus      *events.Bus
+	cfg EngineConfig
+	bus *events.Bus
+
+	// adaptersMu guards adapters, started and stopping: the health loop
+	// reads the list while the engine's host adds and removes adapters.
+	adaptersMu sync.Mutex
+	adapters   []*adapterEntry
+	started    bool
+	stopping   bool
+
+	// routesSeen is the clients.json content ReloadRoutes last read, and
+	// routesErr why it did not parse (the router keeps the routes it had);
+	// routesMu guards both.
+	routesMu   sync.Mutex
+	routesSeen []byte
+	routesErr  error
 
 	// eventCh is the internal channel from adapter goroutines to the single-writer.
 	// Capacity 64 per D-12 / T-13-06.
@@ -213,7 +244,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 
 	return &Engine{
 		cfg:           cfg,
-		adapters:      make([]adapterEntry, 0),
+		adapters:      make([]*adapterEntry, 0),
 		eventCh:       make(chan eventEnvelope, 64),
 		routedEventCh: make(chan Event, 64),
 		healthCh:      make(chan HealthState, 16),
@@ -231,13 +262,160 @@ func NewEngine(cfg EngineConfig) *Engine {
 // watcherID is the statedb watcher ID used for SaveWatcherEvent persistence.
 // maxSilenceMinutes is the threshold for silence detection in the health tracker.
 func (e *Engine) RegisterAdapter(watcherID string, adapter WatcherAdapter, config AdapterConfig, maxSilenceMinutes int) {
-	tracker := NewHealthTracker(config.Name, maxSilenceMinutes)
-	e.adapters = append(e.adapters, adapterEntry{
+	e.adaptersMu.Lock()
+	defer e.adaptersMu.Unlock()
+	e.adapters = append(e.adapters, e.newEntry(watcherID, adapter, config, maxSilenceMinutes))
+}
+
+func (e *Engine) newEntry(watcherID string, adapter WatcherAdapter, config AdapterConfig, maxSilenceMinutes int) *adapterEntry {
+	return &adapterEntry{
 		adapter:   newRecoveredAdapter(adapter, config, e.log),
 		config:    config,
 		watcherID: watcherID,
-		tracker:   tracker,
-	})
+		tracker:   NewHealthTracker(config.Name, maxSilenceMinutes),
+	}
+}
+
+// ErrEngineStopped is returned by AddAdapter once Stop has begun.
+var ErrEngineStopped = errors.New("watcher engine stopped")
+
+// AddAdapter adds one adapter to a running engine (#2739): it runs Setup and
+// starts the adapter the way Start does. A watcher whose Setup fails stays
+// registered, unhealthy, as it would at Start, and AddAdapter returns the
+// Setup error. Before Start it is RegisterAdapter. A watcher id the engine
+// already runs is refused: RemoveAdapter it first.
+func (e *Engine) AddAdapter(watcherID string, adapter WatcherAdapter, config AdapterConfig, maxSilenceMinutes int) error {
+	e.adaptersMu.Lock()
+	defer e.adaptersMu.Unlock()
+	if e.stopping {
+		return ErrEngineStopped
+	}
+	for _, entry := range e.adapters {
+		if entry.watcherID == watcherID {
+			return fmt.Errorf("watcher %s already has an adapter", config.Name)
+		}
+	}
+	entry := e.newEntry(watcherID, adapter, config, maxSilenceMinutes)
+	e.adapters = append(e.adapters, entry)
+	if !e.started {
+		return nil
+	}
+	if err := e.setupAdapter(entry); err != nil {
+		return err
+	}
+	e.launchAdapter(entry)
+	return nil
+}
+
+// RemoveAdapter stops and removes the adapter of watcherID from a running
+// engine (#2739) and reports whether there was one. It returns once the
+// adapter is torn down, so a replacement can bind the same port. Events the
+// adapter had already produced still reach the writer: only Stop discards
+// them. Adapters of other watchers are not touched.
+func (e *Engine) RemoveAdapter(watcherID string) bool {
+	e.adaptersMu.Lock()
+	var entry *adapterEntry
+	for i, cand := range e.adapters {
+		if cand.watcherID == watcherID {
+			entry = cand
+			e.adapters = append(e.adapters[:i:i], e.adapters[i+1:]...)
+			break
+		}
+	}
+	e.adaptersMu.Unlock()
+	if entry == nil {
+		return false
+	}
+	if entry.cancel != nil {
+		entry.cancel()
+	}
+	if entry.done != nil {
+		<-entry.done
+	}
+	entry.mu.Lock()
+	entry.removed = true
+	if entry.setupOK {
+		entry.setupOK = false
+		e.teardownAdapter(entry, "removed")
+	}
+	entry.mu.Unlock()
+	return true
+}
+
+// AdapterInfo describes one adapter of the engine (Adapters).
+type AdapterInfo struct {
+	WatcherID string
+	Config    AdapterConfig
+	// Running is false when the adapter's Setup failed or its Listen loop
+	// has ended; ListenError is then why Listen ended, when it says.
+	Running     bool
+	ListenError string
+}
+
+// Adapters returns the engine's adapters, in registration order.
+func (e *Engine) Adapters() []AdapterInfo {
+	e.adaptersMu.Lock()
+	entries := append([]*adapterEntry(nil), e.adapters...)
+	e.adaptersMu.Unlock()
+	out := make([]AdapterInfo, 0, len(entries))
+	for _, entry := range entries {
+		entry.mu.Lock()
+		running, listenErr := entry.setupOK, entry.listenErr
+		entry.mu.Unlock()
+		if running && entry.done != nil {
+			select {
+			case <-entry.done:
+				running = false
+			default:
+			}
+		}
+		out = append(out, AdapterInfo{WatcherID: entry.watcherID, Config: entry.config, Running: running, ListenError: listenErr})
+	}
+	return out
+}
+
+// ReloadRoutes re-reads clients.json and, when it changed since it was last
+// read, swaps the router's routes (#2739). A missing file is no routes. An
+// empty file is taken for one being written and changes nothing. A file that
+// does not parse leaves the routes as they were, and its error is returned on
+// every call until the file changes. Without a router it does nothing.
+func (e *Engine) ReloadRoutes() (bool, error) {
+	if e.cfg.Router == nil {
+		return false, nil
+	}
+	e.routesMu.Lock()
+	defer e.routesMu.Unlock()
+	data, err := os.ReadFile(e.cfg.ClientsPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		data = nil
+	case err != nil:
+		return false, err
+	case len(data) == 0:
+		return false, nil
+	}
+	if e.routesSeen != nil && bytes.Equal(data, e.routesSeen) || e.routesSeen == nil && data == nil {
+		return false, e.routesErr
+	}
+	clients, err := parseClients(data, e.cfg.ClientsPath)
+	e.routesSeen, e.routesErr = data, err
+	if err != nil {
+		return false, err
+	}
+	e.cfg.Router.Reload(clients)
+	return true, nil
+}
+
+// parseClients parses clients.json content; nil content is no routes.
+func parseClients(data []byte, path string) (map[string]ClientEntry, error) {
+	var clients map[string]ClientEntry
+	if data == nil {
+		return clients, nil
+	}
+	if err := json.Unmarshal(data, &clients); err != nil {
+		return nil, fmt.Errorf("parse clients.json at %q: %w", path, err)
+	}
+	return clients, nil
 }
 
 // Start begins the event pipeline. For each registered adapter, it calls Setup,
@@ -254,23 +432,23 @@ func (e *Engine) Start() error {
 		e.log.Warn("watcher_scaffold_failed", slog.String("error", err.Error()))
 	}
 
-	for i := range e.adapters {
-		entry := &e.adapters[i]
+	// The router's baseline for ReloadRoutes: the clients.json it was
+	// loaded from just before Start. One that does not parse left the
+	// router empty; ReloadRoutes reports it until it changes.
+	if data, err := os.ReadFile(e.cfg.ClientsPath); err == nil && len(data) > 0 {
+		_, perr := parseClients(data, e.cfg.ClientsPath)
+		e.routesSeen, e.routesErr = data, perr
+	}
 
-		if !e.setupAdapter(entry) {
+	e.adaptersMu.Lock()
+	for _, entry := range e.adapters {
+		if e.setupAdapter(entry) != nil {
 			continue
 		}
-
-		// #nosec G118 -- adapterCancel is preserved on entry.cancel; the parent
-		// context e.ctx is canceled by Stop() (see line 594), which propagates
-		// to all derived adapter contexts. Explicit per-entry cancel is reserved
-		// for selective restart in future hot-reload work.
-		adapterCtx, adapterCancel := context.WithCancel(e.ctx)
-		entry.cancel = adapterCancel
-
-		e.wg.Add(1)
-		go e.runAdapter(adapterCtx, entry)
+		e.launchAdapter(entry)
 	}
+	e.started = true
+	e.adaptersMu.Unlock()
 
 	// Single-writer goroutine serializes all DB writes (D-13).
 	e.wg.Add(1)
@@ -299,7 +477,22 @@ func (e *Engine) Start() error {
 	return nil
 }
 
-// setupAdapter runs Setup for one entry and reports whether it succeeded.
+// launchAdapter starts the Listen loop of an entry whose Setup succeeded.
+// The caller holds adaptersMu, so Stop's snapshot sees either the entry with
+// its goroutine counted in wg, or neither.
+func (e *Engine) launchAdapter(entry *adapterEntry) {
+	// #nosec G118 -- adapterCancel is preserved on entry.cancel, which
+	// RemoveAdapter calls; the parent context e.ctx is canceled by Stop(),
+	// which propagates to all derived adapter contexts.
+	adapterCtx, adapterCancel := context.WithCancel(e.ctx)
+	entry.cancel = adapterCancel
+	entry.done = make(chan struct{})
+
+	e.wg.Add(1)
+	go e.runAdapter(adapterCtx, entry)
+}
+
+// setupAdapter runs Setup for one entry and returns its error, nil on success.
 //
 // A failed Setup is cleaned up here, immediately and exactly once for that
 // attempt: Setup is not transactional, so an adapter can bind a listener, open
@@ -312,7 +505,7 @@ func (e *Engine) Start() error {
 // Calling setupAdapter again on the same entry is a retry: each failed attempt
 // gets its own cleanup, and a later success leaves exactly one live Setup for
 // Stop to release.
-func (e *Engine) setupAdapter(entry *adapterEntry) bool {
+func (e *Engine) setupAdapter(entry *adapterEntry) error {
 	entry.setupOK = false
 	entry.config.ResumeSince = e.resumeSince(entry.config)
 
@@ -324,11 +517,11 @@ func (e *Engine) setupAdapter(entry *adapterEntry) bool {
 		)
 		entry.tracker.SetAdapterHealth(false)
 		e.teardownAdapter(entry, "setup_failed")
-		return false
+		return err
 	}
 
 	entry.setupOK = true
-	return true
+	return nil
 }
 
 // teardownAdapter calls Teardown once and contains anything it throws. A
@@ -361,6 +554,7 @@ func (e *Engine) teardownAdapter(entry *adapterEntry, reason string) {
 // Events are wrapped in envelopes and sent to the single-writer via eventCh.
 func (e *Engine) runAdapter(ctx context.Context, entry *adapterEntry) {
 	defer e.wg.Done()
+	defer close(entry.done)
 
 	// Create an intermediary channel for the adapter to send events to.
 	// We wrap each event in an envelope before forwarding to the engine's eventCh.
@@ -382,9 +576,13 @@ func (e *Engine) runAdapter(ctx context.Context, entry *adapterEntry) {
 			// the adapter (T-13-06): once ctx is done the remaining events are
 			// discarded unpersisted, and the persisted cursor, which only the
 			// writer advances, makes the next start fetch them again.
+			// Removing this one adapter (RemoveAdapter, ctx done) is not a
+			// stop: the writer still runs, so what the adapter produced
+			// before it stopped is handed on, a webhook's accepted events
+			// included (#2739).
 			select {
 			case e.eventCh <- env:
-			case <-ctx.Done():
+			case <-e.ctx.Done():
 				e.log.Debug("event_discarded_on_stop",
 					slog.String("watcher", entry.config.Name),
 					slog.String("sender", evt.Sender),
@@ -403,6 +601,9 @@ func (e *Engine) runAdapter(ctx context.Context, entry *adapterEntry) {
 			slog.String("error", err.Error()),
 		)
 		entry.tracker.RecordError()
+		entry.mu.Lock()
+		entry.listenErr = err.Error()
+		entry.mu.Unlock()
 	}
 }
 
@@ -1034,13 +1235,16 @@ func (e *Engine) healthLoop() {
 		select {
 		case <-ticker.C:
 			pending, pendingErr := e.pendingDeliveries()
-			for i := range e.adapters {
-				entry := &e.adapters[i]
-
+			e.adaptersMu.Lock()
+			entries := append([]*adapterEntry(nil), e.adapters...)
+			e.adaptersMu.Unlock()
+			for _, entry := range entries {
 				// Adapters whose Setup failed are already marked unhealthy in
 				// Start; probing them would call into a half-constructed adapter
 				// and take the whole process down (#1886). Still emit their state
-				// so the TUI keeps reporting the watcher as errored.
+				// so the TUI keeps reporting the watcher as errored. An adapter
+				// removed meanwhile is torn down: skip it.
+				entry.mu.Lock()
 				if entry.setupOK {
 					if err := entry.adapter.HealthCheck(); err != nil {
 						entry.tracker.SetAdapterHealth(false)
@@ -1048,6 +1252,11 @@ func (e *Engine) healthLoop() {
 					} else {
 						entry.tracker.SetAdapterHealth(true)
 					}
+				}
+				removed := entry.removed
+				entry.mu.Unlock()
+				if removed {
+					continue
 				}
 
 				state := entry.tracker.Check()
@@ -1097,21 +1306,27 @@ func (e *Engine) pendingDeliveries() (map[string][]PendingDelivery, error) {
 // times — the close happens at most once via stopOnce.
 func (e *Engine) Stop() {
 	e.stopOnce.Do(func() {
+		// No adapter is added from here on (AddAdapter checks stopping).
+		e.adaptersMu.Lock()
+		e.stopping = true
+		entries := append([]*adapterEntry(nil), e.adapters...)
+		e.adaptersMu.Unlock()
+
 		// Cancel root context, which propagates to all derived adapter contexts.
 		e.cancel()
 
 		// Best-effort teardown of every adapter still holding a successful Setup.
 		// Entries whose Setup failed were already torn down by setupAdapter at
 		// the moment they failed, so skipping them here is what makes cleanup
-		// exactly-once rather than twice (#1886). stopOnce keeps a second Stop
-		// from repeating this pass — this loop only reads setupOK, because
-		// healthLoop may still be reading it until wg.Wait() below returns.
-		for i := range e.adapters {
-			entry := &e.adapters[i]
-			if !entry.setupOK {
-				continue
+		// exactly-once rather than twice (#1886); clearing setupOK under the
+		// entry's lock does the same against a RemoveAdapter running now.
+		for _, entry := range entries {
+			entry.mu.Lock()
+			if entry.setupOK {
+				entry.setupOK = false
+				e.teardownAdapter(entry, "stop")
 			}
-			e.teardownAdapter(entry, "stop")
+			entry.mu.Unlock()
 		}
 
 		// Wait for all goroutines (adapters + writer + health + triage) to exit.

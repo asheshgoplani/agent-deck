@@ -78,9 +78,7 @@ func (d costDashboard) View() string {
 		if title == "" {
 			title = sc.SessionID
 		}
-		if len(title) > 35 {
-			title = title[:32] + "..."
-		}
+		title = truncateDisplay(title, 35, "...")
 		b.WriteString(fmt.Sprintf("  %d. %-35s %s  (%d events)\n",
 			i+1, title,
 			valueStyle.Render(costs.FormatUSD(sc.CostMicrodollars)),
