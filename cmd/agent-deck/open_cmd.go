@@ -19,7 +19,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>] [--profile <panel profile>] [--wait <duration>]"
+const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>] [--browser-profile <name>] [--wait <duration>]"
 const openAckTimeout = 3 * time.Second
 const openQueuedMessage = "Queued for AgentDeck: it opens when the app is connected"
 
@@ -30,18 +30,20 @@ const openCommitTimeout = 10 * time.Second
 
 // MacappOpenRequest is carried in the existing profile event bus. The app
 // echoes the frame event_id as open_event_id with opened=true after display.
-// RequestID lets the app drop a request it already handled (for example one
-// replayed from a saved cursor); Profile names an optional Browser panel
-// profile in the app.
+// RequestID (random hex, never caller-supplied) is an extra hint for the app
+// to drop a request it already handled; event_id stays the dedupe key, and
+// older CLIs send no request_id. BrowserProfile names an optional Browser
+// panel profile in the app. It is not the agent-deck profile (-p/--profile,
+// and the profile= query of the launch link).
 type MacappOpenRequest struct {
-	EventID     string `json:"-"`
-	SessionID   string `json:"-"`
-	Host        string `json:"host"`
-	Path        string `json:"path,omitempty"`
-	URL         string `json:"url,omitempty"`
-	RequestedAt string `json:"requested_at"`
-	RequestID   string `json:"request_id"`
-	Profile     string `json:"profile,omitempty"`
+	EventID        string `json:"-"`
+	SessionID      string `json:"-"`
+	Host           string `json:"host"`
+	Path           string `json:"path,omitempty"`
+	URL            string `json:"url,omitempty"`
+	RequestedAt    string `json:"requested_at"`
+	RequestID      string `json:"request_id"`
+	BrowserProfile string `json:"browser_profile,omitempty"`
 }
 
 func handleOpen(profile string, args []string) {
@@ -55,8 +57,8 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("open", flag.ContinueOnError)
 	fs.SetOutput(helpOutput(args, out, errOut))
 	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID)")
-	panelProfile := fs.String("profile", "", "Browser panel profile in the app (optional)")
-	wait := fs.Duration("wait", openAckTimeout, "how long to wait for the app to acknowledge before reporting Queued")
+	browserProfile := fs.String("browser-profile", "", "Browser panel profile in the app (optional; letters, digits, '.', '_', '-', at most 64, no leading '.')")
+	wait := fs.Duration("wait", openAckTimeout, "how long to wait for the app to acknowledge before reporting Queued (at most 2m0s)")
 	fs.Usage = func() { fmt.Fprintln(fs.Output(), openUsage); fs.PrintDefaults() }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -70,8 +72,11 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	if *wait < 0 {
 		return errors.New("--wait must not be negative")
 	}
-	if strings.ContainsAny(*panelProfile, "\x00\r\n") {
-		return errors.New("--profile must not contain control characters")
+	if *wait > openMaxWait {
+		return fmt.Errorf("--wait must be at most %s", openMaxWait)
+	}
+	if *browserProfile != "" && !validBrowserProfileName(*browserProfile) {
+		return fmt.Errorf("--browser-profile %q: use letters, digits, '.', '_' and '-' (at most %d, no leading '.')", truncateForError(*browserProfile), browserProfileMaxLen)
 	}
 	sid, err := openSessionIdentifier(*identifier, os.Getenv("AGENTDECK_INSTANCE_ID"))
 	if err != nil {
@@ -89,7 +94,7 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	if err != nil {
 		return err
 	}
-	req.Profile = *panelProfile
+	req.BrowserProfile = *browserProfile
 	bus := events.OpenProfile(profile)
 	defer bus.Close()
 	acknowledged, err := publishOpenRequest(bus, req, *wait, func(req MacappOpenRequest) { launchLocalMacapp(profile, req) })
@@ -276,4 +281,33 @@ func macappOpenLink(profile string, req MacappOpenRequest) string {
 		q.Set("url", req.URL)
 	}
 	return "agentdeck://open?" + q.Encode()
+}
+
+// openMaxWait caps --wait: the request stays queued for a later app anyway.
+const openMaxWait = 120 * time.Second
+
+// browserProfileMaxLen caps a Browser panel profile name.
+const browserProfileMaxLen = 64
+
+// validBrowserProfileName is the plain-name rule for --browser-profile:
+// [A-Za-z0-9._-], no leading '.', at most browserProfileMaxLen bytes.
+func validBrowserProfileName(name string) bool {
+	if name == "" || len(name) > browserProfileMaxLen || name[0] == '.' {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// truncateForError keeps a refused value short in the error message.
+func truncateForError(s string) string {
+	if len(s) > 80 {
+		return s[:80] + "..."
+	}
+	return s
 }

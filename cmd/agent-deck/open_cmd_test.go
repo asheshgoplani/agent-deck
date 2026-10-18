@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -331,8 +332,9 @@ func TestOpenPublishBuiltinsWithoutPluginGate(t *testing.T) {
 	}
 }
 
-// T1: the open frame carries a fresh request_id and the optional panel
-// profile, and the ack still matches on open_event_id alone.
+// T1: the open frame carries a fresh request_id (random hex) and the
+// optional Browser panel profile as browser_profile, and the ack still
+// matches on open_event_id alone.
 func TestOpenFrameRequestIDProfileAndAck(t *testing.T) {
 	bus, err := events.Open(t.TempDir())
 	if err != nil {
@@ -358,10 +360,10 @@ func TestOpenFrameRequestIDProfileAndAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.RequestID == "" || req.RequestID == other.RequestID {
+	if req.RequestID == "" || req.RequestID == other.RequestID || !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(req.RequestID) {
 		t.Fatalf("request ids: %q %q", req.RequestID, other.RequestID)
 	}
-	req.Profile = "Research"
+	req.BrowserProfile = "Research"
 	seen := make(chan events.Frame, 1)
 	go func() {
 		for frame := range sub.Frames() {
@@ -383,18 +385,18 @@ func TestOpenFrameRequestIDProfileAndAck(t *testing.T) {
 	if err := json.Unmarshal(frame.Data, &data); err != nil {
 		t.Fatal(err)
 	}
-	if data["request_id"] != req.RequestID || data["profile"] != "Research" || data["url"] != "https://example.com/a" || len(data) != 5 {
+	if data["request_id"] != req.RequestID || data["browser_profile"] != "Research" || data["profile"] != "" || data["url"] != "https://example.com/a" || len(data) != 5 {
 		t.Fatalf("frame data: %s", frame.Data)
 	}
 }
 
-// T1 (CLI): --profile lands in the frame, --wait bounds the ack wait, and a
-// negative --wait or a control character in --profile is refused unqueued.
+// T1 (CLI): --browser-profile lands in the frame as browser_profile, and a
+// bad --wait or --browser-profile is refused unqueued.
 func TestOpenCLIProfileAndWaitFlags(t *testing.T) {
 	home := t.TempDir()
 	id := addOpenTestSession(t, home, "Profile writer")
 	env := []string{"AGENTDECK_INSTANCE_ID=" + id, "SSH_CONNECTION=fake-remote 1 2 3"}
-	stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "open", "https://example.com/p", "--profile", "Research", "--wait", "200ms")
+	stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "open", "https://example.com/p", "--browser-profile", "Research", "--wait", "200ms")
 	if code != 0 || strings.TrimSpace(stdout) != openQueuedMessage {
 		t.Fatalf("open: exit=%d %q %q", code, stdout, stderr)
 	}
@@ -422,19 +424,79 @@ func TestOpenCLIProfileAndWaitFlags(t *testing.T) {
 			break
 		}
 	}
-	if data["profile"] != "Research" || data["request_id"] == "" {
+	if data["browser_profile"] != "Research" || data["request_id"] == "" {
 		t.Fatalf("frame data: %v", data)
 	}
 	for _, args := range [][]string{
 		{"open", "https://example.com/p", "--wait", "-1s"},
-		{"open", "https://example.com/p", "--profile", "a\nb"},
+		{"open", "https://example.com/p", "--wait", "121s"},
+		{"open", "https://example.com/p", "--browser-profile", "a\nb"},
+		{"open", "https://example.com/p", "--browser-profile", "a\tb"},
+		{"open", "https://example.com/p", "--browser-profile", "a\x1bb"},
+		{"open", "https://example.com/p", "--browser-profile", "a\x7fb"},
+		{"open", "https://example.com/p", "--browser-profile", "../../etc"},
+		{"open", "https://example.com/p", "--browser-profile", ".hidden"},
+		{"open", "https://example.com/p", "--browser-profile", "a b"},
+		{"open", "https://example.com/p", "--browser-profile", strings.Repeat("a", 65)},
+		{"open", "https://example.com/p", "--browser-profile", strings.Repeat("a", 100000)},
+		// --profile is the global agent-deck profile, never the panel profile.
+		{"open", "https://example.com/p", "--profile", "Research"},
 	} {
 		stdout, stderr, code := runAgentDeckEnv(t, home, "", env, args...)
 		if code == 0 || strings.Contains(stdout, "Queued") {
 			t.Fatalf("%q accepted: exit=%d %q %q", args, code, stdout, stderr)
 		}
 	}
+	if !strings.Contains(func() string {
+		_, e, _ := runAgentDeckEnv(t, home, "", env, "open", "https://example.com/p", "--wait", "121s")
+		return e
+	}(), "at most 2m0s") {
+		t.Fatal("--wait over the cap must say the limit")
+	}
+	for _, ok := range []string{"Research", "work-2", "a.b_c", strings.Repeat("a", 64)} {
+		if !validBrowserProfileName(ok) {
+			t.Fatalf("%q refused", ok)
+		}
+	}
 	if got := openTestBusDir(t, home).Kinds[events.KindMacappOpen]; got != 1 {
 		t.Fatalf("refused requests were queued: %d", got)
+	}
+}
+
+// T1: --wait bounds the acknowledgment wait, both in publishOpenRequest and
+// through the CLI flag (no app answers here).
+func TestOpenWaitBoundsTheAckWait(t *testing.T) {
+	bus, err := events.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	req, err := newOpenRequest("s", "https://example.com/w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	ack, err := publishOpenRequest(bus, req, 300*time.Millisecond, nil)
+	if elapsed := time.Since(start); err != nil || ack || elapsed < 300*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("ack=%v err=%v after %s, want Queued after ~300ms", ack, err, elapsed)
+	}
+
+	home := t.TempDir()
+	id := addOpenTestSession(t, home, "Wait bound")
+	env := []string{"AGENTDECK_INSTANCE_ID=" + id, "SSH_CONNECTION=fake-remote 1 2 3"}
+	for _, c := range []struct {
+		wait     string
+		min, max time.Duration
+	}{
+		{"0", 0, openAckTimeout - 500*time.Millisecond},
+		{"1500ms", 1500 * time.Millisecond, openAckTimeout + 5*time.Second},
+		{"5s", 5 * time.Second, 15 * time.Second},
+	} {
+		start := time.Now()
+		stdout, stderr, code := runAgentDeckEnv(t, home, "", env, "open", "https://example.com/w", "--wait", c.wait)
+		elapsed := time.Since(start)
+		if code != 0 || strings.TrimSpace(stdout) != openQueuedMessage || elapsed < c.min || elapsed > c.max {
+			t.Fatalf("--wait %s: exit=%d %q %q after %s, want %s..%s", c.wait, code, stdout, stderr, elapsed, c.min, c.max)
+		}
 	}
 }
