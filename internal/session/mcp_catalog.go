@@ -225,7 +225,9 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 
 	if pluginPinClaudeProfile != "" {
 		if _, err := RefreshStalePluginPins(mcpFile, []string{pluginPinClaudeProfile}); err != nil {
-			mcpCatLog.Warn("plugin_pin_refresh_failed", "path", mcpFile, "error", err)
+			mcpCatLog.Warn("plugin_pin_refresh_failed",
+				slog.String("path", logging.SanitizeValue(mcpFile)),
+				slog.String("error", logging.SanitizeValue(err.Error())))
 		}
 	}
 

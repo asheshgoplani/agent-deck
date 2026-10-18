@@ -379,3 +379,31 @@ func TestWriteFileWithin_AllowsPathsInsideRoot(t *testing.T) {
 		t.Fatalf("new nested file: %v", err)
 	}
 }
+
+// A dangling symlink in the middle of the path is refused by the check itself,
+// whether it points inside or outside root; nothing is created at its target.
+func TestWriteFileWithin_RefusesDanglingDirLink(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, dest := range map[string]string{
+		"out": filepath.Join(tmp, "elsewhere", "made"),
+		"in":  filepath.Join(root, "later"),
+	} {
+		if err := os.Symlink(dest, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, name, "f.json")
+		if err := atomicfile.CheckWithin(root, path); err == nil || !strings.Contains(err.Error(), "missing path") {
+			t.Errorf("%s: CheckWithin = %v, want the dangling-link refusal", name, err)
+		}
+		if err := atomicfile.WriteFileWithin(root, path, []byte("x"), 0o600); err == nil {
+			t.Errorf("%s: WriteFileWithin succeeded through a dangling link", name)
+		}
+		if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+			t.Errorf("%s: created %s (err %v)", name, dest, err)
+		}
+	}
+}
