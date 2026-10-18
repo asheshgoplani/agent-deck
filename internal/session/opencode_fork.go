@@ -122,26 +122,19 @@ func (i *Instance) openCodeForkBinary() string {
 	return i.openCodePersistentCommand()
 }
 
-// finishOpenCodeForkViaService moves a worktree fork and sets its title before
-// publishing the child. The caller removes the child if either operation fails.
-func (i *Instance) finishOpenCodeForkViaService(binary, childID, workDir, title string) error {
-	if filepath.Clean(workDir) != filepath.Clean(i.ProjectPath) {
-		body, err := json.Marshal(map[string]string{"directory": workDir})
-		if err != nil {
-			return err
-		}
-		if _, err := runOpenCodeServiceCall(binary, workDir, "session.move", childID, string(body)); err != nil {
-			return fmt.Errorf("opencode fork: move child: %w", err)
-		}
+// setOpenCodeForkTitleViaService gives a 2.x fork child the agent-deck title
+// before it is published. The worktree move happens earlier, in
+// moveOpenCodeForkViaService. The caller removes the child if this fails.
+func setOpenCodeForkTitleViaService(binary, childID, workDir, title string) error {
+	if title == "" {
+		return nil
 	}
-	if title != "" {
-		body, err := json.Marshal(map[string]string{"title": title})
-		if err != nil {
-			return err
-		}
-		if _, err := runOpenCodeServiceCall(binary, workDir, "session.update", childID, string(body)); err != nil {
-			return fmt.Errorf("opencode fork: set child title: %w", err)
-		}
+	body, err := json.Marshal(map[string]string{"title": title})
+	if err != nil {
+		return err
+	}
+	if _, err := runOpenCodeServiceCall(binary, workDir, "session.update", childID, string(body)); err != nil {
+		return fmt.Errorf("opencode fork: set child title: %w", err)
 	}
 	return nil
 }

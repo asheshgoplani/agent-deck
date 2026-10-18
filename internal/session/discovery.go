@@ -2,6 +2,7 @@ package session
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -145,7 +146,9 @@ func GroupByProject(instances []*Instance) map[string][]*Instance {
 	return groups
 }
 
-// FilterByQuery filters sessions by title, project path, tool, or status
+// FilterByQuery filters sessions by title, project path, tool, or status.
+// Text matches substrings with a query-length-dependent Levenshtein tolerance:
+// zero edits for 1–3 characters, one for 4–5, and two for longer queries.
 // Supports status filters: "waiting", "running", "idle", "error"
 func FilterByQuery(instances []*Instance, query string) []*Instance {
 	if query == "" {
@@ -168,18 +171,91 @@ func FilterByQuery(instances []*Instance, query string) []*Instance {
 		return filterByStatus(instances, status)
 	}
 
-	// Regular fuzzy search on title, path, tool
-	filtered := make([]*Instance, 0)
+	// Local fuzzy search on title, path, tool. Results are ranked by edit
+	// distance (stable, so ties keep instance order): exact substring matches
+	// come first, so Enter on a fully typed name selects that session rather
+	// than an earlier fuzzy neighbour.
+	type scored struct {
+		inst *Instance
+		dist int
+	}
+	matches := make([]scored, 0)
 
 	for _, inst := range instances {
-		if strings.Contains(strings.ToLower(inst.Title), query) ||
-			strings.Contains(strings.ToLower(inst.ProjectPath), query) ||
-			strings.Contains(strings.ToLower(inst.Tool), query) {
-			filtered = append(filtered, inst)
+		best := -1
+		for _, field := range []string{inst.Title, inst.ProjectPath, inst.Tool} {
+			if d, ok := localQueryDistance(field, query); ok && (best < 0 || d < best) {
+				best = d
+			}
+		}
+		if best >= 0 {
+			matches = append(matches, scored{inst: inst, dist: best})
 		}
 	}
 
+	sort.SliceStable(matches, func(i, j int) bool { return matches[i].dist < matches[j].dist })
+
+	filtered := make([]*Instance, len(matches))
+	for i, m := range matches {
+		filtered[i] = m.inst
+	}
 	return filtered
+}
+
+// matchesLocalQuery compares a normalized query with any substring of text.
+// A zero-cost start at each text position preserves substring search while
+// allowing up to two insertions, deletions, or substitutions for longer queries.
+// Short queries use a smaller tolerance to avoid matching nearly every session.
+// Work on runes so non-ASCII characters count as single edits, not multiple
+// UTF-8 bytes.
+func matchesLocalQuery(text, query string) bool {
+	_, ok := localQueryDistance(text, query)
+	return ok
+}
+
+// localQueryDistance returns the smallest edit distance between query and any
+// substring of text, and whether it is within the query's tolerance. An exact
+// substring match has distance 0.
+func localQueryDistance(text, query string) (int, bool) {
+	text = strings.ToLower(text)
+	if strings.Contains(text, query) {
+		return 0, true
+	}
+	if text == "" {
+		return 0, false
+	}
+	queryRunes := []rune(query)
+	tolerance := 2
+	if len(queryRunes) <= 3 {
+		return 0, false // Short queries must match the exact substring check above.
+	}
+	if len(queryRunes) <= 5 {
+		tolerance = 1
+	}
+	previous := make([]int, len(queryRunes)+1)
+	current := make([]int, len(previous))
+	for i := range previous {
+		previous[i] = i
+	}
+	best := tolerance + 1
+	for _, char := range text {
+		current[0] = 0
+		for i, queryChar := range queryRunes {
+			cost := 0
+			if char != queryChar {
+				cost = 1
+			}
+			current[i+1] = min(previous[i+1]+1, current[i]+1, previous[i]+cost)
+		}
+		if d := current[len(queryRunes)]; d < best {
+			best = d
+		}
+		previous, current = current, previous
+	}
+	if best <= tolerance {
+		return best, true
+	}
+	return 0, false
 }
 
 // filterByStatus returns only instances with the specified status

@@ -3546,7 +3546,17 @@ const codexWalkDirTimeout = 5 * time.Second
 //  1. Prefer sessions whose JSONL metadata matches this instance's project path.
 //  2. Optionally allow unscoped fallback (no cwd metadata) for initial bootstrap.
 func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped bool) string {
-	sessionsDir := filepath.Join(i.getCodexHomeDir(), "sessions")
+	return queryCodexSessionWith(i.getCodexHomeDir(), i.ProjectPath, i.CodexStartedAt, i.ID, excludeIDs, allowUnscoped)
+}
+
+// codexWalkDir walks $CODEX_HOME/sessions during bootstrap discovery. Test seam.
+var codexWalkDir = filepath.WalkDir
+
+// queryCodexSessionWith is queryCodexSession over explicit inputs, so the
+// status pass can run the (up to codexWalkDirTimeout) walk without holding
+// i.mu, and a timed-out walk goroutine never reads Instance fields (#2674).
+func queryCodexSessionWith(codexHome, projectPath string, codexStartedAt int64, instanceID string, excludeIDs map[string]bool, allowUnscoped bool) string {
+	sessionsDir := filepath.Join(codexHome, "sessions")
 	if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
 		return ""
 	}
@@ -3558,11 +3568,11 @@ func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped b
 	var bestUnscopedID string
 	var bestUnscopedTime time.Time
 
-	normalizedProjectPath := normalizePath(i.ProjectPath)
+	normalizedProjectPath := normalizePath(projectPath)
 
 	var walkErr error
 	if !runWithTimeout(codexWalkDirTimeout, func() {
-		walkErr = filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, err error) error {
+		walkErr = codexWalkDir(sessionsDir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil // Skip errors
 			}
@@ -3586,7 +3596,7 @@ func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped b
 			// best user-sourced match instead of returning nothing when the
 			// most-recent match happens to be a subagent. See
 			// codex_subagent_gate.go.
-			if i.shouldRejectCodexSubagentRebind(sessionID) {
+			if CodexSubagentThread(sessionID, codexHome) {
 				return nil
 			}
 
@@ -3596,8 +3606,8 @@ func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped b
 			}
 
 			// Only consider sessions created after we started this instance.
-			if i.CodexStartedAt > 0 {
-				startTime := time.UnixMilli(i.CodexStartedAt)
+			if codexStartedAt > 0 {
+				startTime := time.UnixMilli(codexStartedAt)
 				if info.ModTime().Before(startTime) {
 					return nil
 				}
@@ -3628,7 +3638,7 @@ func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped b
 		// best* variables since they may be partially populated; the caller
 		// retries with backoff so a transient stall self-heals.
 		sessionLog.Warn("codex_walkdir_timeout",
-			slog.String("instance_id", i.ID),
+			slog.String("instance_id", instanceID),
 			slog.String("sessions_dir", sessionsDir),
 			slog.Duration("timeout", codexWalkDirTimeout))
 		return ""
@@ -4387,6 +4397,10 @@ func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forcePr
 		return missingProbeDep
 	}
 
+	if statusLocked {
+		return i.bootstrapCodexSessionStatusLocked(excludeIDs, pass, allowUnscoped, envSessionID, missingProbeDep)
+	}
+
 	// Fetch peer ownership before taking the bootstrap selection lock. Status
 	// readers and authoritative hook updates must remain available during I/O.
 	if excludeIDs == nil {
@@ -4394,26 +4408,10 @@ func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forcePr
 			pass = &StatusUpdatePass{}
 		}
 		socket := tmux.DefaultSocketName()
-		ts := i.tmuxSession
-		started := i.lastStartTime
-		hookID := i.hookSessionID
-		if ts != nil {
-			socket = ts.SocketName
-		}
-		if statusLocked {
-			i.mu.Unlock()
+		if i.tmuxSession != nil {
+			socket = i.tmuxSession.SocketName
 		}
 		pass.codexOwnership(socket)
-		if statusLocked {
-			i.mu.Lock()
-			// A stop, restart, or authoritative binding while unlocked supersedes
-			// this bootstrap attempt. Do not resurrect or overwrite it.
-			if i.tmuxSession != ts || i.lastStartTime != started || i.hookSessionID != hookID ||
-				i.CodexSessionID != "" || !IsCodexCompatible(i.Tool) ||
-				(i.Status != StatusRunning && i.Status != StatusWaiting) {
-				return missingProbeDep
-			}
-		}
 	}
 
 	// Serialize fallback selection with publication so peers sharing a project
@@ -4429,27 +4427,85 @@ func (i *Instance) updateCodexSessionForPass(excludeIDs map[string]bool, forcePr
 	}
 
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
-		// queryCodexSession already filters subagent rollouts out of candidacy
-		// (incident 2026-07-15), so sessionID here is always a user thread.
-		changed := sessionID != i.CodexSessionID
-		if sessionID != i.CodexSessionID {
-			sessionLog.Debug(
-				"codex_session_update",
-				slog.String("old_id", i.CodexSessionID),
-				slog.String("new_id", sessionID),
-			)
-		}
-		i.CodexSessionID = sessionID
-		i.CodexDetectedAt = time.Now()
-		i.recordCodexOwnership(i.CodexSessionID)
-
-		// Sync back to tmux environment for future restarts
-		// Skip redundant writes when env already matches: each write is a tmux subprocess.
-		if i.tmuxSession != nil && i.tmuxSession.Exists() && (changed || envSessionID == "") {
-			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
-		}
+		i.publishCodexBootstrapSession(sessionID, envSessionID)
 	}
 	return missingProbeDep
+}
+
+// bootstrapCodexSessionStatusLocked runs the bootstrap disk scan for the
+// status pass. It is entered and returns with i.mu held, but releases i.mu
+// around the ownership refresh and the $CODEX_HOME walk: holding it there
+// stalled every render-path reader for up to codexWalkDirTimeout (#2674).
+// Lock order is codexBootstrapMu before i.mu.
+func (i *Instance) bootstrapCodexSessionStatusLocked(excludeIDs map[string]bool, pass *StatusUpdatePass, allowUnscoped bool, envSessionID, missingProbeDep string) string {
+	if pass == nil {
+		pass = &StatusUpdatePass{}
+	}
+	socket := tmux.DefaultSocketName()
+	ts := i.tmuxSession
+	started := i.lastStartTime
+	hookID := i.hookSessionID
+	if ts != nil {
+		socket = ts.SocketName
+	}
+	// A stop, restart, or authoritative binding while unlocked supersedes
+	// this bootstrap attempt. Do not resurrect or overwrite it.
+	superseded := func() bool {
+		return i.tmuxSession != ts || i.lastStartTime != started || i.hookSessionID != hookID ||
+			i.CodexSessionID != "" || !IsCodexCompatible(i.Tool) ||
+			(i.Status != StatusRunning && i.Status != StatusWaiting)
+	}
+
+	i.mu.Unlock()
+	if excludeIDs == nil {
+		pass.codexOwnership(socket)
+	}
+	codexBootstrapMu.Lock()
+	defer codexBootstrapMu.Unlock() // runs after return, with i.mu re-held
+	i.mu.Lock()
+	if superseded() {
+		return missingProbeDep
+	}
+	if excludeIDs == nil {
+		excludeIDs = i.codexExclusions(pass) // ownership is warm in pass
+		if excludeIDs == nil {
+			return missingProbeDep // Unknown ownership must not become a guessed binding.
+		}
+	}
+	codexHome, projectPath, startedAt, id := i.getCodexHomeDir(), i.ProjectPath, i.CodexStartedAt, i.ID
+
+	i.mu.Unlock()
+	sessionID := queryCodexSessionWith(codexHome, projectPath, startedAt, id, excludeIDs, allowUnscoped)
+	i.mu.Lock()
+
+	if sessionID != "" && !superseded() {
+		i.publishCodexBootstrapSession(sessionID, envSessionID)
+	}
+	return missingProbeDep
+}
+
+// publishCodexBootstrapSession binds a disk-scan result. Callers hold
+// codexBootstrapMu and, when called from the status pass, i.mu.
+func (i *Instance) publishCodexBootstrapSession(sessionID, envSessionID string) {
+	// queryCodexSession already filters subagent rollouts out of candidacy
+	// (incident 2026-07-15), so sessionID here is always a user thread.
+	changed := sessionID != i.CodexSessionID
+	if changed {
+		sessionLog.Debug(
+			"codex_session_update",
+			slog.String("old_id", i.CodexSessionID),
+			slog.String("new_id", sessionID),
+		)
+	}
+	i.CodexSessionID = sessionID
+	i.CodexDetectedAt = time.Now()
+	i.recordCodexOwnership(i.CodexSessionID)
+
+	// Sync back to tmux environment for future restarts
+	// Skip redundant writes when env already matches: each write is a tmux subprocess.
+	if i.tmuxSession != nil && i.tmuxSession.Exists() && (changed || envSessionID == "") {
+		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
+	}
 }
 
 // buildGenericCommand builds commands for custom tools defined in [tools.*]
@@ -6000,12 +6056,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// The same capture tells whether the composer shows a Claude prompt
 	// suggestion. Typing replaces it; the Enter after typing is then gated
 	// on the composer holding our message rather than the suggestion.
-	composerPasteFreeBeforeSend := false
-	suggestionShownBeforeSend := false
-	if raw, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
-		composerPasteFreeBeforeSend = !send.ComposerHoldsPasteMarker(raw, tmux.StripANSI)
-		suggestionShownBeforeSend = UsesClaudeDeliveryVerify(i.Tool) && send.ComposerBodyIsSuggestion(raw)
-	}
+	composerPasteFreeBeforeSend, suggestionShownBeforeSend := send.ProbeComposerBeforeSend(i.tmuxSession.CapturePaneFresh, UsesClaudeDeliveryVerify(i.Tool))
 
 	// Issue #2079: a large or slow-mounting composer can swallow the leading
 	// bytes of a paste, submitting a truncated tail that the agent answers as
@@ -11731,18 +11782,22 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		if err != nil {
 			return "", "", err
 		}
-		if err := applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts); err != nil {
+		err = i.moveOpenCodeForkViaService(binary, childID, workDir)
+		if err == nil {
+			err = applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts)
+		}
+		if err == nil {
+			err = setOpenCodeForkTitleViaService(binary, childID, workDir, newTitle)
+		}
+		if err != nil {
 			if _, rmErr := runOpenCodeServiceCall(binary, workDir, "session.remove", childID, ""); rmErr != nil {
 				return "", "", fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
 			}
 			return "", "", err
 		}
-		if err := i.finishOpenCodeForkViaService(binary, childID, workDir, newTitle); err != nil {
-			if _, rmErr := runOpenCodeServiceCall(binary, workDir, "session.remove", childID, ""); rmErr != nil {
-				return "", "", fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
-			}
-			return "", "", err
-		}
+		// Launch through the selected launcher, as a restart does
+		// (buildOpenCodeCommand): a bare `opencode` may be missing from PATH or
+		// be a 1.x binary that does not know the 2.x child session.
 		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), childID), childID, nil
 	}
 
@@ -11795,6 +11850,25 @@ func (i *Instance) forkOpenCodeSessionViaService(binary, parentID, workDir strin
 		slog.String("parent_session_id", parentID),
 		slog.String("child_session_id", childID))
 	return childID, nil
+}
+
+// moveOpenCodeForkViaService moves a 2.x fork child onto workDir when the
+// fork targets a different tree (a worktree fork). session.fork keeps the
+// child in the parent's directory, so without the move only the shell cwd
+// changes while the service session still belongs to the parent's tree. A
+// same-directory fork skips the call.
+func (i *Instance) moveOpenCodeForkViaService(binary, childID, workDir string) error {
+	if filepath.Clean(workDir) == filepath.Clean(i.ProjectPath) {
+		return nil
+	}
+	body, err := json.Marshal(map[string]string{"directory": workDir})
+	if err != nil {
+		return fmt.Errorf("opencode fork: encode move: %w", err)
+	}
+	if _, err := runOpenCodeServiceCall(binary, workDir, "session.move", childID, string(body)); err != nil {
+		return fmt.Errorf("opencode fork: move child session %s to %s: %w", childID, workDir, err)
+	}
+	return nil
 }
 
 // applyOpenCodeForkOverridesViaService sets the fork's model and agent

@@ -58,7 +58,10 @@ func TestOpenCodeForkV2_UsesConfiguredBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateForkedOpenCodeInstanceWithOptions: %v", err)
 	}
-	if want := "cd " + shellescape.Quote(workDir) + " && " + quoteOpenCodeArg(parent.openCodeForkBinary()) + " -s ses_child_456"; cmd != want {
+	// The first tmux launch must run the configured binary too: a bare
+	// `opencode` is not on this PATH (or could be a 1.x binary that does not
+	// know the 2.x child session).
+	if want := "cd " + shellescape.Quote(workDir) + " && " + stub + " -s ses_child_456"; cmd != want {
 		t.Fatalf("fork command = %q, want %q", cmd, want)
 	}
 	gotArgv, err := os.ReadFile(argv)
@@ -84,7 +87,7 @@ func TestOpenCodeForkV2_ForksThroughServiceAndResumesChild(t *testing.T) {
 		t.Fatalf("CreateForkedOpenCodeInstanceWithOptions: %v", err)
 	}
 
-	if want := "cd " + shellescape.Quote(workDir) + " && " + quoteOpenCodeArg(parent.openCodeForkBinary()) + " -s ses_child_456"; cmd != want {
+	if want := "cd " + shellescape.Quote(workDir) + " && " + GetToolCommand("opencode") + " -s ses_child_456"; cmd != want {
 		t.Fatalf("fork command = %q, want %q (no --fork, no -m/--agent on 2.x)", cmd, want)
 	}
 	if forked.OpenCodeSessionID != "ses_child_456" || forked.OpenCodeDetectedAt.IsZero() {

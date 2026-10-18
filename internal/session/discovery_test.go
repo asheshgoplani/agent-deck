@@ -86,6 +86,118 @@ func TestFilterByQueryCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestMatchesLocalQuery(t *testing.T) {
+	for _, tt := range []struct {
+		name, text, query string
+		want              bool
+	}{
+		{"substring", "prefix-authentication-suffix", "authentication", true},
+		{"substitution", "authentication", "authentixation", true},
+		{"two substitutions", "prefix-authentication-suffix", "authentixaxion", true},
+		{"three substitutions", "authentication", "authentixaxixn", false},
+		{"insertion", "authentication", "authentiication", true},
+		{"deletion", "authentication", "authentcation", true},
+		{"two insertions", "authentication", "authentiicationn", true},
+		{"two deletions", "authentication", "authentcaton", true},
+		{"case insensitive", "AUTHENTICATION", "authentication", true},
+		{"one character exact", "authentication", "a", true},
+		{"one character mismatch", "authentication", "z", false},
+		{"two characters exact", "authentication", "au", true},
+		{"two characters mismatch", "authentication", "az", false},
+		{"three characters exact", "authentication", "aut", true},
+		{"three characters one edit", "authentication", "aux", false},
+		{"three characters two edits", "authentication", "axx", false},
+		{"four characters one edit", "prefix-abcd-suffix", "abcx", true},
+		{"four characters two edits", "prefix-abcd-suffix", "abxy", false},
+		{"five characters one edit", "prefix-abcde-suffix", "abcdx", true},
+		{"five characters two edits", "prefix-abcde-suffix", "abcxy", false},
+		{"six characters two edits", "prefix-abcdef-suffix", "abcdxy", true},
+		{"unicode short exact", "你好世界", "你好世", true},
+		{"unicode short one edit", "你好世界", "您好世", false},
+		{"unicode four characters one edit", "你好世界", "您好世界", true},
+		{"unicode four characters two edits", "你好世界", "您好世间", false},
+		{"unicode two edits", "你好世界朋友", "您好世间朋友", true},
+		{"unicode three edits", "你好世界朋友", "您们世间朋友", false},
+		{"empty field", "", "ab", false},
+		{"unrelated", "authentication", "zzzzzz", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesLocalQuery(tt.text, tt.query); got != tt.want {
+				t.Errorf("matchesLocalQuery(%q, %q) = %v, want %v", tt.text, tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterByQueryShortQueriesNarrowResults(t *testing.T) {
+	auth := &Instance{Title: "authentication", ProjectPath: "/work/login", Tool: "claude"}
+	other := &Instance{Title: "backend", ProjectPath: "/work/service", Tool: "shell"}
+	items := []*Instance{auth, other}
+	for _, query := range []string{"aut", "AUT", "cla", "log"} {
+		got := FilterByQuery(items, query)
+		if len(got) != 1 || got[0] != auth {
+			t.Errorf("FilterByQuery(%q) = %v, want only authentication session", query, got)
+		}
+	}
+	if got := FilterByQuery(items, "xyz"); len(got) != 0 {
+		t.Errorf("unrelated three-character query matched %d sessions", len(got))
+	}
+}
+
+func TestFilterByQueryFuzzyFieldsAndStatus(t *testing.T) {
+	title := &Instance{Title: "authentication"}
+	path := &Instance{ProjectPath: "/work/authentication/service"}
+	tool := &Instance{Tool: "opencode"}
+	waiting := &Instance{Title: "unrelated", Status: StatusWaiting}
+	statusTitle := &Instance{Title: "waiting", Status: StatusRunning}
+	items := []*Instance{title, path, tool, waiting, statusTitle}
+	for _, tt := range []struct {
+		query string
+		want  []*Instance
+	}{
+		{" AUTHENTIXAXION ", []*Instance{title, path}},
+		{"opencxde", []*Instance{tool}},
+		{"waiting", []*Instance{waiting}},
+		{"", items},
+		{"   ", items},
+	} {
+		t.Run(tt.query, func(t *testing.T) {
+			got := FilterByQuery(items, tt.query)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d results, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("result %d = %p, want %p", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestFilterByQueryRanksExactBeforeFuzzy(t *testing.T) {
+	// Enter in local search jumps to results[0], so a fully typed session
+	// name must rank ahead of earlier sessions that only match fuzzily.
+	api := &Instance{Title: "deploy-api"}
+	app := &Instance{Title: "deploy-app"}
+	far := &Instance{Title: "deploy-abc"}
+	items := []*Instance{far, api, app}
+
+	got := FilterByQuery(items, "deploy-app")
+	if len(got) == 0 || got[0] != app {
+		t.Fatalf("FilterByQuery(deploy-app)[0] = %v, want the exact match deploy-app", got)
+	}
+	want := []*Instance{app, api, far}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("result %d = %q, want %q (ordered by edit distance)", i, got[i].Title, want[i].Title)
+		}
+	}
+}
+
 func TestDetectToolFromName(t *testing.T) {
 	tests := []struct {
 		name     string

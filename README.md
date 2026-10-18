@@ -818,7 +818,9 @@ or create a session with `agent-deck add -c opencode2`. The `opencode2` launcher
 be installed on the session's host. Sessions retain OpenCode's tool identity while
 preserving the selected launcher for restart and fork. V2 model/agent overrides and
 forks use the session API rather than unsupported V1 TUI flags; MCP writes use
-V2's `mcp.servers` structure. V2 status uses the shared service rather than
+V2's `mcp.servers` structure. The global OpenCode config is read from and written to
+`$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set (as OpenCode
+itself does), otherwise `~/.config/opencode/opencode.json`. V2 status uses the shared service rather than
 V1's per-session SSE port, with terminal fallback when service status is unavailable.
 Service-based forks must run on the target host; this local fork path does not
 call a local service on behalf of SSH or sandbox sessions.
