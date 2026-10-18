@@ -158,7 +158,9 @@ if [ "$WAIT" = "true" ]; then
             echo ""
             echo "=== Response ==="
             # Try native output first, fall back to full scrollback capture
-            if ! agent-deck -p "$PROFILE" session output "$TITLE" 2>/dev/null; then
+            # -q: a script's poll read is not the parent having read the
+            # result, so the inbox notice for it is still delivered.
+            if ! agent-deck -p "$PROFILE" session output -q "$TITLE" 2>/dev/null; then
                 tmux capture-pane -t "$TMUX_SESSION" -p -S - 2>/dev/null
             fi
             exit 0

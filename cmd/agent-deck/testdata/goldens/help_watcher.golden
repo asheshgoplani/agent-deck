@@ -8,6 +8,7 @@ Commands:
   create <type> --name <name>   Create a new watcher (types: webhook, ntfy, github, slack)
   start <name>                  Mark a watcher as running (run by the profile's watcher engine)
   stop <name>                   Mark a watcher as stopped
+  reload [--json]               Apply watcher and clients.json changes to the running engine now
   list [--json]                 List all watchers with status and event rate
   status <name> [--json]        Show watcher info, recent events and events not delivered yet
   test <name>                   Route a synthetic event to verify routing config

@@ -78,16 +78,33 @@ func ParseVersionOutput(out string) string {
 // reads the update cache) and normally returns in well under a second.
 const BinaryProbeTimeout = 10 * time.Second
 
+// BinaryProbeWaitDelay bounds how long a probe waits for the output pipe
+// after the timeout killed `<exe> version`: a child of that process (a
+// wrapper script's `sleep`, a hung helper) can keep the pipe open long
+// after its parent is gone.
+const BinaryProbeWaitDelay = 2 * time.Second
+
 // ProbeBinaryVersion runs `<exe> version` once and parses the result. It is
 // the only exec in the detection path and callers run it only after
 // os.Stat says the file changed.
 func ProbeBinaryVersion(exe string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), BinaryProbeTimeout)
+	return ProbeBinaryVersionWithin(exe, BinaryProbeTimeout)
+}
+
+// ProbeBinaryVersionWithin is ProbeBinaryVersion with its own timeout. It
+// returns at most timeout plus BinaryProbeWaitDelay after it starts, even
+// when the process or a child it left behind never closes its output.
+func ProbeBinaryVersionWithin(exe string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	// #nosec G204 -- exe is the path os.Executable() returned at startup
-	// (our own binary), and "version" is a fixed argument.
+	// #nosec G204 -- exe is an agent-deck executable path the caller chose:
+	// our own binary (os.Executable or the path an update installed to) or
+	// an agent-deck found on the user's own PATH, which their shells
+	// already run. The argument is the fixed "version", no shell is
+	// involved, and the run is bounded by timeout plus WaitDelay.
 	cmd := exec.CommandContext(ctx, exe, "version")
 	cmd.Env = append(childenv.ForLaunch(""), SkipUpdateCheckEnv+"=1")
+	cmd.WaitDelay = BinaryProbeWaitDelay
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

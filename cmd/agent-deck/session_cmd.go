@@ -6809,6 +6809,9 @@ func handleSessionOutput(profile string, args []string) {
 		exitCLI(1)
 	}
 	bounded := boundSessionOutputOrExit(out, profile, inst.ID, "response", response.Content, *maxTokens, boundAgentOutput)
+	if resultReadShown(*jsonOutput, quietMode, *copyFlag, bounded == response.Content) {
+		noteResultRead(inst.ID, response.AssistantUUID)
+	}
 
 	// Copy to clipboard mode
 	if *copyFlag {

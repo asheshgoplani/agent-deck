@@ -769,6 +769,16 @@ func (n *TransitionNotifier) wakeCommittedInbox(parent *Instance, event Transiti
 			slog.String("parent", parentID), slog.String("turn", event.TurnFingerprint))
 		return
 	}
+	// A notice withdraws itself when the parent already read the result it
+	// announces (`session output <child>` after the child finished): the
+	// wake would start a turn with nothing new in it. The record stays
+	// queued; the drain retires it unshown.
+	if loadResultReads(parentID).covers(event) {
+		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsWithdrawn++ })
+		commsLog.Debug("wake_nudge_withdrawn_result_read",
+			slog.String("parent", parentID), slog.String("child", event.ChildSessionID), slog.String("turn", event.TurnFingerprint))
+		return
+	}
 	// Issue #2469, design principle 1: only the tiers listed in [inbox]
 	// wake_on (default: urgent) wake the parent. An info record stays durably
 	// queued and rides the parent's next turn or the info digest; it is never

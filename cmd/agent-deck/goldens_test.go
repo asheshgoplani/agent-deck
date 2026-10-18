@@ -518,10 +518,26 @@ func runGoldensIn(t *testing.T, bin string, env []string, dir string, args []str
 	return stdout, exitCode
 }
 
+// withBinaryFirstOnPath puts the binary under test first on PATH, so an
+// agent-deck installed on the machine running the tests can never show up
+// as an older copy shadowing it (doctor's PATH check) in a golden.
+func withBinaryFirstOnPath(env []string, bin string) []string {
+	out := make([]string, 0, len(env)+1)
+	path := ""
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			path = v
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "PATH="+filepath.Dir(bin)+string(os.PathListSeparator)+path)
+}
+
 func runGoldensStreamsIn(t *testing.T, bin string, env []string, dir string, args []string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Env = env
+	cmd.Env = withBinaryFirstOnPath(env, bin)
 	cmd.Dir = dir
 	var out, errOut strings.Builder
 	cmd.Stdout = &out

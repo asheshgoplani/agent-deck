@@ -14,7 +14,7 @@ Options:
   -install-timer
     	Install the daily unattended update timer (launchd on macOS, systemd --user on Linux), rewrite a stale one, migrate a legacy agentdeck-autoupdate unit; an active current timer is left alone
   -json
-    	With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents, remote_nudges); with --timer-status/--install-timer/--ensure-timer: the timer state or what was done
+    	With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents, remote_nudges, shadowed_by); with --timer-status/--install-timer/--ensure-timer: the timer state or what was done
   -timer-status
     	Show whether the daily update timer is installed and loaded (kinds: launchd, systemd, systemd-legacy, none)
   -trigger string

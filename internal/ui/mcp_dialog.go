@@ -1101,9 +1101,7 @@ func (m *MCPDialog) renderColumn(title string, items []MCPItem, selectedIdx int,
 			if item.IsOrphan {
 				name = name + " ⚠"
 			}
-			if len(name) > 24 {
-				name = name[:21] + "..."
-			}
+			name = truncateDisplay(name, 24, "...")
 
 			var line string
 			if i == selectedIdx && focused {

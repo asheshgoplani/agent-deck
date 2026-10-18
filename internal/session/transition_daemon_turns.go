@@ -187,6 +187,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	event.Tier = tier
 	event.Trigger = facts.Trigger
 	event.TurnUUID = facts.UUID
+	event.TurnTextInterim = facts.FinalTextPending
 	event.TextHash = facts.TextHash
 	event.Text = text
 	event.Question = facts.Question

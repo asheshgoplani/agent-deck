@@ -249,6 +249,7 @@ func (i *Instance) BuildIdentityPrompt() string {
 	} else {
 		b.WriteString("- Messages from other agent-deck sessions start with `[agent-deck from:<id>]`; reply by answering normally, the sender is notified.\n")
 	}
+	b.WriteString(identityNoOpNoticeRule)
 	b.WriteString("- `agent-deck session output <id-or-title>` — read another session's last response\n")
 	b.WriteString("- `agent-deck launch <path> -t \"Title\" -c claude --message \"prompt\"` — spawn a child session linked to you as its parent (`-no-parent` for a peer)\n")
 	b.WriteString("- `agent-deck session children --json` — live status and asserted completions of your children\n")
@@ -269,6 +270,11 @@ func (i *Instance) BuildIdentityPrompt() string {
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
 }
+
+// identityNoOpNoticeRule is the child-side form of the conductor's no-op
+// notice rule: an acknowledgement or a status ping that needs no
+// action gets no reply, since every reply is itself delivered and answered.
+const identityNoOpNoticeRule = "- A message or record that needs nothing from you (a pure acknowledgement such as \"ok\" or \"thanks\", or a status ping that changes nothing) is a no-op notice: do not reply to it, end the turn.\n"
 
 // IdentityCarriesSentinel reports whether this session's injected identity
 // block includes the completion-sentinel section, so a launch message does

@@ -45,6 +45,9 @@ type InboxStats struct {
 	WakeupsUrgent     int64 `json:"wakeups_urgent"`
 	WakeupsDigest     int64 `json:"wakeups_digest"`
 	WakeupsSuppressed int64 `json:"wakeups_suppressed"` // info records that did not wake
+	// WakeupsWithdrawn counts wakes not typed because the parent had already
+	// read the result the record announces (`session output` on the child).
+	WakeupsWithdrawn int64 `json:"wakeups_withdrawn,omitempty"`
 
 	// Consumer side.
 	Drains           int64 `json:"drains"`
@@ -55,6 +58,9 @@ type InboxStats struct {
 	// shared shown-turn set says the same turn was already delivered to this
 	// parent by either path ([comms] consumers, exact turn identity).
 	ShadowedByLedger int64 `json:"shadowed_by_ledger,omitempty"`
+	// RecordsWithdrawn counts records a drain retired unshown because the
+	// parent had already read the result they announce.
+	RecordsWithdrawn int64 `json:"records_withdrawn,omitempty"`
 
 	// Latency: last urgent record commit -> delivery, in milliseconds.
 	LastUrgentLatencyMS int64 `json:"last_urgent_latency_ms,omitempty"`
