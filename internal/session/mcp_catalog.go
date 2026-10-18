@@ -173,27 +173,44 @@ func readExistingLocalMCPServers(mcpFile string) (map[string]json.RawMessage, er
 }
 
 // writeJSONFileAtomic writes JSON data to path atomically (symlink-preserving,
-// via atomicfile.WriteFile), guaranteeing exactly one trailing newline and
+// via atomicfile.WriteFileWithin: the real file must stay under root, the
+// project directory the file belongs to), guaranteeing exactly one trailing newline and
 // skipping the write entirely when the on-disk bytes already match.
 // json.MarshalIndent emits no trailing newline, so without this a restart
 // rewrote a byte-identical-except-for-the-missing-\n file, leaving a persistent
 // one-byte git diff (issue #1627). Skipping the atomic replace when nothing
 // changed also avoids needless filesystem churn.
-func writeJSONFileAtomic(path string, data []byte, perm os.FileMode) error {
+func writeJSONFileAtomic(root, path string, data []byte, perm os.FileMode) error {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
 	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
 		return nil
 	}
-	return atomicfile.WriteFile(path, data, perm)
+	return atomicfile.WriteFileWithin(root, path, data, perm)
 }
 
 // WriteMergedMcpJSONFile writes enabled MCPs from config.toml to mcpFile using the
 // Claude/Cursor JSON shape {"mcpServers":{...}}. It preserves entries not defined in
 // config.toml. When pluginPinClaudeProfile is non-empty (Claude project .mcp.json),
-// refreshes stale plugin version pins before merging (#960).
+// refreshes stale plugin version pins before merging (#960). The file must stay
+// inside its own directory: a symlink leading elsewhere is refused.
 func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClaudeProfile string) error {
+	return writeMergedMcpJSONFileWithin(filepath.Dir(mcpFile), mcpFile, enabledNames, pluginPinClaudeProfile)
+}
+
+// writeMergedMcpJSONFileWithin is WriteMergedMcpJSONFile for a file below
+// projectRoot (e.g. <project>/.cursor/mcp.json): the real file written, after
+// following symlinks in the file and its parent directories, must lie under
+// projectRoot.
+func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []string, pluginPinClaudeProfile string) error {
+	// The lock file beside mcpFile is opened with O_CREATE, so both paths are
+	// checked before either is touched.
+	for _, p := range []string{mcpFile, mcpFile + ".lock"} {
+		if err := atomicfile.CheckWithin(projectRoot, p); err != nil {
+			return err
+		}
+	}
 	// Same read-modify-write class as the .claude.json writers: this reads the
 	// existing servers, merges, and writes the whole file back. The web local
 	// scope and the TUI both reach it, so it takes the same per-path lock.
@@ -283,7 +300,7 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 		return fmt.Errorf("failed to marshal mcp json: %w", err)
 	}
 
-	if err := writeJSONFileAtomic(mcpFile, data, 0644); err != nil {
+	if err := writeJSONFileAtomic(projectRoot, mcpFile, data, 0644); err != nil {
 		return fmt.Errorf("failed to save mcp json: %w", err)
 	}
 
