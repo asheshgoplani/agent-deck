@@ -207,7 +207,7 @@ _agent_deck() {
         ;;
     file)
         if (( CURRENT == start + 1 )); then
-            subs=(bundle)
+            subs=(bundle read roots)
             compadd -a subs
             return
         fi

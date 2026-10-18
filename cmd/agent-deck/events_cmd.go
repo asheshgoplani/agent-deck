@@ -200,7 +200,8 @@ func handleEventsPublish(profile string, args []string) {
 	jsonOut := fs.Bool("json", false, "print {ok, kind, session_id, cursor} as JSON")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--json]")
-		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack.")
+		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except built-in macapp.open and macapp.open.ack;")
+		fmt.Fprintln(fs.Output(), "to enable it, run: agent-deck config set macapp.plugins true --yes (docs/macapp-core.md).")
 		fs.PrintDefaults()
 	}
 	routeFlagHelp(fs, args)

@@ -738,10 +738,10 @@ func clipCells(s string, n int) string {
 }
 
 func clipLeft(s string, n int) string {
-	if n < 8 || len(s) <= n {
+	if n < 8 {
 		return s
 	}
-	return "..." + s[len(s)-(n-3):]
+	return truncateDisplayLeft(s, n, "...")
 }
 
 // shortNative is the conversation id as the preview shows it.

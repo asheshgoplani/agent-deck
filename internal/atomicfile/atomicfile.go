@@ -68,7 +68,7 @@ func WriteFileWithin(root, path string, data []byte, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if err := requireWithin(root, target); err != nil {
+	if err := requireWithin(root, path, target); err != nil {
 		return err
 	}
 	return writeAtomic(target, data, perm, false)
@@ -82,8 +82,12 @@ func CheckWithin(root, path string) error {
 	if err != nil {
 		return err
 	}
-	return requireWithin(root, target)
+	return requireWithin(root, path, target)
 }
+
+// ErrOutsideRoot is wrapped by the errors WriteFileWithin and CheckWithin
+// return when the real file lies outside root, so callers can add advice.
+var ErrOutsideRoot = errors.New("resolves outside the allowed directory")
 
 // requireWithin reports an error unless target, with every existing ancestor
 // resolved through symlinks, lies under root (also resolved). Components that
@@ -91,7 +95,7 @@ func CheckWithin(root, path string) error {
 // directories. A missing component that is really a dangling symlink is also
 // kept as written: MkdirAll then fails on it (mkdir does not follow a link),
 // so nothing is created at the link's destination.
-func requireWithin(root, target string) error {
+func requireWithin(root, path, target string) error {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return fmt.Errorf("atomicfile: resolve %s: %w", root, err)
@@ -103,6 +107,20 @@ func requireWithin(root, target string) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("atomicfile: resolve %s: %w", existing, err)
 		}
+		// A dangling symlink is not a missing directory: following it could
+		// create directories wherever it points. Refuse it here rather than
+		// rely on MkdirAll failing on it later. existing is a cleaned absolute
+		// path, so it holds ".." only inside a name; such a path skips this
+		// extra check and still cannot create anything through the link,
+		// since mkdir does not follow it. The guard is also the traversal
+		// check CodeQL go/path-injection recognises.
+		if !strings.Contains(existing, "..") {
+			if fi, lerr := os.Lstat(existing); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				dest, _ := os.Readlink(existing)
+				return fmt.Errorf("atomicfile: refusing to write %s: %s is a symlink to the missing path %s",
+					target, existing, dest)
+			}
+		}
 		parent := filepath.Dir(existing)
 		if parent == existing {
 			return fmt.Errorf("atomicfile: resolve %s: %w", target, err)
@@ -113,8 +131,13 @@ func requireWithin(root, target string) error {
 	}
 	rel, err := filepath.Rel(realRoot, filepath.Join(realDir, missing))
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("atomicfile: refusing to write %s: it resolves to %s, outside %s",
-			target, filepath.Join(realDir, missing), root)
+		real := filepath.Join(realDir, missing)
+		if filepath.Clean(path) != filepath.Clean(target) {
+			return fmt.Errorf("atomicfile: refusing to write %s: it is a symlink to %s, outside %s: %w",
+				path, real, root, ErrOutsideRoot)
+		}
+		return fmt.Errorf("atomicfile: refusing to write %s: a symlinked parent directory puts it at %s, outside %s: %w",
+			path, real, root, ErrOutsideRoot)
 	}
 	return nil
 }

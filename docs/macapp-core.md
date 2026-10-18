@@ -389,7 +389,9 @@ acts on. A key that needs consent carries a `consent` text in `config schema
 explicitly:
 
 - `config set macapp.plugins true` in a terminal prints the consent text and
-  asks `[y/N]`; anything but `y` or `yes` leaves the file untouched (exit 1).
+  asks `[y/N]`; anything but `y` or `yes` prints `Not changed.` on stderr and
+  leaves the file untouched (exit 2, as without consent below). When the key
+  is already on, `config set macapp.plugins true` asks nothing.
 - Without a terminal, or with `--json`, it exits 2 and changes nothing:
 
 ```json
@@ -416,8 +418,13 @@ the app can render as the same consent prompt:
           "consent": "…", "docs": "docs/macapp-core.md"}}
 ```
 
-A `remote <name> limits --json` error is the remote's own; its `hint` is to
-be run on that host.
+A `remote <name> limits` error is the remote's own, with the enable command
+relabelled for that host: the message says `To enable it on remote NAME
+(HOST), run there: agent-deck config set macapp.plugins true --yes`, and the
+JSON `hint` names `remote` and `remote_host`, carries the command as
+`remote_argv` (agent-deck arguments for the remote's binary) and has no
+`argv`, so a client never turns plugins on locally by mistake. `config` is
+not forwarded by `remote`: run it on that host.
 
 ## Favourites
 

@@ -1,1 +1,3 @@
 Usage: agent-deck file bundle <dir|file> --session <id>
+Usage: agent-deck file read <absolute-path> [--json]
+Usage: agent-deck file roots [--json]
