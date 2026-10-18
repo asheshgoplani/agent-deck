@@ -21,6 +21,9 @@ const (
 	KindCLI       = "cli"
 )
 
+// CommandCenter is the --source of the web command center's ask.
+const CommandCenter = "command-center"
+
 // Source names one sender. ID is the stable trigger key "<kind>:<unit>"
 // (the launchd label or systemd unit when known, so a tagged send and the
 // scanned unit land on the same row), else "<kind>:<name>".
@@ -58,6 +61,11 @@ func OSEnv() Env { return Env{Getenv: os.Getenv, ReadFile: os.ReadFile, PPID: os
 // channel:telegram); anything else is a launchd/systemd-agnostic job name.
 func ParseExplicit(v string) Source {
 	v = strings.TrimSpace(v)
+	if v == CommandCenter {
+		// The web command center is a channel of its own: it never joins
+		// the unit the web server happens to run under.
+		return Source{Kind: KindChannel, Name: CommandCenter}
+	}
 	if kind, name, ok := strings.Cut(v, ":"); ok && name != "" && knownKind(kind) {
 		return Source{Kind: kind, Name: cleanName(name)}
 	}

@@ -63,8 +63,20 @@ func Record(db *statedb.StateDB, profile, host string, f Fire) error {
 	}); err != nil {
 		return err
 	}
-	Publish(profile, f.SessionID, map[string]string{"trigger_id": id, "source": f.Source.Name, "kind": f.Source.Kind, "outcome": f.Outcome})
+	Publish(profile, f.SessionID, map[string]string{"trigger_id": id, "source": f.Source.Name, "kind": f.Source.Kind, "outcome": f.Outcome, "health": HealthAfter(f.Outcome)})
 	return nil
+}
+
+// HealthAfter is the health a fire with this outcome leaves its trigger in,
+// for the bus frame (the list recomputes it from the stored rows).
+func HealthAfter(outcome string) string {
+	switch outcome {
+	case OutcomeDeadTarget:
+		return HealthDeadTarget
+	case OutcomeFailed:
+		return HealthFailing
+	}
+	return HealthOK
 }
 
 // MutedUntil returns when the trigger's mute ends (zero when not muted now).

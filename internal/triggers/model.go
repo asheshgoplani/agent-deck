@@ -33,28 +33,30 @@ const NoisyShare = 0.9
 // Target is where a trigger sends, as written and as resolved now.
 type Target struct {
 	AsWritten string `json:"as_written"`
-	By        string `json:"by,omitempty"`
+	By        string `json:"by"`
 	SessionID string `json:"session_id"`
 	Title     string `json:"title"`
-	Profile   string `json:"profile,omitempty"`
+	Profile   string `json:"profile"`
 	Resolved  bool   `json:"resolved"`
 }
 
 // View is one trigger in `triggers --json` (docs: CONTRACT in #2702).
+// Every key is always present (empty when unknown) except last_fire and
+// muted_until, which are omitted, and noop_share_24h, which is null.
 type View struct {
 	ID           string     `json:"id"`
 	Host         string     `json:"host"`
 	Kind         string     `json:"kind"`
 	Source       string     `json:"source"`
-	ConfigPath   string     `json:"config_path,omitempty"`
-	Verb         string     `json:"verb,omitempty"`
+	ConfigPath   string     `json:"config_path"`
+	Verb         string     `json:"verb"`
 	Target       Target     `json:"target"`
-	Schedule     string     `json:"schedule,omitempty"`
+	Schedule     string     `json:"schedule"`
 	Origin       string     `json:"origin"`
 	Inferred     bool       `json:"inferred"`
 	LastFire     *time.Time `json:"last_fire,omitempty"`
-	LastLine     string     `json:"last_line,omitempty"`
-	LastOutcome  string     `json:"last_outcome,omitempty"`
+	LastLine     string     `json:"last_line"`
+	LastOutcome  string     `json:"last_outcome"`
 	Fires24h     int        `json:"fires_24h"`
 	NoopShare24h *float64   `json:"noop_share_24h"`
 	Health       string     `json:"health"`
