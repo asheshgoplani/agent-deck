@@ -72,8 +72,21 @@ func TestUsageStatuslineRoundTrip(t *testing.T) {
 	for _, target := range []string{"deck-id", "My Claude"} {
 		result = runUsageCLI(t, home, "", "-p", profile, "usage", "statusline", "--session", target, "--json")
 		require.Equal(t, 0, result.exitCode, result.stderr)
-		require.JSONEq(t, string(frame.Data), result.stdout)
+		// The fixture's resets_at are in the past, so the served record marks
+		// both windows expired; with the marker cleared it is the stored record.
+		var served statedb.ClaudeStatusline
+		require.NoError(t, json.Unmarshal([]byte(result.stdout), &served))
+		require.True(t, served.RateLimits.FiveHour.Expired)
+		require.True(t, served.RateLimits.SevenDay.Expired)
+		served.RateLimits.FiveHour.Expired, served.RateLimits.SevenDay.Expired = false, false
+		unmarked, err := json.Marshal(served)
+		require.NoError(t, err)
+		require.JSONEq(t, string(frame.Data), string(unmarked))
 	}
+	// The marker is computed when served, never written to the stored row.
+	var storedRecord string
+	require.NoError(t, storage.GetDB().DB().QueryRow(`SELECT record FROM claude_statuslines WHERE claude_session_id = 'claude-native'`).Scan(&storedRecord))
+	require.NotContains(t, storedRecord, "expired")
 	counts, err := bus.KindCounts()
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), counts["usage.statusline"])

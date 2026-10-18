@@ -91,8 +91,9 @@ type MenuSession struct {
 	// Command Center can surface model-unavailable/401 distinctly instead of
 	// hiding them as plain "running". Empty when there is no refinement.
 	Substate string `json:"substate,omitempty"`
-	// SubstateDetail is free text for the substate — today the codex
-	// usage-limit retry time ("try again at Oct 10th, 2026 8:03 AM"). Same
+	// SubstateDetail is free text for the substate — the codex usage-limit
+	// retry time ("try again at Oct 10th, 2026 8:03 AM"), or for a transcript
+	// usage-limit / model-limit / account-blocked verdict its reason. Same
 	// omitempty contract as Substate.
 	SubstateDetail  string `json:"substateDetail,omitempty"`
 	GroupPath       string `json:"groupPath"`

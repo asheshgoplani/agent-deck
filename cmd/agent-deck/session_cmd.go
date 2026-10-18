@@ -2083,6 +2083,10 @@ func handleSessionShow(profile string, args []string) {
 	if inst.Favorite {
 		jsonData["favorite"] = true
 	}
+	// Omitted when none or expired (see session.IntendedSwitch).
+	if rec := inst.ActiveIntendedSwitchJSON(time.Now()); rec != nil {
+		jsonData["intended_switch"] = rec
+	}
 
 	// macapp-core-needs §3: the live native transcript and every native id
 	// seen for this session (Codex re-creates its rollout after the trust
@@ -2308,6 +2312,8 @@ func handleSessionSet(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	intendedReason := fs.String("intended", "", "Mark this account/model switch as intended, with a reason (account and model only)")
+	intendedFor := fs.Duration("intended-for", session.DefaultIntendedSwitchTTL, "How long the --intended mark lasts (max 168h)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session set <id|title> <field> <value> [options]")
@@ -2334,6 +2340,14 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  context-level      Harness context-level override: none, primer, or full (#2260; empty clears; global < group < session; see `session primer`); restart required")
 		fmt.Println("  prompt-suggestions Claude prompt suggestions: children-off (off when the session has a parent), on, or off (empty clears; session > profile > [launch]); restart required")
 		fmt.Println("  order              0-based position in the group (see `session show --json` .order); clamps to the end")
+		fmt.Println("  intended-switch    Mark the CURRENT account+model as switched on purpose (value = reason; 24h); '' clears")
+		fmt.Println()
+		fmt.Println("Intended switches:")
+		fmt.Println("  `account`/`model` with --intended \"<reason>\" record the switch as intended until --intended-for")
+		fmt.Println("  elapses; a later account/model set without --intended clears the record. list --json and")
+		fmt.Println("  session show --json report it as intended_switch {account, model, reason, at, expires_at}")
+		fmt.Println("  while unexpired. Guard contract: a switch is intended when the session's current account")
+		fmt.Println("  and model equal intended_switch's and now < expires_at.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2348,6 +2362,9 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  agent-deck session set my-project color \"\"              # clear (opt-out)")
 		fmt.Println("  agent-deck session set my-project context-level primer")
 		fmt.Println("  agent-deck session set my-project context-level \"\"       # clear (inherit group/global)")
+		fmt.Println("  agent-deck session set my-project account work --intended \"acme blocked\" --intended-for 48h")
+		fmt.Println("  agent-deck session set my-project model opus --intended \"Fable weekly cap\"")
+		fmt.Println("  agent-deck session set my-project intended-switch \"switched in the TUI\"")
 	}
 
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
@@ -2369,6 +2386,36 @@ func handleSessionSet(profile string, args []string) {
 	extraArgTokens := fs.Args()[2:]
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	// --intended / --intended-for are validated before anything is loaded so
+	// a rejected call changes nothing.
+	intendedSet, intendedForSet := false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "intended":
+			intendedSet = true
+		case "intended-for":
+			intendedForSet = true
+		}
+	})
+	reason := strings.TrimSpace(*intendedReason)
+	if intendedSet || intendedForSet {
+		switch {
+		case field != session.FieldAccount && field != session.FieldModel:
+			out.Error(fmt.Sprintf("--intended and --intended-for apply only to the account and model fields (got %q)", field), ErrCodeInvalidOperation)
+			exitCLI(1)
+		case !intendedSet:
+			out.Error("--intended-for requires --intended \"<reason>\"", ErrCodeInvalidOperation)
+			exitCLI(1)
+		case reason == "":
+			out.Error("--intended needs a non-empty reason", ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		if err := session.ValidateIntendedSwitchTTL(*intendedFor); err != nil {
+			out.Error("invalid --intended-for: "+err.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+	}
 
 	// Load sessions
 	storage, instances, groupsData, err := loadSessionData(profile)
@@ -2473,6 +2520,11 @@ func handleSessionSet(profile string, args []string) {
 		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
+	// SetField cleared any earlier intent for an account/model change; record
+	// the new one against the resulting account and model.
+	if intendedSet {
+		inst.MarkIntendedSwitch(reason, *intendedFor, time.Now())
+	}
 	// #1706: SetField canonicalizes a project path (expand + absolutize), so
 	// report what was actually stored rather than the raw argument.
 	if field == session.FieldPath {
@@ -2516,14 +2568,18 @@ func handleSessionSet(profile string, args []string) {
 	}
 
 	// Output success
-	out.Success(fmt.Sprintf("Updated %s: %q -> %q", field, oldValue, value), map[string]interface{}{
+	result := map[string]interface{}{
 		"success":   true,
 		"id":        inst.ID,
 		"title":     inst.Title,
 		"field":     field,
 		"old_value": oldValue,
 		"new_value": value,
-	})
+	}
+	if rec := inst.ActiveIntendedSwitchJSON(time.Now()); rec != nil {
+		result["intended_switch"] = rec
+	}
+	out.Success(fmt.Sprintf("Updated %s: %q -> %q", field, oldValue, value), result)
 
 	maybeEmitSessionSetTelegramWarnings(os.Stderr, session.GetClaudeConfigDirForGroup(inst.GroupPath), inst, field)
 }

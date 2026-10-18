@@ -85,6 +85,10 @@ type SessionRow struct {
 	// BackgroundWork is the in-flight background work behind substate
 	// background-work (issue #2473).
 	BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty" doc:"live; in-flight background work (workflow, agent, bash, monitor) behind substate background-work"`
+
+	// IntendedSwitch marks the current account/model as switched on purpose
+	// (`session set ... --intended`); omitted when none or expired.
+	IntendedSwitch *session.IntendedSwitchJSON `json:"intended_switch,omitempty" doc:"intended account/model switch: the switch is intended while account and model equal it and now < expires_at; absent when none or expired"`
 }
 
 func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) {
@@ -149,6 +153,7 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 		ClaudeSessionID:   inst.ClaudeSessionID,
 		TranscriptPath:    transcripts[inst],
 		ResolvedCodexHome: inst.ResolvedCodexHome(),
+		IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
 	}
 }
 

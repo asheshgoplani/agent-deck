@@ -194,6 +194,14 @@ type InstanceData struct {
 	// zone, prompt_suggestions.go).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 
+	// IntendedSwitch mirrors Instance.IntendedSwitch (tool_data extras zone,
+	// intended_switch.go).
+	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
+
+	// LimitVerdictResetAt mirrors Instance.LimitVerdictResetAt (tool_data
+	// extras zone, limit_verdict_reset.go).
+	LimitVerdictResetAt time.Time `json:"limit_verdict_reset_at,omitempty"`
+
 	// DeepSeekTask mirrors Instance.DeepSeekTask (PR #1942 review, P1c).
 	// Persisted via the tool_data extras zone (see deepseek_task_persist.go).
 	// Empty for every profile but headless.
@@ -508,6 +516,24 @@ func (s *Storage) CommitNativeHarnessSwitch(inst *Instance, result *HarnessSwitc
 
 	source := nativeSwitchStorageIdentity(result.nativeSource)
 	target := nativeSwitchStorageIdentity(result.nativeTarget)
+	// A move of the conversation to another account or harness resets the
+	// transcript limit verdict in the same CAS (the moved transcript still
+	// ends in the old account's rejection); a rollback restores what the
+	// move replaced. An acknowledgement writes nothing.
+	var limitState *limitSwitchState
+	if !result.nativeStorageAcknowledgement {
+		switch {
+		case result.nativeRevert:
+			st := result.nativeRevertLimit
+			limitState = &st
+		case source.Account != target.Account || source.Tool != target.Tool:
+			st := limitSwitchStateAfterMove(captureLimitSwitchState(inst), target.Account, time.Now())
+			limitState = &st
+		}
+	}
+	if limitState != nil {
+		target.ToolDataExtras = limitSwitchToolData(*limitState)
+	}
 	var (
 		committed *statedb.InstanceRow
 		err       error
@@ -528,6 +554,9 @@ func (s *Storage) CommitNativeHarnessSwitch(inst *Instance, result *HarnessSwitc
 	// is replayed merely to repair storage.
 	inst.Tool, inst.Account = result.nativeTarget.Tool, result.nativeTarget.Account
 	inst.ClaudeSessionID, inst.CodexSessionID = result.nativeTarget.ClaudeID, result.nativeTarget.CodexID
+	if limitState != nil {
+		inst.applyLimitSwitchState(*limitState)
+	}
 	desired, err := instanceToRow(inst)
 	if err != nil {
 		return err
@@ -1099,6 +1128,8 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// zone so a restart from any process honours `session set ... context-level`.
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
 	toolData = WritePromptSuggestionsToToolData(toolData, inst.PromptSuggestions)
+	toolData = WriteIntendedSwitchToToolData(toolData, inst.IntendedSwitch)
+	toolData = WriteLimitVerdictResetToToolData(toolData, inst.LimitVerdictResetAt)
 	// #1815: the resume-identity taint travels with the id it describes, so a
 	// writer that saves a discovered conversation id without ever passing
 	// through the resume builder (e.g. `switch-account --no-restart`) cannot
@@ -1310,6 +1341,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
+			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1452,6 +1485,8 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
+			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1765,6 +1800,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
 			ContextLevel:                 instData.ContextLevel,
 			PromptSuggestions:            instData.PromptSuggestions,
+			IntendedSwitch:               instData.IntendedSwitch,
+			LimitVerdictResetAt:          instData.LimitVerdictResetAt,
 			LastStartedAt:                instData.LastStartedAt,
 			GenericSessionID:             instData.GenericSessionID,
 			GenericDetectedAt:            instData.GenericDetectedAt,
