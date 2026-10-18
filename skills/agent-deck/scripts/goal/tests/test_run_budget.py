@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,6 +64,8 @@ class TestWorkerTokens(BudgetCase):
     def test_sums_the_worker_row(self):
         used, run = self.run_with(costs_rows("w1", 1234))
         self.assertEqual(used, 1234)
+        rows = json.dumps([{"session_id": "w1", "input_tokens": 10, "output_tokens": 20, "cache_read": 10**6, "cache_write": 5}])
+        self.assertEqual(self.run_with(rows)[0], 35, "cache reads are not counted")
         self.assertEqual(run.call_args[0][0][:3], ["agent-deck", "-p", "p"])
 
     def test_no_events_yet_is_zero(self):
@@ -106,6 +109,25 @@ class TestWalkGoalBudgets(BudgetCase):
         self.assertEqual(data["state"]["ended_reason"], "budget_exceeded: max_tokens: used 1000 of 1000 tokens")
         self.assertIn("budget_exceeded", [e["event"] for e in data["history"]])
 
+    def test_unmeasured_is_recorded_once_per_change(self, send, stop):
+        """Review nit: budget_unmeasured once per state change, not every tick."""
+        goal = self.idle_goal(max_tokens=1000, escalate_after_stuck_nudges=99)
+        path = self.dir / f"{goal['id']}.json"
+        path.write_text(json.dumps(goal))
+        for used in (None, None, None, 5, None):
+            with patch("manager.worker_tokens", return_value=used):
+                manager.walk_goal(path, dry_run=False, verbose=False)
+        events = [e["event"] for e in json.loads(path.read_text())["history"]]
+        self.assertEqual(events.count("budget_unmeasured"), 2)
+
+    def test_max_cycles_zero_is_no_cap(self, send, stop):
+        """Review m4: --max-turns 0 / MAX_CYCLES=0 is no cap."""
+        goal = self.idle_goal()
+        goal["schedule"]["max_cycles"] = 0
+        data = self.walk(goal)
+        self.assertEqual(data["state"]["status"], "active")
+        stop.assert_not_called()
+
     def test_unmeasurable_tokens_do_not_stop(self, send, stop):
         with patch("manager.worker_tokens", return_value=None):
             data = self.walk(self.idle_goal(max_tokens=1000))
@@ -141,21 +163,70 @@ class TestWalkGoalBudgetsWithProgressFeatures(TestWalkGoalBudgets):
 
 class TestBudgetRefusedNudge(BudgetCase):
     def test_refused_send_is_not_retried(self):
-        refused = subprocess.CompletedProcess([], 1, stdout="", stderr="Error: budget exceeded: daily global limit exceeded ($5.00 used of $1.00); nothing was sent to 'w'")
+        payload = json.dumps({"success": False, "code": "BUDGET_EXCEEDED", "resets_at": "2026-10-19T00:00:00+02:00",
+                              "error": "budget exceeded: daily global limit exceeded ($5.00 used of $1.00); nothing was sent to 'w'"})
+        refused = subprocess.CompletedProcess([], 1, stdout=payload, stderr="")
         with patch("manager.subprocess.run", return_value=refused) as run, patch("manager.time.sleep") as sleep:
-            with self.assertRaises(manager.BudgetRefused):
+            with self.assertRaises(manager.BudgetRefused) as caught:
                 manager.agent_deck_send("w", "nudge", dry_run=False, verbose=False)
         self.assertEqual(run.call_count, 1)
+        self.assertIn("--json", run.call_args[0][0])
+        self.assertEqual(caught.exception.resets_at, "2026-10-19T00:00:00+02:00")
         sleep.assert_not_called()
+
+    def test_refusal_is_detected_by_code_not_text(self):
+        """Review m8: only code BUDGET_EXCEEDED is a budget refusal."""
+        other = subprocess.CompletedProcess([], 1, stdout="", stderr="Error: worker said budget exceeded in its reply")
+        with patch("manager.subprocess.run", return_value=other) as run, patch("manager.time.sleep"):
+            self.assertFalse(manager.agent_deck_send("w", "nudge", dry_run=False, verbose=False))
+        self.assertEqual(run.call_count, len(manager.BACKOFF_SECONDS), "an ordinary failure is retried")
 
     @patch("manager.agent_deck_stop", return_value=True)
     def test_refused_nudge_ends_goal(self, stop):
+        """A limit that does not reset (session lifetime) ends the goal."""
         goal = make_goal(pid="r", max_idle=60, created_minutes_ago=10)
-        with patch("manager.agent_deck_send", side_effect=manager.BudgetRefused("budget exceeded: daily")):
+        with patch("manager.agent_deck_send", side_effect=manager.BudgetRefused("budget exceeded: session lifetime")):
             data = self.walk(goal)
         stop.assert_called_once()
         self.assertEqual(data["state"]["status"], "failed")
-        self.assertEqual(data["state"]["ended_reason"], "budget_exceeded: budget exceeded: daily")
+        self.assertEqual(data["state"]["ended_reason"], "budget_exceeded: budget exceeded: session lifetime")
+
+    @patch("manager.agent_deck_stop", return_value=True)
+    def test_daily_refusal_pauses_until_the_window_resets(self, stop):
+        """Review m5: a daily limit pauses the goal, worker untouched."""
+        resets = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+        goal = make_goal(pid="d", max_idle=60, created_minutes_ago=10)
+        path = self.dir / "d.json"
+        with patch("manager.agent_deck_send", side_effect=manager.BudgetRefused("budget exceeded: daily", resets)):
+            data = self.walk(goal)
+        stop.assert_not_called()
+        self.assertEqual(data["state"]["status"], "active")
+        self.assertEqual(manager.parse_iso(data["state"]["budget_paused_until"]), manager.parse_iso(resets))
+        self.assertIn("budget_paused", [e["event"] for e in data["history"]])
+
+        # During the pause nothing is sent; only done_cmd runs.
+        with patch("manager.agent_deck_send") as send:
+            manager.walk_goal(path, dry_run=False, verbose=False)
+            send.assert_not_called()
+        self.assertEqual(json.loads(path.read_text())["state"]["status"], "active")
+
+        # After the reset the goal runs again and wakes the worker.
+        data = json.loads(path.read_text())
+        data["state"]["budget_paused_until"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        path.write_text(json.dumps(data))
+        with patch("manager.agent_deck_send", return_value=True) as send:
+            manager.walk_goal(path, dry_run=False, verbose=False)
+            send.assert_called_once()
+        data = json.loads(path.read_text())
+        self.assertNotIn("budget_paused_until", data["state"])
+        self.assertIn("budget_resumed", [e["event"] for e in data["history"]])
+
+    @patch("manager.agent_deck_stop", return_value=True)
+    def test_done_during_a_budget_pause_finishes(self, stop):
+        goal = make_goal(pid="p", max_idle=60, created_minutes_ago=10, done_cmd="true")
+        goal["state"]["budget_paused_until"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        data = self.walk(goal)
+        self.assertEqual(data["state"]["status"], "done")
 
     @patch("manager.agent_deck_stop", return_value=True)
     def test_refused_nudge_ends_goal_with_progress_features(self, stop):
@@ -208,6 +279,12 @@ class TestGoalShRunBudget(unittest.TestCase):
     def test_config_defaults_apply(self):
         sched = self.run_goal(env={"STUB_CFG_max_tokens": "80000", "STUB_CFG_max_turns": "12", "STUB_CFG_max_minutes": "30"})["schedule"]
         self.assertEqual((sched["max_tokens"], sched["max_cycles"], sched["max_minutes"]), (80000, 12, 30))
+
+    def test_env_beats_config(self):
+        """Review nit: the environment wins over [costs.run_budget]."""
+        sched = self.run_goal(env={"MAX_TOKENS": "700", "STUB_CFG_max_tokens": "80000",
+                                   "MAX_CYCLES": "0", "STUB_CFG_max_turns": "12"})["schedule"]
+        self.assertEqual((sched["max_tokens"], sched["max_cycles"]), (700, 0))
 
     def test_flags_override_config(self):
         goal = self.run_goal("--max-tokens", "500", "--max-turns", "3", "--max-minutes", "7",

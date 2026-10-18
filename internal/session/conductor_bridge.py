@@ -996,8 +996,10 @@ def send_to_conductor(
             _enqueue_message(session, message, profile, reply_callback)
             return True, "", False  # queued, not failed
 
+        # A chat message is a person's: an enforced cost budget never
+        # blocks it (--ignore-budget).
         result = run_cli(
-            "session", "send", session, message, "--no-wait",
+            "session", "send", session, message, "--no-wait", "--ignore-budget",
             profile=profile, timeout=30,
         )
         if result.returncode != 0:
@@ -1029,7 +1031,7 @@ def send_to_conductor(
         # response as one result; never issue a second output read here.
         result = run_cli(
             "session", "send", session, message,
-            "--wait", "--timeout", f"{response_timeout}s", "--json",
+            "--wait", "--timeout", f"{response_timeout}s", "--json", "--ignore-budget",
             profile=profile,
             timeout=max(response_timeout + 30, 60),
         )

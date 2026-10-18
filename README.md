@@ -900,7 +900,8 @@ Track token usage and costs across all your AI agent sessions in real-time.
 enabled = true        # default; false turns cost tracking off (also [profiles.<name>.costs])
 retention_days = 90
 
-[costs.budgets]        # enforced: a send or wake to an over-budget target is refused
+[costs.budgets]
+enforce = true         # refuse agent sends and wakes once a limit is spent (default false: display-only)
 daily_limit = 50.00
 weekly_limit = 200.00
 

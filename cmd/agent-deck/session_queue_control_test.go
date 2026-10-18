@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // Worker side of `session queue release|cancel` (CORE-CHANGES 22), ported
@@ -263,7 +265,7 @@ func TestQueueReleaseUsesReleaseChildAndKeepsEvidence(t *testing.T) {
 				}
 				return err
 			}
-			if !typeQueued("", dir, rec, queueReleaseStatus, "", 0, set) {
+			if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, queueReleaseStatus, "", 0, set) {
 				t.Fatal("release did not start")
 			}
 			stored, err := sendqueue.Load(dir, rec.SendID)

@@ -283,17 +283,26 @@ for goal_file in glob("~/.agent-deck/goals/*.json"):
 
 `max_cycles` (turns), `max_tokens` and `max_minutes` are the goal's run budget.
 `goal.sh --max-turns N --max-tokens N --max-minutes N` sets them; unset flags take
-`[costs.run_budget]` from config.toml (`max_turns`, `max_tokens`, `max_minutes`),
-then `MAX_CYCLES` / `MAX_TOKENS` / `MAX_MINUTES` from the environment, then 24 / 0 / 0
-(0 = no cap). On every tick, after the verifier and before reading receipts or
-nudging, the manager compares the worker session's tokens (input, output, cache
-read and cache write, from `agent-deck costs sessions --json`) and the minutes since
-`created_at` against the caps. A spent cap finalizes the goal as `failed` with
-`ended_reason` `budget_exceeded: max_tokens: used N of M tokens` (or
-`max_minutes: ran N of M minutes`), records a `budget_exceeded` event, and stops
-the worker. A token cap that cannot be read (cost tracking off) is recorded as
-`budget_unmeasured` and not enforced. A nudge that `session send` refuses because a
-`[costs.budgets]` limit is spent ends the goal the same way, without retries.
+`MAX_CYCLES` / `MAX_TOKENS` / `MAX_MINUTES` from the environment, then
+`[costs.run_budget]` from config.toml (`max_turns`, `max_tokens`, `max_minutes`; 0 there
+means unset), then 24 / 0 / 0. In the goal, 0 means no cap, `max_cycles` included. On
+every tick, after the verifier and before reading receipts or nudging, the manager
+compares the worker session's tokens (input, output and cache write, from
+`agent-deck costs sessions --json`; cache reads are not counted, since every turn
+re-reads the cached context) and the minutes since `created_at` against the caps. A
+spent cap finalizes the goal as `failed` with `ended_reason`
+`budget_exceeded: max_tokens: used N of M tokens` (or `max_minutes: ran N of M minutes`),
+records a `budget_exceeded` event, and stops the worker. A token cap that cannot be read
+(cost tracking off) records `budget_unmeasured` once, when that starts, and is not
+enforced until it can be read again.
+
+A nudge that `session send --json` refuses with code `BUDGET_EXCEEDED` (an enforced
+`[costs.budgets]` limit is spent) is not retried. A daily, weekly or monthly limit
+pauses the goal until its window resets (`resets_at`; `budget_paused_until` in
+`state`, `budget_paused` and later `budget_resumed` in history): the worker keeps
+running, and each tick meanwhile only runs `done_cmd`, so a goal finished during the
+pause is still marked done. A session lifetime limit, which does not reset, ends the
+goal as `failed` and stops the worker.
 
 ## Nudge generator — context-aware
 

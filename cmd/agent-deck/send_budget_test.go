@@ -34,9 +34,9 @@ func TestQueuedSendBudgetGate(t *testing.T) {
 				dir, rec := queueControlFixture(t, sendqueue.StateQueued)
 				prevBudget, prevChild, prevRelease := budgetForSend, sendChild, sendChildRelease
 				t.Cleanup(func() { budgetForSend, sendChild, sendChildRelease = prevBudget, prevChild, prevRelease })
-				budgetForSend = func(_, sessionID string, _ *session.Storage, _ []*session.Instance) costs.BudgetResult {
-					if sessionID != rec.SessionID {
-						t.Fatalf("budget checked for %q, want %q", sessionID, rec.SessionID)
+				budgetForSend = func(_ string, target *session.Instance, _ []*session.Instance, _ *session.Storage) costs.BudgetResult {
+					if target == nil || target.ID != rec.SessionID {
+						t.Fatalf("budget checked for %+v, want %q", target, rec.SessionID)
 					}
 					return tc.budget
 				}
@@ -54,7 +54,7 @@ func TestQueuedSendBudgetGate(t *testing.T) {
 					}
 					return err
 				}
-				if !typeQueued("", dir, rec, status, "", 0, set) {
+				if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, status, "", 0, set) {
 					t.Fatal("typeQueued could not record the send")
 				}
 				if typed != tc.typed {

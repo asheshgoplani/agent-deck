@@ -5,6 +5,8 @@ Start a session's tmux process.
 Options:
   -attach
     	Attach to the session after starting (requires an interactive terminal)
+  -ignore-budget
+    	Send even when an enforced [costs.budgets] limit is spent (for messages a person starts)
   -json
     	Output as JSON
   -m string

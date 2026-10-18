@@ -1169,7 +1169,7 @@ func main() {
 			go func() {
 				for raw := range costWatcher.EventCh() {
 					ev := costs.CostEvent{
-						ID:               fmt.Sprintf("%s_%d", raw.InstanceID, raw.Timestamp),
+						ID:               costs.HookCostEventID(raw.InstanceID, raw.MessageUUID, raw.Timestamp),
 						SessionID:        raw.InstanceID,
 						Timestamp:        time.Unix(0, raw.Timestamp),
 						Model:            raw.Model,

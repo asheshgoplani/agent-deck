@@ -6735,6 +6735,11 @@ func (h *Home) backgroundStatusUpdate() {
 			continue
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
+				uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
+					slog.String("instance", inst.ID), slog.String("reason", reason))
+				continue
+			}
 			h.clearOnCompactSent[inst.ID] = time.Now()
 			conductorName := conductorDisplayName(inst)
 			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
@@ -14162,6 +14167,12 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 		uiLog.Warn("watcher_delivery_conductor_not_loaded", slog.String("conductor", d.Conductor))
 		return
 	}
+	budgetSessions := h.budgetSessions()
+	if reason, refused := h.agentDeliveryOverBudget(sessionByID(budgetSessions, id), budgetSessions); refused {
+		uiLog.Warn("dispatch_health_alert_budget_exceeded",
+			slog.String("tmux_session", ts.Name), slog.String("reason", reason))
+		return
+	}
 	lock, err := session.AcquireSendLock(id, conductorSendLockWait)
 	if err != nil {
 		uiLog.Warn("dispatch_health_alert_send_busy",
@@ -14175,6 +14186,58 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
+}
+
+// agentDeliveryOverBudget reports whether an enforced cost budget
+// ([costs.budgets] enforce = true) refuses an agent-initiated delivery the
+// TUI types into inst's pane itself (the heartbeat after a clear-on-compact,
+// a watcher health alert), with the reason. Group limits sum the sessions of
+// instances in inst's exact group.
+func (h *Home) agentDeliveryOverBudget(inst *session.Instance, instances []*session.Instance) (string, bool) {
+	if inst == nil || !h.costBudget.Enforced() {
+		return "", false
+	}
+	ids := []string{inst.ID}
+	for _, other := range instances {
+		if other != nil && other.ID != inst.ID && other.GroupPath == inst.GroupPath {
+			ids = append(ids, other.ID)
+		}
+	}
+	r, err := h.costBudget.CheckSend(inst.ID, inst.GroupPath, ids)
+	if err != nil || r.Action != costs.BudgetActionStop {
+		return "", false
+	}
+	return r.Describe(), true
+}
+
+// budgetSessions returns the sessions the budget gate looks at: the loaded
+// ones, or for a headless engine owner (which loads none) the ones in
+// storage. Nil without an enforced budget, so nothing is read then.
+func (h *Home) budgetSessions() []*session.Instance {
+	if !h.costBudget.Enforced() {
+		return nil
+	}
+	h.instancesMu.RLock()
+	loaded := append([]*session.Instance(nil), h.instances...)
+	h.instancesMu.RUnlock()
+	if len(loaded) > 0 || !h.headless || h.storage == nil {
+		return loaded
+	}
+	instances, _, err := h.storage.LoadWithGroups()
+	if err != nil {
+		return nil
+	}
+	return instances
+}
+
+// sessionByID finds id in instances, or nil.
+func sessionByID(instances []*session.Instance, id string) *session.Instance {
+	for _, inst := range instances {
+		if inst != nil && inst.ID == id {
+			return inst
+		}
+	}
+	return nil
 }
 
 // conductorSendLockWait bounds how long a health alert waits for another

@@ -6125,6 +6125,9 @@ func ResolveCostLineTemplate(cfg *UserConfig, profile string) (template string, 
 }
 
 type BudgetSettings struct {
+	// Enforce makes the limits refuse agent-initiated sends and wakes. Off by
+	// default: the limits are then shown in the cost dashboard only.
+	Enforce      bool                     `toml:"enforce,omitempty"`
 	DailyLimit   float64                  `toml:"daily_limit,omitzero"`
 	WeeklyLimit  float64                  `toml:"weekly_limit,omitzero"`
 	MonthlyLimit float64                  `toml:"monthly_limit,omitzero"`

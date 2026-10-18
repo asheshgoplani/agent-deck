@@ -10,10 +10,12 @@
 #           <id> <goal> <done-cmd> [worker-title] [workdir]
 #
 # Run budget (0 = no cap): --max-tokens caps the tokens the worker session
-# may use, --max-turns the progress cycles, --max-minutes the wall time.
-# Defaults come from [costs.run_budget] in config.toml (max_tokens,
-# max_turns, max_minutes), then MAX_TOKENS / MAX_CYCLES / MAX_MINUTES in the
-# environment, then 0 / 24 / 0. manager.py stops the run when one is spent.
+# may use (input, output and cache writes; cache reads are not counted),
+# --max-turns the progress cycles, --max-minutes the wall time. A flag wins,
+# then MAX_TOKENS / MAX_CYCLES / MAX_MINUTES in the environment, then
+# [costs.run_budget] in config.toml (max_tokens, max_turns, max_minutes; 0
+# there means unset), then 0 / 24 / 0. manager.py stops the run when one is
+# spent.
 #
 # Examples:
 #   goal.sh test-marker \
@@ -77,15 +79,18 @@ CONDUCTOR="${CONDUCTOR:-agent-deck}"
 PROFILE="${PROFILE:-personal}"
 
 # run_budget_default <config key suffix> <env value> <built-in>: the
-# [costs.run_budget] value when set (> 0), else the environment, else the
-# built-in. An agent-deck without the key prints nothing and falls through.
+# environment value when set, else the [costs.run_budget] value when set
+# (> 0), else the built-in. An agent-deck without the key prints nothing and
+# falls through.
 run_budget_default() {
+    if [[ -n "$2" ]]; then
+        echo "$2"
+        return
+    fi
     local configured
     configured="$(agent-deck -p "$PROFILE" config get "costs.run_budget.$1" 2>/dev/null || true)"
     if [[ "$configured" =~ ^[0-9]+$ && "$configured" -gt 0 ]]; then
         echo "$configured"
-    elif [[ -n "$2" ]]; then
-        echo "$2"
     else
         echo "$3"
     fi

@@ -5,9 +5,13 @@ import (
 	"strings"
 )
 
-// Enforced reports whether any limit is set. With none, the send and wake
-// gates do not open the cost store at all, so behavior is unchanged.
+// Enforced reports whether the limits gate sends and wakes: enforce is on
+// and at least one limit is set. Otherwise the send and wake gates do not
+// open the cost store at all, and budgets stay display-only.
 func (c BudgetConfig) Enforced() bool {
+	if !c.Enforce {
+		return false
+	}
 	if c.DailyLimit > 0 || c.WeeklyLimit > 0 || c.MonthlyLimit > 0 {
 		return true
 	}
@@ -23,6 +27,9 @@ func (c BudgetConfig) Enforced() bool {
 	}
 	return false
 }
+
+// Enforced reports whether this checker's limits gate sends and wakes.
+func (b *BudgetChecker) Enforced() bool { return b != nil && b.cfg.Enforced() }
 
 // CheckSend evaluates every limit that applies to a send or wake aimed at
 // sessionID, in one read transaction, with the same sums as CheckTx.

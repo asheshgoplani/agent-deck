@@ -14,11 +14,14 @@ func TestBudgetConfigEnforced(t *testing.T) {
 		cfg  costs.BudgetConfig
 		want bool
 	}{
-		{"none", costs.BudgetConfig{}, false},
-		{"zero maps", costs.BudgetConfig{GroupLimits: map[string]int64{"g": 0}, SessionLimits: map[string]int64{"s": -1}}, false},
-		{"daily", costs.BudgetConfig{DailyLimit: 1}, true},
-		{"group", costs.BudgetConfig{GroupLimits: map[string]int64{"g": 1}}, true},
-		{"session", costs.BudgetConfig{SessionLimits: map[string]int64{"s": 1}}, true},
+		{"none", costs.BudgetConfig{Enforce: true}, false},
+		{"zero maps", costs.BudgetConfig{Enforce: true, GroupLimits: map[string]int64{"g": 0}, SessionLimits: map[string]int64{"s": -1}}, false},
+		{"daily", costs.BudgetConfig{Enforce: true, DailyLimit: 1}, true},
+		{"group", costs.BudgetConfig{Enforce: true, GroupLimits: map[string]int64{"g": 1}}, true},
+		{"session", costs.BudgetConfig{Enforce: true, SessionLimits: map[string]int64{"s": 1}}, true},
+		// Review M1: limits without enforce are display-only.
+		{"daily without enforce", costs.BudgetConfig{DailyLimit: 1}, false},
+		{"session without enforce", costs.BudgetConfig{SessionLimits: map[string]int64{"s": 1}}, false},
 	} {
 		if got := tc.cfg.Enforced(); got != tc.want {
 			t.Errorf("%s: Enforced() = %v, want %v", tc.name, got, tc.want)
@@ -61,5 +64,40 @@ func TestBudgetCheckSend(t *testing.T) {
 		if tc.reason != "" && !strings.Contains(got.Describe(), tc.reason) {
 			t.Errorf("%s: Describe() = %q, want %q", tc.name, got.Describe(), tc.reason)
 		}
+	}
+}
+
+// A refusal says when its limit's window starts over; a session lifetime
+// limit never does.
+func TestBudgetResultResetsAt(t *testing.T) {
+	s := testStore(t)
+	if err := s.WriteCostEvent(costs.CostEvent{ID: "e1", SessionID: "s1", Timestamp: time.Now(), Model: "m", CostMicrodollars: 10_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	tz := time.UTC
+	now := time.Now().In(tz)
+	day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, tz).AddDate(0, 0, 1)
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, tz).AddDate(0, 1, 0)
+	for _, tc := range []struct {
+		name string
+		cfg  costs.BudgetConfig
+		want time.Time
+	}{
+		{"daily", costs.BudgetConfig{DailyLimit: 1, Timezone: tz}, day},
+		{"group", costs.BudgetConfig{GroupLimits: map[string]int64{"g": 1}, Timezone: tz}, day},
+		{"monthly", costs.BudgetConfig{MonthlyLimit: 1, Timezone: tz}, month},
+		{"session lifetime", costs.BudgetConfig{SessionLimits: map[string]int64{"s1": 1}, Timezone: tz}, time.Time{}},
+	} {
+		got, err := costs.NewBudgetChecker(tc.cfg, s).CheckSend("s1", "g", []string{"s1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Action != costs.BudgetActionStop || !got.ResetsAt.Equal(tc.want) {
+			t.Errorf("%s: %+v, want stop resetting at %v", tc.name, got, tc.want)
+		}
+	}
+	weekly, _ := costs.NewBudgetChecker(costs.BudgetConfig{WeeklyLimit: 1, Timezone: tz}, s).CheckSend("s1", "g", nil)
+	if d := time.Until(weekly.ResetsAt); weekly.ResetsAt.Weekday() != time.Monday || d <= 0 || d > 7*24*time.Hour {
+		t.Errorf("weekly resets at %v, want the next Monday", weekly.ResetsAt)
 	}
 }

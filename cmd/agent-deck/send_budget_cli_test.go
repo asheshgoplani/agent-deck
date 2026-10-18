@@ -13,11 +13,11 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
-// C9 (prime-agent adoption): cost budgets are enforced on every send and
-// wake. This file drives the built binary only, so it also runs against a
-// core without enforcement (where the over-budget cases fail). Each case is
-// under budget passes, over budget refused before anything is typed, and no
-// budget configured unchanged.
+// C9 (prime-agent adoption): with [costs.budgets] enforce = true, cost
+// budgets gate agent-initiated sends and wakes. This file drives the built
+// binary only. Each case is under budget passes, over budget refused before
+// anything is typed, no budget configured unchanged, and limits without
+// enforce stay display-only.
 
 // budgetHome is an isolated agent-deck home with one stopped Claude session
 // that has spentUSD of cost today, and config.toml holding configTOML.
@@ -90,9 +90,10 @@ func TestSessionSendBudget(t *testing.T) {
 		refused bool
 	}{
 		{"no budget configured", "", 5, false},
-		{"under daily budget", "[costs.budgets]\ndaily_limit = 100.0\n", 5, false},
-		{"over daily budget", "[costs.budgets]\ndaily_limit = 1.0\n", 5, true},
-		{"cost tracking off", "[costs]\nenabled = false\n[costs.budgets]\ndaily_limit = 1.0\n", 5, false},
+		{"under daily budget", "[costs.budgets]\nenforce = true\ndaily_limit = 100.0\n", 5, false},
+		{"over daily budget", "[costs.budgets]\nenforce = true\ndaily_limit = 1.0\n", 5, true},
+		{"over daily budget, enforce off (display-only)", "[costs.budgets]\ndaily_limit = 1.0\n", 5, false},
+		{"cost tracking off", "[costs]\nenabled = false\n[costs.budgets]\nenforce = true\ndaily_limit = 1.0\n", 5, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home, id := budgetHome(t, tc.config, tc.spent)
@@ -109,6 +110,7 @@ func TestSessionSendBudget(t *testing.T) {
 					SendID   string  `json:"send_id"`
 					LimitUSD float64 `json:"limit_usd"`
 					UsedUSD  float64 `json:"used_usd"`
+					ResetsAt string  `json:"resets_at"`
 				}
 				if err := json.Unmarshal([]byte(stdout), &res); err != nil {
 					t.Fatalf("%v: decode %q: %v", extra, stdout, err)
@@ -118,6 +120,9 @@ func TestSessionSendBudget(t *testing.T) {
 						!strings.Contains(res.Error, "budget exceeded: daily global limit exceeded ($5.00 used of $1.00)") ||
 						res.LimitUSD != 1 || res.UsedUSD != 5 {
 						t.Fatalf("%v: want a budget refusal before queueing, got %+v", extra, res)
+					}
+					if resets, err := time.Parse(time.RFC3339, res.ResetsAt); err != nil || !resets.After(time.Now()) || resets.After(time.Now().Add(25*time.Hour)) {
+						t.Fatalf("%v: resets_at = %q, want the next day start", extra, res.ResetsAt)
 					}
 					continue
 				}
@@ -130,6 +135,22 @@ func TestSessionSendBudget(t *testing.T) {
 			}
 			if got := budgetEventWritten(t, home); got != tc.refused {
 				t.Fatalf("session.budget_exceeded event written = %v, want %v", got, tc.refused)
+			}
+			if tc.refused {
+				// --ignore-budget is for a person's message: it passes the
+				// gate and fails later, like an unlimited send.
+				for _, extra := range [][]string{nil, {"--queue"}} {
+					args := append([]string{"session", "send", id, "from a person", "--json", "--ignore-budget"}, extra...)
+					stdout, _, _ := runAgentDeck(t, home, args...)
+					if strings.Contains(stdout, "BUDGET_EXCEEDED") || !strings.Contains(stdout, "not running") {
+						t.Fatalf("%v --ignore-budget: want the not-running failure, got %s", extra, stdout)
+					}
+				}
+				// The flag conflict is reported before the budget.
+				stdout, _, code := runAgentDeck(t, home, "session", "send", id, "x", "--json", "--queue", "--wait")
+				if code != 2 || !strings.Contains(stdout, "--queue is incompatible") {
+					t.Fatalf("--queue --wait over budget: exit %d %s, want the flag conflict", code, stdout)
+				}
 			}
 			// Human output names the limit and the fix.
 			if tc.refused {

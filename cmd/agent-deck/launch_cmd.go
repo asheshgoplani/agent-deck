@@ -90,6 +90,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	messageShort := fs.String("m", "", "Initial message to send (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready before sending message")
+	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	assertDone := fs.Bool("assert-done", false, "Append a completion-sentinel instruction to the message (default on for -c claude)")
 	noAssertDone := fs.Bool("no-assert-done", false, "Disable the completion-sentinel instruction")
 	parent := fs.String("parent", "", "Parent session (creates sub-session; group is cwd-derived by default — auto-inherits the parent's group for git worktree children or with --inherit-group)")
@@ -562,6 +563,13 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+	}
+
+	// An initial message is a send: an enforced cost budget refuses the
+	// launch before the session is saved or started (a worktree made for it
+	// is removed again).
+	if initialMessage != "" && !*ignoreBudget {
+		enforceSendBudget(profile, "launch", storage, newInstance, append(instances, newInstance), out, quietMode, func() { _ = cleanupSingleWorktree() })
 	}
 
 	// Socket-isolation CLI override (issue #687 phase 1, v1.7.50).
