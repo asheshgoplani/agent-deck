@@ -74,6 +74,9 @@ type Bus struct {
 	// keepCorrupt (Options.KeepCorrupt) makes recovery leave a malformed
 	// line inside committed history in place instead of truncating from it.
 	keepCorrupt bool
+	// syncDurable makes the bus fsync its checkpoint, drops and directory
+	// writes (the comms ledger); the status bus keeps rename-only writes.
+	syncDurable bool
 	// maxBytes (Options.MaxBytes) bounds the retained log; 0 = unbounded.
 	// totalBytes is the sum of sealed segment sizes plus the active file.
 	maxBytes   int64
@@ -156,16 +159,44 @@ func disabledBus() *Bus {
 // typically the value returned by busDir(); tests pass an isolated temp dir.
 // Open recovers the last-assigned Cursor by reading the tail of the log, so
 // it is durable and monotonic across restarts.
+//
+// The log holds what sessions and the Mac app exchange (browser requests
+// and replies among them), so it is private to its user: the directory is
+// 0o700 and every file 0o600. A log written by an older core with 0o755 /
+// 0o644 is tightened when it is opened.
 func Open(dir string) (*Bus, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("events: create bus dir: %w", err)
 	}
-	return openWith(dir, 0o644, false)
+	tightenBusModes(dir)
+	return openWith(dir, 0o600, false, false)
+}
+
+// tightenBusModes makes an existing log private: the directory and its
+// subdirectories 0o700, every regular file 0o600. Best effort: a file it
+// cannot change keeps its mode (the bus still opens).
+func tightenBusModes(dir string) {
+	_ = os.Chmod(dir, 0o700)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		switch {
+		case entry.IsDir():
+			tightenBusModes(path)
+		case entry.Type().IsRegular():
+			if info, err := entry.Info(); err == nil && info.Mode().Perm()&0o077 != 0 {
+				_ = os.Chmod(path, 0o600)
+			}
+		}
+	}
 }
 
 // openWith is Open with the file mode every created file gets and the
 // recovery policy for a malformed line inside committed history.
-func openWith(dir string, mode os.FileMode, keepCorrupt bool) (*Bus, error) {
+func openWith(dir string, mode os.FileMode, keepCorrupt, syncDurable bool) (*Bus, error) {
 	b := &Bus{
 		dir:          dir,
 		maxSegBytes:  defaultMaxSegBytes,
@@ -174,6 +205,7 @@ func openWith(dir string, mode os.FileMode, keepCorrupt bool) (*Bus, error) {
 		enabled:      true,
 		fileMode:     mode,
 		keepCorrupt:  keepCorrupt,
+		syncDurable:  syncDurable,
 		queue:        make(chan queuedFrame, defaultQueueCap),
 		closeCh:      make(chan struct{}),
 	}
@@ -366,7 +398,7 @@ func recoverActiveSegment(dir string, mode os.FileMode, keepCorrupt bool) (Curso
 // durable reports whether this bus fsyncs its checkpoint, drops and
 // directory writes: the private (ledger) bus does; the status bus keeps the
 // cheaper rename-only behaviour it always had.
-func (b *Bus) durable() bool { return b.fileMode == 0o600 }
+func (b *Bus) durable() bool { return b.syncDurable }
 
 // sealedBytes sums the sizes of sealed segments.
 func sealedBytes(sealed []sealedSegment) int64 {

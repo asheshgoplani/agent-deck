@@ -93,6 +93,10 @@ name. Typically:
 | `cursor.state` | Last sealed cursor, retained even when all sealed segments are compacted. |
 | `drops.count` | Cumulative drops from all producers for this profile. |
 
+The log is private to its user: the directory (and `want/`) is mode 0700 and
+every file 0600. A log an older core wrote with 0755/0644 is tightened when
+it is next opened.
+
 Rotation: the active segment seals (renamed to `seg-*`) on the next sync pass
 after it passes 8 MiB or 50,000 frames, and a fresh `active.ndjson` starts.
 This keeps file data durable before the sealed cursor range is published. Compaction:
