@@ -141,6 +141,24 @@ func TestTerminalHookTransitionCandidate(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "pi turn_end terminal",
+			tool: "pi",
+			hs:   &HookStatus{Status: "waiting", Event: "turn_end", UpdatedAt: now},
+			want: true,
+		},
+		{
+			name: "pi session_start ignored",
+			tool: "pi",
+			hs:   &HookStatus{Status: "waiting", Event: "session_start", UpdatedAt: now},
+			want: false,
+		},
+		{
+			name: "pi turn_start ignored",
+			tool: "pi",
+			hs:   &HookStatus{Status: "running", Event: "turn_start", UpdatedAt: now},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

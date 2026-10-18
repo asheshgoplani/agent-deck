@@ -7,8 +7,9 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// Refusal codes reported by ClaudeComposerReady. They are part of the JSON
-// contract of `agent-deck session command`, so keep them stable.
+// Refusal codes reported by ClaudeComposerReady and ComposerEmptyWhileBusy.
+// They are part of the JSON contract of `agent-deck session command`, so keep
+// them stable.
 const (
 	ComposerCodeDraft    = "composer_draft" // operator text sits unsent in the composer
 	ComposerCodeBusy     = "agent_busy"     // a turn is running
@@ -22,7 +23,8 @@ const (
 // block delivery forever.
 const busyLookback = 12
 
-// ComposerReadiness is the verdict of ClaudeComposerReady.
+// ComposerReadiness is the verdict of ClaudeComposerReady and
+// ComposerEmptyWhileBusy.
 type ComposerReadiness struct {
 	Ready bool
 	// Code is one of the ComposerCode* constants when Ready is false.
@@ -45,12 +47,32 @@ type ComposerReadiness struct {
 // running turn, a pane without a composer, and a composer holding operator
 // text. A ghost suggestion or the "Try ..." hint count as empty.
 func ClaudeComposerReady(raw string) ComposerReadiness {
+	return composerReadiness(raw, false)
+}
+
+// ComposerEmptyWhileBusy is ClaudeComposerReady for a harness that queues
+// typed input while a turn runs (session.AcceptsInputWhileBusy): a running
+// turn is not a refusal, every other reason still is. The composer must be
+// framed (borders above and below the prompt line, as Claude draws it in
+// idle and busy screens), so a prompt glyph in scrolled output is never
+// taken for the input box.
+func ComposerEmptyWhileBusy(raw string) ComposerReadiness {
+	return composerReadiness(raw, true)
+}
+
+func composerReadiness(raw string, busyOK bool) ComposerReadiness {
 	content := tmux.StripANSI(raw)
 	if DialogOpen(content) {
 		return ComposerReadiness{Code: ComposerCodeDialog}
 	}
-	if turnRunning(content) {
+	if !busyOK && turnRunning(content) {
 		return ComposerReadiness{Code: ComposerCodeBusy}
+	}
+	if busyOK {
+		// Busy input needs the framed composer, not a bare prompt glyph.
+		if _, framed := framedComposerPrompt(composerSearchLines(content)); !framed {
+			return ComposerReadiness{Code: ComposerCodeNoPrompt}
+		}
 	}
 	draft, visible := ComposerDraft(raw, tmux.StripANSI)
 	if !visible {
