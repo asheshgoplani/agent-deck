@@ -415,14 +415,18 @@ func commandConfigDir(inst *session.Instance, tmuxSess *tmux.Session) string {
 
 // persistSwitchedModel stores a verified /model switch on the instance, so
 // a restart, a crash restart or a fork starts on that model (--model)
-// instead of reverting to the launch or default model. Only an id or alias
-// (no spaces) is stored: a display label is not a --model value.
+// instead of reverting to the launch or default model. The typed id or
+// alias is stored: Claude's picker shows display names, not ids. "default"
+// clears the stored model (restart then uses the configured default). A
+// display label ("Haiku 5.5") is not a --model value and is not stored.
 //
 // The registry is re-read here (the switch can take minutes) so only this
 // session's model changes.
 func persistSwitchedModel(profile, id, arg string, res *slashcmd.Result) {
 	model := strings.TrimSpace(arg)
-	if model == "" || strings.ContainsAny(model, " \t") || slashcmd.IsDefaultModel(model) {
+	if slashcmd.IsDefaultModel(model) {
+		model = "" // clear: back to the configured default on restart
+	} else if model == "" || strings.ContainsAny(model, " \t") {
 		res.Evidence = append(res.Evidence, "model not stored for restart: "+model+" is not a --model value")
 		return
 	}
@@ -452,6 +456,10 @@ func persistSwitchedModel(profile, id, arg string, res *slashcmd.Result) {
 	}
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		res.Evidence = append(res.Evidence, "model not stored for restart: "+err.Error())
+		return
+	}
+	if model == "" {
+		res.Steps = append(res.Steps, "cleared the session's stored model: restart and fork use the configured default")
 		return
 	}
 	res.Steps = append(res.Steps, "stored "+model+" as the session's model for restart and fork")
