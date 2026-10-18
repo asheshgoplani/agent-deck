@@ -10,16 +10,21 @@ contain no credentials. Other schemes and malformed URLs are refused.
 
 The command works on local hosts and remote hosts without a second transport or
 log. It commits `macapp.open` to the existing profile bus, followed by a wait for
-an acknowledgment within three seconds of publishing. App followers subscribe
+an acknowledgment within three seconds of publishing (`--wait <duration>` sets
+that bound; `--wait 0` reports Queued at once). `--profile <name>` names a
+Browser panel profile in the app and travels as the optional `profile` field. App followers subscribe
 with `events follow --kind macapp.` on each host they watch.
 
 ```json
-{"kind":"macapp.open","session_id":"session-id","event_id":"unique-event-id","data":{"host":"source-hostname","path":"/absolute/report/index.html","requested_at":"2026-10-01T10:00:00.123456789Z"}}
+{"kind":"macapp.open","session_id":"session-id","event_id":"unique-event-id","data":{"host":"source-hostname","path":"/absolute/report/index.html","requested_at":"2026-10-01T10:00:00.123456789Z","request_id":"random-hex-id"}}
 ```
 
 The standard frame also supplies `cursor` and `ts`. For a URL request,
 `url` replaces `path`. `host` is the source's OS hostname; the follower connection
 identifies the SSH host to read from. `requested_at` is UTC RFC 3339 with nanoseconds.
+`request_id` is a random id per request, so an app can drop a request it already
+handled (for example one replayed from a saved cursor). The ack still matches on
+`open_event_id` only.
 The app must deduplicate by top-level `event_id`, including URL-scheme deliveries, and
 acknowledge only after the requested page is displayed:
 
@@ -44,7 +49,7 @@ and explicitly says it was not queued.
 After the acknowledgment deadline, an unacknowledged request on a local Mac
 also invokes `open agentdeck://open?...` to launch the app. The query contains
 `event=<event_id>`, `session=<session_id>`, the payload fields and effective
-`profile`. It does not use `request_id`. The event ID is assigned by the bus
+`profile`. It does not use `request_id` or the Browser panel profile. The event ID is assigned by the bus
 before enqueue and is identical in the committed frame and launch URL.
 No acknowledgment is claimed for that launch. No URL
 scheme is invoked on Linux or in an SSH environment (`SSH_CONNECTION`,
