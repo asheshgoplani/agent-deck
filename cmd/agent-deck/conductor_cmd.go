@@ -1033,7 +1033,7 @@ func conductorRowIDsToRemove(instances []*session.Instance, name string) []strin
 		if inst == nil || inst == found || inst.Title != title {
 			continue
 		}
-		if stored := inst.ConductorName; stored != "" && stored != name {
+		if stored := inst.ConductorName; inst.IsConductor && stored != "" && stored != name {
 			continue
 		}
 		ids = append(ids, inst.ID)

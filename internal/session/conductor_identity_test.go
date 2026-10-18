@@ -117,15 +117,16 @@ func TestConductorIdentity_OldRecordResolvesViaTitle(t *testing.T) {
 		t.Fatalf("stable name filled without a matching meta.json: %q", stray.ConductorName)
 	}
 
-	// A legacy conductor row written before the IsConductor flag existed:
-	// exactly the canonical title plus a matching meta.json is adopted, so a
-	// later rename keeps its settings.
+	// An unflagged row with exactly the canonical title (a legacy row from
+	// before the IsConductor flag, or a worker renamed to it) resolves by
+	// that title but is not adopted (#2708): only the flag confirms a
+	// conductor.
 	legacy := &Instance{ID: "legacy-unflagged", Title: "conductor-personal", Tool: "claude"}
 	if got := legacy.ResolveConductorName(); got != "personal" {
 		t.Fatalf("ResolveConductorName(legacy) = %q, want personal", got)
 	}
-	if legacy.ConductorName != "personal" {
-		t.Fatalf("legacy unflagged conductor row not adopted: %q", legacy.ConductorName)
+	if legacy.ConductorName != "" {
+		t.Fatalf("unflagged exact-title row adopted a conductor identity: %q", legacy.ConductorName)
 	}
 
 	// A decorated title on an unflagged session resolves (env, settings) but
@@ -145,7 +146,7 @@ func TestConductorIdentity_OldRecordResolvesViaTitle(t *testing.T) {
 // settings; the drift is reported.
 func TestConductorIdentity_RenamedConductorKeepsSettings(t *testing.T) {
 	tmpHome := setupConductorIdentityFixture(t)
-	inst := &Instance{ID: "renamed", Title: "my assistant", Tool: "claude", ProjectPath: tmpHome, ConductorName: "personal"}
+	inst := &Instance{ID: "renamed", Title: "my assistant", Tool: "claude", ProjectPath: tmpHome, IsConductor: true, ConductorName: "personal"}
 	assertConductorSettingsKept(t, inst, tmpHome)
 
 	name, drifted := inst.ConductorTitleDrift()
@@ -255,7 +256,7 @@ func TestFindConductorInstance(t *testing.T) {
 	if got := FindConductorInstance([]*Instance{worker, legacy}, "personal"); got != legacy {
 		t.Fatalf("legacy canonical-title row not found: %+v", got)
 	}
-	renamed := &Instance{ID: "r", Title: "something else", ConductorName: "personal"}
+	renamed := &Instance{ID: "r", Title: "something else", IsConductor: true, ConductorName: "personal"}
 	plain := &Instance{ID: "p", Title: "conductor-personal"}
 	if got := FindConductorInstance([]*Instance{plain, renamed}, "personal"); got != renamed {
 		t.Fatalf("stable name should win over title: %+v", got)
@@ -282,7 +283,7 @@ func TestConductorIdentity_InboxConfigFollowsConductor(t *testing.T) {
 	if got := ResolveInboxConfig("🎙 conductor-personal").MaxTextBytes; got != 1234 {
 		t.Errorf("ResolveInboxConfig(decorated).MaxTextBytes = %d, want 1234", got)
 	}
-	renamed := &Instance{ID: "inbox-renamed", Title: "my assistant", ConductorName: "personal"}
+	renamed := &Instance{ID: "inbox-renamed", Title: "my assistant", IsConductor: true, ConductorName: "personal"}
 	if got := ResolveInboxConfigForInstance(renamed).MaxTextBytes; got != 1234 {
 		t.Errorf("ResolveInboxConfigForInstance(renamed).MaxTextBytes = %d, want 1234", got)
 	}
@@ -350,7 +351,7 @@ func TestConductorIdentity_CaseInsensitiveCallSitesPreserved(t *testing.T) {
 // read the title under its lock. Run with -race.
 func TestConductorIdentity_ResolveRacesTitleWrites(t *testing.T) {
 	setupConductorIdentityFixture(t)
-	stored := &Instance{ID: "race-stored", Title: "conductor-personal", ConductorName: "personal"}
+	stored := &Instance{ID: "race-stored", Title: "conductor-personal", IsConductor: true, ConductorName: "personal"}
 	legacy := &Instance{ID: "race-legacy", Title: "conductor-personal", IsConductor: true}
 	all := []*Instance{stored, legacy}
 	t.Cleanup(func() { conductorTitleDriftWarned.Delete(stored.ID) })
@@ -409,7 +410,7 @@ func TestConductorIdentity_DriftWarnedOnce(t *testing.T) {
 	sessionLog = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	t.Cleanup(func() { sessionLog = origLog })
 
-	inst := &Instance{ID: "drift-once-" + t.Name(), Title: "my assistant", ConductorName: "personal"}
+	inst := &Instance{ID: "drift-once-" + t.Name(), Title: "my assistant", IsConductor: true, ConductorName: "personal"}
 	t.Cleanup(func() { conductorTitleDriftWarned.Delete(inst.ID) })
 	for n := 0; n < 5; n++ {
 		if got := inst.ResolveConductorName(); got != "personal" {
@@ -425,7 +426,7 @@ func TestConductorIdentity_DriftWarnedOnce(t *testing.T) {
 
 	// A decorated title for the same name is not drift and logs nothing.
 	buf.Reset()
-	decorated := &Instance{ID: "drift-none-" + t.Name(), Title: "🎙 conductor-personal", ConductorName: "personal"}
+	decorated := &Instance{ID: "drift-none-" + t.Name(), Title: "🎙 conductor-personal", IsConductor: true, ConductorName: "personal"}
 	t.Cleanup(func() { conductorTitleDriftWarned.Delete(decorated.ID) })
 	_ = decorated.ResolveConductorName()
 	if strings.Contains(buf.String(), "conductor_title_drift") {
@@ -473,6 +474,18 @@ func TestConductorIdentity_LazyFillSurvivesSaveLoad(t *testing.T) {
 				t.Fatalf("SaveWithGroups (filled): %v", err)
 			}
 			loaded = load()
+			if !flagged {
+				// #2708: an unflagged row resolves by its title only; the
+				// name is not persisted, so a rename ends the match.
+				if loaded[0].ConductorName != "" {
+					t.Fatalf("unflagged row persisted a conductor name: %q", loaded[0].ConductorName)
+				}
+				loaded[0].Title = "my assistant"
+				if name := loaded[0].ResolveConductorName(); name != "" {
+					t.Fatalf("renamed unflagged row still resolves to %q", name)
+				}
+				return
+			}
 			if loaded[0].ConductorName != "personal" {
 				t.Fatalf("lazily filled name not persisted: %q", loaded[0].ConductorName)
 			}
@@ -518,5 +531,49 @@ func TestGetConductorLastActivity_DecoratedAndRenamed(t *testing.T) {
 		if _, err := GetConductorLastActivity(name, "default"); err != nil {
 			t.Errorf("GetConductorLastActivity(%q): %v (decorated/renamed conductor not found)", name, err)
 		}
+	}
+}
+
+// TestConductorIdentity_RenameBackDoesNotStick (#2708): a worker (not flagged
+// IsConductor) that briefly holds the exact title conductor-<name> must not
+// keep the conductor identity after it is renamed back, and a worker already
+// stamped with the name by an older build heals: it gets no conductor env,
+// keeps the TELEGRAM_* strip, and never beats the real conductor in
+// FindConductorInstance even when it comes first.
+func TestConductorIdentity_RenameBackDoesNotStick(t *testing.T) {
+	tmpHome := setupConductorIdentityFixture(t)
+	metaEnv := filepath.Join(tmpHome, "personal-meta.env")
+
+	worker := &Instance{ID: "worker-2708", Title: "conductor-personal", Tool: "claude", ProjectPath: tmpHome}
+	if got := worker.ResolveConductorName(); got != "personal" {
+		t.Fatalf("worker with the exact title: ResolveConductorName = %q, want personal", got)
+	}
+	worker.Title = "worker"
+	stamped := &Instance{ID: "stamped-2708", Title: "worker", Tool: "claude", ProjectPath: tmpHome, ConductorName: "personal"}
+	t.Cleanup(func() { conductorTitleDriftWarned.Delete(stamped.ID) })
+
+	for _, inst := range []*Instance{worker, stamped} {
+		if got := inst.ResolveConductorName(); got != "" {
+			t.Errorf("%s renamed back still resolves to conductor %q", inst.ID, got)
+		}
+		if got := inst.getConductorEnv(true); strings.Contains(got, metaEnv) {
+			t.Errorf("%s renamed back still gets the conductor env: %q", inst.ID, got)
+		}
+		if got := telegramStateDirStripExpr(inst); got == "" {
+			t.Errorf("%s renamed back keeps TELEGRAM_* (no strip)", inst.ID)
+		}
+		if inst.IsConductorNamed("personal", inst.Title) {
+			t.Errorf("%s renamed back still IsConductorNamed(personal)", inst.ID)
+		}
+	}
+
+	cond := &Instance{ID: "real-2708", Title: "my assistant", Tool: "claude", IsConductor: true, ConductorName: "personal"}
+	t.Cleanup(func() { conductorTitleDriftWarned.Delete(cond.ID) })
+	if got := FindConductorInstance([]*Instance{worker, stamped, cond}, "personal"); got != cond {
+		gotID := "<nil>"
+		if got != nil {
+			gotID = got.ID
+		}
+		t.Fatalf("FindConductorInstance = %s, want the flagged conductor %s", gotID, cond.ID)
 	}
 }
