@@ -131,6 +131,9 @@ func KillSSHProcesses() {
 	sshGroups.closing = true
 	for pid := range sshGroups.pids {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		// An ssh that kept the terminal's foreground group (stdin-reading
+		// verb on a tty) has no group of its own: kill it by pid too.
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
 
