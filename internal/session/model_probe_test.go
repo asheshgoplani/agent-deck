@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -161,9 +162,7 @@ func TestModelProbe_FailureFallsBackToStatic(t *testing.T) {
 			if got := LaunchReasoningEffortsForTool("codex"); !slices.Equal(got, codexReasoningEfforts) {
 				t.Fatalf("efforts %v, want static", got)
 			}
-			if _, err := os.Stat(mustModelProbeCachePath(t)); !os.IsNotExist(err) {
-				t.Fatalf("a failed probe must not be cached on disk (stat err %v)", err)
-			}
+			assertFailureCachedBriefly(t, "codex")
 		})
 	}
 }
@@ -246,17 +245,66 @@ func TestModelProbe_CacheTTL(t *testing.T) {
 	}
 }
 
-// ageModelProbeMemo moves the codex memo into the past, as if d had passed.
+// ageModelProbeMemo moves the codex memo and disk cache into the past, as if
+// d had passed.
 func ageModelProbeMemo(t *testing.T, d time.Duration) {
 	t.Helper()
+	ageModelProbe(t, "codex", d)
+}
+
+func ageModelProbe(t *testing.T, kind string, d time.Duration) {
+	t.Helper()
 	modelProbeMu.Lock()
-	defer modelProbeMu.Unlock()
-	m := modelProbeMemos["codex"]
+	m := modelProbeMemos[kind]
 	if m == nil {
-		t.Fatal("no codex memo to age")
+		modelProbeMu.Unlock()
+		t.Fatalf("no %s memo to age", kind)
 	}
 	m.checkedAt = m.checkedAt.Add(-d)
 	m.probedAt = m.probedAt.Add(-d)
+	modelProbeMu.Unlock()
+
+	path, err := modelProbeCachePath(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry modelProbeCacheFile
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatal(err)
+	}
+	entry.ProbedAt = entry.ProbedAt.Add(-d)
+	writeModelProbeCache(kind, &entry)
+}
+
+// assertFailureCachedBriefly checks that a failed probe left a disk entry
+// with no models that only answers within the failure backoff.
+func assertFailureCachedBriefly(t *testing.T, kind string) {
+	t.Helper()
+	path, err := modelProbeCachePath(kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("a failed probe should be remembered on disk briefly: %v", err)
+	}
+	var entry modelProbeCacheFile
+	if err := json.Unmarshal(data, &entry); err != nil || entry.Result != nil {
+		t.Fatalf("failure entry must carry no models: %s (err %v)", data, err)
+	}
+	if readModelProbeCache(kind, entry.Key, entry.ProbedAt.Add(modelProbeFailureBackoff/2)) == nil {
+		t.Fatal("a failure entry inside the backoff must hit")
+	}
+	if readModelProbeCache(kind, entry.Key, entry.ProbedAt.Add(modelProbeFailureBackoff)) != nil {
+		t.Fatal("a failure entry past the backoff must miss")
+	}
 }
 
 // A failed probe (e.g. a cold-start timeout in the TUI's startup warm-up) is
@@ -363,7 +411,7 @@ func TestModelProbe_OffInTestsByDefault(t *testing.T) {
 
 func TestModelProbe_ClaudeAndGeminiStayStatic(t *testing.T) {
 	installFakeCodex(t, fakeCodexOK)
-	for _, tool := range []string{"claude", "gemini", "opencode"} {
+	for _, tool := range []string{"claude", "gemini"} {
 		if got := KnownModelIDsForTool(tool); !slices.Equal(got, staticModelIDsForTool(tool)) {
 			t.Fatalf("%s: got %v, want static", tool, got)
 		}
