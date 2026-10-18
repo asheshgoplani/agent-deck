@@ -54,7 +54,9 @@ func TestBulkRemoveCleansUpEachRowBeforeAnyExit(t *testing.T) {
 // Every path that deletes a session row runs the shared cleanup, which
 // sweeps the inboxes and the notify-state record and publishes
 // macapp.session.closed. Paths with their own behavioral test are covered
-// there; this pins the ones that need git or a conductor to run.
+// there; this pins the ones that need git or a conductor to run. (TUI and web
+// delete can be undone: they publish at delete time and sweep once the delete
+// is final; see internal/ui/undoable_delete_sweep_test.go.)
 func TestSessionDeletePathsUseSharedCleanup(t *testing.T) {
 	for _, c := range []struct{ file, fn string }{
 		{"main.go", "handleRemove"},
@@ -62,7 +64,6 @@ func TestSessionDeletePathsUseSharedCleanup(t *testing.T) {
 		{"session_remove_cmd.go", "bulkRemoveSessions"},
 		{"worktree_cmd.go", "handleWorktreeFinish"},
 		{"conductor_cmd.go", "handleConductorTeardown"},
-		{"../../internal/ui/web_mutator.go", "DeleteSession"},
 		{"../../internal/ui/web_mutator.go", "FinishWorktree"},
 	} {
 		src, err := os.ReadFile(c.file)

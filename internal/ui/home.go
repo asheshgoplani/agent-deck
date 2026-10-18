@@ -6330,7 +6330,9 @@ func (h *Home) getInstanceByID(id string) *session.Instance {
 	return h.instanceByID[id]
 }
 
-// pushUndoStack adds a deleted session to the undo stack (LIFO, capped at 10)
+// pushUndoStack adds a deleted session to the undo stack (LIFO, capped at 10).
+// An entry pushed off the stack can no longer be undone: its delete is final,
+// so the deferred inbox and notify-state sweep (#910) runs for it then.
 func (h *Home) pushUndoStack(inst *session.Instance) {
 	entry := deletedSessionEntry{
 		instance:  inst,
@@ -6338,7 +6340,13 @@ func (h *Home) pushUndoStack(inst *session.Instance) {
 	}
 	h.undoStack = append(h.undoStack, entry)
 	if len(h.undoStack) > 10 {
+		evicted := h.undoStack[:len(h.undoStack)-10]
 		h.undoStack = h.undoStack[len(h.undoStack)-10:]
+		for _, e := range evicted {
+			if e.instance != nil {
+				logRemovedSessionCleanup("delete", e.instance.ID, session.SweepRemovedSession(e.instance.ID))
+			}
+		}
 	}
 }
 
@@ -8480,9 +8488,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
 		if err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+		} else if deletedInstance != nil {
+			// Undoable (ctrl+z): announce it now; the inbox and notify-state
+			// sweep (#910) waits until the delete is final (the entry leaves
+			// the undo stack, see pushUndoStack), so an undo keeps the
+			// session's pending inbox events.
+			session.PublishSessionClosed(h.profile, msg.deletedID, session.SessionClosedRemoved)
 		} else {
-			// Same best-effort cleanup as `agent-deck rm`: inbox and
-			// notify-state sweep (#910), macapp.session.closed.
+			// Nothing to undo: final now, same cleanup as `agent-deck rm`.
 			logRemovedSessionCleanup("delete", msg.deletedID, session.CleanupRemovedSession(h.profile, msg.deletedID))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)

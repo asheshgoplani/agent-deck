@@ -181,6 +181,8 @@ sends the Mac app's reply to a session on a remote host. Checks:
   rules, and the frame may only reference a session of that host: `--session`
   must name a session in the profile it is published on (exit 2 otherwise).
   Only `macapp.app.focus`, which is about the app, may omit `--session`.
+  These box checks are defence in depth on top of the controller's: the
+  controller sets `--from-remote`, so they do not authenticate it.
 
 ### Mac app checks
 

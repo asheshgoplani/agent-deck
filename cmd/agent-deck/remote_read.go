@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -197,7 +199,15 @@ func runRemotePublishIO(ctx context.Context, runner remotePublishRunner, name st
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	forwarded := append(append([]string(nil), args...), remotePublishFromRemoteFlag)
-	if err := runner.RunPublishIO(timeoutCtx, payload, stdout, stderr, remoteUnsupportedAnswer(name, args), forwarded...); err != nil {
+	err := runner.RunPublishIO(timeoutCtx, payload, stdout, stderr, remoteUnsupportedAnswer(name, args), forwarded...)
+	// The box (or the probe, for an unsupported box) already wrote its own
+	// message; pass its exit code through so a caller can tell a refusal
+	// (exit 2) from a failure (exit 1), with no extra "exit status" line.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return exitErr.ExitCode(), nil
+	}
+	if err != nil {
 		return 1, err
 	}
 	return 0, nil

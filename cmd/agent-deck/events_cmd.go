@@ -418,8 +418,9 @@ func readPublishData(name string) ([]byte, error) {
 // `remote <name> events publish` (which adds --from-remote): only the Mac
 // app's reply kinds, the payload on stdin, and a frame may only reference a
 // session of this host, in the profile it is published on. The controller
-// checks the same before SSH; this check holds even when the controller is
-// not trusted to.
+// checks the same before SSH; this is defence in depth, not authentication:
+// --from-remote is set by the caller, and a caller with a shell on this host
+// can publish without it.
 func checkRemoteReplyPublish(profile, kind, sessionID, data, dataFile string) error {
 	if !events.IsMacappRemoteReplyKind(kind) {
 		return fmt.Errorf("kind %q is not a Mac app reply (%s, %s or %s)", kind, events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus)

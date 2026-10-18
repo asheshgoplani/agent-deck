@@ -276,3 +276,32 @@ func TestEventsPublishFromRemoteBoxChecks(t *testing.T) {
 		}
 	}
 }
+
+// A box that refuses a forwarded reply (here: not one of its sessions).
+const refusingBoxScript = `for a; do [ "$a" = --help ] && exit 0; done
+cat > /dev/null
+echo "Error: events publish --from-remote: session \"s9\" is not a session of this host (profile \"default\")" >&2
+exit 2
+`
+
+// The box's refusal keeps its exit code (2) and message, so a caller can tell
+// it from a failure (an unsupported box exits 1); no "exit status" line is
+// added on top.
+func TestRemoteEventsPublishPassesBoxExitCode(t *testing.T) {
+	for _, c := range []struct {
+		name, box, want string
+		code            int
+	}{
+		{"refusal", refusingBoxScript, "is not a session of this host", 2},
+		{"unsupported", oldBoxScript, "unsupported remote command", 1},
+	} {
+		f := newRemotePublishFixture(t, c.box)
+		stdout, stderr, code := runAgentDeckStdin(t, f.home, `{"ok":true}`, "remote", "lab", "events", "publish", "--kind", "macapp.open.ack", "--session", "s9", "--data-file", "-")
+		if code != c.code || !strings.Contains(stdout+stderr, c.want) {
+			t.Fatalf("%s: exit=%d %q %q", c.name, code, stdout, stderr)
+		}
+		if strings.Contains(stdout+stderr, "exit status") {
+			t.Fatalf("%s: stray exit status line: %q %q", c.name, stdout, stderr)
+		}
+	}
+}

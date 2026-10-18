@@ -22,11 +22,22 @@ type RemovedSessionCleanup struct {
 // Call it once per deleted row, right after that row's delete succeeded, so
 // a later failure in a bulk remove still leaves the rows already deleted
 // announced.
+//
+// A delete that can still be undone (TUI and web delete) publishes with
+// PublishSessionClosed at delete time and runs SweepRemovedSession only once
+// the delete is final, so an undone delete keeps its pending inbox events.
 func CleanupRemovedSession(profile, id string) RemovedSessionCleanup {
+	r := SweepRemovedSession(id)
+	PublishSessionClosed(profile, id, SessionClosedRemoved)
+	return r
+}
+
+// SweepRemovedSession is the sweep half of CleanupRemovedSession: the inbox
+// and notify-state cleanup (#910) for a session whose delete is final.
+func SweepRemovedSession(id string) RemovedSessionCleanup {
 	var r RemovedSessionCleanup
 	r.InboxSwept, r.InboxErr = SweepInboxesForChildSession(id)
 	_, r.NotifyStateErr = RemoveNotifyStateRecord(id)
-	PublishSessionClosed(profile, id, SessionClosedRemoved)
 	return r
 }
 

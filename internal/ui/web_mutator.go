@@ -240,9 +240,11 @@ func (m *WebMutator) DeleteSession(id string) error {
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
 	}
-	// Same best-effort cleanup as `agent-deck rm`: inbox and notify-state
-	// sweep (#910), macapp.session.closed.
-	session.CleanupRemovedSession(storage.Profile(), id)
+	// Undoable (POST /api/sessions/undelete): announce it now; the inbox and
+	// notify-state sweep (#910) waits until the delete is final (the entry
+	// expires or leaves the undo stack, see pushUndo), so an undo keeps the
+	// session's pending inbox events.
+	session.PublishSessionClosed(storage.Profile(), id, session.SessionClosedRemoved)
 	inst.RecordTelemetryEndFrom(telemetry.EndDelete, telemetry.SurfaceWeb)
 	m.pushUndo(inst)
 	return nil
@@ -356,6 +358,7 @@ func (m *WebMutator) UndoDelete() (string, error) {
 		window = web.DefaultUndoWindow
 	}
 	if time.Since(entry.deletedAt) > window {
+		finalizeWebDeletes([]webDeletedEntry{entry})
 		return "", web.ErrUndoExpired
 	}
 
@@ -396,16 +399,43 @@ func (m *WebMutator) UndoDelete() (string, error) {
 }
 
 // pushUndo records a freshly-deleted instance onto the web undo stack,
-// capped at 10 entries (FIFO eviction) to bound memory.
+// capped at 10 entries (FIFO eviction) to bound memory. Entries past the undo
+// window, or evicted by the cap, can no longer be undone: their deletes are
+// final and the deferred inbox and notify-state sweep (#910) runs for them.
 func (m *WebMutator) pushUndo(inst *session.Instance) {
 	m.undoMu.Lock()
-	defer m.undoMu.Unlock()
-	m.undoStack = append(m.undoStack, webDeletedEntry{
+	window := m.undoWindow
+	if window == 0 {
+		window = web.DefaultUndoWindow
+	}
+	var final []webDeletedEntry
+	kept := m.undoStack[:0]
+	for _, e := range m.undoStack {
+		if time.Since(e.deletedAt) > window {
+			final = append(final, e)
+		} else {
+			kept = append(kept, e)
+		}
+	}
+	m.undoStack = append(kept, webDeletedEntry{
 		instance:  inst,
 		deletedAt: time.Now(),
 	})
 	if len(m.undoStack) > 10 {
+		final = append(final, m.undoStack[:len(m.undoStack)-10]...)
 		m.undoStack = m.undoStack[len(m.undoStack)-10:]
+	}
+	m.undoMu.Unlock()
+	finalizeWebDeletes(final)
+}
+
+// finalizeWebDeletes runs the deferred sweep for web deletes that can no
+// longer be undone.
+func finalizeWebDeletes(entries []webDeletedEntry) {
+	for _, e := range entries {
+		if e.instance != nil {
+			logRemovedSessionCleanup("web_delete", e.instance.ID, session.SweepRemovedSession(e.instance.ID))
+		}
 	}
 }
 
