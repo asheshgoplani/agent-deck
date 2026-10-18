@@ -10,10 +10,10 @@ import (
 
 // startTestRelay runs relayEngine with 1-slot panel channels, the size an
 // EngineHost gives them.
-func startTestRelay(events <-chan Event, health <-chan HealthState, deliverEvent func(Event), deliverHealth func(HealthState)) (<-chan Event, <-chan HealthState, <-chan struct{}) {
+func startTestRelay(events <-chan Event, health <-chan HealthState, deliverHealth func(HealthState)) (<-chan Event, <-chan HealthState, <-chan struct{}) {
 	panelEvents := make(chan Event, 1)
 	panelHealth := make(chan HealthState, 1)
-	done := relayEngine(events, health, deliverEvent, deliverHealth, panelEvents, panelHealth,
+	done := relayEngine(events, health, deliverHealth, panelEvents, panelHealth,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return panelEvents, panelHealth, done
 }
@@ -55,15 +55,15 @@ func relayWait(t *testing.T, done <-chan struct{}) {
 }
 
 // TestRelayEngine_DeliversWhileThePanelIsNotRead covers #2524 at the
-// relay: while the TUI is attached nobody reads the panel channels, yet every
-// event and health state is delivered, once and in order, beyond the engine's
-// 64-event buffer; the panel keeps one pending item to refresh from.
+// relay: while the TUI is attached nobody reads the panel channels, yet the
+// relay keeps draining the engine beyond its 64-event buffer and delivers
+// every health state, once and in order; the panel keeps one pending item to
+// refresh from.
 func TestRelayEngine_DeliversWhileThePanelIsNotRead(t *testing.T) {
 	events := make(chan Event)
 	health := make(chan HealthState)
-	var gotEvents, gotHealth []string // appended on the relay goroutines; read after they finish
+	var gotHealth []string // appended on the relay goroutine; read after it finishes
 	panelEvents, panelHealth, done := startTestRelay(events, health,
-		func(e Event) { gotEvents = append(gotEvents, e.Sender) },
 		func(s HealthState) { gotHealth = append(gotHealth, s.WatcherName) })
 
 	for i := 0; i < 100; i++ {
@@ -88,38 +88,30 @@ func TestRelayEngine_DeliversWhileThePanelIsNotRead(t *testing.T) {
 	relayDrain(t, panelEvents)
 	relayDrain(t, panelHealth)
 
-	if len(gotEvents) != 100 || len(gotHealth) != 20 {
-		t.Fatalf("delivered %d events and %d health states, want 100 and 20", len(gotEvents), len(gotHealth))
+	if len(gotHealth) != 20 {
+		t.Fatalf("delivered %d health states, want 20", len(gotHealth))
 	}
-	for i, s := range gotEvents {
+	for i, s := range gotHealth {
 		if s != strconv.Itoa(i) {
-			t.Fatalf("event %d delivered as %q: order or count broken", i, s)
+			t.Fatalf("health state %d delivered as %q: order or count broken", i, s)
 		}
 	}
 }
 
 // TestRelayEngine_SurvivesAPanickingDelivery: one bad item must not end
-// the relay, or every later event would go undelivered again.
+// the relay, or every later health alert would go undelivered.
 func TestRelayEngine_SurvivesAPanickingDelivery(t *testing.T) {
 	events := make(chan Event)
 	health := make(chan HealthState)
 	delivered := make(chan string, 4)
 	panelEvents, panelHealth, done := startTestRelay(events, health,
-		func(e Event) {
-			if e.Sender == "bad" {
-				panic("boom")
-			}
-			delivered <- e.Sender
-		},
 		func(s HealthState) {
 			if s.WatcherName == "bad" {
 				panic("boom")
 			}
-			delivered <- "health:" + s.WatcherName
+			delivered <- s.WatcherName
 		})
 
-	relaySend(t, events, Event{Sender: "bad"})
-	relaySend(t, events, Event{Sender: "good"})
 	relaySend(t, health, HealthState{WatcherName: "bad"})
 	relaySend(t, health, HealthState{WatcherName: "good"})
 	close(events)
@@ -129,11 +121,11 @@ func TestRelayEngine_SurvivesAPanickingDelivery(t *testing.T) {
 	relayDrain(t, panelHealth)
 
 	close(delivered)
-	got := map[string]bool{}
+	var got []string
 	for s := range delivered {
-		got[s] = true
+		got = append(got, s)
 	}
-	if len(got) != 2 || !got["good"] || !got["health:good"] {
-		t.Fatalf("delivered %v after a panic, want the good event and the good health state", got)
+	if len(got) != 1 || got[0] != "good" {
+		t.Fatalf("delivered %v after a panic, want the good health state", got)
 	}
 }

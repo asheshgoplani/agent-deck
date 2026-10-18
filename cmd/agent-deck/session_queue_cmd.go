@@ -251,7 +251,7 @@ func processQueueControl(profile, dir string, rec *sendqueue.Record) bool {
 		queueControlReply(dir, rec.SendID, queueControlResult{Outcome: "refused", Reason: reason, Record: rec})
 		return true
 	}
-	_, instances, _, err := loadSessionData(profile)
+	instances, err := loadSessions(profile)
 	if err != nil {
 		return refuse(err.Error())
 	}
@@ -406,7 +406,7 @@ func handleSessionQueueControl(profile string, args []string) {
 			out.Error(fmt.Sprintf("queue entry %s already has a control request: %v", id, err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
-		_ = spawnSendWorker(profile, rec.SessionID)
+		_ = sendqueue.SpawnWorker(profile, rec.SessionID)
 	}
 	readOutcome := func() bool {
 		if b, err := os.ReadFile(sendqueue.ControlResultPath(dir, id)); err == nil {

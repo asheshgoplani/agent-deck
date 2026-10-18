@@ -323,6 +323,10 @@ type Home struct {
 	// and otherwise waits to take it over (#2530). Set once by
 	// StartWatcherEngine; read by the signal handler too, hence atomic.
 	watcherHost atomic.Pointer[watcher.EngineHost]
+	// spawnSendWorker starts the send worker that delivers a routed event to
+	// its conductor; nil runs this binary's `session send-worker`. Tests
+	// replace it before StartWatcherEngine.
+	spawnSendWorker func(profile, sessionID string) error
 
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
@@ -4365,8 +4369,9 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 // StartWatcherEngine joins the profile's watcher engine election (#2530). The
 // process that takes the engine owner lock runs the engine; any other TUI,
 // `web` or `web --no-tui` process of the profile waits and takes over when
-// the owner exits. Events and health alerts go to this Home's conductor
-// dispatchers. Init calls it for the TUI and the headless web server calls it
+// the owner exits. The engine queues each routed event for its conductor in
+// the profile's send queue (#2537); health alerts go to this Home's conductor
+// dispatcher. Init calls it for the TUI and the headless web server calls it
 // directly, since it runs no Bubble Tea loop. Returns nil without a state
 // database; a second call returns the running host.
 func (h *Home) StartWatcherEngine() *watcher.EngineHost {
@@ -4378,11 +4383,11 @@ func (h *Home) StartWatcherEngine() *watcher.EngineHost {
 		return nil
 	}
 	host := watcher.NewEngineHost(watcher.HostConfig{
-		Profile:       h.profile,
-		DB:            db,
-		DeliverEvent:  h.dispatchWatcherEvent,
-		DeliverHealth: h.dispatchHealthAlert,
-		Logger:        watcherHostLog,
+		Profile:         h.profile,
+		DB:              db,
+		DeliverHealth:   h.dispatchHealthAlert,
+		SpawnSendWorker: h.spawnSendWorker,
+		Logger:          watcherHostLog,
 	})
 	if !h.watcherHost.CompareAndSwap(nil, host) {
 		return h.watcherHost.Load()
@@ -4392,18 +4397,18 @@ func (h *Home) StartWatcherEngine() *watcher.EngineHost {
 }
 
 // StopWatcherEngine leaves the engine election on a signal exit. It does not
-// wait for the conductor delivery in flight, but reports what is left, and an
-// owner keeps the lock until that delivery returns or the process exits, so
-// another process cannot type into the same pane next to it (#2530).
+// wait for the health alert in flight, and an owner keeps the lock until that
+// alert returns or the process exits, so another process cannot type into the
+// same pane next to it (#2530). Routed events need nothing here: they wait in
+// the send queue, whose workers outlive this process (#2537).
 func (h *Home) StopWatcherEngine() {
 	h.StopWatcherEngineAndDeliveries(0)
 }
 
 // StopWatcherEngineAndDeliveries is the clean-exit variant used by quit and
-// by the headless server: it also waits up to wait for the conductor delivery
-// in flight and reports what is left (stopConductorDeliveries). The owner
-// lock is released once no delivery is still being sent, so a successor
-// never delivers next to one.
+// by the headless server: it also waits up to wait for the health alert in
+// flight (stopConductorDeliveries). The owner lock is released once no alert
+// is still being sent, so a successor never delivers next to one.
 func (h *Home) StopWatcherEngineAndDeliveries(wait time.Duration) {
 	h.stopWatcherEngine(func() <-chan struct{} {
 		h.stopConductorDeliveries(wait)
@@ -14119,40 +14124,8 @@ func (h *Home) refreshWatcherPanel() {
 	}
 }
 
-// formatWatcherDispatchMsg builds the single line delivered into the conductor
-// pane for a routed watcher event. It prefers the full message Body (so the
-// conductor receives the complete text, not the first-line/200-byte Subject
-// label) and falls back to Subject when Body is empty (e.g. v1 events). Newlines
-// are collapsed to spaces because the delivery uses tmux send-keys, where a
-// literal '\n' is sent as Enter and would submit the line prematurely.
-func formatWatcherDispatchMsg(evt watcher.Event) string {
-	text := strings.TrimSpace(evt.Body)
-	if text == "" {
-		text = evt.Subject
-	}
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\n", " ")
-	return fmt.Sprintf("[%s] %s: %s", evt.Source, evt.Sender, text)
-}
-
-// dispatchWatcherEvent queues a routed watcher event for the conductor's tmux pane.
-// Skipped for triage and unrouted events (RoutedTo empty or "triage") since those have no
-// concrete delivery target yet. Mirrors dispatchHealthAlert: sendToConductor looks up the
-// conductor session by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
-// Called by the watcher host's relay, off the Bubble Tea loop (#2524).
-func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
-	if evt.RoutedTo == "" || isTriageRoute(evt.RoutedTo) {
-		return
-	}
-	h.deliveryQueue().enqueue(conductorDelivery{
-		Conductor: evt.RoutedTo,
-		Text:      formatWatcherDispatchMsg(evt),
-		QueuedAt:  time.Now(),
-	})
-}
-
-// deliveryQueue returns the queue that delivers watcher messages to conductor
-// panes, creating it on first use.
+// deliveryQueue returns the queue that delivers watcher health alerts to
+// conductor panes, creating it on first use.
 func (h *Home) deliveryQueue() *conductorQueue {
 	h.conductorDeliveriesOnce.Do(func() {
 		h.conductorDeliveries = newConductorQueue(h.sendToConductor)
@@ -14160,113 +14133,90 @@ func (h *Home) deliveryQueue() *conductorQueue {
 	return h.conductorDeliveries
 }
 
-// sendToConductor types one queued watcher message into its conductor's pane.
-// The pane is looked up when the message is sent, so a conductor restarted
-// meanwhile still gets it.
+// sendToConductor types one queued health alert into its conductor's pane.
+// The pane is looked up when the alert is sent, so a conductor restarted
+// meanwhile still gets it. It takes the conductor's send lock first, like
+// every `session send`, so it never types next to a routed event the send
+// queue is delivering (#2537); nothing is typed if the lock stays busy.
 func (h *Home) sendToConductor(d conductorDelivery) {
-	ts := h.conductorTmuxSession(d.Conductor)
+	id, ts := h.conductorPane(d.Conductor)
 	if ts == nil {
 		uiLog.Warn("watcher_delivery_conductor_not_loaded", slog.String("conductor", d.Conductor))
 		return
 	}
-	if err := deliverToConductorPane(ts, d.text()); err != nil {
-		failed := "dispatch_watcher_event_send_failed"
-		if d.Alert != "" {
-			failed = "dispatch_health_alert_send_failed"
-		}
-		uiLog.Warn(failed,
+	lock, err := session.AcquireSendLock(id, conductorSendLockWait)
+	if err != nil {
+		uiLog.Warn("dispatch_health_alert_send_busy",
+			slog.String("tmux_session", ts.Name),
+			slog.String("error", err.Error()))
+		return
+	}
+	defer lock.Release()
+	if err := deliverToConductorPane(ts, d.Text); err != nil {
+		uiLog.Warn("dispatch_health_alert_send_failed",
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
 }
 
-// stopConductorDeliveries starts no further conductor delivery, waits up to
-// wait for the one in flight (so a quit does not leave a pasted message
-// without its Enter), and logs per conductor the routed events this session
-// did not get to it: undelivered (still queued), dropped from a full backlog
-// (overflow is also logged as it starts and when its notice goes out), and, if
-// the wait expired mid-delivery, the one still being sent, whose outcome is
-// unknown. They stay
-// in watcher_events and the watcher's task log (durable delivery is #2537).
-// It returns the three counts. The queue is created here if no delivery made
-// it yet: a relay callback still running past the engine's stop (a health
-// alert reading the database, say) must find it stopped, not create it and
-// start delivering after the owner lock is gone (#2530).
-func (h *Home) stopConductorDeliveries(wait time.Duration) (undelivered, dropped, unconfirmed int) {
-	q := h.deliveryQueue()
-	type left struct{ undelivered, dropped, unconfirmed int }
-	per := map[string]*left{}
-	entry := func(conductor string) *left {
-		if per[conductor] == nil {
-			per[conductor] = &left{}
-		}
-		return per[conductor]
-	}
-	queued, inflight, drops := q.stop(wait)
-	for _, d := range queued {
-		entry(d.Conductor).undelivered++
-		undelivered++
-	}
-	for _, d := range inflight {
-		entry(d.Conductor).unconfirmed++
-		unconfirmed++
-	}
-	for conductor, n := range drops {
-		entry(conductor).dropped += n
-		dropped += n
-	}
-	for conductor, l := range per {
-		uiLog.Warn("watcher_events_undelivered_at_quit",
-			slog.String("conductor", conductor),
-			slog.Int("undelivered", l.undelivered),
-			slog.Int("dropped_backlog_full", l.dropped),
-			slog.Int("in_flight_outcome_unknown", l.unconfirmed))
-	}
-	return undelivered, dropped, unconfirmed
+// conductorSendLockWait bounds how long a health alert waits for another
+// send to the conductor to finish (session.SendTargetLockWait; a var so tests
+// can shorten it).
+var conductorSendLockWait = session.SendTargetLockWait
+
+// stopConductorDeliveries starts no further health alert, waits up to wait
+// for the one in flight (so a quit does not leave a pasted message without
+// its Enter) and drops the rest: the next engine owner restates each
+// watcher's state. The queue is created here if no alert made it yet: a relay
+// callback still running past the engine's stop (a health alert reading the
+// database, say) must find it stopped, not create it and start delivering
+// after the owner lock is gone (#2530).
+func (h *Home) stopConductorDeliveries(wait time.Duration) {
+	h.deliveryQueue().stop(wait)
 }
 
-// conductorTmuxSession returns the tmux session of the named conductor, or nil
-// when that conductor is not loaded or has no tmux session. Watcher deliveries
-// look it up off the UI goroutine while Update may rewrite h.instances, so the
-// lookup holds the read lock for the whole scan. A headless Home reads the
-// sessions from storage instead (#2530).
-func (h *Home) conductorTmuxSession(conductorName string) *tmux.Session {
+// conductorPane returns the session id and tmux session of the named
+// conductor, or a nil session when that conductor is not loaded or has no
+// tmux session. Alerts look it up off the UI goroutine while Update may
+// rewrite h.instances, so the lookup holds the read lock for the whole scan.
+// A headless Home reads the sessions from storage instead (#2530).
+func (h *Home) conductorPane(conductorName string) (string, *tmux.Session) {
 	if h.headless {
-		return h.conductorTmuxSessionFromStorage(conductorName)
+		return h.conductorPaneFromStorage(conductorName)
 	}
 	h.instancesMu.RLock()
 	defer h.instancesMu.RUnlock()
-	return findConductorTmuxSession(h.instances, conductorName)
+	return findConductorPane(h.instances, conductorName)
 }
 
-// conductorTmuxSessionFromStorage looks a conductor up for a headless
+// conductorPaneFromStorage looks a conductor up for a headless
 // (`web --no-tui`) engine owner, which runs no Bubble Tea loop to load
 // h.instances (#2530). It reads the sessions from storage on every delivery
 // and leaves h.instances alone: replacing them here
 // (HydrateInstancesFromStorage) could swap the registry under a web mutation
 // in progress (WebMutator.beginHeadlessTx), and a conductor restarted since
 // the last delivery is found under its current tmux session.
-func (h *Home) conductorTmuxSessionFromStorage(conductorName string) *tmux.Session {
+func (h *Home) conductorPaneFromStorage(conductorName string) (string, *tmux.Session) {
 	if h.storage == nil {
-		return nil
+		return "", nil
 	}
 	instances, _, err := h.storage.LoadWithGroups()
 	if err != nil {
 		uiLog.Warn("watcher_delivery_conductor_lookup_failed",
 			slog.String("conductor_session", session.ConductorSessionTitle(conductorName)),
 			slog.String("error", err.Error()))
-		return nil
+		return "", nil
 	}
-	return findConductorTmuxSession(instances, conductorName)
+	return findConductorPane(instances, conductorName)
 }
 
-// findConductorTmuxSession returns the tmux session of the non-archived
-// conductor named conductorName, or nil when there is none or it has no tmux
-// session. The stored conductor name wins over the title, so a decorated or
-// renamed conductor still receives its deliveries. An archived session keeps
-// the conductor's identity but is not the conductor any more, and it may come
-// before the live one.
-func findConductorTmuxSession(instances []*session.Instance, conductorName string) *tmux.Session {
+// findConductorPane returns the id and tmux session of the non-archived
+// conductor named conductorName, or a nil session when there is none or it
+// has no tmux session. The stored conductor name wins over the title, so a
+// decorated or renamed conductor still receives its deliveries. An archived
+// session keeps the conductor's identity but is not the conductor any more,
+// and it may come before the live one.
+func findConductorPane(instances []*session.Instance, conductorName string) (string, *tmux.Session) {
 	for _, inst := range instances {
 		// Title and ArchivedAt are written under the instance's own lock
 		// (SetTitleThreadSafe, SetArchivedAtThreadSafe), not instancesMu:
@@ -14275,11 +14225,11 @@ func findConductorTmuxSession(instances []*session.Instance, conductorName strin
 			continue
 		}
 		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
-			return ts
+			return inst.ID, ts
 		}
-		return nil
+		return "", nil
 	}
-	return nil
+	return "", nil
 }
 
 // deliverToConductorPane sends msg into a conductor's tmux pane and verifies it

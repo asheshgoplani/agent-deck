@@ -6,17 +6,18 @@ import (
 )
 
 // relayEngine consumes the engine's routed events and health states on
-// goroutines of its own, hands each one to its deliver func (the conductor-pane
-// dispatchers), and then forwards it to panelEvents and panelHealth, which
-// feed a TUI's watcher panel.
+// goroutines of its own, hands each health state to deliverHealth (the
+// conductor health alerts), and forwards both to panelEvents and panelHealth,
+// which feed a TUI's watcher panel. Routed events need no delivery here: the
+// engine queued each for its conductor before storing it (#2537).
 //
 // Delivery must not wait for the Bubble Tea loop. Attaching to a session runs
 // through tea.Exec, which blocks that loop until the attach returns, so a
 // delivery made from Update sat unsent for as long as the TUI showed a session
 // and then went out in a burst on detach (#2524). Like statusWorker, the relay
 // keeps running whatever the TUI is doing, and it is the only consumer of the
-// engine's channels, so each event is delivered once. A headless owner (`web
-// --no-tui`) has no panel at all and runs the same relay (#2530).
+// engine's channels. A headless owner (`web --no-tui`) has no panel at all and
+// runs the same relay (#2530).
 //
 // The panel forwards never block. The panel re-reads the database on every
 // refresh, so while the TUI is not reading (attached), one pending item per
@@ -26,7 +27,6 @@ import (
 func relayEngine(
 	events <-chan Event,
 	health <-chan HealthState,
-	deliverEvent func(Event),
 	deliverHealth func(HealthState),
 	panelEvents chan<- Event,
 	panelHealth chan<- HealthState,
@@ -52,7 +52,6 @@ func relayEngine(
 					slog.String("sender", evt.Sender),
 					slog.String("routed_to", evt.RoutedTo))
 			}
-			relayDeliver(log, "event", deliverEvent, evt)
 			select {
 			case panelEvents <- evt:
 			default:
