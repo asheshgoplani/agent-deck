@@ -620,6 +620,11 @@ func (s *StateDB) Migrate() error {
 		return err
 	}
 
+	// Triggers view (#2702): additive tables, SchemaVersion unchanged.
+	if err := migrateTriggerTables(tx); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(claudeStatuslineSchema); err != nil {
 		return fmt.Errorf("statedb: create Claude statusline cache: %w", err)
 	}
