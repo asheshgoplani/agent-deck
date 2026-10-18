@@ -162,6 +162,13 @@ func systemdUnitFromCgroup(cgroup string) string {
 		if len(parts) != 3 {
 			continue
 		}
+		// Only a unit of the user manager (user@<uid>.service/...) is a
+		// trigger: that is what the scan reads and `triggers run` can start.
+		// A system service (a CI runner, a host agent) running agent-deck is
+		// not a sender of its own.
+		if !strings.Contains(parts[2], "/user@") {
+			continue
+		}
 		leaf := filepath.Base(parts[2])
 		if !strings.HasSuffix(leaf, ".service") || strings.HasPrefix(leaf, "user@") {
 			continue

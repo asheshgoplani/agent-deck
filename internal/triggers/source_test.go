@@ -46,6 +46,11 @@ func TestInferSystemdNeedsInvocationIDAndCgroup(t *testing.T) {
 		t.Fatalf("cgroup without INVOCATION_ID: %+v", got)
 	}
 	// The user manager itself is not a sender.
+	// A system service (the CI runner's own unit) is not a trigger (#2738).
+	sys := map[string]string{"/proc/self/cgroup": "0::/system.slice/hosted-compute-agent.service\n"}
+	if got := Infer(fakeEnv(map[string]string{"INVOCATION_ID": "1"}, sys, 0)); got.Kind != KindCLI {
+		t.Fatalf("system service cgroup: %+v", got)
+	}
 	mgr := map[string]string{"/proc/self/cgroup": "0::/user.slice/user-1000.slice/user@1000.service\n"}
 	if got := Infer(fakeEnv(map[string]string{"INVOCATION_ID": "6f1c"}, mgr, 0)); got.Kind != KindCLI {
 		t.Fatalf("user manager cgroup: %+v", got)
