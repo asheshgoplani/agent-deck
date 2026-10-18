@@ -344,6 +344,16 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return
 	}
+	// Issue #2683: a Claude background/supervisor worker carries the env of
+	// whichever pane first started it; never credit its hooks to that pane.
+	if hookFromClaudeBackgroundWorker() {
+		bgSessionID := strings.TrimSpace(payload.SessionID)
+		if bgSessionID == "" {
+			bgSessionID = strings.TrimSpace(payload.ConversationID)
+		}
+		logBgWorkerHookDropOnce(instanceID, bgSessionID, payload.HookEventName)
+		return
+	}
 	if payload.HookEventName == "PreToolUse" && os.Getenv(session.PreToolHookSyncMarkerEnv) != "1" {
 		// An old async hook can first be scheduled after a newer Stop or
 		// permission event. No payload timestamp can recover that order.

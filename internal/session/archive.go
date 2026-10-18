@@ -77,3 +77,30 @@ func VisibleInstances(instances []*Instance) []*Instance {
 func SameArchivePartition(a, b *Instance) bool {
 	return a.IsArchived() == b.IsArchived()
 }
+
+// ArchivedClaudeSessionIDHolder returns the ARCHIVED record, other than self,
+// that already holds sessionID as its Claude conversation id, or nil.
+//
+// Issue #2683: the save-time duplicate guard (UpdateClaudeSessionsWithDedup)
+// keeps the id on the oldest record and silently clears it on the newer one,
+// archived or not. An archived holder is invisible in the normal list, so
+// `add --resume-session <id>` quietly launched a fresh conversation and
+// `session set <x> claude-session-id <id>` printed success and then reverted.
+// Callers use this to refuse up front, naming the holder.
+func ArchivedClaudeSessionIDHolder(instances []*Instance, self *Instance, sessionID string) *Instance {
+	if sessionID == "" {
+		return nil
+	}
+	for _, inst := range instances {
+		if inst == nil || inst == self || (self != nil && inst.ID == self.ID) {
+			continue
+		}
+		if !inst.IsArchived() || !IsClaudeCompatible(inst.Tool) {
+			continue
+		}
+		if inst.ClaudeSessionID == sessionID {
+			return inst
+		}
+	}
+	return nil
+}

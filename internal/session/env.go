@@ -60,6 +60,9 @@ func (i *Instance) buildEnvSourceCommand() string {
 		if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
 			sources = append(sources, stripExpr)
 		}
+		if stripExpr := claudeJobDirStripExpr(i); stripExpr != "" {
+			sources = append(sources, stripExpr)
+		}
 		if identityExport := i.identityEnvExport(); identityExport != "" {
 			sources = append(sources, identityExport)
 		}
@@ -160,6 +163,11 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// launch` children outside the conductor's group triangle).
 	// Subsumes the narrower issue #680 predicate.
 	if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
+		sources = append(sources, stripExpr)
+	}
+	// 9b. #2683: never let a pane inherit CLAUDE_JOB_DIR (see
+	// claudeJobDirStripExpr).
+	if stripExpr := claudeJobDirStripExpr(i); stripExpr != "" {
 		sources = append(sources, stripExpr)
 	}
 
@@ -780,6 +788,25 @@ func telegramStateDirStripExpr(inst *Instance) string {
 		}
 	}
 	return "unset " + strings.Join(telegramEnvVarsToStrip, " ")
+}
+
+// claudeJobDirStripExpr returns `unset CLAUDE_JOB_DIR` for every spawn whose
+// hooks go through agent-deck's hook handler (#2683). CLAUDE_JOB_DIR marks a
+// Claude Code background job; the hook handler drops hooks that carry it. A
+// tmux server started (by an older agent-deck, or by anything else) from
+// inside such a job keeps it in its global environment and hands it to every
+// pane, which would silently drop every hook on that server. The process-level
+// scrub at agent-deck startup and the tmux spawn env (childenv.
+// WithoutClaudeJobDir) stop new servers from inheriting it; this clause covers
+// a server that already has it.
+func claudeJobDirStripExpr(inst *Instance) string {
+	if inst == nil {
+		return ""
+	}
+	if !HookStatusTool(inst.Tool) && !instInvokesClaudeBinary(inst) {
+		return ""
+	}
+	return "unset CLAUDE_JOB_DIR"
 }
 
 // telegramExecEnvStripFlags returns the `-u VAR -u VAR ...` argument

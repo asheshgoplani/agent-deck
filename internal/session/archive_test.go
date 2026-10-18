@@ -151,3 +151,23 @@ func TestArchivedAtStorageRoundTrip(t *testing.T) {
 		t.Fatalf("archived filter after reload: got %+v", ids(arch))
 	}
 }
+
+// Issue #2683 part 3: an archived record holding a Claude id must be found so
+// the CLI can refuse with its name instead of letting the duplicate-id guard
+// silently clear the id on the newer record.
+func TestArchivedClaudeSessionIDHolder(t *testing.T) {
+	const id = "abababab-abab-4bab-8bab-abababababab"
+	archived := &Instance{ID: "arch", Title: "old copy", Tool: "claude", ClaudeSessionID: id, ArchivedAt: time.Now()}
+	live := &Instance{ID: "live", Title: "live copy", Tool: "claude", ClaudeSessionID: id}
+	self := &Instance{ID: "self", Title: "new", Tool: "claude"}
+
+	if got := ArchivedClaudeSessionIDHolder([]*Instance{live, archived, self}, self, id); got != archived {
+		t.Fatalf("holder = %v, want the archived record", got)
+	}
+	if got := ArchivedClaudeSessionIDHolder([]*Instance{live, self}, self, id); got != nil {
+		t.Fatalf("a non-archived holder is not this guard's concern, got %v", got)
+	}
+	if got := ArchivedClaudeSessionIDHolder([]*Instance{archived}, archived, id); got != nil {
+		t.Fatalf("a record never conflicts with itself, got %v", got)
+	}
+}

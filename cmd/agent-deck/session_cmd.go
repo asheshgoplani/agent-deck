@@ -2421,6 +2421,14 @@ func handleSessionSet(profile string, args []string) {
 			exitCLI(1)
 		}
 	}
+	// #2683: an archived record holding this Claude id wins the duplicate-id
+	// guard on save, so the set would print success and then revert.
+	if field == session.FieldClaudeSessionID {
+		if msg, code := checkArchivedClaudeIDConflict(instances, inst, value); msg != "" {
+			out.Error(msg, code)
+			exitCLI(1)
+		}
+	}
 
 	// "order" needs the group tree, which SetField (instance-only by
 	// contract) cannot see, so it is handled here like set-parent is.
