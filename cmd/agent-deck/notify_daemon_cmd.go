@@ -205,7 +205,10 @@ func installedExePath(exe string) string {
 // bytes while this process still runs the old inode, so this reads the NEW
 // version. Returns "" on any failure (treated as "unknown" -> no recycle).
 func readOnDiskVersion(exe string) string {
-	out, err := exec.Command(installedExePath(exe), "version").Output()
+	// Bounded so a hung binary cannot stall the version watcher.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, installedExePath(exe), "version").Output() //nolint:gosec // G204: the path is this process's own install path (os.Executable), the argument is the fixed "version", no shell
 	if err != nil {
 		return ""
 	}
