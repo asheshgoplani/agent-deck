@@ -234,6 +234,18 @@ func handleRemoteAgent(profile string, args []string) {
 			return
 		}
 	}
+	// Resolve the profile once, for the change feed's state DB, the probe,
+	// the pane capturer and every request alike. The TUI leaves -p out for a
+	// remote whose profile is "" or "default", and GetDBPathForProfile reads
+	// "" as the default profile, while the probe resolves AGENTDECK_PROFILE
+	// and default_profile: the feed then watched a state DB the agent did not
+	// serve and pushed no change.
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
+		exitCLI(1)
+	}
+	profile = resolved
 	dbPath, err := session.GetDBPathForProfile(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
