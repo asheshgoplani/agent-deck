@@ -479,9 +479,33 @@ func (i *Instance) hermesResumeTarget(binding string, boundAt time.Time) string 
 	if !rec.Platform && binding != "" && binding != rec.ID && boundAt.After(time.Unix(0, rec.At)) {
 		sessionLog.Info("hermes_owned_session_superseded_by_binding",
 			slog.String("instance_id", i.ID), slog.String("record", rec.ID), slog.String("binding", binding))
+		// The resume zeroes the binding's time, so a second restart before a
+		// hook of the new process is seen would compare the stale record
+		// again and lose /new. The record takes the binding's id instead.
+		i.adoptBindingIntoRecord(binding)
 		return binding
 	}
 	return rec.ID
+}
+
+// adoptBindingIntoRecord replaces the entry's own-session record with id (a
+// binding that superseded a platform-less record). It holds the Hermes hook
+// locks, the same critical section the hook handler writes the record in, so
+// it cannot interleave with a hook of the current launch, and an older
+// launch is already shut out by the generation seeded before the resume.
+func (i *Instance) adoptBindingIntoRecord(id string) {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") || !hermesSessionIDPattern.MatchString(id) {
+		return
+	}
+	locks, err := acquireHermesHookLocks(i.ID)
+	if err != nil {
+		return
+	}
+	defer locks.release()
+	path := filepath.Join(hermesHookScope(i.ID, i.IsSandboxed()), i.ID+hermesOwnedSessionSuffix)
+	if err := atomicHermesJSON(path, hermesOwnedSession{ID: id, At: time.Now().UnixNano()}); err != nil {
+		sessionLog.Warn("hermes_owned_session_adopt_failed", slog.String("instance_id", i.ID), slog.String("error", err.Error()))
+	}
 }
 
 // preferHermesOwnedSessionForStart makes Start and StartWithMessage resume
