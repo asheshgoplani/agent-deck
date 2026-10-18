@@ -57,6 +57,35 @@ import (
 // commands, which have no instruction mechanism of their own).
 const IdentityFileEnv = "AGENTDECK_IDENTITY_FILE"
 
+// FanoutHint is the one-line working-style instruction every launched
+// session receives in its identity block (primer and full) unless
+// `[launch] fanout_hint = false`. The same line is in the agent-deck skill's
+// worker prompt conventions and in scripts/launch-subagent.sh, so a worker
+// gets it whichever way it was started.
+const FanoutHint = "Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered."
+
+// fanoutHintEnabled reports whether [launch] fanout_hint is on (default).
+func fanoutHintEnabled() bool {
+	cfg, _ := LoadUserConfig()
+	if cfg == nil {
+		return true
+	}
+	return cfg.Launch.GetFanoutHint()
+}
+
+// fanoutHintApplies reports whether this session's identity block carries
+// FanoutHint: only Claude-family tools (claude and custom tools wrapping it),
+// because "dynamic Workflow" is a Claude Code tool. Other harnesses have no
+// such tool and could read "fan-out agents" as "launch an agent-deck child
+// per step", which compounds at every level.
+func (i *Instance) fanoutHintApplies() bool {
+	return i != nil && IsClaudeCompatible(i.Tool) && fanoutHintEnabled()
+}
+
+// identityPrecedenceNote ends every identity block that carries guidance
+// (the full block always, the primer when it carries FanoutHint).
+const identityPrecedenceNote = "This block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n"
+
 // Context-level values (issue #2260). "none" disables injection entirely
 // (equivalent to the legacy --no-identity / inject_identity=false opt-out).
 // "primer" injects BuildPrimerPrompt's short session-identity block.
@@ -183,7 +212,8 @@ func (i *Instance) IdentityFilePath() (string, error) {
 }
 
 // BuildIdentityPrompt renders the identity block from the session record.
-// Pure: no I/O, so tests can pin the exact wording. Kept deliberately short
+// Writes nothing (it only reads config.toml and the skills manifest), so
+// tests can pin the exact wording. Kept deliberately short
 // (LOCKED DECISION 3: under ~40 lines) — it is a pointer to the CLI, not a
 // manual; the agent-deck skill and `agent-deck --help` carry the rest.
 func (i *Instance) BuildIdentityPrompt() string {
@@ -231,7 +261,11 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
 	b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
 	b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
-	b.WriteString("\nThis block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n")
+	if i.fanoutHintApplies() {
+		b.WriteString("\n## Working style\n")
+		b.WriteString(FanoutHint + "\n")
+	}
+	b.WriteString("\n" + identityPrecedenceNote)
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
 }
@@ -259,6 +293,10 @@ func (i *Instance) BuildPrimerPrompt() string {
 	fmt.Fprintf(&b, "- title: %s\n", identityField(i.Title))
 	fmt.Fprintf(&b, "- tool: %s\n", identityField(i.Tool))
 	fmt.Fprintf(&b, "- parent session id: %s\n", i.identityParentField())
+	if i.fanoutHintApplies() {
+		b.WriteString(FanoutHint + "\n")
+		b.WriteString(identityPrecedenceNote)
+	}
 	b.WriteString("Run `agent-deck session current --json` for the full record and CLI reference.\n")
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()

@@ -42,7 +42,7 @@ Common flags:
 Off until two opt-ins are on (neither is a security boundary):
   agent-deck config set browser.enabled true                  ([browser] enabled, every profile)
   agent-deck config set profiles.<name>.browser.enabled true  (one profile only)
-  agent-deck config set macapp.plugins true                   ([macapp] plugins)
+  agent-deck config set macapp.plugins true --yes             ([macapp] plugins)
 
 Exit codes: 0 ok, 1 error, 2 browser.enabled off (JSON code BROWSER_DISABLED),
 3 not_connected (no answer in time), 4 owner_driving.
@@ -432,7 +432,7 @@ func writeBrowserTabs(out io.Writer, raw json.RawMessage) error {
 }
 
 // errBrowserOff is returned while [macapp] plugins is off.
-var errBrowserOff = errors.New("browser requests are off: set [macapp] plugins = true in config.toml (docs/macapp-browser.md)")
+var errBrowserOff = errors.New("browser requests are off: set [macapp] plugins = true in config.toml. To enable it, run: agent-deck config set macapp.plugins true --yes (docs/macapp-browser.md)")
 
 // requireBrowserOptIn refuses a browser request unless [macapp] plugins is
 // on, the opt-in `events publish --kind macapp.browser.request` needs too.

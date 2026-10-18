@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -49,5 +50,22 @@ func TestConfigKeysRoundTrip(t *testing.T) {
 	}
 	if k, ok := LookupConfigKey("ui.theme"); !ok || k.Key != "theme" {
 		t.Fatalf("alias ui.theme: %+v %v", k, ok)
+	}
+}
+
+// TestConfigKeysConsent: only macapp.plugins needs consent, and only to turn
+// it on; SetConfigValue refuses it without consent before touching the file.
+func TestConfigKeysConsent(t *testing.T) {
+	for _, k := range ConfigKeys() {
+		if (k.Consent != "") != (k.Key == "macapp.plugins") {
+			t.Errorf("%s: consent %q", k.Key, k.Consent)
+		}
+	}
+	k, _ := LookupConfigKey("macapp.plugins")
+	if !k.NeedsConsent(true) || k.NeedsConsent(false) {
+		t.Fatalf("NeedsConsent: on %v off %v", k.NeedsConsent(true), k.NeedsConsent(false))
+	}
+	if _, v, err := SetConfigValue("macapp.plugins", "on", false); !errors.Is(err, ErrConsentRequired) || v != true {
+		t.Fatalf("SetConfigValue without consent: %v %v", v, err)
 	}
 }

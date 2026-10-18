@@ -143,7 +143,10 @@ func TestMergeBackgroundWork(t *testing.T) {
 		{"redrawn pane, fresh transcript holds", tmux.BackgroundWork{}, pendingWF, true, time.Time{}, tmux.BackgroundKindWorkflow, "probe-two-agents", false},
 		{"redrawn pane, transcript past the hold", tmux.BackgroundWork{}, staleWF, true, time.Time{}, "", "", false},
 		{"recent pane sighting extends the hold", tmux.BackgroundWork{}, staleWF, true, now.Add(-time.Minute), tmux.BackgroundKindWorkflow, "probe-two-agents", false},
-		{"footer counter named from transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, shells, true, time.Time{}, tmux.BackgroundKindBash, "Sleep for 50 seconds in background", true},
+		// A5: the shell counter holds only through its fresh launch, so the
+		// pane sighting is not stamped (paneShown false).
+		{"footer counter named from transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, shells, true, time.Time{}, tmux.BackgroundKindBash, "Sleep for 50 seconds in background", false},
+		{"footer counter, no transcript", tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell", Source: "pane"}, transcriptBackgroundScan{}, false, time.Time{}, "", "", false},
 		{"nothing anywhere", tmux.BackgroundWork{}, finished, true, time.Time{}, "", "", false},
 	}
 	for _, c := range cases {
@@ -275,10 +278,13 @@ func TestBackgroundWork2473_TranscriptHoldsRedrawnPane(t *testing.T) {
 	}
 }
 
-// Shells and monitors at the prompt, tmux path (no hook): running +
-// background-work. Was TestAudit_ClaudeBackgroundShellsAtPromptIsWaiting
-// before #2473.
-func TestBackgroundWork2473_ShellsAtPromptTmuxPathIsRunning(t *testing.T) {
+// Shells and monitors at the prompt, tmux path (no hook), no transcript.
+// #2473 read this as running + background-work
+// (TestBackgroundWork2473_ShellsAtPromptTmuxPathIsRunning); since A5 the shells
+// need a fresh background Bash launch in the transcript, so the pane alone
+// leaves the monitor: waiting + watching. TestA5_LeftoverShellTranscriptHold
+// covers the transcript-backed running case.
+func TestBackgroundWork2473_ShellsAtPromptTmuxPathNeedsTranscript(t *testing.T) {
 	inst, cleanup := startPaneInstance(t, "claude", "claude-bgshell-2473", loadPaneFixture(t, "agent-and-shells.txt"))
 	defer cleanup()
 	storage, err := NewStorageWithProfile("_test-2473-bgshell")
@@ -289,11 +295,11 @@ func TestBackgroundWork2473_ShellsAtPromptTmuxPathIsRunning(t *testing.T) {
 	// A fresh process (list --json, session show) loading the row as waiting.
 	fresh := persistAndReload(t, storage, inst, StatusWaiting)
 	status, sub := cliPass(t, fresh)
-	if status != StatusRunning || sub != SubstateBackgroundWork {
-		t.Fatalf("shells at the prompt = %q/%q, want running/background-work", status, sub)
+	if status != StatusWaiting || sub != SubstateWatching {
+		t.Fatalf("shells at the prompt = %q/%q, want waiting/watching", status, sub)
 	}
-	if work := fresh.BackgroundWork(); work.Kind != tmux.BackgroundKindBash || work.Task != "2 shells, 1 monitor" {
-		t.Fatalf("background work = %+v", work)
+	if work := fresh.BackgroundWork(); work.Kind != tmux.BackgroundKindMonitor || work.Count != 1 {
+		t.Fatalf("background work = %+v, want the 1 monitor watching", work)
 	}
 }
 

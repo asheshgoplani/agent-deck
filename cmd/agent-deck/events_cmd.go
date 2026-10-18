@@ -296,8 +296,7 @@ func handleEventsPublish(profile string, args []string) {
 		}
 	}
 	if cfg, _ := session.LoadUserConfig(); !events.IsMacappUngatedKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
-		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		exitCLI(2)
+		exitMacappPluginsOff(out, "events publish")
 	}
 	if *fromRemote {
 		if err := checkRemoteReplyPublish(profile, *kind, *sessionID, *data, *dataFile); err != nil {

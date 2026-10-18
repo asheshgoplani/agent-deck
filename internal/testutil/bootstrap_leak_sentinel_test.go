@@ -2,6 +2,7 @@ package testutil_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +57,7 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 	for _, pkg := range []string{"./internal/tmux/", "./internal/session/"} {
 		pkg := pkg
 		t.Run(pkg, func(t *testing.T) {
+			token := newBootstrapSentinelToken()
 			before := snapshotADTmuxDirs()
 
 			// Bound the child run so a hung child (e.g. a stalled tmux call)
@@ -68,7 +70,7 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 			cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-timeout", "60s",
 				"-run", "TestTmuxBootstrap_ServerIsRunning", pkg)
 			cmd.Dir = repoRoot
-			cmd.Env = os.Environ()
+			cmd.Env = append(os.Environ(), bootstrapSentinelTokenEnv+"="+token)
 			out, err := cmd.CombinedOutput()
 			if ctx.Err() == context.DeadlineExceeded {
 				t.Fatalf("child `go test %s` did not finish within 2m (hung?); output:\n%s", pkg, out)
@@ -83,33 +85,7 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 			// still alive on its isolated socket.
 			newDirs := diffDirs(before, snapshotADTmuxDirs())
 
-			// Defense-in-depth: strip TMUX/TMUX_PANE from the probe/kill calls.
-			// `-S <path>` already pins the socket (verified: it is NOT overridden
-			// by an ambient $TMUX, unlike the bare/`-L` discovery documented in
-			// tmuxenv.go), but `go test` is routinely run from inside a tmux pane,
-			// so we belt-and-suspender against any tmux-version edge case ever
-			// letting these calls touch the developer's live server.
-			probeEnv := envWithoutTmux()
-
-			var leaked []string
-			for _, dir := range newDirs {
-				for _, sock := range socketsUnder(dir) {
-					list := exec.Command("tmux", "-S", sock,
-						"list-sessions", "-F", "#{session_name}")
-					list.Env = probeEnv
-					out, err := list.Output()
-					if err != nil {
-						continue // server already gone — not a leak
-					}
-					if strings.Contains(string(out), "bootstrap") {
-						leaked = append(leaked, sock)
-						// Never let the guard itself leak: tear down what we found.
-						kill := exec.Command("tmux", "-S", sock, "kill-server")
-						kill.Env = probeEnv
-						_ = kill.Run()
-					}
-				}
-			}
+			leaked := reapLeakedBootstrapServers(newDirs, token)
 			if len(leaked) > 0 {
 				t.Fatalf("%s leaked %d bootstrap tmux server(s) that survived TestMain "+
 					"exit (os.Exit skipped the kill-server defer): %s\n\n"+
@@ -120,6 +96,62 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bootstrapSentinelTokenEnv tags the child `go test` run. A tmux server copies
+// the environment of the client that started it into its global environment,
+// so the bootstrap server the child's TestMain starts carries this token, and
+// no other server does.
+const bootstrapSentinelTokenEnv = "AGENTDECK_BOOTSTRAP_SENTINEL_TOKEN"
+
+// newBootstrapSentinelToken returns a token unique to one child run.
+func newBootstrapSentinelToken() string {
+	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+}
+
+// reapLeakedBootstrapServers returns, and kills, every bootstrap tmux server
+// still alive under dirs that the tagged child run started.
+func reapLeakedBootstrapServers(dirs []string, token string) []string {
+	// Defense-in-depth: strip TMUX/TMUX_PANE from the probe/kill calls.
+	// `-S <path>` already pins the socket (verified: it is NOT overridden
+	// by an ambient $TMUX, unlike the bare/`-L` discovery documented in
+	// tmuxenv.go), but `go test` is routinely run from inside a tmux pane,
+	// so we belt-and-suspender against any tmux-version edge case ever
+	// letting these calls touch the developer's live server.
+	probeEnv := envWithoutTmux()
+
+	var leaked []string
+	for _, dir := range dirs {
+		for _, sock := range socketsUnder(dir) {
+			list := exec.Command("tmux", "-S", sock,
+				"list-sessions", "-F", "#{session_name}")
+			list.Env = probeEnv
+			out, err := list.Output()
+			if err != nil {
+				continue // server already gone — not a leak
+			}
+			if !strings.Contains(string(out), "bootstrap") {
+				continue
+			}
+			// Another package's test binary may be running right now with its
+			// own live bootstrap server in a dir that appeared after the
+			// snapshot. Killing it breaks that package's suite (issue 2712), so
+			// only the server the tagged child started counts.
+			show := exec.Command("tmux", "-S", sock,
+				"show-environment", "-g", bootstrapSentinelTokenEnv)
+			show.Env = probeEnv
+			tag, err := show.Output()
+			if err != nil || strings.TrimSpace(string(tag)) != bootstrapSentinelTokenEnv+"="+token {
+				continue
+			}
+			leaked = append(leaked, sock)
+			// Never let the guard itself leak: tear down what we found.
+			kill := exec.Command("tmux", "-S", sock, "kill-server")
+			kill.Env = probeEnv
+			_ = kill.Run()
+		}
+	}
+	return leaked
 }
 
 // envWithoutTmux returns os.Environ() with TMUX and TMUX_PANE removed, mirroring

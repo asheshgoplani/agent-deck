@@ -155,7 +155,17 @@ func (s *Session) themedStatusRight(themeStyle tmuxThemeStyle) string {
 	if switchOn {
 		hints += fmt.Sprintf(" · #[fg=%s]%s switch#[default]", themeStyle.hintColor, switchKey)
 	}
-	return fmt.Sprintf("%s │ 📁 %s | %s ", hints, s.DisplayName, s.projectDisplayName())
+	return fmt.Sprintf("%s │ 📁 %s | %s ", hints, FormatLiteral(s.DisplayName), FormatLiteral(s.projectDisplayName()))
+}
+
+// FormatLiteral escapes text placed into a tmux format string such as
+// status-right, status-left or a display-message. tmux expands "#(cmd)" there by running cmd through the shell
+// on every status refresh, and "#[...]" as style codes; "##" is a literal "#".
+// The session title and the project folder name are not ours to trust (a
+// title can come from an OpenClaw gateway or a web request, a folder from a
+// cloned repository), so every "#" in them is doubled.
+func FormatLiteral(s string) string {
+	return strings.ReplaceAll(s, "#", "##")
 }
 
 func (s *Session) projectDisplayName() string {
@@ -4648,8 +4658,8 @@ func (s *Session) GetStatus() (string, error) {
 			// Foreground turn ended by handing off to a background agent
 			// ("Waiting for N background agent to finish"): Claude resumes by
 			// itself, no spinner is drawn, so the busy check above misses it.
-			// Keep it green until the agent reports back. Background shells at
-			// the prompt are deliberately NOT in this rule (background_work.go).
+			// Keep it green until the agent reports back. A shell counter at
+			// the prompt is deliberately NOT in this rule (A5, background_work.go).
 			if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
 				return "active", nil
 			}
@@ -4827,7 +4837,7 @@ func (s *Session) GetStatus() (string, error) {
 					}
 
 					// Background work in flight keeps the session green here too:
-					// a bg shell's output drives the spike, so without this the
+					// the workflow row's redraws drive the spike, so without this the
 					// prompt check below would flip it to waiting and fire a
 					// premature completion (mirrors the busy-check path above).
 					if s.markBackgroundWorkActiveLocked(content, currentTS, shortName) {
@@ -5314,16 +5324,18 @@ func (s *Session) isClaudeTool() bool {
 const bgWorkCacheTTL = 500 * time.Millisecond
 
 // BackgroundWorkPending reports whether a Claude session at the prompt still has
-// background work in flight. See BackgroundWorkSince.
+// background work in flight that the pane alone proves (a shell counter does
+// not, A5). See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
 	work, blocked, _ := s.BackgroundWorkSince(time.Time{})
-	return work.Running() && !blocked
+	return work.PaneProven().Running() && !blocked
 }
 
 // BackgroundWorkSince returns the background work (issue #2473) a Claude
 // session's pane shows in flight: a workflow row short of its last step, a turn
 // awaiting background agents / workflows, or live shells / monitors in the
-// footer. It captures the pane itself — for the UpdateStatus hook fast path,
+// footer (shells recorded raw: the session layer decides them against the
+// transcript, A5). It captures the pane itself — for the UpdateStatus hook fast path,
 // which short-circuits before GetStatus and so has no captured content — and
 // caches the result briefly (bgWorkCacheTTL). A cached verdict older than
 // notBefore is not reused: the caller passes the hook event time, so a Stop
@@ -5406,8 +5418,11 @@ func (s *Session) backgroundWorkOutrankedLocked(content string) bool {
 
 // markBackgroundWorkActiveLocked applies the "keep green while background work is
 // in flight" state update when a Claude session is at the prompt but work it
-// started is still running: a workflow, background agents, run_in_background
-// shells or a Monitor (issue #2473). Returns true when it fired (caller should
+// started is still running: a workflow or background agents (issue #2473).
+// A footer shell counter alone never fires it (A5): Claude Code never reaps a
+// long-lived run_in_background shell, so only the session layer, with a fresh
+// background Bash launch in the transcript, may keep such a frame running.
+// Monitors are watching and never fire it either. Returns true when it fired (caller should
 // return "active"). The verdict comes from the frame prepareFrame recorded
 // (the untrimmed frame) or, failing that, from content itself (raw or
 // stripped; StripANSI is idempotent). Never fires on a frame that shows an
@@ -5418,7 +5433,7 @@ func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64
 		return false
 	}
 	stripped := StripANSI(content)
-	if !s.lastBackgroundWork.Running() && !claudeBackgroundWorkPending(stripped) {
+	if !s.lastBackgroundWork.PaneProven().Running() && !claudeBackgroundWorkPending(stripped) {
 		return false
 	}
 	// An open menu or an error outranks background work: the frame stays
@@ -5860,11 +5875,12 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	// otherwise at the prompt. prepareFrame read it from the untrimmed frame,
 	// which still carries the workflow row the roster trim removes. A live
 	// foreground cue (running), an error, or an open menu keeps its verdict.
-	if s.isClaudeTool() && s.lastBackgroundWork.InFlight() && !s.lastBackgroundBlocked {
+	// A shell counter alone refines nothing (A5, WithoutShells).
+	if work := s.lastBackgroundWork.PaneProven(); s.isClaudeTool() && work.InFlight() && !s.lastBackgroundBlocked {
 		switch s.lastSubstate {
 		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching:
-			s.lastSubstate = s.lastBackgroundWork.Substate()
-			s.lastSubstateDetail = s.lastBackgroundWork.Summary()
+			s.lastSubstate = work.Substate()
+			s.lastSubstateDetail = work.Summary()
 		}
 	}
 	s.recordCompletedTurnSampleLocked(content)
@@ -7408,11 +7424,12 @@ func globalEnvironmentValue(socket, key string) (string, error) {
 
 // SetStatusLeft sets the left side of tmux status bar for a session.
 // Used by NotificationManager to display waiting session notifications.
+//
+// text is a tmux format string: callers escape untrusted parts with
+// FormatLiteral. It is passed as one argv element, so no shell quoting.
 func SetStatusLeft(sessionName, text string) error {
-	// Escape single quotes for tmux by replacing ' with '\''
-	escaped := strings.ReplaceAll(text, "'", "'\\''")
 	// Bounded — see tmuxMutationTimeout. Driven by the notification sweep.
-	return runBoundedMutation(DefaultSocketName(), "set-option", "-t", sessionName, "status-left", escaped)
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-t", sessionName, "status-left", text)
 }
 
 // ClearStatusLeft resets status-left to default for a session.
@@ -7490,11 +7507,15 @@ func captureOriginalStatusLeft() {
 // This is a MAJOR performance optimization: ONE tmux call instead of 100+.
 // All agentdeck sessions inherit this global setting.
 // On first call, captures the existing status-left so ClearStatusLeftGlobal can restore it.
+//
+// text is a tmux format string (the bar uses #[fg=...] styles): callers
+// escape untrusted parts such as session titles with FormatLiteral. It is
+// passed as one argv element, so it needs no shell quoting (the former
+// shell-style quote rewrite made tmux show "it's" with backslashes in it).
 func SetStatusLeftGlobal(text string) error {
 	savedStatusLeft.Do(captureOriginalStatusLeft)
-	escaped := strings.ReplaceAll(text, "'", "'\\''")
 	// Bounded — see tmuxMutationTimeout. Driven by the notification sweep.
-	return runBoundedMutation(DefaultSocketName(), "set-option", "-g", "status-left", escaped)
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-g", "status-left", text)
 }
 
 // ClearStatusLeftGlobal restores the original global status-left value.
@@ -7504,9 +7525,9 @@ func SetStatusLeftGlobal(text string) error {
 func ClearStatusLeftGlobal() error {
 	socket := DefaultSocketName()
 	if savedStatusLeft.captured {
-		escaped := strings.ReplaceAll(savedStatusLeft.value, "'", "'\\''")
+		// Restored verbatim: it is the user's own format string.
 		// Bounded — see tmuxMutationTimeout.
-		return runBoundedMutation(socket, "set-option", "-g", "status-left", escaped)
+		return runBoundedMutation(socket, "set-option", "-g", "status-left", savedStatusLeft.value)
 	}
 	// No saved value — fall back to unset (original behavior)
 	return runBoundedMutation(socket, "set-option", "-gu", "status-left")
@@ -7858,6 +7879,45 @@ func DetachClientsOnSockets(sockets ...string) (bool, error) {
 		}
 	}
 	return detached, firstErr
+}
+
+// DetachClientByPID detaches the one non-control client on socket whose
+// process id is pid ("" = default server). Returns detached=false (no error)
+// when no such client is attached, e.g. a pid recorded by a TUI that has
+// since left that attach (#2704).
+func DetachClientByPID(socket string, pid int) (bool, error) {
+	if pid <= 0 {
+		return false, nil
+	}
+	output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_pid}", "#{client_name}"))
+	if err != nil {
+		return false, nil
+	}
+	name := clientNameForPID(string(output), pid)
+	if name == "" {
+		return false, nil
+	}
+	if err := runBoundedMutation(socket, "detach-client", "-c", name); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// clientNameForPID parses list-clients output of control-mode flag, client
+// pid and client name, and returns the name of the non-control client with
+// that pid, or "". client_name goes last: it is free text.
+func clientNameForPID(output string, pid int) string {
+	want := strconv.Itoa(pid)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		parts := strings.SplitN(line, tmuxFieldSep, 3)
+		if len(parts) != 3 || parts[0] == "1" || parts[2] == "" {
+			continue
+		}
+		if parts[1] == want {
+			return parts[2]
+		}
+	}
+	return ""
 }
 
 // UnbindKey removes a key binding and restores default behavior.

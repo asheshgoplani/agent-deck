@@ -88,8 +88,28 @@ func TestMonitorWatchingUntilEvidence(t *testing.T) {
 			for _, count := range []int{1, 2} {
 				pane := tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: fmt.Sprintf("%d shells", count), Source: "pane"}
 				got, _ := mergeBackgroundWork(pane, sc, true, time.Time{}, time.Now())
-				if got.Watching() != (c.passive && count == 1) {
-					t.Fatalf("%d shells merged to %+v", count, got)
+				switch {
+				case !c.passive:
+					// A fresh non-passive launch holds the counter running.
+					if got.Kind != tmux.BackgroundKindBash {
+						t.Fatalf("%d shells merged to %+v, want bash running", count, got)
+					}
+				case count == 1:
+					// The receipt accounts for the displayed shell: the
+					// counter itself is the watcher.
+					if !got.Watching() || got.Count != 1 || got.Source != "pane+transcript" {
+						t.Fatalf("%d shells merged to %+v, want the counter watching", count, got)
+					}
+				default:
+					// A5: one receipt cannot account for 2 shells, so the
+					// counter is not reclassified (no pane+transcript claim).
+					// The unaccounted shell no longer holds the session
+					// running on the pane's word, and what remains is the
+					// transcript's own watcher receipt: 1 watching, sourced
+					// from the transcript, never a count covering the pane.
+					if !got.Watching() || got.Count != 1 || got.Source != "transcript" {
+						t.Fatalf("%d shells merged to %+v, want only the transcript watcher", count, got)
+					}
 				}
 			}
 			missing := scanTranscriptBackground(lines[1:])
@@ -151,8 +171,10 @@ func TestMonitorWatchingUntilCountAndAge(t *testing.T) {
 		pane := tmux.BackgroundWork{Kind: tmux.BackgroundKindBash, Task: "1 shell, 2 monitors", Source: "pane"}
 		got, _ := mergeBackgroundWork(pane, sc, true, time.Time{}, now)
 		if age > backgroundTranscriptHold {
-			if got.Watching() {
-				t.Fatalf("stale receipt hid unknown shell: %+v", got)
+			// A5: a stale receipt proves nothing about the shell, which is no
+			// longer running on the pane's word; the monitors stay watching.
+			if got.Kind != tmux.BackgroundKindMonitor || got.Count != 2 {
+				t.Fatalf("stale receipt = %+v, want the 2 monitors watching", got)
 			}
 		} else if !got.Watching() || got.Count != 3 {
 			t.Fatalf("watcher count = %+v, want 3", got)
