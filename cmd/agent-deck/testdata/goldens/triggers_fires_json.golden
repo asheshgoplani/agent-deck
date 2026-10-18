@@ -1,0 +1,22 @@
+{
+  "count": 2,
+  "fires": [
+    {
+      "ts": "<TIMESTAMP>",
+      "target": "overnight-orchestrator",
+      "session_id": "",
+      "outcome": "dead-target",
+      "line": "tick: 0 waiting jobs",
+      "noop": true
+    },
+    {
+      "ts": "<TIMESTAMP>",
+      "target": "overnight-orchestrator",
+      "session_id": "",
+      "outcome": "dead-target",
+      "line": "tick: 0 waiting jobs",
+      "noop": false
+    }
+  ],
+  "trigger_id": "systemd:agentdeck-overnight"
+}

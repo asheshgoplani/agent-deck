@@ -44,6 +44,13 @@ above, which use a private tmux server for exactly that purpose.
 - 6 sessions with mixed statuses (idle, running, waiting, error, stopped,
   queued) and tools (claude, codex, gemini, shell), IDs `golden-sess-1`
   through `golden-sess-6`.
+- 4 triggers (issue #2702): a heartbeat that delivered to `claude idle`, a
+  scanned systemd unit aimed at the missing title `overnight-orchestrator`
+  (dead target, two identical fires, so a 50 % no-op share), a scanned
+  launchd job by id that never fired, and a shell (`cli`) sender that only
+  `triggers --all` shows. Their fires are 3 h old by the real clock (so they
+  count in the 24 h window) and a fresh scan stamp keeps `triggers` from
+  rescanning the sandbox HOME.
 - 1 remote entry (`[remotes.golden-remote]` in `config.toml`, host
   `golden@remote.invalid` — an address that can never resolve, so any code
   path that accidentally tried to reach it fails fast instead of hanging).
@@ -78,6 +85,9 @@ Applied by `scrub()` in `goldens_test.go`, in this order:
    has that path replaced with `<AGENT_DECK_BINARY>`.
 6. **Live tmux session names.** A started or restarted session's random
    `agentdeck_<slug>_<hex>` name → `<TMUX_SESSION>` in storage goldens.
+7. **The local host name.** `triggers --json` names this host in each row's
+   `"host"` and as a `"hosts"` key; the quoted short hostname
+   (`"<name>"`, as `triggers.Hostname()` returns it) → `"<HOST>"`.
 
 Everything else — every table column, every JSON field, every line of
 `--help` usage text, exit codes — is asserted exact. If you need to add a

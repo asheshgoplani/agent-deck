@@ -1,0 +1,7 @@
+Usage: agent-deck triggers unmute <id> [--json]
+
+End a mute: the trigger's next send is delivered again.
+
+Options:
+  -json
+    	Output as JSON
