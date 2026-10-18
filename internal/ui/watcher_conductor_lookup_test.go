@@ -198,6 +198,7 @@ func TestConductorTmuxSession_FindsRenamedConductorByStoredName(t *testing.T) {
 		inst := &session.Instance{
 			ID:            id,
 			Title:         title,
+			IsConductor:   true,
 			ConductorName: "demo",
 			ProjectPath:   t.TempDir(),
 			GroupPath:     session.DefaultGroupPath,

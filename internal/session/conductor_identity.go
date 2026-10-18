@@ -76,8 +76,15 @@ func legacyConductorNameFold(title string) (name string, ok bool) {
 }
 
 // storedConductorName reads the persisted stable name under its lock (the
-// lazy fill below can write it from a status/spawn goroutine).
+// lazy fill below can write it from a status/spawn goroutine). A stored name
+// counts only on a row flagged IsConductor: an unflagged row is a worker, and
+// a name stamped on one (the pre-#2708 adoption of any row that briefly held
+// the exact "conductor-<name>" title) must not keep it resolving as the
+// conductor after it is renamed back, so it is treated as absent.
 func (i *Instance) storedConductorName() string {
+	if !i.IsConductor {
+		return ""
+	}
 	i.conductorNameMu.Lock()
 	defer i.conductorNameMu.Unlock()
 	return i.ConductorName
@@ -88,12 +95,12 @@ func (i *Instance) storedConductorName() string {
 //
 //  1. the stored ConductorName (stable across renames and decoration);
 //  2. the title fallback (ConductorNameFromTitle) for old records. When a
-//     meta.json exists for the parsed name and the session is either flagged
-//     IsConductor or carries exactly the canonical "conductor-<name>" title
-//     (a legacy row written before the flag existed), the name is adopted as
-//     the stable key in memory; the next save persists it. A decorated title
-//     on an unflagged session still resolves (env, settings) but is never
-//     adopted.
+//     meta.json exists for the parsed name and the session is flagged
+//     IsConductor, the name is adopted as the stable key in memory; the next
+//     save persists it. An unflagged session (a legacy row written before
+//     the flag existed, or a worker carrying a conductor-shaped title) still
+//     resolves by its current title (env, settings) but is never adopted, so
+//     renaming it away ends the match.
 //
 // A stored name whose title no longer parses to it is logged once.
 //
@@ -130,11 +137,11 @@ func (i *Instance) resolveConductorName(title string) string {
 	if name == "" {
 		return ""
 	}
-	// Adopt only a confirmed conductor: the IsConductor flag (or the exact
-	// canonical title of a legacy row) guards against a worker that merely
-	// carries a decorated conductor-shaped title, and the meta.json check
-	// against persisting a guess for a conductor that was never set up.
-	if (i.IsConductor || title == ConductorSessionTitle(name)) && IsConductorSetup(name) {
+	// Adopt only a confirmed conductor: the IsConductor flag guards against a
+	// worker that merely carries a conductor-shaped title (even the exact one,
+	// #2708), and the meta.json check against persisting a guess for a
+	// conductor that was never set up.
+	if i.IsConductor && IsConductorSetup(name) {
 		i.conductorNameMu.Lock()
 		if i.ConductorName == "" {
 			i.ConductorName = name
@@ -177,7 +184,8 @@ func (i *Instance) warnConductorTitleDrift(name, title string) {
 }
 
 // FindConductorInstance returns the session of the named conductor in
-// instances, or nil. A stored ConductorName wins; then the canonical title;
+// instances, or nil. A stored ConductorName (on a row flagged IsConductor,
+// see storedConductorName) wins; then the canonical title;
 // then a decorated title that parses to name on a session flagged
 // IsConductor (a worker that merely carries a decorated conductor-shaped
 // title must not be taken over by setup or removed by teardown). A session

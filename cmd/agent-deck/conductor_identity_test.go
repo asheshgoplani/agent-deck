@@ -57,7 +57,7 @@ func TestRegisterConductorSession_StoresStableName(t *testing.T) {
 // identity so a decorated or renamed conductor stays addressable.
 func TestResolveSession_ConductorTitleFallsBackToIdentity(t *testing.T) {
 	decorated := &session.Instance{ID: "aaaaaaaaaaaa1111", Title: "🎙 conductor-personal", IsConductor: true}
-	renamed := &session.Instance{ID: "bbbbbbbbbbbb2222", Title: "my assistant", ConductorName: "ops"}
+	renamed := &session.Instance{ID: "bbbbbbbbbbbb2222", Title: "my assistant", IsConductor: true, ConductorName: "ops"}
 	worker := &session.Instance{ID: "cccccccccccc3333", Title: "worker"}
 	instances := []*session.Instance{decorated, renamed, worker}
 

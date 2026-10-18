@@ -152,13 +152,14 @@ func (o *ConductorOutbox) Enqueue(watcherID, watcherName string, evt Event) erro
 }
 
 // rowIsConductorNamed reports whether the stored session row is the named
-// conductor: a stored conductor name decides alone; otherwise the title must
-// parse to name (Instance.IsConductorNamed on a statedb row).
+// conductor: a stored conductor name decides alone on a row flagged
+// IsConductor (an unflagged row's stored name is ignored, #2708); otherwise
+// the title must parse to name (Instance.IsConductorNamed on a statedb row).
 func rowIsConductorNamed(row *statedb.InstanceRow, name string) bool {
 	if row == nil || name == "" {
 		return false
 	}
-	if stored := session.ReadConductorNameFromToolData(row.ToolData); stored != "" {
+	if stored := session.ReadConductorNameFromToolData(row.ToolData); stored != "" && row.IsConductor {
 		return stored == name
 	}
 	return session.ConductorNameFromTitle(row.Title) == name

@@ -340,3 +340,39 @@ func TestConductorMessage_FallsBackToSubject(t *testing.T) {
 		t.Errorf("fallback: want %q, got %q", want, msg)
 	}
 }
+
+// TestConductorOutbox_IgnoresAStoredNameOnAnUnflaggedRow (#2708): a worker
+// row stamped with the conductor name (it once held the exact conductor
+// title) but not flagged IsConductor never receives the conductor's
+// deliveries, even when it comes first.
+func TestConductorOutbox_IgnoresAStoredNameOnAnUnflaggedRow(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+	for i, r := range []struct {
+		id, title string
+		flagged   bool
+	}{{"worker", "worker", false}, {"cond-demo", "renamed boss", true}} {
+		if err := db.SaveInstance(&statedb.InstanceRow{
+			ID: r.id, Title: r.title, Tool: "claude",
+			ProjectPath: t.TempDir(), GroupPath: "conductors", Status: "idle", Order: i,
+			CreatedAt: now, LastAccessed: now, IsConductor: r.flagged,
+			ToolData: session.WriteConductorNameToToolData(nil, "demo"),
+		}); err != nil {
+			t.Fatalf("SaveInstance: %v", err)
+		}
+	}
+	outbox, dir, spawned := newTestOutbox(t, db, 0)
+	if err := outbox.Enqueue("w1", "inbox", Event{Sender: "alice", Body: "x", RoutedTo: "demo"}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	recs, err := sendqueue.List(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].SessionID != "cond-demo" {
+		t.Fatalf("records %+v, want one for the flagged conductor cond-demo", recs)
+	}
+	if spawned.started("worker") {
+		t.Fatalf("worker started for the unflagged row: %v", spawned.targets)
+	}
+}

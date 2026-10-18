@@ -65,7 +65,7 @@ func assertOneCleanRecord(t *testing.T, buf *bytes.Buffer, title string) {
 func TestConductorTitleDriftLog_ControlCharsInTitle(t *testing.T) {
 	for n, title := range hostileTitles {
 		buf := captureSessionLogJSON(t)
-		inst := &Instance{ID: "drift-inject-" + string(rune('a'+n)) + "-" + t.Name(), Title: title, ConductorName: "personal"}
+		inst := &Instance{ID: "drift-inject-" + string(rune('a'+n)) + "-" + t.Name(), Title: title, IsConductor: true, ConductorName: "personal"}
 		t.Cleanup(func() { conductorTitleDriftWarned.Delete(inst.ID) })
 		if got := inst.ResolveConductorName(); got != "personal" {
 			t.Fatalf("ResolveConductorName = %q, want personal", got)
