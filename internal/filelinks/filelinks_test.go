@@ -52,7 +52,7 @@ func layout(t *testing.T) (tmp, root string) {
 }
 
 func TestOpenServesFilesUnderARoot(t *testing.T) {
-	tmp, root := layout(t)
+	_, root := layout(t)
 	cases := []struct {
 		path, wantType string
 		inline         bool
@@ -68,8 +68,6 @@ func TestOpenServesFilesUnderARoot(t *testing.T) {
 		{filepath.Join(root, "blob.bin"), "application/octet-stream", false, "a\x00b"},
 		// A symlink that stays inside the root is fine.
 		{filepath.Join(root, "link-in"), "text/plain; charset=utf-8", true, "<script>alert(1)</script>"},
-		// So is reaching the root through a symlink to it.
-		{filepath.Join(tmp, "rootlink", "notes.txt"), "text/plain; charset=utf-8", true, "hello\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -111,6 +109,9 @@ func TestOpenRefusesEscapes(t *testing.T) {
 		{"dangling symlink out reads as outside", filepath.Join(root, "dangling-out"), ErrOutside},
 		{"directory (no listing)", filepath.Join(root, "sub"), ErrNotRegular},
 		{"the root itself", root, ErrNotRegular},
+		// Reaching the root through an outside symlink to it is refused up
+		// front: only paths lexically under a root reach the filesystem.
+		{"via an outside symlink to the root", filepath.Join(tmp, "rootlink", "notes.txt"), ErrOutside},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -350,5 +351,45 @@ func TestRootsThatContainSensitiveDirsAreRefused(t *testing.T) {
 	}
 	if _, err := Open([]string{link}, filepath.Join(link, "me", ".ssh", "id_ed25519")); !errors.Is(err, ErrOutside) {
 		t.Fatalf("Open via a root resolving to an ancestor of home = %v, want ErrOutside", err)
+	}
+}
+
+// Lane review (CodeQL go/path-injection): a path outside every root must be
+// refused before any filesystem call on it, so it can't time-probe outside
+// paths or wake autofs and network mounts (/net/<host>/..., /Volumes).
+func TestOpenNeverTouchesTheFilesystemForAnOutsidePath(t *testing.T) {
+	tmp, root := layout(t)
+	var touched []string
+	realEval, realLstat := evalSymlinks, lstat
+	t.Cleanup(func() { evalSymlinks, lstat = realEval, realLstat })
+	evalSymlinks = func(p string) (string, error) { touched = append(touched, p); return realEval(p) }
+	lstat = func(p string) (os.FileInfo, error) { touched = append(touched, p); return realLstat(p) }
+
+	for _, p := range []string{
+		"/net/somehost/share/x.txt",
+		"/Volumes/Backup/x.txt",
+		filepath.Join(tmp, "secret.txt"),
+		filepath.Join(tmp, "nope", "x.txt"),
+		root + "-other/x.txt",
+		root + "/../secret.txt",
+	} {
+		touched = nil
+		if _, err := Open([]string{root}, p); !errors.Is(err, ErrOutside) {
+			t.Errorf("Open(%q) = %v, want ErrOutside", p, err)
+		}
+		if len(touched) != 0 {
+			t.Errorf("Open(%q) touched the filesystem: %v", p, touched)
+		}
+	}
+
+	// Inside a root the checks still run, and stay inside the root.
+	touched = nil
+	if _, err := Open([]string{root}, filepath.Join(root, "sub", "missing", "x.txt")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing inside = %v, want ErrNotFound", err)
+	}
+	for _, p := range touched {
+		if p != root && !strings.HasPrefix(p, root+string(filepath.Separator)) {
+			t.Errorf("an inside lookup touched %q, outside the root", p)
+		}
 	}
 }

@@ -29,6 +29,14 @@ import (
 	"unicode/utf8"
 )
 
+// evalSymlinks and lstat are the only filesystem calls Open makes on the
+// requested path; tests swap them to prove an outside path never reaches
+// them.
+var (
+	evalSymlinks = filepath.EvalSymlinks
+	lstat        = os.Lstat
+)
+
 // MaxBytes caps a served file. Terminal links point at reports, logs and
 // screenshots; anything bigger is copied by path instead.
 const MaxBytes int64 = 32 << 20
@@ -203,9 +211,17 @@ func Open(roots []string, path string) (*File, error) {
 	}
 	realRoots := resolveRoots(roots)
 	path = filepath.Clean(path)
-	real, err := filepath.EvalSymlinks(path)
+	// Nothing outside the roots reaches the filesystem: no timing probe of
+	// outside paths, and no waking autofs or network mounts (/net/<host>,
+	// /Volumes). Only a path lexically under a configured or resolved root
+	// is looked at; the checks below still decide.
+	base, ok := lexicalRoot(path, roots, realRoots)
+	if !ok {
+		return nil, ErrOutside
+	}
+	real, err := evalSymlinks(path)
 	if err != nil {
-		return nil, missingAnswer(realRoots, path)
+		return nil, missingAnswer(realRoots, base, path)
 	}
 	for _, realRoot := range realRoots {
 		if rel, ok := within(realRoot, real); ok {
@@ -236,9 +252,11 @@ func resolveRoots(roots []string) []string {
 // the longest existing parent resolves inside a root; anything that exists but
 // won't resolve (a dangling symlink, at any depth) or leads outside is
 // "outside", so the 404/403 split never tells which outside paths exist.
-func missingAnswer(realRoots []string, path string) error {
-	for p := path; ; p = filepath.Dir(p) {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
+//
+// The walk never leaves base, the root path is lexically under.
+func missingAnswer(realRoots []string, base, path string) error {
+	for p := path; lexicallyWithin(base, p); p = filepath.Dir(p) {
+		if real, err := evalSymlinks(p); err == nil {
 			for _, realRoot := range realRoots {
 				if _, ok := within(realRoot, real); ok {
 					return ErrNotFound
@@ -246,13 +264,33 @@ func missingAnswer(realRoots []string, path string) error {
 			}
 			return ErrOutside
 		}
-		if _, err := os.Lstat(p); err == nil {
-			return ErrOutside
-		}
-		if p == filepath.Dir(p) {
+		if _, err := lstat(p); err == nil {
 			return ErrOutside
 		}
 	}
+	return ErrOutside
+}
+
+// lexicalRoot returns the configured or resolved root that the cleaned path
+// is lexically under, without touching the filesystem.
+func lexicalRoot(path string, roots, realRoots []string) (string, bool) {
+	for _, set := range [][]string{realRoots, roots} {
+		for _, root := range set {
+			root = filepath.Clean(root)
+			if tooWide(root, nil) != "" {
+				continue
+			}
+			if lexicallyWithin(root, path) {
+				return root, true
+			}
+		}
+	}
+	return "", false
+}
+
+// lexicallyWithin reports whether the cleaned path p is base or below it.
+func lexicallyWithin(base, p string) bool {
+	return p == base || strings.HasPrefix(p, base+string(filepath.Separator))
 }
 
 // within reports whether p is root or inside it, and p relative to root.
