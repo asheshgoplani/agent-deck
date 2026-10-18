@@ -219,6 +219,11 @@ type hookStatusFile struct {
 	// binds the entry's Hermes session. omitempty keeps other agents' files
 	// unchanged.
 	Platform string `json:"platform,omitempty"`
+
+	// hermesOwnedSessionID is never written to the status file: it is the
+	// Hermes session id this event records as the entry's own (#2582), saved
+	// to the entry's sidecar once the event passes the generation check.
+	hermesOwnedSessionID string
 }
 
 type hookGenerationControl struct {
@@ -632,6 +637,9 @@ func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd
 		Cwd:       strings.TrimSpace(cwd),
 		Platform:  platform,
 	}
+	if os.Getenv("AGENTDECK_TOOL") == "hermes" && session.HermesHookRecordsOwnSession(event, platform, sessionID) {
+		statusFile.hermesOwnedSessionID = sessionID
+	}
 	if scan.signal != nil {
 		statusFile.DoneStatus = scan.signal.Status
 		statusFile.DoneSummary = scan.signal.Summary
@@ -718,6 +726,17 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 	}
 	if mutateAnchor && isTerminalHookEvent(statusFile.Event) {
 		session.ClearHookSessionAnchor(instanceID)
+	}
+	// Same critical section: a Hermes process from an earlier launch was
+	// rejected by the generation check above, so it cannot rebind the entry
+	// to its conversation after a restart (#2582).
+	if mutateAnchor && statusFile.hermesOwnedSessionID != "" {
+		if err := session.WriteHermesOwnedSessionID(instanceID, statusFile.hermesOwnedSessionID); err != nil {
+			hookHandlerLog.Warn("hermes_owned_session_write_failed",
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
+		}
 	}
 	appendHookEvent(instanceID, statusFile)
 	return true
