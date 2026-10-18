@@ -633,9 +633,13 @@ type Instance struct {
 	terminatedPaneExitCode *int
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
-	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
-	hookEvent                   string    // Hook event name that caused the last status (e.g. "PermissionRequest")
-	hookSessionID               string    // Session ID from hook payload
+	hookStatus    string // running, idle, waiting, dead (empty = no hook data)
+	hookEvent     string // Hook event name that caused the last status (e.g. "PermissionRequest")
+	hookSessionID string // Session ID from hook payload
+	// claudeSupersededIDs holds Claude session ids this instance moved away
+	// from by following a continued-in handoff (#2683). A late hook still
+	// carrying one must not revert ClaudeSessionID to the stalled copy.
+	claudeSupersededIDs         map[string]struct{}
 	hookLastUpdate              time.Time // When hook status was last received
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	codexStartedGeneration      string
@@ -6976,38 +6980,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		case "dead":
 			i.Status = StatusError
 		}
-		if i.hookSessionID != "" {
-			switch {
-			case IsClaudeCompatible(i.Tool):
-				if i.hookSessionID != i.ClaudeSessionID {
-					i.ClaudeSessionID = i.hookSessionID
-					// #1815: own hook anchor — verified ownership.
-					i.markClaudeSessionIDVerified()
-					i.ClaudeDetectedAt = time.Now()
-				} else {
-					// Review finding on #1830: the values already matching is
-					// NOT a no-op case for the taint. A live hook confirming
-					// the session's own id is the strongest available vouch
-					// (the process itself, not a disk guess) — clear any
-					// lingering disk-scan taint on it, or a solo custom-wrapper
-					// session whose own id was once disk-scanned stays
-					// permanently unresumable even though this hook just
-					// proved it right.
-					i.markClaudeSessionIDVerified()
-				}
-			case IsCodexCompatible(i.Tool):
-				if i.hookSessionID != i.CodexSessionID {
-					i.CodexSessionID = i.hookSessionID
-					i.recordCodexOwnership(i.CodexSessionID)
-					i.CodexDetectedAt = time.Now()
-				}
-			case i.Tool == "gemini":
-				if i.hookSessionID != i.GeminiSessionID {
-					i.GeminiSessionID = i.hookSessionID
-					i.GeminiDetectedAt = time.Now()
-				}
-			}
-		}
+		i.applyHookSessionIDLocked()
 		// A1: For Hermes, run the gateway reachability check even on the fast path.
 		// Without this, a dead gateway can still report running/waiting for the full
 		// hook freshness window because the check below is skipped.
@@ -11128,6 +11101,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// common flush-race case without slowing the happy path (retry only
 	// fires when the first check comes back negative AND we have a
 	// non-empty ClaudeSessionID).
+	// #2683: an agent-view handoff ends the bound transcript with a
+	// continued-in record; resume the successor, not the stalled copy.
+	i.followClaudeContinuedIn()
+
 	// #1815 identity guard: refuse outright when the id about to be resumed
 	// is not this session's own recorded conversation id (missing recorded id,
 	// or a mismatch). The refused id is replaced by a freshly minted one so
@@ -13947,4 +13924,47 @@ func wrapIgnoreSuspend(cmd string) string {
 	// Example: it's -> it'"'"'s -> bash sees: it's.
 	escaped := strings.ReplaceAll(cmd, `'`, `'"'"'`)
 	return "bash -c 'stty susp undef; " + escaped + "'"
+}
+
+// applyHookSessionIDLocked binds the session id carried by the latest hook
+// sample to the tool's session id field (the hook fast path in UpdateStatus).
+// Caller holds i.mu.
+func (i *Instance) applyHookSessionIDLocked() {
+	if i.hookSessionID == "" {
+		return
+	}
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		if i.claudeIDSuperseded(i.hookSessionID) {
+			// #2683: stale hook from the pre-handoff process.
+			break
+		}
+		if i.hookSessionID != i.ClaudeSessionID {
+			i.ClaudeSessionID = i.hookSessionID
+			// #1815: own hook anchor — verified ownership.
+			i.markClaudeSessionIDVerified()
+			i.ClaudeDetectedAt = time.Now()
+		} else {
+			// Review finding on #1830: the values already matching is
+			// NOT a no-op case for the taint. A live hook confirming
+			// the session's own id is the strongest available vouch
+			// (the process itself, not a disk guess) — clear any
+			// lingering disk-scan taint on it, or a solo custom-wrapper
+			// session whose own id was once disk-scanned stays
+			// permanently unresumable even though this hook just
+			// proved it right.
+			i.markClaudeSessionIDVerified()
+		}
+	case IsCodexCompatible(i.Tool):
+		if i.hookSessionID != i.CodexSessionID {
+			i.CodexSessionID = i.hookSessionID
+			i.recordCodexOwnership(i.CodexSessionID)
+			i.CodexDetectedAt = time.Now()
+		}
+	case i.Tool == "gemini":
+		if i.hookSessionID != i.GeminiSessionID {
+			i.GeminiSessionID = i.hookSessionID
+			i.GeminiDetectedAt = time.Now()
+		}
+	}
 }

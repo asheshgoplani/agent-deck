@@ -377,6 +377,9 @@ func main() {
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
+	// #2683: scrub CLAUDE_JOB_DIR before anything can exec tmux, the same
+	// way TELEGRAM_* is scrubbed before a child launch.
+	scrubClaudeJobDirForCommand(args)
 	if len(args) > 0 && args[0] == "creds-refresh" {
 		printCredsRefreshRemoved()
 		return
@@ -2171,6 +2174,15 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	if err != nil {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		exitCLI(1)
+	}
+
+	// #2683: an archived record holding this id would silently win the
+	// duplicate-id guard and the new session would start fresh.
+	if *resumeSession != "" {
+		if msg, code := checkArchivedClaudeIDConflict(instances, nil, *resumeSession); msg != "" {
+			NewCLIOutput(*jsonOutput, false).Error(msg, code)
+			exitCLI(1)
+		}
 	}
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
