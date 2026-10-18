@@ -9527,7 +9527,18 @@ func (i *Instance) GetJSONLPath() string {
 	if !i.TranscriptIsResolvableLocally() {
 		return ""
 	}
-	return resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	// The instance's own config dir first (account/conductor/group, #2769): a
+	// session scoped to an account writes its transcript there, and the
+	// process-wide dir never has it. The process-wide dir stays as a fallback
+	// for transcripts written before an account switch.
+	instanceDir := GetClaudeConfigDirForInstance(i)
+	if path := resolveClaudeTranscriptPath(instanceDir, i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir()); path != "" {
+		return path
+	}
+	if globalDir := GetClaudeConfigDir(); globalDir != instanceDir {
+		return resolveClaudeTranscriptPath(globalDir, i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	}
+	return ""
 }
 
 // ResolveClaudeTranscriptPath returns the path to the Claude JSONL transcript
