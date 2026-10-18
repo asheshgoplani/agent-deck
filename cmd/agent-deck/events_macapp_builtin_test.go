@@ -12,19 +12,21 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/events"
 )
 
-// T6: the remote browser kinds publish without [macapp] plugins, like
-// macapp.open; the plugin kinds (including the local browser plugin kinds)
-// stay gated.
+// T6: the Mac app's own frames (browser response, focus claim) publish
+// without [macapp] plugins, like macapp.open and its ack. A browser request
+// drives the owner's browser and needs the opt-in, as do the host's
+// session.closed and the plugin kinds (including the local browser plugin
+// kinds).
 func TestEventsPublishBrowserKindsUngated(t *testing.T) {
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = false\n")
-	for _, kind := range []string{events.KindMacappBrowserRequest, events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappSessionClosed, events.KindMacappOpen, events.KindMacappOpenAck} {
+	for _, kind := range []string{events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappOpen, events.KindMacappOpenAck} {
 		out, stderr, code := runAgentDeck(t, home, "events", "publish", "--kind", kind, "--session", "s", "--data", `{"v":1}`)
 		if !builtinPublishAdmitted(code, out+stderr) {
 			t.Fatalf("%s gated: %d %s %s", kind, code, out, stderr)
 		}
 	}
-	for _, kind := range []string{"macapp.browser.open", "macapp.browser.reload", "macapp.browser", "macapp.app.focus.other", "macapp.session.closed.x"} {
+	for _, kind := range []string{events.KindMacappBrowserRequest, events.KindMacappSessionClosed, "macapp.browser.open", "macapp.browser.reload", "macapp.browser", "macapp.app.focus.other", "macapp.session.closed.x"} {
 		out, stderr, code := runAgentDeck(t, home, "events", "publish", "--kind", kind)
 		if code != 2 || !strings.Contains(out+stderr, "plugins = true") {
 			t.Fatalf("plugin gate %s: %d %s %s", kind, code, out, stderr)
@@ -43,14 +45,11 @@ func TestEventsPublishAndFollowProfileFlag(t *testing.T) {
 		t.Fatalf("add in second profile: %d %s %s", code, stdout, stderr)
 	}
 	stdout, stderr, code = runAgentDeck(t, home, "events", "publish", "--profile", "second", "--kind", events.KindMacappOpenAck, "--session", "s2", "--data", `{"open_event_id":"e","opened":true}`, "--json")
-	if !builtinPublishAdmitted(code, stdout+stderr) {
-		t.Fatalf("publish --profile: %d %s %s", code, stdout, stderr)
-	}
 	var res struct {
 		Profile string `json:"profile"`
 	}
-	if code == 0 && (json.Unmarshal([]byte(stdout), &res) != nil || res.Profile != "second") {
-		t.Fatalf("publish result names the wrong profile: %s", stdout)
+	if code != 0 || json.Unmarshal([]byte(stdout), &res) != nil || res.Profile != "second" {
+		t.Fatalf("publish --profile second: exit=%d result=%s %s", code, stdout, stderr)
 	}
 	if got := openTestBusDir(t, home).Kinds[events.KindMacappOpenAck]; got != 0 {
 		t.Fatalf("frame landed on the process profile: %d", got)
@@ -94,5 +93,30 @@ func TestEventsPublishAndFollowProfileFlag(t *testing.T) {
 	out, err := missing.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "does not exist") {
 		t.Fatalf("follow of a missing profile: %v %s", err, out)
+	}
+}
+
+// m3: --profile takes a profile name, never a path. "a/second" would pass a
+// base-name existence check and then open a disabled bus (publish: "bus is
+// disabled", follow: nothing, forever).
+func TestEventsProfileFlagRefusesPaths(t *testing.T) {
+	home := t.TempDir()
+	if stdout, stderr, code := runAgentDeck(t, home, "-p", "second", "add", t.TempDir(), "--title", "Second", "-c", "bash", "--no-parent", "--json"); code != 0 {
+		t.Fatalf("add in second profile: %d %s %s", code, stdout, stderr)
+	}
+	for _, name := range []string{"a/second", "../second", "./second"} {
+		stdout, stderr, code := runAgentDeck(t, home, "events", "publish", "--profile", name, "--kind", events.KindMacappOpenAck, "--data", `{}`)
+		if code != 2 || !strings.Contains(stdout+stderr, "not a path") {
+			t.Fatalf("publish --profile %s: %d %s %s", name, code, stdout, stderr)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		follow := exec.CommandContext(ctx, channelsCLIBinary(t), "events", "follow", "--jsonl", "--profile", name)
+		follow.Env = agentDeckTestEnv(home, nil)
+		out, err := follow.CombinedOutput()
+		timedOut := ctx.Err() != nil
+		cancel()
+		if err == nil || timedOut || !strings.Contains(string(out), "not a path") {
+			t.Fatalf("follow --profile %s: %v %s", name, err, out)
+		}
 	}
 }

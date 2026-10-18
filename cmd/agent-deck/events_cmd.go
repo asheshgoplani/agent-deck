@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -91,7 +92,13 @@ func openProfileFollowerBus(name, profile string, readOnly bool) (*events.Bus, e
 // The global -p of a forwarded `remote <name> events ...` is fixed by the
 // remote's config, so this flag is how a caller reaches another profile's log
 // on that host. It must name an existing profile: a typo never creates a bus.
+// It must also be a plain profile name: the bus directory is keyed by the
+// name itself, so "a/b" (which ProfileExists would resolve by its base name)
+// is refused here instead of silently opening a disabled bus.
 func resolveEventsProfile(name string) (string, error) {
+	if name == "" || !filepath.IsLocal(name) || filepath.Base(name) != name {
+		return "", fmt.Errorf("invalid profile %q: a profile name, not a path", name)
+	}
 	exists, err := session.ProfileExists(name)
 	if err != nil {
 		return "", err
@@ -233,7 +240,9 @@ func eventMatches(f events.Frame, kinds []string, sessionID string) bool {
 
 // macappKindPrefix is the only namespace a client may publish from the CLI.
 // macapp.* frames drive Mac app plugins (docs/macapp-core.md) and need
-// [macapp] plugins = true, except the built-in kinds (events.IsMacappBuiltinKind).
+// [macapp] plugins = true, except the Mac app's own frames
+// (events.IsMacappUngatedKind). macapp.browser.request stays gated: it drives
+// the owner's browser.
 const macappKindPrefix = "macapp."
 
 // handleEventsPublish implements `agent-deck events publish --kind <kind>
@@ -246,10 +255,11 @@ func handleEventsPublish(profile string, args []string) {
 	dataFile := fs.String("data-file", "", "read the JSON payload from this file, or - for stdin")
 	jsonOut := fs.Bool("json", false, "print {ok, kind, session_id, cursor} as JSON")
 	profileFlag := fs.String("profile", "", "publish on this existing profile's log instead of the process profile")
+	fromRemote := fs.Bool("from-remote", false, "set by a forwarded remote <name> events publish: only the Mac app's reply kinds, data on stdin, and --session must be a session of this host")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--profile <name>] [--json]")
-		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except built-in macapp.open, macapp.open.ack,")
-		fmt.Fprintln(fs.Output(), "macapp.browser.request, macapp.browser.response, macapp.app.focus and macapp.session.closed.")
+		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except the Mac app's own frames: macapp.open,")
+		fmt.Fprintln(fs.Output(), "macapp.open.ack, macapp.browser.response and macapp.app.focus.")
 		fs.PrintDefaults()
 	}
 	routeFlagHelp(fs, args)
@@ -264,9 +274,23 @@ func handleEventsPublish(profile string, args []string) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	if cfg, _ := session.LoadUserConfig(); !events.IsMacappBuiltinKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
+	if cfg, _ := session.LoadUserConfig(); !events.IsMacappUngatedKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
 		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
 		exitCLI(2)
+	}
+	if *profileFlag != "" {
+		p, err := resolveEventsProfile(*profileFlag)
+		if err != nil {
+			out.Error(fmt.Sprintf("events publish: %v", err), ErrCodeInvalidOperation)
+			exitCLI(2)
+		}
+		profile = p
+	}
+	if *fromRemote {
+		if err := checkRemoteReplyPublish(profile, *kind, *sessionID, *data, *dataFile); err != nil {
+			out.Error(fmt.Sprintf("events publish --from-remote: %v", err), ErrCodeInvalidOperation)
+			exitCLI(2)
+		}
 	}
 	raw := []byte(*data)
 	if *dataFile != "" {
@@ -290,13 +314,7 @@ func handleEventsPublish(profile string, args []string) {
 	}
 	var bus *events.Bus
 	if *profileFlag != "" {
-		p, err := resolveEventsProfile(*profileFlag)
-		if err != nil {
-			out.Error(fmt.Sprintf("events publish: %v", err), ErrCodeInvalidOperation)
-			exitCLI(2)
-		}
-		profile = p
-		bus = events.OpenProfile(p)
+		bus = events.OpenProfile(profile)
 		defer bus.Close()
 	} else {
 		bus = events.Default()
@@ -394,4 +412,38 @@ func readPublishData(name string) ([]byte, error) {
 		return nil, fmt.Errorf("payload over %d bytes", remotePublishDataCap)
 	}
 	return raw, nil
+}
+
+// checkRemoteReplyPublish is the box-side check of a publish forwarded by
+// `remote <name> events publish` (which adds --from-remote): only the Mac
+// app's reply kinds, the payload on stdin, and a frame may only reference a
+// session of this host, in the profile it is published on. The controller
+// checks the same before SSH; this check holds even when the controller is
+// not trusted to.
+func checkRemoteReplyPublish(profile, kind, sessionID, data, dataFile string) error {
+	if !events.IsMacappRemoteReplyKind(kind) {
+		return fmt.Errorf("kind %q is not a Mac app reply (%s, %s or %s)", kind, events.KindMacappOpenAck, events.KindMacappBrowserResponse, events.KindMacappAppFocus)
+	}
+	if data != "" || dataFile != "-" {
+		return errors.New("the payload must come on stdin (--data-file -)")
+	}
+	if sessionID == "" {
+		if kind == events.KindMacappAppFocus {
+			return nil // a focus claim is about the app, not a session
+		}
+		return errors.New("--session is required")
+	}
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		return fmt.Errorf("open profile %q: %w", profile, err)
+	}
+	defer storage.Close()
+	exists, err := storage.InstanceExists(sessionID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("session %q is not a session of this host (profile %q)", sessionID, profile)
+	}
+	return nil
 }

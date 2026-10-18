@@ -185,7 +185,7 @@ func publishOpenRequest(bus *events.Bus, req MacappOpenRequest, timeout time.Dur
 	if err != nil {
 		return false, err
 	}
-	req.EventID = bus.PublishWithID("macapp.open", req.SessionID, req)
+	req.EventID = bus.PublishWithID(events.KindMacappOpen, req.SessionID, req)
 	if req.EventID == "" || !bus.Flush(openCommitTimeout) || bus.Stats().Written <= before.Written {
 		return false, errors.New("events bus did not commit the request; request was not queued")
 	}
@@ -210,7 +210,7 @@ func publishOpenRequest(bus *events.Bus, req MacappOpenRequest, timeout time.Dur
 }
 
 func openAcknowledged(frame events.Frame, req MacappOpenRequest) (bool, error) {
-	if frame.Kind != "macapp.open.ack" || frame.SessionID != req.SessionID {
+	if frame.Kind != events.KindMacappOpenAck || frame.SessionID != req.SessionID {
 		return false, nil
 	}
 	var ack struct {

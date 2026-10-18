@@ -1,10 +1,12 @@
 Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--profile <name>] [--json]
-Needs [macapp] plugins = true, except built-in macapp.open, macapp.open.ack,
-macapp.browser.request, macapp.browser.response, macapp.app.focus and macapp.session.closed.
+Needs [macapp] plugins = true, except the Mac app's own frames: macapp.open,
+macapp.open.ack, macapp.browser.response and macapp.app.focus.
   -data string
     	JSON object payload
   -data-file string
     	read the JSON payload from this file, or - for stdin
+  -from-remote
+    	set by a forwarded remote <name> events publish: only the Mac app's reply kinds, data on stdin, and --session must be a session of this host
   -json
     	print {ok, kind, session_id, cursor} as JSON
   -kind string
