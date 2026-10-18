@@ -179,6 +179,23 @@ func TestRemoteAgent_ChangeFeedWatchesTheProfileItServes(t *testing.T) {
 
 			switch {
 			case tt.moveDefaultTo != "":
+				// SaveConfig rewrites config.json in place: a poll that reads
+				// it empty must keep the profile, not take it for "default".
+				configPath := filepath.Join(home, ".config", "agent-deck", "config.json")
+				saved, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatalf("read config.json: %v", err)
+				}
+				if err := os.WriteFile(configPath, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				exited := waitExit(remoteAgentProfileEvery + 2*time.Second)
+				if err := os.WriteFile(configPath, saved, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if exited {
+					t.Fatalf("remote-agent exited while config.json was empty\nstderr: %s", stderr())
+				}
 				cli("profile", "create", tt.moveDefaultTo)
 				cli("profile", "default", tt.moveDefaultTo)
 				if !waitExit(remoteAgentProfileEvery + 10*time.Second) {

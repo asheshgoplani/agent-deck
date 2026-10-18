@@ -322,7 +322,8 @@ func handleRemoteAgent(profile string, args []string) {
 	if !explicit {
 		// The resolution is pinned for the life of the agent, so a host
 		// that changes default_profile gets a reconnect, not an agent that
-		// keeps serving the old profile until the channel drops.
+		// keeps serving the old profile until the channel drops. A
+		// config.json caught mid-rewrite is an error, not a move.
 		cfg.ProfileMoved = func() bool {
 			now, err := session.ResolveProfileForStorageQuiet("")
 			return err == nil && now != profile
