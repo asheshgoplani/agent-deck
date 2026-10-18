@@ -52,7 +52,7 @@ func remoteHelpRequested(args []string) bool {
 }
 
 func isRemoteReadCapability(args []string) bool {
-	return len(args) >= 2 && ((args[0] == "recall" && (args[1] == "timeline" || args[1] == "follow")) || (args[0] == "events" && args[1] == "follow") || (args[0] == "session" && args[1] == "send-status"))
+	return len(args) >= 2 && ((args[0] == "recall" && (args[1] == "timeline" || args[1] == "follow")) || (args[0] == "events" && args[1] == "follow") || (args[0] == "session" && args[1] == "send-status") || (args[0] == "file" && (args[1] == "read" || args[1] == "roots")))
 }
 
 type remoteReadRunner interface {

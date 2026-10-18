@@ -38,7 +38,10 @@ type Config struct {
 	// ConfirmLinkOpen gates the web terminal's link-open confirm for hosts
 	// that are NOT trusted. nil means "confirm" — the safe default, so a
 	// Config built without this field never silently disables the prompt.
-	ConfirmLinkOpen     *bool
+	ConfirmLinkOpen *bool
+	// FileLinkRoots are the absolute `[web] file_link_roots` directories
+	// GET /api/files may read (issue #2676). Empty turns the route off.
+	FileLinkRoots       []string
 	MenuData            MenuDataLoader
 	PushVAPIDPublicKey  string
 	PushVAPIDPrivateKey string

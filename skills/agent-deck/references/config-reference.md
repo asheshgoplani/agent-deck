@@ -922,6 +922,7 @@ trusted_domains = [                           # Links to these hosts open withou
   "*.ci.mycorp.example",                      # subdomains of ci.mycorp.example
 ]
 confirm_link_open = true                      # Confirm before opening any OTHER host
+file_link_roots = ["~/projects", "~/Downloads"]  # file:// links under these open through the deck
 ```
 
 | Key | Type | Default | Description |
@@ -930,8 +931,9 @@ confirm_link_open = true                      # Confirm before opening any OTHER
 | `allowed_hosts` | []string | `[]` | Extra exact HTTP Host names for reverse proxies or Tailscale Serve. Optional `:port` limits an entry to that port. Case-insensitive; no URLs, wildcards, or suffix matching. Repeat `--allowed-host` for temporary additions. Unknown Hosts receive HTTP 421, including WebSocket upgrades. |
 | `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
 | `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
+| `file_link_roots` | []string | `[]` (off) | Directories whose files a web-terminal `file://` link may open (a browser on the deck's http origin can't load `file://` itself). A link under a root opens in a new tab through `GET /api/files?path=<abs>` on the deck's own origin, with the usual token auth, so it also works from a phone. `~` and `$VARS` expand; relative entries are dropped. Symlinks and `..` are resolved before the root check and the file is opened through the resolved root, so nothing outside a root can be read. Regular files only (no directory listings), up to 32 MiB. PNG, JPEG, GIF, WebP, AVIF, BMP and ICO are shown as images; other text (including HTML and SVG) is shown as plain text, and binary files download. A `file://<host>/path` link (what `ls --hyperlink` emits) opens only when the host is the deck machine's own hostname. With no roots, or for a link outside them or on another host, a click copies the path instead. A hard link inside a root to a file elsewhere is served like any file in the root, so only list folders whose contents you control. Pick project or report folders, not your whole home directory. `agent-deck file read <path> [--json]` and `agent-deck file roots [--json]` apply the same rules from the CLI, and `agent-deck remote <name> file read ...` reads under that remote's own roots. |
 
-Both link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
+All link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
 
 ## [global_search] Section
 

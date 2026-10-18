@@ -164,6 +164,7 @@ func buildWebServerFromOptions(profile string, options webCommandOptions, menuDa
 		InsecureBind:        options.insecureBind,
 		TrustedDomains:      session.GetWebTrustedDomains(),
 		ConfirmLinkOpen:     &confirmLinkOpen,
+		FileLinkRoots:       session.GetWebFileLinkRoots(),
 		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,
 		PushVAPIDPrivateKey: resolvedPushPrivate,

@@ -4572,6 +4572,8 @@ func printHelp() {
 	fmt.Println("  session          Manage session lifecycle")
 	fmt.Println("  open <file|url>  Show a page in the Mac app Browser panel [--session <id|title>]")
 	fmt.Println("  file bundle      Export a page folder as a size-capped tar [--session <id>]")
+	fmt.Println("  file read        Print a file under [web] file_link_roots [--json]")
+	fmt.Println("  file roots       List [web] file_link_roots [--json]")
 	fmt.Println("  fleet            Detect and recover from a fleet-wide session death")
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  skill            Manage project skills")

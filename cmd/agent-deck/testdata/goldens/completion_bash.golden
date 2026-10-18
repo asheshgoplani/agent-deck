@@ -191,7 +191,7 @@ _agent_deck_completion() {
             ;;
         file)
             if ((cword == start + 1)); then
-                COMPREPLY=($(compgen -W bundle -- "$cur"))
+                COMPREPLY=($(compgen -W 'bundle read roots' -- "$cur"))
                 return 0
             fi
             sub=${words[start+1]}
