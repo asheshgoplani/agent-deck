@@ -17570,8 +17570,11 @@ func (h *Home) bulkRemoveErrored() tea.Cmd {
 // including the partial case where the switch succeeded but the restart did
 // not.
 type accountSwitchedMsg struct {
-	sessionID      string
-	generation     uint64
+	sessionID  string
+	generation uint64
+	// oldPIDs is the pane's process tree before the switch restarted it,
+	// for the hands-free settle that follows (SWFB1018).
+	oldPIDs        []int
 	sourceTool     string
 	sourceAccount  string
 	sourceProject  string
@@ -17812,6 +17815,8 @@ func (h *Home) switchSessionHarnessWithOptions(sessionID, harness, account strin
 			})
 			return crossHarnessSwitchMessage(msg, preview, crossResult, err)
 		}
+		// The tree the restart replaces; the settle afterwards waits for it.
+		msg.oldPIDs = session.SnapshotPaneProcesses(inst)
 		result, err := session.ExecuteHarnessSwitch(cfg, inst, session.HarnessSwitchOptions{Target: target, Storage: h.storage, ArchiveDestination: archiveDestination})
 		return nativeHarnessSwitchMessage(msg, result, err)
 	}

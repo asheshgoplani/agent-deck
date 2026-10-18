@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -13,8 +14,8 @@ func TestSwitchSettleCmd_RunsCLISettleOnlyForRestartedAccountChange(t *testing.T
 	var called []string
 	orig := switchSettleRun
 	t.Cleanup(func() { switchSettleRun = orig })
-	switchSettleRun = func(profile, id string) (string, error) {
-		called = append(called, profile+"/"+id)
+	switchSettleRun = func(profile, id string, oldPIDs []int) (string, error) {
+		called = append(called, fmt.Sprintf("%s/%s/%v", profile, id, oldPIDs))
 		return "settle alpha: ok account=work verified", nil
 	}
 	h := NewHome()
@@ -38,12 +39,12 @@ func TestSwitchSettleCmd_RunsCLISettleOnlyForRestartedAccountChange(t *testing.T
 	if cmd := h.switchSettleCmd(accountSwitchedMsg{sessionID: "s1", nativeResult: &codex}); cmd != nil {
 		t.Fatal("settle for a codex session")
 	}
-	cmd := h.switchSettleCmd(accountSwitchedMsg{sessionID: "s1", nativeResult: restarted})
+	cmd := h.switchSettleCmd(accountSwitchedMsg{sessionID: "s1", nativeResult: restarted, oldPIDs: []int{41, 42}})
 	if cmd == nil {
 		t.Fatal("no settle for a restarted account switch")
 	}
 	msg, ok := cmd().(switchSettledMsg)
-	if !ok || len(called) != 1 || called[0] != "ops/s1" || msg.receipt == "" {
+	if !ok || len(called) != 1 || called[0] != "ops/s1/[41 42]" || msg.receipt == "" {
 		t.Fatalf("msg=%#v called=%v", msg, called)
 	}
 	_, _ = h.Update(msg)

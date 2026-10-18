@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +25,7 @@ type switchSettledMsg struct {
 // switchSettleRun runs `agent-deck session switch-settle` for one session,
 // the same code path as the CLI switch (TUI/CLI parity). It is a variable so
 // tests can observe the call without a subprocess.
-var switchSettleRun = func(profile, sessionID string) (string, error) {
+var switchSettleRun = func(profile, sessionID string, oldPIDs []int) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -32,6 +33,13 @@ var switchSettleRun = func(profile, sessionID string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	args := []string{"session", "switch-settle", sessionID, "-q"}
+	if len(oldPIDs) > 0 {
+		parts := make([]string, len(oldPIDs))
+		for i, pid := range oldPIDs {
+			parts[i] = strconv.Itoa(pid)
+		}
+		args = append(args, "--old-pids", strings.Join(parts, ","))
+	}
 	if profile != "" {
 		args = append([]string{"--profile", profile}, args...)
 	}
@@ -67,9 +75,9 @@ func (h *Home) switchSettleCmd(msg accountSwitchedMsg) tea.Cmd {
 	if result == nil || !result.Restarted || result.OldAccount == result.NewAccount || !session.IsClaudeCompatible(result.NewTool) {
 		return nil
 	}
-	profile, id := h.profile, msg.sessionID
+	profile, id, oldPIDs := h.profile, msg.sessionID, msg.oldPIDs
 	return func() tea.Msg {
-		receipt, err := switchSettleRun(profile, id)
+		receipt, err := switchSettleRun(profile, id, oldPIDs)
 		return switchSettledMsg{sessionID: id, receipt: receipt, err: err}
 	}
 }

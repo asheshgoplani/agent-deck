@@ -73,6 +73,7 @@ var conductorAskCommands = []string{
 	"Bash(agent-deck session set *)",
 	"Bash(agent-deck session move *)",
 	"Bash(agent-deck session switch-account *)",
+	"Bash(agent-deck session switch-settle *)",
 	"Bash(agent-deck session fork *)",
 	"Bash(agent-deck session remove *)",
 }

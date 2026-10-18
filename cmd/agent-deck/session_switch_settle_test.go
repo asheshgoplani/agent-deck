@@ -220,3 +220,27 @@ func TestSwitchSettle_FakeClaudePane_ConnectionClosedRetriedOnce(t *testing.T) {
 		t.Fatalf("launches=%q receipt=%s\npane:\n%s", launches, report.Receipt(), pane)
 	}
 }
+
+// A completed switch exits 0 unless --settle-strict asks for the settle's
+// verdict; existing callers that test $? keep working.
+func TestSwitchSettleExit(t *testing.T) {
+	unhealthy := &session.SettleReport{Ready: true, Kick: "sent"}
+	if c := switchSettleExit(false, unhealthy, nil); c != 0 {
+		t.Fatalf("default = %d, want 0", c)
+	}
+	if c := switchSettleExit(true, unhealthy, nil); c != switchExitSettle {
+		t.Fatalf("strict unhealthy = %d", c)
+	}
+	if c := switchSettleExit(true, &session.SettleReport{StoppedAt: "x"}, session.ErrSettleStopped); c != settleExitStopped {
+		t.Fatalf("strict stopped = %d", c)
+	}
+	if c := switchSettleExit(true, nil, nil); c != 0 {
+		t.Fatalf("no settle = %d", c)
+	}
+}
+
+func TestParsePIDList(t *testing.T) {
+	if got := fmt.Sprint(parsePIDList("12, 13,x,1,0,-4,99")); got != "[12 13 99]" {
+		t.Fatalf("got %s", got)
+	}
+}

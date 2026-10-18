@@ -27,6 +27,7 @@ func handleSessionSwitch(profile string, args []string) {
 	archiveDestination := fs.Bool("archive-destination", false, "Install the source conversation even when the destination holds a newer or undated copy; the destination copy is archived next to it, never deleted")
 	jsonOutput := fs.Bool("json", false, "Output the switch result as JSON")
 	noSettle := fs.Bool("no-settle", false, "After a native restart, do not run switch-settle (ready, known prompts, plugins, kick, verify)")
+	settleStrict := fs.Bool("settle-strict", false, "Exit 4 (3: stopped at a prompt) when the switch succeeded but the settle did not end healthy")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session switch <id|title> --to-harness <harness> [--to-account <account>]")
@@ -46,7 +47,7 @@ func handleSessionSwitch(profile string, args []string) {
 		exitCLI(1)
 	}
 	out := NewCLIOutput(*jsonOutput, false)
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		exitCLI(1)
@@ -66,6 +67,7 @@ func handleSessionSwitch(profile string, args []string) {
 	preview := session.PreviewSwitchWithMaxBytesAndSnapshot(cfg, inst, target, *maxBytes, &sourceSnapshot)
 	var result *session.HarnessSwitchResult
 	var crossResult *session.CrossHarnessSwitchResult
+	var oldPIDs []int
 	var switchErr error
 	if preview.Execution == session.ExecutionPlanned && preview.Refusal == nil {
 		if !*confirmContextLoss {
@@ -81,6 +83,9 @@ func handleSessionSwitch(profile string, args []string) {
 			SourceOwnership: switchSourceOwnershipValidator(storage),
 		})
 	} else {
+		if !*noStart && !*noSettle {
+			oldPIDs = session.SnapshotPaneProcesses(inst)
+		}
 		result, switchErr = session.ExecuteHarnessSwitch(cfg, inst, session.HarnessSwitchOptions{
 			Target: target, MaxBytes: *maxBytes, NoStart: *noStart,
 			Storage: storage, ArchiveDestination: *archiveDestination,
@@ -153,11 +158,11 @@ func handleSessionSwitch(profile string, args []string) {
 	var settle *session.SettleReport
 	var settleErr error
 	if result.Restarted && !*noSettle && result.OldAccount != result.NewAccount && session.IsClaudeCompatible(inst.Tool) {
-		settle, settleErr = settleAfterSwitch(inst, *jsonOutput)
+		settle, settleErr = settleAfterSwitch(inst, *jsonOutput, oldPIDs, func() error { return saveSessionData(storage, instances, groups) })
 	}
 	defer func() {
-		if settle != nil && settleExitCode(settle, settleErr) != 0 {
-			exitCLI(switchExitSettle)
+		if code := switchSettleExit(*settleStrict, settle, settleErr); code != 0 {
+			exitCLI(code)
 		}
 	}()
 	payload := map[string]any{

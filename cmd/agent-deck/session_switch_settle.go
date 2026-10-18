@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 const (
 	settleExitFailed  = 1 // settled, but a check failed (the receipt names it)
 	settleExitStopped = 3 // stopped at a prompt it may not answer; nothing pressed
-	switchExitSettle  = 4 // switch-account/switch: switched, settle not healthy
+	switchExitSettle  = 4 // switch-account/switch --settle-strict: switched, settle not healthy
 )
 
 // handleSessionSwitchSettle finishes an account switch without a human
@@ -32,6 +33,7 @@ func handleSessionSwitchSettle(profile string, args []string) {
 	timeout := fs.Duration("timeout", 3*time.Minute, "How long to wait for the session to become ready")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Print only the receipt line")
+	oldPIDs := fs.String("old-pids", "", "Comma-separated pids of the replaced process tree to wait for (set by the TUI)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session switch-settle <id|title> [options]")
@@ -86,7 +88,7 @@ func handleSessionSwitchSettle(profile string, args []string) {
 		message = session.DefaultSettleKick(inst.Account)
 	}
 	persist := func() error { return saveSessionData(storage, instances, groups) }
-	report, settleErr := runSwitchSettle(inst, settleRun{restart: *restart, kick: message, timeout: *timeout, persist: persist,
+	report, settleErr := runSwitchSettle(inst, settleRun{restart: *restart, kick: message, timeout: *timeout, persist: persist, oldPIDs: parsePIDList(*oldPIDs),
 		log: func(format string, a ...any) {
 			if !*quiet && !*jsonOutput {
 				fmt.Fprintf(os.Stderr, "settle: "+format+"\n", a...)
@@ -100,6 +102,7 @@ func handleSessionSwitchSettle(profile string, args []string) {
 
 type settleRun struct {
 	restart bool
+	oldPIDs []int
 	kick    string
 	timeout time.Duration
 	persist func() error
@@ -131,14 +134,9 @@ func runSwitchSettle(inst *session.Instance, run settleRun) (*session.SettleRepo
 		}
 		return nil
 	}
-	var oldPIDs []int
+	oldPIDs := append([]int(nil), run.oldPIDs...)
 	if run.restart {
-		if pid, err := panePID(); err == nil && pid > 0 {
-			oldPIDs = append(oldPIDs, pid)
-			if procs != nil {
-				oldPIDs = append(oldPIDs, session.SettleDescendants(procs, pid)...)
-			}
-		}
+		oldPIDs = append(oldPIDs, session.SnapshotPaneProcesses(inst)...)
 		if err := restart(); err != nil {
 			return &session.SettleReport{Title: inst.Title, ID: inst.ID, Account: inst.Account, Kick: "not-sent",
 				Problems: []string{"restart: " + err.Error()}}, nil
@@ -150,14 +148,14 @@ func runSwitchSettle(inst *session.Instance, run settleRun) (*session.SettleRepo
 			if tm == nil {
 				return "", fmt.Errorf("no tmux session")
 			}
-			return tm.CapturePaneFresh()
+			return tm.CapturePrimaryPaneFresh()
 		},
 		SendKey: func(key string) error {
 			tm := inst.GetTmuxSession()
 			if tm == nil {
 				return fmt.Errorf("no tmux session")
 			}
-			return tm.SendNamedKey(key)
+			return tm.SendNamedKeyToPrimaryWindow(key)
 		},
 		Restart:  restart,
 		PanePID:  panePID,
@@ -180,13 +178,11 @@ func runSwitchSettle(inst *session.Instance, run settleRun) (*session.SettleRepo
 	})
 }
 
-// settleExpectedConfigDir is the CLAUDE_CONFIG_DIR the restarted process
-// must carry: a worker's scratch generation when it has one (a mirror of the
-// account dir), else the account's resolved dir.
+// settleExpectedConfigDir is the account dir the restarted process must
+// run on. A worker runs on a scratch mirror of it; verification resolves the
+// mirror's source marker back to this dir (the scratch path itself is not
+// persisted, so a fresh CLI process cannot know it).
 func settleExpectedConfigDir(inst *session.Instance) string {
-	if inst.WorkerScratchConfigDir != "" && !inst.IsSSH() {
-		return inst.WorkerScratchConfigDir
-	}
 	return session.GetClaudeConfigDirForInstance(inst)
 }
 
@@ -244,15 +240,43 @@ func settleExitCode(report *session.SettleReport, settleErr error) int {
 	return 0
 }
 
+func parsePIDList(value string) []int {
+	var out []int
+	for _, part := range strings.Split(value, ",") {
+		if pid, err := strconv.Atoi(strings.TrimSpace(part)); err == nil && pid > 1 {
+			out = append(out, pid)
+		}
+	}
+	return out
+}
+
 // settleAfterSwitch is the automatic settle of switch-account and switch.
-// It returns the report for the caller's own output.
-func settleAfterSwitch(inst *session.Instance, quiet bool) (*session.SettleReport, error) {
-	return runSwitchSettle(inst, settleRun{kick: session.DefaultSettleKick(inst.Account), timeout: 3 * time.Minute,
+// oldPIDs is the pane snapshot taken before the switch stopped the session;
+// persist saves the registry after a plugin-retry restart.
+func settleAfterSwitch(inst *session.Instance, quiet bool, oldPIDs []int, persist func() error) (*session.SettleReport, error) {
+	return runSwitchSettle(inst, settleRun{kick: session.DefaultSettleKick(inst.Account), timeout: 3 * time.Minute, oldPIDs: oldPIDs, persist: persist,
 		log: func(format string, a ...any) {
 			if !quiet {
 				fmt.Fprintf(os.Stderr, "settle: "+format+"\n", a...)
 			}
 		}})
+}
+
+// switchSettleExit is the exit code of switch-account/switch after a
+// switch that succeeded: 0 unless --settle-strict asked for the settle's
+// verdict (3 stopped at a prompt, 4 any other unhealthy settle). The receipt
+// and the JSON "settle" object carry the verdict either way.
+func switchSettleExit(strict bool, report *session.SettleReport, err error) int {
+	if !strict || report == nil {
+		return 0
+	}
+	switch settleExitCode(report, err) {
+	case 0:
+		return 0
+	case settleExitStopped:
+		return settleExitStopped
+	}
+	return switchExitSettle
 }
 
 // loadUserConfigOrNil is the config for best-effort decisions; a load error

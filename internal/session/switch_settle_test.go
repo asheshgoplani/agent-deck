@@ -103,7 +103,12 @@ func TestClassifySettlePane(t *testing.T) {
 		{"wrapped path", "Accessing workspace:\n\n/work/al\npha\n\nQuick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\n", SettlePaneTrustOwn},
 		{"trust question quoted in history above the composer", trustScreen(settleProject, 1) + "\n" + readyPane, SettlePaneReady},
 		{"trust question without option rows is not a live dialog", "Quick safety check: Is this a project you created or one you trust?\n" + settleProject + "\n", SettlePaneTrustOther},
-		{"question wrapped by a narrow pane", "│ " + settleProject + " │\n│ Quick safety check: Is this a project you created │\n│ or one you trust? (Like your own code) │\n│ ❯ No, exit │\n│   Yes, I trust this folder │\n", SettlePaneTrustOwn},
+		{"question wrapped by a narrow pane", "│ Accessing workspace: │\n│ " + settleProject + " │\n│ Quick safety check: Is this a project you created │\n│ or one you trust? (Like your own code) │\n│ ❯ No, exit │\n│   Yes, I trust this folder │\n", SettlePaneTrustOwn},
+		{"own path elsewhere on screen, dialog for another folder", " " + settleProject + "\n" + trustScreen("/work/beta", 0), SettlePaneTrustOther},
+		{"wrapped path that only starts with the own path", strings.Replace(trustScreen(settleProject+"-evil", 0), settleProject+"-evil", settleProject+"\n -evil", 1), SettlePaneTrustOther},
+		{"wrapped subdirectory of the own path", strings.Replace(trustScreen(settleProject+"/sub", 0), settleProject+"/sub", settleProject+"\n /sub", 1), SettlePaneTrustOther},
+		{"yes row without a no row is not a live dialog", "Accessing workspace:\n\n" + settleProject + "\n\nQuick safety check: Is this a project you created or one you trust?\n❯ Yes, I trust this folder\n", SettlePaneTrustOther},
+		{"trust dialog framed by two rules", strings.Repeat("─", 40) + "\n" + trustScreen(settleProject, 0) + "\n" + strings.Repeat("─", 40), SettlePaneTrustOwn},
 		{"theme", themePane, SettlePaneTheme},
 		{"bypass", bypassPane(false), SettlePaneBypass},
 		{"onboarding security notes", "Security notes:\n\n1. Claude can make mistakes\n\nPress Enter to continue…\n", SettlePaneOnboarding},
@@ -428,7 +433,9 @@ func TestSettleSwitch_WaitsForOrphanedOldPoller(t *testing.T) {
 	procs := liveProcs("inst-1", cfgDir)
 	// The replaced Claude's telegram poller, reparented to init, still
 	// carrying this instance's id; it exits after a few polls.
-	procs.cmds[90] = procowner.ProcCommand{PPID: 1, Args: []string{"bun", "run", "telegram/server.ts"}}
+	// Reparented to a subreaper (systemd --user), not to pid 1.
+	procs.cmds[50] = procowner.ProcCommand{PPID: 1, Args: []string{"systemd", "--user"}}
+	procs.cmds[90] = procowner.ProcCommand{PPID: 50, Args: []string{"bun", "run", "telegram/server.ts"}}
 	procs.env[90] = map[string]string{"AGENTDECK_INSTANCE_ID": "inst-1"}
 	procs.gone[90] = 4
 	// An unrelated orphan with another id is not ours.
@@ -643,5 +650,227 @@ func TestSessionRunsBypass(t *testing.T) {
 	_ = inst.SetClaudeOptions(&ClaudeOptions{SkipPermissions: false})
 	if SessionRunsBypass(inst, &UserConfig{}) {
 		t.Fatal("explicit options override the config default")
+	}
+}
+
+// A slow repaint: each capture shows the screen as it was before the last
+// key. The cursor must be seen on Yes in two captures before Enter, and no
+// arrow is sent before the previous one shows.
+func TestSettleSwitch_StaleFramesNeverEnterOnNo(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	cursor, shown := 0, 0 // shown lags cursor by one capture
+	f.onKey = func(f *fakeSettle, key string) {
+		switch key {
+		case "Down":
+			cursor = (cursor + 1) % 2 // a selector that wraps
+		case "Up":
+			cursor = (cursor + 1) % 2
+		case "Enter":
+			if cursor != 1 {
+				t.Errorf("Enter with the cursor on No, exit (keys %v)", f.keys)
+			}
+			cursor = 2
+		}
+	}
+	deps := f.deps()
+	deps.Capture = func() (string, error) {
+		screen := trustScreen(settleProject, shown)
+		if shown == 2 {
+			screen = readyPane
+		}
+		shown = cursor
+		return screen, nil
+	}
+	report, err := SettleSwitch(deps, settleOpts(cfgDir))
+	if err != nil || !report.OK() {
+		t.Fatalf("err=%v receipt=%s", err, report.Receipt())
+	}
+	if strings.Join(f.keys, ",") != "Down,Enter" {
+		t.Fatalf("keys = %v, want one Down then Enter", f.keys)
+	}
+}
+
+func TestSettleSwitch_YesAboveCursorMovesUp(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	screen := func(onYes bool) string {
+		yes, no := "   Yes, proceed", " ❯ No, exit"
+		if onYes {
+			yes, no = " ❯ Yes, proceed", "   No, exit"
+		}
+		return "Do you trust the files in this folder?\n\n" + settleProject + "\n\n" + yes + "\n" + no + "\n\nEnter to confirm\n"
+	}
+	f.set(screen(false))
+	f.onKey = func(f *fakeSettle, key string) {
+		switch key {
+		case "Up":
+			f.screens = []string{screen(true)}
+		case "Down":
+			f.screens = []string{screen(false)}
+		case "Enter":
+			f.screens = []string{readyPane}
+		}
+	}
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if err != nil || !report.OK() || strings.Join(f.keys, ",") != "Up,Enter" {
+		t.Fatalf("err=%v keys=%v receipt=%s", err, f.keys, report.Receipt())
+	}
+}
+
+// A composer painted for one frame before the trust dialog is not ready.
+func TestSettleSwitch_TransientComposerIsNotReady(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(readyPane, trustPane(settleProject))
+	f.onKey = trustDialogKeys(settleProject, readyPane)
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if err != nil || strings.Join(report.Answered, ",") != "trust-own-path" {
+		t.Fatalf("err=%v receipt=%s", err, report.Receipt())
+	}
+}
+
+func TestSettleSwitch_PluginTalkInTheConversationIsNotAFailure(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set("● Earlier the plugin:discord:discord server failed and ECONNRESET (CONNECTION_CLOSED) showed up.\n" + readyPane)
+	report, _ := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if f.restarts != 0 || len(report.PluginFailures) != 0 || !report.OK() {
+		t.Fatalf("restarts=%d receipt=%s", f.restarts, report.Receipt())
+	}
+}
+
+func TestSettleSwitch_WorkerScratchDirVerifiesAgainstItsAccount(t *testing.T) {
+	account, other := t.TempDir(), t.TempDir()
+	scratch := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scratch, scratchSourceMarker), []byte(account+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeSettle{procs: liveProcs("inst-1", scratch), now: time.Unix(0, 0)}
+	f.set(readyPane)
+	report, _ := SettleSwitch(f.deps(), settleOpts(account))
+	if !report.AccountOK {
+		t.Fatalf("scratch mirror of the account not verified: %s", report.Receipt())
+	}
+	f = &fakeSettle{procs: liveProcs("inst-1", scratch), now: time.Unix(0, 0)}
+	f.set(readyPane)
+	report, _ = SettleSwitch(f.deps(), settleOpts(other))
+	if report.AccountOK {
+		t.Fatalf("scratch mirror of another account verified: %s", report.Receipt())
+	}
+}
+
+// The shell wrapper carries the id but no config dir; the Claude process
+// under it is what must be on the account.
+func TestSettleSwitch_ClaudeProcessNotShellIsVerified(t *testing.T) {
+	cfgDir := t.TempDir()
+	procs := liveProcs("inst-1", t.TempDir()) // claude 101 on the wrong dir
+	f := &fakeSettle{procs: procs, now: time.Unix(0, 0)}
+	f.set(readyPane)
+	home, _ := os.UserHomeDir()
+	opts := settleOpts(filepath.Join(home, ".claude"))
+	report, _ := SettleSwitch(f.deps(), opts)
+	if report.AccountOK {
+		t.Fatalf("verified by the shell wrapper: %s", report.Receipt())
+	}
+	_ = cfgDir
+}
+
+// The plugin retry waits for every process of the pane it replaces, not
+// only orphans: the old poller here is still parented to the old pane.
+func TestSettleSwitch_PluginRetryWaitsForReplacedPaneProcesses(t *testing.T) {
+	cfgDir := t.TempDir()
+	procs := liveProcs("inst-1", cfgDir)
+	f := &fakeSettle{procs: procs, now: time.Unix(0, 0)}
+	closed := readyPane + "\n  plugin:telegram:telegram (CONNECTION_CLOSED)\n"
+	f.set(closed)
+	pane := 100
+	deps := f.deps()
+	deps.PanePID = func() (int, error) { return pane, nil }
+	var pollerAtKick bool
+	deps.Kick = func(string) error {
+		procs.mu.Lock()
+		_, pollerAtKick = procs.cmds[102]
+		procs.mu.Unlock()
+		return nil
+	}
+	f.onRetry = func(f *fakeSettle) {
+		// New pane 200 with its own claude; the old poller 102 (still under
+		// the old claude 101) takes a few polls to exit.
+		procs.mu.Lock()
+		procs.cmds[200] = procowner.ProcCommand{PPID: 1, Args: []string{"bash"}}
+		procs.cmds[201] = procowner.ProcCommand{PPID: 200, Args: []string{"claude"}}
+		procs.env[201] = map[string]string{"AGENTDECK_INSTANCE_ID": "inst-1", "CLAUDE_CONFIG_DIR": cfgDir}
+		procs.gone[100], procs.gone[101], procs.gone[102] = 0, 0, 5
+		// Its environment is unreadable (another uid, or ps -E refused):
+		// only the pane snapshot taken before the restart knows it.
+		delete(procs.env, 102)
+		procs.mu.Unlock()
+		pane = 200
+		f.screens = []string{readyPane}
+	}
+	report, _ := SettleSwitch(deps, settleOpts(cfgDir))
+	if pollerAtKick {
+		t.Fatalf("kick sent while the replaced pane's poller still ran: %s", report.Receipt())
+	}
+}
+
+// A Claude process of the account rewrote .claude.json from memory right
+// after the seed; the locked writer notices and seeds again.
+func TestPreAcceptClaudeTrust_RedoesAfterConcurrentRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	rewrites := 0
+	claudeJSONAfterWrite = func(p string) {
+		if rewrites == 0 {
+			rewrites++
+			_ = os.WriteFile(p, []byte(`{"projects":{}}`), 0o600)
+		}
+	}
+	t.Cleanup(func() { claudeJSONAfterWrite = nil })
+	if err := PreAcceptClaudeTrust(path, "/work/alpha"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"/work/alpha"`) {
+		t.Fatalf("seed lost to a concurrent rewrite: %s", data)
+	}
+}
+
+// After Enter, a stale frame can still show the dialog with the cursor on
+// Yes; it is not answered a second time.
+func TestSettleSwitch_StaleDialogAfterEnterIsNotAnsweredAgain(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(trustScreen(settleProject, 1))
+	f.onKey = func(f *fakeSettle, key string) {
+		if key == "Enter" {
+			f.screens = []string{trustScreen(settleProject, 1), trustScreen(settleProject, 1), readyPane}
+		}
+	}
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if err != nil || !report.OK() || strings.Join(f.keys, ",") != "Enter" {
+		t.Fatalf("err=%v keys=%v receipt=%s", err, f.keys, report.Receipt())
+	}
+}
+
+// The cursor shows on Yes for one frame and then back on No (a queued key,
+// a wrapping selector): no Enter unless two captures agree on Yes.
+func TestSettleSwitch_CursorBouncingOffYesIsNotConfirmed(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(trustPane(settleProject))
+	f.onKey = func(f *fakeSettle, key string) {
+		if key == "Down" {
+			f.screens = []string{trustScreen(settleProject, 1), trustScreen(settleProject, 0)}
+		}
+	}
+	_, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if !errors.Is(err, ErrSettleStopped) {
+		t.Fatalf("err = %v", err)
+	}
+	for _, k := range f.keys {
+		if k == "Enter" {
+			t.Fatalf("Enter pressed although the cursor went back to No, exit: keys=%v", f.keys)
+		}
 	}
 }

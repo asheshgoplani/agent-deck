@@ -25,6 +25,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	noRestart := fs.Bool("no-restart", false, "Do not restart a running session after the switch")
 	noSettle := fs.Bool("no-settle", false, "After the restart, do not run switch-settle (ready, known prompts, plugins, kick, verify)")
+	settleStrict := fs.Bool("settle-strict", false, "Exit 4 (3: stopped at a prompt) when the switch succeeded but the settle did not end healthy")
 	archiveDestination := fs.Bool("archive-destination", false, "Install the source conversation even when the destination holds a newer or undated copy; the destination copy is archived next to it, never deleted")
 
 	fs.Usage = func() {
@@ -41,8 +42,10 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("After the restart the switch settles hands-free (see `session switch-settle`):")
 		fmt.Println("it answers only the known first-start prompts, checks plugins and MCPs, sends a")
-		fmt.Println("continue message and verifies the account in use. Exit 4 means switched but")
-		fmt.Println("not settled healthy; the receipt line names what failed. --no-settle skips it.")
+		fmt.Println("continue message and verifies the account in use, then prints one receipt line")
+		fmt.Println("(\"settle <title>: ok|FAILED|STOPPED ...\"; JSON: \"settle\"). The exit code stays 0")
+		fmt.Println("for a completed switch; --settle-strict exits 4 (3: stopped at a prompt) when the")
+		fmt.Println("settle is not healthy. --no-settle skips it.")
 		fmt.Println()
 		fmt.Println("Claude Code may key one working directory under several project directories")
 		fmt.Println("(the path as typed, its macOS /private form, its realpath). Every copy of the")
@@ -82,7 +85,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 
 	userConfig, _ := session.LoadUserConfig()
 
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		exitCLI(1)
@@ -97,6 +100,11 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
+	// The tree the restart replaces; settle waits for it to be gone.
+	var oldPIDs []int
+	if !*noRestart && !*noSettle {
+		oldPIDs = session.SnapshotPaneProcesses(inst)
+	}
 	result, switchErr := session.SwitchAccount(userConfig, inst, account, session.AccountSwitchOptions{
 		NoRestart:          *noRestart,
 		Storage:            storage,
@@ -136,15 +144,15 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	var settle *session.SettleReport
 	var settleErr error
 	if result.Restarted && !*noSettle && session.IsClaudeCompatible(inst.Tool) {
-		settle, settleErr = settleAfterSwitch(inst, quietMode || *jsonOutput)
+		settle, settleErr = settleAfterSwitch(inst, quietMode || *jsonOutput, oldPIDs, func() error { return saveSessionData(storage, instances, groups) })
 	}
 	summary := fmt.Sprintf("Switched %s: account %q -> %q; %s", inst.Title, result.OldAccount, result.NewAccount, result.Conversation)
 	if settle != nil {
 		summary += "\n" + settle.Receipt()
 	}
 	defer func() {
-		if settle != nil && settleExitCode(settle, settleErr) != 0 {
-			exitCLI(switchExitSettle)
+		if code := switchSettleExit(*settleStrict, settle, settleErr); code != 0 {
+			exitCLI(code)
 		}
 	}()
 	out.Success(summary,

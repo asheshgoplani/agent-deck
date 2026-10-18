@@ -4188,6 +4188,26 @@ func (s *Session) CapturePaneFresh() (string, error) {
 	return content, nil
 }
 
+// CapturePrimaryPaneFresh is CapturePaneFresh for the managed agent window,
+// whichever window is active: a reader that answers the agent's prompts must
+// not read an auxiliary window the operator opened.
+func (s *Session) CapturePrimaryPaneFresh() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.primaryWindowTarget(), "-p", "-e")
+	output, err := commandOutput(cmd)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", ErrCaptureTimeout
+		}
+		if captureGoneFromErr(err) {
+			return "", fmt.Errorf("failed to capture pane: %w", ErrCaptureGone)
+		}
+		return "", fmt.Errorf("failed to capture pane: %w", err)
+	}
+	return string(output), nil
+}
+
 // CaptureFullHistory captures the scrollback history (limited to last 2000 lines for performance)
 func (s *Session) CaptureFullHistory() (string, error) {
 	// Limit to last 2000 lines to balance content availability with memory usage

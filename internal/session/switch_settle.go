@@ -249,38 +249,51 @@ func firstDialogLine(lines []string, hint int) string {
 	return strings.Trim(lines[hint], settleBoxChars)
 }
 
-// trustDialogPath finds the workspace path the dialog shows. Claude prints it
-// on its own line and a narrow pane wraps it, so a run of consecutive lines
-// that concatenates to exactly one of projectPaths matches; a substring never
-// does.
+// trustDialogPath reads the workspace path the dialog itself shows: the
+// block right under "Accessing workspace:" (or under the older "Do you trust
+// the files in this folder?"), up to the next blank line or the question. A
+// narrow pane wraps a long path, so the block's lines are joined; the whole
+// block must equal one of projectPaths. Any other path on screen, and a
+// longer path that merely starts with the session's own, never match.
 func trustDialogPath(lines []string, projectPaths []string) (string, bool) {
-	stripped := make([]string, len(lines))
-	for i, line := range lines {
-		stripped[i] = strings.Trim(line, settleBoxChars)
-	}
 	want := map[string]bool{}
 	for _, p := range projectPaths {
 		if p = strings.TrimRight(strings.TrimSpace(p), "/"); p != "" {
 			want[p] = true
 		}
 	}
-	shown := ""
-	for i := range stripped {
-		if !strings.HasPrefix(stripped[i], "/") && !strings.HasPrefix(stripped[i], "~") {
-			continue
-		}
-		joined := ""
-		for j := i; j < len(stripped) && j < i+4 && stripped[j] != ""; j++ {
-			joined += stripped[j]
-			if want[strings.TrimRight(joined, "/")] {
-				return joined, true
+	for i, line := range lines {
+		text := strings.Trim(line, settleBoxChars)
+		anchor := ""
+		for _, a := range []string{"Accessing workspace:", "Do you trust the files in this folder?"} {
+			if strings.HasPrefix(text, a) {
+				anchor = a
 			}
 		}
-		if shown == "" {
-			shown = stripped[i]
+		if anchor == "" {
+			continue
 		}
+		var block []string
+		if rest := strings.TrimSpace(strings.TrimPrefix(text, anchor)); rest != "" {
+			block = append(block, rest)
+		}
+		for j := i + 1; j < len(lines) && len(block) < 6; j++ {
+			t := strings.Trim(lines[j], settleBoxChars)
+			if t == "" {
+				if len(block) == 0 {
+					continue
+				}
+				break
+			}
+			if strings.Contains(t, "Is this a project you created") || strings.Contains(t, "Quick safety check") {
+				break
+			}
+			block = append(block, t)
+		}
+		shown := strings.Join(block, "")
+		return shown, shown != "" && want[strings.TrimRight(shown, "/")]
 	}
-	return shown, false
+	return "", false
 }
 
 // SettleProjectPaths lists the spellings Claude may show or key trust by for
@@ -322,13 +335,37 @@ func PreseedClaudeFirstStart(sourceDir, targetDir, projectPath string, bypass bo
 	if targetDir == "" || projectPath == "" {
 		return nil, fmt.Errorf("target config dir and project path are required")
 	}
-	targetJSON := filepath.Join(ExpandPath(targetDir), ".claude.json")
 	var source map[string]any
 	if sourceDir != "" {
-		if data, err := os.ReadFile(filepath.Join(ExpandPath(sourceDir), ".claude.json")); err == nil {
-			_ = jsonUnmarshalLoose(data, &source)
+		for _, path := range claudeJSONPathsForDir(sourceDir) {
+			if data, err := os.ReadFile(path); err == nil && jsonUnmarshalLoose(data, &source) == nil && source != nil {
+				break
+			}
 		}
 	}
+	var notes []string
+	for _, targetJSON := range claudeJSONPathsForDir(targetDir) {
+		seeded, err := preseedClaudeJSON(source, targetJSON, projectPath, bypass)
+		notes = append(notes, seeded...)
+		if err != nil {
+			return notes, err
+		}
+	}
+	return notes, nil
+}
+
+// claudeJSONPathsForDir lists the .claude.json files Claude may read for a
+// config dir: <dir>/.claude.json, and for the default ~/.claude also
+// ~/.claude.json, which Claude reads when CLAUDE_CONFIG_DIR is unset.
+func claudeJSONPathsForDir(dir string) []string {
+	paths := []string{filepath.Join(ExpandPath(dir), ".claude.json")}
+	if home, err := os.UserHomeDir(); err == nil && sameConfigDir(dir, filepath.Join(home, ".claude")) {
+		paths = append([]string{filepath.Join(home, ".claude.json")}, paths...)
+	}
+	return paths
+}
+
+func preseedClaudeJSON(source map[string]any, targetJSON, projectPath string, bypass bool) ([]string, error) {
 	paths := SettleProjectPaths(projectPath)
 	var notes []string
 	recorded := false
@@ -492,6 +529,12 @@ type SettleOptions struct {
 	OldPIDs []int
 }
 
+// settleAnswerGrace is how long a just-answered dialog may still be on
+// screen (a stale frame) before it counts as shown again.
+const settleAnswerGrace = 3 * time.Second
+
+var errDialogGone = errors.New("dialog closed before it was answered")
+
 // ErrSettleStopped marks a settle that met a prompt it may not answer.
 var ErrSettleStopped = errors.New("settle stopped at an unknown prompt")
 
@@ -584,6 +627,7 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 	paths := SettleProjectPaths(opts.ProjectPath)
 	deadline := deps.Now().Add(opts.ReadyTimeout)
 	answered := map[SettlePaneState]int{}
+	answeredAt := map[SettlePaneState]time.Time{}
 	readySeen := 0
 	for deps.Now().Before(deadline) {
 		raw, err := deps.Capture()
@@ -593,6 +637,13 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			continue
 		}
 		pane := ClassifySettlePane(raw, paths)
+		// A frame captured just after an answer may still show the dialog;
+		// only one that is still up after the grace period is answered again.
+		if at, ok := answeredAt[pane.State]; ok && deps.Now().Sub(at) < settleAnswerGrace {
+			readySeen = 0
+			deps.Sleep(opts.PollEvery)
+			continue
+		}
 		switch pane.State {
 		case SettlePaneReady:
 			readySeen++
@@ -610,10 +661,13 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			}
 			answered[pane.State]++
 			deps.Log("answering %s (%s)", pane.State, pane.Detail)
-			if err := selectDialogYes(deps, settleTrustYes, settleNoExit); err != nil {
+			if err := selectDialogYes(deps, settleTrustYes, settleNoExit); errors.Is(err, errDialogGone) {
+				continue
+			} else if err != nil {
 				report.StoppedAt = "folder trust: " + err.Error()
 				return ErrSettleStopped
 			}
+			answeredAt[pane.State] = deps.Now()
 			report.Answered = appendOnce(report.Answered, string(pane.State))
 			deps.Sleep(time.Second)
 		case SettlePaneTheme, SettlePaneOnboarding:
@@ -629,6 +683,7 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			if err := deps.SendKey("Enter"); err != nil {
 				return fmt.Errorf("answer %s: %w", pane.State, err)
 			}
+			answeredAt[pane.State] = deps.Now()
 			report.Answered = appendOnce(report.Answered, string(pane.State))
 			deps.Sleep(time.Second)
 		case SettlePaneBypass:
@@ -641,10 +696,13 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 				return ErrSettleStopped
 			}
 			answered[pane.State]++
-			if err := answerBypass(deps, opts); err != nil {
+			if err := answerBypass(deps, opts); errors.Is(err, errDialogGone) {
+				continue
+			} else if err != nil {
 				report.StoppedAt = err.Error()
 				return ErrSettleStopped
 			}
+			answeredAt[pane.State] = deps.Now()
 			report.Answered = appendOnce(report.Answered, string(pane.State))
 		default:
 			report.StoppedAt = string(pane.State) + ": " + pane.Detail
@@ -660,33 +718,64 @@ func answerBypass(deps SettleDeps, opts SettleOptions) error {
 	return selectDialogYes(deps, settleBypassYes, settleNoExit)
 }
 
-// selectDialogYes moves the cursor onto the Yes row with arrow keys,
-// re-reading the pane after each move, and presses Enter only once the
-// cursor is seen on it. It never presses Enter on another row.
+// selectDialogYes moves the cursor onto the Yes row and presses Enter only
+// when two consecutive captures agree the cursor is on it. A live capture of
+// Claude's trust dialog draws the cursor on "No, exit" first, so a bare
+// Enter exits the session. Each arrow is sent only after the previous one is
+// seen to have moved the cursor, and never more arrows than the distance to
+// Yes, so a slow repaint cannot queue extra moves that land after Enter.
 func selectDialogYes(deps SettleDeps, yes, no []string) error {
-	for moves := 0; moves <= 3; moves++ {
+	read := func() (yesRow, cursorRow int, err error) {
 		raw, err := deps.Capture()
 		if err != nil {
-			return err
+			return -1, -1, err
 		}
 		lines := liveDialogRegion(strings.Split(tmux.StripANSI(raw), "\n"))
 		yesRow, cursorRow, live := dialogChoice(lines, yes, no)
 		if !live {
-			return fmt.Errorf("dialog rows not found (cursor or %q missing)", yes[0])
+			return -1, -1, fmt.Errorf("dialog rows not found (cursor or %q missing)", yes[0])
 		}
-		if cursorRow == yesRow {
-			return deps.SendKey("Enter")
-		}
-		key := "Down"
-		if yesRow < cursorRow {
-			key = "Up"
-		}
+		return yesRow, cursorRow, nil
+	}
+	yesRow, cursorRow, err := read()
+	if err != nil {
+		// Classified live a moment ago: the dialog closed in between.
+		return errDialogGone
+	}
+	moves := yesRow - cursorRow
+	key := "Down"
+	if moves < 0 {
+		key, moves = "Up", -moves
+	}
+	if moves > 3 {
+		return fmt.Errorf("%q is %d rows from the cursor", yes[0], moves)
+	}
+	for ; moves > 0; moves-- {
+		before := cursorRow
 		if err := deps.SendKey(key); err != nil {
 			return err
 		}
-		deps.Sleep(300 * time.Millisecond)
+		moved := false
+		for wait := 0; wait < 10 && !moved; wait++ {
+			deps.Sleep(300 * time.Millisecond)
+			if yesRow, cursorRow, err = read(); err != nil {
+				return err
+			}
+			moved = cursorRow != before
+		}
+		if !moved {
+			return fmt.Errorf("cursor did not move toward %q", yes[0])
+		}
 	}
-	return fmt.Errorf("cursor did not reach %q", yes[0])
+	deps.Sleep(300 * time.Millisecond)
+	again, cursorAgain, err := read()
+	if err != nil {
+		return err
+	}
+	if cursorRow != yesRow || cursorAgain != again || cursorAgain != cursorRow {
+		return fmt.Errorf("cursor not settled on %q", yes[0])
+	}
+	return deps.SendKey("Enter")
 }
 
 func appendOnce(list []string, v string) []string {
@@ -714,7 +803,7 @@ func checkPlugins(deps SettleDeps, opts SettleOptions) []string {
 	for i := 0; i < 6; i++ {
 		raw, err := deps.Capture()
 		if err == nil {
-			failures = PaneMCPFailures(tmux.StripANSI(raw))
+			failures = PaneMCPFailures(settleStatusRegion(tmux.StripANSI(raw)))
 			if len(failures) > 0 {
 				break
 			}
@@ -732,7 +821,22 @@ func checkPlugins(deps SettleDeps, opts SettleOptions) []string {
 	return failures
 }
 
-// PaneMCPFailures extracts named MCP/plugin failures from pane text.
+// settleStatusRegion is where Claude reports MCP and plugin health: the
+// composer and the footer under it, or the last lines when no composer is
+// drawn. The conversation above is never read, so a reply that merely talks
+// about a failed plugin is not a failure.
+func settleStatusRegion(content string) string {
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if top, _ := send.ComposerBounds(lines); top >= 0 {
+		return strings.Join(lines[top:], "\n")
+	}
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// PaneMCPFailures extracts named MCP/plugin failures from status text.
 func PaneMCPFailures(content string) []string {
 	var out []string
 	for _, m := range settlePluginClosed.FindAllStringSubmatch(content, -1) {
@@ -806,6 +910,13 @@ func oldInstanceProcesses(deps SettleDeps, opts SettleOptions) []int {
 			}
 		}
 	}
+	// This settle run and its ancestors (a detached self-switch job) carry
+	// the id too and are never "old".
+	mine := map[int]bool{}
+	for pid, hops := os.Getpid(), 0; pid > 1 && hops < 64; hops++ {
+		mine[pid] = true
+		pid = cmds[pid].PPID
+	}
 	var alive []int
 	seen := map[int]bool{}
 	for _, pid := range opts.OldPIDs {
@@ -816,7 +927,9 @@ func oldInstanceProcesses(deps SettleDeps, opts SettleOptions) []int {
 	}
 	if opts.InstanceID != "" {
 		for pid, cmd := range cmds {
-			if current[pid] || seen[pid] || cmd.PPID != 1 || pid == os.Getpid() || pid == os.Getppid() || !settlePollerCommand(cmd.Args) {
+			// Not only ppid 1: under a subreaper (systemd --user, a
+			// supervisor) an orphan is reparented there instead.
+			if current[pid] || seen[pid] || mine[pid] || !settlePollerCommand(cmd.Args) {
 				continue
 			}
 			if deps.Procs.Env(pid, "AGENTDECK_INSTANCE_ID") == opts.InstanceID {
@@ -843,36 +956,39 @@ func settlePollerCommand(args []string) bool {
 	return false
 }
 
-// verifyAccount checks the live process, not the record: the Claude process
-// under the pane that carries this instance's id must run with the expected
-// CLAUDE_CONFIG_DIR; auth status names the identity when available.
+// verifyAccount checks the live process, not the record. The Claude
+// processes under the pane that carry this instance's id (not the shell
+// wrapper) must all run on the expected account: CLAUDE_CONFIG_DIR is the
+// account dir itself, or a worker-scratch mirror whose source marker names
+// it. Auth status names the identity when available.
 func verifyAccount(deps SettleDeps, opts SettleOptions, report *SettleReport) {
+	checked, agreed := 0, 0
 	if deps.Procs != nil && deps.PanePID != nil {
 		if pid, err := deps.PanePID(); err == nil {
+			cmds, _ := deps.Procs.Commands()
 			for _, child := range append([]int{pid}, settleDescendants(deps.Procs, pid)...) {
-				if deps.Procs.Env(child, "AGENTDECK_INSTANCE_ID") != opts.InstanceID {
+				if deps.Procs.Env(child, "AGENTDECK_INSTANCE_ID") != opts.InstanceID || !settleClaudeCommand(cmds[child].Args) {
 					continue
 				}
+				checked++
 				dir := deps.Procs.Env(child, "CLAUDE_CONFIG_DIR")
-				if dir == "" {
-					// The default account runs without the variable.
-					report.LiveConfigDir = "(unset)"
-					if home, herr := os.UserHomeDir(); herr == nil && (opts.ConfigDir == "" || sameConfigDir(opts.ConfigDir, filepath.Join(home, ".claude"))) {
-						report.AccountOK = true
-						break
-					}
-					continue
-				}
 				report.LiveConfigDir = dir
-				if sameConfigDir(dir, opts.ConfigDir) {
-					report.AccountOK = true
-					break
+				if dir == "" {
+					report.LiveConfigDir = "(unset)"
+				}
+				if settleRunsOnAccount(dir, opts.ConfigDir) {
+					agreed++
 				}
 			}
 		}
 	}
+	report.AccountOK = checked > 0 && agreed == checked
 	if !report.AccountOK {
-		report.Problems = append(report.Problems, fmt.Sprintf("live process does not run with CLAUDE_CONFIG_DIR=%s", opts.ConfigDir))
+		if checked == 0 {
+			report.Problems = append(report.Problems, "no Claude process with this session's id under the pane")
+		} else {
+			report.Problems = append(report.Problems, fmt.Sprintf("live Claude process does not run on %s", opts.ConfigDir))
+		}
 	}
 	if deps.AuthInfo != nil {
 		if who, err := deps.AuthInfo(opts.ConfigDir); err == nil {
@@ -882,6 +998,37 @@ func verifyAccount(deps SettleDeps, opts SettleOptions, report *SettleReport) {
 			deps.Log("auth status: %v", err)
 		}
 	}
+}
+
+// settleClaudeCommand reports whether argv is a Claude process rather than
+// the shell that launched it or a plugin under it.
+func settleClaudeCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch filepath.Base(args[0]) {
+	case "sh", "bash", "zsh", "dash", "fish", "-bash", "-zsh", "-sh", "bun":
+		return false
+	}
+	joined := strings.ToLower(strings.Join(args, " "))
+	return strings.Contains(joined, "claude") && !settlePollerCommand(args)
+}
+
+// settleRunsOnAccount reports whether a live CLAUDE_CONFIG_DIR is the
+// account dir: the same dir, the default (unset) for the default account, or
+// a worker-scratch generation whose source marker names the account dir.
+func settleRunsOnAccount(live, account string) bool {
+	if live == "" {
+		home, err := os.UserHomeDir()
+		return err == nil && (account == "" || sameConfigDir(account, filepath.Join(home, ".claude")))
+	}
+	if sameConfigDir(live, account) {
+		return true
+	}
+	if data, err := os.ReadFile(filepath.Join(ExpandPath(live), scratchSourceMarker)); err == nil {
+		return sameConfigDir(strings.TrimSpace(string(data)), account)
+	}
+	return false
 }
 
 func sameConfigDir(a, b string) bool {

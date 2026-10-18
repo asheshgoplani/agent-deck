@@ -57,6 +57,29 @@ func SettleDescendants(procs SettleProcReader, root int) []int {
 	return settleDescendants(procs, root)
 }
 
+// SnapshotPaneProcesses lists the session's pane pid and every process
+// under it: the tree a restart replaces. Taken before a switch stops the
+// session, so settle can wait until each of them, a plugin poller above all,
+// is gone.
+func SnapshotPaneProcesses(inst *Instance) []int {
+	if inst == nil {
+		return nil
+	}
+	tm := inst.GetTmuxSession()
+	if tm == nil || !tm.Exists() {
+		return nil
+	}
+	pid, err := tm.PanePID()
+	if err != nil || pid <= 0 {
+		return nil
+	}
+	out := []int{pid}
+	if procs := NewHostSettleProcReader(); procs != nil {
+		out = append(out, settleDescendants(procs, pid)...)
+	}
+	return out
+}
+
 // hostProcReader reads the live process table: /proc on Linux, ps on macOS.
 type hostProcReader struct {
 	cmds procowner.CommandReader
@@ -154,6 +177,9 @@ func updateClaudeJSONLocked(path string, mutate func(map[string]any)) error {
 		if err := atomicfile.WriteFile(path, out, 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
+		if claudeJSONAfterWrite != nil {
+			claudeJSONAfterWrite(path)
+		}
 		// A Claude process of this account may rewrite the file from its
 		// own memory at any moment; check that ours survived and redo once.
 		check := map[string]any{}
@@ -168,6 +194,10 @@ func updateClaudeJSONLocked(path string, mutate func(map[string]any)) error {
 	}
 	return fmt.Errorf("%s was rewritten concurrently; pre-seed did not hold", path)
 }
+
+// claudeJSONAfterWrite runs right after each write; tests use it to stand in
+// for a Claude process rewriting the file from its own memory.
+var claudeJSONAfterWrite func(path string)
 
 func jsonUnmarshalLoose(data []byte, v any) error {
 	if len(bytes.TrimSpace(data)) == 0 {

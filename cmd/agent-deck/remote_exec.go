@@ -111,9 +111,9 @@ func remoteCommandArgs(args []string) ([]string, error) {
 // engine runs on the remote host and may only be pointed at the remote's own
 // configured account slots and harnesses, never at a controller path.
 var remoteSwitchOptions = map[string]map[string]bool{
-	"switch":         {"to-harness": true, "to-account": true, "max-bytes": true, "no-start": false, "confirm-context-loss": false, "json": false, "no-settle": false},
+	"switch":         {"to-harness": true, "to-account": true, "max-bytes": true, "no-start": false, "confirm-context-loss": false, "json": false, "no-settle": false, "settle-strict": false},
 	"switch-preview": {"to-harness": true, "to-account": true, "max-chars": true, "json": false},
-	"switch-account": {"no-restart": false, "no-settle": false, "json": false, "quiet": false, "q": false},
+	"switch-account": {"no-restart": false, "no-settle": false, "settle-strict": false, "json": false, "quiet": false, "q": false},
 }
 
 // remoteSwitchValueOK admits the value shapes each option can take: a plain
