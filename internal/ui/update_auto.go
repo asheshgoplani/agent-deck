@@ -196,7 +196,7 @@ func (h *Home) autoInstallSkipReason(info *update.UpdateInfo) string {
 		return h.binaryOrphanReason
 	case h.autoInstallInFlight != "":
 		return "install already running"
-	case update.CompareVersions(h.installedUpdateVersion(), info.LatestVersion) >= 0:
+	case !update.ReleaseSupersedes(info.LatestVersion, h.installedUpdateVersion()):
 		return "already installed on disk"
 	case time.Since(h.autoInstallAttempts[info.LatestVersion]) < autoInstallRetryAfter:
 		return "attempted recently"
