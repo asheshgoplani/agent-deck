@@ -81,8 +81,8 @@ func FindShadowingCopies(selfVersion string) []ShadowCopy {
 }
 
 // Find walks PathEnv in order up to the entry that resolves to Self and
-// returns every earlier agent-deck executable whose version is older than
-// SelfVersion or cannot be read. Copies at or after Self, the same file
+// returns every earlier agent-deck executable that SelfVersion supersedes
+// (ReleaseSupersedes) or whose version cannot be read. Copies at or after Self, the same file
 // reached through a symlink, and copies that are the same or a newer
 // version are not reported. When Self is not on PATH at all, every older
 // copy on PATH is reported, since shells run one of those instead.
@@ -136,7 +136,11 @@ func (s ShadowScan) Find() []ShadowCopy {
 	for _, path := range found {
 		version, err := ProbeBinaryVersion(path)
 		version = strings.TrimPrefix(strings.TrimSpace(version), "v")
-		if err == nil && version != "" && CompareVersions(version, selfVersion) >= 0 {
+		// Only copies the updated binary supersedes are stale. That uses
+		// the same rule as the self-update (#2710): a "+local" build of
+		// the same version is older than its published release, while a
+		// release left first on PATH by a "+local" build is not.
+		if err == nil && version != "" && !ReleaseSupersedes(selfVersion, version) {
 			continue
 		}
 		c := ShadowCopy{

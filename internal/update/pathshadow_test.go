@@ -186,6 +186,30 @@ func TestFindShadowingCopies_VersionRules(t *testing.T) {
 	}
 }
 
+// A "+local" build of the same version earlier on PATH is older than the
+// published release that replaced it (#2710), so it is reported; the
+// published release earlier on PATH than a "+local" build of the same
+// version is not, and neither is another "+local" build of that version.
+func TestFindShadowingCopies_LocalBuildOfSameVersion(t *testing.T) {
+	f := newShadowFixture(t)
+	fakeAgentDeck(t, f.oldDir, "agent-deck", "1.16.28+local.20261013.abc1234")
+	got := ShadowScan{Self: f.self, SelfVersion: "1.16.28", PathEnv: pathOf(f.oldDir, f.newDir), Writable: writableAll}.Find()
+	if len(got) != 1 || got[0].Version != "1.16.28+local.20261013.abc1234" {
+		t.Fatalf("local build of the installed release earlier on PATH: got %+v, want it reported", got)
+	}
+
+	fakeAgentDeck(t, f.oldDir, "agent-deck", "1.16.28")
+	for _, self := range []string{"1.16.28+local.20261018.def5678", "1.16.28+local"} {
+		if got := (ShadowScan{Self: f.self, SelfVersion: self, PathEnv: pathOf(f.oldDir, f.newDir), Writable: writableAll}.Find()); len(got) != 0 {
+			t.Fatalf("release earlier on PATH than local build %s: got %+v, want none", self, got)
+		}
+	}
+	fakeAgentDeck(t, f.oldDir, "agent-deck", "1.16.28+local.20261013.abc1234")
+	if got := (ShadowScan{Self: f.self, SelfVersion: "1.16.28+local.20261018.def5678", PathEnv: pathOf(f.oldDir, f.newDir), Writable: writableAll}.Find()); len(got) != 0 {
+		t.Fatalf("another local build of the same version: got %+v, want none", got)
+	}
+}
+
 // When the updated binary is not on PATH at all, the older copy shells
 // find is still reported, worded for that case.
 func TestFindShadowingCopies_SelfNotOnPath(t *testing.T) {
