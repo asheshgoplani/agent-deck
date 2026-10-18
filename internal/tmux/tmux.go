@@ -7423,14 +7423,56 @@ var savedStatusLeft struct {
 	captured bool
 }
 
+// statusLeftOriginalOption is a tmux user option holding the user's own global
+// status-left. It lives on the tmux server, so it outlives the TUI process: a
+// TUI that exits without ClearStatusLeftGlobal (crash, kill -9, auto-update
+// restart) leaves its notification bar as the global status-left, and the next
+// TUI must not mistake that bar for the user's theme value (#2705).
+const statusLeftOriginalOption = "@agentdeck_orig_status_left"
+
+// statusLeftOriginalMarker prefixes the stored value so an empty original
+// status-left is told apart from an unset option (show-option -q prints "").
+const statusLeftOriginalMarker = "v:"
+
+// notificationBarPrefix is the prefix every agent-deck notification bar
+// carries (session.FormatBar / formatBarMinimal).
+const notificationBarPrefix = "⚡ "
+
+// looksLikeNotificationBar reports whether a status-left value is an
+// agent-deck notification bar rather than a user or theme value.
+func looksLikeNotificationBar(value string) bool {
+	return strings.HasPrefix(value, notificationBarPrefix)
+}
+
 // captureOriginalStatusLeft reads and stores the current global status-left value.
 // Called once on first SetStatusLeftGlobal to preserve the user's existing value.
+// When the current value is a leftover notification bar from an earlier TUI,
+// the original saved on the tmux server is used instead; with none saved,
+// nothing is captured and ClearStatusLeftGlobal falls back to the tmux default.
 func captureOriginalStatusLeft() {
+	socket := DefaultSocketName()
 	// Bounded — see tmuxPollTimeout. A read, and the only chance to capture the
 	// user's theme value: if it hangs, SetStatusLeftGlobal never runs either.
-	out, err := runBoundedOutput(DefaultSocketName(), "show-option", "-gv", "status-left")
-	if err == nil {
-		savedStatusLeft.value = strings.TrimRight(string(out), "\n")
+	out, err := runBoundedOutput(socket, "show-option", "-gv", "status-left")
+	if err != nil {
+		return
+	}
+	current := strings.TrimRight(string(out), "\n")
+	if !looksLikeNotificationBar(current) {
+		savedStatusLeft.value = current
+		savedStatusLeft.captured = true
+		// Persist it for a later TUI that starts while a bar is showing.
+		_ = runBoundedMutation(socket, "set-option", "-g", statusLeftOriginalOption,
+			statusLeftOriginalMarker+current)
+		return
+	}
+	// A previous TUI's bar is still up: never treat it as the original.
+	stored, err := runBoundedOutput(socket, "show-option", "-gqv", statusLeftOriginalOption)
+	if err != nil {
+		return
+	}
+	if value, ok := strings.CutPrefix(strings.TrimRight(string(stored), "\n"), statusLeftOriginalMarker); ok {
+		savedStatusLeft.value = value
 		savedStatusLeft.captured = true
 	}
 }
