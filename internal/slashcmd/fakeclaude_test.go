@@ -56,6 +56,9 @@ type fakeClaude struct {
 	switchTo string
 	// permissionAfter makes a generic command open a permission dialog.
 	permissionAfter bool
+	// eatTrailingSemicolon drops a trailing ';' from typed text, as tmux
+	// did before SendKeys escaped it (review L4).
+	eatTrailingSemicolon bool
 }
 
 func newFakeClaude() *fakeClaude {
@@ -67,7 +70,7 @@ func newFakeClaude() *fakeClaude {
 
 // fakeModels is the live 2.1.296 /model picker list (lab evidence exp20,
 // exp25); the live list wraps around at both ends.
-var fakeModels = []string{"Default (recommended)", "Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6"}
+var fakeModels = []string{"Default (recommended)", "Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Opus 4.6 (1M context)", "Sonnet 4.6 (1M context)"}
 
 // pickerLines renders the picker with a ten-row window that follows the
 // selection, the current model ticked, like the live one.
@@ -204,6 +207,9 @@ func (f *fakeClaude) SendKeys(text string) error {
 		return errors.New("can't find pane")
 	}
 	f.keys = append(f.keys, "text:"+text)
+	if f.eatTrailingSemicolon {
+		text = strings.TrimSuffix(text, ";")
+	}
 	if f.picker && text == "s" {
 		f.picker = false
 		f.pickModel(fakeModels[f.pickerSel], true)

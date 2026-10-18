@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -126,13 +127,22 @@ func handleSessionCommand(profile string, args []string) {
 	}
 	cmd, err := slashcmd.Parse(text)
 	if err != nil {
-		emitCommandResult(out, slashcmd.Result{Command: strings.TrimSpace(text), Code: slashcmd.CodeInvalid, Error: err.Error(), Evidence: []string{}, Steps: []string{}})
+		code := slashcmd.CodeInvalid
+		if errors.Is(err, slashcmd.ErrRefused) {
+			code = slashcmd.CodeRefused
+		}
+		emitCommandResult(out, slashcmd.Result{Command: strings.TrimSpace(text), Code: code, Error: err.Error(), Evidence: []string{}, Steps: []string{}})
 		exitCLI(1)
 	}
 
 	storage, instances, groups, inst, resolvedProfile, msg, code := resolveCommandTarget(profile, ref)
 	if inst == nil {
-		out.Error(msg, code)
+		if *jsonOutput {
+			// The same result contract as every other failure, exit 2.
+			emitCommandResult(out, slashcmd.Result{Command: cmd.Text, Kind: cmd.Kind, Code: "not_found", Error: msg, Evidence: []string{}, Steps: []string{}})
+		} else {
+			out.Error(msg, code)
+		}
 		exitCLI(2)
 		return
 	}

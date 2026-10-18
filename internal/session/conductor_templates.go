@@ -111,7 +111,7 @@ func preHumanTierConductorInstructionsTemplate(template string) string {
 // conductorHarnessControlQuickCommandRow is the `/cmd` quick-command row the
 // session command change added to the shared template's Quick Commands table.
 // v1.16.25 through v1.16.29 shipped the template without it.
-const conductorHarnessControlQuickCommandRow = "| `/cmd <session> <slash command>` (also `cmd ...` without the leading slash) | Run a Claude Code client command (`/model <id>`, `/compact`, `/clear`, `/exit`, any slash command or skill) on that session: run `agent-deck -p <PROFILE> session command --json --wait-idle 60s <session> \"<slash command>\"` (add `--background` when `<session>` is you). Reply with one short line from the JSON: `after` or the first `evidence` entry when `ok`, otherwise `code` and `error`. `/cmd <session> what can I run` runs `agent-deck -p <PROFILE> session commands --json <session>` instead. Never type a slash command with `session send` or tmux. |\n"
+const conductorHarnessControlQuickCommandRow = "| `/cmd <session> <slash command>` (also `cmd ...` without the leading slash) | Run a Claude Code client command (`/model <id>`, `/compact`, `/clear`, `/exit`, any slash command or skill) on that session: run `agent-deck -p <PROFILE> session command --json --wait-idle 60s <session> '<slash command>'` (single quotes, so `$(...)` and backticks in the text are never expanded; write a `'` inside it as `'\\''`; add `--background` when `<session>` is you). Reply with one short line from the JSON: `after` or the first `evidence` entry when `ok`, otherwise `code` and `error`. `/cmd <session> what can I run` runs `agent-deck -p <PROFILE> session commands --json <session>` instead. Never type a slash command with `session send` or tmux. |\n"
 
 // preHarnessControlConductorInstructionsTemplate reconstructs the template as
 // v1.16.25 through v1.16.29 shipped it, before the `/cmd` quick command, so a
@@ -149,10 +149,15 @@ const (
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
 	var gens []string
-	// Newest first: what v1.16.25-v1.16.29 shipped (current minus the /cmd
-	// quick command and minus the no-op notice rule). Every older generation
-	// is reconstructed from it.
-	if shipped := preNoOpNoticeRuleConductorInstructionsTemplate(preHarnessControlConductorInstructionsTemplate(template)); shipped != template {
+	// Newest first: a release with the no-op notice rule but without the
+	// /cmd quick command (the two landed separately), then what
+	// v1.16.25-v1.16.29 shipped (current minus both). Every older generation
+	// is reconstructed from the latter.
+	noCmd := preHarnessControlConductorInstructionsTemplate(template)
+	if noCmd != template && preNoOpNoticeRuleConductorInstructionsTemplate(noCmd) != noCmd {
+		gens = append(gens, noCmd)
+	}
+	if shipped := preNoOpNoticeRuleConductorInstructionsTemplate(noCmd); shipped != template {
 		gens = append(gens, shipped)
 		template = shipped
 	}

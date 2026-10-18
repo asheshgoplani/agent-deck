@@ -175,11 +175,17 @@ func TestShippedV11628SharedTemplateMigratesToHarnessControl(t *testing.T) {
 				t.Fatal("current shared template lacks the /cmd quick command")
 			}
 			oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-			if got := fmtHash(oldGenerations[0]); got != v11628Shared {
-				t.Fatalf("newest reconstructed generation = %s, want what v1.16.28 shipped %s", got, v11628Shared)
+			shipped := -1
+			for i, g := range oldGenerations[:2] {
+				if fmtHash(g) == v11628Shared {
+					shipped = i
+				}
+			}
+			if shipped < 0 {
+				t.Fatalf("none of the two newest reconstructed generations is what v1.16.28 shipped %s", v11628Shared)
 			}
 			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)
-			if err := os.WriteFile(path, []byte(oldGenerations[0]), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(oldGenerations[shipped]), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if err := writeGeneratedFileOrMigrate(path, oldGenerations, current, 0o644); err != nil {
@@ -191,6 +197,44 @@ func TestShippedV11628SharedTemplateMigratesToHarnessControl(t *testing.T) {
 			}
 			if !matchesTemplateContent(string(got), current) {
 				t.Fatal("v1.16.28 shared instructions were not migrated to the /cmd template")
+			}
+		})
+	}
+}
+
+// Review M2: the no-op notice rule and the /cmd quick command land in
+// separate PRs, so a release can carry the rule without /cmd. The shared
+// file that release writes is the newest reconstructed generation and
+// migrates to the /cmd template in place.
+func TestNoOpRuleOnlySharedTemplateMigratesToHarnessControl(t *testing.T) {
+	for _, agent := range []string{ConductorAgentClaude, ConductorAgentCodex, ConductorAgentHermes} {
+		t.Run(agent, func(t *testing.T) {
+			spec, err := GetConductorAgentSpec(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
+			ruleOnly := renderConductorInstructionsTemplate(preHarnessControlConductorInstructionsTemplate(conductorSharedClaudeMDTemplate), "", DefaultProfile, spec)
+			if ruleOnly == current || !strings.Contains(ruleOnly, "**No-op notices get no reply.**") || strings.Contains(ruleOnly, "/cmd <session>") {
+				t.Fatal("the rule-only generation must carry the no-op rule and no /cmd row")
+			}
+			oldGenerations := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
+			if len(oldGenerations) == 0 || oldGenerations[0] != ruleOnly {
+				t.Fatal("the rule-only release is not the newest reconstructed generation")
+			}
+			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)
+			if err := os.WriteFile(path, []byte(ruleOnly), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeGeneratedFileOrMigrate(path, oldGenerations, current, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !matchesTemplateContent(string(got), current) {
+				t.Fatal("a rule-only shared file was not migrated to the /cmd template")
 			}
 		})
 	}
