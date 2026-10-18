@@ -3169,8 +3169,13 @@ func (h *Home) sessionHasChildren(item session.Item) bool {
 // partition at a time (#1987: active or ^ archived), so a child in the other
 // partition never appears under the parent and must not produce a fold badge
 // or capture the fold keys (Tab, l/right, h/left) from the window toggle.
+//
+// A sub-session row never folds: the tree nests only one level, so a
+// sub-session's own children render as orphan rows and FlattenWithParentFolds
+// ignores a fold on it. Counting them put a badge on the row and took the
+// fold keys from the window toggle for a fold that hides nothing.
 func (h *Home) sessionChildCount(item session.Item) int {
-	if item.Session == nil || h.groupTree == nil {
+	if item.Session == nil || h.groupTree == nil || item.Session.IsSubSession() {
 		return 0
 	}
 	viewArchived := h.statusFilter == FilterModeArchived
