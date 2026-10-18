@@ -105,7 +105,7 @@ func TestTriggersLive_ReloadsWhenSessionsChange(t *testing.T) {
 	}
 	// A rename can turn a target dead (or alive) without any trigger write.
 	inst.Title = "inbox-triage-2"
-	h, _ = runTriggersPoll(t, h)
+	_, _ = runTriggersPoll(t, h)
 	if feed.loads != 2 {
 		t.Fatalf("a renamed session did not re-resolve targets: %d loads, want 2", feed.loads)
 	}
