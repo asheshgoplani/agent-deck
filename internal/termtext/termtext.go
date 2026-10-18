@@ -2,7 +2,8 @@
 // terminal line or to render in the TUI.
 //
 // Clean drops every control character (C0, DEL, C1 including CSI U+009B,
-// CR, LF, TAB, ESC) and the Unicode bidirectional formatting characters, so
+// CR, LF, TAB, ESC), the Unicode bidirectional formatting characters and the
+// invisible separators (U+200B, U+FEFF, U+2028, U+2029), so
 // the text can neither drive the terminal (cursor moves, OSC 52 clipboard
 // writes, title changes) nor visually reorder what is shown around it.
 //
@@ -24,12 +25,20 @@ var newlineStripper = strings.NewReplacer("\r", "", "\n", "")
 // Invalid UTF-8 bytes become U+FFFD.
 func Clean(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || isBidiControl(r) {
+		if unicode.IsControl(r) || isBidiControl(r) || isInvisibleSeparator(r) {
 			return -1
 		}
 		return r
 	}, s)
 	return newlineStripper.Replace(s)
+}
+
+// isInvisibleSeparator reports characters that render as nothing or break a
+// line without being controls: zero-width space, the byte-order mark, and the
+// Unicode line and paragraph separators. ZWJ and ZWNJ are kept; emoji
+// sequences and several scripts need them.
+func isInvisibleSeparator(r rune) bool {
+	return r == 0x200B || r == 0xFEFF || r == 0x2028 || r == 0x2029
 }
 
 // isBidiControl reports the characters that change the display order of the
