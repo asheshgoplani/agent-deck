@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Events
+
+- `agent-deck events publish` accepts only lowercase kind names: a kind with an uppercase letter, such as a third-party plugin's `macapp.myPlugin`, now gets exit 2. Rename such a kind to lowercase (`macapp.myplugin`).
+
 ### Watchers
 
 - Without `-p`, the `watcher` commands now use the same profile as every other command: `AGENTDECK_PROFILE`, then the profile inferred from `CLAUDE_CONFIG_DIR`, then `default_profile`. Before, they always used the `default` profile, so with any of those set a watcher was written to `default` and the selected profile's engine never ran it. Such a watcher now shows only with `-p default`. To move one: `agent-deck -p default watcher list` to find it, `agent-deck -p default watcher stop <name>`, move its `watcher.toml` aside, run the same `watcher create` again without `-p`, copy any hand edits back into the new `watcher.toml`, then `watcher start <name>`. The stopped row stays in `default`. `watcher help`, `install-skill`, `import` and `routes` touch no profile state and do not resolve the profile (#2740, #2746, thanks @AndreIntelas).
