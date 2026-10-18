@@ -3,6 +3,7 @@ package costs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,20 @@ type RawCostEvent struct {
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
 	Timestamp        int64  `json:"ts"`
+	// MessageUUID is the transcript record the usage was read from (empty
+	// from hooks of older binaries).
+	MessageUUID string `json:"message_uuid,omitempty"`
+}
+
+// HookCostEventID is the cost_events id of a Stop hook's usage. With the
+// transcript record's uuid it is "<instance>_<uuid>", the id the recall
+// importer gives the same record (UsageImporter), so a turn seen by both is
+// stored once. Without one it falls back to "<instance>_<unix nanos>".
+func HookCostEventID(instanceID, messageUUID string, ts int64) string {
+	if messageUUID != "" {
+		return fmt.Sprintf("%s_%s", instanceID, messageUUID)
+	}
+	return fmt.Sprintf("%s_%d", instanceID, ts)
 }
 
 // CostEventWatcher watches a directory for new cost event JSON files.

@@ -105,6 +105,11 @@ func TestConfigSetMacappPluginsNeedsConsent(t *testing.T) {
 			t.Fatalf("set %s: exit %d %s %s", yes, code, stdout, stderr)
 		}
 	}
+	// Already on: setting it on again asks for nothing, even without a
+	// terminal or --yes.
+	if stdout, stderr, code := runAgentDeck(t, home, "config", "set", "macapp.plugins", "true", "--json"); code != 0 || !strings.Contains(stdout, `"value": true`) {
+		t.Fatalf("set true while already on: exit %d %s %s, want 0 with no consent asked", code, stdout, stderr)
+	}
 	// With consent given, limits runs.
 	if stdout, stderr, code := runAgentDeck(t, home, "limits", "--json"); code != 0 {
 		t.Fatalf("limits after consent: exit %d %s %s", code, stdout, stderr)
@@ -131,14 +136,23 @@ func TestConfigSetMacappPluginsNeedsConsent(t *testing.T) {
 // shows the consent text and asks; only y or yes turns plugins on.
 func TestConfigSetMacappPluginsInteractiveConsent(t *testing.T) {
 	home := t.TempDir()
+	// stdin and stdout are the terminal; stderr is kept apart so the test
+	// can tell which stream a line went to.
+	var stderr bytes.Buffer
 	run := func(answer string) (string, int) {
 		t.Helper()
+		stderr.Reset()
 		cmd := exec.Command(channelsCLIBinary(t), "config", "set", "macapp.plugins", "true")
 		cmd.Env = agentDeckTestEnv(home, nil)
-		terminal, err := pty.Start(cmd)
+		terminal, tty, err := pty.Open()
 		if err != nil {
 			t.Fatal(err)
 		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, &stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		_ = tty.Close()
 		defer func() { _ = terminal.Close() }()
 		var out bytes.Buffer
 		buf := make([]byte, 4096)
@@ -173,9 +187,11 @@ func TestConfigSetMacappPluginsInteractiveConsent(t *testing.T) {
 		}
 		return out.String(), code
 	}
+	// A decline is "not consented" like a missing --yes: exit 2, and the
+	// notice goes to stderr.
 	out, code := run("n")
-	if code != 1 || !strings.Contains(out, "Mac app acts on") || !strings.Contains(out, "Not changed.") {
-		t.Fatalf("answer n: exit %d %q", code, out)
+	if code != 2 || !strings.Contains(out, "Mac app acts on") || strings.Contains(out, "Not changed.") || !strings.Contains(stderr.String(), "Not changed.") {
+		t.Fatalf("answer n: exit %d, terminal %q, stderr %q; want exit 2 and Not changed. on stderr", code, out, stderr.String())
 	}
 	if stdout, _, _ := runAgentDeck(t, home, "config", "get", "macapp.plugins"); strings.TrimSpace(stdout) != "false" {
 		t.Fatalf("declined consent changed the value: %q", stdout)

@@ -98,6 +98,7 @@ func costBudgetConfig(cfg *session.UserConfig) (costs.BudgetConfig, error) {
 		return result, nil
 	}
 	settings := cfg.Costs.Budgets
+	result.Enforce = settings.Enforce
 	result.DailyLimit = int64(math.Round(settings.DailyLimit * 1_000_000))
 	result.WeeklyLimit = int64(math.Round(settings.WeeklyLimit * 1_000_000))
 	result.MonthlyLimit = int64(math.Round(settings.MonthlyLimit * 1_000_000))

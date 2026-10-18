@@ -366,41 +366,52 @@ func GetEffectiveProfile(explicit string) string {
 // merely inferred from CLAUDE_CONFIG_DIR (must not be silently materialised
 // if it doesn't already exist — #1790).
 func getEffectiveProfileWithSource(explicit string) (string, string) {
+	profile, source, _ := effectiveProfileWithSource(explicit)
+	return profile, source
+}
+
+// effectiveProfileWithSource is getEffectiveProfileWithSource plus the error
+// it fell back over when config.json could not be read or parsed.
+func effectiveProfileWithSource(explicit string) (string, string, error) {
 	if explicit != "" {
-		return explicit, ProfileSourceExplicit
+		return explicit, ProfileSourceExplicit, nil
 	}
 
 	if envProfile := os.Getenv("AGENTDECK_PROFILE"); envProfile != "" {
-		return envProfile, ProfileSourceEnv
+		return envProfile, ProfileSourceEnv, nil
 	}
 
 	if inferred := profileFromClaudeConfigDir(os.Getenv("CLAUDE_CONFIG_DIR")); inferred != "" {
-		return inferred, ProfileSourceInferred
+		return inferred, ProfileSourceInferred, nil
 	}
 
 	config, err := LoadConfig()
 	if err != nil {
-		return DefaultProfile, ProfileSourceFallback
+		return DefaultProfile, ProfileSourceFallback, err
 	}
 
 	if config.DefaultProfile != "" {
-		return config.DefaultProfile, ProfileSourceConfigDefault
+		return config.DefaultProfile, ProfileSourceConfigDefault, nil
 	}
 
-	return DefaultProfile, ProfileSourceFallback
+	return DefaultProfile, ProfileSourceFallback, nil
 }
 
 // configuredDefaultProfile returns config.json's default_profile, or
-// DefaultProfile ("default") when unset or unreadable. This mirrors the
-// tail of getEffectiveProfileWithSource (priority 4-5) and is the safe
-// landing spot ResolveProfileForStorage falls back to instead of an
-// unrecognized CLAUDE_CONFIG_DIR-inferred name (#1790).
-func configuredDefaultProfile() string {
+// DefaultProfile ("default") when unset or unreadable, with the read error
+// in the unreadable case. This mirrors the tail of
+// getEffectiveProfileWithSource (priority 4-5) and is the safe landing spot
+// ResolveProfileForStorage falls back to instead of an unrecognized
+// CLAUDE_CONFIG_DIR-inferred name (#1790).
+func configuredDefaultProfile() (string, error) {
 	config, err := LoadConfig()
-	if err != nil || config.DefaultProfile == "" {
-		return DefaultProfile
+	if err != nil {
+		return DefaultProfile, err
 	}
-	return config.DefaultProfile
+	if config.DefaultProfile == "" {
+		return DefaultProfile, nil
+	}
+	return config.DefaultProfile, nil
 }
 
 // ResolveProfileForStorage is GetEffectiveProfile plus the #1790 safety
@@ -437,7 +448,24 @@ func configuredDefaultProfile() string {
 // (permission, transient filesystem); it never fails open on such an error
 // (fail open would silently restore the pre-#1790 auto-create hole).
 func ResolveProfileForStorage(explicit string) (string, error) {
-	effectiveProfile, source := getEffectiveProfileWithSource(explicit)
+	return resolveProfileForStorage(explicit, false)
+}
+
+// ResolveProfileForStorageQuiet is ResolveProfileForStorage for a
+// long-running process that checks again whether the profile it resolved at
+// startup is still the one it would pick. It prints no #1790 warning, and a
+// config.json that cannot be read or parsed is an error here rather than a
+// fallback to the default profile: SaveConfig rewrites the file in place, so
+// a poll can catch it empty or half-written.
+func ResolveProfileForStorageQuiet(explicit string) (string, error) {
+	return resolveProfileForStorage(explicit, true)
+}
+
+func resolveProfileForStorage(explicit string, quiet bool) (string, error) {
+	effectiveProfile, source, configErr := effectiveProfileWithSource(explicit)
+	if quiet && configErr != nil {
+		return "", configErr
+	}
 	if source != ProfileSourceInferred {
 		return effectiveProfile, nil
 	}
@@ -450,7 +478,13 @@ func ResolveProfileForStorage(explicit string) (string, error) {
 		return effectiveProfile, nil
 	}
 
-	fallback := configuredDefaultProfile()
+	fallback, configErr := configuredDefaultProfile()
+	if quiet {
+		if configErr != nil {
+			return "", configErr
+		}
+		return fallback, nil
+	}
 	known, listErr := ListProfiles()
 	knownDesc := "none yet"
 	if listErr == nil && len(known) > 0 {

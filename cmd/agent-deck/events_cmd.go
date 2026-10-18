@@ -259,7 +259,8 @@ func handleEventsPublish(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "Usage: agent-deck events publish --kind macapp.<name> [--session <id>] [--data <json> | --data-file <path|->] [--profile <name>] [--json]")
 		fmt.Fprintln(fs.Output(), "Needs [macapp] plugins = true, except the Mac app's own frames: macapp.open,")
-		fmt.Fprintln(fs.Output(), "macapp.open.ack, macapp.browser.response and macapp.app.focus.")
+		fmt.Fprintln(fs.Output(), "macapp.open.ack, macapp.browser.response and macapp.app.focus;")
+		fmt.Fprintln(fs.Output(), "to enable it, run: agent-deck config set macapp.plugins true --yes (docs/macapp-core.md).")
 		fs.PrintDefaults()
 	}
 	routeFlagHelp(fs, args)

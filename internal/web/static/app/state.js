@@ -185,6 +185,11 @@ export const modelCatalogSignal = signal({})
 // arrives.
 export const trustedDomainsSignal = signal([])
 export const confirmLinkOpenSignal = signal(true)
+// `[web].file_link_roots` (issue #2676): file:// links under these open through
+// GET /api/files. Empty (the default) keeps the copy-path fallback.
+export const fileLinkRootsSignal = signal([])
+// The deck machine's hostname, so file://<that host>/path counts as local.
+export const fileLinkHostSignal = signal('')
 
 // POL-1 (Phase 9, plan 01): sidebar load state for skeleton render gate.
 // Initialized false; flipped to true on the first /api/menu response OR the

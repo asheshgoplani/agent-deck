@@ -274,7 +274,7 @@ func TestIssue2549_QueueFailsFastOnPersistentUnavailableIdentity(t *testing.T) {
 
 	const fastLimit = 10
 	for attempt := 1; attempt <= fastLimit && rec.State == sendqueue.StateQueued; attempt++ {
-		if !typeQueued("", dir, rec, "waiting", "", 0, set) {
+		if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, "waiting", "", 0, set) {
 			t.Fatal("typeQueued reported a failed write")
 		}
 		if attempt == 1 && rec.State != sendqueue.StateQueued {
@@ -296,7 +296,7 @@ func TestIssue2549_QueueKeepsRetryingContestedRefusal(t *testing.T) {
 	dir, rec, set := newIssue2549QueuedRecord(t)
 	stubIssue2549Child(t, `{"success":false,"delivery":"acceptance_refused","code":"INVALID_OPERATION","error":"cannot establish exact Codex turn acceptance: lock held"}`)
 	for attempt := 1; attempt <= 12; attempt++ {
-		if !typeQueued("", dir, rec, "waiting", "", 0, set) {
+		if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, "waiting", "", 0, set) {
 			t.Fatal("typeQueued reported a failed write")
 		}
 		if rec.State != sendqueue.StateQueued {
@@ -316,7 +316,7 @@ func TestIssue2549_QueueUnavailableStreakResets(t *testing.T) {
 			result = contested
 		}
 		stubIssue2549Child(t, result)
-		if !typeQueued("", dir, rec, "waiting", "", 0, set) {
+		if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, "waiting", "", 0, set) {
 			t.Fatal("typeQueued reported a failed write")
 		}
 		if rec.State != sendqueue.StateQueued {
