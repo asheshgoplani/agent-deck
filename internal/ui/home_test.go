@@ -1892,12 +1892,20 @@ func TestRenderRemotePreviewTruncatesCachedResponseLines(t *testing.T) {
 	}
 	home.previewCache[remotePreviewCacheKey("myserver", "remote-123")] = strings.Join(lines, "\n")
 
+	// The cache keeps the last remotePreviewMaxLines lines; the preview shows the newest of them that fit its
+	// rows, marked as cut, never a line from outside the retained tail.
+	if kept := truncateRemotePreviewContent(home.previewCache[remotePreviewCacheKey("myserver", "remote-123")]); strings.Contains(kept, "line-049") || !strings.Contains(kept, "line-050") {
+		t.Fatalf("the retained tail is the last 200 lines")
+	}
 	rendered := home.renderRemotePreview(item, 80, 20)
 	if strings.Contains(rendered, "line-049") {
 		t.Fatalf("rendered preview should drop lines outside the retained tail, got: %q", rendered)
 	}
-	if !strings.Contains(rendered, "line-050") || !strings.Contains(rendered, "line-249") {
-		t.Fatalf("rendered preview should retain the last 200 lines, got: %q", rendered)
+	if !strings.Contains(rendered, "line-249") || !strings.Contains(rendered, "more lines above") {
+		t.Fatalf("rendered preview should end on the newest line, marked as cut, got: %q", rendered)
+	}
+	if n := strings.Count(rendered, "\n") + 1; n > 20 {
+		t.Fatalf("rendered preview is %d rows for 20", n)
 	}
 }
 
@@ -1919,12 +1927,18 @@ func TestRenderRemotePreviewTruncatesCachedResponseBytes(t *testing.T) {
 	content := prefix + strings.Repeat("x", 20*1024) + tail
 	home.previewCache[remotePreviewCacheKey("myserver", "remote-123")] = content
 
+	// The byte cap keeps the most recent bytes in the cache; a line wider than the pane is then cut at the right,
+	// as the local preview cuts it.
+	kept := truncateRemotePreviewContent(content)
+	if strings.Contains(kept, prefix) || !strings.Contains(kept, tail) {
+		t.Fatalf("the byte cap keeps the most recent content")
+	}
 	rendered := home.renderRemotePreview(item, 80, 20)
 	if strings.Contains(rendered, prefix) {
 		t.Fatalf("rendered preview should drop content beyond the byte cap, got: %q", rendered)
 	}
-	if !strings.Contains(rendered, tail) {
-		t.Fatalf("rendered preview should keep the most recent content, got: %q", rendered)
+	if !strings.Contains(rendered, "xxx...") {
+		t.Fatalf("a line wider than the pane is cut with an ellipsis, got: %q", rendered)
 	}
 }
 

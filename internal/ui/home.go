@@ -23004,16 +23004,24 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(strings.Repeat("-", max(1, min(width-4, 40))))
 	b.WriteString("\n")
 	previewContent = truncateRemotePreviewContent(previewContent)
-	if hasPreview && strings.TrimSpace(previewContent) != "" {
-		b.WriteString(previewContent)
+	// The pane's tail fits the rows left above the blank line and the attach
+	// hint: ensureExactHeight keeps the first rows of this block, so a longer
+	// body lost exactly the pane's bottom (the status line and footer).
+	rows := height - strings.Count(b.String(), "\n") - 2
+	fitted := fitRemotePreviewTail(previewContent, rows, width)
+	switch {
+	case hasPreview && len(fitted) > 0:
+		b.WriteString(strings.Join(fitted, "\n"))
 		b.WriteString("\n\n")
-	} else if hasFetched {
+	case hasPreview && strings.TrimSpace(previewContent) != "":
+		// No row left for the body: the header and the hint keep their places.
+	case hasFetched:
 		b.WriteString(dimStyle.Render("No response available yet."))
 		b.WriteString("\n\n")
-	} else if rs.Status == "running" || rs.Status == "waiting" {
+	case rs.Status == "running" || rs.Status == "waiting":
 		b.WriteString(dimStyle.Render("Fetching remote preview..."))
 		b.WriteString("\n\n")
-	} else {
+	default:
 		b.WriteString(dimStyle.Render("No response available yet."))
 		b.WriteString("\n\n")
 	}
