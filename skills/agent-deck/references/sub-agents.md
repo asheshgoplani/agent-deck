@@ -34,13 +34,13 @@ This section covers **one** child (launch + one of the three retrieval modes). F
 
 ### Worker Prompt Conventions
 
-Every worker prompt carries this line (fan-out by default):
+A Claude worker reads this line by default (fan-out by default):
 
 ```
 Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered.
 ```
 
-You rarely need to type it: `launch-subagent.sh` appends it to the prompt (`--no-fanout-hint` skips it), and the identity block agent-deck injects into every launched session carries it (`[launch] fanout_hint = true`, the default; `fanout_hint = false` or `--no-identity` leaves it out). Add it yourself when you launch with `--no-identity` or hand a prompt to a harness that gets no identity block.
+You rarely need to type it: the identity block agent-deck injects into a Claude-family session (claude, or a custom tool wrapping it) carries it, at the `primer` and `full` levels (`[launch] fanout_hint = true`, the default; `fanout_hint = false` leaves it out). Other tools (codex, gemini, pi, omp, ...) never get it: "dynamic Workflow" is a Claude Code tool, and they could read "fan-out agents" as "launch a child per step". `launch-subagent.sh` appends the line to the prompt only for a `claude` child that gets no identity block (global `[launch] context_level` resolves to `none`), never with `fanout_hint = false` or `--no-fanout-hint`, and never twice. Add it yourself for a Claude worker you launch with `--no-identity`, or in a group whose `context_level` is `none` (the script reads only the global level).
 
 When the prompt asks the worker to `Edit` or `Write` any **existing** file, include an explicit **prelude-read** as the first step. Claude Code's tool guard rejects `Edit`/`Write` before `Read` of the same path, and conductor-spawned workers hit this mid-task (#968) when their prompt jumps straight into the change. The interruption forces the worker to backfill reads inside its main loop, breaking flow and burning cycles.
 

@@ -30,9 +30,9 @@ func TestFanoutHint_DocsAndScriptCarryTheLine(t *testing.T) {
 	}
 }
 
-// runLaunchSubagent runs the real script against stub agent-deck and jq
+// runLaunchSubagentEnv runs the real script (with extra env for the stubs) against stub agent-deck and jq
 // binaries and returns the -m prompt the stub received.
-func runLaunchSubagent(t *testing.T, args ...string) string {
+func runLaunchSubagentEnv(t *testing.T, env []string, args ...string) string {
 	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
@@ -52,6 +52,8 @@ func runLaunchSubagent(t *testing.T, args ...string) string {
 		// Records the value after -m on launch; everything else is a no-op.
 		"agent-deck": `#!/bin/bash
 if [ "$1 $2" = "session current" ]; then echo '{}'; exit 0; fi
+if [ "$1 $2 $3" = "config get launch.fanout_hint" ]; then echo "${STUB_FANOUT_HINT:-true}"; exit 0; fi
+if [ "$1 $2 $3" = "config get launch.context_level" ]; then echo "${STUB_CONTEXT_LEVEL:-full}"; exit 0; fi
 while [ $# -gt 0 ]; do
   if [ "$1" = "-m" ]; then printf '%s' "$2" > "$STUB_PROMPT_FILE"; fi
   shift
@@ -79,6 +81,7 @@ esac
 		"STUB_PROMPT_FILE="+promptFile,
 		"STUB_WORK_DIR="+work,
 	)
+	cmd.Env = append(cmd.Env, env...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("launch-subagent.sh %v: %v\n%s", args, err, out)
 	}
@@ -89,22 +92,42 @@ esac
 	return string(got)
 }
 
-func TestLaunchSubagentScript_AppendsFanoutHint(t *testing.T) {
+// launch-subagent.sh appends the line only where the identity block will
+// not carry it: a claude child with no identity block (global level none),
+// with [launch] fanout_hint not false and no --no-fanout-hint.
+func TestLaunchSubagentScript_AppendsFanoutHintOnlyWithoutIdentityBlock(t *testing.T) {
 	t.Parallel()
-	got := runLaunchSubagent(t, "Worker", "Do the task.")
-	want := "Do the task.\n\n" + session.FanoutHint
-	if got != want {
-		t.Errorf("prompt = %q, want %q", got, want)
+	with := "Do the task.\n\n" + session.FanoutHint
+	for _, tc := range []struct {
+		name string
+		env  []string
+		args []string
+		want string
+	}{
+		{"identity block carries it", nil, nil, "Do the task."},
+		{"primer carries it too", []string{"STUB_CONTEXT_LEVEL=primer"}, nil, "Do the task."},
+		{"no identity block", []string{"STUB_CONTEXT_LEVEL=none"}, nil, with},
+		{"no identity block, explicit claude", []string{"STUB_CONTEXT_LEVEL=none"}, []string{"--tool", "claude"}, with},
+		{"fanout_hint=false", []string{"STUB_CONTEXT_LEVEL=none", "STUB_FANOUT_HINT=false"}, nil, "Do the task."},
+		{"--no-fanout-hint", []string{"STUB_CONTEXT_LEVEL=none"}, []string{"--no-fanout-hint"}, "Do the task."},
+		{"codex", []string{"STUB_CONTEXT_LEVEL=none"}, []string{"--tool", "codex"}, "Do the task."},
+		{"gemini", []string{"STUB_CONTEXT_LEVEL=none"}, []string{"--tool", "gemini"}, "Do the task."},
+		{"pi", []string{"STUB_CONTEXT_LEVEL=none"}, []string{"--tool", "pi"}, "Do the task."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := runLaunchSubagentEnv(t, tc.env, append([]string{"Worker", "Do the task."}, tc.args...)...)
+			if got != tc.want {
+				t.Errorf("prompt = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
-func TestLaunchSubagentScript_FanoutHintOptOutAndNoDuplicate(t *testing.T) {
+func TestLaunchSubagentScript_FanoutHintNoDuplicate(t *testing.T) {
 	t.Parallel()
-	if got := runLaunchSubagent(t, "Worker", "Do the task.", "--no-fanout-hint"); got != "Do the task." {
-		t.Errorf("--no-fanout-hint prompt = %q, want the prompt unchanged", got)
-	}
 	already := "Do it.\n" + session.FanoutHint
-	if got := runLaunchSubagent(t, "Worker", already); got != already {
+	if got := runLaunchSubagentEnv(t, []string{"STUB_CONTEXT_LEVEL=none"}, "Worker", already); got != already {
 		t.Errorf("prompt already carrying the line was changed: %q", got)
 	}
 }

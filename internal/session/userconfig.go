@@ -1893,7 +1893,8 @@ type LaunchSettings struct {
 	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
 
 	// FanoutHint adds the FanoutHint constant line to the injected identity
-	// block at the primer and full context levels. nil => true.
+	// block of Claude-family sessions at the primer and full context levels.
+	// nil => true.
 	// It rides on identity injection: --no-identity, inject_identity=false
 	// or context_level "none" leave no block to carry it.
 	FanoutHint *bool `toml:"fanout_hint,omitempty"`

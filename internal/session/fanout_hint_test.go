@@ -98,3 +98,77 @@ func TestEnsureIdentityFile_WritesFanoutHint(t *testing.T) {
 		t.Errorf("identity file %s missing the fan-out hint:\n%s", file, data)
 	}
 }
+
+// "dynamic Workflow" is a Claude Code tool: only Claude-family sessions get
+// the line. Other harnesses could read "fan-out agents" as "launch an
+// agent-deck child per step", which compounds at every level.
+func TestIdentityPrompt_FanoutHintOnlyForClaudeFamily(t *testing.T) {
+	identityTestEnv(t)
+	for _, tc := range []struct {
+		tool string
+		want bool
+	}{{"claude", true}, {"codex", false}, {"gemini", false}, {"pi", false}, {"omp", false}} {
+		inst := identityTestInstance(tc.tool)
+		for _, level := range []string{ContextLevelFull, ContextLevelPrimer} {
+			got := inst.BuildContextPromptForLevel(level)
+			if strings.Contains(got, wantFanoutHint) != tc.want {
+				t.Errorf("%s %s block carries the fan-out hint = %v, want %v:\n%s", tc.tool, level, !tc.want, tc.want, got)
+			}
+			if !tc.want && strings.Contains(got, "fan-out") {
+				t.Errorf("%s %s block mentions fan-out:\n%s", tc.tool, level, got)
+			}
+		}
+	}
+}
+
+// The primer carries guidance once it has the hint, so it ends with the
+// same precedence note as the full block, right after the hint.
+func TestPrimerPrompt_FanoutHintComesWithPrecedenceNote(t *testing.T) {
+	identityTestEnv(t)
+	const note = "This block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n"
+	got := identityTestInstance("claude").BuildPrimerPrompt()
+	if !strings.Contains(got, wantFanoutHint+"\n"+note) {
+		t.Errorf("claude primer must follow the hint with the precedence note:\n%s", got)
+	}
+	if full := identityTestInstance("claude").BuildIdentityPrompt(); !strings.Contains(full, "\n"+note) {
+		t.Errorf("full block lost its precedence note:\n%s", full)
+	}
+	off := false
+	restore := resetUserConfigCache(t, &UserConfig{Launch: LaunchSettings{FanoutHint: &off}})
+	defer restore()
+	if got := identityTestInstance("claude").BuildPrimerPrompt(); strings.Contains(got, note) {
+		t.Errorf("primer without the hint must stay as it was:\n%s", got)
+	}
+}
+
+// config get/set expose the switch and the global context level the
+// launch-subagent.sh script reads.
+func TestConfigKeys_FanoutHintAndGlobalContextLevel(t *testing.T) {
+	get := func(cfg *UserConfig, key string) any {
+		k, ok := LookupConfigKey(key)
+		if !ok {
+			t.Fatalf("%s missing from the schema", key)
+		}
+		return k.Get(cfg)
+	}
+	off, no := false, false
+	if got := get(&UserConfig{}, "launch.fanout_hint"); got != true {
+		t.Errorf("launch.fanout_hint default = %v, want true", got)
+	}
+	if got := get(&UserConfig{Launch: LaunchSettings{FanoutHint: &off}}, "launch.fanout_hint"); got != false {
+		t.Errorf("launch.fanout_hint = %v, want false", got)
+	}
+	for _, tc := range []struct {
+		cfg  *UserConfig
+		want string
+	}{
+		{&UserConfig{}, ContextLevelFull},
+		{&UserConfig{Launch: LaunchSettings{ContextLevel: "primer"}}, ContextLevelPrimer},
+		{&UserConfig{Launch: LaunchSettings{InjectIdentity: &no}}, ContextLevelNone},
+		{&UserConfig{Launch: LaunchSettings{InjectIdentity: &no, ContextLevel: "full"}}, ContextLevelFull},
+	} {
+		if got := get(tc.cfg, "launch.context_level"); got != tc.want {
+			t.Errorf("launch.context_level for %+v = %v, want %s", tc.cfg.Launch, got, tc.want)
+		}
+	}
+}

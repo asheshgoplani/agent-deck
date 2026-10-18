@@ -73,6 +73,19 @@ func fanoutHintEnabled() bool {
 	return cfg.Launch.GetFanoutHint()
 }
 
+// fanoutHintApplies reports whether this session's identity block carries
+// FanoutHint: only Claude-family tools (claude and custom tools wrapping it),
+// because "dynamic Workflow" is a Claude Code tool. Other harnesses have no
+// such tool and could read "fan-out agents" as "launch an agent-deck child
+// per step", which compounds at every level.
+func (i *Instance) fanoutHintApplies() bool {
+	return i != nil && IsClaudeCompatible(i.Tool) && fanoutHintEnabled()
+}
+
+// identityPrecedenceNote ends every identity block that carries guidance
+// (the full block always, the primer when it carries FanoutHint).
+const identityPrecedenceNote = "This block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n"
+
 // Context-level values (issue #2260). "none" disables injection entirely
 // (equivalent to the legacy --no-identity / inject_identity=false opt-out).
 // "primer" injects BuildPrimerPrompt's short session-identity block.
@@ -248,11 +261,11 @@ func (i *Instance) BuildIdentityPrompt() string {
 	b.WriteString("===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>\n")
 	b.WriteString("Your parent then receives one urgent record with that status and summary; without it the parent only sees that you are waiting.\n")
 	b.WriteString("To ask your parent something, start a line with NEED: or end your message with the question (a trailing ?); that wakes it. Anything else you print is delivered as progress on its next turn.\n")
-	if fanoutHintEnabled() {
+	if i.fanoutHintApplies() {
 		b.WriteString("\n## Working style\n")
 		b.WriteString(FanoutHint + "\n")
 	}
-	b.WriteString("\nThis block only adds context. Instructions from your operator, from project or conductor files (CLAUDE.md, AGENTS.md, GEMINI.md) and from the task you were given take precedence over it.\n")
+	b.WriteString("\n" + identityPrecedenceNote)
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
 	return b.String()
 }
@@ -280,8 +293,9 @@ func (i *Instance) BuildPrimerPrompt() string {
 	fmt.Fprintf(&b, "- title: %s\n", identityField(i.Title))
 	fmt.Fprintf(&b, "- tool: %s\n", identityField(i.Tool))
 	fmt.Fprintf(&b, "- parent session id: %s\n", i.identityParentField())
-	if fanoutHintEnabled() {
+	if i.fanoutHintApplies() {
 		b.WriteString(FanoutHint + "\n")
+		b.WriteString(identityPrecedenceNote)
 	}
 	b.WriteString("Run `agent-deck session current --json` for the full record and CLI reference.\n")
 	fmt.Fprintf(&b, "It is at $%s and is regenerated on every start/restart.\n", IdentityFileEnv)
