@@ -109,21 +109,21 @@ func TestFileReadIsOffWithoutRoots(t *testing.T) {
 
 func TestFileRoots(t *testing.T) {
 	var out, diag bytes.Buffer
-	if err := runFileRoots(nil, []string{"--json"}, &out, &diag); err != nil {
+	if err := runFileRoots(nil, nil, []string{"--json"}, &out, &diag); err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(out.String()) != `{"enabled":false,"roots":[]}` {
+	if strings.TrimSpace(out.String()) != `{"enabled":false,"roots":[],"refused":[]}` {
 		t.Fatalf("off: %q", out.String())
 	}
 	out.Reset()
-	if err := runFileRoots([]string{"/srv/a", "/srv/b"}, []string{"--json"}, &out, &diag); err != nil {
+	if err := runFileRoots([]string{"/srv/a", "/srv/b"}, nil, []string{"--json"}, &out, &diag); err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(out.String()) != `{"enabled":true,"roots":["/srv/a","/srv/b"]}` {
+	if strings.TrimSpace(out.String()) != `{"enabled":true,"roots":["/srv/a","/srv/b"],"refused":[]}` {
 		t.Fatalf("on: %q", out.String())
 	}
 	out.Reset()
-	if err := runFileRoots(nil, nil, &out, &diag); err != nil || !strings.Contains(out.String(), "file_link_roots") {
+	if err := runFileRoots(nil, nil, nil, &out, &diag); err != nil || !strings.Contains(out.String(), "file_link_roots") {
 		t.Fatalf("human off: %v %q", err, out.String())
 	}
 }
@@ -171,12 +171,16 @@ func TestFileReadCLIUsesConfiguredRoots(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg, []byte("[web]\nfile_link_roots = ['"+root+"']\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfg, []byte("[web]\nfile_link_roots = ['"+root+"', '/', '$FILELINKS_TEST_UNSET/x']\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stdout, stderr, code := runAgentDeck(t, home, "file", "roots", "--json")
 	if code != 0 || !strings.Contains(stdout, `"enabled":true`) || !strings.Contains(stdout, root) {
 		t.Fatalf("file roots: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var roots fileRootsJSON
+	if err := json.Unmarshal([]byte(stdout), &roots); err != nil || len(roots.Roots) != 1 || len(roots.Refused) != 2 {
+		t.Fatalf("file roots must keep only the real root and report / and the unset $VAR: %q", stdout)
 	}
 	stdout, stderr, code = runAgentDeck(t, home, "file", "read", filepath.Join(root, "notes.txt"))
 	if code != 0 || stdout != "hello\n" {

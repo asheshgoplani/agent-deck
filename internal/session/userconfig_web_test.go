@@ -192,3 +192,14 @@ func TestWebFileLinkRoots_ExpandsHomeAndDropsRelative(t *testing.T) {
 		t.Fatalf("GetWebFileLinkRoots() = %v, want %v", got, want)
 	}
 }
+
+func TestWebFileLinkRoots_RefusesWideningEntries(t *testing.T) {
+	withTempHomeAndConfig(t, "[web]\nfile_link_roots = [\"/\", \"~\", \"$AGENTDECK_TEST_UNSET_ROOT/\", \"/srv/reports\"]\n")
+	roots, refused := GetWebFileLinkRootsChecked()
+	if len(roots) != 1 || roots[0] != "/srv/reports" {
+		t.Fatalf("roots = %v, want only /srv/reports", roots)
+	}
+	if len(refused) != 3 {
+		t.Fatalf("refused = %+v, want /, ~ and the unset $VAR", refused)
+	}
+}

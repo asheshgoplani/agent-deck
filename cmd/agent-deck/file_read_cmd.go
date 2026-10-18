@@ -36,8 +36,9 @@ type fileReadJSON struct {
 }
 
 type fileRootsJSON struct {
-	Enabled bool     `json:"enabled"`
-	Roots   []string `json:"roots"`
+	Enabled bool                `json:"enabled"`
+	Roots   []string            `json:"roots"`
+	Refused []filelinks.Refused `json:"refused"`
 }
 
 // fileErrorJSON keeps a refusal machine-readable under --json.
@@ -111,10 +112,10 @@ func runFileRead(roots []string, args []string, out, diagnostics io.Writer) erro
 	return json.NewEncoder(out).Encode(resp)
 }
 
-func runFileRoots(roots []string, args []string, out, diagnostics io.Writer) error {
+func runFileRoots(roots []string, refused []filelinks.Refused, args []string, out, diagnostics io.Writer) error {
 	flags := flag.NewFlagSet("file roots", flag.ContinueOnError)
 	flags.SetOutput(helpOutput(args, out, diagnostics))
-	jsonOut := flags.Bool("json", false, "print {enabled, roots}")
+	jsonOut := flags.Bool("json", false, "print {enabled, roots, refused}")
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), fileRootsUsage)
 		fmt.Fprintln(flags.Output(), "Lists the [web] file_link_roots directories file links may read.")
@@ -132,8 +133,14 @@ func runFileRoots(roots []string, args []string, out, diagnostics io.Writer) err
 	if roots == nil {
 		roots = []string{}
 	}
+	if refused == nil {
+		refused = []filelinks.Refused{}
+	}
 	if *jsonOut {
-		return json.NewEncoder(out).Encode(fileRootsJSON{Enabled: len(roots) > 0, Roots: roots})
+		return json.NewEncoder(out).Encode(fileRootsJSON{Enabled: len(roots) > 0, Roots: roots, Refused: refused})
+	}
+	for _, r := range refused {
+		fmt.Fprintf(diagnostics, "Warning: [web] file_link_roots entry %q ignored: %s\n", r.Entry, r.Reason)
 	}
 	if len(roots) == 0 {
 		_, err := fmt.Fprintln(out, "File links are off: set [web] file_link_roots in config.toml. Clicking a file link copies its path.")
@@ -154,7 +161,8 @@ func runFileCommand(profile string, args []string, out, diagnostics io.Writer) e
 		case "read":
 			return runFileRead(session.GetWebFileLinkRoots(), args[1:], out, diagnostics)
 		case "roots":
-			return runFileRoots(session.GetWebFileLinkRoots(), args[1:], out, diagnostics)
+			roots, refused := session.GetWebFileLinkRootsChecked()
+			return runFileRoots(roots, refused, args[1:], out, diagnostics)
 		}
 	}
 	if len(args) == 1 && (helpRequested(args) || args[0] == "help") {

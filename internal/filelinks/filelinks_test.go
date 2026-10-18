@@ -218,3 +218,87 @@ func TestOpenUnderRefusesASwappedInEscape(t *testing.T) {
 		}
 	}
 }
+
+// Lane review: a root that widens to / or to the home directory would expose
+// every readable file (~/.ssh, the deck's own config and token). Refused, with
+// the reason, whatever the entry looked like before expansion.
+func TestCheckRootsRefusesWideningRoots(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	t.Setenv("FILELINKS_SET", "/srv/reports")
+	t.Setenv("FILELINKS_EMPTY", "")
+	expand := func(p string) string {
+		p = os.ExpandEnv(p)
+		if p == "~" || strings.HasPrefix(p, "~/") {
+			return home + p[1:]
+		}
+		return p
+	}
+	roots, refused := CheckRoots([]string{
+		"/", "//", "$FILELINKS_UNSET/", "${FILELINKS_UNSET}/reports", "$FILELINKS_EMPTY/x",
+		"~", home, home + "/", "$FILELINKS_SET", "~/projects",
+	}, expand)
+	want := []string{"/srv/reports", filepath.Join(home, "projects")}
+	if strings.Join(roots, ",") != strings.Join(want, ",") {
+		t.Fatalf("roots = %v, want %v", roots, want)
+	}
+	if len(refused) != 8 {
+		t.Fatalf("refused = %+v, want 8 entries", refused)
+	}
+	for _, r := range refused {
+		if r.Entry == "" || r.Reason == "" {
+			t.Errorf("refusal without entry or reason: %+v", r)
+		}
+	}
+	if !strings.Contains(refused[2].Reason, "FILELINKS_UNSET") {
+		t.Errorf("an unset variable should be named in the reason, got %q", refused[2].Reason)
+	}
+}
+
+// Defense in depth: a root that only resolves to / (a symlink) is skipped at
+// open time too.
+func TestOpenSkipsARootResolvingToSlash(t *testing.T) {
+	tmp := t.TempDir()
+	link := filepath.Join(tmp, "slash")
+	if err := os.Symlink("/", link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open([]string{link}, "/etc/hosts"); !errors.Is(err, ErrOutside) {
+		t.Fatalf("Open via a root resolving to / = %v, want ErrOutside", err)
+	}
+}
+
+// Lane review: a missing file behind a symlinked directory that leads outside
+// must read as "outside", the same as an existing one, or the 404/403 split
+// tells which outside paths exist.
+func TestOpenGivesNoExistenceOracleBehindASymlinkedDir(t *testing.T) {
+	tmp, root := layout(t)
+	outside := filepath.Join(tmp, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "there.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for link, target := range map[string]string{"dirlink": outside, "dangling-dir": filepath.Join(tmp, "nowhere")} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{
+		filepath.Join(root, "dirlink", "there.txt"),
+		filepath.Join(root, "dirlink", "missing.txt"),
+		filepath.Join(root, "dirlink", "missing", "deeper.txt"),
+		filepath.Join(root, "dangling-dir", "x.txt"),
+	} {
+		if _, err := Open([]string{root}, p); !errors.Is(err, ErrOutside) {
+			t.Errorf("Open(%q) = %v, want ErrOutside", p, err)
+		}
+	}
+	// A missing file genuinely inside the root is still "not found".
+	if _, err := Open([]string{root}, filepath.Join(root, "sub", "missing", "x.txt")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing inside = %v, want ErrNotFound", err)
+	}
+}

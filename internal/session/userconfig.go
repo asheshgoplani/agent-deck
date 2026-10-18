@@ -4825,11 +4825,18 @@ func GetWebTrustedDomains() []string {
 // GetWebFileLinkRoots returns the expanded, absolute `[web].file_link_roots`
 // directories (issue #2676). nil means file links are off.
 func GetWebFileLinkRoots() []string {
+	roots, _ := GetWebFileLinkRootsChecked()
+	return roots
+}
+
+// GetWebFileLinkRootsChecked is GetWebFileLinkRoots plus the entries it
+// refused and why (an unset $VAR, `/`, the home directory, a relative path).
+func GetWebFileLinkRootsChecked() ([]string, []filelinks.Refused) {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
-		return nil
+		return nil, nil
 	}
-	return filelinks.NormalizeRoots(config.Web.FileLinkRoots, ExpandPath)
+	return filelinks.CheckRoots(config.Web.FileLinkRoots, ExpandPath)
 }
 
 // GetWebAllowedHosts returns the configured Host allowlist additions.

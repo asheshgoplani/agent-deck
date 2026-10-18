@@ -58,24 +58,52 @@ var imageTypes = map[string]string{
 	".ico":  "image/x-icon",
 }
 
-// NormalizeRoots expands each entry with expand (for `~` and $VARS), keeps
-// absolute ones, cleans them and drops duplicates in order. Relative entries
-// are dropped: they would depend on the server's working directory.
+// Refused is a file_link_roots entry that was dropped, and why.
+type Refused struct {
+	Entry  string `json:"entry"`
+	Reason string `json:"reason"`
+}
+
+// NormalizeRoots is CheckRoots without the refusals.
 func NormalizeRoots(entries []string, expand func(string) string) []string {
+	roots, _ := CheckRoots(entries, expand)
+	return roots
+}
+
+// CheckRoots expands each entry with expand (for `~` and $VARS), keeps
+// absolute ones, cleans them and drops duplicates in order. It refuses, with
+// a reason:
+//   - a relative entry (it would depend on the server's working directory);
+//   - an entry naming an unset or empty $VAR (under launchd or systemd,
+//     "$REPORTS/" would otherwise widen to "/");
+//   - "/" and the home directory itself, which would expose every readable
+//     file, ~/.ssh and the deck's own config and token included.
+func CheckRoots(entries []string, expand func(string) string) ([]string, []Refused) {
+	home := cleanHome()
 	out := make([]string, 0, len(entries))
+	var refused []Refused
 	seen := make(map[string]struct{}, len(entries))
 	for _, raw := range entries {
 		p := strings.TrimSpace(raw)
 		if p == "" {
 			continue
 		}
+		if v := emptyVar(p); v != "" {
+			refused = append(refused, Refused{raw, "$" + v + " is unset or empty"})
+			continue
+		}
 		if expand != nil {
 			p = expand(p)
 		}
 		if !filepath.IsAbs(p) {
+			refused = append(refused, Refused{raw, "not an absolute path"})
 			continue
 		}
 		p = filepath.Clean(p)
+		if reason := tooWide(p, home); reason != "" {
+			refused = append(refused, Refused{raw, reason})
+			continue
+		}
 		if _, dup := seen[p]; dup {
 			continue
 		}
@@ -83,9 +111,41 @@ func NormalizeRoots(entries []string, expand func(string) string) []string {
 		out = append(out, p)
 	}
 	if len(out) == 0 {
-		return nil
+		out = nil
 	}
-	return out
+	return out, refused
+}
+
+// emptyVar names the first $VAR in p that is unset or empty, or "".
+func emptyVar(p string) string {
+	missing := ""
+	os.Expand(p, func(name string) string {
+		v := os.Getenv(name)
+		if v == "" && missing == "" {
+			missing = name
+		}
+		return v
+	})
+	return missing
+}
+
+func cleanHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Clean(home)
+}
+
+// tooWide says why a cleaned absolute root would expose too much, or "".
+func tooWide(p, home string) string {
+	if p == string(filepath.Separator) {
+		return "the filesystem root would expose every readable file"
+	}
+	if home != "" && p == home {
+		return "the home directory would expose ~/.ssh and the deck's own config; list folders inside it"
+	}
+	return ""
 }
 
 // File is an open, policy-checked file. The caller must Close it and read
@@ -115,35 +175,60 @@ func Open(roots []string, path string) (*File, error) {
 	if strings.ContainsRune(path, 0) || !filepath.IsAbs(path) {
 		return nil, ErrNotAbsolute
 	}
+	realRoots := resolveRoots(roots)
 	path = filepath.Clean(path)
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		// Say "not found" only under a root, so the route can't be used to
-		// probe which paths exist elsewhere. A path that is there but won't
-		// resolve (a symlink to a missing target) is "outside": else a
-		// planted symlink would tell existing outside targets from missing.
-		if _, lerr := os.Lstat(path); lerr == nil {
-			return nil, ErrOutside
-		}
-		for _, root := range roots {
-			if _, ok := within(root, path); ok {
-				return nil, ErrNotFound
-			}
-		}
-		return nil, ErrOutside
+		return nil, missingAnswer(realRoots, path)
 	}
-	for _, root := range roots {
-		realRoot, err := filepath.EvalSymlinks(root)
-		if err != nil {
-			continue
+	for _, realRoot := range realRoots {
+		if rel, ok := within(realRoot, real); ok {
+			return openUnder(realRoot, rel)
 		}
-		rel, ok := within(realRoot, real)
-		if !ok {
-			continue
-		}
-		return openUnder(realRoot, rel)
 	}
 	return nil, ErrOutside
+}
+
+// resolveRoots resolves each root through symlinks, dropping missing ones and
+// any that resolve to / or the home directory (CheckRoots refuses those by
+// name; this also catches a root that is a symlink to them).
+func resolveRoots(roots []string) []string {
+	home := cleanHome()
+	if h, err := filepath.EvalSymlinks(home); err == nil {
+		home = h
+	}
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err != nil || tooWide(realRoot, home) != "" {
+			continue
+		}
+		out = append(out, realRoot)
+	}
+	return out
+}
+
+// missingAnswer answers for a path that doesn't resolve. "Not found" only when
+// the longest existing parent resolves inside a root; anything that exists but
+// won't resolve (a dangling symlink, at any depth) or leads outside is
+// "outside", so the 404/403 split never tells which outside paths exist.
+func missingAnswer(realRoots []string, path string) error {
+	for p := path; ; p = filepath.Dir(p) {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			for _, realRoot := range realRoots {
+				if _, ok := within(realRoot, real); ok {
+					return ErrNotFound
+				}
+			}
+			return ErrOutside
+		}
+		if _, err := os.Lstat(p); err == nil {
+			return ErrOutside
+		}
+		if p == filepath.Dir(p) {
+			return ErrOutside
+		}
+	}
 }
 
 // within reports whether p is root or inside it, and p relative to root.
