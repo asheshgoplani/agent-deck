@@ -2,6 +2,7 @@ package statedb
 
 import (
 	"database/sql"
+	"log/slog"
 	"time"
 )
 
@@ -68,6 +69,7 @@ func foldLegacyHookCostRows(tx *sql.Tx) error {
 		return err
 	}
 	used := map[string]bool{}
+	folded := 0
 	for _, h := range hooks {
 		candRows, err := tx.Query(`SELECT `+cols+` FROM cost_events
 			WHERE session_id = ? AND model = ? AND input_tokens = ? AND output_tokens = ?
@@ -100,7 +102,9 @@ func foldLegacyHookCostRows(tx *sql.Tx) error {
 		if _, err := tx.Exec(`DELETE FROM cost_events WHERE id = ?`, h.id); err != nil {
 			return err
 		}
+		folded++
 	}
+	slog.Info("statedb: folded legacy hook cost rows", slog.Int("folded", folded), slog.Int("hook_rows", len(hooks)))
 	_, err = tx.Exec(`INSERT INTO metadata (key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, costHookDedupeKey, time.Now().UTC().Format(time.RFC3339))
 	return err

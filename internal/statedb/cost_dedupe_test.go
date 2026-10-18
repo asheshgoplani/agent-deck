@@ -28,8 +28,13 @@ func costIDs(t *testing.T, s *StateDB) []string {
 
 func insertCost(t *testing.T, s *StateDB, id, session string, ts time.Time, in, out int64) {
 	t.Helper()
+	insertCostCache(t, s, id, session, ts, in, out, 2, 1)
+}
+
+func insertCostCache(t *testing.T, s *StateDB, id, session string, ts time.Time, in, out, cacheRead, cacheWrite int64) {
+	t.Helper()
 	if _, err := s.DB().Exec(`INSERT INTO cost_events (id, session_id, timestamp, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_microdollars)
-		VALUES (?, ?, ?, 'claude-test', ?, ?, 2, 1, 100)`, id, session, ts.UTC().Format(time.RFC3339), in, out); err != nil {
+		VALUES (?, ?, ?, 'claude-test', ?, ?, ?, ?, 100)`, id, session, ts.UTC().Format(time.RFC3339), in, out, cacheRead, cacheWrite); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -59,10 +64,20 @@ func TestFoldLegacyHookCostRows(t *testing.T) {
 				imp("inst_a1", turn, 1000)
 				hook("inst_1790000000000000001", turn.Add(20*time.Second), 1000)
 			}
-			hook("inst_1790000000000000002", turn.Add(25*time.Second), 1000)       // same usage, a1 already absorbed one
-			hook("inst_1790000000000000003", turn.Add(30*time.Second), 999)        // tokens differ: no match
-			hook("inst_1790000000000000004", turn.Add(3*time.Hour), 1000)          // outside the window
-			imp("inst_b2", turn.Add(time.Hour), 2000)                              // importer row without a hook copy
+			hook("inst_1790000000000000002", turn.Add(25*time.Second), 1000) // same usage, a1 already absorbed one
+			hook("inst_1790000000000000003", turn.Add(30*time.Second), 999)  // tokens differ: no match
+			hook("inst_1790000000000000004", turn.Add(3*time.Hour), 1000)    // outside the window
+			imp("inst_b2", turn.Add(time.Hour), 2000)                        // importer row without a hook copy
+			// The window on its own: this hook row's only twin is free (no
+			// other hook claims it) but 3h earlier, so both are kept.
+			imp("inst_c3", turn, 3000)
+			hook("inst_1790000000000000007", turn.Add(3*time.Hour), 3000)
+			// Cache tokens are part of the match: same input/output, but a
+			// different cache_read or cache_write is a different turn.
+			imp("inst_d4", turn.Add(2*time.Hour), 4000)
+			insertCostCache(t, s, "inst_1790000000000000008", "inst", turn.Add(2*time.Hour+10*time.Second), 4000, 50, 3, 1)
+			imp("inst_e5", turn.Add(4*time.Hour), 5000)
+			insertCostCache(t, s, "inst_1790000000000000009", "inst", turn.Add(4*time.Hour+10*time.Second), 5000, 50, 2, 7)
 			insertCost(t, s, "other_1790000000000000005", "other", turn, 1000, 50) // another session's hook row
 			// The upgrade: the first open with the fold not yet recorded.
 			if _, err := s.DB().Exec(`DELETE FROM metadata WHERE key = ?`, costHookDedupeKey); err != nil {
@@ -71,7 +86,7 @@ func TestFoldLegacyHookCostRows(t *testing.T) {
 			if err := s.Migrate(); err != nil {
 				t.Fatal(err)
 			}
-			want := []string{"inst_1790000000000000002", "inst_1790000000000000003", "inst_1790000000000000004", "inst_a1", "inst_b2", "other_1790000000000000005"}
+			want := []string{"inst_1790000000000000002", "inst_1790000000000000003", "inst_1790000000000000004", "inst_1790000000000000007", "inst_1790000000000000008", "inst_1790000000000000009", "inst_a1", "inst_b2", "inst_c3", "inst_d4", "inst_e5", "other_1790000000000000005"}
 			if got := costIDs(t, s); !equalStrings(got, want) {
 				t.Fatalf("rows after the fold = %v, want %v", got, want)
 			}
