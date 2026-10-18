@@ -7,8 +7,9 @@
        │    >Dark   Light   System                                      │
        │                                                                │
        │  DEFAULT TOOL                                                  │
-       │     Claude   Gemini   OpenCode   Codex   Pi   Copilot   Crush  │
-       │  Muse   Cursor   Hermes   DeepSeek   Oh My Pi  >None           │
+       │     Claude   Gemini   OpenCode   OpenCode 2   Codex   Pi       │
+       │  Copilot   Crush   Muse   Cursor   Hermes   DeepSeek   Oh My   │
+       │  Pi  >None                                                     │
        │    Pre-selected when creating new sessions                     │
        │                                                                │
        │  CLAUDE                                                        │
@@ -16,7 +17,6 @@
        │    Config directory: ~/.claude (default)                       │
        │                                                                │
        │  GEMINI                                                        │
-       │    [ ] YOLO mode - Auto-approve all actions                    │
        │    ▼ more below                                                │
        │  j/k Navigate  Space Toggle                                    │
        │  h/l Adjust  Enter Edit  Esc Close                             │

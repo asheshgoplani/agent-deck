@@ -10,14 +10,14 @@
          │      > claude-waiting                                      │
          │      Harness (choose destination first):                   │
          │        shell     claude     gemini     opencode            │
-         │        codex     pi     copilot     crush     muse         │
-         │        cursor agent     hermes     deepseek     omp        │
+         │        opencode2     codex     pi     copilot              │
+         │        crush     muse     cursor agent     hermes          │
+         │        deepseek     omp                                    │
          │      Pin position:                                         │
          │        Off     Top     Bottom                              │
          │      [x] Skip permissions (restart, claude)                │
          │      [ ] Auto mode (restart, claude)                       │
-         │      Extra args (restart, claude) — space-separated:       │
-         │      > --model opus --verbose                              │
+         │    ▼ more below                                            │
          │                                                            │
          │                                                            │
          │    Type to edit │ Enter save │ Tab next │ Esc cancel       │
