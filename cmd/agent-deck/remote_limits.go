@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -55,4 +56,41 @@ func remoteLimitsUnsupportedJSON(remote, remoteVersion string) []byte {
 		RemoteVersion string `json:"remote_version"`
 	}{remoteLimitsUnsupportedMessage(remote), remote, remoteVersion})
 	return append(out, '\n')
+}
+
+// relabelRemotePluginsOff rewrites a forwarded `limits` refusal for [macapp]
+// plugins being off on the remote. Its enable command is the remote's own:
+// run as given it would turn plugins on HERE. The text form names the
+// remote and its host; the JSON hint gets remote, remote_host and
+// remote_argv in place of argv. Any other output is returned unchanged.
+func relabelRemotePluginsOff(name, host string, args []string, code int, stdout, stderr []byte) ([]byte, []byte) {
+	if code != 2 || !isRemoteLimitsArgs(args) {
+		return stdout, stderr
+	}
+	where := fmt.Sprintf("To enable it on remote %s (%s), run there: ", name, host)
+	stderr = bytes.ReplaceAll(stderr, []byte("To enable it, run: "), []byte(where))
+	var doc map[string]any
+	if json.Unmarshal(stdout, &doc) != nil {
+		return stdout, stderr
+	}
+	hint, ok := doc["hint"].(map[string]any)
+	if !ok || hint["key"] != "macapp.plugins" {
+		return stdout, stderr
+	}
+	if msg, ok := doc["error"].(string); ok {
+		doc["error"] = strings.Replace(msg, "To enable it, run: ", where, 1)
+	}
+	hint["remote"], hint["remote_host"] = name, host
+	if argv, ok := hint["argv"]; ok {
+		hint["remote_argv"] = argv
+		delete(hint, "argv")
+	}
+	if cmd, ok := hint["command"].(string); ok {
+		hint["command"] = fmt.Sprintf("on remote %s (%s): %s", name, host, cmd)
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return stdout, stderr
+	}
+	return append(out, '\n'), stderr
 }

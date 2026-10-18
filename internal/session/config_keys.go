@@ -295,7 +295,8 @@ func (k ConfigKey) Set(c *UserConfig, v any) { k.set(c, v) }
 // SetConfigValue loads config.toml, sets one key and saves it through the
 // TUI's writer. It returns the value read back after the save. A value
 // that needs consent (NeedsConsent) is refused with ErrConsentRequired,
-// returning the parsed value, unless consented is true.
+// returning the parsed value, unless consented is true or the key already
+// has that value.
 func SetConfigValue(name, raw string, consented bool) (ConfigKey, any, error) {
 	k, ok := LookupConfigKey(name)
 	if !ok {
@@ -305,13 +306,15 @@ func SetConfigValue(name, raw string, consented bool) (ConfigKey, any, error) {
 	if err != nil {
 		return k, nil, err
 	}
-	if k.NeedsConsent(v) && !consented {
-		return k, v, ErrConsentRequired
-	}
 	ClearUserConfigCache()
 	cfg, err := LoadUserConfig()
 	if err != nil {
 		return k, nil, err
+	}
+	// Consent is for turning a key on; one that is already on is left as
+	// it is without asking again.
+	if k.NeedsConsent(v) && !consented && (cfg == nil || k.Get(cfg) != v) {
+		return k, v, ErrConsentRequired
 	}
 	if cfg == nil {
 		cfg = &UserConfig{}

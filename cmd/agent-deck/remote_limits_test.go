@@ -145,3 +145,36 @@ func TestRemoteLimitsPassesRemoteErrorThrough(t *testing.T) {
 	require.Contains(t, stdout+stderr, "limits is off")
 	require.NotContains(t, stdout+stderr, "unsupported remote command")
 }
+
+// The remote's plugins-off refusal names the REMOTE as the place to run the
+// enable command: run as the remote printed it, it would turn plugins on
+// here. Text names the remote and its host; the JSON hint carries remote,
+// remote_host and remote_argv, and no local argv.
+func TestRemoteLimitsPluginsOffHintNamesTheRemote(t *testing.T) {
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "absent-codex"))
+	remote, shim := t.TempDir(), t.TempDir()
+	startParitySSH(t, remote, shim)
+	run := remoteLimitsController(t, shim, channelsCLIBinary(t))
+	where := "To enable it on remote lab (test-host), run there: agent-deck config set macapp.plugins true --yes"
+
+	stdout, stderr, code := run("lab", "limits", "--json")
+	require.Equal(t, 2, code, "stdout=%s stderr=%s", stdout, stderr)
+	var res struct {
+		Code  string         `json:"code"`
+		Error string         `json:"error"`
+		Hint  map[string]any `json:"hint"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &res), stdout)
+	require.Equal(t, "INVALID_OPERATION", res.Code)
+	require.Contains(t, res.Error, where)
+	require.Equal(t, "lab", res.Hint["remote"])
+	require.Equal(t, "test-host", res.Hint["remote_host"])
+	require.Equal(t, []any{"config", "set", "macapp.plugins", "true", "--yes"}, res.Hint["remote_argv"])
+	require.NotContains(t, res.Hint, "argv", "a local argv would turn plugins on here")
+	require.Equal(t, "on remote lab (test-host): agent-deck config set macapp.plugins true --yes", res.Hint["command"])
+
+	stdout, stderr, code = run("lab", "limits")
+	require.Equal(t, 2, code, "stdout=%s stderr=%s", stdout, stderr)
+	require.Contains(t, stderr, where)
+	require.NotContains(t, stderr, "To enable it, run:")
+}
