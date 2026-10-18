@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
-"""Tests for the goal no-progress cap and the unchanged-worktree gate skip.
+"""Tests for the opt-in goal progress features.
 
-No-progress cap: a turn closes on a new receipt or a due idle wake; a turn
-without progress is empty; 3 consecutive empty turns end the goal; each
-wake waits a doubling backoff window.
+No-progress cap: a due idle wake without progress is an empty turn; after
+no_progress_cap empty turns the goal escalates (or, with
+no_progress_action "stop", ends as failed and stops the worker); each wake
+waits a doubling backoff window. A receipt is always progress; with
+worktree_progress a worktree content change is too.
 
-Gate skip: done_cmd is not rerun, and the worker is not woken a second
-time, while the worktree hash equals the one the verifier last failed on.
+Gate skip: done_cmd is not rerun while the worktree hash equals the one the
+verifier last failed on, and with the cap on a wake is skipped after 2
+delivered wakes over that same worktree.
+
+A goal file without the opt-in keys runs the loop from before they existed.
 
 Run with pytest or unittest; git must be on PATH.
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -82,7 +89,9 @@ class GoalSandbox(unittest.TestCase):
 
     def write_goal(self, *, workdir: Path, done_cmd: str | None = None, cap: int | None = 3,
                    base: int = 600, max_idle: int = 60, escalate_after: int = 99,
-                   max_cycles: int = 99, gate: bool | None = True, idle_for: int = 600) -> Path:
+                   max_cycles: int = 99, gate: bool | None = True, idle_for: int = 600,
+                   progress: bool | None = None, action: str | None = None,
+                   state: dict | None = None) -> Path:
         schedule = {
             "check_interval_seconds": 60,
             "max_idle_seconds": max_idle,
@@ -94,6 +103,10 @@ class GoalSandbox(unittest.TestCase):
             schedule["no_progress_cap"] = cap
         if gate is not None:
             schedule["worktree_gate"] = gate
+        if progress is not None:
+            schedule["worktree_progress"] = progress
+        if action is not None:
+            schedule["no_progress_action"] = action
         goal = {
             "id": "g",
             "goal": "make it pass",
@@ -114,6 +127,7 @@ class GoalSandbox(unittest.TestCase):
                 "escalated_at": None,
                 "ended_at": None,
                 "ended_reason": None,
+                **(state or {}),
             },
             "history": [],
         }
@@ -142,10 +156,35 @@ class GoalSandbox(unittest.TestCase):
 
 
 class TestNoProgressCap(GoalSandbox):
-    def test_three_empty_wake_turns_end_goal(self):
+    def test_three_empty_wake_turns_escalate_by_default(self):
         workdir = self.tmp / "plain"  # not a git repo: receipts are the progress signal
         workdir.mkdir()
         path = self.write_goal(workdir=workdir)
+        for _ in range(2):
+            self.tick(path)
+            self.expire_backoff(path)
+        g = self.tick(path)
+        self.assertEqual(g["state"]["status"], "escalated")
+        self.assertIsNone(g["state"]["ended_reason"])
+        self.assertIn("no_progress_cap", self.events(g))
+        self.assertEqual(self.stops, [], "escalating leaves the worker running")
+        self.assertFalse((manager.HISTORY_DIR / "g-failed.md").exists())
+        bundles = list(manager.ESCALATIONS_DIR.glob("g-*.md"))
+        self.assertEqual(len(bundles), 1)
+        self.assertIn("worker left running", bundles[0].read_text())
+
+    def test_unknown_action_escalates(self):
+        workdir = self.tmp / "plain"
+        workdir.mkdir()
+        path = self.write_goal(workdir=workdir, cap=1, action="kill")
+        g = self.tick(path)
+        self.assertEqual(g["state"]["status"], "escalated")
+        self.assertEqual(self.stops, [])
+
+    def test_three_empty_wake_turns_end_goal_with_stop_action(self):
+        workdir = self.tmp / "plain"
+        workdir.mkdir()
+        path = self.write_goal(workdir=workdir, action="stop")
 
         g = self.tick(path)
         self.assertEqual(g["state"]["no_progress_streak"], 1)
@@ -235,38 +274,87 @@ class TestNoProgressCap(GoalSandbox):
         self.assertEqual(g["state"]["status"], "active")
         self.assertEqual(g["state"]["no_progress_streak"], 6)
 
-    def test_legacy_goal_without_new_keys_gets_default_cap(self):
+    def test_goal_without_new_keys_runs_the_classic_loop(self):
+        """Review major 2: a goal file without the opt-in keys behaves as before
+        them: a nudge on every idle tick, escalation after 3 nudges, worker
+        left running, no cap state written."""
         workdir = self.tmp / "plain"
         workdir.mkdir()
-        path = self.write_goal(workdir=workdir, cap=None)
+        path = self.write_goal(workdir=workdir, cap=None, gate=None, escalate_after=3)
+        goal = json.loads(path.read_text())
+        del goal["schedule"]["no_progress_backoff_base_seconds"]
+        path.write_text(json.dumps(goal))
         for _ in range(3):
             g = self.tick(path)
-            self.expire_backoff(path)
-        self.assertEqual(g["state"]["status"], "failed")
+        self.assertEqual(len(self.sends), 3)
+        self.assertEqual(g["state"]["status"], "escalated")
+        self.assertEqual(self.stops, [])
+        self.assertEqual(self.done_runs(), 3, "done_cmd runs every tick")
+        for key in ("no_progress_streak", "next_wake_at", "last_failed_tree_hash", "progress_tree_hash"):
+            self.assertNotIn(key, g["state"])
 
-    def test_metronome_receipts_without_tree_change_end_goal(self):
+    def test_receipts_count_as_progress_with_worktree_progress(self):
+        """Review major 3: receipts without a tree change (waiting on CI, a
+        push, a tag) still count; the tree hash is only an extra signal."""
         repo = init_repo(self.tmp / "repo")
-        path = self.write_goal(workdir=repo, idle_for=0, max_idle=3600)
-        self.tick(path)  # baseline tick records the starting tree
-        for n in range(1, 4):
+        path = self.write_goal(workdir=repo, progress=True, idle_for=0, max_idle=3600)
+        self.tick(path)
+        for n in range(1, 5):
             self.add_receipt(repo, n)
             g = self.tick(path)
-        self.assertEqual(g["state"]["status"], "failed")
-        self.assertEqual(g["state"]["ended_reason"], "no_progress_cap")
-        self.assertEqual(self.sends, [], "a receipt-writing worker is never woken")
+        self.assertEqual(g["state"]["status"], "active")
+        self.assertEqual(g["state"]["no_progress_streak"], 0)
+        self.assertNotIn("no_progress_turn", self.events(g))
 
-    def test_tree_change_is_progress(self):
+    def test_tree_change_is_progress_with_worktree_progress(self):
         repo = init_repo(self.tmp / "repo")
-        path = self.write_goal(workdir=repo, idle_for=0, max_idle=3600)
+        path = self.write_goal(workdir=repo, progress=True, idle_for=0, max_idle=3600,
+                               state={"no_progress_streak": 2, "nudges_sent": 2})
+        g = self.tick(path)  # baseline tick: records the tree, judges nothing
+        self.assertEqual(g["state"]["no_progress_streak"], 2)
+        (repo / "main.txt").write_text("v2\n")
+        g = self.tick(path)
+        self.assertEqual(g["state"]["no_progress_streak"], 0)
+        self.assertEqual(g["state"]["nudges_sent"], 0, "tree progress resets the nudge count")
+        self.assertIn("progress", self.events(g))
+
+    def test_tree_change_is_not_progress_without_worktree_progress(self):
+        repo = init_repo(self.tmp / "repo")
+        path = self.write_goal(workdir=repo, idle_for=0, max_idle=3600, state={"no_progress_streak": 2})
         self.tick(path)
+        (repo / "main.txt").write_text("v2\n")
+        g = self.tick(path)
+        self.assertEqual(g["state"]["no_progress_streak"], 2)
+        self.assertNotIn("progress", self.events(g))
+
+    def test_receipt_on_the_baseline_tick_is_progress(self):
+        repo = init_repo(self.tmp / "repo")
+        path = self.write_goal(workdir=repo, progress=True, idle_for=0, max_idle=3600,
+                               state={"no_progress_streak": 2})
         self.add_receipt(repo, 1)
         g = self.tick(path)
-        self.assertEqual(g["state"]["no_progress_streak"], 1)
-        (repo / "main.txt").write_text("v2\n")
-        self.add_receipt(repo, 2)
+        self.assertIsNotNone(g["state"]["progress_tree_hash"])
+        self.assertEqual(g["state"]["no_progress_streak"], 0)
+        self.assertIn("progress", self.events(g))
+
+    def test_work_before_the_first_tick_counts_against_the_creation_baseline(self):
+        repo = init_repo(self.tmp / "repo")
+        created = manager.worktree_tree_hash(repo)
+        path = self.write_goal(workdir=repo, progress=True, idle_for=0, max_idle=3600,
+                               state={"progress_tree_hash": created, "no_progress_streak": 1})
+        (repo / "main.txt").write_text("worked before the first tick\n")
         g = self.tick(path)
         self.assertEqual(g["state"]["no_progress_streak"], 0)
         self.assertIn("progress", self.events(g))
+
+    def test_idle_is_measured_from_the_last_progress(self):
+        workdir = self.tmp / "plain"
+        workdir.mkdir()
+        path = self.write_goal(workdir=workdir, idle_for=7200, max_idle=3600,
+                               state={"last_progress_at": iso_ago(60)})
+        g = self.tick(path)
+        self.assertEqual(self.sends, [], "progress a minute ago: the worker is not idle")
+        self.assertNotIn("no_progress_turn", self.events(g))
 
     def test_cap_rechecks_skipped_verifier_before_failing(self):
         repo = init_repo(self.tmp / "repo")
@@ -311,17 +399,54 @@ class TestUnchangedWorktreeGate(GoalSandbox):
         self.add_receipt(repo, 1)
         self.assertEqual(h0, manager.worktree_tree_hash(repo))
 
-    def test_no_second_wake_on_unchanged_failed_tree(self):
+    def test_wake_skipped_after_two_delivered_wakes_on_unchanged_failed_tree(self):
         repo = init_repo(self.tmp / "repo")
         path = self.write_goal(workdir=repo, cap=5)
         self.tick(path)
-        self.assertEqual(len(self.sends), 1, "the first wake on a failed tree is allowed")
         self.expire_backoff(path)
         g = self.tick(path)
-        self.assertEqual(len(self.sends), 1)
+        self.assertEqual(len(self.sends), 2, "two wakes on a failed tree are allowed")
+        self.assertNotIn("wake_skipped", self.events(g))
+        self.expire_backoff(path)
+        g = self.tick(path)
+        self.assertEqual(len(self.sends), 2)
         self.assertIn("wake_skipped", self.events(g))
-        self.assertEqual(g["state"]["no_progress_streak"], 2, "a skipped wake still counts as an empty turn")
-        self.assertEqual(self.done_runs(), 1)
+        self.assertEqual(g["state"]["no_progress_streak"], 3, "a skipped wake still counts as an empty turn")
+        self.assertEqual(self.done_runs(), 2)
+
+    def test_failed_nudge_does_not_arm_the_wake_skip(self):
+        """Review major 1: an undelivered wake must not count toward the skip."""
+        repo = init_repo(self.tmp / "repo")
+        path = self.write_goal(workdir=repo, cap=6)
+        delivered = iter([False, True, True])
+        attempts: list[str] = []
+
+        def send(_title, message, _dry_run, _verbose):
+            attempts.append(message)
+            return next(delivered, True)
+
+        with patch("manager.agent_deck_send", side_effect=send):
+            for _ in range(3):
+                g = self.tick(path)
+                self.expire_backoff(path)
+            self.assertEqual(len(attempts), 3, "wakes after a failed one must still go out")
+            self.assertNotIn("wake_skipped", self.events(g))
+            g = self.tick(path)
+        self.assertEqual(len(attempts), 3, "skipped after two delivered wakes")
+        self.assertIn("wake_skipped", self.events(g))
+
+    def test_silent_worker_with_failing_sends_escalates_without_a_stop(self):
+        """Review major 1 scenario: gate and cap on, every nudge fails."""
+        repo = init_repo(self.tmp / "repo")
+        path = self.write_goal(workdir=repo, cap=3)
+        with patch("manager.agent_deck_send", return_value=False) as send:
+            for _ in range(3):
+                g = self.tick(path)
+                self.expire_backoff(path)
+        self.assertEqual(send.call_count, 2, "every wake before the cap is attempted")
+        self.assertNotIn("wake_skipped", self.events(g))
+        self.assertEqual(g["state"]["status"], "escalated")
+        self.assertEqual(self.stops, [])
 
     def test_gate_off_reruns_every_tick(self):
         repo = init_repo(self.tmp / "repo")
@@ -465,6 +590,49 @@ class TestWorktreeTreeHash(unittest.TestCase):
         (repo / "a.txt").write_text("1\n")
         self.assertIsNotNone(manager.worktree_tree_hash(repo))
 
+    def test_does_not_refresh_a_stat_dirty_index(self):
+        """`git status` refreshes a stat-dirty index unless optional locks are off."""
+        repo = init_repo(self.tmp / "repo")
+        main = repo / "main.txt"
+        future = main.stat().st_mtime + 120
+        os.utime(main, (future, future))  # same content, new stat info
+        index = repo / ".git" / "index"
+        before = (index.read_bytes(), index.stat().st_mtime_ns)
+        manager.worktree_tree_hash(repo)
+        self.assertEqual(before, (index.read_bytes(), index.stat().st_mtime_ns))
+
+    def test_submodule_commit_changes_the_hash(self):
+        sub = init_repo(self.tmp / "sub")
+        repo = init_repo(self.tmp / "repo")
+        subprocess.run(["git", "-C", str(repo), "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                        str(sub), "dep"], check=True, capture_output=True)
+        git(repo, "commit", "-q", "-m", "add dep")
+        h0 = manager.worktree_tree_hash(repo)
+        self.assertIsNotNone(h0)
+        dep = repo / "dep"
+        (dep / "main.txt").write_text("v2\n")
+        git(dep, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-am", "move")
+        h1 = manager.worktree_tree_hash(repo)
+        self.assertNotEqual(h0, h1)
+        (dep / "main.txt").write_text("uncommitted 1\n")
+        h2 = manager.worktree_tree_hash(repo)
+        self.assertNotEqual(h1, h2)
+        (dep / "main.txt").write_text("uncommitted 2\n")
+        self.assertNotEqual(h2, manager.worktree_tree_hash(repo), "edits inside a dirty submodule count")
+
+    def test_large_untracked_file_hashed_by_size_and_mtime(self):
+        repo = init_repo(self.tmp / "repo")
+        big = repo / "big.bin"
+        big.write_bytes(b"a" * (manager.MAX_HASHED_UNTRACKED_BYTES + 1))
+        os.utime(big, (1_000_000, 1_000_000))
+        h0 = manager.worktree_tree_hash(repo)
+        with big.open("r+b") as f:
+            f.write(b"b")  # same size
+        os.utime(big, (1_000_000, 1_000_000))
+        self.assertEqual(h0, manager.worktree_tree_hash(repo), "content above the cap is not read")
+        os.utime(big, (2_000_000, 2_000_000))
+        self.assertNotEqual(h0, manager.worktree_tree_hash(repo), "mtime above the cap counts")
+
     def test_read_only(self):
         repo = init_repo(self.tmp / "repo")
         (repo / "main.txt").write_text("dirty\n")
@@ -474,6 +642,58 @@ class TestWorktreeTreeHash(unittest.TestCase):
         manager.worktree_tree_hash(repo)
         self.assertEqual(index, (repo / ".git" / "index").read_bytes())
         self.assertEqual(objects, sorted(p.name for p in (repo / ".git" / "objects").rglob("*")))
+
+
+class TestNaiveTimestamps(unittest.TestCase):
+    def test_naive_timestamp_is_local_time(self):
+        local = datetime(2026, 1, 2, 3, 4, 5).astimezone()
+        self.assertEqual(manager.parse_iso("2026-01-02T03:04:05"), local)
+        self.assertEqual(manager.parse_iso("2026-01-02T03:04:05Z"),
+                         datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc))
+
+
+STUB = """#!/bin/sh
+case "$1 $2 $3" in
+  "-p personal list") echo '[{"id":"sid-1","title":"g1"}]' ;;
+esac
+exit 0
+"""
+
+
+class TestGoalShDefaults(unittest.TestCase):
+    def run_goal(self, workdir: Path, env: dict | None = None) -> dict:
+        tmp = Path(tempfile.mkdtemp(prefix="goal-sh-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        bindir = tmp / "bin"
+        bindir.mkdir()
+        stub = bindir / "agent-deck"
+        stub.write_text(STUB)
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        full_env = {k: v for k, v in os.environ.items()
+                    if not k.startswith(("NO_PROGRESS_", "WORKTREE_"))}
+        full_env.update({"PATH": f"{bindir}:{os.environ['PATH']}", "HOME": str(tmp),
+                         "GOALS_DIR": str(tmp / "goals"), "TMPDIR": str(tmp)})
+        full_env.update(env or {})
+        r = subprocess.run(["bash", str(HERE.parent / "goal.sh"), "g1", "goal", "true", "g1", str(workdir)],
+                           capture_output=True, text=True, env=full_env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads((tmp / "goals" / "g1.json").read_text())
+
+    def test_defaults_keep_the_classic_loop(self):
+        tmp = Path(tempfile.mkdtemp(prefix="goal-wd-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        goal = self.run_goal(init_repo(tmp / "repo"))
+        self.assertEqual(manager.progress_features(goal["schedule"]), (0, False, False))
+        self.assertEqual(goal["schedule"]["no_progress_action"], "escalate")
+        self.assertIsNone(goal["state"]["progress_tree_hash"])
+
+    def test_opt_in_records_the_creation_baseline(self):
+        tmp = Path(tempfile.mkdtemp(prefix="goal-wd-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = init_repo(tmp / "repo")
+        goal = self.run_goal(repo, {"NO_PROGRESS_CAP": "3", "WORKTREE_PROGRESS": "1"})
+        self.assertEqual(manager.progress_features(goal["schedule"]), (3, True, False))
+        self.assertEqual(goal["state"]["progress_tree_hash"], manager.worktree_tree_hash(repo))
 
 
 if __name__ == "__main__":
