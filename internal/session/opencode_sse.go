@@ -27,7 +27,10 @@ package session
 // GET /api/event (basic auth), framed {type, data:{sessionID}}. A turn runs
 // from session.execution.started to session.execution.succeeded, failed or
 // interrupted. A 2.x target therefore names the instance's bound session, and
-// the stream ignores every other session's events (issue #2511).
+// the stream ignores every other session's events (issue #2511) except those
+// of its sub-agents: a sub-agent runs in a child session whose parentID chain
+// leads to the bound one, and while any of them is busy the instance is
+// "running", the same rule the 1.x per-TUI stream applies.
 
 import (
 	"bufio"
@@ -57,6 +60,9 @@ type SSETarget struct {
 	// count, and how to find the service. Set by Instance.OpenCodeSSETarget.
 	sessionID string
 	service   func() (openCodeService, error)
+	// parentOf names the session that spawned a session ("" for a root), so a
+	// sub-agent's turn counts for its parent. Nil counts the bound session only.
+	parentOf func(sessionID string) (string, error)
 }
 
 // openCodeService is where the 2.x background service listens.
@@ -74,6 +80,7 @@ type openCodeEventSource struct {
 	snapshotPath string
 	password     string
 	sessionID    string // non-empty: 2.x shared stream, count only this session
+	parentOf     func(sessionID string) (string, error)
 }
 
 func openCodeTUIServerSource(port int) openCodeEventSource {
@@ -102,6 +109,10 @@ type OpenCodeSSEWatcher struct {
 	statuses map[string]*OpenCodeSSEStatus
 	onChange func() // optional TUI refresh callback
 
+	// parents caches 2.x session -> parent session ("" for a root). A link
+	// never changes, so every stream on the shared service reuses it.
+	parents map[string]string
+
 	// client is overridable for tests.
 	client *http.Client
 }
@@ -118,6 +129,7 @@ func NewOpenCodeSSEWatcher(onChange func()) *OpenCodeSSEWatcher {
 	return &OpenCodeSSEWatcher{
 		conns:    make(map[string]*openCodeSSEConn),
 		statuses: make(map[string]*OpenCodeSSEStatus),
+		parents:  make(map[string]string),
 		onChange: onChange,
 		client: &http.Client{
 			// Streaming reads must not time out; bound only the dial.
@@ -175,7 +187,9 @@ func (t SSETarget) eventSource() func() (openCodeEventSource, error) {
 		if err != nil {
 			return openCodeEventSource{}, err
 		}
-		return openCodeSharedServiceSource(svc, t.sessionID), nil
+		src := openCodeSharedServiceSource(svc, t.sessionID)
+		src.parentOf = t.parentOf
+		return src, nil
 	}
 }
 
@@ -243,6 +257,7 @@ type openCodeEvent struct {
 	// Data is the 2.x shared-service payload.
 	Data struct {
 		SessionID string `json:"sessionID"`
+		ParentID  string `json:"parentID"` // used when an event carries it
 	} `json:"data"`
 }
 
@@ -256,7 +271,8 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 	// them is busy. Seed from the /session/status snapshot so a stream opened
 	// mid-turn starts correct instead of waiting for the next transition.
 	busy := make(map[string]bool)
-	seeded := w.seedSnapshot(ctx, src, busy)
+	tree := w.newSessionTree(src)
+	seeded := w.seedSnapshot(ctx, src, tree, busy)
 	if seeded && len(busy) > 0 {
 		w.setStatus(ctx, instanceID, "running")
 	} else if seeded && src.sessionID != "" {
@@ -310,7 +326,10 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 			continue
 		}
 		if src.sessionID != "" {
-			if !applySharedServiceEvent(ev, src.sessionID, busy) {
+			if ev.Data.ParentID != "" {
+				w.rememberParent(ev.Data.SessionID, ev.Data.ParentID)
+			}
+			if !applySharedServiceEvent(ev, tree, busy) {
 				w.touch(ctx, instanceID)
 				continue
 			}
@@ -343,22 +362,107 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 	return gotData
 }
 
-// applySharedServiceEvent folds one 2.x event for the bound session into busy.
-// It returns false for anything that is not a turn transition of that session:
-// other sessions' events and unrelated types only prove the stream is alive.
-func applySharedServiceEvent(ev openCodeEvent, sessionID string, busy map[string]bool) bool {
-	if ev.Data.SessionID != sessionID {
+// applySharedServiceEvent folds one 2.x event for the bound session or one of
+// its sub-agents into busy. It returns false for anything that is not a turn
+// transition of those sessions: other sessions' events and unrelated types
+// only prove the stream is alive.
+func applySharedServiceEvent(ev openCodeEvent, tree *openCodeSessionTree, busy map[string]bool) bool {
+	sessionID := ev.Data.SessionID
+	if sessionID == "" {
 		return false
 	}
 	switch ev.Type {
 	case "session.execution.started", "session.retry.scheduled":
+		if !tree.counts(sessionID) {
+			return false
+		}
 		busy[sessionID] = true
 	case "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted":
+		// Only a session already counted busy can end a counted turn, so an
+		// ending never needs a parent lookup.
+		if !busy[sessionID] && sessionID != tree.root {
+			return false
+		}
 		delete(busy, sessionID)
 	default:
 		return false
 	}
 	return true
+}
+
+// openCodeSessionMaxDepth bounds a parent-chain walk, so a corrupt or cyclic
+// chain ends instead of looping.
+const openCodeSessionMaxDepth = 8
+
+// openCodeSessionTree answers, for one stream, whether a session is the bound
+// session or a sub-agent below it.
+type openCodeSessionTree struct {
+	w        *OpenCodeSSEWatcher
+	root     string
+	parentOf func(sessionID string) (string, error)
+	memo     map[string]bool // session -> counts; failed lookups stay false for this stream
+}
+
+func (w *OpenCodeSSEWatcher) newSessionTree(src openCodeEventSource) *openCodeSessionTree {
+	return &openCodeSessionTree{w: w, root: src.sessionID, parentOf: src.parentOf, memo: make(map[string]bool)}
+}
+
+// counts walks sessionID's parent chain up to the bound session.
+func (t *openCodeSessionTree) counts(sessionID string) bool {
+	var path []string
+	result := false
+	cur := sessionID
+	for depth := 0; depth < openCodeSessionMaxDepth; depth++ {
+		if cur == t.root {
+			result = true
+			break
+		}
+		if known, ok := t.memo[cur]; ok {
+			result = known
+			break
+		}
+		path = append(path, cur)
+		parent, ok := t.parent(cur)
+		if !ok || parent == "" {
+			break
+		}
+		cur = parent
+	}
+	for _, id := range path {
+		t.memo[id] = result
+	}
+	return result
+}
+
+// parent returns sessionID's parent from the watcher cache, else asks the
+// service once and caches a successful answer for every stream.
+func (t *openCodeSessionTree) parent(sessionID string) (string, bool) {
+	t.w.mu.Lock()
+	parent, ok := t.w.parents[sessionID]
+	t.w.mu.Unlock()
+	if ok {
+		return parent, true
+	}
+	if t.parentOf == nil {
+		return "", false
+	}
+	parent, err := t.parentOf(sessionID)
+	if err != nil {
+		sessionLog.Debug("opencode_sse_parent_lookup_failed",
+			slog.String("opencode_session", sessionID), slog.String("error", err.Error()))
+		return "", false
+	}
+	t.w.rememberParent(sessionID, parent)
+	return parent, true
+}
+
+func (w *OpenCodeSSEWatcher) rememberParent(sessionID, parentID string) {
+	if sessionID == "" {
+		return
+	}
+	w.mu.Lock()
+	w.parents[sessionID] = parentID
+	w.mu.Unlock()
 }
 
 func busyStatus(busy map[string]bool) string {
@@ -378,7 +482,7 @@ func (src openCodeEventSource) authorize(req *http.Request) {
 
 // seedSnapshot loads the busy-session snapshot into busy. Returns false if
 // the snapshot could not be fetched or parsed.
-func (w *OpenCodeSSEWatcher) seedSnapshot(ctx context.Context, src openCodeEventSource, busy map[string]bool) bool {
+func (w *OpenCodeSSEWatcher) seedSnapshot(ctx context.Context, src openCodeEventSource, tree *openCodeSessionTree, busy map[string]bool) bool {
 	snapCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(snapCtx, http.MethodGet, src.base+src.snapshotPath, nil)
@@ -396,7 +500,7 @@ func (w *OpenCodeSSEWatcher) seedSnapshot(ctx context.Context, src openCodeEvent
 	}
 	if src.sessionID != "" {
 		// 2.x session.active: {"data":{"ses_...":{"type":"running"}}}, busy
-		// sessions only.
+		// sessions only. A busy sub-agent of the bound session counts too.
 		var active struct {
 			Data map[string]struct {
 				Type string `json:"type"`
@@ -405,8 +509,10 @@ func (w *OpenCodeSSEWatcher) seedSnapshot(ctx context.Context, src openCodeEvent
 		if err := json.NewDecoder(resp.Body).Decode(&active); err != nil {
 			return false
 		}
-		if st, ok := active.Data[src.sessionID]; ok && st.Type == "running" {
-			busy[src.sessionID] = true
+		for sid, st := range active.Data {
+			if st.Type == "running" && tree.counts(sid) {
+				busy[sid] = true
+			}
 		}
 		return true
 	}
