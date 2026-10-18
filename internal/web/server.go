@@ -414,11 +414,31 @@ type pendingDeleteFinalizer interface {
 	FinalizePendingDeletes()
 }
 
+// pendingDeleteFinalizeTimeout caps the undoable-delete sweep in Shutdown:
+// an inbox file under lock contention can hold it for seconds, and whatever
+// is not swept by then keeps its pending record for the next start's
+// reconcile.
+var pendingDeleteFinalizeTimeout = 5 * time.Second
+
+// finalizePendingDeletesBounded runs f.FinalizePendingDeletes and waits at
+// most timeout for it.
+func finalizePendingDeletesBounded(f pendingDeleteFinalizer, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.FinalizePendingDeletes()
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
 // Shutdown gracefully stops the server. Deletes still undoable through the
 // mutator are finalized once the listener is down.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if f, ok := s.mutator.(pendingDeleteFinalizer); ok {
-		defer f.FinalizePendingDeletes()
+		defer finalizePendingDeletesBounded(f, pendingDeleteFinalizeTimeout)
 	}
 	if s.cancelBase != nil {
 		// Signal long-lived handlers (SSE/WS) to stop promptly.

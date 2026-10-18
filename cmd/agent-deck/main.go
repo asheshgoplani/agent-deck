@@ -1249,7 +1249,7 @@ func main() {
 		webMutator := ui.NewWebMutator(homeModel)
 		setUndoableDeletesSignalFinalize(func() {
 			homeModel.FinalizeUndoableDeletes(3 * time.Second)
-			webMutator.FinalizePendingDeletes()
+			webMutator.FinalizePendingDeletesWithin(3 * time.Second)
 		})
 		server, err := buildWebServerFromOptions(effectiveProfile, webOptions, liveMenuData, webMutator)
 		if err != nil {

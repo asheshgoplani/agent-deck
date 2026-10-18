@@ -50,6 +50,20 @@ func (s *Storage) MarkPendingDeleteSweep(id string) error {
 	return s.db.SetMeta(pendingDeleteSweepPrefix+id, pendingSweepOwner())
 }
 
+// ClearPendingDeleteSweep drops id's pending record: its delete was undone
+// and the row is back, so there is nothing left to sweep. Without this, a
+// later reconcile would sweep the shared inbox entries of a live session
+// whose row is no longer in this profile (moved to another profile).
+func (s *Storage) ClearPendingDeleteSweep(id string) error {
+	if s == nil || s.db == nil {
+		return errNoStorageDB
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	return s.db.DeleteMeta(pendingDeleteSweepPrefix + id)
+}
+
 // liveSessionIDs returns the ids of every session row in this profile.
 func (s *Storage) liveSessionIDs() (map[string]bool, error) {
 	if s == nil || s.db == nil {
