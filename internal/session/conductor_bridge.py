@@ -35,6 +35,7 @@ import threading
 import time
 import urllib.parse
 from collections import OrderedDict, deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -877,8 +878,70 @@ _reply_owner_lock = threading.Lock()
 _wait_send_reservations: dict[tuple[str | None, str], str | None] = {}
 
 
+_RFC3339 = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$")
+
+
+def _record_stamp_ms(value) -> tuple[int, bool] | None:
+    """Parse a Go time.Time JSON value into (Unix ms, whole_second), or None."""
+    m = _RFC3339.match(str(value or "").strip())
+    if not m:
+        return None
+    base, frac, zone = m.group(1), m.group(2) or "", m.group(3)
+    if base.startswith("0001-01-01"):
+        return None  # Go's zero time
+    try:
+        dt = datetime.fromisoformat(base + ("+00:00" if zone == "Z" else zone))
+    except ValueError:
+        return None
+    nanos = int((frac + "000000000")[:9]) if frac else 0
+    return int(dt.timestamp()) * 1000 + nanos // 1_000_000, nanos == 0
+
+
+def _load_result_reads(reader_id: str) -> dict:
+    """The reader's result-read file (internal/session/inbox_result_read.go)."""
+    path = resolve_data_dir("runtime") / "runtime" / "result-reads" / f"{reader_id}.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _record_withdrawn(record: dict, reads: dict) -> bool:
+    """Mirror resultReads.covers in Go: a record the reader already read the
+    result of after the turn ended is withdrawn at the next drain, so the
+    heartbeat does not count it as pending. Anything unclear counts."""
+    if not reads or not isinstance(record, dict):
+        return False
+    child = str(record.get("child_session_id") or "").strip()
+    uuid = str(record.get("turn_uuid") or "").strip()
+    if (record.get("question") or record.get("source_remote") or record.get("overflow_turns")
+            or record.get("turn_text_interim") or not child or not uuid):
+        return False
+    kind = record.get("kind") or ""
+    if kind:
+        if kind != "finished":
+            return False
+    elif record.get("to_status") not in ("waiting", "idle"):
+        return False
+    stamp = _record_stamp_ms(record.get("timestamp"))
+    if stamp is None:
+        return False
+    stamp_ms, whole_second = stamp
+    if whole_second:
+        stamp_ms += 1000  # the turn may have ended anywhere in that second
+    entry = reads.get(child)
+    if not isinstance(entry, dict) or uuid not in (entry.get("turns") or []):
+        return False
+    read_at = (entry.get("read_at") or {}).get(uuid)
+    return isinstance(read_at, int) and read_at >= stamp_ms
+
+
 def _conductor_inbox_snapshot(sessions: list[dict], name: str) -> tuple[int, str, bool]:
-    """Count durable records and identify replacement records at the same count."""
+    """Count durable records still to be delivered and identify replacement
+    records at the same count. A record the conductor already read the
+    result of with `session output` is withdrawn at the next drain and is not
+    counted, the same way the Go heartbeat counts (InboxSnapshot)."""
     conductor = next((s for s in sessions if s.get("title") == conductor_session_title(name)), None)
     if not conductor or not conductor.get("id"):
         return 0, "", False
@@ -886,13 +949,26 @@ def _conductor_inbox_snapshot(sessions: list[dict], name: str) -> tuple[int, str
     path = resolve_data_dir("inboxes") / "inboxes" / f"{session_id}.jsonl"
     try:
         data = path.read_bytes()
-        count = sum(bool(line.strip()) for line in data.splitlines())
-        return count, hashlib.sha256(data).hexdigest() if count else "", False
     except FileNotFoundError:
         return 0, "", False
     except OSError as exc:
         log.warning("Heartbeat [%s]: cannot read inbox %s: %s", name, path, exc)
         return 0, "", True
+    reads = _load_result_reads(session_id)
+    count = 0
+    digest = hashlib.sha256()
+    for line in data.splitlines():
+        if not line.strip():
+            continue
+        if reads:
+            try:
+                if _record_withdrawn(json.loads(line), reads):
+                    continue
+            except ValueError:
+                pass  # unparseable: counts, fail toward delivering
+        count += 1
+        digest.update(line + b"\n")
+    return count, digest.hexdigest() if count else "", False
 
 
 def _heartbeat_fingerprint(scoped_sessions: list[dict], inbox_pending: int = 0, inbox_digest: str = "") -> str:
