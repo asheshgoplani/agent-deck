@@ -84,7 +84,7 @@ func OpenAt(dir string, opts Options) (*Bus, error) {
 	if opts.Private {
 		_ = os.Chmod(dir, dirMode) // an existing directory keeps its mode otherwise
 	}
-	b, err := openWith(dir, mode, opts.KeepCorrupt)
+	b, err := openWith(dir, mode, opts.KeepCorrupt, opts.Private)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func openReadOnly(dir string, opts Options) (*Bus, error) {
 		enabled:      true,
 		readOnly:     true,
 		keepCorrupt:  opts.KeepCorrupt,
-		fileMode:     0o644,
+		fileMode:     0o600,
 		lockFile:     lockFile,
 		closeCh:      make(chan struct{}),
 	}

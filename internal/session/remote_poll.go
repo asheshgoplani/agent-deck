@@ -69,6 +69,15 @@ func LoadRemotePolls() map[string]RemotePollState {
 // RecordRemotePoll stores a safe reason, never raw SSH stderr. Cache writes use
 // the existing cross-process lock and atomic replacement of the version cache.
 func RecordRemotePoll(name string, rc RemoteConfig, elapsed time.Duration, err error) RemotePollState {
+	state, _ := RecordRemotePollSaved(name, rc, elapsed, err)
+	return state
+}
+
+// RecordRemotePollSaved is RecordRemotePoll that also reports whether the
+// observation reached the cache. A caller holding state derived from the
+// record can then tell an explicit reset (the saved record is gone) from a
+// write that never landed.
+func RecordRemotePollSaved(name string, rc RemoteConfig, elapsed time.Duration, err error) (RemotePollState, bool) {
 	ms := max(int64(0), elapsed.Milliseconds())
 	status, reason := remotePollError(err)
 	state := RemotePollState{Host: rc.Host, Profile: rc.GetProfile(), AgentDeckPath: rc.GetAgentDeckPath(), LastPollMS: &ms, LastPollStatus: status, LastPollError: reason, CheckedAt: time.Now()}
@@ -81,7 +90,7 @@ func RecordRemotePoll(name string, rc RemoteConfig, elapsed time.Duration, err e
 	if saveErr != nil {
 		logging.ForComponent(logging.CompSession).Warn("remote_poll_cache_write_failed", slog.String("remote", name), slog.String("error", saveErr.Error()))
 	}
-	return state
+	return state, saveErr == nil
 }
 
 // ResetRemotePoll explicitly releases an authentication block for a new attempt.

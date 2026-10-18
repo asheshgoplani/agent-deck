@@ -148,6 +148,9 @@ type claudeRecord struct {
 }
 
 type claudeMessage struct {
+	// ID is the API message id. Claude writes one message as several
+	// records (one per content block) that repeat the same id and usage.
+	ID      string          `json:"id"`
 	Role    string          `json:"role"`
 	Model   string          `json:"model"`
 	Content json.RawMessage `json:"content"`
@@ -261,7 +264,7 @@ func (st *claudeState) message(rec *claudeRecord, off, n int64) {
 		st.setModel(rec.Message.Model)
 		u := rec.Message.Usage
 		if u.InputTokens+u.OutputTokens > 0 {
-			st.fail(st.sink.Usage(Usage{UUID: rec.UUID, TS: ts, Model: rec.Message.Model,
+			st.fail(st.sink.Usage(Usage{UUID: rec.UUID, MessageID: rec.Message.ID, TS: ts, Model: rec.Message.Model,
 				In: u.InputTokens, Out: u.OutputTokens, CacheR: u.CacheReadInputTokens, CacheW: u.CacheCreationInputTokens}))
 		}
 	} else {

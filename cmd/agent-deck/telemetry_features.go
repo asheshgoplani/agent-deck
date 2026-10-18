@@ -152,9 +152,17 @@ func settleCLITelemetry() {
 	finishCLITelemetry(0)
 }
 
+// cliExitHook, when set, runs once in exitCLI before the process ends: a
+// `session send` records its trigger fire as failed there (issue #2702).
+var cliExitHook func(code int)
+
 // exitCLI records the running command's outcome, then exits. CLI code calls
 // it instead of os.Exit, which skips deferred calls.
 func exitCLI(code int) {
+	if hook := cliExitHook; hook != nil {
+		cliExitHook = nil
+		hook(code)
+	}
 	finishCLITelemetry(code)
 	os.Exit(code)
 }

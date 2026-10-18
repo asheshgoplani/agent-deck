@@ -50,6 +50,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/triggers"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
@@ -308,6 +309,18 @@ type Home struct {
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	agentsPanel          *AgentsPanel          // Agents tab: adopted agents, grouped by machine
 	deadLetterPanel      *DeadLetterPanel      // Inspect, retry, and explicitly purge delivery failures
+	triggersPanel        *TriggersPanel        // What wakes which session (#2702); read-only in P1
+	// Triggers read model (triggers_live.go). A background tick reads the
+	// state DB's triggers_rev stamp and reloads only when it moved; the
+	// panel and the ⚡ row badge render from these cached values only.
+	triggersFeed     triggersFeed
+	triggerViews     []triggers.View
+	triggerBadges    map[string]triggers.Badge
+	triggersLoaded   bool
+	triggersLoadedAt time.Time
+	triggersRev      string
+	triggersKey      string
+	triggersPollGen  int
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -781,8 +794,12 @@ type Home struct {
 	lastNotifSwitchID string
 	lastNotifSwitchMu sync.Mutex
 
-	// Undo delete stack (Chrome-style: Ctrl+Z restores in reverse order)
+	// Undo delete stack (Chrome-style: Ctrl+Z restores in reverse order).
+	// undoMu guards its mutations so a signal-driven exit can take what is
+	// left (FinalizeUndoableDeletes); reads on the Update goroutine need no
+	// lock, since only that goroutine writes.
 	undoStack []deletedSessionEntry
+	undoMu    sync.Mutex
 
 	// Pending title changes: survives reload races.
 	// When a rename save is skipped (isReloading=true), the title change is
@@ -894,6 +911,13 @@ type Home struct {
 	remotePollMu     sync.Mutex                         // serializes poll cache reads/writes without holding the render lock
 	remotePollConfig map[string]session.RemoteConfig
 	remotePollActive map[string]bool // one session poll per remote, across overlapping rounds
+	// remotePollBackoffs holds a host whose last poll was slow or failed out
+	// of automatic polling for an exponentially growing while
+	// (remote_poll_backoff.go). Guarded by remoteSessionsMu.
+	remotePollBackoffs map[string]remotePollBackoff
+	// remoteNow is the clock poll timing and backoff read; nil means
+	// time.Now. Tests inject a fake one.
+	remoteNow func() time.Time
 	// remoteMutationStamp returns the stamp (remote DB mtime, unix ns) of
 	// the last mutating command confirmed over a remote's channel, 0 when
 	// unknown. nil means ask the channel; tests inject a stub.
@@ -2088,6 +2112,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		watcherPanel:              NewWatcherPanel(),
 		agentsPanel:               NewAgentsPanel(),
 		deadLetterPanel:           NewDeadLetterPanel(),
+		triggersFeed:              stateDBTriggersFeed{},
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
@@ -4289,6 +4314,7 @@ func (h *Home) Init() tea.Cmd {
 
 		h.tick(),
 		h.reviverTick(),
+		h.triggersPollCmd(), // ⚡ badges and the Triggers panel (triggers_live.go)
 		h.requestUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
@@ -5009,7 +5035,7 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 		msg.groupsFailed[name] = true
 		return msg
 	}
-	started := time.Now()
+	started := h.remoteClock()
 	var pollErr error
 	defer func() { h.finishRemotePoll(name, rc, started, pollErr) }()
 
@@ -6330,15 +6356,124 @@ func (h *Home) getInstanceByID(id string) *session.Instance {
 	return h.instanceByID[id]
 }
 
-// pushUndoStack adds a deleted session to the undo stack (LIFO, capped at 10)
-func (h *Home) pushUndoStack(inst *session.Instance) {
+// pushUndoStack adds a deleted session to the undo stack (LIFO, capped at 10).
+// An entry pushed off the stack can no longer be undone: its delete is final,
+// so the deferred inbox and notify-state sweep (#910) runs for it then, in
+// the returned command (nil when nothing was evicted).
+func (h *Home) pushUndoStack(inst *session.Instance) tea.Cmd {
 	entry := deletedSessionEntry{
 		instance:  inst,
 		deletedAt: time.Now(),
 	}
+	h.undoMu.Lock()
 	h.undoStack = append(h.undoStack, entry)
+	var evicted []deletedSessionEntry
 	if len(h.undoStack) > 10 {
-		h.undoStack = h.undoStack[len(h.undoStack)-10:]
+		evicted = append(evicted, h.undoStack[:len(h.undoStack)-10]...)
+		h.undoStack = append([]deletedSessionEntry(nil), h.undoStack[len(h.undoStack)-10:]...)
+	}
+	h.undoMu.Unlock()
+	return h.finalizeDeletesCmd(undoEntryIDs(evicted))
+}
+
+// undoEntryIDs returns the session ids of undo entries.
+func undoEntryIDs(entries []deletedSessionEntry) []string {
+	var ids []string
+	for _, e := range entries {
+		if e.instance != nil && e.instance.ID != "" {
+			ids = append(ids, e.instance.ID)
+		}
+	}
+	return ids
+}
+
+// finalizeDeletesCmd runs the deferred inbox and notify-state sweep (#910)
+// for TUI deletes that can no longer be undone, off the Update loop. Nil
+// when ids is empty.
+func (h *Home) finalizeDeletesCmd(ids []string) tea.Cmd {
+	if len(ids) == 0 {
+		return nil
+	}
+	storage := h.storage
+	return func() tea.Msg {
+		finalizeRemovedSessions(storage, "delete", ids)
+		return nil
+	}
+}
+
+// finalizeRemovedSessions sweeps ids (see session.FinalizeRemovedSessions)
+// and logs the outcome.
+func finalizeRemovedSessions(storage *session.Storage, op string, ids []string) {
+	results, err := storage.FinalizeRemovedSessions(ids)
+	if err != nil {
+		uiLog.Warn(op+"_finalize_sweep_skipped", slog.Int("count", len(ids)), slog.String("err", err.Error()))
+	}
+	for id, r := range results {
+		logRemovedSessionCleanup(op, id, r)
+	}
+}
+
+// takeUndoStack empties the undo stack and returns its entries.
+func (h *Home) takeUndoStack() []deletedSessionEntry {
+	h.undoMu.Lock()
+	defer h.undoMu.Unlock()
+	entries := h.undoStack
+	h.undoStack = nil
+	return entries
+}
+
+// snapshotUndoStack copies the undo stack without changing it, so a reader
+// off the Update goroutine never writes state that goroutine reads unlocked.
+func (h *Home) snapshotUndoStack() []deletedSessionEntry {
+	h.undoMu.Lock()
+	defer h.undoMu.Unlock()
+	return append([]deletedSessionEntry(nil), h.undoStack...)
+}
+
+// FinalizeUndoableDeletes ends every delete still on the TUI undo stack when
+// a signal ends the process: they can no longer be undone, so their deferred
+// sweep runs now. Bounded by timeout; whatever is not swept by then keeps its
+// pending record for the next start's reconcile. Safe from any goroutine
+// (the stack is only read; the sweep is idempotent).
+func (h *Home) FinalizeUndoableDeletes(timeout time.Duration) {
+	ids := undoEntryIDs(h.snapshotUndoStack())
+	if len(ids) == 0 {
+		return
+	}
+	runBounded(timeout, func() { finalizeRemovedSessions(h.storage, "delete", ids) })
+}
+
+// runBounded runs fn and waits at most timeout for it.
+func runBounded(timeout time.Duration, fn func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		uiLog.Warn("finalize_sweep_timeout", slog.Duration("timeout", timeout))
+	}
+}
+
+// ReconcileRemovedSessionSweeps sweeps the inbox and notify-state records of
+// deletes an earlier process left unswept (it crashed or was killed while
+// they could still be undone). Run once per process, after storage loaded;
+// a no-op when storage is unavailable.
+func (h *Home) ReconcileRemovedSessionSweeps() {
+	if h.storage == nil {
+		return
+	}
+	results, err := h.storage.ReconcileRemovedSessionSweeps()
+	if err != nil {
+		uiLog.Warn("reconcile_removed_sweep_skipped", slog.String("err", err.Error()))
+	}
+	for id, r := range results {
+		logRemovedSessionCleanup("reconcile", id, r)
+	}
+	if len(results) > 0 {
+		uiLog.Info("reconcile_removed_sweep", slog.Int("swept", len(results)))
 	}
 }
 
@@ -6748,22 +6883,7 @@ func (h *Home) backgroundStatusUpdate() {
 			continue
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-			if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
-				uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
-					slog.String("instance", inst.ID), slog.String("reason", reason))
-				continue
-			}
-			h.clearOnCompactSent[inst.ID] = time.Now()
-			conductorName := conductorDisplayName(inst)
-			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
-				time.Sleep(500 * time.Millisecond)
-				msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
-				if err := clearConductorAndHeartbeat(func(body string) error {
-					return deliverToConductorPane(tmuxSess, body)
-				}, msg, 3*time.Second); err != nil {
-					uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
-				}
-			})
+			h.scheduleClearAndHeartbeat(inst, instances, tmuxSess)
 		}
 	}
 
@@ -7702,6 +7822,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.deadLetterPanel != nil {
 			h.deadLetterPanel.SetSize(msg.Width, msg.Height)
 		}
+		if h.triggersPanel != nil {
+			h.triggersPanel.SetSize(msg.Width, msg.Height)
+		}
 		if h.toolVisibilityPanel != nil {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
 		}
@@ -8445,10 +8568,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Push to undo stack before removing from group tree
 		var cleanupDone chan struct{}
+		var evictSweep tea.Cmd
 		if deletedInstance != nil {
-			h.pushUndoStack(deletedInstance)
+			evictSweep = h.pushUndoStack(deletedInstance)
 			cleanupDone = make(chan struct{})
+			h.undoMu.Lock()
 			h.undoStack[len(h.undoStack)-1].cleanupDone = cleanupDone
+			h.undoMu.Unlock()
 			// Save to recent sessions for quick re-creation
 			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
 				uiLog.Warn("save_recent_session_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
@@ -8476,13 +8602,25 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		// Update search items
 		h.search.SetItems(h.instances)
+		// Undoable: record the pending sweep before the row goes, so a crash
+		// after the delete still leaves it for the startup reconcile.
+		if deletedInstance != nil {
+			if err := h.storage.MarkPendingDeleteSweep(msg.deletedID); err != nil {
+				uiLog.Warn("mark_pending_sweep_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+			}
+		}
 		// Explicitly delete from database to prevent resurrection on reload
 		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
 		if err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+		} else if deletedInstance != nil {
+			// Undoable (ctrl+z): announce it now; the inbox and notify-state
+			// sweep (#910) waits until the delete is final (the entry leaves
+			// the undo stack, see pushUndoStack), so an undo keeps the
+			// session's pending inbox events.
+			session.PublishSessionClosed(h.profile, msg.deletedID, session.SessionClosedRemoved)
 		} else {
-			// Same best-effort cleanup as `agent-deck rm`: inbox and
-			// notify-state sweep (#910), macapp.session.closed.
+			// Nothing to undo: final now, same cleanup as `agent-deck rm`.
 			logRemovedSessionCleanup("delete", msg.deletedID, session.CleanupRemovedSession(h.profile, msg.deletedID))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
@@ -8497,7 +8635,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
 			}
 		}
-		return h, hookCleanupCmd(cleanup, cleanupDone)
+		return h, tea.Batch(hookCleanupCmd(cleanup, cleanupDone), evictSweep)
 
 	case sessionClosedMsg:
 		// Keep session metadata, just reflect runtime termination state.
@@ -8562,7 +8700,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		if msg.err != nil {
+			// The entry is off the undo stack and the session did not come
+			// back: the delete is final, so its deferred sweep runs now.
 			h.setError(fmt.Errorf("failed to restore session: %w", msg.err))
+			if msg.instance != nil {
+				return h, h.finalizeDeletesCmd([]string{msg.instance.ID})
+			}
 			return h, nil
 		}
 
@@ -9294,6 +9437,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.clearError()
 		h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 		return h, nil
+
+	case triggersTickMsg, triggersPolledMsg:
+		return h, h.handleTriggersMsg(msg)
 
 	case reviverTickMsg:
 		// Fire-and-forget reviver sweep for instances whose tmux server
@@ -10313,6 +10459,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle delivery and watcher panels (before settings panel)
+		if h.triggersPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.triggersPanel, cmd = h.triggersPanel.Update(msg)
+			return h, cmd
+		}
 		if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 			var cmd tea.Cmd
 			h.deadLetterPanel, cmd = h.deadLetterPanel.Update(msg)
@@ -11425,6 +11576,7 @@ func (h *Home) hasModalVisible() bool {
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay
 		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
+		h.triggersPanel.IsVisible() || // hotkeyTriggers overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.hookTrustDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -12640,6 +12792,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.deadLetterPanel.SetSize(h.width, h.height)
 		return h, nil
 
+	case defaultHotkeyBindings[hotkeyTriggers]:
+		// What wakes sessions (#2702). On a session a trigger wakes (its row
+		// shows ⚡N) this opens that session's reverse view; esc widens it to
+		// the full list.
+		return h, h.openTriggersPanel()
+
 	case defaultHotkeyBindings[hotkeyAgentsPanel]:
 		// Open the Agents tab. Opt-in by presence: with nothing adopted there
 		// is no panel to open and the key stays inert, so a zero-config deck
@@ -13299,8 +13457,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("nothing to undo"))
 			return h, nil
 		}
+		h.undoMu.Lock()
 		entry := h.undoStack[len(h.undoStack)-1]
 		h.undoStack = h.undoStack[:len(h.undoStack)-1]
+		h.undoMu.Unlock()
 		inst := entry.instance
 		return h, func() tea.Msg {
 			// Restart reuses the ID and can write anchors before the registry row
@@ -13321,6 +13481,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Remote decks refresh in the same keystroke, so a change made on a
 		// remote (or from another machine) shows up now, not at the next poll.
 		state := h.preserveState()
+		// The user asked for a refresh now: a host held by poll backoff is
+		// polled at once (still one poll per host at a time).
+		h.clearRemotePollBackoff("")
 		h.remoteSessionsMu.Lock()
 		h.remotesFetchActive = true // so the remote headers show "refreshing…"
 		h.remoteSessionsMu.Unlock()
@@ -14003,7 +14166,13 @@ func (h *Home) performQuit(shutdownPool bool) tea.Cmd {
 // performFinalShutdown performs the actual cleanup logic before exiting
 // This is called via quitMsg after the splash screen has had time to render
 func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
+	// Deletes still on the undo stack can no longer be undone once the TUI
+	// exits: take them here, on the Update goroutine, and sweep them below.
+	finalDeletes := undoEntryIDs(h.takeUndoStack())
 	return func() tea.Msg {
+		if len(finalDeletes) > 0 {
+			runBounded(5*time.Second, func() { finalizeRemovedSessions(h.storage, "delete", finalDeletes) })
+		}
 		h.removeHeartbeat()
 		// Stop system stats collector
 		if h.sshCollector != nil {
@@ -14197,6 +14366,34 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
+}
+
+// conductorHeartbeatDeliver types the /clear and the heartbeat into a
+// conductor pane. Tests replace it.
+var conductorHeartbeatDeliver = func(p *tmux.Session, body string) error { return deliverToConductorPane(p, body) }
+
+// scheduleClearAndHeartbeat sends /clear and then a heartbeat to a conductor
+// whose context is about to auto-compact, unless an enforced cost budget
+// refuses the delivery. It reports whether the delivery was scheduled; a
+// refused one is not marked sent, so it is tried again once the budget allows.
+func (h *Home) scheduleClearAndHeartbeat(inst *session.Instance, instances []*session.Instance, tmuxSess *tmux.Session) bool {
+	if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
+		uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
+			slog.String("instance", inst.ID), slog.String("reason", reason))
+		return false
+	}
+	h.clearOnCompactSent[inst.ID] = time.Now()
+	conductorName := conductorDisplayName(inst)
+	safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
+		time.Sleep(500 * time.Millisecond)
+		msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
+		if err := clearConductorAndHeartbeat(func(body string) error {
+			return conductorHeartbeatDeliver(tmuxSess, body)
+		}, msg, 3*time.Second); err != nil {
+			uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
+		}
+	})
+	return true
 }
 
 // agentDeliveryOverBudget reports whether an enforced cost budget
@@ -19364,6 +19561,9 @@ func (h *Home) renderFrame() string {
 	}
 
 	// Delivery and watcher panels are modal (before settings panel)
+	if h.triggersPanel.IsVisible() {
+		return h.triggersPanel.View()
+	}
 	if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 		return h.deadLetterPanel.View()
 	}
@@ -22737,9 +22937,17 @@ func (h *Home) renderSessionItem(
 	}
 	cachedViewers, cachedViewersKnown := inst.ViewersCached()
 	viewersBadgeText, viewersWidth := fitViewersBadge(cachedViewers, cachedViewersKnown, selected, badgeBudget)
+	// ⚡N: how many triggers wake this session (triggers_live.go). Read from
+	// the poll's cached map only; it shrinks and drops after the viewers
+	// badge and before the account badge.
+	triggersBudget := badgeBudget
+	if badgeBudget >= 0 {
+		triggersBudget = max(0, badgeBudget-viewersWidth)
+	}
+	triggersBadgeText, triggersWidth := fitTriggersBadge(h.triggerBadges[inst.ID], selected, triggersBudget)
 	accountBudget := instState.accountDisplay.width
 	if badgeBudget >= 0 {
-		accountBudget = min(accountBudget, badgeBudget-viewersWidth)
+		accountBudget = min(accountBudget, badgeBudget-viewersWidth-triggersWidth)
 	}
 	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
 	if accountBadge != "" {
@@ -22750,7 +22958,7 @@ func (h *Home) renderSessionItem(
 		accountBadge = accountStyle.Render(accountBadge)
 	}
 	if listWidth > 0 {
-		budget := max(0, listWidth-reserved-viewersWidth-accountWidth-1)
+		budget := max(0, listWidth-reserved-viewersWidth-triggersWidth-accountWidth-1)
 		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
@@ -22761,7 +22969,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -22778,6 +22986,7 @@ func (h *Home) renderSessionItem(
 		sshBadge,
 		agentBadge,
 		viewersBadgeText,
+		triggersBadgeText,
 		accountBadge,
 		timestampBadge,
 		childFoldBadge,
@@ -23003,16 +23212,24 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(strings.Repeat("-", max(1, min(width-4, 40))))
 	b.WriteString("\n")
 	previewContent = truncateRemotePreviewContent(previewContent)
-	if hasPreview && strings.TrimSpace(previewContent) != "" {
-		b.WriteString(previewContent)
+	// The pane's tail fits the rows left above the blank line and the attach
+	// hint: ensureExactHeight keeps the first rows of this block, so a longer
+	// body lost exactly the pane's bottom (the status line and footer).
+	rows := height - strings.Count(b.String(), "\n") - 2
+	fitted := fitRemotePreviewTail(previewContent, rows, width)
+	switch {
+	case hasPreview && len(fitted) > 0:
+		b.WriteString(strings.Join(fitted, "\n"))
 		b.WriteString("\n\n")
-	} else if hasFetched {
+	case hasPreview && strings.TrimSpace(previewContent) != "":
+		// No row left for the body: the header and the hint keep their places.
+	case hasFetched:
 		b.WriteString(dimStyle.Render("No response available yet."))
 		b.WriteString("\n\n")
-	} else if rs.Status == "running" || rs.Status == "waiting" {
+	case rs.Status == "running" || rs.Status == "waiting":
 		b.WriteString(dimStyle.Render("Fetching remote preview..."))
 		b.WriteString("\n\n")
-	} else {
+	default:
 		b.WriteString(dimStyle.Render("No response available yet."))
 		b.WriteString("\n\n")
 	}

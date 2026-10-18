@@ -1175,6 +1175,8 @@ type costEventFile struct {
 	// MessageUUID is the transcript record the usage came from, so the cost
 	// event gets the same id the recall importer gives that record.
 	MessageUUID string `json:"message_uuid,omitempty"`
+	// MessageID is the API message id; the cost event is keyed on it.
+	MessageID string `json:"message_id,omitempty"`
 }
 
 // stopHookPayload extracts transcript_path from the Stop hook payload.
@@ -1189,6 +1191,7 @@ type transcriptMessage struct {
 	Type        string `json:"type"`
 	IsSidechain bool   `json:"isSidechain"`
 	Message     struct {
+		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage struct {
 			InputTokens              int64 `json:"input_tokens"`
@@ -1267,6 +1270,7 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		CacheWriteTokens: usage.CacheCreationInputTokens,
 		Timestamp:        ts,
 		MessageUUID:      msg.UUID,
+		MessageID:        msg.Message.ID,
 	}
 
 	jsonData, err := json.Marshal(cf)

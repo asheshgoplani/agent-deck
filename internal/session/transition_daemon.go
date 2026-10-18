@@ -15,6 +15,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 	"github.com/asheshgoplani/agent-deck/internal/health"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 const (
@@ -488,6 +489,17 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		return notifyPollSlow
+	}
+	if len(instances) > 0 {
+		// Issue #2770: warm the shared tmux caches once per pass, as the TUI
+		// (backgroundStatusUpdate), web and CLI status paths do once per tick.
+		// Without it every Exists() (hook rebind gate, turn liveness) and
+		// IsPaneDead() (UpdateStatus) below missed the cache and spawned its
+		// own has-session / list-panes: ~5 tmux processes per session per
+		// pass. Exists() still trusts only a positive hit and confirms a miss
+		// (or a session on another socket) with a direct probe.
+		tmux.RefreshExistingSessions()
+		tmux.RefreshPaneInfoCache()
 	}
 
 	byID := make(map[string]*Instance, len(instances))

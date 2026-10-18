@@ -85,6 +85,13 @@ func remoteCommandArgs(args []string) ([]string, error) {
 				return nil, err
 			}
 			return append([]string(nil), args...), nil
+		case "triggers":
+			// Read-only list only (issue #2702): mute, unmute, run, scan and
+			// a second --host hop never travel.
+			if err := validateRemoteTriggersArgs(args[1:]); err != nil {
+				return nil, err
+			}
+			return append([]string(nil), args...), nil
 		case "recall":
 			// Read-only forwards over the remote's own index; the option
 			// set is closed (remoteRecallOptions) so a delivery (--into),

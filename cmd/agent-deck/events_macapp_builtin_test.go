@@ -26,6 +26,12 @@ func TestEventsPublishBrowserKindsUngated(t *testing.T) {
 			t.Fatalf("%s gated: %d %s %s", kind, code, out, stderr)
 		}
 	}
+	// A browser request is refused first by the [browser] enabled opt-in
+	// (TestEventsPublishBrowserRequestNeedsBrowserEnabled), then by plugins.
+	if out, stderr, code := runAgentDeck(t, home, "events", "publish", "--kind", events.KindMacappBrowserRequest); code != 2 || !strings.Contains(out+stderr, "browser.enabled") {
+		t.Fatalf("browser request: %d %s %s", code, out, stderr)
+	}
+	writeMacappConfig(t, home, "[macapp]\nplugins = false\n\n[browser]\nenabled = true\n")
 	for _, kind := range []string{events.KindMacappBrowserRequest, events.KindMacappSessionClosed, "macapp.browser.open", "macapp.browser.reload", "macapp.browser", "macapp.app.focus.other", "macapp.session.closed.x"} {
 		out, stderr, code := runAgentDeck(t, home, "events", "publish", "--kind", kind)
 		if code != 2 || !strings.Contains(out+stderr, "plugins = true") {
@@ -118,5 +124,22 @@ func TestEventsProfileFlagRefusesPaths(t *testing.T) {
 		if err == nil || timedOut || !strings.Contains(string(out), "not a path") {
 			t.Fatalf("follow --profile %s: %v %s", name, err, out)
 		}
+	}
+}
+
+// Kind names are lowercase. A mixed-case spelling of a gated kind (such as
+// macapp.Browser.Request) must not slip past an exact-match gate as an
+// "unknown" kind: publish refuses it before any gate is consulted.
+func TestEventsPublishRefusesNonLowercaseKind(t *testing.T) {
+	home := t.TempDir()
+	writeMacappConfig(t, home, "[macapp]\nplugins = true\n")
+	for _, kind := range []string{"macapp.Browser.Request", "MACAPP.open", "macapp.Open.Ack", "macapp.session.Closed"} {
+		out, stderr, code := runAgentDeck(t, home, "events", "publish", "--kind", kind, "--session", "s", "--data", `{"v":1}`)
+		if code != 2 || !strings.Contains(out+stderr, "lowercase") {
+			t.Fatalf("%s: exit=%d %s %s, want exit 2 naming lowercase", kind, code, out, stderr)
+		}
+	}
+	if got := openTestBusDir(t, home).Kinds; len(got) != 0 {
+		t.Fatalf("a mixed-case kind was published: %v", got)
 	}
 }

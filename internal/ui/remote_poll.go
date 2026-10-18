@@ -29,10 +29,19 @@ func (h *Home) seedRemotePolls(remotes map[string]session.RemoteConfig) {
 			delete(h.remoteSessions, name)
 			delete(h.remoteGroups, name)
 			delete(h.remoteFromCache, name)
+			delete(h.remotePollBackoffs, name)
 		}
 		state := states[name]
 		if !state.Matches(rc) {
 			state = session.RemotePollState{LastPollStatus: "unknown"}
+			// The record this hold was saved with is gone: it was reset
+			// (`remote list --retry`, possibly from another process), so
+			// nothing justifies holding the host back. A hold whose record
+			// never reached the cache stays: dropping it would poll a
+			// failing host on every tick.
+			if h.remotePollBackoffs[name].saved {
+				delete(h.remotePollBackoffs, name)
+			}
 		}
 		h.remotePolls[name] = state
 		if _, exists := h.remoteSessions[name]; !exists {
@@ -46,6 +55,11 @@ func (h *Home) seedRemotePolls(remotes map[string]session.RemoteConfig) {
 	for name := range h.remotePolls {
 		if _, exists := remotes[name]; !exists {
 			delete(h.remotePolls, name)
+		}
+	}
+	for name := range h.remotePollBackoffs {
+		if _, exists := remotes[name]; !exists {
+			delete(h.remotePollBackoffs, name)
 		}
 	}
 }
@@ -66,7 +80,9 @@ func (h *Home) beginRemotePoll(name string, rc session.RemoteConfig) bool {
 	h.remoteSessionsMu.Lock()
 	defer h.remoteSessionsMu.Unlock()
 	state := h.remotePolls[name]
-	if h.ctx.Err() != nil || h.remotePollActive[name] || (state.Matches(rc) && state.AuthBlocked(time.Now())) {
+	// One poll per host at a time, and none while the host is held by
+	// backoff after slow or failed polls (docs/remote-polling-contract.md).
+	if h.ctx.Err() != nil || h.remotePollActive[name] || (state.Matches(rc) && state.AuthBlocked(time.Now())) || h.remotePollBackoffs[name].active(h.remoteClock()) {
 		return false
 	}
 	if h.remotePollActive == nil {
@@ -80,9 +96,12 @@ func (h *Home) finishRemotePoll(name string, rc session.RemoteConfig, started ti
 	h.remotePollMu.Lock()
 	defer h.remotePollMu.Unlock()
 	configured := h.remotePollConfigMatches(name, rc)
+	elapsed := h.remoteClock().Sub(started)
+	saved := false
 	// Shutdown cancellation is not a new observation about the host.
 	if h.ctx.Err() == nil && configured {
-		state := session.RecordRemotePoll(name, rc, time.Since(started), err)
+		var state session.RemotePollState
+		state, saved = session.RecordRemotePollSaved(name, rc, elapsed, err)
 		h.remoteSessionsMu.Lock()
 		if h.remotePolls == nil {
 			h.remotePolls = make(map[string]session.RemotePollState)
@@ -91,6 +110,9 @@ func (h *Home) finishRemotePoll(name string, rc session.RemoteConfig, started ti
 		h.remoteSessionsMu.Unlock()
 	}
 	h.remoteSessionsMu.Lock()
+	if h.ctx.Err() == nil && configured {
+		h.recordRemotePollBackoffLocked(name, elapsed, err, saved)
+	}
 	delete(h.remotePollActive, name)
 	h.remoteSessionsMu.Unlock()
 }
@@ -195,6 +217,7 @@ func (h *Home) retryRemotePoll(name string) tea.Cmd {
 		if err != nil {
 			return remotePollRetryFailedMsg{err}
 		}
+		h.clearRemotePollBackoff(name)
 		h.seedRemotePolls(config.Remotes)
 		names := make([]string, 0, len(config.Remotes))
 		for configured := range config.Remotes {

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -88,8 +89,52 @@ func seedGoldensStore(t *testing.T, home string) {
 	if err := db.SaveInstances(instances); err != nil {
 		t.Fatalf("seeding instances: %v", err)
 	}
+	seedGoldensTriggers(t, db)
 
 	writeGoldensConfig(t, home)
+}
+
+// seedGoldensTriggers writes the triggers fixture (issue #2702): a heartbeat
+// that delivers to a live title, a scanned systemd unit aimed at a title no
+// session has (dead target, noisy), a scanned launchd job by id that never
+// fired, and a shell sender that only --all shows. Fires are relative to
+// the real clock (fires_24h counts the last day); their timestamps scrub.
+func seedGoldensTriggers(t *testing.T, db *statedb.StateDB) {
+	t.Helper()
+	if err := db.ReplaceScannedTriggers([]statedb.TriggerRow{
+		{ID: "systemd:agentdeck-overnight", Kind: "systemd", Source: "agentdeck-overnight", ConfigPath: "/home/u/.config/systemd/user/agentdeck-overnight.service",
+			Verb: "send", Target: "overnight-orchestrator", TargetBy: "title", Schedule: "every 5min", Unit: "agentdeck-overnight"},
+		{ID: "launchd:com.golden.poller", Kind: "launchd", Source: "com.golden.poller", ConfigPath: "/Users/u/Library/LaunchAgents/com.golden.poller.plist",
+			Verb: "send", Target: "golden-sess-3", TargetBy: "id", Schedule: "every 15m", Unit: "com.golden.poller"},
+	}); err != nil {
+		t.Fatalf("seeding scanned triggers: %v", err)
+	}
+	for _, row := range []statedb.TriggerRow{
+		{ID: "heartbeat:golden", Kind: "heartbeat", Source: "golden", Verb: "send", Target: "claude idle", TargetBy: "title"},
+		{ID: "systemd:agentdeck-overnight", Kind: "systemd", Source: "overnight manager", Verb: "send", Target: "overnight-orchestrator", TargetBy: "title"},
+		{ID: "cli:cli", Kind: "cli", Source: "cli", Verb: "send", Target: "golden-sess-1", TargetBy: "id", Inferred: true},
+	} {
+		if err := db.UpsertPushedTrigger(row); err != nil {
+			t.Fatalf("seeding pushed trigger %s: %v", row.ID, err)
+		}
+	}
+	at := time.Now().Add(-3 * time.Hour)
+	for i, f := range []statedb.TriggerFireRow{
+		{TriggerID: "heartbeat:golden", Target: "claude idle", TargetSessionID: "golden-sess-1", Outcome: "delivered", Line: "[HEARTBEAT] [golden] 1 waiting", TextHash: "a1"},
+		{TriggerID: "systemd:agentdeck-overnight", Target: "overnight-orchestrator", Outcome: "dead-target", Line: "tick: 0 waiting jobs", TextHash: "b1"},
+		{TriggerID: "systemd:agentdeck-overnight", Target: "overnight-orchestrator", Outcome: "dead-target", Line: "tick: 0 waiting jobs", TextHash: "b1"},
+		{TriggerID: "cli:cli", Target: "golden-sess-1", TargetSessionID: "golden-sess-1", Outcome: "delivered", Line: "hello", TextHash: "c1"},
+	} {
+		f.TS = at.Add(time.Duration(i) * time.Second)
+		if _, err := db.RecordTriggerFire(f); err != nil {
+			t.Fatalf("seeding trigger fire: %v", err)
+		}
+	}
+	// A fresh scan stamp, so `triggers` does not rescan the sandbox HOME and
+	// drop the scanned fixture rows.
+	if err := db.SetMeta("triggers_scanned_at", strconv.FormatInt(time.Now().Unix(), 10)); err != nil {
+		t.Fatalf("seeding scan stamp: %v", err)
+	}
 }
 
 // writeGoldensConfig writes the one remote entry the fixture calls for,

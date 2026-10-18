@@ -2,6 +2,7 @@ package events
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -203,7 +204,9 @@ func (b *Bus) refreshLocked() error {
 	if err != nil {
 		return err
 	}
+	var prevInfo os.FileInfo
 	if b.activeFile != nil {
+		prevInfo, _ = b.activeFile.Stat()
 		_ = b.activeFile.Close()
 	}
 	flags := os.O_CREATE | os.O_RDWR | os.O_APPEND
@@ -254,7 +257,7 @@ func (b *Bus) refreshLocked() error {
 		}
 		last = max(last, spent)
 		if last != b.cursor {
-			b.activeFrames = countLines(b.dir, activeSegmentName)
+			b.activeFrames = b.recountActiveLocked(prevInfo, first, size)
 		}
 		b.cursor = last
 		b.activeStart = first
@@ -262,6 +265,54 @@ func (b *Bus) refreshLocked() error {
 	b.activeBytes = size
 	return nil
 }
+
+// recountActiveLocked returns the number of lines in the active file after
+// another writer appended to it. When the file is the one this Bus last saw
+// (same inode, same first frame) and only grew, just the appended byte range
+// is read and its lines are added to the known count: a busy profile's
+// active segment is megabytes, and re-reading all of it on every sync tick
+// after a foreign append cost the notify daemon megabytes per second
+// (#2770). A rotation, a shrink or any doubt falls back to the full count.
+func (b *Bus) recountActiveLocked(prevInfo os.FileInfo, first Cursor, size int64) int {
+	from := b.activeBytes
+	if prevInfo != nil && b.activeFile != nil && first == b.activeStart &&
+		from > 0 && size >= from && prevInfo.Size() >= from {
+		if info, err := b.activeFile.Stat(); err == nil && os.SameFile(prevInfo, info) {
+			if n, ok := countNewlinesFrom(b.activeFile, from, size); ok {
+				return b.activeFrames + n
+			}
+		}
+	}
+	return countLines(b.dir, activeSegmentName)
+}
+
+// countNewlinesFrom counts newlines in f's byte range [from, to). The byte
+// just before from must be a newline (the known count ended on a whole
+// line); otherwise ok is false and the caller recounts the whole file.
+func countNewlinesFrom(f *os.File, from, to int64) (int, bool) {
+	var edge [1]byte
+	if _, err := f.ReadAt(edge[:], from-1); err != nil || edge[0] != '\n' {
+		return 0, false
+	}
+	countedBytes.Add(1)
+	buf := make([]byte, 64*1024)
+	n := 0
+	for off := from; off < to; {
+		want := min(int64(len(buf)), to-off)
+		got, err := f.ReadAt(buf[:want], off)
+		countedBytes.Add(int64(got))
+		n += bytes.Count(buf[:got], []byte{'\n'})
+		off += int64(got)
+		if err != nil && (err != io.EOF || off < to) {
+			return 0, false
+		}
+	}
+	return n, true
+}
+
+// countedBytes counts bytes read to count active-file lines; tests use it to
+// prove a sync tick after a foreign append reads only the appended range.
+var countedBytes atomic.Int64
 
 const dropsFileName = "drops.count"
 const cursorFileName = "cursor.state"

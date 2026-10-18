@@ -1,0 +1,11 @@
+Usage: agent-deck triggers mute <id> [--for 24h] [--json]
+
+Mute a trigger at the receiving end: its sends are accepted, logged with
+outcome muted and never typed into the pane. The host job keeps running;
+agent-deck never pauses, stops or disables it. The mute expires on its own.
+
+Options:
+  -for duration
+    	How long the mute lasts (default 24h0m0s)
+  -json
+    	Output as JSON

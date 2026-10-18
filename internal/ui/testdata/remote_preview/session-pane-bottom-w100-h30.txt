@@ -1,0 +1,30 @@
+worker  ◐ waiting
+
+Remote:  deckbox
+Path:    
+Tool:    claude
+Viewers: unknown (remote did not report viewers)
+accounts not polled yet
+
+Last response
+----------------------------------------
+⋮ 108 more lines above
+⏺ transcript line 109
+⏺ transcript line 110
+⏺ transcript line 111
+⏺ transcript line 112
+⏺ transcript line 113
+⏺ transcript line 114
+⏺ transcript line 115
+⏺ transcript line 116
+⏺ transcript line 117
+⏺ transcript line 118
+⏺ transcript line 119
+⏺ transcript line 120
+──────────────────────────────────────────────────────────────────────────────────────────...
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────...
+  Model X | Context 41.0% | 5h 24.0% | 7d 57.0%
+  ⏵⏵ bypass permissions on · 1 shell
+
+Press Enter to attach via SSH

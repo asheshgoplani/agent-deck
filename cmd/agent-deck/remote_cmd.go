@@ -205,6 +205,7 @@ func printRemoteUsage() {
 	fmt.Println("  session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),")
 	fmt.Println("  recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,")
 	fmt.Println("  session queue list/release/cancel (queue entry IDs; --json supported),")
+	fmt.Println("  triggers (read-only list: --session/--kind/--health/--all/--json),")
 	fmt.Println("  events publish forwards the Mac app's replies only (macapp.open.ack, macapp.browser.response,")
 	fmt.Println("  macapp.app.focus) with --data-file - on stdin, at most 2 MiB.")
 	fmt.Println("  Follow streams use --jsonl; events --since resumes a host cursor.")
@@ -783,30 +784,29 @@ func handleRemoteAttach(args []string) {
 	runner := session.NewSSHRunner(remoteName, rc)
 
 	ctx := context.Background()
-	sessions, _, err := runner.FetchSessions(ctx)
-	if err != nil {
-		fmt.Printf("Error: failed to fetch remote sessions: %v\n", err)
-		exitCLI(1)
-	}
+	match := resolveRemoteSessionRef(ctx, runner, remoteName, sessionRef)
 
-	// Find matching session by title or ID prefix
-	var matchID string
-	for _, s := range sessions {
-		if s.Title == sessionRef || strings.HasPrefix(s.ID, sessionRef) {
-			matchID = s.ID
-			break
-		}
-	}
-
-	if matchID == "" {
-		fmt.Printf("Error: session '%s' not found on remote '%s'\n", sessionRef, remoteName)
-		exitCLI(1)
-	}
-
-	if err := runner.Attach(matchID); err != nil {
+	if err := runner.Attach(match.ID); err != nil {
 		fmt.Printf("Error: failed to attach: %v\n", err)
 		exitCLI(1)
 	}
+}
+
+// resolveRemoteSessionRef resolves one remote session by title or ID for a
+// single-target command, without listing the whole remote
+// (SSHRunner.ResolveSession), and exits with the CLI's usual message when
+// it cannot.
+func resolveRemoteSessionRef(ctx context.Context, runner *session.SSHRunner, remoteName, ref string) session.RemoteSessionInfo {
+	match, err := runner.ResolveSession(ctx, ref)
+	switch {
+	case errors.Is(err, session.ErrRemoteSessionNotFound):
+		fmt.Printf("Error: session '%s' not found on remote '%s'\n", ref, remoteName)
+		exitCLI(1)
+	case err != nil:
+		fmt.Printf("Error: failed to resolve remote session: %v\n", err)
+		exitCLI(1)
+	}
+	return match
 }
 
 func handleRemoteRename(args []string) {
@@ -832,26 +832,8 @@ func handleRemoteRename(args []string) {
 	runner := session.NewSSHRunner(remoteName, rc)
 	ctx := context.Background()
 
-	// Resolve session reference
-	sessions, _, err := runner.FetchSessions(ctx)
-	if err != nil {
-		fmt.Printf("Error: failed to fetch remote sessions: %v\n", err)
-		exitCLI(1)
-	}
-
-	var matchID, oldTitle string
-	for _, s := range sessions {
-		if s.Title == sessionRef || strings.HasPrefix(s.ID, sessionRef) {
-			matchID = s.ID
-			oldTitle = s.Title
-			break
-		}
-	}
-
-	if matchID == "" {
-		fmt.Printf("Error: session '%s' not found on remote '%s'\n", sessionRef, remoteName)
-		exitCLI(1)
-	}
+	match := resolveRemoteSessionRef(ctx, runner, remoteName, sessionRef)
+	matchID, oldTitle := match.ID, match.Title
 
 	_, err = runner.RunCommand(ctx, "rename", matchID, newTitle)
 	if err != nil {

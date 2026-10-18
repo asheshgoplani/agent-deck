@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -35,6 +37,33 @@ func validateRemoteEventsArgs(args []string) error {
 			return fmt.Errorf("option --%s takes no value", name)
 		}
 		if value && !inline {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				continue
+			}
+			return fmt.Errorf("option --%s needs a value", name)
+		}
+	}
+	return nil
+}
+
+// validateRemoteTriggersArgs admits `triggers [list]` with the list's
+// filter flags only: a closed, read-only option set.
+func validateRemoteTriggersArgs(args []string) error {
+	if len(args) > 0 && args[0] == "list" {
+		args = args[1:]
+	}
+	options := map[string]bool{"json": false, "all": false, "session": true, "kind": true, "health": true, "help": false, "h": false}
+	for i := 0; i < len(args); i++ {
+		name, _, inline := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+		takesValue, known := options[name]
+		if !strings.HasPrefix(args[i], "-") || !known {
+			return fmt.Errorf("unsupported remote command: triggers forwards the read-only list only (--session, --kind, --health, --all, --json), not %q", args[i])
+		}
+		if !takesValue && inline {
+			return fmt.Errorf("option --%s takes no value", name)
+		}
+		if takesValue && !inline {
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
 				continue
@@ -98,7 +127,8 @@ func hasJSONL(args []string) bool {
 }
 
 // remotePublishDataCap bounds the stdin payload of a forwarded events
-// publish (a browser response carrying a 1.5 MiB screenshot fits).
+// publish: a browser shot reply at macapp.MaxShotBytes (1,400,000 bytes,
+// 1,866,668 in base64) fits with its envelope.
 const remotePublishDataCap = 2 << 20
 
 // remotePublishFromRemoteFlag is added to every forwarded publish. The box
@@ -197,7 +227,15 @@ func runRemotePublishIO(ctx context.Context, runner remotePublishRunner, name st
 	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	forwarded := append(append([]string(nil), args...), remotePublishFromRemoteFlag)
-	if err := runner.RunPublishIO(timeoutCtx, payload, stdout, stderr, remoteUnsupportedAnswer(name, args), forwarded...); err != nil {
+	err := runner.RunPublishIO(timeoutCtx, payload, stdout, stderr, remoteUnsupportedAnswer(name, args), forwarded...)
+	// The box (or the probe, for an unsupported box) already wrote its own
+	// message; pass its exit code through so a caller can tell a refusal
+	// (exit 2) from a failure (exit 1), with no extra "exit status" line.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return exitErr.ExitCode(), nil
+	}
+	if err != nil {
 		return 1, err
 	}
 	return 0, nil

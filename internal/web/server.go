@@ -407,8 +407,19 @@ func (s *Server) listenAndServe() error {
 	return s.httpServer.Serve(ln)
 }
 
-// Shutdown gracefully stops the server.
+// pendingDeleteFinalizer is implemented by a mutator whose deletes stay
+// undoable for a while (ui.WebMutator): once the server stops they can no
+// longer be undone, so Shutdown finalizes them.
+type pendingDeleteFinalizer interface {
+	FinalizePendingDeletes()
+}
+
+// Shutdown gracefully stops the server. Deletes still undoable through the
+// mutator are finalized once the listener is down.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if f, ok := s.mutator.(pendingDeleteFinalizer); ok {
+		defer f.FinalizePendingDeletes()
+	}
 	if s.cancelBase != nil {
 		// Signal long-lived handlers (SSE/WS) to stop promptly.
 		s.cancelBase()
