@@ -94,27 +94,45 @@ export function shouldConfirmLinkOpen(url, options = {}) {
   return !isTrustedLinkTarget(url, trustedDomains)
 }
 
-// The path a file:// URL names, decoded; the whole URL when it names another
-// host (a UNC-style share); '' for any other scheme or an unparseable URL. A
-// path that would decode to control characters stays percent-encoded, so a
-// pasted path can't smuggle in a second shell line.
-export function localFilePath(url) {
+// Characters a copied path must not carry decoded: C0 and C1 controls (a
+// newline would add a shell line) and bidi overrides (they can make a path
+// read differently from what it is).
+const UNSAFE_PATH_CHARS = /[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+
+function parseFileLink(url) {
   let parsed
   try {
     parsed = new URL(String(url))
   } catch (_e) {
-    return ''
+    return null
   }
-  if (parsed.protocol !== 'file:') return ''
-  const host = parsed.hostname.toLowerCase()
-  if (host && host !== 'localhost') return parsed.href
+  return parsed.protocol === 'file:' ? parsed : null
+}
+
+// The path a file:// URL names, decoded; '' for any other scheme or an
+// unparseable URL. A path that would decode to unsafe characters stays
+// percent-encoded, so a pasted path can't smuggle in a second shell line.
+export function localFilePath(url) {
+  const parsed = parseFileLink(url)
+  if (!parsed) return ''
   let path = parsed.pathname
   try {
     const decoded = decodeURIComponent(path)
-    if (!/[\x00-\x1f\x7f]/.test(decoded)) path = decoded
+    if (!UNSAFE_PATH_CHARS.test(decoded)) path = decoded
   } catch (_e) { /* malformed escape: keep it encoded */ }
   // file:///C:/x names the Windows path C:/x.
   return /^\/[A-Za-z]:\//.test(path) ? path.slice(1) : path
+}
+
+// The host a file:// URL names, '' for none or localhost. `ls --hyperlink`
+// and the OSC 8 convention put the pane's hostname here; the browser can't
+// tell whether that is this machine, so the path is used either way and the
+// toast names the host.
+export function fileLinkHost(url) {
+  const parsed = parseFileLink(url)
+  if (!parsed) return ''
+  const host = parsed.hostname.toLowerCase()
+  return host === 'localhost' ? '' : host
 }
 
 // Keeps a toast readable (and the toast history small) for a huge data: URL.
@@ -124,16 +142,17 @@ function clip(text, max = 200) {
 
 // Default for a file:// link: copy the path where the clipboard API exists
 // (secure origins only) and tell the user, instead of a tab that stays blank.
-function reportFileLink(path, win) {
-  const clip = win && win.navigator && win.navigator.clipboard
-  if (clip && clip.writeText) {
-    clip.writeText(path).then(
-      () => addToast(`Local file links can't open in the browser. Path copied: ${path}`, 'info'),
-      () => addToast(`Local file links can't open in the browser: ${path}`, 'info'),
+function reportFileLink(path, host, win) {
+  const shown = clip(path) + (host ? ` (on ${host})` : '')
+  const clipboard = win && win.navigator && win.navigator.clipboard
+  if (clipboard && clipboard.writeText) {
+    clipboard.writeText(path).then(
+      () => addToast(`Local file links can't open in the browser. Path copied: ${shown}`, 'info'),
+      () => addToast(`Local file links can't open in the browser: ${shown}`, 'info'),
     )
     return
   }
-  addToast(`Local file links can't open in the browser: ${path}`, 'info')
+  addToast(`Local file links can't open in the browser: ${shown}`, 'info')
 }
 
 // Applies the policy, then opens the link the way xterm's built-in does.
@@ -144,7 +163,7 @@ export function openTerminalLink(url, options = {}, env = {}) {
   const filePath = localFilePath(url)
   if (filePath) {
     if (env.onFileLink) env.onFileLink(filePath)
-    else reportFileLink(filePath, win)
+    else reportFileLink(filePath, fileLinkHost(url), win)
     return false
   }
   // The handler sets allowNonHttpProtocols so file:// links exist at all, which
@@ -247,4 +266,15 @@ export function installModifierClickLinks(container, handler, { isMac, signal } 
     swallowing = false
     swallow(ev)
   }, opts)
+  // A press dragged out and released outside the terminal never reaches the
+  // listeners above, so forget it; else a later plain release over the same
+  // link would open it and every mouseup would be swallowed.
+  const doc = container.ownerDocument
+  const forgetOutside = (ev) => {
+    if (container.contains(ev.target)) return
+    swallowing = false
+    pressedLink = ''
+  }
+  doc.addEventListener('mousedown', forgetOutside, opts)
+  doc.addEventListener('mouseup', forgetOutside, opts)
 }

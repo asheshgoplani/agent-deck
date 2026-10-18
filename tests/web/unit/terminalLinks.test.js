@@ -256,9 +256,46 @@ describe('file:// links (#2676)', () => {
     expect(localFilePath('file:///C:/Users/me/r.html')).toBe('C:/Users/me/r.html')
   })
 
-  it('keeps the whole URL for a file link on another host', async () => {
+  it('keeps C1 controls and bidi overrides percent-encoded too', async () => {
     const { localFilePath } = await load()
-    expect(localFilePath('file://fileserver/share/x.txt')).toBe('file://fileserver/share/x.txt')
+    expect(localFilePath('file:///tmp/x%C2%9By')).toBe('/tmp/x%C2%9By')
+    expect(localFilePath('file:///tmp/%E2%80%AEtxt.exe')).toBe('/tmp/%E2%80%AEtxt.exe')
+  })
+
+  // `ls --hyperlink` and the OSC 8 convention put the pane's hostname in the
+  // URL. The browser can't tell whether that is this host, so the path is
+  // used and the toast names the host.
+  it('uses the path of a file link that names a host', async () => {
+    const { localFilePath, fileLinkHost } = await load()
+    expect(localFilePath('file://deckbox/home/me/r%20x.txt')).toBe('/home/me/r x.txt')
+    expect(fileLinkHost('file://deckbox/home/me/r.txt')).toBe('deckbox')
+    expect(fileLinkHost('file://localhost/home/me/r.txt')).toBe('')
+    expect(fileLinkHost('file:///home/me/r.txt')).toBe('')
+  })
+
+  it('names the host in the toast for a hosted file link', async () => {
+    const { openTerminalLink } = await load()
+    const { toastsSignal } = await import('../../../internal/web/static/app/toasts.js')
+    toastsSignal.value = []
+    const writeText = vi.fn(() => Promise.resolve())
+    openTerminalLink('file://deckbox/home/me/r.txt', {}, { win: { open: vi.fn(), navigator: { clipboard: { writeText } } } })
+    await new Promise((r) => setTimeout(r))
+    expect(writeText).toHaveBeenCalledWith('/home/me/r.txt')
+    const last = toastsSignal.value[toastsSignal.value.length - 1]
+    expect(last.message).toContain('Path copied: /home/me/r.txt')
+    expect(last.message).toContain('deckbox')
+  })
+
+  it('cuts a very long path short in the toast but copies all of it', async () => {
+    const { openTerminalLink } = await load()
+    const { toastsSignal } = await import('../../../internal/web/static/app/toasts.js')
+    toastsSignal.value = []
+    const long = '/tmp/' + 'a'.repeat(1000)
+    const writeText = vi.fn(() => Promise.resolve())
+    openTerminalLink('file://' + long, {}, { win: { open: vi.fn(), navigator: { clipboard: { writeText } } } })
+    await new Promise((r) => setTimeout(r))
+    expect(writeText).toHaveBeenCalledWith(long)
+    expect(toastsSignal.value[toastsSignal.value.length - 1].message.length).toBeLessThan(300)
   })
 
   it('never opens a window or confirms; hands the path to onFileLink', async () => {
@@ -409,6 +446,35 @@ describe('modifier-click links (#2675)', () => {
     press(inner, 'click', { metaKey: true, detail: 2 })
     expect(opened).toEqual(['https://example.com/a'])
     expect(reached).toEqual([])
+  })
+
+  // Lane review: a Cmd-press on the link, dragged out and released outside
+  // the terminal, must not leave the press armed for a later plain release.
+  it('a modifier press released outside the terminal is forgotten', async () => {
+    const { handler, inner, opened, reached } = await setup()
+    const outside = document.createElement('div')
+    document.body.appendChild(outside)
+    handler.hover(new MouseEvent('mousemove'), 'https://example.com/a', {})
+    press(inner, 'mousedown', { metaKey: true })
+    press(outside, 'mouseup', { metaKey: true })
+    // A plain drag started outside and released over the same link.
+    press(outside, 'mousedown', {})
+    press(inner, 'mouseup', {})
+    expect(opened).toEqual([])
+    expect(reached).toEqual(['mouseup'])
+  })
+
+  it('a release outside the terminal stops the swallowing at once', async () => {
+    const { handler, inner, opened, reached } = await setup()
+    const outside = document.createElement('div')
+    document.body.appendChild(outside)
+    handler.hover(new MouseEvent('mousemove'), 'https://example.com/a', {})
+    press(inner, 'mousedown', { metaKey: true })
+    press(outside, 'mouseup', { metaKey: true })
+    // No new press inside yet: the next release over the link is not ours.
+    press(inner, 'mouseup', {})
+    expect(opened).toEqual([])
+    expect(reached).toEqual(['mouseup'])
   })
 
   it('a plain click on a hovered link still reaches the terminal', async () => {
