@@ -141,13 +141,7 @@ func TestIssue2664_OpenCodeProbeFailureFallsBack(t *testing.T) {
 			if got := KnownModelIDsForTool("opencode"); !slices.Equal(got, staticModelIDsForTool("opencode")) {
 				t.Fatalf("got %v, want the static catalog", got)
 			}
-			path, err := modelProbeCachePath("opencode")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("a failed probe must not be cached on disk (stat err %v)", err)
-			}
+			assertFailureCachedBriefly(t, "opencode")
 		})
 	}
 }
@@ -301,28 +295,80 @@ list = ["acme/nova-2", "local/qwen"]
 	}
 }
 
-// In a long-lived process (after WarmModelCatalog) a lookup never waits on the
-// CLI: it answers from the static catalog while the probe runs, then from the
-// probe.
-func TestIssue2664_BackgroundLookupNeverWaits(t *testing.T) {
-	installFakeOpenCode(t, `sleep 1; cat "$FAKE_OPENCODE_FIXTURE"`)
+// In a long-lived process (after WarmModelCatalog) the first lookup waits,
+// so early validation sees the probed list; a later re-probe runs in the
+// background while lookups keep the previous answer.
+func TestIssue2664_BackgroundReprobeNeverWaits(t *testing.T) {
+	f := installFakeOpenCode(t, fakeOpenCodeOK)
 	modelProbeBackground.Store(true)
 	t.Cleanup(func() { modelProbeBackground.Store(false) })
+
+	if got := KnownModelIDsForTool("opencode"); got[0] != "opencode/big-pickle" {
+		t.Fatalf("first lookup should wait for the probe, got %v", got)
+	}
+	f.writeStub(t, "opencode", `sleep 1; echo acme/nova-3`)
+	ageModelProbe(t, "opencode", modelProbeTTL+time.Minute)
 
 	start := time.Now()
 	got := KnownModelIDsForTool("opencode")
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("lookup waited %s on the probe", elapsed)
+		t.Fatalf("re-probe lookup waited %s", elapsed)
 	}
-	if !slices.Equal(got, staticModelIDsForTool("opencode")) {
-		t.Fatalf("while probing, got %v, want the static catalog", got)
+	if got[0] != "opencode/big-pickle" {
+		t.Fatalf("while re-probing, got %v, want the previous answer", got)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for KnownModelIDsForTool("opencode")[0] != "opencode/big-pickle" {
+	for KnownModelIDsForTool("opencode")[0] != "acme/nova-3" {
 		if time.Now().After(deadline) {
-			t.Fatal("background probe never landed")
+			t.Fatal("background re-probe never landed")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Test binaries share one process, so WarmModelCatalog must not switch them
+// to background mode, and ResetModelProbeMemo clears it.
+func TestIssue2664_BackgroundModeScopedToRealRuns(t *testing.T) {
+	installFakeOpenCode(t, fakeOpenCodeOK)
+	WarmModelCatalog()
+	if modelProbeBackground.Load() {
+		t.Fatal("WarmModelCatalog switched a test binary to background mode")
+	}
+	modelProbeBackground.Store(true)
+	ResetModelProbeMemo()
+	if modelProbeBackground.Load() {
+		t.Fatal("ResetModelProbeMemo must clear background mode")
+	}
+}
+
+// A failure is remembered on disk for the backoff, so the next short-lived
+// process does not wait on a broken CLI again; after it, the probe retries.
+func TestIssue2664_FailureSkipsNextProcessWithinBackoff(t *testing.T) {
+	f := installFakeOpenCode(t, `sleep 0.2; exit 1`)
+	KnownModelIDsForTool("opencode")
+	ResetModelProbeMemo() // a new process
+	if got := KnownModelIDsForTool("opencode"); !slices.Equal(got, staticModelIDsForTool("opencode")) {
+		t.Fatalf("got %v, want the static catalog", got)
+	}
+	if n := f.probeCalls(t); n != 1 {
+		t.Fatalf("%d probe runs, want 1 (the failure is cached for the backoff)", n)
+	}
+	ageModelProbe(t, "opencode", modelProbeFailureBackoff)
+	ResetModelProbeMemo()
+	KnownModelIDsForTool("opencode")
+	if n := f.probeCalls(t); n != 2 {
+		t.Fatalf("%d probe runs, want 2 (past the backoff it retries)", n)
+	}
+}
+
+func TestIssue2664_CommandParsing(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	if got := probeBinaryFromCommand(`OPENCODE_CONFIG="a b.json" opencode --x`, "opencode"); got != "opencode" {
+		t.Fatalf("binary = %q", got)
+	}
+	got := probeEnvFromCommand(`A="a b" B='$HOME/x' C=$HOME/y D=~/z opencode`)
+	if want := []string{"A=a b", "B=$HOME/x", "C=/home/u/y", "D=/home/u/z"}; !slices.Equal(got, want) {
+		t.Fatalf("env = %q, want %q", got, want)
 	}
 }
 

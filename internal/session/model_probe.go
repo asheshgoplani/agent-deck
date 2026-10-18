@@ -114,11 +114,15 @@ func openCodeProbeBinary() string {
 // probeBinaryFromCommand returns the executable of a configured command line.
 // Leading VAR=value assignments are skipped; an empty command means fallback.
 func probeBinaryFromCommand(command, fallback string) string {
-	for _, field := range strings.Fields(command) {
-		if isShellEnvAssignment(field) {
+	words, ok := shellwords.Split(command)
+	if !ok {
+		words = strings.Fields(command)
+	}
+	for _, word := range words {
+		if isShellEnvAssignment(word) {
 			continue
 		}
-		if token := strings.Trim(field, `"'`); token != "" {
+		if token := strings.Trim(word, `"'`); token != "" {
 			return token
 		}
 		break
@@ -128,7 +132,7 @@ func probeBinaryFromCommand(command, fallback string) string {
 
 // probeEnvFromCommand returns the leading VAR=value assignments of a
 // configured command line, with a leading ~/ and $VAR references expanded
-// as the launching shell would.
+// as the launching shell would (not inside single quotes).
 func probeEnvFromCommand(command string) []string {
 	words, ok := shellwords.Split(command)
 	if !ok {
@@ -140,6 +144,10 @@ func probeEnvFromCommand(command string) []string {
 			break
 		}
 		name, value, _ := strings.Cut(word, "=")
+		if strings.Contains(command, name+"='") {
+			env = append(env, name+"="+value)
+			continue
+		}
 		if strings.HasPrefix(value, "~/") {
 			value = modelProbeHomeDir() + value[1:]
 		}
@@ -198,11 +206,16 @@ type modelProbeKey struct {
 }
 
 type modelProbeCacheFile struct {
-	Schema   int               `json:"schema"`
-	Key      modelProbeKey     `json:"key"`
-	Version  string            `json:"version,omitempty"`
-	ProbedAt time.Time         `json:"probed_at"`
-	Result   *ModelProbeResult `json:"result"`
+	Schema   int           `json:"schema"`
+	Key      modelProbeKey `json:"key"`
+	Version  string        `json:"version,omitempty"`
+	ProbedAt time.Time     `json:"probed_at"`
+	// Result is nil for a failed probe. A failure is kept on disk only for
+	// modelProbeFailureBackoff, so short-lived commands (a controller's
+	// `add --capabilities` before every remote launch) do not each wait on a
+	// broken CLI, and the next lookup after it retries. Older versions read
+	// such an entry as a miss.
+	Result *ModelProbeResult `json:"result"`
 }
 
 type modelProbeMemo struct {
@@ -232,7 +245,8 @@ var (
 	modelProbeInFlight = map[string]bool{}
 )
 
-// ResetModelProbeMemo drops the in-memory probe results so the next lookup
+// ResetModelProbeMemo drops the in-memory probe results and background mode
+// so the next lookup
 // re-validates against the binary and the disk cache. Tests use it between
 // cases that install different fake CLIs.
 func ResetModelProbeMemo() {
@@ -240,6 +254,7 @@ func ResetModelProbeMemo() {
 	defer modelProbeMu.Unlock()
 	modelProbeMemos = map[string]*modelProbeMemo{}
 	modelProbeInFlight = map[string]bool{}
+	modelProbeBackground.Store(false)
 }
 
 // modelProbeEnabled reports whether probing is allowed in this process.
@@ -302,12 +317,12 @@ func probedModelCatalog(kind string) *ModelProbeResult {
 	modelProbeInFlight[name] = true
 	modelProbeMu.Unlock()
 
-	if modelProbeBackground.Load() {
+	// With no earlier answer in this process the lookup waits (bounded by the
+	// timeout), so a first validation sees the probed list. After that a
+	// long-lived process re-probes in the background and keeps answering.
+	if memo != nil && modelProbeBackground.Load() {
 		go runAndRecordModelProbe(prober, key, env, now)
-		if memo != nil {
-			return memo.result
-		}
-		return nil
+		return memo.result
 	}
 	return runAndRecordModelProbe(prober, key, env, now)
 }
@@ -316,17 +331,22 @@ func probedModelCatalog(kind string) *ModelProbeResult {
 // records its outcome in the memo and, on success, the disk cache.
 func runAndRecordModelProbe(prober modelProber, key modelProbeKey, env []string, now time.Time) *ModelProbeResult {
 	name := prober.name
+	defer func() {
+		modelProbeMu.Lock()
+		delete(modelProbeInFlight, name)
+		modelProbeMu.Unlock()
+	}()
 	result, version, err := runModelProbe(prober, key.Path, env)
 
 	modelProbeMu.Lock()
-	delete(modelProbeInFlight, name)
-	// Failures are memoized in memory only and for modelProbeFailureBackoff,
-	// so a later lookup in this process (or the next process) retries.
+	// A failure is remembered only for modelProbeFailureBackoff, so a later
+	// lookup in this process (or the next process) retries.
 	modelProbeMemos[name] = &modelProbeMemo{key: key, result: result, probedAt: now, checkedAt: now}
 	modelProbeMu.Unlock()
 
 	if err != nil {
 		logging.ForComponent(logging.CompSession).Debug("model_probe_failed", "tool", name, "error", err.Error())
+		writeModelProbeCache(name, &modelProbeCacheFile{Schema: modelProbeCacheSchema, Key: key, ProbedAt: now})
 		return nil
 	}
 	writeModelProbeCache(name, &modelProbeCacheFile{
@@ -427,8 +447,16 @@ func readModelProbeCache(kind string, key modelProbeKey, now time.Time) *modelPr
 	if err := json.Unmarshal(data, &cached); err != nil {
 		return nil
 	}
-	if cached.Schema != modelProbeCacheSchema || cached.Key != key || cached.Result == nil ||
-		len(cached.Result.Models) == 0 || now.Sub(cached.ProbedAt) >= modelProbeTTL {
+	if cached.Schema != modelProbeCacheSchema || cached.Key != key {
+		return nil
+	}
+	if cached.Result == nil {
+		if age := now.Sub(cached.ProbedAt); age < 0 || age >= modelProbeFailureBackoff {
+			return nil
+		}
+		return &cached
+	}
+	if len(cached.Result.Models) == 0 || now.Sub(cached.ProbedAt) >= modelProbeTTL {
 		return nil
 	}
 	return &cached
@@ -575,7 +603,10 @@ func mergeOrdered(first, rest []string) []string {
 // switches later lookups to background re-probes: a slow or failing CLI then
 // never stalls a keystroke in the TUI or a web request.
 func WarmModelCatalog() {
-	modelProbeBackground.Store(true)
+	// Test binaries share one process across tests; only real runs switch.
+	if !testing.Testing() {
+		modelProbeBackground.Store(true)
+	}
 	go func() {
 		for _, prober := range modelProbers {
 			probedModelCatalog(prober.name)
