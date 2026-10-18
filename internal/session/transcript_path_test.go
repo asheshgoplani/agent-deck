@@ -70,7 +70,11 @@ func TestResolveClaudeTranscriptPath_RejectsUnsafeSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, id := range []string{"../../outside", "*", "1111*", "1111111?-2222-3333-4444-555555555555", `..\..\outside`} {
+	// "" + ".jsonl" is a valid segment; an empty ID must still find nothing
+	// (and must not reach the all-projects glob).
+	mkTranscript(t, cfg, ConvertToClaudeDirName(proj), "")
+
+	for _, id := range []string{"", "../../outside", "*", "1111*", "1111111?-2222-3333-4444-555555555555", `..\..\outside`} {
 		if got := resolveClaudeTranscriptPath(cfg, proj, id); got != "" {
 			t.Errorf("session id %q: expected empty, got %q", id, got)
 		}

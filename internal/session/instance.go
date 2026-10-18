@@ -9365,6 +9365,9 @@ func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
 // and analytics / last-response silently break. The session ID is a UUID, so
 // matching on the filename is unambiguous.
 func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, additionalPaths ...string) string {
+	if sessionID == "" {
+		return ""
+	}
 	// The ID becomes a file name and a glob pattern: a separator or ".." could
 	// name a file outside the projects tree and a glob metacharacter could
 	// match another session's transcript, so such an ID resolves to nothing.
