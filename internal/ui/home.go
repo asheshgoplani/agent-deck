@@ -1934,6 +1934,25 @@ func NewHomeWithProfile(profile string) *Home {
 // so status, log, pipe, and storage updates continue while the TUI is running.
 var homeBackgroundWorkersEnabled = true
 
+// startLogMaintenance runs log maintenance (truncate large logs, remove
+// orphaned ones) in the background. It shells out to `tmux list-sessions`, so
+// it is a background worker: in test mode a goroutine nobody waits for would
+// run tmux under whatever PATH a later test has swapped in (issue 2712).
+func startLogMaintenance(name string) {
+	if !homeBackgroundWorkersEnabled {
+		return
+	}
+	launchLogMaintenance(name)
+}
+
+// launchLogMaintenance is a variable so tests can observe startLogMaintenance.
+var launchLogMaintenance = func(name string) {
+	safego.Go(uiLog, name, func() {
+		logSettings := session.GetLogSettings()
+		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
+	})
+}
+
 // shouldAutoInstallCursorHooks reports whether TUI startup should run the
 // Cursor hook auto-install/watcher-start block in NewHomeWithProfileAndMode:
 // background workers must be enabled, the user must not have durably opted
@@ -2420,10 +2439,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Also initializes lastLogMaintenance and lastLogCheck so periodic checks start from now
 	h.lastLogMaintenance = time.Now()
 	h.lastLogCheck = time.Now()
-	safego.Go(uiLog, "startup_log_maintenance", func() {
-		logSettings := session.GetLogSettings()
-		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
-	})
+	startLogMaintenance("startup_log_maintenance")
 
 	// v1.7.60: one-shot nav-discoverability hint. Reuses the maintenance-banner
 	// slot so no extra layout math is needed. Dismisses via the existing ESC
@@ -10132,10 +10148,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Full log maintenance (orphan cleanup, etc) every 5 minutes
 		if time.Since(h.lastLogMaintenance) >= logMaintenanceInterval {
 			h.lastLogMaintenance = time.Now()
-			go func() {
-				logSettings := session.GetLogSettings()
-				tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
-			}()
+			startLogMaintenance("periodic_log_maintenance")
 		}
 
 		// Clean up expired animation entries (launching, resuming, MCP loading, forking)
