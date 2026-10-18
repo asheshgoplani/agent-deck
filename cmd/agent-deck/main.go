@@ -1167,7 +1167,7 @@ func main() {
 			go func() {
 				for raw := range costWatcher.EventCh() {
 					ev := costs.CostEvent{
-						ID:               costs.HookCostEventID(raw.InstanceID, raw.MessageUUID, raw.Timestamp),
+						ID:               costs.HookCostEventID(raw.InstanceID, raw.MessageID, raw.MessageUUID, raw.Timestamp),
 						SessionID:        raw.InstanceID,
 						Timestamp:        time.Unix(0, raw.Timestamp),
 						Model:            raw.Model,

@@ -101,8 +101,17 @@ func (u *UsageImporter) Import(instanceID string, events []reader.Usage) (import
 		if key == "" {
 			key = uuid.NewString()
 		}
+		// A Claude message is several records (one per content block) that
+		// repeat its usage: count it once, under its message id. legacyKey is
+		// the per-record id earlier versions stored.
 		dedupKey := fmt.Sprintf("%s_%s", instanceID, key)
+		legacyKey := ""
+		if ev.MessageID != "" {
+			legacyKey = dedupKey
+			dedupKey = UsageEventID(instanceID, ev.MessageID, ev.UUID)
+		}
 		if u.existing[dedupKey] {
+			u.dropLegacy(legacyKey, dedupKey)
 			skipped++
 			continue
 		}
@@ -111,9 +120,22 @@ func (u *UsageImporter) Import(instanceID string, events []reader.Usage) (import
 			continue
 		}
 		if count > 0 {
+			u.dropLegacy(legacyKey, dedupKey)
 			skipped++
 			u.existing[dedupKey] = true
 			continue
+		}
+		if legacyKey != "" {
+			// A row stored per record by an earlier version becomes the
+			// message's one row; later records of the message drop theirs.
+			res, err := u.store.db.Exec("UPDATE cost_events SET id = ? WHERE id = ?", dedupKey, legacyKey)
+			if err == nil {
+				if n, _ := res.RowsAffected(); n > 0 {
+					skipped++
+					u.existing[dedupKey] = true
+					continue
+				}
+			}
 		}
 		ts := ev.TS
 		if ts.IsZero() {
@@ -138,6 +160,25 @@ func (u *UsageImporter) Import(instanceID string, events []reader.Usage) (import
 		imported++
 	}
 	return imported, skipped, errs
+}
+
+// dropLegacy deletes the per-record row an earlier version stored for a
+// record of a message that is already counted under its message id. The
+// transcript names the record, so the match is exact.
+func (u *UsageImporter) dropLegacy(legacyKey, dedupKey string) {
+	if legacyKey != "" && legacyKey != dedupKey {
+		_, _ = u.store.db.Exec("DELETE FROM cost_events WHERE id = ?", legacyKey)
+	}
+}
+
+// UsageEventID is the cost_events id of one usage record: "<instance>_<message
+// id>" when the format has message ids (Claude), so the records of one message
+// and the Stop hook's copy of it share one row; else "<instance>_<record uuid>".
+func UsageEventID(instanceID, messageID, recordUUID string) string {
+	if messageID != "" {
+		return fmt.Sprintf("%s_%s", instanceID, messageID)
+	}
+	return fmt.Sprintf("%s_%s", instanceID, recordUUID)
 }
 
 // Usage implements the recall ingest UsageSink: the sweep hands over the

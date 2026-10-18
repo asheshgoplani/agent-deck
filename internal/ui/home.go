@@ -6748,22 +6748,7 @@ func (h *Home) backgroundStatusUpdate() {
 			continue
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-			if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
-				uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
-					slog.String("instance", inst.ID), slog.String("reason", reason))
-				continue
-			}
-			h.clearOnCompactSent[inst.ID] = time.Now()
-			conductorName := conductorDisplayName(inst)
-			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
-				time.Sleep(500 * time.Millisecond)
-				msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
-				if err := clearConductorAndHeartbeat(func(body string) error {
-					return deliverToConductorPane(tmuxSess, body)
-				}, msg, 3*time.Second); err != nil {
-					uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
-				}
-			})
+			h.scheduleClearAndHeartbeat(inst, instances, tmuxSess)
 		}
 	}
 
@@ -14198,6 +14183,34 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
+}
+
+// conductorHeartbeatDeliver types the /clear and the heartbeat into a
+// conductor pane. Tests replace it.
+var conductorHeartbeatDeliver = func(p *tmux.Session, body string) error { return deliverToConductorPane(p, body) }
+
+// scheduleClearAndHeartbeat sends /clear and then a heartbeat to a conductor
+// whose context is about to auto-compact, unless an enforced cost budget
+// refuses the delivery. It reports whether the delivery was scheduled; a
+// refused one is not marked sent, so it is tried again once the budget allows.
+func (h *Home) scheduleClearAndHeartbeat(inst *session.Instance, instances []*session.Instance, tmuxSess *tmux.Session) bool {
+	if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
+		uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
+			slog.String("instance", inst.ID), slog.String("reason", reason))
+		return false
+	}
+	h.clearOnCompactSent[inst.ID] = time.Now()
+	conductorName := conductorDisplayName(inst)
+	safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
+		time.Sleep(500 * time.Millisecond)
+		msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
+		if err := clearConductorAndHeartbeat(func(body string) error {
+			return conductorHeartbeatDeliver(tmuxSess, body)
+		}, msg, 3*time.Second); err != nil {
+			uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
+		}
+	})
+	return true
 }
 
 // agentDeliveryOverBudget reports whether an enforced cost budget

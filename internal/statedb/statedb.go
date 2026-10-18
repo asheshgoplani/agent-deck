@@ -570,6 +570,9 @@ func (s *StateDB) Migrate() error {
 	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_cost_events_timestamp ON cost_events(timestamp)`); err != nil {
 		return fmt.Errorf("statedb: create cost_events timestamp index: %w", err)
 	}
+	if err := foldLegacyHookCostRows(tx); err != nil {
+		return fmt.Errorf("statedb: fold legacy hook cost rows: %w", err)
+	}
 
 	// watchers table (v5)
 	if _, err := tx.Exec(`

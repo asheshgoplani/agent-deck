@@ -164,3 +164,23 @@ func runAgentDeckBounded(t *testing.T, home string, args ...string) (stdout, std
 	}
 	return outBuf.String(), errBuf.String(), exitCode
 }
+
+// Review follow-up (2): `session start -m` with the core registry off runs
+// the legacy handler, which has its own gate.
+func TestLegacyStartWithMessageBudget(t *testing.T) {
+	home, id := budgetHome(t, enforcedSpentBudget, 5)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, channelsCLIBinary(t), "session", "start", id, "-m", "do the task", "--json")
+	cmd.Env = agentDeckTestEnv(home, []string{envCoreRegistry + "=0"})
+	var outBuf strings.Builder
+	cmd.Stdout = &outBuf
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("legacy session start -m did not finish in 60s (not refused?): %s", outBuf.String())
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 1 || !strings.Contains(outBuf.String(), `"BUDGET_EXCEEDED"`) {
+		t.Fatalf("legacy session start -m over budget: err %v, stdout %s", err, outBuf.String())
+	}
+}
