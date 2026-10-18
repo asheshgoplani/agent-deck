@@ -236,6 +236,16 @@ func recordOutputRead(profile string, event outputReadEvent) error {
 	return writeOutputReadLine(f, append(line, '\n'))
 }
 
+// resultReadShown reports whether a `session output` read counts as the
+// caller having seen the turn: only a plain, unclipped text read, the way an
+// agent reads a child from its Bash tool. -q/--quiet (a Monitor or poll loop
+// grepping for a marker, launch-subagent.sh --wait), --json (a dashboard or
+// script), --copy (to the clipboard) and a read clipped by --max-tokens do
+// not; --pane never reaches it. No TTY is required: agent Bash calls have none.
+func resultReadShown(asJSON, quiet, copyMode, unclipped bool) bool {
+	return !asJSON && !quiet && !copyMode && unclipped
+}
+
 // noteResultRead remembers that the calling session was shown target's
 // turn turnUUID (the transcript uuid of the assistant record it read), so
 // the inbox notice for that exact turn withdraws itself
