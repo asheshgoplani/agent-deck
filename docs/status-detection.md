@@ -80,7 +80,7 @@ holds for 3 minutes after its newest sighting (redraws, resizes, a capture
 that missed the footer); a workflow row whose task already reported back is
 vetoed.
 
-Shell rule (A5, 1.16.29; partly reverses #2473 for shells only): a footer
+Shell rule (A5, 1.16.30; partly reverses #2473 for shells only): a footer
 shell counter with no workflow or agent evidence keeps a Claude session
 `running` / `background-work` only while the transcript shows a pending
 background Bash launch whose receipt is within the same 3 minute hold. The
@@ -182,7 +182,7 @@ running rows out):
 - The remote snapshot age counts from arrival at the controller, not from the
   remote's own capture time.
 - A remote row is that remote's own verdict: a remote on 1.16.16 or older,
-  or on 1.16.24 to 1.16.28 (#2473 before A5), keeps reporting Claude
+  or on 1.16.24 to 1.16.29 (#2473 before A5), keeps reporting Claude
   background shells at an idle prompt as running whatever the controller
   runs, until the remote is updated.
 - A finite background shell that runs longer than the 3 minute hold (a long

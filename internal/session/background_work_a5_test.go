@@ -9,7 +9,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// A5 (1.16.29): a leftover run_in_background shell no longer pins a finished
+// A5 (1.16.30): a leftover run_in_background shell no longer pins a finished
 // Claude session at running. The frames are the two owner reports (see
 // internal/tmux/background_work_a5_test.go): a completed turn, "1 shell still
 // running" on the done line, an unsent composer, "· 1 shell · ← for agents"
