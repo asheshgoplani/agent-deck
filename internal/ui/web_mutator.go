@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
@@ -241,7 +242,11 @@ func (m *WebMutator) DeleteSession(id string) error {
 	// Undoable: record the pending sweep before the row goes, so a crash
 	// after the delete still leaves it for the startup reconcile.
 	if err := storage.MarkPendingDeleteSweep(id); err != nil {
-		uiLog.Warn("web_mark_pending_sweep_err", slog.String("id", id), slog.String("err", err.Error()))
+		// The id comes from the web request; strip line breaks so it cannot
+		// forge log lines (code-scanning go/log-injection).
+		uiLog.Warn("web_mark_pending_sweep_err",
+			slog.String("id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(id), "\n", ""), "\r", "")),
+			slog.String("err", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 	}
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
