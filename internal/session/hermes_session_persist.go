@@ -139,7 +139,7 @@ const hermesSubagentPlatform = "subagent"
 // only a later successful parent post_llm_call would move it back: an
 // interrupted parent turn, a delegation outliving the parent turn, or a
 // restart mid-turn would then resume the delegate's session.
-func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent, platform string, at time.Time) {
+func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent, platform, cwd string, at time.Time) {
 	if sessionID == i.HermesSessionID {
 		if at.After(i.hermesBoundAt) {
 			i.hermesBoundAt = at
@@ -152,6 +152,10 @@ func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent, p
 		reason = "candidate_not_in_hook_payload"
 	case strings.EqualFold(strings.TrimSpace(platform), hermesSubagentPlatform):
 		reason = "candidate_from_subagent"
+	case i.hookCwdIsForeign(cwd):
+		// A process outside the entry's paths that inherited its
+		// AGENTDECK_INSTANCE_ID (a nested hermes), issue #1729's rule.
+		reason = "candidate_cwd_outside_instance_paths"
 	case !hermesBindsOnEvent(hookEvent):
 		reason = "candidate_from_non_parent_edge"
 	case i.HermesSessionID != "" && at.Before(i.hermesBoundAt):
@@ -248,10 +252,38 @@ func HermesHookRecordsOwnSession(event, platform, sessionID string) bool {
 		hermesSessionIDPattern.MatchString(strings.TrimSpace(sessionID))
 }
 
-// WriteHermesOwnedSessionID records sessionID as the entry's own Hermes
-// conversation. The hook handler calls it inside the launch-generation
-// critical section.
-func WriteHermesOwnedSessionID(instanceID, sessionID string) error {
+// hermesOwnedSession is the sidecar record: the id and the cwd the event
+// reported. Sidecars from before the cwd was kept hold a bare JSON string.
+type hermesOwnedSession struct {
+	ID  string `json:"id"`
+	Cwd string `json:"cwd,omitempty"`
+}
+
+func readHermesOwnedSession(path string) (hermesOwnedSession, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return hermesOwnedSession{}, false
+	}
+	var rec hermesOwnedSession
+	if json.Unmarshal(data, &rec) != nil {
+		var id string
+		if json.Unmarshal(data, &id) != nil {
+			return hermesOwnedSession{}, false
+		}
+		rec = hermesOwnedSession{ID: id}
+	}
+	rec.ID = strings.TrimSpace(rec.ID)
+	return rec, hermesSessionIDPattern.MatchString(rec.ID)
+}
+
+// WriteHermesOwnedSessionID records sessionID (with the cwd its event
+// reported) as the entry's own Hermes conversation. The hook handler calls it
+// inside the launch-generation critical section. platformKnown is whether the
+// event carried extra.platform: without it the subagent filter had nothing to
+// go on, so such an event never replaces an id already recorded (a Hermes or
+// forwarder that drops the field, or a nested hermes, cannot rebind the
+// entry); it can only record the first one.
+func WriteHermesOwnedSessionID(instanceID, sessionID, cwd string, platformKnown bool) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") {
 		return fmt.Errorf("invalid instance id %q", instanceID)
@@ -259,33 +291,59 @@ func WriteHermesOwnedSessionID(instanceID, sessionID string) error {
 	if !hermesSessionIDPattern.MatchString(sessionID) {
 		return fmt.Errorf("invalid hermes session id %q", sessionID)
 	}
+	rec := hermesOwnedSession{ID: sessionID, Cwd: strings.TrimSpace(cwd)}
 	path := filepath.Join(hermesHookScope(instanceID, false), instanceID+hermesOwnedSessionSuffix)
-	var current string
-	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &current) == nil && current == sessionID {
-		return nil // most turn edges repeat the same id
+	if current, ok := readHermesOwnedSession(path); ok {
+		if current == rec {
+			return nil // most turn edges repeat the same id
+		}
+		if !platformKnown && current.ID != sessionID {
+			return nil
+		}
 	}
-	return atomicHermesJSON(path, sessionID)
+	return atomicHermesJSON(path, rec)
 }
 
 // hermesOwnedSessionID returns the id the hook handler recorded for this
 // entry, or "". A sandboxed entry's hook handler writes in its sandbox scope,
-// so that scope is read first.
+// so that scope is read first. A record whose cwd is provably outside the
+// entry's paths came from another process that inherited the entry's
+// AGENTDECK_INSTANCE_ID (a nested hermes, issue #1729's rule) and is ignored.
 func (i *Instance) hermesOwnedSessionID() string {
 	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
 		return ""
 	}
 	sandboxed := i.IsSandboxed()
 	for _, dir := range []string{hermesHookScope(i.ID, sandboxed), hermesHookScope(i.ID, !sandboxed)} {
-		data, err := os.ReadFile(filepath.Join(dir, i.ID+hermesOwnedSessionSuffix))
-		if err != nil {
+		rec, ok := readHermesOwnedSession(filepath.Join(dir, i.ID+hermesOwnedSessionSuffix))
+		if !ok {
 			continue
 		}
-		var id string
-		if json.Unmarshal(data, &id) == nil && hermesSessionIDPattern.MatchString(id) {
-			return id
+		if i.hookCwdIsForeign(rec.Cwd) {
+			sessionLog.Warn("hermes_owned_session_cwd_foreign", slog.String("instance_id", i.ID), slog.String("candidate", rec.ID))
+			continue
 		}
+		return rec.ID
 	}
 	return ""
+}
+
+// preferHermesOwnedSessionForStart makes Start and StartWithMessage resume
+// the conversation Restart would: the hook handler's record when there is
+// one. A start right after RestartFresh begins a new conversation instead.
+func (i *Instance) preferHermesOwnedSessionForStart() {
+	if i.hermesStartFresh {
+		i.hermesStartFresh = false
+		i.mu.Lock()
+		i.HermesSessionID = ""
+		i.mu.Unlock()
+		return
+	}
+	if owned := i.hermesOwnedSessionID(); owned != "" {
+		i.mu.Lock()
+		i.HermesSessionID = owned
+		i.mu.Unlock()
+	}
 }
 
 // clearHermesOwnedSessionID forgets the recorded id (fresh restart).

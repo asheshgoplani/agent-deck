@@ -184,6 +184,10 @@ func pruneHermesAbandonedScope(instanceID, dir string) {
 	if _, err := os.Stat(filepath.Join(dir, instanceID+".generation.json")); err == nil {
 		return
 	}
+	// The abandoned scope's own-session record goes with it: hermesOwnedSessionID
+	// reads both scopes, so a record left here would outlive the switch, and
+	// it keeps the sandbox directory from being removed.
+	_ = os.Remove(filepath.Join(dir, instanceID+hermesOwnedSessionSuffix))
 	lockPath := filepath.Join(dir, instanceID+".lock")
 	f, err := os.OpenFile(lockPath, os.O_RDWR, 0600)
 	if err != nil {

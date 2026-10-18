@@ -224,6 +224,10 @@ type hookStatusFile struct {
 	// Hermes session id this event records as the entry's own (#2582), saved
 	// to the entry's sidecar once the event passes the generation check.
 	hermesOwnedSessionID string
+	// hermesPlatformKnown: the event carried extra.platform. Without it the
+	// record never replaces an id already recorded (see
+	// session.WriteHermesOwnedSessionID).
+	hermesPlatformKnown bool
 }
 
 type hookGenerationControl struct {
@@ -639,6 +643,7 @@ func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd
 	}
 	if os.Getenv("AGENTDECK_TOOL") == "hermes" && session.HermesHookRecordsOwnSession(event, platform, sessionID) {
 		statusFile.hermesOwnedSessionID = sessionID
+		statusFile.hermesPlatformKnown = strings.TrimSpace(platform) != ""
 	}
 	if scan.signal != nil {
 		statusFile.DoneStatus = scan.signal.Status
@@ -731,7 +736,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 	// rejected by the generation check above, so it cannot rebind the entry
 	// to its conversation after a restart (#2582).
 	if mutateAnchor && statusFile.hermesOwnedSessionID != "" {
-		if err := session.WriteHermesOwnedSessionID(instanceID, statusFile.hermesOwnedSessionID); err != nil {
+		if err := session.WriteHermesOwnedSessionID(instanceID, statusFile.hermesOwnedSessionID, statusFile.Cwd, statusFile.hermesPlatformKnown); err != nil {
 			hookHandlerLog.Warn("hermes_owned_session_write_failed",
 				slog.String("instance", instanceID),
 				slog.String("error", err.Error()),

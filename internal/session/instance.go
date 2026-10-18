@@ -375,8 +375,11 @@ type Instance struct {
 	// hermesLastRejected rate-limits the reject lifecycle line.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
-	hermesBoundAt        time.Time
-	hermesLastRejected   string
+	// hermesStartFresh makes the next Start begin a new Hermes conversation
+	// (RestartFresh) instead of resuming the recorded one.
+	hermesStartFresh   bool
+	hermesBoundAt      time.Time
+	hermesLastRejected string
 
 	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
 	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
@@ -5750,6 +5753,7 @@ func (i *Instance) Start() (startErr error) {
 		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
 			return err
 		}
+		i.preferHermesOwnedSessionForStart()
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "deepseek":
 		// The headless profile answers one task and exits, so a plain Start()
@@ -6138,6 +6142,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		if _, err := i.seedHermesHookGeneration("running", true); err != nil {
 			return err
 		}
+		i.preferHermesOwnedSessionForStart()
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "deepseek":
 		// Only the headless profile takes a task positionally; an installed
@@ -7672,7 +7677,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	switch {
 	case i.Tool == "hermes":
-		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.UpdatedAt)
+		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.Cwd, status.UpdatedAt)
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
@@ -11166,11 +11171,26 @@ func (i *Instance) restart(env map[string]string) (err error) {
 // RestartFresh restarts the current tool without resuming the existing tool session.
 // This recreates the tmux session and clears the stored tool session binding first,
 // so the next start gets a brand-new tool session ID.
+// restartFreshBindingCleared runs right after RestartFresh cleared the
+// session binding, before the old process is killed. Tests replace it.
+var restartFreshBindingCleared = func(*Instance) {}
+
 func (i *Instance) RestartFresh() error {
 	i.prepareRestartMCPConfig()
 	i.spawnGen.Add(1)
 
+	// Rotate the Hermes hook generation before the binding is cleared and the
+	// old process is killed, as Restart does: a late hook from the old process
+	// then fails the generation check instead of writing its id back.
+	if i.Tool == "hermes" {
+		if _, err := i.seedHermesHookGeneration("starting", false); err != nil {
+			return fmt.Errorf("seed hermes fresh restart generation: %w", err)
+		}
+		i.hermesStartFresh = true
+	}
+
 	i.clearSessionBindingForFreshStart()
+	restartFreshBindingCleared(i)
 
 	// #1775: same reasoning as the restart-fallback-recreate path above, and
 	// likewise unconditional — an old watcher whose session is already gone is
