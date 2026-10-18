@@ -1,12 +1,15 @@
 package update
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 )
 
 // Stale PATH copies.
@@ -40,10 +43,19 @@ type ShadowCopy struct {
 	// NeedsSudo is set when the current user cannot remove Path (its
 	// directory is not writable, typically root-owned /usr/local/bin).
 	NeedsSudo bool `json:"needs_sudo"`
-	// Remove and Reorder are the two fixes, as commands to copy.
+	// Remove and Reorder are the two fixes, as commands to copy. Remove is
+	// empty when the copy looks package-managed (ManagedBy is set): an rm
+	// would fight the package manager, which should remove or upgrade it.
 	Remove  string `json:"remove"`
 	Reorder string `json:"reorder"`
+	// ManagedBy names the package manager the copy appears to belong to
+	// (from its path or symlink target), empty when it looks hand-installed.
+	ManagedBy string `json:"managed_by,omitempty"`
 }
+
+// ShadowScanBudget bounds all version probes of one scan. A copy not
+// probed in time is reported with an unknown version.
+const ShadowScanBudget = 15 * time.Second
 
 // shadowBinaryName is the executable name looked up on PATH.
 var shadowBinaryName = func() string {
@@ -66,6 +78,12 @@ type ShadowScan struct {
 	// Writable reports whether the current user may remove entries in
 	// dir (default access(2) W_OK).
 	Writable func(dir string) bool
+	// Budget bounds all version probes together (default
+	// ShadowScanBudget); ProbeTimeout bounds one probe (default
+	// BinaryProbeTimeout). Each probe can also wait BinaryProbeWaitDelay
+	// for a child that keeps its output open.
+	Budget       time.Duration
+	ProbeTimeout time.Duration
 }
 
 // FindShadowingCopies scans this process's PATH for agent-deck copies that
@@ -103,6 +121,7 @@ func (s ShadowScan) Find() []ShadowCopy {
 	// Walk PATH once for every agent-deck executable, in shell lookup
 	// order, and note where the updated binary itself sits.
 	var found []string
+	var foundInfo []os.FileInfo
 	installedPath := self
 	onPath := false
 	seen := map[string]bool{}
@@ -128,13 +147,34 @@ func (s ShadowScan) Find() []ShadowCopy {
 			onPath = true
 			break // everything after the updated binary is shadowed by it
 		}
+		// The same file reached again (merged /bin and /usr/bin, a PATH
+		// dir and a symlink to it) is the copy already listed: shells run
+		// the first entry, so it is reported and probed once.
+		if slices.ContainsFunc(foundInfo, func(prev os.FileInfo) bool { return os.SameFile(prev, info) }) {
+			continue
+		}
 		found = append(found, candidate)
+		foundInfo = append(foundInfo, info)
 	}
 	reorder := fmt.Sprintf("export PATH=%s:\"$PATH\"", ShellQuote([]string{filepath.Dir(installedPath)}))
 
+	budget, probeTimeout := s.Budget, s.ProbeTimeout
+	if budget <= 0 {
+		budget = ShadowScanBudget
+	}
+	if probeTimeout <= 0 {
+		probeTimeout = BinaryProbeTimeout
+	}
+	deadline := time.Now().Add(budget)
+
 	var out []ShadowCopy
 	for _, path := range found {
-		version, err := ProbeBinaryVersion(path)
+		// Probes run one after another inside one budget, so several
+		// slow or hung copies cannot hold doctor or update past it.
+		version, err := "", errors.New("scan budget spent")
+		if left := time.Until(deadline); left > 0 {
+			version, err = ProbeBinaryVersionWithin(path, min(probeTimeout, left))
+		}
 		version = strings.TrimPrefix(strings.TrimSpace(version), "v")
 		// Only copies the updated binary supersedes are stale. That uses
 		// the same rule as the self-update (#2710): a "+local" build of
@@ -157,9 +197,12 @@ func (s ShadowScan) Find() []ShadowCopy {
 				c.Target = target
 			}
 		}
-		c.Remove = ShellQuote([]string{"rm", path})
-		if c.NeedsSudo {
-			c.Remove = "sudo " + c.Remove
+		c.ManagedBy = packageManagerFor(path, c.Target)
+		if c.ManagedBy == "" {
+			c.Remove = ShellQuote([]string{"rm", path})
+			if c.NeedsSudo {
+				c.Remove = "sudo " + c.Remove
+			}
 		}
 		out = append(out, c)
 	}
@@ -183,13 +226,51 @@ func (c ShadowCopy) Warning() string {
 		fmt.Fprintf(&b, "Warning: %s (%s) is the agent-deck on PATH; the updated %s (v%s) is not on PATH, so shells, hooks and scripts run the older copy.\n", c.Path, what, c.InstalledPath, c.Installed)
 	}
 	removeNote := ""
-	if c.Target != "" {
+	if c.Target != "" && c.ManagedBy == "" {
 		removeNote = "  (removes the symlink only)"
 	}
-	fmt.Fprintf(&b, "  Fix: %s%s\n", c.Remove, removeNote)
+	fmt.Fprintf(&b, "  Fix: %s%s\n", c.Fix(), removeNote)
 	fmt.Fprintf(&b, "   or: put %s first on PATH in your shell profile: %s\n", filepath.Dir(c.InstalledPath), c.Reorder)
 	b.WriteString("  agent-deck never removes it for you.\n")
 	return b.String()
+}
+
+// Fix is the first fix as shown to the user: the rm command, or for a
+// package-managed copy, to remove or upgrade it with that package manager.
+func (c ShadowCopy) Fix() string {
+	if c.ManagedBy != "" {
+		return "remove or upgrade it with its package manager (" + c.ManagedBy + ")"
+	}
+	return c.Remove
+}
+
+// packageManagerFor names the package manager that appears to own an
+// agent-deck at path (or at target, where the symlink path resolves to),
+// from well-known install locations; empty when none matches.
+func packageManagerFor(path, target string) string {
+	for _, p := range []string{target, path} {
+		if p == "" {
+			continue
+		}
+		p = filepath.ToSlash(p)
+		switch {
+		case strings.Contains(p, "/Cellar/"), strings.HasPrefix(p, "/opt/homebrew/"), strings.Contains(p, "/.linuxbrew/"):
+			return "Homebrew"
+		case strings.HasPrefix(p, "/nix/store/"), strings.Contains(p, "/.nix-profile/"), strings.HasPrefix(p, "/run/current-system/"), strings.HasPrefix(p, "/etc/profiles/per-user/"):
+			return "Nix"
+		case strings.Contains(p, "/.asdf/"):
+			return "asdf"
+		case strings.Contains(p, "/mise/installs/"), strings.Contains(p, "/mise/shims/"):
+			return "mise"
+		case strings.HasPrefix(p, "/snap/"):
+			return "snap"
+		}
+	}
+	switch filepath.ToSlash(filepath.Dir(path)) {
+	case "/usr/bin", "/bin", "/usr/sbin", "/sbin":
+		return "your distribution's package manager"
+	}
+	return ""
 }
 
 // VersionLabel is the copy's version as shown to the user ("v1.2.3", or

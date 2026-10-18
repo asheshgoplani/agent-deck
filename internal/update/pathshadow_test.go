@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeAgentDeck writes an executable shell script at dir/name that prints
@@ -232,5 +233,134 @@ func TestFindShadowingCopies_Ignores(t *testing.T) {
 	}
 	if got := (ShadowScan{Self: f.self, SelfVersion: "", PathEnv: pathOf(f.oldDir, f.newDir)}.Find()); got != nil {
 		t.Fatalf("unknown own version: got %+v", got)
+	}
+}
+
+// writeScript writes an executable shell script at dir/agent-deck.
+func writeScript(t *testing.T, dir, body string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A copy whose `version` leaves a child holding stdout open (a wrapper
+// that runs `sleep`) must not hold the scan past the probe timeout plus
+// BinaryProbeWaitDelay; it is reported with an unknown version.
+func TestFindShadowingCopies_HungChildIsBounded(t *testing.T) {
+	f := newShadowFixture(t)
+	writeScript(t, f.oldDir, "sleep 20")
+	start := time.Now()
+	got := ShadowScan{Self: f.self, SelfVersion: "1.16.28", PathEnv: pathOf(f.oldDir, f.newDir), Writable: writableAll, ProbeTimeout: 300 * time.Millisecond}.Find()
+	elapsed := time.Since(start)
+	if elapsed > 300*time.Millisecond+BinaryProbeWaitDelay+2*time.Second {
+		t.Fatalf("scan of a copy whose child keeps stdout open took %v, want about probe timeout + %v", elapsed, BinaryProbeWaitDelay)
+	}
+	if len(got) != 1 || got[0].Version != "" {
+		t.Fatalf("hung copy: got %+v, want it reported with an unknown version", got)
+	}
+}
+
+// Probes share one budget: once it is spent the remaining copies are
+// reported as unknown version without being run, so N hung copies do not
+// cost N probe timeouts.
+func TestFindShadowingCopies_ScanBudget(t *testing.T) {
+	f := newShadowFixture(t)
+	root := t.TempDir()
+	var dirs []string
+	for _, name := range []string{"a", "b", "c"} {
+		dir := filepath.Join(root, name)
+		writeScript(t, dir, "exec sleep 20")
+		dirs = append(dirs, dir)
+	}
+	start := time.Now()
+	got := ShadowScan{Self: f.self, SelfVersion: "1.16.28", PathEnv: pathOf(append(dirs, f.newDir)...), Writable: writableAll, Budget: time.Second}.Find()
+	elapsed := time.Since(start)
+	if elapsed > 4*time.Second {
+		t.Fatalf("three hung copies with a 1s budget took %v", elapsed)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d copies %+v, want all 3 reported", len(got), got)
+	}
+	for _, c := range got {
+		if c.Version != "" {
+			t.Fatalf("copy %s: version %q, want unknown", c.Path, c.Version)
+		}
+	}
+}
+
+// The same file reached through two PATH entries (merged /bin and
+// /usr/bin, a directory and a symlink to it) is one copy: listed once.
+func TestFindShadowingCopies_SameFileTwiceIsOneCopy(t *testing.T) {
+	f := newShadowFixture(t)
+	alias := filepath.Join(t.TempDir(), "bin-alias")
+	if err := os.Symlink(f.oldDir, alias); err != nil {
+		t.Fatal(err)
+	}
+	got := ShadowScan{Self: f.self, SelfVersion: "1.16.28", PathEnv: pathOf(f.oldDir, alias, f.newDir), Writable: writableAll}.Find()
+	if len(got) != 1 || got[0].Path != f.old {
+		t.Fatalf("one file on two PATH entries: got %+v, want it once as %s", got, f.old)
+	}
+}
+
+// A package-managed copy is not given an rm fix: the warning says to
+// remove or upgrade it with its package manager.
+func TestFindShadowingCopies_PackageManagedCopy(t *testing.T) {
+	f := newShadowFixture(t)
+	if err := os.Remove(f.old); err != nil {
+		t.Fatal(err)
+	}
+	cellar := fakeAgentDeck(t, filepath.Join(t.TempDir(), "usr", "local", "Cellar", "agent-deck", "1.16.3", "bin"), "agent-deck", "1.16.3")
+	if err := os.Symlink(cellar, f.old); err != nil {
+		t.Fatal(err)
+	}
+	got := ShadowScan{Self: f.self, SelfVersion: "1.16.28", PathEnv: pathOf(f.oldDir, f.newDir), Writable: writableAll}.Find()
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want the Homebrew copy", got)
+	}
+	c := got[0]
+	if c.ManagedBy != "Homebrew" || c.Remove != "" {
+		t.Fatalf("copy = %+v, want managed_by Homebrew and no rm command", c)
+	}
+	w := c.Warning()
+	if !strings.Contains(w, "Fix: remove or upgrade it with its package manager (Homebrew)") || strings.Contains(w, "rm ") || strings.Contains(w, "removes the symlink only") {
+		t.Fatalf("warning:\n%s", w)
+	}
+}
+
+func TestPackageManagerFor(t *testing.T) {
+	for _, tc := range []struct{ path, target, want string }{
+		{"/usr/local/bin/agent-deck", "/usr/local/Cellar/agent-deck/1.16.3/bin/agent-deck", "Homebrew"},
+		{"/opt/homebrew/bin/agent-deck", "", "Homebrew"},
+		{"/home/linuxbrew/.linuxbrew/bin/agent-deck", "", "Homebrew"},
+		{"/home/u/.nix-profile/bin/agent-deck", "/nix/store/abc-agent-deck/bin/agent-deck", "Nix"},
+		{"/run/current-system/sw/bin/agent-deck", "", "Nix"},
+		{"/home/u/.asdf/shims/agent-deck", "", "asdf"},
+		{"/home/u/.local/share/mise/shims/agent-deck", "", "mise"},
+		{"/snap/bin/agent-deck", "", "snap"},
+		{"/usr/bin/agent-deck", "", "your distribution's package manager"},
+		{"/usr/local/bin/agent-deck", "/opt/dev/agent-deck", ""},
+		{"/home/u/.local/bin/agent-deck", "", ""},
+	} {
+		if got := packageManagerFor(tc.path, tc.target); got != tc.want {
+			t.Errorf("packageManagerFor(%q, %q) = %q, want %q", tc.path, tc.target, got, tc.want)
+		}
+	}
+}
+
+// A relative PATH entry depends on the caller's working directory: an
+// agent-deck in the cwd with "." (or a relative dir) on PATH is skipped.
+func TestFindShadowingCopies_RelativePathEntrySkipped(t *testing.T) {
+	f := newShadowFixture(t)
+	t.Chdir(f.oldDir)
+	for _, entry := range []string{".", "./", filepath.Join("..", filepath.Base(f.oldDir))} {
+		if got := (ShadowScan{Self: f.self, SelfVersion: "1.16.28", PathEnv: pathOf(entry, f.newDir), Writable: writableAll}.Find()); len(got) != 0 {
+			t.Fatalf("relative PATH entry %q with an older agent-deck in it: got %+v, want none", entry, got)
+		}
 	}
 }
