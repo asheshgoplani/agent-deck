@@ -966,6 +966,9 @@ func main() {
 			hooks.Stop()
 		}
 		stopWatcherEngineOnSignal()
+		// One-shot ssh children run in their own process groups, out of
+		// reach of a terminal hangup; kill them so none outlives the TUI.
+		session.KillSSHProcesses()
 		// Close control-mode pipes so their tmux clients detach cleanly instead
 		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
 		// avoids the signal-driven detach that races tmux/tmux#4980. The clean

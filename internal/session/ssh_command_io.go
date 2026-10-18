@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -23,13 +22,13 @@ func (r *SSHRunner) RunIO(ctx context.Context, stdin io.Reader, stdout, stderr i
 		return err
 	}
 	CleanStaleSSHSockets()
-	sshArgs := r.sshChannelArgs(r.buildRemoteCommand(args...))
-	// #nosec G204 -- Literal ssh executable; fixed connection options and a
-	// validated non-option host. Remote executable/profile/arguments are each
+	sshArgs := r.sshChannelArgs(remoteCommandWithDeadline(ctx, r.buildRemoteCommand(args...)))
+	// Literal ssh executable; fixed connection options and a validated
+	// non-option host. Remote executable/profile/arguments are each
 	// shell-quoted by buildRemoteCommand, with no local shell evaluation.
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	cmd := newSSHCommand(ctx, sshArgs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	return cmd.Run()
+	return runSSHCommand(cmd)
 }
 
 // RunFollowIO owns one dedicated connection for the stream, with no retries
@@ -42,8 +41,8 @@ func (r *SSHRunner) RunFollowIO(ctx context.Context, stdin io.Reader, stdout, st
 	}
 	remoteCmd := followRemoteCommand(r.buildRemoteCommand(args...))
 	sshArgs := append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}, r.sshChannelArgs(remoteCmd)...)
-	// #nosec G204 -- Literal ssh; validated host and individually quoted remote argv.
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	// Literal ssh; validated host and individually quoted remote argv.
+	cmd := newSSHCommand(ctx, sshArgs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	if stdin != nil {
 		// Force an owned pipe instead of inheriting the controller stdin FD.
@@ -56,7 +55,7 @@ func (r *SSHRunner) RunFollowIO(ctx context.Context, stdin io.Reader, stdout, st
 		cmd.Stdin = owned
 	}
 	cmd.WaitDelay = 3 * time.Second
-	return cmd.Run()
+	return runSSHCommand(cmd)
 }
 
 // Both child PIDs belong to this shell invocation. Cleanup terminates only
@@ -195,8 +194,8 @@ exec ` + command
 		ready()
 	}
 	sshArgs := append([]string{"-T", "-o", "ControlPath=none", "-o", "ControlMaster=no", "-o", "ControlPersist=no"}, r.sshChannelArgs(command)...)
-	// #nosec G204 -- Literal ssh and validated destination; all remote values shell quoted.
-	cmd := exec.CommandContext(streamCtx, "ssh", sshArgs...)
+	// Literal ssh and validated destination; all remote values shell quoted.
+	cmd := newSSHCommand(streamCtx, sshArgs...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// Finite reads and help never consume stdin. Leaving it nil also avoids
 	// waiting on an input copier after a successful response with caller input open.
@@ -214,7 +213,7 @@ exec ` + command
 		cmd.Stdin = bytes.NewReader(payload)
 	}
 	cmd.WaitDelay = 3 * time.Second
-	err := cmd.Run()
+	err := runSSHCommand(cmd)
 	if writer != nil && len(writer.prefix) > 0 {
 		_, _ = writer.out.Write(writer.prefix)
 	}

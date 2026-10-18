@@ -270,7 +270,7 @@ func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteClo
 	remoteCmd := r.buildRemoteCommand(args...)
 	sshArgs := r.sshBaseArgs(remoteCmd)
 
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	cmd := newSSHCommand(ctx, sshArgs...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("stream stdin pipe: %w", err)
@@ -281,17 +281,15 @@ func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteClo
 	// when the remote exits.
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	if err := cmd.Start(); err != nil {
+	if err := startSSHCommand(cmd); err != nil {
 		_ = stdin.Close()
 		return nil, nil, fmt.Errorf("stream start: %w", err)
 	}
 	closeFn := func() error {
 		_ = stdin.Close()
-		if cmd.Process != nil {
-			// stdin close should make the remote loop exit; kill as backstop.
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		}
+		// stdin close should make the remote loop exit; kill as backstop.
+		killSSHGroup(cmd)
+		_ = waitSSHCommand(cmd)
 		return nil
 	}
 	return stdin, closeFn, nil
@@ -326,7 +324,7 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
-	remoteCmd := r.buildRemoteCommand(args...)
+	remoteCmd := remoteCommandWithDeadline(ctx, r.buildRemoteCommand(args...))
 	return r.runExec(ctx, remoteCmd, nil, remoteVerbReadOnly(args))
 }
 
@@ -477,8 +475,7 @@ func muxFallbackGrace(ctx context.Context) time.Duration {
 
 // execSSH runs one ssh invocation and returns stdout, stderr and the exit error.
 func (r *SSHRunner) execSSH(ctx context.Context, args []string, stdin []byte, refused chan<- struct{}) ([]byte, []byte, error) {
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.WaitDelay = sshWaitDelay
+	cmd := newSSHCommand(ctx, args...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -486,7 +483,7 @@ func (r *SSHRunner) execSSH(ctx context.Context, args []string, stdin []byte, re
 	stderr := &sshStderrCapture{refused: refused}
 	cmd.Stdout = &stdout
 	cmd.Stderr = stderr
-	err := cmd.Run()
+	err := runSSHCommand(cmd)
 	return stdout.Bytes(), stderr.buf.Bytes(), err
 }
 
@@ -939,8 +936,11 @@ func (r *SSHRunner) NudgeCheckNow(ctx context.Context) error {
 	// #nosec G204 -- args are ssh connection options plus a shell-quoted
 	// remote command built from this runner's own config, never user input
 	// at call time.
-	cmd := exec.CommandContext(timeoutCtx, "ssh", r.sshBaseArgs(background)...)
-	out, err := cmd.CombinedOutput()
+	cmd := newSSHCommand(timeoutCtx, r.sshBaseArgs(background)...)
+	var combined bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &combined, &combined
+	err := runSSHCommand(cmd)
+	out := combined.Bytes()
 	if err != nil {
 		return fmt.Errorf("nudge failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -1694,11 +1694,11 @@ func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, er
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(timeoutCtx, "ssh", sshArgs...)
+	cmd := newSSHCommand(timeoutCtx, sshArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := runSSHCommand(cmd); err != nil {
 		return "", "", fmt.Errorf("failed to detect remote platform: %w: %s", err, stderr.String())
 	}
 
@@ -1746,15 +1746,14 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	sshArgs := r.sshBaseArgs(remoteCmd)
-	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
-	cmd.WaitDelay = sshWaitDelay
+	cmd := newSSHCommand(ctx, sshArgs...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err := runSSHCommand(cmd)
 	if detail := strings.TrimSpace(stderr.String()); detail != "" {
 		level := slog.LevelDebug
 		if err != nil {
@@ -2402,19 +2401,20 @@ func ValidateSSHHost(host string) error {
 	return nil
 }
 
-// sshBaseArgs returns common SSH args for running a raw command on the remote.
+// sshBaseArgs returns common SSH args for running a raw command on the
+// remote. ServerAlive probes tear down a link that died under the command
+// (laptop sleep, VPN flap, NAT expiry) within about 45 s instead of the OS
+// keepalive's hours (#5); one-shot execs need them too, since a poller may
+// kill the CLI and leave nothing else to bound its ssh.
 func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
-	return append(r.sshConnOpts(), r.Host, remoteCmd)
+	args := append(r.sshConnOpts(), sshServerAliveOpts...)
+	return append(args, r.Host, remoteCmd)
 }
 
-// sshChannelArgs is sshBaseArgs for the persistent channel (#2174). It adds
-// ServerAlive probes so a link that died under the session (laptop sleep,
-// VPN flap, NAT expiry) is torn down by ssh within about 45 s instead of
-// the OS keepalive's hours (#5). One-shot execs do not need them: their
-// command timeout already bounds them.
+// sshChannelArgs is sshBaseArgs for the persistent channel (#2174) and the
+// forwarded CLI streams.
 func (r *SSHRunner) sshChannelArgs(remoteCmd string) []string {
-	args := append(r.sshConnOpts(), "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
-	return append(args, r.Host, remoteCmd)
+	return r.sshBaseArgs(remoteCmd)
 }
 
 // remoteVerbReadOnly reports whether args is a verb that only reads remote

@@ -926,9 +926,11 @@ func TestSSHRunnerChannelArgs_AddServerAlive(t *testing.T) {
 	if !strings.Contains(args, "-o ServerAliveInterval=15 -o ServerAliveCountMax=3 user@host cmd") {
 		t.Fatalf("channel args = %q", args)
 	}
+	// One-shot execs carry the same keepalives (2026-10 orphaned remote
+	// lists): a poller may kill the CLI, leaving nothing else to bound ssh.
 	base := strings.Join(r.sshBaseArgs("cmd"), " ")
-	if strings.Contains(base, "ServerAlive") {
-		t.Fatalf("exec args must stay unchanged, got %q", base)
+	if !strings.Contains(base, "-o ServerAliveInterval=15 -o ServerAliveCountMax=3 user@host cmd") {
+		t.Fatalf("exec args = %q", base)
 	}
 	for _, opt := range []string{"ControlMaster=auto", "BatchMode=yes", "ConnectTimeout=10"} {
 		if !strings.Contains(args, opt) {

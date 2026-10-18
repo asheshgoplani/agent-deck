@@ -10,8 +10,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -39,6 +41,7 @@ func resolveRemoteConfig(name string) (rc session.RemoteConfig, exists bool, loa
 }
 
 func handleRemote(profile string, args []string) {
+	installRemoteSignalCleanup()
 	if len(args) == 0 {
 		printRemoteUsage()
 		return
@@ -94,6 +97,32 @@ func handleRemote(profile string, args []string) {
 	default:
 		handleRemoteExec(args[0], args[1:])
 	}
+}
+
+// remoteSignalGrace is how long a signalled remote command may take to
+// return through its own context handling after its ssh groups are gone.
+const remoteSignalGrace = 2 * time.Second
+
+// installRemoteSignalCleanup makes a signal to any `remote ...` command kill
+// its ssh process groups before the CLI exits. ssh runs in its own process
+// group (so a timeout can kill everything it started), which also means the
+// default "die on SIGTERM" no longer reaches it: a poller that times the CLI
+// out would otherwise leave the ssh, and the remote command behind it,
+// running (2026-10 remote list pile-up). Commands that watch their own
+// signal context still finish on their own, inside remoteSignalGrace.
+func installRemoteSignalCleanup() {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		sig := <-sigs
+		session.KillSSHProcesses()
+		time.Sleep(remoteSignalGrace)
+		code := 1
+		if s, ok := sig.(syscall.Signal); ok {
+			code = 128 + int(s)
+		}
+		exitCLI(code)
+	}()
 }
 
 func isRemoteManagementCommand(name string) bool {

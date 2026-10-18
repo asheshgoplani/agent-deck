@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -195,9 +196,12 @@ func runCursorTrustRemoteScript(host, script string) error {
 	defer cancel()
 	// #nosec G204 -- host is validated by ValidateSSHHost; script is generated
 	// locally from a slugified key and base64 JSON, delivered via stdin.
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd := newSSHCommand(ctx, args...)
 	cmd.Stdin = strings.NewReader(script)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	var combined bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &combined, &combined
+	if err := runSSHCommand(cmd); err != nil {
+		out := combined.Bytes()
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("ssh cursor trust seed: %w: %s", ctxErr, strings.TrimSpace(string(out)))
 		}
