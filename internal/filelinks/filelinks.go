@@ -76,10 +76,11 @@ func NormalizeRoots(entries []string, expand func(string) string) []string {
 //   - a relative entry (it would depend on the server's working directory);
 //   - an entry naming an unset or empty $VAR (under launchd or systemd,
 //     "$REPORTS/" would otherwise widen to "/");
-//   - "/" and the home directory itself, which would expose every readable
-//     file, ~/.ssh and the deck's own config and token included.
+//   - "/" and any root containing the home directory, ~/.ssh or agent-deck's
+//     config or data directory (/home, /Users, $HOME/..), which would
+//     expose ~/.ssh and the deck's own config and token.
 func CheckRoots(entries []string, expand func(string) string) ([]string, []Refused) {
-	home := cleanHome()
+	sensitive := sensitiveDirs()
 	out := make([]string, 0, len(entries))
 	var refused []Refused
 	seen := make(map[string]struct{}, len(entries))
@@ -100,7 +101,7 @@ func CheckRoots(entries []string, expand func(string) string) ([]string, []Refus
 			continue
 		}
 		p = filepath.Clean(p)
-		if reason := tooWide(p, home); reason != "" {
+		if reason := tooWide(p, sensitive); reason != "" {
 			refused = append(refused, Refused{raw, reason})
 			continue
 		}
@@ -129,21 +130,46 @@ func emptyVar(p string) string {
 	return missing
 }
 
-func cleanHome() string {
+// sensitiveDirs are directories no root may contain: the home directory,
+// ~/.ssh, and agent-deck's config and data directories (which hold the web
+// token and push keys), wherever XDG puts them. Each comes cleaned and, when
+// it exists, symlink-resolved too.
+func sensitiveDirs() []string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return ""
+		return nil
 	}
-	return filepath.Clean(home)
+	dirs := []string{home, filepath.Join(home, ".ssh"), filepath.Join(home, ".agent-deck")}
+	for env, fallback := range map[string]string{
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+		"XDG_DATA_HOME":   filepath.Join(home, ".local", "share"),
+	} {
+		base := strings.TrimSpace(os.Getenv(env))
+		if !filepath.IsAbs(base) {
+			base = fallback
+		}
+		dirs = append(dirs, filepath.Join(base, "agent-deck"))
+	}
+	out := make([]string, 0, 2*len(dirs))
+	for _, d := range dirs {
+		d = filepath.Clean(d)
+		out = append(out, d)
+		if real, err := filepath.EvalSymlinks(d); err == nil && real != d {
+			out = append(out, real)
+		}
+	}
+	return out
 }
 
 // tooWide says why a cleaned absolute root would expose too much, or "".
-func tooWide(p, home string) string {
+func tooWide(p string, sensitive []string) string {
 	if p == string(filepath.Separator) {
 		return "the filesystem root would expose every readable file"
 	}
-	if home != "" && p == home {
-		return "the home directory would expose ~/.ssh and the deck's own config; list folders inside it"
+	for _, d := range sensitive {
+		if _, ok := within(p, d); ok {
+			return "it contains " + d + " (home, ~/.ssh or the deck's own config); list folders inside home instead"
+		}
 	}
 	return ""
 }
@@ -190,17 +216,15 @@ func Open(roots []string, path string) (*File, error) {
 }
 
 // resolveRoots resolves each root through symlinks, dropping missing ones and
-// any that resolve to / or the home directory (CheckRoots refuses those by
-// name; this also catches a root that is a symlink to them).
+// any that resolve to / or to a directory containing a sensitive one
+// (CheckRoots refuses those by name; this also catches a root that is a
+// symlink to them).
 func resolveRoots(roots []string) []string {
-	home := cleanHome()
-	if h, err := filepath.EvalSymlinks(home); err == nil {
-		home = h
-	}
+	sensitive := sensitiveDirs()
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
 		realRoot, err := filepath.EvalSymlinks(root)
-		if err != nil || tooWide(realRoot, home) != "" {
+		if err != nil || tooWide(realRoot, sensitive) != "" {
 			continue
 		}
 		out = append(out, realRoot)

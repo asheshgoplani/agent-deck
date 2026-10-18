@@ -302,3 +302,53 @@ func TestOpenGivesNoExistenceOracleBehindASymlinkedDir(t *testing.T) {
 		t.Errorf("missing inside = %v, want ErrNotFound", err)
 	}
 }
+
+// Lane review: a root that CONTAINS the home directory, ~/.ssh or the deck's
+// config or data directory (/home, /Users, $HOME/.., or a parent of an XDG dir
+// outside home) exposes them as surely as / does. Refused by name and, via a
+// symlink, at open time.
+func TestRootsThatContainSensitiveDirsAreRefused(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "users", "me")
+	cfg := filepath.Join(tmp, "xdg", "config")
+	data := filepath.Join(tmp, "xdgdata", "share")
+	for _, d := range []string{filepath.Join(home, "projects"), filepath.Join(home, ".ssh"), cfg, data, filepath.Join(tmp, "other")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519"), []byte("KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("XDG_DATA_HOME", data)
+
+	roots, refused := CheckRoots([]string{
+		filepath.Join(tmp, "users"),     // contains home
+		home + "/..",                    // the same, spelled from $HOME
+		tmp,                             // contains everything
+		filepath.Join(tmp, "xdg"),       // contains the agent-deck config dir
+		filepath.Join(tmp, "xdgdata"),   // contains the agent-deck data dir
+		filepath.Join(home, ".ssh"),     // ~/.ssh itself
+		filepath.Join(home, "projects"), // fine: inside home, not containing it
+		filepath.Join(tmp, "other"),     // fine
+	}, nil)
+	want := []string{filepath.Join(home, "projects"), filepath.Join(tmp, "other")}
+	if strings.Join(roots, ",") != strings.Join(want, ",") {
+		t.Fatalf("roots = %v, want %v (refused %+v)", roots, want, refused)
+	}
+	if len(refused) != 6 {
+		t.Fatalf("refused = %+v, want 6", refused)
+	}
+
+	// A root that only resolves to an ancestor of home (a symlink) is skipped
+	// at open time, so ~/.ssh stays unreadable.
+	link := filepath.Join(tmp, "other", "up")
+	if err := os.Symlink(filepath.Join(tmp, "users"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open([]string{link}, filepath.Join(link, "me", ".ssh", "id_ed25519")); !errors.Is(err, ErrOutside) {
+		t.Fatalf("Open via a root resolving to an ancestor of home = %v, want ErrOutside", err)
+	}
+}
