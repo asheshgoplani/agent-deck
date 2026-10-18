@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -84,11 +85,6 @@ func appendInstallLogLine(now time.Time, from, to, source string, installErr err
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
 	outcome := "ok"
 	if installErr != nil {
 		outcome = "failed: " + strings.Join(strings.Fields(installErr.Error()), " ")
@@ -97,7 +93,24 @@ func appendInstallLogLine(now time.Time, from, to, source string, installErr err
 	if svc := os.Getenv("XPC_SERVICE_NAME"); svc != "" && svc != "0" {
 		line += " service=" + svc
 	}
-	fmt.Fprintln(f, line)
+	if err := writeInstallLogLine(path, line); err != nil {
+		// Strip line breaks from the logged values (go/log-injection).
+		updateCLILog.Warn("install_log_write_failed",
+			slog.String("path", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(path), "\n", ""), "\r", "")),
+			slog.String("err", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
+	}
+}
+
+// writeInstallLogLine appends line to the log at path and reports a failed
+// write or close: on a full or failing disk the close is where a lost line
+// shows up.
+func writeInstallLogLine(path, line string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := fmt.Fprintln(f, line)
+	return errors.Join(werr, f.Close())
 }
 
 // updateKindForTrigger maps an unattended run's trigger to its telemetry

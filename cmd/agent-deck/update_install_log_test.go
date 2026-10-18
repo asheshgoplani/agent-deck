@@ -78,3 +78,23 @@ func TestAppendInstallLogLine_Format(t *testing.T) {
 	assert.True(t, strings.HasPrefix(lines[0], "2026-10-19T00:27:35+02:00 install 1.16.29 -> 1.16.30 ok source=web pid="), lines[0])
 	assert.True(t, strings.HasSuffix(lines[0], " service=com.example.agent"), lines[0])
 }
+
+// A failed append is reported, not dropped: writeInstallLogLine returns the
+// write or close error (the caller logs it and never fails the install).
+func TestWriteInstallLogLineReportsWriteFailure(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("/dev/full not available")
+	}
+	err := writeInstallLogLine("/dev/full", "install 1.0.0 -> 1.0.1 ok source=test")
+	assert.Error(t, err, "a write to a full device must be reported")
+}
+
+// A good append succeeds and writes exactly the line.
+func TestWriteInstallLogLineAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auto-update.log")
+	assert.NoError(t, writeInstallLogLine(path, "first"))
+	assert.NoError(t, writeInstallLogLine(path, "second"))
+	data, err := os.ReadFile(path)
+	assert.NoError(t, err)
+	assert.Equal(t, "first\nsecond\n", string(data))
+}
