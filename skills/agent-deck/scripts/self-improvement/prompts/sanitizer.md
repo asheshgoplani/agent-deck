@@ -73,7 +73,7 @@ INPUT:
 - John's worker session (analyze-fix-876) timed out after 80s.
 - 91fd7978.md [346296cb] documents the SQLite write race.
 - We tested on the innotrade.com Hetzner box (46.224.x.y).
-- TOKEN=ghp_KPF8aB9c1dE2fGh3I4j5K6L7m8N9o0Pq1Rs2 was leaked in a log.
+- TOKEN=ghp_<example-token> was leaked in a log.
 - /home/ashesh-goplani/agent-deck/cmd/main.go:42 has the bug.
 ```
 
