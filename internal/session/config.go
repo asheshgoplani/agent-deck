@@ -437,6 +437,17 @@ func configuredDefaultProfile() string {
 // (permission, transient filesystem); it never fails open on such an error
 // (fail open would silently restore the pre-#1790 auto-create hole).
 func ResolveProfileForStorage(explicit string) (string, error) {
+	return resolveProfileForStorage(explicit, true)
+}
+
+// ResolveProfileForStorageQuiet is ResolveProfileForStorage without the
+// #1790 warning on stderr, for a long-running process that checks again
+// whether the profile it resolved at startup is still the one it would pick.
+func ResolveProfileForStorageQuiet(explicit string) (string, error) {
+	return resolveProfileForStorage(explicit, false)
+}
+
+func resolveProfileForStorage(explicit string, warn bool) (string, error) {
 	effectiveProfile, source := getEffectiveProfileWithSource(explicit)
 	if source != ProfileSourceInferred {
 		return effectiveProfile, nil
@@ -451,6 +462,9 @@ func ResolveProfileForStorage(explicit string) (string, error) {
 	}
 
 	fallback := configuredDefaultProfile()
+	if !warn {
+		return fallback, nil
+	}
 	known, listErr := ListProfiles()
 	knownDesc := "none yet"
 	if listErr == nil && len(known) > 0 {

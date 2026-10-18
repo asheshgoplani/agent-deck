@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -20,6 +22,10 @@ import (
 // feed watched GetDBPathForProfile(""), the default profile's state.db. On a
 // remote whose default_profile is work, a change to work's sessions was never
 // pushed; the TUI only saw it at its next periodic fetch.
+//
+// The agent pins the profile it resolved, so when the host's default_profile
+// changes under an agent started without -p, the agent exits for a reconnect;
+// one started with -p keeps serving its profile.
 func TestRemoteAgent_ChangeFeedWatchesTheProfileItServes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts real agent-deck processes")
@@ -29,8 +35,9 @@ func TestRemoteAgent_ChangeFeedWatchesTheProfileItServes(t *testing.T) {
 		flag          []string // global flags before remote-agent
 		env           string   // AGENTDECK_PROFILE
 		configDefault string   // config.json default_profile
+		moveDefaultTo string   // default_profile set while the agent runs
 	}{
-		{name: "default_profile", configDefault: "work"},
+		{name: "default_profile", configDefault: "work", moveDefaultTo: "other"},
 		{name: "AGENTDECK_PROFILE", env: "work"},
 		{name: "-p wins", flag: []string{"-p", "work"}, env: "other"},
 	}
@@ -135,6 +142,19 @@ func TestRemoteAgent_ChangeFeedWatchesTheProfileItServes(t *testing.T) {
 					}
 				}
 			}
+			waitExit := func(within time.Duration) bool {
+				deadline := time.After(within)
+				for {
+					select {
+					case _, ok := <-events:
+						if !ok {
+							return true
+						}
+					case <-deadline:
+						return false
+					}
+				}
+			}
 			if waitEvent("ready", 15*time.Second) == nil {
 				t.Fatalf("remote-agent never said ready\nstderr: %s", stderr())
 			}
@@ -142,17 +162,80 @@ func TestRemoteAgent_ChangeFeedWatchesTheProfileItServes(t *testing.T) {
 			// The feed seeds itself with one listing right after "ready". An
 			// add that lands before the seed is in the seed, so a second add
 			// is made if the first one is not pushed.
-			for i := 1; i <= 2; i++ {
+			pushed := false
+			for i := 1; i <= 2 && !pushed; i++ {
 				title := "added-" + strconv.Itoa(i)
 				cli("-p", "work", "add", project, "--title", title, "--no-parent")
 				if r := waitEvent("changed", 8*time.Second); r != nil {
 					if r.Sessions != "" && !strings.Contains(r.Sessions, title) {
 						t.Fatalf("pushed listing lacks %q: %s", title, r.Sessions)
 					}
-					return
+					pushed = true
 				}
 			}
-			t.Fatalf("remote-agent pushed no \"changed\" after two sessions were added to the profile it serves\nstderr: %s", stderr())
+			if !pushed {
+				t.Fatalf("remote-agent pushed no \"changed\" after two sessions were added to the profile it serves\nstderr: %s", stderr())
+			}
+
+			switch {
+			case tt.moveDefaultTo != "":
+				cli("profile", "create", tt.moveDefaultTo)
+				cli("profile", "default", tt.moveDefaultTo)
+				if !waitExit(remoteAgentProfileEvery + 10*time.Second) {
+					t.Fatalf("remote-agent kept serving work after default_profile moved to %s\nstderr: %s", tt.moveDefaultTo, stderr())
+				}
+				if !strings.Contains(stderr(), "the host now selects another profile") {
+					t.Fatalf("remote-agent exited without saying why\nstderr: %s", stderr())
+				}
+			case len(tt.flag) > 0:
+				// The host selects other here: an agent pinned by -p must not
+				// take that for a moved profile.
+				if waitExit(remoteAgentProfileEvery + 2*time.Second) {
+					t.Fatalf("remote-agent started with -p exited\nstderr: %s", stderr())
+				}
+			}
 		})
+	}
+}
+
+// When the host would now pick another profile, the agent exits the way it
+// does for a newer binary, so the controller redials; until then it serves.
+func TestRemoteAgent_ExitsWhenTheHostSelectsAnotherProfile(t *testing.T) {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	defer inW.Close()
+	go func() { _, _ = io.Copy(io.Discard, outR) }()
+	var moved atomic.Bool
+	var checks atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		serveRemoteAgent(context.Background(), inR, outW, remoteAgentConfig{
+			Run: func(context.Context, []string) (string, string, int) { return "", "", 0 },
+			ProfileMoved: func() bool {
+				checks.Add(1)
+				return moved.Load()
+			},
+			ProfileEvery: 5 * time.Millisecond,
+		})
+		_ = outW.Close()
+		close(done)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for checks.Load() < 5 {
+		if time.Now().After(deadline) {
+			t.Fatal("the profile was never checked")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case <-done:
+		t.Fatal("agent exited while the host still selected its profile")
+	default:
+	}
+	moved.Store(true)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent did not exit after the host selected another profile")
 	}
 }
