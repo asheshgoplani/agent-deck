@@ -120,8 +120,11 @@ func validateRemoteEventsPublishArgs(args []string) error {
 	}
 	options := map[string]bool{"kind": true, "session": true, "data-file": true, "profile": true, "json": false}
 	values := map[string]string{}
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
+	// Consume the options from the front: no index arithmetic (gosec G602).
+	rest := args
+	for len(rest) > 0 {
+		arg := rest[0]
+		rest = rest[1:]
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
 			return fmt.Errorf("unsupported argument %q for remote events publish", arg)
 		}
@@ -137,11 +140,11 @@ func validateRemoteEventsPublishArgs(args []string) error {
 			continue
 		}
 		if !inline {
-			if i+1 >= len(args) {
+			if len(rest) == 0 {
 				return fmt.Errorf("option --%s needs a value", name)
 			}
-			value = args[i+1]
-			i++
+			value = rest[0]
+			rest = rest[1:]
 		}
 		if strings.HasPrefix(value, "-") && !(name == "data-file" && value == "-") {
 			return fmt.Errorf("option --%s value %q must not start with \"-\"", name, value)
