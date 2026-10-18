@@ -131,6 +131,14 @@ class TestWalkGoalBudgets(BudgetCase):
         self.assertEqual(data["state"]["status"], "done")
 
 
+class TestWalkGoalBudgetsWithProgressFeatures(TestWalkGoalBudgets):
+    """The same budgets on a goal that opted into the no-progress cap, which
+    runs the progress loop instead of the classic one."""
+
+    def idle_goal(self, **schedule) -> dict:
+        return super().idle_goal(no_progress_cap=3, **schedule)
+
+
 class TestBudgetRefusedNudge(BudgetCase):
     def test_refused_send_is_not_retried(self):
         refused = subprocess.CompletedProcess([], 1, stdout="", stderr="Error: budget exceeded: daily global limit exceeded ($5.00 used of $1.00); nothing was sent to 'w'")
@@ -143,6 +151,16 @@ class TestBudgetRefusedNudge(BudgetCase):
     @patch("manager.agent_deck_stop", return_value=True)
     def test_refused_nudge_ends_goal(self, stop):
         goal = make_goal(pid="r", max_idle=60, created_minutes_ago=10)
+        with patch("manager.agent_deck_send", side_effect=manager.BudgetRefused("budget exceeded: daily")):
+            data = self.walk(goal)
+        stop.assert_called_once()
+        self.assertEqual(data["state"]["status"], "failed")
+        self.assertEqual(data["state"]["ended_reason"], "budget_exceeded: budget exceeded: daily")
+
+    @patch("manager.agent_deck_stop", return_value=True)
+    def test_refused_nudge_ends_goal_with_progress_features(self, stop):
+        goal = make_goal(pid="r", max_idle=60, created_minutes_ago=10)
+        goal["schedule"]["no_progress_cap"] = 3
         with patch("manager.agent_deck_send", side_effect=manager.BudgetRefused("budget exceeded: daily")):
             data = self.walk(goal)
         stop.assert_called_once()

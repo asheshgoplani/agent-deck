@@ -20,8 +20,8 @@
 #       "Create a test marker file" \
 #       'test -f /tmp/goal-test-marker.txt'
 #
-#   # done_cmd checks GitHub, not the workdir: turn the worktree gate off.
-#   WORKTREE_GATE=0 goal.sh v160-release \
+#   # Opt in to the no-progress cap: escalate after 3 empty wakes.
+#   NO_PROGRESS_CAP=3 goal.sh v160-release \
 #       "Ship agent-deck v1.6.0 to GitHub Releases" \
 #       'gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e ".publishedAt != null"' \
 #       my-v160-worker \
@@ -67,9 +67,12 @@ WORKDIR="${5:-$HOME}"
 CHECK_INTERVAL_SECONDS="${CHECK_INTERVAL_SECONDS:-300}"     # manager polls every 5 min
 MAX_IDLE_SECONDS="${MAX_IDLE_SECONDS:-3600}"               # nudge after 1h of silence
 ESCALATE_AFTER="${ESCALATE_AFTER:-3}"                      # nudges before paging user
-NO_PROGRESS_CAP="${NO_PROGRESS_CAP:-3}"                    # empty turns that end the goal (0 = off)
-NO_PROGRESS_BACKOFF_BASE_SECONDS="${NO_PROGRESS_BACKOFF_BASE_SECONDS:-$MAX_IDLE_SECONDS}"  # doubling wake backoff base
-WORKTREE_GATE="${WORKTREE_GATE:-1}"                        # skip quiet-tick done_cmd reruns on an unchanged failed worktree; 0 when done_cmd checks state outside the workdir
+# Opt-in progress features (all off by default; see references/goal.md).
+NO_PROGRESS_CAP="${NO_PROGRESS_CAP:-0}"                    # empty turns before the cap acts (0 = off)
+NO_PROGRESS_ACTION="${NO_PROGRESS_ACTION:-escalate}"       # at the cap: escalate (worker keeps running) or stop
+NO_PROGRESS_BACKOFF_BASE_SECONDS="${NO_PROGRESS_BACKOFF_BASE_SECONDS:-$MAX_IDLE_SECONDS}"  # doubling wake backoff base (with the cap on)
+WORKTREE_PROGRESS="${WORKTREE_PROGRESS:-0}"                # 1: a worktree content change counts as progress too
+WORKTREE_GATE="${WORKTREE_GATE:-0}"                        # 1: skip quiet-tick done_cmd reruns on an unchanged failed worktree
 CONDUCTOR="${CONDUCTOR:-agent-deck}"
 PROFILE="${PROFILE:-personal}"
 
@@ -94,6 +97,20 @@ MAX_MINUTES="${FLAG_MAX_MINUTES:-$(run_budget_default max_minutes "${MAX_MINUTES
 for budget in "$MAX_TOKENS" "$MAX_CYCLES" "$MAX_MINUTES"; do
     [[ "$budget" =~ ^[0-9]+$ ]] || { echo "[goal] run budget must be a non-negative integer: '$budget'" >&2; exit 2; }
 done
+
+case "$NO_PROGRESS_ACTION" in
+    escalate|stop) ;;
+    *) echo "[goal] NO_PROGRESS_ACTION must be escalate or stop: '$NO_PROGRESS_ACTION'" >&2; exit 2 ;;
+esac
+
+flag_on() { [[ -n "$1" && "$1" != 0 && "$1" != false && "$1" != no ]]; }
+
+# Baseline worktree hash, taken before the worker starts, so work done
+# before the first manager tick counts as progress.
+BASELINE_TREE_HASH=""
+if flag_on "$WORKTREE_GATE" || flag_on "$WORKTREE_PROGRESS"; then
+    BASELINE_TREE_HASH="$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import manager; from pathlib import Path; print(manager.worktree_tree_hash(Path(sys.argv[2])) or "")' "$SCRIPT_DIR" "$WORKDIR" 2>/dev/null || true)"
+fi
 
 [[ -f "$PROMPT_TEMPLATE" ]] || { echo "[goal] missing prompt template: $PROMPT_TEMPLATE" >&2; exit 1; }
 mkdir -p "$GOALS_DIR"
@@ -170,9 +187,13 @@ rm -f "$PROMPT_FILE"
 python3 - "$GOAL_PATH" "$ID" "$GOAL" "$DONE_CMD" "$WORKER_TITLE" "$SESSION_ID" "$WORKDIR" "$CONDUCTOR" \
         "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" \
         "$NO_PROGRESS_CAP" "$NO_PROGRESS_BACKOFF_BASE_SECONDS" "$WORKTREE_GATE" \
+        "$NO_PROGRESS_ACTION" "$WORKTREE_PROGRESS" "$BASELINE_TREE_HASH" \
         "$MAX_TOKENS" "$MAX_MINUTES" "$PROFILE" <<'PYEOF'
 import json
 import sys
+
+def flag(v):
+    return v not in ("0", "false", "no", "")
 
 path = sys.argv[1]
 data = {
@@ -183,7 +204,7 @@ data = {
     "worker_session_id": sys.argv[6],
     "workdir": sys.argv[7],
     "conductor": sys.argv[8],
-    "profile": sys.argv[19],
+    "profile": sys.argv[22],
     "schedule": {
         "check_interval_seconds": int(sys.argv[9]),
         "max_idle_seconds": int(sys.argv[10]),
@@ -191,9 +212,11 @@ data = {
         "escalate_after_stuck_nudges": int(sys.argv[12]),
         "no_progress_cap": int(sys.argv[14]),
         "no_progress_backoff_base_seconds": int(sys.argv[15]),
-        "worktree_gate": sys.argv[16] not in ("0", "false", "no", ""),
-        "max_tokens": int(sys.argv[17]),
-        "max_minutes": int(sys.argv[18]),
+        "no_progress_action": sys.argv[17],
+        "worktree_progress": flag(sys.argv[18]),
+        "worktree_gate": flag(sys.argv[16]),
+        "max_tokens": int(sys.argv[20]),
+        "max_minutes": int(sys.argv[21]),
     },
     "state": {
         "status": "active",
@@ -206,6 +229,7 @@ data = {
         "no_progress_streak": 0,
         "next_wake_at": None,
         "last_failed_tree_hash": None,
+        "progress_tree_hash": sys.argv[19] or None,
         "escalated_at": None,
         "ended_at": None,
         "ended_reason": None,
