@@ -121,6 +121,10 @@ func handleSession(profile string, args []string) {
 		handleSessionSendWorker(profile, args[1:])
 	case "approve":
 		handleSessionApprove(profile, args[1:])
+	case "command":
+		handleSessionCommand(profile, args[1:])
+	case "commands":
+		handleSessionCommands(profile, args[1:])
 	case "send-keys":
 		handleSessionSendKeys(profile, args[1:])
 	case "output":
@@ -179,6 +183,8 @@ func printSessionHelp() {
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session (--queue: never silently lost, see send-status; --image <path>)")
 	fmt.Println("  image-upload <id>       Stage an attachment from stdin (--name <uuid>.png --json; max 20 MiB)")
+	fmt.Println("  command [id] \"/cmd ...\"  Run a Claude slash command (/model, /compact, /clear, /exit, skills) and verify the outcome")
+	fmt.Println("  commands [id]           List the slash commands and skills a Claude session can run (--json)")
 	fmt.Println("  send-status <send-id>   State of a queued send: queued, typed, submitted, landed or failed")
 	fmt.Println("  queue list <session>    List durable queued sends (--json)")
 	fmt.Println("  queue release <id>      Send a queued entry now, with confirmed delivery evidence (--json)")
@@ -542,29 +548,9 @@ func handleSessionStop(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	// Capture tool conversation IDs from tmux env before killing the session.
-	// This ensures IDs are saved to storage even if PostStartSync timed out
-	// during start (e.g., tool started late on slow WSL2 machines).
-	// Must happen before Kill() because tmux show-environment fails on dead sessions.
-	inst.SyncSessionIDsFromTmux()
-	adoptLiveCodexIdentity(storage, inst)
-
-	// Stop the session by killing the tmux session
-	if err := inst.Kill(); err != nil {
-		out.Error(fmt.Sprintf("failed to stop session: %v", err), ErrCodeInvalidOperation)
-		exitCLI(1)
-	}
-	inst.RecordTelemetryEnd(telemetry.EndStop)
-
-	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
-	// queued sibling is waiting, start the oldest one. Only one drain per
-	// stop: if max_concurrent>=2 and multiple slots are now free, the next
-	// stop drains the next entry.
-	drained := drainGroupQueue(inst.GroupPath, instances, groups)
-
-	// Save updated state
-	if err := saveSessionData(storage, instances, groups); err != nil {
-		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
+	drained, err := stopInstanceAndSave(storage, inst, instances, groups)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
@@ -585,6 +571,36 @@ func handleSessionStop(profile string, args []string) {
 	// the user is waiting on.
 	session.RecordSessionEvent(profile, inst.ID, health.KindStop, nil)
 	session.RecallNotifyInstance(inst, health.KindStop)
+}
+
+// stopInstanceAndSave is the stop path shared by `session stop` and
+// `session command <id> /exit`: it kills only this instance's tmux session,
+// drains one queued sibling and persists the state.
+func stopInstanceAndSave(storage *session.Storage, inst *session.Instance, instances []*session.Instance, groups []*session.GroupData) (*session.Instance, error) {
+	// Capture tool conversation IDs from tmux env before killing the session.
+	// This ensures IDs are saved to storage even if PostStartSync timed out
+	// during start (e.g., tool started late on slow WSL2 machines).
+	// Must happen before Kill() because tmux show-environment fails on dead sessions.
+	inst.SyncSessionIDsFromTmux()
+	adoptLiveCodexIdentity(storage, inst)
+
+	// Stop the session by killing the tmux session
+	if err := inst.Kill(); err != nil {
+		return nil, fmt.Errorf("failed to stop session: %w", err)
+	}
+	inst.RecordTelemetryEnd(telemetry.EndStop)
+
+	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
+	// queued sibling is waiting, start the oldest one. Only one drain per
+	// stop: if max_concurrent>=2 and multiple slots are now free, the next
+	// stop drains the next entry.
+	drained := drainGroupQueue(inst.GroupPath, instances, groups)
+
+	// Save updated state
+	if err := saveSessionData(storage, instances, groups); err != nil {
+		return drained, fmt.Errorf("failed to save session state: %w", err)
+	}
+	return drained, nil
 }
 
 // handleSessionArchive stops a session and marks it archived so it is hidden
@@ -6111,23 +6127,7 @@ const claudeQueuePlaceholder = "Press up to edit queued messages"
 // and neither does a pane without a divider-framed composer.
 func claudeQueueAcknowledged(content string) bool {
 	lines := strings.Split(content, "\n")
-	last := -1
-	for i := len(lines) - 1; i >= 0; i-- {
-		if send.IsComposerDividerLine(lines[i]) {
-			last = i
-			break
-		}
-	}
-	if last <= 0 {
-		return false
-	}
-	prev := -1
-	for i := last - 1; i >= 0; i-- {
-		if send.IsComposerDividerLine(lines[i]) {
-			prev = i
-			break
-		}
-	}
+	prev, last := send.ComposerBounds(lines)
 	if prev < 0 || prev+1 >= last {
 		return false
 	}

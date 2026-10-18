@@ -29,11 +29,13 @@ func TestConductorReadsArePlainAndQuietGenerationMigrates(t *testing.T) {
 				t.Fatal("the read row and /check must still run session output")
 			}
 			gens := renderConductorInstructionsGenerations(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
-			if len(gens) == 0 || fmtHash(gens[0]) != noOpRuleQuietReadShared {
-				t.Fatalf("newest reconstructed generation is not the -q template that was written before")
+			// gens[0] is main before the /cmd quick command; the -q template
+			// written before the plain reads is the one after it.
+			if len(gens) < 2 || fmtHash(gens[1]) != noOpRuleQuietReadShared {
+				t.Fatalf("second newest reconstructed generation is not the -q template that was written before")
 			}
 			path := filepath.Join(t.TempDir(), spec.InstructionsFileName)
-			if err := os.WriteFile(path, []byte(gens[0]), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(gens[1]), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if err := writeGeneratedFileOrMigrate(path, gens, current, 0o644); err != nil {
