@@ -79,10 +79,11 @@ func handleWatcher(profile string, args []string) {
 
 	// Without -p, the watcher commands use the profile every other command
 	// uses: AGENTDECK_PROFILE, then CLAUDE_CONFIG_DIR inference (with its
-	// #1790 guard), then default_profile (#2740). Help and install-skill
-	// touch no profile state, so they skip the resolution and its warning.
+	// #1790 guard), then default_profile (#2740). help, install-skill,
+	// import and routes touch no profile state, so they skip the resolution
+	// and its warning.
 	switch args[0] {
-	case "help", "--help", "-h", "install-skill":
+	case "help", "--help", "-h", "install-skill", "import", "routes":
 	default:
 		resolved, err := session.ResolveProfileForStorage(profile)
 		if err != nil {
