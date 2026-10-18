@@ -89,6 +89,7 @@ func MigrateSessionsToProfile(sourceProfile, targetProfile string, sessionIDs []
 	defer dstStorage.Close()
 
 	result := &ProfileMigrateResult{}
+	defer publishMovedSessionsClosed(sourceProfile, result)
 	for _, id := range sessionIDs {
 		if err := migrateOneSession(srcStorage.GetDB(), dstStorage.GetDB(), id, opts, result); err != nil {
 			return result, err
@@ -175,6 +176,7 @@ func MigrateConductorToProfile(name, sourceProfile, targetProfile string, opts P
 	}
 
 	result := &ProfileMigrateResult{}
+	defer publishMovedSessionsClosed(sourceProfile, result)
 	if dstConductor != nil && srcConductor == nil {
 		// Conductor itself is already migrated. Report it as
 		// SkippedIdempotent so CLI output reflects what happened.
@@ -260,6 +262,7 @@ func MigrateGroupToProfile(groupPath, sourceProfile, targetProfile string, opts 
 	sort.Strings(ids) // deterministic order for test stability
 
 	result := &ProfileMigrateResult{}
+	defer publishMovedSessionsClosed(sourceProfile, result)
 	for _, id := range ids {
 		if err := migrateOneSession(src, dst, id, opts, result); err != nil {
 			return result, err
@@ -517,4 +520,13 @@ func requireProfileExists(profile string) error {
 		return err
 	}
 	return nil
+}
+
+// publishMovedSessionsClosed announces macapp.session.closed {reason:"moved"}
+// on the source profile's bus for every session that left it, including on
+// a partial migration that stopped with an error.
+func publishMovedSessionsClosed(sourceProfile string, result *ProfileMigrateResult) {
+	for _, id := range result.MovedSessionIDs {
+		PublishSessionClosed(sourceProfile, id, SessionClosedMoved)
+	}
 }

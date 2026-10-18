@@ -295,9 +295,19 @@ func runRemoteExec(name string, args []string) (int, error) {
 		return 1, err
 	}
 	defer closeInput()
+	var publishPayload []byte
+	publish := isRemoteEventsPublish(args)
+	if publish {
+		if publishPayload, err = readRemotePublishData(input); err != nil {
+			return 2, err
+		}
+	}
 	runner := session.NewSSHRunner(name, rc)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if publish {
+		return runRemotePublishIO(ctx, runner, name, publishPayload, os.Stdout, os.Stderr, args)
+	}
 	if remoteGuardedSend(args) {
 		if err := requireRemoteGuardSupport(ctx, runner, name); err != nil {
 			return 1, err

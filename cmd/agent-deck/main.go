@@ -3456,17 +3456,10 @@ func handleRemove(profile string, args []string) {
 	}
 	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
-	// Best-effort post-removal cleanup for transition-notifier state
-	// (issue #910). Failures are warned but do not block the rm — the
-	// SQLite removal is the user-visible contract.
-	if swept, err := session.SweepInboxesForChildSession(removedID); err != nil && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "warn: inbox sweep for %s failed: %v\n", removedID, err)
-	} else if swept > 0 && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "swept %d stale inbox event(s) for removed session\n", swept)
-	}
-	if _, err := session.RemoveNotifyStateRecord(removedID); err != nil && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", removedID, err)
-	}
+	// Best-effort post-removal cleanup (issue #910 sweep, macapp.session.closed).
+	// Failures are warned but do not block the rm — the SQLite removal is the
+	// user-visible contract.
+	warnRemovedSessionCleanup(session.CleanupRemovedSession(storage.Profile(), removedID), removedID, *jsonOutput)
 
 	out.Success(
 		fmt.Sprintf("Removed session: %s (from profile '%s')", removedTitle, storage.Profile()),

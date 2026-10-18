@@ -8480,6 +8480,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
 		if err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+		} else {
+			// Same best-effort cleanup as `agent-deck rm`: inbox and
+			// notify-state sweep (#910), macapp.session.closed.
+			logRemovedSessionCleanup("delete", msg.deletedID, session.CleanupRemovedSession(h.profile, msg.deletedID))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
 		// Use forceSave to bypass the external-change abort - delete MUST persist
@@ -9923,14 +9927,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
 		// runtime/transition-notify-state.json dedup record) for the removed
-		// session, mirroring the #910 cleanup on `agent-deck rm`. Best-effort —
-		// never blocks the finish.
-		if _, err := session.SweepInboxesForChildSession(msg.sessionID); err != nil {
-			uiLog.Warn("worktree_finish_inbox_sweep_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
-		}
-		if _, err := session.RemoveNotifyStateRecord(msg.sessionID); err != nil {
-			uiLog.Warn("worktree_finish_notify_state_sweep_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
-		}
+		// session, mirroring the #910 cleanup on `agent-deck rm`, and publish
+		// macapp.session.closed. Best-effort — never blocks the finish.
+		logRemovedSessionCleanup("worktree_finish", msg.sessionID, session.CleanupRemovedSession(h.profile, msg.sessionID))
 
 		// Show success message
 		successMsg := fmt.Sprintf("Finished worktree '%s'", msg.sessionTitle)
