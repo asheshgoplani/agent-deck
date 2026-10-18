@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -66,5 +67,25 @@ func TestIssue2582HermesRestartFreshStartsNewConversation(t *testing.T) {
 	lines := issue2582Launches(t, argsFile, 2)
 	if got := lines[1]; strings.Contains(got, "--resume") {
 		t.Fatalf("fresh restart launched %q, want a new conversation", got)
+	}
+}
+
+// Review S4: a nested hermes that inherited the entry's instance id and
+// generation, running outside the entry's directories, cannot overwrite the
+// entry's record (the hook checks the seed's cwd roots before writing).
+func TestIssue2582HermesNestedHermesElsewhereDoesNotTakeTheRecord(t *testing.T) {
+	argsFile := issue2582FakeHermes(t)
+	a, gen := issue2582StartedA(t, argsFile)
+	t.Setenv("AGENTDECK_INSTANCE_ID", a.ID)
+	t.Setenv("AGENTDECK_TOOL", "hermes")
+	t.Setenv("AGENTDECK_HOOK_GENERATION", gen)
+	runHookHandlerWithStdin(t, fmt.Sprintf(`{"hook_event_name":"pre_llm_call","session_id":%q,"cwd":%q,"extra":{"platform":"cli"}}`,
+		issue2582OwnB, t.TempDir()))
+	if err := a.Restart(); err != nil {
+		t.Fatalf("restart A: %v", err)
+	}
+	lines := issue2582Launches(t, argsFile, 2)
+	if got := lines[1]; !strings.Contains(got, "--resume "+issue2582OwnA) {
+		t.Fatalf("restart launched %q, want --resume %s: a nested hermes elsewhere took the record", got, issue2582OwnA)
 	}
 }

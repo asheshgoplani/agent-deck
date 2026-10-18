@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
@@ -48,6 +49,21 @@ func WriteHermesSessionIDToToolData(td json.RawMessage, sessionID string) json.R
 		return td
 	}
 	return out
+}
+
+// ReadHermesDetectedAtFromToolData returns when the binding was recorded
+// (hermes_detected_at), or zero.
+func ReadHermesDetectedAtFromToolData(td json.RawMessage) time.Time {
+	if len(td) == 0 {
+		return time.Time{}
+	}
+	var blob struct {
+		At int64 `json:"hermes_detected_at"`
+	}
+	if json.Unmarshal(td, &blob) != nil || blob.At == 0 {
+		return time.Time{}
+	}
+	return time.Unix(blob.At, 0).UTC()
 }
 
 // ReadHermesSessionIDFromToolData returns the recorded Hermes session id, or ""
@@ -152,7 +168,7 @@ func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent, p
 		reason = "candidate_not_in_hook_payload"
 	case strings.EqualFold(strings.TrimSpace(platform), hermesSubagentPlatform):
 		reason = "candidate_from_subagent"
-	case i.hookCwdIsForeign(cwd):
+	case i.hermesHookCwdIsForeign(cwd):
 		// A process outside the entry's paths that inherited its
 		// AGENTDECK_INSTANCE_ID (a nested hermes), issue #1729's rule.
 		reason = "candidate_cwd_outside_instance_paths"
@@ -198,15 +214,13 @@ func (i *Instance) bindHermesSessionFromHook(sessionID, hookSource, hookEvent, p
 // conversation, so the restart starts a new one and says so.
 func (i *Instance) prepareHermesResume() {
 	i.mu.Lock()
-	recorded := i.HermesSessionID
+	binding, boundAt := i.HermesSessionID, i.hermesBoundAt
 	i.mu.Unlock()
 
 	// The hook handler's record comes first: it saw every hook event of the
 	// current launch, while the binding above comes only from the hook
-	// status samples a watcher happened to read.
-	if owned := i.hermesOwnedSessionID(); owned != "" {
-		recorded = owned
-	}
+	// status samples a watcher happened to read (hermesResumeTarget).
+	recorded := i.hermesResumeTarget(binding, boundAt)
 
 	resume, warning := recorded, ""
 	if recorded == "" {
@@ -252,11 +266,14 @@ func HermesHookRecordsOwnSession(event, platform, sessionID string) bool {
 		hermesSessionIDPattern.MatchString(strings.TrimSpace(sessionID))
 }
 
-// hermesOwnedSession is the sidecar record: the id and the cwd the event
-// reported. Sidecars from before the cwd was kept hold a bare JSON string.
+// hermesOwnedSession is the sidecar record: the id, the cwd the event
+// reported, whether the event carried extra.platform, and when it was
+// written. Sidecars from before these fields hold a bare JSON string.
 type hermesOwnedSession struct {
-	ID  string `json:"id"`
-	Cwd string `json:"cwd,omitempty"`
+	ID       string `json:"id"`
+	Cwd      string `json:"cwd,omitempty"`
+	Platform bool   `json:"platform,omitempty"`
+	At       int64  `json:"at,omitempty"` // unix nanos
 }
 
 func readHermesOwnedSession(path string) (hermesOwnedSession, bool) {
@@ -270,7 +287,12 @@ func readHermesOwnedSession(path string) (hermesOwnedSession, bool) {
 		if json.Unmarshal(data, &id) != nil {
 			return hermesOwnedSession{}, false
 		}
-		rec = hermesOwnedSession{ID: id}
+		// A legacy record came from a platform-carrying parent edge (the
+		// only kind earlier versions recorded); its time is the file's.
+		rec = hermesOwnedSession{ID: id, Platform: true}
+		if info, err := os.Stat(path); err == nil {
+			rec.At = info.ModTime().UnixNano()
+		}
 	}
 	rec.ID = strings.TrimSpace(rec.ID)
 	return rec, hermesSessionIDPattern.MatchString(rec.ID)
@@ -278,12 +300,20 @@ func readHermesOwnedSession(path string) (hermesOwnedSession, bool) {
 
 // WriteHermesOwnedSessionID records sessionID (with the cwd its event
 // reported) as the entry's own Hermes conversation. The hook handler calls it
-// inside the launch-generation critical section. platformKnown is whether the
-// event carried extra.platform: without it the subagent filter had nothing to
-// go on, so such an event never replaces an id already recorded (a Hermes or
-// forwarder that drops the field, or a nested hermes, cannot rebind the
-// entry); it can only record the first one.
-func WriteHermesOwnedSessionID(instanceID, sessionID, cwd string, platformKnown bool) error {
+// inside the launch-generation critical section.
+//
+// cwdRoots are the directories the entry owns as the hook sees them (the
+// seed writes them into the generation control file; /workspace for a
+// sandboxed entry): an event whose cwd is outside all of them comes from
+// another process that inherited AGENTDECK_INSTANCE_ID (a nested hermes) and
+// is not written, so it cannot replace the entry's record. Empty roots (an
+// older seed) skip the check.
+//
+// platformKnown is whether the event carried extra.platform. Without it the
+// subagent filter had nothing to go on, so such an event never replaces an id
+// already recorded; it can only record the first one, and is marked so that
+// a newer binding wins over it at resume.
+func WriteHermesOwnedSessionID(instanceID, sessionID, cwd string, platformKnown bool, cwdRoots []string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") {
 		return fmt.Errorf("invalid instance id %q", instanceID)
@@ -291,27 +321,130 @@ func WriteHermesOwnedSessionID(instanceID, sessionID, cwd string, platformKnown 
 	if !hermesSessionIDPattern.MatchString(sessionID) {
 		return fmt.Errorf("invalid hermes session id %q", sessionID)
 	}
-	rec := hermesOwnedSession{ID: sessionID, Cwd: strings.TrimSpace(cwd)}
+	cwd = strings.TrimSpace(cwd)
+	if cwd != "" && len(cwdRoots) > 0 && !pathUnderAny(cwd, cwdRoots) {
+		return nil
+	}
 	path := filepath.Join(hermesHookScope(instanceID, false), instanceID+hermesOwnedSessionSuffix)
 	if current, ok := readHermesOwnedSession(path); ok {
-		if current == rec {
+		if current.ID == sessionID && current.Cwd == cwd && current.Platform == platformKnown {
 			return nil // most turn edges repeat the same id
 		}
 		if !platformKnown && current.ID != sessionID {
 			return nil
 		}
 	}
-	return atomicHermesJSON(path, rec)
+	return atomicHermesJSON(path, hermesOwnedSession{ID: sessionID, Cwd: cwd, Platform: platformKnown, At: time.Now().UnixNano()})
 }
 
-// hermesOwnedSessionID returns the id the hook handler recorded for this
-// entry, or "". A sandboxed entry's hook handler writes in its sandbox scope,
-// so that scope is read first. A record whose cwd is provably outside the
-// entry's paths came from another process that inherited the entry's
-// AGENTDECK_INSTANCE_ID (a nested hermes, issue #1729's rule) and is ignored.
-func (i *Instance) hermesOwnedSessionID() string {
+// pathUnderAny reports whether p is one of roots or below one of them,
+// symlinks resolved on both sides.
+func pathUnderAny(p string, roots []string) bool {
+	resolve := func(x string) string {
+		if r, err := filepath.EvalSymlinks(x); err == nil {
+			return filepath.Clean(r)
+		}
+		return filepath.Clean(x)
+	}
+	candidate := resolve(p)
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		r := resolve(root)
+		if candidate == r || strings.HasPrefix(candidate, r+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// hermesCwdRoots are the directories the entry owns as its hook sees them:
+// inside a sandbox the project is mounted at /workspace, otherwise the host
+// paths. The seed writes them into the generation control file for
+// WriteHermesOwnedSessionID.
+func (i *Instance) hermesCwdRoots() []string {
+	if i.IsSandboxed() {
+		return []string{docker.ContainerWorkDir()}
+	}
+	roots := append([]string{i.EffectiveWorkingDir()}, i.AllProjectPaths()...)
+	var out []string
+	for _, r := range roots {
+		if strings.TrimSpace(r) != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// sandboxCwdToHost maps a cwd a sandboxed hook reported (the container's
+// /workspace or below) to the host path mounted there: the project path, or
+// for a multi-repo entry the repo mounted at /workspace/<dirname>, named as
+// docker.WithMultiRepoPaths names it. ok is false when the cwd is not under
+// /workspace or names no mounted repo.
+func (i *Instance) sandboxCwdToHost(cwd string) (string, bool) {
+	work := docker.ContainerWorkDir()
+	cwd = filepath.Clean(cwd)
+	if cwd != work && !strings.HasPrefix(cwd, work+"/") {
+		return "", false
+	}
+	rel := strings.TrimPrefix(strings.TrimPrefix(cwd, work), "/")
+	if !i.MultiRepoEnabled {
+		if strings.TrimSpace(i.ProjectPath) == "" {
+			return "", false
+		}
+		return filepath.Join(i.ProjectPath, rel), true
+	}
+	if rel == "" {
+		return i.EffectiveWorkingDir(), i.EffectiveWorkingDir() != ""
+	}
+	first, rest, _ := strings.Cut(rel, "/")
+	seen := map[string]int{}
+	for _, p := range i.AllProjectPaths() {
+		name := filepath.Base(p)
+		if n := seen[name]; n > 0 {
+			name = fmt.Sprintf("%s-%d", name, n)
+		}
+		seen[filepath.Base(p)]++
+		if name == first {
+			return filepath.Join(p, rest), true
+		}
+	}
+	return "", false
+}
+
+// hermesHookCwdIsForeign is hookCwdIsForeign for Hermes hooks, sandbox
+// aware: a /workspace cwd (Hermes reports the container's cwd) is mapped to
+// the host path mounted there first, and a sandboxed entry's cwd that maps
+// to nothing is not evidence (the rule is skipped). A record written by a
+// sandboxed run and read after the sandbox was turned off maps the same way.
+func (i *Instance) hermesHookCwdIsForeign(cwd string) bool {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return false
+	}
+	if host, ok := i.sandboxCwdToHost(cwd); ok && !pathUnderAny(docker.ContainerWorkDir(), i.hermesCwdRootsOnHost()) {
+		return i.hookCwdIsForeign(host)
+	}
+	if i.IsSandboxed() {
+		return false
+	}
+	return i.hookCwdIsForeign(cwd)
+}
+
+// hermesCwdRootsOnHost are the entry's host paths (never /workspace).
+func (i *Instance) hermesCwdRootsOnHost() []string {
+	return append([]string{i.EffectiveWorkingDir()}, i.AllProjectPaths()...)
+}
+
+// hermesOwnedSession returns the record the hook handler wrote for this
+// entry. A sandboxed entry's hook handler writes in its sandbox scope, so that
+// scope is read first. A record whose cwd is outside the entry's paths came
+// from another process that inherited the entry's AGENTDECK_INSTANCE_ID (a
+// nested hermes, issue #1729's rule) and is ignored.
+func (i *Instance) hermesOwnedSession() (hermesOwnedSession, bool) {
 	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
-		return ""
+		return hermesOwnedSession{}, false
 	}
 	sandboxed := i.IsSandboxed()
 	for _, dir := range []string{hermesHookScope(i.ID, sandboxed), hermesHookScope(i.ID, !sandboxed)} {
@@ -319,18 +452,41 @@ func (i *Instance) hermesOwnedSessionID() string {
 		if !ok {
 			continue
 		}
-		if i.hookCwdIsForeign(rec.Cwd) {
+		if i.hermesHookCwdIsForeign(rec.Cwd) {
 			sessionLog.Warn("hermes_owned_session_cwd_foreign", slog.String("instance_id", i.ID), slog.String("candidate", rec.ID))
 			continue
 		}
-		return rec.ID
+		return rec, true
 	}
-	return ""
+	return hermesOwnedSession{}, false
+}
+
+// hermesOwnedSessionID returns the recorded id, or "".
+func (i *Instance) hermesOwnedSessionID() string {
+	rec, _ := i.hermesOwnedSession()
+	return rec.ID
+}
+
+// hermesResumeTarget is the id a start or restart resumes: the hook
+// handler's record first, except that a record written from an event without
+// extra.platform (which cannot follow /new or a compression) loses to a
+// newer, different binding. binding and boundAt are the entry's binding.
+func (i *Instance) hermesResumeTarget(binding string, boundAt time.Time) string {
+	rec, ok := i.hermesOwnedSession()
+	if !ok {
+		return binding
+	}
+	if !rec.Platform && binding != "" && binding != rec.ID && boundAt.After(time.Unix(0, rec.At)) {
+		sessionLog.Info("hermes_owned_session_superseded_by_binding",
+			slog.String("instance_id", i.ID), slog.String("record", rec.ID), slog.String("binding", binding))
+		return binding
+	}
+	return rec.ID
 }
 
 // preferHermesOwnedSessionForStart makes Start and StartWithMessage resume
-// the conversation Restart would: the hook handler's record when there is
-// one. A start right after RestartFresh begins a new conversation instead.
+// the conversation Restart would (hermesResumeTarget). A start right after
+// RestartFresh begins a new conversation instead.
 func (i *Instance) preferHermesOwnedSessionForStart() {
 	if i.hermesStartFresh {
 		i.hermesStartFresh = false
@@ -339,9 +495,12 @@ func (i *Instance) preferHermesOwnedSessionForStart() {
 		i.mu.Unlock()
 		return
 	}
-	if owned := i.hermesOwnedSessionID(); owned != "" {
+	i.mu.Lock()
+	binding, boundAt := i.HermesSessionID, i.hermesBoundAt
+	i.mu.Unlock()
+	if target := i.hermesResumeTarget(binding, boundAt); target != "" {
 		i.mu.Lock()
-		i.HermesSessionID = owned
+		i.HermesSessionID = target
 		i.mu.Unlock()
 	}
 }

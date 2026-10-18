@@ -234,6 +234,9 @@ type hookGenerationControl struct {
 	Generation            string `json:"generation"`
 	NextSequence          uint64 `json:"next_sequence"`
 	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+	// CwdRoots (Hermes) are the entry's directories as its hook sees them,
+	// written by the seed and carried through each rewrite.
+	CwdRoots []string `json:"cwd_roots,omitempty"`
 }
 
 // normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
@@ -681,6 +684,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 			return false
 		}
 	}
+	var hermesCwdRoots []string
 	if generation != "" {
 		controlPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")
 		var control hookGenerationControl
@@ -688,6 +692,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 		if err != nil || json.Unmarshal(data, &control) != nil || control.Generation != generation {
 			return false
 		}
+		hermesCwdRoots = control.CwdRoots
 		// StartWithMessage stays running until the agent-level completion edge.
 		if normalizeHookEventKey(statusFile.Event) == "onsessionstart" && control.InitialMessagePending {
 			return false
@@ -736,7 +741,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 	// rejected by the generation check above, so it cannot rebind the entry
 	// to its conversation after a restart (#2582).
 	if mutateAnchor && statusFile.hermesOwnedSessionID != "" {
-		if err := session.WriteHermesOwnedSessionID(instanceID, statusFile.hermesOwnedSessionID, statusFile.Cwd, statusFile.hermesPlatformKnown); err != nil {
+		if err := session.WriteHermesOwnedSessionID(instanceID, statusFile.hermesOwnedSessionID, statusFile.Cwd, statusFile.hermesPlatformKnown, hermesCwdRoots); err != nil {
 			hookHandlerLog.Warn("hermes_owned_session_write_failed",
 				slog.String("instance", instanceID),
 				slog.String("error", err.Error()),

@@ -11168,13 +11168,13 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	return nil
 }
 
-// RestartFresh restarts the current tool without resuming the existing tool session.
-// This recreates the tmux session and clears the stored tool session binding first,
-// so the next start gets a brand-new tool session ID.
 // restartFreshBindingCleared runs right after RestartFresh cleared the
 // session binding, before the old process is killed. Tests replace it.
 var restartFreshBindingCleared = func(*Instance) {}
 
+// RestartFresh restarts the current tool without resuming the existing tool session.
+// This recreates the tmux session and clears the stored tool session binding first,
+// so the next start gets a brand-new tool session ID.
 func (i *Instance) RestartFresh() error {
 	i.prepareRestartMCPConfig()
 	i.spawnGen.Add(1)
@@ -11206,6 +11206,7 @@ func (i *Instance) RestartFresh() error {
 	i.recreateTmuxSession()
 
 	if err := i.Start(); err != nil {
+		i.hermesStartFresh = false // a failed start must not make a later one fresh
 		i.Status = StatusError
 		return fmt.Errorf("failed to restart session fresh: %w", err)
 	}
