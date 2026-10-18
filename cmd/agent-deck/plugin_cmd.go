@@ -20,6 +20,12 @@ func handlePlugin(profile string, args []string) {
 		printPluginHelp()
 		exitCLI(1)
 	}
+	// Help after a subcommand must not run it: `plugin attached --help`
+	// opened (and created) the profile state DB before this guard.
+	if len(args) > 1 && helpRequested(args[1:]) {
+		printPluginHelp()
+		return
+	}
 	switch args[0] {
 	case "list", "ls":
 		handlePluginList(args[1:])
