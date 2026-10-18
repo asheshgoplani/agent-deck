@@ -83,7 +83,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	dialer := websocket.DefaultDialer
 	conn, _, err := dialer.DialContext(ctx, c.url, nil)
 	if err != nil {
-		return fmt.Errorf("websocket dial: %w", err)
+		return remoteError{fmt.Errorf("websocket dial: %w", err)}
 	}
 
 	c.connMu.Lock()
@@ -94,7 +94,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	challenge, err := c.waitForChallenge(ctx)
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("challenge: %w", err)
+		return remoteError{fmt.Errorf("challenge: %w", err)}
 	}
 
 	_ = challenge // nonce received but not used in password auth
@@ -103,7 +103,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	helloOk, err := c.sendConnect(ctx)
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("connect: %w", err)
+		return remoteError{fmt.Errorf("connect: %w", err)}
 	}
 
 	c.hello = helloOk
@@ -304,7 +304,7 @@ func (c *Client) waitForChallenge(ctx context.Context) (*ChallengePayload, error
 	}
 
 	if frame.Type != FrameTypeEvent || frame.Event != "connect.challenge" {
-		return nil, fmt.Errorf("expected connect.challenge, got type=%s event=%s", frame.Type, frame.Event)
+		return nil, fmt.Errorf("expected connect.challenge, got type=%s event=%s", remoteText(frame.Type), remoteText(frame.Event))
 	}
 
 	var evt EventFrame
@@ -368,7 +368,7 @@ func (c *Client) sendConnect(ctx context.Context) (*HelloOk, error) {
 	}
 
 	if resp.ID != id {
-		return nil, fmt.Errorf("response id mismatch: got %s, want %s", resp.ID, id)
+		return nil, fmt.Errorf("response id mismatch: got %s, want %s", remoteText(resp.ID), id)
 	}
 	if !resp.OK {
 		if resp.Error != nil {
