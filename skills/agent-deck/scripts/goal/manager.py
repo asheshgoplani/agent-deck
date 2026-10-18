@@ -28,6 +28,16 @@ above):
                            cap on, a wake is skipped after 2 delivered wakes
                            over the same unchanged failed worktree.
 
+Run budgets: after the verifier and before any wake, a goal whose
+schedule.max_tokens (tokens the worker session used, from `agent-deck costs
+sessions --json`) or schedule.max_minutes (wall time since created_at) is
+spent is finalized as failed (budget_exceeded) and its worker is stopped. A
+nudge that `session send` refuses (code BUDGET_EXCEEDED) because an
+enforced [costs.budgets] limit is spent is not retried: a daily, weekly or
+monthly limit pauses the goal until its window resets (only done_cmd runs
+meanwhile), a session lifetime limit ends it as failed. max_cycles 0 is no
+cap.
+
 Phase 1: no Telegram, no daemon, no PID files. Escalation logs to stderr
 and writes ~/.agent-deck/goals/escalations/<id>-<ts>.md. Wire up real
 push (Telegram, ntfy, etc.) in Phase 3.
@@ -67,6 +77,33 @@ def log_attempt(attempt: int, total: int, *, reason: str) -> None:
         f"[manager] wakeup attempt {attempt}/{total}: {reason}",
         file=sys.stderr,
     )
+
+# `session send --json` refuses a send to a target over an enforced
+# [costs.budgets] limit with exit 1 and this code; retrying cannot help.
+BUDGET_EXCEEDED_CODE = "BUDGET_EXCEEDED"
+
+
+class BudgetRefused(Exception):
+    """agent-deck refused the wake because a cost budget is spent.
+
+    resets_at is when the limit's window starts over (a daily, weekly or
+    monthly limit), or None for a limit that does not reset (a session's
+    lifetime limit)."""
+
+    def __init__(self, reason: str, resets_at: str | None = None):
+        super().__init__(reason)
+        self.resets_at = resets_at
+
+
+def budget_refusal(stdout: str) -> BudgetRefused | None:
+    """The BudgetRefused a failed `session send --json` reports, or None."""
+    try:
+        payload = json.loads(stdout or "")
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or payload.get("code") != BUDGET_EXCEEDED_CODE:
+        return None
+    return BudgetRefused(str(payload.get("error") or "budget exceeded"), payload.get("resets_at") or None)
 
 GOALS_DIR = Path.home() / ".agent-deck" / "goals"
 ESCALATIONS_DIR = GOALS_DIR / "escalations"
@@ -296,7 +333,7 @@ def agent_deck_send(session_id_or_title: str, message: str, dry_run: bool, verbo
     Logs every attempt with the reason so a stalled autonomous loop is
     observable instead of silent. Regression fix for issue #976.
     """
-    cmd = ["agent-deck", "session", "send", session_id_or_title, message, "--no-wait", "-q"]
+    cmd = ["agent-deck", "session", "send", session_id_or_title, message, "--no-wait", "-q", "--json"]
     vlog(verbose, "nudge cmd: " + " ".join(shlex.quote(c) for c in cmd))
     if dry_run:
         return True
@@ -311,6 +348,11 @@ def agent_deck_send(session_id_or_title: str, message: str, dry_run: bool, verbo
             reason = (r.stderr or r.stdout or "non-zero exit").strip() or "non-zero exit"
         except Exception as e:  # noqa: BLE001
             reason = f"exception: {e}"
+        else:
+            refused = budget_refusal(r.stdout)
+            if refused is not None:
+                log_attempt(i + 1, total, reason=str(refused))
+                raise refused
 
         log_attempt(i + 1, total, reason=reason)
         if i < total - 1:
@@ -330,6 +372,112 @@ def agent_deck_stop(session_id_or_title: str, dry_run: bool, verbose: bool) -> b
     except Exception as e:  # noqa: BLE001
         print(f"[manager] stop error: {e}", file=sys.stderr)
         return False
+
+
+# Row cap for `costs sessions`; a full page means the worker may be cut off.
+COST_ROWS_LIMIT = 500
+
+
+def worker_tokens(goal: dict) -> int | None:
+    """Tokens the worker session used so far (input, output and cache
+    write), read from `agent-deck costs sessions --json`. Cache reads are
+    left out: every turn re-reads the cached context, so they grow with the
+    conversation length rather than with the work done, and would end a long
+    run long before its real spend. 0 when the
+    session has no cost events yet; None when the figure is unavailable
+    (cost tracking off, an older agent-deck, or any CLI failure)."""
+    cmd = ["agent-deck"]
+    if goal.get("profile"):
+        cmd += ["-p", goal["profile"]]
+    cmd += ["costs", "sessions", "--json", "--period", "all", "--limit", str(COST_ROWS_LIMIT)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return None
+        rows = json.loads(r.stdout or "[]")
+    except Exception:  # noqa: BLE001  (defensive at boundary)
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("session_id") == goal.get("worker_session_id"):
+            return sum(int(row.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_write"))
+    return 0 if len(rows) < COST_ROWS_LIMIT else None
+
+
+def run_budget_exceeded(goal: dict) -> str | None:
+    """The reason a goal's run budget is spent, or None. Unset or 0 caps are
+    off. A token cap whose usage cannot be read is recorded, not enforced."""
+    schedule, state = goal["schedule"], goal["state"]
+    max_minutes = int(schedule.get("max_minutes") or 0)
+    if max_minutes > 0 and state.get("created_at"):
+        try:
+            created = datetime.fromisoformat(state["created_at"].replace("Z", "+00:00"))
+            minutes = (datetime.now(timezone.utc) - created).total_seconds() / 60
+        except ValueError:
+            minutes = None
+        if minutes is not None and minutes >= max_minutes:
+            return f"max_minutes: ran {int(minutes)} of {max_minutes} minutes"
+    max_tokens = int(schedule.get("max_tokens") or 0)
+    if max_tokens > 0:
+        used = worker_tokens(goal)
+        if used is None:
+            # Once per change, not every tick.
+            if not state.get("tokens_unmeasured"):
+                state["tokens_unmeasured"] = True
+                record_event(goal, "budget_unmeasured", "worker token use unavailable; max_tokens not enforced until it is")
+        else:
+            state.pop("tokens_unmeasured", None)
+            state["tokens_used"] = used
+            if used >= max_tokens:
+                return f"max_tokens: used {used} of {max_tokens} tokens"
+    return None
+
+
+def stop_over_budget(path: Path, goal: dict, reason: str, dry_run: bool, verbose: bool) -> None:
+    finalize(goal, "failed", f"budget_exceeded: {reason}")
+    record_event(goal, "budget_exceeded", reason)
+    agent_deck_stop(goal.get("worker_session_title") or goal["worker_session_id"], dry_run, verbose)
+    write_history_artifact(goal)
+    print(f"[manager] BUDGET EXCEEDED: {goal['id']} ({reason})", file=sys.stderr)
+    save_goal(path, goal, dry_run)
+
+
+def handle_budget_refusal(path: Path, goal: dict, refused: BudgetRefused, dry_run: bool, verbose: bool) -> None:
+    """A wake refused for a spent cost budget. A limit whose window resets
+    (daily, weekly, monthly) pauses the goal until then, worker untouched;
+    one that does not (a session lifetime limit) ends it as failed."""
+    resets_at = parse_iso(refused.resets_at)
+    if resets_at is None:
+        stop_over_budget(path, goal, str(refused)[:300], dry_run, verbose)
+        return
+    goal["state"]["budget_paused_until"] = resets_at.isoformat()
+    record_event(goal, "budget_paused", f"{str(refused)[:200]}; paused until {resets_at.isoformat()}")
+    print(f"[manager] BUDGET PAUSED: {goal['id']} until {resets_at.isoformat()} ({str(refused)[:120]})", file=sys.stderr)
+    save_goal(path, goal, dry_run)
+
+
+def walk_budget_paused(path: Path, goal: dict, dry_run: bool, verbose: bool) -> bool:
+    """While a budget pause lasts, a tick only runs done_cmd (it costs no
+    tokens): done ends the goal, otherwise nothing else happens. True when
+    the tick was handled here."""
+    state = goal["state"]
+    until = parse_iso(state.get("budget_paused_until"))
+    if until is None:
+        return False
+    if datetime.now(timezone.utc) >= until:
+        state.pop("budget_paused_until", None)
+        record_event(goal, "budget_resumed", "budget window reset")
+        return False
+    rc, _out = run_done_cmd(goal["done_cmd"], timeout_s=30)
+    state["last_verified_at"] = now_iso()
+    vlog(verbose, f"budget paused until {until.isoformat()}; verifier rc={rc}")
+    if rc == 0:
+        record_event(goal, "verifier_check", "rc=0")
+        finish_done(goal, path, goal.get("worker_session_title") or goal["worker_session_id"], dry_run, verbose)
+        return True
+    save_goal(path, goal, dry_run)
+    return True
 
 
 def build_nudge(goal: dict, idle_minutes: int) -> str:
@@ -523,7 +671,9 @@ def apply_new_receipts(goal: dict, new_receipts: list[Receipt], path: Path, work
 
 
 def enforce_max_cycles(goal: dict, worker: str, dry_run: bool, verbose: bool) -> None:
-    if goal["state"].get("cycles_completed", 0) >= goal["schedule"]["max_cycles"]:
+    """max_cycles 0 (goal.sh --max-turns 0) is no cap."""
+    max_cycles = int(goal["schedule"].get("max_cycles") or 0)
+    if max_cycles > 0 and goal["state"].get("cycles_completed", 0) >= max_cycles:
         finalize(goal, "failed", "max_cycles_exceeded")
         agent_deck_stop(worker, dry_run, verbose)
         write_history_artifact(goal)
@@ -534,6 +684,8 @@ def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
     goal = load_goal(path)
     if goal.get("state", {}).get("status") != "active":
         vlog(verbose, f"skip {path.name}: status={goal.get('state', {}).get('status')}")
+        return
+    if walk_budget_paused(path, goal, dry_run, verbose):
         return
     if any(progress_features(goal["schedule"])):
         walk_goal_progress(path, goal, dry_run, verbose)
@@ -561,6 +713,12 @@ def walk_goal_classic(path: Path, goal: dict, dry_run: bool, verbose: bool) -> N
         finish_done(goal, path, worker, dry_run, verbose)
         return
 
+    # Step 1b: run budget (tokens, minutes) before any further wake
+    over = run_budget_exceeded(goal)
+    if over:
+        stop_over_budget(path, goal, over, dry_run, verbose)
+        return
+
     # Step 2: scan for new receipts
     workdir = Path(goal.get("workdir", str(Path.home())))
     receipts = parse_task_log_tail(workdir / TASK_LOG_NAME)
@@ -578,7 +736,11 @@ def walk_goal_classic(path: Path, goal: dict, dry_run: bool, verbose: bool) -> N
             idle_seconds = schedule["max_idle_seconds"] + 1  # force nudge if we can't parse
         vlog(verbose, f"idle={int(idle_seconds)}s, max_idle={schedule['max_idle_seconds']}s")
         if idle_seconds > schedule["max_idle_seconds"]:
-            send_wake(goal, worker, int(idle_seconds // 60), dry_run, verbose)
+            try:
+                send_wake(goal, worker, int(idle_seconds // 60), dry_run, verbose)
+            except BudgetRefused as refused:
+                handle_budget_refusal(path, goal, refused, dry_run, verbose)
+                return
 
     # Step 4: hard cycle cap
     enforce_max_cycles(goal, worker, dry_run, verbose)
@@ -627,6 +789,12 @@ def walk_goal_progress(path: Path, goal: dict, dry_run: bool, verbose: bool) -> 
         return True
 
     if (new_receipts or not unchanged_failed) and verify_done():
+        return
+
+    # Step 2b: run budget (tokens, minutes) before any further wake
+    over = run_budget_exceeded(goal)
+    if over:
+        stop_over_budget(path, goal, over, dry_run, verbose)
         return
 
     if new_receipts and apply_new_receipts(goal, new_receipts, path, worker, dry_run, verbose):
@@ -693,7 +861,12 @@ def walk_goal_progress(path: Path, goal: dict, dry_run: bool, verbose: bool) -> 
         else:
             if verify_done():
                 return
-            if send_wake(goal, worker, idle_minutes, dry_run, verbose):
+            try:
+                delivered = send_wake(goal, worker, idle_minutes, dry_run, verbose)
+            except BudgetRefused as refused:
+                handle_budget_refusal(path, goal, refused, dry_run, verbose)
+                return
+            if delivered:
                 if tree_hash is not None and tree_hash == state.get("last_wake_tree_hash"):
                     state["wakes_on_tree"] = state.get("wakes_on_tree", 0) + 1
                 else:

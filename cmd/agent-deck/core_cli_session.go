@@ -24,6 +24,7 @@ func cliSessionStart(profile string, args []string) {
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send once agent is ready (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
+	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
 	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
 	noWait := fs.Bool("no-wait", false, "Return as soon as the process is spawned instead of waiting up to 3s for the tool's session id (a caller that attaches right away; the id is still captured by hooks)")
@@ -53,6 +54,12 @@ func cliSessionStart(profile string, args []string) {
 	initialMessage, err := resolveMessageInput(mergeFlags(*message, *messageShort), *messageFile, os.Stdin)
 	if err != nil {
 		exitCLIError(out, &jsonOutput, core.IDSessionStart, core.CodeInvalidInput, err.Error(), 1)
+	}
+
+	// An initial message is a send: an enforced cost budget refuses it
+	// before the start.
+	if initialMessage != "" && !*ignoreBudget {
+		gateStartMessageBudget(profile, fs.Arg(0), out)
 	}
 
 	res := runCore(profile, &jsonOutput, core.IDSessionStart, core.SessionStartIn{
@@ -364,4 +371,18 @@ func restartRowsJSON(rows []core.RestartRow) []map[string]interface{} {
 		out = append(out, m)
 	}
 	return out
+}
+
+// gateStartMessageBudget refuses `session start -m` on an enforced, spent
+// cost budget (enforceSendBudget). A session it cannot resolve is left to the
+// start itself, which reports it.
+func gateStartMessageBudget(profile, identifier string, out *CLIOutput) {
+	storage, instances, _, err := loadSessionData(profile)
+	if err != nil {
+		return
+	}
+	defer func() { _ = storage.Close() }()
+	if inst, _, _ := ResolveSession(identifier, instances); inst != nil {
+		enforceSendBudget(profile, "start", storage, inst, instances, out, false, nil)
+	}
 }

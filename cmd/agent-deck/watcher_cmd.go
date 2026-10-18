@@ -82,13 +82,18 @@ func handleWatcher(profile string, args []string) {
 	// #1790 guard, then default_profile. The raw -p value is "" when the flag
 	// is absent, and GetDBPathForProfile reads "" as the default profile, so
 	// without this a watcher went to a profile whose engine never runs it
-	// (#2740).
-	resolved, err := session.ResolveProfileForStorage(profile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: failed to resolve profile: %v\n", err)
-		exitCLI(1)
+	// (#2740). help, install-skill, import and routes touch no profile
+	// state, so they skip the resolution and its #1790 warning.
+	switch args[0] {
+	case "help", "--help", "-h", "install-skill", "import", "routes":
+	default:
+		resolved, err := session.ResolveProfileForStorage(profile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to resolve profile: %v\n", err)
+			exitCLI(1)
+		}
+		profile = resolved
 	}
-	profile = resolved
 
 	switch args[0] {
 	case "import":

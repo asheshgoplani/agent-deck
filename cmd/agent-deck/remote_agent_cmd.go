@@ -145,6 +145,9 @@ const (
 	remoteAgentProbeQuiet = 2 * time.Second
 	// remoteAgentPingEvery is how often {"event":"ping"} is pushed.
 	remoteAgentPingEvery = 20 * time.Second
+	// remoteAgentProfileEvery is how often an agent started without -p
+	// checks that the host would still pick the profile it serves.
+	remoteAgentProfileEvery = 5 * time.Second
 	// remoteAgentIdleAfter is how long stdin may stay silent before the
 	// agent decides its peer is gone and exits; the local side pings well
 	// within it.
@@ -196,6 +199,13 @@ type remoteAgentConfig struct {
 	// build; pane watches are re-asked after a reconnect. Idle and
 	// Restart on the watcher are set by serveRemoteAgent.
 	BinaryWatch *update.Watcher
+	// ProfileMoved, when set, reports whether the host would now pick
+	// another profile than the one the agent serves (default_profile
+	// changed under an agent started without -p). The agent then exits the
+	// same way as for a newer binary, so the controller redials into an
+	// agent that serves the new profile. It is checked every ProfileEvery.
+	ProfileMoved func() bool
+	ProfileEvery time.Duration
 }
 
 func (c remoteAgentConfig) withDefaults() remoteAgentConfig {
@@ -204,6 +214,9 @@ func (c remoteAgentConfig) withDefaults() remoteAgentConfig {
 	}
 	if c.PingEvery <= 0 {
 		c.PingEvery = remoteAgentPingEvery
+	}
+	if c.ProfileEvery <= 0 {
+		c.ProfileEvery = remoteAgentProfileEvery
 	}
 	if c.IdleAfter <= 0 {
 		c.IdleAfter = remoteAgentIdleAfter
@@ -231,9 +244,27 @@ func handleRemoteAgent(profile string, args []string) {
 			fmt.Println("{\"id\":N,\"unwatch\":true} stops it. {\"id\":N,\"cancel\":true} kills request N;")
 			fmt.Println("{\"id\":N,\"ping\":true} keeps the channel alive. The agent pushes {\"event\":\"ping\"} itself")
 			fmt.Println("and exits when stdout fails or stdin stays silent for 10 minutes.")
+			fmt.Println()
+			fmt.Println("Without -p it serves the profile every other command on this host would use:")
+			fmt.Println("AGENTDECK_PROFILE, then a profile inferred from CLAUDE_CONFIG_DIR if that profile")
+			fmt.Println("exists, then default_profile. The TUI leaves -p out for a remote whose profile is")
+			fmt.Println("unset or \"default\".")
 			return
 		}
 	}
+	// Resolve the profile once, for the change feed's state DB, the probe,
+	// the pane capturer and every request alike. The TUI leaves -p out for a
+	// remote whose profile is "" or "default", and GetDBPathForProfile reads
+	// "" as the default profile, while the probe resolves AGENTDECK_PROFILE
+	// and default_profile: the feed then watched a state DB the agent did not
+	// serve and pushed no change.
+	explicit := profile != ""
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
+		exitCLI(1)
+	}
+	profile = resolved
 	dbPath, err := session.GetDBPathForProfile(profile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "remote-agent: %v\n", err)
@@ -279,7 +310,7 @@ func handleRemoteAgent(profile string, args []string) {
 		}
 		return out.String(), errb.String(), code
 	}
-	serveRemoteAgent(context.Background(), os.Stdin, os.Stdout, remoteAgentConfig{
+	cfg := remoteAgentConfig{
 		Run:         runner,
 		Probe:       probe,
 		WatchPath:   dbPath,
@@ -287,7 +318,18 @@ func handleRemoteAgent(profile string, args []string) {
 		Capture:     remoteAgentPaneCapturer(profile),
 		PaneEvery:   remoteAgentPaneEvery,
 		BinaryWatch: newRemoteAgentBinaryWatch(self),
-	})
+	}
+	if !explicit {
+		// The resolution is pinned for the life of the agent, so a host
+		// that changes default_profile gets a reconnect, not an agent that
+		// keeps serving the old profile until the channel drops. A
+		// config.json caught mid-rewrite is an error, not a move.
+		cfg.ProfileMoved = func() bool {
+			now, err := session.ResolveProfileForStorageQuiet("")
+			return err == nil && now != profile
+		}
+	}
+	serveRemoteAgent(context.Background(), os.Stdin, os.Stdout, cfg)
 }
 
 // newRemoteAgentBinaryWatch returns the recycle-on-upgrade watcher for the
@@ -531,21 +573,52 @@ func serveRemoteAgent(ctx context.Context, in io.Reader, out io.Writer, cfg remo
 
 	requests := newRemoteAgentRequests(cfg.Run, cfg.MaxConcurrent, cfg.WatchPath)
 
-	// Recycle on upgrade: the watcher's "restart" only closes recycle (a
-	// Watcher stops after its first successful Restart, so this runs once);
-	// the loop below stops reading, drains accepted requests and exits so
-	// the controller redials into the new build.
+	// Recycle on upgrade or on a moved profile: either only closes recycle
+	// (once, whichever comes first); the loop below stops reading, drains
+	// accepted requests and exits so the controller redials into an agent
+	// with the new build or the new profile.
 	recycle := make(chan struct{})
+	var (
+		recycleOnce sync.Once
+		recycleWhy  string
+	)
+	startRecycle := func(why string) {
+		recycleOnce.Do(func() {
+			recycleWhy = why
+			close(recycle)
+		})
+	}
 	if w := cfg.BinaryWatch; w != nil {
 		w.Idle = func() bool { return requests.inFlight() == 0 }
 		w.Restart = func(string) error {
-			close(recycle)
+			startRecycle(fmt.Sprintf("binary upgraded (running v%s)", Version))
 			return nil
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			w.Run(ctx)
+		}()
+	}
+	if cfg.ProfileMoved != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(cfg.ProfileEvery)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-recycle:
+					return
+				case <-t.C:
+				}
+				if cfg.ProfileMoved() {
+					startRecycle("the host now selects another profile")
+					return
+				}
+			}
 		}()
 	}
 
@@ -580,7 +653,7 @@ loop:
 			fmt.Fprintf(os.Stderr, "remote-agent: no input for %s, exiting\n", cfg.IdleAfter)
 			break loop
 		case <-recycle:
-			fmt.Fprintf(os.Stderr, "remote-agent: binary upgraded (running v%s); exiting so the controller reconnects\n", Version)
+			fmt.Fprintf(os.Stderr, "remote-agent: %s; exiting so the controller reconnects\n", recycleWhy)
 			draining = true
 			break loop
 		case raw, ok = <-lines:

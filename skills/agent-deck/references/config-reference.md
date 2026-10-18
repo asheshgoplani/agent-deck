@@ -35,6 +35,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[inbox] Section](#inbox-section)
 - [[comms] Section](#comms-section)
 - [[send] Section](#send-section)
+- [[costs.budgets] and [costs.run_budget]](#costsbudgets-and-costsrun_budget)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
 - [[status] Section](#status-section)
@@ -935,6 +936,7 @@ trusted_domains = [                           # Links to these hosts open withou
   "*.ci.mycorp.example",                      # subdomains of ci.mycorp.example
 ]
 confirm_link_open = true                      # Confirm before opening any OTHER host
+file_link_roots = ["~/projects", "~/Downloads"]  # file:// links under these open through the deck
 ```
 
 | Key | Type | Default | Description |
@@ -943,8 +945,9 @@ confirm_link_open = true                      # Confirm before opening any OTHER
 | `allowed_hosts` | []string | `[]` | Extra exact HTTP Host names for reverse proxies or Tailscale Serve. Optional `:port` limits an entry to that port. Case-insensitive; no URLs, wildcards, or suffix matching. Repeat `--allowed-host` for temporary additions. Unknown Hosts receive HTTP 421, including WebSocket upgrades. |
 | `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
 | `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
+| `file_link_roots` | []string | `[]` (off) | Directories whose files a web-terminal `file://` link may open (a browser on the deck's http origin can't load `file://` itself). A link under a root opens in a new tab through `GET /api/files?path=<abs>` on the deck's own origin, with the usual token auth, so it also works from a phone. `~` and `$VARS` expand. Relative entries, entries naming an unset or empty `$VAR`, `/`, and any directory that contains your home directory, `~/.ssh` or agent-deck's config or data directory (such as `/home`, `/Users` or `$HOME/..`) are refused with a warning at `agent-deck web` start (and listed under `refused` by `agent-deck file roots --json`), so a root can never widen to the whole disk. Symlinks and `..` are resolved before the root check and the file is opened through the resolved root, so nothing outside a root can be read. Regular files only (no directory listings), up to 32 MiB. PNG, JPEG, GIF, WebP, AVIF, BMP and ICO are shown as images; other text (including HTML and SVG) is shown as plain text, and binary files download. A `file://<host>/path` link (what `ls --hyperlink` emits) opens only when the host is the deck machine's own hostname; a `file:///path` link with no host is taken as the deck machine's, even when the pane runs an ssh session to another machine. With no roots, or for a link outside them or on another host, a click copies the path instead. A hard link inside a root to a file elsewhere is served like any file in the root, so only list folders whose contents you control. Pick project or report folders, not your whole home directory. `agent-deck file read <path> [--json]` and `agent-deck file roots [--json]` apply the same rules from the CLI, and `agent-deck remote <name> file read ...` reads under that remote's own roots. |
 
-Both link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
+All link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
 
 ## [global_search] Section
 
@@ -1074,6 +1077,47 @@ Tunes `agent-deck session send` (comms redesign PR5).
 ```toml
 [send]
 tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
+## [costs.budgets] and [costs.run_budget]
+
+`[costs.budgets]` limits are in dollars. They are shown in the cost dashboard; with
+`enforce = true` they also gate agent-initiated sends and wakes (`session send` (and so goal nudges, conductor heartbeats, inbox wakes, `--queue`, the queued send worker and `session queue release`), `launch -m`, `session start -m`, the "continue" an MCP `--restart` types, and the TUI's own conductor-pane deliveries (the heartbeat after a clear-on-compact, watcher health alerts)): one aimed at a target whose session, group or global limit is spent is refused before
+anything is typed, with code `BUDGET_EXCEEDED` and a `session.budget_exceeded` event
+(see the costs section of cli-reference.md). Messages a person starts (chat bridges, web
+Command Center, any send with `--ignore-budget`) are never blocked. A group limit applies
+to the sessions whose group path equals the key exactly; subgroups are not included. `[costs.run_budget]` holds the per-run
+defaults every new goal (`skills/agent-deck/scripts/goal/goal.sh`) starts with; the
+goal manager stops the run and its worker when one is spent, before it wakes the
+worker again.
+
+```toml
+[costs.budgets]
+enforce = true                 # gate agent sends and wakes (default false: display-only)
+daily_limit = 50.00            # global, per day in [costs] timezone
+weekly_limit = 200.00
+[costs.budgets.groups.work]
+daily_limit = 20.00
+[costs.budgets.sessions.<session-id>]
+total_limit = 5.00             # lifetime of one session
+
+[costs.run_budget]
+max_tokens = 80000             # tokens the goal's worker session may use
+max_turns = 12                 # progress cycles (receipts) per goal
+max_minutes = 30               # wall time per goal
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `budgets.enforce` | bool | `false` | Make the `[costs.budgets]` limits refuse agent-initiated sends and wakes. Off: display-only. |
+| `run_budget.max_tokens` | int | `0` (no cap) | Input, output and cache write tokens of the worker session, read from `agent-deck costs sessions --json`. Cache reads are not counted: every turn re-reads the cached context, so they grow with the conversation, not the work. When cost tracking is off the cap is recorded as unmeasured and not enforced. `MAX_TOKENS` and `goal.sh --max-tokens N` override. |
+| `run_budget.max_turns` | int | `0` (unset: goal default 24) | Progress cycles before the goal ends as failed (`max_cycles`). `MAX_CYCLES` and `goal.sh --max-turns N` override; there `0` means no cap. |
+| `run_budget.max_minutes` | int | `0` (no cap) | Minutes since the goal was created. `MAX_MINUTES` and `goal.sh --max-minutes N` override. |
+
+`goal.sh` takes a flag first, then the environment, then these keys. The run budget is a
+goal setting and applies whether or not `budgets.enforce` is on.
+
+These keys are also readable and settable with `agent-deck config get|set costs.budgets.enforce` and `costs.run_budget.<key>`.
+The values above are the prime-agent defaults for short autonomous runs; long goals want larger caps.
+
 ## [remotes.<name>] Talkback
 
 Remotes are added with `agent-deck remote add <name> <user@host>`; this key makes the notify-daemon pull a remote's child records on its own instead of waiting for a conductor to run `agent-deck remote drain`.

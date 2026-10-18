@@ -248,8 +248,9 @@ func handleConfigSet(args []string) {
 		fmt.Printf("%s\n\nTurn on %s? [y/N]: ", k.Consent, k.Key)
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if !isYesConfirmation(line) {
-			fmt.Println("Not changed.")
-			exitCLI(1)
+			// Not consented: the same exit 2 as without a terminal.
+			fmt.Fprintln(os.Stderr, "Not changed.")
+			exitCLI(2)
 		}
 		k, v, err = session.SetConfigValue(name, raw, true)
 	}
