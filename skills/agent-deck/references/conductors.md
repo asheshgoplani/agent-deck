@@ -55,14 +55,14 @@ Claude Code client commands (`/model`, `/compact`, `/clear`, `/exit`, any slash 
 /cmd api what can I run            -> "42 commands: 30 built in, 4 of yours, plugins voice-mode and superpowers."
 ```
 
-Path: channel message -> conductor session (the Telegram channel plugin delivers it as a turn; `bridge.py` delivers it with `session send`) -> the `harness-control` pool skill, or directly:
+Path: channel message -> conductor session (the Telegram channel plugin delivers it as a turn; `bridge.py` delivers it with `session send`) -> `session command`:
 
 ```bash
 agent-deck -p <profile> session command --json --wait-idle 60s <session> "/compact"
 agent-deck -p <profile> session commands --json <session>      # "what can I run"
 ```
 
-The conductor replies with one line from the JSON (`after` or the first `evidence` entry when `ok`, otherwise `code` and `error`). When the target is the conductor itself, add `--background` (it is busy until its turn ends). To give a conductor the skill: `agent-deck -p <profile> skill attach <conductor> harness-control --source pool --restart`; without it the conductor calls the primitive as above.
+The conductor replies with one line from the JSON (`after` or the first `evidence` entry when `ok`, otherwise `code` and `error`). When the target is the conductor itself, add `--background` (it is busy until its turn ends).
 
 - Never relay a slash command with `session send` or `tmux send-keys`; see [Slash commands typed with session send are unsafe](gotchas.md#slash-commands-typed-with-session-send-are-unsafe).
 - Through `bridge.py` (Telegram) the text reaches the conductor with `session send`, so a message starting with `/` is typed into the conductor's own composer as a slash command and can open its picker. Send it as `cmd <session> <slash command>` (no leading slash) on that path. Slack treats a leading `/` as a Slack command, so use `cmd ...` there too; the bridge's `[from:...]` tag keeps the rest safe.
