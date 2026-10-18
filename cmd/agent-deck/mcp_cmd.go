@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -483,7 +484,7 @@ func handleMCPAttach(profile string, args []string) {
 			time.Sleep(2 * time.Second)
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && inst.Tool != "cursor" {
 				// Cursor restart already resumes the agent session.
-				_ = tmuxSess.SendKeysAndEnter("continue")
+				sendMCPContinue(profile, storage, inst, instances, tmuxSess.SendKeysAndEnter, *jsonOutput || quietMode)
 			}
 		}
 	}
@@ -656,7 +657,7 @@ func handleMCPDetach(profile string, args []string) {
 			time.Sleep(2 * time.Second)
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && inst.Tool != "cursor" {
 				// Cursor restart already resumes the agent session.
-				_ = tmuxSess.SendKeysAndEnter("continue")
+				sendMCPContinue(profile, storage, inst, instances, tmuxSess.SendKeysAndEnter, *jsonOutput || quietMode)
 			}
 		}
 	}
@@ -1002,4 +1003,18 @@ func handleMCPServerStatus(args []string) {
 	}
 
 	fmt.Printf("\nTotal: %d HTTP MCPs\n", len(servers))
+}
+
+// sendMCPContinue types the "continue" that resumes an agent after an MCP
+// restart. It is an agent wake: with an enforced cost budget spent it is not
+// typed (the restart itself still happened) and a warning says so.
+func sendMCPContinue(profile string, storage *session.Storage, inst *session.Instance, instances []*session.Instance, send func(string) error, quiet bool) {
+	if r := budgetForSend(profile, inst, instances, storage); r.Action == costs.BudgetActionStop {
+		publishBudgetExceeded(profile, inst.ID, "mcp_continue", r)
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "Warning: restarted, but \"continue\" was not sent: budget exceeded: %s\n", r.Describe())
+		}
+		return
+	}
+	_ = send("continue")
 }

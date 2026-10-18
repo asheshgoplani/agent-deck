@@ -224,12 +224,19 @@ type hookStatusFile struct {
 	// Hermes session id this event records as the entry's own (#2582), saved
 	// to the entry's sidecar once the event passes the generation check.
 	hermesOwnedSessionID string
+	// hermesPlatformKnown: the event carried extra.platform. Without it the
+	// record never replaces an id already recorded (see
+	// session.WriteHermesOwnedSessionID).
+	hermesPlatformKnown bool
 }
 
 type hookGenerationControl struct {
 	Generation            string `json:"generation"`
 	NextSequence          uint64 `json:"next_sequence"`
 	InitialMessagePending bool   `json:"initial_message_pending,omitempty"`
+	// CwdRoots (Hermes) are the entry's directories as its hook sees them,
+	// written by the seed and carried through each rewrite.
+	CwdRoots []string `json:"cwd_roots,omitempty"`
 }
 
 // normalizeHookEventKey folds hook event names from Claude (PascalCase), Cursor
@@ -639,6 +646,7 @@ func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd
 	}
 	if os.Getenv("AGENTDECK_TOOL") == "hermes" && session.HermesHookRecordsOwnSession(event, platform, sessionID) {
 		statusFile.hermesOwnedSessionID = sessionID
+		statusFile.hermesPlatformKnown = strings.TrimSpace(platform) != ""
 	}
 	if scan.signal != nil {
 		statusFile.DoneStatus = scan.signal.Status
@@ -676,6 +684,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 			return false
 		}
 	}
+	var hermesCwdRoots []string
 	if generation != "" {
 		controlPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".generation.json")
 		var control hookGenerationControl
@@ -683,6 +692,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 		if err != nil || json.Unmarshal(data, &control) != nil || control.Generation != generation {
 			return false
 		}
+		hermesCwdRoots = control.CwdRoots
 		// StartWithMessage stays running until the agent-level completion edge.
 		if normalizeHookEventKey(statusFile.Event) == "onsessionstart" && control.InitialMessagePending {
 			return false
@@ -731,7 +741,7 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 	// rejected by the generation check above, so it cannot rebind the entry
 	// to its conversation after a restart (#2582).
 	if mutateAnchor && statusFile.hermesOwnedSessionID != "" {
-		if err := session.WriteHermesOwnedSessionID(instanceID, statusFile.hermesOwnedSessionID); err != nil {
+		if err := session.WriteHermesOwnedSessionID(instanceID, statusFile.hermesOwnedSessionID, statusFile.Cwd, statusFile.hermesPlatformKnown, hermesCwdRoots); err != nil {
 			hookHandlerLog.Warn("hermes_owned_session_write_failed",
 				slog.String("instance", instanceID),
 				slog.String("error", err.Error()),
@@ -1162,6 +1172,9 @@ type costEventFile struct {
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
 	Timestamp        int64  `json:"ts"`
+	// MessageUUID is the transcript record the usage came from, so the cost
+	// event gets the same id the recall importer gives that record.
+	MessageUUID string `json:"message_uuid,omitempty"`
 }
 
 // stopHookPayload extracts transcript_path from the Stop hook payload.
@@ -1172,6 +1185,7 @@ type stopHookPayload struct {
 
 // transcriptMessage is one transcript record as the cost path reads it.
 type transcriptMessage struct {
+	UUID        string `json:"uuid"`
 	Type        string `json:"type"`
 	IsSidechain bool   `json:"isSidechain"`
 	Message     struct {
@@ -1252,6 +1266,7 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		CacheReadTokens:  usage.CacheReadInputTokens,
 		CacheWriteTokens: usage.CacheCreationInputTokens,
 		Timestamp:        ts,
+		MessageUUID:      msg.UUID,
 	}
 
 	jsonData, err := json.Marshal(cf)

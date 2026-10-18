@@ -65,7 +65,10 @@ const RetainFinished = 7 * 24 * time.Hour
 
 // Record is one queued send. It is also the `send-status --json` object.
 type Record struct {
-	SendID             string   `json:"send_id"`
+	SendID string `json:"send_id"`
+	// IgnoreBudget: queued with --ignore-budget; the worker skips the cost
+	// budget gate at the typing boundary.
+	IgnoreBudget       bool     `json:"ignore_budget,omitempty"`
 	Verdict            string   `json:"verdict"`
 	State              string   `json:"state"`
 	Reason             string   `json:"reason"`

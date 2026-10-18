@@ -3471,3 +3471,16 @@ func TestSetupConductorWithAgent_PreAcceptsCodexTrust(t *testing.T) {
 		t.Fatalf("trust_level = %v, want trusted", entry["trust_level"])
 	}
 }
+
+// Review M1: the bridge relays a person's chat message; an enforced cost
+// budget never blocks it, on the --no-wait and on the --wait send.
+func TestBridgeTemplate_ChatSendsIgnoreTheBudget(t *testing.T) {
+	for _, pattern := range []string{
+		`"session", "send", session, message, "--no-wait", "--ignore-budget",`,
+		`"--wait", "--timeout", f"{response_timeout}s", "--json", "--ignore-budget",`,
+	} {
+		if !strings.Contains(conductorBridgePy, pattern) {
+			t.Errorf("bridge send_to_conductor is missing %q", pattern)
+		}
+	}
+}

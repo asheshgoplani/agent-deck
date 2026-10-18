@@ -107,6 +107,20 @@ func requireWithin(root, path, target string) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("atomicfile: resolve %s: %w", existing, err)
 		}
+		// A dangling symlink is not a missing directory: following it could
+		// create directories wherever it points. Refuse it here rather than
+		// rely on MkdirAll failing on it later. existing is a cleaned absolute
+		// path, so it holds ".." only inside a name; such a path skips this
+		// extra check and still cannot create anything through the link,
+		// since mkdir does not follow it. The guard is also the traversal
+		// check CodeQL go/path-injection recognises.
+		if !strings.Contains(existing, "..") {
+			if fi, lerr := os.Lstat(existing); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				dest, _ := os.Readlink(existing)
+				return fmt.Errorf("atomicfile: refusing to write %s: %s is a symlink to the missing path %s",
+					target, existing, dest)
+			}
+		}
 		parent := filepath.Dir(existing)
 		if parent == existing {
 			return fmt.Errorf("atomicfile: resolve %s: %w", target, err)

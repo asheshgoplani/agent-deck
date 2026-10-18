@@ -259,6 +259,7 @@ func handleSessionStart(profile string, args []string) {
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send once agent is ready (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
+	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
 	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
 	noWait := fs.Bool("no-wait", false, "Return as soon as the process is spawned instead of waiting up to 3s for the tool's session id (a caller that attaches right away; the id is still captured by hooks)")
@@ -349,7 +350,11 @@ func handleSessionStart(profile string, args []string) {
 		return
 	}
 
-	// Start the session (with or without initial message)
+	// Start the session (with or without initial message). An initial
+	// message is a send: an enforced cost budget refuses it before the start.
+	if initialMessage != "" && !*ignoreBudget {
+		enforceSendBudget(profile, "start", storage, inst, instances, out, quietMode, nil)
+	}
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
@@ -3375,6 +3380,7 @@ func handleSessionSend(profile string, args []string) {
 	codexComposerFallback := fs.Bool("codex-composer-fallback", false, "Codex only: when the session's Codex identity is provably unavailable (fresh composer, rollout re-created after the trust prompt), send through the verified composer path instead of refusing. Never used for --json --wait; every other acceptance error still refuses")
 	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle, at most once; every send ends landed, failed or settled with a reason (see session send-status)")
 	queueWorker := fs.Bool("queue-worker", false, "Internal: deliver a durable queued send directly")
+	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	noTag := fs.Bool("no-tag", false, "Do not prefix the [agent-deck from:<id>] envelope a send from inside a session gets by default ([send] tag_sends)")
 	requireInputPrompt := fs.Bool("require-input-prompt", false, "Refuse with menu_open unless an input prompt is visible immediately before each keystroke batch")
 	var images imageList
@@ -3515,11 +3521,19 @@ func handleSessionSend(profile string, args []string) {
 		enabled:    !*noTag && !*queueWorker && sendTagsEnabled(),
 		draft:      *draft,
 	})
+	if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
+		out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
+		exitCLI(2)
+	}
+	// Cost budgets (prime-agent adoption C9): with [costs.budgets]
+	// enforce = true, a send is refused before anything is queued or typed
+	// when a limit that applies to the target is spent. A draft only
+	// pre-fills the prompt; the queue worker's child was checked by the
+	// worker itself; --ignore-budget is for messages a person starts.
+	if !*queueWorker && !*draft && !*ignoreBudget {
+		enforceSendBudget(profile, "send", storage, inst, instances, out, *quiet, nil)
+	}
 	if len(images) > 0 || *queue || asyncJSON {
-		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
-			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
-			exitCLI(2)
-		}
 		var imgErr error
 		var copies []string
 		message, copies, imgErr = attachImages(inst, message, images, time.Now())
@@ -3536,7 +3550,7 @@ func handleSessionSend(profile string, args []string) {
 			if *noTag {
 				ledgerSender = "" // --no-tag: never attributed to an inherited session
 			}
-			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, *requireInputPrompt, out) // exits on failure
+			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, *requireInputPrompt, *ignoreBudget, out) // exits on failure
 			recordSent()
 			return
 		}

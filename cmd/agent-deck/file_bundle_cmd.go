@@ -16,8 +16,10 @@ const fileBundleMaxBytes int64 = 20 << 20
 const fileBundleUsage = "Usage: agent-deck file bundle <dir|file> --session <id>"
 
 func handleFile(profile string, args []string) {
-	if err := runFileBundle(profile, args, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if err := runFileCommand(profile, args, os.Stdout, os.Stderr); err != nil {
+		if !errors.Is(err, errFileJSONWritten) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 }
@@ -28,7 +30,7 @@ func runFileBundle(_ string, args []string, out, diagnostics io.Writer) error {
 		return nil
 	}
 	if len(args) == 0 || args[0] != "bundle" {
-		return errors.New(fileBundleUsage)
+		return errors.New(fileUsage)
 	}
 	flags := flag.NewFlagSet("file bundle", flag.ContinueOnError)
 	flags.SetOutput(helpOutput(args[1:], out, diagnostics))

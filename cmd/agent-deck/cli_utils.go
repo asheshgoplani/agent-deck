@@ -739,6 +739,9 @@ const (
 	// ErrCodeConsentRequired: `config set` refused to turn on a key that
 	// needs explicit consent (--yes or an interactive yes).
 	ErrCodeConsentRequired = "CONSENT_REQUIRED"
+	// ErrCodeBudgetExceeded: a [costs.budgets] limit that applies to the
+	// target is spent, so the send or wake was refused before typing.
+	ErrCodeBudgetExceeded = "BUDGET_EXCEEDED"
 )
 
 // ResolveSession finds a session by flexible matching (title, ID prefix, or path)

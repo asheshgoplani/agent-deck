@@ -35,7 +35,9 @@ import (
 //     text (TurnFacts.FinalTextPending -> TurnTextInterim) is never
 //     withdrawn: X is not the final reply;
 //   - a read withdraws a record only when it came at or after the record's
-//     time (the turn's end), so a mid-turn peek never counts.
+//     time (the turn's end), so a mid-turn peek never counts. A record
+//     stamped with a whole second (the hook's) needs a read at least one
+//     second later, since the turn may have ended anywhere in that second.
 //
 // A record without a TurnUUID, a read that was clipped, quiet (-q), JSON,
 // copied or from the pane, and a non-Claude read never match: the rule only
@@ -154,7 +156,21 @@ func (r resultReads) covers(ev TransitionNotificationEvent) bool {
 	entry := r[strings.TrimSpace(ev.ChildSessionID)]
 	uuid := strings.TrimSpace(ev.TurnUUID)
 	readAt, ok := entry.ReadAt[uuid]
-	return ok && slices.Contains(entry.Turns, uuid) && readAt >= ev.Timestamp.UnixMilli()
+	return ok && slices.Contains(entry.Turns, uuid) && readAt >= turnEndedByMillis(ev.Timestamp)
+}
+
+// turnEndedByMillis is the earliest Unix millisecond a read must have, to
+// have come after the turn the record announces ended. A hook-driven record
+// is stamped with the hook's whole second, so the turn may have ended
+// anywhere inside that second: a read in the same second can still be a
+// mid-turn peek (Stop fired after the interim text was written but before
+// the tool record). For a whole-second stamp the read must therefore come
+// at least one second after it; a sub-second stamp is used as is.
+func turnEndedByMillis(stamp time.Time) int64 {
+	if stamp.Nanosecond() == 0 {
+		return stamp.Add(time.Second).UnixMilli()
+	}
+	return stamp.UnixMilli()
 }
 
 // noticeCarriesResult reports whether a record only announces one result

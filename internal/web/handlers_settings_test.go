@@ -222,3 +222,31 @@ func TestSettingsLinkPolicy_ServesConfiguredAllowlistAndToggle(t *testing.T) {
 		}
 	}
 }
+
+// Issue #2676: the client needs the roots to decide whether a file:// link
+// opens through /api/files or only copies its path.
+func TestSettingsFileLinkRoots(t *testing.T) {
+	for _, tc := range []struct {
+		roots []string
+		want  string
+	}{
+		{nil, `[]`},
+		{[]string{"/home/me/projects", "/srv/reports"}, `["/home/me/projects","/srv/reports"]`},
+	} {
+		srv := NewServer(Config{ListenAddr: "127.0.0.1:0", Profile: "default", FileLinkRoots: tc.roots})
+		srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, newLocalRequest(http.MethodGet, "/api/settings", nil))
+		var got map[string]json.RawMessage
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode settings: %v", err)
+		}
+		if string(got["fileLinkRoots"]) != tc.want {
+			t.Errorf("fileLinkRoots = %s, want %s", got["fileLinkRoots"], tc.want)
+		}
+		var host string
+		if err := json.Unmarshal(got["fileLinkHost"], &host); err != nil {
+			t.Errorf("fileLinkHost = %s, want a string", got["fileLinkHost"])
+		}
+	}
+}
