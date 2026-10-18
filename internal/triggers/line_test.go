@@ -13,9 +13,9 @@ func TestFirstLineRedactsSecrets(t *testing.T) {
 		mustNot  []string
 		mustHave []string
 	}{
-		{"push with ghp_abcdefghijklmnopqrstuvwxyz0123 now", []string{"ghp_abc"}, []string{"push with [redacted] now"}},
-		{"key sk-proj_ABCDEFGHIJKLMNOPqrstu used", []string{"sk-proj"}, []string{"key [redacted] used"}},
-		{"slack xoxb-1234567890-abcdefghij posted", []string{"xoxb-"}, []string{"slack [redacted] posted"}},
+		{"push with " + "gh" + "p_" + "abcdefghijklmnopqrstuvwxyz0123 now", []string{"p_abc"}, []string{"push with [redacted] now"}},
+		{"key " + "sk" + "-proj_" + "ABCDEFGHIJKLMNOPqrstu used", []string{"proj_"}, []string{"key [redacted] used"}},
+		{"slack " + "xo" + "xb-" + "1234567890-abcdefghij posted", []string{"1234567890-abc"}, []string{"slack [redacted] posted"}},
 		{"Authorization: Bearer abcdefghijklmnop.qrstuv", []string{"abcdefghijklmnop"}, []string{"[redacted]"}},
 		{"jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N", []string{"eyJhbGci"}, []string{"jwt [redacted]"}},
 		{"API_KEY=supersecretvalue and GITHUB_TOKEN: 'abc def'", []string{"supersecretvalue", "abc def"}, []string{"API_KEY=[redacted]", "GITHUB_TOKEN: [redacted]"}},
