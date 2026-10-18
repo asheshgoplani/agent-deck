@@ -188,6 +188,49 @@ func TestConductorOutbox_SkipsAnArchivedConductorSession(t *testing.T) {
 	}
 }
 
+// TestConductorOutbox_FindsARenamedConductorByStoredName: the stable
+// conductor identity (conductor_name in tool_data) wins over the title, so a
+// renamed conductor still gets its routed events; an archived session with
+// the same stored name is skipped, and a session titled "conductor-demo"
+// whose stored name is another conductor is not demo.
+func TestConductorOutbox_FindsARenamedConductorByStoredName(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+	save := func(id, title, stored string, order int, archived bool) {
+		t.Helper()
+		row := &statedb.InstanceRow{
+			ID: id, Title: title, Tool: "claude",
+			ProjectPath: t.TempDir(), GroupPath: "conductors", Status: "idle", Order: order,
+			CreatedAt: now, LastAccessed: now, IsConductor: true,
+			ToolData: session.WriteConductorNameToToolData(nil, stored),
+		}
+		if archived {
+			row.ArchivedAt = now
+		}
+		if err := db.SaveInstance(row); err != nil {
+			t.Fatalf("SaveInstance: %v", err)
+		}
+	}
+	save("cond-other", session.ConductorSessionTitle("demo"), "other", 0, false)
+	save("cond-demo-old", "old boss", "demo", 1, true)
+	save("cond-demo", "renamed boss", "demo", 2, false)
+	outbox, dir, spawned := newTestOutbox(t, db, 0)
+
+	if err := outbox.Enqueue("w1", "inbox", Event{Sender: "alice", Body: "x", RoutedTo: "demo"}); err != nil {
+		t.Fatalf("Enqueue for a renamed conductor: %v", err)
+	}
+	recs, err := sendqueue.List(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].SessionID != "cond-demo" {
+		t.Fatalf("records %+v, want one for the renamed live session cond-demo", recs)
+	}
+	if spawned.started("cond-other") || spawned.started("cond-demo-old") || !spawned.started("cond-demo") {
+		t.Fatalf("worker starts %v, want only cond-demo", spawned.targets)
+	}
+}
+
 // TestConductorOutbox_ResumeStartsTheWorkersOfWaitingEvents: after a
 // reboot, the conductors with routed events still waiting get a worker
 // again; finished deliveries and plain `session send --queue` records do

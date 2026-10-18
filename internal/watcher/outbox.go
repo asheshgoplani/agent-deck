@@ -104,24 +104,26 @@ func NewConductorOutbox(cfg OutboxConfig) *ConductorOutbox {
 // Enqueue queues evt for the conductor it is routed to (evt.RoutedTo) and
 // starts that conductor's worker. An event queued before under the same
 // key is not queued again. The conductor's session is its non-archived one:
-// an archived session keeps its title in storage, but it is not the
-// conductor any more. A conductor with no such session cannot be queued
-// for: the error says so, and the event stays in watcher_events.
+// an archived session keeps its identity in storage, but it is not the
+// conductor any more. The session is matched by its stored conductor name
+// when it has one (stable across renames and title decoration), else by a
+// title that parses to the name, as Instance.IsConductorNamed does. A
+// conductor with no such session cannot be queued for: the error says so,
+// and the event stays in watcher_events.
 func (o *ConductorOutbox) Enqueue(watcherID, watcherName string, evt Event) error {
-	title := session.ConductorSessionTitle(evt.RoutedTo)
 	rows, err := o.db.LoadInstances()
 	if err != nil {
 		return fmt.Errorf("look up conductor %q: %w", evt.RoutedTo, err)
 	}
 	var target *statedb.InstanceRow
 	for _, row := range rows {
-		if row.Title == title && row.ArchivedAt.IsZero() {
+		if rowIsConductorNamed(row, evt.RoutedTo) && row.ArchivedAt.IsZero() {
 			target = row
 			break
 		}
 	}
 	if target == nil {
-		return fmt.Errorf("%w: conductor %q has no session titled %q that is not archived", ErrNoConductorSession, evt.RoutedTo, title)
+		return fmt.Errorf("%w: conductor %q has no session (stored name or title %q) that is not archived", ErrNoConductorSession, evt.RoutedTo, session.ConductorSessionTitle(evt.RoutedTo))
 	}
 	now := time.Now()
 	s := sendqueue.Send{
@@ -147,6 +149,19 @@ func (o *ConductorOutbox) Enqueue(watcherID, watcherName string, evt Event) erro
 		slog.String("send_id", rec.SendID))
 	o.startWorker(rec.SessionID)
 	return nil
+}
+
+// rowIsConductorNamed reports whether the stored session row is the named
+// conductor: a stored conductor name decides alone; otherwise the title must
+// parse to name (Instance.IsConductorNamed on a statedb row).
+func rowIsConductorNamed(row *statedb.InstanceRow, name string) bool {
+	if row == nil || name == "" {
+		return false
+	}
+	if stored := session.ReadConductorNameFromToolData(row.ToolData); stored != "" {
+		return stored == name
+	}
+	return session.ConductorNameFromTitle(row.Title) == name
 }
 
 // Resume starts the worker of every conductor that still has a routed event
