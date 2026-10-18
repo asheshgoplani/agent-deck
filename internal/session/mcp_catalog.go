@@ -187,7 +187,17 @@ func writeJSONFileAtomic(root, path string, data []byte, perm os.FileMode) error
 	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
 		return nil
 	}
-	return atomicfile.WriteFileWithin(root, path, data, perm)
+	return withProjectMCPOptOut(atomicfile.WriteFileWithin(root, path, data, perm))
+}
+
+// withProjectMCPOptOut adds the way out to a refusal to write a project MCP
+// config through a symlink that leaves the project. One setting covers every
+// project writer (.mcp.json, .cursor/mcp.json, opencode.json).
+func withProjectMCPOptOut(err error) error {
+	if !errors.Is(err, atomicfile.ErrOutsideRoot) {
+		return err
+	}
+	return fmt.Errorf("%w; set manage_mcp_json = false in config.toml to stop agent-deck writing project MCP config files", err)
 }
 
 // WriteMergedMcpJSONFile writes enabled MCPs from config.toml to mcpFile using the
@@ -208,7 +218,7 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 	// checked before either is touched.
 	for _, p := range []string{mcpFile, mcpFile + ".lock"} {
 		if err := atomicfile.CheckWithin(projectRoot, p); err != nil {
-			return err
+			return withProjectMCPOptOut(err)
 		}
 	}
 	// Same read-modify-write class as the .claude.json writers: this reads the
