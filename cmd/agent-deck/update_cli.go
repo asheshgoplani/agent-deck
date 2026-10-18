@@ -188,10 +188,6 @@ type unattendedDeps struct {
 	// [updates] auto_update_remotes is on (#2166); it never prompts and
 	// its failures are per-remote, never this run's.
 	sweepRemotes func(latest string)
-	// shadowCheck lists older agent-deck copies that come before the
-	// installed binary on PATH; warned about after an install, never
-	// touched. nil skips the check.
-	shadowCheck func(installed string) []update.ShadowCopy
 }
 
 // runUnattendedUpdate is `agent-deck update --unattended`: no prompts, no
@@ -311,9 +307,10 @@ func runUnattendedUpdate(d unattendedDeps) int {
 
 	fmt.Fprintf(d.out, "✓ Updated to v%s (unattended); running agent-deck processes restart themselves\n", info.LatestVersion)
 	log.Info("unattended_update_done", slog.String("installed", info.LatestVersion))
-	if d.shadowCheck != nil {
-		printPathShadowing(d.out, d.shadowCheck(info.LatestVersion), log)
-	}
+	// No PATH shadow scan here: the timer and a controller's nudge run
+	// with their own PATH (systemd's or launchd's default, an ssh
+	// command's), not the user's shell PATH, so a scan would report
+	// against the wrong PATH. update --check and doctor run it.
 
 	if d.sweepRemotes != nil {
 		d.sweepRemotes(info.LatestVersion)
@@ -364,7 +361,6 @@ func realUnattendedDeps(trigger string) (unattendedDeps, func()) {
 		drainPending: func() error { return drainPendingLaunchAgents(log) },
 		ensureTimer:  func() (update.TimerEnsureResult, error) { return session.AutoEnsureUpdateTimer(log) },
 		sweepRemotes: remoteFollowUpForTrigger(trigger, log),
-		shadowCheck:  update.FindShadowingCopies,
 	}, closeLog
 }
 

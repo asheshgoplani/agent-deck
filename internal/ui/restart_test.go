@@ -345,7 +345,7 @@ func TestRestartHandoff_WarnsAboutShadowingCopy(t *testing.T) {
 	if home.err == nil {
 		t.Fatal("no footer warning")
 	}
-	for _, want := range []string{"/usr/local/bin/agent-deck", "v1.16.3", "comes first on PATH", "sudo rm /usr/local/bin/agent-deck", "agent-deck doctor"} {
+	for _, want := range []string{"restarted into v" + Version + " (was v1.15.0)", "/usr/local/bin/agent-deck", "v1.16.3", "comes first on PATH", "sudo rm /usr/local/bin/agent-deck", "agent-deck doctor"} {
 		if !strings.Contains(home.err.Error(), want) {
 			t.Fatalf("footer %q lacks %q", home.err.Error(), want)
 		}

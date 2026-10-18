@@ -418,8 +418,8 @@ func (h *Home) applyRestartHandoff() tea.Cmd {
 	}
 	uiLog.Info("tui_restarted", slog.String("from", hand.OldVersion), slog.String("into", Version))
 	h.setError(fmt.Errorf("restarted into v%s (was v%s)", Version, hand.OldVersion))
-	version := Version
-	return func() tea.Msg { return pathShadowMsg{copies: pathShadowScan(version)} }
+	version, old := Version, hand.OldVersion
+	return func() tea.Msg { return pathShadowMsg{copies: pathShadowScan(version), oldVersion: old} }
 }
 
 // pathShadowScan lists older agent-deck copies earlier on PATH than this
@@ -427,18 +427,21 @@ func (h *Home) applyRestartHandoff() tea.Cmd {
 var pathShadowScan = update.FindShadowingCopies
 
 // pathShadowMsg carries the post-restart PATH scan.
-type pathShadowMsg struct{ copies []update.ShadowCopy }
+type pathShadowMsg struct {
+	copies     []update.ShadowCopy
+	oldVersion string
+}
 
 // applyPathShadow logs every shadowing copy and puts the first one in the
-// footer, pointing at `agent-deck doctor` for the full fix. The copies are
-// never touched.
+// footer after the restart notice it extends, pointing at `agent-deck
+// doctor` for the full fix. The copies are never touched.
 func (h *Home) applyPathShadow(msg pathShadowMsg) {
 	if len(msg.copies) == 0 {
 		return
 	}
 	update.LogShadowCopies(uiLog, msg.copies)
 	c := msg.copies[0]
-	h.setError(fmt.Errorf("restarted into v%s, but %s (%s) comes first on PATH: shells run that copy; fix: %s (see agent-deck doctor)", Version, c.Path, c.VersionLabel(), c.Remove))
+	h.setError(fmt.Errorf("restarted into v%s (was v%s), but %s (%s) comes first on PATH: shells run that copy; fix: %s (see agent-deck doctor)", Version, msg.oldVersion, c.Path, c.VersionLabel(), c.Fix()))
 }
 
 // ExecSelf replaces the current process with exe, keeping os.Args and the
