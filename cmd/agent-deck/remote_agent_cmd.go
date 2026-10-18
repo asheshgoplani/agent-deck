@@ -231,6 +231,11 @@ func handleRemoteAgent(profile string, args []string) {
 			fmt.Println("{\"id\":N,\"unwatch\":true} stops it. {\"id\":N,\"cancel\":true} kills request N;")
 			fmt.Println("{\"id\":N,\"ping\":true} keeps the channel alive. The agent pushes {\"event\":\"ping\"} itself")
 			fmt.Println("and exits when stdout fails or stdin stays silent for 10 minutes.")
+			fmt.Println()
+			fmt.Println("Without -p it serves the profile every other command on this host would use:")
+			fmt.Println("AGENTDECK_PROFILE, then a profile inferred from CLAUDE_CONFIG_DIR if that profile")
+			fmt.Println("exists, then default_profile. The TUI leaves -p out for a remote whose profile is")
+			fmt.Println("unset or \"default\".")
 			return
 		}
 	}
