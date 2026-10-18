@@ -46,6 +46,7 @@ func TestHermesDetectionDoesNotWriteConfigBeforeConsent(t *testing.T) {
 			previousWorkers := homeBackgroundWorkersEnabled
 			homeBackgroundWorkersEnabled = true
 			t.Cleanup(func() { homeBackgroundWorkersEnabled = previousWorkers })
+			stubLogMaintenance(t)
 			previousDB := statedb.GetGlobal()
 			statedb.SetGlobal(nil)
 			t.Cleanup(func() { statedb.SetGlobal(previousDB) })
@@ -237,6 +238,7 @@ func TestAcceptedHermesHooksRemovedLaterAreNotReinstalled(t *testing.T) {
 	previousWorkers := homeBackgroundWorkersEnabled
 	homeBackgroundWorkersEnabled = true
 	t.Cleanup(func() { homeBackgroundWorkersEnabled = previousWorkers })
+	stubLogMaintenance(t)
 
 	home := NewHome()
 	t.Cleanup(func() {

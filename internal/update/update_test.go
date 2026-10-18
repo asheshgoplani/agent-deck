@@ -57,6 +57,49 @@ func TestCompareVersions(t *testing.T) {
 	}
 }
 
+// TestReleaseSupersedes_LocalBuild pins #2710: a "+local" build of a version
+// is offered the published release of that same version, while ordinary
+// semver precedence (pre-releases, other build metadata) is unchanged.
+func TestReleaseSupersedes_LocalBuild(t *testing.T) {
+	tests := []struct {
+		release, current string
+		want             bool
+	}{
+		{"1.16.29", "1.16.29+local.20261018.abc1234", true},
+		{"v1.16.29", "v1.16.29+local", true},
+		{"1.16.30", "1.16.29+local.x", true},
+		{"1.16.28", "1.16.29+local.x", false},
+		{"1.16.29-rc.2", "1.16.29-rc.2+local.x", true},
+		{"1.16.29-rc.1", "1.16.29-rc.2+local.x", false},
+		{"1.16.29+local.y", "1.16.29+local.x", false},
+		{"1.16.29", "1.16.29+build.5", false},
+		{"1.16.29", "1.16.29+localhost", false},
+		{"1.16.29", "1.16.29", false},
+		{"1.16.30", "1.16.29", true},
+		{"1.16.29-rc.1", "1.16.29", false},
+		{"1.16.29", "1.16.29-rc.1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.release+"_over_"+tt.current, func(t *testing.T) {
+			assert.Equal(t, tt.want, ReleaseSupersedes(tt.release, tt.current))
+		})
+	}
+}
+
+// TestCachedUpdateInfo_LocalBuildOfferedSameRelease is the #2710 user path:
+// a machine running 1.16.29+local... with 1.16.29 cached as latest must see
+// the update as available.
+func TestCachedUpdateInfo_LocalBuildOfferedSameRelease(t *testing.T) {
+	info := &UpdateInfo{}
+	applyCacheToInfo(info, &UpdateCache{LatestVersion: "1.16.29"}, "1.16.29+local.20261018.abc1234")
+	assert.True(t, info.Available, "a +local build must be offered its own release")
+	assert.Equal(t, 1, CountReleasesBehind("1.16.29+local.x", []Release{{TagName: "v1.16.29"}, {TagName: "v1.16.28"}}))
+
+	info = &UpdateInfo{}
+	applyCacheToInfo(info, &UpdateCache{LatestVersion: "1.16.29"}, "1.16.29")
+	assert.False(t, info.Available, "the release itself is current")
+}
+
 func TestParseChangelog(t *testing.T) {
 	content := `# Changelog
 

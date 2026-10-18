@@ -28,8 +28,11 @@ func TestTerminalLinkHandler_WiredIntoTerminal_RegressionFor1682(t *testing.T) {
 	if !strings.Contains(panel, `from './terminalLinks.js'`) {
 		t.Error("TerminalPanel.js does not import ./terminalLinks.js")
 	}
+	// #2675 keeps the handler in a const so the modifier-click path shares it.
 	wired := regexp.MustCompile(`linkHandler\s*:\s*createTerminalLinkHandler\(\)`)
-	if !wired.MatchString(panel) {
+	shared := regexp.MustCompile(`const linkHandler\s*=\s*createTerminalLinkHandler\(\)`).MatchString(panel) &&
+		regexp.MustCompile(`new Terminal\(\{(?:[^{}]|\{[^{}]*\})*\n\s*linkHandler,\n`).MatchString(panel)
+	if !wired.MatchString(panel) && !shared {
 		t.Error("TerminalPanel.js does not pass linkHandler: createTerminalLinkHandler() to new Terminal(...) — " +
 			"without it xterm's built-in confirm fires on every link and [web].trusted_domains has no effect")
 	}
