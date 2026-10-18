@@ -90,6 +90,9 @@ func printInboxStats(w io.Writer, st session.InboxStats) {
 	if st.ShadowedByLedger > 0 {
 		fmt.Fprintf(w, "  ledger       shadowed_by_ledger=%d (already shown by the other path)\n", st.ShadowedByLedger)
 	}
+	if st.WakeupsWithdrawn+st.RecordsWithdrawn > 0 {
+		fmt.Fprintf(w, "  withdrawn    wakeups=%d records=%d (result already read with session output)\n", st.WakeupsWithdrawn, st.RecordsWithdrawn)
+	}
 	if st.LastUrgentLatencyMS > 0 {
 		fmt.Fprintf(w, "  last urgent latency %d ms\n", st.LastUrgentLatencyMS)
 	}

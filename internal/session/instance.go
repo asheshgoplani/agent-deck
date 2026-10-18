@@ -8726,6 +8726,11 @@ type ResponseOutput struct {
 	SessionID           string `json:"session_id,omitempty"`            // Conversation session ID, if available
 	CodexTurnGeneration string `json:"codex_turn_generation,omitempty"` // Exact thread:turn identity, if retained
 	ClaudeTurnUUID      string `json:"claude_turn_uuid,omitempty"`      // Bound Claude user record, if retained
+	// AssistantUUID is the transcript uuid of the Claude assistant record
+	// Content was read from; the turn identity an inbox record carries as
+	// turn_uuid. Empty for pane, terminal and non-Claude reads. Not part of
+	// the CLI output.
+	AssistantUUID string `json:"-"`
 }
 
 // GetLastResponse returns the last assistant response from the session
@@ -9395,6 +9400,13 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 	if sessionID == "" {
 		return ""
 	}
+	// The ID becomes a file name and a glob pattern: a separator or ".." could
+	// name a file outside the projects tree and a glob metacharacter could
+	// match another session's transcript, so such an ID resolves to nothing.
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil || strings.ContainsAny(sessionID, "*?[") {
+		return ""
+	}
 
 	projectsDir := filepath.Join(configDir, "projects")
 
@@ -9417,7 +9429,11 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 		if candidateDir == "" {
 			continue
 		}
-		candidate := filepath.Join(projectsDir, ConvertToClaudeDirName(candidateDir), sessionID+".jsonl")
+		projectDir, ok := claudeProjectDir(configDir, ConvertToClaudeDirName(candidateDir))
+		if !ok {
+			continue
+		}
+		candidate := filepath.Join(projectDir, fileName)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -9731,10 +9747,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		Message     json.RawMessage `json:"message"`
 		Timestamp   string          `json:"timestamp"`
 		IsSidechain bool            `json:"isSidechain"`
+		UUID        string          `json:"uuid"`
 	}
 
 	var lastAssistantContent string
 	var lastTimestamp string
+	var lastUUID string
 	var foundSessionID string
 
 	// Walk lines from EOF backward; the first non-sidechain assistant record
@@ -9819,6 +9837,7 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		if extractedText != "" {
 			lastAssistantContent = extractedText
 			lastTimestamp = record.Timestamp
+			lastUUID = record.UUID
 			if foundSessionID != "" {
 				break
 			}
@@ -9830,11 +9849,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 	}
 
 	return &ResponseOutput{
-		Tool:      "claude",
-		Role:      "assistant",
-		Content:   lastAssistantContent,
-		Timestamp: lastTimestamp,
-		SessionID: foundSessionID,
+		Tool:          "claude",
+		Role:          "assistant",
+		Content:       lastAssistantContent,
+		Timestamp:     lastTimestamp,
+		SessionID:     foundSessionID,
+		AssistantUUID: lastUUID,
 	}, nil
 }
 
@@ -12174,7 +12194,12 @@ func openCodeModelRef(model string) (map[string]string, error) {
 // resolved opencode binary against the 2.x shared service for sessionID and
 // returns its stdout. An empty body sends no request body.
 func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return runOpenCodeServiceCallContext(context.Background(), binary, workDir, operation, sessionID, body)
+}
+
+// runOpenCodeServiceCallContext is runOpenCodeServiceCall ended early when ctx is.
+func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operation, sessionID, body string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	// #nosec G204 -- binary is the configured opencode resolved by
@@ -12980,7 +13005,11 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 	if encodedPath == "" {
 		encodedPath = "-"
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return 0
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 	if info, err := os.Stat(sessionFile); err == nil {
 		return info.Size()
 	}
@@ -13025,7 +13054,11 @@ func sessionConversationMtime(inst *Instance, sessionID string) time.Time {
 	if encodedPath == "" {
 		encodedPath = "-"
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return time.Time{}
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 	if info, err := os.Stat(sessionFile); err == nil {
 		return info.ModTime()
 	}
@@ -13212,7 +13245,11 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		encodedPath = "-"
 	}
 
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return false
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 
 	// Issue #662 diagnostic contract: emit a single structured "decision"
 	// log line per call with every field needed to reconstruct the false

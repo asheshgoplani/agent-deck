@@ -1891,6 +1891,22 @@ type LaunchSettings struct {
 	// and leaves root sessions alone; "on" never sets the env; "off" sets it
 	// for every Claude session. See prompt_suggestions.go.
 	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
+
+	// FanoutHint adds the FanoutHint constant line to the injected identity
+	// block of Claude-family sessions at the primer and full context levels.
+	// nil => true.
+	// It rides on identity injection: --no-identity, inject_identity=false
+	// or context_level "none" leave no block to carry it.
+	FanoutHint *bool `toml:"fanout_hint,omitempty"`
+}
+
+// GetFanoutHint returns whether the fan-out hint is added to the identity
+// block, defaulting to true.
+func (l *LaunchSettings) GetFanoutHint() bool {
+	if l == nil || l.FanoutHint == nil {
+		return true
+	}
+	return *l.FanoutHint
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting

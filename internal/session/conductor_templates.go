@@ -6,6 +6,7 @@ import "strings"
 // generated template. Installers compare its fully rendered form byte-for-byte
 // before migrating, so any user customization is preserved.
 func previousConductorInstructionsTemplate(template string) string {
+	template = preNoOpNoticeRuleConductorInstructionsTemplate(template)
 	template = preBackgroundWorkConductorInstructionsTemplate(template)
 	// Issue #2469 (comms redesign): the heartbeat section gained the
 	// prompt-time drain wording and the record tiers paragraph. Revert them so
@@ -54,6 +55,19 @@ fallback — together they guarantee no completion is missed whether you are bus
 // conductorBackgroundWorkGuidance is the sentence issue #2473 added to the
 // shared template's substate paragraph.
 const conductorBackgroundWorkGuidance = " `background-work` (shown as coarse status `running`) means the child's turn ended but a Workflow, background agents, shells or a Monitor it started are still in flight (`background_work` in `session show --json` names the task and its n/m progress); leave it alone, it reports back and settles to `waiting` by itself."
+
+// conductorNoOpNoticeRule is the paragraph added to the shared template
+// after v1.16.29: no reply to a notice that needs no action (prime-agent's
+// "no reply to no-op notices" rule).
+const conductorNoOpNoticeRule = "\n\n**No-op notices get no reply.** A record or message that needs nothing from you (a pure acknowledgement such as \"ok\", \"thanks\" or \"noted\", or a status ping that changes nothing) is a no-op notice: do not answer it, do not send anything back to the child, just end the turn. Replying only starts another round trip. A `[HEARTBEAT]` is not a no-op notice; answer it in the format below."
+
+// preNoOpNoticeRuleConductorInstructionsTemplate reconstructs the template
+// as v1.16.25-v1.16.29 shipped it, before conductorNoOpNoticeRule, so a
+// conductor written by those releases is recognised as generated and
+// migrated. Per-name templates never carried the rule: a no-op there.
+func preNoOpNoticeRuleConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template, conductorNoOpNoticeRule, "", 1)
+}
 
 // preBackgroundWorkConductorInstructionsTemplate reconstructs the template as
 // v1.16.24 shipped it, before #2473 added the background-work sentence, so a
@@ -118,10 +132,17 @@ const (
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
 	var gens []string
-	// Chain: current -> minus the #2473 background-work sentence (unreleased
-	// main builds) -> minus the strict urgent rule (unreleased main builds)
-	// -> exactly what v1.16.24 shipped. The intermediate "new sentence with the
-	// old reply format" was never released, so it is not a generation.
+	// Newest first: what v1.16.25-v1.16.29 shipped (current minus the
+	// no-op notice rule). Every older generation is reconstructed from it.
+	if shipped := preNoOpNoticeRuleConductorInstructionsTemplate(template); shipped != template {
+		gens = append(gens, shipped)
+		template = shipped
+	}
+	// Chain from that template: minus the #2473 background-work sentence
+	// (main builds between v1.16.24 and v1.16.25) -> minus the strict urgent
+	// rule (same builds) -> exactly what v1.16.24 shipped. The intermediate
+	// "new sentence with the old reply format" was never released, so it is
+	// not a generation.
 	base := template
 	if noBG := preBackgroundWorkConductorInstructionsTemplate(template); noBG != template {
 		gens = append(gens, noBG)
@@ -227,7 +248,7 @@ Records are tiered and carry the child's own text (issue #2469): ` + "`" + `urge
 sentinel, an error, or an explicit question to you) wakes you;
 ` + "`" + `info` + "`" + ` (progress in a turn a background task started) waits for your next turn or a
 digest. Act on the text in the record. Do NOT run ` + "`" + `session output` + "`" + ` on a child whose
-record you already have unless the text is clipped and you need the rest.
+record you already have unless the text is clipped and you need the rest.` + conductorNoOpNoticeRule + `
 
 For child work still in flight, wait with one blocking ` + "`" + `agent-deck -p <PROFILE> session children --follow --until-done` + "`" + ` call. Do not spend turns repeatedly calling ` + "`" + `list --json` + "`" + ` or ` + "`" + `session children --json` + "`" + `.
 

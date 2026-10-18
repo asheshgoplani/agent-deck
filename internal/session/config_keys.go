@@ -176,6 +176,24 @@ var configKeys = []ConfigKey{
 	{Key: "launch.prompt_suggestions", Section: "Sessions", Label: "Prompt suggestions", Help: "Claude prompt suggestions in launched sessions: children-off (off for sessions with a parent), on, or off; applies on the next session start; per profile via [profiles.<name>.claude]", Type: "enum", Values: []string{PromptSuggestionsChildrenOff, PromptSuggestionsOn, PromptSuggestionsOff},
 		get: func(c *UserConfig) any { return firstPromptSuggestionsMode(c.Launch.PromptSuggestions) },
 		set: func(c *UserConfig, v any) { c.Launch.PromptSuggestions = v.(string) }},
+	{Key: "launch.fanout_hint", Section: "Sessions", Label: "Fan-out hint", Help: "Add the fan-out working-style line to the identity block of Claude sessions (primer and full levels); applies on the next session start", Type: "bool",
+		get: func(c *UserConfig) any { return c.Launch.GetFanoutHint() },
+		set: func(c *UserConfig, v any) { b := v.(bool); c.Launch.FanoutHint = &b }},
+	{Key: "launch.context_level", Section: "Sessions", Label: "Context level", Help: "Global default for the identity block launched sessions receive: none, primer or full (inject_identity = false reads as none); group and session overrides win", Type: "enum", Values: []string{ContextLevelNone, ContextLevelPrimer, ContextLevelFull},
+		get: func(c *UserConfig) any { return globalContextLevel(c) },
+		set: func(c *UserConfig, v any) { c.Launch.ContextLevel = v.(string) }},
+}
+
+// globalContextLevel is the global layer of EffectiveContextLevel: a valid
+// [launch].context_level, else none when inject_identity = false, else full.
+func globalContextLevel(c *UserConfig) string {
+	if lvl, err := NormalizeContextLevel(c.Launch.ContextLevel); err == nil {
+		return lvl
+	}
+	if c.Launch.InjectIdentity != nil && !*c.Launch.InjectIdentity {
+		return ContextLevelNone
+	}
+	return ContextLevelFull
 }
 
 func positiveOr(v, def int) int {

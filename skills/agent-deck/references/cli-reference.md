@@ -520,6 +520,24 @@ pane or fallback responses). `--json --if-version V` answers
 while that file is unchanged; it costs one stat, parses nothing and is not
 logged as a read. Any change returns the full response with a new version.
 
+Run from inside another session, a plain text read of a Claude child (no
+`-q`/`--quiet`, `--json`, `--copy` or `--pane`, not clipped by
+`--max-tokens`, not a pane fallback), the way an agent reads a child from its
+Bash tool, is remembered per reader and child as the transcript record it
+printed and when. An inbox notice for that exact turn (same `turn_uuid`)
+withdraws itself (no wake, no Stop block, no injected record) only when the
+read came at or after the notice's time, i.e. after the turn ended. A
+mid-turn peek, a read that showed an earlier record, and a notice built
+while a tool call was newer than the turn's text (the final reply not yet
+written) withdraw nothing. Scripts and poll loops (`session output -q child
+| grep -q DONE`, `--json` dashboards, `launch-subagent.sh --wait`) never
+withdraw anything. Questions, errors and overflow digests are always
+delivered. `inbox drain` reports what it withdrew on stderr (`withdrawn N
+record(s) ...`, or one JSON object `{"withdrawn": N, "withdrawn_records":
+[{"child_session_id", "child_title", "turn_uuid"}]}` with `--json`; stdout is
+unchanged). The comms ledger consumers do not consult reads; there a read
+result is delivered as before.
+
 ### session context
 
 ```bash
@@ -1024,7 +1042,7 @@ agent-deck inbox stats [--json] --all
 agent-deck inbox stats --reset <session-id>
 ```
 
-Read-only counters (#2469) kept per parent under `runtime/inbox-stats/`: records by tier (`records_urgent`, `records_info`, `records_legacy`), turns suppressed (`noise_suppressed`, `dedup_suppressed`), wakeups (`wakeups_urgent`, `wakeups_digest`, `wakeups_suppressed`), delivery (`drains`, `records_delivered`, `bytes_injected`, `text_bytes`) and `last_urgent_latency_ms`. The text form adds the signal ratio (recorded turns over observed turns). Nothing is consumed.
+Read-only counters (#2469) kept per parent under `runtime/inbox-stats/`: records by tier (`records_urgent`, `records_info`, `records_legacy`), turns suppressed (`noise_suppressed`, `dedup_suppressed`), wakeups (`wakeups_urgent`, `wakeups_digest`, `wakeups_suppressed`), delivery (`drains`, `records_delivered`, `bytes_injected`, `text_bytes`), notices withdrawn because the parent already read the child's result with `session output` (`wakeups_withdrawn`, `records_withdrawn`) and `last_urgent_latency_ms`. The text form adds the signal ratio (recorded turns over observed turns). Nothing is consumed.
 
 Every record drained with `inbox drain` now carries `tier`, `trigger`, `text` (the child's new text, capped), `text_hash`, `turn_uuid`, `question` and `seq`; the text form prints the text indented under the record line.
 

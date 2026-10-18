@@ -52,7 +52,8 @@ func loadShippedConductorTemplates(t *testing.T) []shippedConductorTemplate {
 // conductorInstructionsGenerations list, while a hand-written file is left
 // alone.
 //
-// Fixture rows span exactly 3 distinct blobs: v1.16.24 (the shared template
+// Fixture rows span exactly 4 distinct blobs: v1.16.28/v1.16.29 (the shared
+// template before the no-op notice rule), v1.16.24 (the shared template
 // before the #2469 human-tier reply format), v1.11.0-v1.16.10 share one, and
 // v1.10.9-v1.10.11 share the other (predating #1814's substate-guidance row).
 // v1.9.73 and v1.9.70 are intentionally not covered; see the tsv header.
@@ -65,10 +66,10 @@ func TestShippedConductorTemplatesAreRecognizedAsGenerated(t *testing.T) {
 		blobs[r.blob] = true
 		tags[r.tag] = true
 	}
-	if len(blobs) != 3 {
-		t.Fatalf("shipped templates span %d distinct blobs %v; conductorInstructionsGenerations reconstructs exactly 3 prior generations, update the fixture and the generation count together", len(blobs), blobs)
+	if len(blobs) != 4 {
+		t.Fatalf("shipped templates span %d distinct blobs %v; conductorInstructionsGenerations reconstructs exactly 4 prior generations, update the fixture and the generation count together", len(blobs), blobs)
 	}
-	for _, tag := range []string{"v1.16.24", "v1.15.0", "v1.16.5", "v1.16.8", "v1.16.10", "v1.11.0", "v1.10.9", "v1.10.10", "v1.10.11"} {
+	for _, tag := range []string{"v1.16.29", "v1.16.28", "v1.16.24", "v1.15.0", "v1.16.5", "v1.16.8", "v1.16.10", "v1.11.0", "v1.10.9", "v1.10.10", "v1.10.11"} {
 		if !tags[tag] {
 			t.Fatalf("fixture is missing shipped tag %s", tag)
 		}
