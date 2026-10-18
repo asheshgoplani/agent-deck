@@ -89,16 +89,29 @@ const settleFakeClaudeScript = `#!/bin/bash
 mode=$1; shown=$2; log=$3; launches=$4
 n=$(( $(cat "$launches" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$launches"
 composer() { printf '\n● resumed\n\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n  ? for shortcuts\n'; }
+trust() { # $1 = cursor row: 0 "No, exit" (the default), 1 "Yes"
+  clear
+  printf '%s\n Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one\n you trust? (Like your own code, a well-known open source project)\n\n' "────────────────────────────────────────" "$shown"
+  if [ "$1" = 0 ]; then printf ' ❯ No, exit\n   Yes, I trust this folder\n'; else printf '   No, exit\n ❯ Yes, I trust this folder\n'; fi
+  printf '\n Enter to confirm · Esc to cancel\n'
+}
+readkey() { IFS= read -rsn1 k; if [ "$k" = $'\e' ]; then IFS= read -rsn2 rest; k="ESC$rest"; fi; echo "key:[$k]" >> "$log"; }
 if [ "$mode" = trust ]; then
-  printf ' Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one\n you trust? (Like your own code, a well-known open source project)\n\n ❯ 1. Yes, I trust this folder\n   2. No, exit\n\n Enter to confirm · Esc to cancel\n' "$shown"
-  IFS= read -r key; echo "key:[$key]" >> "$log"
+  cur=0; trust $cur
+  while readkey; do
+    case "$k" in
+      "ESC[B") cur=1; trust $cur ;;
+      "ESC[A") cur=0; trust $cur ;;
+      "") [ $cur = 1 ] && break; echo "exited: No, exit chosen"; exit 1 ;;
+    esac
+  done
   clear; composer
 elif [ "$mode" = closed ] && [ "$n" = 1 ]; then
   composer; printf '  plugin:telegram:telegram (CONNECTION_CLOSED) · /mcp\n'
 else
   composer
 fi
-while IFS= read -r key; do echo "key:[$key]" >> "$log"; done
+while readkey; do :; done
 `
 
 type settleFakePane struct {
@@ -168,8 +181,9 @@ func TestSwitchSettle_FakeClaudePane_OwnTrustPromptAnswered(t *testing.T) {
 	if !report.Ready || strings.Join(report.Answered, ",") != "trust-own-path" {
 		t.Fatalf("receipt: %s", report.Receipt())
 	}
-	if got := p.keys(); got != "key:[]" {
-		t.Fatalf("keys read by the fake claude = %q, want one Enter", got)
+	// The cursor starts on "No, exit": one Down, then one Enter on Yes.
+	if got := p.keys(); got != "key:[ESC[B]\nkey:[]" {
+		t.Fatalf("keys read by the fake claude = %q, want Down then Enter", got)
 	}
 	if len(kicks) != 1 {
 		t.Fatalf("kicks = %d", len(kicks))

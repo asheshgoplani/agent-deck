@@ -19,20 +19,60 @@ import (
 
 const settleProject = "/work/alpha"
 
-func trustPane(path string) string {
+// trustScreen is the folder-trust dialog as a live capture draws it: one
+// rule on top, the workspace path, the question, the cursor on "No, exit"
+// first and the rows unnumbered. cursor 0 = "No, exit", 1 = "Yes".
+func trustScreen(path string, cursor int) string {
+	no, yes := "   No, exit", "   Yes, I trust this folder"
+	if cursor == 0 {
+		no = " ❯ No, exit"
+	} else {
+		yes = " ❯ Yes, I trust this folder"
+	}
 	return strings.Join([]string{
-		"╭──────────────────────────────────────────────────────────╮",
-		"│ Accessing workspace:                                     │",
-		"│                                                          │",
-		"│ " + path + " │",
-		"│                                                          │",
-		"│ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first. │",
-		"│                                                          │",
-		"│ ❯ 1. Yes, I trust this folder                            │",
-		"│   2. No, exit                                            │",
-		"╰──────────────────────────────────────────────────────────╯",
-		"  Enter to confirm · Esc to cancel",
+		strings.Repeat("─", 80),
+		" Accessing workspace:",
+		"",
+		" " + path,
+		"",
+		" Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known",
+		" open source project, or work from your team). If not, take a moment to review what's in this folder first.",
+		"",
+		" Claude Code'll be able to read, edit, and execute files here.",
+		"",
+		" Security guide",
+		"",
+		no,
+		yes,
+		"",
+		" Enter to confirm · Esc to cancel",
 	}, "\n")
+}
+
+func trustPane(path string) string { return trustScreen(path, 0) }
+
+const exitedPane = "ashesh@host:~$ "
+
+// trustDialogKeys drives a fake trust dialog: arrows move the cursor, Enter
+// picks the row under it (No exits the session).
+func trustDialogKeys(path string, next string) func(f *fakeSettle, key string) {
+	cursor := 0
+	return func(f *fakeSettle, key string) {
+		switch key {
+		case "Down":
+			cursor = 1
+			f.screens = []string{trustScreen(path, cursor)}
+		case "Up":
+			cursor = 0
+			f.screens = []string{trustScreen(path, cursor)}
+		case "Enter":
+			if cursor == 1 {
+				f.screens = []string{next}
+			} else {
+				f.screens = []string{exitedPane}
+			}
+		}
+	}
 }
 
 const readyPane = "\n● Resumed.\n\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n  ? for shortcuts\n"
@@ -59,15 +99,18 @@ func TestClassifySettlePane(t *testing.T) {
 		{"trust other path", trustPane("/work/beta"), SettlePaneTrustOther},
 		{"trust parent of own path", trustPane("/work"), SettlePaneTrustOther},
 		{"trust longer path sharing a prefix", trustPane(settleProject + "-evil"), SettlePaneTrustOther},
-		{"old trust wording", "Do you trust the files in this folder?\n\n" + settleProject + "\n\n❯ 1. Yes, proceed\n  2. No, exit\n", SettlePaneTrustOwn},
-		{"wrapped path", "Accessing workspace:\n\n/work/al\npha\n\nQuick safety check: Is this a project you created or one you trust?\n❯ 1. Yes, I trust this folder\n  2. No, exit\n", SettlePaneTrustOwn},
-		{"question wrapped by a narrow pane", "│ " + settleProject + " │\n│ Quick safety check: Is this a project you created │\n│ or one you trust? (Like your own code) │\n│ ❯ 1. Yes, I trust this folder │\n│   2. No, exit │\n", SettlePaneTrustOwn},
+		{"old trust wording, numbered rows", "Do you trust the files in this folder?\n\n" + settleProject + "\n\n❯ 1. Yes, proceed\n  2. No, exit\n", SettlePaneTrustOwn},
+		{"wrapped path", "Accessing workspace:\n\n/work/al\npha\n\nQuick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\n", SettlePaneTrustOwn},
+		{"trust question quoted in history above the composer", trustScreen(settleProject, 1) + "\n" + readyPane, SettlePaneReady},
+		{"trust question without option rows is not a live dialog", "Quick safety check: Is this a project you created or one you trust?\n" + settleProject + "\n", SettlePaneTrustOther},
+		{"question wrapped by a narrow pane", "│ " + settleProject + " │\n│ Quick safety check: Is this a project you created │\n│ or one you trust? (Like your own code) │\n│ ❯ No, exit │\n│   Yes, I trust this folder │\n", SettlePaneTrustOwn},
 		{"theme", themePane, SettlePaneTheme},
 		{"bypass", bypassPane(false), SettlePaneBypass},
 		{"onboarding security notes", "Security notes:\n\n1. Claude can make mistakes\n\nPress Enter to continue…\n", SettlePaneOnboarding},
 		{"login", "Select login method:\n\n❯ 1. Claude account with subscription\n", SettlePaneLoginNeeded},
 		{"unknown menu", "Resume a previous conversation?\n\n❯ 1. Resume\n  2. Start fresh\n\nEnter to select\n", SettlePaneUnknownMenu},
 		{"ready composer", readyPane, SettlePaneReady},
+		{"draft that looks like a menu row", "● earlier reply\n  ❯ 1. Yes, old picker in history\n────────────────────────────────────────\n❯ 1. fix the bug\n────────────────────────────────────────\n  ? for shortcuts\n", SettlePaneReady},
 		{"booting", "Claude Code v2.3.1\nloading…\n", SettlePaneStarting},
 	}
 	for _, tc := range cases {
@@ -200,17 +243,14 @@ func TestSettleSwitch_AnswersOwnTrustPromptOnceThenKicksAndVerifies(t *testing.T
 	cfgDir := t.TempDir()
 	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
 	f.set(trustPane(settleProject))
-	f.onKey = func(f *fakeSettle, key string) {
-		if key == "Enter" {
-			f.screens = []string{readyPane}
-		}
-	}
+	f.onKey = trustDialogKeys(settleProject, readyPane)
 	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
 	if err != nil {
 		t.Fatalf("settle: %v (%s)", err, report.Receipt())
 	}
-	if strings.Join(f.keys, ",") != "Enter" {
-		t.Fatalf("keys = %v, want exactly one Enter", f.keys)
+	// The cursor starts on "No, exit": move to Yes, then one Enter.
+	if strings.Join(f.keys, ",") != "Down,Enter" {
+		t.Fatalf("keys = %v, want Down,Enter (never Enter on No, exit)", f.keys)
 	}
 	if len(f.kicks) != 1 || !strings.Contains(f.kicks[0], "re-check your background work") {
 		t.Fatalf("kicks = %q", f.kicks)
@@ -245,6 +285,32 @@ func TestSettleSwitch_TrustPromptForOtherPathStopsWithNothingPressed(t *testing.
 	}
 }
 
+func TestSettleSwitch_NumberedTrustWithCursorOnYesIsOneEnter(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set("Do you trust the files in this folder?\n\n" + settleProject + "\n\n❯ 1. Yes, proceed\n  2. No, exit\n\nEnter to confirm\n")
+	f.onKey = func(f *fakeSettle, key string) { f.screens = []string{readyPane} }
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if err != nil || !report.OK() || strings.Join(f.keys, ",") != "Enter" {
+		t.Fatalf("err=%v keys=%v receipt=%s", err, f.keys, report.Receipt())
+	}
+}
+
+func TestSettleSwitch_TrustCursorThatWillNotMoveStops(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(trustPane(settleProject)) // arrows ignored: cursor stays on No
+	_, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if !errors.Is(err, ErrSettleStopped) {
+		t.Fatalf("err = %v", err)
+	}
+	for _, k := range f.keys {
+		if k == "Enter" {
+			t.Fatalf("Enter pressed with the cursor on No, exit: keys=%v", f.keys)
+		}
+	}
+}
+
 func TestSettleSwitch_UnknownMenuStopsWithNothingPressed(t *testing.T) {
 	cfgDir := t.TempDir()
 	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
@@ -259,12 +325,13 @@ func TestSettleSwitch_ThemeThenTrust(t *testing.T) {
 	cfgDir := t.TempDir()
 	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
 	f.set(themePane)
+	trust := trustDialogKeys(settleProject, readyPane)
 	f.onKey = func(f *fakeSettle, key string) {
 		if len(f.keys) == 1 {
 			f.screens = []string{trustPane(settleProject)}
-		} else {
-			f.screens = []string{readyPane}
+			return
 		}
+		trust(f, key)
 	}
 	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
 	if err != nil || !report.OK() {

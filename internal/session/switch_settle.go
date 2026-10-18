@@ -50,16 +50,20 @@ var (
 		"Is this a project you created or one you trust?",
 		"Do you trust the files in this folder?",
 	}
-	settleTrustYesOption = regexp.MustCompile(`^[\s│]*❯\s*1\.\s+Yes, (I trust this folder|proceed)\s*[│]*\s*$`)
-	settleThemeQuestion  = "Choose the text style that looks best with your terminal"
-	settleBypassWarning  = "Bypass Permissions mode"
-	settleBypassAccept   = regexp.MustCompile(`^[\s│]*❯\s*2\.\s+Yes, I accept\s*[│]*\s*$`)
-	settleBypassOption   = regexp.MustCompile(`^[\s│]*(❯\s*)?2\.\s+Yes, I accept\s*[│]*\s*$`)
-	settleSecurityNotes  = "Security notes:"
-	settleLoginMarkers   = []string{"Select login method", "Please run /login", "Invalid API key", "OAuth token has expired"}
-	settleMenuCursor     = regexp.MustCompile(`^[\s│]*❯\s*\d+\.\s+\S`)
-	settleMenuHints      = []string{"Enter to confirm", "Enter to select", "Esc to cancel", "Use arrow keys to navigate", "Press Enter to continue"}
-	settleBoxChars       = "│╭╮╰╯─ \t"
+	// Option rows, matched exactly after the cursor, a "N." number and the
+	// frame are stripped. A live capture of the trust dialog draws the
+	// cursor on "No, exit" first, so Enter alone would exit the session.
+	settleTrustYes      = []string{"Yes, I trust this folder", "Yes, proceed"}
+	settleBypassYes     = []string{"Yes, I accept"}
+	settleNoExit        = []string{"No, exit"}
+	settleThemeQuestion = "Choose the text style that looks best with your terminal"
+	settleBypassWarning = "Bypass Permissions mode"
+	settleSecurityNotes = "Security notes:"
+	settleLoginMarkers  = []string{"Select login method", "Please run /login", "Invalid API key", "OAuth token has expired"}
+	settleMenuCursor    = regexp.MustCompile(`^[\s│]*❯\s*\d+\.\s+\S`)
+	settleOptionNumber  = regexp.MustCompile(`^\d+\.\s+`)
+	settleMenuHints     = []string{"Enter to confirm", "Enter to select", "Esc to cancel", "Use arrow keys to navigate", "Press Enter to continue"}
+	settleBoxChars      = "│╭╮╰╯─ \t"
 )
 
 // SettlePane is one classification with the evidence behind it.
@@ -73,7 +77,10 @@ type SettlePane struct {
 // other path is reported, never answered.
 func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 	content := tmux.StripANSI(raw)
-	lines := strings.Split(content, "\n")
+	// A dialog replaces Claude's composer. With a composer on screen, any
+	// dialog text above it is conversation history (a reply quoting the trust
+	// question), never a live prompt.
+	lines := liveDialogRegion(strings.Split(content, "\n"))
 	// Claude wraps its dialogs to the pane width; match the prose on the
 	// text with line breaks and frame characters folded away.
 	flat := flattenPane(lines)
@@ -86,15 +93,9 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 		if !strings.Contains(flat, question) {
 			continue
 		}
-		hasYes := false
-		for _, line := range lines {
-			if settleTrustYesOption.MatchString(line) {
-				hasYes = true
-				break
-			}
-		}
+		_, _, live := dialogChoice(lines, settleTrustYes, settleNoExit)
 		shown, own := trustDialogPath(lines, projectPaths)
-		if hasYes && own {
+		if live && own {
 			return SettlePane{State: SettlePaneTrustOwn, Detail: shown}
 		}
 		if shown == "" {
@@ -106,10 +107,8 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 		return SettlePane{State: SettlePaneTheme, Detail: settleThemeQuestion}
 	}
 	if strings.Contains(flat, settleBypassWarning) {
-		for _, line := range lines {
-			if settleBypassOption.MatchString(line) {
-				return SettlePane{State: SettlePaneBypass, Detail: settleBypassWarning}
-			}
+		if _, _, live := dialogChoice(lines, settleBypassYes, settleNoExit); live {
+			return SettlePane{State: SettlePaneBypass, Detail: settleBypassWarning}
 		}
 	}
 	if strings.Contains(flat, settleSecurityNotes) && strings.Contains(flat, "Press Enter to continue") {
@@ -122,6 +121,80 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 		return SettlePane{State: SettlePaneReady}
 	}
 	return SettlePane{State: SettlePaneStarting}
+}
+
+// liveDialogRegion returns the lines below the last composer on screen, or
+// every line when there is none. The composer is a bare "❯" line, or the
+// prompt line inside a frame of two rules that is not an option row.
+func liveDialogRegion(lines []string) []string {
+	last := -1
+	for i, line := range lines {
+		if t := strings.TrimSpace(line); t == "❯" || t == "›" {
+			last = i
+		}
+	}
+	if top, bottom := send.ComposerBounds(lines); top >= 0 && bottom > top+1 {
+		for i := top + 1; i < bottom; i++ {
+			t := strings.TrimSpace(lines[i])
+			if (strings.HasPrefix(t, "❯") || strings.HasPrefix(t, "›")) && !isOptionRow(lines[i]) && i > last {
+				last = i
+			}
+		}
+	}
+	if last < 0 {
+		return lines
+	}
+	return lines[last+1:]
+}
+
+// optionText strips the frame, the cursor and a "N." number from a row and
+// reports whether the cursor was on it.
+func optionText(line string) (string, bool) {
+	t := strings.Trim(line, settleBoxChars)
+	cursor := strings.HasPrefix(t, "❯")
+	t = strings.TrimSpace(strings.TrimPrefix(t, "❯"))
+	t = settleOptionNumber.ReplaceAllString(t, "")
+	t = strings.TrimSpace(strings.TrimSuffix(t, "✔"))
+	return t, cursor
+}
+
+func isOptionRow(line string) bool {
+	text, cursor := optionText(line)
+	return cursor && (settleMenuCursor.MatchString(line) || containsString(settleNoExit, text) ||
+		containsString(settleTrustYes, text) || containsString(settleBypassYes, text))
+}
+
+func containsString(list []string, v string) bool {
+	for _, have := range list {
+		if have == v {
+			return true
+		}
+	}
+	return false
+}
+
+// dialogChoice finds a Yes/No dialog's rows: the row index of the Yes
+// option, the row the cursor is on, and whether both rows are present with
+// the cursor on one of them (a live dialog, not quoted text).
+func dialogChoice(lines []string, yes, no []string) (yesRow, cursorRow int, live bool) {
+	yesRow, cursorRow = -1, -1
+	noSeen := false
+	for i, line := range lines {
+		text, cursor := optionText(line)
+		isYes, isNo := containsString(yes, text), containsString(no, text)
+		if !isYes && !isNo {
+			continue
+		}
+		if isYes {
+			yesRow = i
+		} else {
+			noSeen = true
+		}
+		if cursor {
+			cursorRow = i
+		}
+	}
+	return yesRow, cursorRow, yesRow >= 0 && noSeen && cursorRow >= 0
 }
 
 // flattenPane joins the pane's lines with single spaces, frame characters
@@ -137,8 +210,17 @@ func flattenPane(lines []string) string {
 }
 
 // openMenuLine returns a line that marks an open picker or dialog, or "".
+//
+// Claude draws a picker or dialog in place of its composer. When the
+// composer frame is on screen, the lines inside it are the user's draft
+// ("❯ 1. fix the bug" is not a menu) and the lines above it are history, so
+// only the footer below it is read.
 func openMenuLine(lines []string) string {
-	for i := len(lines) - 1; i >= 0; i-- {
+	from := 0
+	if top, bottom := send.ComposerBounds(lines); top >= 0 {
+		from = bottom + 1
+	}
+	for i := len(lines) - 1; i >= from; i-- {
 		line := strings.TrimSpace(lines[i])
 		if settleMenuCursor.MatchString(lines[i]) {
 			return strings.Trim(line, settleBoxChars)
@@ -520,7 +602,23 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			}
 		case SettlePaneStarting:
 			readySeen = 0
-		case SettlePaneTrustOwn, SettlePaneTheme, SettlePaneOnboarding:
+		case SettlePaneTrustOwn:
+			readySeen = 0
+			if answered[pane.State] >= 2 {
+				report.StoppedAt = string(pane.State) + " keeps returning"
+				return ErrSettleStopped
+			}
+			answered[pane.State]++
+			deps.Log("answering %s (%s)", pane.State, pane.Detail)
+			if err := selectDialogYes(deps, settleTrustYes, settleNoExit); err != nil {
+				report.StoppedAt = "folder trust: " + err.Error()
+				return ErrSettleStopped
+			}
+			report.Answered = appendOnce(report.Answered, string(pane.State))
+			deps.Sleep(time.Second)
+		case SettlePaneTheme, SettlePaneOnboarding:
+			// Any theme is acceptable and the notes only continue, so
+			// Enter on the highlighted row is the answer.
 			readySeen = 0
 			if answered[pane.State] >= 2 {
 				report.StoppedAt = string(pane.State) + " keeps returning"
@@ -557,23 +655,38 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 	return nil
 }
 
-// answerBypass moves the cursor to "Yes, I accept", confirms it is there,
-// and only then presses Enter.
+// answerBypass accepts the bypass warning the same way as folder trust.
 func answerBypass(deps SettleDeps, opts SettleOptions) error {
-	if err := deps.SendKey("Down"); err != nil {
-		return err
-	}
-	deps.Sleep(300 * time.Millisecond)
-	raw, err := deps.Capture()
-	if err != nil {
-		return err
-	}
-	for _, line := range strings.Split(tmux.StripANSI(raw), "\n") {
-		if settleBypassAccept.MatchString(line) {
+	return selectDialogYes(deps, settleBypassYes, settleNoExit)
+}
+
+// selectDialogYes moves the cursor onto the Yes row with arrow keys,
+// re-reading the pane after each move, and presses Enter only once the
+// cursor is seen on it. It never presses Enter on another row.
+func selectDialogYes(deps SettleDeps, yes, no []string) error {
+	for moves := 0; moves <= 3; moves++ {
+		raw, err := deps.Capture()
+		if err != nil {
+			return err
+		}
+		lines := liveDialogRegion(strings.Split(tmux.StripANSI(raw), "\n"))
+		yesRow, cursorRow, live := dialogChoice(lines, yes, no)
+		if !live {
+			return fmt.Errorf("dialog rows not found (cursor or %q missing)", yes[0])
+		}
+		if cursorRow == yesRow {
 			return deps.SendKey("Enter")
 		}
+		key := "Down"
+		if yesRow < cursorRow {
+			key = "Up"
+		}
+		if err := deps.SendKey(key); err != nil {
+			return err
+		}
+		deps.Sleep(300 * time.Millisecond)
 	}
-	return fmt.Errorf("bypass dialog cursor not on \"Yes, I accept\" after Down")
+	return fmt.Errorf("cursor did not reach %q", yes[0])
 }
 
 func appendOnce(list []string, v string) []string {
