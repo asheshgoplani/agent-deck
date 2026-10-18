@@ -196,7 +196,7 @@ func discoverTalkbackTargets(remote string) ([]remoteTalkbackTarget, error) {
 			return nil, err
 		}
 		for _, inst := range instances {
-			if isConductorSessionTitle(inst.Title) && talkbackEnrolled(remote, inst.ID) {
+			if isConductorSession(inst) && talkbackEnrolled(remote, inst.ID) {
 				out = append(out, remoteTalkbackTarget{Parent: inst, Profile: profile})
 			}
 		}

@@ -49,17 +49,17 @@ func handleConductorHeartbeatTick(profile string, args []string) {
 		RulesPath:  *rules,
 		RulesStamp: session.HeartbeatRulesStamp(*rules),
 	}
-	conductorTitle := session.ConductorSessionTitle(name)
+	conductorInst := session.FindConductorInstance(instances, name)
 	prev := session.LoadHeartbeatTickState(name)
 	for _, inst := range instances {
-		if inst.Title == conductorTitle {
+		if conductorInst != nil && inst == conductorInst {
 			n, digest, err := session.InboxSnapshot(inst.ID)
 			in.InboxPending = n
 			in.InboxDigest = digest
 			in.InboxError = in.InboxError || err != nil
 			continue
 		}
-		if strings.HasPrefix(inst.Title, "conductor-") ||
+		if inst.ResolveConductorName() != "" ||
 			(inst.GroupPath != name && !strings.HasPrefix(inst.GroupPath, name+"/")) {
 			continue
 		}

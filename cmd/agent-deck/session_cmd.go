@@ -236,7 +236,7 @@ func printSessionHelp() {
 	fmt.Println("  path               Project path")
 	fmt.Println("  command            Command to run")
 	fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
-	fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
+	fmt.Println("  wrapper            Wrapper command (use {command} to include tool command; an unquoted {command} after a prefix gets a compound command (&&, ;, |, export ...) as one bash -c argv, so for remote use --ssh or quote {command})")
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
 	fmt.Println("  favorite           Favourite flag: true or false (favorite in list/show --json)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
@@ -590,11 +590,14 @@ func handleSessionArchive(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	expectedVersion := fs.String("expected-content-version", "", "Archive only a waiting child with this exact transcript version (requires --expected-parent)")
+	expectedParent := fs.String("expected-parent", "", "Archive only if the session has this parent (requires --expected-content-version)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session archive <id|title> [options]")
 		fmt.Println()
 		fmt.Println("Stop a session and hide it from active lists (retained in storage).")
+		fmt.Println("For conditional archival, provide both --expected-parent and --expected-content-version.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -639,6 +642,37 @@ func handleSessionArchive(profile string, args []string) {
 		out.Error(fmt.Sprintf("session '%s' is already archived", inst.Title), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
+	if conditionalArchiveRequested(fs) {
+		adoptLiveCodexIdentity(storage, inst)
+		lockedCodexID := inst.CodexSessionID
+		if session.IsCodexCompatible(inst.Tool) {
+			lock, err := session.AcquireCodexAcceptanceLock(lockedCodexID, codexAcceptanceLockTimeout)
+			if err != nil {
+				out.Error(fmt.Sprintf("cannot lock archive guard: %v", err), ErrCodeInvalidOperation)
+				exitCLI(1)
+			}
+			defer lock.Release()
+		} else if session.IsClaudeCompatible(inst.Tool) {
+			lock, err := session.AcquireSendLock(inst.ID, session.SendTargetLockWait)
+			if err != nil {
+				out.Error(fmt.Sprintf("cannot lock archive guard: %v", err), ErrCodeInvalidOperation)
+				exitCLI(1)
+			}
+			defer lock.Release()
+		}
+		if err := inst.UpdateStatus(); err != nil {
+			out.Error(fmt.Sprintf("cannot refresh archive guard: %v", err), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		if session.IsCodexCompatible(inst.Tool) && inst.CodexSessionID != lockedCodexID {
+			out.Error("conditional archive refused: Codex identity changed while locked", ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		if err := validateConditionalArchive(inst, instances, *expectedParent, *expectedVersion); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+	}
 
 	// Only kill a live tmux session. Killing an already-dead session returns a
 	// fatal error that would abort the archive (see idempotent-Kill history),
@@ -665,7 +699,7 @@ func handleSessionArchive(profile string, args []string) {
 		killed = true
 	}
 
-	inst.ArchivedAt = time.Now().UTC()
+	inst.SetArchivedAtThreadSafe(time.Now().UTC())
 	if err := persistArchivedCLI(storage, inst, killed); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -677,6 +711,57 @@ func handleSessionArchive(profile string, args []string) {
 		"title":    inst.Title,
 		"archived": true,
 	})
+}
+
+// conditionalArchiveRequested reports whether either guard flag was passed,
+// even with an empty value. An explicitly empty guard (for example an unset
+// shell variable) must reach validateConditionalArchive and be refused rather
+// than silently falling back to an unconditional archive.
+func conditionalArchiveRequested(fs *flag.FlagSet) bool {
+	requested := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "expected-content-version" || f.Name == "expected-parent" {
+			requested = true
+		}
+	})
+	return requested
+}
+
+func validateConditionalArchive(inst *session.Instance, peers []*session.Instance, parent, version string) error {
+	if parent == "" || version == "" || inst.ParentSessionID != parent {
+		return fmt.Errorf("conditional archive requires matching parent and transcript version")
+	}
+	if !session.IsCodexCompatible(inst.Tool) && !session.IsClaudeCompatible(inst.Tool) {
+		return fmt.Errorf("conditional archive supports only Codex and Claude terminal-turn fences")
+	}
+	if inst.Status != session.StatusWaiting {
+		return fmt.Errorf("conditional archive requires a waiting terminal worker")
+	}
+	currentVersion := inst.ResponseContentVersion(peers)
+	if currentVersion == "" || currentVersion != version {
+		return fmt.Errorf("conditional archive refused: transcript changed or exact version unavailable")
+	}
+	if session.IsCodexCompatible(inst.Tool) {
+		response, versioned, err := inst.GetLastResponseAtVersion(peers, currentVersion)
+		latestTurn, turnErr := inst.LatestCodexTurnGeneration()
+		if err != nil || turnErr != nil || !versioned || latestTurn == "" ||
+			response.CodexTurnGeneration != latestTurn {
+			return fmt.Errorf("conditional archive refused: latest Codex turn is not the completed response")
+		}
+		if _, err := session.ReconcileCodexSubmissionMarker(inst.ID, inst.CodexSessionID, latestTurn); err != nil {
+			return fmt.Errorf("conditional archive refused: %w", err)
+		}
+	} else if session.IsClaudeCompatible(inst.Tool) {
+		path, err := inst.GetJSONLPathChecked(peers)
+		if err != nil {
+			return fmt.Errorf("conditional archive refused: cannot resolve exact Claude transcript: %w", err)
+		}
+		_, found, pending := session.ScanTranscriptTailForDone(path)
+		if !found || pending {
+			return fmt.Errorf("conditional archive refused: latest Claude turn has no flushed terminal report")
+		}
+	}
+	return nil
 }
 
 // handleSessionUnarchive clears the archive flag without restarting tmux.
@@ -735,7 +820,7 @@ func handleSessionUnarchive(profile string, args []string) {
 	}
 
 	// unarchive never kills tmux, so there is no post-kill status to persist.
-	inst.ArchivedAt = time.Time{}
+	inst.SetArchivedAtThreadSafe(time.Time{})
 	if err := persistArchivedCLI(storage, inst, false); err != nil {
 		out.Error(fmt.Sprintf("failed to persist unarchive: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -772,7 +857,7 @@ func persistArchivedCLI(storage *session.Storage, inst *session.Instance, persis
 			return err
 		}
 	}
-	return db.SetArchived(inst.ID, inst.ArchivedAt)
+	return db.SetArchived(inst.ID, inst.ArchivedAtThreadSafe())
 }
 
 // drainGroupQueue starts the oldest queued instance in groupPath when a slot
@@ -1998,6 +2083,10 @@ func handleSessionShow(profile string, args []string) {
 	if inst.Favorite {
 		jsonData["favorite"] = true
 	}
+	// Omitted when none or expired (see session.IntendedSwitch).
+	if rec := inst.ActiveIntendedSwitchJSON(time.Now()); rec != nil {
+		jsonData["intended_switch"] = rec
+	}
 
 	// macapp-core-needs §3: the live native transcript and every native id
 	// seen for this session (Codex re-creates its rollout after the trust
@@ -2090,9 +2179,19 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 
+	// A conductor whose channel plugin has no state (typically right after an
+	// account switch) never starts its bot; say so loudly.
+	channelWarnings := inst.ChannelStateWarnings()
+	if len(channelWarnings) > 0 {
+		jsonData["channel_warnings"] = channelWarnings
+	}
+
 	// Build human-readable output
 	var sb strings.Builder
 
+	for _, w := range channelWarnings {
+		sb.WriteString(fmt.Sprintf("⚠  WARNING: %s\n", w))
+	}
 	sb.WriteString(fmt.Sprintf("Session: %s\n", inst.Title))
 	sb.WriteString(fmt.Sprintf("Profile: %s\n", profile))
 	sb.WriteString(fmt.Sprintf("ID:      %s\n", inst.ID))
@@ -2223,6 +2322,8 @@ func handleSessionSet(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	intendedReason := fs.String("intended", "", "Mark this account/model switch as intended, with a reason (account and model only)")
+	intendedFor := fs.Duration("intended-for", session.DefaultIntendedSwitchTTL, "How long the --intended mark lasts (max 168h)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session set <id|title> <field> <value> [options]")
@@ -2234,7 +2335,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  path               Project path")
 		fmt.Println("  command            Command to run")
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
-		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
+		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command; an unquoted {command} after a prefix gets a compound command (&&, ;, |, export ...) as one bash -c argv, so for remote use --ssh or quote {command})")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
 		fmt.Printf("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in %s\n", effectiveUserConfigPathForHelp())
 		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
@@ -2249,6 +2350,14 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  context-level      Harness context-level override: none, primer, or full (#2260; empty clears; global < group < session; see `session primer`); restart required")
 		fmt.Println("  prompt-suggestions Claude prompt suggestions: children-off (off when the session has a parent), on, or off (empty clears; session > profile > [launch]); restart required")
 		fmt.Println("  order              0-based position in the group (see `session show --json` .order); clamps to the end")
+		fmt.Println("  intended-switch    Mark the CURRENT account+model as switched on purpose (value = reason; 24h); '' clears")
+		fmt.Println()
+		fmt.Println("Intended switches:")
+		fmt.Println("  `account`/`model` with --intended \"<reason>\" record the switch as intended until --intended-for")
+		fmt.Println("  elapses; a later account/model set without --intended clears the record. list --json and")
+		fmt.Println("  session show --json report it as intended_switch {account, model, reason, at, expires_at}")
+		fmt.Println("  while unexpired. Guard contract: a switch is intended when the session's current account")
+		fmt.Println("  and model equal intended_switch's and now < expires_at.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -2263,6 +2372,9 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  agent-deck session set my-project color \"\"              # clear (opt-out)")
 		fmt.Println("  agent-deck session set my-project context-level primer")
 		fmt.Println("  agent-deck session set my-project context-level \"\"       # clear (inherit group/global)")
+		fmt.Println("  agent-deck session set my-project account work --intended \"acme blocked\" --intended-for 48h")
+		fmt.Println("  agent-deck session set my-project model opus --intended \"Fable weekly cap\"")
+		fmt.Println("  agent-deck session set my-project intended-switch \"switched in the TUI\"")
 	}
 
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
@@ -2284,6 +2396,36 @@ func handleSessionSet(profile string, args []string) {
 	extraArgTokens := fs.Args()[2:]
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	// --intended / --intended-for are validated before anything is loaded so
+	// a rejected call changes nothing.
+	intendedSet, intendedForSet := false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "intended":
+			intendedSet = true
+		case "intended-for":
+			intendedForSet = true
+		}
+	})
+	reason := strings.TrimSpace(*intendedReason)
+	if intendedSet || intendedForSet {
+		switch {
+		case field != session.FieldAccount && field != session.FieldModel:
+			out.Error(fmt.Sprintf("--intended and --intended-for apply only to the account and model fields (got %q)", field), ErrCodeInvalidOperation)
+			exitCLI(1)
+		case !intendedSet:
+			out.Error("--intended-for requires --intended \"<reason>\"", ErrCodeInvalidOperation)
+			exitCLI(1)
+		case reason == "":
+			out.Error("--intended needs a non-empty reason", ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		if err := session.ValidateIntendedSwitchTTL(*intendedFor); err != nil {
+			out.Error("invalid --intended-for: "+err.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+	}
 
 	// Load sessions
 	storage, instances, groupsData, err := loadSessionData(profile)
@@ -2336,6 +2478,14 @@ func handleSessionSet(profile string, args []string) {
 			exitCLI(1)
 		}
 	}
+	// #2683: an archived record holding this Claude id wins the duplicate-id
+	// guard on save, so the set would print success and then revert.
+	if field == session.FieldClaudeSessionID {
+		if msg, code := checkArchivedClaudeIDConflict(instances, inst, value); msg != "" {
+			out.Error(msg, code)
+			exitCLI(1)
+		}
+	}
 
 	// "order" needs the group tree, which SetField (instance-only by
 	// contract) cannot see, so it is handled here like set-parent is.
@@ -2380,6 +2530,11 @@ func handleSessionSet(profile string, args []string) {
 		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
 	}
+	// SetField cleared any earlier intent for an account/model change; record
+	// the new one against the resulting account and model.
+	if intendedSet {
+		inst.MarkIntendedSwitch(reason, *intendedFor, time.Now())
+	}
 	// #1706: SetField canonicalizes a project path (expand + absolutize), so
 	// report what was actually stored rather than the raw argument.
 	if field == session.FieldPath {
@@ -2413,6 +2568,10 @@ func handleSessionSet(profile string, args []string) {
 		} else if migrated != "" && !quietMode && !*jsonOutput {
 			fmt.Printf("Conversation migrated to %s\n", migrated)
 		}
+		// A conductor's channel plugin state follows it (link or point only).
+		for _, note := range session.CarryConductorChannelState(inst, preAccountConfigDir, targetDir) {
+			fmt.Fprintf(os.Stderr, "Note: %s\n", note)
+		}
 	}
 
 	// Save
@@ -2423,14 +2582,18 @@ func handleSessionSet(profile string, args []string) {
 	}
 
 	// Output success
-	out.Success(fmt.Sprintf("Updated %s: %q -> %q", field, oldValue, value), map[string]interface{}{
+	result := map[string]interface{}{
 		"success":   true,
 		"id":        inst.ID,
 		"title":     inst.Title,
 		"field":     field,
 		"old_value": oldValue,
 		"new_value": value,
-	})
+	}
+	if rec := inst.ActiveIntendedSwitchJSON(time.Now()); rec != nil {
+		result["intended_switch"] = rec
+	}
+	out.Success(fmt.Sprintf("Updated %s: %q -> %q", field, oldValue, value), result)
 
 	maybeEmitSessionSetTelegramWarnings(os.Stderr, session.GetClaudeConfigDirForGroup(inst.GroupPath), inst, field)
 }
@@ -2461,6 +2624,7 @@ func loadSessionData(profile string) (*session.Storage, []*session.Instance, []*
 
 	instances, groupsData, err := storage.LoadWithGroups()
 	if err != nil {
+		_ = storage.Close()
 		return nil, nil, nil, fmt.Errorf("failed to load sessions: %w", err)
 	}
 
@@ -4109,8 +4273,8 @@ func shouldSkipConductorHeartbeatSend(inst *session.Instance, message string) bo
 	if inst == nil || !session.IsConductorHeartbeatMessage(message) {
 		return false
 	}
-	name := strings.TrimPrefix(inst.Title, session.ConductorSessionTitlePrefix)
-	if name == inst.Title || name == "" {
+	name := inst.ResolveConductorName()
+	if name == "" {
 		return false
 	}
 	meta, err := session.LoadConductorMeta(name)

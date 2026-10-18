@@ -86,6 +86,7 @@ func usageStatusline(profile string, args []string, out, diagnostic io.Writer) i
 		defer storage.Close()
 		record, readErr := storage.GetDB().ClaudeStatuslineForSession(*target)
 		if readErr == nil {
+			record.RateLimits.MarkExpired(time.Now())
 			if json.NewEncoder(out).Encode(record) == nil {
 				return 0
 			}

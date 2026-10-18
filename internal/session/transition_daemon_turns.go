@@ -121,7 +121,7 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		return dropSelfConductorTurn(event, observedFlip || !repeat), true
 	}
 
-	cfg := ResolveInboxConfig(parentTitleFor(inst, byID))
+	cfg := ResolveInboxConfigForInstance(parentInstanceFor(inst, byID))
 	if !cfg.GetQuestionWakes() {
 		facts.Question = false
 	}
@@ -331,14 +331,11 @@ func (d *TransitionDaemon) rememberDone(profile, childID string, sig DoneSignal)
 	d.lastDone[profile][childID] = sig
 }
 
-// parentTitleFor resolves the registered parent's title for config
-// overrides, or "" when the parent is not in this pass's registry.
-func parentTitleFor(inst *Instance, byID map[string]*Instance) string {
+// parentInstanceFor resolves the registered parent for config overrides, or
+// nil when the parent is not in this pass's registry.
+func parentInstanceFor(inst *Instance, byID map[string]*Instance) *Instance {
 	if inst == nil || inst.ParentSessionID == "" || byID == nil {
-		return ""
+		return nil
 	}
-	if p := byID[inst.ParentSessionID]; p != nil {
-		return p.Title
-	}
-	return ""
+	return byID[inst.ParentSessionID]
 }

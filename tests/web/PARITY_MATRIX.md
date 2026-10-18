@@ -17,8 +17,10 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Action | TUI Trigger | Web Endpoint | Mutator Method | Test | Notes |
 |--------|-------------|--------------|-----------------|------|-------|
 | **SESSION LIFECYCLE** |
-| Create session | `internal/ui/home.go:6179` (`n` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go` | NewDialog spawns, initiates session creation |
+| Create session | `internal/ui/home.go:6179` (`n` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go`, `handlers_session_directory_test.go` | NewDialog spawns, initiates session creation. `createDir` defaults to false; true creates missing directories and parents before creating the session. Optional `createDirPaths` lists approved absolute directories; when supplied, any missing directory absent from the list returns 409 and requires renewed consent. Creation errors prevent session creation. |
+| Preview missing session directories | `internal/ui/confirm_dialog.go` (`ShowCreateDirectory` confirmation); CLI `add`/`launch --create-dir` | GET `/api/session-directory` | N/A (read-only filesystem preview) | `handlers_session_directory_test.go`, `tests/web/e2e/parity-actions.spec.js` | Query `path`; returns the expanded absolute `path` and every missing parent in creation order. Creates nothing; the web dialog uses this preview for explicit opt-in, matching TUI confirmation and the CLI flag. |
 | Quick create session | `internal/ui/home.go:6286` (`N` key) | POST `/api/sessions` | `CreateSession` | `handlers_sessions_test.go` | Auto-generated name, smart group context |
+| Complete working directory | `internal/ui/newdialog.go` (new-session dialog, `GetDirectoryCompletions`) | GET `/api/path-suggestions` | `session.GetDirectoryCompletions` (read-only) | `handlers_paths_test.go`, `tests/web/e2e/parity-actions.spec.js`, `tests/web/e2e/path-suggestions.spec.js` | Typed-prefix directory completion shared with the TUI; capped results, tilde expansion, hidden-directory filtering |
 | Start session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/start` | `StartSession` | `handlers_sessions_test.go` | Resumes stopped/idle session |
 | Stop session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/stop` | `StopSession` | `handlers_sessions_test.go` | Kills running tmux session |
 | Restart session | `internal/ui/home.go:6473` (`R` key) | POST `/api/sessions/{id}/restart` | `RestartSession` | `handlers_sessions_test.go` | Recreate tmux with resume |
@@ -103,6 +105,7 @@ Every observable session field shown in the TUI must appear in the web API JSON 
 | **RELATIONSHIPS** |
 | `parent_session_id` | Sub-session indicator | `MenuSession.parentSessionId` + `GET /api/sessions/{id}/children` | ✅ Present; tree endpoint surfaces full conductor child topology in the right-rail Children card (`internal/web/handlers_children.go`, `tests/web/e2e/children-panel.spec.js`) |
 | `is_conductor` | (Not shown in TUI) | `MenuSession.isConductor` | ✅ Present; conductor metadata. Tree topology also surfaced at `GET /api/sessions/{id}/children` (kind derived UI-side from title/groupPath in `dataModel.js`) |
+| `conductor_name` | Conducting-parent picker (new/fork dialog) | `MenuSession.conductorName` | ✅ Present; resolved conductor name (`Instance.ResolveConductorName`), stable across a decorated or renamed title. Empty for non-conductor sessions |
 | **PROCESS STATE** |
 | `tmux_session` | Internal reference | `MenuSession.tmuxSession` | ✅ Present (tmux session name) |
 | `tmux_socket_name` | (Internal) | `MenuSession.tmuxSocketName` | ✅ Present; issue #687 |

@@ -115,6 +115,11 @@ func TestIsEmptyTmuxServerResult_ClassifiesOnlyExpectedTmuxErrors(t *testing.T) 
 	}{
 		{name: "no server", stderr: "no server running on /tmp/tmux.sock", want: true},
 		{name: "no sessions", stderr: "no sessions", want: true},
+		// tmux 3.x prints this when the socket file is missing. That is also
+		// what a live server with an unlinked socket looks like, so it must
+		// stay unknown, never empty (TestForeignTmuxServer_Unlistable...).
+		{name: "missing socket", stderr: "error connecting to /tmp/tmux.sock (No such file or directory)", want: false},
+		{name: "permission failure", stderr: "error connecting to /tmp/no server running/socket (Permission denied)", want: false},
 		{name: "unexpected failure", stderr: "permission denied", want: false},
 	}
 

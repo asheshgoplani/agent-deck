@@ -77,6 +77,11 @@ type HarnessSwitchResult struct {
 	nativeTarget                 switchIdentity
 	nativeJournalPath            string
 	nativeStorageAcknowledgement bool
+	// nativeRevert marks the storage CAS that undoes a committed switch whose
+	// target failed to start; nativeRevertLimit is the verdict-reset and
+	// intent state the forward commit replaced, written back with it.
+	nativeRevert      bool
+	nativeRevertLimit limitSwitchState
 }
 
 var ErrSwitchBusy = errors.New("session switch already in progress")
@@ -481,7 +486,11 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 	if trustErr := PreAcceptClaudeTrust(filepath.Join(targetDir, ".claude.json"), inst.EffectiveWorkingDir()); trustErr != nil {
 		j.Failure = "folder trust pre-seed: " + trustErr.Error()
 	}
+	// A conductor's channel plugin state (bot token) must follow it to the new
+	// account before the target starts; link or point only, never copy.
+	warnings = append(warnings, carryConductorChannelState(inst, sourceDir, targetDir)...)
 	oldAccount := inst.Account
+	prevLimit := captureLimitSwitchState(inst)
 	storageAcknowledged, err := commitNativeSwitchAccount(journalPath, j, inst, preview.TargetAccount, wasRunning, opts.Storage)
 	if err != nil {
 		return nil, err
@@ -506,7 +515,7 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 		if err := startNativeSwitchInstance(inst); err != nil {
 			result.Committed = false
 			inst.Account = oldAccount
-			if restoreErr := revertNativeSwitchStorage(opts.Storage, inst, storageAcknowledged, j.Target, j.Source); restoreErr != nil {
+			if restoreErr := revertNativeSwitchStorage(opts.Storage, inst, storageAcknowledged, j.Target, j.Source, prevLimit); restoreErr != nil {
 				j.Failure = fmt.Sprintf("target start failed: %v; persisted account restore failed: %v", err, restoreErr)
 			} else if restartErr := startNativeSwitchInstance(inst); restartErr != nil {
 				j.Failure = fmt.Sprintf("target start failed: %v; source rollback failed: %v", err, restartErr)
@@ -647,6 +656,7 @@ func executeNativeCodexSwitch(cfg *UserConfig, inst *Instance, preview *SwitchPr
 	}
 	oldAccount := inst.Account
 	oldIdentity := identityForInstance(inst)
+	prevLimit := captureLimitSwitchState(inst)
 	storageAcknowledged, err := commitNativeSwitchAccount(journalPath, j, inst, preview.TargetAccount, wasRunning, opts.Storage)
 	if err != nil {
 		return nil, err
@@ -658,7 +668,7 @@ func executeNativeCodexSwitch(cfg *UserConfig, inst *Instance, preview *SwitchPr
 		if err := startNativeSwitchInstance(inst); err != nil {
 			result.Committed = false
 			restoreSwitchIdentity(inst, oldIdentity, oldIdentity.Command)
-			storageErr := revertNativeSwitchStorage(opts.Storage, inst, storageAcknowledged, j.Target, j.Source)
+			storageErr := revertNativeSwitchStorage(opts.Storage, inst, storageAcknowledged, j.Target, j.Source, prevLimit)
 			var rollbackErr error
 			if storageErr == nil {
 				rollbackErr = startNativeSwitchInstance(inst)
@@ -877,11 +887,11 @@ func commitNativeSwitchAccount(path string, j *switchJournal, inst *Instance, ac
 // identity restored by the caller never diverges from what storage durably
 // holds. It is a no-op when storage was never written (storageAcknowledged is
 // false, e.g. Storage was nil).
-func revertNativeSwitchStorage(storage *Storage, inst *Instance, storageAcknowledged bool, committed, restored switchIdentity) error {
+func revertNativeSwitchStorage(storage *Storage, inst *Instance, storageAcknowledged bool, committed, restored switchIdentity, prevLimit limitSwitchState) error {
 	if !storageAcknowledged || storage == nil {
 		return nil
 	}
-	stub := nativeHarnessSwitchResult(&HarnessSwitchResult{Committed: true}, committed, restored)
+	stub := nativeHarnessSwitchResult(&HarnessSwitchResult{Committed: true, nativeRevert: true, nativeRevertLimit: prevLimit}, committed, restored)
 	return storage.CommitNativeHarnessSwitch(inst, stub)
 }
 

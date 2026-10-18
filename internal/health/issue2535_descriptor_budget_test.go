@@ -94,7 +94,7 @@ func TestIssue2535_SustainedBreachWarnsWithGuidance(t *testing.T) {
 	stop := Start(t.TempDir(), "tui", t.TempDir(), "test")
 	defer stop()
 	got := waitForWarning(t)
-	want := "Health: 700 open descriptors exceed the budget of 672; run agent-deck health for details"
+	want := "Health: 700 open descriptors exceed the budget of 672 (advisory); run agent-deck health for causes and fixes"
 	if got != want {
 		t.Fatalf("warning = %q, want %q", got, want)
 	}

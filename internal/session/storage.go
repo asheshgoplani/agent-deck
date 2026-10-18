@@ -47,6 +47,9 @@ type InstanceData struct {
 	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
 	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
 	TitleLocked        bool   `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
+	// ConductorName mirrors Instance.ConductorName, the stable conductor key.
+	// Lives in the tool_data extras zone (conductor_identity.go).
+	ConductorName string `json:"conductor_name,omitempty"`
 	// SubcommandPassthrough mirrors Instance.SubcommandPassthrough (#1821).
 	// Persisted via the tool_data extras zone (see
 	// WriteSubcommandPassthroughToToolData), not a dedicated SQL column, so
@@ -194,10 +197,22 @@ type InstanceData struct {
 	// zone, prompt_suggestions.go).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 
+	// IntendedSwitch mirrors Instance.IntendedSwitch (tool_data extras zone,
+	// intended_switch.go).
+	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
+
+	// LimitVerdictResetAt mirrors Instance.LimitVerdictResetAt (tool_data
+	// extras zone, limit_verdict_reset.go).
+	LimitVerdictResetAt time.Time `json:"limit_verdict_reset_at,omitempty"`
+
 	// DeepSeekTask mirrors Instance.DeepSeekTask (PR #1942 review, P1c).
 	// Persisted via the tool_data extras zone (see deepseek_task_persist.go).
 	// Empty for every profile but headless.
 	DeepSeekTask string `json:"deepseek_task,omitempty"`
+
+	// HermesSessionID mirrors Instance.HermesSessionID (issue #2582), stored in
+	// the tool_data extras zone (hermes_session_persist.go).
+	HermesSessionID string `json:"hermes_session_id,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -504,6 +519,24 @@ func (s *Storage) CommitNativeHarnessSwitch(inst *Instance, result *HarnessSwitc
 
 	source := nativeSwitchStorageIdentity(result.nativeSource)
 	target := nativeSwitchStorageIdentity(result.nativeTarget)
+	// A move of the conversation to another account or harness resets the
+	// transcript limit verdict in the same CAS (the moved transcript still
+	// ends in the old account's rejection); a rollback restores what the
+	// move replaced. An acknowledgement writes nothing.
+	var limitState *limitSwitchState
+	if !result.nativeStorageAcknowledgement {
+		switch {
+		case result.nativeRevert:
+			st := result.nativeRevertLimit
+			limitState = &st
+		case source.Account != target.Account || source.Tool != target.Tool:
+			st := limitSwitchStateAfterMove(captureLimitSwitchState(inst), target.Account, time.Now())
+			limitState = &st
+		}
+	}
+	if limitState != nil {
+		target.ToolDataExtras = limitSwitchToolData(*limitState)
+	}
 	var (
 		committed *statedb.InstanceRow
 		err       error
@@ -524,6 +557,9 @@ func (s *Storage) CommitNativeHarnessSwitch(inst *Instance, result *HarnessSwitc
 	// is replayed merely to repair storage.
 	inst.Tool, inst.Account = result.nativeTarget.Tool, result.nativeTarget.Account
 	inst.ClaudeSessionID, inst.CodexSessionID = result.nativeTarget.ClaudeID, result.nativeTarget.CodexID
+	if limitState != nil {
+		inst.applyLimitSwitchState(*limitState)
+	}
 	desired, err := instanceToRow(inst)
 	if err != nil {
 		return err
@@ -1091,10 +1127,15 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// Identity-injection opt-out lives in the same extras zone so a restart
 	// from any process honours `--no-identity`.
 	toolData = WriteIdentityInjectionDisabledToToolData(toolData, inst.IdentityInjectionDisabled)
+	// Stable conductor identity (conductor_identity.go). Never cleared, so an
+	// empty value leaves the stored key to MergeToolDataExtras.
+	toolData = WriteConductorNameToToolData(toolData, inst.storedConductorName())
 	// #2260: the per-session context-level override lives in the same extras
 	// zone so a restart from any process honours `session set ... context-level`.
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
 	toolData = WritePromptSuggestionsToToolData(toolData, inst.PromptSuggestions)
+	toolData = WriteIntendedSwitchToToolData(toolData, inst.IntendedSwitch)
+	toolData = WriteLimitVerdictResetToToolData(toolData, inst.LimitVerdictResetAt)
 	// #1815: the resume-identity taint travels with the id it describes, so a
 	// writer that saves a discovered conversation id without ever passing
 	// through the resume builder (e.g. `switch-account --no-restart`) cannot
@@ -1135,6 +1176,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// zone. For a one-shot the task IS the invocation, so a row that forgets it
 	// can only ever be "restarted" into dsh's usage error.
 	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
+	toolData = WriteHermesSessionIDToToolData(toolData, inst.HermesSessionID)
 	toolData = WriteCrossHarnessLineageToToolData(toolData, inst.SupersededBy, inst.Supersedes)
 
 	return &statedb.InstanceRow{
@@ -1161,7 +1203,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		WorktreeRepo:        inst.WorktreeRepoRoot,
 		WorktreeBranch:      inst.WorktreeBranch,
 		Account:             inst.Account,
-		ArchivedAt:          inst.ArchivedAt,
+		ArchivedAt:          inst.ArchivedAtThreadSafe(),
 		Pin:                 string(inst.Pin),
 		ToolData:            toolData,
 	}, nil
@@ -1303,8 +1345,11 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
+			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
+			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1315,6 +1360,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
+			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1444,8 +1490,11 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			SubcommandPassthrough:     ReadSubcommandPassthroughFromToolData(r.ToolData),
 			TrackCommandExit:          readTrackCommandExitFromToolData(r.ToolData),
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
+			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
+			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
 			LastStartedAt:             ReadLastStartedAtFromToolData(r.ToolData),
 			GenericSessionID:          ReadGenericSessionIDFromToolData(r.ToolData),
@@ -1456,6 +1505,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
+			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1752,11 +1802,15 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
 			Favorite:                     instData.Favorite,
 			DeepSeekTask:                 instData.DeepSeekTask,
+			HermesSessionID:              instData.HermesSessionID,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
+			ConductorName:                instData.ConductorName,
 			ContextLevel:                 instData.ContextLevel,
 			PromptSuggestions:            instData.PromptSuggestions,
+			IntendedSwitch:               instData.IntendedSwitch,
+			LimitVerdictResetAt:          instData.LimitVerdictResetAt,
 			LastStartedAt:                instData.LastStartedAt,
 			GenericSessionID:             instData.GenericSessionID,
 			GenericDetectedAt:            instData.GenericDetectedAt,

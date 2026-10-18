@@ -516,19 +516,12 @@ func GetClaudeConfigDirSourceForGroup(groupPath string) (path, source string) {
 	return resolveClaudeConfigDir(resolveOpts{groupPath: groupPath})
 }
 
-// conductorNameFromInstance extracts the conductor name from an Instance's
-// Title. Returns "" for non-conductor sessions. Mirrors the canonical pattern
-// used in env.go getConductorEnv (line 267) — single source of truth for
-// conductor name derivation from a session.
+// conductorNameFromInstance returns the conductor name of inst, or "" for
+// non-conductor sessions. Delegates to Instance.ResolveConductorName
+// (conductor_identity.go), the single source of truth: stable stored name
+// first, decorated-title fallback for old records.
 func conductorNameFromInstance(inst *Instance) string {
-	if inst == nil {
-		return ""
-	}
-	name := strings.TrimPrefix(inst.Title, "conductor-")
-	if name == "" || name == inst.Title {
-		return ""
-	}
-	return name
+	return inst.ResolveConductorName()
 }
 
 // GetClaudeConfigDirForInstance returns the Claude config directory for
@@ -539,8 +532,8 @@ func conductorNameFromInstance(inst *Instance) string {
 // Priority (most-specific → least-specific):
 //
 //  1. Instance.Account (#924) → [profiles.<account>.claude].config_dir
-//  2. [conductors.<name>.claude].config_dir — consulted only when
-//     Instance.Title starts with "conductor-"
+//  2. [conductors.<name>.claude].config_dir — consulted only when the
+//     instance resolves to a conductor (ResolveConductorName)
 //  3. [groups."<group>".claude].config_dir
 //  4. CLAUDE_CONFIG_DIR env var
 //  5. [profiles.<profile>.claude].config_dir

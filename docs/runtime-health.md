@@ -33,6 +33,14 @@ go test -tags runtimehealthperf ./internal/ui -run TestPerf_RuntimeHealth -count
 
 Run tests inside Docker as required by the repository development workflow. `PERF_BUDGET_MULTIPLIER` scales timing budgets for shared runners. Synthetic sessions exercise the local status path, not live SSH latency or production-scale filesystem histories.
 
+## Descriptor budget
+
+The descriptor budget is 512 plus 16 per session, capped at 80% of the process's soft open-file limit (`ulimit -n`). The footer warns after two consecutive samples over budget, and `agent-deck health` flags the process with `descriptor count exceeds budget` followed by a hint. The warning is advisory: nothing fails until the count reaches the open-file limit, and past it opening files, sockets and tmux pipes fails. A count that stays over budget and keeps rising while the session count stays flat is a descriptor leak in that process, not a limit to raise; the hint says so when the count rose during the report window, and says the breach is historical when only earlier samples were over budget (a breakdown taken then cannot show what held them). To act on it:
+
+1. Rerun `agent-deck health` after a while. A count that stays flat while the session count is unchanged is the steady state of a busy deck; a count that keeps growing points to a leak.
+2. See what the process holds, using the PID from the report: `lsof -p <pid> | awk 'NR>1 {print $5}' | sort | uniq -c | sort -rn`. Attach that breakdown when reporting a leak.
+3. Restarting the TUI (or `web --no-tui`, `notify-daemon`) resets the count. Raising `ulimit -n` before starting raises the cap, not the 512 + 16 per session part.
+
 ## Session metrics
 
 Next to the process samples, the transition daemon, the CLI send/restart/stop paths and the task-worker wrapper append per-session events to `logs/health/sessions-YYYYMMDD.jsonl` in the same directory (one file per UTC day, the same 1 MiB cap, backup and seven-day retention). `agent-deck session metrics <id> --json` derives turns, turn duration, waiting time, send outcomes and ack times, restarts, dead letters and worker completion time from it; `agent-deck health --json` carries the profile roll-up under `sessions`. `[health] session_events = false` stops the writers; readers then report `journal: disabled`. See the CLI reference for the field table and how to read the numbers.

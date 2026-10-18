@@ -59,6 +59,10 @@ const (
 	FieldPromptSuggestions = "prompt-suggestions"
 	// FieldFavorite marks a session as a favourite (true/false). Live.
 	FieldFavorite = "favorite"
+	// FieldIntendedSwitch marks the session's current account+model as
+	// switched on purpose (value = reason) for DefaultIntendedSwitchTTL, for a
+	// switch made in the TUI. Empty clears. Live. See intended_switch.go.
+	FieldIntendedSwitch = "intended-switch"
 )
 
 var ValidMutableFields = []string{
@@ -88,6 +92,7 @@ var ValidMutableFields = []string{
 	FieldContextLevel,
 	FieldPromptSuggestions,
 	FieldFavorite,
+	FieldIntendedSwitch,
 }
 
 type FieldRestartPolicy int
@@ -207,7 +212,15 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldTool:
 		oldValue = inst.Tool
-		inst.Tool = value
+		if inst.Tool == "opencode" {
+			oldValue = inst.OpenCodeCommandName()
+		}
+		inst.Tool = CanonicalToolName(value)
+		if value == "opencode2" || (oldValue == "opencode2" && value == "opencode") {
+			inst.Command = value
+		} else if oldValue == "opencode2" && inst.Tool != "opencode" {
+			inst.Command = ""
+		}
 		inst.TrackCommandExit = false
 		// Leaving claude → drop encoded ClaudeOptions so a same-submit
 		// skip/auto toggle (Tool applies last) doesn't leave ghost flags
@@ -457,6 +470,15 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		// Restart required (see RestartPolicyFor) — the in-flight
 		// conversation is lost, that's the documented Option 1 tradeoff.
 		oldValue = inst.setAccountThreadSafe(candidate)
+		// A new switch is not covered by an earlier intent (the CLI re-marks
+		// it after SetField when --intended is given), and the resumed
+		// conversation still ends in the old account's rejection, which must
+		// not keep the session limited on the new one. A no-op set changes
+		// neither.
+		if oldValue != candidate {
+			inst.IntendedSwitch = nil
+			inst.resetLimitVerdict(time.Now())
+		}
 
 	case FieldIdleTimeout:
 		// #1143: parses a Go duration like "30m"; 0 (or "0", "") disables.
@@ -517,6 +539,22 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			}
 		} else if aerr := inst.ApplyLaunchModel(trimmed); aerr != nil {
 			return oldValue, nil, &MutationError{Field: field, Msg: aerr.Error()}
+		}
+		// Same as FieldAccount: a real change drops the old intent and
+		// resets the transcript limit verdict; a no-op set does neither.
+		if inst.LaunchModelID() != oldValue {
+			inst.IntendedSwitch = nil
+			inst.resetLimitVerdict(time.Now())
+		}
+
+	case FieldIntendedSwitch:
+		if inst.IntendedSwitch != nil {
+			oldValue = inst.IntendedSwitch.Reason
+		}
+		if reason := strings.TrimSpace(value); reason == "" {
+			inst.IntendedSwitch = nil
+		} else {
+			inst.MarkIntendedSwitch(reason, DefaultIntendedSwitchTTL, time.Now())
 		}
 
 	case FieldFavorite:

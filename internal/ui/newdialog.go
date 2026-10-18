@@ -409,7 +409,7 @@ func displayCommandPreset(cmd string) string {
 // flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
 // before.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
+	presets := []string{"", "claude", "gemini", "opencode", "opencode2", "codex", "pi", "copilot", "crush", "muse", "cursor", "hermes", "deepseek", "omp"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -3292,7 +3292,7 @@ func (d *NewDialog) View() string {
 		items := make([]conductorItem, 0, len(d.conductorSessions)+1)
 		items = append(items, conductorItem{label: "None", idx: 0})
 		for i, inst := range d.conductorSessions {
-			name := strings.TrimPrefix(inst.Title, "conductor-")
+			name := conductorDisplayName(inst)
 			shortPath := inst.ProjectPath
 			if home, err := os.UserHomeDir(); err == nil {
 				shortPath = strings.Replace(shortPath, home, "~", 1)

@@ -243,8 +243,8 @@ func readConductorTelegramStateDir(inst *session.Instance) string {
 	if inst == nil {
 		return ""
 	}
-	name := strings.TrimPrefix(inst.Title, "conductor-")
-	if name == "" || name == inst.Title {
+	name := inst.ResolveConductorName()
+	if name == "" {
 		return ""
 	}
 	cfg, err := session.LoadUserConfig()

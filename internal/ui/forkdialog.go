@@ -675,7 +675,7 @@ func (d *ForkDialog) View() string {
 			conductorSection += itemStyle.Render("    None") + "\n"
 		}
 		for i, inst := range d.conductorSessions {
-			name := strings.TrimPrefix(inst.Title, "conductor-")
+			name := conductorDisplayName(inst)
 			label := name + " (" + shortPath(inst.ProjectPath) + ")"
 			if d.conductorCursor == i+1 {
 				conductorSection += selectedStyle.Render("  ▶ "+label) + "\n"
@@ -848,4 +848,15 @@ func (d *ForkDialog) focusedRow(rows []string, optionsRow int) int {
 		return optionsRow
 	}
 	return 0
+}
+
+// conductorDisplayName is the name shown for a conductor session in the
+// conductor pickers and heartbeat text: its resolved conductor name (stable
+// across a decorated or renamed title), falling back to the title for a
+// session that does not resolve to a conductor.
+func conductorDisplayName(inst *session.Instance) string {
+	if name := inst.ResolveConductorNameThreadSafe(); name != "" {
+		return name
+	}
+	return inst.GetTitleThreadSafe()
 }

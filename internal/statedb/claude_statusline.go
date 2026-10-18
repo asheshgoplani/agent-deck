@@ -44,6 +44,23 @@ type ClaudeStatuslineLimits struct {
 type ClaudeStatuslineWindow struct {
 	UsedPercentage *float64 `json:"used_percentage"`
 	ResetsAt       *int64   `json:"resets_at"`
+	// Expired is set only when a record is served (MarkExpired), never
+	// stored: the window's resets_at has passed, so its value is over.
+	Expired bool `json:"expired,omitempty"`
+}
+
+// MarkExpired flags each window whose resets_at is at or before now. The
+// stored record keeps the last values Claude reported; this marks them for
+// a reader so a stale 100% is not taken as a live limit.
+func (l *ClaudeStatuslineLimits) MarkExpired(now time.Time) {
+	if l == nil {
+		return
+	}
+	for _, w := range []*ClaudeStatuslineWindow{l.FiveHour, l.SevenDay} {
+		if w != nil {
+			w.Expired = w.ResetsAt != nil && *w.ResetsAt <= now.Unix()
+		}
+	}
 }
 
 const claudeStatuslineSchema = `CREATE TABLE IF NOT EXISTS claude_statuslines (

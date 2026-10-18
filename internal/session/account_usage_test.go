@@ -217,3 +217,33 @@ func TestCollectAccountUsage_NoSlots(t *testing.T) {
 		t.Fatalf("got %+v, want empty", got)
 	}
 }
+
+// TestAccountUsageCache_ExpiredWindowDropped pins that a window whose
+// provider-reported reset has passed no longer renders: the last statusLine
+// value (e.g. 7d 100%) belongs to a window that is over. Expiry is judged at
+// read time, so a cached entry for an unchanged file still expires.
+func TestAccountUsageCache_ExpiredWindowDropped(t *testing.T) {
+	newAccountUsageTestHome(t)
+	now := time.Now()
+	fiveReset, sevenReset := now.Add(4*time.Hour).Unix(), now.Add(10*time.Minute).Unix()
+	saveClaudeSnapshot(t, "personal", quota.Snapshot{
+		Windows: []quota.Window{
+			{Kind: quota.WindowFiveHour, Label: "5h", UsedPercentage: 30, ResetsAt: &fiveReset},
+			{Kind: quota.WindowSevenDay, Label: "7d", UsedPercentage: 100, ResetsAt: &sevenReset},
+		},
+		UpdatedAt: now.Add(-time.Minute).Unix(),
+	})
+
+	cache := NewAccountUsageCache()
+	got := cache.Get("personal", now)
+	if !got.SevenDay.Known || got.SevenDay.Percent != 100 {
+		t.Fatalf("before reset: SevenDay = %+v, want Known 100", got.SevenDay)
+	}
+	got = cache.Get("personal", now.Add(time.Hour))
+	if got.SevenDay.Known {
+		t.Fatalf("after reset: SevenDay = %+v, want the expired window dropped", got.SevenDay)
+	}
+	if !got.Known || !got.FiveHour.Known || got.FiveHour.Percent != 30 {
+		t.Fatalf("after reset: got = %+v, want the live five-hour window kept", got)
+	}
+}

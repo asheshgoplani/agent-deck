@@ -162,6 +162,12 @@ type HookStatus struct {
 	// id may bind — empty (legacy files, agents that send no cwd) means "no
 	// evidence either way" and never blocks.
 	Cwd string
+	// Platform is the agent surface the hook payload reported (Hermes
+	// extra.platform: "cli", "subagent", ...). Issue #2582: a delegate_task
+	// child runs in the parent's process with platform "subagent" and its
+	// own session id, so its events must never bind the entry's session.
+	// Empty for agents that send no platform.
+	Platform string
 }
 
 // hookGenerationForInstance resolves generation authority by instance, not by
@@ -503,6 +509,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			DoneSummary              string `json:"done_summary"`
 			TranscriptPath           string `json:"transcript_path"`
 			Cwd                      string `json:"cwd"`
+			Platform                 string `json:"platform"`
 			CodexStartedGeneration   string `json:"codex_started_generation"`
 			CodexCompletedGeneration string `json:"codex_completed_generation"`
 			CodexStartedSessionID    string `json:"codex_started_session_id"`
@@ -527,6 +534,7 @@ func (w *StatusFileWatcher) scanDirEntriesInto(out map[string]*HookStatus, dir s
 			DoneSummary:              raw.DoneSummary,
 			TranscriptPath:           raw.TranscriptPath,
 			Cwd:                      raw.Cwd,
+			Platform:                 raw.Platform,
 			CodexStartedGeneration:   raw.CodexStartedGeneration,
 			CodexCompletedGeneration: raw.CodexCompletedGeneration,
 			CodexStartedSessionID:    raw.CodexStartedSessionID,
@@ -676,6 +684,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		DoneSummary              string `json:"done_summary"`
 		TranscriptPath           string `json:"transcript_path"`
 		Cwd                      string `json:"cwd"`
+		Platform                 string `json:"platform"`
 		CodexStartedGeneration   string `json:"codex_started_generation"`
 		CodexCompletedGeneration string `json:"codex_completed_generation"`
 		CodexStartedSessionID    string `json:"codex_started_session_id"`
@@ -707,6 +716,7 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		DoneSummary:              status.DoneSummary,
 		TranscriptPath:           status.TranscriptPath,
 		Cwd:                      status.Cwd,
+		Platform:                 status.Platform,
 		CodexStartedGeneration:   status.CodexStartedGeneration,
 		CodexCompletedGeneration: status.CodexCompletedGeneration,
 		CodexStartedSessionID:    status.CodexStartedSessionID,

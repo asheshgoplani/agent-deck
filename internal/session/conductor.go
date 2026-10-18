@@ -117,6 +117,9 @@ type ConductorSettings struct {
 	// Discord defines Discord bot integration settings
 	Discord DiscordSettings `toml:"discord,omitempty"`
 
+	// Mattermost defines Mattermost bot integration settings
+	Mattermost MattermostSettings `toml:"mattermost,omitempty"`
+
 	// GitHubWatcher configures the opt-in GitHub event watcher that lives in
 	// conductor/gh-watcher/ (issue #2134). The Go binary only parses this table;
 	// conductor/setup.sh reads it to decide whether to install the poller unit.
@@ -397,6 +400,32 @@ type DiscordSettings struct {
 	IgnoreRepliesToOthers bool `toml:"ignore_replies_to_others,omitempty"`
 }
 
+// MattermostSettings defines Mattermost bot configuration for the conductor bridge
+type MattermostSettings struct {
+	// ServerURL is the Mattermost server's base URL (https://mattermost.example.com)
+	ServerURL string `toml:"server_url,omitempty"`
+
+	// BotToken is the bot account's access token. Like the other bridge
+	// secrets it may be "$ENV_VAR" or "keychain:<service>".
+	BotToken string `toml:"bot_token,omitempty"`
+
+	// User is the one person the bot obeys: a username or a user ID
+	User string `toml:"user,omitempty"`
+
+	// ChannelID is the channel where the bot listens and posts.
+	// Empty means a direct message between the bot and User.
+	ChannelID string `toml:"channel_id,omitempty"`
+
+	// ListenMode controls what the bot responds to in ChannelID: "all"
+	// (every message from User) or "mentions" (only @mentions). Ignored in a
+	// direct message. Default: "all"
+	ListenMode string `toml:"listen_mode,omitempty"`
+
+	// AllowInsecureHTTP lets ServerURL be a plain http URL on a host other
+	// than localhost. The bot token and every message then travel unencrypted.
+	AllowInsecureHTTP bool `toml:"allow_insecure_http,omitempty"`
+}
+
 // ConductorMeta holds metadata for a named conductor instance
 type ConductorMeta struct {
 	Name              string `json:"name"`
@@ -465,14 +494,14 @@ func (m *ConductorMeta) GetClearOnCompact() bool {
 }
 
 // ConductorClearOnCompact checks if this conductor instance has clear_on_compact enabled.
-// Extracts the conductor name from the session title ("conductor-{NAME}"),
-// loads meta.json, and returns the setting (defaults to true).
-// Returns false if the title doesn't match conductor format, since the caller
-// should not enable clear-on-compact for non-conductor sessions.
+// Resolves the conductor name (ResolveConductorName), loads meta.json, and
+// returns the setting (defaults to true).
+// Returns false for a non-conductor session, since the caller should not
+// enable clear-on-compact there.
 func (i *Instance) ConductorClearOnCompact() bool {
-	name := strings.TrimPrefix(i.Title, "conductor-")
-	if name == "" || name == i.Title {
-		return false // not a conductor-prefixed title: don't enable
+	name := i.ResolveConductorName()
+	if name == "" {
+		return false // not a conductor session: don't enable
 	}
 	meta, err := LoadConductorMeta(name)
 	if err != nil {
@@ -576,18 +605,14 @@ func GetConductorLastActivity(name, profile string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("load instances: %w", err)
 	}
 
-	// Find the conductor's session ID.
-	conductorTitle := ConductorSessionTitle(name)
-	var conductorID string
-	for _, inst := range instances {
-		if inst.Title == conductorTitle {
-			conductorID = inst.ID
-			break
-		}
+	// Find the conductor's session ID by identity (stored name, canonical or
+	// decorated title), not the exact title: a renamed or decorated conductor
+	// must not lose its idle gate.
+	conductorInst := FindConductorInstance(instances, name)
+	if conductorInst == nil {
+		return time.Time{}, fmt.Errorf("conductor session %q not found in storage", ConductorSessionTitle(name))
 	}
-	if conductorID == "" {
-		return time.Time{}, fmt.Errorf("conductor session %q not found in storage", conductorTitle)
-	}
+	conductorID := conductorInst.ID
 
 	// Build a parent→children index for a single BFS pass.
 	children := make(map[string][]*Instance, len(instances))

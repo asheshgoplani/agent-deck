@@ -47,4 +47,4 @@ SESSIONS                                                               │ PREVI
                                                                        │
                                                                        │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  H  Shell  c  Copy  V  Copy pane  x  Send │  r  Rename  M  Move  d  Delete  D  Close    ↑↓ Nav │ +/- Move │ / Search │ G Global │ q Quit
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  H  Shell  o  Send  Q  Queue  c  Copy  V  Copy pane  x  Send │  r  Rename  M  Move  d  Delete  D  Close       ↑↓ Nav │ +/- Move │ q Quit

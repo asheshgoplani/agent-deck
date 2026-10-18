@@ -18,6 +18,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // The Command Center is the embedded, live, two-way fleet god-view (see
@@ -302,6 +303,7 @@ func buildCommandCenterSnapshot(menu *MenuSnapshot, profile, artifactDir string,
 	// Collect sessions, split conductors from children, group children by group.
 	type sess struct {
 		id, title, status, substate, group, prompt string
+		conductorName                              string // managed group; "" for non-conductors
 		isConductor                                bool
 		hints                                      map[string]string
 	}
@@ -312,15 +314,26 @@ func buildCommandCenterSnapshot(menu *MenuSnapshot, profile, artifactDir string,
 			continue
 		}
 		ms := item.Session
+		// The resolved conductor name (stored, else a possibly decorated
+		// conductor-<name> title) is the conductor identity, not the title.
+		conductorName := ms.ConductorName
+		if conductorName == "" {
+			conductorName = session.ConductorNameFromTitle(ms.Title)
+		}
+		isConductor := ms.IsConductor || conductorName != ""
+		if isConductor && conductorName == "" {
+			conductorName = ms.Title
+		}
 		e := sess{
-			id:          ms.ID,
-			title:       ms.Title,
-			status:      string(ms.Status),
-			substate:    ms.Substate,
-			group:       ms.GroupPath,
-			prompt:      firstLine(ms.LatestPrompt),
-			isConductor: ms.IsConductor || strings.HasPrefix(ms.Title, "conductor-"),
-			hints:       ms.Hints,
+			id:            ms.ID,
+			title:         ms.Title,
+			status:        string(ms.Status),
+			substate:      ms.Substate,
+			group:         ms.GroupPath,
+			prompt:        firstLine(ms.LatestPrompt),
+			conductorName: conductorName,
+			isConductor:   isConductor,
+			hints:         ms.Hints,
 		}
 		all = append(all, e)
 		// A `summary` hint on any session, or a `note` on a conductor (a
@@ -338,10 +351,9 @@ func buildCommandCenterSnapshot(menu *MenuSnapshot, profile, artifactDir string,
 			})
 		}
 		if e.isConductor {
-			// Map a conductor to the group it manages. Conductors named
-			// "conductor-<name>" manage the "<name>" group by convention.
-			managed := strings.TrimPrefix(e.title, "conductor-")
-			conductorByGroup[managed] = e
+			// Map a conductor to the group it manages. Conductor "<name>"
+			// manages the "<name>" group by convention.
+			conductorByGroup[e.conductorName] = e
 		}
 	}
 
@@ -376,7 +388,7 @@ func buildCommandCenterSnapshot(menu *MenuSnapshot, profile, artifactDir string,
 	groupNames := map[string]bool{}
 	for _, e := range all {
 		if e.isConductor {
-			groupNames[strings.TrimPrefix(e.title, "conductor-")] = true
+			groupNames[e.conductorName] = true
 		} else if e.group != "" {
 			groupNames[e.group] = true
 		}
@@ -399,6 +411,9 @@ func buildCommandCenterSnapshot(menu *MenuSnapshot, profile, artifactDir string,
 		if c, ok := conductorByGroup[name]; ok {
 			cd.Status = c.status
 			cd.Substate = c.substate
+			// Route by the live title so a decorated or renamed conductor
+			// stays askable (the target must be in AskTargets).
+			cd.Target = c.title
 			snap.AskTargets = append(snap.AskTargets, c.title)
 		}
 		// plain-language "currently working on": disk status feed wins, then

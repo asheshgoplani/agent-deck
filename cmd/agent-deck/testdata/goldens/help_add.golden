@@ -109,7 +109,7 @@ Options:
   -worktree string
     	Create session in git worktree for branch (not supported with --ssh)
   -wrapper string
-    	Wrapper command (use {command} to include tool command, e.g., 'nvim +"terminal {command}"')
+    	Wrapper command (use {command} to include tool command, e.g., 'nvim +"terminal {command}"'; an unquoted {command} after a prefix gets a compound command (&&, ;, |, export ...) as one bash -c argv, so for remote use --ssh or quote {command})
   -yolo
     	Enable YOLO mode for Gemini, Codex or Hermes sessions
 

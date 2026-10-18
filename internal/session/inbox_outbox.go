@@ -773,7 +773,7 @@ func (n *TransitionNotifier) wakeCommittedInbox(parent *Instance, event Transiti
 	// wake_on (default: urgent) wake the parent. An info record stays durably
 	// queued and rides the parent's next turn or the info digest; it is never
 	// lost, it just does not buy a turn of its own.
-	if !ResolveInboxConfig(parent.Title).WakesFor(event.Tier) {
+	if !ResolveInboxConfigForInstance(parent).WakesFor(event.Tier) {
 		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.WakeupsSuppressed++ })
 		commsLog.Debug("wake_nudge_skipped_tier",
 			slog.String("parent", parentID), slog.String("tier", event.Tier), slog.String("turn", event.TurnFingerprint))

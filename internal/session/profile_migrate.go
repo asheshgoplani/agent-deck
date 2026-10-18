@@ -134,13 +134,12 @@ func MigrateConductorToProfile(name, sourceProfile, targetProfile string, opts P
 	src := srcStorage.GetDB()
 	dst := dstStorage.GetDB()
 
-	// Find the conductor session in src by title + is_conductor.
-	conductorTitle := ConductorSessionTitle(name)
-	srcConductor, err := findConductorByTitle(src, conductorTitle)
+	// Find the conductor session in src by stable name / title + is_conductor.
+	srcConductor, err := findConductorRow(src, name)
 	if err != nil {
 		return nil, err
 	}
-	dstConductor, err := findConductorByTitle(dst, conductorTitle)
+	dstConductor, err := findConductorRow(dst, name)
 	if err != nil {
 		return nil, err
 	}
@@ -454,10 +453,12 @@ func ensureGroupAtDst(src, dst *statedb.StateDB, groupPath string) (bool, error)
 	return true, nil
 }
 
-// findConductorByTitle returns the conductor row, or (nil, nil) if absent.
-// We match on title AND is_conductor=1 so a session that happens to be
-// titled "conductor-foo" without the flag set is not picked up.
-func findConductorByTitle(db *statedb.StateDB, title string) (*statedb.InstanceRow, error) {
+// findConductorRow returns the named conductor's row, or (nil, nil) if
+// absent. We match on is_conductor=1 AND identity so a session that happens
+// to be titled "conductor-foo" without the flag set is not picked up. The
+// stored conductor name (conductor_identity.go) wins; a row without one
+// matches by its (possibly decorated) conductor-<name> title.
+func findConductorRow(db *statedb.StateDB, name string) (*statedb.InstanceRow, error) {
 	// statedb has no by-title query; reuse the children scan plumbing via the
 	// LoadInstances API and filter in Go. The instances table is small enough
 	// (~10s-100s of rows) that a linear scan is acceptable.
@@ -465,12 +466,20 @@ func findConductorByTitle(db *statedb.StateDB, title string) (*statedb.InstanceR
 	if err != nil {
 		return nil, err
 	}
+	var byTitle *statedb.InstanceRow
 	for _, r := range rows {
-		if r.IsConductor && r.Title == title {
+		if !r.IsConductor {
+			continue
+		}
+		stored := ReadConductorNameFromToolData(r.ToolData)
+		if stored == name {
 			return r, nil
 		}
+		if stored == "" && byTitle == nil && ConductorNameFromTitle(r.Title) == name {
+			byTitle = r
+		}
 	}
-	return nil, nil
+	return byTitle, nil
 }
 
 // updateConductorMetaProfile rewrites the Profile field on

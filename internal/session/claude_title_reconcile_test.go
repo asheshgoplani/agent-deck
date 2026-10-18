@@ -282,3 +282,87 @@ func TestReconcileTitleFromClaude_NoopWhenDerived(t *testing.T) {
 		t.Errorf("Title = %q, want unchanged dev", inst.Title)
 	}
 }
+
+// TestResolveTitleFromClaude_RejectsForeignCwd (issue #2678): a session record
+// whose cwd lies outside every path the instance owns belongs to a foreign
+// Claude, so its name must not be stamped onto the row. A cwd inside the
+// project (or a symlink to it), an absent cwd, and an instance with no
+// declared path all still sync.
+func TestResolveTitleFromClaude_RejectsForeignCwd(t *testing.T) {
+	base := t.TempDir()
+	project := filepath.Join(base, "proj")
+	sub := filepath.Join(project, "pkg", "deep")
+	foreign := filepath.Join(base, "proj-other")
+	link := filepath.Join(base, "proj-link")
+	for _, d := range []string{sub, foreign} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(project, link); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name        string
+		projectPath string
+		cwd         any // nil = field absent
+		locked      bool
+		syncOff     bool
+		want        bool
+	}{
+		{"cwd equals project", project, project, false, false, true},
+		{"cwd in subdirectory", project, sub, false, false, true},
+		{"cwd via symlink", project, link, false, false, true},
+		{"foreign sibling cwd", project, foreign, false, false, false},
+		{"cwd absent", project, nil, false, false, true},
+		{"no declared path", "", foreign, false, false, true},
+		{"title locked", project, project, true, false, false},
+		{"sync_title off", project, project, false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if tc.syncOff {
+				cfgDir := filepath.Join(home, ".agent-deck")
+				if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("sync_title = false\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fields := map[string]any{"sessionId": "sid-x", "name": "Foreign Name"}
+			if tc.cwd != nil {
+				fields["cwd"] = tc.cwd
+			}
+			seedClaudeSessionFile(t, home, "4242.json", fields)
+
+			inst := &Instance{ID: "ix", Title: "my-row", Tool: "claude", ProjectPath: tc.projectPath, TitleLocked: tc.locked}
+			name, ok := inst.ResolveTitleFromClaude("sid-x")
+			if ok != tc.want {
+				t.Fatalf("ResolveTitleFromClaude = (%q,%v), want ok=%v", name, ok, tc.want)
+			}
+			if ok && name != "Foreign Name" {
+				t.Fatalf("name = %q, want %q", name, "Foreign Name")
+			}
+		})
+	}
+}
+
+// TestClaudeSessionNameAndCwdIn_PairsFromFreshest (issue #2678): the cwd the
+// name is checked against comes from the same freshest record, not a stale one.
+func TestClaudeSessionNameAndCwdIn_PairsFromFreshest(t *testing.T) {
+	home := t.TempDir()
+	seedClaudeSessionFile(t, home, "1111.json", map[string]any{
+		"sessionId": "sid-p", "name": "old", "cwd": "/stale/dir", "updatedAt": 1000,
+	})
+	seedClaudeSessionFile(t, home, "2222.json", map[string]any{
+		"sessionId": "sid-p", "name": "new", "cwd": "/fresh/dir", "updatedAt": 2000,
+	})
+	name, cwd := claudeSessionNameAndCwdIn(filepath.Join(home, ".claude"), "sid-p")
+	if name != "new" || cwd != "/fresh/dir" {
+		t.Fatalf("got (%q,%q), want (%q,%q)", name, cwd, "new", "/fresh/dir")
+	}
+}

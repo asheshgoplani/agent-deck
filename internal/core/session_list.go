@@ -58,7 +58,7 @@ type SessionRow struct {
 	Model             string         `json:"model,omitempty" doc:"live"`
 	ModelVersion      string         `json:"model_version,omitempty" doc:"live"`
 	Status            string         `json:"status"`
-	StatusSource      string         `json:"status_source,omitempty" doc:"cached for a stopped row whose stored status was used; live after a status refresh"`
+	StatusSource      string         `json:"status_source,omitempty" doc:"cached for an absent historical row whose stored status was used; live after a status refresh"`
 	Substate          string         `json:"substate,omitempty" doc:"live"`
 	ExitCode          *int           `json:"exit_code,omitempty" doc:"live"`
 	SubstateDetail    string         `json:"substate_detail,omitempty" doc:"live"`
@@ -85,6 +85,10 @@ type SessionRow struct {
 	// BackgroundWork is the in-flight background work behind substate
 	// background-work (issue #2473).
 	BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty" doc:"live; in-flight background work (workflow, agent, bash, monitor) behind substate background-work"`
+
+	// IntendedSwitch marks the current account/model as switched on purpose
+	// (`session set ... --intended`); omitted when none or expired.
+	IntendedSwitch *session.IntendedSwitchJSON `json:"intended_switch,omitempty" doc:"intended account/model switch: the switch is intended while account and model equal it and now < expires_at; absent when none or expired"`
 }
 
 func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) {
@@ -149,6 +153,7 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 		ClaudeSessionID:   inst.ClaudeSessionID,
 		TranscriptPath:    transcripts[inst],
 		ResolvedCodexHome: inst.ResolvedCodexHome(),
+		IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
 	}
 }
 
@@ -168,6 +173,8 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		substate := ""
 		if !cached[inst] {
 			substate = string(inst.Substate())
+		} else {
+			substate = string(inst.HistoricalSubstate())
 		}
 		row := staticSessionRow(inst, instances, profile, transcripts)
 		row.StatusSource = "live"
@@ -183,7 +190,7 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		row.Color = inst.Color
 		row.Favorite = inst.Favorite
 		row.Archived = inst.IsArchived()
-		row.ArchivedAt = inst.ArchivedAt
+		row.ArchivedAt = inst.ArchivedAtThreadSafe()
 		row.SupersededBy = inst.SupersededBy
 		row.Supersedes = inst.Supersedes
 		row.LastActivityAt = inst.DisplayLastActivityTime().Format(time.RFC3339Nano)

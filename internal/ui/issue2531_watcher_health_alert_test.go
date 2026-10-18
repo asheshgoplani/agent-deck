@@ -157,7 +157,7 @@ func newIssue2531Env(t *testing.T, watcherName, columnConductor string) *issue25
 func (e *issue2531Env) run(t *testing.T) {
 	t.Helper()
 	initCmd := e.home.startWatcherEngine()
-	if e.home.watcherEngine == nil {
+	if host := e.home.watcherHost.Load(); host == nil || host.Engine() == nil {
 		t.Fatal("startWatcherEngine did not start an engine")
 	}
 	inR, inW, err := os.Pipe()
@@ -180,7 +180,7 @@ func (e *issue2531Env) run(t *testing.T) {
 		}
 		_ = inW.Close()
 		_ = inR.Close()
-		e.home.watcherEngine.Stop()
+		e.home.StopWatcherEngine()
 	})
 }
 

@@ -9,6 +9,8 @@ import {
 } from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
+import { PathInput } from './PathInput.js'
+import { DirectoryCreationOption } from './DirectoryCreationOption.js'
 import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTools.js'
 import {
   CUSTOM_MODEL, effortOptionsForTool, modelOptionsForTool, seedModelSelection,
@@ -24,6 +26,7 @@ export function CreateSessionDialog() {
   const [customModel, setCustomModel] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
   const [path, setPath] = useState('')
+  const [directoryCreation, setDirectoryCreation] = useState(null)
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [seededFor, setSeededFor] = useState(null)
@@ -44,6 +47,7 @@ export function CreateSessionDialog() {
     const seedTool = shownTools.includes(ctx.tool) ? ctx.tool : shownTools[0]
     setTool(seedTool)
     setPath(ctx.defaultPath || '')
+    setDirectoryCreation(null)
     // A known id selects its option; an unknown one (newer than this build's
     // list) is carried as a custom id instead of silently dropped (#2388).
     const seeded = seedModelSelection(seedTool, ctx.modelId, modelCatalogSignal.value)
@@ -66,6 +70,10 @@ export function CreateSessionDialog() {
     setSubmitting(true)
     try {
       const payload = { title, tool, projectPath: path }
+      if (directoryCreation?.inputPath === path) {
+        payload.createDir = true
+        payload.createDirPaths = directoryCreation.missing
+      }
       if (ctx.groupPath) payload.groupPath = ctx.groupPath
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
@@ -73,6 +81,7 @@ export function CreateSessionDialog() {
       await apiFetch('POST', '/api/sessions', payload)
       createSessionDialogSignal.value = null
     } catch (err) {
+      setDirectoryCreation(null)
       setError(err.message)
     } finally {
       setSubmitting(false)
@@ -102,8 +111,8 @@ export function CreateSessionDialog() {
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
   return html`
-    <div class="overlay" onClick=${handleBackdropClick}>
-      <form class="dialog" onClick=${e => e.stopPropagation()} onSubmit=${handleSubmit}>
+    <div class="overlay path-dialog-overlay" onClick=${handleBackdropClick}>
+      <form class="dialog path-dialog" onClick=${e => e.stopPropagation()} onSubmit=${handleSubmit}>
         <div class="dh">
           <span class="kicker">NEW</span>
           <div class="t">New session</div>
@@ -123,8 +132,9 @@ export function CreateSessionDialog() {
             <input autofocus required value=${title} onInput=${e => setTitle(e.target.value)} placeholder="session-name"/>
           </div>
           <div class="field">
-            <label>WORKING DIR</label>
-            <input required value=${path} onInput=${e => setPath(e.target.value)} placeholder="/absolute/path/to/project"/>
+            <label for="create-session-path">WORKING DIR</label>
+            <${PathInput} value=${path} onInput=${e => { setPath(e.target.value); setDirectoryCreation(null) }}/>
+            <${DirectoryCreationOption} key=${ctx.groupPath} path=${path} refresh=${error} onChange=${setDirectoryCreation}/>
           </div>
           <div class="field">
             <label>TOOL</label>

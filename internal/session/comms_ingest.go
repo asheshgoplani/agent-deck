@@ -262,7 +262,7 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		Tool:    commsToolName(inst),
 		TSignal: e.TSignal,
 	}
-	cfg := ResolveInboxConfig(parentTitleFor(inst, byID))
+	cfg := ResolveInboxConfigForInstance(parentInstanceFor(inst, byID))
 	prompt := d.commsPrompts[inst.ID]
 	facts, classified := commsTurnFacts(inst, e, prompt)
 	owed := commsOwedNone
@@ -607,7 +607,7 @@ func commitCommsSend(l *comms.Ledger, profile string, target *Instance, byID map
 			}
 		}
 		rec = comms.Record{Kind: comms.KindSend, From: from, To: to, Profile: profile, Tier: comms.TierInfo,
-			Text: CapTurnText(e.Text, ResolveInboxConfig(target.Title).GetMaxTextBytes()), TH: e.TH, Req: req,
+			Text: CapTurnText(e.Text, ResolveInboxConfigForInstance(target).GetMaxTextBytes()), TH: e.TH, Req: req,
 			Via: e.Via, State: comms.StateQueued, TSignal: e.TSignal, Key: comms.SendKey(from, req)}
 		if sender := byID[from]; sender != nil {
 			rec.Tool = commsToolName(sender)

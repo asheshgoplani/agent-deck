@@ -40,6 +40,9 @@ func exitOnCLIError(err error) {
 
 // conductorTitleLookup returns the title of the session with this id, or ""
 // (a test seam). It looks in the effective profile first, then every other.
+// A session that resolves to a conductor (stored name, or a decorated title)
+// yields its canonical conductor-<name> title, so a renamed conductor still
+// resolves.
 var conductorTitleLookup = func(id, profile string) string {
 	profiles, _ := session.ListProfiles()
 	if p, err := session.ResolveProfileForStorage(profile); err == nil {
@@ -52,6 +55,9 @@ var conductorTitleLookup = func(id, profile string) string {
 		}
 		for _, inst := range instances {
 			if inst.ID == id {
+				if name := inst.ResolveConductorName(); name != "" {
+					return session.ConductorSessionTitle(name)
+				}
 				return inst.Title
 			}
 		}
@@ -59,11 +65,11 @@ var conductorTitleLookup = func(id, profile string) string {
 	return ""
 }
 
-// conductorNameFromTitle maps a conductor session title (conductor-<name>)
-// to the conductor name.
+// conductorNameFromTitle maps a conductor session title (conductor-<name>,
+// leading decoration tolerated) to the conductor name.
 func conductorNameFromTitle(title string) (string, bool) {
-	name, ok := strings.CutPrefix(strings.TrimSpace(title), session.ConductorSessionTitlePrefix)
-	return name, ok && name != ""
+	name := session.ConductorNameFromTitle(title)
+	return name, name != ""
 }
 
 // resolveHumanConductor picks the conductor a human-tier command acts on:

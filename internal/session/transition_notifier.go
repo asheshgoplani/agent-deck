@@ -335,8 +335,19 @@ func isTerminalAttentionStatus(status string) bool {
 	return s == string(StatusWaiting) || s == string(StatusError) || s == string(StatusIdle)
 }
 
-func isConductorSessionTitle(title string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(title)), "conductor-")
+// isConductorSession reports whether inst is a conductor by its resolved
+// identity (stored name, else a possibly decorated conductor-* title), or by
+// the historical case-insensitive conductor-* title check this predicate has
+// always applied (legacyConductorNameFold), so "Conductor-Ops" keeps counting.
+func isConductorSession(inst *Instance) bool {
+	if inst.ResolveConductorName() != "" {
+		return true
+	}
+	if inst == nil {
+		return false
+	}
+	_, ok := legacyConductorNameFold(inst.Title)
+	return ok
 }
 
 // isSelfSuppressedConductor reports whether inst is a top-level conductor: no
@@ -349,7 +360,7 @@ func isSelfSuppressedConductor(inst *Instance) bool {
 		return false
 	}
 	parent := strings.TrimSpace(inst.ParentSessionID)
-	return (parent == "" || parent == inst.ID) && isConductorSessionTitle(inst.Title)
+	return (parent == "" || parent == inst.ID) && isConductorSession(inst)
 }
 
 // instanceAcceptsTransitionEvents is the centralized per-session predicate used

@@ -84,7 +84,7 @@ Set command fields:
   path               Project path
   command            Command to run
   tool               Tool type (claude, gemini, shell, etc.)
-  wrapper            Wrapper command (use {command} to include tool command)
+  wrapper            Wrapper command (use {command} to include tool command; an unquoted {command} after a prefix gets a compound command (&&, ;, |, export ...) as one bash -c argv, so for remote use --ssh or quote {command})
   claude-session-id  Claude conversation ID (for fork/resume)
   favorite           Favourite flag: true or false (favorite in list/show --json)
   gemini-session-id  Gemini conversation ID (for resume)

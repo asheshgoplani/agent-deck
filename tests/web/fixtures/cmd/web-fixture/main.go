@@ -319,6 +319,7 @@ func (s *fixtureStore) seed() {
 			// passes for every row promoted out of MISSING in PARITY_MATRIX.md.
 			// Not rendered by the UI; no screenshot impact.
 			IsConductor:       true,
+			ConductorName:     "fixture-conductor",
 			ClaudeSessionID:   "fixture-claude-sess-001",
 			GeminiSessionID:   "fixture-gemini-sess-001",
 			GeminiModel:       "gemini-2.5-pro",

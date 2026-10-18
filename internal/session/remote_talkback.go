@@ -929,7 +929,7 @@ func wakeForRemoteRecords(parentID string, fresh []TransitionNotificationEvent, 
 	if parent == nil {
 		return false
 	}
-	cfg := ResolveInboxConfig(parent.Title)
+	cfg := ResolveInboxConfigForInstance(parent)
 	var pick *TransitionNotificationEvent
 	urgent, suppressed := 0, 0
 	for i := range fresh {

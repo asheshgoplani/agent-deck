@@ -47,4 +47,4 @@ SESSIONS                                                               │ PREVI
                                                                        │
                                                                        │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP  v  Both  s  Skills  H  Shell  c  Copy  V  Copy pane  x  Send │  r  Rename …        ↑↓ Nav │ q Quit
+Session:  Enter  Attach  n/N  New/Quick  g  Group  R  Restart  T  Restart Fresh  f/F  Fork  m  MCP  v  Both  s  Skills  H  Shell  o  Send  Q  Queue  c  Copy  V  Copy pane  x  Send …  ↑↓ Nav │ q Quit

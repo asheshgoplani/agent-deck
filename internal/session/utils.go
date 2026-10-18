@@ -1,8 +1,11 @@
 package session
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -32,6 +35,7 @@ func findNewestFile(pattern string) (string, time.Time) {
 
 // GetDirectoryCompletions returns a list of directories that match the input prefix.
 // Supports absolute, relative, and tilde-prefixed (~) paths.
+// Hidden directories are included only when the typed segment starts with a dot.
 func GetDirectoryCompletions(input string) ([]string, error) {
 	if input == "" {
 		return nil, nil
@@ -44,26 +48,54 @@ func GetDirectoryCompletions(input string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		input = filepath.Join(home, input[1:])
+		// Preserve a trailing "/." so it can complete hidden directories.
+		input = home + string(os.PathSeparator) + strings.TrimPrefix(input[1:], string(os.PathSeparator))
 	}
 
-	// Determine the directory to scan and the prefix to match.
-	// Trailing-slash check MUST come first: when input ends with '/', the user
-	// wants to list directory contents, not echo the directory back. os.Stat
-	// would match the directory and return early, making this branch unreachable.
-	var dir, prefix string
+	// Split without cleaning so a symlink followed by ".." keeps its meaning.
+	dir, prefix := filepath.Split(input)
+	if dir == "" {
+		dir = "."
+	}
+
+	// Resolve parent traversal before joining names. Lexically cleaning a
+	// symlink followed by ".." would produce paths outside the scanned directory.
+	resolvedParent := false
+	for _, segment := range strings.Split(dir, string(os.PathSeparator)) {
+		if segment == ".." {
+			resolved, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				return nil, nil
+			}
+			dir = resolved
+			input = filepath.Join(dir, prefix)
+			resolvedParent = true
+			break
+		}
+	}
+	// A terminal ".." is the typed segment, not part of dir. Resolve it too
+	// so later project-path normalization cannot clean away a symlink traversal.
+	if prefix == ".." {
+		resolved, err := filepath.EvalSymlinks(input)
+		if err != nil {
+			return nil, nil
+		}
+		input = resolved
+		resolvedParent = true
+	}
+
+	// A trailing slash lists children; an exact directory returns itself.
 	if strings.HasSuffix(originalInput, string(os.PathSeparator)) {
 		dir = input
 		prefix = ""
-	} else if info, err := os.Stat(input); err == nil && info.IsDir() {
-		// Exact directory match without trailing slash - return itself
+	} else if info, err := os.Stat(input); err == nil && info.IsDir() && prefix != "." {
+		if resolvedParent {
+			return []string{input}, nil
+		}
 		return []string{originalInput}, nil
-	} else {
-		dir = filepath.Dir(input)
-		prefix = filepath.Base(input)
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := readDirBounded(dir, maxCompletionScan)
 	if err != nil {
 		return nil, nil // Silently ignore errors (e.g. invalid parent dir)
 	}
@@ -75,6 +107,9 @@ func GetDirectoryCompletions(input string) ([]string, error) {
 		}
 
 		name := entry.Name()
+		if strings.HasPrefix(name, ".") && !strings.HasPrefix(prefix, ".") {
+			continue
+		}
 		if strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
 			match := filepath.Join(dir, name)
 
@@ -91,6 +126,34 @@ func GetDirectoryCompletions(input string) ([]string, error) {
 	}
 
 	return matches, nil
+}
+
+// maxCompletionScan bounds how many directory entries one completion request
+// reads, so a directory with millions of entries (or a slow network mount)
+// cannot make a single keystroke, or a web request, do unbounded work.
+const maxCompletionScan = 10000
+
+// readDirBounded reads at most limit entries of dir and returns them sorted by
+// name, like os.ReadDir. Entries past the limit are not considered.
+func readDirBounded(dir string, limit int) ([]os.DirEntry, error) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var entries []os.DirEntry
+	for len(entries) < limit {
+		batch, err := f.ReadDir(min(512, limit-len(entries)))
+		entries = append(entries, batch...)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, nil
 }
 
 // CompletionCycler manages the state of directory autocomplete.

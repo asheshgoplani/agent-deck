@@ -156,7 +156,7 @@ func isWakeTarget(target *Instance, targetKind string) bool {
 	if targetKind == InboxTargetKindReply {
 		return IsClaudeCompatible(target.Tool)
 	}
-	return isConductorSessionTitle(target.Title)
+	return isConductorSession(target)
 }
 
 // sendWakeNudge fires one best-effort wake into the parent conductor's pane and

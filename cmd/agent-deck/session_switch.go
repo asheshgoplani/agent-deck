@@ -222,7 +222,7 @@ func switchSourceSnapshot(inst *session.Instance, instances []*session.Instance)
 				managementUnknown = true
 			} else {
 				for _, client := range clients {
-					if client.Conductor == inst.ID || client.Conductor == inst.Title || session.ConductorSessionTitle(client.Conductor) == inst.Title {
+					if client.Conductor == inst.ID || client.Conductor == inst.Title || session.ConductorSessionTitle(client.Conductor) == inst.Title || inst.IsConductorNamed(client.Conductor, inst.Title) {
 						watcherTarget = true
 						break
 					}

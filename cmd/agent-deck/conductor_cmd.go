@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -321,6 +322,7 @@ func handleConductorSetup(profile string, args []string) {
 	telegramConfigured := settings.Telegram.Token != ""
 	slackConfigured := settings.Slack.BotToken != ""
 	discordConfigured := settings.Discord.BotToken != ""
+	mattermostConfigured := settings.Mattermost.BotToken != ""
 
 	// v1.7.22: warn on the "global telegram enabled in profile settings.json"
 	// anti-pattern that silently leaks pollers to every claude session under
@@ -353,7 +355,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("monitor and orchestrate all your agent-deck sessions.")
 		fmt.Println()
 		fmt.Println("Conductors work locally by default — interact via the TUI or CLI.")
-		fmt.Println("You can optionally connect remote channels (Telegram, Slack, Discord)")
+		fmt.Println("You can optionally connect remote channels (Telegram, Slack, Discord, Mattermost)")
 		fmt.Println("for mobile and remote access.")
 		fmt.Println()
 	}
@@ -361,7 +363,7 @@ func handleConductorSetup(profile string, args []string) {
 	// Step 2b: Offer channel configuration for any unconfigured channels.
 	// Runs on first setup and on re-runs, so users can add channels later.
 	// Skipped in --json mode: interactive prompts would hang on stdin.
-	if !*jsonOutput && (!telegramConfigured || !slackConfigured || !discordConfigured) {
+	if !*jsonOutput && (!telegramConfigured || !slackConfigured || !discordConfigured || !mattermostConfigured) {
 		reader := bufio.NewReader(os.Stdin)
 
 		fmt.Print("Add remote channels for mobile/remote access? (y/N): ")
@@ -503,6 +505,22 @@ func handleConductorSetup(profile string, args []string) {
 				}
 			}
 
+			if !mattermostConfigured {
+				fmt.Print("Connect Mattermost bot for chat-based control? (y/N): ")
+				mmAnswer, _ := reader.ReadString('\n')
+				mmAnswer = strings.TrimSpace(strings.ToLower(mmAnswer))
+
+				if yesAnswer(mmAnswer) {
+					mm, err := promptMattermostSettings(reader, os.Stdout)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						exitCLI(1)
+					}
+					settings.Mattermost = mm
+					configChanged = true
+				}
+			}
+
 			if configChanged {
 				if settings.HeartbeatInterval == nil {
 					heartbeatDefault := 15
@@ -513,6 +531,7 @@ func handleConductorSetup(profile string, args []string) {
 				telegramConfigured = settings.Telegram.Token != ""
 				slackConfigured = settings.Slack.BotToken != ""
 				discordConfigured = settings.Discord.BotToken != ""
+				mattermostConfigured = settings.Mattermost.BotToken != ""
 
 				if err := session.SaveUserConfig(config); err != nil {
 					fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
@@ -597,41 +616,13 @@ func handleConductorSetup(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	// Check if session already exists
-	var existingID string
-	for _, inst := range instances {
-		if inst.Title == sessionTitle {
-			existingID = inst.ID
-			break
-		}
-	}
-
-	var sessionID string
-	existed := false
-	if existingID != "" {
-		sessionID = existingID
-		existed = true
-		for _, inst := range instances {
-			if inst.ID != existingID {
-				continue
-			}
-			inst.Tool = spec.Agent
-			inst.Command = spec.DefaultCommand
-			break
-		}
-		if !*jsonOutput {
-			fmt.Printf("  [ok] Session '%s' already registered and synced to %s (ID: %s)\n", sessionTitle, spec.Agent, existingID[:8])
-		}
-	} else {
-		dir, _ := session.ConductorNameDir(name)
-		newInst := session.NewInstanceWithGroupAndTool(sessionTitle, dir, "conductor", spec.Agent)
-		newInst.Command = spec.DefaultCommand
-		newInst.IsConductor = true
-		instances = append(instances, newInst)
-
-		sessionID = newInst.ID
-		if !*jsonOutput {
-			fmt.Printf("  [ok] Session '%s' registered as %s (ID: %s)\n", sessionTitle, spec.Agent, newInst.ID[:8])
+	instances, conductorInst, existed := registerConductorSession(instances, name, spec)
+	sessionID := conductorInst.ID
+	if !*jsonOutput {
+		if existed {
+			fmt.Printf("  [ok] Session '%s' already registered and synced to %s (ID: %s)\n", conductorInst.Title, spec.Agent, sessionID[:8])
+		} else {
+			fmt.Printf("  [ok] Session '%s' registered as %s (ID: %s)\n", sessionTitle, spec.Agent, sessionID[:8])
 		}
 	}
 
@@ -672,9 +663,9 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
-	// Step 7: Install bridge (if Telegram, Slack, or Discord is configured)
+	// Step 7: Install bridge (if Telegram, Slack, Discord, or Mattermost is configured)
 	var plistPath string
-	if telegramConfigured || slackConfigured || discordConfigured {
+	if telegramConfigured || slackConfigured || discordConfigured || mattermostConfigured {
 		if !*jsonOutput {
 			fmt.Println()
 			fmt.Println("Installing bridge...")
@@ -740,6 +731,7 @@ func handleConductorSetup(profile string, args []string) {
 			"telegram":                telegramConfigured,
 			"slack":                   slackConfigured,
 			"discord":                 discordConfigured,
+			"mattermost":              mattermostConfigured,
 			"notifier_daemon_running": session.IsTransitionNotifierDaemonRunning(),
 		}
 		if plistPath != "" {
@@ -765,7 +757,7 @@ func handleConductorSetup(profile string, args []string) {
 	}
 	fmt.Println()
 	fmt.Println("Next steps:")
-	if telegramConfigured || slackConfigured || discordConfigured {
+	if telegramConfigured || slackConfigured || discordConfigured || mattermostConfigured {
 		condDir, _ := session.ConductorDir()
 		fmt.Printf("  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
 		fmt.Println()
@@ -778,6 +770,9 @@ func handleConductorSetup(profile string, args []string) {
 		if discordConfigured {
 			fmt.Println("  Test from Discord: post a message in the configured channel or use /ad-status")
 		}
+		if mattermostConfigured {
+			fmt.Println("  Test from Mattermost: send !status to the bot (in its DM, or the configured channel)")
+		}
 		fmt.Printf("  View bridge logs:   tail -f %s/bridge.log\n", condDir)
 	} else {
 		fmt.Printf("  1. Start the conductor:  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
@@ -786,6 +781,28 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println()
 		fmt.Printf("  To add remote channels later: agent-deck -p %s conductor setup %s\n", resolvedProfile, name)
 	}
+}
+
+// registerConductorSession finds the named conductor's session in instances
+// (by stable name, then title, tolerating decoration; see
+// session.FindConductorInstance) or creates it, syncing its tool/command to
+// spec. Either way it stamps the stable conductor identity so settings keep
+// resolving after the title is decorated or renamed. Returns the (possibly
+// extended) slice, the conductor's instance, and whether it already existed.
+func registerConductorSession(instances []*session.Instance, name string, spec session.ConductorAgentSpec) ([]*session.Instance, *session.Instance, bool) {
+	if inst := session.FindConductorInstance(instances, name); inst != nil {
+		inst.Tool = spec.Agent
+		inst.Command = spec.DefaultCommand
+		inst.IsConductor = true
+		inst.ConductorName = name
+		return instances, inst, true
+	}
+	dir, _ := session.ConductorNameDir(name)
+	newInst := session.NewInstanceWithGroupAndTool(session.ConductorSessionTitle(name), dir, "conductor", spec.Agent)
+	newInst.Command = spec.DefaultCommand
+	newInst.IsConductor = true
+	newInst.ConductorName = name
+	return append(instances, newInst), newInst, false
 }
 
 // handleConductorTeardown stops conductors and optionally removes directories
@@ -895,15 +912,13 @@ func handleConductorTeardown(_ string, args []string) {
 		if err == nil {
 			instances, _, err := storage.LoadWithGroups()
 			if err == nil {
-				for _, inst := range instances {
-					if inst.Title == sessionTitle {
-						if inst.Exists() {
-							_ = inst.Kill()
-						}
-						if !*jsonOutput {
-							fmt.Printf("  [ok] %s stopped\n", sessionTitle)
-						}
-						break
+				if inst := session.FindConductorInstance(instances, meta.Name); inst != nil {
+					sessionTitle = inst.Title
+					if inst.Exists() {
+						_ = inst.Kill()
+					}
+					if !*jsonOutput {
+						fmt.Printf("  [ok] %s stopped\n", sessionTitle)
 					}
 				}
 			}
@@ -931,14 +946,16 @@ func handleConductorTeardown(_ string, args []string) {
 			if storage != nil {
 				instances, groups, err := storage.LoadWithGroups()
 				if err == nil {
+					removedIDs := conductorRowIDsToRemove(instances, meta.Name)
+					remove := make(map[string]bool, len(removedIDs))
+					for _, id := range removedIDs {
+						remove[id] = true
+					}
 					var filtered []*session.Instance
-					var removedIDs []string
 					for _, inst := range instances {
-						if inst.Title == sessionTitle {
-							removedIDs = append(removedIDs, inst.ID)
-							continue
+						if !remove[inst.ID] {
+							filtered = append(filtered, inst)
 						}
-						filtered = append(filtered, inst)
 					}
 					if len(removedIDs) > 0 {
 						groupTree := session.NewGroupTreeWithGroups(filtered, groups)
@@ -997,6 +1014,31 @@ func handleConductorTeardown(_ string, args []string) {
 			fmt.Printf("  agent-deck conductor teardown %s --remove\n", name)
 		}
 	}
+}
+
+// conductorRowIDsToRemove returns the state.db rows `conductor teardown
+// --remove` deletes for the named conductor: the session found by identity
+// (session.FindConductorInstance — the same one teardown stopped, even when
+// renamed or decorated) plus any other row still titled exactly
+// conductor-<name> that is not stamped as a different conductor (the
+// historical behavior, which also swept up duplicates).
+func conductorRowIDsToRemove(instances []*session.Instance, name string) []string {
+	var ids []string
+	found := session.FindConductorInstance(instances, name)
+	if found != nil {
+		ids = append(ids, found.ID)
+	}
+	title := session.ConductorSessionTitle(name)
+	for _, inst := range instances {
+		if inst == nil || inst == found || inst.Title != title {
+			continue
+		}
+		if stored := inst.ConductorName; inst.IsConductor && stored != "" && stored != name {
+			continue
+		}
+		ids = append(ids, inst.ID)
+	}
+	return ids
 }
 
 // handleConductorStatus shows conductor health
@@ -1080,6 +1122,17 @@ func handleConductorStatus(_ string, args []string) {
 		Description          string `json:"description,omitempty"`
 		LastActivityAt       string `json:"last_activity_at,omitempty"`
 		HeartbeatIdleMinutes int    `json:"heartbeat_idle_minutes"`
+		// SessionTitle and TitleMismatch surface a conductor whose session
+		// title no longer names it (renamed); settings still resolve by the
+		// stored conductor name.
+		SessionTitle  string `json:"session_title,omitempty"`
+		TitleMismatch bool   `json:"title_mismatch,omitempty"`
+		// ChannelWarnings names channel plugins with no state (no token),
+		// e.g. after an account switch.
+		ChannelWarnings []string `json:"channel_warnings,omitempty"`
+		// DuplicateSessionIDs lists every session resolving as this
+		// conductor when there is more than one (two bot owners).
+		DuplicateSessionIDs []string `json:"duplicate_session_ids,omitempty"`
 	}
 	var statuses []conductorStatus
 
@@ -1101,7 +1154,6 @@ func handleConductorStatus(_ string, args []string) {
 		}
 
 		// Check session
-		sessionTitle := session.ConductorSessionTitle(meta.Name)
 		storage, err := session.NewStorageWithProfile(meta.Profile)
 		if err == nil {
 			instances, _, err := storage.LoadWithGroups()
@@ -1109,14 +1161,17 @@ func handleConductorStatus(_ string, args []string) {
 				// Warm tmux + hook caches before UpdateStatus so we match
 				// what the TUI and /api/menu show (issue #610).
 				session.RefreshInstancesForCLIStatus(instances)
-				for _, inst := range instances {
-					if inst.Title == sessionTitle {
-						cs.SessionID = inst.ID
-						cs.SessionDone = true
-						_ = inst.UpdateStatus()
-						cs.Running = inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle
-						break
+				if inst := session.FindConductorInstance(instances, meta.Name); inst != nil {
+					cs.SessionID = inst.ID
+					cs.SessionDone = true
+					cs.SessionTitle = inst.Title
+					_, cs.TitleMismatch = inst.ConductorTitleDrift()
+					cs.ChannelWarnings = inst.ChannelStateWarnings()
+					if ids := session.ConductorSessionIDs(instances, meta.Name); len(ids) > 1 {
+						cs.DuplicateSessionIDs = ids
 					}
+					_ = inst.UpdateStatus()
+					cs.Running = inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle
 				}
 			}
 		}
@@ -1190,6 +1245,15 @@ func handleConductorStatus(_ string, args []string) {
 		}
 
 		fmt.Printf("  %s %s [%s] agent:%s heartbeat:%s  (%s)%s\n", statusIcon, cs.Name, cs.Profile, cs.Agent, hb, statusText, desc)
+		if cs.TitleMismatch {
+			fmt.Printf("    warning: session title %q no longer matches conductor %q (settings still resolve by the stored name)\n", cs.SessionTitle, cs.Name)
+		}
+		if len(cs.DuplicateSessionIDs) > 1 {
+			fmt.Printf("    ⚠ WARNING: %d sessions resolve as conductor %q (%s); run only one, or two pollers share the bot\n", len(cs.DuplicateSessionIDs), cs.Name, strings.Join(cs.DuplicateSessionIDs, ", "))
+		}
+		for _, w := range cs.ChannelWarnings {
+			fmt.Printf("    ⚠ WARNING: %s\n", w)
+		}
 	}
 	fmt.Println()
 
@@ -1260,7 +1324,6 @@ func handleConductorList(profile string, args []string) {
 	for _, meta := range conductors {
 		// Check session status
 		var statusText string
-		sessionTitle := session.ConductorSessionTitle(meta.Name)
 		storage, err := session.NewStorageWithProfile(meta.Profile)
 		if err == nil {
 			instances, _, err := storage.LoadWithGroups()
@@ -1268,20 +1331,14 @@ func handleConductorList(profile string, args []string) {
 				// Warm tmux + hook caches before UpdateStatus so conductor
 				// list matches the TUI and /api/menu view (issue #610).
 				session.RefreshInstancesForCLIStatus(instances)
-				found := false
-				for _, inst := range instances {
-					if inst.Title == sessionTitle {
-						found = true
-						_ = inst.UpdateStatus()
-						if inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle {
-							statusText = "running"
-						} else {
-							statusText = "stopped"
-						}
-						break
+				if inst := session.FindConductorInstance(instances, meta.Name); inst != nil {
+					_ = inst.UpdateStatus()
+					if inst.Status == session.StatusRunning || inst.Status == session.StatusWaiting || inst.Status == session.StatusIdle {
+						statusText = "running"
+					} else {
+						statusText = "stopped"
 					}
-				}
-				if !found {
+				} else {
 					statusText = "no session"
 				}
 			}
@@ -1439,6 +1496,9 @@ func installPythonDeps() bool {
 		}
 		if config.Conductor.Discord.BotToken != "" {
 			packages = append(packages, "discord.py")
+		}
+		if config.Conductor.Mattermost.BotToken != "" && !slices.Contains(packages, "aiohttp") {
+			packages = append(packages, "aiohttp")
 		}
 	}
 
