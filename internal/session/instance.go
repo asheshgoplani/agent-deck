@@ -9527,7 +9527,18 @@ func (i *Instance) GetJSONLPath() string {
 	if !i.TranscriptIsResolvableLocally() {
 		return ""
 	}
-	return resolveClaudeTranscriptPath(GetClaudeConfigDir(), i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	// The instance's own config dir first (account/conductor/group, #2769): a
+	// session scoped to an account writes its transcript there, and the
+	// process-wide dir never has it. The process-wide dir stays as a fallback
+	// for transcripts written before an account switch.
+	instanceDir := GetClaudeConfigDirForInstance(i)
+	if path := resolveClaudeTranscriptPath(instanceDir, i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir()); path != "" {
+		return path
+	}
+	if globalDir := GetClaudeConfigDir(); globalDir != instanceDir {
+		return resolveClaudeTranscriptPath(globalDir, i.ProjectPath, i.ClaudeSessionID, i.EffectiveWorkingDir())
+	}
+	return ""
 }
 
 // ResolveClaudeTranscriptPath returns the path to the Claude JSONL transcript
@@ -11896,6 +11907,28 @@ func (p ForkParent) applyTo(inst *Instance) {
 	}
 }
 
+// inheritForkModel gives a fork the source session's own model (one picked
+// with `session command /model` or `session set model`) unless the fork was
+// given a model explicitly (ClaudeOptions.ModelExplicit), so a fork does not
+// revert to the launch or default model. A Model filled from
+// [claude].default_model (NewClaudeOptions, as `session fork -w` builds its
+// options) is not explicit. opts is copied, never modified.
+func inheritForkModel(source *Instance, opts *ClaudeOptions) *ClaudeOptions {
+	model := source.LaunchModelID()
+	if model == "" || (opts != nil && opts.ModelExplicit && strings.TrimSpace(opts.Model) != "") {
+		return opts
+	}
+	var out ClaudeOptions
+	if opts != nil {
+		out = *opts
+	} else {
+		userConfig, _ := LoadUserConfig()
+		out = *NewClaudeOptions(userConfig)
+	}
+	out.Model = model
+	return &out
+}
+
 func (i *Instance) createForkedClaudeInstance(
 	newTitle, newGroupPath string,
 	opts *ClaudeOptions,
@@ -11936,6 +11969,7 @@ func (i *Instance) createForkedClaudeInstance(
 	// suggestions off), and Start() runs the baked command verbatim.
 	parent.applyTo(forked)
 
+	opts = inheritForkModel(i, opts)
 	cmd, err := i.buildClaudeForkCommandForTarget(forked, opts)
 	if err != nil {
 		return nil, "", err

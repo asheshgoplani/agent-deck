@@ -52,6 +52,8 @@ const (
 	CodeCommandError   = "command_error"       // Claude printed an error
 	CodeInteractive    = "interactive_command" // command opened a dialog; cancelled
 	CodeEnterIgnored   = "enter_not_accepted"  // Enter left the command in the composer
+	CodeUnknownModel   = "unknown_model"       // the /model picker has no entry for the model
+	CodeDefaultSaved   = "default_saved"       // Claude saved the model as the default for new sessions
 	CodePaneGone       = "pane_gone"
 	CodeKeys           = "send_failed"
 	CodeRefused        = "refused_command" // never run remotely (/login, /logout)
@@ -86,6 +88,9 @@ func Parse(s string) (Command, error) {
 		return Command{}, fmt.Errorf("not a slash command: %q (want /name [args])", s)
 	}
 	args = strings.TrimSpace(args)
+	if name == "/model" && args == "" {
+		return Command{}, errors.New("pass a model id, e.g. /model claude-haiku-5-5 (bare /model only opens the interactive picker)")
+	}
 	switch name {
 	case "/login", "/logout":
 		return Command{}, fmt.Errorf("%w: %s changes the login of the shared Claude config dir, which logs every session using it in or out; run it yourself in that session", ErrRefused, name)
@@ -113,6 +118,10 @@ type Options struct {
 	Settle   time.Duration // pause after each keystroke before reading
 	DryRun   bool
 	Sleep    func(time.Duration)
+	// BeforeSubmit, when set, runs right before the Enter that submits the
+	// command, after every preflight check passed (the CLI reads the saved
+	// default model there).
+	BeforeSubmit func()
 }
 
 func (o *Options) defaults() {
@@ -157,6 +166,20 @@ type runner struct {
 	opts      Options
 	res       Result
 	confirmed bool // accepted the /model "Switch model?" confirmation
+	// /model picker navigation (navigatePicker): the picker is first moved
+	// to its top row, then walked down one row at a time until the requested
+	// entry is highlighted on two consecutive frames, then "s" is pressed.
+	// picked/pickedLabel: "s" sent on that entry. steps bounds the arrow
+	// keys; lastSel/stalled detect a list end that does not wrap; scanning
+	// is the walk down from the top, seen the labels passed (for the error).
+	picked      bool
+	pickedLabel string
+	steps       int
+	lastSel     int
+	stalled     int
+	scanning    bool
+	stableSel   int
+	seen        []string
 }
 
 // Run delivers cmd to the pane and verifies the outcome.
@@ -175,6 +198,12 @@ func (r *runner) fail(code, msg string, evidence ...string) Result {
 }
 
 func (r *runner) typed() string {
+	if r.cmd.Kind == KindModel {
+		// Never "/model <id>": typed with an argument Claude also saves the
+		// model as the default for new sessions (settings.json "model").
+		// The bare command opens the picker, where "s" is this session only.
+		return "/model "
+	}
 	if r.cmd.Args == "" {
 		// The space closes the picker on an exact command match (live 2.1.296).
 		return r.cmd.Text + " "
@@ -203,6 +232,16 @@ func (r *runner) run() Result {
 			"press Enter",
 			"verify: " + verifyDescription(r.cmd.Kind),
 		}
+		if r.cmd.Kind == KindModel {
+			r.res.Plan = []string{
+				`type "/model " (never the id: that would also save it as the default for new sessions)`,
+				"read the screen: composer must hold exactly that text and the command picker must be closed",
+				"press Enter to open the model picker",
+				fmt.Sprintf("move the picker to its first row, then down one row at a time to the first entry matching %s (family, version and 1M variant), re-reading the highlight after each key", r.cmd.Args),
+				`press "s" (use this session only); answer a "Switch model?" confirmation only when it names that model`,
+				"verify: " + verifyDescription(r.cmd.Kind),
+			}
+		}
 		return r.res
 	}
 
@@ -227,6 +266,9 @@ func (r *runner) run() Result {
 	if send.ClaudeTurnRunning(raw) {
 		// No Escape here: during a turn it interrupts the turn.
 		return r.fail(send.ComposerCodeBusy, "a turn started while typing; "+removedPhrase(r.eraseOwnLine())+", nothing submitted")
+	}
+	if r.opts.BeforeSubmit != nil {
+		r.opts.BeforeSubmit()
 	}
 	if err := r.p.SendNamedKey("Enter"); err != nil {
 		return r.fail(CodeKeys, "Enter failed: "+err.Error())

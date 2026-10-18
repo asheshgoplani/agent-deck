@@ -1,7 +1,8 @@
 # Open a page in AgentDeck
 
 `agent-deck open report.html` shows an HTML report in the Mac app Browser panel
-for `$AGENTDECK_INSTANCE_ID`. Use `--session <id|title>` to select another session
+for `$AGENTDECK_INSTANCE_ID`, else for the agent-deck session that owns the
+calling tmux session. Use `--session <id|title>` to select another session
 or when running outside a session. IDs match exactly; duplicate titles are refused.
 The selected profile applies to both the session lookup and the event bus.
 Relative paths use the CLI working directory. A directory selects `index.html`.

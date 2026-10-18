@@ -42,6 +42,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
 - [[macapp] Section](#macapp-section)
+- [[browser] Section](#browser-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -1208,13 +1209,27 @@ Switches for the Mac app surface (`docs/macapp-core.md`). All are off by default
 plugins = false            # Opt-in: limits --json and events publish --kind macapp.<name>
 transcript_events = false  # Notify daemon publishes session.transcript frames
 status_events = false      # Status owners publish session.status and session.turn frames
+## [browser] Section
+
+The opt-in for `agent-deck browser <op>` (docs/macapp-browser.md). Off by default.
+
+```toml
+[browser]
+enabled = true          # every profile
+
+[profiles.work.browser]
+enabled = false         # this profile only; overrides [browser]
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the built-in `macapp.open` and `macapp.open.ack`. Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
+| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the Mac app's own frames (`macapp.open`, `macapp.open.ack`, `macapp.browser.response`, `macapp.app.focus`); `macapp.browser.request` also needs [`[browser] enabled`](#browser-section). Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
 | `transcript_events` | bool | `false` | The notify daemon publishes a `session.transcript` frame whenever a live session's native transcript grows. Restart required. |
 | `status_events` | bool | `false` | Every status owner (TUI poller, notify daemon) publishes `session.status` and `session.turn` frames on each status transition. |
+| `browser.enabled` | bool | `false` | Allows `agent-deck browser <op>` and `events publish --kind macapp.browser.request` on this host. While off, both refuse before anything is published: exit 2, JSON code `BROWSER_DISABLED`, and the message names the setting and the command to turn it on. `agent-deck config set browser.enabled true`. |
+| `profiles.<name>.browser.enabled` | bool | none | Per-profile override of `browser.enabled`, either way. `agent-deck config set profiles.<name>.browser.enabled true`. |
+
+Browser requests also need `[macapp] plugins = true`. Both are opt-ins, not security boundaries: an agent on the host can edit its config. The Mac app enforces the browser policy.
 
 ## [tmux] Section
 

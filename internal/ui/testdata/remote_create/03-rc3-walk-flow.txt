@@ -15,13 +15,12 @@ Last response
 ⚠  session failed to start
 The command exited almost immediately (after 262ms).
 
-command: export AGENTDECK_INSTANCE_ID=parity-1; export AGENTDECK_PROFILE=personal; exec env -u TELEGRAM_STATE_DIR -u TELEGRAM_BOT_TOKEN claude --session-id 2f4e --name parity-1789689143
+command: export AGENTDECK_INSTANCE_ID=parity-1; export AGENT...
 
 (no output was captured before the process exited)
 
-Tip: run the command manually in this directory to see the full error,
+Tip: run the command manually in this directory to see the f...
 or check logs/session-id-lifecycle.jsonl for the spawn trace.
-
 
 Press Enter to attach via SSH
 --- footer ---

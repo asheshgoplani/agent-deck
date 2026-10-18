@@ -325,6 +325,9 @@ type UserConfig struct {
 	// Macapp holds the switches for the Mac app surface (docs/macapp-core.md).
 	Macapp MacappSettings `toml:"macapp,omitempty"`
 
+	// Browser holds the `agent-deck browser` opt-in (docs/macapp-browser.md).
+	Browser BrowserSettings `toml:"browser,omitempty"`
+
 	// Harnesses overrides the core install/login table per harness
 	// ([harnesses.<name>] binary, install_command, login_command, docs_url).
 	Harnesses map[string]harness.Override `toml:"harnesses,omitempty"`
@@ -1192,6 +1195,8 @@ type ProfileSettings struct {
 	// Nil pointer means "no [profiles.<name>.costs] block in TOML"; the
 	// resolver falls through to global [costs] settings.
 	Costs *ProfileCosts `toml:"costs,omitempty"`
+	// Browser overrides [browser] for this profile ([profiles.<name>.browser]).
+	Browser *BrowserSettings `toml:"browser,omitempty"`
 }
 
 // ProfileClaudeSettings defines profile-specific Claude overrides.

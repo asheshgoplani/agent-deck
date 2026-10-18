@@ -1,0 +1,50 @@
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                        ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮                                        
+                                        │ Triggers  deckbox · 5 · 1 dead · 1 failing                                                                           │                                        
+                                        │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │                                        
+                                        │     NAME                             WAKES                            EVERY                LAST   NOISE              │                                        
+                                        │ ▾ deckbox (5)                                                                                                        │                                        
+                                        │   launchd                                                                                                            │                                        
+                                        │   ○ com.ashesh.limit-guard           mac-ops                          every 1h             never  –                  │                                        
+                                        │   systemd                                                                                                            │                                        
+                                        │   ● agentdeck-github-issue-poll-for… conductor-ashesh                 every 15m            15m    0%                 │                                        
+                                        │ ▶ ✗ agentdeck-overnight              overnight-orchestrator           every 5m             5m     92%                │                                        
+                                        │   ● mail-poll                        inbox-triage                     every 10m            10m    0%                 │                                        
+                                        │   watcher                                                                                                            │                                        
+                                        │   ● github[2J                        conductor-ashesh                 –                    1h     90%                │                                        
+                                        │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │                                        
+                                        │ agentdeck-overnight sends to "overnight-orchestrator": no session has this name                                      │                                        
+                                        │ config ~/.config/systemd/user/agentdeck-overnight.service                                                            │                                        
+                                        │ j/k move  enter what wakes it  p problems  a all kinds  esc close                                                    │                                        
+                                        ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        

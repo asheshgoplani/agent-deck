@@ -22,6 +22,11 @@ func RefreshInstancesForCLIStatus(instances []*Instance) {
 	// hitting a subprocess per instance.
 	tmux.RefreshExistingSessions()
 	tmux.RefreshPaneInfoCache()
+	// Capture every live pane with one tmux client per socket instead of one
+	// `capture-pane` process per session: GetStatus and Substate then read
+	// the primed frame. This is the O(sessions) subprocess cost of every
+	// `list --json` a remote poller runs.
+	primeCLIStatusCaptures(instances)
 
 	// Cold-load hook status files for every tool that emits lifecycle
 	// events. The CLI is a fresh OS process with no StatusFileWatcher
@@ -53,4 +58,19 @@ func ReloadHookStatus(inst *Instance) {
 	if hs := readHookStatusFile(inst.ID); hs != nil {
 		inst.UpdateHookStatus(hs)
 	}
+}
+
+// primeCLIStatusCaptures batches the pane captures of the instances a status
+// pass is about to read (tmux.PrimePaneCaptures).
+func primeCLIStatusCaptures(instances []*Instance) {
+	sessions := make([]*tmux.Session, 0, len(instances))
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		if sess := inst.GetTmuxSession(); sess != nil {
+			sessions = append(sessions, sess)
+		}
+	}
+	tmux.PrimePaneCaptures(sessions)
 }

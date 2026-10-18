@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/slashcmd"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // defaultBackgroundWaitIdle bounds how long a --background run waits for the
@@ -186,8 +189,26 @@ func handleSessionCommand(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	run := slashcmd.Run(tmuxSess, cmd, slashcmd.Options{Timeout: *timeout, WaitIdle: *waitIdle, DryRun: *dryRun})
+	// The session's Claude config dir holds the default model for new
+	// sessions (settings.json "model"); /model here must never change it.
+	// "before" is read right before the Enter that submits /model, after
+	// any --wait-idle, so a change the user made elsewhere while we waited
+	// is not ours.
+	opts := slashcmd.Options{Timeout: *timeout, WaitIdle: *waitIdle, DryRun: *dryRun}
+	var configDir string
+	var defaultBefore defaultModel
+	if cmd.Kind == slashcmd.KindModel && !*dryRun {
+		configDir = commandConfigDir(inst, tmuxSess)
+		opts.BeforeSubmit = func() { defaultBefore = readDefaultModel(configDir) }
+	}
+	run := slashcmd.Run(tmuxSess, cmd, opts)
 	run.Session, run.ID = inst.Title, inst.ID
+	if configDir != "" && hasStep(run, "submitted") {
+		guardDefaultModel(&run, configDir, defaultBefore, cmd.Args)
+	}
+	if run.OK && cmd.Kind == slashcmd.KindModel && !*dryRun {
+		persistSwitchedModel(resolvedProfile, inst.ID, cmd.Args, &run)
+	}
 
 	if run.OK && cmd.Kind == slashcmd.KindExit && !*dryRun {
 		// Claude exited; finish with the same stop path as `session stop`
@@ -321,4 +342,131 @@ func truncateDescription(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
+}
+
+// defaultModel is the "model" key of a Claude config dir's settings.json,
+// the default for new sessions that typed "/model <id>" overwrites.
+type defaultModel struct {
+	value string
+	found bool
+}
+
+// settingsReadFile reads settings.json; tests replace it.
+var settingsReadFile = os.ReadFile
+
+func readDefaultModel(configDir string) defaultModel {
+	for attempt := 0; ; attempt++ {
+		var settings struct {
+			Model *string `json:"model"`
+		}
+		data, err := settingsReadFile(filepath.Join(configDir, "settings.json"))
+		if err != nil {
+			return defaultModel{}
+		}
+		if json.Unmarshal(data, &settings) != nil {
+			if attempt == 0 {
+				// Claude may be rewriting it: read once more.
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+			return defaultModel{}
+		}
+		if settings.Model == nil {
+			return defaultModel{}
+		}
+		return defaultModel{value: *settings.Model, found: true}
+	}
+}
+
+// guardDefaultModel fails res with default_changed when the saved default
+// for new sessions changed while /model ran AND the new value is the model
+// that was requested (the switch saved it). A change to some other value
+// was made elsewhere (another session sharing the config dir): it is noted
+// as evidence and does not fail the switch. Nothing is ever restored or
+// suggested for restoring: the value may be the user's deliberate choice.
+func guardDefaultModel(res *slashcmd.Result, configDir string, before defaultModel, requested string) {
+	after := readDefaultModel(configDir)
+	path := filepath.Join(configDir, "settings.json")
+	if after == before {
+		if before.found {
+			res.Evidence = append(res.Evidence, fmt.Sprintf(`settings.json "model" unchanged (%q)`, before.value))
+		}
+		return
+	}
+	change := fmt.Sprintf(`settings.json "model": %q -> %q (%s)`, before.value, after.value, path)
+	if !after.found || !(slashcmd.ModelMatches(requested, after.value) || (res.After != "" && slashcmd.ModelMatches(res.After, after.value))) {
+		res.Evidence = append(res.Evidence, change+"; not the requested model, so changed elsewhere")
+		return
+	}
+	res.OK, res.Code = false, "default_changed"
+	res.Error = fmt.Sprintf("the switch also saved %s as the default model for new sessions (%s)", after.value, change)
+	res.Evidence = append(res.Evidence, change)
+}
+
+func hasStep(res slashcmd.Result, step string) bool {
+	return slices.Contains(res.Steps, step)
+}
+
+// commandConfigDir is the Claude config dir the session runs with: the
+// CLAUDE_CONFIG_DIR in its tmux environment when set (a custom wrapper or a
+// launch-time override), else the one agent-deck resolves for it.
+func commandConfigDir(inst *session.Instance, tmuxSess *tmux.Session) string {
+	if tmuxSess != nil {
+		if v, err := tmuxSess.GetEnvironment("CLAUDE_CONFIG_DIR"); err == nil && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return session.ClaudeConfigDirForSend(inst)
+}
+
+// persistSwitchedModel stores a verified /model switch on the instance, so
+// a restart, a crash restart or a fork starts on that model (--model)
+// instead of reverting to the launch or default model. The typed id or
+// alias is stored: Claude's picker shows display names, not ids. "default"
+// clears the stored model (restart then uses the configured default). A
+// display label ("Haiku 5.5") is not a --model value and is not stored.
+//
+// The registry is re-read here (the switch can take minutes) so only this
+// session's model changes.
+func persistSwitchedModel(profile, id, arg string, res *slashcmd.Result) {
+	model := strings.TrimSpace(arg)
+	if slashcmd.IsDefaultModel(model) {
+		model = "" // clear: back to the configured default on restart
+	} else if model == "" || strings.ContainsAny(model, " \t") {
+		res.Evidence = append(res.Evidence, "model not stored for restart: "+model+" is not a --model value")
+		return
+	}
+	storage, instances, groups, err := loadSessionData(profile)
+	if err != nil {
+		res.Evidence = append(res.Evidence, "model not stored for restart: "+err.Error())
+		return
+	}
+	defer storage.Close()
+	var inst *session.Instance
+	for _, candidate := range instances {
+		if candidate.ID == id {
+			inst = candidate
+		}
+	}
+	if inst == nil {
+		res.Evidence = append(res.Evidence, "model not stored for restart: session no longer in the registry")
+		return
+	}
+	_, postCommit, err := session.SetField(inst, session.FieldModel, model, nil)
+	if err != nil {
+		res.Evidence = append(res.Evidence, "model not stored for restart: "+err.Error())
+		return
+	}
+	if postCommit != nil {
+		postCommit()
+	}
+	if err := saveSessionData(storage, instances, groups); err != nil {
+		res.Evidence = append(res.Evidence, "model not stored for restart: "+err.Error())
+		return
+	}
+	if model == "" {
+		res.Steps = append(res.Steps, "cleared the session's stored model: restart and fork use the configured default")
+		return
+	}
+	res.Steps = append(res.Steps, "stored "+model+" as the session's model for restart and fork")
 }

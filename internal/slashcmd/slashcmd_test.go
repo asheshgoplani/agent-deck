@@ -33,28 +33,10 @@ func TestParse(t *testing.T) {
 			t.Fatalf("Parse(%q) = %+v", c.in, cmd)
 		}
 	}
-	for _, bad := range []string{"", "model", "/", "/ model", "/model\nrm", "/model\x1b[A", "/mo del\tx"} {
+	for _, bad := range []string{"", "model", "/", "/ model", "/model\nrm", "/model\x1b[A", "/mo del\tx", "/model", "/model  "} {
 		if _, err := Parse(bad); err == nil {
 			t.Fatalf("Parse(%q) must fail", bad)
 		}
-	}
-}
-
-func TestRun_ModelSwitchIsVerifiedFromTheEcho(t *testing.T) {
-	f := newFakeClaude()
-	cmd, _ := Parse("/model claude-haiku-5-5")
-	res := Run(f, cmd, fastOpts())
-	if !res.OK {
-		t.Fatalf("model switch failed: %+v", res)
-	}
-	if res.Before != "Fable 5.1" || res.After != "Haiku 5.5" {
-		t.Fatalf("before/after = %q/%q", res.Before, res.After)
-	}
-	if len(res.Evidence) == 0 || !strings.Contains(res.Evidence[0], "Set model to Haiku 5.5") {
-		t.Fatalf("evidence missing the echo: %v", res.Evidence)
-	}
-	if got := strings.Join(f.executed, "|"); got != "/model claude-haiku-5-5" {
-		t.Fatalf("executed %q", got)
 	}
 }
 
@@ -210,21 +192,6 @@ func TestRun_WaitIdleWaitsForTheTurnToEnd(t *testing.T) {
 	}
 }
 
-func TestRun_ModelWithoutArgumentOpensDialogWhichIsCancelled(t *testing.T) {
-	f := newFakeClaude()
-	cmd, _ := Parse("/model")
-	res := Run(f, cmd, fastOpts())
-	if res.OK || res.Code != CodeInteractive {
-		t.Fatalf("want interactive_command, got %+v", res)
-	}
-	if f.dialog {
-		t.Fatal("the dialog our command opened must be cancelled")
-	}
-	if f.model != "Fable 5.1" {
-		t.Fatalf("model changed to %q", f.model)
-	}
-}
-
 func TestRun_ExitIsVerifiedByThePaneGoingAway(t *testing.T) {
 	f := newFakeClaude()
 	cmd, _ := Parse("/exit")
@@ -276,20 +243,6 @@ func (i *interleaving) SendKeys(text string) error {
 	return i.fakeClaude.SendKeys(text)
 }
 
-func TestRun_ModelSwitchConfirmsOnlyTheRequestedSwitch(t *testing.T) {
-	f := newFakeClaude()
-	f.model = "Haiku 5.5"
-	f.cached = true
-	cmd, _ := Parse("/model claude-fable-5-1")
-	res := Run(f, cmd, fastOpts())
-	if !res.OK || res.After != "Fable 5.1" {
-		t.Fatalf("switch with confirmation: %+v", res)
-	}
-	if !strings.Contains(strings.Join(res.Evidence, " "), "Yes, switch to Fable 5.1") {
-		t.Fatalf("evidence must record the confirmation: %v", res.Evidence)
-	}
-}
-
 func hasKey(keys []string, k string) bool {
 	for _, x := range keys {
 		if x == k {
@@ -332,22 +285,6 @@ func TestRun_KeysTypedRightBeforeEnterAreNotSubmitted(t *testing.T) {
 	res := Run(f, cmd, fastOpts())
 	if res.OK || res.Code != CodeTypeMismatch || hasKey(f.keys, "key:Enter") || hasKey(f.keys, "key:C-u") {
 		t.Fatalf("want type_mismatch with no Enter or Ctrl+U, got %+v keys=%v", res, f.keys)
-	}
-}
-
-// Review S3: a "Switch model?" dialog naming another model is cancelled.
-func TestRun_SwitchDialogForAnotherModelIsCancelled(t *testing.T) {
-	f := newFakeClaude()
-	f.model = "Haiku 5.5"
-	f.cached = true
-	f.switchTo = "Opus 5.5"
-	cmd, _ := Parse("/model claude-fable-5-1")
-	res := Run(f, cmd, fastOpts())
-	if res.OK || res.Code != CodeCommandError {
-		t.Fatalf("want command_error, got %+v", res)
-	}
-	if f.model != "Haiku 5.5" || f.pendingModel != "" {
-		t.Fatalf("model must stay and the dialog must be cancelled: model=%q pending=%q", f.model, f.pendingModel)
 	}
 }
 
@@ -421,5 +358,114 @@ func TestReadPicker_RowWithoutDescription(t *testing.T) {
 	st := readPicker(content)
 	if !st.open || st.selected != "/deploy" {
 		t.Fatalf("picker = %+v", st)
+	}
+}
+
+// The incident class: typed "/model <id>" also saves the default for new
+// sessions. The picker's "s" (this session only) is the only path used.
+func TestRun_ModelSwitchIsSessionOnly(t *testing.T) {
+	f := newFakeClaude()
+	cmd, _ := Parse("/model claude-haiku-5-5")
+	res := Run(f, cmd, fastOpts())
+	if !res.OK || res.Before != "Fable 5.1" || res.After != "Haiku 5.5" {
+		t.Fatalf("model switch: %+v", res)
+	}
+	if len(f.savedDefault) != 0 {
+		t.Fatalf("the default for new sessions was written: %v", f.savedDefault)
+	}
+	if f.keys[0] != "text:/model " {
+		t.Fatalf("the model id must never be typed after /model; first key %q", f.keys[0])
+	}
+	if !strings.Contains(strings.Join(res.Evidence, " "), "for this session only") {
+		t.Fatalf("evidence must show the session-only echo: %v", res.Evidence)
+	}
+}
+
+func TestRun_ModelSwitchWithCachedConversationStaysSessionOnly(t *testing.T) {
+	f := newFakeClaude()
+	f.model = "Haiku 5.5"
+	f.cached = true
+	cmd, _ := Parse("/model claude-fable-5-1")
+	res := Run(f, cmd, fastOpts())
+	if !res.OK || res.After != "Fable 5.1" || len(f.savedDefault) != 0 {
+		t.Fatalf("switch with confirmation: %+v saved=%v", res, f.savedDefault)
+	}
+	if !strings.Contains(strings.Join(res.Evidence, " "), "Yes, switch to Fable 5.1") {
+		t.Fatalf("evidence must record the confirmation: %v", res.Evidence)
+	}
+}
+
+func TestRun_ModelBelowThePickerWindowIsReached(t *testing.T) {
+	f := newFakeClaude()
+	cmd, _ := Parse("/model claude-opus-4-6")
+	res := Run(f, cmd, fastOpts())
+	if !res.OK || f.model != "Opus 4.6" || len(f.savedDefault) != 0 {
+		t.Fatalf("scrolling pick: %+v model=%q saved=%v", res, f.model, f.savedDefault)
+	}
+}
+
+func TestRun_ModelLabelMustMatchExactly(t *testing.T) {
+	f := newFakeClaude()
+	cmd, _ := Parse("/model claude-opus-5")
+	res := Run(f, cmd, fastOpts())
+	if !res.OK || f.model != "Opus 5" {
+		t.Fatalf("claude-opus-5 must pick Opus 5, not Opus 5.5: %+v model=%q", res, f.model)
+	}
+}
+
+func TestRun_UnknownModelCancelsThePicker(t *testing.T) {
+	f := newFakeClaude()
+	cmd, _ := Parse("/model claude-nope-9")
+	res := Run(f, cmd, fastOpts())
+	if res.OK || res.Code != CodeUnknownModel || f.picker || f.model != "Fable 5.1" || len(f.savedDefault) != 0 {
+		t.Fatalf("want unknown_model with the picker cancelled: %+v picker=%v model=%q", res, f.picker, f.model)
+	}
+	if hasKey(f.keys, "key:Enter") && f.keys[len(f.keys)-1] == "key:Enter" {
+		t.Fatalf("Enter in the picker saves the default; keys %v", f.keys)
+	}
+}
+
+func TestRun_SwitchDialogForAnotherModelIsCancelled(t *testing.T) {
+	f := newFakeClaude()
+	f.model = "Haiku 5.5"
+	f.cached = true
+	f.switchTo = "Opus 5.5"
+	cmd, _ := Parse("/model claude-fable-5-1")
+	res := Run(f, cmd, fastOpts())
+	if res.OK || res.Code != CodeCommandError || f.model != "Haiku 5.5" || f.pendingModel != "" {
+		t.Fatalf("want command_error with the dialog cancelled: %+v model=%q pending=%q", res, f.model, f.pendingModel)
+	}
+}
+
+// savingS makes the picker's "s" behave like Enter (save the default), so
+// the outcome check must catch a saved default even if the UI changes.
+type savingS struct{ *fakeClaude }
+
+func (v *savingS) SendKeys(text string) error {
+	if v.picker && text == "s" {
+		v.fakeClaude.keys = append(v.fakeClaude.keys, "text:s")
+		v.picker = false
+		v.pickModel(fakeModels[v.pickerSel], false)
+		return nil
+	}
+	return v.fakeClaude.SendKeys(text)
+}
+
+func TestRun_SavedDefaultEchoIsAFailure(t *testing.T) {
+	f := newFakeClaude()
+	cmd, _ := Parse("/model claude-haiku-5-5")
+	res := Run(&savingS{f}, cmd, fastOpts())
+	if res.OK || res.Code != CodeDefaultSaved {
+		t.Fatalf("want default_saved, got %+v", res)
+	}
+}
+
+func TestRun_ModelAboveTheVisibleWindowIsFound(t *testing.T) {
+	f := newFakeClaude()
+	f.model = "Sonnet 4.6" // last entry: the window shows rows 4-13, Opus 5.5 is row 2
+	cmd, _ := Parse("/model claude-opus-5-5")
+	res := Run(f, cmd, fastOpts())
+	if !res.OK || f.model != "Opus 5.5" || len(f.savedDefault) != 0 {
+		t.Fatalf("pick above the window: %+v model=%q", res, f.model)
 	}
 }

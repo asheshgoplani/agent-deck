@@ -696,6 +696,8 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 // resolveAskTarget maps a requested target to the concrete allowlisted session
 // title, returning "" if it is not allowed. "maestro" resolves to the live
 // "conductor-maestro" session when present (else bare "maestro").
+// commandCenterAskArgs is the `session send` argv of one ask. --source
+// command-center names the sender in `agent-deck triggers` (issue #2702).
 func resolveAskTarget(target string, allow []string) string {
 	if target == "maestro" {
 		if targetAllowed(allow, "conductor-maestro") {
@@ -765,5 +767,6 @@ func firstNonEmptyString(vals ...string) string {
 // message is never blocked by an enforced cost budget, which gates
 // agent-initiated sends only.
 func commandCenterSendArgs(profile, target, msg string) []string {
-	return []string{"-p", profile, "session", "send", target, msg, "--no-wait", "--no-tag", "--ignore-budget"}
+	// --source names the ask in `agent-deck triggers` (issue #2702).
+	return []string{"-p", profile, "session", "send", target, msg, "--no-wait", "--no-tag", "--ignore-budget", "--source", "command-center"}
 }

@@ -1,0 +1,11 @@
+Usage: agent-deck triggers fires <id> [--limit N] [--json]
+
+The recent fire log of one trigger, newest first: when, at which session, the
+outcome, and its first line (sanitized, secrets redacted, 80 cells). Kept 7 days,
+at most 2000 fires per trigger.
+
+Options:
+  -json
+    	Output as JSON
+  -limit int
+    	Newest fires to show (default 50)

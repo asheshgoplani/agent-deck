@@ -43,7 +43,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.16.29" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.16.30" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -591,8 +591,14 @@ func main() {
 		case "open":
 			handleOpen(profile, args[1:])
 			return
+		case "browser":
+			handleBrowser(profile, args[1:])
+			return
 		case "events":
 			handleEvents(profile, args[1:])
+			return
+		case "triggers":
+			handleTriggers(profile, args[1:])
 			return
 		case "daemon":
 			handleDaemon(profile, args[1:])
@@ -1167,7 +1173,7 @@ func main() {
 			go func() {
 				for raw := range costWatcher.EventCh() {
 					ev := costs.CostEvent{
-						ID:               costs.HookCostEventID(raw.InstanceID, raw.MessageUUID, raw.Timestamp),
+						ID:               costs.HookCostEventID(raw.InstanceID, raw.MessageID, raw.MessageUUID, raw.Timestamp),
 						SessionID:        raw.InstanceID,
 						Timestamp:        time.Unix(0, raw.Timestamp),
 						Model:            raw.Model,
@@ -1533,7 +1539,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "file": true, "events": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "browser": true, "file": true, "events": true, "triggers": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -4571,6 +4577,7 @@ func printHelp() {
 	fmt.Println("  status           Show session status summary")
 	fmt.Println("  session          Manage session lifecycle")
 	fmt.Println("  open <file|url>  Show a page in the Mac app Browser panel [--session <id|title>]")
+	fmt.Println("  browser <op>     Drive the session's Mac app Browser: open, tabs, close, click, type, read, shot")
 	fmt.Println("  file bundle      Export a page folder as a size-capped tar [--session <id>]")
 	fmt.Println("  file read        Print a file under [web] file_link_roots [--json]")
 	fmt.Println("  file roots       List [web] file_link_roots [--json]")
@@ -4591,6 +4598,7 @@ func printHelp() {
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
+	fmt.Println("  triggers         What wakes each session: jobs, heartbeats, channels (docs/triggers.md)")
 	fmt.Println("  agents           List adopted agents, grouped by machine")
 	fmt.Println("  agent            Adopt and inspect agent definitions")
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")

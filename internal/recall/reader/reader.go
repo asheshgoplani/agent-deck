@@ -104,13 +104,17 @@ type FileTouch struct {
 // session and, for a linked deck session, hands it to the cost store, so
 // the transcript is read once, not twice.
 type Usage struct {
-	UUID   string
-	TS     time.Time
-	Model  string
-	In     int64
-	Out    int64
-	CacheR int64
-	CacheW int64
+	UUID string
+	// MessageID is the API message the usage belongs to, when the format
+	// has one (Claude). Records of one message repeat its usage, so the
+	// usage is counted once per message, not per record.
+	MessageID string
+	TS        time.Time
+	Model     string
+	In        int64
+	Out       int64
+	CacheR    int64
+	CacheW    int64
 }
 
 // Counter names the structural events that only bump a number.

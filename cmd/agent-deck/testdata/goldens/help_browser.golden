@@ -1,0 +1,26 @@
+Usage: agent-deck browser <op> [flags]
+
+Drive the calling session's own Browser panel in the AgentDeck Mac app.
+
+Ops:
+  open <url|file> [--tab ID | --new-tab] [--browser-profile NAME]
+  tabs
+  close --tab ID
+  click (--ref R | --selector S | --text T) [--tab ID]
+  type (--ref R | --selector S) --text T [--submit] [--tab ID]
+  read [--outline] [--tab ID]
+  shot [--full] [--out FILE] [--tab ID]
+
+Common flags:
+  --session <id|title>  default $AGENTDECK_INSTANCE_ID, then the calling tmux session
+  --json                print the app's response
+  --timeout <duration>  default 30s (120s for click and type)
+
+Off until two opt-ins are on (neither is a security boundary):
+  agent-deck config set browser.enabled true                  ([browser] enabled, every profile)
+  agent-deck config set profiles.<name>.browser.enabled true  (one profile only)
+  agent-deck config set macapp.plugins true --yes             ([macapp] plugins)
+
+Exit codes: 0 ok, 1 error, 2 browser.enabled off (JSON code BROWSER_DISABLED),
+3 not_connected (no answer in time), 4 owner_driving.
+Details: docs/macapp-browser.md

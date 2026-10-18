@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
+	"github.com/asheshgoplani/agent-deck/internal/macapp"
 )
 
 func TestOpenSessionIdentifier(t *testing.T) {
@@ -54,6 +56,9 @@ func TestOpenTargetValidation(t *testing.T) {
 		{"https://", "", "", true}, {"https://user:secret@example.com", "", "", true},
 		{"https://example.com/\n", "", "", true}, {"https://[bad", "", "", true},
 	} {
+		restore := openCallerIsRemote
+		openCallerIsRemote = func() bool { return false }
+		defer func() { openCallerIsRemote = restore }()
 		p, u, err := resolveOpenTarget(tc.target)
 		if (err != nil) != tc.bad || (!tc.bad && (p != tc.path || u != tc.url)) {
 			t.Errorf("%q: %q %q %v", tc.target, p, u, err)
@@ -498,5 +503,30 @@ func TestOpenWaitBoundsTheAckWait(t *testing.T) {
 		if code != 0 || strings.TrimSpace(stdout) != openQueuedMessage || elapsed < c.min || elapsed > c.max {
 			t.Fatalf("--wait %s: exit=%d %q %q after %s, want %s..%s", c.wait, code, stdout, stderr, elapsed, c.min, c.max)
 		}
+	}
+}
+
+// Defence in depth: on a host the app reaches as a remote, open and browser
+// open refuse loopback, private and link-local addresses before writing a
+// request; a local Mac session may still open its own dev server.
+func TestOpenTargetRefusesInternalAddressesFromARemote(t *testing.T) {
+	restore := openCallerIsRemote
+	defer func() { openCallerIsRemote = restore }()
+	openCallerIsRemote = func() bool { return true }
+	for _, bad := range []string{"http://localhost:8080/", "http://192.168.1.1/", "http://169.254.169.254/latest/meta-data/", "http://[::1]/", "http://2130706433/",
+		"http://１２７.０.０.１/", "http://ｌｏｃａｌｈｏｓｔ/", "http://127。0。0。1/", "http://100.100.1.1/", "http://router/"} {
+		if _, _, err := resolveOpenTarget(bad); !errors.Is(err, macapp.ErrInternalAddress) {
+			t.Errorf("%s from a remote: %v", bad, err)
+		}
+	}
+	if _, u, err := resolveOpenTarget("https://example.com/"); err != nil || u != "https://example.com/" {
+		t.Fatalf("public URL: %q %v", u, err)
+	}
+	openCallerIsRemote = func() bool { return false }
+	if _, u, err := resolveOpenTarget("http://localhost:8080/"); err != nil || u != "http://localhost:8080/" {
+		t.Fatalf("local Mac session: %q %v", u, err)
+	}
+	if !(func() bool { return !localMacappLaunchAllowed("linux", func(string) string { return "" }) }()) || localMacappLaunchAllowed("darwin", func(k string) string { return map[string]string{"SSH_CONNECTION": "x"}[k] }) {
+		t.Fatal("a Linux host or an SSH session counts as a remote")
 	}
 }

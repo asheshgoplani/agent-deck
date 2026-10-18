@@ -85,3 +85,10 @@ func modelMatches(arg, display string) bool {
 	got, ok := parseModelSpec(display)
 	return ok && want.matches(got)
 }
+
+// ModelMatches is modelMatches for callers outside the package (the CLI's
+// saved-default guard).
+func ModelMatches(arg, display string) bool { return modelMatches(arg, display) }
+
+// IsDefaultModel reports the "default" alias.
+func IsDefaultModel(s string) bool { return isDefaultModel(s) }

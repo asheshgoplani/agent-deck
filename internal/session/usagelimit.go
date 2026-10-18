@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -378,6 +379,9 @@ func latestAssistantTurnLimit(path string, now time.Time) (verdict limitVerdict,
 // switch, limit_verdict_reset.go): such a record is about the old account or
 // model, so it yields no verdict (ok true) and the next real turn decides. A
 // zero resetAt ignores nothing.
+// assistantWord is the byte pattern every assistant turn record contains.
+var assistantWord = []byte("assistant")
+
 func latestAssistantTurnLimitSince(path string, now, resetAt time.Time) (verdict limitVerdict, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -436,6 +440,14 @@ func latestAssistantTurnLimitSince(path string, now, resetAt time.Time) (verdict
 		}
 		line := make([]byte, end-start)
 		if _, err := f.ReadAt(line, start); err != nil && err != io.EOF {
+			return limitVerdict{}, false, false
+		}
+		// isAssistantTurn needs role or type "assistant", so a line without
+		// that word cannot be one: skip decoding it. Walking back from the
+		// tail this passes over the (often large) tool-result and user
+		// records without a full JSON decode each, which was most of this
+		// scan's cost on every `list --json`.
+		if !bytes.Contains(line, assistantWord) {
 			return limitVerdict{}, false, false
 		}
 		trimmed := strings.TrimSpace(string(line))

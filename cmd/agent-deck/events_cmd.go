@@ -275,9 +275,6 @@ func handleEventsPublish(profile string, args []string) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	if cfg, _ := session.LoadUserConfig(); !events.IsMacappUngatedKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
-		exitMacappPluginsOff(out, "events publish")
-	}
 	if *profileFlag != "" {
 		p, err := resolveEventsProfile(*profileFlag)
 		if err != nil {
@@ -285,6 +282,22 @@ func handleEventsPublish(profile string, args []string) {
 			exitCLI(2)
 		}
 		profile = p
+	}
+	if *kind == events.KindMacappBrowserRequest {
+		// The browser opt-in gates the request kind on every publish path
+		// (a forwarded remote publish never carries it: reply kinds only).
+		resolved, err := session.ResolveProfileForStorage(profile)
+		if err != nil {
+			out.Error(fmt.Sprintf("events publish: %v", err), ErrCodeInvalidOperation)
+			exitCLI(2)
+		}
+		if err := requireBrowserEnabled(resolved); err != nil {
+			out.Error("events publish: "+err.Error(), ErrCodeBrowserDisabled)
+			exitCLI(2)
+		}
+	}
+	if cfg, _ := session.LoadUserConfig(); !events.IsMacappUngatedKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
+		exitMacappPluginsOff(out, "events publish")
 	}
 	if *fromRemote {
 		if err := checkRemoteReplyPublish(profile, *kind, *sessionID, *data, *dataFile); err != nil {
@@ -300,6 +313,15 @@ func handleEventsPublish(profile string, args []string) {
 			out.Error(fmt.Sprintf("events publish: read data: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
 		}
+	}
+	if *kind == events.KindMacappBrowserResponse {
+		// Page text and screenshots go to a 0600 side file, not the log.
+		spilled, err := spillBrowserResponse(profile, raw, time.Now())
+		if err != nil {
+			out.Error(fmt.Sprintf("events publish: keep the browser result out of the log: %v", err), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		raw = spilled
 	}
 	var payload any
 	if len(strings.TrimSpace(string(raw))) > 0 {
