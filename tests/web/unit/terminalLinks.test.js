@@ -528,3 +528,89 @@ describe('modifier-click links (#2675)', () => {
     expect(opened).toEqual(['https://example.com/c'])
   })
 })
+
+// #2676 serve: a file:// link under `[web] file_link_roots` opens through the
+// deck's GET /api/files; everything else keeps the copy-path fallback.
+describe('file links under file_link_roots', () => {
+  const fakeWin = () => {
+    const child = { opener: {}, location: { href: '' } }
+    return { child, open: vi.fn(() => child), location: { origin: 'https://deck.example:8420' } }
+  }
+
+  it('isUnderFileLinkRoot matches the root and below, never a sibling prefix', async () => {
+    const { isUnderFileLinkRoot } = await load()
+    const roots = ['/home/me/projects', '/srv/reports/']
+    expect(isUnderFileLinkRoot('/home/me/projects/a/r.html', roots)).toBe(true)
+    expect(isUnderFileLinkRoot('/home/me/projects', roots)).toBe(true)
+    expect(isUnderFileLinkRoot('/srv/reports/x.txt', roots)).toBe(true)
+    expect(isUnderFileLinkRoot('/home/me/projects-old/r.html', roots)).toBe(false)
+    expect(isUnderFileLinkRoot('/home/me/projects/../.ssh/id_rsa', roots)).toBe(false)
+    expect(isUnderFileLinkRoot('/etc/hosts', roots)).toBe(false)
+    expect(isUnderFileLinkRoot('/home/me/projects/r.html', [])).toBe(false)
+    expect(isUnderFileLinkRoot('/home/me/projects/r.html', undefined)).toBe(false)
+  })
+
+  it('opens a file under a root through /api/files, without the confirm', async () => {
+    const { openTerminalLink } = await load()
+    const win = fakeWin()
+    const ask = vi.fn(() => true)
+    const onFileLink = vi.fn()
+    const ok = openTerminalLink('file:///home/me/projects/a%20b/r.html', {
+      fileLinkRoots: ['/home/me/projects'],
+    }, { win, confirm: ask, onFileLink })
+
+    expect(ok).toBe(true)
+    expect(ask).not.toHaveBeenCalled()
+    expect(onFileLink).not.toHaveBeenCalled()
+    expect(win.child.opener).toBe(null)
+    expect(win.child.location.href).toBe(
+      'https://deck.example:8420/api/files?path=' + encodeURIComponent('/home/me/projects/a b/r.html'))
+  })
+
+  it('a root of / covers every absolute path', async () => {
+    const { isUnderFileLinkRoot } = await load()
+    expect(isUnderFileLinkRoot('/etc/hosts', ['/'])).toBe(true)
+  })
+
+  it('opens a file://<deck host>/ link (ls --hyperlink) but never another host', async () => {
+    const { openTerminalLink, isDeckFileHost } = await load()
+    expect(isDeckFileHost('', 'deckbox')).toBe(true)
+    expect(isDeckFileHost('deckbox', 'deckbox.lan')).toBe(true)
+    expect(isDeckFileHost('DeckBox.lan', 'deckbox')).toBe(true)
+    expect(isDeckFileHost('laptop', 'deckbox')).toBe(false)
+    expect(isDeckFileHost('deckbox', '')).toBe(false)
+
+    const opts = { fileLinkRoots: ['/home/me/projects'], fileLinkHost: 'deckbox' }
+    const mine = fakeWin()
+    expect(openTerminalLink('file://deckbox/home/me/projects/r.txt', opts, { win: mine })).toBe(true)
+    expect(mine.child.location.href).toContain('/api/files?path=' + encodeURIComponent('/home/me/projects/r.txt'))
+
+    const other = fakeWin()
+    const onFileLink = vi.fn()
+    expect(openTerminalLink('file://laptop/home/me/projects/r.txt', opts, { win: other, onFileLink })).toBe(false)
+    expect(other.open).not.toHaveBeenCalled()
+    expect(onFileLink).toHaveBeenCalledWith('/home/me/projects/r.txt')
+  })
+
+  it('keeps the copy-path fallback outside the roots', async () => {
+    const { openTerminalLink } = await load()
+    const win = fakeWin()
+    const onFileLink = vi.fn()
+    const ok = openTerminalLink('file:///etc/hosts', { fileLinkRoots: ['/home/me/projects'] }, { win, onFileLink })
+    expect(ok).toBe(false)
+    expect(win.open).not.toHaveBeenCalled()
+    expect(onFileLink).toHaveBeenCalledWith('/etc/hosts')
+  })
+
+  it('the handler reads the roots from the live signal', async () => {
+    const { createTerminalLinkHandler } = await load()
+    const { fileLinkRootsSignal } = await import('../../../internal/web/static/app/state.js')
+    const child = { opener: {}, location: { href: '' } }
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => child)
+    fileLinkRootsSignal.value = ['/home/me/projects']
+    createTerminalLinkHandler().activate(new MouseEvent('click'), 'file:///home/me/projects/r.txt')
+    expect(child.location.href).toContain('/api/files?path=' + encodeURIComponent('/home/me/projects/r.txt'))
+    fileLinkRootsSignal.value = []
+    openSpy.mockRestore()
+  })
+})

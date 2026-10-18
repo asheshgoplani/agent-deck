@@ -92,6 +92,9 @@ type updateCheckJSON struct {
 	// RemoteNudges is each configured remote's latest auto_update_remotes
 	// nudge outcome (#2472); omitted when this host never nudged.
 	RemoteNudges []session.RemoteNudgeRecord `json:"remote_nudges,omitempty"`
+	// ShadowedBy lists the older agent-deck copies earlier on PATH than
+	// this executable: shells run those instead. Empty when PATH is clean.
+	ShadowedBy []update.ShadowCopy `json:"shadowed_by"`
 }
 
 func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettings, timer update.TimerStatus, onDisk string, tuis []update.TUIReport, pending []update.PendingAgent, nudges ...session.RemoteNudgeRecord) updateCheckJSON {
@@ -114,6 +117,7 @@ func buildUpdateCheckJSON(info *update.UpdateInfo, settings session.UpdateSettin
 		RunningTUIs:         tuis,
 		PendingLaunchAgents: pending,
 		RemoteNudges:        nudges,
+		ShadowedBy:          []update.ShadowCopy{},
 	}
 }
 
@@ -303,6 +307,10 @@ func runUnattendedUpdate(d unattendedDeps) int {
 
 	fmt.Fprintf(d.out, "✓ Updated to v%s (unattended); running agent-deck processes restart themselves\n", info.LatestVersion)
 	log.Info("unattended_update_done", slog.String("installed", info.LatestVersion))
+	// No PATH shadow scan here: the timer and a controller's nudge run
+	// with their own PATH (systemd's or launchd's default, an ssh
+	// command's), not the user's shell PATH, so a scan would report
+	// against the wrong PATH. update --check and doctor run it.
 
 	if d.sweepRemotes != nil {
 		d.sweepRemotes(info.LatestVersion)

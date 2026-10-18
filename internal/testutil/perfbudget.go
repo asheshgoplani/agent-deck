@@ -130,6 +130,13 @@ func applyMultiplier(t *testing.T, measure time.Duration) time.Duration {
 	return time.Duration(float64(measure) * budgetMultiplier(t))
 }
 
+// BudgetMultiplier returns PERF_BUDGET_MULTIPLIER (1.0 when unset or
+// invalid), for budgets that are not durations (a CPU share).
+func BudgetMultiplier(t *testing.T) float64 {
+	t.Helper()
+	return budgetMultiplier(t)
+}
+
 // budgetMultiplier returns PERF_BUDGET_MULTIPLIER, or 1.0 when unset or
 // invalid.
 func budgetMultiplier(t *testing.T) float64 {

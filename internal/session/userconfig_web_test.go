@@ -170,3 +170,36 @@ func TestNormalizeTrustedDomains(t *testing.T) {
 		})
 	}
 }
+
+// --- [web] file_link_roots (issue #2676) -----------------------------------
+
+func TestWebFileLinkRoots_OffWhenAbsent(t *testing.T) {
+	withTempHomeAndConfig(t, "[web]\nmutations_enabled = true\n")
+	if got := GetWebFileLinkRoots(); got != nil {
+		t.Errorf("GetWebFileLinkRoots() = %v, want nil (file links off) when the key is absent", got)
+	}
+}
+
+func TestWebFileLinkRoots_ExpandsHomeAndDropsRelative(t *testing.T) {
+	withTempHomeAndConfig(t, "[web]\nfile_link_roots = [\"~/projects\", \"relative\", \"/srv/reports/\", \"~/projects\"]\n")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := GetWebFileLinkRoots()
+	want := []string{filepath.Join(home, "projects"), "/srv/reports"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("GetWebFileLinkRoots() = %v, want %v", got, want)
+	}
+}
+
+func TestWebFileLinkRoots_RefusesWideningEntries(t *testing.T) {
+	withTempHomeAndConfig(t, "[web]\nfile_link_roots = [\"/\", \"~\", \"$AGENTDECK_TEST_UNSET_ROOT/\", \"/srv/reports\"]\n")
+	roots, refused := GetWebFileLinkRootsChecked()
+	if len(roots) != 1 || roots[0] != "/srv/reports" {
+		t.Fatalf("roots = %v, want only /srv/reports", roots)
+	}
+	if len(refused) != 3 {
+		t.Fatalf("refused = %+v, want /, ~ and the unset $VAR", refused)
+	}
+}

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,7 @@ import (
 //
 //   - 1.x launched with --port: the TUI's own server, as before (issue #1614).
 //   - 2.x with a bound session id: the shared background service, filtered to
-//     that session (issue #2511).
+//     that session and the sub-agent sessions under it (issue #2511).
 //
 // The 2.x check is the memoised version probe the launch already used; the
 // service itself is looked up later, inside the stream goroutine.
@@ -41,7 +42,7 @@ func (i *Instance) OpenCodeSSETarget() (SSETarget, bool) {
 	if !i.openCodeRejectsV1LaunchFlags() {
 		return SSETarget{}, false
 	}
-	return SSETarget{InstanceID: i.ID, sessionID: sessionID, service: i.resolveOpenCodeService}, true
+	return SSETarget{InstanceID: i.ID, sessionID: sessionID, service: i.resolveOpenCodeService, parentOf: i.openCodeSessionParent}, true
 }
 
 // resolveOpenCodeService asks the session's OpenCode binary where its
@@ -105,4 +106,35 @@ func openCodeServicePassword(serviceURL string) string {
 		return ""
 	}
 	return reg.Password
+}
+
+// openCodeSessionParent asks the shared service which session spawned
+// sessionID (`opencode api session.get`, data.parentID). A root session has
+// none. The id comes off the event stream, so it is checked shell-safe first.
+func (i *Instance) openCodeSessionParent(ctx context.Context, sessionID string) (string, error) {
+	sessionID, err := normalizeToolSessionID(FieldOpenCodeSessionID, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if sessionID == "" {
+		return "", errors.New("empty opencode session id")
+	}
+	binary, ok := i.openCodeLaunchBinary()
+	if !ok {
+		return "", errors.New("opencode binary not found")
+	}
+	output, err := runOpenCodeServiceCallContext(ctx, binary, i.ProjectPath, "session.get", sessionID, "")
+	if err != nil {
+		return "", err
+	}
+	var reply struct {
+		Data openCodeHTTPSessionMetadata `json:"data"`
+	}
+	if err := json.Unmarshal(output, &reply); err != nil {
+		return "", fmt.Errorf("opencode session.get: unexpected reply: %w", err)
+	}
+	if reply.Data.ID != sessionID {
+		return "", fmt.Errorf("opencode session.get: reply is for %q, not %q", reply.Data.ID, sessionID)
+	}
+	return reply.Data.ParentID, nil
 }

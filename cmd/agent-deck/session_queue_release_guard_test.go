@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // Integration of queue control (core-22) with the guarded send (core-20-23):
@@ -68,13 +70,13 @@ func TestQueueReleaseMarksEntryGuardedForLaterAttempts(t *testing.T) {
 		}
 		return err
 	}
-	if !typeQueued("", dir, rec, queueReleaseStatus, "", 0, set) || used != "release" {
+	if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, queueReleaseStatus, "", 0, set) || used != "release" {
 		t.Fatalf("release used %q", used)
 	}
 	if rec.State != sendqueue.StateQueued || !rec.RequireInputPrompt {
 		t.Fatalf("refused release: %+v", rec)
 	}
-	if !typeQueued("", dir, rec, "waiting", "", 0, set) || used != "guarded" {
+	if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, "waiting", "", 0, set) || used != "guarded" {
 		t.Fatalf("next normal attempt used %q", used)
 	}
 	if rec.State != sendqueue.StateSubmitted {

@@ -155,7 +155,17 @@ func (s *Session) themedStatusRight(themeStyle tmuxThemeStyle) string {
 	if switchOn {
 		hints += fmt.Sprintf(" · #[fg=%s]%s switch#[default]", themeStyle.hintColor, switchKey)
 	}
-	return fmt.Sprintf("%s │ 📁 %s | %s ", hints, s.DisplayName, s.projectDisplayName())
+	return fmt.Sprintf("%s │ 📁 %s | %s ", hints, FormatLiteral(s.DisplayName), FormatLiteral(s.projectDisplayName()))
+}
+
+// FormatLiteral escapes text placed into a tmux format string such as
+// status-right, status-left or a display-message. tmux expands "#(cmd)" there by running cmd through the shell
+// on every status refresh, and "#[...]" as style codes; "##" is a literal "#".
+// The session title and the project folder name are not ours to trust (a
+// title can come from an OpenClaw gateway or a web request, a folder from a
+// cloned repository), so every "#" in them is doubled.
+func FormatLiteral(s string) string {
+	return strings.ReplaceAll(s, "#", "##")
 }
 
 func (s *Session) projectDisplayName() string {
@@ -7414,11 +7424,12 @@ func globalEnvironmentValue(socket, key string) (string, error) {
 
 // SetStatusLeft sets the left side of tmux status bar for a session.
 // Used by NotificationManager to display waiting session notifications.
+//
+// text is a tmux format string: callers escape untrusted parts with
+// FormatLiteral. It is passed as one argv element, so no shell quoting.
 func SetStatusLeft(sessionName, text string) error {
-	// Escape single quotes for tmux by replacing ' with '\''
-	escaped := strings.ReplaceAll(text, "'", "'\\''")
 	// Bounded — see tmuxMutationTimeout. Driven by the notification sweep.
-	return runBoundedMutation(DefaultSocketName(), "set-option", "-t", sessionName, "status-left", escaped)
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-t", sessionName, "status-left", text)
 }
 
 // ClearStatusLeft resets status-left to default for a session.
@@ -7496,11 +7507,15 @@ func captureOriginalStatusLeft() {
 // This is a MAJOR performance optimization: ONE tmux call instead of 100+.
 // All agentdeck sessions inherit this global setting.
 // On first call, captures the existing status-left so ClearStatusLeftGlobal can restore it.
+//
+// text is a tmux format string (the bar uses #[fg=...] styles): callers
+// escape untrusted parts such as session titles with FormatLiteral. It is
+// passed as one argv element, so it needs no shell quoting (the former
+// shell-style quote rewrite made tmux show "it's" with backslashes in it).
 func SetStatusLeftGlobal(text string) error {
 	savedStatusLeft.Do(captureOriginalStatusLeft)
-	escaped := strings.ReplaceAll(text, "'", "'\\''")
 	// Bounded — see tmuxMutationTimeout. Driven by the notification sweep.
-	return runBoundedMutation(DefaultSocketName(), "set-option", "-g", "status-left", escaped)
+	return runBoundedMutation(DefaultSocketName(), "set-option", "-g", "status-left", text)
 }
 
 // ClearStatusLeftGlobal restores the original global status-left value.
@@ -7510,9 +7525,9 @@ func SetStatusLeftGlobal(text string) error {
 func ClearStatusLeftGlobal() error {
 	socket := DefaultSocketName()
 	if savedStatusLeft.captured {
-		escaped := strings.ReplaceAll(savedStatusLeft.value, "'", "'\\''")
+		// Restored verbatim: it is the user's own format string.
 		// Bounded — see tmuxMutationTimeout.
-		return runBoundedMutation(socket, "set-option", "-g", "status-left", escaped)
+		return runBoundedMutation(socket, "set-option", "-g", "status-left", savedStatusLeft.value)
 	}
 	// No saved value — fall back to unset (original behavior)
 	return runBoundedMutation(socket, "set-option", "-gu", "status-left")
@@ -7864,6 +7879,45 @@ func DetachClientsOnSockets(sockets ...string) (bool, error) {
 		}
 	}
 	return detached, firstErr
+}
+
+// DetachClientByPID detaches the one non-control client on socket whose
+// process id is pid ("" = default server). Returns detached=false (no error)
+// when no such client is attached, e.g. a pid recorded by a TUI that has
+// since left that attach (#2704).
+func DetachClientByPID(socket string, pid int) (bool, error) {
+	if pid <= 0 {
+		return false, nil
+	}
+	output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_pid}", "#{client_name}"))
+	if err != nil {
+		return false, nil
+	}
+	name := clientNameForPID(string(output), pid)
+	if name == "" {
+		return false, nil
+	}
+	if err := runBoundedMutation(socket, "detach-client", "-c", name); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// clientNameForPID parses list-clients output of control-mode flag, client
+// pid and client name, and returns the name of the non-control client with
+// that pid, or "". client_name goes last: it is free text.
+func clientNameForPID(output string, pid int) string {
+	want := strconv.Itoa(pid)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		parts := strings.SplitN(line, tmuxFieldSep, 3)
+		if len(parts) != 3 || parts[0] == "1" || parts[2] == "" {
+			continue
+		}
+		if parts[1] == want {
+			return parts[2]
+		}
+	}
+	return ""
 }
 
 // UnbindKey removes a key binding and restores default behavior.

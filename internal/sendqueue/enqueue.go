@@ -43,6 +43,9 @@ type Send struct {
 	// WaitWhileStopped makes the worker wait for a target that is not
 	// running, until Deadline if one is set, instead of failing the send.
 	WaitWhileStopped bool
+	// IgnoreBudget delivers even when an enforced cost budget is spent
+	// (`session send --queue --ignore-budget`, a person's message).
+	IgnoreBudget bool
 }
 
 // Enqueue writes s to dir as a new record: queued, or failed at once when
@@ -128,6 +131,7 @@ func newRecord(dir string, s Send, now time.Time) (*Record, error) {
 		Sender:          s.Sender,
 		ClaudeSessionID: s.ClaudeSessionID,
 		Key:             s.Key, WaitWhileStopped: s.WaitWhileStopped,
+		IgnoreBudget: s.IgnoreBudget,
 	}
 	if !s.Deadline.IsZero() {
 		rec.Deadline = s.Deadline.UTC().Format(time.RFC3339Nano)

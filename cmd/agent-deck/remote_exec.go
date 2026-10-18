@@ -377,8 +377,12 @@ func runRemoteExec(name string, args []string) (int, error) {
 			return 1, errors.New(remoteAnnotateUnsupportedMessage(name, remoteVersion))
 		}
 	}
-	_, _ = os.Stdout.Write(capturedOut.Bytes())
-	_, _ = os.Stderr.Write(capturedErr.Bytes())
+	outBytes, errBytes := capturedOut.Bytes(), capturedErr.Bytes()
+	if remoteFailed {
+		outBytes, errBytes = relabelRemotePluginsOff(name, rc.Host, args, exitErr.ExitCode(), outBytes, errBytes)
+	}
+	_, _ = os.Stdout.Write(outBytes)
+	_, _ = os.Stderr.Write(errBytes)
 	if remoteFailed {
 		return exitErr.ExitCode(), nil // SSH already forwarded the diagnostic.
 	}

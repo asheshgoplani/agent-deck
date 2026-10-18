@@ -3,8 +3,13 @@
 # constants evaluated from the tagged source, rendered with the renderer,
 # which is unchanged since before v1.9.60).
 #
-# Three prior generations shipped, all recognised by
+# Four prior generations shipped, all recognised by
 # conductorInstructionsGenerations:
+#   generation v1.16.28/v1.16.29 (blob a172f023...; shared template only:
+#     the no-op notice rule was added to the shared template after v1.16.29,
+#     so the per-name templates those releases wrote are byte-identical to
+#     the current ones (the same hashes
+#     TestShippedV11624PerNameTemplatesAreCurrent pins))
 #   generation v1.16.24 (blob ddc29b5f...; shared template only: the #2469
 #     human tier changed only the shared heartbeat reply format, so the
 #     per-name templates v1.16.24 wrote are byte-identical to the current ones
@@ -71,3 +76,9 @@ v1.10.11	f0435464827ceace23ff00a6202223e8a2fa0309	hermes	shared	09569410e1d581f0
 v1.16.24	ddc29b5f48ef7e2e92a228931b26745eb4e9b2c1	claude	shared	743f7bb2a0e5e29a7f4e3bbbe04ac42ad5940ba99b0329985d5525557f8929dd
 v1.16.24	ddc29b5f48ef7e2e92a228931b26745eb4e9b2c1	codex	shared	743f7bb2a0e5e29a7f4e3bbbe04ac42ad5940ba99b0329985d5525557f8929dd
 v1.16.24	ddc29b5f48ef7e2e92a228931b26745eb4e9b2c1	hermes	shared	743f7bb2a0e5e29a7f4e3bbbe04ac42ad5940ba99b0329985d5525557f8929dd
+v1.16.28	a172f023b37a2223399e1c9f5800116fb4042bcc	claude	shared	ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377
+v1.16.28	a172f023b37a2223399e1c9f5800116fb4042bcc	codex	shared	ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377
+v1.16.28	a172f023b37a2223399e1c9f5800116fb4042bcc	hermes	shared	ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377
+v1.16.29	a172f023b37a2223399e1c9f5800116fb4042bcc	claude	shared	ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377
+v1.16.29	a172f023b37a2223399e1c9f5800116fb4042bcc	codex	shared	ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377
+v1.16.29	a172f023b37a2223399e1c9f5800116fb4042bcc	hermes	shared	ca0ef2c586139fc84ce2fffdd3e82dfd023657ec41a60422f4bc2ac508caf377

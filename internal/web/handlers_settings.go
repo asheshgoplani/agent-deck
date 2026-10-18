@@ -2,7 +2,9 @@ package web
 
 import (
 	"net/http"
+	"os"
 	"runtime/debug"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -25,6 +27,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		trustedDomains = []string{}
 	}
 
+	fileLinkRoots := s.cfg.FileLinkRoots
+	if fileLinkRoots == nil {
+		fileLinkRoots = []string{}
+	}
+	fileLinkHost, _ := os.Hostname()
+
 	// Tool-visibility filter (issue #1259) is read from the process registry at
 	// request time, so it reflects the current config (re-probed only when config
 	// changes — see currentRegistry). It is a display filter only.
@@ -40,6 +48,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		PickerTools:        session.PickerToolNames(),
 		TrustedDomains:     trustedDomains,
 		ConfirmLinkOpen:    s.cfg.confirmLinkOpen(),
+		FileLinkRoots:      fileLinkRoots,
+		FileLinkHost:       strings.ToLower(fileLinkHost),
 		ModelCatalog:       modelCatalogForPicker(session.PickerToolNames()),
 	})
 }

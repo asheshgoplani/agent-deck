@@ -2,9 +2,9 @@ package openclaw
 
 import (
 	"encoding/json"
-	"strings"
 	"time"
-	"unicode"
+
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 )
 
 // Protocol version supported by this client.
@@ -70,17 +70,9 @@ type remoteError struct{ err error }
 func (e remoteError) Error() string { return remoteText(e.err.Error()) }
 func (e remoteError) Unwrap() error { return e.err }
 
-// remoteText drops every control character (ESC, C1 codes, CR, LF, ...) from
-// text the gateway chose, so an error that quotes it is safe to print on a
-// terminal.
-func remoteText(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-}
+// remoteText makes text the gateway chose safe to quote in an error that is
+// printed on a terminal (see termtext.Clean).
+func remoteText(s string) string { return termtext.Clean(s) }
 
 // rawFrame is used to peek at the type/event fields before full deserialization.
 type rawFrame struct {

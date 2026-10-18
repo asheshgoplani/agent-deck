@@ -37,6 +37,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -375,8 +376,11 @@ type Instance struct {
 	// hermesLastRejected rate-limits the reject lifecycle line.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
-	hermesBoundAt        time.Time
-	hermesLastRejected   string
+	// hermesStartFresh makes the next Start begin a new Hermes conversation
+	// (RestartFresh) instead of resuming the recorded one.
+	hermesStartFresh   bool
+	hermesBoundAt      time.Time
+	hermesLastRejected string
 
 	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
 	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
@@ -1147,6 +1151,7 @@ func (inst *Instance) GetTitleThreadSafe() string {
 // reapplication) must go through this rather than assigning Title directly,
 // or GetTitleThreadSafe's read lock buys nothing.
 func (inst *Instance) SetTitleThreadSafe(t string) {
+	t = termtext.Clean(t)
 	inst.mu.Lock()
 	inst.Title = t
 	inst.mu.Unlock()
@@ -1278,6 +1283,7 @@ func (inst *Instance) ClearParent() {
 
 // NewInstance creates a new session instance
 func NewInstance(title, projectPath string) *Instance {
+	title = termtext.Clean(title) // see NewInstanceWithTool
 	id := GenerateID()
 	// Seed the tmux socket from the installation-wide config. Callers that
 	// want to override (the `--tmux-socket` CLI flag) set
@@ -1369,6 +1375,9 @@ func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 
 // NewInstanceWithTool creates a new session with tool-specific initialization
 func NewInstanceWithTool(title, projectPath, tool string) *Instance {
+	// The title is printed by `list` and rendered in the TUI and the tmux
+	// status line; a control character in it could drive the terminal.
+	title = termtext.Clean(title)
 	id := GenerateID()
 	socket := GetTmuxSettings().GetSocketName()
 	tmuxSess := tmux.NewSession(title, projectPath)
@@ -5750,6 +5759,7 @@ func (i *Instance) Start() (startErr error) {
 		if _, err := i.seedHermesHookGeneration("waiting", false); err != nil {
 			return err
 		}
+		i.preferHermesOwnedSessionForStart()
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "deepseek":
 		// The headless profile answers one task and exits, so a plain Start()
@@ -6138,6 +6148,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		if _, err := i.seedHermesHookGeneration("running", true); err != nil {
 			return err
 		}
+		i.preferHermesOwnedSessionForStart()
 		command = i.buildHermesCommand(i.Command)
 	case i.Tool == "deepseek":
 		// Only the headless profile takes a task positionally; an installed
@@ -7692,7 +7703,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	switch {
 	case i.Tool == "hermes":
-		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.UpdatedAt)
+		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.Cwd, status.UpdatedAt)
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
@@ -8720,6 +8731,11 @@ type ResponseOutput struct {
 	SessionID           string `json:"session_id,omitempty"`            // Conversation session ID, if available
 	CodexTurnGeneration string `json:"codex_turn_generation,omitempty"` // Exact thread:turn identity, if retained
 	ClaudeTurnUUID      string `json:"claude_turn_uuid,omitempty"`      // Bound Claude user record, if retained
+	// AssistantUUID is the transcript uuid of the Claude assistant record
+	// Content was read from; the turn identity an inbox record carries as
+	// turn_uuid. Empty for pane, terminal and non-Claude reads. Not part of
+	// the CLI output.
+	AssistantUUID string `json:"-"`
 }
 
 // GetLastResponse returns the last assistant response from the session
@@ -9389,6 +9405,13 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 	if sessionID == "" {
 		return ""
 	}
+	// The ID becomes a file name and a glob pattern: a separator or ".." could
+	// name a file outside the projects tree and a glob metacharacter could
+	// match another session's transcript, so such an ID resolves to nothing.
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil || strings.ContainsAny(sessionID, "*?[") {
+		return ""
+	}
 
 	projectsDir := filepath.Join(configDir, "projects")
 
@@ -9411,7 +9434,11 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 		if candidateDir == "" {
 			continue
 		}
-		candidate := filepath.Join(projectsDir, ConvertToClaudeDirName(candidateDir), sessionID+".jsonl")
+		projectDir, ok := claudeProjectDir(configDir, ConvertToClaudeDirName(candidateDir))
+		if !ok {
+			continue
+		}
+		candidate := filepath.Join(projectDir, fileName)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -9725,10 +9752,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		Message     json.RawMessage `json:"message"`
 		Timestamp   string          `json:"timestamp"`
 		IsSidechain bool            `json:"isSidechain"`
+		UUID        string          `json:"uuid"`
 	}
 
 	var lastAssistantContent string
 	var lastTimestamp string
+	var lastUUID string
 	var foundSessionID string
 
 	// Walk lines from EOF backward; the first non-sidechain assistant record
@@ -9813,6 +9842,7 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		if extractedText != "" {
 			lastAssistantContent = extractedText
 			lastTimestamp = record.Timestamp
+			lastUUID = record.UUID
 			if foundSessionID != "" {
 				break
 			}
@@ -9824,11 +9854,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 	}
 
 	return &ResponseOutput{
-		Tool:      "claude",
-		Role:      "assistant",
-		Content:   lastAssistantContent,
-		Timestamp: lastTimestamp,
-		SessionID: foundSessionID,
+		Tool:          "claude",
+		Role:          "assistant",
+		Content:       lastAssistantContent,
+		Timestamp:     lastTimestamp,
+		SessionID:     foundSessionID,
+		AssistantUUID: lastUUID,
 	}, nil
 }
 
@@ -11183,6 +11214,10 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	return nil
 }
 
+// restartFreshBindingCleared runs right after RestartFresh cleared the
+// session binding, before the old process is killed. Tests replace it.
+var restartFreshBindingCleared = func(*Instance) {}
+
 // RestartFresh restarts the current tool without resuming the existing tool session.
 // This recreates the tmux session and clears the stored tool session binding first,
 // so the next start gets a brand-new tool session ID.
@@ -11190,7 +11225,18 @@ func (i *Instance) RestartFresh() error {
 	i.prepareRestartMCPConfig()
 	i.spawnGen.Add(1)
 
+	// Rotate the Hermes hook generation before the binding is cleared and the
+	// old process is killed, as Restart does: a late hook from the old process
+	// then fails the generation check instead of writing its id back.
+	if i.Tool == "hermes" {
+		if _, err := i.seedHermesHookGeneration("starting", false); err != nil {
+			return fmt.Errorf("seed hermes fresh restart generation: %w", err)
+		}
+		i.hermesStartFresh = true
+	}
+
 	i.clearSessionBindingForFreshStart()
+	restartFreshBindingCleared(i)
 
 	// #1775: same reasoning as the restart-fallback-recreate path above, and
 	// likewise unconditional — an old watcher whose session is already gone is
@@ -11206,6 +11252,7 @@ func (i *Instance) RestartFresh() error {
 	i.recreateTmuxSession()
 
 	if err := i.Start(); err != nil {
+		i.hermesStartFresh = false // a failed start must not make a later one fresh
 		i.Status = StatusError
 		return fmt.Errorf("failed to restart session fresh: %w", err)
 	}
@@ -12168,7 +12215,12 @@ func openCodeModelRef(model string) (map[string]string, error) {
 // resolved opencode binary against the 2.x shared service for sessionID and
 // returns its stdout. An empty body sends no request body.
 func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return runOpenCodeServiceCallContext(context.Background(), binary, workDir, operation, sessionID, body)
+}
+
+// runOpenCodeServiceCallContext is runOpenCodeServiceCall ended early when ctx is.
+func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operation, sessionID, body string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	// #nosec G204 -- binary is the configured opencode resolved by
@@ -12974,7 +13026,11 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 	if encodedPath == "" {
 		encodedPath = "-"
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return 0
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 	if info, err := os.Stat(sessionFile); err == nil {
 		return info.Size()
 	}
@@ -13019,7 +13075,11 @@ func sessionConversationMtime(inst *Instance, sessionID string) time.Time {
 	if encodedPath == "" {
 		encodedPath = "-"
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return time.Time{}
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 	if info, err := os.Stat(sessionFile); err == nil {
 		return info.ModTime()
 	}
@@ -13206,7 +13266,11 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		encodedPath = "-"
 	}
 
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return false
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 
 	// Issue #662 diagnostic contract: emit a single structured "decision"
 	// log line per call with every field needed to reconstruct the false

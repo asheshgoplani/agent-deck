@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"fmt"
+	"github.com/asheshgoplani/agent-deck/internal/filelinks"
 	"log/slog"
 	"maps"
 	"os"
@@ -1043,6 +1044,12 @@ type WebSettings struct {
 	// hosts that are NOT on TrustedDomains. nil (omitted) defaults to true.
 	// Setting it false accepts the risk and opens every link directly.
 	ConfirmLinkOpen *bool `toml:"confirm_link_open,omitempty"`
+
+	// FileLinkRoots lists directories whose files the web terminal may open
+	// through the deck when a file:// link points into them (issue #2676).
+	// `~` and $VARS expand. Empty (the default) keeps file links off: a click
+	// only copies the path.
+	FileLinkRoots []string `toml:"file_link_roots,omitempty"`
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -1891,6 +1898,22 @@ type LaunchSettings struct {
 	// and leaves root sessions alone; "on" never sets the env; "off" sets it
 	// for every Claude session. See prompt_suggestions.go.
 	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
+
+	// FanoutHint adds the FanoutHint constant line to the injected identity
+	// block of Claude-family sessions at the primer and full context levels.
+	// nil => true.
+	// It rides on identity injection: --no-identity, inject_identity=false
+	// or context_level "none" leave no block to carry it.
+	FanoutHint *bool `toml:"fanout_hint,omitempty"`
+}
+
+// GetFanoutHint returns whether the fan-out hint is added to the identity
+// block, defaulting to true.
+func (l *LaunchSettings) GetFanoutHint() bool {
+	if l == nil || l.FanoutHint == nil {
+		return true
+	}
+	return *l.FanoutHint
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting
@@ -4882,6 +4905,23 @@ func GetWebTrustedDomains() []string {
 	return NormalizeTrustedDomains(config.Web.TrustedDomains)
 }
 
+// GetWebFileLinkRoots returns the expanded, absolute `[web].file_link_roots`
+// directories (issue #2676). nil means file links are off.
+func GetWebFileLinkRoots() []string {
+	roots, _ := GetWebFileLinkRootsChecked()
+	return roots
+}
+
+// GetWebFileLinkRootsChecked is GetWebFileLinkRoots plus the entries it
+// refused and why (an unset $VAR, `/`, the home directory, a relative path).
+func GetWebFileLinkRootsChecked() ([]string, []filelinks.Refused) {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return nil, nil
+	}
+	return filelinks.CheckRoots(config.Web.FileLinkRoots, ExpandPath)
+}
+
 // GetWebAllowedHosts returns the configured Host allowlist additions.
 func GetWebAllowedHosts() []string {
 	config, err := LoadUserConfig()
@@ -6071,6 +6111,18 @@ type CostsSettings struct {
 	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero,omitempty"`
 	Budgets              BudgetSettings  `toml:"budgets,omitempty"`
 	Pricing              PricingSettings `toml:"pricing,omitempty"`
+	// RunBudget holds the per-run defaults every new autonomous run (a
+	// goal started by skills/agent-deck/scripts/goal/goal.sh) starts with.
+	RunBudget RunBudgetSettings `toml:"run_budget,omitempty"`
+}
+
+// RunBudgetSettings are per-run caps for autonomous runs. 0 means no cap
+// (max_turns 0 keeps the goal's own default of 24 cycles). A goal's
+// --max-tokens/--max-turns/--max-minutes flags override them.
+type RunBudgetSettings struct {
+	MaxTokens  int `toml:"max_tokens,omitzero"`
+	MaxTurns   int `toml:"max_turns,omitzero"`
+	MaxMinutes int `toml:"max_minutes,omitzero"`
 }
 
 // ProfileCosts holds per-profile overrides for cost-related settings.
@@ -6148,6 +6200,9 @@ func ResolveCostLineTemplate(cfg *UserConfig, profile string) (template string, 
 }
 
 type BudgetSettings struct {
+	// Enforce makes the limits refuse agent-initiated sends and wakes. Off by
+	// default: the limits are then shown in the cost dashboard only.
+	Enforce      bool                     `toml:"enforce,omitempty"`
 	DailyLimit   float64                  `toml:"daily_limit,omitzero"`
 	WeeklyLimit  float64                  `toml:"weekly_limit,omitzero"`
 	MonthlyLimit float64                  `toml:"monthly_limit,omitzero"`

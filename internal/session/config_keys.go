@@ -169,6 +169,18 @@ var configKeys = []ConfigKey{
 	{Key: "macapp.status_events", Section: "Advanced", Label: "Status events", Help: "Status owners publish session.status and session.turn frames on the events bus", Type: "bool",
 		get: func(c *UserConfig) any { return c.Macapp.StatusEvents },
 		set: func(c *UserConfig, v any) { c.Macapp.StatusEvents = v.(bool) }},
+	{Key: "costs.budgets.enforce", Section: "Costs", Label: "Enforce budgets", Help: "Refuse agent-initiated sends and wakes while a [costs.budgets] limit is spent (off: limits are display-only)", Type: "bool",
+		get: func(c *UserConfig) any { return c.Costs.Budgets.Enforce },
+		set: func(c *UserConfig, v any) { c.Costs.Budgets.Enforce = v.(bool) }},
+	{Key: "costs.run_budget.max_tokens", Section: "Costs", Label: "Run token cap", Help: "Default token cap for each new goal run (0 = none); goal.sh --max-tokens overrides", Type: "int",
+		get: func(c *UserConfig) any { return c.Costs.RunBudget.MaxTokens },
+		set: func(c *UserConfig, v any) { c.Costs.RunBudget.MaxTokens = v.(int) }},
+	{Key: "costs.run_budget.max_turns", Section: "Costs", Label: "Run turn cap", Help: "Default cycle cap for each new goal run (0 = the goal default, 24); goal.sh --max-turns overrides", Type: "int",
+		get: func(c *UserConfig) any { return c.Costs.RunBudget.MaxTurns },
+		set: func(c *UserConfig, v any) { c.Costs.RunBudget.MaxTurns = v.(int) }},
+	{Key: "costs.run_budget.max_minutes", Section: "Costs", Label: "Run time cap", Help: "Default wall-clock cap in minutes for each new goal run (0 = none); goal.sh --max-minutes overrides", Type: "int",
+		get: func(c *UserConfig) any { return c.Costs.RunBudget.MaxMinutes },
+		set: func(c *UserConfig, v any) { c.Costs.RunBudget.MaxMinutes = v.(int) }},
 	{Key: "core.daemon", Section: "Advanced", Label: "Core daemon", Help: "Route --json=envelope registry commands through agent-deck daemon serve (docs/daemon-protocol.md)", Type: "bool",
 		get: func(c *UserConfig) any { return c.Core.Daemon },
 		set: func(c *UserConfig, v any) { c.Core.Daemon = v.(bool) }},
@@ -176,6 +188,24 @@ var configKeys = []ConfigKey{
 	{Key: "launch.prompt_suggestions", Section: "Sessions", Label: "Prompt suggestions", Help: "Claude prompt suggestions in launched sessions: children-off (off for sessions with a parent), on, or off; applies on the next session start; per profile via [profiles.<name>.claude]", Type: "enum", Values: []string{PromptSuggestionsChildrenOff, PromptSuggestionsOn, PromptSuggestionsOff},
 		get: func(c *UserConfig) any { return firstPromptSuggestionsMode(c.Launch.PromptSuggestions) },
 		set: func(c *UserConfig, v any) { c.Launch.PromptSuggestions = v.(string) }},
+	{Key: "launch.fanout_hint", Section: "Sessions", Label: "Fan-out hint", Help: "Add the fan-out working-style line to the identity block of Claude sessions (primer and full levels); applies on the next session start", Type: "bool",
+		get: func(c *UserConfig) any { return c.Launch.GetFanoutHint() },
+		set: func(c *UserConfig, v any) { b := v.(bool); c.Launch.FanoutHint = &b }},
+	{Key: "launch.context_level", Section: "Sessions", Label: "Context level", Help: "Global default for the identity block launched sessions receive: none, primer or full (inject_identity = false reads as none); group and session overrides win", Type: "enum", Values: []string{ContextLevelNone, ContextLevelPrimer, ContextLevelFull},
+		get: func(c *UserConfig) any { return globalContextLevel(c) },
+		set: func(c *UserConfig, v any) { c.Launch.ContextLevel = v.(string) }},
+}
+
+// globalContextLevel is the global layer of EffectiveContextLevel: a valid
+// [launch].context_level, else none when inject_identity = false, else full.
+func globalContextLevel(c *UserConfig) string {
+	if lvl, err := NormalizeContextLevel(c.Launch.ContextLevel); err == nil {
+		return lvl
+	}
+	if c.Launch.InjectIdentity != nil && !*c.Launch.InjectIdentity {
+		return ContextLevelNone
+	}
+	return ContextLevelFull
 }
 
 func positiveOr(v, def int) int {
@@ -295,7 +325,8 @@ func (k ConfigKey) Set(c *UserConfig, v any) { k.set(c, v) }
 // SetConfigValue loads config.toml, sets one key and saves it through the
 // TUI's writer. It returns the value read back after the save. A value
 // that needs consent (NeedsConsent) is refused with ErrConsentRequired,
-// returning the parsed value, unless consented is true.
+// returning the parsed value, unless consented is true or the key already
+// has that value.
 func SetConfigValue(name, raw string, consented bool) (ConfigKey, any, error) {
 	k, ok := LookupConfigKey(name)
 	if !ok {
@@ -305,13 +336,15 @@ func SetConfigValue(name, raw string, consented bool) (ConfigKey, any, error) {
 	if err != nil {
 		return k, nil, err
 	}
-	if k.NeedsConsent(v) && !consented {
-		return k, v, ErrConsentRequired
-	}
 	ClearUserConfigCache()
 	cfg, err := LoadUserConfig()
 	if err != nil {
 		return k, nil, err
+	}
+	// Consent is for turning a key on; one that is already on is left as
+	// it is without asking again.
+	if k.NeedsConsent(v) && !consented && (cfg == nil || k.Get(cfg) != v) {
+		return k, v, ErrConsentRequired
 	}
 	if cfg == nil {
 		cfg = &UserConfig{}

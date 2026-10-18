@@ -7,7 +7,7 @@ Launching child sessions, worker prompt conventions, the completion sentinel, co
 **Use when:** User says "launch sub-agent", "create sub-agent", "spawn agent"
 
 ```bash
-$SKILL_DIR/scripts/launch-subagent.sh "Title" "Prompt" [--mcp name] [--wait]
+$SKILL_DIR/scripts/launch-subagent.sh "Title" "Prompt" [--mcp name] [--wait] [--no-fanout-hint]
 ```
 
 The script auto-detects current session/profile and creates a child session.
@@ -33,6 +33,14 @@ This section covers **one** child (launch + one of the three retrieval modes). F
 | Complex reasoning | `sequential-thinking` |
 
 ### Worker Prompt Conventions
+
+A Claude worker reads this line by default (fan-out by default):
+
+```
+Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered.
+```
+
+You rarely need to type it: the identity block agent-deck injects into a Claude-family session (claude, or a custom tool wrapping it) carries it, at the `primer` and `full` levels (`[launch] fanout_hint = true`, the default; `fanout_hint = false` leaves it out). Other tools (codex, gemini, pi, omp, ...) never get it: "dynamic Workflow" is a Claude Code tool, and they could read "fan-out agents" as "launch a child per step". `launch-subagent.sh` appends the line to the prompt only for a `claude` child that gets no identity block (global `[launch] context_level` resolves to `none`), never with `fanout_hint = false` or `--no-fanout-hint`, and never twice. Add it yourself for a Claude worker you launch with `--no-identity`, or in a group whose `context_level` is `none` (the script reads only the global level).
 
 When the prompt asks the worker to `Edit` or `Write` any **existing** file, include an explicit **prelude-read** as the first step. Claude Code's tool guard rejects `Edit`/`Write` before `Read` of the same path, and conductor-spawned workers hit this mid-task (#968) when their prompt jumps straight into the change. The interruption forces the worker to backfill reads inside its main loop, breaking flow and burning cycles.
 

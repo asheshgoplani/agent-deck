@@ -253,7 +253,7 @@ var completionTree = []completionNode{
 		},
 	},
 	{name: "open"},
-	{name: "file", subs: []string{"bundle"}},
+	{name: "file", subs: []string{"bundle", "read", "roots"}},
 	{name: "costs", subs: []string{"sync", "summary", "recompute", "daily", "sessions", "models", "groups", "budgets"}},
 	{name: "hooks", subs: []string{"install", "uninstall", "status"}},
 	{name: "codex-hooks", subs: []string{"install", "uninstall", "status"}},
