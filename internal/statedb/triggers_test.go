@@ -2,6 +2,7 @@ package statedb
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -234,4 +235,46 @@ func TestTriggersRevBumps(t *testing.T) {
 	step("mute", func() error { _, err := db.SetTriggerMute("watcher:gh", time.Now().Add(time.Hour)); return err })
 	step("unmute", func() error { _, err := db.SetTriggerMute("watcher:gh", time.Time{}); return err })
 	step("scan", db.BumpTriggersRev)
+}
+
+// A DB made by the first triggers build (#2738 @ 92556636) has a triggers
+// table without unit_kind. Migrate adds it, and the old row stays readable.
+func TestTriggersMigrateAddsUnitKindToFirstBuildTable(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.db.Exec(`CREATE TABLE triggers (
+		id TEXT PRIMARY KEY, kind TEXT NOT NULL, source TEXT NOT NULL,
+		host TEXT NOT NULL DEFAULT '', config_path TEXT NOT NULL DEFAULT '', verb TEXT NOT NULL DEFAULT '',
+		target TEXT NOT NULL DEFAULT '', target_by TEXT NOT NULL DEFAULT '', target_profile TEXT NOT NULL DEFAULT '',
+		schedule TEXT NOT NULL DEFAULT '', unit TEXT NOT NULL DEFAULT '',
+		pushed INTEGER NOT NULL DEFAULT 0, scanned INTEGER NOT NULL DEFAULT 0, inferred INTEGER NOT NULL DEFAULT 0,
+		muted_until INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`INSERT INTO triggers (id, kind, source, unit, scanned, created_at, updated_at)
+		VALUES ('systemd:poll', 'systemd', 'poll', 'poll', 1, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate on a first-build triggers table: %v", err)
+	}
+	rows, err := db.ListTriggers()
+	if err != nil {
+		t.Fatalf("ListTriggers after migrate: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != "systemd:poll" || rows[0].UnitKind != "" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if err := db.ReplaceScannedTriggers([]TriggerRow{{ID: "systemd:poll", Kind: "systemd", Source: "poll", Unit: "poll", UnitKind: "systemd"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(); err != nil { // idempotent on the next open
+		t.Fatal(err)
+	}
+	if r, err := db.GetTrigger("systemd:poll"); err != nil || r == nil || r.UnitKind != "systemd" {
+		t.Fatalf("row after rescan = %+v %v", r, err)
+	}
 }

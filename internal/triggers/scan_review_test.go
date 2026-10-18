@@ -67,7 +67,7 @@ func TestScanUnresolvableProfileIsUnknown(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "x.service"), "[Service]\nExecStart=/usr/bin/agent-deck -p \"$(cat /etc/p)\" session send ops hi\n")
 	found := Scan(ScanDirs{SystemdUser: dir})
-	if len(found) != 1 || strings.Contains(found[0].TargetProfile, "$") {
+	if len(found) != 1 || found[0].TargetProfile != "" || found[0].Target != "ops" {
 		t.Fatalf("profile = %+v", found)
 	}
 }
@@ -176,4 +176,17 @@ func openDB(t *testing.T) *statedb.StateDB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// Units that only run agent-deck for something other than waking a session
+// (update, notes), or only name it in a path, are not triggers.
+func TestScanSkipsNonWakingAgentDeckUnits(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "agent-deck-autoupdate.service"), "[Service]\nExecStart=/usr/local/bin/agent-deck update --yes\n")
+	writeFile(t, filepath.Join(dir, "retro.service"), "[Service]\nExecStart=/usr/bin/python3 /home/u/.agent-deck/retro/run.py --out /home/u/agent-deck-notes\n")
+	writeFile(t, filepath.Join(dir, "wake.service"), "[Service]\nExecStart=/usr/local/bin/agent-deck session start ops\n")
+	found := Scan(ScanDirs{SystemdUser: dir})
+	if len(found) != 1 || found[0].Unit != "wake" || found[0].Verb != "start" {
+		t.Fatalf("found %+v", found)
+	}
 }

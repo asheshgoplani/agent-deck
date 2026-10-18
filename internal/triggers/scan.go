@@ -142,10 +142,12 @@ func readCapped(path string) (string, bool) {
 // --- what the command does ---
 
 var (
-	agentDeckCall = regexp.MustCompile(`agent-deck\b`)
+	// agent-deck as a command word (bare or at the end of a path), not as
+	// part of a path (~/.agent-deck/...) or a name (agent-deck-autoupdate).
+	agentDeckCall = regexp.MustCompile(`(?m)(?:^|[\s;&|("'/=])agent-deck(?:$|[\s"';|&)])`)
 	// agent-deck [-p P] session send|start|restart <target> / launch
-	verbPattern = regexp.MustCompile(`agent-deck(?:"|')?((?:\s+(?:-p|--profile)(?:\s+|=)\S+)*)\s+(?:session\s+(send|start|restart)|(launch))\b((?:\s+-{1,2}[A-Za-z-]+(?:=\S+)?)*)\s+("[^"]*"|'[^']*'|\S+)`)
-	profileArg  = regexp.MustCompile(`(?:-p|--profile)(?:\s+|=)(\S+)`)
+	verbPattern = regexp.MustCompile(`agent-deck(?:"|')?((?:\s+(?:-p|--profile)(?:\s+|=)(?:"[^"]*"|'[^']*'|\S+))*)\s+(?:session\s+(send|start|restart)|(launch))\b((?:\s+-{1,2}[A-Za-z-]+(?:=\S+)?)*)\s+("[^"]*"|'[^']*'|\S+)`)
+	profileArg  = regexp.MustCompile(`(?:-p|--profile)(?:\s+|=)("[^"]*"|'[^']*'|\S+)`)
 	sourceArg   = regexp.MustCompile(`--source(?:\s+|=)("[^"]*"|'[^']*'|\S+)`)
 	assignment  = regexp.MustCompile(`(?m)^\s*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"\n]*"|'[^'\n]*'|[^\s;#]+)`)
 	varRef      = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}?$`)
@@ -176,7 +178,14 @@ func describe(f *Found, command string) bool {
 	}
 	m := verbPattern.FindStringSubmatch(text)
 	if m == nil {
-		return true
+		// agent-deck runs, but not a send/start/restart/launch: a trigger only
+		// when it names itself with --source (update or notes jobs never wake
+		// a session).
+		if s := sourceArg.FindStringSubmatch(text); s != nil {
+			f.Source = resolveWord(text, s[1])
+			return f.Source != ""
+		}
+		return false
 	}
 	f.Verb = m[2]
 	if f.Verb == "" {

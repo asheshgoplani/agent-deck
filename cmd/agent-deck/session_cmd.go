@@ -3409,14 +3409,14 @@ func handleSessionSend(profile string, args []string) {
 		fire.sessionID = inst.ID
 		// A muted trigger's send is accepted and logged, never typed. The
 		// host job that sent it keeps running.
-		if until := fire.mutedUntil(); !until.IsZero() {
+		if until, mutedID := fire.mutedUntil(); !until.IsZero() {
 			fire.record(triggers.OutcomeMuted)
-			summary := fmt.Sprintf("Not delivered to '%s': %s is muted until %s (logged as muted)", inst.Title, fire.source.ID(), until.Local().Format("2006-01-02 15:04"))
+			summary := fmt.Sprintf("Not delivered to '%s': %s is muted until %s (logged as muted)", inst.Title, mutedID, until.Local().Format("2006-01-02 15:04"))
 			mutedData := map[string]interface{}{
 				"success":       true,
 				"muted":         true,
 				"muted_until":   until.UTC(),
-				"trigger_id":    fire.source.ID(),
+				"trigger_id":    mutedID,
 				"session_id":    inst.ID,
 				"session_title": inst.Title,
 			}
