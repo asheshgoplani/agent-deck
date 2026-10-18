@@ -317,7 +317,7 @@ func fetchRecentReleases(limit int) ([]Release, error) {
 func CountReleasesBehind(currentVersion string, releases []Release) int {
 	behind := 0
 	for _, r := range releases {
-		if CompareVersions(r.TagName, currentVersion) > 0 {
+		if ReleaseSupersedes(r.TagName, currentVersion) {
 			behind++
 		}
 	}
@@ -349,7 +349,7 @@ func CachedUpdateInfo(currentVersion string) (*UpdateInfo, error) {
 		DownloadURL:    cache.DownloadURL,
 		ReleaseURL:     cache.ReleaseURL,
 		ReleasesBehind: cache.ReleasesBehind,
-		Available:      CompareVersions(currentVersion, cache.LatestVersion) < 0,
+		Available:      ReleaseSupersedes(cache.LatestVersion, currentVersion),
 	}
 	return info, nil
 }
@@ -532,6 +532,30 @@ func splitPreRelease(v string) (core, pre string) {
 	return core, pre
 }
 
+// ReleaseSupersedes reports whether installing release over current is an
+// upgrade. It is CompareVersions(release, current) > 0, plus one case
+// precedence alone misses: a local build ("1.16.29+local.20261018.abc") is
+// replaced by the published release of the same version (#2710).
+// CompareVersions ignores build metadata, so on its own it calls the two
+// equal and the local build would never be offered its own release. Other
+// build metadata, and a release tag that itself carries "+", stay equal.
+func ReleaseSupersedes(release, current string) bool {
+	switch CompareVersions(release, current) {
+	case 1:
+		return true
+	case 0:
+		return IsLocalBuild(current) && !strings.Contains(release, "+")
+	}
+	return false
+}
+
+// IsLocalBuild reports whether v carries the "+local" build metadata that
+// tools/dist-local stamps on unpublished builds.
+func IsLocalBuild(v string) bool {
+	_, build, ok := strings.Cut(strings.TrimSpace(v), "+")
+	return ok && (build == "local" || strings.HasPrefix(build, "local."))
+}
+
 // comparePreRelease orders two pre-release tags the way semver 2.0 §11
 // does: dot-separated identifiers compared left to right, numeric ones as
 // numbers (so rc.2 < rc.10), numeric below alphanumeric, and a tag that is
@@ -600,7 +624,7 @@ func applyCacheToInfo(info *UpdateInfo, cache *UpdateCache, currentVersion strin
 	info.DownloadURL = cache.DownloadURL
 	info.ReleaseURL = cache.ReleaseURL
 	info.ReleasesBehind = cache.ReleasesBehind
-	info.Available = CompareVersions(currentVersion, cache.LatestVersion) < 0
+	info.Available = ReleaseSupersedes(cache.LatestVersion, currentVersion)
 }
 
 // CheckForUpdate checks if a new version is available
@@ -693,7 +717,7 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 	info.ReleaseURL = release.HTMLURL
 	info.ReleasesBehind = releasesBehind
 	info.PublishingVersion = publishingVersion
-	info.Available = CompareVersions(currentVersion, latestVersion) < 0
+	info.Available = ReleaseSupersedes(latestVersion, currentVersion)
 
 	// Don't persist a mid-publish answer. Caching it would pin the user to the
 	// older release for a full checkInterval (an hour by default) after the real
