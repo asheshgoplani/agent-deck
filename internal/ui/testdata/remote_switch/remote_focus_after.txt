@@ -1,0 +1,13 @@
+1·▾ alpha (2)
+   ├─ ○ a1 claude
+   └─ ○ a2 claude
+2·▾ beta (2)
+   ├─ ○ b1 claude
+   └─ ○ b2 claude
+  ▾ remotes/dev (4) ● 1
+    ▾ work (4) ● 1
+      ├─ ● run-1 claude
+      ├─ ■ stop-1 claude
+      └─ ○ old-1 claude
+      ▾ api (1)
+▶       └─ ○ api-1 claude

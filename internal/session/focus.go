@@ -24,6 +24,57 @@ type FocusRequest struct {
 	// Enter), not merely move the cursor to it. omitempty keeps a plain
 	// select-only request byte-identical to the pre-attach format.
 	Attach bool `json:"attach,omitempty"`
+	// Remote names a configured remote when ID is that remote's own session
+	// id (#2704). omitempty keeps a local request byte-identical to the
+	// pre-remote format, and a TUI that predates the field reads the remote
+	// id as an unknown local id and drops it.
+	Remote string `json:"remote,omitempty"`
+}
+
+// EncodeFocusRequestFull serializes a complete focus request, remote included.
+func EncodeFocusRequestFull(fr FocusRequest) (string, error) {
+	b, err := json.Marshal(fr)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// WriteFocusRequestFull stores a complete focus request for the running TUI.
+func WriteFocusRequestFull(db *statedb.StateDB, fr FocusRequest) error {
+	val, err := EncodeFocusRequestFull(fr)
+	if err != nil {
+		return err
+	}
+	return db.SetMeta(FocusRequestKey, val)
+}
+
+// ParseFocusRequest parses a stored payload into the whole request, with the
+// same freshness rule as DecodeFocusRequestAttach. ok is false for an empty,
+// malformed or id-less payload; fresh is meaningful only when ok is true.
+func ParseFocusRequest(val string, nowNano int64, ttl time.Duration) (fr FocusRequest, ok bool, fresh bool) {
+	if val == "" {
+		return FocusRequest{}, false, false
+	}
+	if err := json.Unmarshal([]byte(val), &fr); err != nil {
+		return FocusRequest{}, false, false
+	}
+	if fr.ID == "" {
+		return FocusRequest{}, false, false
+	}
+	return fr, true, focusRequestFresh(fr.TS, nowNano, ttl)
+}
+
+// focusRequestFresh reports whether a request written at ts is still
+// actionable at nowNano.
+func focusRequestFresh(ts, nowNano int64, ttl time.Duration) bool {
+	// Stale when older than the TTL, and also when the timestamp is more than a
+	// TTL in the future: a backward clock jump or corrupted payload must not be
+	// honored as a fresh focus request (which would trigger a spurious switch)
+	// indefinitely until wall-clock catches up. A modest skew within ±ttl still
+	// counts as fresh.
+	age := nowNano - ts
+	return age <= int64(ttl) && age >= -int64(ttl)
 }
 
 // EncodeFocusRequest serializes a select-only focus request payload.
@@ -54,25 +105,11 @@ func DecodeFocusRequest(val string, nowNano int64, ttl time.Duration) (id string
 // whether the request asked to attach the session. attach is only meaningful
 // when fresh is true.
 func DecodeFocusRequestAttach(val string, nowNano int64, ttl time.Duration) (id string, attach bool, fresh bool) {
-	if val == "" {
+	fr, ok, fresh := ParseFocusRequest(val, nowNano, ttl)
+	if !ok {
 		return "", false, false
 	}
-	var fr FocusRequest
-	if err := json.Unmarshal([]byte(val), &fr); err != nil {
-		return "", false, false
-	}
-	if fr.ID == "" {
-		return "", false, false
-	}
-	// Stale when older than the TTL, and also when the timestamp is more than a
-	// TTL in the future: a backward clock jump or corrupted payload must not be
-	// honored as a fresh focus request (which would trigger a spurious switch)
-	// indefinitely until wall-clock catches up. A modest skew within ±ttl still
-	// counts as fresh.
-	if age := nowNano - fr.TS; age > int64(ttl) || age < -int64(ttl) {
-		return fr.ID, fr.Attach, false
-	}
-	return fr.ID, fr.Attach, true
+	return fr.ID, fr.Attach, fresh
 }
 
 // WriteFocusRequest stores a select-only focus request for the running TUI to consume.
