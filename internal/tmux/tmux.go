@@ -5318,7 +5318,7 @@ const bgWorkCacheTTL = 500 * time.Millisecond
 // not, A5). See BackgroundWorkSince.
 func (s *Session) BackgroundWorkPending() bool {
 	work, blocked, _ := s.BackgroundWorkSince(time.Time{})
-	return work.WithoutShells().Running() && !blocked
+	return work.PaneProven().Running() && !blocked
 }
 
 // BackgroundWorkSince returns the background work (issue #2473) a Claude
@@ -5423,7 +5423,7 @@ func (s *Session) markBackgroundWorkActiveLocked(content string, currentTS int64
 		return false
 	}
 	stripped := StripANSI(content)
-	if !s.lastBackgroundWork.WithoutShells().Running() && !claudeBackgroundWorkPending(stripped) {
+	if !s.lastBackgroundWork.PaneProven().Running() && !claudeBackgroundWorkPending(stripped) {
 		return false
 	}
 	// An open menu or an error outranks background work: the frame stays
@@ -5866,7 +5866,7 @@ func (s *Session) classifyFrameLocked(content string) Substate {
 	// which still carries the workflow row the roster trim removes. A live
 	// foreground cue (running), an error, or an open menu keeps its verdict.
 	// A shell counter alone refines nothing (A5, WithoutShells).
-	if work := s.lastBackgroundWork.WithoutShells(); s.isClaudeTool() && work.InFlight() && !s.lastBackgroundBlocked {
+	if work := s.lastBackgroundWork.PaneProven(); s.isClaudeTool() && work.InFlight() && !s.lastBackgroundBlocked {
 		switch s.lastSubstate {
 		case SubstateNone, SubstateIdleAtEmptyPrompt, SubstateBackgroundWork, SubstateWatching:
 			s.lastSubstate = work.Substate()

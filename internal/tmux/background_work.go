@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // Background work in a Claude pane (issue #2473).
@@ -20,9 +21,12 @@ import (
 // run_in_background shell (a dev server, a tail -f), so the footer's
 // "· 1 shell ·" counter can stay drawn for hours after the work it stood for
 // ended. The pane alone therefore never proves a shell is finite work:
-// WithoutShells is the pane-only verdict every tmux-layer rule uses, and the
-// session layer keeps a shell running only while the transcript shows a
-// fresh background Bash launch (session/background_work.go).
+// PaneProven (WithoutShells) is the pane-only verdict every tmux-layer rule
+// uses, and the session layer keeps a shell running only while the
+// transcript shows a background Bash launch inside [status]
+// background_shell_hold (session/background_work.go). A hold of 0 restores
+// the earlier rule: the counter alone is work in flight
+// (SetShellCounterIsWork).
 //
 // The pane shows the work in four shapes (Claude Code 2.1.288, captured live
 // into testdata and the fixtures in background_work_test.go):
@@ -144,6 +148,24 @@ func (b BackgroundWork) Watching() bool {
 
 // Running excludes passive watchers from the work that holds a turn open.
 func (b BackgroundWork) Running() bool { return b.InFlight() && !b.Watching() }
+
+// shellCounterIsWork is the [status] background_shell_hold = 0 switch (set
+// by the session layer when config.toml loads): a footer shell counter on
+// its own is work in flight again, as before A5.
+var shellCounterIsWork atomic.Bool
+
+// SetShellCounterIsWork turns the pre-A5 rule on (true: a shell counter
+// alone holds the turn open) or off (false, the default).
+func SetShellCounterIsWork(on bool) { shellCounterIsWork.Store(on) }
+
+// PaneProven is the work the pane frame alone proves: WithoutShells, or the
+// item unchanged while SetShellCounterIsWork(true) is in effect.
+func (b BackgroundWork) PaneProven() BackgroundWork {
+	if shellCounterIsWork.Load() {
+		return b
+	}
+	return b.WithoutShells()
+}
 
 // WithoutShells is what the pane alone proves (A5): a footer counter that
 // names shells keeps only its monitors (watching), or nothing when it has
@@ -363,5 +385,5 @@ func countFooterCounter(counter string) (shells, monitors int) {
 // on the footer does not (A5, WithoutShells) and monitors are watching. Pure
 // and Claude-shaped; callers gate it to Claude sessions.
 func claudeBackgroundWorkPending(content string) bool {
-	return ParseClaudeBackgroundWork(content).WithoutShells().Running()
+	return ParseClaudeBackgroundWork(content).PaneProven().Running()
 }

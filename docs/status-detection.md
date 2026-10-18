@@ -83,15 +83,39 @@ vetoed.
 Shell rule (A5, 1.16.30; partly reverses #2473 for shells only): a footer
 shell counter with no workflow or agent evidence keeps a Claude session
 `running` / `background-work` only while the transcript shows a pending
-background Bash launch whose receipt is within the same 3 minute hold. The
-hold runs from the newest launch receipt; seeing the counter on the pane
-never refreshes it, otherwise a shell nobody reaps would pin the light green
-again. Past the hold, or with no readable transcript, the session falls back
-to the prompt logic: `waiting` (or `idle` once acknowledged) with the
-substate the frame shows, `idle-at-empty-prompt` for an empty composer, a
-ghost suggestion or a typed draft alike. A mixed counter keeps its monitors
-as `watching`. Workflow rows, `Waiting for N background agents / workflows
-to finish` and monitors are unchanged. The same merge runs on the tmux path, and the notify daemon's hook
+background Bash launch whose receipt is within the shell hold,
+`[status] background_shell_hold` (a Go duration, default `3m`). The hold
+runs from the newest launch receipt; seeing the counter on the pane never
+refreshes it, otherwise a shell nobody reaps would pin the light green
+again. Past the hold the session falls back to the prompt logic: `waiting`
+(or `idle` once acknowledged) with the substate the frame shows,
+`idle-at-empty-prompt` for an empty composer, a ghost suggestion or a typed
+draft alike. With no readable transcript (no Claude session id, transcript
+not found) there is no launch to hold from, so a shell counter reads
+`waiting` at once: the #2473 protection does not apply then. A mixed
+counter keeps its monitors as `watching`. Workflow rows, `Waiting for N
+background agents / workflows to finish` and monitors are unchanged. The
+lost-Stop-hook rule (hook lag: the hook file still says `running` over a
+finished frame) applies the same hold through the same merge
+(`Instance.shellHoldsTurn`), so a lost Stop hook and a delivered one read
+the same while the shell is inside the hold and after it.
+
+```toml
+[status]
+background_shell_hold = "30m"  # default "3m"; "0" = the rule before A5
+```
+
+`background_shell_hold = "0"` restores the rule before A5: the shell
+counter alone keeps the session `running` / `background-work` however old
+the shell, with or without a transcript, so a leftover dev server or
+`tail -f` pins the light green again. A value that is not a duration, or is
+negative, is logged (`status_background_shell_hold_invalid`) and the
+default applies. The trade-off of any non-zero hold: a build started with
+`run_in_background` that runs longer than the hold flips the session to
+`waiting` while it still runs, so the turn's "done" notification, a
+transition record, and a conductor or goal wake on that transition can
+fire mid-build. Raise the hold above your longest background builds, or
+use 0, if that matters more than a stale green light. The same merge runs on the tmux path, and the notify daemon's hook
 candidate path skips a Stop that handed off to background work, so no
 `running -> waiting` record is written until the work ends (session/
 background_work.go). A menu or an error outranks background work on every
@@ -185,10 +209,13 @@ running rows out):
   or on 1.16.24 to 1.16.29 (#2473 before A5), keeps reporting Claude
   background shells at an idle prompt as running whatever the controller
   runs, until the remote is updated.
-- A finite background shell that runs longer than the 3 minute hold (a long
-  build started with `run_in_background`) reads as waiting once the hold
-  passes, although the work is still running; the shell rule trades that for
-  never pinning a finished session green on a shell nobody reaps.
+- A finite background shell that runs longer than `[status]
+  background_shell_hold` (default 3 minutes; a long build started with
+  `run_in_background`) reads as waiting once the hold passes, although the
+  work is still running, and the done notification or a conductor/goal wake
+  can fire then; the shell rule trades that for never pinning a finished
+  session green on a shell nobody reaps. `background_shell_hold = "0"`
+  makes the opposite trade.
 - A Codex live status line pushed out of the live slot (a popup drawn between
   it and the composer) is not seen; the pane-title spinner still is.
 

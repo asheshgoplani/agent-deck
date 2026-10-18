@@ -37,6 +37,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[send] Section](#send-section)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
+- [[status] Section](#status-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
 - [[tmux] Section](#tmux-section)
@@ -1093,6 +1094,21 @@ session_events = true  # per-session event journal for `session metrics`
 | `session_events` | bool | `true` | Append one JSONL line per observed session event (`status` on every status/substate change the transition daemon sees, `send` with its outcome and ack time, `restart`, `stop`, `worker_done`) to `logs/health/sessions-YYYYMMDD.jsonl`. One file per UTC day, 1 MiB size cap with one backup, seven-day retention: the same rotation as the health samples. Costs no extra tmux calls or pane reads; only what the daemon already observed is written. Long-lived processes pick the switch up on restart. |
 
 Read the journal with `agent-deck session metrics <id> --json` (per session) or `agent-deck health --json` (the `sessions` roll-up).
+
+## [status] Section
+
+Status detection settings (docs/status-detection.md).
+
+```toml
+[status]
+shell_running_indicator = false
+background_shell_hold = "3m"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `shell_running_indicator` | bool | `false` | Show a `shell` tool session as running while its pane's foreground command is a non-interactive process (`node` from `yarn dev`, `java` from `mvn spring-boot:run`). |
+| `background_shell_hold` | duration | `"3m"` | How long after its launch a Claude `run_in_background` shell keeps a finished turn `running` / `background-work`. Past it the session reads `waiting`, even if the shell is a build that still runs (its done notification or a conductor/goal wake can then fire mid-build). `"0"` restores the earlier rule: the footer's shell counter alone keeps the session running, so a leftover dev server pins it green. An invalid or negative value is logged and the default applies. |
 
 ## [performance] Section
 

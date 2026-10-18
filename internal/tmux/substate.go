@@ -184,7 +184,7 @@ func (d *PromptDetector) ClassifySubstate(content string) Substate {
 func (d *PromptDetector) SubstateDetail(content string) string {
 	if d.tool == "claude" {
 		if sub := d.classifyClaudeSubstate(content); sub == SubstateBackgroundWork || sub == SubstateWatching {
-			return ParseClaudeBackgroundWork(content).WithoutShells().Summary()
+			return ParseClaudeBackgroundWork(content).PaneProven().Summary()
 		}
 		return ""
 	}
@@ -247,7 +247,7 @@ func (d *PromptDetector) classifyClaudeSubstate(content string) Substate {
 		}
 		// A shell counter alone is not work the pane can prove (A5): the
 		// frame is the idle prompt it shows, draft or not.
-		if work := ParseClaudeBackgroundWork(content).WithoutShells(); work.InFlight() {
+		if work := ParseClaudeBackgroundWork(content).PaneProven(); work.InFlight() {
 			return work.Substate()
 		}
 		return SubstateIdleAtEmptyPrompt
