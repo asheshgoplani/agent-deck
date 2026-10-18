@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
@@ -382,14 +383,14 @@ func runModelProbeCommand(path string, args ...string) ([]byte, error) {
 }
 
 // runModelProbeCommandIn runs a probe command in dir (empty: inherited) with
-// env added to this process's environment and its own timeout.
+// env added to the child launch environment and its own timeout.
 func runModelProbeCommandIn(timeout time.Duration, dir string, env []string, path string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir = dir
 	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = append(childenv.ForLaunch(""), env...)
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
