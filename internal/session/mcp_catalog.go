@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
@@ -226,8 +227,10 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 	if pluginPinClaudeProfile != "" {
 		if _, err := RefreshStalePluginPins(mcpFile, []string{pluginPinClaudeProfile}); err != nil {
 			mcpCatLog.Warn("plugin_pin_refresh_failed",
-				slog.String("path", logging.SanitizeValue(mcpFile)),
-				slog.String("error", logging.SanitizeValue(err.Error())))
+				// The inline ReplaceAll calls are no-ops after SanitizeValue; they are
+				// the newline barrier CodeQL go/log-injection recognises at the sink.
+				slog.String("path", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(mcpFile), "\n", ""), "\r", "")),
+				slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		}
 	}
 
