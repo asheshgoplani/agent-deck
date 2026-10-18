@@ -9,6 +9,7 @@ import {
 } from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
+import { PathInput } from './PathInput.js'
 import { DirectoryCreationOption } from './DirectoryCreationOption.js'
 import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTools.js'
 import {
@@ -110,8 +111,8 @@ export function CreateSessionDialog() {
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
   return html`
-    <div class="overlay" onClick=${handleBackdropClick}>
-      <form class="dialog" onClick=${e => e.stopPropagation()} onSubmit=${handleSubmit}>
+    <div class="overlay path-dialog-overlay" onClick=${handleBackdropClick}>
+      <form class="dialog path-dialog" onClick=${e => e.stopPropagation()} onSubmit=${handleSubmit}>
         <div class="dh">
           <span class="kicker">NEW</span>
           <div class="t">New session</div>
@@ -131,8 +132,8 @@ export function CreateSessionDialog() {
             <input autofocus required value=${title} onInput=${e => setTitle(e.target.value)} placeholder="session-name"/>
           </div>
           <div class="field">
-            <label>WORKING DIR</label>
-            <input required value=${path} onInput=${e => { setPath(e.target.value); setDirectoryCreation(null) }} placeholder="/absolute/path/to/project"/>
+            <label for="create-session-path">WORKING DIR</label>
+            <${PathInput} value=${path} onInput=${e => { setPath(e.target.value); setDirectoryCreation(null) }}/>
             <${DirectoryCreationOption} key=${ctx.groupPath} path=${path} refresh=${error} onChange=${setDirectoryCreation}/>
           </div>
           <div class="field">

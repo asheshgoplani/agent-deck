@@ -1,10 +1,12 @@
 package childenv
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Issue #1163: the filter must strip every TELEGRAM_* var and any inherited
@@ -43,4 +45,30 @@ func TestFilterEnv_DoesNotMutateInput(t *testing.T) {
 	in := []string{"TELEGRAM_X=1", "PATH=/bin"}
 	_ = FilterEnv(in, "/child")
 	assert.Equal(t, []string{"TELEGRAM_X=1", "PATH=/bin"}, in)
+}
+
+// Issue #2683: a tmux server or worker started from inside a Claude Code
+// background job must not hand that job's CLAUDE_JOB_DIR to its children, or
+// every pane's hooks would look like they came from a background worker.
+func TestFilterEnv_StripsClaudeJobDir(t *testing.T) {
+	out := FilterEnv([]string{"CLAUDE_JOB_DIR=/home/u/.claude/jobs/abc", "PATH=/bin"}, "")
+	for _, kv := range out {
+		assert.False(t, strings.HasPrefix(kv, "CLAUDE_JOB_DIR="), "CLAUDE_JOB_DIR leaked: %s", kv)
+	}
+	assert.Contains(t, out, "PATH=/bin")
+}
+
+func TestWithoutClaudeJobDir(t *testing.T) {
+	t.Setenv("CLAUDE_JOB_DIR", "")
+	require.NoError(t, os.Unsetenv("CLAUDE_JOB_DIR"))
+	assert.Nil(t, WithoutClaudeJobDir(), "absent var: inherit unchanged")
+
+	t.Setenv("CLAUDE_JOB_DIR", "/home/u/.claude/jobs/abc")
+	t.Setenv("TELEGRAM_KEEP", "1")
+	out := WithoutClaudeJobDir()
+	require.NotNil(t, out)
+	for _, kv := range out {
+		assert.False(t, strings.HasPrefix(kv, "CLAUDE_JOB_DIR="), "CLAUDE_JOB_DIR leaked: %s", kv)
+	}
+	assert.Contains(t, out, "TELEGRAM_KEEP=1", "tmux env keeps every other var")
 }

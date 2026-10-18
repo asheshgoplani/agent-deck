@@ -7,12 +7,14 @@
         {
           "window": "5h",
           "used_pct": 23.5,
-          "resets_at": "2026-10-01T13:06:40Z"
+          "resets_at": "2026-10-01T13:06:40Z",
+          "expired": true
         },
         {
           "window": "7d",
           "used_pct": 48,
-          "resets_at": "2026-10-07T19:06:40Z"
+          "resets_at": "2026-10-07T19:06:40Z",
+          "expired": true
         },
         {
           "window": "spend",

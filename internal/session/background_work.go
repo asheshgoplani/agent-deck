@@ -603,7 +603,8 @@ func backgroundWorkOutrankedBySubstate(ts *tmux.Session) bool {
 		return true
 	}
 	switch ts.CachedSubstate() {
-	case tmux.SubstateInteractiveMenu, tmux.SubstateAuth401, tmux.SubstateModelUnavailable, tmux.SubstateUsageLimit:
+	case tmux.SubstateInteractiveMenu, tmux.SubstateAuth401, tmux.SubstateModelUnavailable,
+		tmux.SubstateUsageLimit, tmux.SubstateModelLimit, tmux.SubstateAccountBlocked:
 		return true
 	}
 	return false

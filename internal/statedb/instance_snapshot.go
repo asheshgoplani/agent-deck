@@ -37,6 +37,10 @@ type NativeHarnessSwitchIdentity struct {
 	// existed when its source and pending target were selected. It is not part
 	// of same-harness identity because that operation never replaces a row.
 	ParentSessionID string
+	// ToolDataExtras are tool_data keys CommitNativeHarnessSwitch writes with
+	// the target identity (a nil value removes the key). They are not part of
+	// the identity compared by the CAS.
+	ToolDataExtras map[string]json.RawMessage
 }
 
 // CloneInstanceRow returns an owned snapshot, including the mutable JSON bytes.
@@ -178,6 +182,13 @@ func (s *StateDB) commitNativeHarnessSwitchOnce(source, target NativeHarnessSwit
 	fields["codex_session_id"], err = json.Marshal(target.CodexSessionID)
 	if err != nil {
 		return nil, err
+	}
+	for key, raw := range target.ToolDataExtras {
+		if raw == nil {
+			delete(fields, key)
+		} else {
+			fields[key] = raw
+		}
 	}
 	merged.ToolData, err = json.Marshal(fields)
 	if err != nil {

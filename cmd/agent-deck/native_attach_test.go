@@ -503,43 +503,65 @@ while True:
 	terminal.Close()
 	lastFrame = receipt("alive-after-blackhole")
 	// Matched measurements use the same OpenSSH configuration, proxy, remote
-	// tmux pane and receiver. A 50ms p95 delta guards a new polling delay;
+	// tmux pane and receiver. nativeLatencyBudget guards a new polling delay;
 	// absolute bounds remain deliberately loose for a shared test runner.
-	measure := func(label string) []time.Duration {
-		t.Helper()
-		terminal, _, snapshot, done = attach()
-		samples := make([]time.Duration, 0, 30)
-		for index := 0; index < 30; index++ {
-			frame := fmt.Sprintf("latency-%s-%02d", label, index)
-			start := time.Now()
-			writeInput(terminal, frame+"\r")
-			waitFor("latency receipt", func() bool { return strings.Contains(snapshot(), receipt(frame)) })
-			samples = append(samples, time.Since(start))
-			lastFrame = receipt(frame)
-		}
-		writeInput(terminal, "\x11")
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("%s latency detach: %v", label, err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("latency detach hung")
-		}
-		terminal.Close()
-		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
-		t.Logf("latency %s sorted=%v median=%v p95=%v max=%v", label, samples, samples[15], samples[28], samples[29])
-		return samples
+	// Both clients stay attached and the samples alternate one by one, so
+	// both paths see the same runner latency regime (#2698).
+	type latencyClient struct {
+		label    string
+		terminal *os.File
+		snapshot func() string
+		done     <-chan error
 	}
 	directSSH = true
-	direct := measure("direct")
+	directClient := latencyClient{label: "direct"}
+	directClient.terminal, _, directClient.snapshot, directClient.done = attach()
 	directSSH = false
-	deck := measure("deck")
-	if deck[28] > direct[28]+50*time.Millisecond {
-		t.Errorf("Agent Deck p95=%v exceeds directSSH=%v plus50ms", deck[28], direct[28])
+	deckClient := latencyClient{label: "deck"}
+	deckClient.terminal, _, deckClient.snapshot, deckClient.done = attach()
+	var direct, deck []time.Duration
+	var sequence []string
+	for index, isDirect := range nativeLatencyOrder(30) {
+		client := deckClient
+		if isDirect {
+			client = directClient
+		}
+		frame := fmt.Sprintf("latency-%s-%02d", client.label, index)
+		start := time.Now()
+		writeInput(client.terminal, frame+"\r")
+		waitFor("latency receipt", func() bool { return strings.Contains(client.snapshot(), receipt(frame)) })
+		elapsed := time.Since(start)
+		if isDirect {
+			direct = append(direct, elapsed)
+		} else {
+			deck = append(deck, elapsed)
+		}
+		sequence = append(sequence, fmt.Sprintf("%s=%v", client.label, elapsed.Round(time.Millisecond)))
+		lastFrame = receipt(frame)
 	}
-	if deck[29] > time.Second {
-		t.Errorf("Agent Deck max latency=%v exceeds1s", deck[29])
+	for _, client := range []latencyClient{directClient, deckClient} {
+		writeInput(client.terminal, "\x11")
+		select {
+		case err := <-client.done:
+			if err != nil {
+				t.Errorf("%s latency detach: %v", client.label, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s latency detach hung", client.label)
+		}
+		client.terminal.Close()
+	}
+	t.Logf("latency order=%v", sequence)
+	for _, set := range []struct {
+		label   string
+		samples []time.Duration
+	}{{"direct", direct}, {"deck", deck}} {
+		label, samples := set.label, set.samples
+		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		t.Logf("latency %s sorted=%v median=%v p95=%v max=%v", label, samples, samples[15], samples[28], samples[29])
+	}
+	if err := nativeLatencyBudget(direct, deck); err != nil {
+		t.Error(err)
 	}
 	// Exercise the production ControlMaster options after the isolated
 	// no-master fault tests. The runner owns the whole socket namespace.

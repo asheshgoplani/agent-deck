@@ -325,6 +325,17 @@ type limitWindowJSON struct {
 	Window   string  `json:"window"`
 	UsedPct  float64 `json:"used_pct"`
 	ResetsAt string  `json:"resets_at,omitempty"`
+	// Expired marks a window whose resets_at has passed: its used_pct is the
+	// last value seen for a window that is over, so it never drives a limit.
+	Expired bool `json:"expired,omitempty"`
+}
+
+// limitWindowText renders one window for the text output of `limits`.
+func limitWindowText(w limitWindowJSON) string {
+	if w.Expired {
+		return fmt.Sprintf("%s expired (was %.0f%%)", w.Window, w.UsedPct)
+	}
+	return fmt.Sprintf("%s %.0f%%", w.Window, w.UsedPct)
 }
 
 type limitAccountJSON struct {
@@ -338,6 +349,17 @@ type limitAccountJSON struct {
 	// Default marks the active default Claude login (~/.claude or the
 	// resolved CLAUDE_CONFIG_DIR) that no [profiles.<name>.claude] slot owns.
 	Default bool `json:"default,omitempty"`
+	// Blocked marks a Claude account a live session reports account-blocked
+	// (the organization disabled subscription access): not a limit that
+	// resets, so its sessions must move (limit-guard bug 2).
+	Blocked       bool   `json:"blocked,omitempty"`
+	BlockedReason string `json:"blocked_reason,omitempty"`
+	// Sessions lists the live sessions on this account that are
+	// account-blocked, model-limited or usage-limited, each with its fix.
+	Sessions []limitSessionJSON `json:"sessions,omitempty"`
+	// ConfigDir is the slot's Claude config dir, used to match sessions to
+	// the account they run on. Not part of the JSON report.
+	ConfigDir string `json:"-"`
 }
 
 func epochRFC3339(sec *int64) string {
@@ -366,7 +388,7 @@ func claudeLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 		}
 	}
 	for _, a := range slots {
-		acc := limitAccountJSON{Harness: "claude", Name: a.Name, Windows: []limitWindowJSON{}, Source: "quota cache (statusLine ingester)", Default: !named[a.Name]}
+		acc := limitAccountJSON{Harness: "claude", Name: a.Name, Windows: []limitWindowJSON{}, Source: "quota cache (statusLine ingester)", Default: !named[a.Name], ConfigDir: a.ConfigDir}
 		store, err := quota.NewStore(a.Name)
 		if err == nil {
 			snaps, _ := store.Load()
@@ -384,7 +406,7 @@ func claudeLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 					if label == "" {
 						label = w.Label
 					}
-					acc.Windows = append(acc.Windows, limitWindowJSON{Window: label, UsedPct: w.UsedPercentage, ResetsAt: epochRFC3339(w.ResetsAt)})
+					acc.Windows = append(acc.Windows, limitWindowJSON{Window: label, UsedPct: w.UsedPercentage, ResetsAt: epochRFC3339(w.ResetsAt), Expired: w.Expired(now)})
 				}
 			}
 		}
@@ -503,6 +525,11 @@ func codexLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 		}
 		acc := limitAccountJSON{Harness: "codex", Name: s.name, Windows: []limitWindowJSON{}, Source: "last token_count in " + filepath.Join(s.dir, "sessions")}
 		if w, t, ok := codexRateLimits(s.dir); ok {
+			for i := range w {
+				if t, err := time.Parse(time.RFC3339, w[i].ResetsAt); err == nil && !t.After(now) {
+					w[i].Expired = true
+				}
+			}
 			acc.Windows = w
 			acc.UpdatedAt = t.UTC().Format(time.RFC3339)
 			acc.Stale = now.Sub(t) > session.AccountUsageStaleAfter
@@ -514,8 +541,8 @@ func codexLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 	return out
 }
 
-// limitReachedByHarness marks a harness whose every known window of every
-// account is fresh and at or above 100%.
+// limitReachedByHarness marks a harness whose every account has a fresh,
+// unexpired window at or above 100%.
 func limitReachedByHarness() map[string]bool {
 	cfg, _ := session.LoadUserConfig()
 	now := time.Now()
@@ -524,7 +551,8 @@ func limitReachedByHarness() map[string]bool {
 
 // limitReachedFrom is limitReachedByHarness over already collected accounts.
 // A default Claude login with no known windows (no feed or no data yet) is
-// left out, so it never masks the configured slots' verdict.
+// left out, so it never masks the configured slots' verdict. An expired
+// window (its resets_at has passed) no longer applies and never counts.
 func limitReachedFrom(groups [][]limitAccountJSON) map[string]bool {
 	out := map[string]bool{}
 	for _, group := range groups {
@@ -542,7 +570,7 @@ func limitReachedFrom(groups [][]limitAccountJSON) map[string]bool {
 		for _, a := range accs {
 			hit := false
 			for _, w := range a.Windows {
-				if w.UsedPct >= 100 && !a.Stale {
+				if w.UsedPct >= 100 && !a.Stale && !w.Expired {
 					hit = true
 				}
 			}
@@ -553,7 +581,7 @@ func limitReachedFrom(groups [][]limitAccountJSON) map[string]bool {
 	return out
 }
 
-func handleLimits(args []string) {
+func handleLimits(profile string, args []string) {
 	fs := flag.NewFlagSet("limits", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -564,7 +592,11 @@ func handleLimits(args []string) {
 		fmt.Println("default login no slot owns (marked \"default\": true), from the quota cache the")
 		fmt.Println("statusLine ingester fills (`agent-deck hooks install` wires it), and Codex")
 		fmt.Println("weekly/5h windows per CODEX_HOME (from the newest token_count frame in its rollouts),")
-		fmt.Println("each with used_pct and resets_at. Needs [macapp] plugins = true (docs/macapp-core.md).")
+		fmt.Println("each with used_pct and resets_at; \"expired\": true marks a window whose resets_at")
+		fmt.Println("has passed, so its used_pct no longer applies. A Claude account a live session reports")
+		fmt.Println("account-blocked (organization disabled access) carries \"blocked\": true and \"blocked_reason\";")
+		fmt.Println("\"sessions\" lists the account's account-blocked, model-limit and usage-limit sessions,")
+		fmt.Println("each with the command that moves it on (\"fix\"). Needs [macapp] plugins = true (docs/macapp-core.md).")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -579,7 +611,8 @@ func handleLimits(args []string) {
 		exitCLI(2)
 	}
 	now := time.Now()
-	accounts := append(claudeLimits(cfg, now), codexLimits(cfg, now)...)
+	claude := annotateClaudeLimits(claudeLimits(cfg, now), liveClaudeSessionRows(profile))
+	accounts := append(claude, codexLimits(cfg, now)...)
 	if accounts == nil {
 		accounts = []limitAccountJSON{}
 	}
@@ -590,11 +623,14 @@ func handleLimits(args []string) {
 	for _, a := range accounts {
 		var parts []string
 		for _, w := range a.Windows {
-			parts = append(parts, fmt.Sprintf("%s %.0f%%", w.Window, w.UsedPct))
+			parts = append(parts, limitWindowText(w))
 		}
 		if a.Error != "" {
 			parts = append(parts, a.Error)
 		}
 		fmt.Printf("%-7s %-12s %s\n", a.Harness, a.Name, strings.Join(parts, "  "))
+		for _, line := range limitsTextNotes(a) {
+			fmt.Println(line)
+		}
 	}
 }

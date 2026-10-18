@@ -22,6 +22,7 @@ func TestGetDirectoryCompletions(t *testing.T) {
 		"work/agent-deck",
 		"work/other",
 		"Documents",
+		".hidden",
 	}
 	for _, d := range dirs {
 		err := os.MkdirAll(filepath.Join(tmpDir, d), 0755)
@@ -43,6 +44,16 @@ func TestGetDirectoryCompletions(t *testing.T) {
 		input    string
 		expected []string
 	}{
+		{
+			name:     "Trailing slash omits hidden directories",
+			input:    tmpDir + string(os.PathSeparator),
+			expected: []string{filepath.Join(tmpDir, "Documents"), filepath.Join(tmpDir, "personal"), filepath.Join(tmpDir, "playground"), filepath.Join(tmpDir, "projects"), filepath.Join(tmpDir, "work")},
+		},
+		{
+			name:     "Dot segment discovers hidden directories",
+			input:    tmpDir + string(os.PathSeparator) + ".",
+			expected: []string{filepath.Join(tmpDir, ".hidden")},
+		},
 		{
 			name:     "Absolute path prefix",
 			input:    filepath.Join(tmpDir, "p"),
@@ -89,6 +100,39 @@ func TestGetDirectoryCompletions(t *testing.T) {
 			assert.Equal(t, tt.expected, results)
 		})
 	}
+}
+
+func TestGetDirectoryCompletionsTildeSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	outside := filepath.Join(root, "outside")
+	for _, dir := range []string{home, filepath.Join(outside, "sub"), filepath.Join(outside, "project")} {
+		require.NoError(t, os.MkdirAll(dir, 0755))
+	}
+	require.NoError(t, os.Symlink(filepath.Join(outside, "sub"), filepath.Join(home, "link")))
+	resolvedOutside, err := filepath.EvalSymlinks(outside)
+	require.NoError(t, err)
+	t.Setenv("HOME", home)
+	for _, prefix := range []string{"~/link/../", "~/link/../pr", "~/link/../project"} {
+		got, err := GetDirectoryCompletions(prefix)
+		require.NoError(t, err)
+		for _, path := range got {
+			if len(path) > 0 && path[0] == '~' {
+				path = filepath.Join(home, path[1:])
+			}
+			info, err := os.Stat(path)
+			require.NoError(t, err, "completion must point to the scanned directory")
+			require.True(t, info.IsDir())
+		}
+		assert.Contains(t, got, filepath.Join(resolvedOutside, "project"))
+	}
+	got, err := GetDirectoryCompletions("~/link/..")
+	require.NoError(t, err)
+	assert.Equal(t, []string{resolvedOutside}, got)
+	require.Len(t, got, 1)
+	projectPath, err := ResolveProjectPath(got[0])
+	require.NoError(t, err)
+	assert.Equal(t, resolvedOutside, projectPath)
 }
 
 func TestCompletionCycler(t *testing.T) {
@@ -147,4 +191,26 @@ func TestCompletionCycler_MatchesAndIndex(t *testing.T) {
 	cycler.Reset()
 	assert.Nil(t, cycler.Matches())
 	assert.Equal(t, -1, cycler.Index())
+}
+
+// A huge directory must not make one completion read every entry.
+func TestReadDirBoundedCapsAndSorts(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"d", "b", "e", "a", "c"} {
+		require.NoError(t, os.Mkdir(filepath.Join(dir, name), 0755))
+	}
+	all, err := readDirBounded(dir, 100)
+	require.NoError(t, err)
+	names := make([]string, 0, len(all))
+	for _, e := range all {
+		names = append(names, e.Name())
+	}
+	assert.Equal(t, []string{"a", "b", "c", "d", "e"}, names)
+
+	capped, err := readDirBounded(dir, 3)
+	require.NoError(t, err)
+	assert.Len(t, capped, 3)
+
+	_, err = readDirBounded(filepath.Join(dir, "missing"), 3)
+	assert.Error(t, err)
 }

@@ -288,7 +288,7 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		return fmt.Errorf("failed to stop session: %w", err)
 	}
 	m.h.instancesMu.Lock()
-	inst.ArchivedAt = time.Now().UTC()
+	inst.SetArchivedAtThreadSafe(time.Now().UTC())
 	m.h.instancesMu.Unlock()
 	return m.persistAllInstances()
 }
@@ -311,7 +311,7 @@ func (m *WebMutator) UnarchiveSession(id string) error {
 		m.h.instancesMu.Unlock()
 		return fmt.Errorf("session is not archived: %s", id)
 	}
-	inst.ArchivedAt = time.Time{}
+	inst.SetArchivedAtThreadSafe(time.Time{})
 	m.h.instancesMu.Unlock()
 	return m.persistAllInstances()
 }

@@ -56,7 +56,7 @@ type staleCandidate struct {
 	Tool                string   `json:"tool"`
 	Status              string   `json:"status"`
 	Substate            string   `json:"substate,omitempty"`
-	SubstateDetail      string   `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
+	SubstateDetail      string   `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time; usage-limit window, model-limit model, account-blocked reason)
 	Path                string   `json:"path"`
 	GroupPath           string   `json:"group_path,omitempty"`
 	ParentSessionID     string   `json:"parent_session_id,omitempty"`

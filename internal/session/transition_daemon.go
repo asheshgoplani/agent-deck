@@ -1308,6 +1308,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		DoneSummary              string `json:"done_summary"`
 		TranscriptPath           string `json:"transcript_path"`
 		Cwd                      string `json:"cwd"`
+		Platform                 string `json:"platform"`
 		CodexStartedGeneration   string `json:"codex_started_generation"`
 		CodexCompletedGeneration string `json:"codex_completed_generation"`
 		CodexStartedSessionID    string `json:"codex_started_session_id"`
@@ -1339,6 +1340,7 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		DoneSummary:              raw.DoneSummary,
 		TranscriptPath:           raw.TranscriptPath,
 		Cwd:                      raw.Cwd,
+		Platform:                 raw.Platform,
 		CodexStartedGeneration:   raw.CodexStartedGeneration,
 		CodexCompletedGeneration: raw.CodexCompletedGeneration,
 		CodexStartedSessionID:    raw.CodexStartedSessionID,
@@ -1499,6 +1501,16 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		}
 	case "hermes":
 		if event == "post_llm_call" || event == "postllmcall" || event == "onsessionend" || event == "on_session_end" {
+			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
+		}
+	case "pi":
+		// Issue #2665: pi's extension emits turn_end when a turn finishes.
+		// Without this case a pi turn reached the parent only through the
+		// snapshot edge, which needs a polled `running` status. A short turn
+		// answered between two polls (the common case, and every turn after a
+		// revive left the tracked status at error) never produced an event.
+		// session_start is excluded like Claude's SessionStart.
+		if event == "turn_end" || event == "turnend" {
 			return hookTransitionCandidate{ToStatus: to, Timestamp: hs.UpdatedAt, Event: hs.Event}, true
 		}
 	}

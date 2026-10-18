@@ -1825,6 +1825,27 @@ func TestSaveWatcherEvent_BodyRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHasWatcherEvent: the engine asks whether an event is stored before it
+// queues the event for its conductor (#2537).
+func TestHasWatcherEvent(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveWatcher(&WatcherRow{ID: "w1", Name: "has-event", Type: "webhook", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatalf("SaveWatcher: %v", err)
+	}
+	if has, err := db.HasWatcherEvent("w1", "dk-1"); err != nil || has {
+		t.Fatalf("before storing: %v, %v; want false", has, err)
+	}
+	if _, err := db.SaveWatcherEvent("w1", "dk-1", "alice", "s", "demo", "", "b", 500); err != nil {
+		t.Fatalf("SaveWatcherEvent: %v", err)
+	}
+	if has, err := db.HasWatcherEvent("w1", "dk-1"); err != nil || !has {
+		t.Fatalf("after storing: %v, %v; want true", has, err)
+	}
+	if has, _ := db.HasWatcherEvent("w2", "dk-1"); has {
+		t.Fatal("another watcher's event with the same key reported as stored")
+	}
+}
+
 // TestMigrate_OldSchema_AddArchivedAt verifies v9→v10 adds archived_at and preserves data.
 func TestMigrate_OldSchema_AddArchivedAt(t *testing.T) {
 	db := createV9SchemaDB(t)

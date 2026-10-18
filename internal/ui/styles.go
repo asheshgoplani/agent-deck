@@ -597,6 +597,7 @@ func StatusIndicator(status string) string {
 // source of truth; the switch below is the fallback for names the registry
 // does not know (issue #2136).
 func ToolIcon(tool string) string {
+	tool = session.CanonicalToolName(tool)
 	if icon := session.ToolIconFor(tool); icon != "" {
 		return icon
 	}
@@ -640,6 +641,7 @@ func ToolIcon(tool string) string {
 // set color = "<lipgloss value>" in config. The switch below is the fallback
 // for names the registry does not know (issue #2136).
 func ToolColor(tool string) lipgloss.Color {
+	tool = session.CanonicalToolName(tool)
 	if c, ok := paletteColor(session.ToolColorFor(tool)); ok {
 		return c
 	}

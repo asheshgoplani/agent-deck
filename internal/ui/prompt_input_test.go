@@ -151,16 +151,15 @@ func TestPromptHotkey_OpensInputForClaudeSession(t *testing.T) {
 	}
 }
 
-// TestPromptHotkey_NonClaudeSessionNoOp: the hotkey is inert on a non-claude
-// session (the composer-draft guard + delivery verify are claude-shaped).
-func TestPromptHotkey_NonClaudeSessionNoOp(t *testing.T) {
+// All commands with a live input pane can receive a message.
+func TestPromptHotkey_NonClaudeSession(t *testing.T) {
 	home, _ := armHomeWithRunningClaudeSession(t, "shell")
 
 	key := defaultHotkeyBindings[hotkeyPromptSession]
 	home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 
-	if home.promptInputDialog.IsVisible() {
-		t.Error("prompt input must not open for a non-claude session")
+	if !home.promptInputDialog.IsVisible() {
+		t.Error("prompt input must open for a non-claude session")
 	}
 }
 

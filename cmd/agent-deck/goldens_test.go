@@ -14,6 +14,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -462,7 +464,42 @@ func goldensSandbox(t *testing.T) (home string, env []string) {
 	seedGoldensStore(t, home)
 
 	env = os.Environ()
+	env = hermeticGoldensTmux(t, env)
 	return home, env
+}
+
+// hermeticGoldensTmux points the subprocess at a private TMUX_TMPDIR whose
+// default socket is a stale socket file (nothing listens on it), so every
+// tmux query the binary makes answers "no server running on <path>": a
+// deterministic, known-empty server. Without it the goldens inherited the
+// host's tmux state: on a machine with no default socket file the probe
+// fails with "error connecting to ... (No such file or directory)", which is
+// unknown rather than empty, so absent error rows (golden-sess-4) were
+// refreshed and came out status_source "live" instead of "cached", while a
+// runner with a default socket produced the recorded golden.
+func hermeticGoldensTmux(t *testing.T, env []string) []string {
+	t.Helper()
+	tmuxTmpdir, err := os.MkdirTemp("", "ad-goldens-tmux-")
+	if err != nil {
+		t.Fatalf("creating private tmux directory: %v", err)
+	}
+	t.Cleanup(func() { cleanupPrivateTmux(t, tmuxTmpdir) })
+	socketDir := filepath.Join(tmuxTmpdir, fmt.Sprintf("tmux-%d", os.Getuid()))
+	if err := os.Mkdir(socketDir, 0o700); err != nil {
+		t.Fatalf("creating private tmux socket directory: %v", err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(socketDir, "default"))
+	if err != nil {
+		t.Fatalf("creating stale private tmux socket: %v", err)
+	}
+	// Keep the socket file after closing so connects get ECONNREFUSED,
+	// which tmux reports as "no server running".
+	listener.(*net.UnixListener).SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatalf("closing stale private tmux socket: %v", err)
+	}
+	env = filterEnv(env, "TMUX", "TMUX_PANE", "TMUX_TMPDIR")
+	return append(env, "TMUX_TMPDIR="+tmuxTmpdir)
 }
 
 func runGoldens(t *testing.T, bin string, env []string, args []string) (stdout string, exitCode int) {

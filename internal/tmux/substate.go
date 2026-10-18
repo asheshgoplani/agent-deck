@@ -76,6 +76,23 @@ const (
 	// through Instance.Substate rather than ClassifySubstate.
 	SubstateUsageLimit Substate = "usage-limit"
 
+	// SubstateModelLimit marks a session whose CURRENT MODEL has its own cap
+	// exhausted while the account may still have room: a 429 rate_limit
+	// rejection whose text names a model ("You've reached your Fable limit",
+	// "... keep using Fable 5.1 or /model to switch models"). Distinct from
+	// usage-limit because the fix differs — switch the session's model rather
+	// than wait for the plan window or move accounts. Transcript-derived like
+	// usage-limit (internal/session/usagelimit.go); never from pane text.
+	SubstateModelLimit Substate = "model-limit"
+
+	// SubstateAccountBlocked marks a session whose account has been refused
+	// outright: the API returns error "oauth_org_not_allowed" (403, "Your
+	// organization has disabled Claude subscription access for Claude Code").
+	// Unlike usage-limit this does not clear when a window resets — the
+	// session must move to another account. Transcript-derived like
+	// usage-limit (internal/session/usagelimit.go); never from pane text.
+	SubstateAccountBlocked Substate = "account-blocked"
+
 	// SubstateUnknownExit marks a terminated-pane classification made with NO
 	// evidence at all: the tmux pane vanished without a captured exit code
 	// (no remain-on-exit), and this hook-emitting session never recorded a

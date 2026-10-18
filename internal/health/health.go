@@ -74,7 +74,7 @@ func descriptorBudgetOf(s Sample) int {
 }
 
 func descriptorWarning(openFDs, budget int) string {
-	return fmt.Sprintf("Health: %d open descriptors exceed the budget of %d; run agent-deck health for details", openFDs, budget)
+	return fmt.Sprintf("Health: %d open descriptors exceed the budget of %d (advisory); run agent-deck health for causes and fixes", openFDs, budget)
 }
 
 type Remote struct {

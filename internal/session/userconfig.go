@@ -796,6 +796,7 @@ func normalizeUIHiddenTools(ui *UISettings, customTools map[string]ToolDef) {
 		return
 	}
 	known := make(map[string]bool, len(builtinTools())+len(customTools))
+	known["opencode2"] = true
 	for _, bt := range builtinTools() {
 		known[strings.ToLower(strings.TrimSpace(bt.Name))] = true
 	}
@@ -4681,12 +4682,9 @@ func GetToolCommand(toolName string) string {
 	return toolName
 }
 
-func isBuiltinToolName(toolName string) bool {
-	return currentRegistry().IsBuiltin(toolName)
-}
-
 // GetToolIcon returns the icon for a tool (custom or built-in)
 func GetToolIcon(toolName string) string {
+	toolName = CanonicalToolName(toolName)
 	// Check custom tools first
 	if def := GetToolDef(toolName); def != nil && def.Icon != "" {
 		return def.Icon
@@ -6268,6 +6266,29 @@ type WatcherSettings struct {
 
 	// Alerts configures the health alerts bridge (opt-in). See WatcherAlertsSettings.
 	Alerts WatcherAlertsSettings `toml:"alerts,omitempty"`
+
+	// DeliveryDeadline bounds how long a routed event waits in the send
+	// queue for its conductor (stopped, busy, or a composer holding a draft)
+	// before its delivery fails, as a Go duration such as "72h". Unset or
+	// "0": it waits until the conductor takes it (#2537).
+	DeliveryDeadline string `toml:"delivery_deadline,omitempty"`
+}
+
+// GetDeliveryDeadline returns DeliveryDeadline, 0 for no deadline. A value
+// that is not a duration is reported and means no deadline.
+func (w WatcherSettings) GetDeliveryDeadline() (time.Duration, error) {
+	raw := strings.TrimSpace(w.DeliveryDeadline)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("delivery_deadline %q is negative", raw)
+	}
+	return d, nil
 }
 
 // GetMaxEventsPerWatcher returns the max events per watcher (default: 500).

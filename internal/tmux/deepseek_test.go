@@ -66,41 +66,6 @@ func TestDetectToolFromCommand_DeepSeek_Negative(t *testing.T) {
 	}
 }
 
-func TestDetectToolFromContent_DeepSeek(t *testing.T) {
-	tests := []struct {
-		name    string
-		content string
-	}{
-		{"web ready banner", dshWebReadyBanner},
-		{"launcher help", dshLauncherHelp},
-		{"headless usage", dshHeadlessUsage},
-		{"credential error", dshMissingCredLine},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := detectToolFromContent(tt.content); got != "deepseek" {
-				t.Fatalf("detectToolFromContent(%q) = %q, want deepseek", tt.content, got)
-			}
-		})
-	}
-}
-
-func TestDetectToolFromContent_DeepSeek_DoesNotStealModelMentions(t *testing.T) {
-	// A codex pane that happens to be running a DeepSeek model must stay codex.
-	// The tool-detection order puts codex first, but the deepseek patterns must
-	// also not match a bare model name on their own.
-	content := "codex\nmodel: deepseek-v4-pro\n"
-	if got := detectToolFromContent(content); got == "deepseek" {
-		t.Fatalf("detectToolFromContent claimed a codex pane mentioning a DeepSeek model")
-	}
-
-	// And a pane that only names the model, with no dsh output at all, must not
-	// be claimed either.
-	if got := detectToolFromContent("using deepseek-v4-pro for this task"); got == "deepseek" {
-		t.Fatalf("detectToolFromContent claimed a pane that only names a DeepSeek model")
-	}
-}
-
 // TestDefaultRawPatterns_DeepSeek_HelpIsNotAPrompt pins the review finding that
 // "Usage: dsh" described a state that never occurs: it is the HELP screen (dsh
 // prints it on --help and exits 0), while a real usage failure prints

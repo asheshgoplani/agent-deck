@@ -7,8 +7,9 @@
                                                                    │    >Dark   Light   System                                      │
                                                                    │                                                                │
                                                                    │  DEFAULT TOOL                                                  │
-                                                                   │     Claude   Gemini   OpenCode   Codex   Pi   Copilot   Crush  │
-                                                                   │  Muse   Cursor   Hermes   DeepSeek   Oh My Pi  >None           │
+                                                                   │     Claude   Gemini   OpenCode   OpenCode 2   Codex   Pi       │
+                                                                   │  Copilot   Crush   Muse   Cursor   Hermes   DeepSeek   Oh My   │
+                                                                   │  Pi  >None                                                     │
                                                                    │    Pre-selected when creating new sessions                     │
                                                                    │                                                                │
                                                                    │  CLAUDE                                                        │
@@ -42,7 +43,6 @@
                                                                    │  PREVIEW                                                       │
                                                                    │    [x] Show Output - Terminal output in preview                │
                                                                    │    [ ] Show Analytics - Claude analytics panel                 │
-                                                                   │    [ ] Show Notes - Session notes in preview                   │
                                                                    │    ▼ more below                                                │
                                                                    │  j/k Navigate  Space Toggle                                    │
                                                                    │  h/l Adjust  Enter Edit  Esc Close                             │

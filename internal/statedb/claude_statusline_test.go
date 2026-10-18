@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -52,4 +53,37 @@ func TestClaudeStatuslineAmbiguousNativeID(t *testing.T) {
 	require.Empty(t, id)
 	_, err = db.ClaudeStatuslineForSession("first")
 	require.Error(t, err)
+}
+
+// TestClaudeStatuslineLimitsMarkExpired pins the read-time marker: a window
+// whose resets_at has passed is flagged expired, a live or reset-less window
+// is not, and a nil block is a no-op.
+func TestClaudeStatuslineLimitsMarkExpired(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	at := func(sec int64) *int64 { return &sec }
+	pct := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name     string
+		resetsAt *int64
+		want     bool
+	}{
+		{"no reset reported", nil, false},
+		{"resets in the future", at(now.Unix() + 60), false},
+		{"resets exactly now", at(now.Unix()), true},
+		{"reset in the past", at(now.Unix() - 60), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			limits := &ClaudeStatuslineLimits{SevenDay: &ClaudeStatuslineWindow{UsedPercentage: pct(100), ResetsAt: tc.resetsAt}}
+			limits.MarkExpired(now)
+			if limits.SevenDay.Expired != tc.want {
+				t.Fatalf("Expired = %v, want %v", limits.SevenDay.Expired, tc.want)
+			}
+			if limits.FiveHour != nil {
+				t.Fatalf("an absent window must stay absent")
+			}
+		})
+	}
+	var none *ClaudeStatuslineLimits
+	none.MarkExpired(now)
 }
