@@ -77,6 +77,19 @@ func handleWatcher(profile string, args []string) {
 		return
 	}
 
+	// Resolve the profile the way the TUI, web and every other command do:
+	// -p, AGENTDECK_PROFILE, a CLAUDE_CONFIG_DIR-inferred profile behind the
+	// #1790 guard, then default_profile. The raw -p value is "" when the flag
+	// is absent, and GetDBPathForProfile reads "" as the default profile, so
+	// without this a watcher went to a profile whose engine never runs it
+	// (#2740).
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve profile: %v\n", err)
+		exitCLI(1)
+	}
+	profile = resolved
+
 	switch args[0] {
 	case "import":
 		handleWatcherImport(profile, args[1:])
@@ -109,7 +122,8 @@ func handleWatcher(profile string, args []string) {
 	}
 }
 
-// openWatcherDB opens the statedb for the given profile.
+// openWatcherDB opens the statedb for the given profile, already resolved by
+// handleWatcher: an empty name opens the default profile's.
 func openWatcherDB(profile string) (*statedb.StateDB, error) {
 	dbPath, err := session.GetDBPathForProfile(profile)
 	if err != nil {
