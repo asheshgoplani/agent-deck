@@ -240,6 +240,9 @@ func (m *WebMutator) DeleteSession(id string) error {
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
 	}
+	// Same best-effort cleanup as `agent-deck rm`: inbox and notify-state
+	// sweep (#910), macapp.session.closed.
+	session.CleanupRemovedSession(storage.Profile(), id)
 	inst.RecordTelemetryEndFrom(telemetry.EndDelete, telemetry.SurfaceWeb)
 	m.pushUndo(inst)
 	return nil
@@ -825,9 +828,8 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 	// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
 	// runtime/transition-notify-state.json dedup record) for the removed
 	// session, mirroring the #910 cleanup on `agent-deck rm`. Best-effort —
-	// never fails the finish.
-	_, _ = session.SweepInboxesForChildSession(id)
-	_, _ = session.RemoveNotifyStateRecord(id)
+	// never fails the finish. The same helper publishes macapp.session.closed.
+	session.CleanupRemovedSession(storage.Profile(), id)
 
 	mergedInto := targetBranch
 	if opts.NoMerge {
