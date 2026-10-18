@@ -6,12 +6,27 @@ periodically via cron or by hand. Each invocation walks every active
 goal JSON in ~/.agent-deck/goals/ and advances its state by one tick:
 
     1. Run the goal's done_cmd. If exit 0 → mark done, stop worker.
-    2. Else read task-log.md tail; look for receipts newer than what we've
-       already seen. If found → reset nudge counter, record cycle.
-    3. Else, if idle for max_idle seconds → send a context-rich nudge to
-       the worker via `agent-deck session send`.
+    2. Read task-log.md tail; look for receipts newer than what we've
+       already seen. A STUCK receipt escalates and stops the worker.
+    3. No new receipt and idle longer than max_idle_seconds → nudge.
     4. If nudges_sent >= escalate_after → write a stuck bundle, log loudly.
     5. If cycles_completed >= max_cycles → finalize as failed.
+
+Opt-in per goal (schedule keys; a goal without them runs exactly the loop
+above):
+
+    no_progress_cap N      after N consecutive empty turns (a due idle
+                           wake with no progress) the goal escalates, or
+                           with no_progress_action "stop" ends as failed
+                           and stops the worker. Wakes then wait a doubling
+                           backoff window (no_progress_backoff_base_seconds,
+                           default max_idle_seconds; 2x, 4x, ...).
+    worktree_progress      a change of the worktree content hash counts as
+                           progress too. A new receipt always does.
+    worktree_gate          a quiet tick skips done_cmd while the worktree
+                           hash equals the one it last failed on; with the
+                           cap on, a wake is skipped after 2 delivered wakes
+                           over the same unchanged failed worktree.
 
 Phase 1: no Telegram, no daemon, no PID files. Escalation logs to stderr
 and writes ~/.agent-deck/goals/escalations/<id>-<ts>.md. Wire up real
@@ -26,6 +41,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -34,7 +50,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Retry policy for nudge delivery (regression: issue #976).
@@ -91,6 +107,10 @@ def record_event(goal: dict, event: str, detail: str) -> None:
         goal["history"] = history[-200:]
 
 
+# run_done_cmd's return code for a verifier that timed out (no verdict).
+VERIFIER_TIMEOUT_RC = 124
+
+
 def run_done_cmd(done_cmd: str, timeout_s: int = 30) -> tuple[int, str]:
     """Run the external verifier. Returns (returncode, combined_output)."""
     try:
@@ -100,9 +120,136 @@ def run_done_cmd(done_cmd: str, timeout_s: int = 30) -> tuple[int, str]:
         out = (r.stdout or "") + (r.stderr or "")
         return r.returncode, out.strip()[:500]
     except subprocess.TimeoutExpired:
-        return 124, "verifier timed out"
+        return VERIFIER_TIMEOUT_RC, "verifier timed out"
     except Exception as e:  # noqa: BLE001  (defensive at boundary)
         return 1, f"verifier raised: {e}"
+
+
+# No-progress cap (ported from prime-agent's goal driver), opt-in per goal
+# through schedule.no_progress_cap. A turn closes when the manager sees a
+# new receipt or an idle wake falls due; a turn without progress is empty,
+# and this many consecutive empty turns end the goal's run. Absent or 0 is
+# off, the loop from before the cap existed.
+DEFAULT_NO_PROGRESS_CAP = 0
+
+# What reaching the cap does (schedule.no_progress_action): "escalate" pages
+# the user and leaves the worker running, as the stuck-nudge escalation
+# does; "stop" ends the goal as failed and stops the worker.
+NO_PROGRESS_ACTIONS = ("escalate", "stop")
+
+# Delivered wakes over one unchanged, failed worktree before the gate skips
+# further wakes on it: a single wake may not have reached the worker's turn.
+WAKES_BEFORE_SKIP = 2
+
+# Upper bound for one doubling wake backoff window (7 days), so a long
+# streak with the cap off cannot overflow the date arithmetic.
+MAX_WAKE_BACKOFF_SECONDS = 7 * 24 * 3600
+
+# The worker's receipt file. It is excluded from the worktree snapshot:
+# appending a receipt is not progress on the goal.
+TASK_LOG_NAME = "task-log.md"
+
+# Above this many untracked files the snapshot is skipped (None): hashing
+# them every tick would cost more than the verifier run it saves.
+MAX_SNAPSHOT_UNTRACKED_FILES = 5000
+
+# Untracked files above this size are hashed by path, size and mtime, not
+# by content, so a large build artefact does not cost a full read per tick.
+MAX_HASHED_UNTRACKED_BYTES = 1 << 20
+
+# Submodule nesting the worktree hash follows.
+MAX_SUBMODULE_DEPTH = 4
+
+
+def parse_iso(ts: str | None) -> datetime | None:
+    """Parse an ISO timestamp (Z or offset). A naive value (a receipt heading
+    written without an offset) is taken as the host's local time."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.astimezone(timezone.utc)
+
+
+def worktree_tree_hash(workdir: Path, timeout_s: int = 30, _depth: int = 0) -> str | None:
+    """Content hash of the worker's git worktree, untracked files included.
+
+    The read-only equivalent of `git add -A && git write-tree`: the HEAD
+    tree id, the binary diff of tracked files against it, the porcelain
+    status, the bytes of every untracked, non-ignored file (path, size and mtime above
+    MAX_HASHED_UNTRACKED_BYTES), and the same hash of each submodule's
+    worktree, so edits inside a submodule count too. Nothing is written to
+    the repository (no index refresh, no objects). task-log.md is excluded. Returns None when the workdir is not a git worktree, is
+    the home directory, has too many untracked files, or any git call
+    fails; None means "always rerun the verifier".
+    """
+    try:
+        if not workdir.is_dir() or workdir.resolve() == Path.home().resolve():
+            return None
+
+        def git(*args: str) -> bytes | None:
+            r = subprocess.run(
+                ["git", "--no-optional-locks", "-C", str(workdir), *args],
+                capture_output=True, timeout=timeout_s,
+            )
+            return r.stdout if r.returncode == 0 else None
+
+        pathspec = ("--", ".", f":(exclude){TASK_LOG_NAME}")
+        top = git("rev-parse", "--show-toplevel")
+        if top is None:
+            return None
+        root = Path(top.strip().decode("utf-8", "surrogateescape"))  # porcelain paths are relative to the top
+        base = git("rev-parse", "--verify", "-q", "HEAD^{tree}")
+        if base is None:  # unborn branch: diff against the empty tree
+            base = git("hash-object", "-t", "tree", "/dev/null")
+        if base is None:
+            return None
+        base = base.strip()
+        status = git("status", "--porcelain=v1", "-z", "-uall", "--no-renames", *pathspec)
+        # Plumbing diff-index, not `git diff`: porcelain diff refreshes a
+        # stat-dirty index and writes it even with --no-optional-locks.
+        diff = git("diff-index", "-p", "--binary", "--no-ext-diff", base.decode(), *pathspec)
+        submodules = git("submodule", "status")
+        if status is None or diff is None or submodules is None:
+            return None
+
+        h = hashlib.sha256()
+        for part in (base, status, diff):
+            h.update(part)
+            h.update(b"\0")
+        untracked = [
+            e[3:].decode("utf-8", "surrogateescape")
+            for e in status.split(b"\0") if e.startswith(b"?? ")
+        ]
+        if len(untracked) > MAX_SNAPSHOT_UNTRACKED_FILES:
+            return None
+        for rel in sorted(untracked):
+            fp = root / rel
+            h.update(rel.encode("utf-8", "surrogateescape") + b"\0")
+            if fp.is_symlink():
+                h.update(os.readlink(fp).encode("utf-8", "surrogateescape"))
+            elif fp.is_file() and (st := fp.stat()).st_size > MAX_HASHED_UNTRACKED_BYTES:
+                h.update(f"size={st.st_size} mtime_ns={st.st_mtime_ns}".encode())
+            elif fp.is_file():
+                with fp.open("rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+            h.update(b"\0")
+        # Each initialized submodule ("<flag><sha> <path> (<describe>)"):
+        # its checkout and uncommitted work, which the parent's diff shows
+        # only as "-dirty". Nested ones are reached by the recursion.
+        for line in submodules.decode("utf-8", "surrogateescape").splitlines():
+            fields = line[1:].split()
+            if line.startswith("-") or len(fields) < 2 or _depth >= MAX_SUBMODULE_DEPTH:
+                continue
+            h.update(fields[1].encode("utf-8", "surrogateescape") + b"\0")
+            sub = worktree_tree_hash(workdir / fields[1], timeout_s, _depth + 1)  # paths are relative to -C
+            h.update((sub or "unhashable").encode() + b"\0")
+        return h.hexdigest()
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 @dataclass
@@ -211,7 +358,7 @@ def build_nudge(goal: dict, idle_minutes: int) -> str:
     )
 
 
-def write_escalation_bundle(goal: dict, idle_minutes: int) -> Path:
+def write_escalation_bundle(goal: dict, idle_minutes: int, headline: str | None = None) -> Path:
     ESCALATIONS_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
     out = ESCALATIONS_DIR / f"{goal['id']}-{ts}.md"
@@ -220,10 +367,13 @@ def write_escalation_bundle(goal: dict, idle_minutes: int) -> Path:
     recent_str = "\n".join(
         f"- {e['ts']} {e['event']}: {e['detail'][:120]}" for e in recent
     )
+    headline = headline or (
+        f"Stuck after {goal['state']['nudges_sent']} nudges, no receipt in {idle_minutes} minutes."
+    )
     body = (
         f"# Goal escalation: {goal['goal']}\n"
         f"\n"
-        f"Stuck after {goal['state']['nudges_sent']} nudges, no receipt in {idle_minutes} minutes.\n"
+        f"{headline}\n"
         f"\n"
         f"- Goal id: `{goal['id']}`\n"
         f"- Worker: `{goal.get('worker_session_title')}` (`{goal.get('worker_session_id')}`)\n"
@@ -258,120 +408,335 @@ def finalize(goal: dict, status: str, reason: str) -> None:
     record_event(goal, "finalize", f"{status}: {reason}")
 
 
+def check_verifier(goal: dict, tree_hash: str | None, verbose: bool) -> int:
+    """Run done_cmd once and record the verdict.
+
+    A failed verdict remembers the worktree tree hash it was taken on, so
+    the next tick can skip the rerun while the worktree is unchanged. A
+    timeout is not a verdict, so it never arms the skip.
+    """
+    state = goal["state"]
+    rc, _out = run_done_cmd(goal["done_cmd"])
+    state["last_verified_at"] = now_iso()
+    record_event(goal, "verifier_check", f"rc={rc}")
+    vlog(verbose, f"verifier rc={rc}")
+    if rc != 0:
+        state["last_failed_tree_hash"] = tree_hash if rc != VERIFIER_TIMEOUT_RC else None
+    return rc
+
+
+def finish_done(goal: dict, path: Path, worker: str, dry_run: bool, verbose: bool) -> None:
+    finalize(goal, "done", "verifier passed")
+    agent_deck_stop(worker, dry_run, verbose)
+    write_history_artifact(goal)
+    print(f"[manager] DONE: {goal['id']} ({goal['goal']})", file=sys.stderr)
+    save_goal(path, goal, dry_run)
+
+
+def idle_seconds_since_activity(state: dict, fallback: float) -> float:
+    """Seconds since the newest of: last receipt, last progress, creation."""
+    stamps = [
+        parse_iso(state.get(key))
+        for key in ("last_receipt_seen_at", "last_progress_at", "created_at")
+    ]
+    stamps = [s for s in stamps if s is not None]
+    if not stamps:
+        return fallback  # force a wake if nothing parses
+    return (datetime.now(timezone.utc) - max(stamps)).total_seconds()
+
+
+def wake_backoff_seconds(base: int, streak: int) -> int:
+    """Doubling wake window after `streak` empty turns: base, 2x, 4x, ... (clamped)."""
+    return min(base * 2 ** min(streak - 1, 32), MAX_WAKE_BACKOFF_SECONDS)
+
+
+def progress_features(schedule: dict) -> tuple[int, bool, bool]:
+    """(cap, worktree_progress, worktree_gate) from a goal's schedule; all
+    off for a goal file that does not set them."""
+    cap = max(int(schedule.get("no_progress_cap") or DEFAULT_NO_PROGRESS_CAP), 0)
+    return cap, bool(schedule.get("worktree_progress", False)), bool(schedule.get("worktree_gate", False))
+
+
+def end_no_progress(goal: dict, path: Path, worker: str, streak: int, idle_minutes: int,
+                    dry_run: bool, verbose: bool) -> None:
+    """Act on the no-progress cap: escalate (default) or end and stop."""
+    state = goal["state"]
+    action = goal["schedule"].get("no_progress_action") or "escalate"
+    if action not in NO_PROGRESS_ACTIONS:
+        action = "escalate"
+    record_event(goal, "no_progress_cap", f"{streak} empty turns; action={action}")
+    if action == "stop":
+        finalize(goal, "failed", "no_progress_cap")
+        headline = f"No progress in {streak} consecutive turns: ended as failed (no_progress_cap), worker stopped."
+    else:
+        state["status"] = "escalated"
+        headline = f"No progress in {streak} consecutive turns (no_progress_cap): escalated, worker left running."
+    bundle = write_escalation_bundle(goal, idle_minutes, headline)
+    state["escalated_at"] = now_iso()
+    record_event(goal, "escalated", str(bundle))
+    if action == "stop":
+        agent_deck_stop(worker, dry_run, verbose)
+        write_history_artifact(goal)
+        print(f"[manager] FAILED (no progress in {streak} turns): {goal['id']}; bundle at {bundle}", file=sys.stderr)
+    else:
+        print(f"[manager] ESCALATED (no progress in {streak} turns): {goal['id']}; bundle at {bundle}", file=sys.stderr)
+    save_goal(path, goal, dry_run)
+
+
+def apply_new_receipts(goal: dict, new_receipts: list[Receipt], path: Path, worker: str,
+                       dry_run: bool, verbose: bool) -> bool:
+    """Record the newest receipt. True when it reported STUCK (the goal is
+    escalated, the worker stopped and the goal saved)."""
+    state = goal["state"]
+    newest = new_receipts[-1]
+    state["last_receipt_seen_at"] = newest.ts
+    state["last_receipt_text"] = newest.body[:1000]
+    state["cycles_completed"] = state.get("cycles_completed", 0) + 1
+    state["nudges_sent"] = 0
+    record_event(goal, "receipt", newest.ts)
+    vlog(verbose, f"new receipt at {newest.ts}; cycles={state['cycles_completed']}")
+
+    # STUCK marker. If the worker wrote STUCK: in its most recent receipt,
+    # it's telling us it can't proceed. Escalate immediately with the
+    # worker's own reason rather than continuing to nudge it. This is the
+    # contract: STUCK is the worker's honest signal that it needs help.
+    if "STUCK:" not in newest.body and "STUCK :" not in newest.body:
+        return False
+    stuck_line = next(
+        (line for line in newest.body.splitlines() if "STUCK" in line),
+        "STUCK (no detail line)",
+    )
+    bundle = write_escalation_bundle(goal, 0)
+    state["status"] = "escalated"
+    state["escalated_at"] = now_iso()
+    state["ended_reason"] = f"worker reported {stuck_line.strip()[:200]}"
+    record_event(goal, "stuck_reported", stuck_line.strip()[:200])
+    record_event(goal, "escalated", str(bundle))
+    print(
+        f"[manager] WORKER STUCK: {goal['id']} — {stuck_line.strip()[:120]}",
+        file=sys.stderr,
+    )
+    print(f"[manager] bundle at {bundle}", file=sys.stderr)
+    agent_deck_stop(worker, dry_run, verbose)
+    save_goal(path, goal, dry_run)
+    return True
+
+
+def enforce_max_cycles(goal: dict, worker: str, dry_run: bool, verbose: bool) -> None:
+    if goal["state"].get("cycles_completed", 0) >= goal["schedule"]["max_cycles"]:
+        finalize(goal, "failed", "max_cycles_exceeded")
+        agent_deck_stop(worker, dry_run, verbose)
+        write_history_artifact(goal)
+        print(f"[manager] FAILED (max cycles): {goal['id']}", file=sys.stderr)
+
+
 def walk_goal(path: Path, dry_run: bool, verbose: bool) -> None:
     goal = load_goal(path)
     if goal.get("state", {}).get("status") != "active":
         vlog(verbose, f"skip {path.name}: status={goal.get('state', {}).get('status')}")
         return
+    if any(progress_features(goal["schedule"])):
+        walk_goal_progress(path, goal, dry_run, verbose)
+    else:
+        walk_goal_classic(path, goal, dry_run, verbose)
 
+
+def walk_goal_classic(path: Path, goal: dict, dry_run: bool, verbose: bool) -> None:
+    """One tick of a goal that opted into none of the progress features:
+    verifier every tick, a nudge on every tick once idle, escalation after
+    escalate_after_stuck_nudges nudges."""
     pid = goal["id"]
     schedule = goal["schedule"]
     state = goal["state"]
+    worker = goal.get("worker_session_title") or goal["worker_session_id"]
 
     vlog(verbose, f"=== {pid} ===")
 
     # Step 1: verifier
-    rc, out = run_done_cmd(goal["done_cmd"], timeout_s=30)
+    rc, _out = run_done_cmd(goal["done_cmd"], timeout_s=30)
     state["last_verified_at"] = now_iso()
     record_event(goal, "verifier_check", f"rc={rc}")
     vlog(verbose, f"verifier rc={rc}")
-
     if rc == 0:
-        finalize(goal, "done", "verifier passed")
-        agent_deck_stop(goal["worker_session_title"] or goal["worker_session_id"], dry_run, verbose)
-        write_history_artifact(goal)
-        print(f"[manager] DONE: {pid} ({goal['goal']})", file=sys.stderr)
-        save_goal(path, goal, dry_run)
+        finish_done(goal, path, worker, dry_run, verbose)
         return
 
     # Step 2: scan for new receipts
     workdir = Path(goal.get("workdir", str(Path.home())))
-    task_log = workdir / "task-log.md"
-    receipts = parse_task_log_tail(task_log)
-    last_seen = state.get("last_receipt_seen_at")
-    new_receipts = [r for r in receipts if newer_than(r.ts, last_seen)]
+    receipts = parse_task_log_tail(workdir / TASK_LOG_NAME)
+    new_receipts = [r for r in receipts if newer_than(r.ts, state.get("last_receipt_seen_at"))]
 
     if new_receipts:
-        newest = new_receipts[-1]
-        state["last_receipt_seen_at"] = newest.ts
-        state["last_receipt_text"] = newest.body[:1000]
-        state["cycles_completed"] = state.get("cycles_completed", 0) + 1
-        state["nudges_sent"] = 0
-        record_event(goal, "receipt", newest.ts)
-        vlog(verbose, f"new receipt at {newest.ts}; cycles={state['cycles_completed']}")
-
-        # Step 2a: detect STUCK marker. If the worker wrote STUCK: in its
-        # most recent receipt, it's telling us it can't proceed. Escalate
-        # immediately with the worker's own reason rather than continuing
-        # to nudge it. This is the contract: STUCK is the worker's honest
-        # signal that it needs help.
-        if "STUCK:" in newest.body or "STUCK :" in newest.body:
-            stuck_line = next(
-                (line for line in newest.body.splitlines() if "STUCK" in line),
-                "STUCK (no detail line)",
-            )
-            bundle = write_escalation_bundle(goal, 0)
-            state["status"] = "escalated"
-            state["escalated_at"] = now_iso()
-            state["ended_reason"] = f"worker reported {stuck_line.strip()[:200]}"
-            record_event(goal, "stuck_reported", stuck_line.strip()[:200])
-            record_event(goal, "escalated", str(bundle))
-            print(
-                f"[manager] WORKER STUCK: {pid} — {stuck_line.strip()[:120]}",
-                file=sys.stderr,
-            )
-            print(f"[manager] bundle at {bundle}", file=sys.stderr)
-            agent_deck_stop(goal.get("worker_session_title") or goal["worker_session_id"], dry_run, verbose)
-            save_goal(path, goal, dry_run)
+        if apply_new_receipts(goal, new_receipts, path, worker, dry_run, verbose):
             return
     else:
         # Step 3: nudge if idle
-        last_activity_iso = state.get("last_receipt_seen_at") or state.get("created_at")
-        if last_activity_iso:
-            try:
-                last_activity = datetime.fromisoformat(last_activity_iso.replace("Z", "+00:00"))
-                idle = datetime.now(timezone.utc) - last_activity
-                idle_seconds = idle.total_seconds()
-            except Exception:  # noqa: BLE001
-                idle_seconds = schedule["max_idle_seconds"] + 1  # force nudge if we can't parse
+        last_activity = parse_iso(state.get("last_receipt_seen_at") or state.get("created_at"))
+        if last_activity is not None:
+            idle_seconds = (datetime.now(timezone.utc) - last_activity).total_seconds()
         else:
-            idle_seconds = schedule["max_idle_seconds"] + 1
-
+            idle_seconds = schedule["max_idle_seconds"] + 1  # force nudge if we can't parse
         vlog(verbose, f"idle={int(idle_seconds)}s, max_idle={schedule['max_idle_seconds']}s")
-
         if idle_seconds > schedule["max_idle_seconds"]:
-            target = goal.get("worker_session_title") or goal["worker_session_id"]
-            nudge_text = build_nudge(goal, int(idle_seconds // 60))
-            sent_ok = agent_deck_send(target, nudge_text, dry_run, verbose)
-            # Count attempts, not just successes: N failed nudges = N signals
-            # that something is wrong, and the user deserves to be paged.
-            state["nudges_sent"] = state.get("nudges_sent", 0) + 1
-            if sent_ok:
-                record_event(goal, "nudge_sent", nudge_text[:120])
-                vlog(verbose, f"nudge #{state['nudges_sent']} sent")
-            else:
-                record_event(goal, "nudge_failed", "worker unreachable or session not found")
-                vlog(verbose, f"nudge #{state['nudges_sent']} send FAILED (worker likely missing)")
+            send_wake(goal, worker, int(idle_seconds // 60), dry_run, verbose)
 
-            # Step 4: escalate if too many nudge attempts
-            if state["nudges_sent"] >= schedule["escalate_after_stuck_nudges"]:
-                bundle = write_escalation_bundle(goal, int(idle_seconds // 60))
-                state["status"] = "escalated"
-                state["escalated_at"] = now_iso()
-                record_event(goal, "escalated", str(bundle))
-                print(
-                    f"[manager] ESCALATED: {pid} — bundle at {bundle}",
-                    file=sys.stderr,
-                )
+    # Step 4: hard cycle cap
+    enforce_max_cycles(goal, worker, dry_run, verbose)
+    save_goal(path, goal, dry_run)
+
+
+def walk_goal_progress(path: Path, goal: dict, dry_run: bool, verbose: bool) -> None:
+    """One tick of a goal that opted into the no-progress cap, worktree
+    progress or the worktree gate."""
+    pid = goal["id"]
+    schedule = goal["schedule"]
+    state = goal["state"]
+    max_idle = schedule["max_idle_seconds"]
+    cap, worktree_progress, gate = progress_features(schedule)
+    backoff_base = int(schedule.get("no_progress_backoff_base_seconds") or max_idle)
+    workdir = Path(goal.get("workdir", str(Path.home())))
+
+    vlog(verbose, f"=== {pid} ===")
+
+    tree_hash = worktree_tree_hash(workdir) if (gate or worktree_progress) else None
+    vlog(verbose, f"worktree tree hash={tree_hash}")
+    worker = goal.get("worker_session_title") or goal["worker_session_id"]
+
+    # Step 1: scan for new receipts
+    receipts = parse_task_log_tail(workdir / TASK_LOG_NAME)
+    new_receipts = [r for r in receipts if newer_than(r.ts, state.get("last_receipt_seen_at"))]
+
+    # Step 2: verifier. With the gate on, a quiet tick skips it while the
+    # worktree is unchanged since the last failed verdict. A new receipt, a
+    # wake that is actually sent and the no-progress cap always get a fresh
+    # verdict, so completion outside the worktree is still seen and a worker
+    # is never told NOT YET MET from a stale verdict. done_cmd runs at most
+    # once per tick: a verdict from earlier in the same tick was taken on
+    # the same tree hash, so it is fresh.
+    unchanged_failed = gate and tree_hash is not None and tree_hash == state.get("last_failed_tree_hash")
+    verified = False
+
+    def verify_done() -> bool:
+        nonlocal verified
+        if verified:
+            return False
+        verified = True
+        if check_verifier(goal, tree_hash, verbose) != 0:
+            return False
+        finish_done(goal, path, worker, dry_run, verbose)
+        return True
+
+    if (new_receipts or not unchanged_failed) and verify_done():
+        return
+
+    if new_receipts and apply_new_receipts(goal, new_receipts, path, worker, dry_run, verbose):
+        return
+
+    # Step 3: progress. A new receipt always is; with worktree_progress a
+    # change of the worktree hash against the recorded baseline is too
+    # (goal.sh records the baseline at creation; otherwise the first hashed
+    # tick does).
+    baseline = state.get("progress_tree_hash")
+    tree_changed = worktree_progress and tree_hash is not None and baseline is not None and tree_hash != baseline
+    progressed = bool(new_receipts) or tree_changed
+    if tree_hash is not None and (baseline is None or tree_changed):
+        state["progress_tree_hash"] = tree_hash
+
+    if progressed:
+        state["last_progress_at"] = now_iso()
+        state["no_progress_streak"] = 0
+        state["next_wake_at"] = None
+        state["nudges_sent"] = 0
+        record_event(goal, "progress", f"tree={tree_hash[:12]}" if tree_changed else "receipt")
+
+    # Step 4: an idle wake that falls due without progress is an empty
+    # turn. With the cap on, wakes wait a doubling window: base, 2*base,
+    # 4*base, ... (clamped); with it off a nudge goes out on every idle
+    # tick, as before the cap existed.
+    idle_seconds = idle_seconds_since_activity(state, max_idle + 1)
+    idle_minutes = int(idle_seconds // 60)
+    next_wake_at = parse_iso(state.get("next_wake_at")) if cap > 0 else None
+    wake_due = not progressed and idle_seconds > max_idle and (
+        next_wake_at is None or datetime.now(timezone.utc) >= next_wake_at
+    )
+    vlog(verbose, f"idle={int(idle_seconds)}s, max_idle={max_idle}s, next_wake_at={state.get('next_wake_at')}")
+
+    if wake_due:
+        streak = state.get("no_progress_streak", 0) + 1
+        state["no_progress_streak"] = streak
+        record_event(goal, "no_progress_turn", f"{streak}/{cap}")
+        vlog(verbose, f"empty turn {streak}/{cap}")
+
+        if cap > 0 and streak >= cap:
+            # Last look before acting: done_cmd may check state outside
+            # the worktree.
+            if verify_done():
+                return
+            end_no_progress(goal, path, worker, streak, idle_minutes, dry_run, verbose)
+            return
+
+        if cap > 0:
+            state["next_wake_at"] = (
+                datetime.now(timezone.utc) + timedelta(seconds=wake_backoff_seconds(backoff_base, streak))
+            ).isoformat()
+
+        # With the gate and the cap on, a wake over an unchanged, already
+        # failed worktree is skipped once WAKES_BEFORE_SKIP wakes reached the
+        # worker on it: another cannot change the verdict, and the empty
+        # turn still counts toward the cap. A wake that was not delivered
+        # does not count. With the cap off nothing would end the goal, so
+        # every due wake goes out.
+        if (cap > 0 and unchanged_failed and tree_hash == state.get("last_wake_tree_hash")
+                and state.get("wakes_on_tree", 0) >= WAKES_BEFORE_SKIP):
+            record_event(goal, "wake_skipped", "worktree unchanged since the last delivered wakes and failed verdict")
+            vlog(verbose, "wake skipped: worktree unchanged since the last delivered wakes")
+        else:
+            if verify_done():
+                return
+            if send_wake(goal, worker, idle_minutes, dry_run, verbose):
+                if tree_hash is not None and tree_hash == state.get("last_wake_tree_hash"):
+                    state["wakes_on_tree"] = state.get("wakes_on_tree", 0) + 1
+                else:
+                    state["last_wake_tree_hash"] = tree_hash
+                    state["wakes_on_tree"] = 1
+
+    if not verified:
+        record_event(goal, "verifier_skipped", f"worktree unchanged since last failure ({tree_hash[:12]})")
+        vlog(verbose, "verifier skipped: worktree unchanged since last failure")
 
     # Step 5: hard cycle cap
-    if state.get("cycles_completed", 0) >= schedule["max_cycles"]:
-        finalize(goal, "failed", "max_cycles_exceeded")
-        agent_deck_stop(goal["worker_session_title"] or goal["worker_session_id"], dry_run, verbose)
-        write_history_artifact(goal)
-        print(f"[manager] FAILED (max cycles): {pid}", file=sys.stderr)
-
+    enforce_max_cycles(goal, worker, dry_run, verbose)
     save_goal(path, goal, dry_run)
+
+
+def send_wake(goal: dict, worker: str, idle_minutes: int, dry_run: bool, verbose: bool) -> bool:
+    """Nudge the worker and escalate once nudge attempts reach the limit.
+    Returns whether the nudge was delivered."""
+    state = goal["state"]
+    schedule = goal["schedule"]
+    nudge_text = build_nudge(goal, idle_minutes)
+    sent_ok = agent_deck_send(worker, nudge_text, dry_run, verbose)
+    # Count attempts, not just successes: N failed nudges = N signals
+    # that something is wrong, and the user deserves to be paged.
+    state["nudges_sent"] = state.get("nudges_sent", 0) + 1
+    if sent_ok:
+        record_event(goal, "nudge_sent", nudge_text[:120])
+        vlog(verbose, f"nudge #{state['nudges_sent']} sent")
+    else:
+        record_event(goal, "nudge_failed", "worker unreachable or session not found")
+        vlog(verbose, f"nudge #{state['nudges_sent']} send FAILED (worker likely missing)")
+
+    # Escalate if too many nudge attempts
+    if state["nudges_sent"] >= schedule["escalate_after_stuck_nudges"]:
+        bundle = write_escalation_bundle(goal, idle_minutes)
+        state["status"] = "escalated"
+        state["escalated_at"] = now_iso()
+        record_event(goal, "escalated", str(bundle))
+        print(
+            f"[manager] ESCALATED: {goal['id']} — bundle at {bundle}",
+            file=sys.stderr,
+        )
+    return sent_ok
 
 
 def main() -> int:

@@ -263,6 +263,7 @@ func firstUnknownViewer(viewers []Viewer, known map[string]bool) (Viewer, bool) 
 // viewerNoticeDelay.
 func (s *Session) showViewerNotice(ctx context.Context, v Viewer, msg string) {
 	delay := strconv.Itoa(int(viewerNoticeDelay / time.Millisecond))
+	msg = FormatLiteral(msg) // display-message expands formats; msg is plain text
 	if err := commandRun(s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, "-d", delay, msg)); err != nil {
 		// tmux < 3.2 has no -d; show it for the default display-time.
 		_ = commandRun(s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, msg))

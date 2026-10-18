@@ -12,7 +12,7 @@ import { EmptyStateDashboard } from './EmptyStateDashboard.js'
 import { terminalKeymap } from './terminalKeys.js'
 import { createPasteHandler } from './terminalPaste.js'
 import { registerOsc52Handler } from './terminalClipboard.js'
-import { createTerminalLinkHandler } from './terminalLinks.js'
+import { createTerminalLinkHandler, installModifierClickLinks } from './terminalLinks.js'
 import { observeSession, shouldReattach, sessionStartedSignal, noteSessionStarted } from './terminalReconnect.js'
 
 // Mobile detection: pointer:coarse for touch devices
@@ -137,6 +137,8 @@ export function TerminalPanel() {
     // platforms keep their native Home/End/Ctrl-arrow behavior untouched.
     const isMac = /mac/i.test(navigator.platform || '') || /mac/i.test(navigator.userAgent || '')
 
+    const linkHandler = createTerminalLinkHandler()
+
     // Create Terminal
     const terminal = new Terminal({
       convertEol: false,
@@ -147,7 +149,7 @@ export function TerminalPanel() {
       // Issue #1682: replaces xterm's built-in OSC-8 activate handler, which
       // confirms on every link. Ours skips the confirm for `[web]
       // trusted_domains` hosts and honors `confirm_link_open`.
-      linkHandler: createTerminalLinkHandler(),
+      linkHandler,
       // Issue #2372: on macOS, Option-drag makes a native selection past an
       // app's mouse capture (Claude Code, tmux `mouse on`), matching iTerm2 and
       // Terminal.app. xterm defaults this off, which leaves no modifier that
@@ -279,6 +281,11 @@ export function TerminalPanel() {
     // Touch scrolling for mobile -- listeners attach via the shared
     // AbortController (PERF-E). No local dispose handle is needed.
     installTouchScroll(container, terminal.element, controller)
+
+    // Issue #2675: Cmd-click (Ctrl-click off macOS) opens the hovered link even
+    // when the app captures the mouse (tmux `mouse on`, Claude Code), where a
+    // plain click goes to the app as mouse input.
+    installModifierClickLinks(container, linkHandler, { isMac, signal: controller.signal })
 
     // Keyboard input forwarding (desktop + mobile; server gates on ReadOnly).
     // sendInput is the single guarded path to the pane -- every producer

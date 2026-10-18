@@ -1891,6 +1891,22 @@ type LaunchSettings struct {
 	// and leaves root sessions alone; "on" never sets the env; "off" sets it
 	// for every Claude session. See prompt_suggestions.go.
 	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
+
+	// FanoutHint adds the FanoutHint constant line to the injected identity
+	// block of Claude-family sessions at the primer and full context levels.
+	// nil => true.
+	// It rides on identity injection: --no-identity, inject_identity=false
+	// or context_level "none" leave no block to carry it.
+	FanoutHint *bool `toml:"fanout_hint,omitempty"`
+}
+
+// GetFanoutHint returns whether the fan-out hint is added to the identity
+// block, defaulting to true.
+func (l *LaunchSettings) GetFanoutHint() bool {
+	if l == nil || l.FanoutHint == nil {
+		return true
+	}
+	return *l.FanoutHint
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting
@@ -2566,11 +2582,43 @@ type OpenCodeSettings struct {
 // `launch -capabilities` and reasoning-effort validation.
 type ModelsSettings struct {
 	// Probe asks installed CLIs that can list their own models (today:
-	// `codex debug models`) for their model and effort lists, cached per CLI
-	// binary, merged in front of the built-in catalog. Set false to use only
-	// the built-in catalog.
+	// `codex debug models` and `opencode models`) for their model and effort
+	// lists, cached per CLI binary, merged in front of the built-in catalog.
+	// Set false to use only the built-in catalog.
 	// Default: true
 	Probe *bool `toml:"probe,omitempty"`
+
+	// Per-tool overrides (#2664): [models.codex], [models.opencode], ...
+	// A custom tool uses the table of the tool it wraps.
+	Claude   ModelListSettings `toml:"claude,omitempty"`
+	Codex    ModelListSettings `toml:"codex,omitempty"`
+	Gemini   ModelListSettings `toml:"gemini,omitempty"`
+	OpenCode ModelListSettings `toml:"opencode,omitempty"`
+}
+
+// ModelListSettings pins or extends one tool's model suggestions.
+type ModelListSettings struct {
+	// List replaces the model suggestions entirely: no probed or built-in
+	// models. Reasoning efforts may still be probed.
+	List []string `toml:"list,omitempty"`
+	// Extra is shown first, ahead of the probed and built-in models.
+	Extra []string `toml:"extra,omitempty"`
+}
+
+// ForTool returns the override table for a tool kind ("claude", "codex",
+// "gemini", "opencode"); other kinds have none.
+func (m ModelsSettings) ForTool(kind string) ModelListSettings {
+	switch kind {
+	case "claude":
+		return m.Claude
+	case "codex":
+		return m.Codex
+	case "gemini":
+		return m.Gemini
+	case "opencode":
+		return m.OpenCode
+	}
+	return ModelListSettings{}
 }
 
 // ProbeEnabled reports whether installed CLIs may be probed. Defaults to true.
@@ -3942,6 +3990,38 @@ type StatusSettings struct {
 	//	[status]
 	//	shell_running_indicator = true
 	ShellRunningIndicator bool `toml:"shell_running_indicator"`
+
+	// BackgroundShellHold is how long after its launch a run_in_background
+	// shell keeps a finished Claude turn running (A5), as a Go duration
+	// such as "3m" or "30m". Unset: DefaultBackgroundShellHold (3m). "0"
+	// restores the earlier rule: the footer's shell counter alone keeps the
+	// session running, however old the shell. Past the hold the session
+	// reads waiting even if the shell is a build that is still running.
+	//
+	//	[status]
+	//	background_shell_hold = "30m"
+	BackgroundShellHold string `toml:"background_shell_hold,omitempty"`
+}
+
+// GetBackgroundShellHold returns BackgroundShellHold. Unset means
+// DefaultBackgroundShellHold; a value that is not a duration, or is
+// negative, returns an error and DefaultBackgroundShellHold.
+func (s StatusSettings) GetBackgroundShellHold() (time.Duration, error) {
+	raw := strings.TrimSpace(s.BackgroundShellHold)
+	if raw == "" {
+		return DefaultBackgroundShellHold, nil
+	}
+	if raw == "0" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return DefaultBackgroundShellHold, fmt.Errorf("[status] background_shell_hold %q is not a duration (e.g. \"3m\", \"0\")", raw)
+	}
+	if d < 0 {
+		return DefaultBackgroundShellHold, fmt.Errorf("[status] background_shell_hold %q is negative", raw)
+	}
+	return d, nil
 }
 
 // MaintenanceSettings controls the automatic maintenance worker
@@ -4170,7 +4250,10 @@ func LoadUserConfig() (*UserConfig, error) {
 	defer userConfigCacheMu.Unlock()
 	// Every (re)load re-applies the [macapp] status_events gate, so an
 	// edited config.toml turns the session.status tap on or off live.
-	defer func() { applyStatusBusGate(userConfigCache) }()
+	defer func() {
+		applyStatusBusGate(userConfigCache)
+		applyBackgroundShellHold(userConfigCache)
+	}()
 
 	// Re-check under write lock: another goroutine may have refreshed the
 	// cache to match currentMtime between our RLock drop and Lock acquire.

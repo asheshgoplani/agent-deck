@@ -16,7 +16,7 @@ func TestWriteJSONFileAtomic_AppendsTrailingNewline(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".mcp.json")
 
-	if err := writeJSONFileAtomic(path, []byte(`{"mcpServers":{}}`), 0644); err != nil {
+	if err := writeJSONFileAtomic(filepath.Dir(path), path, []byte(`{"mcpServers":{}}`), 0644); err != nil {
 		t.Fatalf("writeJSONFileAtomic: %v", err)
 	}
 
@@ -38,7 +38,7 @@ func TestWriteJSONFileAtomic_PreservesExistingNewline(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".mcp.json")
 
-	if err := writeJSONFileAtomic(path, []byte("{}\n"), 0644); err != nil {
+	if err := writeJSONFileAtomic(filepath.Dir(path), path, []byte("{}\n"), 0644); err != nil {
 		t.Fatalf("writeJSONFileAtomic: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -64,7 +64,7 @@ func TestWriteJSONFileAtomic_SkipsUnchangedWrite(t *testing.T) {
 
 	// data has no trailing newline; the helper appends one on the first write.
 	data := []byte(`{"mcpServers":{}}`)
-	if err := writeJSONFileAtomic(path, data, 0644); err != nil {
+	if err := writeJSONFileAtomic(filepath.Dir(path), path, data, 0644); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 
@@ -75,14 +75,14 @@ func TestWriteJSONFileAtomic_SkipsUnchangedWrite(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 	// Identical content (helper re-appends the same newline) => must skip, no write.
-	if err := writeJSONFileAtomic(path, data, 0644); err != nil {
+	if err := writeJSONFileAtomic(filepath.Dir(path), path, data, 0644); err != nil {
 		t.Fatalf("expected unchanged write to be skipped, got error: %v", err)
 	}
 
 	// Different content => not skipped => must attempt a write, which fails on
 	// the non-writable directory. This proves the skip is content-gated, not
 	// unconditional.
-	if err := writeJSONFileAtomic(path, []byte(`{"mcpServers":{"x":{}}}`), 0644); err == nil {
+	if err := writeJSONFileAtomic(filepath.Dir(path), path, []byte(`{"mcpServers":{"x":{}}}`), 0644); err == nil {
 		t.Fatalf("expected changed write to attempt (and fail on read-only dir), got nil")
 	}
 }

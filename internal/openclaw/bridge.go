@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 )
 
 // Bridge styles
@@ -226,9 +228,9 @@ func (m *BridgeModel) View() string {
 // --- Rendering ---
 
 func (m *BridgeModel) renderHeader() string {
-	agentDisplay := m.agentName
+	agentDisplay := termtext.Clean(m.agentName)
 	if agentDisplay == "" {
-		agentDisplay = m.agentID
+		agentDisplay = termtext.Clean(m.agentID)
 	}
 
 	var statusStr string
@@ -260,26 +262,33 @@ func (m *BridgeModel) renderMessages() string {
 
 		switch msg.Direction {
 		case "system":
-			sb.WriteString(fmt.Sprintf("  %s %s\n", ts, systemStyle.Render(msg.Content)))
+			sb.WriteString(fmt.Sprintf("  %s %s\n", ts, systemStyle.Render(cleanLine(msg.Content))))
 		case "outbound":
 			sb.WriteString(fmt.Sprintf("  %s %s\n", ts, senderStyle.Render("you:")))
 			for _, line := range strings.Split(msg.Content, "\n") {
-				sb.WriteString(fmt.Sprintf("    %s\n", line))
+				sb.WriteString(fmt.Sprintf("    %s\n", cleanLine(line)))
 			}
 		default:
-			sender := msg.Sender
+			sender := termtext.Clean(msg.Sender)
 			if msg.AgentID != "" {
-				sender = agentStyle.Render(msg.AgentID + ":")
+				sender = agentStyle.Render(termtext.Clean(msg.AgentID) + ":")
 			} else {
 				sender = senderStyle.Render(sender + ":")
 			}
 			sb.WriteString(fmt.Sprintf("  %s %s\n", ts, sender))
 			for _, line := range strings.Split(msg.Content, "\n") {
-				sb.WriteString(fmt.Sprintf("    %s\n", line))
+				sb.WriteString(fmt.Sprintf("    %s\n", cleanLine(line)))
 			}
 		}
 	}
 	return sb.String()
+}
+
+// cleanLine makes one line of message text safe to render: chat content,
+// history, agent errors and the shutdown reason all come from the gateway.
+// Tabs become spaces so indentation survives termtext.Clean.
+func cleanLine(s string) string {
+	return termtext.Clean(strings.ReplaceAll(s, "\t", "    "))
 }
 
 func (m *BridgeModel) updateViewportContent() {
