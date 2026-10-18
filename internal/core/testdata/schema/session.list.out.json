@@ -113,6 +113,10 @@
         "id": {
           "type": "string"
         },
+        "intended_switch": {
+          "$ref": "#/$defs/session.IntendedSwitchJSON",
+          "description": "intended account/model switch: the switch is intended while account and model equal it and now \u003c expires_at; absent when none or expired"
+        },
         "last_activity_at": {
           "description": "live",
           "type": "string"
@@ -205,6 +209,34 @@
         "status",
         "title",
         "tool"
+      ],
+      "additionalProperties": false
+    },
+    "session.IntendedSwitchJSON": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "at",
+        "expires_at",
+        "model",
+        "reason"
       ],
       "additionalProperties": false
     },

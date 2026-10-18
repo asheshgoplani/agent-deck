@@ -105,6 +105,13 @@ still in flight; pairs with `running`, detail in `substate_detail` and the
 `watching` (armed Monitor or proven sleep-only until loop; waiting/idle,
 watcher count in `background_work.count`),
 `auth-401`, `usage-limit`, `model-unavailable`, `unknown-exit`, `hook-lag`.
+`usage-limit`, `model-limit` and `account-blocked` (Claude) come from the
+latest assistant turn in the transcript, not the pane: a 429 `rate_limit`
+rejection is `usage-limit` (detail the window, e.g. `weekly limit · resets
+12pm (Europe/Berlin)`) or, when its text names a model, `model-limit` (detail
+the model, e.g. `Fable 5.1`); error `oauth_org_not_allowed` is
+`account-blocked` (detail `organization disabled Claude subscription
+access`). The 429 kinds are believed for 5h, `account-blocked` for 24h.
 `process-exited` (a custom command started with `add -cmd` / `launch -cmd`
 has exited: status `idle` for exit 0, `error` for a non-zero exit, and the
 code is reported as `exit_code` in `list --json`, `status -v --json`,

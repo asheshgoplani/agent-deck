@@ -77,8 +77,10 @@ const (
 )
 
 // stuckDwellThresholds are the §1.3 cause-specific dwell windows. usage_limit is
-// intentionally absent (never auto-restart, §2). A substate not present here is
-// not a self-heal-actionable stuck class.
+// intentionally absent (never auto-restart, §2), and so are its transcript
+// siblings model-limit and account-blocked: a restart cannot lift a model cap
+// or an org refusal, only a model or account change can. A substate not present
+// here is not a self-heal-actionable stuck class.
 var stuckDwellThresholds = map[tmux.Substate]time.Duration{
 	tmux.SubstateModelUnavailable:  90 * time.Second,
 	tmux.SubstateAuth401:           60 * time.Second,

@@ -92,6 +92,8 @@ const (
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
+	SubstateModelLimit        = tmux.SubstateModelLimit
+	SubstateAccountBlocked    = tmux.SubstateAccountBlocked
 	SubstateUnknownExit       = tmux.SubstateUnknownExit
 	SubstateProcessExited     = tmux.SubstateProcessExited
 	SubstateHookLag           = tmux.SubstateHookLag
@@ -332,12 +334,17 @@ type Instance struct {
 	lastCodexScanAt time.Time // Rate-limits expensive ~/.codex/sessions scans
 	// Usage-limit detection (#1802), all guarded by i.mu.
 	// lastUsageLimitScanAt throttles the transcript read (records scan START).
-	// usageLimitedCached memoises the verdict for that window, and
-	// usageLimitSessionID records the session id it was formed for so a rebind
-	// cannot inherit it. usageLimitScanGen versions in-flight scans so one slower
-	// than the interval cannot publish over a newer result.
+	// usageLimitedCached memoises the verdict for that window (usageLimitVerdict
+	// carries its kind and detail: usage-limit, model-limit or account-blocked),
+	// and usageLimitSessionID records the session id it was formed for so a
+	// rebind cannot inherit it. usageLimitScanGen versions in-flight scans so one
+	// slower than the interval cannot publish over a newer result.
+	// shownTranscriptLimit is the transcript verdict the last Substate() call
+	// returned, so SubstateDetail describes the substate actually reported.
 	lastUsageLimitScanAt time.Time
 	usageLimitedCached   bool
+	usageLimitVerdict    limitVerdict
+	shownTranscriptLimit limitVerdict
 	usageLimitSessionID  string
 	usageLimitScanGen    uint64
 	lastCodexProbeAt     time.Time // Rate-limits expensive Codex process-file probes
@@ -497,6 +504,21 @@ type Instance struct {
 	// clears).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 
+	// IntendedSwitch marks the current account/model as switched on purpose,
+	// until its ExpiresAt (limit-guard reads it from list/show --json). Nil
+	// when unset. Persisted in the tool_data extras zone (intended_switch.go).
+	// CLI: `session set <id> account|model <v> --intended "<reason>"`, or
+	// `session set <id> intended-switch "<reason>"` ("" clears). Any other
+	// account or model change clears it.
+	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
+
+	// LimitVerdictResetAt is when the session's account or model was last
+	// changed. A transcript limit/block rejection stamped at or before it is
+	// about the old account/model and is ignored (usagelimit.go). Zero when
+	// never set. Persisted in the tool_data extras zone
+	// (limit_verdict_reset.go).
+	LimitVerdictResetAt time.Time `json:"limit_verdict_reset_at,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT
@@ -611,9 +633,13 @@ type Instance struct {
 	terminatedPaneExitCode *int
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
-	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
-	hookEvent                   string    // Hook event name that caused the last status (e.g. "PermissionRequest")
-	hookSessionID               string    // Session ID from hook payload
+	hookStatus    string // running, idle, waiting, dead (empty = no hook data)
+	hookEvent     string // Hook event name that caused the last status (e.g. "PermissionRequest")
+	hookSessionID string // Session ID from hook payload
+	// claudeSupersededIDs holds Claude session ids this instance moved away
+	// from by following a continued-in handoff (#2683). A late hook still
+	// carrying one must not revert ClaudeSessionID to the stalled copy.
+	claudeSupersededIDs         map[string]struct{}
 	hookLastUpdate              time.Time // When hook status was last received
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	codexStartedGeneration      string
@@ -652,6 +678,11 @@ type Instance struct {
 	// Use GetStatus()/SetStatus() and GetTool()/SetTool() for thread-safe access.
 	// UpdateStatus() acquires the write lock internally.
 	mu sync.RWMutex
+
+	// archiveMu guards ArchivedAt alone (IsArchived, SetArchivedAtThreadSafe).
+	// It is not mu: UpdateStatus holds mu across tool detection and metadata
+	// I/O, and the TUI checks the archive state of every row it renders.
+	archiveMu sync.RWMutex
 
 	// spawnGen supersedes stale fast-death watchers; spawnWatchers lets teardown
 	// and tests join them before restoring process-global filesystem environment.
@@ -6949,38 +6980,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		case "dead":
 			i.Status = StatusError
 		}
-		if i.hookSessionID != "" {
-			switch {
-			case IsClaudeCompatible(i.Tool):
-				if i.hookSessionID != i.ClaudeSessionID {
-					i.ClaudeSessionID = i.hookSessionID
-					// #1815: own hook anchor — verified ownership.
-					i.markClaudeSessionIDVerified()
-					i.ClaudeDetectedAt = time.Now()
-				} else {
-					// Review finding on #1830: the values already matching is
-					// NOT a no-op case for the taint. A live hook confirming
-					// the session's own id is the strongest available vouch
-					// (the process itself, not a disk guess) — clear any
-					// lingering disk-scan taint on it, or a solo custom-wrapper
-					// session whose own id was once disk-scanned stays
-					// permanently unresumable even though this hook just
-					// proved it right.
-					i.markClaudeSessionIDVerified()
-				}
-			case IsCodexCompatible(i.Tool):
-				if i.hookSessionID != i.CodexSessionID {
-					i.CodexSessionID = i.hookSessionID
-					i.recordCodexOwnership(i.CodexSessionID)
-					i.CodexDetectedAt = time.Now()
-				}
-			case i.Tool == "gemini":
-				if i.hookSessionID != i.GeminiSessionID {
-					i.GeminiSessionID = i.hookSessionID
-					i.GeminiDetectedAt = time.Now()
-				}
-			}
-		}
+		i.applyHookSessionIDLocked()
 		// A1: For Hermes, run the gateway reachability check even on the fast path.
 		// Without this, a dead gateway can still report running/waiting for the full
 		// hook freshness window because the check below is skipped.
@@ -11101,6 +11101,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// common flush-race case without slowing the happy path (retry only
 	// fires when the first check comes back negative AND we have a
 	// non-empty ClaudeSessionID).
+	// #2683: an agent-view handoff ends the bound transcript with a
+	// continued-in record; resume the successor, not the stalled copy.
+	i.followClaudeContinuedIn()
+
 	// #1815 identity guard: refuse outright when the id about to be resumed
 	// is not this session's own recorded conversation id (missing recorded id,
 	// or a mismatch). The refused id is replaced by a freshly minted one so
@@ -12233,6 +12237,7 @@ func (i *Instance) GetTmuxSession() *tmux.Session {
 // session without any of them changing.
 func (i *Instance) Substate() Substate {
 	if held, _ := i.IsAuthHeld(); held {
+		i.setShownTranscriptLimit(limitVerdict{})
 		return SubstateAuth401
 	}
 	// A RECENT quota rejection is checked before the pane verdict, including the
@@ -12246,8 +12251,14 @@ func (i *Instance) Substate() Substate {
 	// evidence — a freshly rendered 401, or a dropped socket that never arms the
 	// credential hold. usageLimited enforces that bound (usageLimitMaxAge), which
 	// is what keeps this ordering honest (#1802).
-	if i.usageLimited() {
-		return SubstateUsageLimit
+	//
+	// The same verdict also carries the other transcript-derived kinds,
+	// model-limit and account-blocked (limit-guard bugs 2 and 4), at the same
+	// precedence: each is the latest assistant turn and a structured rejection.
+	limit := i.transcriptLimit()
+	i.setShownTranscriptLimit(limit)
+	if limit.Kind != SubstateNone {
+		return limit.Kind
 	}
 	if s := i.getTerminatedPaneSubstate(); s != SubstateNone {
 		return s
@@ -12277,10 +12288,21 @@ func (i *Instance) Substate() Substate {
 // SubstateDetail returns free-text detail for the substate the last
 // classification produced (the codex usage-limit retry time; for
 // background-work the in-flight task, e.g. "workflow comms-followon-round3
-// 3/5 · 18m32s"), or "".
+// 3/5 · 18m32s"; for a transcript-derived usage-limit / model-limit /
+// account-blocked the reason the session waits, e.g. "weekly limit · resets
+// 12pm (Europe/Berlin)", "Fable 5.1"), or "".
 // Call after Substate/CachedSubstate; it reads the cached value and never
 // captures the pane.
 func (i *Instance) SubstateDetail() string {
+	// The transcript verdict outranks every pane verdict in Substate, so its
+	// detail outranks theirs here. Without it a session waiting out a quota
+	// read as an anonymous stall (limit-guard bug 3).
+	i.mu.RLock()
+	shown := i.shownTranscriptLimit
+	i.mu.RUnlock()
+	if isTranscriptLimitSubstate(shown.Kind) {
+		return shown.Detail
+	}
 	if work := i.BackgroundWork(); work.InFlight() {
 		return work.Summary()
 	}
@@ -12292,6 +12314,15 @@ func (i *Instance) SubstateDetail() string {
 		return "" // a vetoed stale workflow row (see reconcileBackgroundSubstate)
 	}
 	return tmuxSess.CachedSubstateDetail()
+}
+
+// setShownTranscriptLimit records the transcript verdict Substate is about to
+// report (or the zero verdict when it reports something else) for
+// SubstateDetail. Acquires its own lock; callers must not already hold i.mu.
+func (i *Instance) setShownTranscriptLimit(v limitVerdict) {
+	i.mu.Lock()
+	i.shownTranscriptLimit = v
+	i.mu.Unlock()
 }
 
 // getTerminatedPaneSubstate returns the terminated-pane substate recorded by
@@ -13893,4 +13924,47 @@ func wrapIgnoreSuspend(cmd string) string {
 	// Example: it's -> it'"'"'s -> bash sees: it's.
 	escaped := strings.ReplaceAll(cmd, `'`, `'"'"'`)
 	return "bash -c 'stty susp undef; " + escaped + "'"
+}
+
+// applyHookSessionIDLocked binds the session id carried by the latest hook
+// sample to the tool's session id field (the hook fast path in UpdateStatus).
+// Caller holds i.mu.
+func (i *Instance) applyHookSessionIDLocked() {
+	if i.hookSessionID == "" {
+		return
+	}
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		if i.claudeIDSuperseded(i.hookSessionID) {
+			// #2683: stale hook from the pre-handoff process.
+			break
+		}
+		if i.hookSessionID != i.ClaudeSessionID {
+			i.ClaudeSessionID = i.hookSessionID
+			// #1815: own hook anchor — verified ownership.
+			i.markClaudeSessionIDVerified()
+			i.ClaudeDetectedAt = time.Now()
+		} else {
+			// Review finding on #1830: the values already matching is
+			// NOT a no-op case for the taint. A live hook confirming
+			// the session's own id is the strongest available vouch
+			// (the process itself, not a disk guess) — clear any
+			// lingering disk-scan taint on it, or a solo custom-wrapper
+			// session whose own id was once disk-scanned stays
+			// permanently unresumable even though this hook just
+			// proved it right.
+			i.markClaudeSessionIDVerified()
+		}
+	case IsCodexCompatible(i.Tool):
+		if i.hookSessionID != i.CodexSessionID {
+			i.CodexSessionID = i.hookSessionID
+			i.recordCodexOwnership(i.CodexSessionID)
+			i.CodexDetectedAt = time.Now()
+		}
+	case i.Tool == "gemini":
+		if i.hookSessionID != i.GeminiSessionID {
+			i.GeminiSessionID = i.hookSessionID
+			i.GeminiDetectedAt = time.Now()
+		}
+	}
 }

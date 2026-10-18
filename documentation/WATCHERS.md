@@ -97,7 +97,7 @@ The usual loop:
 # Create the watcher (writes ~/.agent-deck/watcher/<name>/ with watcher.toml + state.json).
 agent-deck watcher create github --name gh-alerts --secret "$GITHUB_WEBHOOK_SECRET"
 
-# Activate it (picked up by the engine on the next tick).
+# Activate it (runs within seconds if no watcher engine runs yet, else when the engine's process restarts).
 agent-deck watcher start gh-alerts
 
 # Confirm: list shows status + events/hour; status shows recent events.
@@ -109,6 +109,8 @@ agent-deck watcher test gh-alerts
 ```
 
 `agent-deck watcher routes` prints the currently-loaded routing rules across every watcher, so you can double-check which conductor or group owns which event types.
+
+Which process runs the watchers: every long-lived agent-deck process of a profile (the TUI, `agent-deck web`, or a headless `agent-deck web --no-tui`) can run the profile's watcher engine, and exactly one does. The first to start with a watcher marked running takes the engine owner lock, `watcher-engine.lock` in the profile's runtime dir next to the daemon's `daemon.lock`, and runs every watcher marked running. The others wait and retry every few seconds, so when the owner exits one of them takes over, and a process with no running watcher holds no lock: the first watcher started on the profile runs within seconds. The debug log records the outcome as `watcher_engine_owner`, `watcher_engine_standby` (with the owner's pid), `watcher_engine_idle` or `watcher_engine_took_over`. A running engine loads its watchers when it starts, so a watcher started or stopped while it runs takes effect when that process restarts.
 
 Conversational setup is also supported: `agent-deck watcher install-skill watcher-creator` drops a Claude Code skill into `~/.agent-deck/skills/pool/`, and inside an agent-deck Claude session you can then ask *"Use the watcher-creator skill to set up a GitHub watcher"*. The skill walks through adapter choice, required settings, and emits the exact `watcher create` command.
 
@@ -126,7 +128,7 @@ Each watcher gets its own directory at `~/.agent-deck/watcher/<name>/` with (REQ
 
 `clients.json` is where you decide *which* conductor wakes up for *which* event. Edit it by hand, or let `watcher create` prompt you for defaults. `agent-deck watcher routes` is the authoritative read-out.
 
-Health alerts follow the same routing. While the TUI runs, a watcher that moves into warning or error sends one `[WATCHER HEALTH ALERT]` line to its conductor, and one `[WATCHER HEALTH RECOVERED]` line when it is healthy again. A watcher that stays in the same state sends nothing more. The conductor is the one set on the watcher row if any, else the one its newest routed event went to, else the only conductor `clients.json` names. If `clients.json` names several and the watcher has no routed events yet, the alert waits and the TUI logs `watcher_health_alert_no_conductor`.
+Health alerts follow the same routing. While the engine runs, a watcher that moves into warning or error sends one `[WATCHER HEALTH ALERT]` line to its conductor, and one `[WATCHER HEALTH RECOVERED]` line when it is healthy again. A watcher that stays in the same state sends nothing more. The conductor is the one set on the watcher row if any, else the one its newest routed event went to, else the only conductor `clients.json` names. If `clients.json` names several and the watcher has no routed events yet, the alert waits and the engine's process logs `watcher_health_alert_no_conductor`.
 
 Dedupe is SQL-level: `INSERT OR IGNORE INTO watcher_events (watcher_name, event_id, ...)`. Retries from the sender (GitHub re-fires when its delivery times out, ntfy replays when the subscriber reconnects) cannot double-fire a conductor. Turning this off requires an RFC.
 
