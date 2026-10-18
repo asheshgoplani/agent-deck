@@ -229,7 +229,19 @@ func (i *Instance) absorbCompletedTurnSample() {
 	}
 	confirmed := i.noteHookLagSampleLocked()
 	if confirmed && i.Status == StatusRunning {
-		i.Status = StatusWaiting
+		// Same shell rule as the UpdateStatus flip (shellHoldsTurn).
+		i.mu.Unlock()
+		work, holds := i.shellHoldsTurn()
+		i.mu.Lock()
+		switch {
+		case i.Status != StatusRunning:
+			// Changed while unlocked (Kill, a newer pass): leave it.
+		case holds:
+			i.bgWork = work
+			i.bgWorkActive = true
+		default:
+			i.Status = StatusWaiting
+		}
 	} else if !confirmed && i.hookLagFlipped && i.Status == StatusWaiting {
 		i.Status = StatusRunning
 	}

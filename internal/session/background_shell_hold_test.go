@@ -157,3 +157,65 @@ func TestBackgroundShellHold_FromConfigEndToEnd(t *testing.T) {
 		t.Fatalf("hold 0, shell counter without a launch = %q/%q, want running/%q (the rule before A5)", status, sub, SubstateBackgroundWork)
 	}
 }
+
+// a5PaneEmptyPrompt is the A5 frame with an empty composer: a completed turn
+// the missing-Stop-hook rule recognises.
+const a5PaneEmptyPrompt = "⏺ Done. The dev server is still up on :5173 if you want to look.\n" +
+	"\n" +
+	"✻ Crunched for 45s · done 10:20 PM · 1 shell still running\n" +
+	"\n" +
+	"────────────────────────────────────────────────────────────\n" +
+	"❯ \n" +
+	"────────────────────────────────────────────────────────────\n" +
+	"  ⏵⏵ bypass permissions on · 1 shell · ← for agents\n"
+
+// A lost Stop hook (the hook file still says running over the finished
+// frame) and a delivered one must agree on a background shell: both running
+// / background-work while the launch is inside the hold, both waiting past
+// it.
+func TestBackgroundShellHold_LostAndDeliveredStopHookAgree(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	for _, tc := range []struct {
+		name    string
+		ago     time.Duration
+		running bool
+	}{
+		{"within the hold", 20 * time.Second, true},
+		{"past the hold", 2 * time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launch := a5BashLaunch(time.Now().Add(-tc.ago))
+			want := StatusWaiting
+			if tc.running {
+				want = StatusRunning
+			}
+
+			// Lost Stop hook: two completed-turn samples under the running
+			// hook confirm the lag.
+			lost, cleanup := startHookLagInstance(t, "shell-lost-hook", a5PaneEmptyPrompt)
+			defer cleanup()
+			lost.ClaudeSessionID = "sess-610"
+			turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
+			writeInstanceTranscript(t, lost, launch)
+			cliPass(t, lost)
+			time.Sleep(tmux.CompletedTurnSampleInterval + 200*time.Millisecond)
+			lostStatus, lostSub := cliPass(t, lost)
+
+			// Delivered Stop hook on the same frame and transcript.
+			delivered, cleanup2 := startHookLagInstance(t, "shell-stop-hook", a5PaneEmptyPrompt)
+			defer cleanup2()
+			delivered.ClaudeSessionID = "sess-610"
+			turnFacts = &turnFactsCache{entries: map[string]turnFactsCacheEntry{}}
+			writeInstanceTranscript(t, delivered, launch)
+			writeHookLagStopFile(t, delivered.ID)
+			deliveredStatus, deliveredSub := cliPass(t, delivered)
+
+			if lostStatus != want || deliveredStatus != want {
+				t.Fatalf("lost hook = %q/%q, delivered hook = %q/%q, want both %q", lostStatus, lostSub, deliveredStatus, deliveredSub, want)
+			}
+			if tc.running && (lostSub != SubstateBackgroundWork || deliveredSub != SubstateBackgroundWork) {
+				t.Fatalf("lost hook substate %q, delivered %q, want both %q", lostSub, deliveredSub, SubstateBackgroundWork)
+			}
+		})
+	}
+}

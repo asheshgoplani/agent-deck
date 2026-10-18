@@ -602,6 +602,26 @@ func (i *Instance) probeBackgroundWork(pane tmux.BackgroundWork) tmux.Background
 	return work
 }
 
+// shellHoldsTurn is the shell rule for the lost-Stop-hook path (hook still
+// "running", the pane showing the finished turn): the same merge the Stop
+// hook path runs (mergeBackgroundWork, so the same transcript-based hold),
+// on the pane's cached background work. It reports whether a background
+// shell still holds the turn, and that work. Never captures; reads the
+// transcript, so the caller must not hold i.mu.
+func (i *Instance) shellHoldsTurn() (tmux.BackgroundWork, bool) {
+	ts := i.GetTmuxSession()
+	if ts == nil || ts.CachedBackgroundWorkBlocked() {
+		return tmux.BackgroundWork{}, false
+	}
+	pane := ts.CachedBackgroundWork()
+	sc, scOK := transcriptBackgroundScanFor(i)
+	i.mu.RLock()
+	seen := i.bgWorkPaneSeenAt
+	i.mu.RUnlock()
+	work, _ := mergeBackgroundWork(pane, sc, scOK, seen, time.Now())
+	return work, work.Kind == tmux.BackgroundKindBash && work.Running()
+}
+
 // BackgroundWork returns finite work holding a turn open, or passive watchers
 // while the session is waiting/idle. Never captures the pane.
 func (i *Instance) BackgroundWork() tmux.BackgroundWork {

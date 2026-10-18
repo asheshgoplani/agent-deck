@@ -7062,9 +7062,26 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			// makes afterwards (Instance.Substate) wins over the record: if
 			// the pane is busy again, absorbCompletedTurnSample reverts the
 			// flip in the same pass.
+			//
+			// A background shell is decided by the same transcript-based
+			// hold as on the Stop hook path (shellHoldsTurn): a lost Stop
+			// hook must not read waiting where a delivered one reads
+			// running / background-work. The scan reads disk, so i.mu is
+			// released around it, then re-checked for a concurrent Kill().
 			if IsClaudeCompatible(i.Tool) && i.noteHookLagSampleLocked() {
-				i.Status = StatusWaiting
-				i.hookLagFlipped = true
+				i.mu.Unlock()
+				work, holds := i.shellHoldsTurn()
+				i.mu.Lock()
+				if i.Status == StatusStopped {
+					return nil
+				}
+				if holds {
+					i.bgWork = work
+					i.bgWorkActive = true
+				} else {
+					i.Status = StatusWaiting
+					i.hookLagFlipped = true
+				}
 			}
 		case "waiting":
 			if IsCodexCompatible(i.Tool) {
