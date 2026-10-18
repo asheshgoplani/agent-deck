@@ -109,9 +109,9 @@ func preHumanTierConductorInstructionsTemplate(template string) string {
 }
 
 // conductorHarnessControlQuickCommandRow is the `/cmd` quick-command row the
-// harness-control change added to the shared template's Quick Commands table.
+// session command change added to the shared template's Quick Commands table.
 // v1.16.25 through v1.16.29 shipped the template without it.
-const conductorHarnessControlQuickCommandRow = "| `/cmd <session> <slash command>` (also `cmd ...` without the leading slash) | Run a Claude Code client command (`/model <id>`, `/compact`, `/clear`, `/exit`, any slash command or skill) on that session: use the `harness-control` skill, or run `agent-deck -p <PROFILE> session command --json --wait-idle 60s <session> \"<slash command>\"` (add `--background` when `<session>` is you). Reply with one short line from the JSON: `after` or the first `evidence` entry when `ok`, otherwise `code` and `error`. `/cmd <session> what can I run` runs `agent-deck -p <PROFILE> session commands --json <session>` instead. Never type a slash command with `session send` or tmux. |\n"
+const conductorHarnessControlQuickCommandRow = "| `/cmd <session> <slash command>` (also `cmd ...` without the leading slash) | Run a Claude Code client command (`/model <id>`, `/compact`, `/clear`, `/exit`, any slash command or skill) on that session: run `agent-deck -p <PROFILE> session command --json --wait-idle 60s <session> \"<slash command>\"` (add `--background` when `<session>` is you). Reply with one short line from the JSON: `after` or the first `evidence` entry when `ok`, otherwise `code` and `error`. `/cmd <session> what can I run` runs `agent-deck -p <PROFILE> session commands --json <session>` instead. Never type a slash command with `session send` or tmux. |\n"
 
 // preHarnessControlConductorInstructionsTemplate reconstructs the template as
 // v1.16.25 through v1.16.29 shipped it, before the `/cmd` quick command, so a
