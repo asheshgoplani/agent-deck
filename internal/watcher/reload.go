@@ -30,8 +30,11 @@ const (
 // acknowledgement `watcher reload` waits for.
 type ReloadReport struct {
 	// Request is the token of the request this answers.
-	Request   string    `json:"request"`
-	PID       int       `json:"pid"`
+	Request string `json:"request"`
+	PID     int    `json:"pid"`
+	// StartedAt is when the pass began, before it read the request: a
+	// request made before it is covered. AppliedAt is when it ended.
+	StartedAt time.Time `json:"started_at"`
 	AppliedAt time.Time `json:"applied_at"`
 	// Started, Stopped and Restarted name the watchers whose adapter the
 	// engine added, removed and replaced. Failed is "<name>: <error>" for an

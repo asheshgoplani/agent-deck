@@ -348,10 +348,11 @@ func (h *EngineHost) reconcile() {
 	if eng == nil || stopped {
 		return
 	}
+	started := time.Now()
 	request := readReloadRequest(h.cfg.Profile)
 	forced := request != "" && request != h.lastReload
 
-	rep := &ReloadReport{Request: request, PID: os.Getpid()}
+	rep := &ReloadReport{Request: request, PID: os.Getpid(), StartedAt: started}
 	rows, err := h.cfg.DB.LoadWatchers()
 	if err != nil {
 		rep.Error = err.Error()

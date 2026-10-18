@@ -505,3 +505,27 @@ func TestEngine_HealthLoopWithAddAndRemove_2739(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// A new owner does not replay a reload request an earlier owner already
+// answered: the request file stays after the answer.
+func TestEngineHost_TakeoverDoesNotReplayAnAnsweredReload_2739(t *testing.T) {
+	env := newHostTestEnv(t, "hotreload-replay")
+	first, _ := env.host(t)
+	first.Start()
+	answered := env.reload(t)
+	first.Stop(nil)
+
+	second, _ := env.host(t)
+	second.Start()
+	if !second.IsOwner() {
+		t.Fatal("the second host did not take the engine over")
+	}
+	time.Sleep(200 * time.Millisecond) // ten passes of the new owner
+	rep, err := ReadReloadReport(env.profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.StartedAt.Equal(answered.StartedAt) {
+		t.Fatalf("the new owner answered the old request again: %+v, was %+v", rep, answered)
+	}
+}

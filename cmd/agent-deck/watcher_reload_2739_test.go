@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -133,5 +134,40 @@ func TestWatcherReload_EngineAnswers_2739(t *testing.T) {
 	// either way hook is no longer running.
 	if a := host.Engine().Adapters(); len(a) != 0 {
 		t.Fatalf("adapters after stop and reload = %+v, want none", a)
+	}
+}
+
+// Two quick reloads: an answer whose pass started before this request was
+// made does not cover it, even when it was written after; one whose pass
+// started after does.
+func TestWaitWatcherReload_OnlyPassesStartedAfterTheRequest_2739(t *testing.T) {
+	isolateWatcherReloadHome(t)
+	lock, err := watcher.EngineLockPath("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack := filepath.Join(filepath.Dir(lock), watcher.ReloadAckFile)
+	if err := os.MkdirAll(filepath.Dir(ack), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeAck := func(r watcher.ReloadReport) {
+		b, _ := json.Marshal(r)
+		if err := os.WriteFile(ack, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requested := time.Now()
+
+	writeAck(watcher.ReloadReport{Request: "other", StartedAt: requested.Add(-time.Second), AppliedAt: requested.Add(time.Second)})
+	if rep := waitWatcherReload("work", "mine", requested, 200*time.Millisecond); rep != nil {
+		t.Fatalf("accepted %+v from a pass that started before the request", rep)
+	}
+	writeAck(watcher.ReloadReport{Request: "later", StartedAt: requested.Add(time.Millisecond), AppliedAt: requested.Add(time.Second)})
+	if rep := waitWatcherReload("work", "mine", requested, 200*time.Millisecond); rep == nil || rep.Request != "later" {
+		t.Fatalf("waitWatcherReload = %+v, want the later pass's answer", rep)
+	}
+	writeAck(watcher.ReloadReport{Request: "mine", StartedAt: requested.Add(-time.Second)})
+	if rep := waitWatcherReload("work", "mine", requested, 200*time.Millisecond); rep == nil || rep.Request != "mine" {
+		t.Fatalf("waitWatcherReload = %+v, want the answer to its own token", rep)
 	}
 }

@@ -664,12 +664,12 @@ func watcherReload(profile string, timeout time.Duration) (res watcherReloadResu
 
 // waitWatcherReload waits up to timeout for the engine's answer to token. An
 // answer to a later request (another `watcher reload` replaced this one's
-// token) applied after this one was made covers it too.
+// token) from a pass that started after this one was made covers it too.
 func waitWatcherReload(profile, token string, requested time.Time, timeout time.Duration) *watcher.ReloadReport {
 	deadline := time.Now().Add(timeout)
 	for {
 		if rep, err := watcher.ReadReloadReport(profile); err == nil && rep != nil &&
-			(rep.Request == token || !rep.AppliedAt.Before(requested)) {
+			(rep.Request == token || !rep.StartedAt.Before(requested)) {
 			return rep
 		}
 		if time.Now().After(deadline) {
