@@ -894,6 +894,13 @@ type Home struct {
 	remotePollMu     sync.Mutex                         // serializes poll cache reads/writes without holding the render lock
 	remotePollConfig map[string]session.RemoteConfig
 	remotePollActive map[string]bool // one session poll per remote, across overlapping rounds
+	// remotePollBackoffs holds a host whose last poll was slow or failed out
+	// of automatic polling for an exponentially growing while
+	// (remote_poll_backoff.go). Guarded by remoteSessionsMu.
+	remotePollBackoffs map[string]remotePollBackoff
+	// remoteNow is the clock poll timing and backoff read; nil means
+	// time.Now. Tests inject a fake one.
+	remoteNow func() time.Time
 	// remoteMutationStamp returns the stamp (remote DB mtime, unix ns) of
 	// the last mutating command confirmed over a remote's channel, 0 when
 	// unknown. nil means ask the channel; tests inject a stub.
@@ -5009,7 +5016,7 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 		msg.groupsFailed[name] = true
 		return msg
 	}
-	started := time.Now()
+	started := h.remoteClock()
 	var pollErr error
 	defer func() { h.finishRemotePoll(name, rc, started, pollErr) }()
 
@@ -13321,6 +13328,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Remote decks refresh in the same keystroke, so a change made on a
 		// remote (or from another machine) shows up now, not at the next poll.
 		state := h.preserveState()
+		// The user asked for a refresh now: a host held by poll backoff is
+		// polled at once (still one poll per host at a time).
+		h.clearRemotePollBackoff("")
 		h.remoteSessionsMu.Lock()
 		h.remotesFetchActive = true // so the remote headers show "refreshing…"
 		h.remoteSessionsMu.Unlock()
