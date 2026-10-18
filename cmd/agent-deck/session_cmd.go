@@ -1715,16 +1715,6 @@ func (tmuxClientDetacher) detachClientsOn(sockets []string) (bool, error) {
 	return tmux.DetachClientsOnSockets(sockets...)
 }
 
-// tmuxAgentDeckDetacher detaches only clients that are showing an agent-deck
-// session, for the remote focus path: it sweeps the default server too, where
-// a terminal on another tmux session (the TUI itself, run inside tmux) must
-// stay attached.
-type tmuxAgentDeckDetacher struct{}
-
-func (tmuxAgentDeckDetacher) detachClientsOn(sockets []string) (bool, error) {
-	return tmux.DetachAgentDeckClientsOnSockets(sockets...)
-}
-
 // findFocusInstance returns the instance with the given id, or nil.
 func findFocusInstance(instances []*session.Instance, id string) *session.Instance {
 	for _, inst := range instances {
@@ -1804,30 +1794,29 @@ func routeFocus(db *statedb.StateDB, instances []*session.Instance, id string, n
 	return session.WriteFocusRequestAttach(db, id, nowNano, attach)
 }
 
-// focusAllSockets returns every local tmux socket an agent-deck client may be
-// attached on: the default server, the configured agent-deck socket and each
-// instance's socket. Order-preserving and deduped.
-func focusAllSockets(instances []*session.Instance, configured string) []string {
-	out := []string{""}
-	if configured != "" {
-		out = append(out, configured)
-	}
-	for _, s := range focusOtherSockets(instances, "") {
-		if s != configured {
-			out = append(out, s)
-		}
-	}
-	return out
+// tuiClientDetacher detaches one tmux client by pid: the client the TUI is
+// paused in, as it recorded under session.TUIAttachKey. Injected into
+// routeRemoteFocus so it is unit-testable without a real tmux server.
+type tuiClientDetacher interface {
+	detachClient(socket string, pid int) (bool, error)
+}
+
+// tmuxPIDDetacher is the production tuiClientDetacher.
+type tmuxPIDDetacher struct{}
+
+func (tmuxPIDDetacher) detachClient(socket string, pid int) (bool, error) {
+	return tmux.DetachClientByPID(socket, pid)
 }
 
 // routeRemoteFocus drives `session focus --remote <name> <id>` (#2704). The id
 // belongs to the remote, so it is not checked here (no SSH): the TUI looks it
-// up in its remote list. With --attach it writes the request FIRST and then
-// detaches the user's clients on every local socket that are showing an
-// agent-deck session, so a TUI paused inside a local attach comes back and
-// consumes it, the way cross-socket focus does.
-// Select-only never detaches anything.
-func routeRemoteFocus(db *statedb.StateDB, instances []*session.Instance, configuredSocket, remote, id string, nowNano int64, attach bool, remoteExists func(string) (bool, error), detacher clientDetacher) error {
+// up in its remote list. With --attach it writes the request FIRST and then,
+// when the TUI recorded that it is paused inside a local attach, detaches that
+// one client so the TUI comes back and consumes the request. Any other client
+// (web viewers, other terminals, the embedded pane) stays attached, and with
+// no record (TUI on the list, embedded layout, or an older TUI that would
+// drop the request anyway) nothing is detached. Select-only never detaches.
+func routeRemoteFocus(db *statedb.StateDB, remote, id string, nowNano int64, attach bool, remoteExists func(string) (bool, error), detacher tuiClientDetacher) error {
 	if id == "" {
 		return fmt.Errorf("session focus requires an <id>")
 	}
@@ -1844,9 +1833,13 @@ func routeRemoteFocus(db *statedb.StateDB, instances []*session.Instance, config
 	if !attach || detacher == nil {
 		return nil
 	}
+	rec, ok := session.ReadTUIAttach(db)
+	if !ok {
+		return nil
+	}
 	// The request is already persisted, so a detach failure still leaves it
 	// to be consumed once the user is back in the list; surface it anyway.
-	_, err = detacher.detachClientsOn(focusAllSockets(instances, configuredSocket))
+	_, err = detacher.detachClient(rec.Socket, rec.ClientPID)
 	return err
 }
 
@@ -1923,10 +1916,11 @@ func handleSessionFocus(profile string, args []string) {
 		detacher = tmuxClientDetacher{}
 	}
 	if *remote != "" {
+		var tuiDetacher tuiClientDetacher
 		if *attach {
-			detacher = tmuxAgentDeckDetacher{}
+			tuiDetacher = tmuxPIDDetacher{}
 		}
-		err = routeRemoteFocus(db, instances, tmux.DefaultSocketName(), *remote, id, time.Now().UnixNano(), *attach, focusRemoteExists, detacher)
+		err = routeRemoteFocus(db, *remote, id, time.Now().UnixNano(), *attach, focusRemoteExists, tuiDetacher)
 	} else {
 		err = routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher, detacher)
 	}
@@ -1934,12 +1928,16 @@ func handleSessionFocus(profile string, args []string) {
 		fail(err)
 	}
 	if *jsonOutput {
-		out.Success("", map[string]interface{}{
+		// Same envelope keys as the error path (success/error/code).
+		data := map[string]interface{}{
 			"success": true,
 			"id":      id,
-			"remote":  *remote,
 			"attach":  *attach,
-		})
+		}
+		if *remote != "" {
+			data["remote"] = *remote
+		}
+		out.Success("", data)
 	}
 }
 

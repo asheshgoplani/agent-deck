@@ -1,8 +1,11 @@
 package session
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // #2704: a local request must keep its exact pre-remote bytes, so a TUI of
@@ -60,5 +63,34 @@ func TestParseFocusRequest_Invalid(t *testing.T) {
 		if _, ok, _ := ParseFocusRequest(val, 1, FocusRequestTTL); ok {
 			t.Fatalf("ParseFocusRequest(%q) ok=true, want false", val)
 		}
+	}
+}
+
+func TestTUIAttachRecord(t *testing.T) {
+	db, err := statedb.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ReadTUIAttach(db); ok {
+		t.Fatal("no record expected on a fresh db")
+	}
+	if err := WriteTUIAttach(db, TUIAttach{Socket: "agent-deck", ClientPID: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if a, ok := ReadTUIAttach(db); !ok || a != (TUIAttach{Socket: "agent-deck", ClientPID: 42}) {
+		t.Fatalf("read = %+v ok=%v", a, ok)
+	}
+	// Another client's clear leaves the record alone.
+	_ = ClearTUIAttach(db, 7)
+	if _, ok := ReadTUIAttach(db); !ok {
+		t.Fatal("a clear for another pid removed the record")
+	}
+	_ = ClearTUIAttach(db, 42)
+	if _, ok := ReadTUIAttach(db); ok {
+		t.Fatal("record not cleared")
 	}
 }

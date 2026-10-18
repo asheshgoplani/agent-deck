@@ -161,6 +161,11 @@ type AttachOptions struct {
 	// cheap and never runs on ordinary keystrokes. It is NOT consulted for the
 	// ScrollbackKeyByte chord, which is an explicit user opt-in.
 	ScrollbackGate func() bool
+	// OnClientStarted, when non-nil, gets the pid of the tmux attach client
+	// once it is running, so the caller can later name exactly this client
+	// (#2704: `session focus --remote --attach` detaches it to bring a paused
+	// TUI back, and no other client).
+	OnClientStarted func(pid int)
 }
 
 // indexSwitchKey returns the index of the switch key in data and
@@ -557,6 +562,9 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		return SwitchNone, fmt.Errorf("failed to start pty: %w", err)
 	}
 	defer ptmx.Close()
+	if opts.OnClientStarted != nil && cmd.Process != nil {
+		opts.OnClientStarted(cmd.Process.Pid)
+	}
 
 	// Set the PTY to raw mode so all bytes pass through transparently.
 	// Without this, the PTY's default terminal settings (ISIG enabled)

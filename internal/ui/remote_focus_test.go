@@ -138,23 +138,18 @@ func TestRemoteFocus_UnknownOrArchivedLeavesCursor(t *testing.T) {
 			db := newUITempStateDB(t)
 			home.cursor = 2
 			writeRemoteFocus(t, db, tc.remote, tc.id, true, time.Now())
-			cmd := home.consumeFocusRequest(db)
+			// No cmd in any case: the tick only returns early for an attach.
+			if cmd := home.consumeFocusRequest(db); cmd != nil {
+				t.Fatal("no cmd expected")
+			}
 			if home.cursor != 2 {
 				t.Fatalf("cursor moved to %d", home.cursor)
 			}
 			if tc.id == "missing" {
-				// Waits, and asks for a refresh now: the default poll is
-				// slower than the request's lifetime.
 				if home.pendingRemoteFocus == nil {
 					t.Fatal("an unknown id waits for the next refresh")
 				}
-				if cmd == nil || !home.remotesFetchActive {
-					t.Fatal("a waiting request must start a remote fetch")
-				}
 				return
-			}
-			if cmd != nil {
-				t.Fatal("no cmd expected")
 			}
 			if home.pendingRemoteFocus != nil {
 				t.Fatal("unknown remote / archived id must not stay pending")
@@ -271,13 +266,14 @@ func TestRemoteFocus_PendingExpires(t *testing.T) {
 func TestRemoteFocus_PendingExpiresThroughRefresh(t *testing.T) {
 	home, _ := buildRemoteFocusHome(t)
 	db := newUITempStateDB(t)
-	writeRemoteFocus(t, db, "dev", "new-1", false, time.Now().Add(-session.FocusRequestTTL+50*time.Millisecond))
+	writeRemoteFocus(t, db, "dev", "new-1", false, time.Now())
 	home.consumeFocusRequest(db)
 	if home.pendingRemoteFocus == nil {
 		t.Fatal("precondition: pending")
 	}
 	before := home.cursor
-	time.Sleep(100 * time.Millisecond)
+	// Expire it outright rather than racing the wall clock.
+	home.pendingRemoteFocus.deadline = time.Now().Add(-time.Second)
 	sessions := append(remoteFocusSessions(), session.RemoteSessionInfo{ID: "new-1", Title: "new-1", Group: "work", Status: "running"})
 	home.Update(remoteSessionsFetchedMsg{sessions: map[string][]session.RemoteSessionInfo{"dev": sessions}})
 	if cursorRemoteID(home) == "dev/new-1" || home.pendingRemoteFocus != nil {
@@ -410,5 +406,43 @@ func TestRemoteFocus_ArchivedRowNotSelectedEvenWhenShown(t *testing.T) {
 	before := home.cursor
 	if home.SelectRemoteSession("dev", "arch-1") || home.cursor != before {
 		t.Fatalf("archived row selected (cursor %d -> %d)", before, home.cursor)
+	}
+}
+
+// A waiting request asks the tick for a fetch every remoteFocusRetryInterval
+// until its TTL ends, never while a fetch is in flight.
+func TestRemoteFocus_WaitingRequestRetriesFetch(t *testing.T) {
+	home, _ := buildRemoteFocusHome(t)
+	now := time.Now()
+	if home.remoteFocusWantsFetch(now) {
+		t.Fatal("no request, no fetch")
+	}
+	home.pendingRemoteFocus = &pendingRemoteFocus{remote: "dev", id: "new-1", deadline: now.Add(8 * time.Second)}
+	home.lastRemoteFetch = now.Add(-remoteFocusRetryInterval)
+	if !home.remoteFocusWantsFetch(now) {
+		t.Fatal("a waiting request must ask for a fetch")
+	}
+	home.remotesFetchActive = true
+	if home.remoteFocusWantsFetch(now) {
+		t.Fatal("never while a fetch is in flight")
+	}
+	home.remotesFetchActive = false
+	home.lastRemoteFetch = now.Add(-time.Second)
+	if home.remoteFocusWantsFetch(now) {
+		t.Fatal("a fetch 1 s ago is recent enough")
+	}
+	if !home.remoteFocusWantsFetch(now.Add(time.Second)) {
+		t.Fatal("2 s after the last fetch it asks again")
+	}
+	if home.remoteFocusWantsFetch(now.Add(9 * time.Second)) {
+		t.Fatal("no fetch after the request's TTL")
+	}
+
+	// Through a real tick: the fetch is started (the in-flight flag is set).
+	home.lastRemoteFetch = now.Add(-remoteFocusRetryInterval)
+	home.remoteSessionRefreshSec = 3600
+	home.Update(tickMsg(now))
+	if !home.remotesFetchActive {
+		t.Fatal("the tick did not start a fetch for the waiting request")
 	}
 }

@@ -145,3 +145,47 @@ func ClearFocusRequest(db *statedb.StateDB) error {
 func TakeFocusRequest(db *statedb.StateDB) (string, error) {
 	return db.TakeMeta(FocusRequestKey)
 }
+
+// TUIAttachKey holds the tmux client the TUI is paused in while it attaches a
+// local session in the classic layout (#2704). `session focus --remote
+// --attach` detaches exactly that client so the TUI comes back and reads the
+// request. No record (the TUI is on the list, in the embedded layout, or
+// predates the key) means there is nothing to detach.
+const TUIAttachKey = "tui_local_attach"
+
+// TUIAttach is the JSON payload stored under TUIAttachKey.
+type TUIAttach struct {
+	Socket    string `json:"socket"`     // tmux socket of the attach ("" = default server)
+	ClientPID int    `json:"client_pid"` // pid of the tmux attach client
+}
+
+// WriteTUIAttach records the client the TUI just started for a local attach.
+func WriteTUIAttach(db *statedb.StateDB, a TUIAttach) error {
+	b, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	return db.SetMeta(TUIAttachKey, string(b))
+}
+
+// ReadTUIAttach returns the recorded attach client, ok=false when none.
+func ReadTUIAttach(db *statedb.StateDB) (TUIAttach, bool) {
+	val, err := db.GetMeta(TUIAttachKey)
+	if err != nil || val == "" {
+		return TUIAttach{}, false
+	}
+	var a TUIAttach
+	if err := json.Unmarshal([]byte(val), &a); err != nil || a.ClientPID <= 0 {
+		return TUIAttach{}, false
+	}
+	return a, true
+}
+
+// ClearTUIAttach removes the record when it still names clientPID, so a
+// second TUI on the same profile does not wipe the record of another.
+func ClearTUIAttach(db *statedb.StateDB, clientPID int) error {
+	if a, ok := ReadTUIAttach(db); !ok || a.ClientPID != clientPID {
+		return nil
+	}
+	return db.SetMeta(TUIAttachKey, "")
+}

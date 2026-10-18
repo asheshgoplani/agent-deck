@@ -152,25 +152,31 @@ func (h *Home) consumeRemoteFocus(fr session.FocusRequest) tea.Cmd {
 	if _, found, archived := h.lookupRemoteSession(fr.Remote, fr.ID); archived {
 		return nil
 	} else if !found {
+		// The tick fetches for it (remoteFocusWantsFetch).
 		h.pendingRemoteFocus = p
-		return h.fetchRemotesForFocus()
+		return nil
 	}
 	return h.applyRemoteFocus(p)
 }
 
-// fetchRemotesForFocus starts a remote refresh now for a waiting request:
-// the regular poll (15 s by default) is slower than the request's 10 s TTL.
-// A fetch already in flight gets one more round after it, as a pushed change
-// without data does.
-func (h *Home) fetchRemotesForFocus() tea.Cmd {
-	h.remoteSessionsMu.Lock()
-	defer h.remoteSessionsMu.Unlock()
-	if h.remotesFetchActive {
-		h.remoteRefetchWanted = true
-		return nil
+// remoteFocusRetryInterval paces the extra remote fetches a waiting focus
+// request asks for: the regular poll (15 s by default) is slower than the
+// request's 10 s lifetime, and one fetch can land before the remote lists a
+// session it is still creating.
+const remoteFocusRetryInterval = 2 * time.Second
+
+// remoteFocusWantsFetch reports whether the tick should start a remote fetch
+// for a waiting request: one is pending and alive, no fetch is in flight, and
+// the last fetch is at least remoteFocusRetryInterval old. The request's TTL
+// bounds the retries.
+func (h *Home) remoteFocusWantsFetch(now time.Time) bool {
+	p := h.pendingRemoteFocus
+	if p == nil || now.After(p.deadline) {
+		return false
 	}
-	h.remotesFetchActive = true
-	return h.fetchRemoteSessions
+	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	return !h.remotesFetchActive && now.Sub(h.lastRemoteFetch) >= remoteFocusRetryInterval
 }
 
 // retryPendingRemoteFocus runs after each remote refresh: it selects (and

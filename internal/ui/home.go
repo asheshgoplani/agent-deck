@@ -10047,7 +10047,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Periodic remote session fetch (issue #1170). Cadence is configurable
 		// via [ui] remote_session_refresh_secs (default 15s); see
 		// shouldFetchRemoteSessions for the stale/in-flight gating.
-		if h.shouldFetchRemoteSessions(time.Now()) {
+		if h.shouldFetchRemoteSessions(time.Now()) || h.remoteFocusWantsFetch(time.Now()) {
 			h.remoteSessionsMu.Lock()
 			h.remotesFetchActive = true
 			h.remoteSessionsMu.Unlock()
@@ -18137,9 +18137,20 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which would lose the tmux session state)
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
+	opts := h.attachOptions(tmuxSess)
+	// #2704: record the client this attach runs in, so `session focus
+	// --remote --attach` can detach exactly it to bring the TUI back. Both
+	// callbacks run inside attachCmd.Run, on one goroutine.
+	clientPID := 0
+	opts.OnClientStarted = func(pid int) {
+		clientPID = pid
+		if db := statedb.GetGlobal(); db != nil {
+			_ = session.WriteTUIAttach(db, session.TUIAttach{Socket: tmuxSess.SocketName, ClientPID: pid})
+		}
+	}
 	return tea.Exec(attachCmd{
 		session: tmuxSess,
-		opts:    h.attachOptions(tmuxSess),
+		opts:    opts,
 		result:  res,
 		// #1753: clear the flag inside Run(), i.e. BEFORE Bubble Tea restores the
 		// terminal and resumes the loop. The ExecCallback below runs on its own
@@ -18149,7 +18160,12 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// the first post-detach repaint deterministic. Nothing can call View() in
 		// between — the event loop is parked inside Program.exec for the whole
 		// attach.
-		onExit: func() { h.isAttaching.Store(false) },
+		onExit: func() {
+			if db := statedb.GetGlobal(); db != nil && clientPID != 0 {
+				_ = session.ClearTUIAttach(db, clientPID)
+			}
+			h.isAttaching.Store(false)
+		},
 	}, func(err error) tea.Msg {
 		// Belt for the path where Bubble Tea fails to release the terminal and
 		// invokes this callback without ever running attachCmd.Run().

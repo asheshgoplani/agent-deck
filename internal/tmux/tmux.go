@@ -7860,47 +7860,43 @@ func DetachClientsOnSockets(sockets ...string) (bool, error) {
 	return detached, firstErr
 }
 
-// DetachAgentDeckClientsOnSockets is DetachClientsOnSockets limited to
-// clients whose current session is an agent-deck session (SessionPrefix), so
-// a terminal showing some other tmux session (the TUI itself run inside tmux,
-// or unrelated work) on the same server is left attached (#2704).
-func DetachAgentDeckClientsOnSockets(sockets ...string) (bool, error) {
-	detached := false
-	var firstErr error
-	for _, socket := range sockets {
-		output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_session}", "#{client_name}"))
-		if err != nil {
-			continue
-		}
-		for _, c := range agentDeckClientNames(string(output)) {
-			if err := runBoundedMutation(socket, "detach-client", "-c", c); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			detached = true
-		}
+// DetachClientByPID detaches the one non-control client on socket whose
+// process id is pid ("" = default server). Returns detached=false (no error)
+// when no such client is attached, e.g. a pid recorded by a TUI that has
+// since left that attach (#2704).
+func DetachClientByPID(socket string, pid int) (bool, error) {
+	if pid <= 0 {
+		return false, nil
 	}
-	return detached, firstErr
+	output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_pid}", "#{client_name}"))
+	if err != nil {
+		return false, nil
+	}
+	name := clientNameForPID(string(output), pid)
+	if name == "" {
+		return false, nil
+	}
+	if err := runBoundedMutation(socket, "detach-client", "-c", name); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-// agentDeckClientNames parses list-clients output of control-mode flag,
-// session name and client name, and returns the non-control clients whose
-// session is an agent-deck session. client_name goes last: it is free text.
-func agentDeckClientNames(output string) []string {
-	var names []string
+// clientNameForPID parses list-clients output of control-mode flag, client
+// pid and client name, and returns the name of the non-control client with
+// that pid, or "". client_name goes last: it is free text.
+func clientNameForPID(output string, pid int) string {
+	want := strconv.Itoa(pid)
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		parts := strings.SplitN(line, tmuxFieldSep, 3)
-		if len(parts) != 3 || parts[2] == "" || parts[0] == "1" {
+		if len(parts) != 3 || parts[0] == "1" || parts[2] == "" {
 			continue
 		}
-		if !strings.HasPrefix(parts[1], SessionPrefix) {
-			continue
+		if parts[1] == want {
+			return parts[2]
 		}
-		names = append(names, parts[2])
 	}
-	return names
+	return ""
 }
 
 // UnbindKey removes a key binding and restores default behavior.
