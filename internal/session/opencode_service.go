@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,7 +111,7 @@ func openCodeServicePassword(serviceURL string) string {
 // openCodeSessionParent asks the shared service which session spawned
 // sessionID (`opencode api session.get`, data.parentID). A root session has
 // none. The id comes off the event stream, so it is checked shell-safe first.
-func (i *Instance) openCodeSessionParent(sessionID string) (string, error) {
+func (i *Instance) openCodeSessionParent(ctx context.Context, sessionID string) (string, error) {
 	sessionID, err := normalizeToolSessionID(FieldOpenCodeSessionID, sessionID)
 	if err != nil {
 		return "", err
@@ -122,7 +123,7 @@ func (i *Instance) openCodeSessionParent(sessionID string) (string, error) {
 	if !ok {
 		return "", errors.New("opencode binary not found")
 	}
-	output, err := runOpenCodeServiceCall(binary, i.ProjectPath, "session.get", sessionID, "")
+	output, err := runOpenCodeServiceCallContext(ctx, binary, i.ProjectPath, "session.get", sessionID, "")
 	if err != nil {
 		return "", err
 	}

@@ -6,8 +6,8 @@ package session
 // sessionID only, so the watcher maps it back through the parent chain.
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,21 +23,29 @@ const (
 )
 
 // parentLookup is a fake session.get: it answers from parents and counts
-// calls per session id.
+// calls per session id. failFirst fails that many calls before answering;
+// delay holds each call, so concurrent streams overlap.
 type parentLookup struct {
-	mu      sync.Mutex
-	parents map[string]string
-	calls   map[string]int
+	mu        sync.Mutex
+	parents   map[string]string
+	calls     map[string]int
+	failFirst int
+	delay     time.Duration
 }
 
 func newParentLookup(parents map[string]string) *parentLookup {
 	return &parentLookup{parents: parents, calls: map[string]int{}}
 }
 
-func (p *parentLookup) parentOf(sessionID string) (string, error) {
+func (p *parentLookup) parentOf(_ context.Context, sessionID string) (string, error) {
+	time.Sleep(p.delay)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls[sessionID]++
+	if p.failFirst > 0 {
+		p.failFirst--
+		return "", errors.New("service busy")
+	}
 	parent, ok := p.parents[sessionID]
 	if !ok {
 		return "", errors.New("session not found")
@@ -57,10 +65,25 @@ func sharedTargetWithChildren(instanceID, sessionID, url string, lookup *parentL
 	return t
 }
 
-// assertStaysStatus fails if the instance's status leaves want within a short window.
-func assertStaysStatus(t *testing.T, w *OpenCodeSSEWatcher, instanceID, want, why string) {
+// sendAndSettle sends events on a one-stream watcher and waits until the
+// stream has handled all of them (each ends in one status write or touch).
+func sendAndSettle(t *testing.T, w *OpenCodeSSEWatcher, send func(string), events ...string) {
 	t.Helper()
-	time.Sleep(100 * time.Millisecond)
+	want := w.writes.Load() + int64(len(events))
+	for _, ev := range events {
+		send(ev)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for w.writes.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("stream handled %d of %d events", len(events)-int(want-w.writes.Load()), len(events))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func assertStatus(t *testing.T, w *OpenCodeSSEWatcher, instanceID, want, why string) {
+	t.Helper()
 	if s := w.GetStatus(instanceID); s == nil || s.Status != want {
 		t.Fatalf("%s: want %q, got %+v", why, want, s)
 	}
@@ -85,20 +108,23 @@ func TestOpenCodeSSEWatcher_SharedServiceChildKeepsParentRunning(t *testing.T) {
 
 	send(sharedServiceEvent("session.execution.started", sesBound))
 	waitForStatus(t, w, "inst-bound", "running")
-	send(sharedServiceEvent("session.execution.started", sesChild))
-	send(sharedServiceEvent("session.execution.succeeded", sesBound))
-	assertStaysStatus(t, w, "inst-bound", "running", "a running sub-agent keeps the parent running")
+	sendAndSettle(t, w, send,
+		sharedServiceEvent("session.execution.started", sesChild),
+		sharedServiceEvent("session.execution.succeeded", sesBound))
+	assertStatus(t, w, "inst-bound", "running", "a running sub-agent keeps the parent running")
 
-	send(sharedServiceEvent("session.execution.started", sesGrandchild))
-	send(sharedServiceEvent("session.execution.succeeded", sesChild))
-	assertStaysStatus(t, w, "inst-bound", "running", "a running nested sub-agent keeps the parent running")
+	sendAndSettle(t, w, send,
+		sharedServiceEvent("session.execution.started", sesGrandchild),
+		sharedServiceEvent("session.execution.succeeded", sesChild))
+	assertStatus(t, w, "inst-bound", "running", "a running nested sub-agent keeps the parent running")
 
-	send(sharedServiceEvent("session.execution.succeeded", sesGrandchild))
-	waitForStatus(t, w, "inst-bound", "waiting")
+	sendAndSettle(t, w, send, sharedServiceEvent("session.execution.succeeded", sesGrandchild))
+	assertStatus(t, w, "inst-bound", "waiting", "the last sub-agent ending leaves the parent waiting")
 
-	send(sharedServiceEvent("session.execution.started", sesOtherChild))
-	send(sharedServiceEvent("session.execution.started", sesOther))
-	assertStaysStatus(t, w, "inst-bound", "waiting", "another session's sub-agent must not move this instance")
+	sendAndSettle(t, w, send,
+		sharedServiceEvent("session.execution.started", sesOtherChild),
+		sharedServiceEvent("session.execution.started", sesOther))
+	assertStatus(t, w, "inst-bound", "waiting", "another session's sub-agent must not move this instance")
 
 	// A child turn that starts after the parent went idle wakes the parent.
 	send(sharedServiceEvent("session.execution.started", sesChild))
@@ -135,23 +161,54 @@ func TestOpenCodeSSEWatcher_SharedServiceSnapshotSeedsFromChild(t *testing.T) {
 	waitForStatus(t, w, "inst-bound", "waiting")
 }
 
-// TestOpenCodeSSEWatcher_SharedServiceEventParentIDSkipsLookup: when the event
-// itself names the parent, no session.get is needed.
-func TestOpenCodeSSEWatcher_SharedServiceEventParentIDSkipsLookup(t *testing.T) {
+// TestOpenCodeSSEWatcher_SharedServiceStreamsShareLookup: several decks on
+// the one service see the same new sub-agent at once; session.get runs once.
+func TestOpenCodeSSEWatcher_SharedServiceStreamsShareLookup(t *testing.T) {
 	srv, send := sharedServiceServer(t, `{"data":{}}`)
-	lookup := newParentLookup(map[string]string{})
+	lookup := newParentLookup(map[string]string{sesChild: sesBound})
+	lookup.delay = 200 * time.Millisecond
+	w := NewOpenCodeSSEWatcher(nil)
+	defer w.Stop()
+	w.Sync([]SSETarget{
+		sharedTargetWithChildren("inst-bound", sesBound, srv.URL, lookup),
+		sharedTargetWithChildren("inst-other", sesOther, srv.URL, lookup),
+		sharedTargetWithChildren("inst-third", sesOtherChild, srv.URL, lookup),
+	})
+	waitConnected()
+
+	send(sharedServiceEvent("session.execution.started", sesChild))
+	waitForStatus(t, w, "inst-bound", "running")
+	send(sharedServiceEvent("session.execution.started", sesOther))
+	waitForStatus(t, w, "inst-other", "running")
+	if n := lookup.callCount(sesChild); n != 1 {
+		t.Fatalf("three streams asking about one session must share one session.get, ran %d", n)
+	}
+	if s := w.GetStatus("inst-third"); s != nil && s.Status == "running" {
+		t.Fatalf("an unrelated deck must not count the sub-agent, got %+v", s)
+	}
+}
+
+// TestOpenCodeSSEWatcher_SharedServiceRetriesFailedLookup: a lookup that
+// failed is asked again after the retry window instead of excluding a real
+// sub-agent for the life of the stream.
+func TestOpenCodeSSEWatcher_SharedServiceRetriesFailedLookup(t *testing.T) {
+	prev := openCodeParentRetry
+	openCodeParentRetry = 0
+	t.Cleanup(func() { openCodeParentRetry = prev })
+	srv, send := sharedServiceServer(t, `{"data":{}}`)
+	lookup := newParentLookup(map[string]string{sesChild: sesBound})
+	lookup.failFirst = 1
 	w := NewOpenCodeSSEWatcher(nil)
 	defer w.Stop()
 	w.Sync([]SSETarget{sharedTargetWithChildren("inst-bound", sesBound, srv.URL, lookup)})
 	waitConnected()
 
-	send(fmt.Sprintf(`{"id":"evt_p","type":"session.execution.started","data":{"sessionID":%q,"parentID":%q}}`, sesChild, sesBound))
-	waitForStatus(t, w, "inst-bound", "running")
-	send(sharedServiceEvent("session.execution.succeeded", sesChild))
-	waitForStatus(t, w, "inst-bound", "waiting")
-	if n := lookup.callCount(sesChild); n != 0 {
-		t.Fatalf("event carried the parent, session.get ran %d times", n)
+	sendAndSettle(t, w, send, sharedServiceEvent("session.execution.started", sesChild))
+	if s := w.GetStatus("inst-bound"); s != nil && s.Status == "running" {
+		t.Fatalf("a failed lookup must not count the session, got %+v", s)
 	}
+	send(sharedServiceEvent("session.execution.started", sesChild))
+	waitForStatus(t, w, "inst-bound", "running")
 }
 
 // TestOpenCodeSSEWatcher_SharedServiceLookupFailureIgnoresSession: a session
@@ -165,14 +222,18 @@ func TestOpenCodeSSEWatcher_SharedServiceLookupFailureIgnoresSession(t *testing.
 	w.Sync([]SSETarget{sharedTargetWithChildren("inst-bound", sesBound, srv.URL, lookup)})
 	waitConnected()
 
-	send(sharedServiceEvent("session.execution.started", sesChild))
-	send(sharedServiceEvent("session.execution.started", sesChild))
+	sendAndSettle(t, w, send,
+		sharedServiceEvent("session.execution.started", sesChild),
+		sharedServiceEvent("session.execution.started", sesChild))
+	if s := w.GetStatus("inst-bound"); s != nil && s.Status == "running" {
+		t.Fatalf("a session whose parent is unknown must not count, got %+v", s)
+	}
 	send(sharedServiceEvent("session.execution.started", sesBound))
 	waitForStatus(t, w, "inst-bound", "running")
 	send(sharedServiceEvent("session.execution.succeeded", sesBound))
 	waitForStatus(t, w, "inst-bound", "waiting")
 	if n := lookup.callCount(sesChild); n != 1 {
-		t.Fatalf("a failed lookup is not retried on the same stream, ran %d times", n)
+		t.Fatalf("a failed lookup is not repeated inside the retry window, ran %d times", n)
 	}
 }
 
@@ -219,18 +280,18 @@ func TestOpenCodeSessionParent(t *testing.T) {
 	useOpenCodeStub(t, script)
 	inst := &Instance{ID: "inst-1", Tool: "opencode", ProjectPath: t.TempDir()}
 
-	parent, err := inst.openCodeSessionParent(sesChild)
+	parent, err := inst.openCodeSessionParent(context.Background(), sesChild)
 	if err != nil || parent != sesBound {
 		t.Fatalf("child parent = %q, %v; want %q", parent, err, sesBound)
 	}
-	parent, err = inst.openCodeSessionParent(sesBound)
+	parent, err = inst.openCodeSessionParent(context.Background(), sesBound)
 	if err != nil || parent != "" {
 		t.Fatalf("root parent = %q, %v; want empty", parent, err)
 	}
-	if _, err := inst.openCodeSessionParent(sesOther); err == nil {
+	if _, err := inst.openCodeSessionParent(context.Background(), sesOther); err == nil {
 		t.Fatal("a failing session.get must be an error")
 	}
-	if _, err := inst.openCodeSessionParent("ses_bad;rm -rf"); err == nil {
+	if _, err := inst.openCodeSessionParent(context.Background(), "ses_bad;rm -rf"); err == nil {
 		t.Fatal("an id that is not shell-safe must be refused before running the CLI")
 	}
 	data, _ := os.ReadFile(calls)
@@ -239,5 +300,56 @@ func TestOpenCodeSessionParent(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "api session.get --param sessionID="+sesChild) {
 		t.Fatalf("unexpected CLI calls:\n%s", data)
+	}
+}
+
+// TestOpenCodeSessionTree_WaiterRetriesAfterLeaderCancelled: a stream waiting
+// on another stream's lookup asks again when that stream was cancelled
+// mid-call, instead of taking its cancellation as the answer.
+func TestOpenCodeSessionTree_WaiterRetriesAfterLeaderCancelled(t *testing.T) {
+	w := NewOpenCodeSSEWatcher(nil)
+	started := make(chan struct{})
+	var calls sync.Map
+	parentOf := func(ctx context.Context, sessionID string) (string, error) {
+		n, _ := calls.LoadOrStore("n", new(int))
+		*n.(*int)++
+		if *n.(*int) == 1 {
+			close(started)
+			<-ctx.Done()
+			return "", ctx.Err()
+		}
+		return sesBound, nil
+	}
+	src := openCodeEventSource{sessionID: sesBound, parentOf: parentOf}
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderDone := make(chan bool)
+	go func() { leaderDone <- w.newSessionTree(src).counts(leaderCtx, sesChild) }()
+	<-started
+
+	waiterDone := make(chan bool)
+	go func() { waiterDone <- w.newSessionTree(src).counts(context.Background(), sesChild) }()
+	// Let the waiter join the in-flight call before the leader is cancelled.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		w.mu.Lock()
+		_, inFlight := w.parents[sesChild]
+		w.mu.Unlock()
+		if inFlight || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	cancelLeader()
+	if <-leaderDone {
+		t.Fatal("a cancelled leader must not count the session")
+	}
+	select {
+	case got := <-waiterDone:
+		if !got {
+			t.Fatal("the waiter took the cancelled leader's error as its answer")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter never finished")
 	}
 }

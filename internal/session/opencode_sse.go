@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,7 +63,7 @@ type SSETarget struct {
 	service   func() (openCodeService, error)
 	// parentOf names the session that spawned a session ("" for a root), so a
 	// sub-agent's turn counts for its parent. Nil counts the bound session only.
-	parentOf func(sessionID string) (string, error)
+	parentOf func(ctx context.Context, sessionID string) (string, error)
 }
 
 // openCodeService is where the 2.x background service listens.
@@ -79,8 +80,8 @@ type openCodeEventSource struct {
 	eventPath    string
 	snapshotPath string
 	password     string
-	sessionID    string // non-empty: 2.x shared stream, count only this session
-	parentOf     func(sessionID string) (string, error)
+	sessionID    string // non-empty: 2.x shared stream, count only this session and its sub-agents
+	parentOf     func(ctx context.Context, sessionID string) (string, error)
 }
 
 func openCodeTUIServerSource(port int) openCodeEventSource {
@@ -109,9 +110,14 @@ type OpenCodeSSEWatcher struct {
 	statuses map[string]*OpenCodeSSEStatus
 	onChange func() // optional TUI refresh callback
 
-	// parents caches 2.x session -> parent session ("" for a root). A link
-	// never changes, so every stream on the shared service reuses it.
-	parents map[string]string
+	// parents caches 2.x session -> parent session lookups. A link never
+	// changes, so every stream on the shared service reuses an answer, and
+	// streams asking about the same session at once share one CLI call.
+	parents map[string]*openCodeParentLookup
+
+	// writes counts status writes and touches: every handled stream line
+	// ends in exactly one, so tests wait on it instead of sleeping.
+	writes atomic.Int64
 
 	// client is overridable for tests.
 	client *http.Client
@@ -129,7 +135,7 @@ func NewOpenCodeSSEWatcher(onChange func()) *OpenCodeSSEWatcher {
 	return &OpenCodeSSEWatcher{
 		conns:    make(map[string]*openCodeSSEConn),
 		statuses: make(map[string]*OpenCodeSSEStatus),
-		parents:  make(map[string]string),
+		parents:  make(map[string]*openCodeParentLookup),
 		onChange: onChange,
 		client: &http.Client{
 			// Streaming reads must not time out; bound only the dial.
@@ -257,7 +263,6 @@ type openCodeEvent struct {
 	// Data is the 2.x shared-service payload.
 	Data struct {
 		SessionID string `json:"sessionID"`
-		ParentID  string `json:"parentID"` // used when an event carries it
 	} `json:"data"`
 }
 
@@ -272,13 +277,21 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 	// mid-turn starts correct instead of waiting for the next transition.
 	busy := make(map[string]bool)
 	tree := w.newSessionTree(src)
-	seeded := w.seedSnapshot(ctx, src, tree, busy)
-	if seeded && len(busy) > 0 {
-		w.setStatus(ctx, instanceID, "running")
-	} else if seeded && src.sessionID != "" {
-		// A turn that ended while the stream was down must not leave the
-		// bound session running; the shared snapshot lists busy sessions only.
-		w.setStatus(ctx, instanceID, "waiting")
+	seed := func() {
+		seeded := w.seedSnapshot(ctx, src, tree, busy)
+		if seeded && len(busy) > 0 {
+			w.setStatus(ctx, instanceID, "running")
+		} else if seeded && src.sessionID != "" {
+			// A turn that ended while the stream was down must not leave the
+			// bound session running; the shared snapshot lists busy sessions only.
+			w.setStatus(ctx, instanceID, "waiting")
+		}
+	}
+	// The 2.x seed may look up sub-agent parents, which takes CLI calls, so
+	// it runs after subscribing: events that arrive meanwhile wait in the
+	// stream instead of being lost between the snapshot and the subscription.
+	if src.sessionID == "" {
+		seed()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+src.eventPath, nil)
@@ -294,6 +307,9 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return false
+	}
+	if src.sessionID != "" {
+		seed()
 	}
 
 	if src.sessionID != "" {
@@ -326,10 +342,7 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 			continue
 		}
 		if src.sessionID != "" {
-			if ev.Data.ParentID != "" {
-				w.rememberParent(ev.Data.SessionID, ev.Data.ParentID)
-			}
-			if !applySharedServiceEvent(ev, tree, busy) {
+			if !applySharedServiceEvent(ctx, ev, tree, busy) {
 				w.touch(ctx, instanceID)
 				continue
 			}
@@ -366,14 +379,14 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 // its sub-agents into busy. It returns false for anything that is not a turn
 // transition of those sessions: other sessions' events and unrelated types
 // only prove the stream is alive.
-func applySharedServiceEvent(ev openCodeEvent, tree *openCodeSessionTree, busy map[string]bool) bool {
+func applySharedServiceEvent(ctx context.Context, ev openCodeEvent, tree *openCodeSessionTree, busy map[string]bool) bool {
 	sessionID := ev.Data.SessionID
 	if sessionID == "" {
 		return false
 	}
 	switch ev.Type {
 	case "session.execution.started", "session.retry.scheduled":
-		if !tree.counts(sessionID) {
+		if !tree.counts(ctx, sessionID) {
 			return false
 		}
 		busy[sessionID] = true
@@ -394,13 +407,26 @@ func applySharedServiceEvent(ev openCodeEvent, tree *openCodeSessionTree, busy m
 // chain ends instead of looping.
 const openCodeSessionMaxDepth = 8
 
+// openCodeParentRetry is how long a failed parent lookup is not repeated, so
+// a 2.x build without session.get, or a stuck service, does not get one CLI
+// call per event.
+var openCodeParentRetry = time.Minute
+
+// openCodeParentLookup is one session's parent lookup, shared by every stream.
+type openCodeParentLookup struct {
+	done     chan struct{} // closed when the call below has finished
+	parent   string        // "" for a root session
+	err      error
+	failedAt time.Time
+}
+
 // openCodeSessionTree answers, for one stream, whether a session is the bound
 // session or a sub-agent below it.
 type openCodeSessionTree struct {
 	w        *OpenCodeSSEWatcher
 	root     string
-	parentOf func(sessionID string) (string, error)
-	memo     map[string]bool // session -> counts; failed lookups stay false for this stream
+	parentOf func(ctx context.Context, sessionID string) (string, error)
+	memo     map[string]bool // definite answers only; a failed lookup is asked again later
 }
 
 func (w *OpenCodeSSEWatcher) newSessionTree(src openCodeEventSource) *openCodeSessionTree {
@@ -408,61 +434,102 @@ func (w *OpenCodeSSEWatcher) newSessionTree(src openCodeEventSource) *openCodeSe
 }
 
 // counts walks sessionID's parent chain up to the bound session.
-func (t *openCodeSessionTree) counts(sessionID string) bool {
+func (t *openCodeSessionTree) counts(ctx context.Context, sessionID string) bool {
 	var path []string
-	result := false
+	result, definite := false, false
 	cur := sessionID
-	for depth := 0; depth < openCodeSessionMaxDepth; depth++ {
+	for depth := 0; depth < openCodeSessionMaxDepth && ctx.Err() == nil; depth++ {
 		if cur == t.root {
-			result = true
+			result, definite = true, true
 			break
 		}
 		if known, ok := t.memo[cur]; ok {
-			result = known
+			result, definite = known, true
 			break
 		}
 		path = append(path, cur)
-		parent, ok := t.parent(cur)
-		if !ok || parent == "" {
+		parent, ok := t.parent(ctx, cur)
+		if !ok {
+			break
+		}
+		if parent == "" {
+			definite = true // reached a root that is not the bound session
 			break
 		}
 		cur = parent
 	}
-	for _, id := range path {
-		t.memo[id] = result
+	if definite {
+		for _, id := range path {
+			t.memo[id] = result
+		}
 	}
 	return result
 }
 
-// parent returns sessionID's parent from the watcher cache, else asks the
-// service once and caches a successful answer for every stream.
-func (t *openCodeSessionTree) parent(sessionID string) (string, bool) {
-	t.w.mu.Lock()
-	parent, ok := t.w.parents[sessionID]
-	t.w.mu.Unlock()
-	if ok {
-		return parent, true
-	}
+// parent returns sessionID's parent. A successful answer is kept for every
+// stream; concurrent streams wait on the one call already running; a failure
+// is not asked again for openCodeParentRetry.
+func (t *openCodeSessionTree) parent(ctx context.Context, sessionID string) (string, bool) {
 	if t.parentOf == nil {
 		return "", false
 	}
-	parent, err := t.parentOf(sessionID)
+	w := t.w
+	w.mu.Lock()
+	lookup, ok := w.parents[sessionID]
+	if ok {
+		select {
+		case <-lookup.done:
+			if lookup.err == nil {
+				w.mu.Unlock()
+				return lookup.parent, true
+			}
+			if time.Since(lookup.failedAt) < openCodeParentRetry {
+				w.mu.Unlock()
+				return "", false
+			}
+			ok = false // retry a failure that is old enough
+		default:
+		}
+	}
+	if ok {
+		w.mu.Unlock()
+		select {
+		case <-lookup.done:
+		case <-ctx.Done():
+			return "", false
+		}
+		w.mu.Lock()
+		parent, err := lookup.parent, lookup.err
+		dropped := w.parents[sessionID] != lookup
+		w.mu.Unlock()
+		if err != nil && dropped && ctx.Err() == nil {
+			// The leading stream was cancelled mid-call; ask again.
+			return t.parent(ctx, sessionID)
+		}
+		return parent, err == nil
+	}
+	lookup = &openCodeParentLookup{done: make(chan struct{})}
+	w.parents[sessionID] = lookup
+	w.mu.Unlock()
+
+	parent, err := t.parentOf(ctx, sessionID)
+	w.mu.Lock()
+	lookup.parent, lookup.err = parent, err
+	if err != nil {
+		lookup.failedAt = time.Now()
+		if ctx.Err() != nil {
+			// This stream was cancelled; that says nothing about the session.
+			delete(w.parents, sessionID)
+		}
+	}
+	close(lookup.done)
+	w.mu.Unlock()
 	if err != nil {
 		sessionLog.Debug("opencode_sse_parent_lookup_failed",
 			slog.String("opencode_session", sessionID), slog.String("error", err.Error()))
 		return "", false
 	}
-	t.w.rememberParent(sessionID, parent)
 	return parent, true
-}
-
-func (w *OpenCodeSSEWatcher) rememberParent(sessionID, parentID string) {
-	if sessionID == "" {
-		return
-	}
-	w.mu.Lock()
-	w.parents[sessionID] = parentID
-	w.mu.Unlock()
 }
 
 func busyStatus(busy map[string]bool) string {
@@ -510,7 +577,7 @@ func (w *OpenCodeSSEWatcher) seedSnapshot(ctx context.Context, src openCodeEvent
 			return false
 		}
 		for sid, st := range active.Data {
-			if st.Type == "running" && tree.counts(sid) {
+			if st.Type == "running" && tree.counts(ctx, sid) {
 				busy[sid] = true
 			}
 		}
@@ -544,6 +611,7 @@ func (w *OpenCodeSSEWatcher) setStatus(ctx context.Context, instanceID, status s
 	w.statuses[instanceID] = &OpenCodeSSEStatus{Status: status, UpdatedAt: time.Now()}
 	onChange := w.onChange
 	w.mu.Unlock()
+	w.writes.Add(1)
 	if changed && onChange != nil {
 		onChange()
 	}
@@ -557,4 +625,5 @@ func (w *OpenCodeSSEWatcher) touch(ctx context.Context, instanceID string) {
 		s.UpdatedAt = time.Now()
 	}
 	w.mu.Unlock()
+	w.writes.Add(1)
 }

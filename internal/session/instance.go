@@ -12147,7 +12147,12 @@ func openCodeModelRef(model string) (map[string]string, error) {
 // resolved opencode binary against the 2.x shared service for sessionID and
 // returns its stdout. An empty body sends no request body.
 func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return runOpenCodeServiceCallContext(context.Background(), binary, workDir, operation, sessionID, body)
+}
+
+// runOpenCodeServiceCallContext is runOpenCodeServiceCall ended early when ctx is.
+func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operation, sessionID, body string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	// #nosec G204 -- binary is the configured opencode resolved by
