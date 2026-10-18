@@ -34,12 +34,17 @@ func applyAssertDone(message string, enabled bool) string {
 }
 
 // preAcceptLaunchTrust seeds Claude Code's per-directory trust flag
-// (projects[dir].hasTrustDialogAccepted) in the root ~/.claude.json before
-// the launch spawn, for claude-tool instances only — no other tool shows
-// this prompt. Keyed by realpath, matching the loadout trust seed (#1149),
-// since Claude resolves the cwd through symlinks. Best-effort: a failure is
-// reported to stderr and never blocks launch, matching every other
-// PreAcceptClaudeTrust call site.
+// (projects[dir].hasTrustDialogAccepted) before the launch spawn, for
+// claude-tool instances only — no other tool shows this prompt. Keyed by
+// realpath, matching the loadout trust seed (#1149), since Claude resolves
+// the cwd through symlinks. Best-effort: a failure is reported to stderr and
+// never blocks launch, matching every other PreAcceptClaudeTrust call site.
+//
+// The flag is written to the .claude.json Claude will actually read. With
+// an explicit config root (-account, conductor, group, env or profile
+// config_dir) the session runs with CLAUDE_CONFIG_DIR=<dir> and reads
+// <dir>/.claude.json, so seeding only ~/.claude.json left it stuck on the
+// trust prompt (#2673). The home root is still seeded too, as before.
 func preAcceptLaunchTrust(inst *session.Instance) {
 	if inst.Tool != "claude" {
 		return
@@ -48,8 +53,21 @@ func preAcceptLaunchTrust(inst *session.Instance) {
 	if real, err := filepath.EvalSymlinks(trustDir); err == nil {
 		trustDir = real
 	}
-	if err := session.PreAcceptClaudeTrust(session.GetUserMCPRootPath(), trustDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for %q failed (Claude launch may stall on the trust prompt): %v\n", trustDir, err)
+	targets := []string{session.GetUserMCPRootPath()}
+	if session.IsClaudeConfigDirExplicitForInstance(inst) {
+		if dir := session.GetClaudeConfigDirForInstance(inst); dir != "" {
+			if p := filepath.Join(dir, ".claude.json"); p != targets[0] {
+				targets = append(targets, p)
+			}
+		}
+	}
+	for _, claudeJSON := range targets {
+		if claudeJSON == "" {
+			continue
+		}
+		if err := session.PreAcceptClaudeTrust(claudeJSON, trustDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for %q in %s failed (Claude launch may stall on the trust prompt): %v\n", trustDir, claudeJSON, err)
+		}
 	}
 }
 
@@ -912,22 +930,10 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if initialMessage != "" && *noWait && !promptRidesArgv {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
-			// #1777 provenance probe: a freshly launched session has an
-			// empty composer, so a "[Pasted text …]" marker appearing
-			// during verification is this prompt's own collapse and the
-			// Enter nudge stays attributable. If the probe cannot confirm
-			// that, the gate withholds the nudge. Captured once, before the
-			// send, and shared with the v1.7.64 recovery pass below — a
-			// multi-line prompt collapses behind that marker as its normal
-			// delivered form (#1855), so the recovery retry needs the same
-			// provenance or its attribution gate withholds it forever.
-			pasteFreeBeforeSend := composerPasteFree(tmuxSess)
-			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), sendRetryOptions{
-				maxRetries:                  8,
-				checkDelay:                  150 * time.Millisecond,
-				tool:                        newInstance.Tool,
-				composerPasteFreeBeforeSend: pasteFreeBeforeSend,
-			}); err != nil {
+			// One pre-send probe (#1777) shared with the recovery pass
+			// below, whose attribution gate needs the same provenance (#1855).
+			opts := launchPromptSendOptions(tmuxSess, newInstance.Tool)
+			if _, err := sendWithRetryTarget(tmuxSess, initialMessage, skipClaudeDeliveryVerify(newInstance.Tool), opts); err != nil {
 				// Check whether the pane died before delivery was attempted.
 				// When it did, the paste-buffer failure is a symptom of the
 				// dead pane, not a transport fault. The spawn-failure sidecar
@@ -942,7 +948,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 				exitCLI(1)
 			}
 			verifyPromptConsumedAfterLaunchAttributed(
-				tmuxSess, initialMessage, pasteFreeBeforeSend,
+				tmuxSess, newInstance.Tool, initialMessage, opts.composerPasteFreeBeforeSend,
 				10*time.Second, 250*time.Millisecond,
 				os.Stderr,
 			)

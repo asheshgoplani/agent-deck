@@ -173,6 +173,34 @@ class Rig:
     def fixture(self, name):
         return json.loads((HERE.parents[1] / 'cmd/agent-deck/testdata/comms' / name).read_text())
 
+    def pi_run(self, identity, parts):
+        """One pi run in one extension process; the daemon ticks between parts."""
+        env = dict(self.env, **{'AGENTDECK_INSTANCE_ID': identity, **self.hook_envs.get(identity, {})},
+                   PATH=str(Path(BINARY).parent) + os.pathsep + self.env['PATH'])
+        extension = Path(env.get('PI_CODING_AGENT_DIR', self.root / '.pi/agent')) / 'extensions/agent-deck.ts'
+        process = subprocess.Popen(['node', str(HERE / 'pi_driver.mjs'), str(extension)], env=env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            for number, steps in enumerate(parts):
+                for step in steps:
+                    process.stdin.write(json.dumps(step) + '\n')
+                if number < len(parts) - 1:
+                    process.stdin.write(json.dumps(dict(pause=True)) + '\n')
+                    process.stdin.flush()
+                    while not json.loads(process.stdout.readline() or '{}').get('paused'):
+                        if process.poll() is not None:
+                            raise RuntimeError('pi driver exited before its pause: ' + process.stderr.read())
+                    self.tick()
+            out, err = process.communicate(timeout=30)
+        finally:
+            process.kill()
+        self.calls.append(dict(argv=['pi_driver.mjs', str(extension)], code=process.returncode, stdout=out, stderr=err))
+        if process.returncode:
+            raise RuntimeError('pi driver failed: ' + err)
+
+    def matrix_fixture(self, name):
+        return json.loads((HERE / 'fixtures' / name).read_text())
+
     def emit(self, tool, tier, turn='turn-1', text=None, identity=None):
         identity = identity or self.child
         text = text or ('Built and tested.\n===AGENTDECK_DONE=== status=ok summary=matrix' if tier == 'urgent' else 'Background task completed with a new result.')
@@ -220,9 +248,14 @@ class Rig:
             self.hook(tool, 'stop', dict(conversation_id=sid, hook_event_name='stop', status='completed'), identity)
         elif tool == 'pi':
             self.cli('pi-hooks', 'install')
-            self.hook(tool, 'turn_start', dict(type='turn_start'), identity)
-            self.tick()
-            self.hook(tool, 'turn_end', dict(type='turn_end', message=dict(role='assistant', content=[dict(type='text', text=text)])), identity)
+            turn_end = self.matrix_fixture('pi_turnend_v2.json')
+            turn_end.update(session_id=sid, messageEntryId=turn, message=dict(turn_end['message'], content=[dict(type='text', text=text)]))
+            self.pi_run(identity, [
+                [dict(event='input', payload=dict(type='input', text=prompt, source='interactive', session_id=sid)),
+                 dict(event='agent_start', payload=dict(type='agent_start', session_id=sid)),
+                 dict(event='turn_start', payload=dict(type='turn_start', session_id=sid))],
+                [dict(event='turn_end', payload=turn_end),
+                 dict(event='agent_settled', payload=dict(type='agent_settled', aborted=False, session_id=sid))]])
         elif tool == 'opencode':
             text = json.loads((HERE / 'fixtures/opencode_messages_v1.json').read_text())[0]['parts'][0]['text']
             port = self.ports.get(identity)
@@ -297,9 +330,9 @@ def local_cell(output, tool, tier, root=None):
         turns = [r for r in records if r.get('from') == rig.child and r['kind'] == 'turn']
         stats = json.loads(rig.cli('inbox', 'stats', '--json', '--all').stdout)
         checks = [check('msg_export_available', export, True, [False]),
-                  check('one_turn', len(turns), 1, [0] if tool not in ('claude', 'codex') else None),
-                  check('turn_text', [r.get('text') for r in turns], [text], [[]] if tool not in ('claude', 'codex') else None),
-                  check('turn_tier', [r.get('tier') for r in turns], [tier], [[]] if tool not in ('claude', 'codex') else None)]
+                  check('one_turn', len(turns), 1, [0] if tool not in ('claude', 'codex', 'pi') else None),
+                  check('turn_text', [r.get('text') for r in turns], [text], [[]] if tool not in ('claude', 'codex', 'pi') else None),
+                  check('turn_tier', [r.get('tier') for r in turns], [tier], [[]] if tool not in ('claude', 'codex', 'pi') else None)]
         if tool != 'opencode':
             checks.append(check('hook_receipt_fresh', shown.get('hook_status_fresh', False), True))
             checks.append(check('hook_receipt_completed', shown.get('hook_status'), 'waiting'))
@@ -339,7 +372,7 @@ def local_cell(output, tool, tier, root=None):
             checks.append(check('urgent_woken_once', wakes, 1, [0]))
             checks.append(check('typed_wake_carries_text', not typed or text.encode() in typed, True, [False]))
             # Latency uses ledger timestamps; wall time includes observation overhead.
-            checks.append(check('urgent_record_within_2s', len([r for r in turns if r.get('t_signal', 0) > 0 and r.get('t_record', 0) > 0 and 0 <= r['t_record'] - r['t_signal'] <= 2000]), 1, [0] if tool not in ('claude', 'codex') else None))
+            checks.append(check('urgent_record_within_2s', len([r for r in turns if r.get('t_signal', 0) > 0 and r.get('t_record', 0) > 0 and 0 <= r['t_record'] - r['t_signal'] <= 2000]), 1, [0] if tool not in ('claude', 'codex', 'pi') else None))
         if tool in ('claude', 'codex', 'gemini', 'hermes', 'cursor'):
             event = {'claude': 'UserPromptSubmit', 'codex': 'UserPromptSubmit', 'gemini': 'BeforeAgent', 'hermes': 'pre_llm_call', 'cursor': 'sessionStart'}[tool]
             payload = dict(hook_event_name=event, session_id='matrix-parent-thread', prompt='Continue on your own next turn.', user_message='Continue on your own next turn.')
