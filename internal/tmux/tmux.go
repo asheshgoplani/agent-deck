@@ -6154,8 +6154,18 @@ func (s *Session) sendKeysToTarget(target, keys string) error {
 	// The -l flag makes tmux treat the string as literal text, not key names
 	// This prevents issues like "Enter" being interpreted as the Enter key
 	// and provides a layer of safety against tmux special sequences
-	cmd := keySenderExec(s.SocketName, "send-keys", "-l", "-t", target, "--", keys)
+	cmd := keySenderExec(s.SocketName, "send-keys", "-l", "-t", target, "--", escapeTrailingSemicolon(keys))
 	return runSendKeysBounded(cmd)
+}
+
+// escapeTrailingSemicolon protects a trailing ';' from tmux: an argument
+// that ends in ';' is a command separator even after -l, so "/foo a;" would
+// type "/foo a". tmux reads "\;" at the end of an argument as a literal ';'.
+func escapeTrailingSemicolon(keys string) string {
+	if strings.HasSuffix(keys, ";") {
+		return keys[:len(keys)-1] + `\;`
+	}
+	return keys
 }
 
 // ensureInsertMode prepends an Escape + `i` sequence so a vim-mode composer

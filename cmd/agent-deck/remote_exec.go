@@ -85,6 +85,13 @@ func remoteCommandArgs(args []string) ([]string, error) {
 				return nil, err
 			}
 			return append([]string(nil), args...), nil
+		case "triggers":
+			// Read-only list only (issue #2702): mute, unmute, run, scan and
+			// a second --host hop never travel.
+			if err := validateRemoteTriggersArgs(args[1:]); err != nil {
+				return nil, err
+			}
+			return append([]string(nil), args...), nil
 		case "recall":
 			// Read-only forwards over the remote's own index; the option
 			// set is closed (remoteRecallOptions) so a delivery (--into),
@@ -295,9 +302,19 @@ func runRemoteExec(name string, args []string) (int, error) {
 		return 1, err
 	}
 	defer closeInput()
+	var publishPayload []byte
+	publish := isRemoteEventsPublish(args)
+	if publish {
+		if publishPayload, err = readRemotePublishData(input); err != nil {
+			return 2, err
+		}
+	}
 	runner := session.NewSSHRunner(name, rc)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if publish {
+		return runRemotePublishIO(ctx, runner, name, publishPayload, os.Stdout, os.Stderr, args)
+	}
 	if remoteGuardedSend(args) {
 		if err := requireRemoteGuardSupport(ctx, runner, name); err != nil {
 			return 1, err

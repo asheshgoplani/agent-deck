@@ -25,6 +25,11 @@ type ClaudeOptions struct {
 	// "opus", and "haiku" let Claude Code resolve the latest version; full
 	// model IDs pin a specific version.
 	Model string `json:"model,omitempty"`
+	// ModelExplicit marks Model as chosen for this launch (a fork given its
+	// own model) rather than filled from [claude].default_model by
+	// NewClaudeOptions; only an explicit model keeps a fork from inheriting
+	// the source session's stored model. Not persisted.
+	ModelExplicit bool `json:"-"`
 	// Effort sets Claude Code's per-session --effort level.
 	Effort string `json:"effort,omitempty"`
 	// SkipPermissions adds --dangerously-skip-permissions flag

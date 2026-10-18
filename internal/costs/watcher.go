@@ -27,15 +27,17 @@ type RawCostEvent struct {
 	// MessageUUID is the transcript record the usage was read from (empty
 	// from hooks of older binaries).
 	MessageUUID string `json:"message_uuid,omitempty"`
+	// MessageID is the API message id of that record.
+	MessageID string `json:"message_id,omitempty"`
 }
 
-// HookCostEventID is the cost_events id of a Stop hook's usage. With the
-// transcript record's uuid it is "<instance>_<uuid>", the id the recall
-// importer gives the same record (UsageImporter), so a turn seen by both is
-// stored once. Without one it falls back to "<instance>_<unix nanos>".
-func HookCostEventID(instanceID, messageUUID string, ts int64) string {
-	if messageUUID != "" {
-		return fmt.Sprintf("%s_%s", instanceID, messageUUID)
+// HookCostEventID is the cost_events id of a Stop hook's usage: the id the
+// recall importer gives the same message (UsageEventID), so a turn seen by
+// both is stored once. Without a message id or record uuid (hooks of older
+// binaries) it falls back to "<instance>_<unix nanos>".
+func HookCostEventID(instanceID, messageID, recordUUID string, ts int64) string {
+	if messageID != "" || recordUUID != "" {
+		return UsageEventID(instanceID, messageID, recordUUID)
 	}
 	return fmt.Sprintf("%s_%d", instanceID, ts)
 }

@@ -1,0 +1,2 @@
+terminal_width=78 list_width=27
+   └─ ● a genuinely … ⚡12

@@ -594,6 +594,9 @@ func main() {
 		case "events":
 			handleEvents(profile, args[1:])
 			return
+		case "triggers":
+			handleTriggers(profile, args[1:])
+			return
 		case "daemon":
 			handleDaemon(profile, args[1:])
 			return
@@ -1167,7 +1170,7 @@ func main() {
 			go func() {
 				for raw := range costWatcher.EventCh() {
 					ev := costs.CostEvent{
-						ID:               costs.HookCostEventID(raw.InstanceID, raw.MessageUUID, raw.Timestamp),
+						ID:               costs.HookCostEventID(raw.InstanceID, raw.MessageID, raw.MessageUUID, raw.Timestamp),
 						SessionID:        raw.InstanceID,
 						Timestamp:        time.Unix(0, raw.Timestamp),
 						Model:            raw.Model,
@@ -1533,7 +1536,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "file": true, "events": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "file": true, "events": true, "triggers": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -3456,17 +3459,10 @@ func handleRemove(profile string, args []string) {
 	}
 	inst.RecordTelemetryEnd(telemetry.EndDelete)
 
-	// Best-effort post-removal cleanup for transition-notifier state
-	// (issue #910). Failures are warned but do not block the rm — the
-	// SQLite removal is the user-visible contract.
-	if swept, err := session.SweepInboxesForChildSession(removedID); err != nil && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "warn: inbox sweep for %s failed: %v\n", removedID, err)
-	} else if swept > 0 && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "swept %d stale inbox event(s) for removed session\n", swept)
-	}
-	if _, err := session.RemoveNotifyStateRecord(removedID); err != nil && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", removedID, err)
-	}
+	// Best-effort post-removal cleanup (issue #910 sweep, macapp.session.closed).
+	// Failures are warned but do not block the rm — the SQLite removal is the
+	// user-visible contract.
+	warnRemovedSessionCleanup(session.CleanupRemovedSession(storage.Profile(), removedID), removedID, *jsonOutput)
 
 	out.Success(
 		fmt.Sprintf("Removed session: %s (from profile '%s')", removedTitle, storage.Profile()),
@@ -4598,6 +4594,7 @@ func printHelp() {
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  remote           Manage remote agent-deck instances")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
+	fmt.Println("  triggers         What wakes each session: jobs, heartbeats, channels (docs/triggers.md)")
 	fmt.Println("  agents           List adopted agents, grouped by machine")
 	fmt.Println("  agent            Adopt and inspect agent definitions")
 	fmt.Println("  telegram-doctor  Audit channel-owning sessions for telegram drops (#1138)")

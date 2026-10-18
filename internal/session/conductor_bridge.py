@@ -1035,6 +1035,7 @@ def send_to_conductor(
     reply_callback: ReplyCallback | None = None,
     force_queue: bool = False,
     claim_late_reply: bool = False,
+    source: str | None = None,
 ) -> tuple[bool, str, dict | bool | str]:
     """Send a message to the conductor session.
 
@@ -1054,12 +1055,16 @@ def send_to_conductor(
 
     claim_late_reply reserves one in-memory owner across the blocking wait and,
     on an accepted timeout, until the caller registers its reply watcher.
+
+    source (e.g. "channel:telegram") names the sender in `agent-deck triggers`
+    (session send --source); a queued message keeps it for the drain.
     """
+    source_args = ("--source", source) if source else ()
     if not wait_for_reply:
         # force_queue: caller already confirmed conductor is busy — skip status check.
         if force_queue:
             log.info("Conductor %s: force-queueing message", session)
-            _enqueue_message(session, message, profile, reply_callback)
+            _enqueue_message(session, message, profile, reply_callback, source)
             return True, "", False
 
         # For non-blocking sends (user messages), check if conductor is busy
@@ -1069,13 +1074,13 @@ def send_to_conductor(
             log.info(
                 "Conductor %s is busy (%s), queueing message", session, status,
             )
-            _enqueue_message(session, message, profile, reply_callback)
+            _enqueue_message(session, message, profile, reply_callback, source)
             return True, "", False  # queued, not failed
 
         # A chat message is a person's: an enforced cost budget never
         # blocks it (--ignore-budget).
         result = run_cli(
-            "session", "send", session, message, "--no-wait", "--ignore-budget",
+            "session", "send", session, message, "--no-wait", "--ignore-budget", *source_args,
             profile=profile, timeout=30,
         )
         if result.returncode != 0:
@@ -1087,7 +1092,7 @@ def send_to_conductor(
                     "Conductor %s became busy during send, queueing message",
                     session,
                 )
-                _enqueue_message(session, message, profile, reply_callback)
+                _enqueue_message(session, message, profile, reply_callback, source)
                 return True, "", False
             log.error("Failed to send to conductor: %s", stderr)
             return False, "", False
@@ -1107,7 +1112,7 @@ def send_to_conductor(
         # response as one result; never issue a second output read here.
         result = run_cli(
             "session", "send", session, message,
-            "--wait", "--timeout", f"{response_timeout}s", "--json", "--ignore-budget",
+            "--wait", "--timeout", f"{response_timeout}s", "--json", "--ignore-budget", *source_args,
             profile=profile,
             timeout=max(response_timeout + 30, 60),
         )
@@ -1180,6 +1185,7 @@ def _enqueue_message(
     message: str,
     profile: str | None,
     reply_callback: ReplyCallback | None = None,
+    source: str | None = None,
 ) -> None:
     """Add a message to the in-memory queue for a busy conductor.
 
@@ -1195,7 +1201,7 @@ def _enqueue_message(
             "Queue full for %s (depth=%d), dropping oldest message",
             session, MAX_QUEUE_DEPTH,
         )
-        _msg, _prof, dropped_cb = queue.popleft()
+        dropped_cb = queue.popleft()[2]
         if dropped_cb is not None:
             try:
                 loop = asyncio.get_running_loop()
@@ -1205,9 +1211,15 @@ def _enqueue_message(
                 ))
             except RuntimeError:
                 pass  # no event loop available, can't fire async callback
-    queue.append((message, profile, reply_callback))
+    # A source rides along as an optional fourth element (see _queue_source).
+    queue.append((message, profile, reply_callback, source) if source else (message, profile, reply_callback))
     log.info("Queued message for %s (queue depth: %d)", session, len(queue))
     _ensure_drain_task()
+
+
+def _queue_source(item: tuple) -> str | None:
+    """The --source a queued item was sent with, if any."""
+    return item[3] if len(item) > 3 else None
 
 
 async def _fire_callback(cb: ReplyCallback, text: str) -> None:
@@ -1269,7 +1281,8 @@ async def _drain_queue() -> None:
                 _message_queue.pop(session, None)
                 continue
 
-            message, profile, reply_callback = items[0]
+            message, profile, reply_callback = items[0][:3]
+            source = _queue_source(items[0])
             with _reply_owner_lock:
                 if ((profile, session) in _wait_send_reservations or
                         (profile, session) in _pending_reply_tasks):
@@ -1290,7 +1303,8 @@ async def _drain_queue() -> None:
                     session, len(items),
                 )
                 dropped = _message_queue.pop(session, deque())
-                for _msg, _prof, cb in dropped:
+                for dropped_item in dropped:
+                    cb = dropped_item[2]
                     if cb is not None:
                         loop.create_task(_fire_callback(
                             cb,
@@ -1316,6 +1330,7 @@ async def _drain_queue() -> None:
                     wait_for_reply=True,
                     response_timeout=RESPONSE_TIMEOUT,
                     claim_late_reply=True,
+                    **({"source": source} if source else {}),
                 ),
             )
 
@@ -1323,7 +1338,7 @@ async def _drain_queue() -> None:
             # Restore this exact unsent item at the head for the next cycle.
             if not ok and pending == _WAIT_SEND_QUEUE_REQUIRED:
                 if len(items) >= MAX_QUEUE_DEPTH:
-                    _msg, _prof, dropped_cb = items.pop()
+                    dropped_cb = items.pop()[2]
                     log.warning(
                         "Queue full for %s while restoring unsent item; dropping newest message",
                         session,
@@ -2848,6 +2863,7 @@ def create_telegram_bot(config: dict):
                 wait_for_reply=False,
                 reply_callback=_tg_reply,
                 force_queue=True,
+                source="channel:telegram",
             )
             if not ok:
                 await message.answer(
@@ -2872,6 +2888,7 @@ def create_telegram_bot(config: dict):
                 wait_for_reply=True,
                 response_timeout=RESPONSE_TIMEOUT,
                 claim_late_reply=True,
+                source="channel:telegram",
             ),
         )
         if not ok:
@@ -2898,6 +2915,7 @@ def create_telegram_bot(config: dict):
                 if still_running == _WAIT_SEND_QUEUE_REQUIRED:
                     _enqueue_message(
                         session_title, cleaned_msg, target_profile, _tg_late_reply,
+                        "channel:telegram",
                     )
                     await message.answer(
                         f"{profile_tag}⏳ Conductor busy — message queued, will reply here when done."
@@ -3231,7 +3249,7 @@ def create_slack_app(config: dict):
             ok, _, _ = send_to_conductor(
                 session_title, cleaned_msg, profile=profile,
                 wait_for_reply=False, reply_callback=_slack_reply,
-                force_queue=True,
+                force_queue=True, source="channel:slack",
             )
             if not ok:
                 await _safe_say(
@@ -3255,7 +3273,7 @@ def create_slack_app(config: dict):
                 send_to_conductor,
                 session_title, cleaned_msg, profile=profile,
                 wait_for_reply=True, response_timeout=RESPONSE_TIMEOUT,
-                claim_late_reply=True,
+                claim_late_reply=True, source="channel:slack",
             ),
         )
         if not ok:
@@ -3281,6 +3299,7 @@ def create_slack_app(config: dict):
                 if still_running == _WAIT_SEND_QUEUE_REQUIRED:
                     _enqueue_message(
                         session_title, cleaned_msg, profile, _slack_late_reply,
+                        "channel:slack",
                     )
                     notice = f"{name_tag}⏳ Conductor busy — message queued, will reply here when done."
                 elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
@@ -3872,6 +3891,7 @@ def create_discord_bot(config: dict):
                     wait_for_reply=True,
                     response_timeout=RESPONSE_TIMEOUT,
                     claim_late_reply=True,
+                    source="channel:discord",
                 ),
             )
         finally:
@@ -3897,6 +3917,7 @@ def create_discord_bot(config: dict):
                 if still_running == _WAIT_SEND_QUEUE_REQUIRED:
                     _enqueue_message(
                         session_title, cleaned_msg, profile, _dc_late_reply,
+                        "channel:discord",
                     )
                     notice = "⏳ Conductor busy — message queued, will reply here when done."
                 elif (still_running is True or isinstance(still_running, dict)) and _register_pending_reply(
@@ -5092,6 +5113,7 @@ async def heartbeat_loop(
                         profile=profile,
                         wait_for_reply=True,
                         response_timeout=RESPONSE_TIMEOUT,
+                        source=f"heartbeat:{name}",
                     ),
                 )
                 if not ok:

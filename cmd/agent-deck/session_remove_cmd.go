@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
@@ -114,10 +115,9 @@ func handleSessionRemove(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	// Best-effort transition-notifier cleanup for issue #910 — see the
-	// matching block in handleRemove for rationale.
-	_, _ = session.SweepInboxesForChildSession(inst.ID)
-	_, _ = session.RemoveNotifyStateRecord(inst.ID)
+	// Best-effort cleanup for the removed row (issue #910 sweep,
+	// macapp.session.closed) — see the matching block in handleRemove.
+	session.CleanupRemovedSession(storage.Profile(), inst.ID)
 
 	out.Success(fmt.Sprintf("Removed session: %s", inst.Title), map[string]interface{}{
 		"success": true,
@@ -216,8 +216,11 @@ func bulkRemoveSessions(
 		}
 		if err := storage.DeleteInstance(inst.ID); err != nil {
 			out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
-			exitCLI(1)
+			exitBulkRemove(1)
 		}
+		// Clean up per deleted row, right away: a later failure exits, and
+		// the rows already deleted must still be swept and announced.
+		session.CleanupRemovedSession(storage.Profile(), inst.ID)
 		removedIDs = append(removedIDs, inst.ID)
 		removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
 	}
@@ -231,18 +234,39 @@ func bulkRemoveSessions(
 	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
 	if err := storage.SaveGroupsOnly(groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		exitCLI(1)
+		exitBulkRemove(1)
 	}
 
 	for _, id := range removedIDs {
 		if exists, _ := storage.InstanceExists(id); exists {
 			_ = storage.DeleteInstance(id)
 		}
-		// Best-effort transition-notifier cleanup (issue #910).
-		_, _ = session.SweepInboxesForChildSession(id)
-		_, _ = session.RemoveNotifyStateRecord(id)
 	}
 	return removed
+}
+
+// exitBulkRemove exits a bulk remove that failed part way. os.Exit skips
+// main's deferred events drain, so the macapp.session.closed frames of the
+// rows already deleted are flushed first.
+func exitBulkRemove(code int) {
+	_ = events.CloseDefault()
+	exitCLI(code)
+}
+
+// warnRemovedSessionCleanup prints the best-effort cleanup outcome of a
+// removed session to stderr (never in --json mode).
+func warnRemovedSessionCleanup(r session.RemovedSessionCleanup, id string, jsonOutput bool) {
+	if jsonOutput {
+		return
+	}
+	if r.InboxErr != nil {
+		fmt.Fprintf(os.Stderr, "warn: inbox sweep for %s failed: %v\n", id, r.InboxErr)
+	} else if r.InboxSwept > 0 {
+		fmt.Fprintf(os.Stderr, "swept %d stale inbox event(s) for removed session\n", r.InboxSwept)
+	}
+	if r.NotifyStateErr != nil {
+		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", id, r.NotifyStateErr)
+	}
 }
 
 // pruneSessionWorktree kills the session and removes its git worktree (if any).

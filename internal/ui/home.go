@@ -50,6 +50,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/triggers"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
@@ -308,6 +309,18 @@ type Home struct {
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	agentsPanel          *AgentsPanel          // Agents tab: adopted agents, grouped by machine
 	deadLetterPanel      *DeadLetterPanel      // Inspect, retry, and explicitly purge delivery failures
+	triggersPanel        *TriggersPanel        // What wakes which session (#2702); read-only in P1
+	// Triggers read model (triggers_live.go). A background tick reads the
+	// state DB's triggers_rev stamp and reloads only when it moved; the
+	// panel and the ⚡ row badge render from these cached values only.
+	triggersFeed     triggersFeed
+	triggerViews     []triggers.View
+	triggerBadges    map[string]triggers.Badge
+	triggersLoaded   bool
+	triggersLoadedAt time.Time
+	triggersRev      string
+	triggersKey      string
+	triggersPollGen  int
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -2088,6 +2101,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		watcherPanel:              NewWatcherPanel(),
 		agentsPanel:               NewAgentsPanel(),
 		deadLetterPanel:           NewDeadLetterPanel(),
+		triggersFeed:              stateDBTriggersFeed{},
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
@@ -4289,6 +4303,7 @@ func (h *Home) Init() tea.Cmd {
 
 		h.tick(),
 		h.reviverTick(),
+		h.triggersPollCmd(), // ⚡ badges and the Triggers panel (triggers_live.go)
 		h.requestUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
@@ -6748,22 +6763,7 @@ func (h *Home) backgroundStatusUpdate() {
 			continue
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-			if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
-				uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
-					slog.String("instance", inst.ID), slog.String("reason", reason))
-				continue
-			}
-			h.clearOnCompactSent[inst.ID] = time.Now()
-			conductorName := conductorDisplayName(inst)
-			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
-				time.Sleep(500 * time.Millisecond)
-				msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
-				if err := clearConductorAndHeartbeat(func(body string) error {
-					return deliverToConductorPane(tmuxSess, body)
-				}, msg, 3*time.Second); err != nil {
-					uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
-				}
-			})
+			h.scheduleClearAndHeartbeat(inst, instances, tmuxSess)
 		}
 	}
 
@@ -7702,6 +7702,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.deadLetterPanel != nil {
 			h.deadLetterPanel.SetSize(msg.Width, msg.Height)
 		}
+		if h.triggersPanel != nil {
+			h.triggersPanel.SetSize(msg.Width, msg.Height)
+		}
 		if h.toolVisibilityPanel != nil {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
 		}
@@ -8480,6 +8483,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
 		if err != nil {
 			uiLog.Warn("delete_instance_db_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+		} else {
+			// Same best-effort cleanup as `agent-deck rm`: inbox and
+			// notify-state sweep (#910), macapp.session.closed.
+			logRemovedSessionCleanup("delete", msg.deletedID, session.CleanupRemovedSession(h.profile, msg.deletedID))
 		}
 		// Save both instances AND groups (critical fix: was losing groups!)
 		// Use forceSave to bypass the external-change abort - delete MUST persist
@@ -9291,6 +9298,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 		return h, nil
 
+	case triggersTickMsg, triggersPolledMsg:
+		return h, h.handleTriggersMsg(msg)
+
 	case reviverTickMsg:
 		// Fire-and-forget reviver sweep for instances whose tmux server
 		// survived an SSH scope cleanup but whose pipe was reaped. Runs in
@@ -9923,14 +9933,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Issue #1576: sweep transition-notifier state (inbox JSONL lines +
 		// runtime/transition-notify-state.json dedup record) for the removed
-		// session, mirroring the #910 cleanup on `agent-deck rm`. Best-effort —
-		// never blocks the finish.
-		if _, err := session.SweepInboxesForChildSession(msg.sessionID); err != nil {
-			uiLog.Warn("worktree_finish_inbox_sweep_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
-		}
-		if _, err := session.RemoveNotifyStateRecord(msg.sessionID); err != nil {
-			uiLog.Warn("worktree_finish_notify_state_sweep_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
-		}
+		// session, mirroring the #910 cleanup on `agent-deck rm`, and publish
+		// macapp.session.closed. Best-effort — never blocks the finish.
+		logRemovedSessionCleanup("worktree_finish", msg.sessionID, session.CleanupRemovedSession(h.profile, msg.sessionID))
 
 		// Show success message
 		successMsg := fmt.Sprintf("Finished worktree '%s'", msg.sessionTitle)
@@ -10314,6 +10319,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle delivery and watcher panels (before settings panel)
+		if h.triggersPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.triggersPanel, cmd = h.triggersPanel.Update(msg)
+			return h, cmd
+		}
 		if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 			var cmd tea.Cmd
 			h.deadLetterPanel, cmd = h.deadLetterPanel.Update(msg)
@@ -11426,6 +11436,7 @@ func (h *Home) hasModalVisible() bool {
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay
 		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
+		h.triggersPanel.IsVisible() || // hotkeyTriggers overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.hookTrustDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -12640,6 +12651,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.deadLetterPanel.Show()
 		h.deadLetterPanel.SetSize(h.width, h.height)
 		return h, nil
+
+	case defaultHotkeyBindings[hotkeyTriggers]:
+		// What wakes sessions (#2702). On a session a trigger wakes (its row
+		// shows ⚡N) this opens that session's reverse view; esc widens it to
+		// the full list.
+		return h, h.openTriggersPanel()
 
 	case defaultHotkeyBindings[hotkeyAgentsPanel]:
 		// Open the Agents tab. Opt-in by presence: with nothing adopted there
@@ -14198,6 +14215,34 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
+}
+
+// conductorHeartbeatDeliver types the /clear and the heartbeat into a
+// conductor pane. Tests replace it.
+var conductorHeartbeatDeliver = func(p *tmux.Session, body string) error { return deliverToConductorPane(p, body) }
+
+// scheduleClearAndHeartbeat sends /clear and then a heartbeat to a conductor
+// whose context is about to auto-compact, unless an enforced cost budget
+// refuses the delivery. It reports whether the delivery was scheduled; a
+// refused one is not marked sent, so it is tried again once the budget allows.
+func (h *Home) scheduleClearAndHeartbeat(inst *session.Instance, instances []*session.Instance, tmuxSess *tmux.Session) bool {
+	if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
+		uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
+			slog.String("instance", inst.ID), slog.String("reason", reason))
+		return false
+	}
+	h.clearOnCompactSent[inst.ID] = time.Now()
+	conductorName := conductorDisplayName(inst)
+	safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
+		time.Sleep(500 * time.Millisecond)
+		msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
+		if err := clearConductorAndHeartbeat(func(body string) error {
+			return conductorHeartbeatDeliver(tmuxSess, body)
+		}, msg, 3*time.Second); err != nil {
+			uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
+		}
+	})
+	return true
 }
 
 // agentDeliveryOverBudget reports whether an enforced cost budget
@@ -19365,6 +19410,9 @@ func (h *Home) renderFrame() string {
 	}
 
 	// Delivery and watcher panels are modal (before settings panel)
+	if h.triggersPanel.IsVisible() {
+		return h.triggersPanel.View()
+	}
 	if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 		return h.deadLetterPanel.View()
 	}
@@ -22738,9 +22786,17 @@ func (h *Home) renderSessionItem(
 	}
 	cachedViewers, cachedViewersKnown := inst.ViewersCached()
 	viewersBadgeText, viewersWidth := fitViewersBadge(cachedViewers, cachedViewersKnown, selected, badgeBudget)
+	// ⚡N: how many triggers wake this session (triggers_live.go). Read from
+	// the poll's cached map only; it shrinks and drops after the viewers
+	// badge and before the account badge.
+	triggersBudget := badgeBudget
+	if badgeBudget >= 0 {
+		triggersBudget = max(0, badgeBudget-viewersWidth)
+	}
+	triggersBadgeText, triggersWidth := fitTriggersBadge(h.triggerBadges[inst.ID], selected, triggersBudget)
 	accountBudget := instState.accountDisplay.width
 	if badgeBudget >= 0 {
-		accountBudget = min(accountBudget, badgeBudget-viewersWidth)
+		accountBudget = min(accountBudget, badgeBudget-viewersWidth-triggersWidth)
 	}
 	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
 	if accountBadge != "" {
@@ -22751,7 +22807,7 @@ func (h *Home) renderSessionItem(
 		accountBadge = accountStyle.Render(accountBadge)
 	}
 	if listWidth > 0 {
-		budget := max(0, listWidth-reserved-viewersWidth-accountWidth-1)
+		budget := max(0, listWidth-reserved-viewersWidth-triggersWidth-accountWidth-1)
 		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
@@ -22762,7 +22818,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -22779,6 +22835,7 @@ func (h *Home) renderSessionItem(
 		sshBadge,
 		agentBadge,
 		viewersBadgeText,
+		triggersBadgeText,
 		accountBadge,
 		timestampBadge,
 		childFoldBadge,

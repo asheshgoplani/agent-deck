@@ -6,6 +6,7 @@ import "strings"
 // generated template. Installers compare its fully rendered form byte-for-byte
 // before migrating, so any user customization is preserved.
 func previousConductorInstructionsTemplate(template string) string {
+	template = preHarnessControlConductorInstructionsTemplate(template)
 	template = prePlainReadConductorInstructionsTemplate(template)
 	template = preNoOpNoticeRuleConductorInstructionsTemplate(template)
 	template = preBackgroundWorkConductorInstructionsTemplate(template)
@@ -128,6 +129,20 @@ func preHumanTierConductorInstructionsTemplate(template string) string {
 	return strings.Replace(template, conductorHeartbeatReplyDoc, conductorHeartbeatReplyDocV0, 1)
 }
 
+// conductorHarnessControlQuickCommandRow is the `/cmd` quick-command row the
+// session command change added to the shared template's Quick Commands table.
+// v1.16.25 through v1.16.29 shipped the template without it.
+const conductorHarnessControlQuickCommandRow = "| `/cmd <session> <slash command>` (also `cmd ...` without the leading slash) | Run a Claude Code client command (`/model <id>`, `/compact`, `/clear`, `/exit`, any slash command or skill) on that session: run `agent-deck -p <PROFILE> session command --json --wait-idle 60s <session> '<slash command>'` (single quotes, so `$(...)` and backticks in the text are never expanded; write a `'` inside it as `'\\''`; add `--background` when `<session>` is you). Reply with one short line from the JSON: `after` or the first `evidence` entry when `ok`, otherwise `code` and `error`. `/cmd <session> what can I run` runs `agent-deck -p <PROFILE> session commands --json <session>` instead. Never type a slash command with `session send` or tmux. |\n"
+
+// preHarnessControlConductorInstructionsTemplate reconstructs the template as
+// v1.16.25 through v1.16.29 shipped it, before the `/cmd` quick command, so a
+// conductor written by those releases is recognised as generated and
+// migrated. Per-name templates carry no Quick Commands table, so this is a
+// no-op there.
+func preHarnessControlConductorInstructionsTemplate(template string) string {
+	return strings.Replace(template, conductorHarnessControlQuickCommandRow, "", 1)
+}
+
 // conductorHeartbeatReplyDoc is the tail of the heartbeat reply-format
 // example as of #2469 (urgent/info markers, conductor notify);
 // conductorHeartbeatReplyDocV0 is the wording v1.11.0-v1.16.24 shipped.
@@ -145,6 +160,8 @@ const (
 //
 // Verified against fixtures rendered from the actual shipped source
 // (testdata/conductor_templates_shipped.tsv): this reconstructs the
+// v1.16.25-v1.16.29 generation (before the /cmd quick command and the no-op notice rule; pinned by
+// TestShippedV11628SharedTemplateMigratesToHarnessControl), the
 // v1.16.24 generation (only the heartbeat reply format differs), the
 // v1.11.0-v1.16.10 generation and the v1.10.9-v1.10.11 generation. It does
 // NOT reconstruct v1.9.73 or v1.9.70, which shipped further template
@@ -153,14 +170,18 @@ const (
 // those releases is treated as user-edited and left alone.
 func conductorInstructionsGenerations(template string) []string {
 	var gens []string
-	// Newest first: the release with the no-op notice rule whose conductor
-	// reads still used -q. Every older generation is reconstructed from it.
+	// Newest first: main before the /cmd quick command, then the release
+	// with the no-op notice rule whose conductor reads still used -q, then
+	// what v1.16.25-v1.16.29 shipped (current minus all three). Every older
+	// generation is reconstructed from the latter.
+	if noCmd := preHarnessControlConductorInstructionsTemplate(template); noCmd != template {
+		gens = append(gens, noCmd)
+		template = noCmd
+	}
 	if quiet := prePlainReadConductorInstructionsTemplate(template); quiet != template {
 		gens = append(gens, quiet)
 		template = quiet
 	}
-	// Then what v1.16.25-v1.16.29 shipped (current minus the
-	// no-op notice rule). Every older generation is reconstructed from it.
 	if shipped := preNoOpNoticeRuleConductorInstructionsTemplate(template); shipped != template {
 		gens = append(gens, shipped)
 		template = shipped
@@ -371,7 +392,7 @@ You may receive these special commands (from remote channels or the CLI):
 | ` + "`" + `/sessions` + "`" + ` | Run ` + "`" + `agent-deck -p <PROFILE> list --json` + "`" + ` and list active sessions with status |
 | ` + "`" + `/check <name>` + "`" + ` | Run ` + "`" + conductorPlainCheckCmd + "`" + ` and summarize what it's doing |
 | ` + "`" + `/send <name> <msg>` + "`" + ` | Forward the message to that session via ` + "`" + `agent-deck -p <PROFILE> session send` + "`" + ` |
-| ` + "`" + `/help` + "`" + ` | List available commands |
+` + conductorHarnessControlQuickCommandRow + `| ` + "`" + `/help` + "`" + ` | List available commands |
 
 For any other text, treat it as a conversational message from the user. They might ask about session progress, give instructions for specific sessions, or ask you to create/manage sessions.
 

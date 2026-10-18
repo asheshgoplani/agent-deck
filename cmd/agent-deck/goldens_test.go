@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/triggers"
 )
 
 // updateGoldensFlag is a `go test`-recognized flag alternative to the
@@ -237,6 +239,10 @@ func safeSpecs() []goldenSpec {
 		{"watcher_status_missing", []string{"-p", goldensProfile, "watcher", "status", "missing"}, 1},
 		{"watcher_status_missing_json", []string{"-p", goldensProfile, "watcher", "status", "missing", "--json"}, 1},
 
+		{"triggers_json", []string{"-p", goldensProfile, "triggers", "--json"}, 0},
+		{"triggers_all_json", []string{"-p", goldensProfile, "triggers", "--all", "--json"}, 0},
+		{"triggers_fires_json", []string{"-p", goldensProfile, "triggers", "fires", "systemd:agentdeck-overnight", "--json"}, 0},
+
 		{"completion_bash", []string{"completion", "bash"}, 0},
 		{"completion_zsh", []string{"completion", "zsh"}, 0},
 		{"completion_fish", []string{"completion", "fish"}, 0},
@@ -258,7 +264,7 @@ func helpSpecs() []goldenSpec {
 		"telegram-doctor", "profile", "update", "telemetry", "debug-dump", "migrate-paths",
 		"uninstall", "completion", "costs", "config", "inbox", "feedback",
 		"watcher", "openclaw", "system", "mcp-proxy", "hooks", "hook-handler", "codex-notify",
-		"notify-daemon", "run-task", "open", "file",
+		"notify-daemon", "run-task", "open", "file", "triggers",
 	}
 
 	subcommands := []string{
@@ -295,6 +301,7 @@ func helpSpecs() []goldenSpec {
 		"session image-upload", "session send-status", "session queue",
 		"usage statusline", "recall timeline", "recall follow",
 		"events follow", "events publish",
+		"triggers list", "triggers scan", "triggers mute", "triggers unmute", "triggers run", "triggers fires",
 	}
 
 	all := append(append([]string{}, topLevel...), subcommands...)
@@ -372,6 +379,11 @@ func scrubWithEpoch(s, home string, normalizeEpoch bool) string {
 		// rows use fixed fixture times and normalize only the shell row's
 		// last_accessed field in dumpStateDBRows.
 		s = regexp.MustCompile(`([:\[,]\s*)\d{10,13}(\s*[,\]}])`).ReplaceAllString(s, "${1}<EPOCH>${2}")
+	}
+	// The local host's name is a JSON value in `triggers --json` (row
+	// "host" and the "hosts" key); it differs on every machine.
+	if host := triggers.Hostname(); host != "" {
+		s = strings.ReplaceAll(s, `"`+host+`"`, `"<HOST>"`)
 	}
 	version := regexp.QuoteMeta(Version)
 	s = regexp.MustCompile(`(^|[^0-9.])v?`+version+`($|[^0-9.])`).ReplaceAllString(s, "${1}<VERSION>${2}")

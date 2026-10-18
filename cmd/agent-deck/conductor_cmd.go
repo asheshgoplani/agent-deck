@@ -966,7 +966,10 @@ func handleConductorTeardown(_ string, args []string) {
 								if !*jsonOutput {
 									fmt.Fprintf(os.Stderr, "  Warning: failed to remove session '%s' (%s) from %s: %v\n", sessionTitle, id, meta.Profile, rmErr)
 								}
+								continue
 							}
+							// Inbox / notify-state sweep and macapp.session.closed.
+							session.CleanupRemovedSession(storage.Profile(), id)
 						}
 						if !removeFailed && !*jsonOutput {
 							fmt.Printf("  [ok] Removed session '%s' from %s\n", sessionTitle, meta.Profile)

@@ -138,6 +138,22 @@ func (w *readReadyWriter) Write(p []byte) (int, error) {
 // the channel. A stream never retries, so cursors and duplicates remain under
 // the consumer's control.
 func (r *SSHRunner) RunReadIO(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, unsupported []byte, follow bool, args ...string) error {
+	return r.runNegotiatedIO(ctx, stdin, nil, stdout, stderr, unsupported, follow, args...)
+}
+
+// RunPublishIO is RunReadIO for a finite command that takes a payload on
+// stdin (a forwarded `events publish`): the same one-round-trip capability
+// probe, then payload is the command's stdin. The probe itself never reads
+// it (its stdin is /dev/null). An owner that cannot run the command answers
+// with unsupported and exit 1.
+func (r *SSHRunner) RunPublishIO(ctx context.Context, payload []byte, stdout, stderr io.Writer, unsupported []byte, args ...string) error {
+	if payload == nil {
+		payload = []byte{}
+	}
+	return r.runNegotiatedIO(ctx, nil, payload, stdout, stderr, unsupported, false, args...)
+}
+
+func (r *SSHRunner) runNegotiatedIO(ctx context.Context, stdin io.Reader, payload []byte, stdout, stderr io.Writer, unsupported []byte, follow bool, args ...string) error {
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return err
 	}
@@ -193,6 +209,9 @@ exec ` + command
 		}
 		defer closeOwned()
 		cmd.Stdin = owned
+	}
+	if payload != nil && !help {
+		cmd.Stdin = bytes.NewReader(payload)
 	}
 	cmd.WaitDelay = 3 * time.Second
 	err := cmd.Run()

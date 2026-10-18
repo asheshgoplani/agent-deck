@@ -1,3 +1,7 @@
-Usage: agent-deck open <file|url> [--session <id|title>]
+Usage: agent-deck open <file|url> [--session <id|title>] [--browser-profile <name>] [--wait <duration>]
+  -browser-profile string
+    	Browser panel profile in the app (optional; letters, digits, '.', '_', '-', at most 64, no leading '.')
   -session string
     	session id or title (default: $AGENTDECK_INSTANCE_ID)
+  -wait duration
+    	how long to wait for the app to acknowledge before reporting Queued (at most 2m0s) (default 3s)
