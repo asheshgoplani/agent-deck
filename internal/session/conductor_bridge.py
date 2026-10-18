@@ -1053,6 +1053,18 @@ def send_to_conductor(
                     retain_reservation = True
                 return False, "", True
             error = payload.get("error") or result.stderr.strip()
+            if (
+                payload.get("submitted") is not True
+                and (
+                    payload.get("delivery") == "target_busy"
+                    or "not ready" in error.lower()
+                )
+            ):
+                log.info(
+                    "Conductor %s became busy before submission; queue required",
+                    session,
+                )
+                return False, "", _WAIT_SEND_QUEUE_REQUIRED
             log.error("Failed to send to conductor: %s", error)
             return False, "", False
         payload = _cli_json(result.stdout)
@@ -1208,19 +1220,48 @@ async def _drain_queue() -> None:
                         ))
                 continue
 
-            # Conductor is ready — deliver the message and wait for the response
-            result = await loop.run_in_executor(
+            # Keep the in-flight item outside the overflow-managed deque. New
+            # arrivals can then evict only genuinely waiting messages, and the
+            # result below always belongs to this exact item.
+            inflight_item = items.popleft()
+
+            # Conductor is ready — use the same structured accepted-turn path as
+            # an idle remote send. A timed-out wait may still have submitted the
+            # turn; in that case ownership transfers to a reply-only watcher and
+            # the queued message must never be sent a second time.
+            ok, response, pending = await loop.run_in_executor(
                 None,
                 functools.partial(
-                    run_cli,
-                    "session", "send", session, message,
-                    "--wait", "--timeout", f"{RESPONSE_TIMEOUT}s", "-q",
+                    send_to_conductor,
+                    session, message,
                     profile=profile,
-                    timeout=max(RESPONSE_TIMEOUT + 30, 60),
+                    wait_for_reply=True,
+                    response_timeout=RESPONSE_TIMEOUT,
+                    claim_late_reply=True,
                 ),
             )
-            if result.returncode == 0:
-                items.popleft()
+
+            # Another sender acquired reply ownership after the status check.
+            # Restore this exact unsent item at the head for the next cycle.
+            if not ok and pending == _WAIT_SEND_QUEUE_REQUIRED:
+                if len(items) >= MAX_QUEUE_DEPTH:
+                    _msg, _prof, dropped_cb = items.pop()
+                    log.warning(
+                        "Queue full for %s while restoring unsent item; dropping newest message",
+                        session,
+                    )
+                    if dropped_cb is not None:
+                        loop.create_task(_fire_callback(
+                            dropped_cb,
+                            "[Message dropped — conductor queue overflow.]",
+                        ))
+                items.appendleft(inflight_item)
+                continue
+
+            # A synchronous response or an accepted asynchronous turn owns this
+            # queue item now. Remove it before any callback work so it cannot be
+            # replayed if callback setup fails.
+            if ok or pending is True or isinstance(pending, dict):
                 remaining = len(items)
                 if not remaining:
                     _message_queue.pop(session, None)
@@ -1228,36 +1269,46 @@ async def _drain_queue() -> None:
                     "Conductor %s delivered queued message (%d remaining)",
                     session, remaining,
                 )
-                if reply_callback is not None:
-                    # Re-fetch the clean reply via get_session_output (consistent
-                    # with send_to_conductor's wait path) rather than the raw
-                    # `--wait` stdout. Off-loop to avoid blocking the drain.
-                    output = await loop.run_in_executor(
-                        None,
-                        functools.partial(get_session_output, session, profile=profile),
-                    )
-                    text = output.strip() or "[No output from conductor.]"
-                    loop.create_task(_fire_callback(reply_callback, text))
-            else:
-                stderr = result.stderr.strip()
-                if "timeout" in stderr.lower() or "not ready" in stderr.lower():
+                if ok:
+                    if reply_callback is not None:
+                        text = response.strip() or "[No output from conductor.]"
+                        loop.create_task(_fire_callback(reply_callback, text))
+                    continue
+
+                receipt = pending if isinstance(pending, dict) else None
+                if reply_callback is None:
+                    _release_late_reply_claim(session, profile, receipt)
+                    continue
+                if _register_pending_reply(
+                    session, profile, receipt, reply_callback,
+                ):
                     log.info(
-                        "Conductor %s busy again during drain, will retry",
+                        "Conductor %s accepted queued message; reply pending",
                         session,
                     )
-                else:
-                    log.error(
-                        "Failed to deliver queued message to %s: %s — dropping",
-                        session, stderr,
-                    )
-                    items.popleft()
-                    if not items:
-                        _message_queue.pop(session, None)
-                    if reply_callback is not None:
-                        loop.create_task(_fire_callback(
-                            reply_callback,
-                            f"[Queued message could not be delivered — send failed: {stderr[:100]}]",
-                        ))
+                    continue
+
+                _release_late_reply_claim(session, profile, receipt)
+                loop.create_task(_fire_callback(
+                    reply_callback,
+                    "[Queued message was accepted, but its reply watcher could not be started.]",
+                ))
+                continue
+
+            # Any other failure is final for this item. The CLI may already have
+            # written the message (a Claude wait that timed out, or an
+            # unacknowledged socket write), so it is never sent a second time
+            # and the caller is not told it was undelivered.
+            log.error(
+                "Queued message to %s was not confirmed — not resending", session,
+            )
+            if not items:
+                _message_queue.pop(session, None)
+            if reply_callback is not None:
+                loop.create_task(_fire_callback(
+                    reply_callback,
+                    "[Queued message was not confirmed and was not resent; no reply was captured.]",
+                ))
 
         # Exit check AFTER the session loop — avoids missing items enqueued during drain
         if not _message_queue:
