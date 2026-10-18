@@ -401,8 +401,10 @@ func stepEdit(w *widthRun) error {
 	}
 	markers := []string{"Edit Session", "Title:"}
 	if w.spec.width == 80 {
-		// This dialog is taller than 24 rows; its heading scrolls out of view.
-		markers = []string{"same-harness resume", "Title:", "Extra args"}
+		// This dialog is taller than 24 rows. Its lower fields (Extra args
+		// and below) sit past the "more below" fold, so wait only on rows
+		// that always render above it.
+		markers = []string{"same-harness resume", "Title:", "Auto mode"}
 	}
 	if err := waitScreen(w, 5*time.Second, markers...); err != nil {
 		return err

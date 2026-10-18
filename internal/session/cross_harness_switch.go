@@ -348,7 +348,7 @@ func ExecuteCrossHarnessSwitch(ctx context.Context, cfg *UserConfig, source *Ins
 		// Keep an unready destination out of the default active list. The target
 		// remains durable and directly addressable for recovery, while the source
 		// remains the sole visible row until final atomic supersession.
-		target.ArchivedAt = time.Now().UTC()
+		target.SetArchivedAtThreadSafe(time.Now().UTC())
 		target.Supersedes = source.ID
 		if err := deps.Store.CreateTarget(target); err != nil {
 			return failCrossHarness(journalPath, journal, result, fmt.Errorf("persist fresh target: %w", err))
@@ -475,8 +475,10 @@ func ExecuteCrossHarnessSwitch(ctx context.Context, cfg *UserConfig, source *Ins
 	if err := deps.Store.FinalizeTargetHandoff(source, target); err != nil {
 		return pendingCrossHarness(journalPath, journal, result, "atomic source/target supersession pending: "+err.Error())
 	}
-	source.ArchivedAt, source.SupersededBy = time.Now().UTC(), target.ID
-	target.ArchivedAt, target.Supersedes = time.Time{}, source.ID
+	source.SetArchivedAtThreadSafe(time.Now().UTC())
+	source.SupersededBy = target.ID
+	target.SetArchivedAtThreadSafe(time.Time{})
+	target.Supersedes = source.ID
 	journal.State, journal.Failure, journal.NativeSessionID, journal.Superseded = crossHarnessReady, "", evidence.SessionID, true
 	result.TargetReady = true
 	result.ContextDelivery = "lifecycle prompt delivery returned; native semantic acceptance remains pending"

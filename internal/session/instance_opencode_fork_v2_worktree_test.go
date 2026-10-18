@@ -45,7 +45,8 @@ func TestOpenCodeForkV2_WorktreeForkMovesChildToWorkDir(t *testing.T) {
 	moveBody, _ := json.Marshal(map[string]string{"directory": workDir})
 	want := "api\nsession.fork\n--param\nsessionID=ses_parent_123\n-d\n{}\n" +
 		"api\nsession.move\n--param\nsessionID=ses_child_456\n-d\n" + string(moveBody) + "\n" +
-		"api\nsession.switchAgent\n--param\nsessionID=ses_child_456\n-d\n" + `{"agent":"build"}` + "\n"
+		"api\nsession.switchAgent\n--param\nsessionID=ses_child_456\n-d\n" + `{"agent":"build"}` + "\n" +
+		"api\nsession.update\n--param\nsessionID=ses_child_456\n-d\n" + `{"title":"oc fork"}` + "\n"
 	if string(gotArgv) != want {
 		t.Fatalf("opencode argv =\n%s\nwant\n%s", gotArgv, want)
 	}

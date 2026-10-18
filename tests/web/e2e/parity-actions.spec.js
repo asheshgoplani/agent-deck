@@ -12,7 +12,7 @@
 // with the matrix).
 
 import { test, expect } from '@playwright/test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadMatrix, inferMissingProbe } from '../helpers/parity-matrix.js'
@@ -21,7 +21,7 @@ const MATRIX = loadMatrix()
 
 // Pinned row counts. If the matrix grows or shrinks, these MUST be updated
 // in the same PR — the failure is the point.
-const EXPECTED_ACTION_ROWS = 56
+const EXPECTED_ACTION_ROWS = 57
 // Probeable = MISSING rows that inferMissingProbe() maps to a URL. Decremented
 // as endpoints land and their matrix rows flip MISSING → Present:
 //   15 (PR-A #804) → 9 (#1124 skills+MCP, 6 closed) → 7 (#1129 Close + Undo
@@ -88,6 +88,22 @@ test.describe('parity: matrix structural invariants', () => {
 test.describe('parity: session lifecycle', () => {
   test.beforeEach(async ({ request }) => {
     await resetFixture(request)
+  })
+
+  test('complete working directory - GET returns matching directories only', async ({ request }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'parity-paths-'))
+    try {
+      for (const name of ['AirConnect', 'SpotConnect', '.hidden']) {
+        mkdirSync(join(dir, name))
+      }
+      writeFileSync(join(dir, 'Air-file'), 'fixture')
+
+      const res = await request.get('/api/path-suggestions', { params: { prefix: dir + '/Air' } })
+      expect(res.status()).toBe(200)
+      expect(await res.json()).toEqual({ suggestions: [join(dir, 'AirConnect')] })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('preview missing directories - matches TUI confirmation without creating folders', async ({ request }) => {

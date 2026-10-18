@@ -92,6 +92,8 @@ const (
 	SubstateModelUnavailable  = tmux.SubstateModelUnavailable
 	SubstateAuth401           = tmux.SubstateAuth401
 	SubstateUsageLimit        = tmux.SubstateUsageLimit
+	SubstateModelLimit        = tmux.SubstateModelLimit
+	SubstateAccountBlocked    = tmux.SubstateAccountBlocked
 	SubstateUnknownExit       = tmux.SubstateUnknownExit
 	SubstateProcessExited     = tmux.SubstateProcessExited
 	SubstateHookLag           = tmux.SubstateHookLag
@@ -332,12 +334,17 @@ type Instance struct {
 	lastCodexScanAt time.Time // Rate-limits expensive ~/.codex/sessions scans
 	// Usage-limit detection (#1802), all guarded by i.mu.
 	// lastUsageLimitScanAt throttles the transcript read (records scan START).
-	// usageLimitedCached memoises the verdict for that window, and
-	// usageLimitSessionID records the session id it was formed for so a rebind
-	// cannot inherit it. usageLimitScanGen versions in-flight scans so one slower
-	// than the interval cannot publish over a newer result.
+	// usageLimitedCached memoises the verdict for that window (usageLimitVerdict
+	// carries its kind and detail: usage-limit, model-limit or account-blocked),
+	// and usageLimitSessionID records the session id it was formed for so a
+	// rebind cannot inherit it. usageLimitScanGen versions in-flight scans so one
+	// slower than the interval cannot publish over a newer result.
+	// shownTranscriptLimit is the transcript verdict the last Substate() call
+	// returned, so SubstateDetail describes the substate actually reported.
 	lastUsageLimitScanAt time.Time
 	usageLimitedCached   bool
+	usageLimitVerdict    limitVerdict
+	shownTranscriptLimit limitVerdict
 	usageLimitSessionID  string
 	usageLimitScanGen    uint64
 	lastCodexProbeAt     time.Time // Rate-limits expensive Codex process-file probes
@@ -351,14 +358,17 @@ type Instance struct {
 	PiSessionID   string `json:"pi_session_id,omitempty"`
 	PiSessionPath string `json:"pi_session_path,omitempty"`
 
-	// Hermes CLI integration. Hermes mints a new session ID each launch and does
-	// not export it (no env var / hook), so agent-deck captures it from
-	// `hermes sessions list` at restart time and resumes with --resume. Not
-	// persisted (json:"-"): it is re-captured on every restart, so it needs no
-	// lifetime beyond a single Restart() call — which also keeps it out of the
-	// JSON marshaling that could otherwise race the restart-time write.
+	// Hermes CLI integration. HermesSessionID is the native session id this
+	// entry's OWN hook events reported (issue #2582); restart resumes exactly
+	// that id with --resume. Persisted in the tool_data extras zone
+	// (hermes_session_persist.go), not through this struct's JSON.
+	// Only parent-only hook edges bind or rotate it (hermesBindsOnEvent);
+	// hermesBoundAt orders rebinds against stale samples, and
+	// hermesLastRejected rate-limits the reject lifecycle line.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
+	hermesBoundAt        time.Time
+	hermesLastRejected   string
 
 	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
 	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
@@ -494,6 +504,21 @@ type Instance struct {
 	// clears).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 
+	// IntendedSwitch marks the current account/model as switched on purpose,
+	// until its ExpiresAt (limit-guard reads it from list/show --json). Nil
+	// when unset. Persisted in the tool_data extras zone (intended_switch.go).
+	// CLI: `session set <id> account|model <v> --intended "<reason>"`, or
+	// `session set <id> intended-switch "<reason>"` ("" clears). Any other
+	// account or model change clears it.
+	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
+
+	// LimitVerdictResetAt is when the session's account or model was last
+	// changed. A transcript limit/block rejection stamped at or before it is
+	// about the old account/model and is ignored (usagelimit.go). Zero when
+	// never set. Persisted in the tool_data extras zone
+	// (limit_verdict_reset.go).
+	LimitVerdictResetAt time.Time `json:"limit_verdict_reset_at,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT
@@ -608,9 +633,13 @@ type Instance struct {
 	terminatedPaneExitCode *int
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
-	hookStatus                  string    // running, idle, waiting, dead (empty = no hook data)
-	hookEvent                   string    // Hook event name that caused the last status (e.g. "PermissionRequest")
-	hookSessionID               string    // Session ID from hook payload
+	hookStatus    string // running, idle, waiting, dead (empty = no hook data)
+	hookEvent     string // Hook event name that caused the last status (e.g. "PermissionRequest")
+	hookSessionID string // Session ID from hook payload
+	// claudeSupersededIDs holds Claude session ids this instance moved away
+	// from by following a continued-in handoff (#2683). A late hook still
+	// carrying one must not revert ClaudeSessionID to the stalled copy.
+	claudeSupersededIDs         map[string]struct{}
 	hookLastUpdate              time.Time // When hook status was last received
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	codexStartedGeneration      string
@@ -649,6 +678,11 @@ type Instance struct {
 	// Use GetStatus()/SetStatus() and GetTool()/SetTool() for thread-safe access.
 	// UpdateStatus() acquires the write lock internally.
 	mu sync.RWMutex
+
+	// archiveMu guards ArchivedAt alone (IsArchived, SetArchivedAtThreadSafe).
+	// It is not mu: UpdateStatus holds mu across tool detection and metadata
+	// I/O, and the TUI checks the archive state of every row it renders.
+	archiveMu sync.RWMutex
 
 	// spawnGen supersedes stale fast-death watchers; spawnWatchers lets teardown
 	// and tests join them before restoring process-global filesystem environment.
@@ -1352,6 +1386,11 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 		addedThisProcess: true,
 	}
 	tmuxSess.GroupPath = inst.GroupPath
+
+	if tool == "opencode2" {
+		inst.Tool = "opencode"
+		inst.Command = "opencode2"
+	}
 
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
@@ -2201,19 +2240,16 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 
-	// If baseCommand is just "opencode", handle specially
+	// Resume through the stored launcher, including the explicit opencode2 alias.
 	if baseCommand == "opencode" {
-		cmd := GetToolCommand("opencode")
+		baseCommand = i.openCodePersistentCommand()
+	}
+	if cmd, ok := i.openCodeLauncher(baseCommand); ok {
 		var extraFlags string
 		if i.openCodeRejectsV1LaunchFlags() {
-			// 2.x exits on -m/--agent/--port (opencode_version.go). Without
-			// --port there is no SSE server, so status falls back to tmux.
-			if dropped := i.buildOpenCodeExtraFlags(); dropped != "" {
-				sessionLog.Warn("opencode_v2_launch_flags_dropped",
-					slog.String("instance_id", i.ID),
-					slog.String("flags", dropped))
-			}
+			// V2 uses the shared service instead of a per-TUI --port server.
 			i.setOpenCodePort(0)
+			return envPrefix + i.buildOpenCodeV2Command(cmd)
 		} else {
 			extraFlags = i.buildOpenCodeExtraFlags() + i.buildOpenCodeSSEPortFlag()
 		}
@@ -3233,7 +3269,7 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 
 // minCreated is the earliest creation time an unbound 2.x instance may adopt; 0 means any.
 func (i *Instance) queryOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
-	cacheKey := normalizePath(projectPath)
+	cacheKey := i.openCodeForkBinary() + "\x00" + normalizePath(projectPath)
 	if i.openCodeRejectsV1LaunchFlags() {
 		// The 2.x pager stops at what this caller can use, so a page set is only complete for that caller.
 		cacheKey += "\x00" + currentID + "\x00" + strconv.FormatInt(minCreated, 10)
@@ -3299,7 +3335,7 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCrea
 		return i.runOpenCodeServiceSessionPages(ctx, projectPath, currentID, minCreated)
 	}
 
-	output, ok := i.runOpenCodeCLI(ctx, projectPath, "opencode", "session", "list", "--format", "json")
+	output, ok := i.runOpenCodeCLI(ctx, projectPath, "session", "list", "--format", "json")
 	if !ok {
 		return nil
 	}
@@ -3315,10 +3351,12 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCrea
 	return sessions
 }
 
-func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath, binary string, args ...string) ([]byte, bool) {
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Dir = projectPath
-	cmd.WaitDelay = 500 * time.Millisecond
+func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath string, args ...string) ([]byte, bool) {
+	cmd, err := i.openCodeCLICommand(ctx, projectPath, args...)
+	if err != nil {
+		sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
+		return nil, false
+	}
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -3344,12 +3382,6 @@ func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath, binary strin
 // A failed page, or hitting the page cap before the bound session, returns
 // nothing for the same reason.
 func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
-	// The version that picked this path came from the configured binary, which a bare name may not reach.
-	binary, ok := i.openCodeLaunchBinary()
-	if !ok {
-		return nil
-	}
-
 	var sessions []openCodeSessionMetadata
 	cursor := ""
 	usableSeen := false
@@ -3360,7 +3392,7 @@ func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPa
 		if cursor != "" {
 			args = append(args, "--param", "cursor="+cursor)
 		}
-		output, ok := i.runOpenCodeCLI(ctx, projectPath, binary, args...)
+		output, ok := i.runOpenCodeCLI(ctx, projectPath, args...)
 		if !ok {
 			return nil
 		}
@@ -6946,38 +6978,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		case "dead":
 			i.Status = StatusError
 		}
-		if i.hookSessionID != "" {
-			switch {
-			case IsClaudeCompatible(i.Tool):
-				if i.hookSessionID != i.ClaudeSessionID {
-					i.ClaudeSessionID = i.hookSessionID
-					// #1815: own hook anchor — verified ownership.
-					i.markClaudeSessionIDVerified()
-					i.ClaudeDetectedAt = time.Now()
-				} else {
-					// Review finding on #1830: the values already matching is
-					// NOT a no-op case for the taint. A live hook confirming
-					// the session's own id is the strongest available vouch
-					// (the process itself, not a disk guess) — clear any
-					// lingering disk-scan taint on it, or a solo custom-wrapper
-					// session whose own id was once disk-scanned stays
-					// permanently unresumable even though this hook just
-					// proved it right.
-					i.markClaudeSessionIDVerified()
-				}
-			case IsCodexCompatible(i.Tool):
-				if i.hookSessionID != i.CodexSessionID {
-					i.CodexSessionID = i.hookSessionID
-					i.recordCodexOwnership(i.CodexSessionID)
-					i.CodexDetectedAt = time.Now()
-				}
-			case i.Tool == "gemini":
-				if i.hookSessionID != i.GeminiSessionID {
-					i.GeminiSessionID = i.hookSessionID
-					i.GeminiDetectedAt = time.Now()
-				}
-			}
-		}
+		i.applyHookSessionIDLocked()
 		// A1: For Hermes, run the gateway reachability check even on the fast path.
 		// Without this, a dead gateway can still report running/waiting for the full
 		// hook freshness window because the check below is skipped.
@@ -7510,6 +7511,8 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	}
 
 	switch {
+	case i.Tool == "hermes":
+		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.UpdatedAt)
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
@@ -8387,9 +8390,12 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	}
 
 	if i.Tool == "hermes" {
-		// Drop the captured resume ID so the next launch starts a new session
-		// and Restart() re-captures rather than resuming the old conversation.
+		// Drop the recorded resume ID so the next launch starts a new session;
+		// its first hook event records the new id.
 		i.HermesSessionID = ""
+		i.hermesBoundAt = time.Time{}
+		i.hermesLastRejected = ""
+		i.persistHermesSessionBinding("")
 	}
 
 	if i.Tool == "deepseek" {
@@ -10809,13 +10815,8 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	} else if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
 		command = i.buildCodexCommand(i.Command)
 	} else if i.Tool == "hermes" {
-		// Re-capture the pane's hermes session ID on EVERY restart (hermes
-		// doesn't export it). Overwriting rather than caching once self-heals a
-		// stale ID: if the previously-resumed session was pruned, the query
-		// returns the current most-recent session, or "" — in which case
-		// buildHermesCommand starts fresh instead of resuming a dead ID forever.
-		// Scoped to the working dir to avoid picking up an unrelated session.
-		i.HermesSessionID = captureHermesSessionID(i.EffectiveWorkingDir())
+		// Issue #2582: resume only the id this entry's own hooks recorded.
+		i.prepareHermesResume()
 		// Drop any stale hook state from the previous process, then seed a
 		// synthetic "waiting" baseline. Hermes fires on_session_start only at
 		// the FIRST TURN of a brand-new session (not at process launch), so
@@ -11098,6 +11099,10 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// common flush-race case without slowing the happy path (retry only
 	// fires when the first check comes back negative AND we have a
 	// non-empty ClaudeSessionID).
+	// #2683: an agent-view handoff ends the bound transcript with a
+	// continued-in record; resume the successor, not the stalled copy.
+	i.followClaudeContinuedIn()
+
 	// #1815 identity guard: refuse outright when the id about to be resumed
 	// is not this session's own recorded conversation id (missing recorded id,
 	// or a mismatch). The refused id is replaced by a freshly minted one so
@@ -11203,6 +11208,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || IsCodexCompatible(tool)
 }
 
@@ -11370,9 +11376,9 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
-	// Hermes resumes via `--resume <id>`; the ID is captured from
-	// `hermes sessions list` at restart time. Always restartable (resumes when a
-	// session is found, else starts fresh) rather than only when dead/errored,
+	// Hermes resumes via `--resume <id>`, the id its own hooks recorded
+	// (#2582). Always restartable (resumes when an id is recorded, else starts
+	// fresh) rather than only when dead/errored,
 	// which left a live hermes session silently un-restartable.
 	if i.Tool == "hermes" {
 		return true
@@ -11439,6 +11445,7 @@ func (i *Instance) CanRestartFresh() bool {
 // newly supported tool cannot be admitted by Instance.CanFork while remaining
 // rejected or hidden at another surface.
 func SupportsNativeFork(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "pi" || tool == "opencode" ||
 		IsCodexCompatible(tool) || tool == "omp"
 }
@@ -11814,6 +11821,9 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 	}
 
 	if i.openCodeRejectsV1LaunchFlags() {
+		if i.IsSSH() || i.IsSandboxed() {
+			return "", "", fmt.Errorf("opencode fork: service-based forks must run on the target host")
+		}
 		serviceOpts := opts
 		if serviceOpts == nil {
 			if config, err := LoadUserConfig(); err == nil && config != nil {
@@ -11826,10 +11836,10 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 			}
 		}
 		// The 2.x verdict came from the configured binary, which a bare name may not reach.
-		binary, ok := i.openCodeLaunchBinary()
-		if !ok {
+		if _, ok := i.openCodeLaunchBinary(); !ok {
 			return "", "", fmt.Errorf("opencode fork: cannot resolve the configured opencode binary")
 		}
+		binary := i.openCodeForkBinary()
 		childID, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir)
 		if err != nil {
 			return "", "", err
@@ -11838,16 +11848,19 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		if err == nil {
 			err = applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts)
 		}
+		if err == nil {
+			err = setOpenCodeForkTitleViaService(binary, childID, workDir, newTitle)
+		}
 		if err != nil {
 			if _, rmErr := runOpenCodeServiceCall(binary, workDir, "session.remove", childID, ""); rmErr != nil {
 				return "", "", fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
 			}
 			return "", "", err
 		}
-		// Launch through the configured command, as a restart does
+		// Launch through the selected launcher, as a restart does
 		// (buildOpenCodeCommand): a bare `opencode` may be missing from PATH or
 		// be a 1.x binary that does not know the 2.x child session.
-		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), GetToolCommand("opencode"), childID), childID, nil
+		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), childID), childID, nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -11865,8 +11878,8 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 
 	// workDir and the session id are shell-quoted to keep the launch command
 	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
-	return fmt.Sprintf("cd %s && opencode -s %s --fork%s",
-		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", nil
+	return fmt.Sprintf("cd %s && %s -s %s --fork%s",
+		shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", nil
 }
 
 // forkOpenCodeSessionViaService forks parentID in the OpenCode 2.x shared
@@ -11959,7 +11972,15 @@ func openCodeModelRef(model string) (map[string]string, error) {
 	if !ok || providerID == "" || modelID == "" {
 		return nil, fmt.Errorf("opencode fork: model %q is not in provider/model form", model)
 	}
-	return map[string]string{"providerID": providerID, "id": modelID}, nil
+	modelID, variant, _ := strings.Cut(modelID, "#")
+	if modelID == "" {
+		return nil, fmt.Errorf("opencode fork: model %q has no model id", model)
+	}
+	ref := map[string]string{"providerID": providerID, "id": modelID}
+	if variant != "" {
+		ref["variant"] = variant
+	}
+	return ref, nil
 }
 
 // runOpenCodeServiceCall runs one `opencode api <operation>` request with the
@@ -11977,9 +11998,11 @@ func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) 
 	if body != "" {
 		args = append(args, "-d", body)
 	}
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Dir = workDir
-	cmd.WaitDelay = 500 * time.Millisecond
+	inst := &Instance{Command: binary}
+	cmd, err := inst.openCodeCLICommand(ctx, workDir, args...)
+	if err != nil {
+		return nil, err
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -12035,7 +12058,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	// script self-deletes after first run, so storing it as the persistent Command
 	// would make a later restart re-run a missing file. Command holds a stable base
 	// ("opencode") that restart resumes from via OpenCodeSessionID.
-	forked.Command = "opencode"
+	forked.Command = i.openCodePersistentCommand()
 	forked.ForkStartCommand = cmd
 	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"
@@ -12230,6 +12253,7 @@ func (i *Instance) GetTmuxSession() *tmux.Session {
 // session without any of them changing.
 func (i *Instance) Substate() Substate {
 	if held, _ := i.IsAuthHeld(); held {
+		i.setShownTranscriptLimit(limitVerdict{})
 		return SubstateAuth401
 	}
 	// A RECENT quota rejection is checked before the pane verdict, including the
@@ -12243,8 +12267,14 @@ func (i *Instance) Substate() Substate {
 	// evidence — a freshly rendered 401, or a dropped socket that never arms the
 	// credential hold. usageLimited enforces that bound (usageLimitMaxAge), which
 	// is what keeps this ordering honest (#1802).
-	if i.usageLimited() {
-		return SubstateUsageLimit
+	//
+	// The same verdict also carries the other transcript-derived kinds,
+	// model-limit and account-blocked (limit-guard bugs 2 and 4), at the same
+	// precedence: each is the latest assistant turn and a structured rejection.
+	limit := i.transcriptLimit()
+	i.setShownTranscriptLimit(limit)
+	if limit.Kind != SubstateNone {
+		return limit.Kind
 	}
 	if s := i.getTerminatedPaneSubstate(); s != SubstateNone {
 		return s
@@ -12274,10 +12304,21 @@ func (i *Instance) Substate() Substate {
 // SubstateDetail returns free-text detail for the substate the last
 // classification produced (the codex usage-limit retry time; for
 // background-work the in-flight task, e.g. "workflow comms-followon-round3
-// 3/5 · 18m32s"), or "".
+// 3/5 · 18m32s"; for a transcript-derived usage-limit / model-limit /
+// account-blocked the reason the session waits, e.g. "weekly limit · resets
+// 12pm (Europe/Berlin)", "Fable 5.1"), or "".
 // Call after Substate/CachedSubstate; it reads the cached value and never
 // captures the pane.
 func (i *Instance) SubstateDetail() string {
+	// The transcript verdict outranks every pane verdict in Substate, so its
+	// detail outranks theirs here. Without it a session waiting out a quota
+	// read as an anonymous stall (limit-guard bug 3).
+	i.mu.RLock()
+	shown := i.shownTranscriptLimit
+	i.mu.RUnlock()
+	if isTranscriptLimitSubstate(shown.Kind) {
+		return shown.Detail
+	}
 	if work := i.BackgroundWork(); work.InFlight() {
 		return work.Summary()
 	}
@@ -12289,6 +12330,15 @@ func (i *Instance) SubstateDetail() string {
 		return "" // a vetoed stale workflow row (see reconcileBackgroundSubstate)
 	}
 	return tmuxSess.CachedSubstateDetail()
+}
+
+// setShownTranscriptLimit records the transcript verdict Substate is about to
+// report (or the zero verdict when it reports something else) for
+// SubstateDetail. Acquires its own lock; callers must not already hold i.mu.
+func (i *Instance) setShownTranscriptLimit(v limitVerdict) {
+	i.mu.Lock()
+	i.shownTranscriptLimit = v
+	i.mu.Unlock()
 }
 
 // getTerminatedPaneSubstate returns the terminated-pane substate recorded by
@@ -13890,4 +13940,47 @@ func wrapIgnoreSuspend(cmd string) string {
 	// Example: it's -> it'"'"'s -> bash sees: it's.
 	escaped := strings.ReplaceAll(cmd, `'`, `'"'"'`)
 	return "bash -c 'stty susp undef; " + escaped + "'"
+}
+
+// applyHookSessionIDLocked binds the session id carried by the latest hook
+// sample to the tool's session id field (the hook fast path in UpdateStatus).
+// Caller holds i.mu.
+func (i *Instance) applyHookSessionIDLocked() {
+	if i.hookSessionID == "" {
+		return
+	}
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		if i.claudeIDSuperseded(i.hookSessionID) {
+			// #2683: stale hook from the pre-handoff process.
+			break
+		}
+		if i.hookSessionID != i.ClaudeSessionID {
+			i.ClaudeSessionID = i.hookSessionID
+			// #1815: own hook anchor — verified ownership.
+			i.markClaudeSessionIDVerified()
+			i.ClaudeDetectedAt = time.Now()
+		} else {
+			// Review finding on #1830: the values already matching is
+			// NOT a no-op case for the taint. A live hook confirming
+			// the session's own id is the strongest available vouch
+			// (the process itself, not a disk guess) — clear any
+			// lingering disk-scan taint on it, or a solo custom-wrapper
+			// session whose own id was once disk-scanned stays
+			// permanently unresumable even though this hook just
+			// proved it right.
+			i.markClaudeSessionIDVerified()
+		}
+	case IsCodexCompatible(i.Tool):
+		if i.hookSessionID != i.CodexSessionID {
+			i.CodexSessionID = i.hookSessionID
+			i.recordCodexOwnership(i.CodexSessionID)
+			i.CodexDetectedAt = time.Now()
+		}
+	case i.Tool == "gemini":
+		if i.hookSessionID != i.GeminiSessionID {
+			i.GeminiSessionID = i.hookSessionID
+			i.GeminiDetectedAt = time.Now()
+		}
+	}
 }

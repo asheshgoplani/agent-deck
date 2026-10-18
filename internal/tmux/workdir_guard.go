@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -72,6 +73,11 @@ const SpawnBaseDir = "/"
 func newSpawnCommand(launcher string, args ...string) *exec.Cmd {
 	cmd := execCommand(launcher, args...)
 	cmd.Dir = SpawnBaseDir
+	// #2683: the new-session spawn is what starts a tmux server; a server
+	// born with CLAUDE_JOB_DIR in its env hands it to every pane.
+	if cmd.Env == nil {
+		cmd.Env = childenv.WithoutClaudeJobDir()
+	}
 	return cmd
 }
 

@@ -801,6 +801,7 @@ Agent Deck works with any terminal-based AI tool:
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
 | **OpenCode** | Status detection, organization, fork |
+| **OpenCode 2** (`opencode2`) | Status detection, MCP, model/agent selection, launch, resume, fork |
 | **Codex** | Status detection, MCP, organization, conductor, fork |
 | **Copilot** | Organization, launch |
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
@@ -811,6 +812,18 @@ Agent Deck works with any terminal-based AI tool:
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
+
+Select `opencode2` in the new/edit session picker, web picker, or default-tool settings,
+or create a session with `agent-deck add -c opencode2`. The `opencode2` launcher must
+be installed on the session's host. Sessions retain OpenCode's tool identity while
+preserving the selected launcher for restart and fork. V2 model/agent overrides and
+forks use the session API rather than unsupported V1 TUI flags; MCP writes use
+V2's `mcp.servers` structure. The global OpenCode config is read from and written to
+`$XDG_CONFIG_HOME/opencode/opencode.json` when `XDG_CONFIG_HOME` is set (as OpenCode
+itself does), otherwise `~/.config/opencode/opencode.json`. V2 status uses the shared service rather than
+V1's per-session SSE port, with terminal fallback when service status is unavailable.
+Service-based forks must run on the target host; this local fork path does not
+call a local service on behalf of SSH or sandbox sessions.
 
 Codex status detection uses Codex's notify hook. Install and verify it once for each Codex home:
 

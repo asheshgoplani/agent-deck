@@ -8,7 +8,6 @@
 
 
 
-
                                                                      ╭────────────────────────────────────────────────────────────╮
                                                                      │                                                            │
                                                                      │                                                            │
@@ -23,8 +22,9 @@
                                                                      │      > claude-waiting                                      │
                                                                      │      Harness (choose destination first):                   │
                                                                      │        shell     claude     gemini     opencode            │
-                                                                     │        codex     pi     copilot     crush     muse         │
-                                                                     │        cursor agent     hermes     deepseek     omp        │
+                                                                     │        opencode2     codex     pi     copilot              │
+                                                                     │        crush     muse     cursor agent     hermes          │
+                                                                     │        deepseek     omp                                    │
                                                                      │      Pin position:                                         │
                                                                      │        Off     Top     Bottom                              │
                                                                      │      [x] Skip permissions (restart, claude)                │

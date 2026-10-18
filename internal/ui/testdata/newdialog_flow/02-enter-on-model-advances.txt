@@ -1,5 +1,4 @@
                                                                                                     
-                                                                                                    
        ╭────────────────────────────────────────────────────────────────────────────────────╮       
        │                                                                                    │       
        │                                                                                    │       
@@ -11,8 +10,9 @@
        │      > demo                                                                        │       
        │                                                                                    │       
        │      Command:                                                                      │       
-       │        shell     claude     gemini     opencode     codex     pi     copilot       │       
-       │        crush     muse     cursor agent     hermes     deepseek     omp             │       
+       │        shell     claude     gemini     opencode     opencode2     codex            │       
+       │        pi     copilot     crush     muse     cursor agent     hermes               │       
+       │        deepseek     omp                                                            │       
        │                                                                                    │       
        │      Model ID:                                                                     │       
        │      > tool default (↓ to browse)                                                  │       

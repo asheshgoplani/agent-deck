@@ -956,6 +956,10 @@ func SubstateLabel(sub session.Substate) string {
 		return "auth (login)"
 	case session.SubstateUsageLimit:
 		return "usage limit"
+	case session.SubstateModelLimit:
+		return "model limit"
+	case session.SubstateAccountBlocked:
+		return "account blocked (org disabled)"
 	case session.SubstateIdleAtEmptyPrompt:
 		return "idle at prompt"
 	case session.SubstateInteractiveMenu:
@@ -971,6 +975,16 @@ func SubstateLabel(sub session.Substate) string {
 	default:
 		return ""
 	}
+}
+
+// isLimitSubstate reports whether sub is one of the transcript-derived limit
+// substates, whose substate_detail names what the session is waiting on.
+func isLimitSubstate(sub session.Substate) bool {
+	switch sub {
+	case session.SubstateUsageLimit, session.SubstateModelLimit, session.SubstateAccountBlocked:
+		return true
+	}
+	return false
 }
 
 // TruncateID returns a shortened ID for display

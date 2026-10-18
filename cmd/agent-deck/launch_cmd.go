@@ -483,6 +483,14 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		out.Error(err.Error(), ErrCodeNotFound)
 		exitCLI(1)
 	}
+	// #2683: see handleAdd. An archived holder would silently win the
+	// duplicate-id guard and the launch would start a fresh conversation.
+	if *resumeSession != "" {
+		if msg, code := checkArchivedClaudeIDConflict(instances, nil, *resumeSession); msg != "" {
+			out.Error(msg, code)
+			exitCLI(1)
+		}
+	}
 
 	// Resolve parent session if specified.
 	// Issue #972: when no explicit -g is passed, prefer the cwd-derived

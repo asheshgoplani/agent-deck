@@ -21,8 +21,9 @@ import (
 const AccountUsageStaleAfter = 30 * time.Minute
 
 // AccountUsageWindow is one quota window (5h or 7d) for an account slot.
-// Known is false when the provider never reported this window — never a
-// zero presented as a real percentage.
+// Known is false when the provider never reported this window, or its
+// reported reset has passed — never a zero or a stale value presented as a
+// real percentage.
 type AccountUsageWindow struct {
 	Known   bool
 	Percent float64
@@ -89,6 +90,25 @@ type AccountUsageCache struct {
 type accountUsageCacheEntry struct {
 	mtime time.Time
 	usage AccountUsage
+	// fiveHour/sevenDay are the windows as stored, kept so expiry is judged
+	// against each Get's now rather than frozen at parse time: the file does
+	// not change when a window's reset passes.
+	fiveHour, sevenDay quota.Window
+}
+
+// at returns the entry's usage as of now, dropping a window whose
+// provider-reported reset has passed (quota.Window.Expired). Its last value
+// belongs to a window that is over; rendering it would show a stale 100% as
+// a live limit, so it reads as unknown, like a window never reported.
+func (e accountUsageCacheEntry) at(now time.Time) AccountUsage {
+	usage := e.usage
+	if usage.FiveHour.Known && e.fiveHour.Expired(now) {
+		usage.FiveHour = AccountUsageWindow{}
+	}
+	if usage.SevenDay.Known && e.sevenDay.Expired(now) {
+		usage.SevenDay = AccountUsageWindow{}
+	}
+	return usage
 }
 
 // NewAccountUsageCache returns an empty cache.
@@ -120,21 +140,23 @@ func (c *AccountUsageCache) Get(name string, now time.Time) AccountUsage {
 		return AccountUsage{Name: name, UnknownReason: AccountUsageNoData}
 	}
 	if entry, ok := c.entries[name]; ok && entry.mtime.Equal(info) {
-		return entry.usage
+		return entry.at(now)
 	}
 
-	usage := loadAccountUsage(store, name)
-	c.entries[name] = accountUsageCacheEntry{mtime: info, usage: usage}
-	return usage
+	entry := loadAccountUsage(store, name)
+	entry.mtime = info
+	c.entries[name] = entry
+	return entry.at(now)
 }
 
 // loadAccountUsage reads and parses a slot's quota store, extracting the
 // claude provider's five_hour/seven_day windows. Any failure — no claude
 // snapshot present, an unreadable or corrupt cache file (quota.Store reports
 // those as Snapshot.Error rather than an error return) — yields Known: false
-// with AccountUsageUnreadable rather than a guessed number.
-func loadAccountUsage(store *quota.Store, name string) AccountUsage {
-	unreadable := AccountUsage{Name: name, UnknownReason: AccountUsageUnreadable}
+// with AccountUsageUnreadable rather than a guessed number. The returned
+// entry keeps the raw windows so Get can apply expiry per call.
+func loadAccountUsage(store *quota.Store, name string) accountUsageCacheEntry {
+	unreadable := accountUsageCacheEntry{usage: AccountUsage{Name: name, UnknownReason: AccountUsageUnreadable}}
 	snapshots, err := store.Load()
 	if err != nil {
 		return unreadable
@@ -143,20 +165,22 @@ func loadAccountUsage(store *quota.Store, name string) AccountUsage {
 		if snap.ID != quota.ProviderClaude || snap.Error != "" {
 			continue
 		}
-		usage := AccountUsage{Name: name, Known: true}
+		entry := accountUsageCacheEntry{usage: AccountUsage{Name: name, Known: true}}
 		if snap.UpdatedAt > 0 {
-			usage.UpdatedAt = time.Unix(snap.UpdatedAt, 0)
-			usage.HasUpdatedAt = true
+			entry.usage.UpdatedAt = time.Unix(snap.UpdatedAt, 0)
+			entry.usage.HasUpdatedAt = true
 		}
 		for _, w := range snap.Windows {
 			switch w.Kind {
 			case quota.WindowFiveHour:
-				usage.FiveHour = AccountUsageWindow{Known: true, Percent: w.UsedPercentage}
+				entry.usage.FiveHour = AccountUsageWindow{Known: true, Percent: w.UsedPercentage}
+				entry.fiveHour = w
 			case quota.WindowSevenDay:
-				usage.SevenDay = AccountUsageWindow{Known: true, Percent: w.UsedPercentage}
+				entry.usage.SevenDay = AccountUsageWindow{Known: true, Percent: w.UsedPercentage}
+				entry.sevenDay = w
 			}
 		}
-		return usage
+		return entry
 	}
 	return unreadable
 }

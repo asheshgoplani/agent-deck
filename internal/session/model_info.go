@@ -219,3 +219,19 @@ func titleWord(s string) string {
 	runes[0] = unicode.ToUpper(runes[0])
 	return string(runes)
 }
+
+// EffectiveClaudeModel returns the model a Claude session launches with: its
+// own override, then the conductor/group model, then [claude].default_model.
+// "" means Claude Code's own default.
+func (i *Instance) EffectiveClaudeModel() string {
+	if i == nil || !IsClaudeCompatible(i.Tool) {
+		return ""
+	}
+	model := i.resolveClaudeLaunchModel(i.LaunchModelID())
+	if model == "" {
+		if cfg, _ := LoadUserConfig(); cfg != nil {
+			model = cfg.Claude.DefaultModel
+		}
+	}
+	return strings.TrimSpace(model)
+}
