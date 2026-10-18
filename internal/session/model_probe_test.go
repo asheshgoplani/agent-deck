@@ -363,7 +363,7 @@ func TestModelProbe_OffInTestsByDefault(t *testing.T) {
 
 func TestModelProbe_ClaudeAndGeminiStayStatic(t *testing.T) {
 	installFakeCodex(t, fakeCodexOK)
-	for _, tool := range []string{"claude", "gemini", "opencode"} {
+	for _, tool := range []string{"claude", "gemini"} {
 		if got := KnownModelIDsForTool(tool); !slices.Equal(got, staticModelIDsForTool(tool)) {
 			t.Fatalf("%s: got %v, want static", tool, got)
 		}

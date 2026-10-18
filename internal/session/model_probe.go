@@ -26,15 +26,17 @@ import (
 // The static lists in model_catalog.go and reasoning_effort.go go stale every
 // time a vendor ships a model. Where the installed CLI can list its own models
 // without a billed request, Agent Deck asks it and merges the answer in front
-// of the static list. Today only Codex has such a command (`codex debug
-// models`); Claude Code and Gemini have no local listing and stay static.
+// of the static list. Codex (`codex debug models`) and OpenCode (`opencode
+// models`, #2664) have such a command; Claude Code and Gemini have no local
+// listing and stay static.
 //
 // The probe runs on the host that launches the session, with a short timeout.
 // Its result is cached on disk per tool, keyed by the resolved binary path,
 // its mtime and size, so a CLI upgrade re-probes. A missing CLI, a timeout, a
 // non-zero exit or output the strict parser rejects all fall back to the
 // static catalog, so offline behaviour is unchanged. `[models] probe = false`
-// turns the probe off entirely.
+// turns the probe off entirely, and `[models.<tool>]` pins or extends a
+// tool's list (see KnownModelIDsForTool).
 
 // ModelProbeResult is what a probe learned from an installed CLI.
 type ModelProbeResult struct {
@@ -53,12 +55,26 @@ type modelProber struct {
 	binary func() string
 	args   []string
 	parse  func([]byte) (*ModelProbeResult, error)
+	// timeout overrides modelProbeTimeout for a CLI with a slower start.
+	timeout time.Duration
+	// dir is the working directory for the probe; empty means inherited.
+	dir func() string
 }
 
 var codexModelProber = modelProber{name: "codex", binary: codexProbeBinary, args: []string{"debug", "models"}, parse: parseCodexDebugModels}
 
+// openCodeModelProber asks `opencode models`, which lists the models of the
+// providers that have credentials. OpenCode boots its whole runtime first, so
+// it gets a longer timeout. It runs from the home directory because a
+// project's opencode.json in the caller's cwd would change the answer, and the
+// cache is per binary, not per project.
+var openCodeModelProber = modelProber{
+	name: "opencode", binary: openCodeProbeBinary, args: []string{"models"}, parse: parseOpenCodeModels,
+	timeout: 3 * time.Second, dir: modelProbeHomeDir,
+}
+
 // modelProbers lists the tools that can answer.
-var modelProbers = []modelProber{codexModelProber}
+var modelProbers = []modelProber{codexModelProber, openCodeModelProber}
 
 // modelProberFor returns the prober for a tool kind. A switch, not a map
 // lookup, so the returned prober never carries the caller's string.
@@ -66,15 +82,27 @@ func modelProberFor(kind string) (modelProber, bool) {
 	switch kind {
 	case "codex":
 		return codexModelProber, true
+	case "opencode":
+		return openCodeModelProber, true
 	}
 	return modelProber{}, false
 }
 
 // codexProbeBinary is the executable of the configured [codex] command, so
-// the catalog comes from the Codex that sessions actually launch. Leading
-// VAR=value assignments are skipped; an empty command means "codex".
+// the catalog comes from the Codex that sessions actually launch.
 func codexProbeBinary() string {
-	for _, field := range strings.Fields(GetCodexCommand()) {
+	return probeBinaryFromCommand(GetCodexCommand(), "codex")
+}
+
+// openCodeProbeBinary is the executable of the configured [opencode] command.
+func openCodeProbeBinary() string {
+	return probeBinaryFromCommand(GetToolCommand("opencode"), "opencode")
+}
+
+// probeBinaryFromCommand returns the executable of a configured command line.
+// Leading VAR=value assignments are skipped; an empty command means fallback.
+func probeBinaryFromCommand(command, fallback string) string {
+	for _, field := range strings.Fields(command) {
 		if isShellEnvAssignment(field) {
 			continue
 		}
@@ -83,7 +111,12 @@ func codexProbeBinary() string {
 		}
 		break
 	}
-	return "codex"
+	return fallback
+}
+
+func modelProbeHomeDir() string {
+	home, _ := os.UserHomeDir()
+	return home
 }
 
 const (
@@ -249,7 +282,15 @@ func modelProbeBinaryKey(binary string) (modelProbeKey, error) {
 // runModelProbe executes the listing command and the version command. Neither
 // sends a prompt, so neither is billed.
 func runModelProbe(prober modelProber, path string) (*ModelProbeResult, string, error) {
-	out, err := runModelProbeCommand(path, prober.args...)
+	timeout := modelProbeTimeout
+	if prober.timeout > timeout {
+		timeout = prober.timeout
+	}
+	dir := ""
+	if prober.dir != nil {
+		dir = prober.dir()
+	}
+	out, err := runModelProbeCommandIn(timeout, dir, path, prober.args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -257,14 +298,21 @@ func runModelProbe(prober modelProber, path string) (*ModelProbeResult, string, 
 	if err != nil {
 		return nil, "", err
 	}
-	version, _ := runModelProbeCommand(path, "--version")
+	version, _ := runModelProbeCommandIn(timeout, dir, path, "--version")
 	return result, strings.TrimSpace(string(version)), nil
 }
 
 func runModelProbeCommand(path string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), modelProbeTimeout)
+	return runModelProbeCommandIn(modelProbeTimeout, "", path, args...)
+}
+
+// runModelProbeCommandIn runs a probe command in dir (empty: inherited) with
+// its own timeout.
+func runModelProbeCommandIn(timeout time.Duration, dir, path string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	// Do not wait for grandchildren holding the pipe open past the timeout.
@@ -272,7 +320,7 @@ func runModelProbeCommand(path string, args ...string) ([]byte, error) {
 	if err := cmd.Run(); err != nil {
 		command := filepath.Base(path) + " " + strings.Join(args, " ")
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("%s: timed out after %s", command, modelProbeTimeout)
+			return nil, fmt.Errorf("%s: timed out after %s", command, timeout)
 		}
 		return nil, fmt.Errorf("%s: %w", command, err)
 	}
@@ -395,6 +443,38 @@ func parseCodexDebugModels(data []byte) (*ModelProbeResult, error) {
 		}
 	}
 	return result, nil
+}
+
+// parseOpenCodeModels parses `opencode models`: one provider/model per line,
+// no header. A line without a slash means the format changed and rejects the
+// whole probe; a well-formed line whose ID has characters outside
+// probeIDPattern is skipped, so one odd provider does not hide the rest.
+func parseOpenCodeModels(data []byte) (*ModelProbeResult, error) {
+	result := &ModelProbeResult{}
+	for _, line := range strings.Split(string(data), "\n") {
+		id := strings.TrimSpace(line)
+		if id == "" {
+			continue
+		}
+		provider, model, ok := strings.Cut(id, "/")
+		if !ok || provider == "" || model == "" {
+			return nil, fmt.Errorf("parse opencode models: unexpected line %q", truncateProbeLine(id))
+		}
+		if probeIDPattern.MatchString(id) && !slices.Contains(result.Models, id) {
+			result.Models = append(result.Models, id)
+		}
+	}
+	if len(result.Models) == 0 {
+		return nil, errors.New("parse opencode models: no models")
+	}
+	return result, nil
+}
+
+func truncateProbeLine(line string) string {
+	if len(line) > 64 {
+		return line[:64] + "..."
+	}
+	return line
 }
 
 // mergeOrdered returns first's entries followed by the entries of rest that

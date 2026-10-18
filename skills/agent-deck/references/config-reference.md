@@ -316,11 +316,19 @@ Where the model and reasoning-effort suggestions come from (TUI and web new-sess
 ```toml
 [models]
 probe = true   # Ask installed CLIs for their model lists (default)
+
+[models.codex]
+extra = ["nova-2"]          # shown first, ahead of the probed and built-in models
+
+[models.opencode]
+list = ["acme/nova-2", "local/qwen"]   # replaces the suggestions entirely
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, no prompt, about 1s timeout); Claude Code and Gemini have no local listing and use the built-in catalog. Results are cached per CLI binary for up to a day in `<cache dir>/model-probe/`. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
+| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout) and OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for). Neither sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. Results are cached per CLI binary for up to a day in `<cache dir>/model-probe/`. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
+| `<tool>.list` | string array | `[]` | Pins the suggestions for `claude`, `codex`, `gemini` or `opencode`: only these IDs are offered, the CLI is not probed and the built-in catalog is not used. A custom tool wrapping Claude or Codex uses that tool's table. |
+| `<tool>.extra` | string array | `[]` | Extra IDs shown first, ahead of the probed and built-in models. Applies with `probe = false` too. |
 
 The lists are suggestions, not an allowlist: a `[claude] default_model` the catalog does not know is still prefilled in the new-session dialog (with a warning in the log), and `--model` passes any ID through.
 
