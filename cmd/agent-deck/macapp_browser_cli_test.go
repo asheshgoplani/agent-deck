@@ -22,7 +22,7 @@ import (
 // to exit codes, and no answer within --timeout.
 func TestMacappBrowserCLIRoundTripAndExitCodes(t *testing.T) {
 	home := t.TempDir()
-	writeMacappConfig(t, home, "[macapp]\nplugins = true\n")
+	writeMacappConfig(t, home, "[macapp]\nplugins = true\n\n[browser]\nenabled = true\n")
 	id := addOpenTestSession(t, home, "Browser driver")
 	stats := openTestBusDir(t, home)
 	responder, err := events.Open(stats.Dir)
@@ -98,7 +98,7 @@ func TestMacappBrowserCLIRoundTripAndExitCodes(t *testing.T) {
 // unknown sessions never reach the log; help is advertised.
 func TestMacappBrowserCLISessionAndRefusals(t *testing.T) {
 	home := t.TempDir()
-	writeMacappConfig(t, home, "[macapp]\nplugins = true\n")
+	writeMacappConfig(t, home, "[macapp]\nplugins = true\n\n[browser]\nenabled = true\n")
 	id := addOpenTestSession(t, home, "Browser refusals")
 	env := []string{"AGENTDECK_INSTANCE_ID=" + id, "SSH_CONNECTION=fake-remote 1 2 3"}
 
@@ -154,11 +154,9 @@ func TestMacappBrowserCLISessionAndRefusals(t *testing.T) {
 // a security boundary (an agent on the host controls its config and log; the
 // Mac app enforces the policy). Without it nothing reaches the log.
 func TestMacappBrowserCLINeedsPluginsOptIn(t *testing.T) {
-	for _, cfg := range []string{"", "[macapp]\nplugins = false\n"} {
+	for _, cfg := range []string{"[browser]\nenabled = true\n", "[macapp]\nplugins = false\n\n[browser]\nenabled = true\n"} {
 		home := t.TempDir()
-		if cfg != "" {
-			writeMacappConfig(t, home, cfg)
-		}
+		writeMacappConfig(t, home, cfg)
 		id := addOpenTestSession(t, home, "Browser gated")
 		for _, args := range [][]string{
 			{"browser", "tabs", "--session", id, "--timeout", "1s"},

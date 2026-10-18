@@ -39,6 +39,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[health] Section](#health-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
+- [[browser] Section](#browser-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -1127,6 +1128,25 @@ daemon = false   # Opt-in: send --json=envelope requests to `agent-deck daemon s
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `daemon` | bool | `false` | When `true`, a `--json=envelope` request of a registry command (`session start/stop/restart`, `list`, `group list`) is sent to the profile's daemon if one answers on its socket, and runs in process when none does, so the CLI keeps working with the daemon dead. Every other request, and every request when `false`, runs in process exactly as before; the socket is never dialled. |
+
+## [browser] Section
+
+The opt-in for `agent-deck browser <op>` (docs/macapp-browser.md). Off by default.
+
+```toml
+[browser]
+enabled = true          # every profile
+
+[profiles.work.browser]
+enabled = false         # this profile only; overrides [browser]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `browser.enabled` | bool | `false` | Allows `agent-deck browser <op>` and `events publish --kind macapp.browser.request` on this host. While off, both refuse before anything is published: exit 2, JSON code `BROWSER_DISABLED`, and the message names the setting and the command to turn it on. `agent-deck config set browser.enabled true`. |
+| `profiles.<name>.browser.enabled` | bool | none | Per-profile override of `browser.enabled`, either way. `agent-deck config set profiles.<name>.browser.enabled true`. |
+
+Browser requests also need `[macapp] plugins = true`. Both are opt-ins, not security boundaries: an agent on the host can edit its config. The Mac app enforces the browser policy.
 
 ## [tmux] Section
 

@@ -26,6 +26,12 @@ func TestEventsPublishBrowserKindsUngated(t *testing.T) {
 			t.Fatalf("%s gated: %d %s %s", kind, code, out, stderr)
 		}
 	}
+	// A browser request is refused first by the [browser] enabled opt-in
+	// (TestEventsPublishBrowserRequestNeedsBrowserEnabled), then by plugins.
+	if out, stderr, code := runAgentDeck(t, home, "events", "publish", "--kind", events.KindMacappBrowserRequest); code != 2 || !strings.Contains(out+stderr, "browser.enabled") {
+		t.Fatalf("browser request: %d %s %s", code, out, stderr)
+	}
+	writeMacappConfig(t, home, "[macapp]\nplugins = false\n\n[browser]\nenabled = true\n")
 	for _, kind := range []string{events.KindMacappBrowserRequest, events.KindMacappSessionClosed, "macapp.browser.open", "macapp.browser.reload", "macapp.browser", "macapp.app.focus.other", "macapp.session.closed.x"} {
 		out, stderr, code := runAgentDeck(t, home, "events", "publish", "--kind", kind)
 		if code != 2 || !strings.Contains(out+stderr, "plugins = true") {

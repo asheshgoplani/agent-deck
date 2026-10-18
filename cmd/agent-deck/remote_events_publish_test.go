@@ -250,7 +250,7 @@ func TestEventsPublishFromRemoteBoxChecks(t *testing.T) {
 		args  []string
 		want  string
 	}{
-		{"request kind", reply, []string{"--kind", events.KindMacappBrowserRequest, "--session", id, "--data-file", "-"}, "plugins = true"},
+		{"request kind", reply, []string{"--kind", events.KindMacappBrowserRequest, "--session", id, "--data-file", "-"}, "browser.enabled"},
 		{"open kind", reply, []string{"--kind", events.KindMacappOpen, "--session", id, "--data-file", "-"}, "not a Mac app reply"},
 		{"other session", reply, []string{"--kind", events.KindMacappOpenAck, "--session", "not-on-this-box", "--data-file", "-"}, "not a session of this host"},
 		{"no session", reply, []string{"--kind", events.KindMacappBrowserResponse, "--data-file", "-"}, "--session is required"},

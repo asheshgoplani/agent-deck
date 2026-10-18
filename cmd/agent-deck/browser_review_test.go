@@ -138,7 +138,7 @@ func TestBrowserResultSpill(t *testing.T) {
 // never lands in the events log, and `agent-deck browser read` prints it.
 func TestMacappBrowserCLIKeepsLargeResultsOutOfTheLog(t *testing.T) {
 	home := t.TempDir()
-	writeMacappConfig(t, home, "[macapp]\nplugins = true\n")
+	writeMacappConfig(t, home, "[macapp]\nplugins = true\n\n[browser]\nenabled = true\n")
 	id := addOpenTestSession(t, home, "Big page")
 	stats := openTestBusDir(t, home)
 	reader, err := events.Open(stats.Dir)

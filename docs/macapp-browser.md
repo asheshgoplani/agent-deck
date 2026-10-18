@@ -30,12 +30,22 @@ agent-deck browser shot  [--full] [--out FILE] [--tab ID]
 common: --session <id|title>, --json, --timeout <duration>
 ```
 
-Browser requests need `[macapp] plugins = true` in `config.toml` on the host
-that runs the command. While it is off, every op exits 1 with `browser
-requests are off: set [macapp] plugins = true` and nothing is written to the
-log. (`events publish --kind macapp.browser.request` has the same check.) This
-is an opt-in, not a security boundary: an agent on that host can edit its
-config, point `XDG_CONFIG_HOME` elsewhere or append to its own events log.
+Browser requests need two opt-ins in `config.toml` on the host that runs
+the command:
+
+- `[browser] enabled = true` (every profile), or `[profiles.<name>.browser]
+  enabled = true` for one profile (a profile setting overrides the global one
+  either way). Off by default. While off, every op and every `events publish
+  --kind macapp.browser.request` (local, or one claiming to come from a
+  remote) refuses before anything is published: exit 2, JSON code
+  `BROWSER_DISABLED`, and a message naming the setting and the command:
+  `agent-deck config set browser.enabled true` or
+  `agent-deck config set profiles.<name>.browser.enabled true`.
+- `[macapp] plugins = true`. While off, every op exits 1 with `browser
+  requests are off: set [macapp] plugins = true`, and nothing is written.
+
+Both are opt-ins, not security boundaries: an agent on that host can edit
+its config, point `XDG_CONFIG_HOME` elsewhere or append to its own events log.
 Plain `agent-deck open` needs no opt-in, so the check on `browser open` adds
 no protection by itself. The policy that protects the owner lives in the Mac
 app (see "Policy").
@@ -57,6 +67,7 @@ The wait starts once the request is on disk.
 |------|---------|
 | 0 | ok; for `open` with no answer in time: `Queued for AgentDeck: it opens when the app is connected` |
 | 1 | error: refused arguments, `[macapp] plugins` off, unknown session, disabled bus, or an app error (`not_your_tab`, `bad_args`, `unknown_session`, `refused_url`) |
+| 2 | `[browser] enabled` off for the profile (JSON code `BROWSER_DISABLED`); nothing was published |
 | 3 | `not_connected`: no answer within the timeout (the app is offline or not following this log) |
 | 4 | `owner_driving`: the owner kept using the page until the request expired |
 

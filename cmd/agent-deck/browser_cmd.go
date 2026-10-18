@@ -39,12 +39,19 @@ Common flags:
   --json                print the app's response
   --timeout <duration>  default 30s (120s for click and type)
 
-Exit codes: 0 ok, 1 error, 3 not_connected (no answer in time), 4 owner_driving.
+Off until two opt-ins are on (neither is a security boundary):
+  agent-deck config set browser.enabled true                  ([browser] enabled, every profile)
+  agent-deck config set profiles.<name>.browser.enabled true  (one profile only)
+  agent-deck config set macapp.plugins true                   ([macapp] plugins)
+
+Exit codes: 0 ok, 1 error, 2 browser.enabled off (JSON code BROWSER_DISABLED),
+3 not_connected (no answer in time), 4 owner_driving.
 Details: docs/macapp-browser.md`
 
 const (
 	browserExitOK           = 0
 	browserExitError        = 1
+	browserExitDisabled     = 2 // [browser] enabled is off for the profile
 	browserExitNotConnected = 3
 	browserExitOwnerDriving = 4
 )
@@ -83,6 +90,10 @@ func runBrowser(profile string, args []string, out, errOut io.Writer) int {
 		return browserExitError
 	}
 	code, err := runBrowserOp(profile, op, args[1:], out, errOut)
+	if errors.Is(err, errBrowserDisabled) && wantsJSON(args) {
+		_ = writeBrowserJSON(out, map[string]any{"success": false, "error": err.Error(), "code": ErrCodeBrowserDisabled})
+		return code
+	}
 	if err != nil {
 		fmt.Fprintf(errOut, "Error: browser %s: %v\n", op, err)
 	}
@@ -119,13 +130,16 @@ func runBrowserOp(profile string, op macapp.Op, args []string, out, errOut io.Wr
 	if err != nil {
 		return browserExitError, err
 	}
-	// An opt-in, not a security boundary: an agent on this host controls
-	// its config and the log. The Mac app enforces the policy.
-	if err := requireBrowserOptIn(); err != nil {
-		return browserExitError, err
-	}
 	profile, err = session.ResolveProfileForStorage(profile)
 	if err != nil {
+		return browserExitError, err
+	}
+	// Two opt-ins, neither a security boundary: an agent on this host
+	// controls its config and the log. The Mac app enforces the policy.
+	if err := requireBrowserEnabled(profile); err != nil {
+		return browserExitDisabled, err
+	}
+	if err := requireBrowserOptIn(); err != nil {
 		return browserExitError, err
 	}
 	inst, err := resolveCallingSession(profile, f.session, os.Getenv("AGENTDECK_INSTANCE_ID"), currentTmuxSessionName)
@@ -450,6 +464,28 @@ func displayPageText(s string) string {
 func checkBrowserResponseVersion(resp macapp.BrowserResponse) error {
 	if resp.V != macapp.ProtocolVersion {
 		return fmt.Errorf("AgentDeck answered with protocol version %d; this agent-deck speaks %d", resp.V, macapp.ProtocolVersion)
+	}
+	return nil
+}
+
+// ErrCodeBrowserDisabled is the JSON code of a browser request refused while
+// [browser] enabled is off for the profile.
+const ErrCodeBrowserDisabled = "BROWSER_DISABLED"
+
+// errBrowserDisabled wraps the refusal while [browser] enabled is off.
+var errBrowserDisabled = errors.New("browser requests are off")
+
+type browserDisabledError struct{ profile string }
+
+func (e browserDisabledError) Error() string        { return session.BrowserDisabledMessage(e.profile) }
+func (e browserDisabledError) Is(target error) bool { return target == errBrowserDisabled }
+
+// requireBrowserEnabled refuses a browser request unless [browser] enabled
+// (or [profiles.<profile>.browser] enabled) is on. Off by default.
+func requireBrowserEnabled(profile string) error {
+	cfg, _ := session.LoadUserConfig()
+	if !session.ResolveBrowserEnabled(cfg, profile) {
+		return browserDisabledError{profile: profile}
 	}
 	return nil
 }

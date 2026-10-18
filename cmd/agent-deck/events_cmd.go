@@ -274,10 +274,6 @@ func handleEventsPublish(profile string, args []string) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	if cfg, _ := session.LoadUserConfig(); !events.IsMacappUngatedKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
-		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		exitCLI(2)
-	}
 	if *profileFlag != "" {
 		p, err := resolveEventsProfile(*profileFlag)
 		if err != nil {
@@ -285,6 +281,23 @@ func handleEventsPublish(profile string, args []string) {
 			exitCLI(2)
 		}
 		profile = p
+	}
+	if *kind == events.KindMacappBrowserRequest {
+		// The browser opt-in gates the request kind on every publish path
+		// (a forwarded remote publish never carries it: reply kinds only).
+		resolved, err := session.ResolveProfileForStorage(profile)
+		if err != nil {
+			out.Error(fmt.Sprintf("events publish: %v", err), ErrCodeInvalidOperation)
+			exitCLI(2)
+		}
+		if err := requireBrowserEnabled(resolved); err != nil {
+			out.Error("events publish: "+err.Error(), ErrCodeBrowserDisabled)
+			exitCLI(2)
+		}
+	}
+	if cfg, _ := session.LoadUserConfig(); !events.IsMacappUngatedKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
+		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
+		exitCLI(2)
 	}
 	if *fromRemote {
 		if err := checkRemoteReplyPublish(profile, *kind, *sessionID, *data, *dataFile); err != nil {
