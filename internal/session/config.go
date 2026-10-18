@@ -398,18 +398,12 @@ func effectiveProfileWithSource(explicit string) (string, string, error) {
 }
 
 // configuredDefaultProfile returns config.json's default_profile, or
-// DefaultProfile ("default") when unset or unreadable. This mirrors the
-// tail of getEffectiveProfileWithSource (priority 4-5) and is the safe
-// landing spot ResolveProfileForStorage falls back to instead of an
-// unrecognized CLAUDE_CONFIG_DIR-inferred name (#1790).
-func configuredDefaultProfile() string {
-	profile, _ := readConfiguredDefaultProfile()
-	return profile
-}
-
-// readConfiguredDefaultProfile is configuredDefaultProfile plus the error it
-// fell back over when config.json could not be read or parsed.
-func readConfiguredDefaultProfile() (string, error) {
+// DefaultProfile ("default") when unset or unreadable, with the read error
+// in the unreadable case. This mirrors the tail of
+// getEffectiveProfileWithSource (priority 4-5) and is the safe landing spot
+// ResolveProfileForStorage falls back to instead of an unrecognized
+// CLAUDE_CONFIG_DIR-inferred name (#1790).
+func configuredDefaultProfile() (string, error) {
 	config, err := LoadConfig()
 	if err != nil {
 		return DefaultProfile, err
@@ -484,7 +478,7 @@ func resolveProfileForStorage(explicit string, quiet bool) (string, error) {
 		return effectiveProfile, nil
 	}
 
-	fallback, configErr := readConfiguredDefaultProfile()
+	fallback, configErr := configuredDefaultProfile()
 	if quiet {
 		if configErr != nil {
 			return "", configErr
