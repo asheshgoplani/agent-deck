@@ -170,7 +170,13 @@ func ConductorNameFromPath(path string) string {
 	if strings.TrimSpace(path) == "" {
 		return ""
 	}
-	name := filepath.Base(filepath.Clean(path))
+	// The session's project path is stored data: only an absolute, clean
+	// path with no ".." is compared (and statted) against the conductor dir.
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) || strings.Contains(path, "..") {
+		return ""
+	}
+	name := filepath.Base(path)
 	meta, err := LoadConductorMeta(name)
 	if err != nil {
 		return ""

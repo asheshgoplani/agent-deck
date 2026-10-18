@@ -92,7 +92,7 @@ func (i *Instance) configuredChannelStateDir(config *UserConfig, name, envVar st
 			return ExpandPath(v), true
 		}
 		if meta.EnvFile != "" {
-			if v, ok := envFileValue(resolvePath(meta.EnvFile, i.ProjectPath), envVar); ok {
+			if v, ok := envFileValue(resolvePath(meta.EnvFile, i.ProjectPath), i.ProjectPath, envVar); ok {
 				return v, true
 			}
 		}
@@ -106,13 +106,13 @@ func (i *Instance) configuredChannelStateDir(config *UserConfig, name, envVar st
 		}
 	}
 	if f := i.getToolEnvFile(); f != "" {
-		if v, ok := envFileValue(resolvePath(f, i.ProjectPath), envVar); ok {
+		if v, ok := envFileValue(resolvePath(f, i.ProjectPath), i.ProjectPath, envVar); ok {
 			return v, true
 		}
 	}
 	if config != nil {
 		for k := len(config.Shell.EnvFiles) - 1; k >= 0; k-- {
-			if v, ok := envFileValue(resolvePath(config.Shell.EnvFiles[k], i.ProjectPath), envVar); ok {
+			if v, ok := envFileValue(resolvePath(config.Shell.EnvFiles[k], i.ProjectPath), i.ProjectPath, envVar); ok {
 				return v, true
 			}
 		}
@@ -121,8 +121,26 @@ func (i *Instance) configuredChannelStateDir(config *UserConfig, name, envVar st
 }
 
 // envFileValue reads a `[export ]KEY=value` line from an env file.
-func envFileValue(path, key string) (string, bool) {
-	data, err := os.ReadFile(path)
+//
+// The path comes from operator config (meta.json env_file, the tool env_file,
+// [shell].env_files) and may carry expanded env-var values, so it is read only
+// when it is absolute, clean, free of "..", and sits (lexically and after
+// symlink resolution) under HOME or the session's project tree: the same guard
+// as the env_file existence probe (validateEnvFileForProbe). A file outside
+// those roots is not read here; it is still sourced by the prelude, whose
+// value then overrides the conductor pointer at runtime, as for init_script.
+func envFileValue(path, projectPath, key string) (string, bool) {
+	clean, ok := validateEnvFileForProbe(path, projectPath)
+	if !ok {
+		return "", false
+	}
+	// Traversal barrier and root containment, colocated with the read below.
+	clean = filepath.Clean(clean)
+	if !filepath.IsAbs(clean) || strings.Contains(clean, "..") ||
+		!containedUnderAny(clean, probeRoots(projectPath)) {
+		return "", false
+	}
+	data, err := os.ReadFile(clean)
 	if err != nil {
 		return "", false
 	}
