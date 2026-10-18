@@ -20,22 +20,34 @@ import (
 // Stop hook does not block for it, the digest does not count it, and the
 // drain retires it as consumed without showing it.
 //
-// The match is on turn identity, never on time. A read records the
-// transcript uuid of the Claude assistant record it printed; a record
-// carries the uuid of the assistant record holding the turn's final text
-// (TurnUUID). Only equal uuids withdraw. Timestamps cannot do this safely:
-// a hook-driven record is stamped with the hook's whole second, and Stop can
-// fire before the final assistant record is written (#1186), so a read that
-// looks "after" the stamp can still have shown mid-turn or previous-turn
-// text. With uuids such a read names an older record and the notice is
-// delivered. A record without a TurnUUID, a read that was clipped or came
-// from the pane, and a non-Claude read never match: the rule only errs
-// toward delivering.
+// The match is on turn identity first. A read records the transcript uuid of
+// the Claude assistant record it printed; a record carries the uuid of the
+// assistant record holding the turn's text (TurnUUID). Only equal uuids
+// withdraw. Time alone cannot do this safely: a hook-driven record is
+// stamped with the hook's whole second, and Stop can fire before the final
+// assistant record is written (#1186), so a read that looks "after" the
+// stamp can still have shown mid-turn or previous-turn text. Two more
+// guards close the case where that interim text is what both sides name
+// (text X, a tool call, then the final text Y not yet flushed, and a parent
+// that peeked at X mid-turn):
+//
+//   - a record built while a tool call or tool result was newer than its
+//     text (TurnFacts.FinalTextPending -> TurnTextInterim) is never
+//     withdrawn: X is not the final reply;
+//   - a read withdraws a record only when it came at or after the record's
+//     time (the turn's end), so a mid-turn peek never counts.
+//
+// A record without a TurnUUID, a read that was clipped, quiet (-q), JSON,
+// copied or from the pane, and a non-Claude read never match: the rule only
+// errs toward delivering. The comms consumers' ledger path does not consult
+// reads either; there a read result is delivered once more, as before.
 //
 // Layout: <data>/runtime/result-reads/<reader>.json, a map of child id to
 // the turn uuids the reader was shown (newest last, at most
-// resultReadTurnsKept) and the Unix millisecond of the latest read. Entries
-// older than the consumed-turn TTL are pruned on write.
+// resultReadTurnsKept), the Unix millisecond of each turn's latest read and
+// of the latest read overall. Entries older than the consumed-turn TTL are
+// pruned on write; the file goes with the reader's other per-parent files
+// when the reader session is removed.
 
 // resultReadsLockWait bounds the wait for the per-reader file lock. The
 // lock is held for one small read-modify-write.
@@ -53,6 +65,11 @@ const resultReadTurnsKept = 8
 type resultRead struct {
 	Turns []string `json:"turns"`
 	At    int64    `json:"at"` // Unix ms of the latest read; pruning only
+	// ReadAt is the Unix ms of the latest read of each turn in Turns. A read
+	// withdraws a record only when it came at or after the record's time
+	// (the turn's end), so a mid-turn peek never counts. A file written
+	// before this field existed has none and withdraws nothing.
+	ReadAt map[string]int64 `json:"read_at,omitempty"`
 }
 
 // resultReads is one reader's reads: child id -> the turns it was shown.
@@ -99,6 +116,14 @@ func NoteResultRead(readerID, childID, turnUUID string, at time.Time) error {
 			entry.Turns = entry.Turns[extra:]
 		}
 	}
+	readAt := make(map[string]int64, len(entry.Turns))
+	for _, turn := range entry.Turns {
+		if ms, ok := entry.ReadAt[turn]; ok {
+			readAt[turn] = ms
+		}
+	}
+	readAt[turnUUID] = max(readAt[turnUUID], at.UnixMilli())
+	entry.ReadAt = readAt
 	entry.At = max(entry.At, at.UnixMilli())
 	reads[childID] = entry
 	cutoff := at.Add(-consumedTurnsTTL).UnixMilli()
@@ -119,12 +144,17 @@ func NoteResultRead(readerID, childID, turnUUID string, at time.Time) error {
 // covers reports whether the reader was already shown the turn ev
 // announces: ev is a finished turn of a local child (a status edge to
 // waiting or idle, or a completion sentinel), not a question, carries the
-// uuid of its final assistant record, and the reader read that same record.
+// uuid of its final assistant record (not interim text the final reply had
+// not replaced yet), and the reader read that same record at or after the
+// record's time, so the read came once the turn had ended.
 func (r resultReads) covers(ev TransitionNotificationEvent) bool {
-	if len(r) == 0 || !noticeCarriesResult(ev) {
+	if len(r) == 0 || !noticeCarriesResult(ev) || ev.TurnTextInterim || ev.Timestamp.IsZero() {
 		return false
 	}
-	return slices.Contains(r[strings.TrimSpace(ev.ChildSessionID)].Turns, strings.TrimSpace(ev.TurnUUID))
+	entry := r[strings.TrimSpace(ev.ChildSessionID)]
+	uuid := strings.TrimSpace(ev.TurnUUID)
+	readAt, ok := entry.ReadAt[uuid]
+	return ok && slices.Contains(entry.Turns, uuid) && readAt >= ev.Timestamp.UnixMilli()
 }
 
 // noticeCarriesResult reports whether a record only announces one result

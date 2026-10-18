@@ -24,15 +24,23 @@ func TestNoteResultRead_RecordsTurnsReadPerChild(t *testing.T) {
 	if len(reads) != 1 || strings.Join(reads["c"].Turns, ",") != "u1,u2" {
 		t.Fatalf("reads = %+v, want only c with turns u1,u2", reads)
 	}
-	finished := TransitionNotificationEvent{ChildSessionID: "c", Kind: transitionKindFinished, TurnUUID: "u2"}
+	finished := TransitionNotificationEvent{ChildSessionID: "c", Kind: transitionKindFinished, TurnUUID: "u2", Timestamp: t0.Add(-time.Minute)}
 	if !reads.covers(finished) {
-		t.Fatal("a read of the record's own turn must cover it")
+		t.Fatal("a read of the record's own turn, made after the turn ended, must cover it")
 	}
-	// Time plays no part: a record stamped long after the read still matches
-	// by turn, and one stamped before it does not match another turn.
+	// Review B1(b): a read made before the record's time (a mid-turn peek)
+	// never covers it, even with the same uuid; nor does a record with no time.
 	finished.Timestamp = t0.Add(time.Hour)
-	if !reads.covers(finished) {
-		t.Fatal("the match is on turn identity, not on time")
+	if reads.covers(finished) {
+		t.Fatal("a read made before the turn ended must not cover its record")
+	}
+	finished.Timestamp = time.Time{}
+	if reads.covers(finished) {
+		t.Fatal("a record without a time must not be covered")
+	}
+	interim := TransitionNotificationEvent{ChildSessionID: "c", Kind: transitionKindFinished, TurnUUID: "u2", Timestamp: t0.Add(-time.Minute), TurnTextInterim: true}
+	if reads.covers(interim) {
+		t.Fatal("a record keyed on interim text must never be covered")
 	}
 	for name, ev := range map[string]TransitionNotificationEvent{
 		"other turn": {ChildSessionID: "c", Kind: transitionKindFinished, TurnUUID: "u3", Timestamp: t0.Add(-time.Hour)},
@@ -47,7 +55,7 @@ func TestNoteResultRead_RecordsTurnsReadPerChild(t *testing.T) {
 			t.Errorf("%s record must never be withdrawn", name)
 		}
 	}
-	waiting := TransitionNotificationEvent{ChildSessionID: "c", ToStatus: "waiting", TurnUUID: "u1"}
+	waiting := TransitionNotificationEvent{ChildSessionID: "c", ToStatus: "waiting", TurnUUID: "u1", Timestamp: t0.Add(-time.Minute)}
 	if !reads.covers(waiting) {
 		t.Fatal("a finished turn (waiting edge) whose turn was read must be covered")
 	}

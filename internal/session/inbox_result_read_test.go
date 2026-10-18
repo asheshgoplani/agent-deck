@@ -20,14 +20,21 @@ import (
 // The read marker is written straight to its on-disk layout here, so these
 // tests compile against releases without the feature and also pin that
 // layout (<runtime>/result-reads/<reader>.json, child id -> {"turns":
-// [uuid...], "at": unix ms}).
+// [uuid...], "at": unix ms, "read_at": {uuid: unix ms}}).
 
+// writeResultReadForTest records a read made now.
 func writeResultReadForTest(t *testing.T, readerID, childID, turnUUID string) {
+	t.Helper()
+	writeResultReadAtForTest(t, readerID, childID, turnUUID, time.Now())
+}
+
+func writeResultReadAtForTest(t *testing.T, readerID, childID, turnUUID string, at time.Time) {
 	t.Helper()
 	path := filepath.Join(runtimeDirOrTemp("result-reads"), sanitizeInboxName(readerID)+".json")
 	type entry struct {
-		Turns []string `json:"turns"`
-		At    int64    `json:"at"`
+		Turns  []string         `json:"turns"`
+		At     int64            `json:"at"`
+		ReadAt map[string]int64 `json:"read_at,omitempty"`
 	}
 	reads := map[string]entry{}
 	if raw, err := os.ReadFile(path); err == nil {
@@ -35,7 +42,11 @@ func writeResultReadForTest(t *testing.T, readerID, childID, turnUUID string) {
 	}
 	e := reads[childID]
 	e.Turns = append(e.Turns, turnUUID)
-	e.At = time.Now().UnixMilli()
+	e.At = at.UnixMilli()
+	if e.ReadAt == nil {
+		e.ReadAt = map[string]int64{}
+	}
+	e.ReadAt[turnUUID] = at.UnixMilli()
 	reads[childID] = e
 	data, err := json.Marshal(reads)
 	if err != nil {
