@@ -99,8 +99,10 @@ func (s *Search) SetSize(width, height int) {
 	s.height = height
 }
 
-// Show makes the search overlay visible
+// Show opens a fresh search, without retaining the previous query or selection.
 func (s *Search) Show() {
+	s.input.Reset()
+	s.updateResults()
 	s.visible = true
 	s.input.Focus()
 	s.switchToGlobal = false

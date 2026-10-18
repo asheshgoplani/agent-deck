@@ -103,10 +103,10 @@ func buildSetupCmd(ctx context.Context, scriptPath string, mode os.FileMode) *ex
 //
 // User-visible progress (#768): the start preamble, an explicit completion
 // line on success, and an explicit failure line on error are written to
-// stderr so callers (CLI streaming directly, TUI capturing into a buffer
-// for later display) can show the user what happened. Without these,
-// users couldn't tell whether the script had run, finished, or finished
-// cleanly before claude started.
+// stderr so callers can show the user what happened (the CLI streams them
+// directly; the TUI logs the captured buffer and shows its last lines in the
+// failure warning). Without these, users couldn't tell whether the script
+// had run, finished, or finished cleanly before claude started.
 func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
 	return CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName, WorktreeStateOptions{}, stdout, stderr, setupTimeout)
 }
