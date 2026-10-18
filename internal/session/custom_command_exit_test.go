@@ -31,7 +31,13 @@ func TestCustomCommandExitStatus(t *testing.T) {
 			require.Equal(t, "on", i.tmuxSession.OptionOverrides["remain-on-exit"])
 			i.tmuxSession.RunCommandAsInitialProcess = true
 			t.Cleanup(func() { _ = i.tmuxSession.Kill() })
-			require.NoError(t, i.tmuxSession.Start(tc.command))
+			// Launch through the same receipt wrapper every product launch path
+			// uses (start, sister start, restart). tmux 3.3a can leave a
+			// fast-exiting initial process unreaped, so pane_dead_status stays
+			// empty; the receipt is the product's fallback for that case.
+			command, err := i.wrapTrackedCommandExit(tc.command)
+			require.NoError(t, err)
+			require.NoError(t, i.tmuxSession.Start(command))
 			i.CreatedAt = time.Now().Add(-time.Minute)
 			require.Eventually(t, func() bool {
 				_ = i.UpdateStatus()

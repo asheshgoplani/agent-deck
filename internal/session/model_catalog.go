@@ -1,16 +1,54 @@
 package session
 
+import (
+	"slices"
+	"strings"
+)
+
 // KnownModelIDsForTool returns model suggestions for the tool configured on
-// this host: the installed CLI's own list when it can be probed (#2388), then
-// the static catalog entries the probe did not mention. The list is a
-// suggestion source, not an allowlist.
+// this host: `[models.<tool>] extra`, then the installed CLI's own list when
+// it can be probed (#2388), then the static catalog entries neither
+// mentioned. A non-empty `[models.<tool>] list` replaces all of that (#2664).
+// The list is a suggestion source, not an allowlist.
 func KnownModelIDsForTool(tool string) []string {
 	tool = CanonicalToolName(tool)
-	static := staticModelIDsForTool(tool)
-	if probed := probedModelCatalog(modelProbeKind(tool)); probed != nil {
-		return mergeOrdered(probed.Models, static)
+	override := modelListOverride(tool)
+	if pinned := cleanModelIDs(override.List); len(pinned) > 0 {
+		return pinned
 	}
-	return static
+	models := staticModelIDsForTool(tool)
+	if probed := probedModelCatalog(modelProbeKind(tool)); probed != nil {
+		models = mergeOrdered(probed.Models, models)
+	}
+	if extra := cleanModelIDs(override.Extra); len(extra) > 0 {
+		models = mergeOrdered(extra, models)
+	}
+	return models
+}
+
+// modelListOverride returns the [models.<tool>] table for a tool; a custom
+// tool wrapping Claude or Codex uses that tool's table.
+func modelListOverride(tool string) ModelListSettings {
+	cfg, _ := LoadUserConfig()
+	if cfg == nil {
+		return ModelListSettings{}
+	}
+	kind := modelProbeKind(tool)
+	if IsClaudeCompatible(tool) {
+		kind = "claude"
+	}
+	return cfg.Models.ForTool(kind)
+}
+
+// cleanModelIDs trims configured IDs and drops blanks and duplicates.
+func cleanModelIDs(ids []string) []string {
+	var out []string
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // modelProbeKind maps a tool name to the prober that answers for it, so a

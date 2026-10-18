@@ -12,7 +12,9 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -195,6 +197,13 @@ func (i *Instance) prepareHermesResume() {
 	recorded := i.HermesSessionID
 	i.mu.Unlock()
 
+	// The hook handler's record comes first: it saw every hook event of the
+	// current launch, while the binding above comes only from the hook
+	// status samples a watcher happened to read.
+	if owned := i.hermesOwnedSessionID(); owned != "" {
+		recorded = owned
+	}
+
 	resume, warning := recorded, ""
 	if recorded == "" {
 		workspace := i.EffectiveWorkingDir()
@@ -212,6 +221,81 @@ func (i *Instance) prepareHermesResume() {
 	i.hermesLastRejected = ""
 	i.pendingCodexRestartWarning = warning
 	i.mu.Unlock()
+}
+
+// hermesOwnedSessionSuffix names the per-entry sidecar in the hooks dir that
+// holds the Hermes session id the hook handler recorded for the entry.
+//
+// The binding in tool_data is fed by hook status samples: the status file
+// keeps only the latest event, the watcher reads it 100ms debounced, and a
+// CLI restart reads none. A Hermes turn writes its parent-only edges
+// (on_session_start, pre_llm_call, post_llm_call) and, within milliseconds,
+// the api, tool and on_session_end events that replace them in that file, so
+// a sample rarely shows a parent edge and the entry often never bound. The
+// hook handler sees every event, so it records the id of each parent edge
+// here, after the launch-generation check, where a replaced process cannot
+// write. The sidecar survives on_session_finalize: the finalized conversation
+// is the one a later restart resumes.
+const hermesOwnedSessionSuffix = ".hermes-session"
+
+// HermesHookRecordsOwnSession reports whether a Hermes hook event identifies
+// the entry's own conversation: a parent-only edge (hermesBindsOnEvent) that
+// is not a delegate_task child's (platform "subagent") and carries a Hermes
+// session id.
+func HermesHookRecordsOwnSession(event, platform, sessionID string) bool {
+	return hermesBindsOnEvent(event) &&
+		!strings.EqualFold(strings.TrimSpace(platform), hermesSubagentPlatform) &&
+		hermesSessionIDPattern.MatchString(strings.TrimSpace(sessionID))
+}
+
+// WriteHermesOwnedSessionID records sessionID as the entry's own Hermes
+// conversation. The hook handler calls it inside the launch-generation
+// critical section.
+func WriteHermesOwnedSessionID(instanceID, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if !hermesHookInstanceIDPattern.MatchString(instanceID) || strings.Contains(instanceID, "..") {
+		return fmt.Errorf("invalid instance id %q", instanceID)
+	}
+	if !hermesSessionIDPattern.MatchString(sessionID) {
+		return fmt.Errorf("invalid hermes session id %q", sessionID)
+	}
+	path := filepath.Join(hermesHookScope(instanceID, false), instanceID+hermesOwnedSessionSuffix)
+	var current string
+	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &current) == nil && current == sessionID {
+		return nil // most turn edges repeat the same id
+	}
+	return atomicHermesJSON(path, sessionID)
+}
+
+// hermesOwnedSessionID returns the id the hook handler recorded for this
+// entry, or "". A sandboxed entry's hook handler writes in its sandbox scope,
+// so that scope is read first.
+func (i *Instance) hermesOwnedSessionID() string {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return ""
+	}
+	sandboxed := i.IsSandboxed()
+	for _, dir := range []string{hermesHookScope(i.ID, sandboxed), hermesHookScope(i.ID, !sandboxed)} {
+		data, err := os.ReadFile(filepath.Join(dir, i.ID+hermesOwnedSessionSuffix))
+		if err != nil {
+			continue
+		}
+		var id string
+		if json.Unmarshal(data, &id) == nil && hermesSessionIDPattern.MatchString(id) {
+			return id
+		}
+	}
+	return ""
+}
+
+// clearHermesOwnedSessionID forgets the recorded id (fresh restart).
+func (i *Instance) clearHermesOwnedSessionID() {
+	if !hermesHookInstanceIDPattern.MatchString(i.ID) || strings.Contains(i.ID, "..") {
+		return
+	}
+	for _, dir := range []string{hermesHookScope(i.ID, false), hermesHookScope(i.ID, true)} {
+		_ = os.Remove(filepath.Join(dir, i.ID+hermesOwnedSessionSuffix))
+	}
 }
 
 // hermesWorkspaceShared reports whether another Hermes entry in the owning

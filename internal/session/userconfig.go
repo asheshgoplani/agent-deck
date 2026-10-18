@@ -2566,11 +2566,43 @@ type OpenCodeSettings struct {
 // `launch -capabilities` and reasoning-effort validation.
 type ModelsSettings struct {
 	// Probe asks installed CLIs that can list their own models (today:
-	// `codex debug models`) for their model and effort lists, cached per CLI
-	// binary, merged in front of the built-in catalog. Set false to use only
-	// the built-in catalog.
+	// `codex debug models` and `opencode models`) for their model and effort
+	// lists, cached per CLI binary, merged in front of the built-in catalog.
+	// Set false to use only the built-in catalog.
 	// Default: true
 	Probe *bool `toml:"probe,omitempty"`
+
+	// Per-tool overrides (#2664): [models.codex], [models.opencode], ...
+	// A custom tool uses the table of the tool it wraps.
+	Claude   ModelListSettings `toml:"claude,omitempty"`
+	Codex    ModelListSettings `toml:"codex,omitempty"`
+	Gemini   ModelListSettings `toml:"gemini,omitempty"`
+	OpenCode ModelListSettings `toml:"opencode,omitempty"`
+}
+
+// ModelListSettings pins or extends one tool's model suggestions.
+type ModelListSettings struct {
+	// List replaces the model suggestions entirely: no probed or built-in
+	// models. Reasoning efforts may still be probed.
+	List []string `toml:"list,omitempty"`
+	// Extra is shown first, ahead of the probed and built-in models.
+	Extra []string `toml:"extra,omitempty"`
+}
+
+// ForTool returns the override table for a tool kind ("claude", "codex",
+// "gemini", "opencode"); other kinds have none.
+func (m ModelsSettings) ForTool(kind string) ModelListSettings {
+	switch kind {
+	case "claude":
+		return m.Claude
+	case "codex":
+		return m.Codex
+	case "gemini":
+		return m.Gemini
+	case "opencode":
+		return m.OpenCode
+	}
+	return ModelListSettings{}
 }
 
 // ProbeEnabled reports whether installed CLIs may be probed. Defaults to true.
