@@ -386,6 +386,12 @@ func ExecuteCrossHarnessSwitch(ctx context.Context, cfg *UserConfig, source *Ins
 			return nil, err
 		}
 		uncertainLaunch = true
+		// Best-effort, like every other launch path: a Claude target in a
+		// never-trusted directory would otherwise sit at the folder-trust
+		// prompt and never become ready (#2677).
+		if err := preSeedCrossHarnessClaudeTrust(target); err != nil {
+			journal.Failure = "folder trust pre-seed: " + err.Error()
+		}
 		if err := deps.Lifecycle.StartTarget(ctx, target, plan); err != nil {
 			journal.Failure = "launch result uncertain: " + err.Error()
 			if writeErr := writeCrossHarnessJournal(journalPath, journal); writeErr != nil {
@@ -665,6 +671,35 @@ func crossHarnessPlanCommand(target *Instance, plan *FreshTargetLaunchPlan, _ st
 	readPayload := shellescape.Quote(`payload=$(cat "$1") || exit 1; shift; command=$1; shift; exec "$command" "$@" "$payload"`)
 	command := prefix + "sh -c " + readPayload + " agent-deck-handoff " + strings.Join(args, " ")
 	return command, true, nil
+}
+
+// preSeedCrossHarnessClaudeTrust marks a Claude target's working directory as
+// trusted before its first launch, mirroring the launch and account-switch
+// paths. The trust entry is keyed by the realpath (Claude resolves symlinks)
+// and written to the .claude.json the target Claude actually reads: the config
+// dir resolved for the target through the full chain (account, conductor,
+// group, env, profile, global), or ~/.claude.json when nothing sets one. A
+// worker-scratch .claude.json is a symlink into that resolved dir, so seeding
+// the resolved dir covers it too.
+func preSeedCrossHarnessClaudeTrust(target *Instance) error {
+	if target == nil || !IsClaudeCompatible(target.Tool) {
+		return nil
+	}
+	dir := target.EffectiveWorkingDir()
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	return PreAcceptClaudeTrust(crossHarnessClaudeTrustPath(target), dir)
+}
+
+// crossHarnessClaudeTrustPath returns the .claude.json that holds folder
+// trust for target.
+func crossHarnessClaudeTrustPath(target *Instance) string {
+	configDir, source := GetClaudeConfigDirSourceForInstance(target)
+	if source == "default" || configDir == "" {
+		return GetUserMCPRootPath()
+	}
+	return filepath.Join(configDir, ".claude.json")
 }
 
 func newCrossHarnessTarget(plan *FreshTargetLaunchPlan) *Instance {
