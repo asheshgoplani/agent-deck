@@ -571,7 +571,24 @@ func (r *SSHRunner) consumeLastStderr() []byte {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
-	return r.attachInteractive("session", "attach", sessionID)
+	cmd, transport, err := r.attachCommand("session", "attach", sessionID)
+	if err != nil {
+		return err
+	}
+	return runRemoteAttach(cmd, transport, r.imagePaste(sessionID))
+}
+
+// imagePaste is the Ctrl+V image route for one attached remote session
+// (remote_image_paste.go).
+func (r *SSHRunner) imagePaste(sessionID string) *remoteImagePaste {
+	return &remoteImagePaste{
+		remote:    r.name,
+		readImage: clipboardImage,
+		upload: func(ctx context.Context, data []byte, ext string) (string, error) {
+			return r.UploadImage(ctx, sessionID, data, ext)
+		},
+		tool: func(ctx context.Context) string { return r.SessionTool(ctx, sessionID) },
+	}
 }
 
 // RunInteractiveCreation uses the same PTY flow as ordinary remote attach.
@@ -590,7 +607,7 @@ func (r *SSHRunner) attachInteractive(args ...string) error {
 	if err != nil {
 		return err
 	}
-	return runRemoteAttach(cmd, transport)
+	return runRemoteAttach(cmd, transport, nil)
 }
 
 // moshServerProbeTimeout bounds the pre-attach check that the remote can
@@ -639,7 +656,7 @@ func (r *SSHRunner) remoteHasMoshServer() bool {
 
 // runRemoteAttach runs an interactive transport command (ssh or mosh) in a
 // local PTY until it exits or the user detaches.
-func runRemoteAttach(cmd *exec.Cmd, transport string) error {
+func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) error {
 	// Start SSH with a local PTY pre-sized to the controlling terminal so the
 	// remote tmux client connects full-width from frame one (#1167). A bare
 	// pty.Start creates the PTY at the 80x24 default, which can size the remote
@@ -705,7 +722,13 @@ func runRemoteAttach(cmd *exec.Cmd, transport string) error {
 	detachCh := make(chan struct{})
 	input := sshAttachInput{writer: ptmx}
 	outputDone := make(chan struct{})
-	output := &attachOutput{w: os.Stdout}
+	output := &attachOutput{w: os.Stdout, bracketed: &bracketedPasteTracker{}}
+	if paste != nil {
+		paste.write = func(p []byte) error { _, err := ptmx.Write(p); return err }
+		paste.bracketed = output.bracketed.enabled
+		paste.notice = func(text string) { output.notice(text, terminalRows()) }
+		input.paste = paste
+	}
 
 	// Copy PTY output to stdout.
 	wg.Add(1)
@@ -863,15 +886,48 @@ type attachOutput struct {
 	mu        sync.Mutex
 	w         io.Writer
 	discarded bool
+	// bracketed follows the remote program's bracketed-paste mode (an image
+	// path typed by a Ctrl+V paste is wrapped like a paste when it is on).
+	bracketed *bracketedPasteTracker
 }
 
 func (o *attachOutput) Write(p []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.bracketed != nil {
+		o.bracketed.observe(p)
+	}
 	if o.discarded {
 		return len(p), nil
 	}
 	return o.w.Write(p)
+}
+
+// notice draws one line on the terminal's last row (tmux's status line in an
+// attach, which tmux repaints on its next status update); "" clears it.
+func (o *attachOutput) notice(text string, rows int) {
+	if rows < 1 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.discarded {
+		return
+	}
+	line := fmt.Sprintf("\x1b7\x1b[%d;1H\x1b[2K", rows)
+	if text != "" {
+		line += "\x1b[7m " + text + " \x1b[0m"
+	}
+	_, _ = o.w.Write([]byte(line + "\x1b8"))
+}
+
+// terminalRows is the owner's terminal height (0 when it cannot be read).
+func terminalRows() int {
+	_, rows, err := term.GetSize(int(os.Stdout.Fd())) // #nosec G115 -- fd is a small positive int
+	if err != nil {
+		return 0
+	}
+	return rows
 }
 
 func (o *attachOutput) discard() {
@@ -885,6 +941,9 @@ func (o *attachOutput) discard() {
 type sshAttachInput struct {
 	writer          io.Writer
 	detachRequested atomic.Bool
+	// paste takes a lone Ctrl+V when this machine's clipboard holds an image
+	// (nil: every key is forwarded as before).
+	paste *remoteImagePaste
 }
 
 func (input *sshAttachInput) forward(data []byte) (bool, error) {
@@ -895,6 +954,9 @@ func (input *sshAttachInput) forward(data []byte) (bool, error) {
 			_, _ = input.writer.Write(data[:idx])
 		}
 		return true, nil
+	}
+	if input.paste.take(data) {
+		return false, nil
 	}
 	_, err := input.writer.Write(data)
 	return false, err
