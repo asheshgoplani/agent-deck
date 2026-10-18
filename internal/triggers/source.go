@@ -24,21 +24,33 @@ const (
 // CommandCenter is the --source of the web command center's ask.
 const CommandCenter = "command-center"
 
-// Source names one sender. ID is the stable trigger key "<kind>:<unit>"
-// (the launchd label or systemd unit when known, so a tagged send and the
-// scanned unit land on the same row), else "<kind>:<name>".
+// Source names one sender. ID is the stable trigger key: "<kind>:<name>"
+// for a named kind (heartbeat:ops, channel:telegram), and the unit's own key
+// "<launchd|systemd>:<unit>" for a bare job name, so a tagged send and the
+// scanned unit land on the same row. UnitKind/Unit name the launchd job or
+// systemd unit this process runs under, when inference found one.
 type Source struct {
 	Kind     string
 	Name     string
+	UnitKind string
 	Unit     string
 	Inferred bool
 }
 
 func (s Source) ID() string {
-	if s.Unit != "" {
+	if s.Unit != "" && s.Kind == s.UnitKind {
 		return s.Kind + ":" + s.Unit
 	}
 	return s.Kind + ":" + s.Name
+}
+
+// UnitID is the key of the unit this send runs under ("" when none). A mute
+// on that unit applies whatever --source the job passes.
+func (s Source) UnitID() string {
+	if s.Unit == "" {
+		return ""
+	}
+	return s.UnitKind + ":" + s.Unit
 }
 
 // IsTrigger reports whether fires from this source belong in the default
@@ -102,11 +114,13 @@ func Resolve(explicit, senderSessionID string, env Env) Source {
 	}
 	if explicit != "" {
 		src := ParseExplicit(explicit)
-		if src.Kind == "job" {
-			// A bare name from a launchd job or systemd unit joins the scanned
-			// row of that unit; the explicit name stays the display name.
-			if inf := Infer(env); inf.Kind == KindLaunchd || inf.Kind == KindSystemd || inf.Kind == KindCron {
-				src.Kind, src.Unit = inf.Kind, inf.Name
+		if inf := Infer(env); inf.Kind == KindLaunchd || inf.Kind == KindSystemd || inf.Kind == KindCron {
+			src.UnitKind, src.Unit = inf.Kind, inf.Name
+			if src.Kind == "job" {
+				// A bare name from a launchd job or systemd unit joins the
+				// scanned row of that unit; the explicit name stays the
+				// display name.
+				src.Kind = inf.Kind
 			}
 		}
 		return src

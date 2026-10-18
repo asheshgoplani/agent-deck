@@ -96,8 +96,9 @@ func ApplyScan(db *statedb.StateDB, profile, host string, found []Found) error {
 	rows := make([]statedb.TriggerRow, 0, len(found))
 	for _, f := range found {
 		rows = append(rows, statedb.TriggerRow{
-			ID: f.ID(), Kind: f.Kind, Source: f.Unit, Host: host, ConfigPath: f.ConfigPath, Verb: f.Verb,
-			Target: f.Target, TargetBy: f.TargetBy, TargetProfile: f.TargetProfile, Schedule: f.Schedule, Unit: f.Unit,
+			ID: f.ID(), Kind: f.TriggerKind(), Source: f.Name(), Host: host, ConfigPath: f.ConfigPath, Verb: f.Verb,
+			Target: f.Target, TargetBy: f.TargetBy, TargetProfile: f.TargetProfile, Schedule: f.Schedule,
+			Unit: f.Unit, UnitKind: f.Kind,
 		})
 	}
 	if err := db.ReplaceScannedTriggers(rows); err != nil {
@@ -162,7 +163,7 @@ func RunCommand(v View, uid int) ([]string, error) {
 		return nil, fmt.Errorf("%s cannot be run from agent-deck: only scanned launchd jobs and systemd units can (kind %s)", v.ID, v.Kind)
 	}
 	unit := v.unit
-	switch v.Kind {
+	switch v.unitKind {
 	case KindSystemd:
 		return []string{"systemctl", "--user", "start", unit + ".service"}, nil
 	case KindLaunchd:

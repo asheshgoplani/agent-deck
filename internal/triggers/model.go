@@ -69,6 +69,7 @@ type View struct {
 	// feeds the reverse view and the row badge.
 	firesBySession map[string]int
 	unit           string
+	unitKind       string
 }
 
 // Resolved is a session a target points at.
@@ -86,11 +87,14 @@ type Resolver func(target, profile string) (Resolved, bool)
 func Build(rows []statedb.TriggerRow, stats map[string]*statedb.TriggerStats, resolve Resolver, host string, now time.Time) []View {
 	out := make([]View, 0, len(rows))
 	for _, r := range rows {
+		if r.UnitKind == "" && r.Scanned && (r.Kind == KindLaunchd || r.Kind == KindSystemd) {
+			r.UnitKind = r.Kind // a row scanned before unit_kind existed
+		}
 		v := View{
 			ID: r.ID, Host: r.Host, Kind: r.Kind, Source: r.Source, ConfigPath: r.ConfigPath,
-			Verb: r.Verb, Schedule: r.Schedule, Inferred: r.Inferred, unit: r.Unit,
+			Verb: r.Verb, Schedule: r.Schedule, Inferred: r.Inferred, unit: r.Unit, unitKind: r.UnitKind,
 			Target:   Target{AsWritten: r.Target, By: r.TargetBy, Profile: r.TargetProfile},
-			Runnable: r.Scanned && r.Unit != "" && (r.Kind == KindLaunchd || r.Kind == KindSystemd),
+			Runnable: r.Scanned && r.Unit != "" && (r.UnitKind == KindLaunchd || r.UnitKind == KindSystemd),
 		}
 		if v.Host == "" {
 			v.Host = host
@@ -109,9 +113,12 @@ func Build(rows []statedb.TriggerRow, stats map[string]*statedb.TriggerStats, re
 			v.MutedUntil = &mu
 		}
 		st := stats[r.ID]
-		var last *statedb.TriggerFireRow
+		var last, active *statedb.TriggerFireRow
 		if st != nil {
-			last = st.LastFire
+			last, active = st.LastFire, st.LastActive
+			if active == nil && last != nil && last.Outcome != OutcomeMuted {
+				active = last
+			}
 			v.Fires24h = st.Fires24h
 			v.firesBySession = st.FiresByID
 			if st.Fires24h > 0 {
@@ -131,7 +138,7 @@ func Build(rows []statedb.TriggerRow, stats map[string]*statedb.TriggerStats, re
 				}
 			}
 		}
-		v.Health = health(v, last)
+		v.Health = health(v, last, active)
 		out = append(out, v)
 	}
 	return out
@@ -139,17 +146,19 @@ func Build(rows []statedb.TriggerRow, stats map[string]*statedb.TriggerStats, re
 
 // health applies the rules in order: a target that names no session is the
 // worst state, then a failed last fire, then a trigger that never fired.
-func health(v View, last *statedb.TriggerFireRow) string {
+// Muted fires are skipped (active is the newest fire that was not muted):
+// muting a failing trigger must not make it look healthy.
+func health(v View, last, active *statedb.TriggerFireRow) string {
 	if v.Target.AsWritten != "" && !v.Target.Resolved {
 		return HealthDeadTarget
 	}
-	if v.Target.AsWritten == "" && last != nil && last.Outcome == OutcomeDeadTarget {
+	if v.Target.AsWritten == "" && active != nil && active.Outcome == OutcomeDeadTarget {
 		return HealthDeadTarget
 	}
 	if last == nil {
 		return HealthNeverFired
 	}
-	if last.Outcome == OutcomeFailed {
+	if active != nil && active.Outcome == OutcomeFailed {
 		return HealthFailing
 	}
 	return HealthOK

@@ -254,8 +254,23 @@ func TestTriggersMutedSendNotDelivered(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &res); err != nil || !res.Success || !res.Muted || res.TriggerID != "job:poller" || res.MutedUntil == "" || res.Delivery != "" {
 		t.Fatalf("muted send JSON: %v %s", err, stdout)
 	}
+	// A waiting caller (the chat bridge's --wait --json) gets a complete
+	// reply naming the mute, not a failure (review of #2738).
+	stdout, stderr, code = runAgentDeck(t, home, "session", "send", id, "second", "--source", "poller", "--wait", "--json")
+	if code != 0 {
+		t.Fatalf("muted --wait send: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	var waited struct {
+		Success    bool   `json:"success"`
+		Muted      bool   `json:"muted"`
+		Completion string `json:"completion"`
+		Content    string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &waited); err != nil || !waited.Success || !waited.Muted || waited.Completion != "complete" || !strings.Contains(waited.Content, "muted") {
+		t.Fatalf("muted --wait JSON: %v %s", err, stdout)
+	}
 	fires := listFires(t, home, "job:poller")
-	if len(fires.Fires) != 2 || fires.Fires[0].Outcome != "muted" || fires.Fires[0].Line != "second" || fires.Fires[1].Outcome != "failed" {
+	if len(fires.Fires) != 3 || fires.Fires[0].Outcome != "muted" || fires.Fires[1].Outcome != "muted" || fires.Fires[1].Line != "second" || fires.Fires[2].Outcome != "failed" {
 		t.Fatalf("fires after a muted send: %+v", fires)
 	}
 	doc := listTriggers(t, home)

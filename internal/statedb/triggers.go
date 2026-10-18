@@ -25,6 +25,7 @@ var triggerSchemaStatements = []string{
 		target_profile TEXT NOT NULL DEFAULT '',
 		schedule     TEXT NOT NULL DEFAULT '',
 		unit         TEXT NOT NULL DEFAULT '',
+		unit_kind    TEXT NOT NULL DEFAULT '',
 		pushed       INTEGER NOT NULL DEFAULT 0,
 		scanned      INTEGER NOT NULL DEFAULT 0,
 		inferred     INTEGER NOT NULL DEFAULT 0,
@@ -81,6 +82,7 @@ type TriggerRow struct {
 	TargetProfile string
 	Schedule      string
 	Unit          string
+	UnitKind      string // launchd | systemd: the scanned unit behind the trigger
 	Pushed        bool
 	Scanned       bool
 	Inferred      bool
@@ -104,10 +106,13 @@ type TriggerFireRow struct {
 
 // TriggerStats is the per-trigger aggregate the list view needs.
 type TriggerStats struct {
-	LastFire  *TriggerFireRow
-	Fires24h  int
-	Noops24h  int
-	FiresByID map[string]int // target session id -> fires in 24h
+	LastFire *TriggerFireRow
+	// LastActive is the newest fire that was not muted: a muted fire says
+	// nothing about the trigger's own health.
+	LastActive *TriggerFireRow
+	Fires24h   int
+	Noops24h   int
+	FiresByID  map[string]int // target session id -> fires in 24h
 }
 
 func unixOrZero(t time.Time) int64 {
@@ -170,22 +175,22 @@ func (s *StateDB) ReplaceScannedTriggers(rows []TriggerRow) error {
 		}
 		for _, r := range rows {
 			if _, err := tx.Exec(`
-				INSERT INTO triggers (id, kind, source, host, config_path, verb, target, target_by, target_profile, schedule, unit, scanned, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+				INSERT INTO triggers (id, kind, source, host, config_path, verb, target, target_by, target_profile, schedule, unit, unit_kind, scanned, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 				ON CONFLICT(id) DO UPDATE SET
 					kind = excluded.kind, host = excluded.host, config_path = excluded.config_path,
 					verb = excluded.verb, target = excluded.target, target_by = excluded.target_by,
 					target_profile = excluded.target_profile, schedule = excluded.schedule,
-					unit = excluded.unit, scanned = 1, updated_at = excluded.updated_at
+					unit = excluded.unit, unit_kind = excluded.unit_kind, scanned = 1, updated_at = excluded.updated_at
 			`, r.ID, r.Kind, r.Source, r.Host, r.ConfigPath, r.Verb, r.Target, r.TargetBy, r.TargetProfile,
-				r.Schedule, r.Unit, now, now); err != nil {
+				r.Schedule, r.Unit, r.UnitKind, now, now); err != nil {
 				return err
 			}
 		}
 		if _, err := tx.Exec(`DELETE FROM triggers WHERE scanned = 2 AND pushed = 0`); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE triggers SET scanned = 0, config_path = '', schedule = '', unit = '' WHERE scanned = 2`); err != nil {
+		if _, err := tx.Exec(`UPDATE triggers SET scanned = 0, config_path = '', schedule = '', unit = '', unit_kind = '' WHERE scanned = 2`); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM trigger_fires WHERE trigger_id NOT IN (SELECT id FROM triggers)`); err != nil {
@@ -264,7 +269,7 @@ func (s *StateDB) bumpTriggersRev() error {
 // TriggersRev returns the last trigger write stamp ("" when never written).
 func (s *StateDB) TriggersRev() (string, error) { return s.GetMeta(triggersRevKey) }
 
-const triggerColumns = `id, kind, source, host, config_path, verb, target, target_by, target_profile, schedule, unit,
+const triggerColumns = `id, kind, source, host, config_path, verb, target, target_by, target_profile, schedule, unit, unit_kind,
 	pushed, scanned, inferred, muted_until, created_at, updated_at`
 
 func scanTriggerRow(sc interface{ Scan(...any) error }) (TriggerRow, error) {
@@ -272,7 +277,7 @@ func scanTriggerRow(sc interface{ Scan(...any) error }) (TriggerRow, error) {
 	var pushed, scanned, inferred int
 	var muted, created, updated int64
 	err := sc.Scan(&r.ID, &r.Kind, &r.Source, &r.Host, &r.ConfigPath, &r.Verb, &r.Target, &r.TargetBy,
-		&r.TargetProfile, &r.Schedule, &r.Unit, &pushed, &scanned, &inferred, &muted, &created, &updated)
+		&r.TargetProfile, &r.Schedule, &r.Unit, &r.UnitKind, &pushed, &scanned, &inferred, &muted, &created, &updated)
 	r.Pushed, r.Scanned, r.Inferred = pushed == 1, scanned == 1, inferred == 1
 	r.MutedUntil, r.CreatedAt, r.UpdatedAt = timeOrZero(muted), timeOrZero(created), timeOrZero(updated)
 	return r, err
@@ -374,6 +379,25 @@ func (s *StateDB) TriggerStatsSince(since time.Time) (map[string]*TriggerStats, 
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	active, err := s.db.Query(`
+		SELECT ` + triggerFireColumns + ` FROM trigger_fires f
+		WHERE f.id = (SELECT g.id FROM trigger_fires g WHERE g.trigger_id = f.trigger_id AND g.outcome != 'muted' ORDER BY g.ts DESC, g.id DESC LIMIT 1)`)
+	if err != nil {
+		return nil, err
+	}
+	for active.Next() {
+		f, err := scanTriggerFire(active)
+		if err != nil {
+			active.Close()
+			return nil, err
+		}
+		fc := f
+		get(f.TriggerID).LastActive = &fc
+	}
+	active.Close()
+	if err := active.Err(); err != nil {
 		return nil, err
 	}
 	last, err := s.db.Query(`

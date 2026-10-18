@@ -3412,14 +3412,21 @@ func handleSessionSend(profile string, args []string) {
 		if until := fire.mutedUntil(); !until.IsZero() {
 			fire.record(triggers.OutcomeMuted)
 			summary := fmt.Sprintf("Not delivered to '%s': %s is muted until %s (logged as muted)", inst.Title, fire.source.ID(), until.Local().Format("2006-01-02 15:04"))
-			out.Success(summary, map[string]interface{}{
+			mutedData := map[string]interface{}{
 				"success":       true,
 				"muted":         true,
 				"muted_until":   until.UTC(),
 				"trigger_id":    fire.source.ID(),
 				"session_id":    inst.ID,
 				"session_title": inst.Title,
-			})
+			}
+			if *wait || *stream {
+				// A waiting caller (the chat bridge) gets a complete reply
+				// that says why nothing ran, not a "send failed".
+				mutedData["completion"] = "complete"
+				mutedData["content"] = summary
+			}
+			out.Success(summary, mutedData)
 			out.QuietNotice(summary)
 			return
 		}

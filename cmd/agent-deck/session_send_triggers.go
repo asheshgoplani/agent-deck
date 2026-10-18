@@ -77,10 +77,19 @@ func (f *sendTriggerFire) onExit(code int) {
 	_ = events.CloseDefault()
 }
 
-// mutedUntil reports whether this sender is muted now.
+// mutedUntil reports whether this sender is muted now: its own row, or the
+// launchd job / systemd unit it runs under (so a job cannot pass a fresh
+// --source to get past a mute on its unit).
 func (f *sendTriggerFire) mutedUntil() time.Time {
 	if f == nil {
 		return time.Time{}
 	}
-	return triggers.MutedUntil(f.db, f.source.ID(), time.Now())
+	now := time.Now()
+	until := triggers.MutedUntil(f.db, f.source.ID(), now)
+	if unit := f.source.UnitID(); unit != "" && unit != f.source.ID() {
+		if u := triggers.MutedUntil(f.db, unit, now); u.After(until) {
+			until = u
+		}
+	}
+	return until
 }

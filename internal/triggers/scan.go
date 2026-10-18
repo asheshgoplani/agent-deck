@@ -30,9 +30,47 @@ type Found struct {
 	TargetBy      string // title | id
 	TargetProfile string
 	Schedule      string
+	// Source is the --source the unit passes ("" when none or unreadable). A
+	// named kind (heartbeat:ops) becomes the row's id, so the scanned unit
+	// and the sends it tags are one row.
+	Source string
 }
 
-func (f Found) ID() string { return f.Kind + ":" + f.Unit }
+// ID is the trigger key: the unit's --source when it names a kind,
+// otherwise "<kind>:<unit>" (which a bare --source name also maps to).
+func (f Found) ID() string {
+	if src := f.namedSource(); src != nil {
+		return src.ID()
+	}
+	return f.Kind + ":" + f.Unit
+}
+
+// TriggerKind is the kind shown for the row.
+func (f Found) TriggerKind() string {
+	if src := f.namedSource(); src != nil {
+		return src.Kind
+	}
+	return f.Kind
+}
+
+// Name is the row's display name.
+func (f Found) Name() string {
+	if src := f.namedSource(); src != nil {
+		return src.Name
+	}
+	return f.Unit
+}
+
+func (f Found) namedSource() *Source {
+	if f.Source == "" {
+		return nil
+	}
+	src := ParseExplicit(f.Source)
+	if src.Kind == "job" || src.Name == "" {
+		return nil
+	}
+	return &src
+}
 
 // ScanDirs are the places a scan looks; tests point them at fixtures.
 type ScanDirs struct {
@@ -82,6 +120,10 @@ func listDir(dir string, budget *int, suffixes ...string) []string {
 }
 
 func readCapped(path string) (string, bool) {
+	// Stat before opening: opening a FIFO named like a unit would block.
+	if st, err := os.Stat(path); err != nil || !st.Mode().IsRegular() {
+		return "", false
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", false
@@ -104,6 +146,7 @@ var (
 	// agent-deck [-p P] session send|start|restart <target> / launch
 	verbPattern = regexp.MustCompile(`agent-deck(?:"|')?((?:\s+(?:-p|--profile)(?:\s+|=)\S+)*)\s+(?:session\s+(send|start|restart)|(launch))\b((?:\s+-{1,2}[A-Za-z-]+(?:=\S+)?)*)\s+("[^"]*"|'[^']*'|\S+)`)
 	profileArg  = regexp.MustCompile(`(?:-p|--profile)(?:\s+|=)(\S+)`)
+	sourceArg   = regexp.MustCompile(`--source(?:\s+|=)("[^"]*"|'[^']*'|\S+)`)
 	assignment  = regexp.MustCompile(`(?m)^\s*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=("[^"\n]*"|'[^'\n]*'|[^\s;#]+)`)
 	varRef      = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}?$`)
 	sessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9]{6,}$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -127,6 +170,7 @@ func describe(f *Found, command string) bool {
 			text = command + "\n" + body
 		}
 	}
+	text = stripComments(text)
 	if !agentDeckCall.MatchString(text) {
 		return false
 	}
@@ -139,18 +183,15 @@ func describe(f *Found, command string) bool {
 		f.Verb = m[3]
 	}
 	if p := profileArg.FindStringSubmatch(m[1]); p != nil {
-		f.TargetProfile = unquote(p[1])
+		f.TargetProfile = resolveWord(text, p[1])
+	}
+	if s := sourceArg.FindStringSubmatch(text[strings.Index(text, m[0]):]); s != nil {
+		f.Source = resolveWord(text, s[1])
 	}
 	if f.Verb == "launch" {
 		return true // launch creates a session; its argument is a path, not a target
 	}
-	target := unquote(m[5])
-	if v := varRef.FindStringSubmatch(target); v != nil {
-		target = lookupVar(text, v[1], v[2])
-	}
-	if strings.ContainsAny(target, "$`") {
-		target = ""
-	}
+	target := resolveWord(text, m[5])
 	f.Target = target
 	if target != "" {
 		f.TargetBy = "title"
@@ -159,6 +200,33 @@ func describe(f *Found, command string) bool {
 		}
 	}
 	return true
+}
+
+// resolveWord unquotes a shell word and resolves a plain $VAR / ${VAR:-x}
+// from an assignment in the same script. Anything still dynamic is
+// unknown (""), never guessed.
+func resolveWord(text, word string) string {
+	w := unquote(word)
+	if v := varRef.FindStringSubmatch(w); v != nil {
+		w = lookupVar(text, v[1], v[2])
+	}
+	if strings.ContainsAny(w, "$`") {
+		return ""
+	}
+	return w
+}
+
+// stripComments drops shell comment lines, so a script that only mentions
+// agent-deck in a comment is not a trigger.
+func stripComments(text string) string {
+	lines := strings.Split(text, "\n")
+	out := lines[:0]
+	for _, l := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(l), "#") {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func lookupVar(text, name, fallback string) string {
@@ -233,21 +301,41 @@ func scanSystemd(dir string, budget *int) []Found {
 		if !strings.HasSuffix(path, ".service") {
 			continue
 		}
-		body, ok := readCapped(path)
-		if !ok {
-			continue
+		if f, ok := scanOne(path, func() (Found, bool) { return systemdUnit(dir, path, present) }); ok {
+			out = append(out, f)
 		}
-		keys := unitKeys(body)
-		unit := strings.TrimSuffix(filepath.Base(path), ".service")
-		f := Found{Kind: KindSystemd, Unit: unit, ConfigPath: path}
-		command := strings.TrimLeft(strings.Join(keys["ExecStart"], "\n"), "-@:+!")
-		if !describe(&f, command) {
-			continue
-		}
-		f.Schedule = systemdSchedule(dir, unit, present)
-		out = append(out, f)
 	}
 	return out
+}
+
+// scanOne reads one unit file; a file that makes the parser panic is
+// skipped, so one bad file written by another app never breaks the scan.
+func scanOne(path string, read func() (Found, bool)) (f Found, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			f, ok = Found{}, false
+		}
+	}()
+	return read()
+}
+
+func systemdUnit(dir, path string, present map[string]bool) (Found, bool) {
+	body, ok := readCapped(path)
+	if !ok {
+		return Found{}, false
+	}
+	keys := unitKeys(body)
+	unit := strings.TrimSuffix(filepath.Base(path), ".service")
+	f := Found{Kind: KindSystemd, Unit: unit, ConfigPath: path}
+	command := strings.TrimLeft(strings.Join(keys["ExecStart"], "\n"), "-@:+!")
+	if home, err := os.UserHomeDir(); err == nil {
+		command = strings.ReplaceAll(command, "%h", home)
+	}
+	if !describe(&f, command) {
+		return Found{}, false
+	}
+	f.Schedule = systemdSchedule(dir, unit, present)
+	return f, true
 }
 
 func systemdSchedule(dir, unit string, present map[string]bool) string {
@@ -380,34 +468,40 @@ func scanLaunchd(dir string, budget *int) []Found {
 	}
 	var out []Found
 	for _, path := range listDir(dir, budget, ".plist") {
-		body, ok := readCapped(path)
-		if !ok {
-			continue
+		if f, ok := scanOne(path, func() (Found, bool) { return launchdJob(path) }); ok {
+			out = append(out, f)
 		}
-		pl, err := parsePlist([]byte(body))
-		if err != nil {
-			continue
-		}
-		label := pl["Label"].str
-		if label == "" {
-			label = strings.TrimSuffix(filepath.Base(path), ".plist")
-		}
-		var args []string
-		for _, a := range pl["ProgramArguments"].array {
-			args = append(args, a.str)
-		}
-		if p := pl["Program"].str; p != "" && len(args) == 0 {
-			args = []string{p}
-		}
-		command := strings.Join(args, " ")
-		f := Found{Kind: KindLaunchd, Unit: label, ConfigPath: path}
-		if !describe(&f, command) {
-			continue
-		}
-		f.Schedule = launchdSchedule(pl)
-		out = append(out, f)
 	}
 	return out
+}
+
+func launchdJob(path string) (Found, bool) {
+	body, ok := readCapped(path)
+	if !ok {
+		return Found{}, false
+	}
+	pl, err := parsePlist([]byte(body))
+	if err != nil {
+		return Found{}, false
+	}
+	label := pl["Label"].str
+	if label == "" {
+		label = strings.TrimSuffix(filepath.Base(path), ".plist")
+	}
+	var args []string
+	for _, a := range pl["ProgramArguments"].array {
+		args = append(args, a.str)
+	}
+	if p := pl["Program"].str; p != "" && len(args) == 0 {
+		args = []string{p}
+	}
+	command := strings.Join(args, " ")
+	f := Found{Kind: KindLaunchd, Unit: label, ConfigPath: path}
+	if !describe(&f, command) {
+		return Found{}, false
+	}
+	f.Schedule = launchdSchedule(pl)
+	return f, true
 }
 
 func launchdSchedule(pl map[string]plistValue) string {
@@ -458,7 +552,9 @@ func calendarPhrase(d map[string]plistValue) string {
 	wd, hasWD := get("Weekday")
 	day := "daily"
 	if hasWD {
-		day = "weekly " + []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}[wd%8]
+		// launchd: 0 and 7 are Sunday; anything else out of range is not
+		// trusted (another app's plist), so it never indexes out of range.
+		day = "weekly " + []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}[((wd%7)+7)%7]
 	}
 	switch {
 	case hasH:
