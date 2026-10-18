@@ -109,6 +109,7 @@ func TestClassifySettlePane(t *testing.T) {
 		{"wrapped subdirectory of the own path", strings.Replace(trustScreen(settleProject+"/sub", 0), settleProject+"/sub", settleProject+"\n /sub", 1), SettlePaneTrustOther},
 		{"yes row without a no row is not a live dialog", "Accessing workspace:\n\n" + settleProject + "\n\nQuick safety check: Is this a project you created or one you trust?\n❯ Yes, I trust this folder\n", SettlePaneTrustOther},
 		{"trust dialog framed by two rules", strings.Repeat("─", 40) + "\n" + trustScreen(settleProject, 0) + "\n" + strings.Repeat("─", 40), SettlePaneTrustOwn},
+		{"leftover own-path dialog above a live one for another folder", trustScreen(settleProject, 0) + "\n" + trustScreen("/work/beta", 0), SettlePaneTrustOther},
 		{"theme", themePane, SettlePaneTheme},
 		{"bypass", bypassPane(false), SettlePaneBypass},
 		{"onboarding security notes", "Security notes:\n\n1. Claude can make mistakes\n\nPress Enter to continue…\n", SettlePaneOnboarding},
@@ -872,5 +873,100 @@ func TestSettleSwitch_CursorBouncingOffYesIsNotConfirmed(t *testing.T) {
 		if k == "Enter" {
 			t.Fatalf("Enter pressed although the cursor went back to No, exit: keys=%v", f.keys)
 		}
+	}
+}
+
+// Processes in other windows of the session carry its id too (tmux sets it
+// session-wide); they are live, not old pollers.
+func TestSettleSwitch_OtherWindowsOfTheSessionAreNotOldPollers(t *testing.T) {
+	cfgDir := t.TempDir()
+	procs := liveProcs("inst-1", cfgDir)
+	procs.cmds[300] = procowner.ProcCommand{PPID: 1, Args: []string{"zsh"}}
+	procs.cmds[301] = procowner.ProcCommand{PPID: 300, Args: []string{"bun", "run", "mcp-server.ts"}}
+	procs.env[301] = map[string]string{"AGENTDECK_INSTANCE_ID": "inst-1"}
+	procs.cmds[302] = procowner.ProcCommand{PPID: 300, Args: []string{"vim", "mcp.json"}}
+	procs.env[302] = map[string]string{"AGENTDECK_INSTANCE_ID": "inst-1"}
+	f := &fakeSettle{procs: procs, now: time.Unix(0, 0)}
+	f.set(readyPane)
+	deps := f.deps()
+	deps.SessionPanePIDs = func() ([]int, error) { return []int{100, 300}, nil }
+	report, _ := SettleSwitch(deps, settleOpts(cfgDir))
+	if !report.OK() || len(report.StalePollers) != 0 {
+		t.Fatalf("stale=%v receipt=%s", report.StalePollers, report.Receipt())
+	}
+}
+
+// One torn frame while the cursor moves is read again, not a stop.
+func TestSettleSwitch_TornFrameDuringMoveIsRetried(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(trustPane(settleProject))
+	f.onKey = func(f *fakeSettle, key string) {
+		switch key {
+		case "Down":
+			f.screens = []string{"Accessing workspa", trustScreen(settleProject, 1)}
+		case "Enter":
+			f.screens = []string{readyPane}
+		}
+	}
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if err != nil || !report.OK() || strings.Join(f.keys, ",") != "Down,Enter" {
+		t.Fatalf("err=%v keys=%v receipt=%s", err, f.keys, report.Receipt())
+	}
+}
+
+// A Claude worker started inside the session on another config dir is not
+// the session's own Claude.
+func TestSettleSwitch_ClaudeWorkerChildDoesNotFailVerification(t *testing.T) {
+	cfgDir := t.TempDir()
+	procs := liveProcs("inst-1", cfgDir)
+	procs.cmds[110] = procowner.ProcCommand{PPID: 101, Args: []string{"claude", "-p", "x"}}
+	procs.env[110] = map[string]string{"AGENTDECK_INSTANCE_ID": "inst-1", "CLAUDE_CONFIG_DIR": t.TempDir()}
+	f := &fakeSettle{procs: procs, now: time.Unix(0, 0)}
+	f.set(readyPane)
+	report, _ := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if !report.AccountOK {
+		t.Fatalf("receipt=%s", report.Receipt())
+	}
+}
+
+// The default account is seeded in ~/.claude.json, and no stub
+// ~/.claude/.claude.json is created (other readers take it as login state).
+func TestPreseedClaudeFirstStart_DefaultAccountSeedsHomeClaudeJSONWithoutStub(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PreseedClaudeFirstStart("", filepath.Join(home, ".claude"), "/work/alpha", false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+	if err != nil || !strings.Contains(string(data), `"/work/alpha"`) {
+		t.Fatalf("~/.claude.json not seeded: %v %s", err, data)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", ".claude.json")); err == nil {
+		t.Fatal("stub ~/.claude/.claude.json created")
+	}
+}
+
+// Claude repaints the closed dialog for longer than the grace period after
+// Enter; settle waits for it to close instead of answering it again.
+func TestSettleSwitch_SlowRepaintAfterEnterIsNotAnsweredAgain(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(trustScreen(settleProject, 1))
+	f.onKey = func(f *fakeSettle, key string) {
+		if key == "Enter" {
+			stale := make([]string, 0, 41)
+			for i := 0; i < 40; i++ {
+				stale = append(stale, trustScreen(settleProject, 1))
+			}
+			f.screens = append(stale, readyPane)
+		}
+	}
+	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if err != nil || strings.Join(f.keys, ",") != "Enter" {
+		t.Fatalf("err=%v keys=%v receipt=%s", err, f.keys, report.Receipt())
 	}
 }

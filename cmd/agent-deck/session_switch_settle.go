@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // Exit codes of `session switch-settle`, also used by switch-account and
@@ -114,13 +115,6 @@ type settleRun struct {
 func runSwitchSettle(inst *session.Instance, run settleRun) (*session.SettleReport, error) {
 	cfg, _ := session.LoadUserConfig()
 	procs := session.NewHostSettleProcReader()
-	panePID := func() (int, error) {
-		tm := inst.GetTmuxSession()
-		if tm == nil {
-			return 0, fmt.Errorf("no tmux session")
-		}
-		return tm.PanePID()
-	}
 	restart := func() error {
 		if err := inst.Restart(); err != nil {
 			return err
@@ -142,28 +136,12 @@ func runSwitchSettle(inst *session.Instance, run settleRun) (*session.SettleRepo
 				Problems: []string{"restart: " + err.Error()}}, nil
 		}
 	}
-	deps := session.SettleDeps{
-		Capture: func() (string, error) {
-			tm := inst.GetTmuxSession()
-			if tm == nil {
-				return "", fmt.Errorf("no tmux session")
-			}
-			return tm.CapturePrimaryPaneFresh()
-		},
-		SendKey: func(key string) error {
-			tm := inst.GetTmuxSession()
-			if tm == nil {
-				return fmt.Errorf("no tmux session")
-			}
-			return tm.SendNamedKeyToPrimaryWindow(key)
-		},
-		Restart:  restart,
-		PanePID:  panePID,
-		Procs:    procs,
-		Kick:     func(message string) error { return sendSettleKick(inst, message) },
-		AuthInfo: session.ClaudeAuthIdentity,
-		Log:      run.log,
-	}
+	deps := settleTmuxDeps(inst.GetTmuxSession)
+	deps.Restart = restart
+	deps.Procs = procs
+	deps.Kick = func(message string) error { return sendSettleKick(inst, message) }
+	deps.AuthInfo = session.ClaudeAuthIdentity
+	deps.Log = run.log
 	return session.SettleSwitch(deps, session.SettleOptions{
 		InstanceID:   inst.ID,
 		Title:        inst.Title,
@@ -176,6 +154,48 @@ func runSwitchSettle(inst *session.Instance, run settleRun) (*session.SettleRepo
 		ReadyTimeout: run.timeout,
 		OldPIDs:      oldPIDs,
 	})
+}
+
+// settleTmuxDeps reads and answers the session's agent window: the primary
+// window, whichever window the operator has focused. tm is looked up per call
+// because a restart can replace the session.
+func settleTmuxDeps(tm func() *tmux.Session) session.SettleDeps {
+	get := func() (*tmux.Session, error) {
+		if s := tm(); s != nil {
+			return s, nil
+		}
+		return nil, fmt.Errorf("no tmux session")
+	}
+	return session.SettleDeps{
+		Capture: func() (string, error) {
+			s, err := get()
+			if err != nil {
+				return "", err
+			}
+			return s.CapturePrimaryPaneFresh()
+		},
+		SendKey: func(key string) error {
+			s, err := get()
+			if err != nil {
+				return err
+			}
+			return s.SendNamedKeyToPrimaryWindow(key)
+		},
+		PanePID: func() (int, error) {
+			s, err := get()
+			if err != nil {
+				return 0, err
+			}
+			return s.PrimaryPanePID()
+		},
+		SessionPanePIDs: func() ([]int, error) {
+			s, err := get()
+			if err != nil {
+				return nil, err
+			}
+			return s.AllPanePIDs()
+		},
+	}
 }
 
 // settleExpectedConfigDir is the account dir the restarted process must

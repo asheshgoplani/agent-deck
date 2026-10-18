@@ -69,7 +69,7 @@ func SnapshotPaneProcesses(inst *Instance) []int {
 	if tm == nil || !tm.Exists() {
 		return nil
 	}
-	pid, err := tm.PanePID()
+	pid, err := tm.PrimaryPanePID()
 	if err != nil || pid <= 0 {
 		return nil
 	}

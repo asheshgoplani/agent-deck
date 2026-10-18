@@ -3670,6 +3670,29 @@ func (s *Session) PanePID() (int, error) {
 	return PanePIDOfSession(s.SocketName, s.Name)
 }
 
+// PrimaryPanePID is PanePID for the managed agent window, whichever window
+// is active.
+func (s *Session) PrimaryPanePID() (int, error) {
+	out, err := runBoundedOutput(s.SocketName, "list-panes", "-t", s.primaryWindowTarget(), "-F", "#{pane_pid}")
+	return parsePanePID(out, err)
+}
+
+// AllPanePIDs lists the pane pid of every pane in every window of the
+// session.
+func (s *Session) AllPanePIDs() ([]int, error) {
+	out, err := runBoundedOutput(s.SocketName, "list-panes", "-s", "-t", s.Name, "-F", "#{pane_pid}")
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+		return nil, err
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if pid, convErr := strconv.Atoi(strings.TrimSpace(line)); convErr == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids, nil
+}
+
 // PanePIDOfSession is the name-explicit variant, for callers holding a session
 // name from somewhere other than a live Session — notably an ownership receipt,
 // which records the tmux session its leader was launched into. An Instance's

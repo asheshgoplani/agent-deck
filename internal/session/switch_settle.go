@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/procowner"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -262,8 +263,10 @@ func trustDialogPath(lines []string, projectPaths []string) (string, bool) {
 			want[p] = true
 		}
 	}
-	for i, line := range lines {
-		text := strings.Trim(line, settleBoxChars)
+	// The anchor nearest the option rows is the live dialog; leftover text
+	// of an earlier dialog above it is not.
+	for i := len(lines) - 1; i >= 0; i-- {
+		text := strings.Trim(lines[i], settleBoxChars)
 		anchor := ""
 		for _, a := range []string{"Accessing workspace:", "Do you trust the files in this folder?"} {
 			if strings.HasPrefix(text, a) {
@@ -358,11 +361,17 @@ func PreseedClaudeFirstStart(sourceDir, targetDir, projectPath string, bypass bo
 // config dir: <dir>/.claude.json, and for the default ~/.claude also
 // ~/.claude.json, which Claude reads when CLAUDE_CONFIG_DIR is unset.
 func claudeJSONPathsForDir(dir string) []string {
-	paths := []string{filepath.Join(ExpandPath(dir), ".claude.json")}
+	inDir := filepath.Join(ExpandPath(dir), ".claude.json")
 	if home, err := os.UserHomeDir(); err == nil && sameConfigDir(dir, filepath.Join(home, ".claude")) {
-		paths = append([]string{filepath.Join(home, ".claude.json")}, paths...)
+		// Never create a stub <dir>/.claude.json for the default account:
+		// other readers take its presence as the login state.
+		paths := []string{filepath.Join(home, ".claude.json")}
+		if _, statErr := os.Stat(inDir); statErr == nil {
+			paths = append(paths, inDir)
+		}
+		return paths
 	}
-	return paths
+	return []string{inDir}
 }
 
 func preseedClaudeJSON(source map[string]any, targetJSON, projectPath string, bypass bool) ([]string, error) {
@@ -498,16 +507,20 @@ func orDash(s string) string {
 // SettleDeps are the side effects settle needs; production wiring is in the
 // CLI, tests inject fakes.
 type SettleDeps struct {
-	Capture  func() (string, error)
-	SendKey  func(key string) error // tmux key name: "Enter", "Down"
-	Restart  func() error
-	PanePID  func() (int, error)
-	Procs    SettleProcReader
-	Kick     func(message string) error
-	AuthInfo func(configDir string) (string, error)
-	Sleep    func(time.Duration)
-	Now      func() time.Time
-	Log      func(format string, args ...any)
+	Capture func() (string, error)
+	SendKey func(key string) error // tmux key name: "Enter", "Down"
+	Restart func() error
+	PanePID func() (int, error)
+	// SessionPanePIDs lists every pane of the session (all windows); a
+	// process under any of them is live, never an old poller. nil: only
+	// PanePID's tree counts.
+	SessionPanePIDs func() ([]int, error)
+	Procs           SettleProcReader
+	Kick            func(message string) error
+	AuthInfo        func(configDir string) (string, error)
+	Sleep           func(time.Duration)
+	Now             func() time.Time
+	Log             func(format string, args ...any)
 }
 
 // SettleOptions configure one run.
@@ -758,24 +771,44 @@ func selectDialogYes(deps SettleDeps, yes, no []string) error {
 		moved := false
 		for wait := 0; wait < 10 && !moved; wait++ {
 			deps.Sleep(300 * time.Millisecond)
-			if yesRow, cursorRow, err = read(); err != nil {
-				return err
+			// A torn or partial frame is not evidence either way; read again.
+			y, c, readErr := read()
+			if readErr != nil {
+				continue
 			}
+			yesRow, cursorRow = y, c
 			moved = cursorRow != before
 		}
 		if !moved {
 			return fmt.Errorf("cursor did not move toward %q", yes[0])
 		}
 	}
-	deps.Sleep(300 * time.Millisecond)
-	again, cursorAgain, err := read()
-	if err != nil {
-		return err
+	// Two consecutive good frames must agree the cursor is on Yes.
+	agreed := false
+	for tries := 0; tries < 4 && !agreed; tries++ {
+		deps.Sleep(300 * time.Millisecond)
+		y, c, readErr := read()
+		if readErr != nil {
+			continue
+		}
+		agreed = c == y && cursorRow == yesRow && y == yesRow
+		yesRow, cursorRow = y, c
 	}
-	if cursorRow != yesRow || cursorAgain != again || cursorAgain != cursorRow {
+	if !agreed {
 		return fmt.Errorf("cursor not settled on %q", yes[0])
 	}
-	return deps.SendKey("Enter")
+	if err := deps.SendKey("Enter"); err != nil {
+		return err
+	}
+	// Wait for the dialog to close, so a late repaint of it is not taken
+	// for a dialog still waiting and answered a second time.
+	for wait := 0; wait < 30; wait++ {
+		deps.Sleep(300 * time.Millisecond)
+		if _, _, readErr := read(); readErr != nil {
+			break
+		}
+	}
+	return nil
 }
 
 func appendOnce(list []string, v string) []string {
@@ -902,12 +935,21 @@ func oldInstanceProcesses(deps SettleDeps, opts SettleOptions) []int {
 		return nil
 	}
 	current := map[int]bool{}
+	var roots []int
 	if deps.PanePID != nil {
 		if pid, perr := deps.PanePID(); perr == nil && pid > 0 {
-			current[pid] = true
-			for _, child := range settleDescendants(deps.Procs, pid) {
-				current[child] = true
-			}
+			roots = append(roots, pid)
+		}
+	}
+	if deps.SessionPanePIDs != nil {
+		if pids, perr := deps.SessionPanePIDs(); perr == nil {
+			roots = append(roots, pids...)
+		}
+	}
+	for _, root := range roots {
+		current[root] = true
+		for _, child := range settleDescendants(deps.Procs, root) {
+			current[child] = true
 		}
 	}
 	// This settle run and its ancestors (a detached self-switch job) carry
@@ -948,7 +990,7 @@ func oldInstanceProcesses(deps SettleDeps, opts SettleOptions) []int {
 // pollers and are left out.
 func settlePollerCommand(args []string) bool {
 	joined := strings.ToLower(strings.Join(args, " "))
-	for _, marker := range []string{"telegram", "discord", "slack", "mcp", "bun "} {
+	for _, marker := range []string{"telegram", "discord", "slack", "mcp-server", "mcp_server", "server-mcp", "/mcp", "bun "} {
 		if strings.Contains(joined, marker) {
 			return true
 		}
@@ -968,6 +1010,11 @@ func verifyAccount(deps SettleDeps, opts SettleOptions, report *SettleReport) {
 			cmds, _ := deps.Procs.Commands()
 			for _, child := range append([]int{pid}, settleDescendants(deps.Procs, pid)...) {
 				if deps.Procs.Env(child, "AGENTDECK_INSTANCE_ID") != opts.InstanceID || !settleClaudeCommand(cmds[child].Args) {
+					continue
+				}
+				// Only the session's own Claude: one started under it (a
+				// worker on another config dir) is not the session.
+				if settleUnderClaude(cmds, child, pid) {
 					continue
 				}
 				checked++
@@ -1007,11 +1054,23 @@ func settleClaudeCommand(args []string) bool {
 		return false
 	}
 	switch filepath.Base(args[0]) {
-	case "sh", "bash", "zsh", "dash", "fish", "-bash", "-zsh", "-sh", "bun":
+	case "sh", "bash", "zsh", "dash", "fish", "ksh", "tcsh", "csh", "-bash", "-zsh", "-sh", "bun":
 		return false
 	}
 	joined := strings.ToLower(strings.Join(args, " "))
 	return strings.Contains(joined, "claude") && !settlePollerCommand(args)
+}
+
+// settleUnderClaude reports whether pid has a Claude process among its
+// ancestors below the pane root.
+func settleUnderClaude(cmds map[int]procowner.ProcCommand, pid, root int) bool {
+	for p, hops := cmds[pid].PPID, 0; p > 1 && p != root && hops < 64; hops++ {
+		if settleClaudeCommand(cmds[p].Args) {
+			return true
+		}
+		p = cmds[p].PPID
+	}
+	return false
 }
 
 // settleRunsOnAccount reports whether a live CLAUDE_CONFIG_DIR is the

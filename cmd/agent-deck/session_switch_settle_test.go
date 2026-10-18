@@ -148,18 +148,16 @@ func (p *settleFakePane) keys() string {
 }
 
 func (p *settleFakePane) deps(t *testing.T, kicks *[]string) session.SettleDeps {
-	return session.SettleDeps{
-		Capture: p.sess.CapturePaneFresh,
-		SendKey: p.sess.SendNamedKey,
-		Restart: func() error {
-			if err := p.sess.Kill(); err != nil {
-				return err
-			}
-			return p.sess.Start(p.command)
-		},
-		PanePID: p.sess.PanePID,
-		Kick:    func(m string) error { *kicks = append(*kicks, m); return nil },
+	// The production tmux wiring, so the window targeting is under test.
+	deps := settleTmuxDeps(func() *tmux.Session { return p.sess })
+	deps.Restart = func() error {
+		if err := p.sess.Kill(); err != nil {
+			return err
+		}
+		return p.sess.Start(p.command)
 	}
+	deps.Kick = func(m string) error { *kicks = append(*kicks, m); return nil }
+	return deps
 }
 
 func fakePaneOpts(project string) session.SettleOptions {
@@ -242,5 +240,33 @@ func TestSwitchSettleExit(t *testing.T) {
 func TestParsePIDList(t *testing.T) {
 	if got := fmt.Sprint(parsePIDList("12, 13,x,1,0,-4,99")); got != "[12 13 99]" {
 		t.Fatalf("got %s", got)
+	}
+}
+
+// An operator window focused in the session does not divert settle: it
+// reads and answers the agent's own window.
+func TestSwitchSettle_FakeClaudePane_OtherWindowFocused(t *testing.T) {
+	project := t.TempDir()
+	p := startSettleFakePane(t, "swfb-two-windows", "trust", project)
+	if out, err := exec.Command("tmux", "new-window", "-t", p.sess.Name, "cat").CombinedOutput(); err != nil {
+		t.Skipf("new-window: %v %s", err, out)
+	}
+	var kicks []string
+	deps := p.deps(t, &kicks)
+	// The pane pid (process checks, verification) is the agent window's too.
+	first, err := exec.Command("tmux", "list-panes", "-t", p.sess.Name+":^", "-F", "#{pane_pid}").Output()
+	if err != nil {
+		t.Fatalf("list-panes: %v", err)
+	}
+	if pid, err := deps.PanePID(); err != nil || fmt.Sprint(pid) != strings.TrimSpace(string(first)) {
+		t.Fatalf("pane pid = %d (%v), want the agent window's %s", pid, err, first)
+	}
+	report, err := session.SettleSwitch(deps, fakePaneOpts(project))
+	if err != nil || strings.Join(report.Answered, ",") != "trust-own-path" {
+		pane, _ := p.sess.CapturePrimaryPaneFresh()
+		t.Fatalf("err=%v receipt=%s\npane:\n%s", err, report.Receipt(), pane)
+	}
+	if got := p.keys(); got != "key:[ESC[B]\nkey:[]" {
+		t.Fatalf("agent window read %q", got)
 	}
 }
