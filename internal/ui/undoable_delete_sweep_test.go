@@ -71,11 +71,16 @@ func TestTUIUndoableDeleteDefersInboxSweep(t *testing.T) {
 	require.Len(t, frames(), 1, "undo publishes nothing extra")
 
 	// Delete again, then push it off the 10-entry stack: now it is final.
-	h.pushUndoStack(inst)
+	// The sweep runs in the returned command, not in Update.
+	require.Nil(t, h.pushUndoStack(inst))
+	var evictSweep tea.Cmd
 	for i := 0; i < 10; i++ {
 		require.True(t, pending(), "swept while still undoable (push %d)", i)
-		h.pushUndoStack(&session.Instance{ID: fmt.Sprintf("other-%d", i)})
+		evictSweep = h.pushUndoStack(&session.Instance{ID: fmt.Sprintf("other-%d", i)})
 	}
+	require.True(t, pending(), "the eviction sweep must not run inside Update")
+	require.NotNil(t, evictSweep, "evicting an entry must return its sweep command")
+	evictSweep()
 	require.False(t, pending(), "a delete pushed off the undo stack must be swept")
 }
 

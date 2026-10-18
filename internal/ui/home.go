@@ -781,8 +781,12 @@ type Home struct {
 	lastNotifSwitchID string
 	lastNotifSwitchMu sync.Mutex
 
-	// Undo delete stack (Chrome-style: Ctrl+Z restores in reverse order)
+	// Undo delete stack (Chrome-style: Ctrl+Z restores in reverse order).
+	// undoMu guards its mutations so a signal-driven exit can take what is
+	// left (FinalizeUndoableDeletes); reads on the Update goroutine need no
+	// lock, since only that goroutine writes.
 	undoStack []deletedSessionEntry
+	undoMu    sync.Mutex
 
 	// Pending title changes: survives reload races.
 	// When a rename save is skipped (isReloading=true), the title change is
@@ -6332,21 +6336,122 @@ func (h *Home) getInstanceByID(id string) *session.Instance {
 
 // pushUndoStack adds a deleted session to the undo stack (LIFO, capped at 10).
 // An entry pushed off the stack can no longer be undone: its delete is final,
-// so the deferred inbox and notify-state sweep (#910) runs for it then.
-func (h *Home) pushUndoStack(inst *session.Instance) {
+// so the deferred inbox and notify-state sweep (#910) runs for it then, in
+// the returned command (nil when nothing was evicted).
+func (h *Home) pushUndoStack(inst *session.Instance) tea.Cmd {
 	entry := deletedSessionEntry{
 		instance:  inst,
 		deletedAt: time.Now(),
 	}
+	h.undoMu.Lock()
 	h.undoStack = append(h.undoStack, entry)
+	var evicted []deletedSessionEntry
 	if len(h.undoStack) > 10 {
-		evicted := h.undoStack[:len(h.undoStack)-10]
-		h.undoStack = h.undoStack[len(h.undoStack)-10:]
-		for _, e := range evicted {
-			if e.instance != nil {
-				logRemovedSessionCleanup("delete", e.instance.ID, session.SweepRemovedSession(e.instance.ID))
-			}
+		evicted = append(evicted, h.undoStack[:len(h.undoStack)-10]...)
+		h.undoStack = append([]deletedSessionEntry(nil), h.undoStack[len(h.undoStack)-10:]...)
+	}
+	h.undoMu.Unlock()
+	return h.finalizeDeletesCmd(undoEntryIDs(evicted))
+}
+
+// undoEntryIDs returns the session ids of undo entries.
+func undoEntryIDs(entries []deletedSessionEntry) []string {
+	var ids []string
+	for _, e := range entries {
+		if e.instance != nil && e.instance.ID != "" {
+			ids = append(ids, e.instance.ID)
 		}
+	}
+	return ids
+}
+
+// finalizeDeletesCmd runs the deferred inbox and notify-state sweep (#910)
+// for TUI deletes that can no longer be undone, off the Update loop. Nil
+// when ids is empty.
+func (h *Home) finalizeDeletesCmd(ids []string) tea.Cmd {
+	if len(ids) == 0 {
+		return nil
+	}
+	storage := h.storage
+	return func() tea.Msg {
+		finalizeRemovedSessions(storage, "delete", ids)
+		return nil
+	}
+}
+
+// finalizeRemovedSessions sweeps ids (see session.FinalizeRemovedSessions)
+// and logs the outcome.
+func finalizeRemovedSessions(storage *session.Storage, op string, ids []string) {
+	results, err := storage.FinalizeRemovedSessions(ids)
+	if err != nil {
+		uiLog.Warn(op+"_finalize_sweep_skipped", slog.Int("count", len(ids)), slog.String("err", err.Error()))
+	}
+	for id, r := range results {
+		logRemovedSessionCleanup(op, id, r)
+	}
+}
+
+// takeUndoStack empties the undo stack and returns its entries.
+func (h *Home) takeUndoStack() []deletedSessionEntry {
+	h.undoMu.Lock()
+	defer h.undoMu.Unlock()
+	entries := h.undoStack
+	h.undoStack = nil
+	return entries
+}
+
+// snapshotUndoStack copies the undo stack without changing it, so a reader
+// off the Update goroutine never writes state that goroutine reads unlocked.
+func (h *Home) snapshotUndoStack() []deletedSessionEntry {
+	h.undoMu.Lock()
+	defer h.undoMu.Unlock()
+	return append([]deletedSessionEntry(nil), h.undoStack...)
+}
+
+// FinalizeUndoableDeletes ends every delete still on the TUI undo stack when
+// a signal ends the process: they can no longer be undone, so their deferred
+// sweep runs now. Bounded by timeout; whatever is not swept by then keeps its
+// pending record for the next start's reconcile. Safe from any goroutine
+// (the stack is only read; the sweep is idempotent).
+func (h *Home) FinalizeUndoableDeletes(timeout time.Duration) {
+	ids := undoEntryIDs(h.snapshotUndoStack())
+	if len(ids) == 0 {
+		return
+	}
+	runBounded(timeout, func() { finalizeRemovedSessions(h.storage, "delete", ids) })
+}
+
+// runBounded runs fn and waits at most timeout for it.
+func runBounded(timeout time.Duration, fn func()) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		uiLog.Warn("finalize_sweep_timeout", slog.Duration("timeout", timeout))
+	}
+}
+
+// ReconcileRemovedSessionSweeps sweeps the inbox and notify-state records of
+// deletes an earlier process left unswept (it crashed or was killed while
+// they could still be undone). Run once per process, after storage loaded;
+// a no-op when storage is unavailable.
+func (h *Home) ReconcileRemovedSessionSweeps() {
+	if h.storage == nil {
+		return
+	}
+	results, err := h.storage.ReconcileRemovedSessionSweeps()
+	if err != nil {
+		uiLog.Warn("reconcile_removed_sweep_skipped", slog.String("err", err.Error()))
+	}
+	for id, r := range results {
+		logRemovedSessionCleanup("reconcile", id, r)
+	}
+	if len(results) > 0 {
+		uiLog.Info("reconcile_removed_sweep", slog.Int("swept", len(results)))
 	}
 }
 
@@ -8453,10 +8558,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Push to undo stack before removing from group tree
 		var cleanupDone chan struct{}
+		var evictSweep tea.Cmd
 		if deletedInstance != nil {
-			h.pushUndoStack(deletedInstance)
+			evictSweep = h.pushUndoStack(deletedInstance)
 			cleanupDone = make(chan struct{})
+			h.undoMu.Lock()
 			h.undoStack[len(h.undoStack)-1].cleanupDone = cleanupDone
+			h.undoMu.Unlock()
 			// Save to recent sessions for quick re-creation
 			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
 				uiLog.Warn("save_recent_session_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
@@ -8484,6 +8592,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		// Update search items
 		h.search.SetItems(h.instances)
+		// Undoable: record the pending sweep before the row goes, so a crash
+		// after the delete still leaves it for the startup reconcile.
+		if deletedInstance != nil {
+			if err := h.storage.MarkPendingDeleteSweep(msg.deletedID); err != nil {
+				uiLog.Warn("mark_pending_sweep_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+			}
+		}
 		// Explicitly delete from database to prevent resurrection on reload
 		cleanup, err := h.storage.DeleteInstanceDeferredCleanup(msg.deletedID)
 		if err != nil {
@@ -8510,7 +8625,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
 			}
 		}
-		return h, hookCleanupCmd(cleanup, cleanupDone)
+		return h, tea.Batch(hookCleanupCmd(cleanup, cleanupDone), evictSweep)
 
 	case sessionClosedMsg:
 		// Keep session metadata, just reflect runtime termination state.
@@ -8575,7 +8690,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		if msg.err != nil {
+			// The entry is off the undo stack and the session did not come
+			// back: the delete is final, so its deferred sweep runs now.
 			h.setError(fmt.Errorf("failed to restore session: %w", msg.err))
+			if msg.instance != nil {
+				return h, h.finalizeDeletesCmd([]string{msg.instance.ID})
+			}
 			return h, nil
 		}
 
@@ -13312,8 +13432,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("nothing to undo"))
 			return h, nil
 		}
+		h.undoMu.Lock()
 		entry := h.undoStack[len(h.undoStack)-1]
 		h.undoStack = h.undoStack[:len(h.undoStack)-1]
+		h.undoMu.Unlock()
 		inst := entry.instance
 		return h, func() tea.Msg {
 			// Restart reuses the ID and can write anchors before the registry row
@@ -14016,7 +14138,13 @@ func (h *Home) performQuit(shutdownPool bool) tea.Cmd {
 // performFinalShutdown performs the actual cleanup logic before exiting
 // This is called via quitMsg after the splash screen has had time to render
 func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
+	// Deletes still on the undo stack can no longer be undone once the TUI
+	// exits: take them here, on the Update goroutine, and sweep them below.
+	finalDeletes := undoEntryIDs(h.takeUndoStack())
 	return func() tea.Msg {
+		if len(finalDeletes) > 0 {
+			runBounded(5*time.Second, func() { finalizeRemovedSessions(h.storage, "delete", finalDeletes) })
+		}
 		h.removeHeartbeat()
 		// Stop system stats collector
 		if h.sshCollector != nil {

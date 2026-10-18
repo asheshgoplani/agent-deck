@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -237,12 +238,18 @@ func (m *WebMutator) DeleteSession(id string) error {
 	}
 	defer storage.Close()
 
+	// Undoable: record the pending sweep before the row goes, so a crash
+	// after the delete still leaves it for the startup reconcile.
+	if err := storage.MarkPendingDeleteSweep(id); err != nil {
+		uiLog.Warn("web_mark_pending_sweep_err", slog.String("id", id), slog.String("err", err.Error()))
+	}
 	if err := storage.DeleteInstance(id); err != nil {
 		return err
 	}
 	// Undoable (POST /api/sessions/undelete): announce it now; the inbox and
 	// notify-state sweep (#910) waits until the delete is final (the entry
-	// expires or leaves the undo stack, see pushUndo), so an undo keeps the
+	// expires, leaves the undo stack or the server stops, see pushUndo), so
+	// an undo keeps the
 	// session's pending inbox events.
 	session.PublishSessionClosed(storage.Profile(), id, session.SessionClosedRemoved)
 	inst.RecordTelemetryEndFrom(telemetry.EndDelete, telemetry.SurfaceWeb)
@@ -358,9 +365,22 @@ func (m *WebMutator) UndoDelete() (string, error) {
 		window = web.DefaultUndoWindow
 	}
 	if time.Since(entry.deletedAt) > window {
-		finalizeWebDeletes([]webDeletedEntry{entry})
+		m.finalizeWebDeletes([]webDeletedEntry{entry})
 		return "", web.ErrUndoExpired
 	}
+	id, err := m.restoreDeleted(entry)
+	if err != nil {
+		// The entry is popped and the session is not back: the delete is
+		// final, so its deferred sweep runs now (it skips a row that did
+		// make it back into storage).
+		m.finalizeWebDeletes([]webDeletedEntry{entry})
+		return "", err
+	}
+	return id, nil
+}
+
+// restoreDeleted restarts a popped undo entry and re-persists it.
+func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 
 	// Restart the session and re-persist alongside the rest of the
 	// current in-memory list. Note: Restart() may not succeed for every
@@ -423,20 +443,79 @@ func (m *WebMutator) pushUndo(inst *session.Instance) {
 	})
 	if len(m.undoStack) > 10 {
 		final = append(final, m.undoStack[:len(m.undoStack)-10]...)
-		m.undoStack = m.undoStack[len(m.undoStack)-10:]
+		m.undoStack = append([]webDeletedEntry(nil), m.undoStack[len(m.undoStack)-10:]...)
 	}
 	m.undoMu.Unlock()
-	finalizeWebDeletes(final)
+	m.finalizeWebDeletes(final)
+	// Sweep this entry once its undo window passes, even when no later web
+	// action comes.
+	time.AfterFunc(window+time.Millisecond, m.sweepExpiredUndo)
+}
+
+// sweepExpiredUndo finalizes the undo entries whose window has passed.
+func (m *WebMutator) sweepExpiredUndo() {
+	m.undoMu.Lock()
+	window := m.undoWindow
+	if window == 0 {
+		window = web.DefaultUndoWindow
+	}
+	var final []webDeletedEntry
+	kept := m.undoStack[:0]
+	for _, e := range m.undoStack {
+		if time.Since(e.deletedAt) > window {
+			final = append(final, e)
+		} else {
+			kept = append(kept, e)
+		}
+	}
+	m.undoStack = kept
+	m.undoMu.Unlock()
+	m.finalizeWebDeletes(final)
+}
+
+// FinalizePendingDeletes ends every delete still on the web undo stack: the
+// server is stopping, so they can no longer be undone and their deferred
+// sweep runs now. Called by web.Server.Shutdown and on a signal exit.
+func (m *WebMutator) FinalizePendingDeletes() {
+	m.undoMu.Lock()
+	final := m.undoStack
+	m.undoStack = nil
+	m.undoMu.Unlock()
+	m.finalizeWebDeletes(final)
 }
 
 // finalizeWebDeletes runs the deferred sweep for web deletes that can no
-// longer be undone.
-func finalizeWebDeletes(entries []webDeletedEntry) {
+// longer be undone (see session.Storage.FinalizeRemovedSessions).
+func (m *WebMutator) finalizeWebDeletes(entries []webDeletedEntry) {
+	var ids []string
 	for _, e := range entries {
-		if e.instance != nil {
-			logRemovedSessionCleanup("web_delete", e.instance.ID, session.SweepRemovedSession(e.instance.ID))
+		if e.instance != nil && e.instance.ID != "" {
+			ids = append(ids, e.instance.ID)
 		}
 	}
+	if len(ids) == 0 {
+		return
+	}
+	// The Home's storage is open for the whole process (its methods lock);
+	// open one only when the Home has none.
+	var storage *session.Storage
+	if m.h != nil {
+		storage = m.h.storage
+	}
+	if storage == nil {
+		profile := ""
+		if m.h != nil {
+			profile = m.h.profile
+		}
+		opened, err := session.NewStorageWithProfile(profile)
+		if err != nil {
+			uiLog.Warn("web_delete_finalize_sweep_skipped", slog.Int("count", len(ids)), slog.String("err", err.Error()))
+			return
+		}
+		defer opened.Close()
+		storage = opened
+	}
+	finalizeRemovedSessions(storage, "web_delete", ids)
 }
 
 // ForkSession forks an existing session using the proper tool-specific fork command.

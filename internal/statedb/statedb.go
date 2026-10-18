@@ -2186,6 +2186,35 @@ func (s *StateDB) GetMeta(key string) (string, error) {
 	return value, err
 }
 
+// DeleteMeta removes a key from the metadata table. A missing key is not an
+// error.
+func (s *StateDB) DeleteMeta(key string) error {
+	_, err := s.db.Exec("DELETE FROM metadata WHERE key = ?", key)
+	return err
+}
+
+// ListMetaPrefix returns every metadata key-value pair whose key starts with
+// prefix (compared literally, not as a LIKE pattern).
+func (s *StateDB) ListMetaPrefix(prefix string) (map[string]string, error) {
+	rows, err := s.db.Query(
+		"SELECT key, value FROM metadata WHERE substr(key, 1, ?) = ?",
+		len(prefix), prefix,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
 // TakeMeta reads a metadata value and clears it (sets to "") for consume-once
 // signals (e.g. focus_request). Use it instead of GetMeta-then-SetMeta(""): the
 // clear is a compare-and-clear that only wipes the row when it still holds the

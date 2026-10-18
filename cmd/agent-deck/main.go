@@ -116,6 +116,20 @@ func stopWatcherEngineOnSignal() {
 	}
 }
 
+// undoableDeletesSignalFinalize sweeps the deletes still undoable in this
+// process (TUI undo stack, web undo stack) when a signal ends it: the exit
+// makes them final. Whatever it misses is swept by the next start's
+// reconcile. Set once the home model exists (and again with the web mutator).
+var undoableDeletesSignalFinalize atomic.Pointer[func()]
+
+func setUndoableDeletesSignalFinalize(fn func()) { undoableDeletesSignalFinalize.Store(&fn) }
+
+func finalizeUndoableDeletesOnSignal() {
+	if fn := undoableDeletesSignalFinalize.Load(); fn != nil {
+		(*fn)()
+	}
+}
+
 // writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending
 // ` (update available: vA.B.C)` when the on-disk cache says the user
 // is behind. Offline — never touches the network. Conductor task #45.
@@ -966,6 +980,7 @@ func main() {
 			hooks.Stop()
 		}
 		stopWatcherEngineOnSignal()
+		finalizeUndoableDeletesOnSignal()
 		// Close control-mode pipes so their tmux clients detach cleanly instead
 		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
 		// avoids the signal-driven detach that races tmux/tmux#4980. The clean
@@ -1092,6 +1107,10 @@ func main() {
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
 	setTelemetrySignalClose(homeModel.CloseTelemetry)
 	setWatcherEngineSignalStop(homeModel.StopWatcherEngine)
+	setUndoableDeletesSignalFinalize(func() { homeModel.FinalizeUndoableDeletes(3 * time.Second) })
+	// Once per process (TUI and web): sweep the deletes an earlier process
+	// left undoable when it crashed or was killed. Off the startup path.
+	go homeModel.ReconcileRemovedSessionSweeps()
 	// --group / --select were already extracted and validated above, before
 	// the no-TTY gate; apply them to the model now that it exists.
 	if groupScope != "" {
@@ -1221,7 +1240,12 @@ func main() {
 			homeModel.SetHeadless(true)
 		}
 
-		server, err := buildWebServerFromOptions(effectiveProfile, webOptions, liveMenuData, ui.NewWebMutator(homeModel))
+		webMutator := ui.NewWebMutator(homeModel)
+		setUndoableDeletesSignalFinalize(func() {
+			homeModel.FinalizeUndoableDeletes(3 * time.Second)
+			webMutator.FinalizePendingDeletes()
+		})
+		server, err := buildWebServerFromOptions(effectiveProfile, webOptions, liveMenuData, webMutator)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: web server setup failed: %v\n", err)
 			exitCLI(1)
