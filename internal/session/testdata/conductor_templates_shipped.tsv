@@ -6,7 +6,8 @@
 # Four prior generations shipped, all recognised by
 # conductorInstructionsGenerations:
 #   generation v1.16.28/v1.16.29 (blob a172f023...; shared template only:
-#     the no-op notice rule was added to the shared template after v1.16.29,
+#     the /cmd quick command and the no-op notice rule were added to the
+#     shared template after v1.16.29,
 #     so the per-name templates those releases wrote are byte-identical to
 #     the current ones (the same hashes
 #     TestShippedV11624PerNameTemplatesAreCurrent pins))

@@ -179,6 +179,7 @@ The bridge forwards them as messages to your session:
 | `/sessions` | Run `agent-deck -p {PROFILE} list --json` and list active sessions with status |
 | `/check <name>` | Run `agent-deck -p {PROFILE} session output <name>` and summarize what it's doing |
 | `/send <name> <msg>` | Forward the message to that session via `agent-deck -p {PROFILE} session send` |
+| `/cmd <session> <slash command>` (also `cmd ...` without the leading slash) | Run a Claude Code client command (`/model <id>`, `/compact`, `/clear`, `/exit`, any slash command or skill) on that session: run `agent-deck -p {PROFILE} session command --json --wait-idle 60s <session> '<slash command>'` (single quotes, so `$(...)` and backticks in the text are never expanded; write a `'` inside it as `'\''`; add `--background` when `<session>` is you). Reply with one short line from the JSON: `after` or the first `evidence` entry when `ok`, otherwise `code` and `error`. `/cmd <session> what can I run` runs `agent-deck -p {PROFILE} session commands --json <session>` instead. Never type a slash command with `session send` or tmux. |
 | `/help` | List available commands |
 
 For any other text, treat it as a conversational message from the user. They might ask about session progress, give instructions for specific sessions, or ask you to create/manage sessions.

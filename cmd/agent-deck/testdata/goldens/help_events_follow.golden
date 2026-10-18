@@ -1,4 +1,4 @@
-Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only]
+Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--bus events|comms] [--read-only] [--profile <name>]
   -after uint
     	resume after this cursor (0 = from the beginning of the retained log)
   -bus string
@@ -9,6 +9,8 @@ Usage: agent-deck events follow --jsonl [--since <cursor>] [--kind <prefix,...>]
     	stream NDJSON frames (alias for --json) (default true)
   -kind string
     	only frames whose kind equals or starts with one of these comma-separated prefixes (e.g. session.status,session.turn,macapp.)
+  -profile string
+    	read this existing profile's log instead of the process profile
   -read-only
     	observe only: no send-worker recovery, no writer handle, no demand lease (tmux.output frames appear only while another follower asks for them); fails if no writer has created the bus yet
   -session string

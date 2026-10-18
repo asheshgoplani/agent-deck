@@ -501,6 +501,41 @@ then verifies that the original prompt clears. It never sends Enter or retries
 the decision automatically. Do not use `session send <id> "1"` for a Codex
 approval: that path sends composer text followed by Enter.
 
+### session command
+
+```bash
+agent-deck session command [--json] [--dry-run] [--timeout 120s] [--wait-idle 0s] [--background] [--result-file PATH] [<id|title|current>] "/<command> [args]"
+```
+
+Runs a Claude Code client command (`/model`, `/compact`, `/clear`, `/exit`, any other slash command or skill) on a Claude session and verifies the outcome from the screen. It proves the composer is empty and the agent idle before typing anything, closes the autocomplete picker deterministically, aborts if the picker would pick a different entry, submits, then waits for the evidence. Use it instead of `session send` or `tmux send-keys` for every slash command.
+
+- `<session>` omitted (one positional argument starting with `/`) or the literal `current`: the session owning the current tmux pane.
+- `--wait-idle D`: poll up to D for the target to be idle with an empty composer before acting (a busy target, or a session targeting itself).
+- `--background`: detach a child that runs the same command with `--wait-idle` (300s when 0) and writes the result JSON to `--result-file` (default a temp file); returns at once with `{"ok":true,"queued":true,"result_file":"..."}`. Required when a Claude session targets itself, since it is busy until its turn ends.
+- `--dry-run`: read only; prints the plan and the preflight state, types nothing.
+
+`--json` result, exit 0 only when `ok`:
+
+```json
+{"ok":true,"session":"api","session_id":"8c211446","command":"/model claude-haiku-5-5","kind":"model",
+ "before":"Fable 5.1","after":"Haiku 5.5","evidence":["Set model to Haiku 5.5 ..."],
+ "steps":["preflight: composer empty, idle","typed","picker closed","submitted","verified"]}
+```
+
+`code` and `error` are present only on failure. An unknown session exits 2: with `--json` it prints the same result object with `"code":"not_found"`, without it a plain error line.
+
+`kind` is `model`, `compact`, `clear`, `exit` or `generic`. Verification: model = the `Set model to X` echo; compact = the `Compacted` notice; clear = transcript redrawn with only the `/clear` echo; exit = Claude exits, the pane is gone and the session status is `stopped` (the `session stop` path, never other sessions); generic = the command echoed in the transcript and gone from the composer, or, when a long first response scrolled the echo off, the composer cleared and the transcript changed after Enter. The model id is matched to Claude's echo by family, version and the `[1m]`/`(1M context)` variant on token boundaries: `opus` (any Opus), `opus[1m]`, `claude-opus-5-5` (exactly 5.5); `s` or `opus-4` do not match Sonnet or Opus 4.6.
+
+Failure `code` values: `invalid_command`, `refused_command` (`/login` and `/logout` are never run: they act on the Claude config dir every session using it shares), `not_found` (exit 2), `not_running`, `unsupported_tool` (only Claude targets for now), `composer_draft` (unsent text in the composer, nothing typed), `agent_busy`, `dialog_open` (a selection or trust dialog where Enter could exit Claude, before typing; or, after submitting, a dialog with the command echo not visible above it, which may be a skill's own prompt, so it is left untouched), `no_prompt`, `unknown_command` (the picker would select a different entry; the text was removed, nothing submitted), `type_mismatch` (the composer did not show exactly the typed text; the line was cleared with Ctrl+U, nothing submitted), `verify_timeout` (submitted, outcome not seen in time), `command_error` (Claude printed an error such as Unknown command), `interactive_command` (the command opened a dialog, e.g. bare `/model`; it was cancelled), `enter_not_accepted` (Enter did not submit; the typed text was removed), `pane_gone`, `send_failed`, `unsupported_vim_mode` (vim composer), `stop_failed` (`/exit` ran but the stop could not be recorded). Never retry `composer_draft`, `unknown_command` or `dialog_open` automatically.
+
+### session commands
+
+```bash
+agent-deck session commands [--json] [<id|title|current>]
+```
+
+Lists the slash commands and skills a Claude session can run: Claude Code's built-in list plus the session's `CLAUDE_CONFIG_DIR` and project `.claude` commands, skills and enabled plugins. Nothing is typed into the pane, so it is safe on a busy session. `--json`: `{"session":"api","commands":[{"name":"/model","source":"builtin","description":"..."},{"name":"/catchup","source":"user"},{"name":"/voice-mode:on","source":"plugin:voice-mode"}]}`.
+
 ### session output
 
 ```bash
@@ -1144,11 +1179,12 @@ In the TUI, remote sessions use the same status indicators and nested group tree
 ```bash
 agent-deck remote <name> recall timeline <session> --json [--tail N | --since <cursor> | --before <before_cursor> --limit N]
 agent-deck remote <name> recall follow <session> --after <cursor|end> --jsonl [--status]
-agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>]
+agent-deck remote <name> events follow --jsonl [--since <cursor>] [--kind <prefix,...>] [--session <id>] [--profile <name>]
+agent-deck remote <name> events publish --kind macapp.open.ack|macapp.browser.response|macapp.app.focus --session <id> --data-file - < reply.json
 agent-deck remote <name> session send-status <send-id> --json
 ```
 
-Forwards the local read to the owner host and prints its output unchanged (rows v2 snapshots, follow frames, event frames, send-status records), in one SSH round trip on a dedicated channel; one-shot calls never open the persistent remote channel. Flags are checked on the owner host inside that same channel: an owner whose core predates the verb or flag answers exit 1 and, for `--json`/`--jsonl`, one `{error, remote, remote_version}` object whose `error` contains `unsupported remote command`, so clients fall back. Snapshots and send-status have a five minute deadline. A follow streams until the controller's stdin closes or the controller is terminated; the owner host then terminates and reaps its own reader. Stdin is the lifetime signal: a follow started with stdin from `/dev/null` (`</dev/null`, or a background job of a non-interactive shell) exits 0 within seconds with no output, so a long-lived consumer keeps a pipe to its stdin open and closes it to stop. Local `events follow` and `recall follow` ignore stdin. It never retries: resume with the last processed cursor. See `docs/remote-recall.md`.
+Forwards the local read to the owner host and prints its output unchanged (rows v2 snapshots, follow frames, event frames, send-status records), in one SSH round trip on a dedicated channel; one-shot calls never open the persistent remote channel. Flags are checked on the owner host inside that same channel: an owner whose core predates the verb or flag answers exit 1 and, for `--json`/`--jsonl`, one `{error, remote, remote_version}` object whose `error` contains `unsupported remote command`, so clients fall back. Snapshots and send-status have a five minute deadline. A follow streams until the controller's stdin closes or the controller is terminated; the owner host then terminates and reaps its own reader. Stdin is the lifetime signal: a follow started with stdin from `/dev/null` (`</dev/null`, or a background job of a non-interactive shell) exits 0 within seconds with no output, so a long-lived consumer keeps a pipe to its stdin open and closes it to stop. Local `events follow` and `recall follow` ignore stdin. It never retries: resume with the last processed cursor. See `docs/remote-recall.md`. `events publish` is the one write: it forwards only the Mac app's reply kinds, with the payload on stdin (at most 2 MiB, read before SSH); other kinds, inline `--data` and file paths are refused before the remote is contacted. It is negotiated like a read (an older owner answers `unsupported remote command`), and the owner accepts it only for one of its own sessions (`--session`; `macapp.app.focus` may omit it).
 
 ### remote drain
 

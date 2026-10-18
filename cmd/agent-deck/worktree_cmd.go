@@ -870,14 +870,8 @@ func handleWorktreeFinish(profile string, args []string) {
 	// keep re-firing [EVENT] deliveries to the parent conductor. Best-effort:
 	// failures warn but never block the finish (the SQLite removal above is
 	// the user-visible contract).
-	if swept, err := session.SweepInboxesForChildSession(inst.ID); err != nil && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "warn: inbox sweep for %s failed: %v\n", inst.ID, err)
-	} else if swept > 0 && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "swept %d stale inbox event(s) for removed session\n", swept)
-	}
-	if _, err := session.RemoveNotifyStateRecord(inst.ID); err != nil && !*jsonOutput {
-		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", inst.ID, err)
-	}
+	// The same helper publishes macapp.session.closed.
+	warnRemovedSessionCleanup(session.CleanupRemovedSession(storage.Profile(), inst.ID), inst.ID, *jsonOutput)
 
 	if *jsonOutput {
 		out.Print("", map[string]interface{}{
