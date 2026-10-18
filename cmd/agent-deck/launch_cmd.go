@@ -34,12 +34,17 @@ func applyAssertDone(message string, enabled bool) string {
 }
 
 // preAcceptLaunchTrust seeds Claude Code's per-directory trust flag
-// (projects[dir].hasTrustDialogAccepted) in the root ~/.claude.json before
-// the launch spawn, for claude-tool instances only — no other tool shows
-// this prompt. Keyed by realpath, matching the loadout trust seed (#1149),
-// since Claude resolves the cwd through symlinks. Best-effort: a failure is
-// reported to stderr and never blocks launch, matching every other
-// PreAcceptClaudeTrust call site.
+// (projects[dir].hasTrustDialogAccepted) before the launch spawn, for
+// claude-tool instances only — no other tool shows this prompt. Keyed by
+// realpath, matching the loadout trust seed (#1149), since Claude resolves
+// the cwd through symlinks. Best-effort: a failure is reported to stderr and
+// never blocks launch, matching every other PreAcceptClaudeTrust call site.
+//
+// The flag is written to the .claude.json Claude will actually read. With
+// an explicit config root (-account, conductor, group, env or profile
+// config_dir) the session runs with CLAUDE_CONFIG_DIR=<dir> and reads
+// <dir>/.claude.json, so seeding only ~/.claude.json left it stuck on the
+// trust prompt (#2673). The home root is still seeded too, as before.
 func preAcceptLaunchTrust(inst *session.Instance) {
 	if inst.Tool != "claude" {
 		return
@@ -48,8 +53,21 @@ func preAcceptLaunchTrust(inst *session.Instance) {
 	if real, err := filepath.EvalSymlinks(trustDir); err == nil {
 		trustDir = real
 	}
-	if err := session.PreAcceptClaudeTrust(session.GetUserMCPRootPath(), trustDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for %q failed (Claude launch may stall on the trust prompt): %v\n", trustDir, err)
+	targets := []string{session.GetUserMCPRootPath()}
+	if session.IsClaudeConfigDirExplicitForInstance(inst) {
+		if dir := session.GetClaudeConfigDirForInstance(inst); dir != "" {
+			if p := filepath.Join(dir, ".claude.json"); p != targets[0] {
+				targets = append(targets, p)
+			}
+		}
+	}
+	for _, claudeJSON := range targets {
+		if claudeJSON == "" {
+			continue
+		}
+		if err := session.PreAcceptClaudeTrust(claudeJSON, trustDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for %q in %s failed (Claude launch may stall on the trust prompt): %v\n", trustDir, claudeJSON, err)
+		}
 	}
 }
 
