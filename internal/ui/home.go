@@ -50,6 +50,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/triggers"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
@@ -308,6 +309,18 @@ type Home struct {
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	agentsPanel          *AgentsPanel          // Agents tab: adopted agents, grouped by machine
 	deadLetterPanel      *DeadLetterPanel      // Inspect, retry, and explicitly purge delivery failures
+	triggersPanel        *TriggersPanel        // What wakes which session (#2702); read-only in P1
+	// Triggers read model (triggers_live.go). A background tick reads the
+	// state DB's triggers_rev stamp and reloads only when it moved; the
+	// panel and the ⚡ row badge render from these cached values only.
+	triggersFeed     triggersFeed
+	triggerViews     []triggers.View
+	triggerBadges    map[string]triggers.Badge
+	triggersLoaded   bool
+	triggersLoadedAt time.Time
+	triggersRev      string
+	triggersKey      string
+	triggersPollGen  int
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -2088,6 +2101,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		watcherPanel:              NewWatcherPanel(),
 		agentsPanel:               NewAgentsPanel(),
 		deadLetterPanel:           NewDeadLetterPanel(),
+		triggersFeed:              stateDBTriggersFeed{},
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
@@ -4289,6 +4303,7 @@ func (h *Home) Init() tea.Cmd {
 
 		h.tick(),
 		h.reviverTick(),
+		h.triggersPollCmd(), // ⚡ badges and the Triggers panel (triggers_live.go)
 		h.requestUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
@@ -7702,6 +7717,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.deadLetterPanel != nil {
 			h.deadLetterPanel.SetSize(msg.Width, msg.Height)
 		}
+		if h.triggersPanel != nil {
+			h.triggersPanel.SetSize(msg.Width, msg.Height)
+		}
 		if h.toolVisibilityPanel != nil {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
 		}
@@ -9295,6 +9313,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 		return h, nil
 
+	case triggersTickMsg, triggersPolledMsg:
+		return h, h.handleTriggersMsg(msg)
+
 	case reviverTickMsg:
 		// Fire-and-forget reviver sweep for instances whose tmux server
 		// survived an SSH scope cleanup but whose pipe was reaped. Runs in
@@ -10313,6 +10334,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle delivery and watcher panels (before settings panel)
+		if h.triggersPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.triggersPanel, cmd = h.triggersPanel.Update(msg)
+			return h, cmd
+		}
 		if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 			var cmd tea.Cmd
 			h.deadLetterPanel, cmd = h.deadLetterPanel.Update(msg)
@@ -11425,6 +11451,7 @@ func (h *Home) hasModalVisible() bool {
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay
 		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
+		h.triggersPanel.IsVisible() || // hotkeyTriggers overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.hookTrustDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -12639,6 +12666,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.deadLetterPanel.Show()
 		h.deadLetterPanel.SetSize(h.width, h.height)
 		return h, nil
+
+	case defaultHotkeyBindings[hotkeyTriggers]:
+		// What wakes sessions (#2702). On a session a trigger wakes (its row
+		// shows ⚡N) this opens that session's reverse view; esc widens it to
+		// the full list.
+		return h, h.openTriggersPanel()
 
 	case defaultHotkeyBindings[hotkeyAgentsPanel]:
 		// Open the Agents tab. Opt-in by presence: with nothing adopted there
@@ -19364,6 +19397,9 @@ func (h *Home) renderFrame() string {
 	}
 
 	// Delivery and watcher panels are modal (before settings panel)
+	if h.triggersPanel.IsVisible() {
+		return h.triggersPanel.View()
+	}
 	if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 		return h.deadLetterPanel.View()
 	}
@@ -22737,9 +22773,17 @@ func (h *Home) renderSessionItem(
 	}
 	cachedViewers, cachedViewersKnown := inst.ViewersCached()
 	viewersBadgeText, viewersWidth := fitViewersBadge(cachedViewers, cachedViewersKnown, selected, badgeBudget)
+	// ⚡N: how many triggers wake this session (triggers_live.go). Read from
+	// the poll's cached map only; it shrinks and drops after the viewers
+	// badge and before the account badge.
+	triggersBudget := badgeBudget
+	if badgeBudget >= 0 {
+		triggersBudget = max(0, badgeBudget-viewersWidth)
+	}
+	triggersBadgeText, triggersWidth := fitTriggersBadge(h.triggerBadges[inst.ID], selected, triggersBudget)
 	accountBudget := instState.accountDisplay.width
 	if badgeBudget >= 0 {
-		accountBudget = min(accountBudget, badgeBudget-viewersWidth)
+		accountBudget = min(accountBudget, badgeBudget-viewersWidth-triggersWidth)
 	}
 	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
 	if accountBadge != "" {
@@ -22750,7 +22794,7 @@ func (h *Home) renderSessionItem(
 		accountBadge = accountStyle.Render(accountBadge)
 	}
 	if listWidth > 0 {
-		budget := max(0, listWidth-reserved-viewersWidth-accountWidth-1)
+		budget := max(0, listWidth-reserved-viewersWidth-triggersWidth-accountWidth-1)
 		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
@@ -22761,7 +22805,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -22778,6 +22822,7 @@ func (h *Home) renderSessionItem(
 		sshBadge,
 		agentBadge,
 		viewersBadgeText,
+		triggersBadgeText,
 		accountBadge,
 		timestampBadge,
 		childFoldBadge,

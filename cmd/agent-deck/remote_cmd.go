@@ -176,6 +176,7 @@ func printRemoteUsage() {
 	fmt.Println("  session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),")
 	fmt.Println("  recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,")
 	fmt.Println("  session queue list/release/cancel (queue entry IDs; --json supported),")
+	fmt.Println("  triggers (read-only list: --session/--kind/--health/--all/--json),")
 	fmt.Println("  events publish forwards the Mac app's replies only (macapp.open.ack, macapp.browser.response,")
 	fmt.Println("  macapp.app.focus) with --data-file - on stdin, at most 2 MiB.")
 	fmt.Println("  Follow streams use --jsonl; events --since resumes a host cursor.")

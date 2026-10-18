@@ -1,0 +1,34 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                        ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+                                        │ Triggers  labbox · 5 · 1 dead · 1 failing                                                                            │
+                                        │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+                                        │     NAME                             WAKES                            EVERY                LAST   NOISE              │
+                                        │ ▾ labbox (5)                                                                                                         │
+                                        │   launchd                                                                                                            │
+                                        │   ○ com.example.limit-guard          claude-running                   every <age>             never  –                  │
+                                        │   systemd                                                                                                            │
+                                        │ ▶ ✗ agentdeck-overnight              overnight-orchestrator           every <age>             <age>     92%                │
+                                        │   ● issue-poll                       claude-idle                      every <age>            <age>    0%                 │
+                                        │   ● mail-poll                        claude-waiting                   every <age>            <age>    0%                 │
+                                        │   watcher                                                                                                            │
+                                        │   ● github                           claude-idle                      –                    <age>     90%                │
+                                        │ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+                                        │ agentdeck-overnight sends to "overnight-orchestrator": no session has this name                                      │
+                                        │ config ~/.config/systemd/user/agentdeck-overnight.service                                                            │
+                                        │ j/k move  enter what wakes it  p problems  a all kinds  esc close                                                    │
+                                        ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,9 @@
+Usage: agent-deck triggers run <id> [--json]
+
+Start a scanned launchd job or systemd user unit once now
+(systemctl --user start <unit>.service / launchctl kickstart gui/<uid>/<label>).
+Only scanned launchd/systemd triggers can run. Nothing is paused, stopped or disabled.
+
+Options:
+  -json
+    	Output as JSON

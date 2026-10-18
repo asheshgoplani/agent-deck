@@ -49,6 +49,10 @@ var visualCheckSteps = []visualCheckStep{
 	{"12-attach-shell", stepAttachShell},
 	{"13-detach-shell", stepDetachShell},
 	{"14-fork", stepFork},
+	// Seeds trigger rows into the running deck's state DB, so it runs after
+	// every other frame: the ⚡ badges it adds would otherwise show up on
+	// the gallery rows of earlier goldens.
+	{"22-triggers", stepTriggers},
 }
 
 var expectedFrames = []string{
@@ -59,6 +63,7 @@ var expectedFrames = []string{
 	"10-help", "11-update-banner", "12-attach-shell", "13-detach-shell", "14-fork",
 	"15-filter-running", "16-filter-waiting", "17-time-today", "18-view-active-top",
 	"19-archived-empty", "20-stopped-preview", "21-filter-empty",
+	"22-triggers",
 }
 
 func stepStateVisibility(w *widthRun) error {
@@ -663,6 +668,40 @@ func stepFork(w *widthRun) error {
 	}
 	w.capture("14-fork")
 	return nil
+}
+
+// stepTriggers seeds triggers while the deck is running (the live-update
+// path: the panel's poll sees the triggers_rev bump), opens the Triggers
+// panel with alt+t and selects the dead target so its detail line shows.
+// Safe to retry: the seed is written once, and a panel left open by a
+// failed attempt is reused instead of toggled shut.
+func stepTriggers(w *widthRun) error {
+	if err := w.s.seedTriggers(); err != nil {
+		return fmt.Errorf("seed triggers: %w", err)
+	}
+	pane, err := w.pane()
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(pane, "NOISE") {
+		if err := w.send("M-t"); err != nil {
+			return err
+		}
+	}
+	// Names are cut by cells at 80 columns, so wait on ones that fit.
+	if err := waitScreen(w, 10*time.Second, "Triggers", "agentdeck-overnight", "NOISE"); err != nil {
+		return err
+	}
+	// First row (the launchd job), then one down: the dead target.
+	if err := w.send("g", "j"); err != nil {
+		return err
+	}
+	// The detail line wraps at 80 columns; match the part that never does.
+	if err := waitScreen(w, 5*time.Second, "no session has this"); err != nil {
+		return err
+	}
+	w.capture("22-triggers")
+	return closeScreen(w, "NOISE")
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }

@@ -620,6 +620,11 @@ func (s *StateDB) Migrate() error {
 		return err
 	}
 
+	// Triggers view (#2702): additive tables, SchemaVersion unchanged.
+	if err := migrateTriggerTables(tx); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(claudeStatuslineSchema); err != nil {
 		return fmt.Errorf("statedb: create Claude statusline cache: %w", err)
 	}
@@ -665,6 +670,9 @@ func (s *StateDB) Migrate() error {
 		// deliberate-idle (never a self-heal candidate). Additive + targeted-write
 		// only (WriteLastSentAt); never part of a whole-row REPLACE/SaveInstances.
 		"ALTER TABLE instances ADD COLUMN last_sent_at INTEGER NOT NULL DEFAULT 0",
+		// Triggers view (#2702): unit_kind arrived after the first build of the
+		// triggers table; a DB made by that build lacks it.
+		"ALTER TABLE triggers ADD COLUMN unit_kind TEXT NOT NULL DEFAULT ''",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {

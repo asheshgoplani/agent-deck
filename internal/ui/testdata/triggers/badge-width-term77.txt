@@ -1,0 +1,2 @@
+terminal_width=77 list_width=26
+   └─ ● a genuinely l… ⚡

@@ -1,0 +1,40 @@
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
+ │ What wakes conductor-ashesh  2 triggers                                                                            │ 
+ │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │ 
+ │     NAME                             WAKES                            EVERY                LAST   NOISE            │ 
+ │ ▶ ● github[2J                        conductor-ashesh                 –                    1h     90%              │ 
+ │   ● agentdeck-github-issue-poll-for… conductor-ashesh                 every 15m            15m    0%               │ 
+ │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │ 
+ │ github[2J → conductor-ashesh · 90% no-op in 24h  last: "CI green on main[2J"                                       │ 
+ │ no config file known (seen from its tagged sends)                                                                  │ 
+ │ j/k move  enter what wakes it  p problems  a all kinds  esc all triggers                                           │ 
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

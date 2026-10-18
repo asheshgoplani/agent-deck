@@ -45,6 +45,33 @@ func validateRemoteEventsArgs(args []string) error {
 	return nil
 }
 
+// validateRemoteTriggersArgs admits `triggers [list]` with the list's
+// filter flags only: a closed, read-only option set.
+func validateRemoteTriggersArgs(args []string) error {
+	if len(args) > 0 && args[0] == "list" {
+		args = args[1:]
+	}
+	options := map[string]bool{"json": false, "all": false, "session": true, "kind": true, "health": true, "help": false, "h": false}
+	for i := 0; i < len(args); i++ {
+		name, _, inline := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+		takesValue, known := options[name]
+		if !strings.HasPrefix(args[i], "-") || !known {
+			return fmt.Errorf("unsupported remote command: triggers forwards the read-only list only (--session, --kind, --health, --all, --json), not %q", args[i])
+		}
+		if !takesValue && inline {
+			return fmt.Errorf("option --%s takes no value", name)
+		}
+		if takesValue && !inline {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				continue
+			}
+			return fmt.Errorf("option --%s needs a value", name)
+		}
+	}
+	return nil
+}
+
 func isRemoteFollow(args []string) bool {
 	return len(args) >= 2 && (args[0] == "recall" || args[0] == "events") && args[1] == "follow" && !remoteHelpRequested(args)
 }

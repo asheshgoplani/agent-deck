@@ -40,6 +40,7 @@ trailing spaces).
 | `internal/watcher/engine.go` | `writerLoop` (new persisted event) | `watcher.event` |
 | `internal/watcher/engine.go` | `healthLoop` (health snapshot) | `watcher.health` |
 | `cmd/agent-deck/session_queue_cmd.go` | the queue worker answered `session queue release` or `cancel` | `queue.released`, `queue.cancelled` |
+| `internal/triggers/store.go` (from `session send`, `triggers scan\|mute\|unmute` and the daily rescan in `triggers list`) | a trigger fired, was muted or unmuted, or the unit scan stored a result (docs/triggers.md) | `session.trigger` |
 
 Frame data for the session kinds (`session_id` is the agent-deck session id):
 
@@ -50,6 +51,7 @@ Frame data for the session kinds (`session_id` is the agent-deck session id):
 | `session.transcript` | `{path, bytes_appended, size}` |
 | `queue.released` | `{id, state, outcome, reason}` (`outcome` as `session queue release --json` reports it) |
 | `queue.cancelled` | `{id, state: "cancelled"}` |
+| `session.trigger` | a fire: `{trigger_id, source, kind, outcome, health}` (`session_id` is the receiving session, `""` for a dead target); a mute change: `{trigger_id, mute: "muted"\|"unmuted"}`; a scan: `{scan: "<units found>"}`. Clients refetch `triggers --json` on any of them. |
 | `tmux.output` | none: `session_id` is the tmux session name; the frame has no `data` key (never `"data": null`) |
 
 A producer that passes nil data publishes a frame without `data`; a stored

@@ -64,6 +64,13 @@ const (
 	hotkeyDetach           = "detach"
 	hotkeyWatcherPanel     = "watcher_panel"
 	hotkeyDeadLetters      = "dead_letters"
+	// hotkeyTriggers opens the Triggers panel (#2702): every launchd job,
+	// systemd unit, watcher and bridge that wakes a session. The mockup asks
+	// for "T", which is restart_fresh; "alt+t" keeps the mnemonic on a chord
+	// nothing else claims, like alt+d (dead letters) and alt+a (agents).
+	// With a session selected that something wakes (it shows a ⚡ badge) the
+	// panel opens on that session's "what wakes me" view.
+	hotkeyTriggers = "triggers"
 	// hotkeyAgentsPanel opens the Agents tab.
 	//
 	// The design mockup asks for "a". Every plain letter that reads as
@@ -159,6 +166,7 @@ var hotkeyActionOrder = []string{
 	hotkeyDetach,
 	hotkeyWatcherPanel,
 	hotkeyDeadLetters,
+	hotkeyTriggers,
 	hotkeyAgentsPanel,
 	hotkeySwitchSession,
 	hotkeyAltSession,
@@ -216,6 +224,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyDetach:           "ctrl+q",
 	hotkeyWatcherPanel:     "w",
 	hotkeyDeadLetters:      "alt+d",
+	hotkeyTriggers:         "alt+t",
 	hotkeyAgentsPanel:      "alt+a",
 	hotkeySwitchSession:    "ctrl+s",
 	hotkeyAltSession:       "`",

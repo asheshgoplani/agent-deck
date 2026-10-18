@@ -7,6 +7,7 @@ Run commands: agent-deck remote <name> <command> [arguments]
   session switch/switch-preview/switch-account (runs on the remote; its own accounts and harnesses),
   recall timeline/follow/search/sessions/show/context/export/status, events follow, session send-status,
   session queue list/release/cancel (queue entry IDs; --json supported),
+  triggers (read-only list: --session/--kind/--health/--all/--json),
   events publish forwards the Mac app's replies only (macapp.open.ack, macapp.browser.response,
   macapp.app.focus) with --data-file - on stdin, at most 2 MiB.
   Follow streams use --jsonl; events --since resumes a host cursor.
