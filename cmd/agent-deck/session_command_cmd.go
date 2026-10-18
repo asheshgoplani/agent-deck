@@ -257,14 +257,20 @@ func startBackgroundCommand(profile, id, command string, timeout, waitIdle time.
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
 	// self is this binary (os.Executable) and argv goes straight to execve
 	// with no shell; id was resolved from storage, command passed Parse.
 	child := exec.Command(self, backgroundArgs(profile, id, command, timeout, waitIdle)...) //nolint:gosec // G702: own binary, no shell
 	child.Stdin, child.Stdout, child.Stderr = nil, f, f
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
+		_ = f.Close() // nothing was written; the start error is the one to report
 		return "", err
+	}
+	// The child holds its own copy of the descriptor; this process wrote
+	// nothing, but a failed close is still reported rather than dropped.
+	if err := f.Close(); err != nil {
+		_ = child.Process.Release()
+		return "", fmt.Errorf("close result file: %w", err)
 	}
 	return resultFile, child.Process.Release()
 }
