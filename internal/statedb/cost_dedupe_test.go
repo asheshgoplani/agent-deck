@@ -1,8 +1,11 @@
 package statedb
 
 import (
+	"bytes"
+	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -112,4 +115,36 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// The fold never writes to the process's default logger: CLI commands open
+// the state DB and their stdout/stderr may be JSON a caller parses.
+func TestFoldLegacyHookCostRowsKeepsDefaultLoggerQuiet(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	turn := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	insertCost(t, s, "inst_a1", "inst", turn, 1000, 50)
+	insertCost(t, s, "inst_1790000000000000001", "inst", turn.Add(20*time.Second), 1000, 50)
+	if _, err := s.DB().Exec(`DELETE FROM metadata WHERE key = ?`, costHookDedupeKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := costIDs(t, s); !equalStrings(got, []string{"inst_a1"}) {
+		t.Fatalf("rows after the fold = %v", got)
+	}
+	if strings.Contains(buf.String(), "folded") {
+		t.Fatalf("the fold wrote to the default logger: %q", buf.String())
+	}
 }

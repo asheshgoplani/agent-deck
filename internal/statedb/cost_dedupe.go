@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"log/slog"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // costHookDedupeKey marks foldLegacyHookCostRows as done in metadata.
@@ -104,7 +106,11 @@ func foldLegacyHookCostRows(tx *sql.Tx) error {
 		}
 		folded++
 	}
-	slog.Info("statedb: folded legacy hook cost rows", slog.Int("folded", folded), slog.Int("hook_rows", len(hooks)))
+	// Only when something was removed, and only to the agent-deck log: a
+	// CLI command's stdout/stderr may be JSON its caller parses.
+	if folded > 0 {
+		logging.ForComponent(logging.CompStorage).Info("statedb: folded legacy hook cost rows", slog.Int("folded", folded), slog.Int("hook_rows", len(hooks)))
+	}
 	_, err = tx.Exec(`INSERT INTO metadata (key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, costHookDedupeKey, time.Now().UTC().Format(time.RFC3339))
 	return err
