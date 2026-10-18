@@ -97,6 +97,18 @@ its `macapp.open.ack` back on the same host. A controller can follow a host
 with `agent-deck remote <name> events follow --jsonl --kind macapp.` and send
 the acknowledgment back with `agent-deck remote <name> events publish --kind
 macapp.open.ack --session <id> --data-file -` (payload on stdin, at most
-2 MiB); only the Mac app's reply kinds are forwarded that way. Older cores that lack
+2 MiB); only the Mac app's reply kinds are forwarded that way, and the
+remote host accepts a forwarded reply only for one of its own sessions. A
+host whose core predates the forwarding answers `unsupported remote command`
+(see docs/events.md, "Remote reply publish"). Older cores that lack
 `open` or `file bundle` refuse them as unknown commands, which a client can
 use to detect the capability.
+
+## Mac app checks
+
+The app acts on a `macapp.open` frame only when it came from the log of the
+host and profile it follows and its `session_id` is a session that host
+reported. It deduplicates by `event_id` and `request_id`, displays the page,
+and only then publishes `macapp.open.ack` on that same host and profile. It
+never acts on a frame that names a session of another host. The full list is
+in docs/events.md, "Mac app checks".
