@@ -579,15 +579,18 @@ func (r *SSHRunner) Attach(sessionID string) error {
 }
 
 // imagePaste is the Ctrl+V image route for one attached remote session
-// (remote_image_paste.go).
+// (remote_image_paste.go); nil when `[remote] paste_images = false`.
 func (r *SSHRunner) imagePaste(sessionID string) *remoteImagePaste {
+	if cfg, err := LoadUserConfig(); err == nil && cfg != nil && !cfg.Remote.PasteImagesEnabled() {
+		return nil
+	}
 	return &remoteImagePaste{
 		remote:    r.name,
 		readImage: clipboardImage,
 		upload: func(ctx context.Context, data []byte, ext string) (string, error) {
 			return r.UploadImage(ctx, sessionID, data, ext)
 		},
-		tool: func(ctx context.Context) string { return r.SessionTool(ctx, sessionID) },
+		target: func(ctx context.Context) (string, string, error) { return r.PasteTarget(ctx, sessionID) },
 	}
 }
 

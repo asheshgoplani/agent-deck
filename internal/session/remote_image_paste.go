@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // Image paste into a remote attach (owner report 2026-10-18). In a terminal
@@ -29,6 +31,11 @@ import (
 // macapp-uploads folder there) and types the host path the way the
 // composer's --image does: `@<path>` for Claude and Gemini, the bare path for
 // other harnesses. Text pastes and a Ctrl+V with no image are untouched.
+//
+// The key is taken only when the session's harness reads a pasted @path
+// (Claude-compatible, Gemini) and its composer is on screen; in an editor, a
+// shell, a dialog, or when that cannot be told, Ctrl+V goes on as typed.
+// `[remote] paste_images = false` turns the whole route off.
 //
 // A plain `ssh host` + `tmux attach` without agent-deck has no such hop: the
 // keypress goes straight to the host and the image cannot arrive. That path
@@ -68,21 +75,39 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// SessionTool asks the remote which harness a session runs (`session show
-// <id> --json`); "" when it cannot tell.
-func (r *SSHRunner) SessionTool(ctx context.Context, sessionID string) string {
-	out, err := r.Run(ctx, "session", "show", sessionID, "--json")
+// PasteTarget asks the remote for a session's harness and its pane as shown
+// now (`session output <id> --pane --json`, one call).
+func (r *SSHRunner) PasteTarget(ctx context.Context, sessionID string) (tool, pane string, err error) {
+	out, err := r.Run(ctx, "session", "output", sessionID, "--pane", "--json")
 	if err != nil {
-		return ""
+		return "", "", err
 	}
 	var shown struct {
-		Tool string `json:"tool"`
+		Tool    string `json:"tool"`
+		Content string `json:"content"`
 	}
-	if json.Unmarshal(bytes.TrimSpace(out), &shown) != nil {
-		return ""
+	if err := json.Unmarshal(bytes.TrimSpace(out), &shown); err != nil {
+		return "", "", fmt.Errorf("paste target: unexpected answer from the remote")
 	}
-	return shown.Tool
+	return shown.Tool, shown.Content, nil
 }
+
+// pasteAgent is the harness a pasted @path is typed for: Claude-compatible
+// tools and Gemini read it; every other tool (a shell, Codex, an editor
+// session) never gets its Ctrl+V taken. "" for those.
+func pasteAgent(tool string) string {
+	switch {
+	case IsClaudeCompatible(tool):
+		return "claude"
+	case strings.EqualFold(tool, "gemini"):
+		return "gemini"
+	}
+	return ""
+}
+
+// pasteTargetTimeout bounds the check that runs between the key and the
+// upload (one ssh round trip on the attach's master connection).
+const pasteTargetTimeout = 3 * time.Second
 
 // remoteImagePaste handles a lone Ctrl+V in one remote attach.
 type remoteImagePaste struct {
@@ -91,7 +116,10 @@ type remoteImagePaste struct {
 	// (png or jpg); nil data when the clipboard holds none.
 	readImage func() ([]byte, string)
 	upload    func(ctx context.Context, data []byte, ext string) (string, error)
-	tool      func(ctx context.Context) string
+	// target returns the session's harness and its pane now: the key is taken
+	// only when that harness reads a pasted @path and its composer is on
+	// screen (tmux.AgentComposerVisible), never in an editor or a shell.
+	target func(ctx context.Context) (tool, pane string, err error)
 	// write types into the remote session (the attach's input side).
 	write func([]byte) error
 	// notice shows one line to the owner; "" clears it.
@@ -155,6 +183,13 @@ func (p *remoteImagePaste) take(data []byte) bool {
 	if len(image) == 0 {
 		return false
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), pasteTargetTimeout)
+	tool, pane, err := p.target(ctx)
+	cancel()
+	agent := pasteAgent(tool)
+	if err != nil || agent == "" || !tmux.AgentComposerVisible(agent, pane) {
+		return false // not an agent's composer, or it cannot be told: the key goes on as typed
+	}
 	if int64(len(image)) > MaxImageUploadBytes {
 		p.notice(pasteTooLargeNotice())
 		return true
@@ -163,11 +198,11 @@ func (p *remoteImagePaste) take(data []byte) bool {
 	p.busy = true
 	p.mu.Unlock()
 	p.notice(pasteUploadingNotice(p.remote))
-	go p.send(image, ext)
+	go p.send(image, ext, agent)
 	return true
 }
 
-func (p *remoteImagePaste) send(image []byte, ext string) {
+func (p *remoteImagePaste) send(image []byte, ext, agent string) {
 	defer func() {
 		p.mu.Lock()
 		p.busy = false
@@ -188,7 +223,7 @@ func (p *remoteImagePaste) send(image []byte, ext string) {
 		p.notice(pasteFailedNotice(p.remote, err))
 		return
 	}
-	text := []byte(pastedPaths([]string{path}, p.tool(ctx)))
+	text := []byte(pastedPaths([]string{path}, agent))
 	if p.bracketed != nil && p.bracketed() {
 		text = append(append([]byte("\x1b[200~"), text...), []byte("\x1b[201~")...)
 	}

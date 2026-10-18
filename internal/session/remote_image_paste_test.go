@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Owner report 2026-10-18: in a terminal attached to a remote session, Ctrl+V
@@ -18,12 +20,27 @@ import (
 
 var pngBytes = []byte("\x89PNG\r\n\x1a\n" + "rest-of-a-picture")
 
+// Panes as `session output --pane` returns them.
+const (
+	claudeComposerPane = "⏺ Done.\n\n" +
+		"\x1b[38;5;244m────────────────────────────────────────── work ─\n" +
+		"\x1b[38;5;246m❯\u00a0\x1b[39m\n" +
+		"\x1b[38;5;244m──────────────────────────────────────────────────\n" +
+		"  Model X | Context 41.0% | 5h 24.0% | 7d 57.0%\n" +
+		"  ⏵⏵ bypass permissions on · 1 shell\n\n"
+	vimPane          = "package main\n\nfunc main() {\n}\n~\n~\n~\n\"main.go\" 4L, 29B                 1,1           All\n"
+	shellPane        = "user@box:~/work$ ls\nREADME.md  main.go\nuser@box:~/work$ \n"
+	claudeDialogPane = "⏺ Bash(rm -rf build)\n\n" +
+		"╭──────────────────────────────╮\n│ Do you want to proceed?      │\n│ ❯ 1. Yes                     │\n│   2. No                      │\n╰──────────────────────────────╯\n"
+)
+
 type pasteRecorder struct {
 	mu      sync.Mutex
 	typed   bytes.Buffer
 	notices []string
 	uploads [][]byte
 	exts    []string
+	targets int
 }
 
 func (r *pasteRecorder) Write(p []byte) (int, error) {
@@ -39,6 +56,10 @@ func (r *pasteRecorder) snapshot() (string, []string, int) {
 }
 
 func newTestPaste(rec *pasteRecorder, image []byte, uploadErr error, tool string, bracketed bool) *remoteImagePaste {
+	return newTestPasteOn(rec, image, uploadErr, tool, claudeComposerPane, nil, bracketed)
+}
+
+func newTestPasteOn(rec *pasteRecorder, image []byte, uploadErr error, tool, pane string, targetErr error, bracketed bool) *remoteImagePaste {
 	return &remoteImagePaste{
 		remote:    "deckbox",
 		readImage: func() ([]byte, string) { return image, "png" },
@@ -52,7 +73,12 @@ func newTestPaste(rec *pasteRecorder, image []byte, uploadErr error, tool string
 			}
 			return "/home/u/.agent-deck/profiles/default/macapp-uploads/s1/A.png", nil
 		},
-		tool:      func(context.Context) string { return tool },
+		target: func(context.Context) (string, string, error) {
+			rec.mu.Lock()
+			rec.targets++
+			rec.mu.Unlock()
+			return tool, pane, targetErr
+		},
 		write:     func(p []byte) error { _, err := rec.Write(p); return err },
 		notice:    func(text string) { rec.mu.Lock(); rec.notices = append(rec.notices, text); rec.mu.Unlock() },
 		bracketed: func() bool { return bracketed },
@@ -160,6 +186,76 @@ func TestRemoteImagePaste_OldRemoteSaysSoInOneLine(t *testing.T) {
 	}
 }
 
+// Lander review of #2775: Ctrl+V was taken in every program whenever the clipboard held an image. It is now
+// taken only when the session's agent reads a pasted @path and its composer is on screen.
+func TestRemoteImagePaste_EditorsShellsAndDialogsKeepCtrlV(t *testing.T) {
+	cases := []struct {
+		name, tool, pane string
+		err              error
+	}{
+		{"vim in a Claude session's pane", "claude", vimPane, nil},
+		{"a shell session", "shell", shellPane, nil},
+		{"a shell session that shows a Claude-looking pane", "shell", claudeComposerPane, nil},
+		{"Codex (no @path)", "codex", claudeComposerPane, nil},
+		{"Claude's permission dialog", "claude", claudeDialogPane, nil},
+		{"the pane cannot be read", "claude", "", errors.New("ssh: timeout")},
+		{"an empty pane", "claude", "", nil},
+	}
+	for _, tc := range cases {
+		rec := &pasteRecorder{}
+		input := sshAttachInput{writer: rec, paste: newTestPasteOn(rec, pngBytes, nil, tc.tool, tc.pane, tc.err, false)}
+		if _, err := input.forward([]byte{0x16}); err != nil {
+			t.Fatal(err)
+		}
+		typed, notices, uploads := rec.snapshot()
+		if typed != "\x16" || uploads != 0 || len(notices) != 0 {
+			t.Fatalf("%s: Ctrl+V must reach the program as typed: typed %q, %d uploads, notices %q", tc.name, typed, uploads, notices)
+		}
+	}
+}
+
+func TestRemoteImagePaste_NoImageAsksTheRemoteNothing(t *testing.T) {
+	rec := &pasteRecorder{}
+	input := sshAttachInput{writer: rec, paste: newTestPaste(rec, nil, nil, "claude", false)}
+	_, _ = input.forward([]byte{0x16})
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.targets != 0 {
+		t.Fatalf("no image on the clipboard: no remote call (%d)", rec.targets)
+	}
+}
+
+func TestRemotePasteImagesSetting(t *testing.T) {
+	var cfg UserConfig
+	if _, err := toml.Decode("[remote]\npaste_images = false\n", &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Remote.PasteImagesEnabled() {
+		t.Fatal("[remote] paste_images = false turns image paste off")
+	}
+	var unset UserConfig
+	if !unset.Remote.PasteImagesEnabled() {
+		t.Fatal("image paste is on by default")
+	}
+	if _, err := toml.Decode("[remote]\npaste_images = true\n", &cfg); err != nil || !cfg.Remote.PasteImagesEnabled() {
+		t.Fatalf("paste_images = true: %v", err)
+	}
+}
+
+func TestRemoteImagePaste_OffMeansNoRoute(t *testing.T) {
+	off := false
+	restore := resetUserConfigCache(t, &UserConfig{Remote: RemoteAttachSettings{PasteImages: &off}})
+	if p := NewSSHRunner("deckbox", RemoteConfig{Host: "u@box"}).imagePaste("s1"); p != nil {
+		t.Fatal("with paste_images = false the attach takes no key")
+	}
+	restore()
+	restore = resetUserConfigCache(t, &UserConfig{})
+	defer restore()
+	if p := NewSSHRunner("deckbox", RemoteConfig{Host: "u@box"}).imagePaste("s1"); p == nil {
+		t.Fatal("by default the attach has the paste route")
+	}
+}
+
 func TestRemoteImagePaste_PathFormFollowsTheHarness(t *testing.T) {
 	cases := map[string]string{"claude": "@/a.png ", "gemini": "@/a.png ", "codex": "/a.png ", "": "/a.png "}
 	for tool, want := range cases {
@@ -193,7 +289,9 @@ func TestSSHRunnerUploadImageSendsTheBytesToImageUpload(t *testing.T) {
 	if _, err := r.UploadImage(context.Background(), "s1", pngBytes, "png"); !errors.Is(err, ErrImageUploadUnsupported) {
 		t.Fatalf("an old remote is told apart: %v", err)
 	}
-	r.runStdinFn = func(context.Context, []byte, ...string) ([]byte, error) { return []byte(`{"path":"relative.png"}`), nil }
+	r.runStdinFn = func(context.Context, []byte, ...string) ([]byte, error) {
+		return []byte(`{"path":"relative.png"}`), nil
+	}
 	if _, err := r.UploadImage(context.Background(), "s1", pngBytes, "png"); err == nil {
 		t.Fatal("a path that is not absolute is refused")
 	}

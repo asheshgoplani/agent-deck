@@ -266,6 +266,9 @@ type UserConfig struct {
 	// Remotes defines named SSH remote agent-deck instances
 	Remotes map[string]RemoteConfig `toml:"remotes,omitempty"`
 
+	// Remote holds settings for every remote attach ([remote]).
+	Remote RemoteAttachSettings `toml:"remote,omitempty"`
+
 	// OpenClaw defines OpenClaw gateway integration settings
 	OpenClaw OpenClawSettings `toml:"openclaw,omitempty"`
 
@@ -1103,6 +1106,21 @@ type OpenClawSettings struct {
 }
 
 // RemoteConfig defines a remote agent-deck instance accessible via SSH.
+// RemoteAttachSettings are the [remote] settings that apply to every remote
+// attach (agent-deck remote attach, the TUI's Enter on a remote session).
+type RemoteAttachSettings struct {
+	// PasteImages lets Ctrl+V with an image on this machine's clipboard upload
+	// it to the attached remote session and type its host path, when that
+	// session's agent (Claude, Gemini) shows its input composer. Default on;
+	// false leaves Ctrl+V to the remote untouched.
+	PasteImages *bool `toml:"paste_images,omitempty"`
+}
+
+// PasteImagesEnabled reports the [remote] paste_images setting (default true).
+func (s RemoteAttachSettings) PasteImagesEnabled() bool {
+	return s.PasteImages == nil || *s.PasteImages
+}
+
 type RemoteConfig struct {
 	// Host is the SSH destination (e.g., "user@host" or "user@host:port")
 	Host string `toml:"host,omitempty"`

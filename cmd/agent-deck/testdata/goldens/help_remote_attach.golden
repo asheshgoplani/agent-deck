@@ -1,1 +1,3 @@
 Usage: agent-deck remote attach <remote-name> <session-title-or-id>
+
+Ctrl+V with an image on this machine's clipboard sends it to the session's Claude or Gemini composer; off with [remote] paste_images = false.

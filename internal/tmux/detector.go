@@ -971,3 +971,42 @@ func StripANSI(content string) string {
 
 	return b.String()
 }
+
+// AgentComposerVisible reports whether the pane shows the input composer of
+// an agent that reads a pasted @path (Claude Code, Gemini): the remote attach
+// turns Ctrl+V with a clipboard image into an upload only then, never in an
+// editor, a shell or a dialog that happens to run in the pane. For Claude the
+// composer is its prompt line (❯, or > on older builds; empty or with a draft)
+// between two horizontal rules, the lower one in the pane's last 8 lines;
+// a busy turn keeps the composer, so a paste then queues as typed text does.
+func AgentComposerVisible(tool, content string) bool {
+	content = StripANSI(content)
+	switch tool {
+	case "claude":
+		lines := strings.Split(strings.TrimRight(content, "\n "), "\n")
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		for i := 0; i+2 < len(lines); i++ {
+			if !isHorizontalRuleLine(lines[i]) {
+				continue
+			}
+			prompt := strings.TrimSpace(strings.ReplaceAll(lines[i+1], " ", " "))
+			if prompt != "❯" && prompt != ">" && !strings.HasPrefix(prompt, "❯ ") && !strings.HasPrefix(prompt, "> ") {
+				continue
+			}
+			for j := i + 2; j < len(lines); j++ {
+				if isHorizontalRuleLine(lines[j]) {
+					if j >= len(lines)-8 {
+						return true
+					}
+					break
+				}
+			}
+		}
+		return false
+	case "gemini":
+		return NewPromptDetector("gemini").HasPrompt(content)
+	}
+	return false
+}
