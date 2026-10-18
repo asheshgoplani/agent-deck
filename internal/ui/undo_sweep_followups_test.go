@@ -67,10 +67,20 @@ func TestWebSuccessfulUndoThenMoveReconcileSweepsNothing(t *testing.T) {
 func TestWebFinalizePendingDeletesWithinIsBounded(t *testing.T) {
 	m, _ := newUndoSweepWebMutator(t, "_test_web_final_bounded")
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	returned := make(chan struct{})
 	prev := finalizeRemovedSessionsFn
-	finalizeRemovedSessionsFn = func(*session.Storage, string, []string) { <-release }
-	t.Cleanup(func() { finalizeRemovedSessionsFn = prev })
+	finalizeRemovedSessionsFn = func(*session.Storage, string, []string) {
+		defer close(returned)
+		<-release
+	}
+	// The bounded sweep keeps running after its cap: unblock it and wait for
+	// it to return before restoring the seam, or the race detector sees the
+	// restore race its read of finalizeRemovedSessionsFn.
+	t.Cleanup(func() {
+		close(release)
+		<-returned
+		finalizeRemovedSessionsFn = prev
+	})
 
 	require.NoError(t, m.DeleteSession("web-final-001"))
 	done := make(chan struct{})
