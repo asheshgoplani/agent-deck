@@ -6361,6 +6361,8 @@ func (h *Home) getInstanceByID(id string) *session.Instance {
 // so the deferred inbox and notify-state sweep (#910) runs for it then, in
 // the returned command (nil when nothing was evicted).
 func (h *Home) pushUndoStack(inst *session.Instance) tea.Cmd {
+	// The row is deleted: an undo must re-insert it, not update it.
+	inst.ForgetStorageSnapshot()
 	entry := deletedSessionEntry{
 		instance:  inst,
 		deletedAt: time.Now(),

@@ -496,6 +496,16 @@ type instanceStorageSnapshot struct {
 	stored   *statedb.InstanceRow
 }
 
+// ForgetStorageSnapshot drops what the instance remembers of its stored row.
+// An undoable delete calls it once the row is gone: an undo then re-saves the
+// session as a new row instead of failing the registry's stale-deletion
+// check against a row that no longer exists.
+func (i *Instance) ForgetStorageSnapshot() {
+	if i != nil {
+		i.storageSnapshot = nil
+	}
+}
+
 func (s *Storage) rememberInstanceSnapshot(inst *Instance, original, stored *statedb.InstanceRow) {
 	inst.restartDB.Store(s.db)
 	inst.storageSnapshot = &instanceStorageSnapshot{

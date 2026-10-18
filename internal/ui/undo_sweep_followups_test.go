@@ -50,17 +50,6 @@ func TestWebSuccessfulUndoThenMoveReconcileSweepsNothing(t *testing.T) {
 	t.Cleanup(func() { restartForUndo = prev })
 
 	require.NoError(t, m.DeleteSession("web-final-001"))
-	// The popped instance still carries the storage snapshot of the row its
-	// delete removed, and re-saving it trips the registry's stale-deletion
-	// guard. That is a separate issue: restore an equivalent fresh instance
-	// so this test reaches the successful-restore path.
-	m.undoMu.Lock()
-	m.undoStack[len(m.undoStack)-1].instance = &session.Instance{
-		ID: "web-final-001", Title: "first", ProjectPath: "/tmp/issue1397-proj",
-		GroupPath: session.DefaultGroupPath, Command: "bash", Tool: "bash",
-		Status: session.StatusStopped, CreatedAt: time.Now(),
-	}
-	m.undoMu.Unlock()
 	id, err := m.UndoDelete()
 	require.NoError(t, err)
 	require.Equal(t, "web-final-001", id)

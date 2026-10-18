@@ -438,6 +438,8 @@ func (m *WebMutator) restoreDeleted(entry webDeletedEntry) (string, error) {
 // window, or evicted by the cap, can no longer be undone: their deletes are
 // final and the deferred inbox and notify-state sweep (#910) runs for them.
 func (m *WebMutator) pushUndo(inst *session.Instance) {
+	// The row is deleted: an undo must re-insert it, not update it.
+	inst.ForgetStorageSnapshot()
 	m.undoMu.Lock()
 	window := m.undoWindow
 	if window == 0 {
