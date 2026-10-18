@@ -29,6 +29,10 @@ func TestIssue2664_CapabilitiesCarryOpenCodeProbeAndOverrides(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A failing codex keeps the host's real one from being run for efforts.
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	env := []string{
 		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),

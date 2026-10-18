@@ -3,6 +3,8 @@ package session
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,11 +16,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/shellwords"
 )
 
 // Model catalog probe (#2388).
@@ -59,9 +63,15 @@ type modelProber struct {
 	timeout time.Duration
 	// dir is the working directory for the probe; empty means inherited.
 	dir func() string
+	// env is the VAR=value prefix of the configured command, so the probe
+	// sees the same config dir and credentials as the sessions.
+	env func() []string
 }
 
-var codexModelProber = modelProber{name: "codex", binary: codexProbeBinary, args: []string{"debug", "models"}, parse: parseCodexDebugModels}
+var codexModelProber = modelProber{
+	name: "codex", binary: codexProbeBinary, args: []string{"debug", "models"}, parse: parseCodexDebugModels,
+	env: func() []string { return probeEnvFromCommand(GetCodexCommand()) },
+}
 
 // openCodeModelProber asks `opencode models`, which lists the models of the
 // providers that have credentials. OpenCode boots its whole runtime first, so
@@ -71,6 +81,7 @@ var codexModelProber = modelProber{name: "codex", binary: codexProbeBinary, args
 var openCodeModelProber = modelProber{
 	name: "opencode", binary: openCodeProbeBinary, args: []string{"models"}, parse: parseOpenCodeModels,
 	timeout: 3 * time.Second, dir: modelProbeHomeDir,
+	env: func() []string { return probeEnvFromCommand(GetToolCommand("opencode")) },
 }
 
 // modelProbers lists the tools that can answer.
@@ -114,6 +125,38 @@ func probeBinaryFromCommand(command, fallback string) string {
 	return fallback
 }
 
+// probeEnvFromCommand returns the leading VAR=value assignments of a
+// configured command line, with a leading ~/ and $VAR references expanded
+// as the launching shell would.
+func probeEnvFromCommand(command string) []string {
+	words, ok := shellwords.Split(command)
+	if !ok {
+		words = strings.Fields(command)
+	}
+	var env []string
+	for _, word := range words {
+		if !isShellEnvAssignment(word) {
+			break
+		}
+		name, value, _ := strings.Cut(word, "=")
+		if strings.HasPrefix(value, "~/") {
+			value = modelProbeHomeDir() + value[1:]
+		}
+		env = append(env, name+"="+os.ExpandEnv(value))
+	}
+	return env
+}
+
+// probeEnvKey fingerprints a probe environment for the cache key without
+// writing its values (which may hold credentials) to disk.
+func probeEnvKey(env []string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(env, "\x00")))
+	return hex.EncodeToString(sum[:8])
+}
+
 func modelProbeHomeDir() string {
 	home, _ := os.UserHomeDir()
 	return home
@@ -148,6 +191,9 @@ type modelProbeKey struct {
 	Path    string `json:"path"`
 	ModTime int64  `json:"mod_time"`
 	Size    int64  `json:"size"`
+	// Env fingerprints the command's VAR=value prefix: a different
+	// CODEX_HOME or OPENCODE_CONFIG is a different catalog.
+	Env string `json:"env,omitempty"`
 }
 
 type modelProbeCacheFile struct {
@@ -173,6 +219,11 @@ func (m *modelProbeMemo) ttl() time.Duration {
 	}
 	return modelProbeTTL
 }
+
+// modelProbeBackground is set by long-lived processes (TUI, web server):
+// there a lookup never waits on a CLI, it answers from the last result (or the
+// static catalog) while the probe runs in the background.
+var modelProbeBackground atomic.Bool
 
 var (
 	modelProbeMu       sync.Mutex
@@ -226,6 +277,11 @@ func probedModelCatalog(kind string) *ModelProbeResult {
 	}
 
 	key, err := modelProbeBinaryKey(prober.binary())
+	var env []string
+	if prober.env != nil {
+		env = prober.env()
+	}
+	key.Env = probeEnvKey(env)
 	if err != nil {
 		// Not installed: remember the miss so we do not LookPath per keystroke.
 		modelProbeMemos[name] = &modelProbeMemo{checkedAt: now}
@@ -245,7 +301,21 @@ func probedModelCatalog(kind string) *ModelProbeResult {
 	modelProbeInFlight[name] = true
 	modelProbeMu.Unlock()
 
-	result, version, err := runModelProbe(prober, key.Path)
+	if modelProbeBackground.Load() {
+		go runAndRecordModelProbe(prober, key, env, now)
+		if memo != nil {
+			return memo.result
+		}
+		return nil
+	}
+	return runAndRecordModelProbe(prober, key, env, now)
+}
+
+// runAndRecordModelProbe runs one probe the caller marked in flight and
+// records its outcome in the memo and, on success, the disk cache.
+func runAndRecordModelProbe(prober modelProber, key modelProbeKey, env []string, now time.Time) *ModelProbeResult {
+	name := prober.name
+	result, version, err := runModelProbe(prober, key.Path, env)
 
 	modelProbeMu.Lock()
 	delete(modelProbeInFlight, name)
@@ -269,6 +339,11 @@ func modelProbeBinaryKey(binary string) (modelProbeKey, error) {
 	if err != nil {
 		return modelProbeKey{}, err
 	}
+	// Absolute, so a relative command still resolves when the probe runs in
+	// another directory.
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
@@ -281,7 +356,7 @@ func modelProbeBinaryKey(binary string) (modelProbeKey, error) {
 
 // runModelProbe executes the listing command and the version command. Neither
 // sends a prompt, so neither is billed.
-func runModelProbe(prober modelProber, path string) (*ModelProbeResult, string, error) {
+func runModelProbe(prober modelProber, path string, env []string) (*ModelProbeResult, string, error) {
 	timeout := modelProbeTimeout
 	if prober.timeout > timeout {
 		timeout = prober.timeout
@@ -290,7 +365,7 @@ func runModelProbe(prober modelProber, path string) (*ModelProbeResult, string, 
 	if prober.dir != nil {
 		dir = prober.dir()
 	}
-	out, err := runModelProbeCommandIn(timeout, dir, path, prober.args...)
+	out, err := runModelProbeCommandIn(timeout, dir, env, path, prober.args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -298,21 +373,24 @@ func runModelProbe(prober modelProber, path string) (*ModelProbeResult, string, 
 	if err != nil {
 		return nil, "", err
 	}
-	version, _ := runModelProbeCommandIn(timeout, dir, path, "--version")
+	version, _ := runModelProbeCommandIn(timeout, dir, env, path, "--version")
 	return result, strings.TrimSpace(string(version)), nil
 }
 
 func runModelProbeCommand(path string, args ...string) ([]byte, error) {
-	return runModelProbeCommandIn(modelProbeTimeout, "", path, args...)
+	return runModelProbeCommandIn(modelProbeTimeout, "", nil, path, args...)
 }
 
 // runModelProbeCommandIn runs a probe command in dir (empty: inherited) with
-// its own timeout.
-func runModelProbeCommandIn(timeout time.Duration, dir, path string, args ...string) ([]byte, error) {
+// env added to this process's environment and its own timeout.
+func runModelProbeCommandIn(timeout time.Duration, dir string, env []string, path string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	// Do not wait for grandchildren holding the pipe open past the timeout.
@@ -492,8 +570,11 @@ func mergeOrdered(first, rest []string) []string {
 }
 
 // WarmModelCatalog runs the probes in the background so the first dialog
-// open does not wait on them.
+// open does not wait on them. Only long-lived processes call it, so it also
+// switches later lookups to background re-probes: a slow or failing CLI then
+// never stalls a keystroke in the TUI or a web request.
 func WarmModelCatalog() {
+	modelProbeBackground.Store(true)
 	go func() {
 		for _, prober := range modelProbers {
 			probedModelCatalog(prober.name)

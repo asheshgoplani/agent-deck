@@ -2582,7 +2582,8 @@ type ModelsSettings struct {
 
 // ModelListSettings pins or extends one tool's model suggestions.
 type ModelListSettings struct {
-	// List replaces the suggestions entirely: no probe, no built-in catalog.
+	// List replaces the model suggestions entirely: no probed or built-in
+	// models. Reasoning efforts may still be probed.
 	List []string `toml:"list,omitempty"`
 	// Extra is shown first, ahead of the probed and built-in models.
 	Extra []string `toml:"extra,omitempty"`

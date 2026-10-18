@@ -300,3 +300,67 @@ list = ["acme/nova-2", "local/qwen"]
 		t.Fatalf("unknown tool has an override: %+v", got)
 	}
 }
+
+// In a long-lived process (after WarmModelCatalog) a lookup never waits on the
+// CLI: it answers from the static catalog while the probe runs, then from the
+// probe.
+func TestIssue2664_BackgroundLookupNeverWaits(t *testing.T) {
+	installFakeOpenCode(t, `sleep 1; cat "$FAKE_OPENCODE_FIXTURE"`)
+	modelProbeBackground.Store(true)
+	t.Cleanup(func() { modelProbeBackground.Store(false) })
+
+	start := time.Now()
+	got := KnownModelIDsForTool("opencode")
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("lookup waited %s on the probe", elapsed)
+	}
+	if !slices.Equal(got, staticModelIDsForTool("opencode")) {
+		t.Fatalf("while probing, got %v, want the static catalog", got)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for KnownModelIDsForTool("opencode")[0] != "opencode/big-pickle" {
+		if time.Now().After(deadline) {
+			t.Fatal("background probe never landed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// The probe sees the command's VAR=value prefix (expanded like the shell),
+// and a different prefix is a different cache entry.
+func TestIssue2664_ProbeUsesCommandEnv(t *testing.T) {
+	f := installFakeOpenCode(t, `echo "cfg/$(basename "$OPENCODE_CONFIG")"; echo "home/$(dirname "$OPENCODE_CONFIG" | sed "s#^$HOME#ok#")"`)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := &UserConfig{}
+	cfg.OpenCode.Command = "OPENCODE_CONFIG=~/work.json opencode"
+	t.Cleanup(resetUserConfigCache(t, cfg))
+
+	if got := KnownModelIDsForTool("opencode"); !slices.Equal(got[:2], []string{"cfg/work.json", "home/ok"}) {
+		t.Fatalf("probe did not get the expanded env: %v", got)
+	}
+
+	cfg2 := &UserConfig{}
+	cfg2.OpenCode.Command = `OPENCODE_CONFIG="$HOME/other.json" opencode`
+	t.Cleanup(resetUserConfigCache(t, cfg2))
+	ResetModelProbeMemo()
+	if got := KnownModelIDsForTool("opencode"); got[0] != "cfg/other.json" || got[1] != "home/ok" {
+		t.Fatalf("got %v, want the other config's answer", got)
+	}
+	if n := f.probeCalls(t); n != 2 {
+		t.Fatalf("%d probe runs, want 2 (a new prefix must not hit the old cache)", n)
+	}
+	data, err := os.ReadFile(mustOpenCodeCachePath(t))
+	if err != nil || strings.Contains(string(data), "OPENCODE_CONFIG") || strings.Contains(string(data), home) {
+		t.Fatalf("cache must fingerprint the env, not store it: %s (err %v)", data, err)
+	}
+}
+
+func mustOpenCodeCachePath(t *testing.T) string {
+	t.Helper()
+	path, err := modelProbeCachePath("opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
