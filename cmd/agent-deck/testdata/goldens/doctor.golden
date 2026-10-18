@@ -6,5 +6,6 @@ Profile store: <SANDBOX_HOME>/.local/share/agent-deck (xdg, reason=xdg_only)
   xdg    <SANDBOX_HOME>/.local/share/agent-deck: 6 sessions (goldens=6) [active]
 Codex notify hooks not installed (content detection only); run 'CODEX_HOME=<SANDBOX_HOME>/.codex agent-deck codex-hooks install'
 Telemetry: off (consent has not been given (default off))
+agent-deck on PATH: OK (no older copy shadows this binary)
 Named Claude account directories:
 No named Claude account slots configured.

@@ -253,10 +253,7 @@ func remoteVersionCheckedLabel(state session.RemoteVersionState) string {
 // preview line never wraps a narrow pane.
 func truncateRemoteVersionDisplay(v string) string {
 	const maxLen = 24
-	if len(v) <= maxLen {
-		return v
-	}
-	return v[:maxLen-1] + "…"
+	return truncateDisplay(v, maxLen, "…")
 }
 
 // remoteStatsUnknownLine renders the "stats unknown" fallback honestly: the

@@ -116,6 +116,13 @@ type TurnFacts struct {
 	// Pending means the Stop hook outran the transcript flush: the newest
 	// main-chain record is a user record with no assistant reply yet.
 	Pending bool
+	// FinalTextPending means a tool call or tool result is newer than the
+	// assistant text found (text X, then a tool call, then the final text Y
+	// not yet flushed, #1186): Text and UUID name interim text, not the
+	// turn's final reply. Identity and text are unchanged; consumers that
+	// must know the final reply was seen (result-read withdrawal) treat the
+	// turn as unkeyed.
+	FinalTextPending bool
 	// At is the assistant record's own timestamp (zero when the record has
 	// none), so a consumer can tell which observed edge the facts belong to.
 	At time.Time
@@ -158,6 +165,12 @@ type transcriptTurnRecord struct {
 // results (the harness echoing a tool's output back), which is not a turn
 // trigger.
 func userRecordIsToolResult(content json.RawMessage) bool {
+	return contentHasBlock(content, "tool_result")
+}
+
+// contentHasBlock reports whether a message content array holds a block of
+// the given type.
+func contentHasBlock(content json.RawMessage, blockType string) bool {
 	var blocks []struct {
 		Type string `json:"type"`
 	}
@@ -165,7 +178,7 @@ func userRecordIsToolResult(content json.RawMessage) bool {
 		return false
 	}
 	for _, b := range blocks {
-		if b.Type == "tool_result" {
+		if b.Type == blockType {
 			return true
 		}
 	}
@@ -200,9 +213,13 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 			}
 			text := strings.TrimSpace(transcriptText(rec.Message.Content))
 			if text == "" {
-				continue // tool_use-only record; keep walking
+				facts.FinalTextPending = true // a tool call after any text found below
+				continue                      // tool_use-only record; keep walking
 			}
 			foundAssistant = true
+			if contentHasBlock(rec.Message.Content, "tool_use") {
+				facts.FinalTextPending = true // text and a tool call in one record
+			}
 			facts.UUID = rec.UUID
 			var ts string
 			if json.Unmarshal(rec.Timestamp, &ts) == nil && ts != "" {
@@ -214,6 +231,9 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 			facts.Done, facts.HasDone = ScanDoneSentinel(text)
 		case "user":
 			if userRecordIsToolResult(rec.Message.Content) {
+				if !foundAssistant {
+					facts.FinalTextPending = true
+				}
 				continue
 			}
 			if !foundAssistant {

@@ -983,9 +983,7 @@ func main() {
 			_ = db.ReleaseAllClaims()
 			_ = db.UnregisterInstance()
 		}
-		// Hand the outer terminal's cursor and pointer back if the embedded
-		// terminal owned them; deferred releases do not survive os.Exit.
-		runEmbeddedTerminalCleanup()
+		signalTerminalCleanup()
 		_ = events.CloseDefault()
 		exitCLI(0)
 	}()
@@ -1385,11 +1383,12 @@ func main() {
 		p.Send(ui.MaintenanceCompleteMsg{Result: result})
 	})
 
+	tuiRunning.Store(true)
 	_, runErr := p.Run()
+	tuiRunning.Store(false)
 	homeModel.CloseTelemetryAfterRun(runErr)
 	if runErr != nil {
-		runEmbeddedTerminalCleanup()
-		fmt.Printf("Error: %v\n", runErr)
+		reportTUIRunError(runErr)
 		exitCLI(1)
 	}
 
@@ -4098,7 +4097,7 @@ func handleProfileSetDefault(out *CLIOutput, name string) {
 func handleUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
-	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents, remote_nudges); with --timer-status/--install-timer/--ensure-timer: the timer state or what was done")
+	jsonOut := fs.Bool("json", false, "With --check: print the result as JSON (current, latest, available, publishing, auto_install, auto_restart, timer, on_disk, running_tuis, pending_launch_agents, remote_nudges, shadowed_by); with --timer-status/--install-timer/--ensure-timer: the timer state or what was done")
 	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
 	unattended := fs.Bool("unattended", false, "Install without prompts (no changelog, no stdin); honours [updates] auto_install; exit 2 on Homebrew installs")
 	checkNow := fs.Bool("check-now", false, "Same as --unattended, but for a controller's nudge: checks GitHub right away and never nudges this host's own remotes")
@@ -4191,7 +4190,9 @@ func handleUpdate(args []string) {
 			timer = update.QueryTimerStatus(cfg, update.ExecRunner{})
 		}
 		onDisk := onDiskVersion()
-		if err := printUpdateCheckJSON(os.Stdout, buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), pendingLaunchAgentsForCheck(), session.LoadRemoteNudges()...)); err != nil {
+		doc := buildUpdateCheckJSON(info, session.GetUpdateSettings(), timer, onDisk, runningTUIReports(onDisk), pendingLaunchAgentsForCheck(), session.LoadRemoteNudges()...)
+		doc.ShadowedBy = shadowedBy(onDisk)
+		if err := printUpdateCheckJSON(os.Stdout, doc); err != nil {
 			exit(1)
 		}
 		exit(0)
@@ -4220,9 +4221,11 @@ func handleUpdate(args []string) {
 	if !info.Available {
 		fmt.Println("✓ You're running the latest version!")
 		if *checkOnly {
-			printOutdatedTUIs(onDiskVersion())
+			onDisk := onDiskVersion()
+			printOutdatedTUIs(onDisk)
 			printPendingLaunchAgents()
 			printFailedRemoteNudges(os.Stdout, session.LoadRemoteNudges())
+			printPathShadowing(os.Stdout, update.FindShadowingCopies(onDisk), updateCLILog)
 			return
 		}
 		// Nothing to install, but a launch agent an earlier run left
@@ -4257,9 +4260,11 @@ func handleUpdate(args []string) {
 		} else {
 			fmt.Println("\nRun 'agent-deck update' to install.")
 		}
-		printOutdatedTUIs(onDiskVersion())
+		onDisk := onDiskVersion()
+		printOutdatedTUIs(onDisk)
 		printPendingLaunchAgents()
 		printFailedRemoteNudges(os.Stdout, session.LoadRemoteNudges())
+		printPathShadowing(os.Stdout, update.FindShadowingCopies(onDisk), updateCLILog)
 		return
 	}
 
@@ -4320,6 +4325,7 @@ func handleUpdate(args []string) {
 
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
 	fmt.Println("  Restart agent-deck to use the new version.")
+	printPathShadowing(os.Stdout, update.FindShadowingCopies(info.LatestVersion), updateCLILog)
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
@@ -4416,6 +4422,7 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 
 	fmt.Printf("\n✓ Installed v%s\n", targetVersion)
 	fmt.Println("  Restart agent-deck to use this version.")
+	printPathShadowing(os.Stdout, update.FindShadowingCopies(targetVersion), updateCLILog)
 }
 
 // brewRunner abstracts `brew <args...>` so tests can inject canned output

@@ -140,8 +140,9 @@ func InboxHasUrgentPending(parentID string) bool {
 	if err != nil {
 		return true // unreadable: fail toward delivering
 	}
+	reads := loadResultReads(parentID)
 	for _, ev := range events {
-		if ev.IsUrgent() {
+		if ev.IsUrgent() && !reads.covers(ev) {
 			return true
 		}
 	}
@@ -263,22 +264,28 @@ func DigestDue(parentID string, window time.Duration, now time.Time) (due bool, 
 	}
 	kids := map[string]bool{}
 	var oldest time.Time
+	reads := loadResultReads(parentID)
+	count := 0
 	for _, ev := range events {
+		if reads.covers(ev) {
+			continue // already read by the parent: withdrawn, nothing to digest
+		}
 		if ev.IsUrgent() {
 			return false, 0, 0
 		}
+		count++
 		kids[ev.ChildSessionID] = true
 		if oldest.IsZero() || ev.Timestamp.Before(oldest) {
 			oldest = ev.Timestamp
 		}
 	}
-	if now.Sub(oldest) < window {
+	if count == 0 || now.Sub(oldest) < window {
 		return false, 0, 0
 	}
 	if last := lastDigestWake(parentID); !last.IsZero() && now.Sub(last) < window {
 		return false, 0, 0
 	}
-	return true, len(events), len(kids)
+	return true, count, len(kids)
 }
 
 // promptContextBudgetBytes keeps the injected block under Claude Code's

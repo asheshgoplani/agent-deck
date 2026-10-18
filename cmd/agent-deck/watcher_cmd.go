@@ -77,6 +77,19 @@ func handleWatcher(profile string, args []string) {
 		return
 	}
 
+	// Resolve the profile the way the TUI, web and every other command do:
+	// -p, AGENTDECK_PROFILE, a CLAUDE_CONFIG_DIR-inferred profile behind the
+	// #1790 guard, then default_profile. The raw -p value is "" when the flag
+	// is absent, and GetDBPathForProfile reads "" as the default profile, so
+	// without this a watcher went to a profile whose engine never runs it
+	// (#2740).
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to resolve profile: %v\n", err)
+		exitCLI(1)
+	}
+	profile = resolved
+
 	switch args[0] {
 	case "import":
 		handleWatcherImport(profile, args[1:])
@@ -90,6 +103,8 @@ func handleWatcher(profile string, args []string) {
 		handleWatcherList(profile, args[1:])
 	case "status":
 		handleWatcherStatus(profile, args[1:])
+	case "reload":
+		handleWatcherReload(profile, args[1:])
 	case "test":
 		handleWatcherTest(profile, args[1:])
 	case "routes":
@@ -109,7 +124,8 @@ func handleWatcher(profile string, args []string) {
 	}
 }
 
-// openWatcherDB opens the statedb for the given profile.
+// openWatcherDB opens the statedb for the given profile, already resolved by
+// handleWatcher: an empty name opens the default profile's.
 func openWatcherDB(profile string) (*statedb.StateDB, error) {
 	dbPath, err := session.GetDBPathForProfile(profile)
 	if err != nil {
@@ -520,8 +536,8 @@ func handleWatcherStart(profile string, args []string) {
 	}
 
 	// One TUI, web or web --no-tui process per profile owns the watcher
-	// engine (#2530); the engine loads its watchers when it starts.
-	fmt.Printf("Started watcher: %s (an agent-deck TUI or web process runs it: within seconds if the profile has no watcher engine yet, else once the engine's process restarts)\n", name)
+	// engine (#2530), and applies a start or stop while it runs (#2739).
+	fmt.Printf("Started watcher: %s (%s)\n", name, watcherApplyHint)
 }
 
 // handleWatcherStop marks a watcher as stopped in statedb.
@@ -562,7 +578,149 @@ func handleWatcherStop(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	fmt.Printf("Stopped watcher: %s\n", name)
+	fmt.Printf("Stopped watcher: %s (%s)\n", name, watcherApplyHint)
+}
+
+// watcherApplyHint says when a watcher change takes effect (#2739).
+const watcherApplyHint = "the profile's watcher engine, in an agent-deck TUI or web process, applies it within seconds; `agent-deck watcher reload` applies it now and reports what changed, or that an engine of an older agent-deck needs its process restarted"
+
+// watcherReloadResult is the JSON schema for `agent-deck watcher reload --json`.
+type watcherReloadResult struct {
+	Profile       string                `json:"profile"`
+	EngineRunning bool                  `json:"engine_running"`
+	OwnerPID      int                   `json:"owner_pid,omitempty"`
+	Applied       bool                  `json:"applied"`
+	Report        *watcher.ReloadReport `json:"report,omitempty"`
+	Message       string                `json:"message"`
+}
+
+// handleWatcherReload asks the profile's watcher engine to apply the watchers,
+// their [source] settings and clients.json now, and prints what it changed
+// (#2739). Exit status 1 when no engine answered, the engine could not read
+// the watchers, an adapter failed to start or clients.json did not parse.
+func handleWatcherReload(profile string, args []string) {
+	fs := flag.NewFlagSet("watcher reload", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	timeout := fs.Duration("timeout", 15*time.Second, "How long to wait for the engine to answer")
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck watcher reload [--json] [--timeout 15s]")
+		fmt.Println()
+		fmt.Println("Apply started, stopped and edited watchers and clients.json routes to the")
+		fmt.Println("profile's running watcher engine now, and retry watchers that failed to start.")
+		fmt.Println("The engine also applies changes by itself within seconds.")
+	}
+	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
+		exitCLI(1)
+	}
+
+	res, failed, err := watcherReload(profile, *timeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		exitCLI(1)
+	}
+
+	if *jsonOutput {
+		out, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(out))
+	} else {
+		fmt.Println(res.Message)
+		if rep := res.Report; rep != nil {
+			for _, f := range rep.Failed {
+				fmt.Printf("  failed: %s\n", f)
+			}
+			if rep.RoutesError != "" {
+				fmt.Printf("  routes kept: %s\n", rep.RoutesError)
+			}
+		}
+	}
+	if failed {
+		exitCLI(1)
+	}
+}
+
+// watcherReload asks profile's engine owner to reload and waits up to
+// timeout for its answer. failed reports what makes `watcher reload` exit 1.
+func watcherReload(profile string, timeout time.Duration) (res watcherReloadResult, failed bool, err error) {
+	resolved, err := session.ResolveProfileForStorage(profile)
+	if err != nil {
+		return res, true, fmt.Errorf("resolving profile: %w", err)
+	}
+	res.Profile = resolved
+	pid, running, err := watcher.EngineOwnerPID(resolved)
+	if err != nil {
+		return res, true, err
+	}
+	res.EngineRunning, res.OwnerPID = running, pid
+	if !running {
+		res.Message = "No watcher engine runs for this profile. The agent-deck TUI or web process that starts one reads the current watchers and routes."
+		return res, false, nil
+	}
+	requested := time.Now()
+	token, err := watcher.RequestReload(resolved)
+	if err != nil {
+		return res, true, err
+	}
+	res.Report = waitWatcherReload(resolved, token, requested, timeout)
+	switch rep := res.Report; {
+	case rep == nil:
+		res.Message = fmt.Sprintf("The watcher engine (%s) did not answer within %s. An engine of an agent-deck older than this one applies watcher changes only when its process restarts.", watcherOwnerDesc(pid), timeout)
+		return res, true, nil
+	case rep.Error != "":
+		res.Applied = true
+		res.Message = "The watcher engine could not read the watchers: " + rep.Error
+		return res, true, nil
+	default:
+		res.Applied = true
+		res.Message = watcherReloadSummary(rep)
+		return res, len(rep.Failed) > 0 || rep.RoutesError != "", nil
+	}
+}
+
+// waitWatcherReload waits up to timeout for the engine's answer to token. An
+// answer to a later request (another `watcher reload` replaced this one's
+// token) from a pass that started after this one was made covers it too.
+func waitWatcherReload(profile, token string, requested time.Time, timeout time.Duration) *watcher.ReloadReport {
+	deadline := time.Now().Add(timeout)
+	for {
+		if rep, err := watcher.ReadReloadReport(profile); err == nil && rep != nil &&
+			(rep.Request == token || !rep.StartedAt.Before(requested)) {
+			return rep
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func watcherOwnerDesc(pid int) string {
+	if pid > 0 {
+		return fmt.Sprintf("pid %d", pid)
+	}
+	return "pid unknown"
+}
+
+// watcherReloadSummary is the one-line text form of rep.
+func watcherReloadSummary(rep *watcher.ReloadReport) string {
+	var parts []string
+	add := func(label string, names []string) {
+		if len(names) > 0 {
+			parts = append(parts, label+" "+strings.Join(names, ", "))
+		}
+	}
+	add("started", rep.Started)
+	add("stopped", rep.Stopped)
+	add("restarted", rep.Restarted)
+	if n := len(rep.Failed); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed to start", n))
+	}
+	if rep.RoutesReloaded {
+		parts = append(parts, "routes reloaded")
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("Watcher engine (pid %d) reloaded: nothing changed (%d watchers running).", rep.PID, rep.Unchanged)
+	}
+	return fmt.Sprintf("Watcher engine (pid %d) reloaded: %s; %d unchanged.", rep.PID, strings.Join(parts, "; "), rep.Unchanged)
 }
 
 // handleWatcherList lists all watchers with name, type, status, event rate, and health.
@@ -1138,6 +1296,7 @@ func printWatcherHelp() {
 	fmt.Println("  create <type> --name <name>   Create a new watcher (types: webhook, ntfy, github, slack)")
 	fmt.Println("  start <name>                  Mark a watcher as running (run by the profile's watcher engine)")
 	fmt.Println("  stop <name>                   Mark a watcher as stopped")
+	fmt.Println("  reload [--json]               Apply watcher and clients.json changes to the running engine now")
 	fmt.Println("  list [--json]                 List all watchers with status and event rate")
 	fmt.Println("  status <name> [--json]        Show watcher info, recent events and events not delivered yet")
 	fmt.Println("  test <name>                   Route a synthetic event to verify routing config")
