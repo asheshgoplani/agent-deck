@@ -13,12 +13,17 @@ import (
 
 // TestQuickMessageQueueRecipientContinuity ensures native queueing never sends
 // terminal keys, even when the session no longer has a live tmux recipient.
+//
+// PATH is process-wide, so the fake tmux also answers goroutines other tests
+// left running (issue 2712). It records only calls naming this session; any
+// delivery to the recipient has to name it. The session-send fallback is
+// caught at its seam rather than by re-running the test binary.
 func TestQuickMessageQueueRecipientContinuity(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "terminal-keys")
 	t.Setenv("QUEUE_KEYS_MARKER", marker)
 	for name, script := range map[string]string{
-		"tmux":     "#!/bin/sh\nprintf keys >> \"$QUEUE_KEYS_MARKER\"\nexit 1\n",
+		"tmux":     "#!/bin/sh\ncase \"$*\" in *\"$QUEUE_TMUX_TARGET\"*) printf keys >> \"$QUEUE_KEYS_MARKER\" ;; esac\nexit 1\n",
 		"opencode": "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'opencode v2.0.26\\n'; exit 0; fi\nprintf '%s\\n' '{\"data\":{\"id\":\"msg_queued\",\"sessionID\":\"ses_target\",\"delivery\":\"queue\"}}'\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
@@ -40,6 +45,11 @@ func TestQuickMessageQueueRecipientContinuity(t *testing.T) {
 	session.ClearUserConfigCache()
 	t.Cleanup(session.ClearUserConfigCache)
 	inst := session.NewInstanceWithGroupAndTool("queue", dir, "", "opencode")
+	t.Setenv("QUEUE_TMUX_TARGET", inst.GetTmuxSession().Name)
+	origSend := quickMessageRunSend
+	fallback := false
+	quickMessageRunSend = func([]string, string) error { fallback = true; return nil }
+	t.Cleanup(func() { quickMessageRunSend = origSend })
 	inst.OpenCodeSessionID = "ses_target"
 	for _, id := range []string{"ses_target", ""} {
 		inst.OpenCodeSessionID = id
@@ -48,8 +58,11 @@ func TestQuickMessageQueueRecipientContinuity(t *testing.T) {
 			t.Fatalf("session %q: %v", id, msg.err)
 		}
 	}
+	if fallback {
+		t.Fatal("native queue fell back to session send")
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("native queue attempted terminal delivery or fallback")
+		t.Fatal("native queue attempted terminal delivery")
 	}
 }
 

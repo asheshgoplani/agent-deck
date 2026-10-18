@@ -377,3 +377,44 @@ func TestParentFoldReappliedWhenStatusFilterFallsBack(t *testing.T) {
 		t.Fatalf("fallback list = %s, want parent (fold applies once the parent is drawn)", got)
 	}
 }
+
+// A sub-session's own children render as orphan rows, never under it, so its
+// row gets no fold badge and leaves Tab to the window toggle.
+func TestParentFoldNotOfferedOnSubSessionRow(t *testing.T) {
+	h, parent, child := makeFoldTestHome()
+	grand := session.NewInstanceWithTool("grandchild", "/tmp/grandchild", "claude")
+	grand.ID = "grandchild"
+	grand.GroupPath = "alpha"
+	grand.Status = session.StatusIdle
+	grand.SetParent(child.ID)
+	h.groupTree = session.NewGroupTree([]*session.Instance{parent, child, grand})
+	h.width, h.height = 80, 24
+	h.rebuildFlatItems()
+
+	var childItem session.Item
+	for _, item := range h.flatItems {
+		if item.Session != nil && item.Session.ID == child.ID {
+			childItem = item
+		}
+	}
+	if childItem.Session == nil {
+		t.Fatal("child row missing")
+	}
+	if n := h.sessionChildCount(childItem); n != 0 {
+		t.Fatalf("sub-session row child count = %d, want 0", n)
+	}
+	frame := stripAnsi(h.renderSessionList(80, 24))
+	for _, line := range strings.Split(frame, "\n") {
+		if strings.Contains(line, "child") && !strings.Contains(line, "grandchild") &&
+			(strings.Contains(line, "▾") || strings.Contains(line, "▸")) {
+			t.Fatalf("sub-session row carries a fold badge: %q\n%s", line, frame)
+		}
+	}
+
+	// Tab on the sub-session row must not record a fold that hides nothing.
+	h.moveCursorToSession(child.ID)
+	_, _ = h.handleMainKey(tea.KeyMsg{Type: tea.KeyTab})
+	if h.parentChildrenCollapsed[child.ID] {
+		t.Fatal("Tab folded a sub-session row")
+	}
+}
