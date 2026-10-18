@@ -57,3 +57,32 @@ func TestResolveClaudeTranscriptPath_NotFound(t *testing.T) {
 		t.Fatalf("empty id: expected empty, got %q", got)
 	}
 }
+
+// A session ID is joined into a path and used as a glob pattern. One that is
+// not a single plain path segment must resolve to nothing: "../" would leave
+// the projects tree and "*" would match another session's transcript.
+func TestResolveClaudeTranscriptPath_RejectsUnsafeSessionID(t *testing.T) {
+	cfg := t.TempDir()
+	proj := "/home/user/proj"
+	mkTranscript(t, cfg, ConvertToClaudeDirName(proj), "11111111-2222-3333-4444-555555555555")
+	outside := filepath.Join(cfg, "outside.jsonl")
+	if err := os.WriteFile(outside, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// "" + ".jsonl" is a valid segment; an empty ID must still find nothing
+	// (and must not reach the all-projects glob).
+	mkTranscript(t, cfg, ConvertToClaudeDirName(proj), "")
+
+	for _, id := range []string{"", "../../outside", "*", "1111*", "1111111?-2222-3333-4444-555555555555", `..\..\outside`} {
+		if got := resolveClaudeTranscriptPath(cfg, proj, id); got != "" {
+			t.Errorf("session id %q: expected empty, got %q", id, got)
+		}
+	}
+
+	// IDs set by hand need not be UUIDs; a plain segment still resolves.
+	want := mkTranscript(t, cfg, ConvertToClaudeDirName(proj), "abc123-def456")
+	if got := resolveClaudeTranscriptPath(cfg, proj, "abc123-def456"); got != want {
+		t.Errorf("plain non-UUID id: got %q want %q", got, want)
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -41,13 +42,15 @@ func handleConfig(profile string, args []string) {
 func printConfigHelp() {
 	fmt.Println("Usage: agent-deck config show --effective [path] [--json]")
 	fmt.Println("       agent-deck config get <key> [--json]")
-	fmt.Println("       agent-deck config set <key> <value> [--json]")
+	fmt.Println("       agent-deck config set <key> <value> [--yes] [--json]")
 	fmt.Println("       agent-deck config schema [--json]")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  get <key>                 Print one setting's effective value (its default when unset).")
 	fmt.Println("  set <key> <value>         Write one setting to config.toml with the TUI Settings writer;")
 	fmt.Println("                            prints the value read back. Lists are comma-separated.")
+	fmt.Println("                            Turning on a key that needs consent (macapp.plugins) asks")
+	fmt.Println("                            [y/N] in a terminal; --yes (-y) gives the consent otherwise.")
 	fmt.Println("  schema                    Every settable key: section, label, help, type, allowed values,")
 	fmt.Println("                            default, restart_required. The keys are the TUI Settings rows")
 	fmt.Println("                            plus recall.enabled, macapp.*, core.daemon (docs/macapp-core.md).")
@@ -162,16 +165,24 @@ type configValueJSON struct {
 }
 
 func configKeyFlags(name string, args []string) (*flag.FlagSet, *bool) {
+	fs, jsonOutput := newConfigFlagSet(name)
+	parseConfigFlags(fs, args)
+	return fs, jsonOutput
+}
+
+func newConfigFlagSet(name string) (*flag.FlagSet, *bool) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
-	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	return fs, fs.Bool("json", false, "Output as JSON")
+}
+
+func parseConfigFlags(fs *flag.FlagSet, args []string) {
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			exitCLI(0)
 		}
 		exitCLI(2)
 	}
-	return fs, jsonOutput
 }
 
 func printConfigValue(k session.ConfigKey, v any, jsonOutput bool) {
@@ -216,13 +227,32 @@ func handleConfigGet(args []string) {
 }
 
 func handleConfigSet(args []string) {
-	fs, jsonOutput := configKeyFlags("config set", args)
+	fs, jsonOutput := newConfigFlagSet("config set")
+	yes := fs.Bool("yes", false, "Consent to turning on a key that needs it (macapp.plugins)")
+	fs.BoolVar(yes, "y", false, "Short for --yes")
+	parseConfigFlags(fs, args)
 	out := NewCLIOutput(*jsonOutput, false)
 	if fs.NArg() != 2 {
-		out.Error("usage: agent-deck config set <key> <value> [--json]", ErrCodeInvalidOperation)
+		out.Error("usage: agent-deck config set <key> <value> [--yes] [--json]", ErrCodeInvalidOperation)
 		exitCLI(2)
 	}
-	k, v, err := session.SetConfigValue(fs.Arg(0), fs.Arg(1))
+	name, raw := fs.Arg(0), fs.Arg(1)
+	k, v, err := session.SetConfigValue(name, raw, *yes)
+	if errors.Is(err, session.ErrConsentRequired) {
+		if *jsonOutput || !stdinStdoutIsTerminal() {
+			argv, cmd := consentCommand(k.Key)
+			out.ErrorWithData(fmt.Sprintf("turning on %s needs your consent: %s Run %s to confirm.", k.Key, k.Consent, cmd), ErrCodeConsentRequired,
+				map[string]any{"key": k.Key, "value": v, "consent": k.Consent, "confirm_command": cmd, "confirm_argv": argv})
+			exitCLI(2)
+		}
+		fmt.Printf("%s\n\nTurn on %s? [y/N]: ", k.Consent, k.Key)
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if !isYesConfirmation(line) {
+			fmt.Println("Not changed.")
+			exitCLI(1)
+		}
+		k, v, err = session.SetConfigValue(name, raw, true)
+	}
 	if err != nil {
 		code := ErrCodeInvalidOperation
 		if k.Key == "" {
@@ -232,6 +262,23 @@ func handleConfigSet(args []string) {
 		exitCLI(2)
 	}
 	printConfigValue(k, v, *jsonOutput)
+}
+
+// consentCommand is the agent-deck argv, and its shell form, that turns a
+// consent-gated key on.
+func consentCommand(key string) (argv []string, cmd string) {
+	argv = []string{"config", "set", key, "true", "--yes"}
+	return argv, "agent-deck " + strings.Join(argv, " ")
+}
+
+// exitMacappPluginsOff exits 2 because what needs [macapp] plugins: the error
+// names the exact command that turns it on, and its JSON form carries a hint
+// the Mac app shows as a consent prompt before it runs hint.argv.
+func exitMacappPluginsOff(out *CLIOutput, what string) {
+	argv, cmd := consentCommand("macapp.plugins")
+	out.ErrorWithData(fmt.Sprintf("%s is off: it needs [macapp] plugins = true in config.toml. To enable it, run: %s (docs/macapp-core.md)", what, cmd), ErrCodeInvalidOperation,
+		map[string]any{"hint": map[string]any{"key": "macapp.plugins", "value": true, "command": cmd, "argv": argv, "consent": session.MacappPluginsConsent, "docs": "docs/macapp-core.md"}})
+	exitCLI(2)
 }
 
 func handleConfigSchema(args []string) {

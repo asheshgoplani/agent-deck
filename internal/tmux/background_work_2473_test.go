@@ -131,7 +131,9 @@ func TestBackgroundWork_LiveFixtures(t *testing.T) {
 	}{
 		{"workflow-running.txt", FrameActive, SubstateBackgroundWork, BackgroundKindWorkflow, "workflow probe-two-agents 1/2 · 22s"},
 		{"workflow-finished.txt", FrameWaiting, SubstateIdleAtEmptyPrompt, "", ""},
-		{"agent-and-shells.txt", FrameActive, SubstateBackgroundWork, BackgroundKindBash, "bash 2 shells, 1 monitor"},
+		// A5: the shells need the transcript, so the pane alone shows the
+		// monitor watching. The raw counter is still recorded as bash.
+		{"agent-and-shells.txt", FrameWaiting, SubstateWatching, BackgroundKindBash, "bash 2 shells, 1 monitor"},
 		// A live spinner is foreground work: running, not background-work.
 		{"monitor-footer-busy-turn.txt", FrameActive, SubstateRunning, BackgroundKindMonitor, "1 watching · 1 monitor"},
 		// The old 20-line scan matched the stale "Waiting for 1 background
@@ -183,6 +185,13 @@ func TestBackgroundWork_CounterOnlyOnFooter(t *testing.T) {
 	footer := "✻ Brewed for 3s\n────\n❯ \n────\n  ⏵⏵ bypass permissions on · 1 shell, 2 monitors · ← for agents"
 	if w := ParseClaudeBackgroundWork(footer); w.Kind != BackgroundKindBash || w.Task != "1 shell, 2 monitors" {
 		t.Fatalf("footer counter = %+v", w)
+	}
+	// What the pane proves without the transcript (A5): the monitors only.
+	if w := ParseClaudeBackgroundWork(footer).WithoutShells(); w.Kind != BackgroundKindMonitor || w.Count != 2 || w.Task != "2 monitors" {
+		t.Fatalf("footer counter without shells = %+v, want 2 monitors watching", w)
+	}
+	if w := ParseClaudeBackgroundWork("✻ Brewed for 3s\n────\n❯ \n────\n  ⏵⏵ auto mode on · 1 shell"); w.WithoutShells().InFlight() {
+		t.Fatalf("shell-only counter without shells = %+v, want nothing", w.WithoutShells())
 	}
 	monitors := "✻ Brewed for 3s\n────\n❯ \n────\n  ⏵⏵ auto mode on · 2 monitors"
 	if w := ParseClaudeBackgroundWork(monitors); w.Kind != BackgroundKindMonitor {

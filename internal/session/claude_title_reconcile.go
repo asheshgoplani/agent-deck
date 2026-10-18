@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/send"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -268,6 +269,9 @@ func (i *Instance) ResolveTitleFromClaude(sessionID string) (string, bool) {
 		return "", false
 	}
 	name, cwd := ClaudeSessionNameAndCwd(sessionID)
+	// Titles are stored cleaned; compare the cleaned name, or a name with a
+	// control character would differ forever and be rewritten on every hook.
+	name = termtext.Clean(name)
 	if name == "" || name == i.Title {
 		return "", false
 	}

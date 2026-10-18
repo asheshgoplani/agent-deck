@@ -37,8 +37,10 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[send] Section](#send-section)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
+- [[status] Section](#status-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
+- [[macapp] Section](#macapp-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -316,11 +318,19 @@ Where the model and reasoning-effort suggestions come from (TUI and web new-sess
 ```toml
 [models]
 probe = true   # Ask installed CLIs for their model lists (default)
+
+[models.codex]
+extra = ["nova-2"]          # shown first, ahead of the probed and built-in models
+
+[models.opencode]
+list = ["acme/nova-2", "local/qwen"]   # replaces the suggestions entirely
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, no prompt, about 1s timeout); Claude Code and Gemini have no local listing and use the built-in catalog. Results are cached per CLI binary for up to a day in `<cache dir>/model-probe/`. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
+| `probe` | bool | `true` | Ask an installed CLI that can list its own models for its model and effort lists, merged in front of the built-in catalog. Today that is Codex (`codex debug models`, about 1s timeout) and OpenCode (`opencode models`, about 3s timeout, run from your home directory; it lists the models of providers you have credentials for). Neither sends a prompt. Claude Code and Gemini have no local listing and use the built-in catalog. The probe runs with the `VAR=value` prefix of the configured `command`. Results are cached per CLI binary and prefix for up to a day in `<cache dir>/model-probe/`; a provider you add to OpenCode shows up after that day, or at once if you delete `model-probe/opencode.json`. The TUI and web server never wait on a probe: they show the last list (or the built-in one) while it runs. A missing CLI, timeout or unrecognized output falls back to the built-in catalog, and a failed probe is retried after about a minute. `false` uses only the built-in catalog. |
+| `<tool>.list` | string array | `[]` | Pins the model suggestions for `claude`, `codex`, `gemini` or `opencode`: only these IDs are offered, without the probed or built-in models. Codex may still be asked for its reasoning efforts. A custom tool wrapping Claude or Codex uses that tool's table. |
+| `<tool>.extra` | string array | `[]` | Extra IDs shown first, ahead of the probed and built-in models. Applies with `probe = false` too. |
 
 The lists are suggestions, not an allowlist: a `[claude] default_model` the catalog does not know is still prefilled in the new-session dialog (with a warning in the log), and `--model` passes any ID through.
 
@@ -690,14 +700,16 @@ inject_identity = true   # Default: true
 context_level = "primer" # none | primer | full — global default (issue #2260)
 nest_under_parent = false # Default: false
 prompt_suggestions = "children-off" # children-off | on | off
+fanout_hint = true       # Default: true
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `inject_identity` | bool | `true` | Tell every spawned session, through its harness's own instruction mechanism, that it runs inside agent-deck: its session id, title, tool, group, profile, account, parent session and project path, the six most useful `agent-deck` commands, `session current --json` as the way to fetch the live record, and the `===AGENTDECK_DONE===` completion sentinel. The block (under 40 lines) is regenerated from the session record on every start/restart and written to `<data-dir>/agent-deck/runtime/identity/<session-id>/identity.md`; its path is exported as `AGENTDECK_IDENTITY_FILE`. Per-session opt-out: `agent-deck add|launch --no-identity`. `inject_identity = false` is the *global* layer's value only — a `context_level` set on a group or session still overrides it (global < group < session precedence; the per-session `--no-identity` opt-out is the one thing that keeps winning over everything). |
-| `context_level` | string | `""` (falls back to `full`) | Global default for how much of the identity block a spawned session's harness receives (issue #2260): `none` (no injection, same as `inject_identity = false`), `primer` (short session-identity block: id/title/tool/parent), or `full` (the complete block `inject_identity` describes). Overridden per group (`[groups."<path>"].context_level`, ancestor-walking) or per session (`agent-deck session set <id> context-level <level>`). Precedence: `--no-identity` (session) > session `context_level` > group `context_level` (nearest ancestor) > global `context_level` > global `inject_identity=false` > default `full`. Inspect what a session actually resolves to with `agent-deck session primer [id]`. |
+| `context_level` | string | `""` (falls back to `full`) | Global default for how much of the identity block a spawned session's harness receives (issue #2260): `none` (no injection, same as `inject_identity = false`), `primer` (short session-identity block: id/title/tool/parent), or `full` (the complete block `inject_identity` describes). Overridden per group (`[groups."<path>"].context_level`, ancestor-walking) or per session (`agent-deck session set <id> context-level <level>`). Precedence: `--no-identity` (session) > session `context_level` > group `context_level` (nearest ancestor) > global `context_level` > global `inject_identity=false` > default `full`. Inspect what a session actually resolves to with `agent-deck session primer [id]`; `agent-deck config get launch.context_level` prints the global layer only (`none` when `inject_identity = false`). |
 | `nest_under_parent` | bool | `false` | What `add` and `launch` do when run from inside a sub-session without `--parent`. `false` keeps the long-standing behaviour: the new session starts top-level, in the group derived from its folder, with no parent link and no note. `true` links it under the calling sub-session's own parent (one hop, never further), picks its group by the same rules as any child of that parent (`add` takes the parent's group; `launch` keeps the folder-derived group unless `--inherit-group` or a worktree child), prints a one-line note on stderr, and records the calling sub-session in a `launched-by` hint next to the `parent` hint (`launch --json` shows both under `hints`; `parent_id` is the session it was actually linked to). With `true`, a caller whose parent no longer exists starts top-level with a note instead of failing, a caller whose parent is itself a sub-session is refused naming both ids, and `--no-parent` from a sub-session prints where the session would otherwise have landed. An explicit `--parent <sub-session>` is refused either way (single level only). The `--startup-query` capacity pre-check follows the same rule. |
 | `prompt_suggestions` | string | `"children-off"` | Claude Code prompt suggestions (the dim predicted next message Claude paints in an empty composer) in sessions agent-deck launches. `children-off`: a session launched with a parent (a worker, a conductor's child) starts with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`; a root session, the kind a person attaches to and drives, is left alone. `on`: agent-deck never sets the variable, so Claude's own `promptSuggestionEnabled` setting decides. `off`: every Claude session starts with suggestions disabled. Also accepts `true`/`false`. Applied at start, restart and resume, on the first launch of a fork (a TUI fork with a parent chosen is a parented session; `session fork` from the CLI or the web makes a root fork) and on a cross-harness switch into Claude (the target keeps the source's parent). See [Prompt suggestions](#prompt-suggestions-in-launched-sessions). |
+| `fanout_hint` | bool | `true` | Adds one "Working style" line to the injected identity block of Claude-family sessions (claude and custom tools wrapping it; primer and full levels): "Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered." Other tools never get it. `false` leaves it out and changes nothing else. It rides on identity injection, so `--no-identity`, `inject_identity = false` or `context_level = "none"` mean no block and no hint. `launch-subagent.sh` appends the same line to the prompt only for a claude child with no identity block (global level `none`) and honours `false` and `--no-fanout-hint`. Also `agent-deck config get/set launch.fanout_hint`. |
 
 How each harness receives the block (`documentation/HARNESS_IDENTITY.md` has the details):
 
@@ -1094,6 +1106,21 @@ session_events = true  # per-session event journal for `session metrics`
 
 Read the journal with `agent-deck session metrics <id> --json` (per session) or `agent-deck health --json` (the `sessions` roll-up).
 
+## [status] Section
+
+Status detection settings (docs/status-detection.md).
+
+```toml
+[status]
+shell_running_indicator = false
+background_shell_hold = "3m"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `shell_running_indicator` | bool | `false` | Show a `shell` tool session as running while its pane's foreground command is a non-interactive process (`node` from `yarn dev`, `java` from `mvn spring-boot:run`). |
+| `background_shell_hold` | duration | `"3m"` | How long after its launch a Claude `run_in_background` shell keeps a finished turn `running` / `background-work`. Past it the session reads `waiting`, even if the shell is a build that still runs (its done notification or a conductor/goal wake can then fire mid-build). `"0"` restores the earlier rule: the footer's shell counter alone keeps the session running, so a leftover dev server pins it green. An invalid or negative value is logged and the default applies. |
+
 ## [performance] Section
 
 Background-work sharing between concurrent agent-deck instances (e.g. multiple `-g <scope>` TUIs open against the same state.db).
@@ -1127,6 +1154,23 @@ daemon = false   # Opt-in: send --json=envelope requests to `agent-deck daemon s
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `daemon` | bool | `false` | When `true`, a `--json=envelope` request of a registry command (`session start/stop/restart`, `list`, `group list`) is sent to the profile's daemon if one answers on its socket, and runs in process when none does, so the CLI keeps working with the daemon dead. Every other request, and every request when `false`, runs in process exactly as before; the socket is never dialled. |
+
+## [macapp] Section
+
+Switches for the Mac app surface (`docs/macapp-core.md`). All are off by default.
+
+```toml
+[macapp]
+plugins = false            # Opt-in: limits --json and events publish --kind macapp.<name>
+transcript_events = false  # Notify daemon publishes session.transcript frames
+status_events = false      # Status owners publish session.status and session.turn frames
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the built-in `macapp.open` and `macapp.open.ack`. Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
+| `transcript_events` | bool | `false` | The notify daemon publishes a `session.transcript` frame whenever a live session's native transcript grows. Restart required. |
+| `status_events` | bool | `false` | Every status owner (TUI poller, notify daemon) publishes `session.status` and `session.turn` frames on each status transition. |
 
 ## [tmux] Section
 
