@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Models
+
+- OpenCode's model list comes from the installed CLI (`opencode models`, no prompt, about 3s timeout, cached per binary for up to a day), merged in front of the built-in list, so new models show up in the TUI and web pickers and `launch -capabilities --json` without an Agent Deck release. A failure keeps the built-in list. `[models.<tool>] list = [...]` pins a tool's suggestions and `[models.<tool>] extra = [...]` adds IDs in front, for `claude`, `codex`, `gemini` and `opencode` (#2664, thanks @koenzhao).
+
 ## [1.16.29] - 2026-10-18
 
 ### Security and toolchain

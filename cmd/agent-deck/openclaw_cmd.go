@@ -254,12 +254,12 @@ func handleOpenClawStatus(args []string) {
 					if status.Connected {
 						state = "connected"
 					}
-					entry := fmt.Sprintf("  %s: %s", name, state)
+					entry := fmt.Sprintf("  %s: %s", displayRemote(name), state)
 					if status.Guilds > 0 {
 						entry += fmt.Sprintf(" (%d guilds)", status.Guilds)
 					}
 					if status.Error != "" {
-						entry += fmt.Sprintf(" [error: %s]", status.Error)
+						entry += fmt.Sprintf(" [error: %s]", displayRemote(status.Error))
 					}
 					found = append(found, entry)
 				}
@@ -285,7 +285,7 @@ func handleOpenClawStatus(args []string) {
 			if agent.ID == agentsResult.DefaultID {
 				defaultMarker = " (default)"
 			}
-			fmt.Printf("  %s: %s%s\n", agent.ID, name, defaultMarker)
+			fmt.Printf("  %s: %s%s\n", displayRemote(agent.ID), displayRemote(name), defaultMarker)
 		}
 	}
 
@@ -358,7 +358,7 @@ func handleOpenClawList(args []string) {
 		if agent.Identity != nil && agent.Identity.Emoji != "" {
 			emoji = agent.Identity.Emoji + " "
 		}
-		fmt.Printf("  %s%s (%s)%s\n", emoji, name, agent.ID, defaultMarker)
+		fmt.Printf("  %s%s (%s)%s\n", displayRemote(emoji), displayRemote(name), displayRemote(agent.ID), defaultMarker)
 	}
 }
 
