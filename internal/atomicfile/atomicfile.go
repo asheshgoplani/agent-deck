@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -53,6 +54,69 @@ func WriteFileDurable(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return writeAtomic(target, data, perm, true)
+}
+
+// WriteFileWithin is WriteFile for a file inside a directory tree someone else
+// may control, such as a cloned repository. The real file it would write, after
+// following every symlink on the way (the file itself and its parent
+// directories), must lie under root; a link that leads outside is refused
+// instead of followed, so a repository cannot point its config file at an
+// unrelated file of the user. A link that stays inside root is preserved like
+// WriteFile does.
+func WriteFileWithin(root, path string, data []byte, perm os.FileMode) error {
+	target, err := resolveTarget(path)
+	if err != nil {
+		return err
+	}
+	if err := requireWithin(root, target); err != nil {
+		return err
+	}
+	return writeAtomic(target, data, perm, false)
+}
+
+// CheckWithin reports the error WriteFileWithin(root, path, ...) would refuse
+// with, without writing. Callers that open a file beside path first (a lock)
+// check both paths before touching either.
+func CheckWithin(root, path string) error {
+	target, err := resolveTarget(path)
+	if err != nil {
+		return err
+	}
+	return requireWithin(root, target)
+}
+
+// requireWithin reports an error unless target, with every existing ancestor
+// resolved through symlinks, lies under root (also resolved). Components that
+// do not exist yet are kept as written; writeAtomic creates them as real
+// directories. A missing component that is really a dangling symlink is also
+// kept as written: MkdirAll then fails on it (mkdir does not follow a link),
+// so nothing is created at the link's destination.
+func requireWithin(root, target string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("atomicfile: resolve %s: %w", root, err)
+	}
+	existing := filepath.Dir(target)
+	missing := filepath.Base(target)
+	realDir, err := filepath.EvalSymlinks(existing)
+	for err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("atomicfile: resolve %s: %w", existing, err)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return fmt.Errorf("atomicfile: resolve %s: %w", target, err)
+		}
+		missing = filepath.Join(filepath.Base(existing), missing)
+		existing = parent
+		realDir, err = filepath.EvalSymlinks(existing)
+	}
+	rel, err := filepath.Rel(realRoot, filepath.Join(realDir, missing))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("atomicfile: refusing to write %s: it resolves to %s, outside %s",
+			target, filepath.Join(realDir, missing), root)
+	}
+	return nil
 }
 
 // resolveTarget returns the real file path that should be written. For a regular
