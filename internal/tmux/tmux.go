@@ -155,7 +155,17 @@ func (s *Session) themedStatusRight(themeStyle tmuxThemeStyle) string {
 	if switchOn {
 		hints += fmt.Sprintf(" · #[fg=%s]%s switch#[default]", themeStyle.hintColor, switchKey)
 	}
-	return fmt.Sprintf("%s │ 📁 %s | %s ", hints, s.DisplayName, s.projectDisplayName())
+	return fmt.Sprintf("%s │ 📁 %s | %s ", hints, tmuxFormatLiteral(s.DisplayName), tmuxFormatLiteral(s.projectDisplayName()))
+}
+
+// tmuxFormatLiteral escapes text placed into a tmux format string such as
+// status-right. tmux expands "#(cmd)" there by running cmd through the shell
+// on every status refresh, and "#[...]" as style codes; "##" is a literal "#".
+// The session title and the project folder name are not ours to trust (a
+// title can come from an OpenClaw gateway or a web request, a folder from a
+// cloned repository), so every "#" in them is doubled.
+func tmuxFormatLiteral(s string) string {
+	return strings.ReplaceAll(s, "#", "##")
 }
 
 func (s *Session) projectDisplayName() string {

@@ -37,6 +37,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -1147,6 +1148,7 @@ func (inst *Instance) GetTitleThreadSafe() string {
 // reapplication) must go through this rather than assigning Title directly,
 // or GetTitleThreadSafe's read lock buys nothing.
 func (inst *Instance) SetTitleThreadSafe(t string) {
+	t = termtext.Clean(t)
 	inst.mu.Lock()
 	inst.Title = t
 	inst.mu.Unlock()
@@ -1278,6 +1280,7 @@ func (inst *Instance) ClearParent() {
 
 // NewInstance creates a new session instance
 func NewInstance(title, projectPath string) *Instance {
+	title = termtext.Clean(title) // see NewInstanceWithTool
 	id := GenerateID()
 	// Seed the tmux socket from the installation-wide config. Callers that
 	// want to override (the `--tmux-socket` CLI flag) set
@@ -1369,6 +1372,9 @@ func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 
 // NewInstanceWithTool creates a new session with tool-specific initialization
 func NewInstanceWithTool(title, projectPath, tool string) *Instance {
+	// The title is printed by `list` and rendered in the TUI and the tmux
+	// status line; a control character in it could drive the terminal.
+	title = termtext.Clean(title)
 	id := GenerateID()
 	socket := GetTmuxSettings().GetSocketName()
 	tmuxSess := tmux.NewSession(title, projectPath)
