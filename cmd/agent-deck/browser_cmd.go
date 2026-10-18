@@ -117,6 +117,11 @@ func runBrowserOp(profile string, op macapp.Op, args []string, out, errOut io.Wr
 	if err != nil {
 		return browserExitError, err
 	}
+	// A browser request drives the owner's browser, so it needs the same
+	// opt-in as every other request kind beyond the Mac app's own frames.
+	if err := requireBrowserOptIn(); err != nil {
+		return browserExitError, err
+	}
 	profile, err = session.ResolveProfileForStorage(profile)
 	if err != nil {
 		return browserExitError, err
@@ -393,6 +398,19 @@ func writeBrowserTabs(out io.Writer, raw json.RawMessage) error {
 	if tabs.Driver != "" {
 		_, err := fmt.Fprintf(out, "driver: %s\n", tabs.Driver)
 		return err
+	}
+	return nil
+}
+
+// errBrowserOff is returned while [macapp] plugins is off.
+var errBrowserOff = errors.New("browser requests are off: set [macapp] plugins = true in config.toml (docs/macapp-browser.md)")
+
+// requireBrowserOptIn refuses a browser request unless [macapp] plugins is
+// on, the opt-in `events publish --kind macapp.browser.request` needs too.
+func requireBrowserOptIn() error {
+	cfg, _ := session.LoadUserConfig()
+	if cfg == nil || !cfg.Macapp.Plugins {
+		return errBrowserOff
 	}
 	return nil
 }

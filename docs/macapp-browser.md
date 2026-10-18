@@ -30,6 +30,12 @@ agent-deck browser shot  [--full] [--out FILE] [--tab ID]
 common: --session <id|title>, --json, --timeout <duration>
 ```
 
+Browser requests need `[macapp] plugins = true` in `config.toml` on the host
+that runs the command, because a request drives the owner's browser. While it
+is off, every op exits 1 with `browser requests are off: set [macapp] plugins =
+true` and nothing is written to the log. (`events publish --kind
+macapp.browser.request` has the same gate.)
+
 The op comes first. `--session` defaults to `$AGENTDECK_INSTANCE_ID`, then to
 the agent-deck session that owns the calling tmux session; outside a session it
 is required. IDs match exactly and duplicate titles are refused (the `open`
@@ -46,7 +52,7 @@ The wait starts once the request is on disk.
 | Exit | Meaning |
 |------|---------|
 | 0 | ok; for `open` with no answer in time: `Queued for AgentDeck: it opens when the app is connected` |
-| 1 | error: refused arguments, unknown session, disabled bus, or an app error (`not_your_tab`, `bad_args`, `unknown_session`, `refused_url`) |
+| 1 | error: refused arguments, `[macapp] plugins` off, unknown session, disabled bus, or an app error (`not_your_tab`, `bad_args`, `unknown_session`, `refused_url`) |
 | 3 | `not_connected`: no answer within the timeout (the app is offline or not following this log) |
 | 4 | `owner_driving`: the owner kept using the page until the request expired |
 
@@ -67,8 +73,10 @@ launches anything; the app reads the log.
 ## Frames
 
 All frames use the standard envelope `{cursor, event_id, ts, kind, session_id,
-data}` with `session_id` = the calling session. These kinds are built in and
-need no `[macapp] plugins = true`; the local plugin kinds
+data}` with `session_id` = the calling session. These kinds are built in. The
+app's replies (`macapp.browser.response`, `macapp.app.focus`) publish without
+`[macapp] plugins = true`; `macapp.browser.request` needs it, and
+`macapp.session.closed` is written by the host itself. The local plugin kinds
 `macapp.browser.open` and `macapp.browser.reload` are unrelated and stay gated.
 
 | kind | writer | data |
@@ -76,7 +84,7 @@ need no `[macapp] plugins = true`; the local plugin kinds
 | `macapp.browser.request` | session CLI | `{v:1, req_id, op, args, host, requested_at, expires_at}` |
 | `macapp.browser.response` | app | `{v:1, req_id, request_event_id, ok, error?:{code, message}, result, driver, app_id}` |
 | `macapp.app.focus` | app | `{app_id, mac, user, claimed_at, lease_until}` |
-| `macapp.session.closed` | session core | `{reason:"removed"}` |
+| `macapp.session.closed` | session core | `{reason:"removed"}`, or `{reason:"moved"}` on the source profile of a profile migration |
 
 Times are UTC RFC 3339 (fractional seconds allowed). `req_id` is 32 hex
 characters, unique per request. `host` is the source OS hostname; the app
@@ -97,6 +105,11 @@ The app answers on the same host and profile:
 agent-deck events publish --kind macapp.browser.response --session box-session-id \
   --data '{"v":1,"req_id":"5e0b...","request_event_id":"9f2c...","ok":true,"result":{"url":"https://example.com/","title":"Example","text":"..."},"driver":"agent","app_id":"mac-1"}'
 ```
+
+From a controller, the reply goes back with `agent-deck remote <name> events
+publish --kind macapp.browser.response --session box-session-id --data-file -`
+(payload on stdin). The box accepts it only for one of its own sessions; see
+docs/events.md, "Remote reply publish".
 
 The CLI subscribes before it publishes, accepts only a response whose
 `session_id`, `req_id` and `request_event_id` all match, takes the first one
@@ -142,7 +155,10 @@ session.
 The app keys each session's tabs by `<remote>:<box session id>` (plain session
 id for local sessions), where `<remote>` is the name of the follow that
 delivered the frame. Ops act only on that key's tabs. Frames land only in the
-session owner's Unix account log, so only that owner's apps see them.
+session owner's Unix account log, so only that owner's apps see them. The app
+acts on a request only when its `session_id` is a session the delivering host
+reported, and never addresses another host's session through that follow (the
+checks are listed in docs/events.md, "Mac app checks").
 
 Driver state lives in the app per key. Owner input in the page sets the driver
 to `owner`. Mutating ops (`open`, `close`, `click`, `type`) wait for 5 s of
@@ -168,5 +184,6 @@ requests past `expires_at`. `open` therefore reports `Queued` and exits 0 when
 nobody answers in time; every other op exits 3 and its request expires at the
 CLI timeout.
 
-When a session is removed, its core publishes `macapp.session.closed` so the
-app can forget that key.
+When a session is removed (by any path: CLI, TUI, web, worktree finish,
+conductor teardown) or moved to another profile, its core publishes
+`macapp.session.closed` so the app can forget that key.
