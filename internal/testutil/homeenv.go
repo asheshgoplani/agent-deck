@@ -9,6 +9,24 @@ import (
 // the pathsafety guard test) read this to confirm a test context is sandboxed.
 const HomeIsolationMarkerEnv = "AGENT_DECK_TEST_HOME_ISOLATED"
 
+// ToolConfigDirEnvs are the agent tools' own config-dir overrides. Each one
+// wins over $HOME in agent-deck's resolvers (GetClaudeConfigDir,
+// getCodexHomeDir, getCopilotHomeDir, geminiUserDir, PiExtensionsDir), and
+// agent-deck itself exports CLAUDE_CONFIG_DIR into the sessions it starts. So
+// a `go test` run from inside a worker session, or from a shell that exports
+// any of them, inherits a path into the developer's live tool config: hook
+// installs, settings.json and trusted-folder writes then land there even
+// though HOME was swapped. IsolateHome clears them so they fall back under
+// the isolated HOME, like the XDG dirs.
+var ToolConfigDirEnvs = []string{
+	"CLAUDE_CONFIG_DIR",
+	"CODEX_HOME",
+	"COPILOT_CONFIG_DIR",
+	"GEMINI_CLI_HOME",
+	"GEMINI_CLI_TRUSTED_FOLDERS_PATH",
+	"PI_CODING_AGENT_DIR",
+}
+
 // IsolateHome makes it safe for tests to resolve and write agent-deck runtime
 // paths (~/.agent-deck/config.json, profiles/<p>/state.db, worker-scratch,
 // logs, hooks) without ever touching the developer's real home directory.
@@ -55,6 +73,7 @@ const HomeIsolationMarkerEnv = "AGENT_DECK_TEST_HOME_ISOLATED"
 //   - XDG_DATA_HOME    -> ""  (cleared; resolves under $HOME/.local/share)
 //   - XDG_CACHE_HOME   -> ""  (cleared; resolves under $HOME/.cache)
 //   - XDG_STATE_HOME   -> ""  (cleared; resolves under $HOME/.local/state)
+//   - CLAUDE_CONFIG_DIR, CODEX_HOME, ... -> "" (cleared; see ToolConfigDirEnvs)
 //   - AGENTDECK_PROFILE -> _test
 //   - AGENT_DECK_TEST_HOME_ISOLATED -> 1  (marker for guard/runtime checks)
 //
@@ -87,6 +106,7 @@ func IsolateHome() func() {
 		"AGENTDECK_PROFILE",
 		HomeIsolationMarkerEnv,
 	}
+	keys = append(keys, ToolConfigDirEnvs...)
 
 	snaps := make([]snap, 0, len(keys))
 	for _, k := range keys {
@@ -111,6 +131,9 @@ func IsolateHome() func() {
 	_ = os.Unsetenv("XDG_DATA_HOME")
 	_ = os.Unsetenv("XDG_CACHE_HOME")
 	_ = os.Unsetenv("XDG_STATE_HOME")
+	for _, k := range ToolConfigDirEnvs {
+		_ = os.Unsetenv(k)
+	}
 	_ = os.Setenv("AGENTDECK_PROFILE", "_test")
 	_ = os.Setenv(HomeIsolationMarkerEnv, "1")
 
