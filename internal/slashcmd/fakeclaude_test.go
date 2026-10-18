@@ -70,7 +70,7 @@ func newFakeClaude() *fakeClaude {
 
 // fakeModels is the live 2.1.296 /model picker list (lab evidence exp20,
 // exp25); the live list wraps around at both ends.
-var fakeModels = []string{"Default (recommended)", "Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Opus 4.6 (1M context)", "Sonnet 4.6 (1M context)"}
+var fakeModels = []string{"Default (recommended)", "Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Opus 4.6 (1M context)", "Sonnet 4.6 (1M context)", "Opus 5.5 (1M context)"}
 
 // pickerLines renders the picker with a ten-row window that follows the
 // selection, the current model ticked, like the live one.

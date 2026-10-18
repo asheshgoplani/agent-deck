@@ -3,6 +3,7 @@ package slashcmd
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -189,7 +190,20 @@ func currentModel(content string) string {
 // isRequestedModel reports whether display names the model requested by
 // /model <args>: same family and 1M variant on token boundaries, and the
 // exact version when one was given (model.go).
+//
+// Once an entry was picked, display must name that entry (same family,
+// version and 1M variant): Claude echoes and confirms the entry, which for
+// an alias or "default" is more specific than the argument.
 func (r *runner) isRequestedModel(display string) bool {
+	if r.pickedLabel != "" {
+		if isDefaultModel(r.cmd.Args) {
+			return strings.TrimSpace(display) != ""
+		}
+		picked, ok := parseModelSpec(r.pickedLabel)
+		got, ok2 := parseModelSpec(display)
+		return ok && ok2 && picked.family == got.family && picked.oneM == got.oneM &&
+			strings.Join(picked.version, ".") == strings.Join(got.version, ".")
+	}
 	return modelMatches(r.cmd.Args, display)
 }
 
@@ -204,10 +218,19 @@ type pickerRowT struct {
 	selected bool
 }
 
-// modelPickerRows parses the visible rows of the /model picker.
+// modelPickerRows parses the visible rows of the /model picker. Only the
+// picker region counts: the lines after its "Select model" header, so a
+// numbered list in the transcript above is never read as picker rows.
 func modelPickerRows(content string) []pickerRowT {
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "Select model") {
+			lines = lines[i+1:]
+			break
+		}
+	}
 	var rows []pickerRowT
-	for _, line := range strings.Split(content, "\n") {
+	for _, line := range lines {
 		m := modelPickerRow.FindStringSubmatch(strings.TrimRight(line, " "))
 		if m == nil {
 			continue
@@ -218,57 +241,83 @@ func modelPickerRows(content string) []pickerRowT {
 	return rows
 }
 
-// maxPickerSteps bounds the arrow keys sent while looking for the entry.
-const maxPickerSteps = 40
+// maxPickerSteps bounds the arrow keys sent while looking for the entry:
+// up to the top, then once down the whole list.
+const maxPickerSteps = 80
 
-// navigatePicker moves the /model picker to the requested entry one row at a
-// time and presses "s" (use this session only). It never presses Enter in
-// the picker: Enter saves the model as the default for new sessions.
+// pickerMatches reports whether a picker label is the requested model: the
+// "default" alias is the Default entry; anything else is matched by family,
+// version and 1M variant on token boundaries (model.go).
+func (r *runner) pickerMatches(label string) bool {
+	if isDefaultModel(r.cmd.Args) {
+		spec, ok := parseModelSpec(label)
+		return ok && spec.family == "default"
+	}
+	want, ok := parseModelSpec(r.cmd.Args)
+	got, ok2 := parseModelSpec(label)
+	return ok && ok2 && want.matches(got)
+}
+
+// navigatePicker moves the /model picker to its first row, then walks it
+// down one row at a time to the first entry that matches the requested
+// model (so an alias such as "opus" picks the first Opus entry, as Claude
+// lists them), and presses "s" (use this session only) once that entry has
+// been highlighted on two consecutive frames. It never presses Enter in the
+// picker: Enter saves the model as the default for new sessions. When the
+// whole list was walked without a match it cancels the picker and names the
+// entries it saw.
 func (r *runner) navigatePicker(content string) (Result, bool) {
 	rows := modelPickerRows(content)
 	var sel *pickerRowT
-	target := -1
 	for i := range rows {
 		if rows[i].selected {
 			sel = &rows[i]
-		}
-		if r.isRequestedModel(rows[i].label) {
-			target = rows[i].num
 		}
 	}
 	if sel == nil || r.picked {
 		return Result{}, false // frame still drawing, or "s" sent and the picker is closing
 	}
-	if r.isRequestedModel(sel.label) {
-		r.picked = true
+	moved := sel.num != r.lastSel
+	if r.steps > 0 && !moved {
+		// The highlight has not moved yet: wait a few frames before
+		// treating it as an end of the list that does not wrap.
+		if r.stalled++; r.stalled < 4 {
+			return Result{}, false
+		}
+	}
+	stalled := r.steps > 0 && !moved
+	r.stalled = 0
+	if !r.scanning {
+		if sel.num != 1 && !stalled && r.steps < maxPickerSteps {
+			return r.pickerKey(sel, "Up")
+		}
+		r.scanning = true // at the top (or the top does not move further)
+		r.stableSel = 0
+	}
+	if r.pickerMatches(sel.label) {
+		if r.stableSel != sel.num {
+			r.stableSel = sel.num // re-read once before pressing "s"
+			return Result{}, false
+		}
+		r.picked, r.pickedLabel = true, sel.label
 		_ = r.p.SendKeys("s")
 		r.step(fmt.Sprintf("picker: %q highlighted, pressed s (this session only)", sel.label))
 		return Result{}, false
 	}
-	if r.steps > 0 && sel.num == r.lastSel {
-		// The highlight has not moved yet: wait a few frames, then treat it
-		// as the end of the list and search the other way once.
-		if r.stalled++; r.stalled < 4 {
-			return Result{}, false
-		}
-		if r.reversed {
-			r.steps = maxPickerSteps // both ends reached: not in the list
-		}
-		r.reversed = true
+	r.stableSel = 0
+	if !slices.Contains(r.seen, sel.label) {
+		r.seen = append(r.seen, sel.label)
 	}
-	r.stalled = 0
-	if r.steps >= maxPickerSteps {
+	wrapped := len(r.seen) > 1 && sel.num == 1 && r.steps > 0 && r.lastSel != 0 && r.lastSel != 1
+	if wrapped || (stalled && r.scanning && len(r.seen) > 1) || r.steps >= maxPickerSteps {
 		_ = r.p.SendNamedKey("Escape")
 		r.step("cancelled the model picker (Escape)")
-		return r.fail(CodeUnknownModel, fmt.Sprintf("the /model picker has no entry named like %s; cancelled, nothing changed", r.cmd.Args)), true
+		return r.fail(CodeUnknownModel, fmt.Sprintf("the /model picker has no entry for %s; it lists: %s. Cancelled, nothing changed", r.cmd.Args, strings.Join(r.seen, ", "))), true
 	}
-	key := "Down"
-	switch {
-	case target > 0 && target < sel.num:
-		key = "Up"
-	case target < 0 && r.reversed:
-		key = "Up" // not visible below: look above
-	}
+	return r.pickerKey(sel, "Down")
+}
+
+func (r *runner) pickerKey(sel *pickerRowT, key string) (Result, bool) {
 	r.lastSel = sel.num
 	r.steps++
 	_ = r.p.SendNamedKey(key)

@@ -118,6 +118,10 @@ type Options struct {
 	Settle   time.Duration // pause after each keystroke before reading
 	DryRun   bool
 	Sleep    func(time.Duration)
+	// BeforeSubmit, when set, runs right before the Enter that submits the
+	// command, after every preflight check passed (the CLI reads the saved
+	// default model there).
+	BeforeSubmit func()
 }
 
 func (o *Options) defaults() {
@@ -162,13 +166,20 @@ type runner struct {
 	opts      Options
 	res       Result
 	confirmed bool // accepted the /model "Switch model?" confirmation
-	// /model picker navigation: picked = "s" sent on the requested entry;
-	// steps bounds the arrow keys; lastSel/stalled detect the list end.
-	picked   bool
-	steps    int
-	lastSel  int
-	stalled  int
-	reversed bool
+	// /model picker navigation (navigatePicker): the picker is first moved
+	// to its top row, then walked down one row at a time until the requested
+	// entry is highlighted on two consecutive frames, then "s" is pressed.
+	// picked/pickedLabel: "s" sent on that entry. steps bounds the arrow
+	// keys; lastSel/stalled detect a list end that does not wrap; scanning
+	// is the walk down from the top, seen the labels passed (for the error).
+	picked      bool
+	pickedLabel string
+	steps       int
+	lastSel     int
+	stalled     int
+	scanning    bool
+	stableSel   int
+	seen        []string
 }
 
 // Run delivers cmd to the pane and verifies the outcome.
@@ -226,7 +237,7 @@ func (r *runner) run() Result {
 				`type "/model " (never the id: that would also save it as the default for new sessions)`,
 				"read the screen: composer must hold exactly that text and the command picker must be closed",
 				"press Enter to open the model picker",
-				fmt.Sprintf("move to the entry named exactly like %s one row at a time, re-reading the highlight after each key", r.cmd.Args),
+				fmt.Sprintf("move the picker to its first row, then down one row at a time to the first entry matching %s (family, version and 1M variant), re-reading the highlight after each key", r.cmd.Args),
 				`press "s" (use this session only); answer a "Switch model?" confirmation only when it names that model`,
 				"verify: " + verifyDescription(r.cmd.Kind),
 			}
@@ -255,6 +266,9 @@ func (r *runner) run() Result {
 	if send.ClaudeTurnRunning(raw) {
 		// No Escape here: during a turn it interrupts the turn.
 		return r.fail(send.ComposerCodeBusy, "a turn started while typing; "+removedPhrase(r.eraseOwnLine())+", nothing submitted")
+	}
+	if r.opts.BeforeSubmit != nil {
+		r.opts.BeforeSubmit()
 	}
 	if err := r.p.SendNamedKey("Enter"); err != nil {
 		return r.fail(CodeKeys, "Enter failed: "+err.Error())
