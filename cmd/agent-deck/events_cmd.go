@@ -271,6 +271,12 @@ func handleEventsPublish(profile string, args []string) {
 		exitCLI(2)
 	}
 	out := NewCLIOutput(*jsonOut, false)
+	// Kind names are lowercase; a mixed-case spelling of a gated kind must
+	// not pass the exact-match gates below as some other kind.
+	if *kind != strings.ToLower(*kind) {
+		out.Error(fmt.Sprintf("events publish: --kind %q must be lowercase", *kind), ErrCodeInvalidOperation)
+		exitCLI(2)
+	}
 	if !strings.HasPrefix(*kind, macappKindPrefix) || len(*kind) == len(macappKindPrefix) {
 		out.Error("events publish: --kind must be in the macapp.* namespace", ErrCodeInvalidOperation)
 		exitCLI(2)
