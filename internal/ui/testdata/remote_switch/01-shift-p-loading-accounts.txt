@@ -19,8 +19,9 @@
                              │      > remote session                                      │                             
                              │      Harness (choose destination first):                   │                             
                              │        shell     claude     gemini     opencode            │                             
-                             │        codex     pi     copilot     crush     muse         │                             
-                             │        cursor agent     hermes     deepseek     omp        │                             
+                             │        opencode2     codex     pi     copilot              │                             
+                             │        crush     muse     cursor agent     hermes          │                             
+                             │        deepseek     omp                                    │                             
                              │      Account for selected harness (configured; auth u…:    │                             
                              │        inherit     personal (not configured)               │                             
                              │                                                            │                             
@@ -30,7 +31,6 @@
                              │                                                            │                             
                              │                                                            │                             
                              ╰────────────────────────────────────────────────────────────╯                             
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

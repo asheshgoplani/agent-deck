@@ -1387,6 +1387,11 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	}
 	tmuxSess.GroupPath = inst.GroupPath
 
+	if tool == "opencode2" {
+		inst.Tool = "opencode"
+		inst.Command = "opencode2"
+	}
+
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
 
@@ -2235,19 +2240,16 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 
-	// If baseCommand is just "opencode", handle specially
+	// Resume through the stored launcher, including the explicit opencode2 alias.
 	if baseCommand == "opencode" {
-		cmd := GetToolCommand("opencode")
+		baseCommand = i.openCodePersistentCommand()
+	}
+	if cmd, ok := i.openCodeLauncher(baseCommand); ok {
 		var extraFlags string
 		if i.openCodeRejectsV1LaunchFlags() {
-			// 2.x exits on -m/--agent/--port (opencode_version.go). Without
-			// --port there is no SSE server, so status falls back to tmux.
-			if dropped := i.buildOpenCodeExtraFlags(); dropped != "" {
-				sessionLog.Warn("opencode_v2_launch_flags_dropped",
-					slog.String("instance_id", i.ID),
-					slog.String("flags", dropped))
-			}
+			// V2 uses the shared service instead of a per-TUI --port server.
 			i.setOpenCodePort(0)
+			return envPrefix + i.buildOpenCodeV2Command(cmd)
 		} else {
 			extraFlags = i.buildOpenCodeExtraFlags() + i.buildOpenCodeSSEPortFlag()
 		}
@@ -3267,7 +3269,7 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 
 // minCreated is the earliest creation time an unbound 2.x instance may adopt; 0 means any.
 func (i *Instance) queryOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
-	cacheKey := normalizePath(projectPath)
+	cacheKey := i.openCodeForkBinary() + "\x00" + normalizePath(projectPath)
 	if i.openCodeRejectsV1LaunchFlags() {
 		// The 2.x pager stops at what this caller can use, so a page set is only complete for that caller.
 		cacheKey += "\x00" + currentID + "\x00" + strconv.FormatInt(minCreated, 10)
@@ -3333,7 +3335,7 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCrea
 		return i.runOpenCodeServiceSessionPages(ctx, projectPath, currentID, minCreated)
 	}
 
-	output, ok := i.runOpenCodeCLI(ctx, projectPath, "opencode", "session", "list", "--format", "json")
+	output, ok := i.runOpenCodeCLI(ctx, projectPath, "session", "list", "--format", "json")
 	if !ok {
 		return nil
 	}
@@ -3349,10 +3351,12 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCrea
 	return sessions
 }
 
-func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath, binary string, args ...string) ([]byte, bool) {
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Dir = projectPath
-	cmd.WaitDelay = 500 * time.Millisecond
+func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath string, args ...string) ([]byte, bool) {
+	cmd, err := i.openCodeCLICommand(ctx, projectPath, args...)
+	if err != nil {
+		sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
+		return nil, false
+	}
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -3378,12 +3382,6 @@ func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath, binary strin
 // A failed page, or hitting the page cap before the bound session, returns
 // nothing for the same reason.
 func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
-	// The version that picked this path came from the configured binary, which a bare name may not reach.
-	binary, ok := i.openCodeLaunchBinary()
-	if !ok {
-		return nil
-	}
-
 	var sessions []openCodeSessionMetadata
 	cursor := ""
 	usableSeen := false
@@ -3394,7 +3392,7 @@ func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPa
 		if cursor != "" {
 			args = append(args, "--param", "cursor="+cursor)
 		}
-		output, ok := i.runOpenCodeCLI(ctx, projectPath, binary, args...)
+		output, ok := i.runOpenCodeCLI(ctx, projectPath, args...)
 		if !ok {
 			return nil
 		}
@@ -11210,6 +11208,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || tool == "omp" || IsCodexCompatible(tool)
 }
 
@@ -11446,6 +11445,7 @@ func (i *Instance) CanRestartFresh() bool {
 // newly supported tool cannot be admitted by Instance.CanFork while remaining
 // rejected or hidden at another surface.
 func SupportsNativeFork(tool string) bool {
+	tool = CanonicalToolName(tool)
 	return IsClaudeCompatible(tool) || tool == "pi" || tool == "opencode" ||
 		IsCodexCompatible(tool) || tool == "omp"
 }
@@ -11821,6 +11821,9 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 	}
 
 	if i.openCodeRejectsV1LaunchFlags() {
+		if i.IsSSH() || i.IsSandboxed() {
+			return "", "", fmt.Errorf("opencode fork: service-based forks must run on the target host")
+		}
 		serviceOpts := opts
 		if serviceOpts == nil {
 			if config, err := LoadUserConfig(); err == nil && config != nil {
@@ -11833,10 +11836,10 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 			}
 		}
 		// The 2.x verdict came from the configured binary, which a bare name may not reach.
-		binary, ok := i.openCodeLaunchBinary()
-		if !ok {
+		if _, ok := i.openCodeLaunchBinary(); !ok {
 			return "", "", fmt.Errorf("opencode fork: cannot resolve the configured opencode binary")
 		}
+		binary := i.openCodeForkBinary()
 		childID, err := i.forkOpenCodeSessionViaService(binary, i.OpenCodeSessionID, workDir)
 		if err != nil {
 			return "", "", err
@@ -11845,16 +11848,19 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		if err == nil {
 			err = applyOpenCodeForkOverridesViaService(binary, childID, workDir, serviceOpts)
 		}
+		if err == nil {
+			err = setOpenCodeForkTitleViaService(binary, childID, workDir, newTitle)
+		}
 		if err != nil {
 			if _, rmErr := runOpenCodeServiceCall(binary, workDir, "session.remove", childID, ""); rmErr != nil {
 				return "", "", fmt.Errorf("%w (remove child session %s: %v)", err, childID, rmErr)
 			}
 			return "", "", err
 		}
-		// Launch through the configured command, as a restart does
+		// Launch through the selected launcher, as a restart does
 		// (buildOpenCodeCommand): a bare `opencode` may be missing from PATH or
 		// be a 1.x binary that does not know the 2.x child session.
-		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), GetToolCommand("opencode"), childID), childID, nil
+		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), childID), childID, nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).
@@ -11872,8 +11878,8 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 
 	// workDir and the session id are shell-quoted to keep the launch command
 	// injection-safe (the id is also charset-validated upstream by CanForkOpenCode).
-	return fmt.Sprintf("cd %s && opencode -s %s --fork%s",
-		shellescape.Quote(workDir), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", nil
+	return fmt.Sprintf("cd %s && %s -s %s --fork%s",
+		shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(i.OpenCodeSessionID), extraFlags), "", nil
 }
 
 // forkOpenCodeSessionViaService forks parentID in the OpenCode 2.x shared
@@ -11966,7 +11972,15 @@ func openCodeModelRef(model string) (map[string]string, error) {
 	if !ok || providerID == "" || modelID == "" {
 		return nil, fmt.Errorf("opencode fork: model %q is not in provider/model form", model)
 	}
-	return map[string]string{"providerID": providerID, "id": modelID}, nil
+	modelID, variant, _ := strings.Cut(modelID, "#")
+	if modelID == "" {
+		return nil, fmt.Errorf("opencode fork: model %q has no model id", model)
+	}
+	ref := map[string]string{"providerID": providerID, "id": modelID}
+	if variant != "" {
+		ref["variant"] = variant
+	}
+	return ref, nil
 }
 
 // runOpenCodeServiceCall runs one `opencode api <operation>` request with the
@@ -11984,9 +11998,11 @@ func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) 
 	if body != "" {
 		args = append(args, "-d", body)
 	}
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Dir = workDir
-	cmd.WaitDelay = 500 * time.Millisecond
+	inst := &Instance{Command: binary}
+	cmd, err := inst.openCodeCLICommand(ctx, workDir, args...)
+	if err != nil {
+		return nil, err
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -12042,7 +12058,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	// script self-deletes after first run, so storing it as the persistent Command
 	// would make a later restart re-run a missing file. Command holds a stable base
 	// ("opencode") that restart resumes from via OpenCodeSessionID.
-	forked.Command = "opencode"
+	forked.Command = i.openCodePersistentCommand()
 	forked.ForkStartCommand = cmd
 	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"

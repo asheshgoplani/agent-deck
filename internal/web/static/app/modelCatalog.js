@@ -105,6 +105,7 @@ const EFFORT_LABELS = Object.fromEntries(
 )
 
 function staticModelLabel(tool, id) {
+  if (tool === 'opencode2') tool = 'opencode'
   const hit = (MODEL_ID_CATALOG[tool] || []).find(m => m.value === id)
   return hit ? hit.label : id
 }
@@ -115,7 +116,7 @@ export function modelOptionsForTool(tool, serverCatalog) {
   if (entry && Array.isArray(entry.models) && entry.models.length > 0) {
     return entry.models.map(id => ({ value: id, label: staticModelLabel(tool, id) }))
   }
-  return MODEL_ID_CATALOG[tool] || []
+  return MODEL_ID_CATALOG[tool === 'opencode2' ? 'opencode' : tool] || []
 }
 
 // effortOptionsForTool returns [{ value, label }] for the REASONING EFFORT

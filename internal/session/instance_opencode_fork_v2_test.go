@@ -68,7 +68,7 @@ func TestOpenCodeForkV2_UsesConfiguredBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configured binary was not run: %v", err)
 	}
-	if want := "api\nsession.fork\n--param\nsessionID=ses_parent_123\n-d\n{}\n"; string(gotArgv) != want {
+	if want := "api\nsession.fork\n--param\nsessionID=ses_parent_123\n-d\n{}\n" + "api\nsession.update\n--param\nsessionID=ses_child_456\n-d\n" + `{"title":"oc fork"}` + "\n"; string(gotArgv) != want {
 		t.Fatalf("opencode argv =\n%s\nwant\n%s", gotArgv, want)
 	}
 }
@@ -105,7 +105,8 @@ func TestOpenCodeForkV2_ForksThroughServiceAndResumesChild(t *testing.T) {
 	}
 	want := "api\nsession.fork\n--param\nsessionID=ses_parent_123\n-d\n{}\n" +
 		"api\nsession.switchModel\n--param\nsessionID=ses_child_456\n-d\n" + `{"model":{"id":"claude","providerID":"anthropic"}}` + "\n" +
-		"api\nsession.switchAgent\n--param\nsessionID=ses_child_456\n-d\n" + `{"agent":"build"}` + "\n"
+		"api\nsession.switchAgent\n--param\nsessionID=ses_child_456\n-d\n" + `{"agent":"build"}` + "\n" +
+		"api\nsession.update\n--param\nsessionID=ses_child_456\n-d\n" + `{"title":"oc fork"}` + "\n"
 	if string(gotArgv) != want {
 		t.Fatalf("opencode argv =\n%s\nwant\n%s", gotArgv, want)
 	}
@@ -152,7 +153,7 @@ func TestOpenCodeForkV2_NoOverridesForksOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read argv marker: %v", err)
 	}
-	if want := "api\nsession.fork\n--param\nsessionID=ses_parent_123\n-d\n{}\n"; string(gotArgv) != want {
+	if want := "api\nsession.fork\n--param\nsessionID=ses_parent_123\n-d\n{}\n" + "api\nsession.update\n--param\nsessionID=ses_child_456\n-d\n" + `{"title":"oc fork"}` + "\n"; string(gotArgv) != want {
 		t.Fatalf("opencode argv =\n%s\nwant only the fork call\n%s", gotArgv, want)
 	}
 }

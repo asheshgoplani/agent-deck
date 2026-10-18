@@ -212,7 +212,15 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldTool:
 		oldValue = inst.Tool
-		inst.Tool = value
+		if inst.Tool == "opencode" {
+			oldValue = inst.OpenCodeCommandName()
+		}
+		inst.Tool = CanonicalToolName(value)
+		if value == "opencode2" || (oldValue == "opencode2" && value == "opencode") {
+			inst.Command = value
+		} else if oldValue == "opencode2" && inst.Tool != "opencode" {
+			inst.Command = ""
+		}
 		inst.TrackCommandExit = false
 		// Leaving claude → drop encoded ClaudeOptions so a same-submit
 		// skip/auto toggle (Tool applies last) doesn't leave ghost flags
