@@ -8,10 +8,12 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -94,7 +96,10 @@ func assertStatus(t *testing.T, w *OpenCodeSSEWatcher, instanceID, want, why str
 // sub-agent) still runs; the instance stays running until the last one ends,
 // then goes to waiting. Another deck's sub-agent never moves it.
 func TestOpenCodeSSEWatcher_SharedServiceChildKeepsParentRunning(t *testing.T) {
-	srv, send := sharedServiceServer(t, `{"data":{}}`)
+	// session.active lists the live sub-agent when the bound turn ends.
+	var snapshot atomic.Value
+	snapshot.Store(`{"data":{}}`)
+	srv, send := sharedServiceServerFunc(t, func() string { return snapshot.Load().(string) })
 	lookup := newParentLookup(map[string]string{
 		sesChild:      sesBound,
 		sesGrandchild: sesChild,
@@ -108,6 +113,7 @@ func TestOpenCodeSSEWatcher_SharedServiceChildKeepsParentRunning(t *testing.T) {
 
 	send(sharedServiceEvent("session.execution.started", sesBound))
 	waitForStatus(t, w, "inst-bound", "running")
+	snapshot.Store(`{"data":{"` + sesChild + `":{"type":"running"}}}`)
 	sendAndSettle(t, w, send,
 		sharedServiceEvent("session.execution.started", sesChild),
 		sharedServiceEvent("session.execution.succeeded", sesBound))
@@ -309,11 +315,9 @@ func TestOpenCodeSessionParent(t *testing.T) {
 func TestOpenCodeSessionTree_WaiterRetriesAfterLeaderCancelled(t *testing.T) {
 	w := NewOpenCodeSSEWatcher(nil)
 	started := make(chan struct{})
-	var calls sync.Map
+	var calls atomic.Int32
 	parentOf := func(ctx context.Context, sessionID string) (string, error) {
-		n, _ := calls.LoadOrStore("n", new(int))
-		*n.(*int)++
-		if *n.(*int) == 1 {
+		if calls.Add(1) == 1 {
 			close(started)
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -323,23 +327,27 @@ func TestOpenCodeSessionTree_WaiterRetriesAfterLeaderCancelled(t *testing.T) {
 	src := openCodeEventSource{sessionID: sesBound, parentOf: parentOf}
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	leaderDone := make(chan bool)
-	go func() { leaderDone <- w.newSessionTree(src).counts(leaderCtx, sesChild) }()
+	go func() { leaderDone <- w.newSessionTree(leaderCtx, src).counts(leaderCtx, sesChild) }()
 	<-started
 
 	waiterDone := make(chan bool)
-	go func() { waiterDone <- w.newSessionTree(src).counts(context.Background(), sesChild) }()
-	// Let the waiter join the in-flight call before the leader is cancelled.
+	go func() {
+		waiterDone <- w.newSessionTree(context.Background(), src).counts(context.Background(), sesChild)
+	}()
+	// The waiter must have joined the in-flight call before the leader is cancelled.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		w.mu.Lock()
-		_, inFlight := w.parents[sesChild]
+		joined := w.parents[sesChild] != nil && w.parents[sesChild].waiters == 1
 		w.mu.Unlock()
-		if inFlight || time.Now().After(deadline) {
+		if joined {
 			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("waiter never joined the in-flight lookup")
 		}
 		time.Sleep(time.Millisecond)
 	}
-	time.Sleep(20 * time.Millisecond)
 	cancelLeader()
 	if <-leaderDone {
 		t.Fatal("a cancelled leader must not count the session")
@@ -351,5 +359,106 @@ func TestOpenCodeSessionTree_WaiterRetriesAfterLeaderCancelled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("waiter never finished")
+	}
+}
+
+// TestOpenCodeSSEWatcher_SharedServiceDropsStaleChild: a counted sub-agent
+// that never sends its turn ending (aborted, deleted, died) is dropped once
+// session.active stops listing it, both when the bound turn ends and on the
+// periodic check, so the parent does not stay running.
+func TestOpenCodeSSEWatcher_SharedServiceDropsStaleChild(t *testing.T) {
+	var snapshot atomic.Value
+	snapshot.Store(`{"data":{}}`)
+	srv, send := sharedServiceServerFunc(t, func() string { return snapshot.Load().(string) })
+	lookup := newParentLookup(map[string]string{sesChild: sesBound, sesGrandchild: sesBound})
+	w := NewOpenCodeSSEWatcher(nil)
+	defer w.Stop()
+	w.Sync([]SSETarget{sharedTargetWithChildren("inst-bound", sesBound, srv.URL, lookup)})
+	waitConnected()
+
+	// The bound turn ends while a live sub-agent runs: it stays counted.
+	snapshot.Store(`{"data":{"` + sesChild + `":{"type":"running"}}}`)
+	sendAndSettle(t, w, send,
+		sharedServiceEvent("session.execution.started", sesBound),
+		sharedServiceEvent("session.execution.started", sesChild),
+		sharedServiceEvent("session.execution.succeeded", sesBound))
+	assertStatus(t, w, "inst-bound", "running", "a sub-agent session.active still lists keeps the parent running")
+
+	// It dies without an ending; the next bound turn end drops it.
+	snapshot.Store(`{"data":{}}`)
+	sendAndSettle(t, w, send,
+		sharedServiceEvent("session.execution.started", sesBound),
+		sharedServiceEvent("session.execution.succeeded", sesBound))
+	// The drop is written right after the turn end's own status write.
+	waitForStatus(t, w, "inst-bound", "waiting")
+}
+
+// TestOpenCodeSSEWatcher_SharedServicePeriodicCheckDropsStaleChild: while the
+// parent is idle, the periodic check drops a sub-agent that died mid-turn.
+func TestOpenCodeSSEWatcher_SharedServicePeriodicCheckDropsStaleChild(t *testing.T) {
+	prev := openCodeReconcileInterval
+	openCodeReconcileInterval = 0
+	t.Cleanup(func() { openCodeReconcileInterval = prev })
+	var snapshot atomic.Value
+	snapshot.Store(`{"data":{}}`)
+	srv, send := sharedServiceServerFunc(t, func() string { return snapshot.Load().(string) })
+	lookup := newParentLookup(map[string]string{sesChild: sesBound})
+	w := NewOpenCodeSSEWatcher(nil)
+	defer w.Stop()
+	w.Sync([]SSETarget{sharedTargetWithChildren("inst-bound", sesBound, srv.URL, lookup)})
+	waitConnected()
+
+	snapshot.Store(`{"data":{"` + sesChild + `":{"type":"running"}}}`)
+	send(sharedServiceEvent("session.execution.started", sesChild))
+	waitForStatus(t, w, "inst-bound", "running")
+	send(sharedServiceEvent("session.execution.started", sesOther)) // unrelated traffic, child still listed
+	sendAndSettle(t, w, send, sharedServiceEvent("session.execution.started", sesOther))
+	assertStatus(t, w, "inst-bound", "running", "a sub-agent session.active still lists stays counted")
+
+	snapshot.Store(`{"data":{}}`) // it died without an ending
+	send(sharedServiceEvent("session.execution.started", sesOther))
+	waitForStatus(t, w, "inst-bound", "waiting")
+}
+
+// TestOpenCodeSSEWatcher_SharedServiceStuckLookupDoesNotStallStream: a
+// session.get that never returns is cut off by the walk budget, so the bound
+// session's own transitions still arrive.
+func TestOpenCodeSSEWatcher_SharedServiceStuckLookupDoesNotStallStream(t *testing.T) {
+	prev := openCodeParentWalkBudget
+	openCodeParentWalkBudget = 100 * time.Millisecond
+	t.Cleanup(func() { openCodeParentWalkBudget = prev })
+	srv, send := sharedServiceServer(t, `{"data":{}}`)
+	target := sharedTarget("inst-bound", sesBound, srv.URL)
+	target.parentOf = func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	w := NewOpenCodeSSEWatcher(nil)
+	defer w.Stop()
+	w.Sync([]SSETarget{target})
+	waitConnected()
+
+	send(sharedServiceEvent("session.execution.started", sesChild))
+	send(sharedServiceEvent("session.execution.started", sesBound))
+	waitForStatus(t, w, "inst-bound", "running")
+}
+
+// TestOpenCodeSessionTree_ParentCacheIsBounded: the shared cache drops
+// finished lookups once it reaches its cap.
+func TestOpenCodeSessionTree_ParentCacheIsBounded(t *testing.T) {
+	prev := openCodeParentCacheMax
+	openCodeParentCacheMax = 4
+	t.Cleanup(func() { openCodeParentCacheMax = prev })
+	w := NewOpenCodeSSEWatcher(nil)
+	src := openCodeEventSource{sessionID: sesBound, parentOf: func(context.Context, string) (string, error) { return "", nil }}
+	tree := w.newSessionTree(context.Background(), src)
+	for n := 0; n < 50; n++ {
+		tree.counts(context.Background(), fmt.Sprintf("ses_unrelated%03d", n))
+	}
+	w.mu.Lock()
+	size := len(w.parents)
+	w.mu.Unlock()
+	if size > openCodeParentCacheMax {
+		t.Fatalf("parent cache holds %d entries, cap %d", size, openCodeParentCacheMax)
 	}
 }

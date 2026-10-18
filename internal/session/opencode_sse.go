@@ -276,7 +276,7 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 	// them is busy. Seed from the /session/status snapshot so a stream opened
 	// mid-turn starts correct instead of waiting for the next transition.
 	busy := make(map[string]bool)
-	tree := w.newSessionTree(src)
+	tree := w.newSessionTree(ctx, src)
 	seed := func() {
 		seeded := w.seedSnapshot(ctx, src, tree, busy)
 		if seeded && len(busy) > 0 {
@@ -322,6 +322,7 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 	}
 
 	gotData := false
+	lastReconcile := time.Now()
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -330,6 +331,14 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 			continue
 		}
 		gotData = true
+		// A counted sub-agent that is aborted, deleted or dies may never
+		// send its turn ending, and the stream's own traffic keeps the status
+		// fresh, so busy sessions are checked against session.active now and
+		// then. It runs between events, so their order is kept.
+		if src.sessionID != "" && len(busy) > 0 && time.Since(lastReconcile) >= openCodeReconcileInterval {
+			w.reconcileShared(ctx, instanceID, src, busy)
+			lastReconcile = time.Now()
+		}
 		payload, ok := strings.CutPrefix(line, "data: ")
 		if !ok {
 			// Comment/heartbeat line: refresh freshness of the known status.
@@ -342,11 +351,20 @@ func (w *OpenCodeSSEWatcher) stream(ctx context.Context, instanceID string, src 
 			continue
 		}
 		if src.sessionID != "" {
-			if !applySharedServiceEvent(ctx, ev, tree, busy) {
+			walkCtx, cancel := context.WithTimeout(ctx, openCodeParentWalkBudget)
+			applied := applySharedServiceEvent(walkCtx, ev, tree, busy)
+			cancel()
+			if !applied {
 				w.touch(ctx, instanceID)
 				continue
 			}
 			w.setStatus(ctx, instanceID, busyStatus(busy))
+			if ev.Data.SessionID == src.sessionID && !busy[src.sessionID] && len(busy) > 0 {
+				// The bound turn ended with sub-agents still counted: check
+				// them now rather than leave the parent running on a stale one.
+				w.reconcileShared(ctx, instanceID, src, busy)
+				lastReconcile = time.Now()
+			}
 			continue
 		}
 		switch ev.Type {
@@ -407,6 +425,19 @@ func applySharedServiceEvent(ctx context.Context, ev openCodeEvent, tree *openCo
 // chain ends instead of looping.
 const openCodeSessionMaxDepth = 8
 
+// openCodeParentWalkBudget bounds the parent lookups one event (or the
+// whole seed) may run, so a stuck CLI cannot stall the stream past the
+// status freshness window.
+var openCodeParentWalkBudget = 5 * time.Second
+
+// openCodeReconcileInterval is how often a stream with busy sessions checks
+// them against the service's session.active.
+var openCodeReconcileInterval = 30 * time.Second
+
+// openCodeParentCacheMax bounds the shared parent cache: past it, finished
+// lookups are dropped and asked again when seen.
+var openCodeParentCacheMax = 4096
+
 // openCodeParentRetry is how long a failed parent lookup is not repeated, so
 // a 2.x build without session.get, or a stuck service, does not get one CLI
 // call per event.
@@ -418,19 +449,21 @@ type openCodeParentLookup struct {
 	parent   string        // "" for a root session
 	err      error
 	failedAt time.Time
+	waiters  int // streams that joined this call, for tests
 }
 
 // openCodeSessionTree answers, for one stream, whether a session is the bound
 // session or a sub-agent below it.
 type openCodeSessionTree struct {
 	w        *OpenCodeSSEWatcher
+	stream   context.Context // the stream's own context, not a walk deadline
 	root     string
 	parentOf func(ctx context.Context, sessionID string) (string, error)
 	memo     map[string]bool // definite answers only; a failed lookup is asked again later
 }
 
-func (w *OpenCodeSSEWatcher) newSessionTree(src openCodeEventSource) *openCodeSessionTree {
-	return &openCodeSessionTree{w: w, root: src.sessionID, parentOf: src.parentOf, memo: make(map[string]bool)}
+func (w *OpenCodeSSEWatcher) newSessionTree(stream context.Context, src openCodeEventSource) *openCodeSessionTree {
+	return &openCodeSessionTree{w: w, stream: stream, root: src.sessionID, parentOf: src.parentOf, memo: make(map[string]bool)}
 }
 
 // counts walks sessionID's parent chain up to the bound session.
@@ -492,6 +525,7 @@ func (t *openCodeSessionTree) parent(ctx context.Context, sessionID string) (str
 		}
 	}
 	if ok {
+		lookup.waiters++
 		w.mu.Unlock()
 		select {
 		case <-lookup.done:
@@ -502,11 +536,20 @@ func (t *openCodeSessionTree) parent(ctx context.Context, sessionID string) (str
 		parent, err := lookup.parent, lookup.err
 		dropped := w.parents[sessionID] != lookup
 		w.mu.Unlock()
-		if err != nil && dropped && ctx.Err() == nil {
+		if err != nil && dropped && ctx.Err() == nil && t.stream.Err() == nil {
 			// The leading stream was cancelled mid-call; ask again.
 			return t.parent(ctx, sessionID)
 		}
 		return parent, err == nil
+	}
+	if len(w.parents) >= openCodeParentCacheMax {
+		for id, old := range w.parents {
+			select {
+			case <-old.done:
+				delete(w.parents, id)
+			default: // in flight: its streams are waiting on it
+			}
+		}
 	}
 	lookup = &openCodeParentLookup{done: make(chan struct{})}
 	w.parents[sessionID] = lookup
@@ -517,8 +560,10 @@ func (t *openCodeSessionTree) parent(ctx context.Context, sessionID string) (str
 	lookup.parent, lookup.err = parent, err
 	if err != nil {
 		lookup.failedAt = time.Now()
-		if ctx.Err() != nil {
+		if t.stream.Err() != nil && w.parents[sessionID] == lookup {
 			// This stream was cancelled; that says nothing about the session.
+			// A walk deadline does count as a failure, so a stuck CLI is not
+			// asked again on every event.
 			delete(w.parents, sessionID)
 		}
 	}
@@ -566,18 +611,16 @@ func (w *OpenCodeSSEWatcher) seedSnapshot(ctx context.Context, src openCodeEvent
 		return false
 	}
 	if src.sessionID != "" {
-		// 2.x session.active: {"data":{"ses_...":{"type":"running"}}}, busy
-		// sessions only. A busy sub-agent of the bound session counts too.
-		var active struct {
-			Data map[string]struct {
-				Type string `json:"type"`
-			} `json:"data"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&active); err != nil {
+		active, ok := decodeSharedActive(resp)
+		if !ok {
 			return false
 		}
-		for sid, st := range active.Data {
-			if st.Type == "running" && tree.counts(ctx, sid) {
+		// A busy sub-agent of the bound session counts too. All the seed's
+		// lookups share one budget.
+		walkCtx, cancelWalk := context.WithTimeout(ctx, openCodeParentWalkBudget)
+		defer cancelWalk()
+		for sid := range active {
+			if tree.counts(walkCtx, sid) {
 				busy[sid] = true
 			}
 		}
@@ -595,6 +638,62 @@ func (w *OpenCodeSSEWatcher) seedSnapshot(ctx context.Context, src openCodeEvent
 		}
 	}
 	return true
+}
+
+// decodeSharedActive reads 2.x session.active,
+// {"data":{"ses_...":{"type":"running"}}}, which lists busy sessions only.
+func decodeSharedActive(resp *http.Response) (map[string]bool, bool) {
+	var active struct {
+		Data map[string]struct {
+			Type string `json:"type"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&active); err != nil {
+		return nil, false
+	}
+	running := make(map[string]bool, len(active.Data))
+	for sid, st := range active.Data {
+		if st.Type == "running" {
+			running[sid] = true
+		}
+	}
+	return running, true
+}
+
+// reconcileShared drops busy sessions that session.active no longer lists:
+// a turn whose ending event never came. A failed fetch changes nothing.
+func (w *OpenCodeSSEWatcher) reconcileShared(ctx context.Context, instanceID string, src openCodeEventSource, busy map[string]bool) {
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, src.base+src.snapshotPath, nil)
+	if err != nil {
+		return
+	}
+	src.authorize(req)
+	resp, err := w.client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	active, ok := decodeSharedActive(resp)
+	if !ok {
+		return
+	}
+	dropped := false
+	for sid := range busy {
+		if !active[sid] {
+			delete(busy, sid)
+			dropped = true
+		}
+	}
+	if dropped {
+		sessionLog.Debug("opencode_sse_reconciled_stale_busy",
+			slog.String("instance_id", instanceID), slog.String("opencode_session", src.sessionID))
+		w.setStatus(ctx, instanceID, busyStatus(busy))
+	}
 }
 
 // setStatus records a derived status and fires onChange on transitions.
