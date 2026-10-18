@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,5 +237,94 @@ func TestPollingCoarseDirectoryMtimeStillSeesChange(t *testing.T) {
 	events, errs := w.scan()
 	if len(errs) != 0 || len(events) != 1 || events[0].Name != path || events[0].Op != fsnotify.Create {
 		t.Fatalf("got events=%v errors=%v, want one Create for %s", events, errs, path)
+	}
+}
+
+// One slow scan backs the poller off, but never by more than maxPollWait: a
+// 400 ms stall would otherwise mean 10 s (25x) with changes unreported.
+func TestPollingSlowScanBackoffIsCapped(t *testing.T) {
+	var mu sync.Mutex
+	var starts []time.Time
+	beforeScan := func() {
+		mu.Lock()
+		starts = append(starts, time.Now())
+		first := len(starts) == 1
+		mu.Unlock()
+		if first {
+			time.Sleep(400 * time.Millisecond)
+		}
+	}
+	w := newPollingWatcherWith(10*time.Millisecond, Options{}, beforeScan)
+	defer w.Close()
+	if err := w.Add(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(maxPollWait + 2*time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(starts)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(starts) < 2 {
+		t.Fatalf("no scan within %v of a 400ms scan, want the backoff capped at %v", maxPollWait+2*time.Second, maxPollWait)
+	}
+	if gap := starts[1].Sub(starts[0]); gap > 400*time.Millisecond+maxPollWait+500*time.Millisecond {
+		t.Fatalf("next scan %v after a 400ms scan, want at most the scan plus %v", gap, maxPollWait)
+	}
+	if got := nextPollWait(250*time.Millisecond, 2*time.Second); got != maxPollWait {
+		t.Fatalf("nextPollWait after a 2s scan = %v, want %v", got, maxPollWait)
+	}
+	if got := nextPollWait(250*time.Millisecond, time.Millisecond); got != 250*time.Millisecond {
+		t.Fatalf("nextPollWait after a 1ms scan = %v, want the interval", got)
+	}
+}
+
+// Claude appends to its transcripts in place, which leaves the directory's
+// mtime alone. With InPlaceWrites the append in an otherwise idle directory
+// is reported on the next scan; without it the idle directory is skipped.
+func TestPollingInPlaceAppendInIdleDirectory(t *testing.T) {
+	for _, inPlace := range []bool{true, false} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "session.jsonl")
+		if err := os.WriteFile(path, []byte("{}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Minute)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
+		w := newPollingWatcherWith(time.Hour, Options{InPlaceWrites: inPlace}, nil)
+		if err := w.Add(dir); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("{\"type\":\"assistant\"}\n"); err != nil {
+			t.Fatal(err)
+		}
+		_ = f.Close()
+		if info, _ := os.Lstat(dir); !info.ModTime().Equal(old) {
+			t.Fatalf("the append moved the directory mtime; the test needs an idle directory")
+		}
+		events, errs := w.scan()
+		_ = w.Close()
+		reported := len(errs) == 0 && len(events) == 1 && events[0].Name == path && events[0].Op == fsnotify.Write
+		if inPlace && !reported {
+			t.Fatalf("InPlaceWrites: got events=%v errors=%v, want one Write for %s", events, errs, path)
+		}
+		if !inPlace && len(events) != 0 {
+			t.Fatalf("default watcher read an idle directory: %v", events)
+		}
 	}
 }

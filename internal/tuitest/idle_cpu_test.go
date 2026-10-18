@@ -159,8 +159,8 @@ func TestIdleTUICPUBudget(t *testing.T) {
 	percent := 100 * used.Seconds() / time.Since(start).Seconds()
 	t.Logf("idle TUI (%d sessions, %d remotes, %d hook sessions): %v CPU over %v = %.1f%% of one core (budget %.0f%%)",
 		idleFleetSessions, idleFleetRemotes, idleFleetHookSessions, used, idleCPUWindow, percent, idleCPUBudgetPercent)
-	if percent > idleCPUBudgetPercent {
-		t.Fatalf("idle TUI used %.1f%% of one core, budget %.0f%%", percent, idleCPUBudgetPercent)
+	if budget := idleCPUBudgetPercent * testutil.BudgetMultiplier(t); percent > budget {
+		t.Fatalf("idle TUI used %.1f%% of one core, budget %.1f%% (%.0f%% x PERF_BUDGET_MULTIPLIER)", percent, budget, idleCPUBudgetPercent)
 	}
 }
 

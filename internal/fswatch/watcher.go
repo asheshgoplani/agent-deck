@@ -26,6 +26,20 @@ type Watcher struct {
 	closed bool
 	stop   chan struct{}
 	done   chan struct{}
+
+	inPlaceWrites bool
+	beforeScan    func() // test seam: runs before each poll's scan
+}
+
+// Options adjusts a Watcher.
+type Options struct {
+	// InPlaceWrites is for directories whose files are written in place
+	// (appended to or rewritten without a rename), such as Claude's
+	// transcripts under ~/.claude/projects. Such a write does not change
+	// the directory's mtime, so the poller then reads every entry on every
+	// poll instead of skipping a directory whose mtime is unchanged. The
+	// native watchers report in-place writes anyway and ignore it.
+	InPlaceWrites bool
 }
 
 const pollInterval = 250 * time.Millisecond
@@ -34,18 +48,35 @@ const pollInterval = 250 * time.Millisecond
 // build tag, for tests).
 var forcePolling bool
 
+// SetForcePollingForTest makes every new Watcher a polling one, as on
+// macOS, so other packages' tests can run the poller on Linux (the
+// fswatchpoll build tag does the same for a whole binary). It returns a
+// func that restores the previous setting. Not for production code.
+func SetForcePollingForTest(on bool) (restore func()) {
+	prev := forcePolling
+	forcePolling = on
+	return func() { forcePolling = prev }
+}
+
 // NewWatcher uses polling where native directory watches retain per-file fds.
 func NewWatcher() (*Watcher, error) {
 	return newWatcher(runtime.GOOS)
 }
 
-func newWatcher(goos string) (*Watcher, error) {
+// NewWatcherWithOptions is NewWatcher with opts.
+func NewWatcherWithOptions(opts Options) (*Watcher, error) {
+	return newWatcherOpts(runtime.GOOS, opts)
+}
+
+func newWatcher(goos string) (*Watcher, error) { return newWatcherOpts(goos, Options{}) }
+
+func newWatcherOpts(goos string, opts Options) (*Watcher, error) {
 	switch goos {
 	case "darwin", "freebsd", "openbsd", "netbsd", "dragonfly":
-		return newPollingWatcher(pollInterval), nil
+		return newPollingWatcherWith(pollInterval, opts, nil), nil
 	default:
 		if forcePolling {
-			return newPollingWatcher(pollInterval), nil
+			return newPollingWatcherWith(pollInterval, opts, nil), nil
 		}
 		native, err := fsnotify.NewWatcher()
 		if err != nil {
@@ -56,10 +87,16 @@ func newWatcher(goos string) (*Watcher, error) {
 }
 
 func newPollingWatcher(interval time.Duration) *Watcher {
+	return newPollingWatcherWith(interval, Options{}, nil)
+}
+
+func newPollingWatcherWith(interval time.Duration, opts Options, beforeScan func()) *Watcher {
 	w := &Watcher{
 		Events: make(chan fsnotify.Event, 64), Errors: make(chan error, 1),
 		paths: make(map[string]snapshot),
 		stop:  make(chan struct{}), done: make(chan struct{}),
+		inPlaceWrites: opts.InPlaceWrites,
+		beforeScan:    beforeScan,
 	}
 	go w.poll(interval)
 	return w
@@ -180,6 +217,16 @@ func snapshotPath(path string) (snapshot, error) {
 // with its size.
 const scanShare = 25
 
+// maxPollWait bounds that backoff: one slow scan (a stalled disk, a
+// suspended laptop waking up) must not leave changes unreported for 25
+// times as long.
+const maxPollWait = 2 * time.Second
+
+// nextPollWait is the wait before the next scan after one that took took.
+func nextPollWait(interval, took time.Duration) time.Duration {
+	return max(interval, min(maxPollWait, scanShare*took))
+}
+
 func (w *Watcher) poll(interval time.Duration) {
 	defer close(w.done)
 	defer close(w.Events)
@@ -192,8 +239,11 @@ func (w *Watcher) poll(interval time.Duration) {
 			return
 		case <-timer.C:
 			start := time.Now()
+			if w.beforeScan != nil {
+				w.beforeScan()
+			}
 			events, errors := w.scan()
-			timer.Reset(max(interval, scanShare*time.Since(start)))
+			timer.Reset(nextPollWait(interval, time.Since(start)))
 			for _, err := range errors {
 				select {
 				case w.Errors <- err:
@@ -217,7 +267,7 @@ func (w *Watcher) scan() ([]fsnotify.Event, []error) {
 	var events []fsnotify.Event
 	var errors []error
 	for path, previous := range w.paths {
-		if dirUnchanged(path, previous) {
+		if !w.inPlaceWrites && dirUnchanged(path, previous) {
 			continue
 		}
 		current, err := snapshotPath(path)
@@ -250,9 +300,12 @@ func (w *Watcher) scan() ([]fsnotify.Event, []error) {
 
 // dirUnchanged reports whether path is still the directory last read with the
 // same mtime, so its entries need no Lstat each: creating, removing or renaming
-// an entry (atomic writers replace files by rename) updates the directory's
-// mtime. An in-place write to an existing entry does not, so it is reported
-// with the directory's next change; watch the file itself to see it at once.
+// an entry updates the directory's mtime, and the hook, event, cost and
+// session-anchor writers replace their files by rename. An in-place write to
+// an existing entry (an append) does not, so without Options.InPlaceWrites it
+// is reported only with the directory's next change; watch the file itself,
+// or set InPlaceWrites (global search does, for Claude's transcripts), to see
+// it at once.
 //
 // File systems stamp times at a coarse granularity (a kernel tick on Linux,
 // whole seconds on some), so a change made right after the last read can
