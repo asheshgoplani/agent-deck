@@ -505,12 +505,13 @@ while True:
 	// Matched measurements use the same OpenSSH configuration, proxy, remote
 	// tmux pane and receiver. A 50ms p95 delta guards a new polling delay;
 	// absolute bounds remain deliberately loose for a shared test runner.
-	measure := func(label string) []time.Duration {
+	// Direct and deck samples are interleaved in short batches so both paths
+	// see the same runner latency regime (#2698).
+	measure := func(label string, count int, samples []time.Duration) []time.Duration {
 		t.Helper()
 		terminal, _, snapshot, done = attach()
-		samples := make([]time.Duration, 0, 30)
-		for index := 0; index < 30; index++ {
-			frame := fmt.Sprintf("latency-%s-%02d", label, index)
+		for index := 0; index < count; index++ {
+			frame := fmt.Sprintf("latency-%s-%02d", label, len(samples))
 			start := time.Now()
 			writeInput(terminal, frame+"\r")
 			waitFor("latency receipt", func() bool { return strings.Contains(snapshot(), receipt(frame)) })
@@ -527,19 +528,28 @@ while True:
 			t.Fatal("latency detach hung")
 		}
 		terminal.Close()
-		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
-		t.Logf("latency %s sorted=%v median=%v p95=%v max=%v", label, samples, samples[15], samples[28], samples[29])
 		return samples
 	}
-	directSSH = true
-	direct := measure("direct")
-	directSSH = false
-	deck := measure("deck")
-	if deck[28] > direct[28]+50*time.Millisecond {
-		t.Errorf("Agent Deck p95=%v exceeds directSSH=%v plus50ms", deck[28], direct[28])
+	var direct, deck []time.Duration
+	for _, batch := range nativeLatencySchedule(30, 6) {
+		directSSH = batch.direct
+		if batch.direct {
+			direct = measure("direct", batch.count, direct)
+		} else {
+			deck = measure("deck", batch.count, deck)
+		}
 	}
-	if deck[29] > time.Second {
-		t.Errorf("Agent Deck max latency=%v exceeds1s", deck[29])
+	directSSH = false
+	for _, set := range []struct {
+		label   string
+		samples []time.Duration
+	}{{"direct", direct}, {"deck", deck}} {
+		label, samples := set.label, set.samples
+		sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+		t.Logf("latency %s sorted=%v median=%v p95=%v max=%v", label, samples, samples[15], samples[28], samples[29])
+	}
+	if err := nativeLatencyBudget(direct, deck); err != nil {
+		t.Error(err)
 	}
 	// Exercise the production ControlMaster options after the isolated
 	// no-master fault tests. The runner owns the whole socket namespace.

@@ -4682,10 +4682,6 @@ func GetToolCommand(toolName string) string {
 	return toolName
 }
 
-func isBuiltinToolName(toolName string) bool {
-	return currentRegistry().IsBuiltin(toolName)
-}
-
 // GetToolIcon returns the icon for a tool (custom or built-in)
 func GetToolIcon(toolName string) string {
 	// Check custom tools first
