@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
@@ -184,8 +185,18 @@ func writeJSONFileAtomic(root, path string, data []byte, perm os.FileMode) error
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
-		return nil
+	// Check containment before reading: the unchanged-content shortcut must
+	// not turn a refusal into success, nor read through a link out of root.
+	if err := atomicfile.CheckWithin(root, path); err != nil {
+		return withProjectMCPOptOut(err)
+	}
+	// A cleaned absolute path holds ".." only inside a name; such a path just
+	// skips the shortcut. The guard is the traversal check CodeQL
+	// go/path-injection recognises.
+	if !strings.Contains(path, "..") {
+		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+			return nil
+		}
 	}
 	return withProjectMCPOptOut(atomicfile.WriteFileWithin(root, path, data, perm))
 }
