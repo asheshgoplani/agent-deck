@@ -411,6 +411,7 @@ func countLines(dir, name string) int {
 	if err != nil {
 		return 0
 	}
+	countedBytes.Add(int64(len(data)))
 	n := 0
 	for _, b := range data {
 		if b == '\n' {
