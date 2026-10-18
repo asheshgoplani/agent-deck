@@ -194,7 +194,7 @@ func promptForUpdate() bool {
 	}
 
 	fmt.Println()
-	if err := recordUpdateAttempt(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, func() error {
+	if err := recordUpdateAttempt(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, "startup-prompt", func() error {
 		release, err := update.FetchReleaseByTag(info.LatestVersion)
 		if err != nil {
 			return fmt.Errorf("failed to fetch release info: %w", err)
@@ -4321,7 +4321,7 @@ func handleUpdate(args []string) {
 	// Perform update (direct binary replacement or Homebrew upgrade)
 	fmt.Println()
 	warnIfLaunchctlUnavailable()
-	if err := recordUpdateAttempt(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, func() error {
+	if err := recordUpdateAttempt(info.CurrentVersion, info.LatestVersion, telemetry.UpdateManual, "manual", func() error {
 		if homebrewManaged {
 			if err := runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd); err != nil {
 				fmt.Printf("Error installing update via Homebrew: %v\n", err)
@@ -4434,7 +4434,7 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 
 	fmt.Println()
 	warnIfLaunchctlUnavailable()
-	if err := recordUpdateAttempt(Version, targetVersion, telemetry.UpdateManual, func() error {
+	if err := recordUpdateAttempt(Version, targetVersion, telemetry.UpdateManual, "manual-version", func() error {
 		return update.PerformVerifiedUpdate(release, runtime.GOOS, runtime.GOARCH)
 	}); err != nil {
 		fmt.Printf("Error installing v%s: %v\n", targetVersion, err)

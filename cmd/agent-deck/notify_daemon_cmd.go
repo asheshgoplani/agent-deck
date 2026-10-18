@@ -152,14 +152,29 @@ func initDaemonLogging() func() {
 // fresh. Recycling only on a definite mismatch (ShouldRecycleForVersion ignores
 // empty/unknown versions) means a transient read failure never flaps the daemon.
 func watchBinaryVersion(ctx context.Context, cancel context.CancelFunc) {
-	ticker := time.NewTicker(versionCheckInterval)
+	watchBinaryVersionAt(ctx, cancel, os.Executable, versionCheckInterval)
+}
+
+// watchBinaryVersionAt is watchBinaryVersion with the executable lookup and
+// interval as seams. The install path is resolved once, before the first
+// tick: after an upgrade swaps the binary (rename to <path>.old, new file into
+// <path>, remove .old), os.Executable on Linux reports the running inode as
+// "<path>.old (deleted)", which cannot be run, so probing it would read
+// "unknown" forever and the daemon would never recycle.
+func watchBinaryVersionAt(ctx context.Context, cancel context.CancelFunc, executable func() (string, error), interval time.Duration) {
+	exe, err := executable()
+	if err != nil || exe == "" {
+		return
+	}
+	exe = installedExePath(exe)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			onDisk := readOnDiskVersion()
+			onDisk := readOnDiskVersion(exe)
 			if session.ShouldRecycleForVersion(Version, onDisk) {
 				fmt.Fprintf(os.Stderr, "notify-daemon: binary upgraded (running %s, on-disk %s); recycling\n", Version, onDisk)
 				cancel()
@@ -169,16 +184,28 @@ func watchBinaryVersion(ctx context.Context, cancel context.CancelFunc) {
 	}
 }
 
-// readOnDiskVersion runs the current executable path with `version` and parses
-// the semver token. After an in-place upgrade the path holds the new bytes while
-// this process still runs the old inode, so this reads the NEW version. Returns
-// "" on any failure (treated as "unknown" -> no recycle).
-func readOnDiskVersion() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
+// installedExePath maps the path os.Executable reports for this process to
+// the install path an upgrade writes: Linux appends " (deleted)" once the
+// running file is unlinked, and the updater moves the running file to
+// <path>.old before the new one takes its place. The ".old" suffix is only
+// dropped when the install path exists, so an install that really ends in
+// ".old" keeps its name.
+func installedExePath(exe string) string {
+	p := strings.TrimSuffix(exe, " (deleted)")
+	if base, ok := strings.CutSuffix(p, ".old"); ok {
+		if _, err := os.Stat(base); err == nil {
+			return base
+		}
 	}
-	out, err := exec.Command(exe, "version").Output()
+	return p
+}
+
+// readOnDiskVersion runs the binary at the install path with `version` and
+// parses the semver token. After an in-place upgrade the path holds the new
+// bytes while this process still runs the old inode, so this reads the NEW
+// version. Returns "" on any failure (treated as "unknown" -> no recycle).
+func readOnDiskVersion(exe string) string {
+	out, err := exec.Command(installedExePath(exe), "version").Output()
 	if err != nil {
 		return ""
 	}

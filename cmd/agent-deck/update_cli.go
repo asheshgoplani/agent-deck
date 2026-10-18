@@ -7,10 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/procowner"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -45,14 +47,57 @@ func updateTrigger(flagValue string) string {
 // reports the same way. Telemetry is a no-op without consent, and it records
 // only with a person at a terminal (telemetry's canRecord): unattended runs
 // from the timer or a remote nudge have no TTY and so still record nothing.
-func recordUpdateAttempt(from, to string, kind telemetry.UpdateKind, install func() error) error {
-	if err := install(); err != nil {
+// Every attempt also appends one line to auto-update.log naming source (the
+// unattended trigger, or the manual path), so a swapped binary always says
+// which path replaced it, whatever the telemetry consent.
+func recordUpdateAttempt(from, to string, kind telemetry.UpdateKind, source string, install func() error) error {
+	err := install()
+	appendInstallLogLine(time.Now(), from, to, source, err)
+	if err != nil {
 		telemetry.UpdateAttempted(from, to, kind, telemetry.UpdateError, false)
 		telemetry.ErrorOccurred(telemetry.AreaUpdate, telemetry.KindOther, "")
 		return err
 	}
 	telemetry.UpdateAttempted(from, to, kind, telemetry.UpdateOK, false)
 	return nil
+}
+
+// installLogPath is where appendInstallLogLine writes: auto-update.log in
+// the agent-deck log dir, the file the launchd timer's output already goes
+// to. A seam so tests never write the host's log.
+var installLogPath = func() (string, error) {
+	dir, err := agentpaths.EffectiveDataPath("logs", "logs")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, update.TimerLogFileName), nil
+}
+
+// appendInstallLogLine appends one line per install attempt, e.g.
+// "2026-10-19T00:27:35+02:00 install 1.16.29 -> 1.16.30 ok source=web pid=1 ppid=2".
+// Best effort: a log that cannot be written never fails the install.
+func appendInstallLogLine(now time.Time, from, to, source string, installErr error) {
+	path, err := installLogPath()
+	if err != nil || path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	outcome := "ok"
+	if installErr != nil {
+		outcome = "failed: " + strings.Join(strings.Fields(installErr.Error()), " ")
+	}
+	line := fmt.Sprintf("%s install %s -> %s %s source=%s pid=%d ppid=%d", now.Format(time.RFC3339), from, to, outcome, source, os.Getpid(), os.Getppid())
+	if svc := os.Getenv("XPC_SERVICE_NAME"); svc != "" && svc != "0" {
+		line += " service=" + svc
+	}
+	fmt.Fprintln(f, line)
 }
 
 // updateKindForTrigger maps an unattended run's trigger to its telemetry
@@ -285,7 +330,7 @@ func runUnattendedUpdate(d unattendedDeps) int {
 	}
 
 	log.Info("unattended_install_start", slog.String("latest", info.LatestVersion))
-	if err := recordUpdateAttempt(d.version, info.LatestVersion, updateKindForTrigger(d.trigger), func() error {
+	if err := recordUpdateAttempt(d.version, info.LatestVersion, updateKindForTrigger(d.trigger), d.trigger, func() error {
 		return d.install(info.LatestVersion)
 	}); err != nil {
 		fmt.Fprintf(d.out, "Error installing v%s: %v\n", info.LatestVersion, err)

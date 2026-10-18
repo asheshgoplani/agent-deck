@@ -111,9 +111,9 @@ func TestRunUnattendedUpdate_NoInstallNoUpdateEvent(t *testing.T) {
 
 func TestRecordUpdateAttempt(t *testing.T) {
 	grantTelemetryForTest(t, "1.16.25")
-	require.NoError(t, recordUpdateAttempt("1.16.25", "1.16.26", telemetry.UpdateManual, func() error { return nil }))
+	require.NoError(t, recordUpdateAttempt("1.16.25", "1.16.26", telemetry.UpdateManual, "manual", func() error { return nil }))
 	boom := errors.New("boom")
-	require.ErrorIs(t, recordUpdateAttempt("1.16.25", "1.16.26", telemetry.UpdateManual, func() error { return boom }), boom)
+	require.ErrorIs(t, recordUpdateAttempt("1.16.25", "1.16.26", telemetry.UpdateManual, "manual", func() error { return boom }), boom)
 
 	evs := spooledEvents(t, "update")
 	require.Len(t, evs, 2)
