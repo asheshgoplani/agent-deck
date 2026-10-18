@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 // RefreshStalePluginPins scans mcpFile for mcpServers entries whose `command`
@@ -90,12 +92,9 @@ func RefreshStalePluginPins(mcpFile string, profileDirs []string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("marshal refreshed .mcp.json: %w", err)
 	}
-	tmp := mcpFile + ".tmp"
-	if err := os.WriteFile(tmp, newData, 0o644); err != nil {
-		return 0, fmt.Errorf("write refreshed .mcp.json: %w", err)
-	}
-	if err := os.Rename(tmp, mcpFile); err != nil {
-		os.Remove(tmp)
+	// A fixed "<file>.tmp" name would follow a symlink planted at that name;
+	// atomicfile uses a fresh temp file and keeps the write inside the project.
+	if err := atomicfile.WriteFileWithin(filepath.Dir(mcpFile), mcpFile, newData, 0o644); err != nil {
 		return 0, fmt.Errorf("save refreshed .mcp.json: %w", err)
 	}
 	return refreshed, nil

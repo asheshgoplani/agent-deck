@@ -314,6 +314,52 @@ func TestRestartHandoff_AppliedAfterFirstLoad(t *testing.T) {
 	}
 }
 
+// TestRestartHandoff_WarnsAboutShadowingCopy pins the post-flip restart
+// path: a process restarted into a new version scans PATH off the loop and
+// puts an older agent-deck copy that comes first on PATH in the footer with
+// the fix; a fresh start (no hand-off) runs no scan.
+func TestRestartHandoff_WarnsAboutShadowingCopy(t *testing.T) {
+	home, _ := buildFocusHome(t)
+	var scannedFor string
+	orig := pathShadowScan
+	pathShadowScan = func(version string) []update.ShadowCopy {
+		scannedFor = version
+		return []update.ShadowCopy{{Path: "/usr/local/bin/agent-deck", Version: "1.16.3", Installed: version, Remove: "sudo rm /usr/local/bin/agent-deck"}}
+	}
+	t.Cleanup(func() { pathShadowScan = orig })
+
+	if cmd := home.applyRestartHandoff(); cmd != nil {
+		t.Fatal("no hand-off: no PATH scan")
+	}
+
+	home.restartHandoff = RestartHandoff{OldVersion: "1.15.0"}
+	cmd := home.applyRestartHandoff()
+	if cmd == nil {
+		t.Fatal("restart into a new version must scan PATH")
+	}
+	msg := cmd()
+	if scannedFor != Version {
+		t.Fatalf("scanned against %q, want the running version %q", scannedFor, Version)
+	}
+	home.Update(msg)
+	if home.err == nil {
+		t.Fatal("no footer warning")
+	}
+	for _, want := range []string{"restarted into v" + Version + " (was v1.15.0)", "/usr/local/bin/agent-deck", "v1.16.3", "comes first on PATH", "sudo rm /usr/local/bin/agent-deck", "agent-deck doctor"} {
+		if !strings.Contains(home.err.Error(), want) {
+			t.Fatalf("footer %q lacks %q", home.err.Error(), want)
+		}
+	}
+
+	// A clean PATH leaves the restart notice alone.
+	pathShadowScan = func(string) []update.ShadowCopy { return nil }
+	home.restartHandoff = RestartHandoff{OldVersion: "1.15.0"}
+	home.Update(home.applyRestartHandoff()())
+	if home.err == nil || !strings.Contains(home.err.Error(), "(was v1.15.0)") {
+		t.Fatalf("clean PATH replaced the restart notice: %v", home.err)
+	}
+}
+
 // TestRestartDeck_RefusedWhileFeedbackDialogOpen pins that the feedback
 // textarea counts as a dialog for the restart guard: neither the key nor
 // the auto path may exec while the user is typing feedback.

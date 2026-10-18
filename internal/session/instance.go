@@ -37,6 +37,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -1147,6 +1148,7 @@ func (inst *Instance) GetTitleThreadSafe() string {
 // reapplication) must go through this rather than assigning Title directly,
 // or GetTitleThreadSafe's read lock buys nothing.
 func (inst *Instance) SetTitleThreadSafe(t string) {
+	t = termtext.Clean(t)
 	inst.mu.Lock()
 	inst.Title = t
 	inst.mu.Unlock()
@@ -1278,6 +1280,7 @@ func (inst *Instance) ClearParent() {
 
 // NewInstance creates a new session instance
 func NewInstance(title, projectPath string) *Instance {
+	title = termtext.Clean(title) // see NewInstanceWithTool
 	id := GenerateID()
 	// Seed the tmux socket from the installation-wide config. Callers that
 	// want to override (the `--tmux-socket` CLI flag) set
@@ -1369,6 +1372,9 @@ func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 
 // NewInstanceWithTool creates a new session with tool-specific initialization
 func NewInstanceWithTool(title, projectPath, tool string) *Instance {
+	// The title is printed by `list` and rendered in the TUI and the tmux
+	// status line; a control character in it could drive the terminal.
+	title = termtext.Clean(title)
 	id := GenerateID()
 	socket := GetTmuxSettings().GetSocketName()
 	tmuxSess := tmux.NewSession(title, projectPath)
@@ -7062,9 +7068,26 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			// makes afterwards (Instance.Substate) wins over the record: if
 			// the pane is busy again, absorbCompletedTurnSample reverts the
 			// flip in the same pass.
+			//
+			// A background shell is decided by the same transcript-based
+			// hold as on the Stop hook path (shellHoldsTurn): a lost Stop
+			// hook must not read waiting where a delivered one reads
+			// running / background-work. The scan reads disk, so i.mu is
+			// released around it, then re-checked for a concurrent Kill().
 			if IsClaudeCompatible(i.Tool) && i.noteHookLagSampleLocked() {
-				i.Status = StatusWaiting
-				i.hookLagFlipped = true
+				i.mu.Unlock()
+				work, holds := i.shellHoldsTurn()
+				i.mu.Lock()
+				if i.Status == StatusStopped {
+					return nil
+				}
+				if holds {
+					i.bgWork = work
+					i.bgWorkActive = true
+				} else {
+					i.Status = StatusWaiting
+					i.hookLagFlipped = true
+				}
 			}
 		case "waiting":
 			if IsCodexCompatible(i.Tool) {
@@ -7078,10 +7101,11 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			} else {
 				// Claude fires its Stop hook (→ "waiting") when the FOREGROUND turn
 				// ends, including the turn that launched a Workflow, background
-				// agents or finite run_in_background shells. Issue #2473: a
-				// running workflow means a running session, so this "waiting"
-				// never overrides a pane or transcript that proves background
-				// work in flight (background_work.go has the merge rule); the
+				// agents or a run_in_background shell. Issue #2473: a running
+				// workflow means a running session, so this "waiting" never
+				// overrides a pane or transcript that proves background work in
+				// flight (background_work.go has the merge rule; a shell counter
+				// counts only while the transcript shows a fresh launch, A5); the
 				// session stays running with substate background-work until the
 				// work reports back. BackgroundWorkSince captures the pane (the
 				// fast path has no captured content; a probe older than this
@@ -7307,7 +7331,9 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	// work (background_work.go). A pane at the prompt with work in flight is
 	// already "active" from tmux; the transcript can veto a stale workflow row
 	// there, and can hold a waiting/idle pane running while the footer is
-	// briefly not visible (redraw, resize).
+	// briefly not visible (redraw, resize). A shell counter never makes the
+	// pane "active" (A5): the frame reads waiting/idle and only a fresh
+	// background Bash launch in the transcript promotes it here.
 	// A frame that shows an open menu or an error is never promoted: the menu
 	// blocks the turn on the operator (#2185) and the error means no progress.
 	i.bgWorkActive = false
@@ -8556,6 +8582,7 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.hermesBoundAt = time.Time{}
 		i.hermesLastRejected = ""
 		i.persistHermesSessionBinding("")
+		i.clearHermesOwnedSessionID()
 	}
 
 	if i.Tool == "deepseek" {
@@ -8699,6 +8726,11 @@ type ResponseOutput struct {
 	SessionID           string `json:"session_id,omitempty"`            // Conversation session ID, if available
 	CodexTurnGeneration string `json:"codex_turn_generation,omitempty"` // Exact thread:turn identity, if retained
 	ClaudeTurnUUID      string `json:"claude_turn_uuid,omitempty"`      // Bound Claude user record, if retained
+	// AssistantUUID is the transcript uuid of the Claude assistant record
+	// Content was read from; the turn identity an inbox record carries as
+	// turn_uuid. Empty for pane, terminal and non-Claude reads. Not part of
+	// the CLI output.
+	AssistantUUID string `json:"-"`
 }
 
 // GetLastResponse returns the last assistant response from the session
@@ -9368,6 +9400,13 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 	if sessionID == "" {
 		return ""
 	}
+	// The ID becomes a file name and a glob pattern: a separator or ".." could
+	// name a file outside the projects tree and a glob metacharacter could
+	// match another session's transcript, so such an ID resolves to nothing.
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil || strings.ContainsAny(sessionID, "*?[") {
+		return ""
+	}
 
 	projectsDir := filepath.Join(configDir, "projects")
 
@@ -9390,7 +9429,11 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 		if candidateDir == "" {
 			continue
 		}
-		candidate := filepath.Join(projectsDir, ConvertToClaudeDirName(candidateDir), sessionID+".jsonl")
+		projectDir, ok := claudeProjectDir(configDir, ConvertToClaudeDirName(candidateDir))
+		if !ok {
+			continue
+		}
+		candidate := filepath.Join(projectDir, fileName)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -9704,10 +9747,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		Message     json.RawMessage `json:"message"`
 		Timestamp   string          `json:"timestamp"`
 		IsSidechain bool            `json:"isSidechain"`
+		UUID        string          `json:"uuid"`
 	}
 
 	var lastAssistantContent string
 	var lastTimestamp string
+	var lastUUID string
 	var foundSessionID string
 
 	// Walk lines from EOF backward; the first non-sidechain assistant record
@@ -9792,6 +9837,7 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		if extractedText != "" {
 			lastAssistantContent = extractedText
 			lastTimestamp = record.Timestamp
+			lastUUID = record.UUID
 			if foundSessionID != "" {
 				break
 			}
@@ -9803,11 +9849,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 	}
 
 	return &ResponseOutput{
-		Tool:      "claude",
-		Role:      "assistant",
-		Content:   lastAssistantContent,
-		Timestamp: lastTimestamp,
-		SessionID: foundSessionID,
+		Tool:          "claude",
+		Role:          "assistant",
+		Content:       lastAssistantContent,
+		Timestamp:     lastTimestamp,
+		SessionID:     foundSessionID,
+		AssistantUUID: lastUUID,
 	}, nil
 }
 
@@ -12147,7 +12194,12 @@ func openCodeModelRef(model string) (map[string]string, error) {
 // resolved opencode binary against the 2.x shared service for sessionID and
 // returns its stdout. An empty body sends no request body.
 func runOpenCodeServiceCall(binary, workDir, operation, sessionID, body string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return runOpenCodeServiceCallContext(context.Background(), binary, workDir, operation, sessionID, body)
+}
+
+// runOpenCodeServiceCallContext is runOpenCodeServiceCall ended early when ctx is.
+func runOpenCodeServiceCallContext(ctx context.Context, binary, workDir, operation, sessionID, body string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	// #nosec G204 -- binary is the configured opencode resolved by
@@ -12953,7 +13005,11 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 	if encodedPath == "" {
 		encodedPath = "-"
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return 0
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 	if info, err := os.Stat(sessionFile); err == nil {
 		return info.Size()
 	}
@@ -12998,7 +13054,11 @@ func sessionConversationMtime(inst *Instance, sessionID string) time.Time {
 	if encodedPath == "" {
 		encodedPath = "-"
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return time.Time{}
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 	if info, err := os.Stat(sessionFile); err == nil {
 		return info.ModTime()
 	}
@@ -13185,7 +13245,11 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		encodedPath = "-"
 	}
 
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	fileName, err := conversationPathComponent(sessionID + ".jsonl")
+	if err != nil {
+		return false
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
 
 	// Issue #662 diagnostic contract: emit a single structured "decision"
 	// log line per call with every field needed to reconstruct the false

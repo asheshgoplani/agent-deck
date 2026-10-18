@@ -448,9 +448,7 @@ func (d *SkillDialog) renderColumn(title string, items []SkillDialogItem, select
 		if item.Candidate.Source != "" {
 			label += " [" + item.Candidate.Source + "]"
 		}
-		if len(label) > colWidth-4 {
-			label = label[:colWidth-7] + "..."
-		}
+		label = truncateDisplay(label, colWidth-4, "...")
 
 		if i == selectedIdx && focused {
 			lines = append(lines, lipgloss.NewStyle().

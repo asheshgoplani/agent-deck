@@ -596,7 +596,8 @@ func handleLimits(profile string, args []string) {
 		fmt.Println("has passed, so its used_pct no longer applies. A Claude account a live session reports")
 		fmt.Println("account-blocked (organization disabled access) carries \"blocked\": true and \"blocked_reason\";")
 		fmt.Println("\"sessions\" lists the account's account-blocked, model-limit and usage-limit sessions,")
-		fmt.Println("each with the command that moves it on (\"fix\"). Needs [macapp] plugins = true (docs/macapp-core.md).")
+		fmt.Println("each with the command that moves it on (\"fix\"). Needs [macapp] plugins = true: run")
+		fmt.Println("agent-deck config set macapp.plugins true --yes (docs/macapp-core.md).")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -607,8 +608,7 @@ func handleLimits(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 	cfg, _ := session.LoadUserConfig()
 	if cfg == nil || !cfg.Macapp.Plugins {
-		out.Error("limits is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		exitCLI(2)
+		exitMacappPluginsOff(out, "limits")
 	}
 	now := time.Now()
 	claude := annotateClaudeLimits(claudeLimits(cfg, now), liveClaudeSessionRows(profile))

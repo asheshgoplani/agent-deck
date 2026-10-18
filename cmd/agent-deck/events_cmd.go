@@ -275,8 +275,7 @@ func handleEventsPublish(profile string, args []string) {
 		exitCLI(2)
 	}
 	if cfg, _ := session.LoadUserConfig(); !events.IsMacappUngatedKind(*kind) && (cfg == nil || !cfg.Macapp.Plugins) {
-		out.Error("events publish is off: set [macapp] plugins = true in config.toml (docs/macapp-core.md)", ErrCodeInvalidOperation)
-		exitCLI(2)
+		exitMacappPluginsOff(out, "events publish")
 	}
 	if *profileFlag != "" {
 		p, err := resolveEventsProfile(*profileFlag)
