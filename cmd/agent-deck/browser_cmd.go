@@ -11,7 +11,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/events"
@@ -117,8 +119,8 @@ func runBrowserOp(profile string, op macapp.Op, args []string, out, errOut io.Wr
 	if err != nil {
 		return browserExitError, err
 	}
-	// A browser request drives the owner's browser, so it needs the same
-	// opt-in as every other request kind beyond the Mac app's own frames.
+	// An opt-in, not a security boundary: an agent on this host controls
+	// its config and the log. The Mac app enforces the policy.
 	if err := requireBrowserOptIn(); err != nil {
 		return browserExitError, err
 	}
@@ -137,6 +139,9 @@ func runBrowserOp(profile string, op macapp.Op, args []string, out, errOut io.Wr
 		}
 	}
 
+	if dir, err := browserResultsDir(profile); err == nil {
+		sweepBrowserResults(dir, time.Now())
+	}
 	bus := events.OpenProfile(profile)
 	defer bus.Close()
 	resp, err := publishBrowserRequest(bus, inst.ID, req, timeout)
@@ -149,6 +154,15 @@ func runBrowserOp(profile string, op macapp.Op, args []string, out, errOut io.Wr
 	}
 	if err != nil {
 		return browserExitError, err
+	}
+	if err := checkBrowserResponseVersion(resp); err != nil {
+		return browserExitError, err
+	}
+	if resp.ResultRef != nil {
+		if resp.Result, err = loadBrowserResult(profile, resp.ResultRef); err != nil {
+			return browserExitError, err
+		}
+		resp.ResultRef = nil
 	}
 	if !resp.OK {
 		if f.json {
@@ -260,7 +274,7 @@ func publishBrowserRequest(bus *events.Bus, sessionID string, req macapp.Browser
 	}
 	eventID := bus.PublishWithID(macapp.KindBrowserRequest, sessionID, req)
 	if eventID == "" || !bus.Flush(openCommitTimeout) || bus.Stats().Written <= before.Written {
-		return macapp.BrowserResponse{}, errors.New("events bus did not commit the request; request was not sent")
+		return macapp.BrowserResponse{}, errors.New("events bus did not confirm the request in time; it may not have been sent")
 	}
 	deadline := time.AfterFunc(timeout, cancel)
 	defer deadline.Stop()
@@ -303,9 +317,9 @@ func browserResponseError(e *macapp.ErrorInfo) error {
 		return errors.New("AgentDeck refused the request")
 	}
 	if e.Message == "" {
-		return errors.New(e.Code)
+		return errors.New(displayRemote(e.Code))
 	}
-	return fmt.Errorf("%s: %s", e.Code, e.Message)
+	return fmt.Errorf("%s: %s", displayRemote(e.Code), displayRemote(e.Message))
 }
 
 func writeBrowserJSON(out io.Writer, v any) error {
@@ -326,7 +340,8 @@ func writeBrowserResult(out io.Writer, op macapp.Op, resp macapp.BrowserResponse
 		if asJSON {
 			return writeBrowserJSON(out, resp)
 		}
-		_, err = fmt.Fprintln(out, read.Text)
+		// Page content is untrusted: no escape sequence reaches the pane.
+		_, err = fmt.Fprintln(out, displayPageText(read.Text))
 		return err
 	}
 	if asJSON {
@@ -346,10 +361,10 @@ func writeBrowserResult(out io.Writer, op macapp.Op, resp macapp.BrowserResponse
 		}
 	}
 	if op == macapp.OpOpen {
-		_, err := fmt.Fprintf(out, "Opened %s (tab %s)\n", page.URL, page.TabID)
+		_, err := fmt.Fprintf(out, "Opened %s (tab %s)\n", displayRemote(page.URL), displayRemote(page.TabID))
 		return err
 	}
-	_, err := fmt.Fprintln(out, page.URL)
+	_, err := fmt.Fprintln(out, displayRemote(page.URL))
 	return err
 }
 
@@ -391,12 +406,12 @@ func writeBrowserTabs(out io.Writer, raw json.RawMessage) error {
 		if tab.Active {
 			marker = "*"
 		}
-		if _, err := fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, tab.TabID, tab.URL, tab.Title); err != nil {
+		if _, err := fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, displayRemote(tab.TabID), displayRemote(tab.URL), displayRemote(tab.Title)); err != nil {
 			return err
 		}
 	}
 	if tabs.Driver != "" {
-		_, err := fmt.Fprintf(out, "driver: %s\n", tabs.Driver)
+		_, err := fmt.Fprintf(out, "driver: %s\n", displayRemote(tabs.Driver))
 		return err
 	}
 	return nil
@@ -411,6 +426,30 @@ func requireBrowserOptIn() error {
 	cfg, _ := session.LoadUserConfig()
 	if cfg == nil || !cfg.Macapp.Plugins {
 		return errBrowserOff
+	}
+	return nil
+}
+
+// displayPageText makes page text safe to print: line breaks and tabs stay,
+// every other control character (ESC and so every CSI/OSC sequence, C1
+// codes, DEL) is dropped, so a page cannot drive the agent's terminal.
+func displayPageText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// checkBrowserResponseVersion refuses a response in a protocol version this
+// CLI does not speak.
+func checkBrowserResponseVersion(resp macapp.BrowserResponse) error {
+	if resp.V != macapp.ProtocolVersion {
+		return fmt.Errorf("AgentDeck answered with protocol version %d; this agent-deck speaks %d", resp.V, macapp.ProtocolVersion)
 	}
 	return nil
 }

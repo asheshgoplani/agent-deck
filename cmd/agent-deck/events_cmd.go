@@ -301,6 +301,15 @@ func handleEventsPublish(profile string, args []string) {
 			exitCLI(1)
 		}
 	}
+	if *kind == events.KindMacappBrowserResponse {
+		// Page text and screenshots go to a 0600 side file, not the log.
+		spilled, err := spillBrowserResponse(profile, raw, time.Now())
+		if err != nil {
+			out.Error(fmt.Sprintf("events publish: keep the browser result out of the log: %v", err), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		raw = spilled
+	}
 	var payload any
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		if err := json.Unmarshal(raw, &payload); err != nil {

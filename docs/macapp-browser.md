@@ -31,10 +31,14 @@ common: --session <id|title>, --json, --timeout <duration>
 ```
 
 Browser requests need `[macapp] plugins = true` in `config.toml` on the host
-that runs the command, because a request drives the owner's browser. While it
-is off, every op exits 1 with `browser requests are off: set [macapp] plugins =
-true` and nothing is written to the log. (`events publish --kind
-macapp.browser.request` has the same gate.)
+that runs the command. While it is off, every op exits 1 with `browser
+requests are off: set [macapp] plugins = true` and nothing is written to the
+log. (`events publish --kind macapp.browser.request` has the same check.) This
+is an opt-in, not a security boundary: an agent on that host can edit its
+config, point `XDG_CONFIG_HOME` elsewhere or append to its own events log.
+Plain `agent-deck open` needs no opt-in, so the check on `browser open` adds
+no protection by itself. The policy that protects the owner lives in the Mac
+app (see "Policy").
 
 The op comes first. `--session` defaults to `$AGENTDECK_INSTANCE_ID`, then to
 the agent-deck session that owns the calling tmux session; outside a session it
@@ -131,9 +135,53 @@ Each op accepts only its own fields. `open` needs exactly one of `url` or
 `path` (`path` absolute, without `..`) and not both `tab_id` and `new_tab`;
 `click` needs exactly one target; `type` needs one of `ref` or `selector` and
 a non-empty `text`. Caps: `type` text 8 KiB, `read` text 256 KiB, `shot` image
-1.5 MiB decoded. The CLI refuses oversized results. `browser_profile` names a Browser
+1,400,000 bytes decoded (so a shot reply fits the 2 MiB remote reply cap with
+its envelope). The CLI refuses oversized results. `browser_profile` names a Browser
 panel profile (letters, digits, `.`, `_`, `-`, at most 64, no leading `.`;
 not the agent-deck profile).
+
+`req_id` is 32 lowercase hex characters; a request with any other `req_id` is
+invalid. A response must carry `v: 1`; the CLI refuses any other version.
+Everything the CLI prints from a response (page text, titles, URLs, tab ids,
+app messages) has its control characters removed (page text keeps line
+breaks and tabs), so a page cannot send escape sequences to the agent's
+terminal.
+
+### Results out of the log
+
+The events log is shared by every reader of the profile and retained for a
+while, so large results do not stay in it. `events publish --kind
+macapp.browser.response` (which the app runs on the host that asked, locally
+or through `remote <name> events publish`) moves a result over 16 KiB (page
+text, screenshots) to a side file `<data dir>/runtime/browser-results/<profile>/<req_id>.json`,
+mode 0600 in a 0700 directory, and the frame carries
+`result_ref: {file, bytes, sha256}` instead of `result`. The waiting `agent-deck
+browser` reads the file, checks its size and digest, prints the result and
+deletes the file. Side files older than 10 minutes are swept on every such
+publish and every `agent-deck browser` command. `type --text` (at most 8 KiB)
+stays in the request frame, since the app reads requests from the log.
+
+## Policy
+
+The core cannot enforce a policy on what a session's browser may do: an agent
+on a host controls that host's CLI, config and log. The Mac app is the
+enforcement point, and the contract (`internal/macapp`, policy.go) is:
+
+- **Addresses.** A request from a remote host (a session the app reaches over
+  SSH) never loads a loopback, private, link-local (including cloud metadata
+  such as `169.254.169.254`), unspecified or multicast address, nor
+  `localhost` or a `.local`/`.internal` name, as the app resolves it, for the
+  first load, redirects and every subresource.
+- **Profiles.** A Browser panel profile is isolated per session: a session's
+  pages never use the owner's own browsing profile, cookies or logins unless
+  the owner turns that on for it in the app. A remote host never picks or
+  switches a panel profile (`browser_profile` from a remote is refused).
+
+As defence in depth, the CLI on a host the app reaches as a remote (not macOS,
+or inside an SSH session) refuses such addresses in `browser open` and `open`
+before it writes a request (`macapp.CheckRemoteURL`: names, IP literals and
+numeric host forms like `2130706433`; it does no DNS, so it never replaces the
+app's check). A local Mac session may still open its own dev server.
 
 `read` returns text and element refs only and masks password input values.
 There is no cookie, storage or script op, and `type` into a password field is

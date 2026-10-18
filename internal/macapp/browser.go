@@ -25,12 +25,32 @@ const (
 // ProtocolVersion is the v field of browser requests and responses.
 const ProtocolVersion = 1
 
-// Size caps. MaxShotBytes applies to the decoded image.
+// Size caps. MaxShotBytes applies to the decoded image: 1,400,000 bytes is
+// 1,866,668 in base64, so a shot reply with its envelope stays under the
+// 2 MiB stdin cap of `remote <name> events publish` (the app's own shot
+// limit is the same number).
 const (
 	MaxTypeTextBytes = 8 << 10
 	MaxReadTextBytes = 256 << 10
-	MaxShotBytes     = 3 << 19 // 1.5 MiB
+	MaxShotBytes     = 1_400_000
 )
+
+// Large results stay out of the shared events log: a reply whose result is
+// over SpillThreshold bytes is written by `events publish` (on the host that
+// asked) to a 0600 side file under <data dir>/runtime/browser-results/<profile>/
+// and the frame carries a ResultRef instead. Side files live ResultTTL; the
+// CLI deletes one once it read it, and publish and the CLI sweep older ones.
+const (
+	SpillThreshold = 16 << 10
+	ResultTTL      = 10 * time.Minute
+)
+
+// ResultRef points at a spilled result on the host that asked.
+type ResultRef struct {
+	File   string `json:"file"`
+	Bytes  int    `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
 
 // Op is a browser operation.
 type Op string
@@ -111,6 +131,7 @@ type BrowserResponse struct {
 	OK             bool            `json:"ok"`
 	Error          *ErrorInfo      `json:"error,omitempty"`
 	Result         json.RawMessage `json:"result,omitempty"`
+	ResultRef      *ResultRef      `json:"result_ref,omitempty"`
 	Driver         string          `json:"driver,omitempty"`
 	AppID          string          `json:"app_id,omitempty"`
 }
@@ -163,8 +184,8 @@ func (r BrowserRequest) Validate() error {
 	if r.V != ProtocolVersion {
 		return fmt.Errorf("unsupported version %d", r.V)
 	}
-	if strings.TrimSpace(r.ReqID) == "" {
-		return errors.New("req_id is required")
+	if !ValidReqID(r.ReqID) {
+		return errors.New("req_id must be 32 lowercase hex characters")
 	}
 	if r.RequestedAt.IsZero() || !r.ExpiresAt.After(r.RequestedAt) {
 		return errors.New("expires_at must be after requested_at")
@@ -373,6 +394,20 @@ func ValidBrowserProfile(name string) bool {
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidReqID reports whether id is a req_id as the CLI makes it: 32
+// lowercase hex characters (16 random bytes).
+func ValidReqID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
 			return false
 		}
 	}

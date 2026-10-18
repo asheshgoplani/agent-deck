@@ -150,8 +150,9 @@ func TestMacappBrowserCLISessionAndRefusals(t *testing.T) {
 	}
 }
 
-// SECURITY: a browser request drives the owner's browser, so it needs the
-// [macapp] plugins opt-in. Without it nothing reaches the log.
+// A browser request needs the [macapp] plugins opt-in. It is an opt-in, not
+// a security boundary (an agent on the host controls its config and log; the
+// Mac app enforces the policy). Without it nothing reaches the log.
 func TestMacappBrowserCLINeedsPluginsOptIn(t *testing.T) {
 	for _, cfg := range []string{"", "[macapp]\nplugins = false\n"} {
 		home := t.TempDir()

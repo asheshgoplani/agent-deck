@@ -98,7 +98,8 @@ func hasJSONL(args []string) bool {
 }
 
 // remotePublishDataCap bounds the stdin payload of a forwarded events
-// publish (a browser response carrying a 1.5 MiB screenshot fits).
+// publish: a browser shot reply at macapp.MaxShotBytes (1,400,000 bytes,
+// 1,866,668 in base64) fits with its envelope.
 const remotePublishDataCap = 2 << 20
 
 // remotePublishFromRemoteFlag is added to every forwarded publish. The box

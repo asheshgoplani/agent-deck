@@ -11,7 +11,7 @@ import (
 
 func validRequest(op Op, args BrowserArgs) BrowserRequest {
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
-	return BrowserRequest{V: ProtocolVersion, ReqID: "r1", Op: op, Args: args, Host: "box", RequestedAt: now, ExpiresAt: now.Add(30 * time.Second)}
+	return BrowserRequest{V: ProtocolVersion, ReqID: "0123456789abcdef0123456789abcdef", Op: op, Args: args, Host: "box", RequestedAt: now, ExpiresAt: now.Add(30 * time.Second)}
 }
 
 // The frame data uses the snake_case names of the contract and nothing else.
@@ -132,10 +132,12 @@ func TestBrowserArgsRefusedPerOp(t *testing.T) {
 	if bad.Validate() == nil {
 		t.Error("unknown version accepted")
 	}
-	bad = validRequest(OpTabs, BrowserArgs{})
-	bad.ReqID = " "
-	if bad.Validate() == nil {
-		t.Error("empty req_id accepted")
+	for _, id := range []string{"", " ", "r1", "0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef0123456789abcde", "0123456789abcdef0123456789abcdefa", "0123456789abcdef0123456789abcdeg"} {
+		bad = validRequest(OpTabs, BrowserArgs{})
+		bad.ReqID = id
+		if bad.Validate() == nil {
+			t.Errorf("req_id %q accepted (the contract says 32 lowercase hex)", id)
+		}
 	}
 	bad = validRequest(OpTabs, BrowserArgs{})
 	bad.ExpiresAt = bad.RequestedAt
@@ -257,5 +259,16 @@ func TestBrowserProfileNameRule(t *testing.T) {
 		if err := (BrowserArgs{URL: "https://example.com/", BrowserProfile: bad}).Validate(OpOpen); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// MaxShotBytes keeps a shot reply under the 2 MiB stdin cap of the remote
+// reply publish, envelope included.
+func TestShotAtTheCapFitsTheRemoteReply(t *testing.T) {
+	const remotePublishCap = 2 << 20 // cmd/agent-deck remotePublishDataCap
+	result, _ := json.Marshal(ShotResult{MIME: "image/jpeg", ImageB64: base64.StdEncoding.EncodeToString(make([]byte, MaxShotBytes)), Width: 4096, Height: 4096})
+	reply, _ := json.Marshal(BrowserResponse{V: ProtocolVersion, ReqID: strings.Repeat("a", 32), RequestEventID: strings.Repeat("e", 64), OK: true, Result: result, Driver: DriverAgent, AppID: strings.Repeat("m", 128)})
+	if len(reply) > remotePublishCap {
+		t.Fatalf("a shot reply at the cap is %d bytes, over the %d remote publish cap", len(reply), remotePublishCap)
 	}
 }

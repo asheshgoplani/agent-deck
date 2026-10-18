@@ -196,9 +196,21 @@ func newOpenRequest(sessionID, target string) (MacappOpenRequest, error) {
 	return req, err
 }
 
+// openCallerIsRemote reports whether this CLI runs on a host the Mac app
+// reaches as a remote (not macOS, or inside an SSH session): the requests it
+// writes are then "from a remote" in the app's policy.
+var openCallerIsRemote = func() bool { return !localMacappLaunchAllowed(runtime.GOOS, os.Getenv) }
+
 func resolveOpenTarget(target string) (path, webURL string, err error) {
 	webURL, err = macapp.ValidateURL(target)
 	if err == nil {
+		// Defence in depth for the app's policy: a remote host never asks
+		// for a loopback, private or link-local address (macapp.CheckRemoteURL).
+		if openCallerIsRemote() {
+			if err := macapp.CheckRemoteURL(webURL); err != nil {
+				return "", "", err
+			}
+		}
 		return "", webURL, nil
 	}
 	if !errors.Is(err, macapp.ErrNotURL) {
