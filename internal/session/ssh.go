@@ -324,8 +324,16 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
-	remoteCmd := remoteCommandWithDeadline(ctx, r.buildRemoteCommand(args...))
-	return r.runExec(ctx, remoteCmd, nil, remoteVerbReadOnly(args))
+	readOnly := remoteVerbReadOnly(args)
+	remoteCmd := r.buildRemoteCommand(args...)
+	if readOnly {
+		// Only a read may be ended remotely at the deadline. A slow
+		// mutating verb (add, fork, restart, remove, ...) killed halfway
+		// could leave a half-made worktree or session behind; it is still
+		// killed locally, as a process group, on timeout or signal.
+		remoteCmd = remoteCommandWithDeadline(ctx, remoteCmd)
+	}
+	return r.runExec(ctx, remoteCmd, nil, readOnly)
 }
 
 // runExec runs one remote command over the shared ControlMaster and, when the

@@ -256,6 +256,57 @@ func remoteMessageInput(args []string) ([]string, io.Reader, func(), error) {
 	return forwarded, input, closeInput, nil
 }
 
+// remoteForwardNeedsStdin reports whether a forwarded command (after
+// remoteMessageInput) reads its stdin: a message on --message-file -, the
+// image bytes of session image-upload, session annotate --note-stdin, or a
+// confirmation prompt (worktree cleanup --force, session context --verify
+// without --yes). Everything else runs with stdin on /dev/null.
+func remoteForwardNeedsStdin(args []string) bool {
+	verb := ""
+	if len(args) >= 2 {
+		verb = args[0] + " " + args[1]
+	}
+	switch verb {
+	case "session image-upload":
+		return true
+	case "session annotate":
+		return remoteArgsHaveFlag(args, "note-stdin")
+	case "worktree cleanup":
+		return remoteArgsHaveFlag(args, "force")
+	case "session context":
+		return remoteArgsHaveFlag(args, "verify") && !remoteArgsHaveFlag(args, "yes")
+	}
+	for i, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		switch arg {
+		case "--message-file", "-message-file":
+			if i+1 < len(args) && args[i+1] == "-" {
+				return true
+			}
+		case "--message-file=-", "-message-file=-":
+			return true
+		}
+	}
+	return false
+}
+
+// remoteArgsHaveFlag reports whether boolean flag name is set in args,
+// before any "--" terminator.
+func remoteArgsHaveFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		switch arg {
+		case "-" + name, "--" + name, "-" + name + "=true", "--" + name + "=true":
+			return true
+		}
+	}
+	return false
+}
+
 // wantsJSON reports whether a forwarded command asked for --json, so a
 // controller-side diagnostic can answer in the same shape.
 func wantsJSON(args []string) bool {
@@ -339,6 +390,12 @@ func runRemoteExec(name string, args []string) (int, error) {
 	}
 	if isSessionAnnotateArgs(args) || isRecallArgs(args) || isRemoteLimitsArgs(args) || isSessionQueueArgs(args) {
 		stdout = &capturedOut
+	}
+	if !remoteForwardNeedsStdin(args) {
+		// ssh gets /dev/null: handing it a terminal it never reads makes
+		// exec copy the terminal from a goroutine that outlives ssh, and
+		// Wait then fails a successful command with ErrWaitDelay.
+		input = nil
 	}
 	err = runner.RunIO(ctx, input, stdout, stderr, args...)
 	var exitErr *exec.ExitError

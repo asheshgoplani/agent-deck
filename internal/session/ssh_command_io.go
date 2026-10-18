@@ -22,7 +22,12 @@ func (r *SSHRunner) RunIO(ctx context.Context, stdin io.Reader, stdout, stderr i
 		return err
 	}
 	CleanStaleSSHSockets()
-	sshArgs := r.sshChannelArgs(remoteCommandWithDeadline(ctx, r.buildRemoteCommand(args...)))
+	remoteCmd := r.buildRemoteCommand(args...)
+	if remoteVerbReadOnly(args) {
+		// As in run: only reads get the remote-side deadline.
+		remoteCmd = remoteCommandWithDeadline(ctx, remoteCmd)
+	}
+	sshArgs := r.sshChannelArgs(remoteCmd)
 	// Literal ssh executable; fixed connection options and a validated
 	// non-option host. Remote executable/profile/arguments are each
 	// shell-quoted by buildRemoteCommand, with no local shell evaluation.

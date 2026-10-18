@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -45,9 +44,7 @@ var sshGroups = struct {
 }{pids: map[int]struct{}{}}
 
 // newSSHCommand builds an ssh command whose cancellation kills its whole
-// process group. A terminal stdin is copied through a pipe instead of being
-// handed over: a child outside the terminal's foreground group would be
-// stopped (SIGTTIN) by its first read.
+// process group.
 func newSSHCommand(ctx context.Context, args ...string) *exec.Cmd {
 	// #nosec G204 -- literal ssh; every caller passes fixed options, a
 	// validated host and a shell-quoted remote command.
@@ -71,9 +68,20 @@ func runSSHCommand(cmd *exec.Cmd) error {
 }
 
 // startSSHCommand starts cmd and tracks its group until waitSSHCommand.
+//
+// A terminal stdin is handed to ssh as the file itself, never wrapped in a
+// reader: exec would then copy it through a pipe from a goroutine that
+// stays blocked reading the terminal after ssh exits, so Wait would fail
+// with exec.ErrWaitDelay on every successful command and the goroutine
+// would leak. A child in its own process group would be stopped (SIGTTIN)
+// by its first read of the terminal, so such a command stays in the
+// CLI's foreground group instead; a terminal hangup or ^C reaches it
+// directly, and cancellation still kills it by pid.
 func startSSHCommand(cmd *exec.Cmd) error {
-	if f, ok := cmd.Stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		cmd.Stdin = struct{ io.Reader }{f}
+	if f, ok := cmd.Stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) { // #nosec G115 -- fd is a small positive int
+		if cmd.SysProcAttr != nil {
+			cmd.SysProcAttr.Setpgid = false
+		}
 	}
 	sshGroups.Lock()
 	defer sshGroups.Unlock()
@@ -108,7 +116,9 @@ func killSSHGroup(cmd *exec.Cmd) {
 		return
 	}
 	// The group id is the leader's pid (Setpgid with Pgid 0). Kill the
-	// leader directly too, in case the group signal raced its setpgid.
+	// leader directly too, in case the group signal raced its setpgid or
+	// the command kept the CLI's group (terminal stdin); then no group
+	// with that id exists and the group signal is a no-op.
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	_ = cmd.Process.Kill()
 }
