@@ -24,6 +24,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/creack/pty"
@@ -1085,6 +1086,12 @@ func parseRemoteSessions(output []byte) ([]RemoteSessionInfo, error) {
 	var sessions []RemoteSessionInfo
 	if err := json.Unmarshal(trimmed, &sessions); err != nil {
 		return nil, fmt.Errorf("failed to parse remote sessions: %w", err)
+	}
+	// The remote's titles and groups are rendered in the TUI; an older or
+	// compromised remote may send them with control characters.
+	for i := range sessions {
+		sessions[i].Title = termtext.Clean(sessions[i].Title)
+		sessions[i].Group = termtext.Clean(sessions[i].Group)
 	}
 	return sessions, nil
 }

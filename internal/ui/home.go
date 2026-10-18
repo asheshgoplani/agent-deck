@@ -476,6 +476,10 @@ type Home struct {
 	// store rather than groupTree's expanded flags.
 	remoteGroupsCollapsed map[string]bool
 
+	// A `session focus --remote` request whose session the remote list does
+	// not hold yet (#2704); retried after each remote refresh until its TTL.
+	pendingRemoteFocus *pendingRemoteFocus
+
 	// Manual order of remote session rows (#1875): remote -> group path ->
 	// session IDs. Remote rows are not Instances in groupTree, so shift+up/down
 	// cannot move them there; this local overlay carries the order instead and
@@ -2625,10 +2629,17 @@ func (h *Home) consumeFocusRequest(db *statedb.StateDB) tea.Cmd {
 		return nil
 	}
 
-	id, attach, fresh := session.DecodeFocusRequestAttach(raw, time.Now().UnixNano(), session.FocusRequestTTL)
-	if !fresh {
+	fr, ok, fresh := session.ParseFocusRequest(raw, time.Now().UnixNano(), session.FocusRequestTTL)
+	if !ok || !fresh {
 		return nil
 	}
+	if fr.Remote != "" {
+		// #2704: a session on a remote, selected under Remotes.
+		return h.consumeRemoteFocus(fr)
+	}
+	// A newer local request replaces a pending remote one.
+	h.pendingRemoteFocus = nil
+	id, attach := fr.ID, fr.Attach
 	if !h.SelectSessionByID(id) {
 		return nil
 	}
@@ -4562,8 +4573,10 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	// Invalidate so the next View() recomputes.
 	h.cachedStatusCounts.valid.Store(false)
 	h.rebuildFlatItems()
+	// #2704: a focus request that arrived before its session did.
+	focusCmd := h.retryPendingRemoteFocus(time.Now())
 	if !roundDone {
-		return h, nil
+		return h, focusCmd
 	}
 	h.remoteSessionsMu.Lock()
 	again := h.remoteRefetchWanted
@@ -4573,9 +4586,9 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	}
 	h.remoteSessionsMu.Unlock()
 	if again {
-		return h, h.fetchRemoteSessions
+		return h, tea.Batch(focusCmd, h.fetchRemoteSessions)
 	}
-	return h, nil
+	return h, focusCmd
 }
 
 // remoteFetchIsStale reports whether a newer fetch has already been applied
@@ -10060,7 +10073,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Periodic remote session fetch (issue #1170). Cadence is configurable
 		// via [ui] remote_session_refresh_secs (default 15s); see
 		// shouldFetchRemoteSessions for the stale/in-flight gating.
-		if h.shouldFetchRemoteSessions(time.Now()) {
+		if h.shouldFetchRemoteSessions(time.Now()) || h.remoteFocusWantsFetch(time.Now()) {
 			h.remoteSessionsMu.Lock()
 			h.remotesFetchActive = true
 			h.remoteSessionsMu.Unlock()
@@ -12035,6 +12048,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Shared with `session focus --remote --attach` (#2704).
+				return h, h.openRemoteSessionRow(item.RemoteName, item.RemoteSession)
+			}
 			if !h.embeddedLayout && (item.Type == session.ItemTypeSession || item.Type == session.ItemTypeWindow || item.Type == session.ItemTypeRemoteSession) {
 				return h, h.attachSelectedLegacy()
 			}
@@ -12081,17 +12098,6 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if parentInst != nil && h.sessionExistsForUI(parentInst) && h.enterEmbeddedMode() {
 					return h, h.startEmbeddedModeCmd()
 				}
-			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
-				// A stopped remote session is restarted first, as Enter on a
-				// dead local session restarts it; the row refreshes when the
-				// remote confirms. Otherwise attach (embedded or over SSH).
-				if strings.EqualFold(item.RemoteSession.Status, string(session.StatusStopped)) {
-					return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
-				}
-				if h.enterEmbeddedMode() {
-					return h, h.startEmbeddedModeCmd()
-				}
-				return h, h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
 			}
 		}
 		return h, nil
@@ -18212,9 +18218,20 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which would lose the tmux session state)
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
+	opts := h.attachOptions(tmuxSess)
+	// #2704: record the client this attach runs in, so `session focus
+	// --remote --attach` can detach exactly it to bring the TUI back. Both
+	// callbacks run inside attachCmd.Run, on one goroutine.
+	clientPID := 0
+	opts.OnClientStarted = func(pid int) {
+		clientPID = pid
+		if db := statedb.GetGlobal(); db != nil {
+			_ = session.WriteTUIAttach(db, session.TUIAttach{Socket: tmuxSess.SocketName, ClientPID: pid})
+		}
+	}
 	return tea.Exec(attachCmd{
 		session: tmuxSess,
-		opts:    h.attachOptions(tmuxSess),
+		opts:    opts,
 		result:  res,
 		// #1753: clear the flag inside Run(), i.e. BEFORE Bubble Tea restores the
 		// terminal and resumes the loop. The ExecCallback below runs on its own
@@ -18224,7 +18241,12 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// the first post-detach repaint deterministic. Nothing can call View() in
 		// between — the event loop is parked inside Program.exec for the whole
 		// attach.
-		onExit: func() { h.isAttaching.Store(false) },
+		onExit: func() {
+			if db := statedb.GetGlobal(); db != nil && clientPID != 0 {
+				_ = session.ClearTUIAttach(db, clientPID)
+			}
+			h.isAttaching.Store(false)
+		},
 	}, func(err error) tea.Msg {
 		// Belt for the path where Bubble Tea fails to release the terminal and
 		// invokes this callback without ever running attachCmd.Run().

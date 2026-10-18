@@ -161,7 +161,7 @@ func WriteCursorProjectMCP(projectPath string, enabledNames []string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create .cursor directory: %w", err)
 	}
-	if err := WriteMergedMcpJSONFile(mcpFile, enabledNames, ""); err != nil {
+	if err := writeMergedMcpJSONFileWithin(filepath.Dir(dir), mcpFile, enabledNames, ""); err != nil {
 		return err
 	}
 	return nil

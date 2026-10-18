@@ -137,8 +137,10 @@ func hasClaudeEmptyPromptLine(content string) bool {
 // picker, an awaited background agent, or any spinner all return false —
 // those panes may legitimately still be working or blocked, and this verdict
 // is used to overrule a hook, so it must only fire on the unambiguous frame.
-// Background work still in flight (a workflow, background agents, live shells
-// or monitors) keeps the turn open (issue #2473).
+// Background work the pane proves in flight (a workflow or background agents)
+// keeps the turn open (issue #2473). A shell counter alone does not (A5): the
+// pane cannot tell finite work from a leftover shell, so a hook stuck at
+// running over such a frame is lagging like any other.
 func (d *PromptDetector) CompletedTurnAtIdlePrompt(content string) bool {
 	if d.tool != "claude" {
 		return false
@@ -176,7 +178,7 @@ func (s *Session) recordCompletedTurnSampleLocked(content string) {
 	// the trimmed frame no longer shows it (the workflow row lives under the
 	// footer): a hook that still says running over such a frame is not lagging.
 	s.completedTurnIdle = s.cachedPromptDetector != nil && s.cachedPromptDetector.CompletedTurnAtIdlePrompt(content) &&
-		!s.lastBackgroundWork.Running()
+		!s.lastBackgroundWork.PaneProven().Running()
 	s.completedTurnSampledAt = time.Now()
 }
 

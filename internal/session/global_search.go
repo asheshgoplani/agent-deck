@@ -574,8 +574,10 @@ func NewGlobalSearchIndex(claudeDir string, config GlobalSearchSettings) (*Globa
 		idx.tier = DetectTier(totalSize)
 	}
 
-	// Start file watcher
-	watcher, err := fswatch.NewWatcher()
+	// Start file watcher. Claude appends to its .jsonl transcripts in place,
+	// which leaves the directory mtime alone: the poller must stat every
+	// entry each poll instead of skipping an unchanged directory.
+	watcher, err := fswatch.NewWatcherWithOptions(fswatch.Options{InPlaceWrites: true})
 	if err != nil {
 		cancel()
 		return nil, err

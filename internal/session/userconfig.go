@@ -3974,6 +3974,38 @@ type StatusSettings struct {
 	//	[status]
 	//	shell_running_indicator = true
 	ShellRunningIndicator bool `toml:"shell_running_indicator"`
+
+	// BackgroundShellHold is how long after its launch a run_in_background
+	// shell keeps a finished Claude turn running (A5), as a Go duration
+	// such as "3m" or "30m". Unset: DefaultBackgroundShellHold (3m). "0"
+	// restores the earlier rule: the footer's shell counter alone keeps the
+	// session running, however old the shell. Past the hold the session
+	// reads waiting even if the shell is a build that is still running.
+	//
+	//	[status]
+	//	background_shell_hold = "30m"
+	BackgroundShellHold string `toml:"background_shell_hold,omitempty"`
+}
+
+// GetBackgroundShellHold returns BackgroundShellHold. Unset means
+// DefaultBackgroundShellHold; a value that is not a duration, or is
+// negative, returns an error and DefaultBackgroundShellHold.
+func (s StatusSettings) GetBackgroundShellHold() (time.Duration, error) {
+	raw := strings.TrimSpace(s.BackgroundShellHold)
+	if raw == "" {
+		return DefaultBackgroundShellHold, nil
+	}
+	if raw == "0" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return DefaultBackgroundShellHold, fmt.Errorf("[status] background_shell_hold %q is not a duration (e.g. \"3m\", \"0\")", raw)
+	}
+	if d < 0 {
+		return DefaultBackgroundShellHold, fmt.Errorf("[status] background_shell_hold %q is negative", raw)
+	}
+	return d, nil
 }
 
 // MaintenanceSettings controls the automatic maintenance worker
@@ -4202,7 +4234,10 @@ func LoadUserConfig() (*UserConfig, error) {
 	defer userConfigCacheMu.Unlock()
 	// Every (re)load re-applies the [macapp] status_events gate, so an
 	// edited config.toml turns the session.status tap on or off live.
-	defer func() { applyStatusBusGate(userConfigCache) }()
+	defer func() {
+		applyStatusBusGate(userConfigCache)
+		applyBackgroundShellHold(userConfigCache)
+	}()
 
 	// Re-check under write lock: another goroutine may have refreshed the
 	// cache to match currentMtime between our RLock drop and Lock acquire.
