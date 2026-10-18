@@ -183,7 +183,7 @@ func liveSessionRows(ctx context.Context, profile string, instances []*session.I
 		row.Color = inst.Color
 		row.Favorite = inst.Favorite
 		row.Archived = inst.IsArchived()
-		row.ArchivedAt = inst.ArchivedAt
+		row.ArchivedAt = inst.ArchivedAtThreadSafe()
 		row.SupersededBy = inst.SupersededBy
 		row.Supersedes = inst.Supersedes
 		row.LastActivityAt = inst.DisplayLastActivityTime().Format(time.RFC3339Nano)

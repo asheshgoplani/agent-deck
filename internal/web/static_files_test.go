@@ -427,6 +427,29 @@ func TestCreateSessionDialogUsesToolSpecificReasoningEffortCatalog(t *testing.T)
 	}
 }
 
+// TestCreateSessionDialogKeepsPathSuggestionsAndDirectoryCreation guards the
+// merge of #2659 (working-directory suggestions) with #2660 (opt-in creation of
+// missing folders): the WORKING DIR field must use PathInput, still render the
+// DirectoryCreationOption, and a path edit (typed or an accepted suggestion)
+// must clear any earlier create-folder consent.
+func TestCreateSessionDialogKeepsPathSuggestionsAndDirectoryCreation(t *testing.T) {
+	data, err := embeddedStaticFiles.ReadFile("static/app/CreateSessionDialog.js")
+	if err != nil {
+		t.Fatalf("read CreateSessionDialog.js: %v", err)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"import { PathInput } from './PathInput.js'",
+		"import { DirectoryCreationOption } from './DirectoryCreationOption.js'",
+		"<${PathInput} value=${path} onInput=${e => { setPath(e.target.value); setDirectoryCreation(null) }}/>",
+		"<${DirectoryCreationOption} key=${ctx.groupPath} path=${path}",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("CreateSessionDialog.js missing %q", want)
+		}
+	}
+}
+
 // TestNoTailwindPlayCDN is the regression gate for Phase 1 / Plan 03 (PERF-01).
 // The Tailwind Play CDN runtime (vendor/tailwind.js, 397 KB) was deleted in
 // favor of a build-time compiled /static/styles.css file (~8 KB gzipped).

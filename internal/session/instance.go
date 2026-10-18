@@ -228,9 +228,15 @@ type Instance struct {
 	MultiRepoTempDir   string              `json:"multi_repo_temp_dir,omitempty"` // Temp cwd for multi-repo sessions
 	MultiRepoWorktrees []MultiRepoWorktree `json:"multi_repo_worktrees,omitempty"`
 
-	Command        string    `json:"command"`
-	Wrapper        string    `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
-	Tool           string    `json:"tool"`
+	Command string `json:"command"`
+	Wrapper string `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
+	Tool    string `json:"tool"`
+	// observedTool is the runtime DetectTool last reported (a foreground CLI
+	// or shell). It is not persisted and is
+	// not consulted by Start/Restart: detection must not change what restarts.
+	// Empty until the first status sample that reaches DetectTool.
+	observedTool string
+
 	Status         Status    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"` // When user last attached
@@ -345,14 +351,17 @@ type Instance struct {
 	PiSessionID   string `json:"pi_session_id,omitempty"`
 	PiSessionPath string `json:"pi_session_path,omitempty"`
 
-	// Hermes CLI integration. Hermes mints a new session ID each launch and does
-	// not export it (no env var / hook), so agent-deck captures it from
-	// `hermes sessions list` at restart time and resumes with --resume. Not
-	// persisted (json:"-"): it is re-captured on every restart, so it needs no
-	// lifetime beyond a single Restart() call — which also keeps it out of the
-	// JSON marshaling that could otherwise race the restart-time write.
+	// Hermes CLI integration. HermesSessionID is the native session id this
+	// entry's OWN hook events reported (issue #2582); restart resumes exactly
+	// that id with --resume. Persisted in the tool_data extras zone
+	// (hermes_session_persist.go), not through this struct's JSON.
+	// Only parent-only hook edges bind or rotate it (hermesBindsOnEvent);
+	// hermesBoundAt orders rebinds against stale samples, and
+	// hermesLastRejected rate-limits the reject lifecycle line.
 	HermesSessionID      string `json:"-"`
 	HermesHookGeneration string `json:"-"`
+	hermesBoundAt        time.Time
+	hermesLastRejected   string
 
 	// DeepSeek Harness integration. dsh exports no session ID (no env var, no
 	// hook, no `sessions list` subcommand), so agent-deck discovers it from the
@@ -643,6 +652,11 @@ type Instance struct {
 	// Use GetStatus()/SetStatus() and GetTool()/SetTool() for thread-safe access.
 	// UpdateStatus() acquires the write lock internally.
 	mu sync.RWMutex
+
+	// archiveMu guards ArchivedAt alone (IsArchived, SetArchivedAtThreadSafe).
+	// It is not mu: UpdateStatus holds mu across tool detection and metadata
+	// I/O, and the TUI checks the archive state of every row it renders.
+	archiveMu sync.RWMutex
 
 	// spawnGen supersedes stale fast-death watchers; spawnWatchers lets teardown
 	// and tests join them before restoring process-global filesystem environment.
@@ -1036,12 +1050,34 @@ func (inst *Instance) SetStatusThreadSafe(s Status) {
 	inst.mu.Unlock()
 }
 
-// GetToolThreadSafe returns the tool name with read-lock protection.
+// GetToolThreadSafe returns the configured launch tool with read-lock protection.
+// Restart and resume read this, not the observed runtime.
 func (inst *Instance) GetToolThreadSafe() string {
 	inst.mu.RLock()
 	t := inst.Tool
 	inst.mu.RUnlock()
 	return t
+}
+
+// ObservedTool returns the runtime identity last reported by DetectTool.
+// It is empty until a status sample runs, and it is not the launch identity.
+func (inst *Instance) ObservedTool() string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	return inst.observedTool
+}
+
+// DisplayToolThreadSafe is the tool to show. A foreground agent
+// wins over the configured shell so the list matches what is actually running;
+// a shell observation does not hide a configured agent, and neither value is
+// what Restart launches.
+func (inst *Instance) DisplayToolThreadSafe() string {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+	if inst.observedTool != "" && inst.observedTool != "shell" {
+		return inst.observedTool
+	}
+	return inst.Tool
 }
 
 // GetAccountThreadSafe returns the stored slot, not a resolved login identity.
@@ -5049,6 +5085,44 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 	}
 }
 
+// noteObservedRuntimeLocked records a DetectTool result without changing Tool.
+// Status patterns follow the observed agent so a foreground OpenCode pane is
+// classified with OpenCode's busy/prompt rules; they are restored to the
+// configured tool when the observation drops back to shell. Caller holds i.mu.
+// SetDetectPatterns is deliberately not used: it would pin customToolName and
+// make the next DetectTool skip command-based observation.
+func (i *Instance) noteObservedRuntimeLocked(observed string) {
+	if observed == "" {
+		return
+	}
+	if observed == i.observedTool {
+		return
+	}
+	prev := i.runtimePatternToolLocked()
+	i.observedTool = observed
+	next := i.runtimePatternToolLocked()
+	if next == prev || i.tmuxSession == nil {
+		return
+	}
+	raw := MergeToolPatterns(next)
+	if raw == nil {
+		return
+	}
+	resolved, err := tmux.CompilePatterns(raw)
+	if err != nil || resolved == nil {
+		sessionLog.Warn("pattern_compile_error", slog.String("tool", next), slog.String("error", errString(err)))
+		return
+	}
+	i.tmuxSession.SetPatterns(resolved)
+}
+
+func (i *Instance) runtimePatternToolLocked() string {
+	if i.observedTool != "" && i.observedTool != "shell" {
+		return i.observedTool
+	}
+	return i.Tool
+}
+
 // buildTmuxOptionOverrides returns tmux option overrides from user config,
 // adding remain-on-exit for sandbox sessions (needed for dead-pane detection).
 // Returns nil if no overrides apply.
@@ -7175,24 +7249,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		}
 	}
 
-	// Update tool detection dynamically (enables fork when wrapped tools start).
-	// Only built-in tool identities are rewritten here. Custom tools like
-	// "my-codex" should keep their configured identity even when tmux correctly
-	// detects the wrapped CLI as Codex.
+	// Observed runtime is separate from the configured launch identity. A shell
+	// session that later runs OpenCode in the foreground is observed as opencode
+	// for status patterns and the list icon, but Restart still launches the
+	// configured command. Writing the observation back onto Tool is what made
+	// a screen-text guess sticky and then resumed the wrong agent.
 	if detectedTool := i.tmuxSession.DetectTool(); detectedTool != "" {
-		if !isBuiltinToolName(i.Tool) && GetToolDef(i.Tool) != nil {
-			// Preserve configured custom tool names.
-		} else {
-			switch detectedTool {
-			case "claude", "gemini", "opencode", "codex":
-				i.Tool = detectedTool
-			case "shell":
-				switch i.Tool {
-				case "", "shell", "claude", "gemini", "opencode", "codex":
-					i.Tool = detectedTool
-				}
-			}
-		}
+		i.noteObservedRuntimeLocked(detectedTool)
 	}
 
 	// Update session metadata tracking only for active/waiting sessions.
@@ -7453,6 +7516,8 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	}
 
 	switch {
+	case i.Tool == "hermes":
+		i.bindHermesSessionFromHook(sessionID, hookSource, status.Event, status.Platform, status.UpdatedAt)
 	case IsClaudeCompatible(i.Tool):
 		if sessionID == i.ClaudeSessionID {
 			// Review finding on #1830: same rationale as the sibling equality
@@ -8330,9 +8395,12 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 	}
 
 	if i.Tool == "hermes" {
-		// Drop the captured resume ID so the next launch starts a new session
-		// and Restart() re-captures rather than resuming the old conversation.
+		// Drop the recorded resume ID so the next launch starts a new session;
+		// its first hook event records the new id.
 		i.HermesSessionID = ""
+		i.hermesBoundAt = time.Time{}
+		i.hermesLastRejected = ""
+		i.persistHermesSessionBinding("")
 	}
 
 	if i.Tool == "deepseek" {
@@ -10752,13 +10820,8 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	} else if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
 		command = i.buildCodexCommand(i.Command)
 	} else if i.Tool == "hermes" {
-		// Re-capture the pane's hermes session ID on EVERY restart (hermes
-		// doesn't export it). Overwriting rather than caching once self-heals a
-		// stale ID: if the previously-resumed session was pruned, the query
-		// returns the current most-recent session, or "" — in which case
-		// buildHermesCommand starts fresh instead of resuming a dead ID forever.
-		// Scoped to the working dir to avoid picking up an unrelated session.
-		i.HermesSessionID = captureHermesSessionID(i.EffectiveWorkingDir())
+		// Issue #2582: resume only the id this entry's own hooks recorded.
+		i.prepareHermesResume()
 		// Drop any stale hook state from the previous process, then seed a
 		// synthetic "waiting" baseline. Hermes fires on_session_start only at
 		// the FIRST TURN of a brand-new session (not at process launch), so
@@ -11314,9 +11377,9 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
-	// Hermes resumes via `--resume <id>`; the ID is captured from
-	// `hermes sessions list` at restart time. Always restartable (resumes when a
-	// session is found, else starts fresh) rather than only when dead/errored,
+	// Hermes resumes via `--resume <id>`, the id its own hooks recorded
+	// (#2582). Always restartable (resumes when an id is recorded, else starts
+	// fresh) rather than only when dead/errored,
 	// which left a live hermes session silently un-restartable.
 	if i.Tool == "hermes" {
 		return true

@@ -1,7 +1,7 @@
 ▶ ▾ alpha (5)
    ├─ ○ root-first claude
-   └─ ○ root-last claude
+   └─ ○ root-last claude ▾1
      └─ ○ child-last claude
     ▾ backend (2)
-     └─ ○ backend-only claude
+     └─ ○ backend-only claude ▾1
        └─ ○ backend-child claude

@@ -730,6 +730,36 @@ body[data-rail="hidden"] .rightrail { display: none; }
 }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); outline: 0; }
 
+.path-dialog-overlay { height: var(--path-viewport-height, 100%); top: var(--path-viewport-top, 0px); bottom: auto; }
+.path-dialog { max-height: calc(var(--path-viewport-height, var(--app-height, 100dvh)) - 80px); }
+.path-input { position: relative; min-width: 0; }
+.path-input input { width: 100%; box-sizing: border-box; }
+.path-suggestions {
+  margin-top: var(--sp-3); padding: var(--sp-2);
+  max-height: min(200px, calc(var(--path-viewport-height, var(--app-height, 100dvh)) / 4)); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border-hi); border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+}
+.path-suggestion {
+  display: flex; align-items: center; gap: var(--sp-4); min-height: 44px;
+  padding: var(--sp-4) var(--sp-5); border-radius: var(--radius-sm);
+  color: var(--text); font-family: var(--mono); font-size: var(--fs-12); cursor: pointer;
+}
+.path-suggestion-icon { display: flex; flex: 0 0 auto; color: var(--text-dim); }
+.path-suggestion-label {
+  flex: 1; min-width: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.path-suggestion:hover { background: var(--card); color: var(--text-hi); }
+.path-suggestion[aria-selected="true"], .path-suggestion:active {
+  background: var(--accent-soft); color: var(--text-hi);
+}
+.path-suggestion:hover .path-suggestion-icon,
+.path-suggestion[aria-selected="true"] .path-suggestion-icon { color: var(--accent); }
+.path-input:focus-within .path-suggestion[aria-selected="true"] {
+  outline: 1px solid var(--accent); outline-offset: -1px;
+}
+
 .dialog .ro-value {
   font-family: var(--mono); font-size: 12px; color: var(--text-hi);
   padding: 7px 9px; border: 1px solid var(--border); border-radius: 4px;

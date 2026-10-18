@@ -41,6 +41,60 @@ func TestIsArchived(t *testing.T) {
 	}
 }
 
+// TestArchiveState_ReadsAndWritesUnderTheInstanceLock: background commands
+// archive and unarchive a session while the TUI renders and filters it and
+// the watcher looks its conductor up. Run with -race: every read of the
+// archive state takes the instance lock its writers take.
+func TestArchiveState_ReadsAndWritesUnderTheInstanceLock(t *testing.T) {
+	inst := &Instance{ID: "s1", Title: "s1"}
+	list := []*Instance{inst}
+	stop := make(chan struct{})
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			inst.SetArchivedAtThreadSafe(time.Now().UTC())
+			inst.SetArchivedAtThreadSafe(time.Time{})
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		_ = inst.IsArchived()
+		_ = FilterInstancesByArchive(list, true)
+		_ = VisibleInstances(list)
+		_ = inst.ArchivedAtThreadSafe()
+	}
+	close(stop)
+	<-written
+	if inst.IsArchived() {
+		t.Fatal("the session is archived after the last write unarchived it")
+	}
+}
+
+// TestIsArchived_DoesNotWaitOnTheStatusLock: UpdateStatus holds the
+// instance's mu across tool detection and metadata I/O, and the TUI checks
+// the archive state of every row it renders. Reading it must not wait for
+// that lock (#1753).
+func TestIsArchived_DoesNotWaitOnTheStatusLock(t *testing.T) {
+	inst := &Instance{ID: "s1", Title: "s1", ArchivedAt: time.Now().UTC()}
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	read := make(chan bool, 1)
+	go func() { read <- inst.IsArchived() && !inst.ArchivedAtThreadSafe().IsZero() }()
+	select {
+	case archived := <-read:
+		if !archived {
+			t.Fatal("IsArchived = false for an archived session")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("IsArchived waited on the lock UpdateStatus holds")
+	}
+}
+
 func ids(insts []*Instance) []string {
 	out := make([]string, 0, len(insts))
 	for _, i := range insts {

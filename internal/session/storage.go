@@ -198,6 +198,10 @@ type InstanceData struct {
 	// Persisted via the tool_data extras zone (see deepseek_task_persist.go).
 	// Empty for every profile but headless.
 	DeepSeekTask string `json:"deepseek_task,omitempty"`
+
+	// HermesSessionID mirrors Instance.HermesSessionID (issue #2582), stored in
+	// the tool_data extras zone (hermes_session_persist.go).
+	HermesSessionID string `json:"hermes_session_id,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -1135,6 +1139,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// zone. For a one-shot the task IS the invocation, so a row that forgets it
 	// can only ever be "restarted" into dsh's usage error.
 	toolData = WriteDeepSeekTaskToToolData(toolData, inst.DeepSeekTask)
+	toolData = WriteHermesSessionIDToToolData(toolData, inst.HermesSessionID)
 	toolData = WriteCrossHarnessLineageToToolData(toolData, inst.SupersededBy, inst.Supersedes)
 
 	return &statedb.InstanceRow{
@@ -1161,7 +1166,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		WorktreeRepo:        inst.WorktreeRepoRoot,
 		WorktreeBranch:      inst.WorktreeBranch,
 		Account:             inst.Account,
-		ArchivedAt:          inst.ArchivedAt,
+		ArchivedAt:          inst.ArchivedAtThreadSafe(),
 		Pin:                 string(inst.Pin),
 		ToolData:            toolData,
 	}, nil
@@ -1315,6 +1320,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
+			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1456,6 +1462,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			LastActivityAt:            ReadLastActivityAtFromToolData(r.ToolData),
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
+			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1752,6 +1759,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IdleTimeoutSecs:              instData.IdleTimeoutSecs,
 			Favorite:                     instData.Favorite,
 			DeepSeekTask:                 instData.DeepSeekTask,
+			HermesSessionID:              instData.HermesSessionID,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,

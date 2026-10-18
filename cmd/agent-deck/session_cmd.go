@@ -699,7 +699,7 @@ func handleSessionArchive(profile string, args []string) {
 		killed = true
 	}
 
-	inst.ArchivedAt = time.Now().UTC()
+	inst.SetArchivedAtThreadSafe(time.Now().UTC())
 	if err := persistArchivedCLI(storage, inst, killed); err != nil {
 		out.Error(fmt.Sprintf("failed to persist archive: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -820,7 +820,7 @@ func handleSessionUnarchive(profile string, args []string) {
 	}
 
 	// unarchive never kills tmux, so there is no post-kill status to persist.
-	inst.ArchivedAt = time.Time{}
+	inst.SetArchivedAtThreadSafe(time.Time{})
 	if err := persistArchivedCLI(storage, inst, false); err != nil {
 		out.Error(fmt.Sprintf("failed to persist unarchive: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -857,7 +857,7 @@ func persistArchivedCLI(storage *session.Storage, inst *session.Instance, persis
 			return err
 		}
 	}
-	return db.SetArchived(inst.ID, inst.ArchivedAt)
+	return db.SetArchived(inst.ID, inst.ArchivedAtThreadSafe())
 }
 
 // drainGroupQueue starts the oldest queued instance in groupPath when a slot

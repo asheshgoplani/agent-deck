@@ -375,7 +375,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		TmuxSocketName:     inst.TmuxSocketName,
 		CreatedAt:          inst.CreatedAt,
 		LastAccessedAt:     inst.LastAccessedAt,
-		ArchivedAt:         inst.ArchivedAt,
+		ArchivedAt:         inst.ArchivedAtThreadSafe(),
 		IsConductor:        inst.IsConductor,
 		ClaudeSessionID:    inst.ClaudeSessionID,
 		GeminiSessionID:    inst.GeminiSessionID,
@@ -418,6 +418,12 @@ type rawHookStatus struct {
 	CodexCompletedGeneration string `json:"codex_completed_generation"`
 	CodexStartedSessionID    string `json:"codex_started_session_id"`
 	CodexCompletedSessionID  string `json:"codex_completed_session_id"`
+	// Cwd and Platform mirror the session-package readers. Platform must
+	// survive this path: refreshStatuses feeds every instance through
+	// UpdateHookStatus, and a Hermes delegate (platform "subagent") event
+	// must be recognised there or it rebinds the entry (#2582).
+	Cwd      string `json:"cwd"`
+	Platform string `json:"platform"`
 }
 
 func defaultLoadHookStatuses() map[string]*session.HookStatus {
@@ -487,6 +493,8 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 			CodexCompletedGeneration: parsed.CodexCompletedGeneration,
 			CodexStartedSessionID:    parsed.CodexStartedSessionID,
 			CodexCompletedSessionID:  parsed.CodexCompletedSessionID,
+			Cwd:                      parsed.Cwd,
+			Platform:                 parsed.Platform,
 		}
 	}
 
