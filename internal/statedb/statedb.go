@@ -1628,6 +1628,13 @@ func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt tim
 	return s.writeHarnessSessionBinding(id, sessionID, "gemini", detectedAt)
 }
 
+// WriteHermesSessionBinding records the Hermes session id an entry's own hook
+// events reported (issue #2582), so restart resumes that id rather than the
+// newest conversation in a shared workspace. Empty sessionID clears it.
+func (s *StateDB) WriteHermesSessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return s.writeHarnessSessionBinding(id, sessionID, "hermes", detectedAt)
+}
+
 // WriteGenericSessionBinding persists a custom-tool conversation id
 // (tools configured via [tools.*] with resume_flag) into tool_data.
 // Mirrors WriteClaudeSessionBinding's json_set / withBusyRetry shape so a

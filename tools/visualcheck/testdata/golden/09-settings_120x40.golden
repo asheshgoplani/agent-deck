@@ -7,8 +7,9 @@
                            │    >Dark   Light   System                                      │
                            │                                                                │
                            │  DEFAULT TOOL                                                  │
-                           │     Claude   Gemini   OpenCode   Codex   Pi   Copilot   Crush  │
-                           │  Muse   Cursor   Hermes   DeepSeek   Oh My Pi  >None           │
+                           │     Claude   Gemini   OpenCode   OpenCode 2   Codex   Pi       │
+                           │  Copilot   Crush   Muse   Cursor   Hermes   DeepSeek   Oh My   │
+                           │  Pi  >None                                                     │
                            │    Pre-selected when creating new sessions                     │
                            │                                                                │
                            │  CLAUDE                                                        │
@@ -32,7 +33,6 @@
                            │                                                                │
                            │  LOGS                                                          │
                            │    Max file size: [10] MB    Lines to keep: [10000]            │
-                           │    [x] Remove orphan logs                                      │
                            │    ▼ more below                                                │
                            │  j/k Navigate  Space Toggle                                    │
                            │  h/l Adjust  Enter Edit  Esc Close                             │

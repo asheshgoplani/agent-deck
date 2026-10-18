@@ -28,6 +28,53 @@ type opencodeConfig struct {
 	MCP map[string]opencodeMCPServer `json:"mcp,omitempty"`
 }
 
+// UnmarshalJSON reads both legacy mcp maps and native V2 mcp.servers maps.
+func (c *opencodeConfig) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if servers, ok := raw.MCP["servers"]; ok {
+		var entry map[string]json.RawMessage
+		if err := json.Unmarshal(servers, &entry); err != nil {
+			return err
+		}
+		if _, legacyServer := entry["type"]; !legacyServer {
+			return json.Unmarshal(servers, &c.MCP)
+		}
+	}
+	payload, err := json.Marshal(raw.MCP)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(payload, &c.MCP)
+}
+
+// setOpenCodeMCPServers preserves native V2 MCP options such as timeouts.
+func setOpenCodeMCPServers(config map[string]interface{}, servers map[string]opencodeMCPServer, v2 bool) {
+	mcp, _ := config["mcp"].(map[string]interface{})
+	if _, native := mcp["servers"]; v2 || native {
+		if mcp == nil {
+			mcp = make(map[string]interface{})
+		}
+		if v2 && !native {
+			// A catalog rewrite replaces the legacy direct server map too;
+			// leaving those entries alongside servers is not native V2 config.
+			for name, value := range mcp {
+				if server, ok := value.(map[string]interface{}); ok && server["type"] != nil {
+					delete(mcp, name)
+				}
+			}
+		}
+		mcp["servers"] = servers
+		config["mcp"] = mcp
+		return
+	}
+	config["mcp"] = servers
+}
+
 // opencodeMCPConfigDirOverride allows tests to override ~/.config/opencode.
 var opencodeMCPConfigDirOverride string
 
@@ -35,6 +82,9 @@ var opencodeMCPConfigDirOverride string
 func GetOpenCodeConfigDir() string {
 	if opencodeMCPConfigDirOverride != "" {
 		return opencodeMCPConfigDirOverride
+	}
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "opencode")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -224,7 +274,7 @@ func buildOpenCodeMCPServers(enabledNames []string) map[string]opencodeMCPServer
 
 // WriteOpenCodeProjectMCP writes catalog MCPs to <project>/opencode.json.
 // OpenCode's local config uses {"mcp": {"name": {"type":"local","command":[...]}}} format.
-func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string) error {
+func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string, nativeV2 ...bool) error {
 	if !GetManageMCPJson() {
 		mcpCatLog.Debug("opencode_mcp_json_management_disabled", "path", logging.SanitizeValue(projectPath))
 		return nil
@@ -255,7 +305,7 @@ func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string) error {
 		return fmt.Errorf("read opencode project mcp %s: %w", mcpFile, readErr)
 	}
 
-	rawConfig["mcp"] = buildOpenCodeMCPServers(enabledNames)
+	setOpenCodeMCPServers(rawConfig, buildOpenCodeMCPServers(enabledNames), len(nativeV2) > 0 && nativeV2[0])
 
 	newData, err := json.MarshalIndent(rawConfig, "", "  ")
 	if err != nil {
@@ -271,7 +321,7 @@ func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string) error {
 
 // WriteOpenCodeGlobalMCP writes catalog MCPs to ~/.config/opencode/opencode.json.
 // Preserves other JSON keys already present in the file.
-func WriteOpenCodeGlobalMCP(enabledNames []string) error {
+func WriteOpenCodeGlobalMCP(enabledNames []string, nativeV2 ...bool) error {
 	if !GetManageMCPJson() {
 		mcpCatLog.Debug("opencode_mcp_json_management_disabled", "scope", "global")
 		return nil
@@ -297,7 +347,7 @@ func WriteOpenCodeGlobalMCP(enabledNames []string) error {
 		return fmt.Errorf("read opencode global mcp %s: %w", configFile, readErr)
 	}
 
-	rawConfig["mcp"] = buildOpenCodeMCPServers(enabledNames)
+	setOpenCodeMCPServers(rawConfig, buildOpenCodeMCPServers(enabledNames), len(nativeV2) > 0 && nativeV2[0])
 
 	newData, err := json.MarshalIndent(rawConfig, "", "  ")
 	if err != nil {

@@ -65,6 +65,10 @@ type tmuxPTYBridge struct {
 	done      chan struct{}
 }
 
+// attachTmuxPTYBridge is the bridge constructor the websocket handler uses.
+// Tests replace it to observe which tmux target a terminal attaches to.
+var attachTmuxPTYBridge = newTmuxPTYBridge
+
 func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
 	if tmuxSession == "" {
 		return nil, fmt.Errorf("tmux session name is required")

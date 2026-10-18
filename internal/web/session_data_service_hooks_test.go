@@ -3,6 +3,7 @@ package web
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -80,5 +81,52 @@ func TestSessionDataServiceRefreshStatusesAppliesHookData(t *testing.T) {
 	}
 	if !fresh {
 		t.Fatalf("expected hook status to be fresh")
+	}
+}
+
+// Issue #2582 / review blocker on #2696: the web dashboard reads hook files
+// itself and feeds them through UpdateHookStatus. A Hermes delegate_task child
+// writes its own session id with platform "subagent"; if this reader drops
+// platform, the delegate's pre_llm_call rebinds the entry to the child.
+func TestRefreshStatusesHermesSubagentHookKeepsParentBinding(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	hooksDir := session.GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks dir: %v", err)
+	}
+
+	const parentID = "hermes-parent-session"
+	const delegateID = "hermes-delegate-session"
+
+	inst := &session.Instance{ID: "hermes-web-1", Tool: "hermes"}
+	inst.UpdateHookStatus(&session.HookStatus{
+		Status:    "running",
+		SessionID: parentID,
+		Event:     "pre_llm_call",
+		Platform:  "cli",
+		UpdatedAt: time.Now().Add(-time.Minute),
+	})
+	if inst.HermesSessionID != parentID {
+		t.Fatalf("setup: parent turn edge must bind, got %q", inst.HermesSessionID)
+	}
+
+	body := `{"status":"running","session_id":"` + delegateID + `","event":"pre_llm_call","ts":` +
+		strconv.FormatInt(time.Now().Unix(), 10) + `,"cwd":"/work","platform":"subagent"}`
+	if err := os.WriteFile(filepath.Join(hooksDir, inst.ID+".json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write hook file: %v", err)
+	}
+
+	statuses := defaultLoadHookStatuses()
+	if hs := statuses[inst.ID]; hs == nil || hs.Platform != "subagent" || hs.Cwd != "/work" {
+		t.Fatalf("web hook reader must carry platform and cwd, got %+v", hs)
+	}
+
+	svc := &SessionDataService{loadHookStatuses: defaultLoadHookStatuses}
+	svc.refreshStatuses([]*session.Instance{inst})
+
+	if inst.HermesSessionID != parentID {
+		t.Fatalf("delegate hook via web refresh rebound the entry: got %q, want %q", inst.HermesSessionID, parentID)
 	}
 }

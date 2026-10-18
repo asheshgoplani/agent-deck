@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/tmuxutf8"
 )
 
@@ -200,6 +201,7 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 	// boundaries.
 	cmd := exec.Command("tmux", tmuxArgs(socketName, args...)...)
 	cmd.WaitDelay = tmuxSubprocessWaitDelay
+	cmd.Env = childenv.WithoutClaudeJobDir() // #2683
 	return cmd
 }
 
@@ -211,6 +213,7 @@ func tmuxExecContext(ctx context.Context, socketName string, args ...string) *ex
 	assertTmuxSpawnIsolated(socketName, args)
 	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
 	cmd.WaitDelay = tmuxSubprocessWaitDelay
+	cmd.Env = childenv.WithoutClaudeJobDir() // #2683
 	return cmd
 }
 

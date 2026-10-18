@@ -6,7 +6,7 @@ so your running agents can act on them automatically.
 
 Commands:
   create <type> --name <name>   Create a new watcher (types: webhook, ntfy, github, slack)
-  start <name>                  Mark a watcher as running (picked up by TUI engine)
+  start <name>                  Mark a watcher as running (run by the profile's watcher engine)
   stop <name>                   Mark a watcher as stopped
   list [--json]                 List all watchers with status and event rate
   status <name> [--json]        Show detailed watcher info including recent events

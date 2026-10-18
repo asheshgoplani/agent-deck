@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -144,4 +145,69 @@ func TestCreateHandler_SkipsAutoAttachWhenSetupWarningPending(t *testing.T) {
 	if !strings.Contains(src, `h.attachOnCreate && msg.setupWarning == ""`) {
 		t.Fatal("auto-attach must be guarded by msg.setupWarning == \"\" so the warning stays visible")
 	}
+}
+
+// #2637: a failed setup script's warning must include the tail of its output,
+// not just "exit status 1", while staying bounded and sanitized.
+func TestFormatSetupWarning_IncludesOutputTail(t *testing.T) {
+	const prefix = "worktree setup script failed: "
+	exit1 := errors.New("exit status 1")
+
+	t.Run("tail of output is shown after the error", func(t *testing.T) {
+		out := "Running worktree setup script...\nstep 1\nERROR: npm install failed\nWorktree setup script failed after 2s: exit status 1\n"
+		got := formatSetupWarning(withSetupOutputTail(exit1, out))
+		want := prefix + "exit status 1 — step 1 | ERROR: npm install failed"
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ANSI and carriage-return progress lines are cleaned", func(t *testing.T) {
+		out := "\x1b[32mfetching\x1b[0m 10%\rfetching 100%\r\n\n   \n\x1b[31mboom\x1b[0m\n"
+		got := formatSetupWarning(withSetupOutputTail(exit1, out))
+		want := prefix + "exit status 1 — fetching 10% | fetching 100% | boom"
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("only the last lines are kept", func(t *testing.T) {
+		out := "l1\nl2\nl3\nl4\nl5\nl6\nl7\n"
+		got := formatSetupWarning(withSetupOutputTail(exit1, out))
+		want := prefix + "exit status 1 — l3 | l4 | l5 | l6 | l7"
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("long tail is cut from the front so the last line survives", func(t *testing.T) {
+		out := strings.Repeat("y", setupWarningMaxLen*2) + "\nFINAL LINE\n"
+		got := formatSetupWarning(withSetupOutputTail(exit1, out))
+		if !strings.HasSuffix(got, "FINAL LINE") {
+			t.Fatalf("last line lost: %q", got)
+		}
+		if !strings.Contains(got, "exit status 1 — …") {
+			t.Fatalf("want error kept and tail front-truncated, got %q", got)
+		}
+		if body := []rune(strings.TrimPrefix(got, prefix)); len(body) > setupWarningMaxLen+1 {
+			t.Fatalf("body rune length = %d, exceeds cap %d", len(body), setupWarningMaxLen)
+		}
+	})
+
+	t.Run("not-approved skip keeps its own message and no tail", func(t *testing.T) {
+		skipped := fmt.Errorf("%w: run agent-deck worktree approve", git.ErrWorktreeScriptNotApproved)
+		got := formatSetupWarning(withSetupOutputTail(skipped, "some output\n"))
+		if strings.HasPrefix(got, prefix) || strings.Contains(got, "some output") {
+			t.Fatalf("got %q, want the plain not-approved message", got)
+		}
+		if !errors.Is(withSetupOutputTail(skipped, "x\n"), git.ErrWorktreeScriptNotApproved) {
+			t.Fatal("wrapping must keep errors.Is working")
+		}
+	})
+
+	t.Run("no output leaves the error unchanged", func(t *testing.T) {
+		if got := withSetupOutputTail(exit1, "Running worktree setup script...\n\n"); got != exit1 {
+			t.Fatalf("got %v, want the original error", got)
+		}
+	})
 }

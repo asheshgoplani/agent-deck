@@ -6,7 +6,7 @@ package session
 // functions (issue #1258):
 //   - detectTool()        in cmd/agent-deck/main.go  — the strings.Contains
 //     heuristic dispatcher (command string -> tool name).
-//   - isBuiltinToolName()  in internal/session/userconfig.go — the strict
+//   - Registry.IsBuiltin() in internal/session/toolregistry.go — the strict
 //     allowlist used to stop custom [tools.<name>] entries
 //     from shadowing a built-in.
 //

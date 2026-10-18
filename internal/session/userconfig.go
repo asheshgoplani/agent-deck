@@ -796,6 +796,7 @@ func normalizeUIHiddenTools(ui *UISettings, customTools map[string]ToolDef) {
 		return
 	}
 	known := make(map[string]bool, len(builtinTools())+len(customTools))
+	known["opencode2"] = true
 	for _, bt := range builtinTools() {
 		known[strings.ToLower(strings.TrimSpace(bt.Name))] = true
 	}
@@ -4681,12 +4682,9 @@ func GetToolCommand(toolName string) string {
 	return toolName
 }
 
-func isBuiltinToolName(toolName string) bool {
-	return currentRegistry().IsBuiltin(toolName)
-}
-
 // GetToolIcon returns the icon for a tool (custom or built-in)
 func GetToolIcon(toolName string) string {
+	toolName = CanonicalToolName(toolName)
 	// Check custom tools first
 	if def := GetToolDef(toolName); def != nil && def.Icon != "" {
 		return def.Icon

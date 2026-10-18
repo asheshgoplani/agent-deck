@@ -252,6 +252,7 @@ func (h *HelpOverlay) View() string {
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
 	promptSessionKey := h.key(hotkeyPromptSession, "o")
+	queueMessageKey := h.key(hotkeyQueueMessage, "Q")
 	copyKey := h.key(hotkeyCopyOutput, "c")
 	copyPaneKey := h.key(hotkeyCopyPane, "V")
 	yoloKey := h.key(hotkeyToggleYolo, "y")
@@ -361,7 +362,8 @@ func (h *HelpOverlay) View() string {
 				{"< / >", "Shrink / grow preview pane by 5% (drag divider with mouse; vertical in below-orientation)"},
 				{unreadKey, "Mark unread"},
 				{quickApproveKey, "Quick approve (send '1' to Claude)"},
-				{promptSessionKey, "Prompt session (send a one-line prompt without attaching)"},
+				{promptSessionKey, "Send a message (a busy Claude session queues it; Ctrl+X E opens editor)"},
+				{queueMessageKey, "Queue message for after the current turn"},
 				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
 				{reorderDownKeys, "Reorder down (auto-promote at edge)"},
 				{indentKeys, "Indent / outdent (in group)"},

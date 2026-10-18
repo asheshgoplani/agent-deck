@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -68,6 +69,73 @@ const (
 // longer cap (a weekly one), this clears early and reports the session as
 // unremarkable — the pre-existing behaviour, not a new false positive.
 const usageLimitMaxAge = 5 * time.Hour
+
+// Account-blocked detection (limit-guard bug 2, 2026-10-18).
+//
+// A second structured rejection shares this detector's shape but means something
+// else entirely: the account itself is refused, not out of quota.
+//
+//	{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":403,
+//	 "error":"oauth_org_not_allowed", ... "text":"Your organization has disabled
+//	 Claude subscription access for Claude Code · ..."}
+//
+// The error kind is the key; 403 is not required because the status is the
+// generic one for any refused request and the kind alone is unambiguous. No
+// window reset clears it, so it is believed for accountBlockedMaxAge rather than
+// usageLimitMaxAge: a session that sends nothing further after the block is
+// still blocked hours later, and reporting it healthy at 5h is the silent wait
+// this exists to stop.
+const (
+	accountBlockedErrorKind = "oauth_org_not_allowed"
+	accountBlockedMaxAge    = 24 * time.Hour
+	// accountBlockedDetail is the fixed substate_detail for account-blocked. The
+	// banner's own text is advice for a human at the composer ("Use an Anthropic
+	// API key instead ..."), not the reason, so it is not passed through.
+	accountBlockedDetail = "organization disabled Claude subscription access"
+)
+
+// limitDetailMaxRunes caps a detail taken from rejection prose, so an
+// unexpectedly long banner cannot bloat every list --json row.
+const limitDetailMaxRunes = 120
+
+// Per-model caps (limit-guard bug 4). A 429 rate_limit whose text NAMES a model
+// is that model's own cap, which switching model fixes while the account may
+// still have room. Field wordings:
+//
+//	"You've reached your Fable limit. Run /usage-credits to continue ..."
+//	"You're out of usage credits. Run /usage-credits to keep using Fable 5.1 or /model ..."
+//
+// Prose is read here only to SUB-classify a record the structured fields already
+// classified as a rate_limit rejection; it never forms a verdict on its own.
+var (
+	modelLimitKeepUsingRe = regexp.MustCompile(`keep using (.+?) or /model`)
+	modelLimitReachedRe   = regexp.MustCompile(`reached your (.+?) limit`)
+	// usageLimitLeadRe strips the lead-in from a plan-window banner, leaving the
+	// window and its reset ("weekly limit · resets 12pm (Europe/Berlin)").
+	usageLimitLeadRe = regexp.MustCompile(`^You(?:'|’)ve (?:hit|reached) your `)
+)
+
+// planWindowWords are the words that make "reached your X limit" a PLAN window
+// rather than a model ("You've reached your weekly limit").
+var planWindowWords = []string{"usage", "session", "weekly", "daily", "monthly", "hour", "plan", "rate", "credit", "spend"}
+
+// limitVerdict is what the transcript scan concluded about the latest
+// main-conversation assistant turn: Kind is SubstateNone when it was not a
+// believed limit/block rejection, and Detail is the substate_detail for Kind.
+type limitVerdict struct {
+	Kind   Substate
+	Detail string
+}
+
+// isTranscriptLimitSubstate reports whether s is one of the substates formed
+// from the transcript by this detector rather than from the pane.
+func isTranscriptLimitSubstate(s Substate) bool {
+	switch s {
+	case SubstateUsageLimit, SubstateModelLimit, SubstateAccountBlocked:
+		return true
+	}
+	return false
+}
 
 // usageLimitScanInterval throttles the transcript read. Substate is computed per
 // session per status poll, so an unbounded read would put file I/O on a path
@@ -144,7 +212,95 @@ type transcriptRecord struct {
 	Timestamp         string `json:"timestamp"`
 	Message           struct {
 		Role string `json:"role"`
+		// Content stays raw: user records carry a string here and assistant
+		// records a block array, and decoding it eagerly would make one of
+		// the two shapes fail the whole record. Only a rejection's is read.
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
+}
+
+// text returns the concatenated text blocks of the record's message content,
+// or "" when the content is absent or not a block array.
+func (r transcriptRecord) text() string {
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if len(r.Message.Content) == 0 || json.Unmarshal(r.Message.Content, &blocks) != nil {
+		var plain string
+		if json.Unmarshal(r.Message.Content, &plain) == nil {
+			return strings.TrimSpace(plain)
+		}
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, b := range blocks {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			parts = append(parts, strings.TrimSpace(b.Text))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// isAccountBlocked reports whether this record is the org-disabled refusal.
+func (r transcriptRecord) isAccountBlocked() bool {
+	return r.IsAPIErrorMessage &&
+		strings.EqualFold(strings.TrimSpace(r.Error), accountBlockedErrorKind)
+}
+
+// limitVerdict classifies an assistant record, ignoring freshness: account-
+// blocked, model-limit or usage-limit with its detail, or SubstateNone.
+func (r transcriptRecord) limitVerdict() limitVerdict {
+	if r.isAccountBlocked() {
+		return limitVerdict{Kind: SubstateAccountBlocked, Detail: accountBlockedDetail}
+	}
+	if !r.isRateLimitRejection() {
+		return limitVerdict{}
+	}
+	text := r.text()
+	if model := modelNamedInLimitText(text); model != "" {
+		return limitVerdict{Kind: SubstateModelLimit, Detail: model}
+	}
+	return limitVerdict{Kind: SubstateUsageLimit, Detail: usageLimitDetail(text)}
+}
+
+// modelNamedInLimitText returns the model a rate_limit rejection names as the
+// exhausted cap, or "" when it names a plan window instead.
+func modelNamedInLimitText(text string) string {
+	if m := modelLimitKeepUsingRe.FindStringSubmatch(text); m != nil {
+		if model := strings.TrimSpace(m[1]); model != "" {
+			return truncateLimitDetail(model)
+		}
+	}
+	m := modelLimitReachedRe.FindStringSubmatch(text)
+	if m == nil {
+		return ""
+	}
+	model := strings.TrimSpace(m[1])
+	lower := strings.ToLower(model)
+	for _, w := range planWindowWords {
+		if strings.Contains(lower, w) {
+			return ""
+		}
+	}
+	return truncateLimitDetail(model)
+}
+
+// usageLimitDetail returns the plan window named by a rate_limit rejection
+// ("weekly limit · resets 12pm (Europe/Berlin)"), or the trimmed text when the
+// lead-in is not the known one.
+func usageLimitDetail(text string) string {
+	if loc := usageLimitLeadRe.FindStringIndex(text); loc != nil {
+		text = text[loc[1]:]
+	}
+	return truncateLimitDetail(strings.TrimSpace(text))
+}
+
+func truncateLimitDetail(s string) string {
+	if r := []rune(s); len(r) > limitDetailMaxRunes {
+		return string(r[:limitDetailMaxRunes]) + "…"
+	}
+	return s
 }
 
 // isRateLimitRejection reports whether this record is a plan-quota rejection.
@@ -183,29 +339,61 @@ func (r transcriptRecord) fresh(now time.Time, maxAge time.Duration) bool {
 	return age >= 0 && age <= maxAge
 }
 
+// after reports whether the record's timestamp is strictly after t. A zero t
+// admits every record; an unparseable timestamp is never after a set t.
+func (r transcriptRecord) after(t time.Time) bool {
+	if t.IsZero() {
+		return true
+	}
+	ts, err := time.Parse(time.RFC3339, strings.TrimSpace(r.Timestamp))
+	if err != nil {
+		return false
+	}
+	return ts.After(t)
+}
+
 // latestAssistantTurnIsRateLimited reports whether the MOST RECENT
-// main-conversation assistant turn at path is a quota rejection recent enough to
-// still be believed, plus whether a verdict could be formed at all.
+// main-conversation assistant turn at path is a believed limit or block
+// rejection of any kind, plus whether a verdict could be formed at all. It is
+// latestAssistantTurnLimit with the kind collapsed to a bool.
+func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool, ok bool) {
+	v, ok := latestAssistantTurnLimit(path, now)
+	return v.Kind != SubstateNone, ok
+}
+
+// latestAssistantTurnLimit reports what the MOST RECENT main-conversation
+// assistant turn at path says about a limit — usage-limit, model-limit or
+// account-blocked with its detail, each only while recent enough to still be
+// believed — plus whether a verdict could be formed at all.
 //
 // ok is false when no assistant turn was found within the escalation bound.
 // Callers must treat that as "unknown", never as "fine" — silence being mistaken
 // for health is the failure this whole detector exists to stop.
-func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool, ok bool) {
+func latestAssistantTurnLimit(path string, now time.Time) (verdict limitVerdict, ok bool) {
+	return latestAssistantTurnLimitSince(path, now, time.Time{})
+}
+
+// latestAssistantTurnLimitSince is latestAssistantTurnLimit that also ignores
+// a rejection stamped at or before resetAt (the session's last account/model
+// switch, limit_verdict_reset.go): such a record is about the old account or
+// model, so it yields no verdict (ok true) and the next real turn decides. A
+// zero resetAt ignores nothing.
+func latestAssistantTurnLimitSince(path string, now, resetAt time.Time) (verdict limitVerdict, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return false, false
+		return limitVerdict{}, false
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return false, false
+		return limitVerdict{}, false
 	}
 
 	if info.Size() == 0 {
 		// Nothing to read, and nothing to allocate: an empty transcript used to cost
 		// a full chunk buffer on every eligible scan.
-		return false, false
+		return limitVerdict{}, false
 	}
 
 	chunk := usageLimitScanChunkBytes
@@ -230,9 +418,9 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 	// documents /compact producing multi-megabyte single-line records.
 	lineEnd := info.Size()
 
-	consider := func(start, end int64) (bool, bool, bool) {
+	consider := func(start, end int64) (limitVerdict, bool, bool) {
 		if end <= start {
-			return false, false, false
+			return limitVerdict{}, false, false
 		}
 		if end-start > usageLimitMaxLineBytes {
 			if usageLimitScanObserver != nil {
@@ -241,31 +429,41 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 			// A line this large is a compaction/file-history snapshot, not a turn
 			// this detector can act on. Skipped WITHOUT reading it: the whole point
 			// of the bound is not to pull megabytes onto a status path.
-			return false, false, false
+			return limitVerdict{}, false, false
 		}
 		if usageLimitScanObserver != nil {
 			usageLimitScanObserver(usageLimitScanRead{Kind: "line", Start: start, End: end, Bytes: end - start})
 		}
 		line := make([]byte, end-start)
 		if _, err := f.ReadAt(line, start); err != nil && err != io.EOF {
-			return false, false, false
+			return limitVerdict{}, false, false
 		}
 		trimmed := strings.TrimSpace(string(line))
 		if trimmed == "" {
-			return false, false, false
+			return limitVerdict{}, false, false
 		}
 		var rec transcriptRecord
 		if err := json.Unmarshal([]byte(trimmed), &rec); err != nil {
-			return false, false, false
+			return limitVerdict{}, false, false
 		}
 		if !rec.isAssistantTurn() {
-			return false, false, false
+			return limitVerdict{}, false, false
 		}
-		if !rec.isRateLimitRejection() {
-			return false, true, true
+		v := rec.limitVerdict()
+		maxAge := usageLimitMaxAge
+		if v.Kind == SubstateAccountBlocked {
+			maxAge = accountBlockedMaxAge
 		}
-		// A rejection older than the window is no longer evidence about now.
-		return rec.fresh(now, usageLimitMaxAge), true, true
+		// A rejection older than its bound is no longer evidence about now.
+		if v.Kind != SubstateNone && !rec.fresh(now, maxAge) {
+			v = limitVerdict{}
+		}
+		// A rejection from before the last account/model switch is not about
+		// the account or model the session runs on now.
+		if v.Kind != SubstateNone && !rec.after(resetAt) {
+			v = limitVerdict{}
+		}
+		return v, true, true
 	}
 
 	for end := info.Size(); end > 0; {
@@ -278,25 +476,25 @@ func latestAssistantTurnIsRateLimited(path string, now time.Time) (limited bool,
 			usageLimitScanObserver(usageLimitScanRead{Kind: "chunk", Start: start, End: end, Bytes: end - start})
 		}
 		if _, err := f.ReadAt(buf[:n], start); err != nil && err != io.EOF {
-			return false, false
+			return limitVerdict{}, false
 		}
 		for i := n - 1; i >= 0; i-- {
 			if buf[i] != '\n' {
 				continue
 			}
-			if lim, o, decided := consider(start+i+1, lineEnd); decided {
-				return lim, o
+			if v, o, decided := consider(start+i+1, lineEnd); decided {
+				return v, o
 			}
 			lineEnd = start + i
 		}
 		end = start
 	}
 	// The first line of the file has no preceding newline to close it.
-	if lim, o, decided := consider(0, lineEnd); decided {
-		return lim, o
+	if v, o, decided := consider(0, lineEnd); decided {
+		return v, o
 	}
 	// The whole file was read and holds no main-conversation assistant turn.
-	return false, false
+	return limitVerdict{}, false
 }
 
 // usageLimitPublishable reports whether a finished scan may write its result to
@@ -330,7 +528,7 @@ func usageLimitPublishable(currentGen, scanGen uint64, liveSessionID, scanSessio
 //     in between.
 //
 // A mismatch on any leg means "no verdict for this caller", never "not limited".
-func (i *Instance) usageLimitVerdictFor(scanSessionID string) bool {
+func (i *Instance) usageLimitVerdictFor(scanSessionID string) limitVerdict {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.usageLimitVerdictForLocked(scanSessionID)
@@ -339,14 +537,22 @@ func (i *Instance) usageLimitVerdictFor(scanSessionID string) bool {
 // usageLimitVerdictForLocked is usageLimitVerdictFor for callers already holding
 // i.mu, so the publish path can apply the identical invariant instead of an
 // open-coded approximation of it.
-func (i *Instance) usageLimitVerdictForLocked(scanSessionID string) bool {
+func (i *Instance) usageLimitVerdictForLocked(scanSessionID string) limitVerdict {
 	if strings.TrimSpace(i.ClaudeSessionID) != scanSessionID {
-		return false
+		return limitVerdict{}
 	}
 	if i.usageLimitSessionID != scanSessionID {
-		return false
+		return limitVerdict{}
 	}
-	return i.usageLimitedCached
+	if !i.usageLimitedCached {
+		return limitVerdict{}
+	}
+	if i.usageLimitVerdict.Kind == SubstateNone {
+		// usageLimitedCached is the authoritative "limited" bit; a memo set
+		// without a kind is the original plan-window verdict.
+		return limitVerdict{Kind: SubstateUsageLimit}
+	}
+	return i.usageLimitVerdict
 }
 
 // transcriptBelongsToSession reports whether a resolved transcript path is the
@@ -364,19 +570,36 @@ func transcriptBelongsToSession(path, sessionID string) bool {
 	return filepath.Base(path) == sessionID+".jsonl"
 }
 
+// TranscriptLimit returns the transcript-derived limit verdict alone
+// (usage-limit, model-limit, account-blocked, or SubstateNone) with its
+// detail. Unlike Substate it never captures the pane and persists nothing,
+// so a read-only report (`agent-deck limits`) can call it for every session.
+func (i *Instance) TranscriptLimit() (Substate, string) {
+	v := i.transcriptLimit()
+	return v.Kind, v.Detail
+}
+
 // usageLimited reports whether this instance's latest assistant turn was a
-// recent quota rejection, throttled to usageLimitScanInterval.
+// recent limit or block rejection of any kind, throttled to
+// usageLimitScanInterval.
 func (i *Instance) usageLimited() bool {
+	return i.transcriptLimit().Kind != SubstateNone
+}
+
+// transcriptLimit reports what this instance's latest assistant turn says about
+// a limit (usage-limit, model-limit, account-blocked, or SubstateNone) with its
+// detail, throttled to usageLimitScanInterval.
+func (i *Instance) transcriptLimit() limitVerdict {
 	// Claude-compatible tools only: the transcript shape is Claude's.
 	if !IsClaudeCompatible(i.Tool) {
-		return false
+		return limitVerdict{}
 	}
 	// The transcript is a local file. An SSH-backed session keeps its
 	// conversation on the remote host and stores a remote ProjectPath, so there
 	// is no local path to resolve — bail before doing any path work rather than
 	// resolving a meaningless local path and failing to open it forever.
 	if i.IsSSH() {
-		return false
+		return limitVerdict{}
 	}
 
 	// Read the session id, check the throttle and claim the window in ONE critical
@@ -392,7 +615,7 @@ func (i *Instance) usageLimited() bool {
 	sessionID := strings.TrimSpace(i.ClaudeSessionID)
 	if sessionID == "" {
 		i.mu.Unlock()
-		return false
+		return limitVerdict{}
 	}
 	// The memo carries the id it was formed for. A session normally rebinds
 	// (A→B) on the same Instance, and an identity-less memo would hand B the
@@ -402,10 +625,11 @@ func (i *Instance) usageLimited() bool {
 	if i.usageLimitSessionID != sessionID {
 		i.usageLimitSessionID = sessionID
 		i.usageLimitedCached = false
+		i.usageLimitVerdict = limitVerdict{}
 		i.lastUsageLimitScanAt = time.Time{}
 	}
 	if !i.lastUsageLimitScanAt.IsZero() && time.Since(i.lastUsageLimitScanAt) < usageLimitScanInterval {
-		cached := i.usageLimitedCached
+		cached := i.usageLimitVerdictForLocked(sessionID)
 		i.mu.Unlock()
 		return cached
 	}
@@ -416,6 +640,7 @@ func (i *Instance) usageLimited() bool {
 	i.lastUsageLimitScanAt = time.Now()
 	i.usageLimitScanGen++
 	gen := i.usageLimitScanGen
+	resetAt := i.LimitVerdictResetAt
 	i.mu.Unlock()
 
 	path := locateHandoffTranscript(i)
@@ -431,7 +656,7 @@ func (i *Instance) usageLimited() bool {
 		return i.usageLimitVerdictFor(sessionID)
 	}
 
-	limited, ok := latestAssistantTurnIsRateLimited(path, time.Now())
+	verdict, ok := latestAssistantTurnLimitSince(path, time.Now(), resetAt)
 	if !ok {
 		// No formed verdict (unreadable, or no assistant turn in the file): leave
 		// the previous answer standing rather than silently reporting "not
@@ -452,18 +677,19 @@ func (i *Instance) usageLimited() bool {
 	case live != sessionID:
 		// Rebound while this read was in flight. There is no verdict for the new
 		// session, and inheriting one is the bug.
-		limited = false
+		verdict = limitVerdict{}
 	case usageLimitPublishable(i.usageLimitScanGen, gen, live, sessionID):
-		i.usageLimitedCached = limited
+		i.usageLimitedCached = verdict.Kind != SubstateNone
+		i.usageLimitVerdict = verdict
 	default:
 		// A newer claim for the same live session landed while this read was in
 		// flight, so this result is stale. Report the memo through the SAME
 		// three-way invariant: reading usageLimitedCached directly here was
 		// identity-blind under A→B→A, where live and scan both read "A" while the
 		// memo holds B's verdict.
-		limited = i.usageLimitVerdictForLocked(sessionID)
+		verdict = i.usageLimitVerdictForLocked(sessionID)
 	}
 	i.mu.Unlock()
 
-	return limited
+	return verdict
 }

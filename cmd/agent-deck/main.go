@@ -102,6 +102,20 @@ func closeTelemetryOnSignal() {
 	}
 }
 
+// watcherEngineSignalStop stops the watcher engine this process owns and
+// releases its owner lock when a signal ends the process, so another TUI or
+// web process of the profile takes over without waiting for the kernel to
+// close both (#2530); set once the home model exists.
+var watcherEngineSignalStop atomic.Pointer[func()]
+
+func setWatcherEngineSignalStop(fn func()) { watcherEngineSignalStop.Store(&fn) }
+
+func stopWatcherEngineOnSignal() {
+	if fn := watcherEngineSignalStop.Load(); fn != nil {
+		(*fn)()
+	}
+}
+
 // writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending
 // ` (update available: vA.B.C)` when the on-disk cache says the user
 // is behind. Offline — never touches the network. Conductor task #45.
@@ -363,6 +377,9 @@ func main() {
 
 	// Extract global -p/--profile flag before subcommand dispatch
 	profile, args := extractProfileFlag(os.Args[1:])
+	// #2683: scrub CLAUDE_JOB_DIR before anything can exec tmux, the same
+	// way TELEGRAM_* is scrubbed before a child launch.
+	scrubClaudeJobDirForCommand(args)
 	if len(args) > 0 && args[0] == "creds-refresh" {
 		printCredsRefreshRemoved()
 		return
@@ -536,7 +553,7 @@ func main() {
 			handleHarness(profile, args[1:])
 			return
 		case "limits":
-			handleLimits(args[1:])
+			handleLimits(profile, args[1:])
 			return
 		case "conductor":
 			handleConductor(profile, args[1:])
@@ -948,6 +965,7 @@ func main() {
 		if hooks := intervalhook.GetGlobal(); hooks != nil {
 			hooks.Stop()
 		}
+		stopWatcherEngineOnSignal()
 		// Close control-mode pipes so their tmux clients detach cleanly instead
 		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
 		// avoids the signal-driven detach that races tmux/tmux#4980. The clean
@@ -1075,6 +1093,7 @@ func main() {
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
 	setTelemetrySignalClose(homeModel.CloseTelemetry)
+	setWatcherEngineSignalStop(homeModel.StopWatcherEngine)
 	// --group / --select were already extracted and validated above, before
 	// the no-TTY gate; apply them to the model now that it exists.
 	if groupScope != "" {
@@ -1228,6 +1247,11 @@ func main() {
 				defer cancel()
 				_ = server.Shutdown(ctx)
 			}()
+			// Run the profile's watcher engine here, or take it over once
+			// the TUI or web process that owns it exits (#2530). No Bubble
+			// Tea loop runs, so Home's conductor lookup reads storage.
+			homeModel.StartWatcherEngine()
+			defer homeModel.StopWatcherEngineAndDeliveries(5 * time.Second)
 			watchCtx, stopWatch := context.WithCancel(context.Background())
 			defer stopWatch()
 			startHeadlessAutoInstall(watchCtx)
@@ -1236,6 +1260,9 @@ func main() {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
 					slog.String("error", err.Error()))
 				fmt.Fprintf(os.Stderr, "Error: web server: %v\n", err)
+				// exitCLI skips the deferred stop, and the engine may already
+				// be receiving events: stop it and its deliveries first.
+				homeModel.StopWatcherEngineAndDeliveries(5 * time.Second)
 				exitCLI(1)
 			}
 			return
@@ -2149,6 +2176,15 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		exitCLI(1)
 	}
 
+	// #2683: an archived record holding this id would silently win the
+	// duplicate-id guard and the new session would start fresh.
+	if *resumeSession != "" {
+		if msg, code := checkArchivedClaudeIDConflict(instances, nil, *resumeSession); msg != "" {
+			NewCLIOutput(*jsonOutput, false).Error(msg, code)
+			exitCLI(1)
+		}
+	}
+
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 
 	// Seed groups declared in config.toml into the DB before resolving the
@@ -3043,7 +3079,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		StatusSource      string    `json:"status_source,omitempty"`
 		Substate          string    `json:"substate,omitempty"` // Honest Status v2: additive refinement
 		ExitCode          *int      `json:"exit_code,omitempty"`
-		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time)
+		SubstateDetail    string    `json:"substate_detail,omitempty"` // free text for the substate (codex usage-limit retry time; usage-limit window, model-limit model, account-blocked reason)
 		TmuxSession       string    `json:"tmux_session,omitempty"`
 		Profile           string    `json:"profile"`
 		CreatedAt         time.Time `json:"created_at"`
@@ -3075,6 +3111,9 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		// background-work (issue #2473): kind, task, step/steps, elapsed,
 		// source. Omitted when nothing is in flight.
 		BackgroundWork *tmux.BackgroundWork `json:"background_work,omitempty"`
+
+		// IntendedSwitch: see core.SessionRow (omitted when none or expired).
+		IntendedSwitch *session.IntendedSwitchJSON `json:"intended_switch,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
 	transcripts := session.ListedTranscriptPaths(instances)
@@ -3092,6 +3131,8 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 		substate := ""
 		if !cached[inst] {
 			substate = string(inst.Substate())
+		} else {
+			substate = string(inst.HistoricalSubstate())
 		}
 		parentProjectPath := listParentProjectPath(inst, instances)
 		sj := sessionJSON{
@@ -3119,7 +3160,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			Color:             inst.Color,
 			Favorite:          inst.Favorite,
 			Archived:          inst.IsArchived(),
-			ArchivedAt:        inst.ArchivedAt,
+			ArchivedAt:        inst.ArchivedAtThreadSafe(),
 			SupersededBy:      inst.SupersededBy,
 			Supersedes:        inst.Supersedes,
 			CodexSessionID:    inst.CodexSessionID,
@@ -3127,6 +3168,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			TranscriptPath:    transcripts[inst],
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
+			IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
 		}
 		if cached[inst] {
 			sj.StatusSource = "cached"
@@ -3763,9 +3805,16 @@ func handleStatus(profile string, args []string) {
 					path = "~" + path[len(home):]
 				}
 				suffix := ""
-				if lbl := SubstateLabel(inst.Substate()); lbl != "" {
+				sub := inst.Substate()
+				if lbl := SubstateLabel(sub); lbl != "" {
 					if work := inst.BackgroundWork(); work.InFlight() {
 						lbl += ": " + work.Summary() // issue #2473
+					} else if isLimitSubstate(sub) {
+						// Name what the session is waiting on ("usage limit: weekly
+						// limit · resets 12pm"), not just that it waits.
+						if detail := inst.SubstateDetail(); detail != "" {
+							lbl += ": " + detail
+						}
 					}
 					suffix = "  [" + lbl + "]"
 					if exitCode := inst.ExitCode(); exitCode != nil {

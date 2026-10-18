@@ -33,6 +33,8 @@
 // one.
 package quota
 
+import "time"
+
 // Provider IDs. These are the on-disk filenames in the cache and the stable
 // keys in `agent-deck usage --json`, so they are part of the contract and are
 // spelled once here rather than as literals at each call site.
@@ -75,6 +77,14 @@ type Window struct {
 	// "now + 5h" would be a promise this package is in no position to make.
 	// Never fill this in from the window's nominal duration.
 	ResetsAt *int64 `json:"resets_at,omitempty"`
+}
+
+// Expired reports whether the window's provider-reported reset has passed as
+// of now. The values describe a window that is over, so they no longer
+// apply: a stale 100% must not read as "limit reached". A window without a
+// reported reset never expires, rather than on a guessed duration.
+func (w Window) Expired(now time.Time) bool {
+	return w.ResetsAt != nil && *w.ResetsAt <= now.Unix()
 }
 
 // Snapshot is one provider's quota state as of UpdatedAt.
