@@ -27,6 +27,8 @@ import (
 	"strings"
 	"syscall"
 	"unicode/utf8"
+
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
 // evalSymlinks and lstat are the only filesystem calls Open makes on the
@@ -147,16 +149,11 @@ func sensitiveDirs() []string {
 	if err != nil || home == "" {
 		return nil
 	}
-	dirs := []string{home, filepath.Join(home, ".ssh"), filepath.Join(home, ".agent-deck")}
-	for env, fallback := range map[string]string{
-		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
-		"XDG_DATA_HOME":   filepath.Join(home, ".local", "share"),
-	} {
-		base := strings.TrimSpace(os.Getenv(env))
-		if !filepath.IsAbs(base) {
-			base = fallback
+	dirs := []string{home, filepath.Join(home, ".ssh")}
+	for _, dir := range []func() (string, error){agentpaths.LegacyDir, agentpaths.ConfigDir, agentpaths.DataDir} {
+		if d, err := dir(); err == nil {
+			dirs = append(dirs, d)
 		}
-		dirs = append(dirs, filepath.Join(base, "agent-deck"))
 	}
 	out := make([]string, 0, 2*len(dirs))
 	for _, d := range dirs {
