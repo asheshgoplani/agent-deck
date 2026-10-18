@@ -6119,7 +6119,7 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		state := sessionRenderState{
 			status:             inst.GetStatusThreadSafe(),
 			substate:           inst.CachedSubstate(),
-			tool:               inst.GetToolThreadSafe(),
+			tool:               inst.DisplayToolThreadSafe(),
 			archivedSuperseded: inst.IsArchived() && inst.SupersededBy != "",
 			// Label fields: read here, on the refresher's goroutine, so the
 			// render path never takes Instance.mu per row (#1753). Title goes
@@ -6176,7 +6176,7 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	account := inst.GetAccountThreadSafe()
 	return sessionRenderState{
 		status:         inst.GetStatusThreadSafe(),
-		tool:           inst.GetToolThreadSafe(),
+		tool:           inst.DisplayToolThreadSafe(),
 		account:        account,
 		accountDisplay: newAccountPresentation(account, h.accountSlotsConfigured.Load()),
 		title:          inst.GetTitleThreadSafe(),
@@ -6852,19 +6852,7 @@ func (h *Home) backgroundStatusUpdate() {
 		// the owning instance (or, for orphans, this primary's orphan sweep)
 		// is the source of truth for that session's status row. Orphans MUST
 		// be written here — that's the entire point of polling them above.
-		currentIDs := make(map[string]struct{}, len(instances))
-		for _, inst := range instances {
-			currentIDs[inst.ID] = struct{}{}
-			if !h.isPolledByMe(inst.ID) {
-				continue
-			}
-			status := string(inst.GetStatusThreadSafe())
-			if prev, ok := h.lastPersistedStatus[inst.ID]; ok && prev == status {
-				continue
-			}
-			_ = db.WriteStatus(inst.ID, status, inst.Tool)
-			h.lastPersistedStatus[inst.ID] = status
-		}
+		currentIDs := h.persistPolledStatuses(db, instances)
 		for id := range h.lastPersistedStatus {
 			if _, ok := currentIDs[id]; !ok {
 				delete(h.lastPersistedStatus, id)
@@ -7251,10 +7239,81 @@ func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 		h.cachedStatusCounts.valid.Store(false)
 		h.publishCurrentSessionStates()
 		if db := statedb.GetGlobal(); db != nil {
-			_ = db.WriteStatus(inst.ID, string(newStatus), inst.GetToolThreadSafe())
+			committed, applied := writeStatusIfCurrent(db, inst.ID, string(oldStatus), string(newStatus), inst.GetToolThreadSafe())
+			if !applied && committed != "" && committed != string(newStatus) {
+				inst.SetStatusThreadSafe(session.Status(committed))
+				h.publishCurrentSessionStates()
+			}
 		}
 	}
 	h.refreshSessionRenderSnapshot(nil)
+}
+
+// persistPolledStatuses writes the status of every session this process
+// polls to the shared row, skipping unchanged ones, and returns the set of
+// current instance IDs. A write that loses to a status another process
+// committed (a CLI `session stop`, #2669) adopts the committed status.
+func (h *Home) persistPolledStatuses(db *statedb.StateDB, instances []*session.Instance) map[string]struct{} {
+	currentIDs := make(map[string]struct{}, len(instances))
+	adoptedCommitted := false
+	for _, inst := range instances {
+		currentIDs[inst.ID] = struct{}{}
+		if !h.isPolledByMe(inst.ID) {
+			continue
+		}
+		status := string(inst.GetStatusThreadSafe())
+		prev, ok := h.lastPersistedStatus[inst.ID]
+		if ok && prev == status {
+			continue
+		}
+		if !ok {
+			_ = db.WriteStatus(inst.ID, status, inst.Tool)
+			h.lastPersistedStatus[inst.ID] = status
+			continue
+		}
+		// Conditional on the row still holding what this Home last wrote
+		// (#2669): a CLI `session stop` commits "stopped" while this
+		// process still holds the pre-stop status in memory, and the
+		// sweep then classifies the vanished pane as "error". Last writer
+		// wins would turn the deliberate stop into an error.
+		committed, applied := writeStatusIfCurrent(db, inst.ID, prev, status, inst.Tool)
+		if !applied && committed != "" {
+			inst.SetStatusThreadSafe(session.Status(committed))
+			status = committed
+			adoptedCommitted = true
+		}
+		h.lastPersistedStatus[inst.ID] = status
+	}
+	if adoptedCommitted {
+		h.cachedStatusCounts.valid.Store(false)
+		h.publishWebSessionStates(instances)
+		h.refreshSessionRenderSnapshot(instances)
+	}
+	return currentIDs
+}
+
+// writeStatusIfCurrent persists status only while the shared row still holds
+// expected, so a status another process committed in between (a CLI
+// `session stop`, #2669) is not overwritten by this process's stale sample.
+// When the write loses, it returns the committed status for the caller to
+// adopt; committed is "" when the row could not be read or does not exist.
+func writeStatusIfCurrent(db *statedb.StateDB, id, expected, status, tool string) (committed string, applied bool) {
+	applied, err := db.WriteStatusIfCurrent(id, expected, status, tool)
+	if err != nil {
+		return "", false
+	}
+	if applied {
+		return status, true
+	}
+	rows, err := db.ReadAllStatuses()
+	if err != nil {
+		return "", false
+	}
+	row, ok := rows[id]
+	if !ok {
+		return "", false
+	}
+	return row.Status, false
 }
 
 func (h *Home) publishCurrentSessionStates() {
@@ -9664,7 +9723,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case worktreeSetupResultMsg:
 		delete(h.setupRunningSessions, msg.sessionID)
 		if msg.err != nil {
-			h.setError(msg.err)
+			// Same bounded, sanitized formatting as the create path, so the
+			// script's output tail is shown instead of a bare "exit status 1".
+			h.setError(errors.New(formatSetupWarning(msg.err)))
 		} else {
 			h.setError(fmt.Errorf("worktree setup completed for '%s'", msg.sessionTitle))
 		}
@@ -12374,6 +12435,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		// The quick local title filter; Tab from it reaches Recall, and G
 		// opens Recall directly.
+		h.search.SetScopedGroup("")
+		h.search.SetItems(h.instances)
 		h.search.Show()
 		return h, nil
 
@@ -15788,6 +15851,7 @@ func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDi
 	}
 	if setupErr != nil {
 		uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", buf.String()))
+		setupErr = withSetupOutputTail(setupErr, buf.String())
 	}
 	return setupErr, nil
 }
@@ -15801,6 +15865,20 @@ const setupWarningMaxLen = 300
 // verbose output stays in the log (see createWorktreeWithSetupAndLog).
 func formatSetupWarning(setupErr error) string {
 	msg := strings.Join(strings.Fields(tmux.StripANSI(setupErr.Error())), " ")
+	// Append the last lines of the script's output (#2637) so the footer says
+	// why the script failed, not just "exit status 1". When the tail does not
+	// fit, it is cut from the front so the final (usually most telling) line
+	// survives.
+	var tailed *setupScriptError
+	if errors.As(setupErr, &tailed) && tailed.tail != "" && !errors.Is(setupErr, git.ErrWorktreeScriptNotApproved) {
+		tail := []rune(tailed.tail)
+		if budget := setupWarningMaxLen - len([]rune(msg)) - len([]rune(setupOutputSep)); budget > 1 {
+			if len(tail) > budget {
+				tail = append([]rune("…"), tail[len(tail)-(budget-1):]...)
+			}
+			msg += setupOutputSep + string(tail)
+		}
+	}
 	// Truncate by rune, not byte, so a multi-byte character is never split.
 	if runes := []rune(msg); len(runes) > setupWarningMaxLen {
 		msg = string(runes[:setupWarningMaxLen]) + "…"
@@ -15810,6 +15888,57 @@ func formatSetupWarning(setupErr error) string {
 		return msg
 	}
 	return "worktree setup script failed: " + msg
+}
+
+// setupScriptError carries the last lines of a failed setup script's output
+// alongside the error, so formatSetupWarning can show them. Error() is the
+// original message (logs are unchanged); Unwrap keeps errors.Is working.
+type setupScriptError struct {
+	err  error
+	tail string
+}
+
+func (e *setupScriptError) Error() string { return e.err.Error() }
+func (e *setupScriptError) Unwrap() error { return e.err }
+
+const (
+	setupOutputTailLines = 5
+	setupOutputSep       = " — "
+)
+
+// withSetupOutputTail attaches the tail of the captured script output to a
+// setup error. It returns err unchanged when there is no useful output.
+func withSetupOutputTail(err error, output string) error {
+	if err == nil {
+		return nil
+	}
+	tail := setupOutputTail(output, setupOutputTailLines)
+	if tail == "" {
+		return err
+	}
+	return &setupScriptError{err: err, tail: tail}
+}
+
+// setupOutputTail returns the last maxLines non-blank lines of script output,
+// ANSI-stripped, with whitespace collapsed, joined by " | ". Carriage returns
+// split lines too, so progress-bar redraws do not glue together. The
+// "Running worktree setup script..." preamble and the trailing "Worktree setup
+// script failed after ..." line are dropped: they carry nothing the warning
+// does not already say.
+func setupOutputTail(output string, maxLines int) string {
+	clean := strings.ReplaceAll(tmux.StripANSI(output), "\r", "\n")
+	var lines []string
+	for _, line := range strings.Split(clean, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" || line == "Running worktree setup script..." || strings.HasPrefix(line, "Worktree setup script failed after ") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, " | ")
 }
 
 // createSessionTool maps a free-form command to (tool, command). Built-in
@@ -16894,7 +17023,7 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 		// the whole fork. The full output is logged; the concise error is
 		// returned so the caller can surface it in the UI.
 		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", scriptErr.Error()), slog.String("output", setupBuf.String()))
-		return scriptErr, nil
+		return withSetupOutputTail(scriptErr, setupBuf.String()), nil
 	}
 	return nil, nil
 }
@@ -23333,7 +23462,7 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 
 	// Snapshot status/tool under read lock for thread safety
 	cardStatus := inst.GetStatusThreadSafe()
-	cardTool := inst.GetToolThreadSafe()
+	cardTool := inst.DisplayToolThreadSafe()
 
 	// Header with tool icon
 	icon := ToolIcon(cardTool)
@@ -25649,7 +25778,8 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 		// same trust check as the automatic run at worktree-creation time.
 		err := git.GateAndRunWorktreeSetupScript(repoRoot, wtPath, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
 		if err != nil {
-			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: err}
+			uiLog.Warn("worktree_setup_rerun_failed", slog.String("error", err.Error()), slog.String("output", buf.String()))
+			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: withSetupOutputTail(err, buf.String())}
 		}
 		return worktreeSetupResultMsg{sessionID: id, sessionTitle: title}
 	}

@@ -51,6 +51,45 @@ func TestSearchVisibility(t *testing.T) {
 	}
 }
 
+func TestSearchReopensWithFreshState(t *testing.T) {
+	for _, key := range []tea.KeyType{tea.KeyEsc, tea.KeyEnter, tea.KeyTab} {
+		t.Run(fmt.Sprint(key), func(t *testing.T) {
+			s := NewSearch()
+			items := []*session.Instance{{Title: "alpha-one"}, {Title: "alpha-two"}, {Title: "unrelated"}}
+			s.SetItems(items)
+			s.Show()
+			s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("alpha")})
+			s.Update(tea.KeyMsg{Type: tea.KeyDown})
+			if s.cursor != 1 || len(s.results) != 2 {
+				t.Fatal("expected a filtered search with the second result selected")
+			}
+			s.Update(tea.KeyMsg{Type: key})
+			s.Show()
+			if s.input.Value() != "" || s.cursor != 0 || len(s.results) != len(items) || s.switchToGlobal {
+				t.Fatalf("reopened search retained state: query=%q cursor=%d results=%d switch=%v",
+					s.input.Value(), s.cursor, len(s.results), s.switchToGlobal)
+			}
+		})
+	}
+}
+
+func TestSearchSlashClearsPreviousGroupScope(t *testing.T) {
+	h, idx := buildTwoGroupHome(t)
+	h.cursor = idx["a2"]
+	h.handleMainKey(altKeyMsg('/'))
+	h.search.input.SetValue("previous query")
+	h.search.updateResults()
+	h.handleSearchKey(tea.KeyMsg{Type: tea.KeyEsc})
+	h.handleMainKey(plainKeyMsg('/'))
+	if !h.search.IsVisible() || h.search.input.Value() != "" || h.search.cursor != 0 {
+		t.Fatal("/ did not open a fresh search")
+	}
+	if h.search.scopedGroup != "" || len(h.search.results) != len(h.instances) {
+		t.Fatalf("/ retained group scope: scope=%q results=%d want=%d",
+			h.search.scopedGroup, len(h.search.results), len(h.instances))
+	}
+}
+
 func TestSearchSelected(t *testing.T) {
 	s := NewSearch()
 	items := []*session.Instance{
