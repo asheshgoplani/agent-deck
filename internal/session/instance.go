@@ -8556,6 +8556,7 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.hermesBoundAt = time.Time{}
 		i.hermesLastRejected = ""
 		i.persistHermesSessionBinding("")
+		i.clearHermesOwnedSessionID()
 	}
 
 	if i.Tool == "deepseek" {

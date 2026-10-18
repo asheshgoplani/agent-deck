@@ -350,6 +350,9 @@ func (s *Server) Start() error {
 	if s.remoteFleet != nil {
 		s.remoteFleet.Start(s.baseCtx)
 	}
+	// Probe CLIs for model lists in the background, so /api/settings never
+	// waits on one (#2664).
+	session.WarmModelCatalog()
 
 	webLog := logging.ForComponent(logging.CompWeb)
 	if watcher, err := session.NewStatusFileWatcher(func() {

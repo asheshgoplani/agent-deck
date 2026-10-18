@@ -13,7 +13,8 @@
 #       "Create a test marker file" \
 #       'test -f /tmp/goal-test-marker.txt'
 #
-#   goal.sh v160-release \
+#   # Opt in to the no-progress cap: escalate after 3 empty wakes.
+#   NO_PROGRESS_CAP=3 goal.sh v160-release \
 #       "Ship agent-deck v1.6.0 to GitHub Releases" \
 #       'gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e ".publishedAt != null"' \
 #       my-v160-worker \
@@ -45,8 +46,28 @@ CHECK_INTERVAL_SECONDS="${CHECK_INTERVAL_SECONDS:-300}"     # manager polls ever
 MAX_IDLE_SECONDS="${MAX_IDLE_SECONDS:-3600}"               # nudge after 1h of silence
 MAX_CYCLES="${MAX_CYCLES:-24}"                             # hard stop after 24 receipts
 ESCALATE_AFTER="${ESCALATE_AFTER:-3}"                      # nudges before paging user
+# Opt-in progress features (all off by default; see references/goal.md).
+NO_PROGRESS_CAP="${NO_PROGRESS_CAP:-0}"                    # empty turns before the cap acts (0 = off)
+NO_PROGRESS_ACTION="${NO_PROGRESS_ACTION:-escalate}"       # at the cap: escalate (worker keeps running) or stop
+NO_PROGRESS_BACKOFF_BASE_SECONDS="${NO_PROGRESS_BACKOFF_BASE_SECONDS:-$MAX_IDLE_SECONDS}"  # doubling wake backoff base (with the cap on)
+WORKTREE_PROGRESS="${WORKTREE_PROGRESS:-0}"                # 1: a worktree content change counts as progress too
+WORKTREE_GATE="${WORKTREE_GATE:-0}"                        # 1: skip quiet-tick done_cmd reruns on an unchanged failed worktree
 CONDUCTOR="${CONDUCTOR:-agent-deck}"
 PROFILE="${PROFILE:-personal}"
+
+case "$NO_PROGRESS_ACTION" in
+    escalate|stop) ;;
+    *) echo "[goal] NO_PROGRESS_ACTION must be escalate or stop: '$NO_PROGRESS_ACTION'" >&2; exit 2 ;;
+esac
+
+flag_on() { [[ -n "$1" && "$1" != 0 && "$1" != false && "$1" != no ]]; }
+
+# Baseline worktree hash, taken before the worker starts, so work done
+# before the first manager tick counts as progress.
+BASELINE_TREE_HASH=""
+if flag_on "$WORKTREE_GATE" || flag_on "$WORKTREE_PROGRESS"; then
+    BASELINE_TREE_HASH="$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import manager; from pathlib import Path; print(manager.worktree_tree_hash(Path(sys.argv[2])) or "")' "$SCRIPT_DIR" "$WORKDIR" 2>/dev/null || true)"
+fi
 
 [[ -f "$PROMPT_TEMPLATE" ]] || { echo "[goal] missing prompt template: $PROMPT_TEMPLATE" >&2; exit 1; }
 mkdir -p "$GOALS_DIR"
@@ -121,9 +142,14 @@ rm -f "$PROMPT_FILE"
 
 # Write the goal JSON
 python3 - "$GOAL_PATH" "$ID" "$GOAL" "$DONE_CMD" "$WORKER_TITLE" "$SESSION_ID" "$WORKDIR" "$CONDUCTOR" \
-        "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" <<'PYEOF'
+        "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" \
+        "$NO_PROGRESS_CAP" "$NO_PROGRESS_BACKOFF_BASE_SECONDS" "$WORKTREE_GATE" \
+        "$NO_PROGRESS_ACTION" "$WORKTREE_PROGRESS" "$BASELINE_TREE_HASH" <<'PYEOF'
 import json
 import sys
+
+def flag(v):
+    return v not in ("0", "false", "no", "")
 
 path = sys.argv[1]
 data = {
@@ -139,6 +165,11 @@ data = {
         "max_idle_seconds": int(sys.argv[10]),
         "max_cycles": int(sys.argv[11]),
         "escalate_after_stuck_nudges": int(sys.argv[12]),
+        "no_progress_cap": int(sys.argv[14]),
+        "no_progress_backoff_base_seconds": int(sys.argv[15]),
+        "no_progress_action": sys.argv[17],
+        "worktree_progress": flag(sys.argv[18]),
+        "worktree_gate": flag(sys.argv[16]),
     },
     "state": {
         "status": "active",
@@ -148,6 +179,10 @@ data = {
         "last_receipt_text": None,
         "cycles_completed": 0,
         "nudges_sent": 0,
+        "no_progress_streak": 0,
+        "next_wake_at": None,
+        "last_failed_tree_hash": None,
+        "progress_tree_hash": sys.argv[19] or None,
         "escalated_at": None,
         "ended_at": None,
         "ended_reason": None,
