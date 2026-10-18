@@ -190,8 +190,9 @@ The app is the other half of the contract. It must:
   frame's `session_id` as a session of that host: one the host's own session
   list reported (sessions on other hosts are never addressed through it);
 - act on `macapp.browser.request` and `macapp.open` only for those sessions,
-  deduplicate by `event_id`, and answer on the
-  same host and profile;
+  deduplicate by `event_id` (the key; `macapp.open` may also carry
+  `request_id`, which is optional, since older CLIs do not send it, and only
+  a hint), and answer on the same host and profile;
 - publish its replies only with the reply kinds above, and forget a
   session's Browser state on `macapp.session.closed`.
 

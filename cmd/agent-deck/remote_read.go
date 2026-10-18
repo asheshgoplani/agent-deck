@@ -137,11 +137,11 @@ func validateRemoteEventsPublishArgs(args []string) error {
 			continue
 		}
 		if !inline {
-			if i+1 == len(args) {
+			if i+1 >= len(args) {
 				return fmt.Errorf("option --%s needs a value", name)
 			}
+			value = args[i+1]
 			i++
-			value = args[i]
 		}
 		if strings.HasPrefix(value, "-") && !(name == "data-file" && value == "-") {
 			return fmt.Errorf("option --%s value %q must not start with \"-\"", name, value)
