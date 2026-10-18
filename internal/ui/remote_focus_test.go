@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,17 +138,25 @@ func TestRemoteFocus_UnknownOrArchivedLeavesCursor(t *testing.T) {
 			db := newUITempStateDB(t)
 			home.cursor = 2
 			writeRemoteFocus(t, db, tc.remote, tc.id, true, time.Now())
-			if cmd := home.consumeFocusRequest(db); cmd != nil {
-				t.Fatal("no cmd expected")
-			}
+			cmd := home.consumeFocusRequest(db)
 			if home.cursor != 2 {
 				t.Fatalf("cursor moved to %d", home.cursor)
 			}
 			if tc.id == "missing" {
+				// Waits, and asks for a refresh now: the default poll is
+				// slower than the request's lifetime.
 				if home.pendingRemoteFocus == nil {
 					t.Fatal("an unknown id waits for the next refresh")
 				}
-			} else if home.pendingRemoteFocus != nil {
+				if cmd == nil || !home.remotesFetchActive {
+					t.Fatal("a waiting request must start a remote fetch")
+				}
+				return
+			}
+			if cmd != nil {
+				t.Fatal("no cmd expected")
+			}
+			if home.pendingRemoteFocus != nil {
 				t.Fatal("unknown remote / archived id must not stay pending")
 			}
 		})
@@ -160,10 +170,11 @@ func TestRemoteFocus_AttachMatchesEnter(t *testing.T) {
 		name     string
 		embedded bool
 		id       string
+		want     string // pinned outcome: "dev" is not in the test config
 	}{
-		{"classic running", false, "run-1"},
-		{"classic stopped", false, "stop-1"},
-		{"embedded stopped restarts", true, "stop-1"},
+		{"classic running", false, "run-1", "attach: cannot attach on dev: "},
+		{"classic stopped", false, "stop-1", "attach: cannot attach on dev: "},
+		{"embedded stopped restarts", true, "stop-1", "restart dev/stop-1: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			enterHome, _ := buildRemoteFocusHome(t)
@@ -184,10 +195,8 @@ func TestRemoteFocus_AttachMatchesEnter(t *testing.T) {
 			if got, want := cmdOutcome(focusCmd), cmdOutcome(enterCmd); got != want {
 				t.Fatalf("focus produced %s, Enter produced %s", got, want)
 			}
-			if tc.embedded {
-				if _, ok := focusCmd().(remoteSessionRestartedMsg); !ok {
-					t.Fatalf("a stopped row must restart, got %T", focusCmd())
-				}
+			if got := cmdOutcome(focusCmd); !strings.HasPrefix(got, tc.want) {
+				t.Fatalf("outcome %q, want prefix %q", got, tc.want)
 			}
 		})
 	}
@@ -253,6 +262,25 @@ func TestRemoteFocus_PendingExpires(t *testing.T) {
 		t.Fatal("expired request returned a cmd")
 	}
 	if home.cursor != before || home.pendingRemoteFocus != nil {
+		t.Fatalf("expired request acted: cursor %d -> %d, pending=%v", before, home.cursor, home.pendingRemoteFocus)
+	}
+}
+
+// The same through a real refresh: a request that is just past its lifetime
+// when the session arrives is not acted on.
+func TestRemoteFocus_PendingExpiresThroughRefresh(t *testing.T) {
+	home, _ := buildRemoteFocusHome(t)
+	db := newUITempStateDB(t)
+	writeRemoteFocus(t, db, "dev", "new-1", false, time.Now().Add(-session.FocusRequestTTL+50*time.Millisecond))
+	home.consumeFocusRequest(db)
+	if home.pendingRemoteFocus == nil {
+		t.Fatal("precondition: pending")
+	}
+	before := home.cursor
+	time.Sleep(100 * time.Millisecond)
+	sessions := append(remoteFocusSessions(), session.RemoteSessionInfo{ID: "new-1", Title: "new-1", Group: "work", Status: "running"})
+	home.Update(remoteSessionsFetchedMsg{sessions: map[string][]session.RemoteSessionInfo{"dev": sessions}})
+	if cursorRemoteID(home) == "dev/new-1" || home.pendingRemoteFocus != nil {
 		t.Fatalf("expired request acted: cursor %d -> %d, pending=%v", before, home.cursor, home.pendingRemoteFocus)
 	}
 }
@@ -345,8 +373,8 @@ func TestRemoteFocus_GoldenFrames(t *testing.T) {
 	assertGolden(t, "remote_focus_after", home.renderSessionList(60, 20))
 }
 
-// An older TUI reads a remote request with the pre-#2704 decoder: the remote
-// id is an unknown local id, so the request is dropped and nothing moves.
+// An older TUI reads a remote request with the pre-#2704 struct (no remote
+// field): the remote id is an unknown local id, so it is dropped.
 func TestRemoteFocus_OldDecoderIgnoresRemoteRequest(t *testing.T) {
 	home, _ := buildRemoteFocusHome(t)
 	before := home.cursor
@@ -354,11 +382,33 @@ func TestRemoteFocus_OldDecoderIgnoresRemoteRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _, fresh := session.DecodeFocusRequestAttach(val, time.Now().UnixNano(), session.FocusRequestTTL)
-	if !fresh || home.SelectSessionByID(id) {
-		t.Fatalf("old path selected remote id %q (fresh=%v)", id, fresh)
+	var old struct {
+		ID     string `json:"id"`
+		TS     int64  `json:"ts"`
+		Attach bool   `json:"attach,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(val), &old); err != nil {
+		t.Fatalf("old struct cannot read a remote request: %v", err)
+	}
+	if old.ID != "run-1" || home.SelectSessionByID(old.ID) {
+		t.Fatalf("old path selected remote id %q", old.ID)
 	}
 	if home.cursor != before {
 		t.Fatalf("cursor moved %d -> %d", before, home.cursor)
+	}
+}
+
+// The archived view shows archived rows, but focus never selects one.
+func TestRemoteFocus_ArchivedRowNotSelectedEvenWhenShown(t *testing.T) {
+	home, _ := buildRemoteFocusHome(t)
+	home.remoteGroupsCollapsed = map[string]bool{}
+	home.statusFilter = FilterModeArchived
+	home.rebuildFlatItems()
+	if home.remoteFlatItemIndex("dev", "arch-1") < 0 {
+		t.Fatal("precondition: arch-1 shown in the archived view")
+	}
+	before := home.cursor
+	if home.SelectRemoteSession("dev", "arch-1") || home.cursor != before {
+		t.Fatalf("archived row selected (cursor %d -> %d)", before, home.cursor)
 	}
 }

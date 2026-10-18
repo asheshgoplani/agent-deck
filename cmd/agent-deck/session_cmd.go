@@ -1715,6 +1715,16 @@ func (tmuxClientDetacher) detachClientsOn(sockets []string) (bool, error) {
 	return tmux.DetachClientsOnSockets(sockets...)
 }
 
+// tmuxAgentDeckDetacher detaches only clients that are showing an agent-deck
+// session, for the remote focus path: it sweeps the default server too, where
+// a terminal on another tmux session (the TUI itself, run inside tmux) must
+// stay attached.
+type tmuxAgentDeckDetacher struct{}
+
+func (tmuxAgentDeckDetacher) detachClientsOn(sockets []string) (bool, error) {
+	return tmux.DetachAgentDeckClientsOnSockets(sockets...)
+}
+
 // findFocusInstance returns the instance with the given id, or nil.
 func findFocusInstance(instances []*session.Instance, id string) *session.Instance {
 	for _, inst := range instances {
@@ -1813,8 +1823,9 @@ func focusAllSockets(instances []*session.Instance, configured string) []string 
 // routeRemoteFocus drives `session focus --remote <name> <id>` (#2704). The id
 // belongs to the remote, so it is not checked here (no SSH): the TUI looks it
 // up in its remote list. With --attach it writes the request FIRST and then
-// detaches the user's clients on every local socket, so a TUI paused inside a
-// local attach comes back and consumes it, the way cross-socket focus does.
+// detaches the user's clients on every local socket that are showing an
+// agent-deck session, so a TUI paused inside a local attach comes back and
+// consumes it, the way cross-socket focus does.
 // Select-only never detaches anything.
 func routeRemoteFocus(db *statedb.StateDB, instances []*session.Instance, configuredSocket, remote, id string, nowNano int64, attach bool, remoteExists func(string) (bool, error), detacher clientDetacher) error {
 	if id == "" {
@@ -1912,6 +1923,9 @@ func handleSessionFocus(profile string, args []string) {
 		detacher = tmuxClientDetacher{}
 	}
 	if *remote != "" {
+		if *attach {
+			detacher = tmuxAgentDeckDetacher{}
+		}
 		err = routeRemoteFocus(db, instances, tmux.DefaultSocketName(), *remote, id, time.Now().UnixNano(), *attach, focusRemoteExists, detacher)
 	} else {
 		err = routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher, detacher)

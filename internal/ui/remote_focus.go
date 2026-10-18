@@ -55,14 +55,14 @@ func (h *Home) SelectRemoteSession(remote, id string) bool {
 	if remote == "" || id == "" {
 		return false
 	}
+	group, found, archived := h.lookupRemoteSession(remote, id)
+	if !found || archived {
+		return false
+	}
 	if idx := h.remoteFlatItemIndex(remote, id); idx >= 0 {
 		h.cursor = idx
 		h.syncViewport()
 		return true
-	}
-	group, found, archived := h.lookupRemoteSession(remote, id)
-	if !found || archived {
-		return false
 	}
 
 	// Open the remote header and every group header above the row.
@@ -83,10 +83,12 @@ func (h *Home) SelectRemoteSession(remote, id string) bool {
 			unfolded = true
 		}
 	}
-	h.statusFilter = ""
+	prevStatus, prevTime := h.statusFilter, h.timeFilter
 	h.groupScopeMu.Lock()
+	prevScope := h.groupScope
 	h.groupScope = ""
 	h.groupScopeMu.Unlock()
+	h.statusFilter = ""
 	h.rebuildFlatItems()
 
 	idx := h.remoteFlatItemIndex(remote, id)
@@ -99,6 +101,12 @@ func (h *Home) SelectRemoteSession(remote, id string) bool {
 		h.saveUIState()
 	}
 	if idx < 0 {
+		// Still not shown: give the user their filters back.
+		h.statusFilter, h.timeFilter = prevStatus, prevTime
+		h.groupScopeMu.Lock()
+		h.groupScope = prevScope
+		h.groupScopeMu.Unlock()
+		h.rebuildFlatItems()
 		return false
 	}
 	h.cursor = idx
@@ -145,9 +153,24 @@ func (h *Home) consumeRemoteFocus(fr session.FocusRequest) tea.Cmd {
 		return nil
 	} else if !found {
 		h.pendingRemoteFocus = p
-		return nil
+		return h.fetchRemotesForFocus()
 	}
 	return h.applyRemoteFocus(p)
+}
+
+// fetchRemotesForFocus starts a remote refresh now for a waiting request:
+// the regular poll (15 s by default) is slower than the request's 10 s TTL.
+// A fetch already in flight gets one more round after it, as a pushed change
+// without data does.
+func (h *Home) fetchRemotesForFocus() tea.Cmd {
+	h.remoteSessionsMu.Lock()
+	defer h.remoteSessionsMu.Unlock()
+	if h.remotesFetchActive {
+		h.remoteRefetchWanted = true
+		return nil
+	}
+	h.remotesFetchActive = true
+	return h.fetchRemoteSessions
 }
 
 // retryPendingRemoteFocus runs after each remote refresh: it selects (and

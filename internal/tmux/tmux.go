@@ -7860,6 +7860,49 @@ func DetachClientsOnSockets(sockets ...string) (bool, error) {
 	return detached, firstErr
 }
 
+// DetachAgentDeckClientsOnSockets is DetachClientsOnSockets limited to
+// clients whose current session is an agent-deck session (SessionPrefix), so
+// a terminal showing some other tmux session (the TUI itself run inside tmux,
+// or unrelated work) on the same server is left attached (#2704).
+func DetachAgentDeckClientsOnSockets(sockets ...string) (bool, error) {
+	detached := false
+	var firstErr error
+	for _, socket := range sockets {
+		output, err := runBoundedOutput(socket, "list-clients", "-F", tmuxFmt("#{client_control_mode}", "#{client_session}", "#{client_name}"))
+		if err != nil {
+			continue
+		}
+		for _, c := range agentDeckClientNames(string(output)) {
+			if err := runBoundedMutation(socket, "detach-client", "-c", c); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			detached = true
+		}
+	}
+	return detached, firstErr
+}
+
+// agentDeckClientNames parses list-clients output of control-mode flag,
+// session name and client name, and returns the non-control clients whose
+// session is an agent-deck session. client_name goes last: it is free text.
+func agentDeckClientNames(output string) []string {
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		parts := strings.SplitN(line, tmuxFieldSep, 3)
+		if len(parts) != 3 || parts[2] == "" || parts[0] == "1" {
+			continue
+		}
+		if !strings.HasPrefix(parts[1], SessionPrefix) {
+			continue
+		}
+		names = append(names, parts[2])
+	}
+	return names
+}
+
 // UnbindKey removes a key binding and restores default behavior.
 // After unbinding, attempts to restore the default behavior where number keys
 // select windows. The restore is best-effort since it may fail in environments
