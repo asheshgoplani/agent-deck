@@ -192,8 +192,8 @@ func TestBrowserRequestFrameShape(t *testing.T) {
 		t.Fatalf("envelope: %+v", got)
 	}
 
-	open, err := newBrowserRequest(macapp.OpOpen, browserFlags{profile: "work"}, "https://example.com/a?b=c", time.Second)
-	if err != nil || open.Args.URL != "https://example.com/a?b=c" || open.Args.Profile != "work" || open.ExpiresAt.Sub(open.RequestedAt) != browserOpenQueueTTL {
+	open, err := newBrowserRequest(macapp.OpOpen, browserFlags{browserProfile: "work"}, "https://example.com/a?b=c", time.Second)
+	if err != nil || open.Args.URL != "https://example.com/a?b=c" || open.Args.BrowserProfile != "work" || open.ExpiresAt.Sub(open.RequestedAt) != browserOpenQueueTTL {
 		t.Fatalf("open: %+v %v", open, err)
 	}
 	read, err := newBrowserRequest(macapp.OpRead, browserFlags{outline: true}, "", time.Second)

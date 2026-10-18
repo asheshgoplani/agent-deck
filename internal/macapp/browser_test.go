@@ -68,7 +68,7 @@ func TestBrowserArgsAcceptedPerOp(t *testing.T) {
 		args BrowserArgs
 	}{
 		{OpOpen, BrowserArgs{URL: "https://example.com/x?q=1"}},
-		{OpOpen, BrowserArgs{URL: "http://localhost:8080/", TabID: "t1", Profile: "work"}},
+		{OpOpen, BrowserArgs{URL: "http://localhost:8080/", TabID: "t1", BrowserProfile: "work"}},
 		{OpOpen, BrowserArgs{Path: "/tmp/report/index.html", NewTab: true}},
 		{OpTabs, BrowserArgs{}},
 		{OpClose, BrowserArgs{TabID: "t1"}},
@@ -242,6 +242,20 @@ func TestActiveClaim(t *testing.T) {
 		got, ok := ActiveClaim(tc.claims, now)
 		if ok != tc.ok || got.AppID != tc.want {
 			t.Errorf("%s: %q %v", tc.name, got.AppID, ok)
+		}
+	}
+}
+
+// browser_profile is a plain name, never a path or a control sequence.
+func TestBrowserProfileNameRule(t *testing.T) {
+	for _, ok := range []string{"work", "Research-2", "a.b_c", strings.Repeat("a", MaxBrowserProfileLen)} {
+		if err := (BrowserArgs{URL: "https://example.com/", BrowserProfile: ok}).Validate(OpOpen); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"a\nb", "a\tb", "a\x1bb", "a\x7fb", "../../etc", ".hidden", "a b", "a/b", strings.Repeat("a", MaxBrowserProfileLen+1)} {
+		if err := (BrowserArgs{URL: "https://example.com/", BrowserProfile: bad}).Validate(OpOpen); err == nil {
+			t.Errorf("%q accepted", bad)
 		}
 	}
 }

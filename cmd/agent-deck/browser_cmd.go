@@ -24,7 +24,7 @@ const browserUsage = `Usage: agent-deck browser <op> [flags]
 Drive the calling session's own Browser panel in the AgentDeck Mac app.
 
 Ops:
-  open <url|file> [--tab ID | --new-tab] [--profile P]
+  open <url|file> [--tab ID | --new-tab] [--browser-profile NAME]
   tabs
   close --tab ID
   click (--ref R | --selector S | --text T) [--tab ID]
@@ -54,9 +54,9 @@ const browserOpenQueueTTL = 24 * time.Hour
 var errBrowserNoAnswer = errors.New("no answer from AgentDeck")
 
 type browserFlags struct {
-	session, tab, profile, ref, selector, text, out string
-	newTab, submit, outline, full, json             bool
-	timeout                                         time.Duration
+	session, tab, browserProfile, ref, selector, text, out string
+	newTab, submit, outline, full, json                    bool
+	timeout                                                time.Duration
 }
 
 func handleBrowser(profile string, args []string) {
@@ -172,7 +172,7 @@ func registerBrowserFlags(fs *flag.FlagSet, op macapp.Op, f *browserFlags) {
 	switch op {
 	case macapp.OpOpen:
 		fs.BoolVar(&f.newTab, "new-tab", false, "open in a new tab")
-		fs.StringVar(&f.profile, "profile", "", "Browser panel profile name")
+		fs.StringVar(&f.browserProfile, "browser-profile", "", "Browser panel profile name (not the agent-deck profile)")
 	case macapp.OpClick, macapp.OpType:
 		fs.StringVar(&f.ref, "ref", "", "element ref from browser read --outline")
 		fs.StringVar(&f.selector, "selector", "", "CSS selector")
@@ -204,7 +204,7 @@ func newBrowserRequest(op macapp.Op, f browserFlags, target string, timeout time
 		ExpiresAt:   now.Add(timeout),
 	}
 	req.Args = macapp.BrowserArgs{
-		TabID: f.tab, NewTab: f.newTab, Profile: f.profile,
+		TabID: f.tab, NewTab: f.newTab, BrowserProfile: f.browserProfile,
 		Ref: f.ref, Selector: f.selector, Text: f.text, Submit: f.submit, FullPage: f.full,
 	}
 	var err error

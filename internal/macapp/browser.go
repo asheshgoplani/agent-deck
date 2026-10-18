@@ -71,17 +71,17 @@ const (
 
 // BrowserArgs are the op arguments. Each op accepts only its own fields.
 type BrowserArgs struct {
-	URL      string `json:"url,omitempty"`
-	Path     string `json:"path,omitempty"`
-	TabID    string `json:"tab_id,omitempty"`
-	NewTab   bool   `json:"new_tab,omitempty"`
-	Profile  string `json:"profile,omitempty"`
-	Ref      string `json:"ref,omitempty"`
-	Selector string `json:"selector,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Submit   bool   `json:"submit,omitempty"`
-	Mode     string `json:"mode,omitempty"`
-	FullPage bool   `json:"full_page,omitempty"`
+	URL            string `json:"url,omitempty"`
+	Path           string `json:"path,omitempty"`
+	TabID          string `json:"tab_id,omitempty"`
+	NewTab         bool   `json:"new_tab,omitempty"`
+	BrowserProfile string `json:"browser_profile,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	Selector       string `json:"selector,omitempty"`
+	Text           string `json:"text,omitempty"`
+	Submit         bool   `json:"submit,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	FullPage       bool   `json:"full_page,omitempty"`
 }
 
 // BrowserRequest is the data of a macapp.browser.request frame. The frame's
@@ -181,7 +181,10 @@ func (a BrowserArgs) Validate(op Op) error {
 	if extra := a.fieldsOutside(op); len(extra) > 0 {
 		return fmt.Errorf("%s does not take %s", op, strings.Join(extra, ", "))
 	}
-	for name, value := range map[string]string{"tab_id": a.TabID, "profile": a.Profile, "ref": a.Ref, "selector": a.Selector} {
+	if a.BrowserProfile != "" && !ValidBrowserProfile(a.BrowserProfile) {
+		return fmt.Errorf("browser_profile must be letters, digits, '.', '_' or '-', at most %d, no leading '.'", MaxBrowserProfileLen)
+	}
+	for name, value := range map[string]string{"tab_id": a.TabID, "ref": a.Ref, "selector": a.Selector} {
 		if strings.ContainsAny(value, "\x00\r\n") {
 			return fmt.Errorf("%s contains control characters", name)
 		}
@@ -234,7 +237,7 @@ func (a BrowserArgs) Validate(op Op) error {
 // fieldsOutside lists set fields that op does not accept.
 func (a BrowserArgs) fieldsOutside(op Op) []string {
 	allowed := map[Op]string{
-		OpOpen:  "url path tab_id new_tab profile",
+		OpOpen:  "url path tab_id new_tab browser_profile",
 		OpTabs:  "",
 		OpClose: "tab_id",
 		OpClick: "tab_id ref selector text",
@@ -248,7 +251,7 @@ func (a BrowserArgs) fieldsOutside(op Op) []string {
 		on   bool
 	}{
 		{"url", a.URL != ""}, {"path", a.Path != ""}, {"tab_id", a.TabID != ""}, {"new_tab", a.NewTab},
-		{"profile", a.Profile != ""}, {"ref", a.Ref != ""}, {"selector", a.Selector != ""}, {"text", a.Text != ""},
+		{"browser_profile", a.BrowserProfile != ""}, {"ref", a.Ref != ""}, {"selector", a.Selector != ""}, {"text", a.Text != ""},
 		{"submit", a.Submit}, {"mode", a.Mode != ""}, {"full_page", a.FullPage},
 	}
 	var extra []string
@@ -354,4 +357,24 @@ func ActiveClaim(claims []FocusClaim, now time.Time) (FocusClaim, bool) {
 		}
 	}
 	return active, found
+}
+
+// MaxBrowserProfileLen caps a Browser panel profile name.
+const MaxBrowserProfileLen = 64
+
+// ValidBrowserProfile is the plain-name rule for a Browser panel profile
+// (open --browser-profile, browser open --browser-profile): [A-Za-z0-9._-],
+// no leading '.', at most MaxBrowserProfileLen bytes. It is never the
+// agent-deck profile.
+func ValidBrowserProfile(name string) bool {
+	if name == "" || len(name) > MaxBrowserProfileLen || name[0] == '.' {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }

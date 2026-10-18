@@ -319,22 +319,11 @@ func macappOpenLink(profile string, req MacappOpenRequest) string {
 const openMaxWait = 120 * time.Second
 
 // browserProfileMaxLen caps a Browser panel profile name.
-const browserProfileMaxLen = 64
+const browserProfileMaxLen = macapp.MaxBrowserProfileLen
 
 // validBrowserProfileName is the plain-name rule for --browser-profile:
 // [A-Za-z0-9._-], no leading '.', at most browserProfileMaxLen bytes.
-func validBrowserProfileName(name string) bool {
-	if name == "" || len(name) > browserProfileMaxLen || name[0] == '.' {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
-			return false
-		}
-	}
-	return true
-}
+func validBrowserProfileName(name string) bool { return macapp.ValidBrowserProfile(name) }
 
 // truncateForError keeps a refused value short in the error message.
 func truncateForError(s string) string {

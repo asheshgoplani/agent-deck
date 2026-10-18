@@ -20,7 +20,7 @@ agent-deck browser close --tab t2
 ## Command
 
 ```
-agent-deck browser open <url|file> [--tab ID | --new-tab] [--profile P]
+agent-deck browser open <url|file> [--tab ID | --new-tab] [--browser-profile NAME]
 agent-deck browser tabs
 agent-deck browser close --tab ID
 agent-deck browser click (--ref R | --selector S | --text T) [--tab ID]
@@ -119,7 +119,7 @@ and ignores later ones.
 
 | op | args | result |
 |----|------|--------|
-| `open` | `{url \| path, tab_id?, new_tab?, profile?}` | `{tab_id, url, title}` |
+| `open` | `{url \| path, tab_id?, new_tab?, browser_profile?}` | `{tab_id, url, title}` |
 | `tabs` | `{}` | `{tabs:[{tab_id, url, title, active}], driver}` |
 | `close` | `{tab_id}` | `{closed:true}` |
 | `click` | `{tab_id?, ref \| selector \| text}` | `{url, title}` |
@@ -131,8 +131,9 @@ Each op accepts only its own fields. `open` needs exactly one of `url` or
 `path` (`path` absolute, without `..`) and not both `tab_id` and `new_tab`;
 `click` needs exactly one target; `type` needs one of `ref` or `selector` and
 a non-empty `text`. Caps: `type` text 8 KiB, `read` text 256 KiB, `shot` image
-1.5 MiB decoded. The CLI refuses oversized results. `profile` names a Browser
-panel profile.
+1.5 MiB decoded. The CLI refuses oversized results. `browser_profile` names a Browser
+panel profile (letters, digits, `.`, `_`, `-`, at most 64, no leading `.`;
+not the agent-deck profile).
 
 `read` returns text and element refs only and masks password input values.
 There is no cookie, storage or script op, and `type` into a password field is
