@@ -404,17 +404,44 @@ func consumeRestartEnv() RestartHandoff {
 // that was exec'd by its predecessor: it puts the cursor back on the
 // session that was selected and tells the user which version they are on
 // now. The notice goes through the footer as a plain message, not a
-// failure.
-func (h *Home) applyRestartHandoff() {
+// failure. After a restart into a new version it returns the PATH scan for
+// older agent-deck copies that shadow this binary (run off the loop, since
+// it probes each copy), nil otherwise.
+func (h *Home) applyRestartHandoff() tea.Cmd {
 	hand := h.restartHandoff
 	h.restartHandoff = RestartHandoff{}
 	if hand.SelectedID != "" {
 		h.SelectSessionByID(hand.SelectedID)
 	}
-	if hand.OldVersion != "" {
-		uiLog.Info("tui_restarted", slog.String("from", hand.OldVersion), slog.String("into", Version))
-		h.setError(fmt.Errorf("restarted into v%s (was v%s)", Version, hand.OldVersion))
+	if hand.OldVersion == "" {
+		return nil
 	}
+	uiLog.Info("tui_restarted", slog.String("from", hand.OldVersion), slog.String("into", Version))
+	h.setError(fmt.Errorf("restarted into v%s (was v%s)", Version, hand.OldVersion))
+	version, old := Version, hand.OldVersion
+	return func() tea.Msg { return pathShadowMsg{copies: pathShadowScan(version), oldVersion: old} }
+}
+
+// pathShadowScan lists older agent-deck copies earlier on PATH than this
+// executable; a seam for tests.
+var pathShadowScan = update.FindShadowingCopies
+
+// pathShadowMsg carries the post-restart PATH scan.
+type pathShadowMsg struct {
+	copies     []update.ShadowCopy
+	oldVersion string
+}
+
+// applyPathShadow logs every shadowing copy and puts the first one in the
+// footer after the restart notice it extends, pointing at `agent-deck
+// doctor` for the full fix. The copies are never touched.
+func (h *Home) applyPathShadow(msg pathShadowMsg) {
+	if len(msg.copies) == 0 {
+		return
+	}
+	update.LogShadowCopies(uiLog, msg.copies)
+	c := msg.copies[0]
+	h.setError(fmt.Errorf("restarted into v%s (was v%s), but %s (%s) comes first on PATH: shells run that copy; fix: %s (see agent-deck doctor)", Version, msg.oldVersion, c.Path, c.VersionLabel(), c.Fix()))
 }
 
 // ExecSelf replaces the current process with exe, keeping os.Args and the

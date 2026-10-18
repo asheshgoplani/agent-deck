@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 )
 
 // This file is the CLI half of "a session's identity is WHERE IT RUNS".
@@ -245,6 +246,9 @@ func titleConflictError(inst *session.Instance, newTitle string, conflict *sessi
 // consumer to special-case one of the three (review finding F8). Renaming a
 // session to the title it already holds stays a no-op.
 func checkTitleConflict(instances []*session.Instance, inst *session.Instance, newTitle string) (string, string) {
+	// The title is stored cleaned (SetTitleThreadSafe), so compare that form:
+	// "foo\x1b" must collide with an existing "foo".
+	newTitle = termtext.Clean(newTitle)
 	if inst == nil || newTitle == inst.Title {
 		return "", ""
 	}

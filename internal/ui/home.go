@@ -489,6 +489,10 @@ type Home struct {
 	// store rather than groupTree's expanded flags.
 	remoteGroupsCollapsed map[string]bool
 
+	// A `session focus --remote` request whose session the remote list does
+	// not hold yet (#2704); retried after each remote refresh until its TTL.
+	pendingRemoteFocus *pendingRemoteFocus
+
 	// Manual order of remote session rows (#1875): remote -> group path ->
 	// session IDs. Remote rows are not Instances in groupTree, so shift+up/down
 	// cannot move them there; this local overlay carries the order instead and
@@ -1947,6 +1951,25 @@ func NewHomeWithProfile(profile string) *Home {
 // so status, log, pipe, and storage updates continue while the TUI is running.
 var homeBackgroundWorkersEnabled = true
 
+// startLogMaintenance runs log maintenance (truncate large logs, remove
+// orphaned ones) in the background. It shells out to `tmux list-sessions`, so
+// it is a background worker: in test mode a goroutine nobody waits for would
+// run tmux under whatever PATH a later test has swapped in (issue 2712).
+func startLogMaintenance(name string) {
+	if !homeBackgroundWorkersEnabled {
+		return
+	}
+	launchLogMaintenance(name)
+}
+
+// launchLogMaintenance is a variable so tests can observe startLogMaintenance.
+var launchLogMaintenance = func(name string) {
+	safego.Go(uiLog, name, func() {
+		logSettings := session.GetLogSettings()
+		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
+	})
+}
+
 // shouldAutoInstallCursorHooks reports whether TUI startup should run the
 // Cursor hook auto-install/watcher-start block in NewHomeWithProfileAndMode:
 // background workers must be enabled, the user must not have durably opted
@@ -2434,10 +2457,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Also initializes lastLogMaintenance and lastLogCheck so periodic checks start from now
 	h.lastLogMaintenance = time.Now()
 	h.lastLogCheck = time.Now()
-	safego.Go(uiLog, "startup_log_maintenance", func() {
-		logSettings := session.GetLogSettings()
-		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
-	})
+	startLogMaintenance("startup_log_maintenance")
 
 	// v1.7.60: one-shot nav-discoverability hint. Reuses the maintenance-banner
 	// slot so no extra layout math is needed. Dismisses via the existing ESC
@@ -2623,10 +2643,17 @@ func (h *Home) consumeFocusRequest(db *statedb.StateDB) tea.Cmd {
 		return nil
 	}
 
-	id, attach, fresh := session.DecodeFocusRequestAttach(raw, time.Now().UnixNano(), session.FocusRequestTTL)
-	if !fresh {
+	fr, ok, fresh := session.ParseFocusRequest(raw, time.Now().UnixNano(), session.FocusRequestTTL)
+	if !ok || !fresh {
 		return nil
 	}
+	if fr.Remote != "" {
+		// #2704: a session on a remote, selected under Remotes.
+		return h.consumeRemoteFocus(fr)
+	}
+	// A newer local request replaces a pending remote one.
+	h.pendingRemoteFocus = nil
+	id, attach := fr.ID, fr.Attach
 	if !h.SelectSessionByID(id) {
 		return nil
 	}
@@ -3183,8 +3210,13 @@ func (h *Home) sessionHasChildren(item session.Item) bool {
 // partition at a time (#1987: active or ^ archived), so a child in the other
 // partition never appears under the parent and must not produce a fold badge
 // or capture the fold keys (Tab, l/right, h/left) from the window toggle.
+//
+// A sub-session row never folds: the tree nests only one level, so a
+// sub-session's own children render as orphan rows and FlattenWithParentFolds
+// ignores a fold on it. Counting them put a badge on the row and took the
+// fold keys from the window toggle for a fold that hides nothing.
 func (h *Home) sessionChildCount(item session.Item) int {
-	if item.Session == nil || h.groupTree == nil {
+	if item.Session == nil || h.groupTree == nil || item.Session.IsSubSession() {
 		return 0
 	}
 	viewArchived := h.statusFilter == FilterModeArchived
@@ -4556,8 +4588,10 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	// Invalidate so the next View() recomputes.
 	h.cachedStatusCounts.valid.Store(false)
 	h.rebuildFlatItems()
+	// #2704: a focus request that arrived before its session did.
+	focusCmd := h.retryPendingRemoteFocus(time.Now())
 	if !roundDone {
-		return h, nil
+		return h, focusCmd
 	}
 	h.remoteSessionsMu.Lock()
 	again := h.remoteRefetchWanted
@@ -4567,9 +4601,9 @@ func (h *Home) applyRemoteFetch(msg remoteSessionsFetchedMsg) (tea.Model, tea.Cm
 	}
 	h.remoteSessionsMu.Unlock()
 	if again {
-		return h, h.fetchRemoteSessions
+		return h, tea.Batch(focusCmd, h.fetchRemoteSessions)
 	}
-	return h, nil
+	return h, focusCmd
 }
 
 // remoteFetchIsStale reports whether a newer fetch has already been applied
@@ -6729,6 +6763,11 @@ func (h *Home) backgroundStatusUpdate() {
 			continue
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
+				uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
+					slog.String("instance", inst.ID), slog.String("reason", reason))
+				continue
+			}
 			h.clearOnCompactSent[inst.ID] = time.Now()
 			conductorName := conductorDisplayName(inst)
 			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
@@ -8183,7 +8222,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Pick up where the process we were exec'd from left off.
 			if firstLoad {
-				h.applyRestartHandoff()
+				if cmd := h.applyRestartHandoff(); cmd != nil {
+					detectionCmds = append(detectionCmds, cmd)
+				}
 				if cmd := h.telemetryFirstLoad(); cmd != nil {
 					detectionCmds = append(detectionCmds, cmd)
 				}
@@ -8813,6 +8854,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateTimerEnsuredMsg:
 		h.handleUpdateTimerEnsured(msg)
+		return h, nil
+
+	case pathShadowMsg:
+		h.applyPathShadow(msg)
 		return h, nil
 
 	case binaryVersionProbedMsg:
@@ -10055,7 +10100,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Periodic remote session fetch (issue #1170). Cadence is configurable
 		// via [ui] remote_session_refresh_secs (default 15s); see
 		// shouldFetchRemoteSessions for the stale/in-flight gating.
-		if h.shouldFetchRemoteSessions(time.Now()) {
+		if h.shouldFetchRemoteSessions(time.Now()) || h.remoteFocusWantsFetch(time.Now()) {
 			h.remoteSessionsMu.Lock()
 			h.remotesFetchActive = true
 			h.remoteSessionsMu.Unlock()
@@ -10153,10 +10198,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Full log maintenance (orphan cleanup, etc) every 5 minutes
 		if time.Since(h.lastLogMaintenance) >= logMaintenanceInterval {
 			h.lastLogMaintenance = time.Now()
-			go func() {
-				logSettings := session.GetLogSettings()
-				tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
-			}()
+			startLogMaintenance("periodic_log_maintenance")
 		}
 
 		// Clean up expired animation entries (launching, resuming, MCP loading, forking)
@@ -12039,6 +12081,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				// Shared with `session focus --remote --attach` (#2704).
+				return h, h.openRemoteSessionRow(item.RemoteName, item.RemoteSession)
+			}
 			if !h.embeddedLayout && (item.Type == session.ItemTypeSession || item.Type == session.ItemTypeWindow || item.Type == session.ItemTypeRemoteSession) {
 				return h, h.attachSelectedLegacy()
 			}
@@ -12085,17 +12131,6 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if parentInst != nil && h.sessionExistsForUI(parentInst) && h.enterEmbeddedMode() {
 					return h, h.startEmbeddedModeCmd()
 				}
-			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
-				// A stopped remote session is restarted first, as Enter on a
-				// dead local session restarts it; the row refreshes when the
-				// remote confirms. Otherwise attach (embedded or over SSH).
-				if strings.EqualFold(item.RemoteSession.Status, string(session.StatusStopped)) {
-					return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
-				}
-				if h.enterEmbeddedMode() {
-					return h, h.startEmbeddedModeCmd()
-				}
-				return h, h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
 			}
 		}
 		return h, nil
@@ -14177,6 +14212,12 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 		uiLog.Warn("watcher_delivery_conductor_not_loaded", slog.String("conductor", d.Conductor))
 		return
 	}
+	budgetSessions := h.budgetSessions()
+	if reason, refused := h.agentDeliveryOverBudget(sessionByID(budgetSessions, id), budgetSessions); refused {
+		uiLog.Warn("dispatch_health_alert_budget_exceeded",
+			slog.String("tmux_session", ts.Name), slog.String("reason", reason))
+		return
+	}
 	lock, err := session.AcquireSendLock(id, conductorSendLockWait)
 	if err != nil {
 		uiLog.Warn("dispatch_health_alert_send_busy",
@@ -14190,6 +14231,58 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
+}
+
+// agentDeliveryOverBudget reports whether an enforced cost budget
+// ([costs.budgets] enforce = true) refuses an agent-initiated delivery the
+// TUI types into inst's pane itself (the heartbeat after a clear-on-compact,
+// a watcher health alert), with the reason. Group limits sum the sessions of
+// instances in inst's exact group.
+func (h *Home) agentDeliveryOverBudget(inst *session.Instance, instances []*session.Instance) (string, bool) {
+	if inst == nil || !h.costBudget.Enforced() {
+		return "", false
+	}
+	ids := []string{inst.ID}
+	for _, other := range instances {
+		if other != nil && other.ID != inst.ID && other.GroupPath == inst.GroupPath {
+			ids = append(ids, other.ID)
+		}
+	}
+	r, err := h.costBudget.CheckSend(inst.ID, inst.GroupPath, ids)
+	if err != nil || r.Action != costs.BudgetActionStop {
+		return "", false
+	}
+	return r.Describe(), true
+}
+
+// budgetSessions returns the sessions the budget gate looks at: the loaded
+// ones, or for a headless engine owner (which loads none) the ones in
+// storage. Nil without an enforced budget, so nothing is read then.
+func (h *Home) budgetSessions() []*session.Instance {
+	if !h.costBudget.Enforced() {
+		return nil
+	}
+	h.instancesMu.RLock()
+	loaded := append([]*session.Instance(nil), h.instances...)
+	h.instancesMu.RUnlock()
+	if len(loaded) > 0 || !h.headless || h.storage == nil {
+		return loaded
+	}
+	instances, _, err := h.storage.LoadWithGroups()
+	if err != nil {
+		return nil
+	}
+	return instances
+}
+
+// sessionByID finds id in instances, or nil.
+func sessionByID(instances []*session.Instance, id string) *session.Instance {
+	for _, inst := range instances {
+		if inst != nil && inst.ID == id {
+			return inst
+		}
+	}
+	return nil
 }
 
 // conductorSendLockWait bounds how long a health alert waits for another
@@ -18164,9 +18257,20 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which would lose the tmux session state)
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
+	opts := h.attachOptions(tmuxSess)
+	// #2704: record the client this attach runs in, so `session focus
+	// --remote --attach` can detach exactly it to bring the TUI back. Both
+	// callbacks run inside attachCmd.Run, on one goroutine.
+	clientPID := 0
+	opts.OnClientStarted = func(pid int) {
+		clientPID = pid
+		if db := statedb.GetGlobal(); db != nil {
+			_ = session.WriteTUIAttach(db, session.TUIAttach{Socket: tmuxSess.SocketName, ClientPID: pid})
+		}
+	}
 	return tea.Exec(attachCmd{
 		session: tmuxSess,
-		opts:    h.attachOptions(tmuxSess),
+		opts:    opts,
 		result:  res,
 		// #1753: clear the flag inside Run(), i.e. BEFORE Bubble Tea restores the
 		// terminal and resumes the loop. The ExecCallback below runs on its own
@@ -18176,7 +18280,12 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// the first post-detach repaint deterministic. Nothing can call View() in
 		// between — the event loop is parked inside Program.exec for the whole
 		// attach.
-		onExit: func() { h.isAttaching.Store(false) },
+		onExit: func() {
+			if db := statedb.GetGlobal(); db != nil && clientPID != 0 {
+				_ = session.ClearTUIAttach(db, clientPID)
+			}
+			h.isAttaching.Store(false)
+		},
 	}, func(err error) tea.Msg {
 		// Belt for the path where Bubble Tea fails to release the terminal and
 		// invokes this callback without ever running attachCmd.Run().
@@ -19873,13 +19982,7 @@ func overlayAtCells(base, overlay string, row, col int) string {
 // renderPanelTitle creates a styled section title with underline
 func (h *Home) renderPanelTitle(title string, width int) string {
 	// Truncate title if it exceeds width
-	if len(title) > width {
-		if width > 3 {
-			title = title[:width-3] + "..."
-		} else {
-			title = title[:width]
-		}
-	}
+	title = truncateDisplay(title, width, "...")
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(ColorCyan).
@@ -20149,15 +20252,13 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 	content.WriteString(titleStyle.Render(config.Title))
 
 	// Subtitle - shown in full and compact modes
+	// (padding and margins take hPad*2+4 columns; a pane too narrow for a
+	// shortened subtitle leaves it out).
 	if config.Subtitle != "" && (tier != "minimal" || config.ShowSubtitleMinimal) {
-		content.WriteString("\n")
-		// Truncate subtitle if width is tight
-		subtitle := config.Subtitle
-		maxSubtitleWidth := width - hPad*2 - 4 // Account for padding and margins
-		if maxSubtitleWidth > 0 && len(subtitle) > maxSubtitleWidth {
-			subtitle = subtitle[:maxSubtitleWidth-3] + "..."
+		if subtitle, ok := fitEmptyStateText(config.Subtitle, width-hPad*2-4); ok {
+			content.WriteString("\n")
+			content.WriteString(subtitleStyle.Render(subtitle))
 		}
-		content.WriteString(subtitleStyle.Render(subtitle))
 	}
 
 	// Body - extra plain lines, same tiers as Subtitle. Rendered as one
@@ -20190,22 +20291,24 @@ func renderEmptyStateResponsive(config EmptyStateConfig, width, height int) stri
 		if tier == "minimal" && config.ShowAllHintsMinimal {
 			hintCount = len(config.Hints)
 		}
-		hintsToShow := config.Hints[:hintCount]
-
-		if tier == "full" {
-			content.WriteString("\n\n")
-		} else {
-			content.WriteString("\n")
+		// Each hint gets the width minus padding, margins and the "• "
+		// prefix (hPad*2+6); one that cannot be shortened usefully is left out.
+		var hintsToShow []string
+		for _, hint := range config.Hints[:hintCount] {
+			if displayHint, ok := fitEmptyStateText(hint, width-hPad*2-6); ok {
+				hintsToShow = append(hintsToShow, displayHint)
+			}
 		}
 
-		for i, hint := range hintsToShow {
-			// Truncate hint if width is tight
-			displayHint := hint
-			maxHintWidth := width - hPad*2 - 6 // Account for "• " prefix and margins
-			if maxHintWidth > 0 && len(displayHint) > maxHintWidth {
-				displayHint = displayHint[:maxHintWidth-3] + "..."
+		if len(hintsToShow) > 0 {
+			if tier == "full" {
+				content.WriteString("\n\n")
+			} else {
+				content.WriteString("\n")
 			}
-			content.WriteString(hintStyle.Render("• " + displayHint))
+		}
+		for i, hint := range hintsToShow {
+			content.WriteString(hintStyle.Render("• " + hint))
 			if i < len(hintsToShow)-1 {
 				content.WriteString("\n")
 			}
@@ -22509,9 +22612,7 @@ func (h *Home) renderSessionItem(
 	worktreeBadge := ""
 	if inst.IsWorktree() && inst.WorktreeBranch != "" {
 		branch := inst.WorktreeBranch
-		if len(branch) > 15 {
-			branch = branch[:12] + "..."
-		}
+		branch = truncateDisplay(branch, 15, "...")
 		wtStyle := lipgloss.NewStyle().Foreground(ColorCyan)
 		if selected {
 			wtStyle = SessionStatusSelStyle
@@ -22544,9 +22645,7 @@ func (h *Home) renderSessionItem(
 	sshBadge := ""
 	if inst.IsSSH() {
 		host := inst.SSHHost
-		if len(host) > 20 {
-			host = host[:17] + "..."
-		}
+		host = truncateDisplay(host, 20, "...")
 		sshStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
 		if selected {
 			sshStyle = SessionStatusSelStyle
@@ -23270,9 +23369,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	titleStr := rs.Title
-	if len(titleStr) > 25 {
-		titleStr = titleStr[:22] + "..."
-	}
+	titleStr = truncateDisplay(titleStr, 25, "...")
 
 	toolStr := ""
 	if rs.Tool != "" && !h.toolBadgeHidden(rs.Tool) {

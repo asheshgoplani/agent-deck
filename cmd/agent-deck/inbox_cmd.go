@@ -336,7 +336,7 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 		session.SpoolCommsCall(caller, comms.CallInboxDrain, sessionID)
 	}
 
-	events, err := session.DrainInboxForParent(sessionID)
+	events, withdrawn, err := session.DrainInboxForParentReport(sessionID)
 	if err != nil {
 		return fmt.Errorf("drain inbox: %w", err)
 	}
@@ -352,6 +352,7 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 	} else {
 		printInboxEvents(stdout, events)
 	}
+	reportWithdrawnRecords(os.Stderr, withdrawn, *asJSON)
 
 	// Messaging audit P1-4 (#2101): a dead letter is parked, not pending
 	// delivery, and nothing can ack it yet, so it must not turn every
@@ -371,6 +372,34 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 		}
 	}
 	return nil
+}
+
+// reportWithdrawnRecords logs the records a drain retired unshown because
+// the parent already read the result they announce. It goes to stderr so
+// stdout stays the delivered records (a JSON array with --json, unchanged
+// for every consumer): one line "withdrawn N ..." in text mode, one JSON
+// object {"withdrawn": N, "withdrawn_records": [...]} with --json. Nothing
+// is printed when nothing was withdrawn.
+func reportWithdrawnRecords(w io.Writer, withdrawn []session.TransitionNotificationEvent, asJSON bool) {
+	if len(withdrawn) == 0 {
+		return
+	}
+	type withdrawnRecord struct {
+		Child    string `json:"child_session_id"`
+		Title    string `json:"child_title,omitempty"`
+		TurnUUID string `json:"turn_uuid"`
+	}
+	records := make([]withdrawnRecord, 0, len(withdrawn))
+	names := make([]string, 0, len(withdrawn))
+	for _, ev := range withdrawn {
+		records = append(records, withdrawnRecord{Child: ev.ChildSessionID, Title: ev.ChildTitle, TurnUUID: ev.TurnUUID})
+		names = append(names, ev.ChildSessionID+"@"+ev.TurnUUID)
+	}
+	if asJSON {
+		_ = json.NewEncoder(w).Encode(map[string]any{"withdrawn": len(records), "withdrawn_records": records})
+		return
+	}
+	fmt.Fprintf(w, "withdrawn %d record(s) already read with session output: %s\n", len(records), strings.Join(names, ", "))
 }
 
 func resolveInboxDrainSession(identifier string) (string, error) {

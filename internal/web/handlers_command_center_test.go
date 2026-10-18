@@ -394,8 +394,8 @@ func TestCommandCenterFleetSummariesAndChildHints(t *testing.T) {
 // An ask is tagged --source command-center so `agent-deck triggers` names
 // it (issue #2702); the message stays one argv element.
 func TestCommandCenterAskArgsCarrySource(t *testing.T) {
-	got := strings.Join(commandCenterAskArgs("personal", "maestro", "[command-center] hi; rm -rf /"), "\x00")
-	want := strings.Join([]string{"-p", "personal", "session", "send", "maestro", "[command-center] hi; rm -rf /", "--no-wait", "--no-tag", "--source", "command-center"}, "\x00")
+	got := strings.Join(commandCenterSendArgs("personal", "maestro", "[command-center] hi; rm -rf /"), "\x00")
+	want := strings.Join([]string{"-p", "personal", "session", "send", "maestro", "[command-center] hi; rm -rf /", "--no-wait", "--no-tag", "--ignore-budget", "--source", "command-center"}, "\x00")
 	if got != want {
 		t.Fatalf("ask argv = %q, want %q", got, want)
 	}

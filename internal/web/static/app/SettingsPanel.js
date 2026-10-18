@@ -33,8 +33,9 @@ export function SettingsPanel() {
       <div class="kv" data-testid="settings-picker-tools"><span class="k">picker tools</span><span class="v">${(settings.pickerTools || []).join(', ') || 'loading…'}</span></div>
       <div class="kv" data-testid="settings-trusted-domains"><span class="k">trusted domains</span><span class="v">${(settings.trustedDomains || []).join(', ') || 'none'}</span></div>
       <div class="kv" data-testid="settings-confirm-link-open"><span class="k">link confirm</span><span class=${`v ${settings.confirmLinkOpen === false ? 'warn' : 'ok'}`}>${settings.confirmLinkOpen === false ? 'off' : 'on'}</span></div>
+      <div class="kv" data-testid="settings-file-link-roots"><span class="k">file link roots</span><span class="v">${(settings.fileLinkRoots || []).join(', ') || 'none (copy path)'}</span></div>
       <div style="font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px;">
-        Edit <code>~/.config/agent-deck/config.toml</code> (<code>[ui] hidden_tools</code>, <code>[web] trusted_domains</code>) or use TUI Settings → Visible tools…
+        Edit <code>~/.config/agent-deck/config.toml</code> (<code>[ui] hidden_tools</code>, <code>[web] trusted_domains</code>, <code>[web] file_link_roots</code>) or use TUI Settings → Visible tools…
       </div>
     </div>
   `

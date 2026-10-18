@@ -157,11 +157,10 @@ func WriteCursorProjectMCP(projectPath string, enabledNames []string) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(mcpFile)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create .cursor directory: %w", err)
-	}
-	if err := WriteMergedMcpJSONFile(mcpFile, enabledNames, ""); err != nil {
+	// No MkdirAll here: .cursor may be a link out of the project, and nothing
+	// may be created before the containment check. The lock and the atomic
+	// write create the directory once the check has passed.
+	if err := writeMergedMcpJSONFileWithin(filepath.Dir(filepath.Dir(mcpFile)), mcpFile, enabledNames, ""); err != nil {
 		return err
 	}
 	return nil

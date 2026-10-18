@@ -304,7 +304,7 @@ an unknown name).
 
 ## Limits
 
-`limits --json` (needs `[macapp] plugins = true`; `remote <name> limits
+`limits --json` (needs `[macapp] plugins = true`, see "Turning on `[macapp] plugins`" below; `remote <name> limits
 --json` forwards it read-only and returns the remote's own accounts; a remote
 that predates `limits` exits 1 with `unsupported remote command "limits" on
 remote "NAME"; update its agent-deck`, as `{error, remote, remote_version}`
@@ -380,6 +380,52 @@ the value, writes it with the same writer the TUI Settings panel uses
 the value read back. Lists are comma-separated (`system_stats.show cpu,load`).
 `ui.theme` is an alias of `theme`. Exit 2 for an unknown key or an invalid
 value.
+
+### Turning on `[macapp] plugins` (consent)
+
+`[macapp] plugins` stays off by default: it lets `limits` read every
+account's usage and lets any local process publish `macapp.*` frames the app
+acts on. A key that needs consent carries a `consent` text in `config schema
+--json` (today only `macapp.plugins`). Turning it on needs that consent
+explicitly:
+
+- `config set macapp.plugins true` in a terminal prints the consent text and
+  asks `[y/N]`; anything but `y` or `yes` prints `Not changed.` on stderr and
+  leaves the file untouched (exit 2, as without consent below). When the key
+  is already on, `config set macapp.plugins true` asks nothing.
+- Without a terminal, or with `--json`, it exits 2 and changes nothing:
+
+```json
+{"success": false, "code": "CONSENT_REQUIRED", "key": "macapp.plugins", "value": true,
+ "consent": "…", "confirm_command": "agent-deck config set macapp.plugins true --yes",
+ "confirm_argv": ["config", "set", "macapp.plugins", "true", "--yes"], "error": "…"}
+```
+
+- `--yes` (or `-y`) is the consent: the app shows `consent`, and only after
+  the user agrees runs its own agent-deck binary with `confirm_argv` (append
+  `--json` to read the value back). Setting it to `false` never needs consent.
+
+While it is off, `limits` and `events publish --kind macapp.<name>` (other
+than the built-in `macapp.open` and `macapp.open.ack`) exit 2 with
+`code: "INVALID_OPERATION"`, an error that names the command, and a `hint`
+the app can render as the same consent prompt:
+
+```json
+{"success": false, "code": "INVALID_OPERATION",
+ "error": "limits is off: it needs [macapp] plugins = true in config.toml. To enable it, run: agent-deck config set macapp.plugins true --yes (docs/macapp-core.md)",
+ "hint": {"key": "macapp.plugins", "value": true,
+          "command": "agent-deck config set macapp.plugins true --yes",
+          "argv": ["config", "set", "macapp.plugins", "true", "--yes"],
+          "consent": "…", "docs": "docs/macapp-core.md"}}
+```
+
+A `remote <name> limits` error is the remote's own, with the enable command
+relabelled for that host: the message says `To enable it on remote NAME
+(HOST), run there: agent-deck config set macapp.plugins true --yes`, and the
+JSON `hint` names `remote` and `remote_host`, carries the command as
+`remote_argv` (agent-deck arguments for the remote's binary) and has no
+`argv`, so a client never turns plugins on locally by mistake. `config` is
+not forwarded by `remote`: run it on that host.
 
 ## Favourites
 

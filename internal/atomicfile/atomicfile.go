@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -53,6 +54,92 @@ func WriteFileDurable(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return writeAtomic(target, data, perm, true)
+}
+
+// WriteFileWithin is WriteFile for a file inside a directory tree someone else
+// may control, such as a cloned repository. The real file it would write, after
+// following every symlink on the way (the file itself and its parent
+// directories), must lie under root; a link that leads outside is refused
+// instead of followed, so a repository cannot point its config file at an
+// unrelated file of the user. A link that stays inside root is preserved like
+// WriteFile does.
+func WriteFileWithin(root, path string, data []byte, perm os.FileMode) error {
+	target, err := resolveTarget(path)
+	if err != nil {
+		return err
+	}
+	if err := requireWithin(root, path, target); err != nil {
+		return err
+	}
+	return writeAtomic(target, data, perm, false)
+}
+
+// CheckWithin reports the error WriteFileWithin(root, path, ...) would refuse
+// with, without writing. Callers that open a file beside path first (a lock)
+// check both paths before touching either.
+func CheckWithin(root, path string) error {
+	target, err := resolveTarget(path)
+	if err != nil {
+		return err
+	}
+	return requireWithin(root, path, target)
+}
+
+// ErrOutsideRoot is wrapped by the errors WriteFileWithin and CheckWithin
+// return when the real file lies outside root, so callers can add advice.
+var ErrOutsideRoot = errors.New("resolves outside the allowed directory")
+
+// requireWithin reports an error unless target, with every existing ancestor
+// resolved through symlinks, lies under root (also resolved). Components that
+// do not exist yet are kept as written; writeAtomic creates them as real
+// directories. A missing component that is really a dangling symlink is also
+// kept as written: MkdirAll then fails on it (mkdir does not follow a link),
+// so nothing is created at the link's destination.
+func requireWithin(root, path, target string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("atomicfile: resolve %s: %w", root, err)
+	}
+	existing := filepath.Dir(target)
+	missing := filepath.Base(target)
+	realDir, err := filepath.EvalSymlinks(existing)
+	for err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("atomicfile: resolve %s: %w", existing, err)
+		}
+		// A dangling symlink is not a missing directory: following it could
+		// create directories wherever it points. Refuse it here rather than
+		// rely on MkdirAll failing on it later. existing is a cleaned absolute
+		// path, so it holds ".." only inside a name; such a path skips this
+		// extra check and still cannot create anything through the link,
+		// since mkdir does not follow it. The guard is also the traversal
+		// check CodeQL go/path-injection recognises.
+		if !strings.Contains(existing, "..") {
+			if fi, lerr := os.Lstat(existing); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				dest, _ := os.Readlink(existing)
+				return fmt.Errorf("atomicfile: refusing to write %s: %s is a symlink to the missing path %s",
+					target, existing, dest)
+			}
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return fmt.Errorf("atomicfile: resolve %s: %w", target, err)
+		}
+		missing = filepath.Join(filepath.Base(existing), missing)
+		existing = parent
+		realDir, err = filepath.EvalSymlinks(existing)
+	}
+	rel, err := filepath.Rel(realRoot, filepath.Join(realDir, missing))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		real := filepath.Join(realDir, missing)
+		if filepath.Clean(path) != filepath.Clean(target) {
+			return fmt.Errorf("atomicfile: refusing to write %s: it is a symlink to %s, outside %s: %w",
+				path, real, root, ErrOutsideRoot)
+		}
+		return fmt.Errorf("atomicfile: refusing to write %s: a symlinked parent directory puts it at %s, outside %s: %w",
+			path, real, root, ErrOutsideRoot)
+	}
+	return nil
 }
 
 // resolveTarget returns the real file path that should be written. For a regular

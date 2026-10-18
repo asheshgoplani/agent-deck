@@ -14,6 +14,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/health"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -213,6 +214,9 @@ type InstanceData struct {
 	// HermesSessionID mirrors Instance.HermesSessionID (issue #2582), stored in
 	// the tool_data extras zone (hermes_session_persist.go).
 	HermesSessionID string `json:"hermes_session_id,omitempty"`
+	// HermesDetectedAt is when the binding was recorded (tool_data
+	// hermes_detected_at); restart compares it with the hook record.
+	HermesDetectedAt time.Time `json:"-"`
 }
 
 // GroupData represents serializable group data
@@ -1288,7 +1292,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 
 		instances[i] = &InstanceData{
 			ID:                        r.ID,
-			Title:                     r.Title,
+			Title:                     termtext.Clean(r.Title),
 			ProjectPath:               r.ProjectPath,
 			GroupPath:                 r.GroupPath,
 			Order:                     r.Order,
@@ -1361,6 +1365,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
+			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1433,7 +1438,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 
 		data.Instances[i] = &InstanceData{
 			ID:                        r.ID,
-			Title:                     r.Title,
+			Title:                     termtext.Clean(r.Title),
 			ProjectPath:               r.ProjectPath,
 			GroupPath:                 r.GroupPath,
 			Order:                     r.Order,
@@ -1506,6 +1511,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			HookLag:                   ReadHookLagFromToolData(r.ToolData),
 			DeepSeekTask:              ReadDeepSeekTaskFromToolData(r.ToolData),
 			HermesSessionID:           ReadHermesSessionIDFromToolData(r.ToolData),
+			HermesDetectedAt:          ReadHermesDetectedAtFromToolData(r.ToolData),
 			SupersededBy:              ReadCrossHarnessSupersededByFromToolData(r.ToolData),
 			Supersedes:                ReadCrossHarnessSupersedesFromToolData(r.ToolData),
 		}
@@ -1599,7 +1605,11 @@ func (s *Storage) LoadRecentSessions() ([]*statedb.RecentSessionRow, error) {
 		return nil, fmt.Errorf("storage database not initialized")
 	}
 
-	return s.db.LoadRecentSessions()
+	rows, err := s.db.LoadRecentSessions()
+	for _, r := range rows {
+		r.Title = termtext.Clean(r.Title) // rendered in the TUI's recent list
+	}
+	return rows, err
 }
 
 // GetDBPathForProfile returns the path to the state.db file for a specific profile.
@@ -1753,7 +1763,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 
 		inst := &Instance{
 			ID:                           instData.ID,
-			Title:                        instData.Title,
+			Title:                        termtext.Clean(instData.Title),
 			ProjectPath:                  projectPath,
 			GroupPath:                    groupPath,
 			Order:                        instData.Order,
@@ -1803,6 +1813,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Favorite:                     instData.Favorite,
 			DeepSeekTask:                 instData.DeepSeekTask,
 			HermesSessionID:              instData.HermesSessionID,
+			hermesBoundAt:                instData.HermesDetectedAt,
 			SubcommandPassthrough:        instData.SubcommandPassthrough,
 			TrackCommandExit:             instData.TrackCommandExit,
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,

@@ -658,7 +658,7 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 	// a wedged tmux) can't pile up orphaned processes if many asks fire.
 	// --no-tag: an operator's command-center message is not a send from
 	// whatever session the web server happened to be started in.
-	args := commandCenterAskArgs(s.cfg.Profile, resolved, msg)
+	args := commandCenterSendArgs(s.cfg.Profile, resolved, msg)
 	cmdCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, exe, args...)
@@ -698,10 +698,6 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 // "conductor-maestro" session when present (else bare "maestro").
 // commandCenterAskArgs is the `session send` argv of one ask. --source
 // command-center names the sender in `agent-deck triggers` (issue #2702).
-func commandCenterAskArgs(profile, target, msg string) []string {
-	return []string{"-p", profile, "session", "send", target, msg, "--no-wait", "--no-tag", "--source", "command-center"}
-}
-
 func resolveAskTarget(target string, allow []string) string {
 	if target == "maestro" {
 		if targetAllowed(allow, "conductor-maestro") {
@@ -763,4 +759,14 @@ func firstNonEmptyString(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// commandCenterSendArgs is the `session send` argv of a Command Center ask.
+// --no-tag: an operator's message is not a send from whatever session the
+// web server happened to be started in. --ignore-budget: an operator's
+// message is never blocked by an enforced cost budget, which gates
+// agent-initiated sends only.
+func commandCenterSendArgs(profile, target, msg string) []string {
+	// --source names the ask in `agent-deck triggers` (issue #2702).
+	return []string{"-p", profile, "session", "send", target, msg, "--no-wait", "--no-tag", "--ignore-budget", "--source", "command-center"}
 }

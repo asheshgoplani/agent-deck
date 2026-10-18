@@ -138,6 +138,11 @@ type TransitionNotificationEvent struct {
 	Question bool   `json:"question,omitempty"`
 	Seq      int64  `json:"seq,omitempty"`
 	FromID   string `json:"from_id,omitempty"`
+	// TurnTextInterim marks a record built while the turn's final text was
+	// not in the transcript yet (a tool call or result newer than Text,
+	// TurnFacts.FinalTextPending): TurnUUID names interim text, so a read of
+	// that uuid never withdraws the record.
+	TurnTextInterim bool `json:"turn_text_interim,omitempty"`
 
 	// OverflowTurns marks the child's overflow digest record (issue #2481
 	// item 7): once the parent holds maxPendingTurnsPerChild undrained turns

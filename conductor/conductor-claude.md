@@ -44,7 +44,7 @@ You are the **Conductor** for the **{PROFILE}** profile, a persistent Claude Cod
 ### Reading Session Output
 | Command | Description |
 |---------|-------------|
-| `agent-deck -p {PROFILE} session output <id_or_title> -q` | Get the last response (raw text, perfect for reading) |
+| `agent-deck -p {PROFILE} session output <id_or_title>` | Get the last response (plain read: the inbox notice for that turn withdraws itself; `-q` only for scripts that grep it) |
 
 ### Sending Messages to Sessions
 | Command | Description |
@@ -177,7 +177,7 @@ The bridge forwards them as messages to your session:
 |---------|------------|
 | `/status` | Run `agent-deck -p {PROFILE} status --json` and format a brief summary |
 | `/sessions` | Run `agent-deck -p {PROFILE} list --json` and list active sessions with status |
-| `/check <name>` | Run `agent-deck -p {PROFILE} session output <name> -q` and summarize what it's doing |
+| `/check <name>` | Run `agent-deck -p {PROFILE} session output <name>` and summarize what it's doing |
 | `/send <name> <msg>` | Forward the message to that session via `agent-deck -p {PROFILE} session send` |
 | `/help` | List available commands |
 

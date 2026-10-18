@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -281,8 +283,17 @@ func saveConsumedTurnsLocked(parentID string, m map[string]int64) error {
 // before truncating the inbox, then finalize the consumed ledger and drop the
 // WAL. A crash between the two phases re-delivers from the WAL on the next call.
 func DrainInboxForParent(parentID string) ([]TransitionNotificationEvent, error) {
+	out, _, err := DrainInboxForParentReport(parentID)
+	return out, err
+}
+
+// DrainInboxForParentReport is DrainInboxForParent that also returns the
+// records this drain withdrew (retired unshown because the parent already
+// read the result they announce, inbox_result_read.go), so `inbox drain`
+// can report them.
+func DrainInboxForParentReport(parentID string) (delivered, withdrawn []TransitionNotificationEvent, err error) {
 	if strings.TrimSpace(parentID) == "" {
-		return nil, errors.New("inbox drain: empty parent session id")
+		return nil, nil, errors.New("inbox drain: empty parent session id")
 	}
 
 	// The producers' flock, held across BOTH phases so no rename can land
@@ -290,7 +301,7 @@ func DrainInboxForParent(parentID string) ([]TransitionNotificationEvent, error)
 	// stage the same WAL (messaging audit P1-3).
 	fileLock, err := acquireInboxLock(parentID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer fileLock.Release()
 
@@ -299,10 +310,10 @@ func DrainInboxForParent(parentID string) ([]TransitionNotificationEvent, error)
 	// caller wins the inbox under the flock + inboxWriteMu.
 	staged, err := stageInboxDrainLocked(parentID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(staged) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Phase 2: dedup against the consumed ledger, mark the rest consumed (fsync),
@@ -351,7 +362,7 @@ func stageInboxDrainLocked(parentID string) ([]TransitionNotificationEvent, erro
 // finalizeInboxDrain is phase 2: collapse same-turn retries, dedup against the consumed
 // ledger, mark newly-delivered turns consumed (durable), then drop the WAL.
 // Caller holds the inbox flock.
-func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) ([]TransitionNotificationEvent, error) {
+func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) ([]TransitionNotificationEvent, []TransitionNotificationEvent, error) {
 	collapsed := collapseTurnRetries(staged)
 
 	consumedTurnsMu.Lock()
@@ -359,12 +370,14 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 	consumed := loadConsumedTurnsLocked(parentID)
 	marker, err := loadInboxConsumeMarker(parentID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	now := time.Now().Unix()
+	reads := loadResultReads(parentID)
 	var out []TransitionNotificationEvent
 	dirty := false
+	var withdrawn []TransitionNotificationEvent
 	for _, ev := range collapsed {
 		fp := ev.TurnFingerprint
 		if fp == "" {
@@ -375,6 +388,14 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 		}
 		consumed[fp] = now
 		dirty = true
+		if reads.covers(ev) {
+			// The parent already read this result: the notice withdraws
+			// itself (consumed, never shown). See inbox_result_read.go.
+			withdrawn = append(withdrawn, ev)
+			commsLog.Info("inbox_record_withdrawn_result_read",
+				slog.String("parent", parentID), slog.String("child", ev.ChildSessionID), slog.String("turn", ev.TurnUUID))
+			continue
+		}
 		out = append(out, ev)
 	}
 	if dirty {
@@ -386,13 +407,13 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 		if err := saveConsumedTurnsLocked(parentID, consumed); err != nil {
 			// Ledger not durable — leave the WAL in place so the next drain
 			// re-delivers rather than loses.
-			return out, err
+			return out, withdrawn, err
 		}
 		// The marker is deliberately alongside the inbox, not the restorable
 		// ledger. Writing ledger first is fail-closed: a marker-write failure
 		// leaves the WAL for retry and cannot falsely bless a rolled-back ledger.
 		if err := saveInboxConsumeMarker(parentID, generation); err != nil {
-			return out, err
+			return out, withdrawn, err
 		}
 		marker.Generation = generation
 	}
@@ -401,7 +422,7 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 	// marker before dropping that WAL so the completed consume is still pinned.
 	if ledgerGeneration := consumedLedgerGeneration(consumed); marker.Generation < ledgerGeneration {
 		if err := saveInboxConsumeMarker(parentID, ledgerGeneration); err != nil {
-			return out, err
+			return out, withdrawn, err
 		}
 	}
 	// Consumed ledger durable (or nothing new to mark) — the records are now
@@ -409,7 +430,10 @@ func finalizeInboxDrain(parentID string, staged []TransitionNotificationEvent) (
 	inboxWriteMu.Lock()
 	removeInflightLocked(parentID)
 	inboxWriteMu.Unlock()
-	return out, nil
+	if len(withdrawn) > 0 {
+		_ = BumpInboxStats(parentID, func(s *InboxStats) { s.RecordsWithdrawn += int64(len(withdrawn)) })
+	}
+	return out, withdrawn, nil
 }
 
 // DrainStagePhaseForCrashTest runs ONLY phase 1 of the drain (stage + truncate)
@@ -615,15 +639,22 @@ func DrainInboxForParentWhere(parentID string, choose func(pending []TransitionN
 	consumedTurnsMu.Lock()
 	consumed := loadConsumedTurnsLocked(parentID)
 	consumedTurnsMu.Unlock()
-	var pending []TransitionNotificationEvent
+	reads := loadResultReads(parentID)
+	var pending, withdrawn []TransitionNotificationEvent
 	for _, ev := range collapseTurnRetries(staged) {
-		if _, seen := consumed[turnFingerprintOf(ev)]; !seen {
-			pending = append(pending, ev)
+		if _, seen := consumed[turnFingerprintOf(ev)]; seen {
+			continue
 		}
+		if reads.covers(ev) {
+			// Already read by the parent: retired by finalize, never offered.
+			withdrawn = append(withdrawn, ev)
+			continue
+		}
+		pending = append(pending, ev)
 	}
-	take := choose(pending)
-	taken := make(map[string]bool, len(take))
-	for _, ev := range take {
+	retire := slices.Concat(choose(pending), withdrawn)
+	taken := make(map[string]bool, len(retire))
+	for _, ev := range retire {
 		taken[turnFingerprintOf(ev)] = true
 	}
 	inboxWriteMu.Lock()
@@ -639,7 +670,8 @@ func DrainInboxForParentWhere(parentID string, choose func(pending []TransitionN
 		}
 	}
 	inboxWriteMu.Unlock()
-	return finalizeInboxDrain(parentID, take)
+	out, _, err := finalizeInboxDrain(parentID, retire)
+	return out, err
 }
 
 func turnFingerprintOf(ev TransitionNotificationEvent) string {

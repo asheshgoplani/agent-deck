@@ -520,6 +520,24 @@ pane or fallback responses). `--json --if-version V` answers
 while that file is unchanged; it costs one stat, parses nothing and is not
 logged as a read. Any change returns the full response with a new version.
 
+Run from inside another session, a plain text read of a Claude child (no
+`-q`/`--quiet`, `--json`, `--copy` or `--pane`, not clipped by
+`--max-tokens`, not a pane fallback), the way an agent reads a child from its
+Bash tool, is remembered per reader and child as the transcript record it
+printed and when. An inbox notice for that exact turn (same `turn_uuid`)
+withdraws itself (no wake, no Stop block, no injected record) only when the
+read came at or after the notice's time, i.e. after the turn ended. A
+mid-turn peek, a read that showed an earlier record, and a notice built
+while a tool call was newer than the turn's text (the final reply not yet
+written) withdraw nothing. Scripts and poll loops (`session output -q child
+| grep -q DONE`, `--json` dashboards, `launch-subagent.sh --wait`) never
+withdraw anything. Questions, errors and overflow digests are always
+delivered. `inbox drain` reports what it withdrew on stderr (`withdrawn N
+record(s) ...`, or one JSON object `{"withdrawn": N, "withdrawn_records":
+[{"child_session_id", "child_title", "turn_uuid"}]}` with `--json`; stdout is
+unchanged). The comms ledger consumers do not consult reads; there a read
+result is delivered as before.
+
 ### session context
 
 ```bash
@@ -1024,7 +1042,7 @@ agent-deck inbox stats [--json] --all
 agent-deck inbox stats --reset <session-id>
 ```
 
-Read-only counters (#2469) kept per parent under `runtime/inbox-stats/`: records by tier (`records_urgent`, `records_info`, `records_legacy`), turns suppressed (`noise_suppressed`, `dedup_suppressed`), wakeups (`wakeups_urgent`, `wakeups_digest`, `wakeups_suppressed`), delivery (`drains`, `records_delivered`, `bytes_injected`, `text_bytes`) and `last_urgent_latency_ms`. The text form adds the signal ratio (recorded turns over observed turns). Nothing is consumed.
+Read-only counters (#2469) kept per parent under `runtime/inbox-stats/`: records by tier (`records_urgent`, `records_info`, `records_legacy`), turns suppressed (`noise_suppressed`, `dedup_suppressed`), wakeups (`wakeups_urgent`, `wakeups_digest`, `wakeups_suppressed`), delivery (`drains`, `records_delivered`, `bytes_injected`, `text_bytes`), notices withdrawn because the parent already read the child's result with `session output` (`wakeups_withdrawn`, `records_withdrawn`) and `last_urgent_latency_ms`. The text form adds the signal ratio (recorded turns over observed turns). Nothing is consumed.
 
 Every record drained with `inbox drain` now carries `tier`, `trigger`, `text` (the child's new text, capped), `text_hash`, `turn_uuid`, `question` and `seq`; the text form prints the text indented under the record line.
 
@@ -1357,6 +1375,29 @@ and `[costs.budgets.sessions.<id>]` (`total_limit`). Global and group budget win
 use `[costs] timezone` (default `Local`), matching BudgetChecker; sessions use lifetime totals.
 Group membership uses the current exact group path. Prices come from stored events,
 just as on the web; use `costs recompute` explicitly to apply changed pricing overrides.
+
+Budgets are display-only unless `[costs.budgets] enforce = true`. With enforce on, a
+limit that applies to the target (its session limit, its group's daily limit, or a daily,
+weekly or monthly global limit) gates agent-initiated sends and wakes: `session send` (and so goal nudges, conductor heartbeats, inbox wakes, `--queue`, the
+queued send worker and `session queue release`), `launch -m`, `session start -m`, the
+"continue" an MCP `--restart` types, and the TUI's own conductor-pane deliveries (the
+heartbeat after a clear-on-compact, watcher health alerts). When one is spent the send is refused before anything is queued or typed:
+exit 1, `Error: budget exceeded: <limit> ($used of $limit); nothing was sent to '<title>'`,
+under `--json` `code: "BUDGET_EXCEEDED"`, `delivery: "budget_exceeded"`, `budget_reason`,
+`used_usd`, `limit_usd`, `resets_at` (when a daily, weekly or monthly window starts over;
+absent for a session lifetime limit), and a `session.budget_exceeded` frame on the events
+bus (`reason`, `used_usd`, `limit_usd`, `via`). A queued send or a `session queue release`
+whose target went over budget while it waited fails untyped with reason
+`budget exceeded: ...`; `launch -m` creates nothing; an MCP restart still restarts but
+does not type "continue". At 80% of a limit the send goes through with a stderr note.
+
+Messages a person starts are never blocked: the chat bridges (Telegram, Slack, Discord,
+Mattermost) and the web Command Center send with `--ignore-budget`, which `session send`
+(also with `--queue`), `session start -m` and `launch -m` accept. `--draft` only pre-fills
+and is not checked. A group limit sums the sessions whose group path equals the key
+exactly; a subgroup needs its own `[costs.budgets.groups.<path>]` entry. With cost tracking
+off, enforce off or no limit set, sends are unchanged and the cost store is not opened. A
+failed budget query warns and sends.
 
 Tracking defaults on. Set `[costs] enabled = false` globally or
 `[profiles.<name>.costs] enabled = false` for a profile. Explicit profile values override

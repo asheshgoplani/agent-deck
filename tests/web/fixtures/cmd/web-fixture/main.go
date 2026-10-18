@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/filelinks"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
@@ -37,6 +38,7 @@ func main() {
 	startupToken := flag.String("startup-token", "", "Echoed at /__fixture/whoami so callers can verify they're talking to this exact process")
 	trustedDomains := flag.String("trusted-domains", "", "Comma-separated `[web].trusted_domains` hosts served by GET /api/settings (issue #1682)")
 	confirmLinkOpen := flag.Bool("confirm-link-open", true, "Value of `[web].confirm_link_open` served by GET /api/settings (issue #1682)")
+	fileLinkRoots := flag.String("file-link-roots", "", "Comma-separated `[web].file_link_roots` directories GET /api/files may read (issue #2676)")
 	authToken := flag.String("auth-token", "", "Bearer token for API/WS access. When set the fixture behaves like `agent-deck web --token`, so specs can exercise the authenticated browser path.")
 	flag.Parse()
 
@@ -71,6 +73,7 @@ func main() {
 		// the real server never would.
 		TrustedDomains:  session.NormalizeTrustedDomains(splitCSV(*trustedDomains)),
 		ConfirmLinkOpen: confirmLinkOpen,
+		FileLinkRoots:   filelinks.NormalizeRoots(splitCSV(*fileLinkRoots), session.ExpandPath),
 		MenuData:        store,
 		RemoteFleet:     store,
 		// Empty by default, so the existing suite keeps running

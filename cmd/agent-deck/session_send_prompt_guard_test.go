@@ -11,6 +11,8 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/sendqueue"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 const guardedMenu = "Which approach should I take?\n❯ 1. Yes\n  2. No\nEnter to select · Esc to cancel"
@@ -158,7 +160,7 @@ func TestGuardedQueueUsesGuardedChildAndRetriesBeforeTyping(t *testing.T) {
 		}
 		return err
 	}
-	if !typeQueued("", dir, rec, "waiting", "", 0, set) || !called || rec.State != sendqueue.StateQueued {
+	if !typeQueued("", dir, rec, &session.Instance{ID: rec.SessionID}, nil, "waiting", "", 0, set) || !called || rec.State != sendqueue.StateQueued {
 		t.Fatalf("called=%v state=%q", called, rec.State)
 	}
 }

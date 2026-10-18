@@ -35,10 +35,13 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[inbox] Section](#inbox-section)
 - [[comms] Section](#comms-section)
 - [[send] Section](#send-section)
+- [[costs.budgets] and [costs.run_budget]](#costsbudgets-and-costsrun_budget)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
 - [[health] Section](#health-section)
+- [[status] Section](#status-section)
 - [[performance] Section](#performance-section)
 - [[core] Section](#core-section)
+- [[macapp] Section](#macapp-section)
 - [[tmux] Section](#tmux-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -698,14 +701,16 @@ inject_identity = true   # Default: true
 context_level = "primer" # none | primer | full — global default (issue #2260)
 nest_under_parent = false # Default: false
 prompt_suggestions = "children-off" # children-off | on | off
+fanout_hint = true       # Default: true
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `inject_identity` | bool | `true` | Tell every spawned session, through its harness's own instruction mechanism, that it runs inside agent-deck: its session id, title, tool, group, profile, account, parent session and project path, the six most useful `agent-deck` commands, `session current --json` as the way to fetch the live record, and the `===AGENTDECK_DONE===` completion sentinel. The block (under 40 lines) is regenerated from the session record on every start/restart and written to `<data-dir>/agent-deck/runtime/identity/<session-id>/identity.md`; its path is exported as `AGENTDECK_IDENTITY_FILE`. Per-session opt-out: `agent-deck add|launch --no-identity`. `inject_identity = false` is the *global* layer's value only — a `context_level` set on a group or session still overrides it (global < group < session precedence; the per-session `--no-identity` opt-out is the one thing that keeps winning over everything). |
-| `context_level` | string | `""` (falls back to `full`) | Global default for how much of the identity block a spawned session's harness receives (issue #2260): `none` (no injection, same as `inject_identity = false`), `primer` (short session-identity block: id/title/tool/parent), or `full` (the complete block `inject_identity` describes). Overridden per group (`[groups."<path>"].context_level`, ancestor-walking) or per session (`agent-deck session set <id> context-level <level>`). Precedence: `--no-identity` (session) > session `context_level` > group `context_level` (nearest ancestor) > global `context_level` > global `inject_identity=false` > default `full`. Inspect what a session actually resolves to with `agent-deck session primer [id]`. |
+| `context_level` | string | `""` (falls back to `full`) | Global default for how much of the identity block a spawned session's harness receives (issue #2260): `none` (no injection, same as `inject_identity = false`), `primer` (short session-identity block: id/title/tool/parent), or `full` (the complete block `inject_identity` describes). Overridden per group (`[groups."<path>"].context_level`, ancestor-walking) or per session (`agent-deck session set <id> context-level <level>`). Precedence: `--no-identity` (session) > session `context_level` > group `context_level` (nearest ancestor) > global `context_level` > global `inject_identity=false` > default `full`. Inspect what a session actually resolves to with `agent-deck session primer [id]`; `agent-deck config get launch.context_level` prints the global layer only (`none` when `inject_identity = false`). |
 | `nest_under_parent` | bool | `false` | What `add` and `launch` do when run from inside a sub-session without `--parent`. `false` keeps the long-standing behaviour: the new session starts top-level, in the group derived from its folder, with no parent link and no note. `true` links it under the calling sub-session's own parent (one hop, never further), picks its group by the same rules as any child of that parent (`add` takes the parent's group; `launch` keeps the folder-derived group unless `--inherit-group` or a worktree child), prints a one-line note on stderr, and records the calling sub-session in a `launched-by` hint next to the `parent` hint (`launch --json` shows both under `hints`; `parent_id` is the session it was actually linked to). With `true`, a caller whose parent no longer exists starts top-level with a note instead of failing, a caller whose parent is itself a sub-session is refused naming both ids, and `--no-parent` from a sub-session prints where the session would otherwise have landed. An explicit `--parent <sub-session>` is refused either way (single level only). The `--startup-query` capacity pre-check follows the same rule. |
 | `prompt_suggestions` | string | `"children-off"` | Claude Code prompt suggestions (the dim predicted next message Claude paints in an empty composer) in sessions agent-deck launches. `children-off`: a session launched with a parent (a worker, a conductor's child) starts with `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false`; a root session, the kind a person attaches to and drives, is left alone. `on`: agent-deck never sets the variable, so Claude's own `promptSuggestionEnabled` setting decides. `off`: every Claude session starts with suggestions disabled. Also accepts `true`/`false`. Applied at start, restart and resume, on the first launch of a fork (a TUI fork with a parent chosen is a parented session; `session fork` from the CLI or the web makes a root fork) and on a cross-harness switch into Claude (the target keeps the source's parent). See [Prompt suggestions](#prompt-suggestions-in-launched-sessions). |
+| `fanout_hint` | bool | `true` | Adds one "Working style" line to the injected identity block of Claude-family sessions (claude and custom tools wrapping it; primer and full levels): "Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered." Other tools never get it. `false` leaves it out and changes nothing else. It rides on identity injection, so `--no-identity`, `inject_identity = false` or `context_level = "none"` mean no block and no hint. `launch-subagent.sh` appends the same line to the prompt only for a claude child with no identity block (global level `none`) and honours `false` and `--no-fanout-hint`. Also `agent-deck config get/set launch.fanout_hint`. |
 
 How each harness receives the block (`documentation/HARNESS_IDENTITY.md` has the details):
 
@@ -787,7 +792,7 @@ notify_in_cli = true          # Show in CLI commands
 
 **Nudging remotes instead of pushing bytes.** With `sweep_remotes` at its default of `false`, an unattended install (or a "nothing to install, already current" run) tells every configured remote to check for the release right now, over the same SSH connection `remote list`/`remote update` already use: `agent-deck update --check-now` runs on the remote, backgrounded (`nohup … & disown`) so the controller never waits on the remote's own download and never transfers any release bytes to it. A remote whose last known version predates `--check-now` (anything before this feature, e.g. v1.16.14/v1.16.15) gets the compatibility fallback instead — a blocking `agent-deck update --unattended` on that remote — so the bytes are still fetched BY the remote either way. Either path is best-effort: a remote that cannot be reached is reported (`agent-deck update`'s own output lists one line per remote) and never fails the local install. Set `sweep_remotes = true` to restore the old behavior of the controller pushing a verified binary onto every remote directly.
 
-**Timer.** `agent-deck update --install-timer` schedules `agent-deck update --unattended --trigger timer` once a day: a launchd agent (`~/Library/LaunchAgents/com.agentdeck.autoupdate.plist`, 07:MM local time with a minute drawn at random at install time, since launchd has no `RandomizedDelaySec`) on macOS, or a systemd user timer (`agent-deck-autoupdate.timer`, `OnCalendar=daily`, `RandomizedDelaySec=1h`, `Persistent=true`) on Linux. This daily run is now a backstop, not the primary path: any long-running agent-deck process (an open TUI, `web --no-tui`, `notify-daemon`) already polls every `check_interval` on its own and installs the moment a release appears. The unattended run honours `auto_install`, never runs Homebrew, takes `<cache dir>/update.lock` so it cannot collide with another run (single-flight; a run whose holder process has died is detected and the lock recovered automatically), and afterwards nudges every configured remote (falling back to a blocking pull for one that predates the nudge) and, only with `sweep_remotes` on, also runs the old push-based sweep. A hand-made `agentdeck-autoupdate.timer`/`.service` pair (no hyphen, found in `~/.config/systemd/user` or wherever `systemctl --user cat` says it lives) is reported as kind `systemd-legacy` with `legacy_unit`, never as "not installed", and `--install-timer` or the automatic heal (`manage_timer`) migrates it: the canonical pair is written, enabled and verified first, then the legacy timer is disabled (`systemctl --user disable --now`) and both legacy files are moved to `<file>.bak-agentdeck-<UTC timestamp>` beside them; one line is printed (`migrated legacy timer agentdeck-autoupdate.timer -> agent-deck-autoupdate.timer`). An active timer whose unit files match what this binary would write is left alone, so `--install-timer` and `--ensure-timer` are idempotent (on macOS the plist's existing minute is kept). The automatic heal never rewrites an active canonical timer, so an owner's edit to it survives; it rewrites the pair only when the service is missing or pins a binary that is gone, and every rewrite moves the replaced file to a `.bak-agentdeck-<UTC timestamp>` backup first. A legacy unit in a directory this user cannot write is stopped if active and otherwise left in place with a note, and a lone legacy `.service` is backed up like the pair. `--timer-status [--json]`, `--ensure-timer [--json]`, `--uninstall-timer` and `--dry-run` round it out; `agent-deck update --check --json` reports the timer state alongside these settings, plus `remote_nudges` (each configured remote's latest nudge: `remote`, `asked_version`, `ok`, `outcome` nudged/fallback/failed, `error`, `at`, from `runtime/remote-nudges.json`; omitted on a host that never nudged), `on_disk` (the version of the binary at the executable's path) and `running_tuis` (every open TUI's pid, version, `outdated`, `ticking`, `attached`, `attached_since`, `restart_state` and `block_reason`, from the heartbeat each TUI writes to `<cache dir>/tui/<pid>.json`; while a TUI is attached to a session its loop does not tick, so a worker off the loop keeps the file fresh and reports `attached: true` with `ticking: false`, and auto-update resumes on detach; not ticking and not attached means hung). Every unattended run also appends to `<cache dir>/update.log` (trigger, pid, ppid, launchd service, version on each line). On macOS the run re-registers the `com.agentdeck.*` launch agents that run the binary, except the one it runs inside itself, which goes to `<cache dir>/launchd-rebootstrap-pending.json` for the next run outside it (or is settled by that service itself when launchd starts it again on the new binary, as the notify daemon does at start); an agent that was booted out and never came back is kept there too (with its attempts) and retried by every later run, and `agent-deck update --check --json` lists the marker as `pending_launch_agents` (label, reason, since, attempts, last_error, and `disabled: true` with reason `disabled` for an agent launchd has disabled). An agent on launchd's disabled list (`launchctl print-disabled gui/<uid>`) is never booted out, bootstrapped or kept pending: the run prints one line with the `launchctl enable gui/<uid>/<label>` command that brings it back and drops any marker entry for it.
+**Timer.** `agent-deck update --install-timer` schedules `agent-deck update --unattended --trigger timer` once a day: a launchd agent (`~/Library/LaunchAgents/com.agentdeck.autoupdate.plist`, 07:MM local time with a minute drawn at random at install time, since launchd has no `RandomizedDelaySec`) on macOS, or a systemd user timer (`agent-deck-autoupdate.timer`, `OnCalendar=daily`, `RandomizedDelaySec=1h`, `Persistent=true`) on Linux. This daily run is now a backstop, not the primary path: any long-running agent-deck process (an open TUI, `web --no-tui`, `notify-daemon`) already polls every `check_interval` on its own and installs the moment a release appears. The unattended run honours `auto_install`, never runs Homebrew, takes `<cache dir>/update.lock` so it cannot collide with another run (single-flight; a run whose holder process has died is detected and the lock recovered automatically), and afterwards nudges every configured remote (falling back to a blocking pull for one that predates the nudge) and, only with `sweep_remotes` on, also runs the old push-based sweep. A hand-made `agentdeck-autoupdate.timer`/`.service` pair (no hyphen, found in `~/.config/systemd/user` or wherever `systemctl --user cat` says it lives) is reported as kind `systemd-legacy` with `legacy_unit`, never as "not installed", and `--install-timer` or the automatic heal (`manage_timer`) migrates it: the canonical pair is written, enabled and verified first, then the legacy timer is disabled (`systemctl --user disable --now`) and both legacy files are moved to `<file>.bak-agentdeck-<UTC timestamp>` beside them; one line is printed (`migrated legacy timer agentdeck-autoupdate.timer -> agent-deck-autoupdate.timer`). An active timer whose unit files match what this binary would write is left alone, so `--install-timer` and `--ensure-timer` are idempotent (on macOS the plist's existing minute is kept). The automatic heal never rewrites an active canonical timer, so an owner's edit to it survives; it rewrites the pair only when the service is missing or pins a binary that is gone, and every rewrite moves the replaced file to a `.bak-agentdeck-<UTC timestamp>` backup first. A legacy unit in a directory this user cannot write is stopped if active and otherwise left in place with a note, and a lone legacy `.service` is backed up like the pair. `--timer-status [--json]`, `--ensure-timer [--json]`, `--uninstall-timer` and `--dry-run` round it out; `agent-deck update --check --json` reports the timer state alongside these settings, plus `remote_nudges` (each configured remote's latest nudge: `remote`, `asked_version`, `ok`, `outcome` nudged/fallback/failed, `error`, `at`, from `runtime/remote-nudges.json`; omitted on a host that never nudged), `on_disk` (the version of the binary at the executable's path) and `running_tuis` (every open TUI's pid, version, `outdated`, `ticking`, `attached`, `attached_since`, `restart_state` and `block_reason`, from the heartbeat each TUI writes to `<cache dir>/tui/<pid>.json`; while a TUI is attached to a session its loop does not tick, so a worker off the loop keeps the file fresh and reports `attached: true` with `ticking: false`, and auto-update resumes on detach; not ticking and not attached means hung). Every unattended run also appends to `<cache dir>/update.log` (trigger, pid, ppid, launchd service, version on each line). On macOS the run re-registers the `com.agentdeck.*` launch agents that run the binary, except the one it runs inside itself, which goes to `<cache dir>/launchd-rebootstrap-pending.json` for the next run outside it (or is settled by that service itself when launchd starts it again on the new binary, as the notify daemon does at start); an agent that was booted out and never came back is kept there too (with its attempts) and retried by every later run, and `agent-deck update --check --json` lists the marker as `pending_launch_agents` (label, reason, since, attempts, last_error, and `disabled: true` with reason `disabled` for an agent launchd has disabled). An agent on launchd's disabled list (`launchctl print-disabled gui/<uid>`) is never booted out, bootstrapped or kept pending: the run prints one line with the `launchctl enable gui/<uid>/<label>` command that brings it back and drops any marker entry for it. **Stale PATH copies.** An older `agent-deck` earlier on `PATH` than the binary that updates (for example a root-owned `/usr/local/bin/agent-deck` symlink to an old build in front of `~/.local/bin`) keeps shells, hooks and scripts on the old release. `agent-deck update` after an interactive or `--version` install, `update --check`, `doctor` and a TUI that restarted into a new version each print one warning per copy with its path, symlink target, both versions and the fix: the `rm` command (with `sudo` when its directory is not writable by you, and only the symlink is removed), or for a copy that looks package-managed (Homebrew, Nix, asdf, mise, snap, `/usr/bin`) removing or upgrading it with that package manager, or the `export PATH=...` line that puts the updated binary first. `update --unattended` does not scan: the timer and a controller's nudge run with their own PATH, not your shell's. `update --check --json` and `doctor --json` list them as `shadowed_by` (`path`, `target`, `version`, `installed`, `installed_path`, `installed_on_path`, `needs_sudo`, `remove`, `reorder`, `managed_by`). Copies of the same or a newer version are not reported; the same file reached through two PATH entries is listed once. Version probes are bounded (10 s each, 15 s per scan); a copy not probed in time shows as unknown version. On Windows the scan finds nothing (it looks for executable permission bits). agent-deck never removes or replaces a copy itself.
 
 **When the automatic paths stay quiet.** `auto_install` and `auto_restart` are for a person's deck. Neither fires, whatever the config says, when the process runs under `go test`, when `AGENTDECK_SKIP_UPDATE_CHECK` is set, when `CI` is truthy, when an `AGENTDECK_TEST_*` marker is in the environment, or (TUI only) when stdin or stdout is not a terminal. Headless daemons (`web --no-tui`, `remote-agent`) keep their idle-point restart for real deployments but honour the same environment markers. The reason is logged once at startup (`auto_update_suppressed`), the banner then offers the keys instead of promising a restart, and `ctrl+y` / `ctrl+t` and the explicit `agent-deck update` commands keep working. Scripts that drive `agent-deck` and must never see an unattended install set `AGENTDECK_SKIP_UPDATE_CHECK=1`; the repository's CI workflows do so once per workflow.
 
@@ -930,6 +935,7 @@ trusted_domains = [                           # Links to these hosts open withou
   "*.ci.mycorp.example",                      # subdomains of ci.mycorp.example
 ]
 confirm_link_open = true                      # Confirm before opening any OTHER host
+file_link_roots = ["~/projects", "~/Downloads"]  # file:// links under these open through the deck
 ```
 
 | Key | Type | Default | Description |
@@ -938,8 +944,9 @@ confirm_link_open = true                      # Confirm before opening any OTHER
 | `allowed_hosts` | []string | `[]` | Extra exact HTTP Host names for reverse proxies or Tailscale Serve. Optional `:port` limits an entry to that port. Case-insensitive; no URLs, wildcards, or suffix matching. Repeat `--allowed-host` for temporary additions. Unknown Hosts receive HTTP 421, including WebSocket upgrades. |
 | `trusted_domains` | []string | `[]` | Hosts whose links open straight from the web terminal, skipping the "this link could potentially be dangerous" confirm. Everything not listed still confirms. Matching is on **host** only: case-insensitive, port- and path-independent. An entry may be a bare host (`gitlab.corp.example`), a pasted URL (reduced to its host), or `*.base.example` to match **subdomains** of `base.example` (not the bare base itself). Only `http`/`https` links are ever auto-opened. Unusable entries (`*`, `*.example`, blanks) are dropped. |
 | `confirm_link_open` | bool | `true` | Confirm before opening a web-terminal link whose host is **not** in `trusted_domains`. Set `false` to accept the risk and open every link directly — prefer `trusted_domains`, which keeps the safety net for arbitrary links. |
+| `file_link_roots` | []string | `[]` (off) | Directories whose files a web-terminal `file://` link may open (a browser on the deck's http origin can't load `file://` itself). A link under a root opens in a new tab through `GET /api/files?path=<abs>` on the deck's own origin, with the usual token auth, so it also works from a phone. `~` and `$VARS` expand. Relative entries, entries naming an unset or empty `$VAR`, `/`, and any directory that contains your home directory, `~/.ssh` or agent-deck's config or data directory (such as `/home`, `/Users` or `$HOME/..`) are refused with a warning at `agent-deck web` start (and listed under `refused` by `agent-deck file roots --json`), so a root can never widen to the whole disk. Symlinks and `..` are resolved before the root check and the file is opened through the resolved root, so nothing outside a root can be read. Regular files only (no directory listings), up to 32 MiB. PNG, JPEG, GIF, WebP, AVIF, BMP and ICO are shown as images; other text (including HTML and SVG) is shown as plain text, and binary files download. A `file://<host>/path` link (what `ls --hyperlink` emits) opens only when the host is the deck machine's own hostname; a `file:///path` link with no host is taken as the deck machine's, even when the pane runs an ssh session to another machine. With no roots, or for a link outside them or on another host, a click copies the path instead. A hard link inside a root to a file elsewhere is served like any file in the root, so only list folders whose contents you control. Pick project or report folders, not your whole home directory. `agent-deck file read <path> [--json]` and `agent-deck file roots [--json]` apply the same rules from the CLI, and `agent-deck remote <name> file read ...` reads under that remote's own roots. |
 
-Both link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
+All link keys are read at server start and served to the browser by `GET /api/settings`; the web Settings drawer shows the active values.
 
 ## [global_search] Section
 
@@ -1069,6 +1076,47 @@ Tunes `agent-deck session send` (comms redesign PR5).
 ```toml
 [send]
 tag_sends = true   # prefix agent-originated sends with [agent-deck from:<id>]
+## [costs.budgets] and [costs.run_budget]
+
+`[costs.budgets]` limits are in dollars. They are shown in the cost dashboard; with
+`enforce = true` they also gate agent-initiated sends and wakes (`session send` (and so goal nudges, conductor heartbeats, inbox wakes, `--queue`, the queued send worker and `session queue release`), `launch -m`, `session start -m`, the "continue" an MCP `--restart` types, and the TUI's own conductor-pane deliveries (the heartbeat after a clear-on-compact, watcher health alerts)): one aimed at a target whose session, group or global limit is spent is refused before
+anything is typed, with code `BUDGET_EXCEEDED` and a `session.budget_exceeded` event
+(see the costs section of cli-reference.md). Messages a person starts (chat bridges, web
+Command Center, any send with `--ignore-budget`) are never blocked. A group limit applies
+to the sessions whose group path equals the key exactly; subgroups are not included. `[costs.run_budget]` holds the per-run
+defaults every new goal (`skills/agent-deck/scripts/goal/goal.sh`) starts with; the
+goal manager stops the run and its worker when one is spent, before it wakes the
+worker again.
+
+```toml
+[costs.budgets]
+enforce = true                 # gate agent sends and wakes (default false: display-only)
+daily_limit = 50.00            # global, per day in [costs] timezone
+weekly_limit = 200.00
+[costs.budgets.groups.work]
+daily_limit = 20.00
+[costs.budgets.sessions.<session-id>]
+total_limit = 5.00             # lifetime of one session
+
+[costs.run_budget]
+max_tokens = 80000             # tokens the goal's worker session may use
+max_turns = 12                 # progress cycles (receipts) per goal
+max_minutes = 30               # wall time per goal
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `budgets.enforce` | bool | `false` | Make the `[costs.budgets]` limits refuse agent-initiated sends and wakes. Off: display-only. |
+| `run_budget.max_tokens` | int | `0` (no cap) | Input, output and cache write tokens of the worker session, read from `agent-deck costs sessions --json`. Cache reads are not counted: every turn re-reads the cached context, so they grow with the conversation, not the work. When cost tracking is off the cap is recorded as unmeasured and not enforced. `MAX_TOKENS` and `goal.sh --max-tokens N` override. |
+| `run_budget.max_turns` | int | `0` (unset: goal default 24) | Progress cycles before the goal ends as failed (`max_cycles`). `MAX_CYCLES` and `goal.sh --max-turns N` override; there `0` means no cap. |
+| `run_budget.max_minutes` | int | `0` (no cap) | Minutes since the goal was created. `MAX_MINUTES` and `goal.sh --max-minutes N` override. |
+
+`goal.sh` takes a flag first, then the environment, then these keys. The run budget is a
+goal setting and applies whether or not `budgets.enforce` is on.
+
+These keys are also readable and settable with `agent-deck config get|set costs.budgets.enforce` and `costs.run_budget.<key>`.
+The values above are the prime-agent defaults for short autonomous runs; long goals want larger caps.
+
 ## [remotes.<name>] Talkback
 
 Remotes are added with `agent-deck remote add <name> <user@host>`; this key makes the notify-daemon pull a remote's child records on its own instead of waiting for a conductor to run `agent-deck remote drain`.
@@ -1101,6 +1149,21 @@ session_events = true  # per-session event journal for `session metrics`
 | `session_events` | bool | `true` | Append one JSONL line per observed session event (`status` on every status/substate change the transition daemon sees, `send` with its outcome and ack time, `restart`, `stop`, `worker_done`) to `logs/health/sessions-YYYYMMDD.jsonl`. One file per UTC day, 1 MiB size cap with one backup, seven-day retention: the same rotation as the health samples. Costs no extra tmux calls or pane reads; only what the daemon already observed is written. Long-lived processes pick the switch up on restart. |
 
 Read the journal with `agent-deck session metrics <id> --json` (per session) or `agent-deck health --json` (the `sessions` roll-up).
+
+## [status] Section
+
+Status detection settings (docs/status-detection.md).
+
+```toml
+[status]
+shell_running_indicator = false
+background_shell_hold = "3m"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `shell_running_indicator` | bool | `false` | Show a `shell` tool session as running while its pane's foreground command is a non-interactive process (`node` from `yarn dev`, `java` from `mvn spring-boot:run`). |
+| `background_shell_hold` | duration | `"3m"` | How long after its launch a Claude `run_in_background` shell keeps a finished turn `running` / `background-work`. Past it the session reads `waiting`, even if the shell is a build that still runs (its done notification or a conductor/goal wake can then fire mid-build). `"0"` restores the earlier rule: the footer's shell counter alone keeps the session running, so a leftover dev server pins it green. An invalid or negative value is logged and the default applies. |
 
 ## [performance] Section
 
@@ -1135,6 +1198,23 @@ daemon = false   # Opt-in: send --json=envelope requests to `agent-deck daemon s
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `daemon` | bool | `false` | When `true`, a `--json=envelope` request of a registry command (`session start/stop/restart`, `list`, `group list`) is sent to the profile's daemon if one answers on its socket, and runs in process when none does, so the CLI keeps working with the daemon dead. Every other request, and every request when `false`, runs in process exactly as before; the socket is never dialled. |
+
+## [macapp] Section
+
+Switches for the Mac app surface (`docs/macapp-core.md`). All are off by default.
+
+```toml
+[macapp]
+plugins = false            # Opt-in: limits --json and events publish --kind macapp.<name>
+transcript_events = false  # Notify daemon publishes session.transcript frames
+status_events = false      # Status owners publish session.status and session.turn frames
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `plugins` | bool | `false` | Enables `limits --json` and `events publish` for `macapp.*` kinds other than the built-in `macapp.open` and `macapp.open.ack`. Off by design: turning it on needs explicit consent, so `agent-deck config set macapp.plugins true` exits 2 with `CONSENT_REQUIRED` unless it gets `--yes` (or `-y`), or a `y` at the interactive prompt in a terminal. Turning it off needs no consent. While it is off, `limits` and `events publish` exit 2 and name the command to run: `agent-deck config set macapp.plugins true --yes`; under `--json` the error carries a `hint` object (`key`, `value`, `command`, `argv`, `consent`, `docs`) the Mac app can show before it runs `argv`. |
+| `transcript_events` | bool | `false` | The notify daemon publishes a `session.transcript` frame whenever a live session's native transcript grows. Restart required. |
+| `status_events` | bool | `false` | Every status owner (TUI poller, notify daemon) publishes `session.status` and `session.turn` frames on each status transition. |
 
 ## [tmux] Section
 

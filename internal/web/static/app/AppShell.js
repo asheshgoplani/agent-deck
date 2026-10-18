@@ -27,7 +27,7 @@ import {
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
   hiddenToolsSignal, pickerToolsSignal, modelCatalogSignal,
-  trustedDomainsSignal, confirmLinkOpenSignal,
+  trustedDomainsSignal, confirmLinkOpenSignal, fileLinkRootsSignal, fileLinkHostSignal,
 } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
@@ -232,6 +232,12 @@ export function AppShell() {
         }
         if (typeof data.confirmLinkOpen === 'boolean') {
           confirmLinkOpenSignal.value = data.confirmLinkOpen
+        }
+        if (Array.isArray(data.fileLinkRoots)) {
+          fileLinkRootsSignal.value = data.fileLinkRoots
+        }
+        if (typeof data.fileLinkHost === 'string') {
+          fileLinkHostSignal.value = data.fileLinkHost
         }
       })
       .catch(() => {})

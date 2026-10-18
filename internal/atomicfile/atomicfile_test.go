@@ -313,3 +313,97 @@ func TestWriteFile_NoTempLeftBehind(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteFileWithin_RefusesLinkOutsideRoot(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "proj")
+	outsideDir := filepath.Join(tmp, "elsewhere")
+	for _, d := range []string{root, outsideDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	victim := filepath.Join(tmp, "victim.json")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(root, "file.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(tmp, "missing.json"), filepath.Join(root, "dangling.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(root, "linkdir")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, rel := range []string{"file.json", "dangling.json", filepath.Join("linkdir", "new.json"), filepath.Join("linkdir", "sub", "new.json")} {
+		if err := atomicfile.WriteFileWithin(root, filepath.Join(root, rel), []byte("x"), 0o600); err == nil {
+			t.Errorf("%s: expected refusal for a path that resolves outside the root", rel)
+		}
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "keep" {
+		t.Fatalf("victim rewritten: %q", got)
+	}
+	for _, p := range []string{filepath.Join(tmp, "missing.json"), filepath.Join(outsideDir, "new.json"), filepath.Join(outsideDir, "sub")} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s created outside the root (err %v)", p, err)
+		}
+	}
+}
+
+func TestWriteFileWithin_AllowsPathsInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "real", "f.json"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "f.json")
+	if err := os.Symlink(filepath.Join("real", "f.json"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := atomicfile.WriteFileWithin(root, link, []byte("new"), 0o600); err != nil {
+		t.Fatalf("in-root link: %v", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link not preserved (err %v)", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "real", "f.json")); string(got) != "new" {
+		t.Fatalf("link target = %q, want new", got)
+	}
+	nested := filepath.Join(root, "a", "b", "c.json")
+	if err := atomicfile.WriteFileWithin(root, nested, []byte("n"), 0o600); err != nil {
+		t.Fatalf("new nested file: %v", err)
+	}
+}
+
+// A dangling symlink in the middle of the path is refused by the check itself,
+// whether it points inside or outside root; nothing is created at its target.
+func TestWriteFileWithin_RefusesDanglingDirLink(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "proj")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, dest := range map[string]string{
+		"out": filepath.Join(tmp, "elsewhere", "made"),
+		"in":  filepath.Join(root, "later"),
+	} {
+		if err := os.Symlink(dest, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(root, name, "f.json")
+		if err := atomicfile.CheckWithin(root, path); err == nil || !strings.Contains(err.Error(), "missing path") {
+			t.Errorf("%s: CheckWithin = %v, want the dangling-link refusal", name, err)
+		}
+		if err := atomicfile.WriteFileWithin(root, path, []byte("x"), 0o600); err == nil {
+			t.Errorf("%s: WriteFileWithin succeeded through a dangling link", name)
+		}
+		if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+			t.Errorf("%s: created %s (err %v)", name, dest, err)
+		}
+	}
+}

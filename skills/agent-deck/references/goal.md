@@ -106,7 +106,14 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
     "check_interval_seconds": 300,
     "max_idle_seconds": 3600,
     "max_cycles": 24,
-    "escalate_after_stuck_nudges": 3
+    "escalate_after_stuck_nudges": 3,
+    "no_progress_cap": 0,
+    "no_progress_action": "escalate",
+    "no_progress_backoff_base_seconds": 3600,
+    "worktree_progress": false,
+    "worktree_gate": false,
+    "max_tokens": 0,
+    "max_minutes": 0
   },
 
   "state": {
@@ -117,6 +124,10 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
     "last_receipt_text": "Tagged v1.6.0 locally, pushed to origin",
     "cycles_completed": 4,
     "nudges_sent": 0,
+    "no_progress_streak": 0,
+    "next_wake_at": null,
+    "last_failed_tree_hash": null,
+    "progress_tree_hash": null,
     "escalated_at": null,
     "ended_at": null,
     "ended_reason": null
@@ -132,6 +143,22 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
 ```
 
 Status values: `active`, `done`, `failed`, `escalated`, `stopped_by_user`.
+
+### Opt-in progress features
+
+All of these are off unless the goal sets them. A goal file without them, or with all of them off (what `goal.sh` writes by default), runs the original loop below: `done_cmd` every tick, a nudge on every tick once the worker is idle longer than `max_idle_seconds`, escalation after `escalate_after_stuck_nudges` nudges with the worker left running. `goal.sh` takes them from the environment (`NO_PROGRESS_CAP`, `NO_PROGRESS_ACTION`, `NO_PROGRESS_BACKOFF_BASE_SECONDS`, `WORKTREE_PROGRESS`, `WORKTREE_GATE`). They run inside `manager.py` and cost no tokens.
+
+- **No-progress cap** (`no_progress_cap: N`, 0 = off). An idle wake that falls due without progress is an empty turn (`no_progress_turn`). After N consecutive empty turns `done_cmd` runs once more; if it still fails, the cap acts (`no_progress_cap` in history) as `no_progress_action` says:
+  - `escalate` (the default): status `escalated`, an escalation bundle is written, the worker keeps running, as with the stuck-nudge escalation.
+  - `stop`: status `failed` with reason `no_progress_cap`, a bundle is written and the worker is stopped.
+- **Backoff** (with the cap on). Wakes wait a doubling window after each empty turn: base, 2x base, 4x base (`no_progress_backoff_base_seconds`, default `max_idle_seconds`; one window is capped at 7 days). `escalate_after_stuck_nudges` still applies, so whichever of the two comes first escalates.
+- **Progress.** A new receipt is always progress: it resets the streak, the backoff and the nudge count. With `worktree_progress: true` a change of the worktree hash is progress too, so a worker that edits files without writing a receipt is not woken. Tags, pushes, merges and CI waits do not change the worktree; they count through the worker's receipts.
+- **Worktree gate** (`worktree_gate: true`), an optimisation only: on a quiet tick (no new receipt, no wake going out) `done_cmd` is not rerun while the worktree hash equals the one it last failed on (`verifier_skipped`). A new receipt, every wake that is actually sent and the cap check always get a fresh verdict, so the worker is never told NOT YET MET from a stale result. A timeout never arms the skip. With the cap on too, a wake over that same unchanged, failed worktree is skipped (`wake_skipped`, still an empty turn) once 2 wakes were delivered on it; a wake that could not be delivered does not count. A `done_cmd` that checks state outside the worktree (`gh release view`, a merged PR, CI) is then seen on the next receipt, wake or cap check, not on a quiet tick, so leave the gate off for those.
+- **Worktree hash.** Used by `worktree_progress` and `worktree_gate`, with a git worktree as `workdir` (not your home directory). It is read-only: the HEAD tree, the diff of tracked files, the bytes of every untracked, non-ignored file (path, size and mtime for files above 1 MiB), and the same hash of each submodule's worktree. `task-log.md` and gitignored files are excluded. Nothing is written to the repository. `goal.sh` records the baseline (`progress_tree_hash`) before the worker starts, so work done before the first tick counts; a goal file without one takes it on its first tick.
+
+The manager keeps `no_progress_streak`, `next_wake_at`, `last_progress_at`, `progress_tree_hash`, `last_failed_tree_hash`, `last_wake_tree_hash` and `wakes_on_tree` in `state` for these features.
+
+Receipt headings without an offset (`## 2026-10-18T09:00:00`) are read as the host's local time; write `Z` or an offset to be explicit.
 
 ## Worker contract — the launch prompt
 
@@ -199,6 +226,8 @@ RECEIPT PATH: {workdir}/task-log.md
 
 ## Manager loop — exact algorithm
 
+The pseudocode below is the loop every goal runs unless it opts into the progress features described under the registry schema.
+
 ```python
 # Pseudocode for the manager daemon (cron'd every check_interval)
 
@@ -249,6 +278,31 @@ for goal_file in glob("~/.agent-deck/goals/*.json"):
 
     save(goal_file, goal)
 ```
+
+### Run budget
+
+`max_cycles` (turns), `max_tokens` and `max_minutes` are the goal's run budget.
+`goal.sh --max-turns N --max-tokens N --max-minutes N` sets them; unset flags take
+`MAX_CYCLES` / `MAX_TOKENS` / `MAX_MINUTES` from the environment, then
+`[costs.run_budget]` from config.toml (`max_turns`, `max_tokens`, `max_minutes`; 0 there
+means unset), then 24 / 0 / 0. In the goal, 0 means no cap, `max_cycles` included. On
+every tick, after the verifier and before reading receipts or nudging, the manager
+compares the worker session's tokens (input, output and cache write, from
+`agent-deck costs sessions --json`; cache reads are not counted, since every turn
+re-reads the cached context) and the minutes since `created_at` against the caps. A
+spent cap finalizes the goal as `failed` with `ended_reason`
+`budget_exceeded: max_tokens: used N of M tokens` (or `max_minutes: ran N of M minutes`),
+records a `budget_exceeded` event, and stops the worker. A token cap that cannot be read
+(cost tracking off) records `budget_unmeasured` once, when that starts, and is not
+enforced until it can be read again.
+
+A nudge that `session send --json` refuses with code `BUDGET_EXCEEDED` (an enforced
+`[costs.budgets]` limit is spent) is not retried. A daily, weekly or monthly limit
+pauses the goal until its window resets (`resets_at`; `budget_paused_until` in
+`state`, `budget_paused` and later `budget_resumed` in history): the worker keeps
+running, and each tick meanwhile only runs `done_cmd`, so a goal finished during the
+pause is still marked done. A session lifetime limit, which does not reset, ends the
+goal as `failed` and stops the worker.
 
 ## Nudge generator — context-aware
 

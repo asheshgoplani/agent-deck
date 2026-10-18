@@ -3,6 +3,8 @@ package openclaw
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 )
 
 // Protocol version supported by this client.
@@ -57,8 +59,20 @@ type ErrorShape struct {
 }
 
 func (e *ErrorShape) Error() string {
-	return e.Code + ": " + e.Message
+	return remoteText(e.Code) + ": " + remoteText(e.Message)
 }
+
+// remoteError is an error whose text may quote the gateway (a close reason, a
+// TLS certificate name, a rejection message). Error() drops control characters
+// from all of it; Unwrap keeps errors.Is/As working on the original.
+type remoteError struct{ err error }
+
+func (e remoteError) Error() string { return remoteText(e.err.Error()) }
+func (e remoteError) Unwrap() error { return e.err }
+
+// remoteText makes text the gateway chose safe to quote in an error that is
+// printed on a terminal (see termtext.Clean).
+func remoteText(s string) string { return termtext.Clean(s) }
 
 // rawFrame is used to peek at the type/event fields before full deserialization.
 type rawFrame struct {

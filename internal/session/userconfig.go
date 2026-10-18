@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"fmt"
+	"github.com/asheshgoplani/agent-deck/internal/filelinks"
 	"log/slog"
 	"maps"
 	"os"
@@ -1043,6 +1044,12 @@ type WebSettings struct {
 	// hosts that are NOT on TrustedDomains. nil (omitted) defaults to true.
 	// Setting it false accepts the risk and opens every link directly.
 	ConfirmLinkOpen *bool `toml:"confirm_link_open,omitempty"`
+
+	// FileLinkRoots lists directories whose files the web terminal may open
+	// through the deck when a file:// link points into them (issue #2676).
+	// `~` and $VARS expand. Empty (the default) keeps file links off: a click
+	// only copies the path.
+	FileLinkRoots []string `toml:"file_link_roots,omitempty"`
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -1891,6 +1898,22 @@ type LaunchSettings struct {
 	// and leaves root sessions alone; "on" never sets the env; "off" sets it
 	// for every Claude session. See prompt_suggestions.go.
 	PromptSuggestions string `toml:"prompt_suggestions,omitempty"`
+
+	// FanoutHint adds the FanoutHint constant line to the injected identity
+	// block of Claude-family sessions at the primer and full context levels.
+	// nil => true.
+	// It rides on identity injection: --no-identity, inject_identity=false
+	// or context_level "none" leave no block to carry it.
+	FanoutHint *bool `toml:"fanout_hint,omitempty"`
+}
+
+// GetFanoutHint returns whether the fan-out hint is added to the identity
+// block, defaulting to true.
+func (l *LaunchSettings) GetFanoutHint() bool {
+	if l == nil || l.FanoutHint == nil {
+		return true
+	}
+	return *l.FanoutHint
 }
 
 // GetInjectIdentity returns whether identity injection is enabled, defaulting
@@ -3974,6 +3997,38 @@ type StatusSettings struct {
 	//	[status]
 	//	shell_running_indicator = true
 	ShellRunningIndicator bool `toml:"shell_running_indicator"`
+
+	// BackgroundShellHold is how long after its launch a run_in_background
+	// shell keeps a finished Claude turn running (A5), as a Go duration
+	// such as "3m" or "30m". Unset: DefaultBackgroundShellHold (3m). "0"
+	// restores the earlier rule: the footer's shell counter alone keeps the
+	// session running, however old the shell. Past the hold the session
+	// reads waiting even if the shell is a build that is still running.
+	//
+	//	[status]
+	//	background_shell_hold = "30m"
+	BackgroundShellHold string `toml:"background_shell_hold,omitempty"`
+}
+
+// GetBackgroundShellHold returns BackgroundShellHold. Unset means
+// DefaultBackgroundShellHold; a value that is not a duration, or is
+// negative, returns an error and DefaultBackgroundShellHold.
+func (s StatusSettings) GetBackgroundShellHold() (time.Duration, error) {
+	raw := strings.TrimSpace(s.BackgroundShellHold)
+	if raw == "" {
+		return DefaultBackgroundShellHold, nil
+	}
+	if raw == "0" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return DefaultBackgroundShellHold, fmt.Errorf("[status] background_shell_hold %q is not a duration (e.g. \"3m\", \"0\")", raw)
+	}
+	if d < 0 {
+		return DefaultBackgroundShellHold, fmt.Errorf("[status] background_shell_hold %q is negative", raw)
+	}
+	return d, nil
 }
 
 // MaintenanceSettings controls the automatic maintenance worker
@@ -4202,7 +4257,10 @@ func LoadUserConfig() (*UserConfig, error) {
 	defer userConfigCacheMu.Unlock()
 	// Every (re)load re-applies the [macapp] status_events gate, so an
 	// edited config.toml turns the session.status tap on or off live.
-	defer func() { applyStatusBusGate(userConfigCache) }()
+	defer func() {
+		applyStatusBusGate(userConfigCache)
+		applyBackgroundShellHold(userConfigCache)
+	}()
 
 	// Re-check under write lock: another goroutine may have refreshed the
 	// cache to match currentMtime between our RLock drop and Lock acquire.
@@ -4845,6 +4903,23 @@ func GetWebTrustedDomains() []string {
 		return nil
 	}
 	return NormalizeTrustedDomains(config.Web.TrustedDomains)
+}
+
+// GetWebFileLinkRoots returns the expanded, absolute `[web].file_link_roots`
+// directories (issue #2676). nil means file links are off.
+func GetWebFileLinkRoots() []string {
+	roots, _ := GetWebFileLinkRootsChecked()
+	return roots
+}
+
+// GetWebFileLinkRootsChecked is GetWebFileLinkRoots plus the entries it
+// refused and why (an unset $VAR, `/`, the home directory, a relative path).
+func GetWebFileLinkRootsChecked() ([]string, []filelinks.Refused) {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return nil, nil
+	}
+	return filelinks.CheckRoots(config.Web.FileLinkRoots, ExpandPath)
 }
 
 // GetWebAllowedHosts returns the configured Host allowlist additions.
@@ -6036,6 +6111,18 @@ type CostsSettings struct {
 	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero,omitempty"`
 	Budgets              BudgetSettings  `toml:"budgets,omitempty"`
 	Pricing              PricingSettings `toml:"pricing,omitempty"`
+	// RunBudget holds the per-run defaults every new autonomous run (a
+	// goal started by skills/agent-deck/scripts/goal/goal.sh) starts with.
+	RunBudget RunBudgetSettings `toml:"run_budget,omitempty"`
+}
+
+// RunBudgetSettings are per-run caps for autonomous runs. 0 means no cap
+// (max_turns 0 keeps the goal's own default of 24 cycles). A goal's
+// --max-tokens/--max-turns/--max-minutes flags override them.
+type RunBudgetSettings struct {
+	MaxTokens  int `toml:"max_tokens,omitzero"`
+	MaxTurns   int `toml:"max_turns,omitzero"`
+	MaxMinutes int `toml:"max_minutes,omitzero"`
 }
 
 // ProfileCosts holds per-profile overrides for cost-related settings.
@@ -6113,6 +6200,9 @@ func ResolveCostLineTemplate(cfg *UserConfig, profile string) (template string, 
 }
 
 type BudgetSettings struct {
+	// Enforce makes the limits refuse agent-initiated sends and wakes. Off by
+	// default: the limits are then shown in the cost dashboard only.
+	Enforce      bool                     `toml:"enforce,omitempty"`
 	DailyLimit   float64                  `toml:"daily_limit,omitzero"`
 	WeeklyLimit  float64                  `toml:"weekly_limit,omitzero"`
 	MonthlyLimit float64                  `toml:"monthly_limit,omitzero"`

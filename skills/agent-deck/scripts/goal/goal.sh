@@ -6,14 +6,24 @@
 # manager.py periodically (manually or via cron) to advance it.
 #
 # Usage:
-#   goal.sh <id> <goal> <done-cmd> [worker-title] [workdir]
+#   goal.sh [--max-tokens N] [--max-turns N] [--max-minutes N] \
+#           <id> <goal> <done-cmd> [worker-title] [workdir]
+#
+# Run budget (0 = no cap): --max-tokens caps the tokens the worker session
+# may use (input, output and cache writes; cache reads are not counted),
+# --max-turns the progress cycles, --max-minutes the wall time. A flag wins,
+# then MAX_TOKENS / MAX_CYCLES / MAX_MINUTES in the environment, then
+# [costs.run_budget] in config.toml (max_tokens, max_turns, max_minutes; 0
+# there means unset), then 0 / 24 / 0. manager.py stops the run when one is
+# spent.
 #
 # Examples:
 #   goal.sh test-marker \
 #       "Create a test marker file" \
 #       'test -f /tmp/goal-test-marker.txt'
 #
-#   goal.sh v160-release \
+#   # Opt in to the no-progress cap: escalate after 3 empty wakes.
+#   NO_PROGRESS_CAP=3 goal.sh v160-release \
 #       "Ship agent-deck v1.6.0 to GitHub Releases" \
 #       'gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e ".publishedAt != null"' \
 #       my-v160-worker \
@@ -30,9 +40,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT_TEMPLATE="$SCRIPT_DIR/prompts/worker.md"
 GOALS_DIR="${GOALS_DIR:-$HOME/.agent-deck/goals}"
 
-if [[ $# -lt 3 ]]; then
-    sed -n '3,/^set -uo/p' "$0" | sed -n '3,/^set -uo/p' | head -25
+usage() {
+    sed -n '5,/^set -uo/p' "$0"
     exit 2
+}
+
+FLAG_MAX_TOKENS="" FLAG_MAX_TURNS="" FLAG_MAX_MINUTES=""
+while [[ $# -gt 0 && "$1" == --* ]]; do
+    case "$1" in
+        --max-tokens)  FLAG_MAX_TOKENS="${2:-}"; shift 2 || usage ;;
+        --max-turns)   FLAG_MAX_TURNS="${2:-}"; shift 2 || usage ;;
+        --max-minutes) FLAG_MAX_MINUTES="${2:-}"; shift 2 || usage ;;
+        --) shift; break ;;
+        *) echo "[goal] unknown option: $1" >&2; usage ;;
+    esac
+done
+
+if [[ $# -lt 3 ]]; then
+    usage
 fi
 
 ID="$1"
@@ -43,10 +68,54 @@ WORKDIR="${5:-$HOME}"
 
 CHECK_INTERVAL_SECONDS="${CHECK_INTERVAL_SECONDS:-300}"     # manager polls every 5 min
 MAX_IDLE_SECONDS="${MAX_IDLE_SECONDS:-3600}"               # nudge after 1h of silence
-MAX_CYCLES="${MAX_CYCLES:-24}"                             # hard stop after 24 receipts
 ESCALATE_AFTER="${ESCALATE_AFTER:-3}"                      # nudges before paging user
+# Opt-in progress features (all off by default; see references/goal.md).
+NO_PROGRESS_CAP="${NO_PROGRESS_CAP:-0}"                    # empty turns before the cap acts (0 = off)
+NO_PROGRESS_ACTION="${NO_PROGRESS_ACTION:-escalate}"       # at the cap: escalate (worker keeps running) or stop
+NO_PROGRESS_BACKOFF_BASE_SECONDS="${NO_PROGRESS_BACKOFF_BASE_SECONDS:-$MAX_IDLE_SECONDS}"  # doubling wake backoff base (with the cap on)
+WORKTREE_PROGRESS="${WORKTREE_PROGRESS:-0}"                # 1: a worktree content change counts as progress too
+WORKTREE_GATE="${WORKTREE_GATE:-0}"                        # 1: skip quiet-tick done_cmd reruns on an unchanged failed worktree
 CONDUCTOR="${CONDUCTOR:-agent-deck}"
 PROFILE="${PROFILE:-personal}"
+
+# run_budget_default <config key suffix> <env value> <built-in>: the
+# environment value when set, else the [costs.run_budget] value when set
+# (> 0), else the built-in. An agent-deck without the key prints nothing and
+# falls through.
+run_budget_default() {
+    if [[ -n "$2" ]]; then
+        echo "$2"
+        return
+    fi
+    local configured
+    configured="$(agent-deck -p "$PROFILE" config get "costs.run_budget.$1" 2>/dev/null || true)"
+    if [[ "$configured" =~ ^[0-9]+$ && "$configured" -gt 0 ]]; then
+        echo "$configured"
+    else
+        echo "$3"
+    fi
+}
+
+MAX_TOKENS="${FLAG_MAX_TOKENS:-$(run_budget_default max_tokens "${MAX_TOKENS:-}" 0)}"
+MAX_CYCLES="${FLAG_MAX_TURNS:-$(run_budget_default max_turns "${MAX_CYCLES:-}" 24)}"   # hard stop after N receipts
+MAX_MINUTES="${FLAG_MAX_MINUTES:-$(run_budget_default max_minutes "${MAX_MINUTES:-}" 0)}"
+for budget in "$MAX_TOKENS" "$MAX_CYCLES" "$MAX_MINUTES"; do
+    [[ "$budget" =~ ^[0-9]+$ ]] || { echo "[goal] run budget must be a non-negative integer: '$budget'" >&2; exit 2; }
+done
+
+case "$NO_PROGRESS_ACTION" in
+    escalate|stop) ;;
+    *) echo "[goal] NO_PROGRESS_ACTION must be escalate or stop: '$NO_PROGRESS_ACTION'" >&2; exit 2 ;;
+esac
+
+flag_on() { [[ -n "$1" && "$1" != 0 && "$1" != false && "$1" != no ]]; }
+
+# Baseline worktree hash, taken before the worker starts, so work done
+# before the first manager tick counts as progress.
+BASELINE_TREE_HASH=""
+if flag_on "$WORKTREE_GATE" || flag_on "$WORKTREE_PROGRESS"; then
+    BASELINE_TREE_HASH="$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import manager; from pathlib import Path; print(manager.worktree_tree_hash(Path(sys.argv[2])) or "")' "$SCRIPT_DIR" "$WORKDIR" 2>/dev/null || true)"
+fi
 
 [[ -f "$PROMPT_TEMPLATE" ]] || { echo "[goal] missing prompt template: $PROMPT_TEMPLATE" >&2; exit 1; }
 mkdir -p "$GOALS_DIR"
@@ -121,9 +190,15 @@ rm -f "$PROMPT_FILE"
 
 # Write the goal JSON
 python3 - "$GOAL_PATH" "$ID" "$GOAL" "$DONE_CMD" "$WORKER_TITLE" "$SESSION_ID" "$WORKDIR" "$CONDUCTOR" \
-        "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" <<'PYEOF'
+        "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" \
+        "$NO_PROGRESS_CAP" "$NO_PROGRESS_BACKOFF_BASE_SECONDS" "$WORKTREE_GATE" \
+        "$NO_PROGRESS_ACTION" "$WORKTREE_PROGRESS" "$BASELINE_TREE_HASH" \
+        "$MAX_TOKENS" "$MAX_MINUTES" "$PROFILE" <<'PYEOF'
 import json
 import sys
+
+def flag(v):
+    return v not in ("0", "false", "no", "")
 
 path = sys.argv[1]
 data = {
@@ -134,11 +209,19 @@ data = {
     "worker_session_id": sys.argv[6],
     "workdir": sys.argv[7],
     "conductor": sys.argv[8],
+    "profile": sys.argv[22],
     "schedule": {
         "check_interval_seconds": int(sys.argv[9]),
         "max_idle_seconds": int(sys.argv[10]),
         "max_cycles": int(sys.argv[11]),
         "escalate_after_stuck_nudges": int(sys.argv[12]),
+        "no_progress_cap": int(sys.argv[14]),
+        "no_progress_backoff_base_seconds": int(sys.argv[15]),
+        "no_progress_action": sys.argv[17],
+        "worktree_progress": flag(sys.argv[18]),
+        "worktree_gate": flag(sys.argv[16]),
+        "max_tokens": int(sys.argv[20]),
+        "max_minutes": int(sys.argv[21]),
     },
     "state": {
         "status": "active",
@@ -148,6 +231,10 @@ data = {
         "last_receipt_text": None,
         "cycles_completed": 0,
         "nudges_sent": 0,
+        "no_progress_streak": 0,
+        "next_wake_at": None,
+        "last_failed_tree_hash": None,
+        "progress_tree_hash": sys.argv[19] or None,
         "escalated_at": None,
         "ended_at": None,
         "ended_reason": None,

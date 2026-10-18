@@ -46,14 +46,15 @@ func pinnedToolchain(t *testing.T) (exact, line string) {
 }
 
 // buildBinary builds the agent-deck binary into a temp directory with the
-// toolchain pinned by go.mod. Returns the path to the built binary.
-func buildBinary(t *testing.T) string {
+// toolchain pinned by go.mod and the given build tags. Returns the path to the
+// built binary.
+func buildBinary(t *testing.T, tags ...string) string {
 	t.Helper()
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "agent-deck")
 	exact, line := pinnedToolchain(t)
 
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/agent-deck")
+	cmd := exec.Command("go", "build", "-tags", strings.Join(tags, ","), "-o", binPath, "./cmd/agent-deck")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = os.Environ()
 	// Pin the go.mod toolchain only when the local go is on another release

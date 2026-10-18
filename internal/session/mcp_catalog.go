@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
@@ -173,27 +174,64 @@ func readExistingLocalMCPServers(mcpFile string) (map[string]json.RawMessage, er
 }
 
 // writeJSONFileAtomic writes JSON data to path atomically (symlink-preserving,
-// via atomicfile.WriteFile), guaranteeing exactly one trailing newline and
+// via atomicfile.WriteFileWithin: the real file must stay under root, the
+// project directory the file belongs to), guaranteeing exactly one trailing newline and
 // skipping the write entirely when the on-disk bytes already match.
 // json.MarshalIndent emits no trailing newline, so without this a restart
 // rewrote a byte-identical-except-for-the-missing-\n file, leaving a persistent
 // one-byte git diff (issue #1627). Skipping the atomic replace when nothing
 // changed also avoids needless filesystem churn.
-func writeJSONFileAtomic(path string, data []byte, perm os.FileMode) error {
+func writeJSONFileAtomic(root, path string, data []byte, perm os.FileMode) error {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
-		return nil
+	// Check containment before reading: the unchanged-content shortcut must
+	// not turn a refusal into success, nor read through a link out of root.
+	if err := atomicfile.CheckWithin(root, path); err != nil {
+		return withProjectMCPOptOut(err)
 	}
-	return atomicfile.WriteFile(path, data, perm)
+	// A cleaned absolute path holds ".." only inside a name; such a path just
+	// skips the shortcut. The guard is the traversal check CodeQL
+	// go/path-injection recognises.
+	if !strings.Contains(path, "..") {
+		if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+			return nil
+		}
+	}
+	return withProjectMCPOptOut(atomicfile.WriteFileWithin(root, path, data, perm))
+}
+
+// withProjectMCPOptOut adds the way out to a refusal to write a project MCP
+// config through a symlink that leaves the project. One setting covers every
+// project writer (.mcp.json, .cursor/mcp.json, opencode.json).
+func withProjectMCPOptOut(err error) error {
+	if !errors.Is(err, atomicfile.ErrOutsideRoot) {
+		return err
+	}
+	return fmt.Errorf("%w; set manage_mcp_json = false in config.toml to stop agent-deck writing project MCP config files", err)
 }
 
 // WriteMergedMcpJSONFile writes enabled MCPs from config.toml to mcpFile using the
 // Claude/Cursor JSON shape {"mcpServers":{...}}. It preserves entries not defined in
 // config.toml. When pluginPinClaudeProfile is non-empty (Claude project .mcp.json),
-// refreshes stale plugin version pins before merging (#960).
+// refreshes stale plugin version pins before merging (#960). The file must stay
+// inside its own directory: a symlink leading elsewhere is refused.
 func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClaudeProfile string) error {
+	return writeMergedMcpJSONFileWithin(filepath.Dir(mcpFile), mcpFile, enabledNames, pluginPinClaudeProfile)
+}
+
+// writeMergedMcpJSONFileWithin is WriteMergedMcpJSONFile for a file below
+// projectRoot (e.g. <project>/.cursor/mcp.json): the real file written, after
+// following symlinks in the file and its parent directories, must lie under
+// projectRoot.
+func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []string, pluginPinClaudeProfile string) error {
+	// The lock file beside mcpFile is opened with O_CREATE, so both paths are
+	// checked before either is touched.
+	for _, p := range []string{mcpFile, mcpFile + ".lock"} {
+		if err := atomicfile.CheckWithin(projectRoot, p); err != nil {
+			return withProjectMCPOptOut(err)
+		}
+	}
 	// Same read-modify-write class as the .claude.json writers: this reads the
 	// existing servers, merges, and writes the whole file back. The web local
 	// scope and the TUI both reach it, so it takes the same per-path lock.
@@ -208,7 +246,11 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 
 	if pluginPinClaudeProfile != "" {
 		if _, err := RefreshStalePluginPins(mcpFile, []string{pluginPinClaudeProfile}); err != nil {
-			mcpCatLog.Warn("plugin_pin_refresh_failed", "path", mcpFile, "error", err)
+			mcpCatLog.Warn("plugin_pin_refresh_failed",
+				// The inline ReplaceAll calls are no-ops after SanitizeValue; they are
+				// the newline barrier CodeQL go/log-injection recognises at the sink.
+				slog.String("path", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(mcpFile), "\n", ""), "\r", "")),
+				slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		}
 	}
 
@@ -283,7 +325,7 @@ func WriteMergedMcpJSONFile(mcpFile string, enabledNames []string, pluginPinClau
 		return fmt.Errorf("failed to marshal mcp json: %w", err)
 	}
 
-	if err := writeJSONFileAtomic(mcpFile, data, 0644); err != nil {
+	if err := writeJSONFileAtomic(projectRoot, mcpFile, data, 0644); err != nil {
 		return fmt.Errorf("failed to save mcp json: %w", err)
 	}
 

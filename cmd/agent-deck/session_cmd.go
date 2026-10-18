@@ -168,7 +168,7 @@ func printSessionHelp() {
 	fmt.Println("  handoff <id>            Build a cross-tool handoff prompt from the session's conversation (read-only)")
 	fmt.Println("  switch-preview <id>     Preview switch capability, fidelity and refusals (read-only, no mutation)")
 	fmt.Println("  attach <id>             Attach to session interactively")
-	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session")
+	fmt.Println("  focus <id> [--attach]   Signal the running TUI to select (or --attach) a session (--remote <name> for a remote's session)")
 	fmt.Println("  recent [--limit N]      List sessions most-recently-used first (same last_accessed the TUI's alternate/MRU keys use)")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  viewers [id]            List the terminals attached to a session (who is viewing it)")
@@ -260,6 +260,7 @@ func handleSessionStart(profile string, args []string) {
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send once agent is ready (short)")
 	messageFile := fs.String("message-file", "", "Read the initial message from a file ('-' for stdin); avoids shell quoting of long prompts")
+	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
 	attach := fs.Bool("attach", false, "Attach to the session after starting (requires an interactive terminal)")
 	noWait := fs.Bool("no-wait", false, "Return as soon as the process is spawned instead of waiting up to 3s for the tool's session id (a caller that attaches right away; the id is still captured by hooks)")
@@ -350,7 +351,11 @@ func handleSessionStart(profile string, args []string) {
 		return
 	}
 
-	// Start the session (with or without initial message)
+	// Start the session (with or without initial message). An initial
+	// message is a send: an enforced cost budget refuses it before the start.
+	if initialMessage != "" && !*ignoreBudget {
+		enforceSendBudget(profile, "start", storage, inst, instances, out, quietMode, nil)
+	}
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
@@ -1659,6 +1664,10 @@ func handleSessionAttach(profile string, args []string) {
 // current profile. Callers map it to a distinct (exit 2) "not found" code.
 var errFocusNotFound = errors.New("session not found")
 
+// errFocusRemoteUnknown signals that `session focus --remote <name>` named a
+// remote absent from the config. It also exits 2, like an unknown id.
+var errFocusRemoteUnknown = errors.New("remote is not configured")
+
 // liveSwitcher attempts to move the attached terminal straight into a session's
 // tmux pane (the Ctrl+b N quick-switch path), so a notification click lands you
 // in the session even while the TUI is paused inside another attach. Injected
@@ -1791,6 +1800,61 @@ func routeFocus(db *statedb.StateDB, instances []*session.Instance, id string, n
 	return session.WriteFocusRequestAttach(db, id, nowNano, attach)
 }
 
+// tuiClientDetacher detaches one tmux client by pid: the client the TUI is
+// paused in, as it recorded under session.TUIAttachKey. Injected into
+// routeRemoteFocus so it is unit-testable without a real tmux server.
+type tuiClientDetacher interface {
+	detachClient(socket string, pid int) (bool, error)
+}
+
+// tmuxPIDDetacher is the production tuiClientDetacher.
+type tmuxPIDDetacher struct{}
+
+func (tmuxPIDDetacher) detachClient(socket string, pid int) (bool, error) {
+	return tmux.DetachClientByPID(socket, pid)
+}
+
+// routeRemoteFocus drives `session focus --remote <name> <id>` (#2704). The id
+// belongs to the remote, so it is not checked here (no SSH): the TUI looks it
+// up in its remote list. With --attach it writes the request FIRST and then,
+// when the TUI recorded that it is paused inside a local attach, detaches that
+// one client so the TUI comes back and consumes the request. Any other client
+// (web viewers, other terminals, the embedded pane) stays attached, and with
+// no record (TUI on the list, embedded layout, or an older TUI that would
+// drop the request anyway) nothing is detached. Select-only never detaches.
+func routeRemoteFocus(db *statedb.StateDB, remote, id string, nowNano int64, attach bool, remoteExists func(string) (bool, error), detacher tuiClientDetacher) error {
+	if id == "" {
+		return fmt.Errorf("session focus requires an <id>")
+	}
+	exists, err := remoteExists(remote)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: %q", errFocusRemoteUnknown, remote)
+	}
+	if err := session.WriteFocusRequestFull(db, session.FocusRequest{ID: id, TS: nowNano, Attach: attach, Remote: remote}); err != nil {
+		return err
+	}
+	if !attach || detacher == nil {
+		return nil
+	}
+	rec, ok := session.ReadTUIAttach(db)
+	if !ok {
+		return nil
+	}
+	// The request is already persisted, so a detach failure still leaves it
+	// to be consumed once the user is back in the list; surface it anyway.
+	_, err = detacher.detachClient(rec.Socket, rec.ClientPID)
+	return err
+}
+
+// focusRemoteExists reports whether name is a configured remote.
+func focusRemoteExists(name string) (bool, error) {
+	_, exists, err := resolveRemoteConfig(name)
+	return exists, err
+}
+
 // resolveAndWriteFocus validates id against the loaded instances and, on a
 // match, writes the focus_request row. Retained as the switcher-less path
 // (select-only / no live switch); delegates to routeFocus.
@@ -1804,30 +1868,51 @@ func resolveAndWriteFocus(db *statedb.StateDB, instances []*session.Instance, id
 func handleSessionFocus(profile string, args []string) {
 	fs := flag.NewFlagSet("session focus", flag.ContinueOnError)
 	attach := fs.Bool("attach", false, "Open/attach the session, not just select it")
+	remote := fs.String("remote", "", "Focus a session of this configured remote (see 'agent-deck remote list'); <id> is the remote's own session id")
+	jsonOutput := fs.Bool("json", false, "Output the written request as JSON")
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session focus <id> [--attach]")
+		fmt.Println("Usage: agent-deck session focus [--remote <name>] <id> [--attach] [--json]")
 		fmt.Println()
 		fmt.Println("Signal the running agent-deck TUI (same profile) to reveal and")
 		fmt.Println("select the session with the given instance id on its next refresh.")
 		fmt.Println("With --attach, the TUI opens/attaches the session (as if you")
 		fmt.Println("pressed Enter on it) instead of only moving the cursor.")
+		fmt.Println("With --remote, <id> is a session on that remote: the TUI selects")
+		fmt.Println("its row under Remotes. Nothing local is created.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
 	}
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
 
 	id := fs.Arg(0)
+	out := NewCLIOutput(*jsonOutput, false)
+	fail := func(err error) {
+		code := ErrCodeInvalidOperation
+		if errors.Is(err, errFocusNotFound) || errors.Is(err, errFocusRemoteUnknown) {
+			code = ErrCodeNotFound
+		}
+		if *jsonOutput {
+			out.Error(err.Error(), code)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+		if code == ErrCodeNotFound {
+			exitCLI(2)
+		}
+		exitCLI(1)
+	}
 
 	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		exitCLI(1)
+		fail(err)
 	}
 
 	db := storage.GetDB()
 	if db == nil {
-		fmt.Fprintln(os.Stderr, "Error: no state database available")
-		exitCLI(1)
+		fail(errors.New("no state database available"))
 	}
 
 	var switcher liveSwitcher
@@ -1836,12 +1921,29 @@ func handleSessionFocus(profile string, args []string) {
 		switcher = tmuxLiveSwitcher{}
 		detacher = tmuxClientDetacher{}
 	}
-	if err := routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher, detacher); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		if errors.Is(err, errFocusNotFound) {
-			exitCLI(2)
+	if *remote != "" {
+		var tuiDetacher tuiClientDetacher
+		if *attach {
+			tuiDetacher = tmuxPIDDetacher{}
 		}
-		exitCLI(1)
+		err = routeRemoteFocus(db, *remote, id, time.Now().UnixNano(), *attach, focusRemoteExists, tuiDetacher)
+	} else {
+		err = routeFocus(db, instances, id, time.Now().UnixNano(), *attach, switcher, detacher)
+	}
+	if err != nil {
+		fail(err)
+	}
+	if *jsonOutput {
+		// Same envelope keys as the error path (success/error/code).
+		data := map[string]interface{}{
+			"success": true,
+			"id":      id,
+			"attach":  *attach,
+		}
+		if *remote != "" {
+			data["remote"] = *remote
+		}
+		out.Success("", data)
 	}
 }
 
@@ -3279,6 +3381,7 @@ func handleSessionSend(profile string, args []string) {
 	codexComposerFallback := fs.Bool("codex-composer-fallback", false, "Codex only: when the session's Codex identity is provably unavailable (fresh composer, rollout re-created after the trust prompt), send through the verified composer path instead of refusing. Never used for --json --wait; every other acceptance error still refuses")
 	queue := fs.Bool("queue", false, "Return at once with a send_id; a background worker delivers when the target is idle, at most once; every send ends landed, failed or settled with a reason (see session send-status)")
 	queueWorker := fs.Bool("queue-worker", false, "Internal: deliver a durable queued send directly")
+	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	noTag := fs.Bool("no-tag", false, "Do not prefix the [agent-deck from:<id>] envelope a send from inside a session gets by default ([send] tag_sends)")
 	requireInputPrompt := fs.Bool("require-input-prompt", false, "Refuse with menu_open unless an input prompt is visible immediately before each keystroke batch")
 	sourceFlag := fs.String("source", "", sendSourceFlagHelp)
@@ -3461,11 +3564,19 @@ func handleSessionSend(profile string, args []string) {
 		enabled:    !*noTag && !*queueWorker && sendTagsEnabled(),
 		draft:      *draft,
 	})
+	if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
+		out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
+		exitCLI(2)
+	}
+	// Cost budgets (prime-agent adoption C9): with [costs.budgets]
+	// enforce = true, a send is refused before anything is queued or typed
+	// when a limit that applies to the target is spent. A draft only
+	// pre-fills the prompt; the queue worker's child was checked by the
+	// worker itself; --ignore-budget is for messages a person starts.
+	if !*queueWorker && !*draft && !*ignoreBudget {
+		enforceSendBudget(profile, "send", storage, inst, instances, out, *quiet, nil)
+	}
 	if len(images) > 0 || *queue || asyncJSON {
-		if *queue && (*wait || *stream || *draft || *noWait || *deferIfBusy) {
-			out.Error("--queue is incompatible with --wait, --stream, --draft, --no-wait and --defer-if-busy", ErrCodeInvalidOperation)
-			exitCLI(2)
-		}
 		var imgErr error
 		var copies []string
 		message, copies, imgErr = attachImages(inst, message, images, time.Now())
@@ -3482,7 +3593,7 @@ func handleSessionSend(profile string, args []string) {
 			if *noTag {
 				ledgerSender = "" // --no-tag: never attributed to an inherited session
 			}
-			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, *requireInputPrompt, out) // exits on failure
+			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, *requireInputPrompt, *ignoreBudget, out) // exits on failure
 			recordSent()
 			fire.record(triggers.OutcomeQueued)
 			return
@@ -6761,6 +6872,9 @@ func handleSessionOutput(profile string, args []string) {
 		exitCLI(1)
 	}
 	bounded := boundSessionOutputOrExit(out, profile, inst.ID, "response", response.Content, *maxTokens, boundAgentOutput)
+	if resultReadShown(*jsonOutput, quietMode, *copyFlag, bounded == response.Content) {
+		noteResultRead(inst.ID, response.AssistantUUID)
+	}
 
 	// Copy to clipboard mode
 	if *copyFlag {

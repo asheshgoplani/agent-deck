@@ -200,10 +200,10 @@ func TestEngine_SetupRetry_CleansUpEveryFailedAttempt(t *testing.T) {
 
 	adapter := &failedSetupAdapter{failSetups: 2}
 	engine.RegisterAdapter("w1", adapter, AdapterConfig{Type: "mock", Name: "flaky"}, 60)
-	entry := &engine.adapters[0]
+	entry := engine.adapters[0]
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		if ok := engine.setupAdapter(entry); ok {
+		if err := engine.setupAdapter(entry); err == nil {
 			t.Fatalf("attempt %d: Setup unexpectedly succeeded", attempt)
 		}
 		if entry.setupOK {
@@ -215,7 +215,7 @@ func TestEngine_SetupRetry_CleansUpEveryFailedAttempt(t *testing.T) {
 		}
 	}
 
-	if ok := engine.setupAdapter(entry); !ok {
+	if err := engine.setupAdapter(entry); err != nil {
 		t.Fatal("third attempt: Setup should have succeeded")
 	}
 	if !entry.setupOK {

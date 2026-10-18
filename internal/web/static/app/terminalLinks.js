@@ -11,11 +11,12 @@
 // Trusted host -> opens directly. Everything else keeps the confirm. The open
 // mirrors xterm's: blank window, `opener` cleared, then navigate.
 //
-// Issue #2676: a file:// link can't load from an http(s) origin, so it never
-// opens a window; the path is copied and a toast says so.
+// Issue #2676: a file:// link can't load from an http(s) origin. Under a
+// `[web] file_link_roots` directory it opens through the deck's GET /api/files;
+// anywhere else the path is copied and a toast says so.
 // Issue #2675: Cmd-click (Ctrl-click off macOS) opens the hovered link even
 // when the app captures the mouse; see installModifierClickLinks.
-import { trustedDomainsSignal, confirmLinkOpenSignal } from './state.js'
+import { trustedDomainsSignal, confirmLinkOpenSignal, fileLinkRootsSignal, fileLinkHostSignal } from './state.js'
 import { addToast } from './toasts.js'
 
 // Reduces one allowlist entry to a comparable lowercase host, mirroring
@@ -155,6 +156,54 @@ function reportFileLink(path, host, win) {
   addToast(`Local file links can't open in the browser: ${shown}`, 'info')
 }
 
+// Whether path is a `[web] file_link_roots` entry or below one. Only a hint
+// for which links to send to GET /api/files: the server resolves symlinks and
+// enforces the roots itself.
+export function isUnderFileLinkRoot(path, roots) {
+  if (typeof path !== 'string' || !path.startsWith('/')) return false
+  if (path.split('/').some((seg) => seg === '.' || seg === '..')) return false
+  for (const raw of Array.isArray(roots) ? roots : []) {
+    const root = String(raw || '').replace(/\/+$/, '')
+    if (!String(raw || '').startsWith('/')) continue
+    // A root of `/` strips to '' and covers every absolute path.
+    if (root === '' || path === root || path.startsWith(root + '/')) return true
+  }
+  return false
+}
+
+// Whether a file link's host (from fileLinkHost) is the deck machine: none,
+// localhost, or the deck's hostname (short or full form).
+export function isDeckFileHost(host, deckHost) {
+  if (!host) return true
+  const want = String(deckHost || '').toLowerCase()
+  if (!want) return false
+  const h = String(host).toLowerCase()
+  return h === want || h === want.split('.')[0] || h.split('.')[0] === want
+}
+
+// The deck URL that serves a file link (issue #2676).
+function fileLinkURL(path, win) {
+  const origin = (win.location && win.location.origin) || ''
+  return `${origin}/api/files?path=${encodeURIComponent(path)}`
+}
+
+// Opens url the way xterm's built-in does: blank window, `opener` cleared,
+// then navigate.
+function navigateNewWindow(win, url) {
+  const opened = win.open()
+  if (!opened) {
+    // Same as xterm: refuse to navigate rather than hand the target a live
+    // opener reference we could not clear.
+    console.warn('Opening link blocked as opener could not be cleared')
+    return false
+  }
+  try {
+    opened.opener = null
+  } catch (_e) { /* read-only in some browsers; window.open already noopener'd */ }
+  opened.location.href = url
+  return true
+}
+
 // Applies the policy, then opens the link the way xterm's built-in does.
 // `env` is injectable so tests can supply fakes instead of real dialogs.
 export function openTerminalLink(url, options = {}, env = {}) {
@@ -162,6 +211,13 @@ export function openTerminalLink(url, options = {}, env = {}) {
   if (!win) return false
   const filePath = localFilePath(url)
   if (filePath) {
+    // Under a configured root the deck serves it; no confirm, the roots are
+    // the user's own allowlist.
+    // A link naming another machine's file never opens the deck's file
+    // at the same path.
+    if (isDeckFileHost(fileLinkHost(url), options.fileLinkHost) && isUnderFileLinkRoot(filePath, options.fileLinkRoots)) {
+      return navigateNewWindow(win, fileLinkURL(filePath, win))
+    }
     if (env.onFileLink) env.onFileLink(filePath)
     else reportFileLink(filePath, fileLinkHost(url), win)
     return false
@@ -179,18 +235,7 @@ export function openTerminalLink(url, options = {}, env = {}) {
       return false
     }
   }
-  const opened = win.open()
-  if (!opened) {
-    // Same as xterm: refuse to navigate rather than hand the target a live
-    // opener reference we could not clear.
-    console.warn('Opening link blocked as opener could not be cleared')
-    return false
-  }
-  try {
-    opened.opener = null
-  } catch (_e) { /* read-only in some browsers; window.open already noopener'd */ }
-  opened.location.href = url
-  return true
+  return navigateNewWindow(win, url)
 }
 
 // The xterm `linkHandler` option. Reads the live signals at click time so a
@@ -202,6 +247,8 @@ export function createTerminalLinkHandler(env = {}) {
   const open = env.open || ((text) => openTerminalLink(text, {
     trustedDomains: trustedDomainsSignal.value,
     confirmLinkOpen: confirmLinkOpenSignal.value,
+    fileLinkRoots: fileLinkRootsSignal.value,
+    fileLinkHost: fileLinkHostSignal.value,
   }))
   return {
     // xterm drops every non-http(s) OSC 8 link without this; openTerminalLink
