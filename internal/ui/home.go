@@ -22467,9 +22467,7 @@ func (h *Home) renderSessionItem(
 	worktreeBadge := ""
 	if inst.IsWorktree() && inst.WorktreeBranch != "" {
 		branch := inst.WorktreeBranch
-		if len(branch) > 15 {
-			branch = branch[:12] + "..."
-		}
+		branch = truncateDisplay(branch, 15, "...")
 		wtStyle := lipgloss.NewStyle().Foreground(ColorCyan)
 		if selected {
 			wtStyle = SessionStatusSelStyle
@@ -22502,9 +22500,7 @@ func (h *Home) renderSessionItem(
 	sshBadge := ""
 	if inst.IsSSH() {
 		host := inst.SSHHost
-		if len(host) > 20 {
-			host = host[:17] + "..."
-		}
+		host = truncateDisplay(host, 20, "...")
 		sshStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
 		if selected {
 			sshStyle = SessionStatusSelStyle
@@ -23219,9 +23215,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	titleStr := rs.Title
-	if len(titleStr) > 25 {
-		titleStr = titleStr[:22] + "..."
-	}
+	titleStr = truncateDisplay(titleStr, 25, "...")
 
 	toolStr := ""
 	if rs.Tool != "" && !h.toolBadgeHidden(rs.Tool) {

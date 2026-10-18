@@ -373,7 +373,7 @@ func (d *EditPathsDialog) View() string {
 		labelPrefix := fmt.Sprintf("%s%d. ", prefix, i+1)
 		if isSelected && d.editing {
 			// Constrain textinput width to fit inside the dialog frame
-			inputWidth := innerWidth - len(labelPrefix)
+			inputWidth := innerWidth - lipgloss.Width(labelPrefix)
 			if inputWidth < 10 {
 				inputWidth = 10
 			}
@@ -387,10 +387,7 @@ func (d *EditPathsDialog) View() string {
 				display = "(empty)"
 			}
 			// Truncate path to fit within the dialog frame
-			maxPathLen := innerWidth - len(labelPrefix)
-			if maxPathLen > 0 && len(display) > maxPathLen {
-				display = "…" + display[len(display)-maxPathLen+1:]
-			}
+			display = truncateDisplayLeft(display, innerWidth-lipgloss.Width(labelPrefix), "…")
 			if isSelected {
 				content.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render(
 					labelPrefix + display))
@@ -402,9 +399,7 @@ func (d *EditPathsDialog) View() string {
 		}
 	}
 	hint := "    [a: add, d: remove, enter: edit, ↑↓: navigate]"
-	if len(hint) > innerWidth {
-		hint = hint[:innerWidth]
-	}
+	hint = truncateDisplay(hint, innerWidth, "")
 	content.WriteString(dimStyle.Render(hint))
 	content.WriteString("\n")
 
