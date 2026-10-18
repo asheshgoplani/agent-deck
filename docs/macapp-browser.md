@@ -179,10 +179,18 @@ on a host controls that host's CLI, config and log. The Mac app is the
 enforcement point, and the contract (`internal/macapp`, policy.go) is:
 
 - **Addresses.** A request from a remote host (a session the app reaches over
-  SSH) never loads a loopback, private, link-local (including cloud metadata
-  such as `169.254.169.254`), unspecified or multicast address, nor
-  `localhost` or a `.local`/`.internal` name, as the app resolves it, for the
-  first load, redirects and every subresource.
+  SSH) never loads, as the app resolves the name, for the first load,
+  redirects and every subresource:
+  - loopback, private, link-local (incl. cloud metadata `169.254.169.254`),
+    unspecified / "this network" (`0.0.0.0/8`), multicast, broadcast
+    (`255.255.255.255`), reserved (`240.0.0.0/4`), benchmarking
+    (`198.18.0.0/15`) or IETF protocol (`192.0.0.0/24`) addresses;
+  - **CGNAT `100.64.0.0/10`, which tailnets (Tailscale and the like) use**:
+    a box page must not reach the owner's other machines over the tailnet;
+  - IPv4-mapped, IPv4-compatible and NAT64 (`64:ff9b::/96`,
+    `64:ff9b:1::/48`) IPv6 forms, and any address with a zone ID;
+  - `localhost`, `*.localhost`, `*.local`, `*.lan`, `*.internal`,
+    `home.arpa`, `*.ts.net` (tailnet MagicDNS) and single-label names.
 - **Profiles.** A Browser panel profile is isolated per session: a session's
   pages never use the owner's own browsing profile, cookies or logins unless
   the owner turns that on for it in the app. A remote host never picks or
@@ -190,9 +198,12 @@ enforcement point, and the contract (`internal/macapp`, policy.go) is:
 
 As defence in depth, the CLI on a host the app reaches as a remote (not macOS,
 or inside an SSH session) refuses such addresses in `browser open` and `open`
-before it writes a request (`macapp.CheckRemoteURL`: names, IP literals and
-numeric host forms like `2130706433`; it does no DNS, so it never replaces the
-app's check). A local Mac session may still open its own dev server.
+before it writes a request (`macapp.CheckRemoteURL`). It maps the host the
+way a browser does first (UTS-46: full-width forms such as `１２７.０.０.１`
+or `ｌｏｃａｌｈｏｓｔ`, the ideographic full stop in `127。0。0。1`,
+percent-escapes) and refuses a host that does not map; it also refuses
+numeric host forms like `2130706433`. It does no DNS, so it never replaces
+the app's check. A local Mac session may still open its own dev server.
 
 `read` returns text and element refs only and masks password input values.
 There is no cookie, storage or script op, and `type` into a password field is

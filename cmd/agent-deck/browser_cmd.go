@@ -13,12 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/events"
 	"github.com/asheshgoplani/agent-deck/internal/macapp"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 )
 
 const browserUsage = `Usage: agent-deck browser <op> [flags]
@@ -331,9 +331,9 @@ func browserResponseError(e *macapp.ErrorInfo) error {
 		return errors.New("AgentDeck refused the request")
 	}
 	if e.Message == "" {
-		return errors.New(displayRemote(e.Code))
+		return errors.New(termtext.Clean(e.Code))
 	}
-	return fmt.Errorf("%s: %s", displayRemote(e.Code), displayRemote(e.Message))
+	return fmt.Errorf("%s: %s", termtext.Clean(e.Code), termtext.Clean(e.Message))
 }
 
 func writeBrowserJSON(out io.Writer, v any) error {
@@ -375,10 +375,10 @@ func writeBrowserResult(out io.Writer, op macapp.Op, resp macapp.BrowserResponse
 		}
 	}
 	if op == macapp.OpOpen {
-		_, err := fmt.Fprintf(out, "Opened %s (tab %s)\n", displayRemote(page.URL), displayRemote(page.TabID))
+		_, err := fmt.Fprintf(out, "Opened %s (tab %s)\n", termtext.Clean(page.URL), termtext.Clean(page.TabID))
 		return err
 	}
-	_, err := fmt.Fprintln(out, displayRemote(page.URL))
+	_, err := fmt.Fprintln(out, termtext.Clean(page.URL))
 	return err
 }
 
@@ -420,12 +420,12 @@ func writeBrowserTabs(out io.Writer, raw json.RawMessage) error {
 		if tab.Active {
 			marker = "*"
 		}
-		if _, err := fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, displayRemote(tab.TabID), displayRemote(tab.URL), displayRemote(tab.Title)); err != nil {
+		if _, err := fmt.Fprintf(out, "%s %s\t%s\t%s\n", marker, termtext.Clean(tab.TabID), termtext.Clean(tab.URL), termtext.Clean(tab.Title)); err != nil {
 			return err
 		}
 	}
 	if tabs.Driver != "" {
-		_, err := fmt.Fprintf(out, "driver: %s\n", displayRemote(tabs.Driver))
+		_, err := fmt.Fprintf(out, "driver: %s\n", termtext.Clean(tabs.Driver))
 		return err
 	}
 	return nil
@@ -444,19 +444,16 @@ func requireBrowserOptIn() error {
 	return nil
 }
 
-// displayPageText makes page text safe to print: line breaks and tabs stay,
-// every other control character (ESC and so every CSI/OSC sequence, C1
-// codes, DEL) is dropped, so a page cannot drive the agent's terminal.
+// displayPageText makes page text safe to print: each line goes through
+// termtext.Clean (controls incl. ESC/CSI/OSC, C1, DEL, bidi formatting and
+// invisible separators dropped) and the line breaks stay. A tab becomes a
+// space, since Clean drops tabs.
 func displayPageText(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\t' {
-			return r
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
+	lines := strings.Split(strings.ReplaceAll(s, "\t", " "), "\n")
+	for i, line := range lines {
+		lines[i] = termtext.Clean(strings.TrimSuffix(line, "\r"))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // checkBrowserResponseVersion refuses a response in a protocol version this

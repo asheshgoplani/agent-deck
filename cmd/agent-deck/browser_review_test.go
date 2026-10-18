@@ -19,10 +19,10 @@ import (
 // sequence (CSI, OSC, C1, BEL, DEL) reaches the agent's terminal, while
 // line breaks and tabs of the page text stay.
 func TestBrowserOutputDropsTerminalSequences(t *testing.T) {
-	const evil = "a\x1b[2J\x1b]0;pwned\x07b\x9b31mc\x7fd\x1b]52;c;ZXZpbA==\x1b\\e"
+	const evil = "a\x1b[2J\x1b]0;pwned\x07b\x9b31mc\x7fd\x1b]52;c;ZXZpbA==\x1b\\e\u202egnp.exe\u200bf\u2066g\ufeffh"
 	check := func(name, got string) {
 		t.Helper()
-		for _, bad := range []string{"\x1b", "\x07", "\x9b", "\x7f"} {
+		for _, bad := range []string{"\x1b", "\x07", "\x9b", "\x7f", "\u202e", "\u200b", "\u2066", "\ufeff"} {
 			if strings.Contains(got, bad) {
 				t.Errorf("%s: %q passed through in %q", name, bad, got)
 			}
@@ -34,7 +34,7 @@ func TestBrowserOutputDropsTerminalSequences(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("read", out.String())
-	if !strings.HasPrefix(out.String(), "line one\n\t") {
+	if !strings.HasPrefix(out.String(), "line one\n ") {
 		t.Errorf("read lost its line breaks: %q", out.String())
 	}
 	tabs, _ := json.Marshal(macapp.TabsResult{Tabs: []macapp.Tab{{TabID: "t1" + evil, URL: "https://example.com/" + evil, Title: evil, Active: true}}, Driver: evil})

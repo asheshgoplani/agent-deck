@@ -513,7 +513,8 @@ func TestOpenTargetRefusesInternalAddressesFromARemote(t *testing.T) {
 	restore := openCallerIsRemote
 	defer func() { openCallerIsRemote = restore }()
 	openCallerIsRemote = func() bool { return true }
-	for _, bad := range []string{"http://localhost:8080/", "http://192.168.1.1/", "http://169.254.169.254/latest/meta-data/", "http://[::1]/", "http://2130706433/"} {
+	for _, bad := range []string{"http://localhost:8080/", "http://192.168.1.1/", "http://169.254.169.254/latest/meta-data/", "http://[::1]/", "http://2130706433/",
+		"http://１２７.０.０.１/", "http://ｌｏｃａｌｈｏｓｔ/", "http://127。0。0。1/", "http://100.100.1.1/", "http://router/"} {
 		if _, _, err := resolveOpenTarget(bad); !errors.Is(err, macapp.ErrInternalAddress) {
 			t.Errorf("%s from a remote: %v", bad, err)
 		}
