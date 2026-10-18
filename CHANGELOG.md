@@ -7,9 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.30] - 2026-10-18
+
+### Security and toolchain
+
+- agent-deck no longer writes your MCP definitions through a project's MCP config symlink that points outside the project. A cloned repository could ship `.mcp.json` (or `.cursor/mcp.json`, a `.cursor` directory link, or `opencode.json`) as a link to a file elsewhere, such as `~/.claude.json`, and the next session start or MCP change replaced that file with your MCP definitions, env values included; a dangling link created a file outside the project. Such a link is now refused and the error names both paths. Links that stay inside the project still work. The plugin pin refresh no longer writes through a fixed `<file>.tmp` name, and the `.mcp.json` lock file is checked too. Config files in your home directory (`~/.claude.json`, `~/.cursor/mcp.json`) still follow links as before (#2737).
+- `openclaw` commands drop control characters from text the gateway sends before printing it: rejection codes and messages, close reasons and other connect, list and send errors, and the channel and agent names shown by `openclaw status` and `openclaw list`. A hostile gateway can no longer send terminal escape sequences (such as a clipboard write) through them (#2735).
+
+### Updates
+
+- A local build (`<version>+local...`) is now offered the published release of the same version, so `update --check`, the auto-install and the releases-behind count move a machine running `1.16.29+local.<date>.<sha>` onto v1.16.29 or later instead of keeping the local build. Other build metadata (such as `+build.5`) still counts as the same version, and release candidate ordering is unchanged (#2710, #2711).
+
 ### Models
 
-- OpenCode's model list comes from the installed CLI (`opencode models`, no prompt, about 3s timeout, cached per binary for up to a day), merged in front of the built-in list, so new models show up in the TUI and web pickers and `launch -capabilities --json` without an Agent Deck release. A failure keeps the built-in list. `[models.<tool>] list = [...]` pins a tool's suggestions and `[models.<tool>] extra = [...]` adds IDs in front, for `claude`, `codex`, `gemini` and `opencode` (#2664, thanks @koenzhao).
+- OpenCode's model list comes from the installed CLI (`opencode models`, no prompt, about 3s timeout, cached per binary for up to a day and probed again after a CLI upgrade), merged in front of the built-in list, so new models show up in the TUI and web pickers and `launch -capabilities --json` without an Agent Deck release. A failure keeps the built-in list. `[models.<tool>] list = [...]` pins a tool's suggestions and `[models.<tool>] extra = [...]` adds IDs in front, for `claude`, `codex`, `gemini` and `opencode` (#2664, #2714, reported by @koenzhao).
+
+### Sessions
+
+- Restarting a Hermes entry resumes that entry's own conversation more reliably. The hook handler now records the conversation each entry's own turns report, so restart no longer depends on the TUI having sampled the right moment of a turn. A delegated subagent's conversation is never recorded, and a fresh restart forgets the record. Entries with nothing recorded behave as in 1.16.29 (#2582, #2722, reported by @renky).
+
+### Goals
+
+- The goal skill has opt-in progress controls; goals that do not set them run exactly as before. `no_progress_cap: N` waits twice as long before each wake of a worker that makes no progress, and after N such wakes runs `done_cmd` once more; if it still fails, the goal escalates with the worker left running (or stops the worker with `no_progress_action: "stop"`). `worktree_progress: true` counts changes in the worktree as progress, so a worker that edits files without writing receipts is not woken. `worktree_gate: true` skips rerunning `done_cmd` while the worktree is unchanged since it last failed. `goal.sh` takes them as `NO_PROGRESS_CAP`, `NO_PROGRESS_ACTION`, `NO_PROGRESS_BACKOFF_BASE_SECONDS`, `WORKTREE_PROGRESS` and `WORKTREE_GATE`, all off by default. See `skills/agent-deck/references/goal.md` (#2718).
+
+### Status
+
+- A finished Claude session with a leftover `run_in_background` shell (a dev server, a `tail -f`) no longer shows as running for hours. The shell counter in Claude's footer keeps a session running only while the transcript shows a recent background Bash launch, within `[status] background_shell_hold` (default `"3m"`); after that the session reads as waiting. A mixed counter with a monitor still reads as watching. `"0"` restores the old rule. A build started in the background that runs longer than the hold shows as waiting while it still runs, so raise the hold if that matters (#2733).
+
+### macOS app
+
+- When `[macapp] plugins` is off, `limits` and `events publish` name the exact command that turns it on (`agent-deck config set macapp.plugins true --yes`), and `--json` errors carry a `hint` the app can show as a consent prompt. `config set macapp.plugins true` now asks `[y/N]` in a terminal; without a terminal or with `--json` it exits 2 with `CONSENT_REQUIRED` and leaves config.toml unchanged unless `--yes` is given. Turning plugins off needs no consent (#2732).
+
+### Fixes
+
+- Web: Cmd-click (Ctrl-click on Linux and Windows) opens a terminal link in a session that captures the mouse, such as tmux with `mouse on` or a fullscreen agent, where a plain click went to the app. The link opens on release through the usual confirm and trusted domains check, and dragging off cancels. A `file://` link no longer opens a blank tab: it copies the path and shows a toast. Other non-web links (`javascript:`, `data:`, `vscode:`, `mailto:`) open nothing and show a toast. Plain clicks, Option-drag selection and touch scrolling are unchanged (#2675, #2676, #2713, reported by @bautrey).
+- A sub-session row no longer shows a `▾N` fold badge or takes `Tab`, `l`, `→` and `h` for a fold that hid nothing, so those keys work on it again. Parent rows are unchanged (#2723).
+
+### Upgrading
+
+- Project MCP configs: a project `.mcp.json`, `.cursor/mcp.json` or `opencode.json` that is a symlink to a file outside the project (for example a monorepo `pkg/.mcp.json -> ../.mcp.json`, or a dotfiles link) is now refused instead of written. `add --mcp` and `launch` fail with the error, the TUI and web MCP dialogs show it, and a restart starts the session without the MCP change. Replace the link with a real file or a link inside the project.
+- Scripts that run `config set macapp.plugins true` without a terminal must add `--yes`.
+- Local builds: a machine on a `+local` build of a version now auto-updates to the published release of that same version when auto-install is on.
+
+Thanks to @koenzhao, @bautrey and @renky for their reports.
 
 ## [1.16.29] - 2026-10-18
 
