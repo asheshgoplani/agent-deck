@@ -94,10 +94,10 @@ export function shouldConfirmLinkOpen(url, options = {}) {
   return !isTrustedLinkTarget(url, trustedDomains)
 }
 
-// Characters a copied path must not carry decoded: C0 and C1 controls (a
-// newline would add a shell line) and bidi overrides (they can make a path
-// read differently from what it is).
-const UNSAFE_PATH_CHARS = /[\x00-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+// Characters a copied path must not carry decoded: C0 and C1 controls and
+// the U+2028/U+2029 line separators (a newline would add a shell line), and
+// bidi overrides (they can make a path read differently from what it is).
+const UNSAFE_PATH_CHARS = /[\p{Cc}\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/u
 
 function parseFileLink(url) {
   let parsed

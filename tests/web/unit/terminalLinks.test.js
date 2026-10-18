@@ -260,6 +260,10 @@ describe('file:// links (#2676)', () => {
     const { localFilePath } = await load()
     expect(localFilePath('file:///tmp/x%C2%9By')).toBe('/tmp/x%C2%9By')
     expect(localFilePath('file:///tmp/%E2%80%AEtxt.exe')).toBe('/tmp/%E2%80%AEtxt.exe')
+    expect(localFilePath('file:///tmp/x%C2%85y')).toBe('/tmp/x%C2%85y')
+    expect(localFilePath('file:///tmp/x%E2%80%A8y')).toBe('/tmp/x%E2%80%A8y')
+    expect(localFilePath('file:///tmp/x%E2%80%A9y')).toBe('/tmp/x%E2%80%A9y')
+    expect(localFilePath('file:///tmp/caf%C3%A9.txt')).toBe('/tmp/café.txt')
   })
 
   // `ls --hyperlink` and the OSC 8 convention put the pane's hostname in the
