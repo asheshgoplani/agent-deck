@@ -19,27 +19,39 @@ import (
 //
 // The per-host single-flight (beginRemotePoll / remotePollActive) already
 // keeps a second poll from starting while one runs. Backoff adds the other
-// half: a poll that FAILED (error, timeout) or was SLOW (longer than half the
-// poll interval) pushes the host's next automatic poll out exponentially —
-// 2x, 4x, 8x ... the interval, capped at remotePollBackoffMax — and the
-// first fast success resets it. The host's last-good rows stay on screen
-// meanwhile (a skipped poll is merged like a failed one). Ctrl+R and the
-// explicit retry clear the backoff, so a user asking for a refresh gets one.
+// half: a poll that FAILED (error, timeout) pushes the host's next automatic
+// poll out exponentially — 2x, 4x, 8x ... the interval, capped at
+// remotePollBackoffMax. A poll that SUCCEEDED but was SLOW (longer than half
+// the poll interval) rests the host one interval and never escalates: the
+// host answers, so its rows must not go stale for minutes. The first fast
+// success clears it. The host's last-good rows stay on screen meanwhile (a
+// skipped poll is merged like a failed one). Ctrl+R, the explicit retry and
+// `session focus --remote` clear the backoff, so a user asking for a
+// refresh gets one.
 
 // remotePollBackoffMax caps how long a slow or failing host waits between
 // automatic polls.
 const remotePollBackoffMax = 5 * time.Minute
 
-// remotePollBackoff is one host's backoff: how many polls in a row were slow
-// or failed, and the earliest time the next automatic poll may start.
+// remotePollBackoff is one host's backoff: how many polls in a row failed,
+// and the earliest time the next automatic poll may start. A slow success
+// sets until with no strikes. saved records whether the poll that set it
+// reached the poll-state cache (seedRemotePolls reads a missing saved record
+// as an explicit reset).
 type remotePollBackoff struct {
 	strikes int
 	until   time.Time
+	saved   bool
 }
 
 // active reports whether an automatic poll must still wait at now.
 func (b remotePollBackoff) active(now time.Time) bool {
-	return b.strikes > 0 && now.Before(b.until)
+	return now.Before(b.until)
+}
+
+// empty reports whether the backoff holds nothing.
+func (b remotePollBackoff) empty() bool {
+	return b.strikes == 0 && b.until.IsZero()
 }
 
 // remotePollSlow reports whether a poll that took elapsed counts as slow for
@@ -49,11 +61,15 @@ func remotePollSlow(elapsed, interval time.Duration) bool {
 }
 
 // nextRemotePollBackoff is the backoff after one poll that ended at now. A
-// fast success resets it; a slow or failed poll adds a strike and holds the
-// host for interval * 2^strikes, capped at remotePollBackoffMax.
+// fast success resets it; a slow success clears the strikes and holds the
+// host one interval; a failed poll adds a strike and holds the host for
+// interval * 2^strikes, capped at remotePollBackoffMax.
 func nextRemotePollBackoff(prev remotePollBackoff, now time.Time, elapsed, interval time.Duration, err error) remotePollBackoff {
-	if err == nil && !remotePollSlow(elapsed, interval) {
-		return remotePollBackoff{}
+	if err == nil {
+		if !remotePollSlow(elapsed, interval) {
+			return remotePollBackoff{}
+		}
+		return remotePollBackoff{until: now.Add(remotePollBackoffDelay(0, interval))}
 	}
 	strikes := prev.strikes + 1
 	return remotePollBackoff{strikes: strikes, until: now.Add(remotePollBackoffDelay(strikes, interval))}
@@ -91,10 +107,11 @@ func (h *Home) remoteClock() time.Time {
 	return time.Now()
 }
 
-// recordRemotePollBackoffLocked updates name's backoff after a poll. A
-// shutdown cancellation says nothing about the host and leaves it as is.
-// Caller holds remoteSessionsMu.
-func (h *Home) recordRemotePollBackoffLocked(name string, elapsed time.Duration, err error) {
+// recordRemotePollBackoffLocked updates name's backoff after a poll; saved
+// says whether the poll reached the poll-state cache. A shutdown
+// cancellation says nothing about the host and leaves it as is. Caller holds
+// remoteSessionsMu.
+func (h *Home) recordRemotePollBackoffLocked(name string, elapsed time.Duration, err error, saved bool) {
 	if errors.Is(err, context.Canceled) {
 		return
 	}
@@ -102,8 +119,8 @@ func (h *Home) recordRemotePollBackoffLocked(name string, elapsed time.Duration,
 	interval := h.remotePollInterval()
 	prev := h.remotePollBackoffs[name]
 	next := nextRemotePollBackoff(prev, now, elapsed, interval, err)
-	if next.strikes == 0 {
-		if prev.strikes > 0 {
+	if next.empty() {
+		if !prev.empty() {
 			uiLog.Info("remote_poll_backoff_reset", slog.String("remote", name), slog.Duration("elapsed", elapsed))
 		}
 		delete(h.remotePollBackoffs, name)
@@ -112,6 +129,7 @@ func (h *Home) recordRemotePollBackoffLocked(name string, elapsed time.Duration,
 	if h.remotePollBackoffs == nil {
 		h.remotePollBackoffs = make(map[string]remotePollBackoff)
 	}
+	next.saved = saved
 	h.remotePollBackoffs[name] = next
 	reason := "slow"
 	if err != nil {

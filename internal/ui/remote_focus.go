@@ -152,7 +152,10 @@ func (h *Home) consumeRemoteFocus(fr session.FocusRequest) tea.Cmd {
 	if _, found, archived := h.lookupRemoteSession(fr.Remote, fr.ID); archived {
 		return nil
 	} else if !found {
-		// The tick fetches for it (remoteFocusWantsFetch).
+		// The tick fetches for it (remoteFocusWantsFetch). A host held by
+		// poll backoff (30s and up) would outlive the request's 10s TTL,
+		// so the request clears that host's hold.
+		h.clearRemotePollBackoff(fr.Remote)
 		h.pendingRemoteFocus = p
 		return nil
 	}

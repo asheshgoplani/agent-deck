@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // fakeRemoteClock is a settable clock shared by the Home under test and its
@@ -119,30 +121,29 @@ func secs(ds []time.Duration) []int {
 	return out
 }
 
-// A host whose polls take longer than half the interval is polled on an
-// exponential schedule (2x, 4x, 8x ... the interval, capped at 5 minutes)
-// instead of on every tick, and returns to the normal cadence after the
-// first fast poll.
-func TestRemotePollSlowHostBacksOffExponentiallyAndResets(t *testing.T) {
+// A host whose polls fail is polled on an exponential schedule (2x, 4x, 8x
+// ... the interval, capped at 5 minutes) instead of on every tick, and
+// returns to the normal cadence after the first fast success.
+func TestRemotePollFailingHostBacksOffExponentiallyAndResets(t *testing.T) {
 	h := newBackoffHome(t)
 	clock, epoch, runner := setupClockedRunner(h)
 
-	runner.elapsed.Store(int64(10 * time.Second)) // > 15s/2: slow
+	runner.err.Store(pollErr{fmt.Errorf("list: %w", context.DeadlineExceeded)})
 	driveTicks(t, h, clock, epoch, 0, 900*time.Second, runner)
-	// Each slow poll ends 10s after it starts and holds the host for
-	// 30s, 60s, 120s, 240s, then the 300s cap; the next tick after that
-	// starts the next poll.
-	want := []int{0, 45, 120, 255, 510, 825}
+	// Each failed poll holds the host for 30s, 60s, 120s, 240s, then the
+	// 300s cap; the next tick after that starts the next poll.
+	want := []int{0, 30, 90, 210, 450, 750}
 	if got := secs(*runner.starts); !reflect.DeepEqual(got, want) {
-		t.Fatalf("slow host poll starts (s) = %v, want %v", got, want)
+		t.Fatalf("failing host poll starts (s) = %v, want %v", got, want)
 	}
 
 	// The host recovers: the first poll after the hold is fast and resets
 	// the backoff, so the tick cadence resumes.
+	runner.err.Store(pollErr{})
 	runner.elapsed.Store(int64(time.Second))
 	*runner.starts = nil
 	driveTicks(t, h, clock, epoch, 915*time.Second, 1200*time.Second, runner)
-	want = []int{1140, 1155, 1170, 1185, 1200}
+	want = []int{1050, 1065, 1080, 1095, 1110, 1125, 1140, 1155, 1170, 1185, 1200}
 	if got := secs(*runner.starts); !reflect.DeepEqual(got, want) {
 		t.Fatalf("recovered host poll starts (s) = %v, want %v", got, want)
 	}
@@ -195,7 +196,7 @@ func TestRemotePollBackoffSchedule(t *testing.T) {
 	var b remotePollBackoff
 	var got []time.Duration
 	for i := 0; i < 7; i++ {
-		b = nextRemotePollBackoff(b, now, 9*time.Second, interval, nil)
+		b = nextRemotePollBackoff(b, now, 0, interval, errors.New("boom"))
 		got = append(got, b.until.Sub(now))
 	}
 	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute}
@@ -266,5 +267,89 @@ func TestRemotePollSlowFetcherNeverOverlapsPerHost(t *testing.T) {
 		if got := c.calls.Load(); got < 1 || got > 2 {
 			t.Errorf("%s: %d polls for 12 overlapping rounds, want 1 (2 if a round started after the first finished)", name, got)
 		}
+	}
+}
+
+// A slow poll that succeeds rests the host one interval but never escalates:
+// the host is healthy, only slow, and its rows must not go stale for minutes.
+func TestRemotePollSlowSuccessDoesNotEscalate(t *testing.T) {
+	h := newBackoffHome(t)
+	clock, epoch, runner := setupClockedRunner(h)
+	runner.elapsed.Store(int64(10 * time.Second)) // > 15s/2: slow
+	driveTicks(t, h, clock, epoch, 0, 300*time.Second, runner)
+	// Each poll ends 10s after it starts and rests the host until 25s
+	// after its start: every other tick polls.
+	want := []int{0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300}
+	if got := secs(*runner.starts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("slow but healthy host poll starts (s) = %v, want %v", got, want)
+	}
+}
+
+// A failure after a slow success starts the exponential schedule at its first
+// step, not further along.
+func TestRemotePollFailureAfterSlowSuccessStartsAtFirstStep(t *testing.T) {
+	interval := 15 * time.Second
+	now := time.Unix(0, 0)
+	b := nextRemotePollBackoff(remotePollBackoff{}, now, 9*time.Second, interval, nil)
+	if !b.active(now) || b.until.Sub(now) != interval {
+		t.Fatalf("a slow success must rest the host one interval, got %+v", b)
+	}
+	b = nextRemotePollBackoff(b, now, 0, interval, errors.New("boom"))
+	if b.until.Sub(now) != 30*time.Second {
+		t.Fatalf("first failure after a slow success holds %v, want 30s", b.until.Sub(now))
+	}
+}
+
+// The poll-state cache is a hint: when it cannot be written, the in-memory
+// backoff must still hold a failing host (it used to reset every round,
+// because the missing record read as `remote list --retry`).
+func TestRemotePollBackoffHoldsWhenCacheWriteFails(t *testing.T) {
+	h := newBackoffHome(t)
+	// A regular file where the cache dir should be: every write fails.
+	blocked := t.TempDir() + "/cache-is-a-file"
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CACHE_HOME", blocked)
+	clock, epoch, runner := setupClockedRunner(h)
+	runner.err.Store(pollErr{fmt.Errorf("list: %w", context.DeadlineExceeded)})
+	driveTicks(t, h, clock, epoch, 0, 1100*time.Second, runner)
+	want := []int{0, 30, 90, 210, 450, 750, 1050}
+	if got := secs(*runner.starts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("failing host poll starts with an unwritable cache (s) = %v, want %v", got, want)
+	}
+}
+
+// `session focus --remote` waits at most the request's TTL (10s) for the
+// session; a host held by backoff (30s and up) would never be fetched in
+// time, so the request clears that host's hold.
+func TestRemoteFocusClearsThatHostsBackoff(t *testing.T) {
+	h := newBackoffHome(t)
+	now := time.Now()
+	h.remoteConfigured = map[string]struct{}{"dev": {}, "prod": {}}
+	h.remotePollBackoffs = map[string]remotePollBackoff{
+		"dev":  {strikes: 2, until: now.Add(time.Minute)},
+		"prod": {strikes: 2, until: now.Add(time.Minute)},
+	}
+	h.consumeRemoteFocus(session.FocusRequest{Remote: "dev", ID: "not-listed-yet", TS: now.UnixNano()})
+	if h.pendingRemoteFocus == nil {
+		t.Fatal("an unlisted session must stay pending")
+	}
+	if h.remotePollBackoffs["dev"].active(now) {
+		t.Fatal("focus --remote must clear the target host's backoff")
+	}
+	if !h.remotePollBackoffs["prod"].active(now) {
+		t.Fatal("focus --remote must leave other hosts' backoff alone")
+	}
+}
+
+// Ctrl+R itself (not just clearRemotePollBackoff) clears every host's hold.
+func TestRemotePollCtrlRKeyClearsBackoff(t *testing.T) {
+	h := newBackoffHome(t)
+	now := time.Now()
+	h.remotePollBackoffs = map[string]remotePollBackoff{"dev": {strikes: 3, until: now.Add(time.Minute)}}
+	h.handleMainKey(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if h.remotePollBackoffs["dev"].active(now) {
+		t.Fatal("Ctrl+R must clear the poll backoff")
 	}
 }

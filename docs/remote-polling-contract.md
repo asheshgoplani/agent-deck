@@ -40,9 +40,8 @@ with it.
 
 ## 3. Back off when slow or failing
 
-A poll that **fails** (error, timeout, auth failure) or is **slow** (takes
-longer than half the poll interval) adds a strike. The next automatic poll
-waits `interval * 2^strikes`, capped at **5 minutes**:
+A poll that **fails** (error, timeout, auth failure) adds a strike. The next
+automatic poll waits `interval * 2^strikes`, capped at **5 minutes**:
 
 | strikes | wait before next automatic poll (15 s interval) |
 |--------:|--------------------------------------------------|
@@ -53,15 +52,24 @@ waits `interval * 2^strikes`, capped at **5 minutes**:
 | 4 | 4 min |
 | 5+ | 5 min (cap) |
 
-The first **fast success** (no error, under half the interval) resets the
-strikes to 0 and the normal cadence resumes. While a host is held, show its
-last good rows marked as stale. Do not show them as gone.
+A poll that **succeeds but is slow** (takes longer than half the poll
+interval) clears the strikes and rests the host for one interval, so the next
+automatic poll waits one extra tick. It never escalates: the host answers, so
+its rows must not go stale for minutes. A failure after it starts again at 1
+strike.
 
-An explicit user refresh (TUI: Ctrl+R, or the retry on an auth failure) clears
-the hold and polls at once, still subject to rule 1.
+The first **fast success** (no error, under half the interval) clears the
+hold and the normal cadence resumes. While a host is held, show its last good
+rows marked as stale. Do not show them as gone.
 
-A host that is always a little slow (a large fleet over a slow link) settles
-at the cap under this rule. Raise its poll interval (`[ui]
+An explicit user refresh (TUI: Ctrl+R, the retry on an auth failure, or
+`session focus --remote` for that host) clears the hold and polls at once,
+still subject to rule 1. `remote list --retry` from another process clears it
+too, through the poll-state cache. The hold is kept in memory as well, so a
+failed write of that cache does not release it.
+
+A host that is always a little slow (a large fleet over a slow link) is polled
+every other tick under this rule. Raise its poll interval (`[ui]
 remote_session_refresh_secs`) so that a normal poll fits in half of it.
 
 ## 4. No new poll while one runs, across processes too
@@ -71,7 +79,8 @@ Rule 1 covers one client process. A client that shells out to
 must also keep at most one such child per host at a time. It should wait for
 the child to exit, or kill it when its own deadline passes, before starting
 the next one. It must also apply rule 3 to the child's outcome: a non-zero
-exit or a duration over half the interval counts as a strike.
+exit counts as a strike, and a duration over half the interval rests the host
+one interval.
 
 ## Where this lives
 
