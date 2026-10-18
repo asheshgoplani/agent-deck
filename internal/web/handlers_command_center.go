@@ -658,7 +658,7 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 	// a wedged tmux) can't pile up orphaned processes if many asks fire.
 	// --no-tag: an operator's command-center message is not a send from
 	// whatever session the web server happened to be started in.
-	args := []string{"-p", s.cfg.Profile, "session", "send", resolved, msg, "--no-wait", "--no-tag"}
+	args := commandCenterAskArgs(s.cfg.Profile, resolved, msg)
 	cmdCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, exe, args...)
@@ -696,6 +696,12 @@ func (s *Server) handleCommandCenterAsk(w http.ResponseWriter, r *http.Request) 
 // resolveAskTarget maps a requested target to the concrete allowlisted session
 // title, returning "" if it is not allowed. "maestro" resolves to the live
 // "conductor-maestro" session when present (else bare "maestro").
+// commandCenterAskArgs is the `session send` argv of one ask. --source
+// command-center names the sender in `agent-deck triggers` (issue #2702).
+func commandCenterAskArgs(profile, target, msg string) []string {
+	return []string{"-p", profile, "session", "send", target, msg, "--no-wait", "--no-tag", "--source", "command-center"}
+}
+
 func resolveAskTarget(target string, allow []string) string {
 	if target == "maestro" {
 		if targetAllowed(allow, "conductor-maestro") {

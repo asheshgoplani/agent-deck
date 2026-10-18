@@ -358,3 +358,43 @@ def test_queue_drain_overflow_does_not_evict_inflight_or_next_unsent_item():
         assert delivered == ["in-flight reply"]
     finally:
         bridge._message_queue.clear()
+
+
+def test_queued_message_keeps_its_source_for_the_drain():
+    """Issue #2702: a channel message queued for a busy conductor is still
+    sent with --source channel:<platform> when the queue drains it."""
+    async def driver() -> None:
+        bridge._message_queue.clear()
+        bridge._enqueue_message("conductor-ops", "from tg", "work", None, "channel:telegram")
+        assert bridge._queue_source(bridge._message_queue["conductor-ops"][0]) == "channel:telegram"
+        with (
+            mock.patch("bridge.get_session_status", return_value="waiting"),
+            mock.patch("bridge.send_to_conductor", return_value=(True, "ok", False)) as send,
+        ):
+            await bridge._drain_queue()
+            await _finish_scheduled_tasks()
+        assert send.call_args.kwargs["source"] == "channel:telegram"
+
+    try:
+        _run(driver())
+    finally:
+        bridge._message_queue.clear()
+
+
+def test_send_to_conductor_passes_source_to_session_send():
+    calls: list[tuple] = []
+
+    def fake_run_cli(*args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    with (
+        mock.patch("bridge.get_session_status", return_value="waiting"),
+        mock.patch("bridge.run_cli", side_effect=fake_run_cli),
+    ):
+        ok, _, _ = bridge.send_to_conductor("conductor-ops", "hi", profile="work", source="channel:slack")
+        assert ok
+        ok, _, _ = bridge.send_to_conductor("conductor-ops", "hi", profile="work")
+        assert ok
+    assert calls[0][:2] == ("session", "send") and calls[0][-2:] == ("--source", "channel:slack")
+    assert "--source" not in calls[1]

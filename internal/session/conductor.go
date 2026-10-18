@@ -1645,7 +1645,8 @@ else
 fi
 unlink "$TICK_ERROR" 2>/dev/null || true
 if [ -n "$MSG" ]; then
-    if SEND_ERROR=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q 2>&1); then
+    # --source names this heartbeat in 'agent-deck triggers' (issue #2702).
+    if SEND_ERROR=$(agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q --source "heartbeat:{NAME}" 2>&1); then
         unlink "$SEND_FAILURE" 2>/dev/null || true
         agent-deck -p "$PROFILE" conductor heartbeat-tick "{NAME}" --rules="$RULES_FILE" --commit-message="$MSG" >/dev/null
     elif [ ! -f "$SEND_FAILURE" ]; then

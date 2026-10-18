@@ -3471,3 +3471,13 @@ func TestSetupConductorWithAgent_PreAcceptsCodexTrust(t *testing.T) {
 		t.Fatalf("trust_level = %v, want trusted", entry["trust_level"])
 	}
 }
+
+// The heartbeat names itself in `agent-deck triggers` (issue #2702).
+func TestConductorHeartbeatScript_TagsSource(t *testing.T) {
+	if !strings.Contains(conductorHeartbeatScript, `--no-wait -q --source "heartbeat:{NAME}"`) {
+		t.Fatal("heartbeat send must pass --source heartbeat:<name>")
+	}
+	if script := renderConductorHeartbeatScript("ops", "default"); !strings.Contains(script, `--source "heartbeat:ops"`) {
+		t.Fatalf("rendered heartbeat lacks --source heartbeat:ops:\n%s", script)
+	}
+}
