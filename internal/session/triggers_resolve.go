@@ -10,9 +10,20 @@ import (
 // sender may target any profile). Each profile's database is opened
 // read-only; current holds the caller's already-loaded profile, if any.
 func TriggerResolver(currentProfile string, current []*Instance) triggers.Resolver {
+	if current == nil {
+		return TriggerResolverForSessions(currentProfile, nil)
+	}
+	return TriggerResolverForSessions(currentProfile, resolvedFromInstances(current))
+}
+
+// TriggerResolverForSessions is TriggerResolver for a caller that already
+// holds a snapshot of its profile's sessions (the TUI takes it on its own
+// goroutine, then resolves in a background command). A nil current means
+// the current profile is read from its database like the others.
+func TriggerResolverForSessions(currentProfile string, current []triggers.Resolved) triggers.Resolver {
 	var sets []triggers.ProfileSessions
 	if current != nil {
-		sets = append(sets, triggers.ProfileSessions{Profile: currentProfile, Sessions: resolvedFromInstances(current)})
+		sets = append(sets, triggers.ProfileSessions{Profile: currentProfile, Sessions: current})
 	}
 	profiles, _ := ListProfiles()
 	for _, p := range profiles {
