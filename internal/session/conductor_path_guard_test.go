@@ -91,3 +91,39 @@ func TestConductorNameFromPath_PathGuard(t *testing.T) {
 		}
 	}
 }
+
+// Path-based resolution never adopts on an unflagged row (#2708): a worker
+// launched in the conductor dir, even one carrying the exact
+// "conductor-<name>" title, resolves by its title only and keeps no stored
+// name, so renaming it away ends the match. A flagged conductor in its dir
+// still adopts the name the dir gives it.
+func TestResolveConductorName_PathAdoptionOnlyWhenFlagged(t *testing.T) {
+	setupSwitchConductor(t, "")
+	dir, err := ConductorNameDir("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker := &Instance{ID: "w1", Title: ConductorSessionTitle("ops"), ProjectPath: dir}
+	if got := worker.ResolveConductorName(); got != "ops" {
+		t.Fatalf("unflagged exact title: got %q, want ops", got)
+	}
+	if worker.ConductorName != "" {
+		t.Fatalf("unflagged row adopted %q, want no stored name", worker.ConductorName)
+	}
+	worker.Title = "notes"
+	if got := worker.ResolveConductorName(); got != "" {
+		t.Fatalf("unflagged row renamed away: got %q, want \"\"", got)
+	}
+	if worker.IsConductorNamed("ops", worker.Title) {
+		t.Fatal("unflagged row in the conductor dir matched by path")
+	}
+
+	cond := &Instance{ID: "c1", Title: "conductor-team-ops", ProjectPath: dir, IsConductor: true}
+	if got := cond.ResolveConductorName(); got != "ops" {
+		t.Fatalf("flagged conductor in its dir: got %q, want ops", got)
+	}
+	if cond.ConductorName != "ops" {
+		t.Fatalf("flagged conductor stored %q, want ops", cond.ConductorName)
+	}
+}
