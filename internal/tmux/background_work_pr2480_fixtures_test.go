@@ -53,7 +53,9 @@ func TestBackgroundWork2473_CustomStatuslineFrames(t *testing.T) {
 		summary string
 	}{
 		{"workflow row under a custom statusline", pr2480WorkflowRunning, FrameActive, SubstateBackgroundWork, "workflow comms-followon-round3 3/5 · 18m32s"},
-		{"shell counter under a custom statusline", pr2480BashRunning, FrameActive, SubstateBackgroundWork, "bash 1 shell"},
+		// A5: the pane alone does not prove the shell; the session layer
+		// keeps it running only with a fresh launch in the transcript.
+		{"shell counter under a custom statusline", pr2480BashRunning, FrameWaiting, SubstateIdleAtEmptyPrompt, "bash 1 shell"},
 		{"finished turn, row gone", pr2480WorkflowCompleted, FrameWaiting, SubstateIdleAtEmptyPrompt, ""},
 	}
 	for _, c := range cases {

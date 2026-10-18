@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -23,6 +24,9 @@ type ConfigKey struct {
 	Default         any      `json:"default"`
 	RestartRequired bool     `json:"restart_required"`
 	Aliases         []string `json:"aliases,omitempty"`
+	// Consent, when set, is what turning the key on allows; `config set`
+	// refuses to turn it on without the user's explicit consent.
+	Consent string `json:"consent,omitempty"`
 
 	get func(*UserConfig) any
 	set func(*UserConfig, any)
@@ -156,8 +160,9 @@ var configKeys = []ConfigKey{
 		get: func(c *UserConfig) any { return c.Recall.GetEnabled() },
 		set: func(c *UserConfig, v any) { c.Recall.Enabled = boolRef(v.(bool)) }},
 	{Key: "macapp.plugins", Section: "Advanced", Label: "Mac app plugins", Help: "Enable limits --json and events publish for macapp.* (docs/macapp-core.md)", Type: "bool",
-		get: func(c *UserConfig) any { return c.Macapp.Plugins },
-		set: func(c *UserConfig, v any) { c.Macapp.Plugins = v.(bool) }},
+		Consent: MacappPluginsConsent,
+		get:     func(c *UserConfig) any { return c.Macapp.Plugins },
+		set:     func(c *UserConfig, v any) { c.Macapp.Plugins = v.(bool) }},
 	{Key: "macapp.transcript_events", Section: "Advanced", Label: "Transcript events", Help: "Notify daemon publishes session.transcript frames when a transcript grows", Type: "bool", RestartRequired: true,
 		get: func(c *UserConfig) any { return c.Macapp.TranscriptEvents },
 		set: func(c *UserConfig, v any) { c.Macapp.TranscriptEvents = v.(bool) }},
@@ -171,6 +176,24 @@ var configKeys = []ConfigKey{
 	{Key: "launch.prompt_suggestions", Section: "Sessions", Label: "Prompt suggestions", Help: "Claude prompt suggestions in launched sessions: children-off (off for sessions with a parent), on, or off; applies on the next session start; per profile via [profiles.<name>.claude]", Type: "enum", Values: []string{PromptSuggestionsChildrenOff, PromptSuggestionsOn, PromptSuggestionsOff},
 		get: func(c *UserConfig) any { return firstPromptSuggestionsMode(c.Launch.PromptSuggestions) },
 		set: func(c *UserConfig, v any) { c.Launch.PromptSuggestions = v.(string) }},
+	{Key: "launch.fanout_hint", Section: "Sessions", Label: "Fan-out hint", Help: "Add the fan-out working-style line to the identity block of Claude sessions (primer and full levels); applies on the next session start", Type: "bool",
+		get: func(c *UserConfig) any { return c.Launch.GetFanoutHint() },
+		set: func(c *UserConfig, v any) { b := v.(bool); c.Launch.FanoutHint = &b }},
+	{Key: "launch.context_level", Section: "Sessions", Label: "Context level", Help: "Global default for the identity block launched sessions receive: none, primer or full (inject_identity = false reads as none); group and session overrides win", Type: "enum", Values: []string{ContextLevelNone, ContextLevelPrimer, ContextLevelFull},
+		get: func(c *UserConfig) any { return globalContextLevel(c) },
+		set: func(c *UserConfig, v any) { c.Launch.ContextLevel = v.(string) }},
+}
+
+// globalContextLevel is the global layer of EffectiveContextLevel: a valid
+// [launch].context_level, else none when inject_identity = false, else full.
+func globalContextLevel(c *UserConfig) string {
+	if lvl, err := NormalizeContextLevel(c.Launch.ContextLevel); err == nil {
+		return lvl
+	}
+	if c.Launch.InjectIdentity != nil && !*c.Launch.InjectIdentity {
+		return ContextLevelNone
+	}
+	return ContextLevelFull
 }
 
 func positiveOr(v, def int) int {
@@ -274,12 +297,24 @@ func configValueIndex(list []string, v string) int {
 	return len(list)
 }
 
+// MacappPluginsConsent is what turning [macapp] plugins on allows.
+const MacappPluginsConsent = "Turning on [macapp] plugins lets `agent-deck limits` read the usage of every Claude and Codex account on this machine, and lets any local process that can run agent-deck publish macapp.* frames that the Mac app acts on."
+
+// ErrConsentRequired: the value turns on a key that needs explicit consent.
+var ErrConsentRequired = errors.New("consent required")
+
+// NeedsConsent reports whether setting v needs explicit consent: turning on a
+// key that carries a Consent text. Turning it off never does.
+func (k ConfigKey) NeedsConsent(v any) bool { return k.Consent != "" && v == true }
+
 // Set writes a typed value into the config.
 func (k ConfigKey) Set(c *UserConfig, v any) { k.set(c, v) }
 
 // SetConfigValue loads config.toml, sets one key and saves it through the
-// TUI's writer. It returns the value read back after the save.
-func SetConfigValue(name, raw string) (ConfigKey, any, error) {
+// TUI's writer. It returns the value read back after the save. A value
+// that needs consent (NeedsConsent) is refused with ErrConsentRequired,
+// returning the parsed value, unless consented is true.
+func SetConfigValue(name, raw string, consented bool) (ConfigKey, any, error) {
 	k, ok := LookupConfigKey(name)
 	if !ok {
 		return ConfigKey{}, nil, fmt.Errorf("unknown config key %q (see agent-deck config schema)", name)
@@ -287,6 +322,9 @@ func SetConfigValue(name, raw string) (ConfigKey, any, error) {
 	v, err := k.Parse(raw)
 	if err != nil {
 		return k, nil, err
+	}
+	if k.NeedsConsent(v) && !consented {
+		return k, v, ErrConsentRequired
 	}
 	ClearUserConfigCache()
 	cfg, err := LoadUserConfig()

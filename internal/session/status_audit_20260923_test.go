@@ -79,11 +79,13 @@ const claudeDoneWithBackgroundShells = "  ===AGENTDECK_DONE=== status=ok summary
 	"\n" +
 	"  ⏵⏵ bypass permissions on · PR #508 · 1 shell · ← for agents\n"
 
-// Issue #2473 reversed this audit verdict: a shell still running is work in
-// flight, so the session is running with substate background-work. (Before
-// #2473 this test was TestAudit_ClaudeBackgroundShellsAtPromptIsWaiting and
-// expected waiting.)
-func TestAudit_ClaudeBackgroundShellsAtPromptIsRunning(t *testing.T) {
+// A5 (1.16.29) restores the audit verdict for shells, which issue #2473 had
+// reversed (as TestAudit_ClaudeBackgroundShellsAtPromptIsRunning): Claude Code
+// never reaps a long-lived run_in_background shell, so the footer counter
+// alone cannot hold a finished turn at running. With no transcript proving a
+// fresh background Bash launch the session reads as the prompt it shows.
+// Workflows and awaited agents keep their #2473 behaviour (next test).
+func TestAudit_ClaudeBackgroundShellsAtPromptIsWaiting(t *testing.T) {
 	inst, cleanup := startPaneInstance(t, "claude", "claude-bgshell", claudeDoneWithBackgroundShells)
 	defer cleanup()
 	storage, err := NewStorageWithProfile("_test-audit-claude-bgshell")
@@ -93,11 +95,11 @@ func TestAudit_ClaudeBackgroundShellsAtPromptIsRunning(t *testing.T) {
 	defer storage.Close()
 	fresh := persistAndReload(t, storage, inst, StatusRunning)
 	status, sub := cliPass(t, fresh)
-	if status != StatusRunning {
-		t.Fatalf("fresh process = %q, want running: the footer shows a shell still running (#2473)", status)
+	if status != StatusWaiting {
+		t.Fatalf("fresh process = %q, want waiting: a leftover shell counter is not work in flight (A5)", status)
 	}
-	if sub != SubstateBackgroundWork {
-		t.Fatalf("substate = %q, want %q", sub, SubstateBackgroundWork)
+	if sub != SubstateIdleAtEmptyPrompt {
+		t.Fatalf("substate = %q, want %q", sub, SubstateIdleAtEmptyPrompt)
 	}
 }
 

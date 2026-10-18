@@ -70,19 +70,20 @@ const paneCompletedAgentRowNoBackground = `⏺ Here are the results.
   ⏺ main
   ◯ Explore  Idle probe agent                                         5s · ↓ 14.2k tokens`
 
-// Issue #2473 reverses the 2026-09-23 ruling for shells and monitors: work in
-// flight is activity. Every shape below that shows live background work is
-// pending; a finished turn with nothing in flight is not.
+// Issue #2473: work the pane proves in flight is activity. A5 restores the
+// 2026-09-23 ruling for shells: Claude Code never reaps a long-lived
+// run_in_background shell, so a footer shell counter is not work the pane
+// alone can prove (the session layer decides it against the transcript).
 func TestClaudeBackgroundWorkPending(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
 		want    bool
 	}{
-		// Was false before #2473 ("the shells are context"): the footer
-		// counter is live, so shells still running are work in flight.
-		{"shells still running (plural)", paneShellsStillRunning, true},
-		{"single shell footer", paneSingleShell, true},
+		// #2473 made these true; A5 makes them false again: the counter
+		// can name a shell nobody will ever reap.
+		{"shells still running (plural)", paneShellsStillRunning, false},
+		{"single shell footer", paneSingleShell, false},
 		{"awaiting background agent", paneAwaitingAgent, true},
 		{"idle, nothing pending", paneIdleNoBackground, false},
 		{"completed agent row, no background", paneCompletedAgentRowNoBackground, false},
@@ -113,15 +114,18 @@ func TestClaudeBackgroundWorkPending_IgnoresScrollbackProse(t *testing.T) {
 	}
 }
 
-// Finite shells and awaited agents remain running; armed monitors do not.
-func TestClaudeBackgroundShellsAreRunning(t *testing.T) {
+// Awaited agents remain running from the pane alone; armed monitors do not,
+// and since A5 neither does a shell counter: the pane records it (bash) for
+// the session layer, which keeps it running only while the transcript shows
+// a fresh background Bash launch.
+func TestClaudeBackgroundShellsNeedTheTranscript(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
 		want    bool
 	}{
-		{"shells still running (plural)", paneShellsStillRunning, true},
-		{"single shell footer", paneSingleShell, true},
+		{"shells still running (plural)", paneShellsStillRunning, false},
+		{"single shell footer", paneSingleShell, false},
 		{"monitor still running", "⏺ done\n✻ Baked for 13s · done 2:02 PM · 1 monitor still running\n───\n❯ plepa\n───\n  ⏵⏵ auto mode on · 1 monitor", false},
 		{"awaiting background agent only", paneAwaitingAgent, true},
 		{"idle, nothing pending", paneIdleNoBackground, false},
@@ -129,19 +133,20 @@ func TestClaudeBackgroundShellsAreRunning(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := ParseClaudeBackgroundWork(c.content).Running(); got != c.want {
-				t.Fatalf("ParseClaudeBackgroundWork(%s).Running() = %v, want %v", c.name, got, c.want)
+			if got := ParseClaudeBackgroundWork(c.content).WithoutShells().Running(); got != c.want {
+				t.Fatalf("ParseClaudeBackgroundWork(%s).WithoutShells().Running() = %v, want %v", c.name, got, c.want)
 			}
 		})
 	}
-	if got := ClassifyPaneFrame("claude", paneShellsStillRunning); got != FrameActive {
-		t.Errorf("frame with background shells at the prompt = %s, want active (#2473)", got)
+	if got := ClassifyPaneFrame("claude", paneShellsStillRunning); got != FrameWaiting {
+		t.Errorf("frame with background shells at the prompt = %s, want waiting (A5)", got)
 	}
 	s := &Session{detectedTool: "claude"}
-	if got := s.classifySubstate(paneShellsStillRunning); got != SubstateBackgroundWork {
-		t.Errorf("substate = %q, want %q", got, SubstateBackgroundWork)
+	if got := s.classifySubstate(paneShellsStillRunning); got != SubstateIdleAtEmptyPrompt {
+		t.Errorf("substate = %q, want %q", got, SubstateIdleAtEmptyPrompt)
 	}
-	if got := ParseClaudeBackgroundWork(paneShellsStillRunning); got.Kind != BackgroundKindBash || got.Task != "2 shells" {
+	// The raw item stays bash (finite work while the transcript proves it).
+	if got := ParseClaudeBackgroundWork(paneShellsStillRunning); got.Kind != BackgroundKindBash || got.Task != "2 shells" || !got.Running() {
 		t.Errorf("shells work = %+v, want bash \"2 shells\"", got)
 	}
 	// paneSingleShell carries a live spinner line above the footer counter:

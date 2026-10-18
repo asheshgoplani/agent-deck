@@ -263,7 +263,7 @@ func helpSpecs() []goldenSpec {
 
 	subcommands := []string{
 		"session start", "session stop", "session restart", "session fork", "session attach",
-		"session show", "session viewers", "session context",
+		"session show", "session viewers", "session context", "session focus",
 		"fleet status", "fleet recover",
 		"mcp list", "mcp attached", "mcp attach", "mcp detach",
 		"skill list", "skill attached", "skill attach", "skill detach", "skill source", "skill source list",

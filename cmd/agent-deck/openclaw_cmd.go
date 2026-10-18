@@ -8,11 +8,11 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/openclaw"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/termtext"
 )
 
 // handleOpenClaw dispatches openclaw subcommands.
@@ -198,23 +198,9 @@ func handleOpenClawBridge(args []string) {
 
 // --- status ---
 
-// remoteNewlineStripper removes line breaks from gateway-supplied strings.
-// Redundant with the IsControl filter in displayRemote; kept as its final step
-// so static analysis recognises displayRemote as an output sanitiser.
-var remoteNewlineStripper = strings.NewReplacer("\r", "", "\n", "")
-
 // displayRemote makes a string reported by the OpenClaw gateway safe to print
-// on one terminal line: every control character (ESC, C1 codes, CR, LF, ...)
-// is dropped.
-func displayRemote(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
-	return remoteNewlineStripper.Replace(s)
-}
+// on one terminal line (see termtext.Clean).
+func displayRemote(s string) string { return termtext.Clean(s) }
 
 func handleOpenClawStatus(args []string) {
 	cfg := loadOpenClawConfig()
@@ -254,12 +240,12 @@ func handleOpenClawStatus(args []string) {
 					if status.Connected {
 						state = "connected"
 					}
-					entry := fmt.Sprintf("  %s: %s", name, state)
+					entry := fmt.Sprintf("  %s: %s", displayRemote(name), state)
 					if status.Guilds > 0 {
 						entry += fmt.Sprintf(" (%d guilds)", status.Guilds)
 					}
 					if status.Error != "" {
-						entry += fmt.Sprintf(" [error: %s]", status.Error)
+						entry += fmt.Sprintf(" [error: %s]", displayRemote(status.Error))
 					}
 					found = append(found, entry)
 				}
@@ -285,7 +271,7 @@ func handleOpenClawStatus(args []string) {
 			if agent.ID == agentsResult.DefaultID {
 				defaultMarker = " (default)"
 			}
-			fmt.Printf("  %s: %s%s\n", agent.ID, name, defaultMarker)
+			fmt.Printf("  %s: %s%s\n", displayRemote(agent.ID), displayRemote(name), defaultMarker)
 		}
 	}
 
@@ -358,7 +344,7 @@ func handleOpenClawList(args []string) {
 		if agent.Identity != nil && agent.Identity.Emoji != "" {
 			emoji = agent.Identity.Emoji + " "
 		}
-		fmt.Printf("  %s%s (%s)%s\n", emoji, name, agent.ID, defaultMarker)
+		fmt.Printf("  %s%s (%s)%s\n", displayRemote(emoji), displayRemote(name), displayRemote(agent.ID), defaultMarker)
 	}
 }
 
@@ -457,14 +443,19 @@ func findOpenClawSession(instances []*session.Instance, agentID string) *session
 	return nil
 }
 
+// resolveAgentName picks the gateway's display name for an agent. `openclaw
+// sync` stores it as the session title, which `list` and the TUI print later,
+// so it is cleaned here, once, before it is persisted.
 func resolveAgentName(agent openclaw.AgentSummary) string {
-	if agent.Identity != nil && agent.Identity.Name != "" {
-		return agent.Identity.Name
+	if agent.Identity != nil {
+		if name := termtext.Clean(agent.Identity.Name); name != "" {
+			return name
+		}
 	}
-	if agent.Name != "" {
-		return agent.Name
+	if name := termtext.Clean(agent.Name); name != "" {
+		return name
 	}
-	return agent.ID
+	return termtext.Clean(agent.ID)
 }
 
 func formatDuration(d time.Duration) string {

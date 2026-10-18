@@ -736,6 +736,9 @@ const (
 	// ErrCodeDeliveryFailed: `session send` typed the message but could not
 	// confirm submission (delivery=typed_not_submitted, issue #1413).
 	ErrCodeDeliveryFailed = "DELIVERY_FAILED"
+	// ErrCodeConsentRequired: `config set` refused to turn on a key that
+	// needs explicit consent (--yes or an interactive yes).
+	ErrCodeConsentRequired = "CONSENT_REQUIRED"
 )
 
 // ResolveSession finds a session by flexible matching (title, ID prefix, or path)

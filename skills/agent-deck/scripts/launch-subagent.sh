@@ -9,6 +9,15 @@
 #   --path <dir>     Working directory for the agent (default: /tmp/<title>)
 #   --wait           Poll until complete, return output
 #   --timeout <sec>  Wait timeout (default: 300)
+#   --no-fanout-hint Never append the fan-out line to the prompt
+#
+# A Claude child normally reads $FANOUT_HINT (set below) in the identity
+# block agent-deck injects, so the script adds nothing. It appends the line
+# to the prompt only when the child gets no identity block (global
+# [launch] context_level resolves to none), the tool is claude, [launch]
+# fanout_hint is not false, --no-fanout-hint is not given and the prompt
+# does not already contain it. Other tools never get it: "dynamic Workflow"
+# is a Claude Code tool.
 #
 # Examples:
 #   launch-subagent.sh "Research" "Find info about X"
@@ -27,6 +36,8 @@ WORK_PATH=""
 MCPS=()
 WAIT=false
 TIMEOUT=300
+FANOUT_HINT="Use a dynamic Workflow (fan-out agents) for every set of independent steps; serial only what must be ordered."
+ADD_FANOUT_HINT=true
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -50,6 +61,10 @@ while [ $# -gt 0 ]; do
             TIMEOUT="$2"
             shift 2
             ;;
+        --no-fanout-hint)
+            ADD_FANOUT_HINT=false
+            shift
+            ;;
         *)
             if [ -z "$TITLE" ]; then
                 TITLE="$1"
@@ -62,8 +77,24 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$TITLE" ] || [ -z "$PROMPT" ]; then
-    echo "Usage: launch-subagent.sh \"Title\" \"Prompt\" [--tool codex] [--path /dir] [--mcp name] [--wait]" >&2
+    echo "Usage: launch-subagent.sh \"Title\" \"Prompt\" [--tool codex] [--path /dir] [--mcp name] [--wait] [--no-fanout-hint]" >&2
     exit 1
+fi
+
+# The fan-out line, only where the identity block will not carry it (see the
+# header). An agent-deck without these config keys prints nothing: the hint
+# stays on and the identity block is assumed, so nothing is appended.
+fanout_hint_needed() {
+    [ "$ADD_FANOUT_HINT" = "true" ] || return 1
+    case "$TOOL" in claude | claude-*) ;; *) return 1 ;; esac
+    [[ "$PROMPT" != *"$FANOUT_HINT"* ]] || return 1
+    [ "$(agent-deck config get launch.fanout_hint 2>/dev/null)" != "false" ] || return 1
+    [ "$(agent-deck config get launch.context_level 2>/dev/null)" = "none" ]
+}
+if fanout_hint_needed; then
+    PROMPT="${PROMPT}
+
+${FANOUT_HINT}"
 fi
 
 # Detect current session (filter out log lines starting with year)
