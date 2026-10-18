@@ -1148,7 +1148,12 @@ type Session struct {
 	cacheMu      sync.RWMutex
 	cacheContent string
 	cacheTime    time.Time
-	captureSf    singleflight.Group // Deduplicates concurrent CapturePane subprocess calls
+	// cachePrimedUntil extends cacheContent past the 500ms window when it
+	// came from a batched capture (PrimePaneCaptures): one status pass reads
+	// every row's frame from that single tmux call even when the pass itself
+	// runs longer than 500ms on a loaded host.
+	cachePrimedUntil time.Time
+	captureSf        singleflight.Group // Deduplicates concurrent CapturePane subprocess calls
 
 	// Content tracking for HasUpdated (separate from StateTracker)
 	lastHash    string
@@ -1662,6 +1667,7 @@ func (s *Session) invalidateCache() {
 	defer s.cacheMu.Unlock()
 	s.cacheContent = ""
 	s.cacheTime = time.Time{}
+	s.cachePrimedUntil = time.Time{}
 }
 
 // ensureStateTrackerLocked lazily allocates the tracker so callers can safely
@@ -4074,7 +4080,7 @@ func (s *Session) GetCachedWindowActivity() int64 {
 func (s *Session) CapturePane() (string, error) {
 	// Fast path: return cached content if fresh
 	s.cacheMu.RLock()
-	if s.cacheContent != "" && time.Since(s.cacheTime) < 500*time.Millisecond {
+	if s.captureCacheFreshLocked(time.Now()) {
 		content := s.cacheContent
 		s.cacheMu.RUnlock()
 		logging.Aggregate(logging.CompPerf, "capture_pane_cache_hit", slog.String("session", s.Name))
@@ -4086,7 +4092,7 @@ func (s *Session) CapturePane() (string, error) {
 	v, err, _ := s.captureSf.Do("capture", func() (interface{}, error) {
 		// Double-check cache inside singleflight
 		s.cacheMu.RLock()
-		if s.cacheContent != "" && time.Since(s.cacheTime) < 500*time.Millisecond {
+		if s.captureCacheFreshLocked(time.Now()) {
 			content := s.cacheContent
 			s.cacheMu.RUnlock()
 			return content, nil
