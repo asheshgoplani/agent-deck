@@ -48,6 +48,9 @@ type fakeClaude struct {
 	switchTo string
 	// permissionAfter makes a generic command open a permission dialog.
 	permissionAfter bool
+	// eatTrailingSemicolon drops a trailing ';' from typed text, as tmux
+	// did before SendKeys escaped it (review L4).
+	eatTrailingSemicolon bool
 }
 
 func newFakeClaude() *fakeClaude {
@@ -156,6 +159,9 @@ func (f *fakeClaude) SendKeys(text string) error {
 		return errors.New("can't find pane")
 	}
 	f.keys = append(f.keys, "text:"+text)
+	if f.eatTrailingSemicolon {
+		text = strings.TrimSuffix(text, ";")
+	}
 	f.composer += text
 	f.escaped = false
 	return nil
@@ -232,7 +238,11 @@ func (f *fakeClaude) run(name, args string) {
 			f.dialog = true
 			return
 		}
-		display := map[string]string{"claude-haiku-5-5": "Haiku 5.5", "claude-fable-5-1": "Fable 5.1"}[args]
+		display := map[string]string{
+			"claude-haiku-5-5": "Haiku 5.5", "claude-fable-5-1": "Fable 5.1",
+			"opus[1m]": "Opus 4.6 (1M context)", "sonnet[1m]": "Sonnet 4.6 (1M context)",
+			"opus": "Opus 4.6", "s": "Sonnet 4.6", "opus-4": "Opus 4.6",
+		}[args]
 		if f.cached {
 			f.transcript = append(f.transcript, echo)
 			f.pendingModel = display

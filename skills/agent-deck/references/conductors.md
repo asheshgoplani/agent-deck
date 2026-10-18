@@ -58,7 +58,7 @@ Claude Code client commands (`/model`, `/compact`, `/clear`, `/exit`, any slash 
 Path: channel message -> conductor session (the Telegram channel plugin delivers it as a turn; `bridge.py` delivers it with `session send`) -> `session command`:
 
 ```bash
-agent-deck -p <profile> session command --json --wait-idle 60s <session> "/compact"
+agent-deck -p <profile> session command --json --wait-idle 60s <session> '/compact'   # single quotes: no $(...) or backtick expansion
 agent-deck -p <profile> session commands --json <session>      # "what can I run"
 ```
 

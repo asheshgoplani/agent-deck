@@ -185,20 +185,17 @@ func currentModel(content string) string {
 	return ""
 }
 
-// modelKey normalizes a model id or display name for comparison:
-// "claude-haiku-5-5" and "Haiku 5.5" both become "haiku 5 5".
-func modelKey(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.NewReplacer("-", " ", ".", " ", "_", " ").Replace(s)
-	s = strings.TrimPrefix(strings.Join(strings.Fields(s), " "), "claude ")
-	return s
+// isRequestedModel reports whether display names the model requested by
+// /model <args>: same family and 1M variant on token boundaries, and the
+// exact version when one was given (model.go).
+func (r *runner) isRequestedModel(display string) bool {
+	return modelMatches(r.cmd.Args, display)
 }
 
-// isRequestedModel reports whether display names the model requested by
-// /model <args>. An alias ("haiku") matches any version of it.
-func (r *runner) isRequestedModel(display string) bool {
-	want, got := modelKey(r.cmd.Args), modelKey(display)
-	return want != "" && got != "" && (strings.HasPrefix(got, want) || strings.HasPrefix(want, got))
+// transcriptChanged reports whether the lines above the composer differ
+// between two frames.
+func transcriptChanged(content, baseline string) bool {
+	return strings.Join(transcriptLines(content), "\n") != strings.Join(transcriptLines(baseline), "\n")
 }
 
 func verifyDescription(k Kind) string {
@@ -293,11 +290,12 @@ func (r *runner) check(raw, content, baseline string) (Result, bool) {
 		case r.cmd.Kind == KindModel:
 			return r.modelDialog(content)
 		case !echoed:
-			// The command itself opened a dialog (e.g. /config): cancel it
-			// so the session is not left waiting on a selection.
-			_ = r.p.SendNamedKey("Escape")
-			r.step("cancelled the dialog the command opened (Escape)")
-			return r.fail(CodeInteractive, r.cmd.Name+" opened an interactive dialog, which cannot be driven remotely; cancelled it"), true
+			// Our echo is not on screen above the dialog, so nothing shows
+			// the command opened it: it may be a skill's own permission
+			// prompt or the owner's. Never answer or cancel a dialog we
+			// cannot prove is ours; report it.
+			r.step("a dialog is open and the command echo is not visible; left untouched")
+			return r.fail(CodeDialogUnowned, "a dialog is open after submitting "+r.cmd.Text+" and the command echo is not visible, so it may not be ours; left it untouched. Check the session"), true
 		case r.cmd.Kind == KindGeneric:
 			// A skill's own dialog (e.g. a tool permission prompt) belongs
 			// to the owner; the command itself was submitted.
@@ -306,8 +304,17 @@ func (r *runner) check(raw, content, baseline string) (Result, bool) {
 			return Result{}, false
 		}
 	}
-	if composerInput(raw) == send.NormalizePromptText(r.typed()) || !echoed {
+	if composerInput(raw) == send.NormalizePromptText(r.typed()) {
 		return Result{}, false // not submitted yet
+	}
+	if !echoed {
+		if r.cmd.Kind == KindGeneric && transcriptChanged(content, baseline) {
+			// A long first response can scroll the echo off before the
+			// first poll. Our text left the composer and the transcript
+			// moved after Enter: the command ran.
+			return r.ok("submitted", "composer cleared and the transcript changed after submit (the echo scrolled off)"), true
+		}
+		return Result{}, false
 	}
 	if t, bad := r.rejection(after); bad {
 		return r.fail(CodeCommandError, "Claude rejected the command: "+t, t), true

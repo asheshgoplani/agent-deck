@@ -54,7 +54,14 @@ const (
 	CodeEnterIgnored   = "enter_not_accepted"  // Enter left the command in the composer
 	CodePaneGone       = "pane_gone"
 	CodeKeys           = "send_failed"
+	CodeRefused        = "refused_command" // never run remotely (/login, /logout)
+	CodeDialogUnowned  = "dialog_open"     // a dialog is up and our echo is not visible; left untouched
 )
+
+// ErrRefused is returned by Parse for commands session command never runs:
+// /login and /logout act on the Claude config dir, which every session using
+// it shares, so one remote /logout logs out all of them.
+var ErrRefused = errors.New("refused")
 
 // Command is a parsed slash command.
 type Command struct {
@@ -79,6 +86,10 @@ func Parse(s string) (Command, error) {
 		return Command{}, fmt.Errorf("not a slash command: %q (want /name [args])", s)
 	}
 	args = strings.TrimSpace(args)
+	switch name {
+	case "/login", "/logout":
+		return Command{}, fmt.Errorf("%w: %s changes the login of the shared Claude config dir, which logs every session using it in or out; run it yourself in that session", ErrRefused, name)
+	}
 	cmd := Command{Name: name, Args: args, Text: strings.TrimSpace(name + " " + args), Kind: KindGeneric}
 	switch name {
 	case "/model":
@@ -211,7 +222,7 @@ func (r *runner) run() Result {
 	}
 	baseline := tmux.StripANSI(raw)
 	if input := composerInput(raw); input != send.NormalizePromptText(r.typed()) || readPicker(baseline).open {
-		return r.fail(CodeTypeMismatch, "composer changed right before Enter; left untouched, nothing submitted", fmt.Sprintf("composer: %q", input))
+		return r.fail(CodeTypeMismatch, "composer changed right before Enter; "+r.clearIfOwnText(input)+", nothing submitted", fmt.Sprintf("composer: %q", input))
 	}
 	if send.ClaudeTurnRunning(raw) {
 		// No Escape here: during a turn it interrupts the turn.
@@ -282,9 +293,10 @@ func (r *runner) confirmTyped() (Result, bool) {
 		}
 	}
 	if input != want {
-		// Not our text alone: someone else's keystrokes may be in there.
-		// Never clear or submit it.
-		return r.fail(CodeTypeMismatch, "composer does not hold exactly the typed command; left untouched, nothing submitted",
+		// Never submit it. If what is there is only our own text, mangled
+		// in transit (tmux once ate a trailing ';'), clear it so a partial
+		// command is not left for the next Enter.
+		return r.fail(CodeTypeMismatch, "composer does not hold exactly the typed command; "+r.clearIfOwnText(input)+", nothing submitted",
 			fmt.Sprintf("composer: %q", input)), false
 	}
 	ev := fmt.Sprintf("picker still open, highlighting %s", picker.selected)
@@ -312,7 +324,9 @@ func (r *runner) closePickerAndErase() bool {
 }
 
 // eraseOwnLine clears the composer line with Ctrl+U and confirms it is empty.
-// Only called with the composer proven to hold exactly our text.
+// Only called with the composer proven to hold nothing but our own text
+// (exactly, or a mangled subsequence of it). Ctrl+U does not interrupt a
+// running turn.
 func (r *runner) eraseOwnLine() bool {
 	_ = r.p.SendNamedKey("C-u")
 	r.opts.Sleep(r.opts.Settle)
@@ -322,6 +336,38 @@ func (r *runner) eraseOwnLine() bool {
 	}
 	r.step("abort: composer not confirmed empty after Ctrl+U")
 	return false
+}
+
+// clearIfOwnText clears the composer when it holds nothing but (part of)
+// the text we typed: the composer was proven empty before typing, so a
+// subsequence of our text is ours, with characters lost in transit. Any
+// character we did not type means someone else is typing there too; that
+// text is never cleared (it may be the owner's draft). Returns the phrase
+// for the result message.
+func (r *runner) clearIfOwnText(input string) string {
+	if input != "" && !isSubsequence(input, send.NormalizePromptText(r.typed())) {
+		return "left untouched (it holds text we did not type)"
+	}
+	if input == "" {
+		return "composer empty"
+	}
+	return removedPhrase(r.eraseOwnLine())
+}
+
+// isSubsequence reports whether every rune of sub appears in s, in order.
+func isSubsequence(sub, s string) bool {
+	rs := []rune(s)
+	i := 0
+	for _, c := range sub {
+		for i < len(rs) && rs[i] != c {
+			i++
+		}
+		if i == len(rs) {
+			return false
+		}
+		i++
+	}
+	return true
 }
 
 func removedPhrase(removed bool) string {
