@@ -28,6 +28,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/triggers"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
@@ -3399,6 +3400,7 @@ func handleSessionSend(profile string, args []string) {
 	ignoreBudget := fs.Bool("ignore-budget", false, ignoreBudgetFlagHelp)
 	noTag := fs.Bool("no-tag", false, "Do not prefix the [agent-deck from:<id>] envelope a send from inside a session gets by default ([send] tag_sends)")
 	requireInputPrompt := fs.Bool("require-input-prompt", false, "Refuse with menu_open unless an input prompt is visible immediately before each keystroke batch")
+	sourceFlag := fs.String("source", "", sendSourceFlagHelp)
 	var images imageList
 	fs.Var(&images, "image", "Attach an image (repeatable): Claude Code and Gemini get @<copy under .agentdeck-images/>; Codex and other harnesses exit 2")
 
@@ -3497,15 +3499,56 @@ func handleSessionSend(profile string, args []string) {
 		exitCLI(1)
 	}
 
+	// Triggers (#2702): every send is a fire of its source. The queue
+	// worker delivers a send whose fire was recorded when it was queued.
+	var fire *sendTriggerFire
+	if !*queueWorker {
+		fireSender := sendSenderID()
+		if *noTag {
+			fireSender = "" // --no-tag: never attributed to an inherited session
+		}
+		fire = newSendTriggerFire(storage.GetDB(), *sourceFlag, fireSender, sessionRef, profile, message)
+		cliExitHook = fire.onExit
+	}
+
 	// Resolve session
 	inst, errMsg, errCode := ResolveSession(sessionRef, instances)
 	if inst == nil {
+		if errCode == ErrCodeNotFound && fire != nil {
+			fire.exitOutcome = triggers.OutcomeDeadTarget
+		}
 		out.Error(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
 			exitCLI(2)
 		}
 		exitCLI(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+	if fire != nil {
+		fire.sessionID = inst.ID
+		// A muted trigger's send is accepted and logged, never typed. The
+		// host job that sent it keeps running.
+		if until, mutedID := fire.mutedUntil(); !until.IsZero() {
+			fire.record(triggers.OutcomeMuted)
+			summary := fmt.Sprintf("Not delivered to '%s': %s is muted until %s (logged as muted)", inst.Title, mutedID, until.Local().Format("2006-01-02 15:04"))
+			mutedData := map[string]interface{}{
+				"success":       true,
+				"muted":         true,
+				"muted_until":   until.UTC(),
+				"trigger_id":    mutedID,
+				"session_id":    inst.ID,
+				"session_title": inst.Title,
+			}
+			if *wait || *stream {
+				// A waiting caller (the chat bridge) gets a complete reply
+				// that says why nothing ran, not a "send failed".
+				mutedData["completion"] = "complete"
+				mutedData["content"] = summary
+			}
+			out.Success(summary, mutedData)
+			out.QuietNotice(summary)
+			return
+		}
 	}
 
 	// Machine callers get a durable id immediately. The worker opts out of
@@ -3568,6 +3611,7 @@ func handleSessionSend(profile string, args []string) {
 			}
 			queueSend(profile, storage, inst, message, copies, tagged, ledgerSender, *requireInputPrompt, *ignoreBudget, out) // exits on failure
 			recordSent()
+			fire.record(triggers.OutcomeQueued)
 			return
 		}
 	}
@@ -3598,6 +3642,7 @@ func handleSessionSend(profile string, args []string) {
 	}
 
 	if shouldSkipConductorHeartbeatSend(inst, message) {
+		fire.skip()
 		out.Success(fmt.Sprintf("Skipped heartbeat for '%s'", inst.Title), map[string]interface{}{
 			"success":       true,
 			"skipped":       true,
@@ -3748,6 +3793,7 @@ func handleSessionSend(profile string, args []string) {
 	// --draft: type text into the prompt without pressing Enter, letting the
 	// user review and submit manually.
 	if *draft {
+		fire.skip() // a pre-fill is not a fire
 		var draftTarget draftSender = tmuxSess
 		if *requireInputPrompt {
 			lock, err := session.AcquireSendLock(inst.ID, sendTargetLockWait)
@@ -3912,6 +3958,9 @@ func handleSessionSend(profile string, args []string) {
 		exitCLI(1)
 	}
 	recordSent()
+	// Delivered: a later --wait/--stream failure is about the reply, not
+	// about the trigger's send.
+	fire.record(triggers.OutcomeDelivered)
 
 	// Self-heal Stage 1: stamp the "we talked to it" clock. A delivered send is
 	// exactly the event the idle_at_empty_prompt dwell is measured from — a

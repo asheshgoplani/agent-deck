@@ -50,6 +50,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/triggers"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
@@ -308,6 +309,18 @@ type Home struct {
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	agentsPanel          *AgentsPanel          // Agents tab: adopted agents, grouped by machine
 	deadLetterPanel      *DeadLetterPanel      // Inspect, retry, and explicitly purge delivery failures
+	triggersPanel        *TriggersPanel        // What wakes which session (#2702); read-only in P1
+	// Triggers read model (triggers_live.go). A background tick reads the
+	// state DB's triggers_rev stamp and reloads only when it moved; the
+	// panel and the ⚡ row badge render from these cached values only.
+	triggersFeed     triggersFeed
+	triggerViews     []triggers.View
+	triggerBadges    map[string]triggers.Badge
+	triggersLoaded   bool
+	triggersLoadedAt time.Time
+	triggersRev      string
+	triggersKey      string
+	triggersPollGen  int
 	// agentsView is the last built fleet view; agentBySession indexes its
 	// rows by adopted session id so the session list can mark agent-owned
 	// rows and the preview pane can render their card. Both are empty for a
@@ -898,6 +911,13 @@ type Home struct {
 	remotePollMu     sync.Mutex                         // serializes poll cache reads/writes without holding the render lock
 	remotePollConfig map[string]session.RemoteConfig
 	remotePollActive map[string]bool // one session poll per remote, across overlapping rounds
+	// remotePollBackoffs holds a host whose last poll was slow or failed out
+	// of automatic polling for an exponentially growing while
+	// (remote_poll_backoff.go). Guarded by remoteSessionsMu.
+	remotePollBackoffs map[string]remotePollBackoff
+	// remoteNow is the clock poll timing and backoff read; nil means
+	// time.Now. Tests inject a fake one.
+	remoteNow func() time.Time
 	// remoteMutationStamp returns the stamp (remote DB mtime, unix ns) of
 	// the last mutating command confirmed over a remote's channel, 0 when
 	// unknown. nil means ask the channel; tests inject a stub.
@@ -2092,6 +2112,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		watcherPanel:              NewWatcherPanel(),
 		agentsPanel:               NewAgentsPanel(),
 		deadLetterPanel:           NewDeadLetterPanel(),
+		triggersFeed:              stateDBTriggersFeed{},
 		toolVisibilityPanel:       NewToolVisibilityPanel(),
 		insertBatchDuration:       defaultInsertBatchDuration,
 		insertOpenKeySender:       defaultInsertOpenKeySender,
@@ -4293,6 +4314,7 @@ func (h *Home) Init() tea.Cmd {
 
 		h.tick(),
 		h.reviverTick(),
+		h.triggersPollCmd(), // ⚡ badges and the Triggers panel (triggers_live.go)
 		h.requestUpdateCheck(time.Now()),
 		h.fetchRemoteSessions,
 		h.waitRemoteChange,
@@ -5013,7 +5035,7 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 		msg.groupsFailed[name] = true
 		return msg
 	}
-	started := time.Now()
+	started := h.remoteClock()
 	var pollErr error
 	defer func() { h.finishRemotePoll(name, rc, started, pollErr) }()
 
@@ -6861,22 +6883,7 @@ func (h *Home) backgroundStatusUpdate() {
 			continue
 		}
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-			if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
-				uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
-					slog.String("instance", inst.ID), slog.String("reason", reason))
-				continue
-			}
-			h.clearOnCompactSent[inst.ID] = time.Now()
-			conductorName := conductorDisplayName(inst)
-			safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
-				time.Sleep(500 * time.Millisecond)
-				msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
-				if err := clearConductorAndHeartbeat(func(body string) error {
-					return deliverToConductorPane(tmuxSess, body)
-				}, msg, 3*time.Second); err != nil {
-					uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
-				}
-			})
+			h.scheduleClearAndHeartbeat(inst, instances, tmuxSess)
 		}
 	}
 
@@ -7814,6 +7821,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.agentsPanel.SetSize(msg.Width, msg.Height)
 		if h.deadLetterPanel != nil {
 			h.deadLetterPanel.SetSize(msg.Width, msg.Height)
+		}
+		if h.triggersPanel != nil {
+			h.triggersPanel.SetSize(msg.Width, msg.Height)
 		}
 		if h.toolVisibilityPanel != nil {
 			h.toolVisibilityPanel.SetSize(msg.Width, msg.Height)
@@ -9428,6 +9438,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItemsPreservingSelection(h.captureSelectedItemIdentity())
 		return h, nil
 
+	case triggersTickMsg, triggersPolledMsg:
+		return h, h.handleTriggersMsg(msg)
+
 	case reviverTickMsg:
 		// Fire-and-forget reviver sweep for instances whose tmux server
 		// survived an SSH scope cleanup but whose pipe was reaped. Runs in
@@ -10446,6 +10459,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Handle delivery and watcher panels (before settings panel)
+		if h.triggersPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.triggersPanel, cmd = h.triggersPanel.Update(msg)
+			return h, cmd
+		}
 		if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 			var cmd tea.Cmd
 			h.deadLetterPanel, cmd = h.deadLetterPanel.Update(msg)
@@ -11558,6 +11576,7 @@ func (h *Home) hasModalVisible() bool {
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.agentsPanel.IsVisible() || // hotkeyAgentsPanel overlay
 		(h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible()) || // hotkeyDeadLetters overlay
+		h.triggersPanel.IsVisible() || // hotkeyTriggers overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.hookTrustDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -12773,6 +12792,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.deadLetterPanel.SetSize(h.width, h.height)
 		return h, nil
 
+	case defaultHotkeyBindings[hotkeyTriggers]:
+		// What wakes sessions (#2702). On a session a trigger wakes (its row
+		// shows ⚡N) this opens that session's reverse view; esc widens it to
+		// the full list.
+		return h, h.openTriggersPanel()
+
 	case defaultHotkeyBindings[hotkeyAgentsPanel]:
 		// Open the Agents tab. Opt-in by presence: with nothing adopted there
 		// is no panel to open and the key stays inert, so a zero-config deck
@@ -13456,6 +13481,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Remote decks refresh in the same keystroke, so a change made on a
 		// remote (or from another machine) shows up now, not at the next poll.
 		state := h.preserveState()
+		// The user asked for a refresh now: a host held by poll backoff is
+		// polled at once (still one poll per host at a time).
+		h.clearRemotePollBackoff("")
 		h.remoteSessionsMu.Lock()
 		h.remotesFetchActive = true // so the remote headers show "refreshing…"
 		h.remoteSessionsMu.Unlock()
@@ -14338,6 +14366,34 @@ func (h *Home) sendToConductor(d conductorDelivery) {
 			slog.String("tmux_session", ts.Name),
 			slog.String("error", err.Error()))
 	}
+}
+
+// conductorHeartbeatDeliver types the /clear and the heartbeat into a
+// conductor pane. Tests replace it.
+var conductorHeartbeatDeliver = func(p *tmux.Session, body string) error { return deliverToConductorPane(p, body) }
+
+// scheduleClearAndHeartbeat sends /clear and then a heartbeat to a conductor
+// whose context is about to auto-compact, unless an enforced cost budget
+// refuses the delivery. It reports whether the delivery was scheduled; a
+// refused one is not marked sent, so it is tried again once the budget allows.
+func (h *Home) scheduleClearAndHeartbeat(inst *session.Instance, instances []*session.Instance, tmuxSess *tmux.Session) bool {
+	if reason, refused := h.agentDeliveryOverBudget(inst, instances); refused {
+		uiLog.Warn("conductor_clear_heartbeat_budget_exceeded",
+			slog.String("instance", inst.ID), slog.String("reason", reason))
+		return false
+	}
+	h.clearOnCompactSent[inst.ID] = time.Now()
+	conductorName := conductorDisplayName(inst)
+	safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
+		time.Sleep(500 * time.Millisecond)
+		msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
+		if err := clearConductorAndHeartbeat(func(body string) error {
+			return conductorHeartbeatDeliver(tmuxSess, body)
+		}, msg, 3*time.Second); err != nil {
+			uiLog.Warn("conductor_clear_heartbeat_refused", slog.String("error", err.Error()))
+		}
+	})
+	return true
 }
 
 // agentDeliveryOverBudget reports whether an enforced cost budget
@@ -19505,6 +19561,9 @@ func (h *Home) renderFrame() string {
 	}
 
 	// Delivery and watcher panels are modal (before settings panel)
+	if h.triggersPanel.IsVisible() {
+		return h.triggersPanel.View()
+	}
 	if h.deadLetterPanel != nil && h.deadLetterPanel.IsVisible() {
 		return h.deadLetterPanel.View()
 	}
@@ -22878,9 +22937,17 @@ func (h *Home) renderSessionItem(
 	}
 	cachedViewers, cachedViewersKnown := inst.ViewersCached()
 	viewersBadgeText, viewersWidth := fitViewersBadge(cachedViewers, cachedViewersKnown, selected, badgeBudget)
+	// ⚡N: how many triggers wake this session (triggers_live.go). Read from
+	// the poll's cached map only; it shrinks and drops after the viewers
+	// badge and before the account badge.
+	triggersBudget := badgeBudget
+	if badgeBudget >= 0 {
+		triggersBudget = max(0, badgeBudget-viewersWidth)
+	}
+	triggersBadgeText, triggersWidth := fitTriggersBadge(h.triggerBadges[inst.ID], selected, triggersBudget)
 	accountBudget := instState.accountDisplay.width
 	if badgeBudget >= 0 {
-		accountBudget = min(accountBudget, badgeBudget-viewersWidth)
+		accountBudget = min(accountBudget, badgeBudget-viewersWidth-triggersWidth)
 	}
 	accountBadge, accountWidth := instState.accountDisplay.fit(accountBudget)
 	if accountBadge != "" {
@@ -22891,7 +22958,7 @@ func (h *Home) renderSessionItem(
 		accountBadge = accountStyle.Render(accountBadge)
 	}
 	if listWidth > 0 {
-		budget := max(0, listWidth-reserved-viewersWidth-accountWidth-1)
+		budget := max(0, listWidth-reserved-viewersWidth-triggersWidth-accountWidth-1)
 		if cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
@@ -22902,7 +22969,7 @@ func (h *Home) renderSessionItem(
 	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
 	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
@@ -22919,6 +22986,7 @@ func (h *Home) renderSessionItem(
 		sshBadge,
 		agentBadge,
 		viewersBadgeText,
+		triggersBadgeText,
 		accountBadge,
 		timestampBadge,
 		childFoldBadge,
@@ -23144,16 +23212,24 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(strings.Repeat("-", max(1, min(width-4, 40))))
 	b.WriteString("\n")
 	previewContent = truncateRemotePreviewContent(previewContent)
-	if hasPreview && strings.TrimSpace(previewContent) != "" {
-		b.WriteString(previewContent)
+	// The pane's tail fits the rows left above the blank line and the attach
+	// hint: ensureExactHeight keeps the first rows of this block, so a longer
+	// body lost exactly the pane's bottom (the status line and footer).
+	rows := height - strings.Count(b.String(), "\n") - 2
+	fitted := fitRemotePreviewTail(previewContent, rows, width)
+	switch {
+	case hasPreview && len(fitted) > 0:
+		b.WriteString(strings.Join(fitted, "\n"))
 		b.WriteString("\n\n")
-	} else if hasFetched {
+	case hasPreview && strings.TrimSpace(previewContent) != "":
+		// No row left for the body: the header and the hint keep their places.
+	case hasFetched:
 		b.WriteString(dimStyle.Render("No response available yet."))
 		b.WriteString("\n\n")
-	} else if rs.Status == "running" || rs.Status == "waiting" {
+	case rs.Status == "running" || rs.Status == "waiting":
 		b.WriteString(dimStyle.Render("Fetching remote preview..."))
 		b.WriteString("\n\n")
-	} else {
+	default:
 		b.WriteString(dimStyle.Render("No response available yet."))
 		b.WriteString("\n\n")
 	}

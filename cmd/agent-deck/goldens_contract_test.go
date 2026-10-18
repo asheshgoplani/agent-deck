@@ -18,7 +18,7 @@ func TestGoldensReviewContract(t *testing.T) {
 		"skill_list", "skill_attached", "group_list", "group_show",
 		"conductor_status", "conductor_list", "worktree_list", "inbox_export",
 		"worktree_info", "inbox_writer_status", "inbox_dead_letter_list",
-		"watcher_list", "deepseek_sessions",
+		"watcher_list", "deepseek_sessions", "triggers",
 	}
 	seen := make(map[string]bool)
 	for _, spec := range safeSpecs() {
@@ -32,7 +32,7 @@ func TestGoldensReviewContract(t *testing.T) {
 	if !seen["costs_recompute_dry_run"] {
 		t.Error("missing safe costs recompute --dry-run golden")
 	}
-	for _, path := range []string{"skill source list", "inbox dead-letter list", "inbox dead-letter show", "inbox dead-letter retry", "inbox dead-letter purge"} {
+	for _, path := range []string{"triggers list", "triggers scan", "triggers mute", "triggers unmute", "triggers run", "triggers fires", "skill source list", "inbox dead-letter list", "inbox dead-letter show", "inbox dead-letter retry", "inbox dead-letter purge"} {
 		if !seenHelpPath(path) {
 			t.Errorf("missing leaf help golden for %s", path)
 		}

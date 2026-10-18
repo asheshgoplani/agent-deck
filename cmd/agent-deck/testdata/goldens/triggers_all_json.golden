@@ -1,0 +1,120 @@
+{
+  "triggers": [
+    {
+      "id": "cli:cli",
+      "host": "<HOST>",
+      "kind": "cli",
+      "source": "cli",
+      "config_path": "",
+      "verb": "send",
+      "target": {
+        "as_written": "golden-sess-1",
+        "by": "id",
+        "session_id": "golden-sess-1",
+        "title": "claude idle",
+        "profile": "goldens",
+        "resolved": true
+      },
+      "schedule": "",
+      "origin": "push",
+      "inferred": true,
+      "last_fire": "<TIMESTAMP>",
+      "last_line": "hello",
+      "last_outcome": "delivered",
+      "fires_24h": 1,
+      "noop_share_24h": 0,
+      "health": "ok",
+      "muted": false,
+      "paused": false,
+      "runnable": false
+    },
+    {
+      "id": "heartbeat:golden",
+      "host": "<HOST>",
+      "kind": "heartbeat",
+      "source": "golden",
+      "config_path": "",
+      "verb": "send",
+      "target": {
+        "as_written": "claude idle",
+        "by": "title",
+        "session_id": "golden-sess-1",
+        "title": "claude idle",
+        "profile": "goldens",
+        "resolved": true
+      },
+      "schedule": "",
+      "origin": "push",
+      "inferred": false,
+      "last_fire": "<TIMESTAMP>",
+      "last_line": "[HEARTBEAT] [golden] 1 waiting",
+      "last_outcome": "delivered",
+      "fires_24h": 1,
+      "noop_share_24h": 0,
+      "health": "ok",
+      "muted": false,
+      "paused": false,
+      "runnable": false
+    },
+    {
+      "id": "launchd:com.golden.poller",
+      "host": "<HOST>",
+      "kind": "launchd",
+      "source": "com.golden.poller",
+      "config_path": "/Users/u/Library/LaunchAgents/com.golden.poller.plist",
+      "verb": "send",
+      "target": {
+        "as_written": "golden-sess-3",
+        "by": "id",
+        "session_id": "golden-sess-3",
+        "title": "gemini waiting",
+        "profile": "goldens",
+        "resolved": true
+      },
+      "schedule": "every 15m",
+      "origin": "scan",
+      "inferred": false,
+      "last_line": "",
+      "last_outcome": "",
+      "fires_24h": 0,
+      "noop_share_24h": null,
+      "health": "never-fired",
+      "muted": false,
+      "paused": false,
+      "runnable": true
+    },
+    {
+      "id": "systemd:agentdeck-overnight",
+      "host": "<HOST>",
+      "kind": "systemd",
+      "source": "agentdeck-overnight",
+      "config_path": "/home/u/.config/systemd/user/agentdeck-overnight.service",
+      "verb": "send",
+      "target": {
+        "as_written": "overnight-orchestrator",
+        "by": "title",
+        "session_id": "",
+        "title": "",
+        "profile": "",
+        "resolved": false
+      },
+      "schedule": "every 5min",
+      "origin": "push+scan",
+      "inferred": false,
+      "last_fire": "<TIMESTAMP>",
+      "last_line": "tick: 0 waiting jobs",
+      "last_outcome": "dead-target",
+      "fires_24h": 2,
+      "noop_share_24h": 0.5,
+      "health": "dead-target",
+      "muted": false,
+      "paused": false,
+      "runnable": true
+    }
+  ],
+  "hosts": {
+    "<HOST>": "ok"
+  },
+  "count": 4,
+  "generated_at": "<TIMESTAMP>"
+}

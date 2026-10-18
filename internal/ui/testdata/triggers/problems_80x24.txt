@@ -1,0 +1,24 @@
+                                                                                
+                                                                                
+                                                                                
+ ╭────────────────────────────────────────────────────────────────────────────╮ 
+ │ Triggers  deckbox · 5 · 1 dead · 1 failing · problems only                 │ 
+ │ ────────────────────────────────────────────────────────────────────────── │ 
+ │     NAME                   WAKES               EVERY          LAST   NOISE │ 
+ │ ▾ deckbox (4)                                                              │ 
+ │   launchd                                                                  │ 
+ │ ▶ ○ com.ashesh.limit-guard mac-ops             every 1h       never  –     │ 
+ │   systemd                                                                  │ 
+ │   ● agentdeck-github-issu… conductor-ashesh    every 15m      15m    0%    │ 
+ │   ✗ agentdeck-overnight    overnight-orchestr… every 5m       5m     92%   │ 
+ │   watcher                                                                  │ 
+ │   ● github[2J              conductor-ashesh    –              1h     90%   │ 
+ │ ────────────────────────────────────────────────────────────────────────── │ 
+ │ com.ashesh.limit-guard → mac-ops: has not fired yet                        │ 
+ │ config ~/Library/LaunchAgents/com.ashesh.limit-guard.plist                 │ 
+ │ j/k move  enter what wakes it  p problems  a all kinds  esc close          │ 
+ ╰────────────────────────────────────────────────────────────────────────────╯ 
+                                                                                
+                                                                                
+                                                                                
+                                                                                

@@ -1,0 +1,9 @@
+Usage: agent-deck triggers scan [--json]
+
+Rescan ~/Library/LaunchAgents and ~/.config/systemd/user for units whose
+command (or the script it runs) calls agent-deck, then print the list.
+At most 500 files and 256 KB per script are read. Nothing is changed on the host.
+
+Options:
+  -json
+    	Output as JSON

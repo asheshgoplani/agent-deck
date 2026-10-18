@@ -63,8 +63,10 @@ func TestRun_LooseModelMatchIsNotAccepted(t *testing.T) {
 			f.cached = cached
 			cmd, _ := Parse("/model " + arg)
 			res := Run(f, cmd, fastOpts())
-			if res.OK || res.Code != CodeCommandError {
-				t.Fatalf("/model %s cached=%v: want command_error, got %+v", arg, cached, res)
+			// On this branch /model walks the picker, which has no entry for
+			// a loose match: unknown_model.
+			if res.OK || res.Code != CodeUnknownModel {
+				t.Fatalf("/model %s cached=%v: want unknown_model, got %+v", arg, cached, res)
 			}
 			if cached && f.model != "Fable 5.1" {
 				t.Fatalf("/model %s: the switch to %s was accepted", arg, f.model)

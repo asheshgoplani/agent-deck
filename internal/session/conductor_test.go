@@ -3472,6 +3472,16 @@ func TestSetupConductorWithAgent_PreAcceptsCodexTrust(t *testing.T) {
 	}
 }
 
+// The heartbeat names itself in `agent-deck triggers` (issue #2702).
+func TestConductorHeartbeatScript_TagsSource(t *testing.T) {
+	if !strings.Contains(conductorHeartbeatScript, `--no-wait -q --source "heartbeat:{NAME}"`) {
+		t.Fatal("heartbeat send must pass --source heartbeat:<name>")
+	}
+	if script := renderConductorHeartbeatScript("ops", "default"); !strings.Contains(script, `--source "heartbeat:ops"`) {
+		t.Fatalf("rendered heartbeat lacks --source heartbeat:ops:\n%s", script)
+	}
+}
+
 // Review M1: the bridge relays a person's chat message; an enforced cost
 // budget never blocks it, on the --no-wait and on the --wait send.
 func TestBridgeTemplate_ChatSendsIgnoreTheBudget(t *testing.T) {

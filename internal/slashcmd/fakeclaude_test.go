@@ -29,10 +29,18 @@ type fakeClaude struct {
 	gone       bool
 	keys       []string // every key event, for assertions
 	model      string
-	// cached makes /model <id> ask "Switch model?" first (live 2.1.296 with
-	// a cached conversation); pendingModel holds the requested display name.
-	cached       bool
-	pendingModel string
+	// cached makes a model switch ask "Switch model?" first (live 2.1.296
+	// with a cached conversation); pendingModel holds the chosen display
+	// name and pendingSessionOnly whether it came from "s" in the picker.
+	cached             bool
+	pendingModel       string
+	pendingSessionOnly bool
+	// picker is the open /model picker; pickerSel indexes fakeModels.
+	picker    bool
+	pickerSel int
+	// savedDefault records every write of the default for new sessions
+	// (settings.json "model"), the incident class this fake guards.
+	savedDefault []string
 	// afterExec lets a test change the screen after submission (e.g. a slow
 	// compaction); nil means the command completes immediately.
 	afterExec func(f *fakeClaude, cmd string)
@@ -60,6 +68,48 @@ func newFakeClaude() *fakeClaude {
 	}
 }
 
+// fakeModels is the live 2.1.296 /model picker list (lab evidence exp20,
+// exp25); the live list wraps around at both ends.
+var fakeModels = []string{"Default (recommended)", "Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "Opus 4.6 (1M context)", "Sonnet 4.6 (1M context)", "Opus 5.5 (1M context)"}
+
+// pickerLines renders the picker with a ten-row window that follows the
+// selection, the current model ticked, like the live one.
+func (f *fakeClaude) pickerLines() []string {
+	start := 0
+	if f.pickerSel >= 10 {
+		start = f.pickerSel - 9
+	}
+	out := []string{"  Select model", "  Switch between Claude models. Your pick becomes the default for new sessions."}
+	for i := start; i < start+10 && i < len(fakeModels); i++ {
+		mark := "    "
+		if i == f.pickerSel {
+			mark = "  ❯ "
+		} else if i == start+9 && i+1 < len(fakeModels) {
+			mark = "  ↓ "
+		}
+		label := fakeModels[i]
+		if label == f.model {
+			label += " ✔"
+		}
+		out = append(out, fmt.Sprintf("%s%d.  %-22s Description", mark, i+1, label))
+	}
+	if more := len(fakeModels) - (start + 10); more > 0 {
+		out = append(out, fmt.Sprintf("     … +%d models", more))
+	}
+	return append(out, "  Enter to set as default · s to use this session only · Esc to cancel")
+}
+
+// chooseModel applies a picker choice; sessionOnly is "s", otherwise Enter.
+func (f *fakeClaude) chooseModel(label string, sessionOnly bool) {
+	f.model = label
+	if sessionOnly {
+		f.transcript = append(f.transcript, "  ⎿  Set model to "+label+" for this session only")
+		return
+	}
+	f.savedDefault = append(f.savedDefault, label)
+	f.transcript = append(f.transcript, "  ⎿  Set model to "+label+" and saved as your default for new sessions")
+}
+
 func (f *fakeClaude) CapturePaneFresh() (string, error) {
 	f.captures++
 	if f.beforeCapture != nil {
@@ -85,10 +135,8 @@ func (f *fakeClaude) CapturePaneFresh() (string, error) {
 		return strings.Join(append(append([]string{}, f.transcript...), div, div,
 			"  Do you want to proceed?", "  ❯ 1. Yes", "    2. No, and tell Claude what to do differently"), "\n"), nil
 	}
-	if f.dialog {
-		return strings.Join(append(append([]string{}, f.transcript...),
-			"  Select model", "  ❯ 1. Default", "    2. Haiku 5.5",
-			"  Enter to set as default · s to use this session only · Esc to cancel"), "\n"), nil
+	if f.picker {
+		return strings.Join(append(append(append([]string{}, f.transcript...), div, div), f.pickerLines()...), "\n"), nil
 	}
 	lines := []string{" ▐▛███▛█   Claude Code v2.1.296", "▝▜██████▀  " + f.model + " · Claude Max"}
 	lines = append(lines, f.transcript...)
@@ -162,6 +210,11 @@ func (f *fakeClaude) SendKeys(text string) error {
 	if f.eatTrailingSemicolon {
 		text = strings.TrimSuffix(text, ";")
 	}
+	if f.picker && text == "s" {
+		f.picker = false
+		f.pickModel(fakeModels[f.pickerSel], true)
+		return nil
+	}
 	f.composer += text
 	f.escaped = false
 	return nil
@@ -183,12 +236,20 @@ func (f *fakeClaude) SendNamedKey(key string) error {
 			f.pendingModel = ""
 			return nil
 		}
-		if f.dialog {
-			f.dialog = false
+		if f.picker {
+			f.picker = false
 			f.transcript = append(f.transcript, "  ⎿  Kept model as "+f.model)
 			return nil
 		}
 		f.escaped = true
+	case "Down":
+		if f.picker {
+			f.pickerSel = (f.pickerSel + 1) % len(fakeModels)
+		}
+	case "Up":
+		if f.picker {
+			f.pickerSel = (f.pickerSel + len(fakeModels) - 1) % len(fakeModels)
+		}
 	case "C-u":
 		f.composer = ""
 		f.escaped = false
@@ -203,8 +264,14 @@ func (f *fakeClaude) enter() error {
 		return nil
 	}
 	if f.pendingModel != "" {
-		f.model, f.pendingModel = f.pendingModel, ""
-		f.transcript = append(f.transcript, "  ⎿  Set model to "+f.model+" and saved as your default for new sessions")
+		label := f.pendingModel
+		f.pendingModel = ""
+		f.chooseModel(label, f.pendingSessionOnly)
+		return nil
+	}
+	if f.picker {
+		f.picker = false
+		f.pickModel(fakeModels[f.pickerSel], false) // Enter in the picker saves the default
 		return nil
 	}
 	if f.dialog {
@@ -233,26 +300,20 @@ func (f *fakeClaude) run(name, args string) {
 	}
 	switch name {
 	case "/model":
+		f.transcript = append(f.transcript, echo)
 		if args == "" {
-			f.transcript = append(f.transcript, echo)
-			f.dialog = true
-			return
-		}
-		display := map[string]string{
-			"claude-haiku-5-5": "Haiku 5.5", "claude-fable-5-1": "Fable 5.1",
-			"opus[1m]": "Opus 4.6 (1M context)", "sonnet[1m]": "Sonnet 4.6 (1M context)",
-			"opus": "Opus 4.6", "s": "Sonnet 4.6", "opus-4": "Opus 4.6",
-		}[args]
-		if f.cached {
-			f.transcript = append(f.transcript, echo)
-			f.pendingModel = display
-			if f.switchTo != "" {
-				f.pendingModel = f.switchTo
+			f.picker = true
+			for i, m := range fakeModels {
+				if m == f.model {
+					f.pickerSel = i
+				}
 			}
 			return
 		}
-		f.model = display
-		f.transcript = append(f.transcript, echo, "  ⎿  Set model to "+f.model+" and saved as your default for new sessions")
+		// Typed "/model <id>" sets the model AND saves it as the default
+		// for new sessions (live 2.1.296, the incident class).
+		display := map[string]string{"claude-haiku-5-5": "Haiku 5.5", "claude-fable-5-1": "Fable 5.1", "claude-opus-5-5": "Opus 5.5"}[args]
+		f.pickModel(display, false)
 	case "/clear":
 		f.transcript = []string{echo}
 	case "/compact":
@@ -272,4 +333,17 @@ func (f *fakeClaude) run(name, args string) {
 	if f.afterExec != nil {
 		f.afterExec(f, name)
 	}
+}
+
+// pickModel goes through the "Switch model?" confirmation when the
+// conversation is cached; the confirmation keeps the session-only choice.
+func (f *fakeClaude) pickModel(label string, sessionOnly bool) {
+	if f.cached {
+		f.pendingModel, f.pendingSessionOnly = label, sessionOnly
+		if f.switchTo != "" {
+			f.pendingModel = f.switchTo
+		}
+		return
+	}
+	f.chooseModel(label, sessionOnly)
 }

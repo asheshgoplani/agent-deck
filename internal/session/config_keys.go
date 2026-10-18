@@ -163,6 +163,9 @@ var configKeys = []ConfigKey{
 		Consent: MacappPluginsConsent,
 		get:     func(c *UserConfig) any { return c.Macapp.Plugins },
 		set:     func(c *UserConfig, v any) { c.Macapp.Plugins = v.(bool) }},
+	{Key: "browser.enabled", Section: "Advanced", Label: "Browser requests", Help: "Allow agent-deck browser and events publish --kind macapp.browser.request (an opt-in, not a security boundary; per profile via profiles.<name>.browser.enabled; docs/macapp-browser.md)", Type: "bool",
+		get: func(c *UserConfig) any { return c.Browser.Enabled != nil && *c.Browser.Enabled },
+		set: func(c *UserConfig, v any) { c.Browser.Enabled = boolRef(v.(bool)) }},
 	{Key: "macapp.transcript_events", Section: "Advanced", Label: "Transcript events", Help: "Notify daemon publishes session.transcript frames when a transcript grows", Type: "bool", RestartRequired: true,
 		get: func(c *UserConfig) any { return c.Macapp.TranscriptEvents },
 		set: func(c *UserConfig, v any) { c.Macapp.TranscriptEvents = v.(bool) }},
@@ -232,7 +235,7 @@ func LookupConfigKey(name string) (ConfigKey, bool) {
 			return k, true
 		}
 	}
-	return ConfigKey{}, false
+	return profileBrowserKey(name)
 }
 
 // Get returns the effective value (the default when unset).

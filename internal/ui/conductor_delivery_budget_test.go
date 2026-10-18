@@ -11,6 +11,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 func budgetTestChecker(t *testing.T, cfg costs.BudgetConfig, spent map[string]int64) *costs.BudgetChecker {
@@ -73,7 +74,7 @@ func TestConductorDeliveriesAskTheBudgetGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gated := map[string]bool{}
+	calls := map[string]map[string]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -81,17 +82,67 @@ func TestConductorDeliveriesAskTheBudgetGate(t *testing.T) {
 		}
 		ast.Inspect(fn.Body, func(x ast.Node) bool {
 			if c, ok := x.(*ast.CallExpr); ok {
-				if sel, ok := c.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "agentDeliveryOverBudget" {
-					gated[fn.Name.Name] = true
+				if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+					if calls[fn.Name.Name] == nil {
+						calls[fn.Name.Name] = map[string]bool{}
+					}
+					calls[fn.Name.Name][sel.Sel.Name] = true
 				}
 			}
 			return true
 		})
 		return true
 	})
-	for _, fn := range []string{"sendToConductor", "backgroundStatusUpdate"} {
-		if !gated[fn] {
-			t.Errorf("%s types into a conductor pane without the budget gate (gated: %v)", fn, gated)
+	for _, fn := range []string{"sendToConductor", "scheduleClearAndHeartbeat"} {
+		if !calls[fn]["agentDeliveryOverBudget"] {
+			t.Errorf("%s types into a conductor pane without the budget gate", fn)
 		}
+	}
+	if !calls["backgroundStatusUpdate"]["scheduleClearAndHeartbeat"] {
+		t.Error("backgroundStatusUpdate does not send the heartbeat through scheduleClearAndHeartbeat")
+	}
+}
+
+// Review follow-up (2): the result of the heartbeat gate. A spent, enforced
+// budget sends nothing and leaves the conductor unmarked, so it is tried
+// again; otherwise the /clear and the heartbeat are typed.
+func TestScheduleClearAndHeartbeatBudgetResult(t *testing.T) {
+	cond := &session.Instance{ID: "cond", Title: "conductor-x", GroupPath: "conductor"}
+	for _, tc := range []struct {
+		name      string
+		cfg       costs.BudgetConfig
+		scheduled bool
+	}{
+		{"under budget", costs.BudgetConfig{Enforce: true, DailyLimit: 100_000_000}, true},
+		{"spent", costs.BudgetConfig{Enforce: true, DailyLimit: 1}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			typed := make(chan string, 4)
+			prev := conductorHeartbeatDeliver
+			conductorHeartbeatDeliver = func(_ *tmux.Session, body string) error { typed <- body; return nil }
+			t.Cleanup(func() { conductorHeartbeatDeliver = prev })
+			h := &Home{clearOnCompactSent: map[string]time.Time{}}
+			h.costBudget = budgetTestChecker(t, tc.cfg, map[string]int64{"cond": 5})
+			got := h.scheduleClearAndHeartbeat(cond, []*session.Instance{cond}, tmux.NewSession("conductor-x", t.TempDir()))
+			if got != tc.scheduled {
+				t.Fatalf("scheduled = %v, want %v", got, tc.scheduled)
+			}
+			if _, marked := h.clearOnCompactSent[cond.ID]; marked != tc.scheduled {
+				t.Fatalf("marked sent = %v, want %v", marked, tc.scheduled)
+			}
+			select {
+			case body := <-typed:
+				if !tc.scheduled {
+					t.Fatalf("typed %q into the pane with the budget spent", body)
+				}
+				if body != "/clear" {
+					t.Fatalf("first delivery = %q, want /clear", body)
+				}
+			case <-time.After(2 * time.Second):
+				if tc.scheduled {
+					t.Fatal("nothing was typed for a scheduled heartbeat")
+				}
+			}
+		})
 	}
 }

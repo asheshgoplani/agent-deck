@@ -1,0 +1,20 @@
+Usage: agent-deck triggers [list] [--host H|all] [--session S] [--kind K] [--health H|problems] [--all] [--json]
+
+List everything that wakes a session on this host (and remotes with --host).
+A remote that is too old or unreachable shows as "unknown" in hosts, never guessed.
+
+Options:
+  -all
+    	Also show session-to-session and shell (cli) senders
+  -health string
+    	Only this health (ok, failing, dead-target, never-fired, unknown) or problems
+  -host string
+    	This host's name, a remote name, or all (this host plus every configured remote)
+  -json
+    	Output as JSON
+  -kind string
+    	Only this kind (launchd, systemd, cron, watcher, heartbeat, channel, interval, session, ssh, cli, job)
+  -session string
+    	What wakes this session (id or title)
+
+Other subcommands: scan, mute <id>, unmute <id>, run <id>, fires <id> (see agent-deck triggers <sub> --help)

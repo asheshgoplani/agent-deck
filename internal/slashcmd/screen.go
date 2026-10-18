@@ -1,7 +1,9 @@
 package slashcmd
 
 import (
+	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -188,8 +190,138 @@ func currentModel(content string) string {
 // isRequestedModel reports whether display names the model requested by
 // /model <args>: same family and 1M variant on token boundaries, and the
 // exact version when one was given (model.go).
+//
+// Once an entry was picked, display must name that entry (same family,
+// version and 1M variant): Claude echoes and confirms the entry, which for
+// an alias or "default" is more specific than the argument.
 func (r *runner) isRequestedModel(display string) bool {
+	if r.pickedLabel != "" {
+		if isDefaultModel(r.cmd.Args) {
+			return strings.TrimSpace(display) != ""
+		}
+		picked, ok := parseModelSpec(r.pickedLabel)
+		got, ok2 := parseModelSpec(display)
+		return ok && ok2 && picked.family == got.family && picked.oneM == got.oneM &&
+			strings.Join(picked.version, ".") == strings.Join(got.version, ".")
+	}
 	return modelMatches(r.cmd.Args, display)
+}
+
+// modelPickerRow matches a /model picker entry such as
+// "  ❯ 3.  Fable 5.1 ✔            For your toughest challenges" or
+// "  ↓ 10. Opus 4.8               Best for everyday, complex tasks".
+var modelPickerRow = regexp.MustCompile(`^\s*(?:[↓↑]\s*)?(❯\s*)?(\d+)\.\s+(.+?)(?:\s+✔)?(?:\s{2,}\S.*)?$`)
+
+type pickerRowT struct {
+	num      int
+	label    string
+	selected bool
+}
+
+// modelPickerRows parses the visible rows of the /model picker. Only the
+// picker region counts: the lines after its "Select model" header, so a
+// numbered list in the transcript above is never read as picker rows.
+func modelPickerRows(content string) []pickerRowT {
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "Select model") {
+			lines = lines[i+1:]
+			break
+		}
+	}
+	var rows []pickerRowT
+	for _, line := range lines {
+		m := modelPickerRow.FindStringSubmatch(strings.TrimRight(line, " "))
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[2])
+		rows = append(rows, pickerRowT{num: n, label: strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(m[3]), "✔")), selected: m[1] != ""})
+	}
+	return rows
+}
+
+// maxPickerSteps bounds the arrow keys sent while looking for the entry:
+// up to the top, then once down the whole list.
+const maxPickerSteps = 80
+
+// pickerMatches reports whether a picker label is the requested model: the
+// "default" alias is the Default entry; anything else is matched by family,
+// version and 1M variant on token boundaries (model.go).
+func (r *runner) pickerMatches(label string) bool {
+	if isDefaultModel(r.cmd.Args) {
+		spec, ok := parseModelSpec(label)
+		return ok && spec.family == "default"
+	}
+	want, ok := parseModelSpec(r.cmd.Args)
+	got, ok2 := parseModelSpec(label)
+	return ok && ok2 && want.matches(got)
+}
+
+// navigatePicker moves the /model picker to its first row, then walks it
+// down one row at a time to the first entry that matches the requested
+// model (so an alias such as "opus" picks the first Opus entry, as Claude
+// lists them), and presses "s" (use this session only) once that entry has
+// been highlighted on two consecutive frames. It never presses Enter in the
+// picker: Enter saves the model as the default for new sessions. When the
+// whole list was walked without a match it cancels the picker and names the
+// entries it saw.
+func (r *runner) navigatePicker(content string) (Result, bool) {
+	rows := modelPickerRows(content)
+	var sel *pickerRowT
+	for i := range rows {
+		if rows[i].selected {
+			sel = &rows[i]
+		}
+	}
+	if sel == nil || r.picked {
+		return Result{}, false // frame still drawing, or "s" sent and the picker is closing
+	}
+	moved := sel.num != r.lastSel
+	if r.steps > 0 && !moved {
+		// The highlight has not moved yet: wait a few frames before
+		// treating it as an end of the list that does not wrap.
+		if r.stalled++; r.stalled < 4 {
+			return Result{}, false
+		}
+	}
+	stalled := r.steps > 0 && !moved
+	r.stalled = 0
+	if !r.scanning {
+		if sel.num != 1 && !stalled && r.steps < maxPickerSteps {
+			return r.pickerKey(sel, "Up")
+		}
+		r.scanning = true // at the top (or the top does not move further)
+		r.stableSel = 0
+	}
+	if r.pickerMatches(sel.label) {
+		if r.stableSel != sel.num {
+			r.stableSel = sel.num // re-read once before pressing "s"
+			return Result{}, false
+		}
+		r.picked, r.pickedLabel = true, sel.label
+		_ = r.p.SendKeys("s")
+		r.step(fmt.Sprintf("picker: %q highlighted, pressed s (this session only)", sel.label))
+		return Result{}, false
+	}
+	r.stableSel = 0
+	if !slices.Contains(r.seen, sel.label) {
+		r.seen = append(r.seen, sel.label)
+	}
+	wrapped := len(r.seen) > 1 && sel.num == 1 && r.steps > 0 && r.lastSel != 0 && r.lastSel != 1
+	if wrapped || (stalled && r.scanning && len(r.seen) > 1) || r.steps >= maxPickerSteps {
+		_ = r.p.SendNamedKey("Escape")
+		r.step("cancelled the model picker (Escape)")
+		return r.fail(CodeUnknownModel, fmt.Sprintf("the /model picker has no entry for %s; it lists: %s. Cancelled, nothing changed", r.cmd.Args, strings.Join(r.seen, ", "))), true
+	}
+	return r.pickerKey(sel, "Down")
+}
+
+func (r *runner) pickerKey(sel *pickerRowT, key string) (Result, bool) {
+	r.lastSel = sel.num
+	r.steps++
+	_ = r.p.SendNamedKey(key)
+	return Result{}, false
 }
 
 // transcriptChanged reports whether the lines above the composer differ
@@ -201,7 +333,7 @@ func transcriptChanged(content, baseline string) bool {
 func verifyDescription(k Kind) string {
 	switch k {
 	case KindModel:
-		return `"Set model to <name>" echo`
+		return `"Set model to <name> for this session only" echo (a "saved as your default" echo fails)`
 	case KindCompact:
 		return `"Compacted" notice`
 	case KindClear:
@@ -327,8 +459,11 @@ func (r *runner) check(raw, content, baseline string) (Result, bool) {
 			if m == nil {
 				continue
 			}
-			if !r.isRequestedModel(m[2]) {
-				return r.fail(CodeCommandError, "Claude reports "+t+", not the requested model", t), true
+			if strings.Contains(t, "saved as your default") {
+				return r.fail(CodeDefaultSaved, "Claude saved "+m[2]+" as the default for new sessions (settings.json \"model\"); restore it", t), true
+			}
+			if !r.isRequestedModel(m[2]) || !strings.Contains(t, "for this session only") {
+				return r.fail(CodeCommandError, "Claude reports "+t+", not a session-only switch to the requested model", t), true
 			}
 			return r.ok(m[2], t), true
 		}
@@ -365,14 +500,17 @@ func (r *runner) check(raw, content, baseline string) (Result, bool) {
 	return Result{}, false
 }
 
-// modelDialog handles a dialog after /model. With a cached conversation
-// Claude asks "Switch model?"; only "Yes, switch to <the requested model>" is
-// accepted, once. Any other dialog (bare /model opens the model picker) is
-// cancelled.
+// modelDialog handles the dialogs after /model: the model picker (navigated
+// to the requested entry, then "s"), and with a cached conversation the
+// "Switch model?" confirmation, answered only with "Yes, switch to <the
+// requested model>" after our session-only pick. Anything else is cancelled.
 func (r *runner) modelDialog(content string) (Result, bool) {
+	if strings.Contains(content, "Select model") && !strings.Contains(content, "Switch model?") {
+		return r.navigatePicker(content)
+	}
 	sel, _ := send.DialogSelection(content)
 	target, isSwitch := strings.CutPrefix(sel, "Yes, switch to ")
-	if isSwitch && r.isRequestedModel(target) {
+	if isSwitch && r.picked && r.isRequestedModel(target) {
 		if !r.confirmed {
 			r.confirmed = true
 			_ = r.p.SendNamedKey("Enter")

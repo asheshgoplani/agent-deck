@@ -129,6 +129,13 @@ func agentDeckTestEnv(home string, extraEnv []string) []string {
 		if strings.HasPrefix(kv, "HOME=") {
 			continue
 		}
+		// Strip what trigger source inference reads (#2702): a test run
+		// inside a launchd job, a systemd unit or an ssh session must not
+		// attribute the binary's sends to that host unit.
+		if strings.HasPrefix(kv, "INVOCATION_ID=") || strings.HasPrefix(kv, "XPC_SERVICE_NAME=") ||
+			strings.HasPrefix(kv, "SSH_CONNECTION=") {
+			continue
+		}
 		// Strip CLAUDE_CONFIG_DIR so the test's isolated HOME/.claude is the
 		// effective Claude config dir — otherwise session search leaks into
 		// the developer's real ~/.claude/projects tree. Added for #483.

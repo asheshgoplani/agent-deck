@@ -119,6 +119,15 @@ func runMain(args []string) int {
 	for _, r := range reports {
 		fmt.Printf("| %s | %s | %s |\n", r.step, r.width, r.status)
 	}
+	// A run in a throwaway container (deck-test) cannot hand back the
+	// contact sheet, so a frame without a matching golden is also printed:
+	// it can be reviewed from the log and, after a reviewer's PASS, saved by
+	// hand as testdata/golden/<step>_<width>.golden.
+	for _, r := range reports {
+		if r.status == "MISSING" || r.status == "DIFF" {
+			fmt.Printf("\n=== FRAME %s_%s (%s) ===\n%s\n=== END ===\n", r.step, r.width, r.status, r.frame)
+		}
+	}
 	fmt.Printf("\ncontact-sheet.html and visualcheck-report.json written; redraw frames are in %s. A DIFF needs a reviewer's PASS before the golden is updated.\n", artifactDir())
 
 	if failed {

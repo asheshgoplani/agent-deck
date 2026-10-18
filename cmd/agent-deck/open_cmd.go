@@ -12,14 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
+	"github.com/asheshgoplani/agent-deck/internal/macapp"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>]"
+const openUsage = "Usage: agent-deck open <file|url> [--session <id|title>] [--browser-profile <name>] [--wait <duration>]"
 const openAckTimeout = 3 * time.Second
 const openQueuedMessage = "Queued for AgentDeck: it opens when the app is connected"
 
@@ -30,13 +30,20 @@ const openCommitTimeout = 10 * time.Second
 
 // MacappOpenRequest is carried in the existing profile event bus. The app
 // echoes the frame event_id as open_event_id with opened=true after display.
+// RequestID (random hex, never caller-supplied) is an extra hint for the app
+// to drop a request it already handled; event_id stays the dedupe key, and
+// older CLIs send no request_id. BrowserProfile names an optional Browser
+// panel profile in the app. It is not the agent-deck profile (-p/--profile,
+// and the profile= query of the launch link).
 type MacappOpenRequest struct {
-	EventID     string `json:"-"`
-	SessionID   string `json:"-"`
-	Host        string `json:"host"`
-	Path        string `json:"path,omitempty"`
-	URL         string `json:"url,omitempty"`
-	RequestedAt string `json:"requested_at"`
+	EventID        string `json:"-"`
+	SessionID      string `json:"-"`
+	Host           string `json:"host"`
+	Path           string `json:"path,omitempty"`
+	URL            string `json:"url,omitempty"`
+	RequestedAt    string `json:"requested_at"`
+	RequestID      string `json:"request_id"`
+	BrowserProfile string `json:"browser_profile,omitempty"`
 }
 
 func handleOpen(profile string, args []string) {
@@ -49,7 +56,9 @@ func handleOpen(profile string, args []string) {
 func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("open", flag.ContinueOnError)
 	fs.SetOutput(helpOutput(args, out, errOut))
-	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID)")
+	identifier := fs.String("session", "", "session id or title (default: $AGENTDECK_INSTANCE_ID, then the calling tmux session)")
+	browserProfile := fs.String("browser-profile", "", "Browser panel profile in the app (optional; letters, digits, '.', '_', '-', at most 64, no leading '.')")
+	wait := fs.Duration("wait", openAckTimeout, "how long to wait for the app to acknowledge before reporting Queued (at most 2m0s)")
 	fs.Usage = func() { fmt.Fprintln(fs.Output(), openUsage); fs.PrintDefaults() }
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -60,15 +69,20 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	if fs.NArg() != 1 {
 		return errors.New(openUsage)
 	}
-	sid, err := openSessionIdentifier(*identifier, os.Getenv("AGENTDECK_INSTANCE_ID"))
+	if *wait < 0 {
+		return errors.New("--wait must not be negative")
+	}
+	if *wait > openMaxWait {
+		return fmt.Errorf("--wait must be at most %s", openMaxWait)
+	}
+	if *browserProfile != "" && !validBrowserProfileName(*browserProfile) {
+		return fmt.Errorf("--browser-profile %q: use letters, digits, '.', '_' and '-' (at most %d, no leading '.')", truncateForError(*browserProfile), browserProfileMaxLen)
+	}
+	profile, err := session.ResolveProfileForStorage(profile)
 	if err != nil {
 		return err
 	}
-	profile, err = session.ResolveProfileForStorage(profile)
-	if err != nil {
-		return err
-	}
-	inst, err := readOpenSession(profile, sid)
+	inst, err := resolveCallingSession(profile, *identifier, os.Getenv("AGENTDECK_INSTANCE_ID"), currentTmuxSessionName)
 	if err != nil {
 		return err
 	}
@@ -76,9 +90,10 @@ func runOpen(profile string, args []string, out, errOut io.Writer) error {
 	if err != nil {
 		return err
 	}
+	req.BrowserProfile = *browserProfile
 	bus := events.OpenProfile(profile)
 	defer bus.Close()
-	acknowledged, err := publishOpenRequest(bus, req, openAckTimeout, func(req MacappOpenRequest) { launchLocalMacapp(profile, req) })
+	acknowledged, err := publishOpenRequest(bus, req, *wait, func(req MacappOpenRequest) { launchLocalMacapp(profile, req) })
 	if err != nil {
 		return err
 	}
@@ -96,14 +111,45 @@ func openSessionIdentifier(explicit, current string) (string, error) {
 	return "", errors.New("--session is required outside an agent-deck session")
 }
 
+// resolveCallingSession is the one session resolver of open and browser:
+// --session, then $AGENTDECK_INSTANCE_ID, then the agent-deck session that
+// owns the calling tmux session.
+func resolveCallingSession(profile, explicit, current string, tmuxName func() string) (*session.InstanceData, error) {
+	if explicit != "" || current != "" {
+		identifier, err := openSessionIdentifier(explicit, current)
+		if err != nil {
+			return nil, err
+		}
+		return readOpenSession(profile, identifier)
+	}
+	if name := tmuxName(); name != "" {
+		instances, err := loadOpenSessions(profile)
+		if err != nil {
+			return nil, err
+		}
+		for _, inst := range instances {
+			if inst.TmuxSession == name {
+				return inst, nil
+			}
+		}
+	}
+	return nil, errors.New("--session is required outside an agent-deck session")
+}
+
+func currentTmuxSessionName() string {
+	if os.Getenv("TMUX") == "" {
+		return ""
+	}
+	name, err := getCurrentTmuxSessionName()
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
 // Metadata only: no tmux reconnection, migration, or writes to the session DB.
 func readOpenSession(profile, identifier string) (*session.InstanceData, error) {
-	storage, err := session.NewLiveReadOnlyStorageWithProfile(profile)
-	if err != nil {
-		return nil, err
-	}
-	defer storage.Close()
-	instances, _, err := storage.LoadLite()
+	instances, err := loadOpenSessions(profile)
 	if err != nil {
 		return nil, err
 	}
@@ -128,8 +174,19 @@ func readOpenSession(profile, identifier string) (*session.InstanceData, error) 
 	return match, nil
 }
 
+// loadOpenSessions reads session metadata only, like readOpenSession.
+func loadOpenSessions(profile string) ([]*session.InstanceData, error) {
+	storage, err := session.NewLiveReadOnlyStorageWithProfile(profile)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadLite()
+	return instances, err
+}
+
 func newOpenRequest(sessionID, target string) (MacappOpenRequest, error) {
-	req := MacappOpenRequest{SessionID: sessionID, RequestedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	req := MacappOpenRequest{SessionID: sessionID, RequestedAt: time.Now().UTC().Format(time.RFC3339Nano), RequestID: events.NewID()}
 	var err error
 	req.Host, err = os.Hostname()
 	if err != nil {
@@ -139,19 +196,25 @@ func newOpenRequest(sessionID, target string) (MacappOpenRequest, error) {
 	return req, err
 }
 
+// openCallerIsRemote reports whether this CLI runs on a host the Mac app
+// reaches as a remote (not macOS, or inside an SSH session): the requests it
+// writes are then "from a remote" in the app's policy.
+var openCallerIsRemote = func() bool { return !localMacappLaunchAllowed(runtime.GOOS, os.Getenv) }
+
 func resolveOpenTarget(target string) (path, webURL string, err error) {
-	if strings.ContainsAny(target, "\x00\r\n") || strings.TrimSpace(target) == "" {
-		return "", "", errors.New("empty target or control characters in target")
-	}
-	u, parseErr := url.Parse(target)
-	if parseErr == nil && u.Scheme != "" {
-		if (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil {
-			return "", "", errors.New("URL must be an absolute http or https URL without credentials")
+	webURL, err = macapp.ValidateURL(target)
+	if err == nil {
+		// Defence in depth for the app's policy: a remote host never asks
+		// for a loopback, private or link-local address (macapp.CheckRemoteURL).
+		if openCallerIsRemote() {
+			if err := macapp.CheckRemoteURL(webURL); err != nil {
+				return "", "", err
+			}
 		}
-		return "", u.String(), nil
+		return "", webURL, nil
 	}
-	if strings.Contains(target, "://") {
-		return "", "", fmt.Errorf("invalid URL: %q", target)
+	if !errors.Is(err, macapp.ErrNotURL) {
+		return "", "", err
 	}
 	path, err = filepath.Abs(target)
 	if err != nil {
@@ -262,4 +325,22 @@ func macappOpenLink(profile string, req MacappOpenRequest) string {
 		q.Set("url", req.URL)
 	}
 	return "agentdeck://open?" + q.Encode()
+}
+
+// openMaxWait caps --wait: the request stays queued for a later app anyway.
+const openMaxWait = 120 * time.Second
+
+// browserProfileMaxLen caps a Browser panel profile name.
+const browserProfileMaxLen = macapp.MaxBrowserProfileLen
+
+// validBrowserProfileName is the plain-name rule for --browser-profile:
+// [A-Za-z0-9._-], no leading '.', at most browserProfileMaxLen bytes.
+func validBrowserProfileName(name string) bool { return macapp.ValidBrowserProfile(name) }
+
+// truncateForError keeps a refused value short in the error message.
+func truncateForError(s string) string {
+	if len(s) > 80 {
+		return s[:80] + "..."
+	}
+	return s
 }
