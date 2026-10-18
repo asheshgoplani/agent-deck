@@ -483,8 +483,12 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 			return switchFailedAfterStop(journalPath, j, inst, wasRunning, err)
 		}
 	}
-	if trustErr := PreAcceptClaudeTrust(filepath.Join(targetDir, ".claude.json"), inst.EffectiveWorkingDir()); trustErr != nil {
-		j.Failure = "folder trust pre-seed: " + trustErr.Error()
+	// The target account has its own trust list and onboarding state; seed
+	// them so the restarted session meets no first-start prompt. A failure is
+	// a visible warning, and settle answers the prompt instead.
+	if _, seedErr := PreseedClaudeFirstStart(sourceDir, targetDir, inst.EffectiveWorkingDir(), SessionRunsBypass(inst, cfg)); seedErr != nil {
+		j.Failure = "folder trust pre-seed: " + seedErr.Error()
+		warnings = append(warnings, "folder trust pre-seed failed: "+seedErr.Error())
 	}
 	// A conductor's channel plugin state (bot token) must follow it to the new
 	// account before the target starts; link or point only, never copy.

@@ -8674,6 +8674,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		delete(h.resumingSessions, msg.sessionID)
+		var settleCmd tea.Cmd
 		// A distinct target is attachable only after an explicit positive native
 		// readiness result with no execution error. Pending is not a substitute
 		// for readiness, and an error after a durable target write is recovery-only.
@@ -8705,6 +8706,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				h.rebuildFlatItems()
 				h.invalidatePreviewCache(msg.sessionID)
+				settleCmd = h.switchSettleCmd(msg)
 			}
 		}
 		for _, warning := range msg.warnings {
@@ -8719,7 +8721,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// dead end: offer the explicit archive-and-retry action instead of an
 			// acknowledge-only notice with no way forward.
 			h.confirmDialog.ShowArchiveDestinationSwitch(current, msg.targetHarness, msg.account, msg.err.Error())
-			return h, nil
+			return h, settleCmd
 		}
 		if msg.err != nil && (!msg.pending || errors.Is(msg.err, session.ErrCrossHarnessRecoveryRequired)) {
 			// A refused switch explains why in a paragraph the footer banner
@@ -8734,15 +8736,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				body += "\n\nstatus=failed; recovery_required=true; committed=true"
 			}
 			h.confirmDialog.ShowNotice("Account switch failed", body)
-			return h, nil
+			return h, settleCmd
 		}
 		if msg.pending {
 			h.confirmDialog.ShowNotice("Account switch pending", msg.summary)
-			return h, nil
+			return h, settleCmd
 		}
 		if msg.err != nil {
 			h.confirmDialog.ShowNotice("Account switch failed", msg.err.Error())
-			return h, nil
+			return h, settleCmd
 		}
 		if len(msg.warnings) > 0 {
 			// The CLI prints these on stderr; dropping them here would leave a
@@ -8750,26 +8752,31 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// on a trust prompt with no explanation.
 			h.confirmDialog.ShowNotice("Account switched with warnings",
 				fmt.Sprintf("Switched to %q — %s\n\n%s", msg.account, msg.summary, strings.Join(msg.warnings, "\n")))
-			return h, nil
+			return h, settleCmd
 		}
 		if msg.target != nil && msg.targetReady {
 			h.confirmDialog.ShowNotice("Harness transfer verified",
 				fmt.Sprintf("New %s target %q is verified and ready. %s", msg.target.Tool, msg.target.Title, msg.summary))
-			return h, nil
+			return h, settleCmd
 		}
 		if msg.nativeResult != nil && msg.nativeResult.DestinationReady {
 			h.confirmDialog.ShowNotice("Account switch verified", msg.summary)
-			return h, nil
+			return h, settleCmd
 		}
 		if msg.nativeResult != nil {
 			h.confirmDialog.ShowNotice("Account switch pending verification",
 				fmt.Sprintf("Account changed to %q, but its restarted harness has not reported native readiness. %s", msg.account, msg.summary))
-			return h, nil
+			return h, settleCmd
 		}
 		// Legacy/synthetic completions without an execution receipt retain the
 		// existing footer behavior; real native and cross-harness paths above
 		// always carry the receipt needed to state verified versus pending.
 		h.setError(fmt.Errorf("account switched to %q — %s", msg.account, msg.summary))
+		return h, settleCmd
+
+	case switchSettledMsg:
+		h.handleSwitchSettled(msg)
+		h.invalidatePreviewCache(msg.sessionID)
 		return h, nil
 
 	case sessionRestartedMsg:

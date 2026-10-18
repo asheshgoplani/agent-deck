@@ -104,6 +104,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSet(profile, args[1:])
 	case "switch-account":
 		handleSessionSwitchAccount(profile, args[1:])
+	case "switch-settle":
+		handleSessionSwitchSettle(profile, args[1:])
 	case "switch":
 		handleSessionSwitch(profile, args[1:])
 	case "switch-preview":
@@ -181,6 +183,7 @@ func printSessionHelp() {
 	fmt.Println("  set <id> <field> <value>  Update session property")
 	fmt.Println("  switch <id> --to-harness <harness> [--to-account <account>]  Switch account or create a confirmed fresh cross-harness target")
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
+	fmt.Println("  switch-settle <id>             Finish a switch hands-free: ready, prompts, plugins, kick, verify")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session (--queue: never silently lost, see send-status; --image <path>)")
 	fmt.Println("  image-upload <id>       Stage an attachment from stdin (--name <uuid>.png --json; max 20 MiB)")
@@ -2690,6 +2693,11 @@ func handleSessionSet(profile string, args []string) {
 		// A conductor's channel plugin state follows it (link or point only).
 		for _, note := range session.CarryConductorChannelState(inst, preAccountConfigDir, targetDir) {
 			fmt.Fprintf(os.Stderr, "Note: %s\n", note)
+		}
+		// The restart that follows meets the target account's own trust
+		// list and onboarding state; seed them (SWFB1018).
+		if _, seedErr := session.PreseedClaudeFirstStart(preAccountConfigDir, targetDir, inst.EffectiveWorkingDir(), session.SessionRunsBypass(inst, loadUserConfigOrNil())); seedErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for the new account failed: %v\n", seedErr)
 		}
 	}
 

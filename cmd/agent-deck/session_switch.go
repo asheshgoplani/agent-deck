@@ -26,6 +26,7 @@ func handleSessionSwitch(profile string, args []string) {
 	confirmContextLoss := fs.Bool("confirm-context-loss", false, "Required for lossy cross-harness transfer after reviewing switch-preview")
 	archiveDestination := fs.Bool("archive-destination", false, "Install the source conversation even when the destination holds a newer or undated copy; the destination copy is archived next to it, never deleted")
 	jsonOutput := fs.Bool("json", false, "Output the switch result as JSON")
+	noSettle := fs.Bool("no-settle", false, "After a native restart, do not run switch-settle (ready, known prompts, plugins, kick, verify)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session switch <id|title> --to-harness <harness> [--to-account <account>]")
@@ -149,7 +150,18 @@ func handleSessionSwitch(profile string, args []string) {
 		out.Error(fmt.Sprintf("save switched session: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
+	var settle *session.SettleReport
+	var settleErr error
+	if result.Restarted && !*noSettle && result.OldAccount != result.NewAccount && session.IsClaudeCompatible(inst.Tool) {
+		settle, settleErr = settleAfterSwitch(inst, *jsonOutput)
+	}
+	defer func() {
+		if settle != nil && settleExitCode(settle, settleErr) != 0 {
+			exitCLI(switchExitSettle)
+		}
+	}()
 	payload := map[string]any{
+		"settle":  settle,
 		"success": result.Committed && result.DestinationReady, "status": switchPresentationStatus(result.Committed, result.DestinationReady), "pending": result.Committed && !result.DestinationReady,
 		"id": inst.ID, "title": inst.Title,
 		"old_tool": result.OldTool, "new_tool": result.NewTool,
@@ -171,6 +183,9 @@ func handleSessionSwitch(profile string, args []string) {
 	fmt.Printf("Switch %s: %s/%q -> %s/%q (%s); status=%s; readiness=%s\n", inst.Title, result.OldTool, result.OldAccount, result.NewTool, result.NewAccount, result.Continuity, status, readinessPresentation(result.DestinationReady))
 	if len(result.LossDisclosure) > 0 {
 		fmt.Printf("Not preserved: %s\n", strings.Join(result.LossDisclosure, "; "))
+	}
+	if settle != nil {
+		fmt.Println(settle.Receipt())
 	}
 }
 

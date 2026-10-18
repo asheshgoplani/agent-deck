@@ -24,6 +24,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	noRestart := fs.Bool("no-restart", false, "Do not restart a running session after the switch")
+	noSettle := fs.Bool("no-settle", false, "After the restart, do not run switch-settle (ready, known prompts, plugins, kick, verify)")
 	archiveDestination := fs.Bool("archive-destination", false, "Install the source conversation even when the destination holds a newer or undated copy; the destination copy is archived next to it, never deleted")
 
 	fs.Usage = func() {
@@ -37,6 +38,11 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		fmt.Println("source account keeps its copy), the session's account field is updated, and")
 		fmt.Println("a running session is restarted so `claude --resume` continues the")
 		fmt.Println("conversation under the new account.")
+		fmt.Println()
+		fmt.Println("After the restart the switch settles hands-free (see `session switch-settle`):")
+		fmt.Println("it answers only the known first-start prompts, checks plugins and MCPs, sends a")
+		fmt.Println("continue message and verifies the account in use. Exit 4 means switched but")
+		fmt.Println("not settled healthy; the receipt line names what failed. --no-settle skips it.")
 		fmt.Println()
 		fmt.Println("Claude Code may key one working directory under several project directories")
 		fmt.Println("(the path as typed, its macOS /private form, its realpath). Every copy of the")
@@ -127,8 +133,23 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		exitCLI(1)
 	}
 
-	out.Success(fmt.Sprintf("Switched %s: account %q -> %q; %s", inst.Title, result.OldAccount, result.NewAccount, result.Conversation),
+	var settle *session.SettleReport
+	var settleErr error
+	if result.Restarted && !*noSettle && session.IsClaudeCompatible(inst.Tool) {
+		settle, settleErr = settleAfterSwitch(inst, quietMode || *jsonOutput)
+	}
+	summary := fmt.Sprintf("Switched %s: account %q -> %q; %s", inst.Title, result.OldAccount, result.NewAccount, result.Conversation)
+	if settle != nil {
+		summary += "\n" + settle.Receipt()
+	}
+	defer func() {
+		if settle != nil && settleExitCode(settle, settleErr) != 0 {
+			exitCLI(switchExitSettle)
+		}
+	}()
+	out.Success(summary,
 		map[string]interface{}{
+			"settle":               settle,
 			"success":              true,
 			"id":                   inst.ID,
 			"title":                inst.Title,

@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 // PreAcceptClaudeTrust adds a `projects[parentDir].hasTrustDialogAccepted = true`
@@ -31,42 +29,21 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 	if parentDir == "" {
 		return fmt.Errorf("parentDir is empty")
 	}
-
-	cfg := map[string]any{}
-	if data, err := os.ReadFile(claudeJSONPath); err == nil {
-		if len(data) > 0 {
-			if err := json.Unmarshal(data, &cfg); err != nil {
-				return fmt.Errorf("parse %s: %w", claudeJSONPath, err)
-			}
+	// Locked and verified: parallel callers on one account must not lose
+	// each other's entries (SWFB1018).
+	return updateClaudeJSONLocked(claudeJSONPath, func(cfg map[string]any) {
+		projects, _ := cfg["projects"].(map[string]any)
+		if projects == nil {
+			projects = map[string]any{}
 		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read %s: %w", claudeJSONPath, err)
-	}
-
-	projects, _ := cfg["projects"].(map[string]any)
-	if projects == nil {
-		projects = map[string]any{}
-	}
-	entry, _ := projects[parentDir].(map[string]any)
-	if entry == nil {
-		entry = map[string]any{}
-	}
-	entry["hasTrustDialogAccepted"] = true
-	projects[parentDir] = entry
-	cfg["projects"] = projects
-
-	if err := os.MkdirAll(filepath.Dir(claudeJSONPath), 0o755); err != nil {
-		return fmt.Errorf("mkdir parent of %s: %w", claudeJSONPath, err)
-	}
-
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal claude config: %w", err)
-	}
-	if err := atomicfile.WriteFile(claudeJSONPath, out, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", claudeJSONPath, err)
-	}
-	return nil
+		entry, _ := projects[parentDir].(map[string]any)
+		if entry == nil {
+			entry = map[string]any{}
+		}
+		entry["hasTrustDialogAccepted"] = true
+		projects[parentDir] = entry
+		cfg["projects"] = projects
+	})
 }
 
 // WriteMultiRepoParentClaudeMD writes a .claude/CLAUDE.md to parentDir telling
