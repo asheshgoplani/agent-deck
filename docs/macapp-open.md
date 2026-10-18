@@ -107,7 +107,7 @@ use to detect the capability.
 
 The app acts on a `macapp.open` frame only when it came from the log of the
 host and profile it follows and its `session_id` is a session that host
-reported. It deduplicates by `event_id`, displays the page,
+reported. It deduplicates by `event_id` and `request_id`, displays the page,
 and only then publishes `macapp.open.ack` on that same host and profile. It
 never acts on a frame that names a session of another host. The full list is
 in docs/events.md, "Mac app checks".
