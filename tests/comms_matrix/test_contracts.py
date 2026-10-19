@@ -165,6 +165,8 @@ class DriverReadDeadlineTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 10, 'the read must give up at its deadline')
         self.assertNotIsInstance(caught.exception, json.JSONDecodeError)
         self.assertIn('driver diagnostics', str(caught.exception), 'the driver stderr must be in the failure')
+        self.assertIn('silent for 0.5s', str(caught.exception))
+        self.assertNotIn('exited', str(caught.exception))
         self.assertIsNotNone(process.returncode, 'the silent driver must be killed and reaped, not left running')
 
     def test_eof_raises_with_driver_stderr_not_a_bare_decode_error(self):
@@ -173,6 +175,18 @@ class DriverReadDeadlineTests(unittest.TestCase):
             read_json_line(process, 5)
         self.assertNotIsInstance(caught.exception, json.JSONDecodeError)
         self.assertIn('exited early', str(caught.exception))
+        self.assertIn('pi driver exited before', str(caught.exception))
+
+    def test_a_blank_line_from_a_live_driver_is_not_called_exited_or_silent(self):
+        process = self.spawn('import sys, time; sys.stderr.write("still alive\\n"); sys.stderr.flush(); print(flush=True); time.sleep(60)')
+        with self.assertRaises(Exception) as caught:
+            read_json_line(process, 5)
+        message = str(caught.exception)
+        self.assertIn('pi driver sent a blank line before', message)
+        self.assertNotIn('exited', message)
+        self.assertNotIn('silent', message)
+        self.assertIn('still alive', message)
+        self.assertIsNotNone(process.returncode, 'the driver must be killed and reaped')
 
     def test_a_line_that_arrives_in_time_is_returned_parsed(self):
         process = self.spawn('import sys, time; print(\'{"paused": true}\', flush=True); time.sleep(60)')
