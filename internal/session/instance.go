@@ -654,6 +654,7 @@ type Instance struct {
 	claudeSupersededIDs         map[string]struct{}
 	hookLastUpdate              time.Time // When hook status was last received
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
+	skipRecoveryTurn            bool      // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
 	codexStartedSessionID       string

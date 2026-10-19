@@ -810,11 +810,39 @@ auto_refresh_idle_builds = true   # default; false opts out
 
 [profiles.work.sessions]
 auto_refresh_idle_builds = false  # per-profile override (wins over [sessions])
+
+[conductors.ops.sessions]
+auto_refresh_idle_builds = true   # conductors only take part when opted in
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `auto_refresh_idle_builds` | bool | `true` | When the binary a session's tool command resolves to (symlinks followed) was installed after the session last started, the notify daemon restarts the session with `agent-deck session restart`, which resumes its conversation. Only a `claude` or `codex` session that is idle at an empty prompt qualifies: status waiting or idle, no open question or menu, no background work, an empty composer, no client attached, no auth hold, and a conversation id to resume. It must stay that way for 5 minutes (10 minutes for a conductor). One session restarts at a time per profile, 30 s apart; each session gets at most one attempt per build (remembered in `<data dir>/runtime/idle-build-refresh.json`), and every attempt writes one JSON line to `<data dir>/logs/idle-build-refresh.log`. A command that is not a plain executable (an alias, a wrapper with env assignments) is never refreshed. Stays off under `go test`, with `CI` truthy, `AGENTDECK_SKIP_UPDATE_CHECK` set or any `AGENTDECK_TEST_*` marker, like the other automatic update paths. |
+| `auto_refresh_idle_builds` | bool | `true` (conductors: `false`) | A session is on an older build when the binary its tool command resolves to (symlinks followed) was installed after the session last started. The notify daemon then restarts it with `agent-deck session restart --if-idle`, which resumes its conversation. See below for which sessions qualify. Set it to `false` in `[sessions]` or `[profiles.<name>.sessions]` to opt out. Conductors are excluded unless `[conductors.<name>.sessions]` sets it to `true`. |
+
+**Which sessions qualify.** Only a local `claude` or `codex` session that is idle at an empty prompt:
+- status waiting or idle
+- no open question, menu or dialog
+- no background work (workflows, agents, shells, monitors, Codex background terminals)
+- an empty composer
+- no client attached
+- no auth hold
+- a conversation id to resume
+- no in-Claude timer a restart would cancel: a `CronCreate` with no later `CronDelete`, a `ScheduleWakeup` that has not fired yet, or a `Monitor` that is persistent or still within its timeout. These are read from the transcript; an unreadable transcript counts as a timer.
+
+The session must stay like that for 5 minutes. An opted-in conductor must stay like that for 10 minutes, and its restart sends no recovery turn.
+
+**Never refreshed:**
+- SSH, sandbox and wrapper sessions, whose binary is not the local one. Detecting a newer build on the remote or in the container is not implemented.
+- A Codex session whose status the daemon did not probe itself on that pass. While a TUI is open the TUI owns the status, so nothing knows the Codex session's background state.
+- A command that is not a plain executable, such as an alias or `FOO=1 claude`.
+
+**Limits.**
+- `--if-idle` re-checks the session under the send lock right before the restart. A session that became busy is skipped and tried again after a fresh dwell.
+- One session restarts at a time per profile, at least 30 s apart.
+- Each session gets at most one attempt per build. A build is identified by path, inode, size and mtime, so a chmod is not a new build. Attempts are kept in `<data dir>/runtime/idle-build-refresh.json`.
+- Two failed restarts in a row (for example, a broken login) stop refreshes in that profile for the rest of the day, and that is logged too.
+- Every attempt writes one JSON line to `<data dir>/logs/idle-build-refresh.log`.
+- The pass stays off under `go test`, when `CI` is truthy, when `AGENTDECK_SKIP_UPDATE_CHECK` is set, or when any `AGENTDECK_TEST_*` marker is present, like the other automatic update paths.
 
 ## [interval_hooks.*] Section
 

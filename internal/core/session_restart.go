@@ -10,6 +10,10 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// ifIdleSendLockWait bounds how long restart --if-idle waits for a send in
+// progress before it skips.
+var ifIdleSendLockWait = 10 * time.Second
+
 // SessionRestartIn is the input of session.restart.
 type SessionRestartIn struct {
 	Profile string            `json:"profile" doc:"Profile whose store holds the session"`
@@ -17,6 +21,7 @@ type SessionRestartIn struct {
 	All     bool              `json:"all,omitempty" doc:"Restart every active session"`
 	Force   bool              `json:"force,omitempty" doc:"Restart even if the session is healthy and fresh"`
 	Env     map[string]string `json:"env,omitempty" doc:"Environment variables for the restarted process"`
+	IfIdle  bool              `json:"if_idle,omitempty" doc:"Restart only if the session is still idle at an empty prompt, checked under the send lock"`
 }
 
 // SessionRestartOut is the output of session.restart. A single restart fills
@@ -86,6 +91,23 @@ func (deps Deps) sessionRestart(ctx context.Context, in SessionRestartIn) (Sessi
 		out.Skipped = true
 		out.Reason = reason
 		return out, nil
+	}
+
+	// IfIdle (the idle build refresh): hold the send lock from the last idle
+	// check through the restart and save, so a send or wake in between is
+	// either seen by the check or delivered to the new process, never lost.
+	if in.IfIdle {
+		lock, err := session.AcquireSendLock(inst.ID, ifIdleSendLockWait)
+		if err != nil {
+			out.Skipped, out.Reason = true, "a send is in progress"
+			return out, nil
+		}
+		defer lock.Release()
+		if blocker := inst.IdleRefreshRecheck(); blocker != "" {
+			out.Skipped, out.Reason = true, "not idle: "+blocker
+			return out, nil
+		}
+		inst.SkipConductorRecoveryTurn()
 	}
 
 	if err := inst.RestartWithEnv(in.Env); err != nil {

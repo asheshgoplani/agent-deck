@@ -912,6 +912,7 @@ func handleSessionRestart(profile string, args []string) {
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	force := fs.Bool("force", false, "Restart even if the session is already healthy and fresh (bypasses issue #30 guard)")
 	all := fs.Bool("all", false, "Restart all active sessions")
+	ifIdle := fs.Bool("if-idle", false, "Restart only if the session is idle at an empty prompt, checked under the send lock (skipped otherwise); a conductor gets no recovery turn")
 	envFlags := make(envVarFlags)
 	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
 
@@ -996,6 +997,29 @@ func handleSessionRestart(profile string, args []string) {
 		out.Success(fmt.Sprintf("Skipped restart of %s: %s", inst.Title, reason), data)
 		markCLINoop()
 		return
+	}
+
+	// --if-idle (the idle build refresh): hold the send lock from the last
+	// idle check through the restart, so a send or wake in between is either
+	// seen by the check or delivered to the new process, never lost.
+	if *ifIdle {
+		reason := ""
+		lock, lockErr := session.AcquireSendLock(inst.ID, 10*time.Second)
+		if lockErr != nil {
+			reason = "a send is in progress"
+		} else {
+			defer lock.Release()
+			if blocker := inst.IdleRefreshRecheck(); blocker != "" {
+				reason = "not idle: " + blocker
+			}
+		}
+		if reason != "" {
+			data := map[string]interface{}{"success": true, "skipped": true, "reason": reason, "id": inst.ID, "title": inst.Title}
+			out.Success(fmt.Sprintf("Skipped restart of %s: %s", inst.Title, reason), data)
+			markCLINoop()
+			return
+		}
+		inst.SkipConductorRecoveryTurn()
 	}
 
 	// Restart the session

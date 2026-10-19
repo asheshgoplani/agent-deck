@@ -1,10 +1,11 @@
 package session
 
 import (
-	"context"
+	"bufio"
+	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,9 +25,19 @@ import (
 //
 // "Genuinely idle" is deliberately narrow. A session is left alone while it is
 // running, sits at a question or menu, has background work in flight, holds an
-// unsent composer draft, has a client attached, carries an auth hold, or has
-// no conversation id to resume. A conductor must also have been idle for
-// idleRefreshConductorDwell, any other session for idleRefreshDwell.
+// unsent composer draft, has a client attached, carries an auth hold, has no
+// conversation id to resume, or has an in-Claude timer (cron, scheduled
+// wake-up, Monitor) a restart would cancel. SSH, sandbox and wrapper sessions
+// do not run the local binary and are never refreshed. A conductor takes part
+// only when opted in ([conductors.<name>.sessions]), and only after
+// idleRefreshConductorDwell; any other session after idleRefreshDwell. A Codex
+// session takes part only on a pass where the daemon probed its status itself,
+// since nothing else knows its background state.
+//
+// The `session restart --if-idle` it runs takes the send lock, recaptures the
+// pane and refuses unless the session is still idle with an empty prompt, so a
+// message or keystroke in the gap is never lost. Two failed restarts in a row
+// in a profile trip a breaker for the rest of the day.
 //
 // A build is "newer" when the file the tool command resolves to was installed
 // (its ctime: installers create the file, and npm tarballs pin mtime to 1985)
@@ -64,6 +75,7 @@ var (
 	resolveToolBuild      = defaultResolveToolBuild
 	idleRefreshPane       = defaultIdleRefreshPane
 	restartForIdleRefresh = defaultRestartForIdleRefresh
+	idleRefreshTimers     = defaultIdleRefreshTimers
 	idleRefreshSuppressed = update.AutoUpdateSuppressed
 	idleRefreshNow        = time.Now
 )
@@ -73,6 +85,10 @@ var (
 type idleRefreshCandidate struct {
 	Tool            string
 	Status          string
+	NotLocal        bool // SSH, sandbox or wrapper: not the local binary
+	Conductor       bool
+	ConductorOptIn  bool
+	Probed          bool // the daemon refreshed this status itself this pass
 	AuthHeld        bool
 	HasConversation bool
 	LastStartedAt   time.Time
@@ -89,6 +105,12 @@ func idleRefreshCheapBlocker(c idleRefreshCandidate) string {
 		return "tool"
 	case c.Status != string(StatusWaiting) && c.Status != string(StatusIdle):
 		return "status " + c.Status
+	case c.NotLocal:
+		return "not a local session"
+	case c.Conductor && !c.ConductorOptIn:
+		return "conductor not opted in"
+	case c.Tool == "codex" && !c.Probed:
+		return "codex background state unknown"
 	case c.AuthHeld:
 		return "auth_hold"
 	case !c.HasConversation:
@@ -135,6 +157,9 @@ func idleRefreshPaneBlocker(tool string, v idleRefreshPaneView) string {
 		if v.Substate != SubstateNone {
 			return "substate " + string(v.Substate)
 		}
+		if strings.Contains(strings.ToLower(tailOf(tmux.StripANSI(v.Raw), 15)), "background terminal") {
+			return "background work"
+		}
 		draft, visible = send.CodexComposerDraft(v.Raw, tmux.StripANSI)
 	} else {
 		if v.Substate != SubstateIdleAtEmptyPrompt {
@@ -170,6 +195,8 @@ type idleRefreshState struct {
 	lastRestart map[string]time.Time // profile -> last refresh restart
 	inFlight    map[string]bool      // profile -> restart running
 	tried       map[string]string    // profile|id -> build key
+	failures    map[string]int       // profile -> consecutive failed restarts
+	tripped     map[string]string    // profile -> day the breaker tripped
 	triedLoaded bool
 	wg          sync.WaitGroup
 }
@@ -181,13 +208,25 @@ func newIdleRefreshState() *idleRefreshState {
 		lastRestart: map[string]time.Time{},
 		inFlight:    map[string]bool{},
 		tried:       map[string]string{},
+		failures:    map[string]int{},
+		tripped:     map[string]string{},
 	}
 }
 
+// idleRefreshBreakerAfter consecutive failed restarts (a login that broke, a
+// pane that dies on boot) stop the profile's refreshes for the day.
+const idleRefreshBreakerAfter = 2
+
+func idleRefreshDay(t time.Time) string { return t.Local().Format("2006-01-02") }
+
 // runIdleBuildRefreshPass restarts at most one idle, stale-build session of
 // profile onto its tool's installed build. The restart runs off the poll loop.
-func (d *TransitionDaemon) runIdleBuildRefreshPass(profile string, instances []*Instance, statuses map[string]string) {
-	if cfg, err := LoadUserConfig(); err != nil || !cfg.AutoRefreshIdleBuildsEnabled(profile) {
+//
+// probed holds the instances whose status this pass refreshed itself (no live
+// TUI); only those have a known Codex background state.
+func (d *TransitionDaemon) runIdleBuildRefreshPass(profile string, instances []*Instance, statuses map[string]string, probed map[string]string) {
+	cfg, err := LoadUserConfig()
+	if err != nil || !cfg.AutoRefreshIdleBuildsEnabled(profile) {
 		return // an unreadable config must not override an opt-out
 	}
 	if idleRefreshSuppressed() != "" {
@@ -201,6 +240,9 @@ func (d *TransitionDaemon) runIdleBuildRefreshPass(profile string, instances []*
 	defer st.mu.Unlock()
 	st.loadTried()
 	now := idleRefreshNow()
+	if st.tripped[profile] == idleRefreshDay(now) {
+		return
+	}
 	// The gate below still runs while a restart is in flight or spaced, so
 	// activity in the meantime resets every other session's dwell.
 	held := st.inFlight[profile] || now.Sub(st.lastRestart[profile]) < idleRefreshSpacing
@@ -210,9 +252,13 @@ func (d *TransitionDaemon) runIdleBuildRefreshPass(profile string, instances []*
 			continue
 		}
 		k := profile + "|" + inst.ID
+		_, wasProbed := probed[inst.ID]
 		c := idleRefreshCandidate{
 			Tool:            inst.Tool,
 			Status:          statuses[inst.ID],
+			NotLocal:        inst.SSHHost != "" || inst.IsSandboxed() || strings.TrimSpace(inst.Wrapper) != "",
+			Conductor:       inst.IsConductor,
+			Probed:          wasProbed,
 			HasConversation: idleRefreshConversationID(inst) != "",
 			LastStartedAt:   inst.LastStartedAt,
 		}
@@ -225,6 +271,10 @@ func (d *TransitionDaemon) runIdleBuildRefreshPass(profile string, instances []*
 			}
 			c.Build, c.BuildKnown = b, b.Path != ""
 			c.AlreadyTried = c.BuildKnown && st.tried[k] == b.key()
+		}
+		if name := inst.ResolveConductorName(); name != "" {
+			c.Conductor = true
+			c.ConductorOptIn = cfg.ConductorAutoRefreshIdleBuilds(name)
 		}
 		if idleRefreshCheapBlocker(c) == "" {
 			// A file read per session, so only once the rest says stale.
@@ -249,11 +299,18 @@ func (d *TransitionDaemon) runIdleBuildRefreshPass(profile string, instances []*
 			st.idleSince[k] = now
 			continue
 		}
-		if held || now.Sub(since) < idleRefreshDwellFor(inst.IsConductor || inst.ResolveConductorName() != "") {
+		if held || now.Sub(since) < idleRefreshDwellFor(c.Conductor) {
 			continue
 		}
 		delete(st.idleSince, k)
 		delete(st.lastCheck, k)
+		if inst.Tool == "claude" {
+			// Read once the dwell is over, not every poll: the transcript is
+			// the only record of a timer the pane does not show.
+			if timer := idleRefreshTimers(inst, now); timer != "" {
+				continue // the next dwell looks again
+			}
+		}
 		st.tried[k] = c.Build.key()
 		st.saveTried()
 		st.inFlight[profile] = true
@@ -269,9 +326,27 @@ func (d *TransitionDaemon) idleRefreshRestart(profile, id, title, tool string, b
 	skipped, err := restartForIdleRefresh(profile, id)
 	appendIdleRefreshLog(profile, id, title, tool, b, idle, skipped, err)
 	st.mu.Lock()
+	defer st.mu.Unlock()
+	now := idleRefreshNow()
 	st.inFlight[profile] = false
-	st.lastRestart[profile] = idleRefreshNow()
-	st.mu.Unlock()
+	st.lastRestart[profile] = now
+	switch {
+	case err != nil:
+		st.failures[profile]++
+		if st.failures[profile] >= idleRefreshBreakerAfter {
+			st.tripped[profile] = idleRefreshDay(now)
+			st.saveTried()
+			appendIdleRefreshLog(profile, "", "", "", toolBuild{}, 0, false,
+				fmt.Errorf("breaker: %d failed restarts in a row, no more refreshes in this profile today", st.failures[profile]))
+		}
+	case skipped:
+		// Refused (no longer idle, or just restarted): not this build's one
+		// attempt, so a later dwell may try again.
+		delete(st.tried, profile+"|"+id)
+		st.saveTried()
+	default:
+		st.failures[profile] = 0
+	}
 }
 
 func idleRefreshConversationID(inst *Instance) string {
@@ -368,16 +443,25 @@ func defaultRestartForIdleRefresh(profile, id string) (skipped bool, err error) 
 	if bin == "" {
 		return false, fmt.Errorf("agent-deck binary not found")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), idleRefreshTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "-p", profile, "session", "restart", "--json", id)
+	cmd := exec.Command(bin, "-p", profile, "session", "restart", "--json", "--if-idle", id)
 	detachIdleRefreshChild(cmd)
-	out, err := cmd.Output()
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		return false, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err = <-done:
+	case <-time.After(idleRefreshTimeout):
+		// Never killed: a restart cut between respawn and save would leave
+		// the session unsaved. The goroutine reaps it when it finishes.
+		return false, fmt.Errorf("session restart still running after %s", idleRefreshTimeout)
+	}
+	out := []byte(stdout.String())
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			out = append(out, exitErr.Stderr...)
-		}
+		out = append(out, stderr.String()...)
 		return false, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	var res struct {
@@ -424,8 +508,14 @@ func idleRefreshTriedPath() (string, error) {
 	return runtimeDataPath("idle-build-refresh.json")
 }
 
-// loadTried reads the persisted attempts once per daemon process. Caller
-// holds st.mu.
+// idleRefreshPersisted is runtime/idle-build-refresh.json.
+type idleRefreshPersisted struct {
+	Tried   map[string]string `json:"tried"`
+	Tripped map[string]string `json:"breaker_tripped,omitempty"`
+}
+
+// loadTried reads the persisted attempts and breaker trips once per daemon
+// process. Caller holds st.mu.
 func (st *idleRefreshState) loadTried() {
 	if st.triedLoaded {
 		return
@@ -439,19 +529,25 @@ func (st *idleRefreshState) loadTried() {
 	if err != nil {
 		return
 	}
-	_ = json.Unmarshal(data, &st.tried)
-	if st.tried == nil {
-		st.tried = map[string]string{}
+	var p idleRefreshPersisted
+	if json.Unmarshal(data, &p) != nil {
+		return
+	}
+	for k, v := range p.Tried {
+		st.tried[k] = v
+	}
+	for k, v := range p.Tripped {
+		st.tripped[k] = v
 	}
 }
 
-// saveTried persists the attempts. Caller holds st.mu.
+// saveTried persists the attempts and breaker trips. Caller holds st.mu.
 func (st *idleRefreshState) saveTried() {
 	path, err := idleRefreshTriedPath()
 	if err != nil {
 		return
 	}
-	data, err := json.Marshal(st.tried)
+	data, err := json.Marshal(idleRefreshPersisted{Tried: st.tried, Tripped: st.tripped})
 	if err != nil {
 		return
 	}
@@ -463,4 +559,136 @@ func (st *idleRefreshState) saveTried() {
 		return
 	}
 	_ = os.Rename(tmp, path)
+}
+
+func tailOf(content string, n int) string {
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// defaultIdleRefreshTimers reports an in-Claude timer a restart would cancel,
+// or "". A transcript that cannot be read counts as one: unknown is not idle.
+func defaultIdleRefreshTimers(inst *Instance, now time.Time) string {
+	path := inst.GetJSONLPath()
+	if path == "" {
+		return "transcript unknown"
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "transcript unreadable"
+	}
+	defer f.Close()
+	return transcriptTimers(f, now)
+}
+
+// transcriptTimers scans a Claude transcript for timers still armed at now:
+// a CronCreate without a later CronDelete (counted, not matched by id, so it
+// errs towards "armed"), a ScheduleWakeup whose delay has not run out, or a
+// Monitor that is persistent or within its timeout.
+func transcriptTimers(r io.Reader, now time.Time) string {
+	names := [][]byte{[]byte(`"CronCreate"`), []byte(`"CronDelete"`), []byte(`"ScheduleWakeup"`), []byte(`"Monitor"`)}
+	crons := 0
+	var wakeUntil, monitorUntil time.Time
+	persistentMonitor := false
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		hit := false
+		for _, n := range names {
+			if bytes.Contains(line, n) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			continue
+		}
+		var rec struct {
+			Timestamp time.Time `json:"timestamp"`
+			Message   struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &rec) != nil {
+			continue
+		}
+		var blocks []struct {
+			Type  string `json:"type"`
+			Name  string `json:"name"`
+			Input struct {
+				DelaySeconds float64 `json:"delaySeconds"`
+				TimeoutMS    float64 `json:"timeout_ms"`
+				Persistent   bool    `json:"persistent"`
+			} `json:"input"`
+		}
+		if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type != "tool_use" {
+				continue
+			}
+			switch b.Name {
+			case "CronCreate":
+				crons++
+			case "CronDelete":
+				if crons > 0 {
+					crons--
+				}
+			case "ScheduleWakeup":
+				delay := time.Duration(b.Input.DelaySeconds) * time.Second
+				if delay <= 0 || delay > time.Hour {
+					delay = time.Hour
+				}
+				wakeUntil = rec.Timestamp.Add(delay)
+			case "Monitor":
+				if b.Input.Persistent {
+					persistentMonitor = true
+				}
+				timeout := time.Duration(b.Input.TimeoutMS) * time.Millisecond
+				if timeout <= 0 || timeout > time.Hour {
+					timeout = time.Hour
+				}
+				if until := rec.Timestamp.Add(timeout); until.After(monitorUntil) {
+					monitorUntil = until
+				}
+			}
+		}
+	}
+	switch {
+	case sc.Err() != nil:
+		return "transcript unreadable"
+	case crons > 0:
+		return "cron"
+	case wakeUntil.After(now):
+		return "scheduled wake-up"
+	case persistentMonitor || monitorUntil.After(now):
+		return "monitor"
+	}
+	return ""
+}
+
+// SkipConductorRecoveryTurn makes this process's next spawn of a conductor
+// send no recovery turn: an idle build refresh resumes the conversation as it
+// was, with nothing new to recover from.
+func (i *Instance) SkipConductorRecoveryTurn() { i.skipRecoveryTurn = true }
+
+// IdleRefreshRecheck is the last idle check of `session restart --if-idle`,
+// run under the send lock right before the restart: "" when the session is
+// still idle at an empty prompt, else why not.
+func (i *Instance) IdleRefreshRecheck() string {
+	switch st := i.GetStatusThreadSafe(); st {
+	case StatusWaiting, StatusIdle:
+	default:
+		return "status " + string(st)
+	}
+	view, err := defaultIdleRefreshPane(i)
+	if err != nil {
+		return err.Error()
+	}
+	return idleRefreshPaneBlocker(i.Tool, view)
 }

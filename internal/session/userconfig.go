@@ -1231,6 +1231,18 @@ type SessionsSettings struct {
 	AutoRefreshIdleBuilds *bool `toml:"auto_refresh_idle_builds,omitempty"`
 }
 
+// ConductorAutoRefreshIdleBuilds reports whether conductor name opted into
+// idle build refresh ([conductors.<name>.sessions] auto_refresh_idle_builds =
+// true). Default false: a restart cancels a conductor's in-Claude timers and
+// sends it a recovery turn.
+func (c *UserConfig) ConductorAutoRefreshIdleBuilds(name string) bool {
+	if c == nil || name == "" {
+		return false
+	}
+	v := c.Conductors[name].Sessions.AutoRefreshIdleBuilds
+	return v != nil && *v
+}
+
 // AutoRefreshIdleBuildsEnabled reports whether idle sessions of profile move
 // onto newer tool builds by themselves: [profiles.<profile>.sessions] first,
 // then [sessions], default true.
@@ -1391,6 +1403,9 @@ type ConductorOverrides struct {
 	DeepSeek ConductorDeepSeekSettings `toml:"deepseek,omitempty"`
 	// Inbox overrides [inbox] for this conductor (issue #2469).
 	Inbox *InboxConfig `toml:"inbox,omitempty"`
+	// Sessions opts this conductor into [sessions] auto_refresh_idle_builds,
+	// which skips conductors unless this says true.
+	Sessions SessionsSettings `toml:"sessions,omitempty"`
 }
 
 // ConductorDeepSeekSettings defines conductor-specific DeepSeek Harness

@@ -19,6 +19,10 @@
       "description": "Restart even if the session is healthy and fresh",
       "type": "boolean"
     },
+    "if_idle": {
+      "description": "Restart only if the session is still idle at an empty prompt, checked under the send lock",
+      "type": "boolean"
+    },
     "profile": {
       "description": "Profile whose store holds the session",
       "type": "string"

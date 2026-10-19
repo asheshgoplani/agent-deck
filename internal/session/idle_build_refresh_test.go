@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,9 @@ type idleRefreshHarness struct {
 	mu       sync.Mutex
 	restarts []string
 	skip     bool
+	fail     bool
+	timers   map[string]string
+	unprobed map[string]bool
 	d        *TransitionDaemon
 }
 
@@ -44,22 +48,28 @@ func newIdleRefreshHarness(t *testing.T, toml string) *idleRefreshHarness {
 	withTempAgentDeckHome(t, toml)
 	start := time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
 	h := &idleRefreshHarness{
-		t:     t,
-		now:   start,
-		build: toolBuild{Path: "/opt/claude/versions/2.9.1", InstalledAt: start.Add(-time.Hour)},
-		panes: map[string]idleRefreshPaneView{},
-		d:     &TransitionDaemon{},
+		t:        t,
+		now:      start,
+		build:    toolBuild{Path: "/opt/claude/versions/2.9.1", InstalledAt: start.Add(-time.Hour)},
+		panes:    map[string]idleRefreshPaneView{},
+		timers:   map[string]string{},
+		unprobed: map[string]bool{},
+		d:        &TransitionDaemon{},
 	}
-	origResolve, origPane, origRestart, origSupp, origNow := resolveToolBuild, idleRefreshPane, restartForIdleRefresh, idleRefreshSuppressed, idleRefreshNow
+	origResolve, origPane, origRestart, origSupp, origNow, origTimers := resolveToolBuild, idleRefreshPane, restartForIdleRefresh, idleRefreshSuppressed, idleRefreshNow, idleRefreshTimers
 	t.Cleanup(func() {
-		resolveToolBuild, idleRefreshPane, restartForIdleRefresh, idleRefreshSuppressed, idleRefreshNow = origResolve, origPane, origRestart, origSupp, origNow
+		resolveToolBuild, idleRefreshPane, restartForIdleRefresh, idleRefreshSuppressed, idleRefreshNow, idleRefreshTimers = origResolve, origPane, origRestart, origSupp, origNow, origTimers
 	})
+	idleRefreshTimers = func(inst *Instance, _ time.Time) string { return h.timers[inst.ID] }
 	resolveToolBuild = func(string) (toolBuild, bool) { return h.build, true }
 	idleRefreshPane = func(inst *Instance) (idleRefreshPaneView, error) { return h.panes[inst.ID], nil }
 	restartForIdleRefresh = func(profile, id string) (bool, error) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.restarts = append(h.restarts, profile+"/"+id)
+		if h.fail {
+			return false, errors.New("exit status 1: pane died on boot")
+		}
 		return h.skip, nil
 	}
 	idleRefreshSuppressed = func() string { return "" }
@@ -76,7 +86,13 @@ func (h *idleRefreshHarness) run(profile string, d time.Duration, insts []*Insta
 func (h *idleRefreshHarness) runEvery(step time.Duration, profile string, d time.Duration, insts []*Instance, statuses map[string]string) []string {
 	h.t.Helper()
 	for end := h.now.Add(d); !h.now.After(end); h.now = h.now.Add(step) {
-		h.d.runIdleBuildRefreshPass(profile, insts, statuses)
+		probed := map[string]string{}
+		for id := range statuses {
+			if !h.unprobed[id] {
+				probed[id] = ""
+			}
+		}
+		h.d.runIdleBuildRefreshPass(profile, insts, statuses, probed)
 		if h.d.idleRefresh != nil {
 			h.d.idleRefresh.wg.Wait()
 		}
@@ -175,18 +191,28 @@ func TestIdleBuildRefresh_NeverRestartsBusyOrHeldSessions(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, idlePane(idleClaudeComposer)},
+		{"ssh session", "waiting", func(i *Instance) { i.SSHHost = "box" }, idlePane(idleClaudeComposer)},
+		{"sandbox session", "waiting", func(i *Instance) { i.Sandbox = &SandboxConfig{Enabled: true, Image: "img"} }, idlePane(idleClaudeComposer)},
+		{"wrapper session", "waiting", func(i *Instance) { i.Wrapper = "nice {command}" }, idlePane(idleClaudeComposer)},
+		{"conductor not opted in", "waiting", func(i *Instance) { i.IsConductor, i.ConductorName = true, "cond" }, idlePane(idleClaudeComposer)},
+		{"in-Claude timer", "waiting", func(i *Instance) { i.ID = "timer" }, idlePane(idleClaudeComposer)},
+		{"codex background terminal", "waiting", func(i *Instance) { i.Tool, i.CodexSessionID = "codex", "thread-1" },
+			idleRefreshPaneView{Raw: strings.Replace(idleCodexComposer, "Context 70% left", "Context 70% left · 1 background terminal running", 1)}},
+		{"codex unprobed", "waiting", func(i *Instance) { i.ID, i.Tool, i.CodexSessionID = "unprobed", "codex", "thread-1" }, idleRefreshPaneView{Raw: idleCodexComposer}},
 		{"codex draft", "waiting", func(i *Instance) { i.Tool, i.CodexSessionID = "codex", "thread-1" }, idleRefreshPaneView{Raw: draftCodexComposer}},
 		{"codex usage limit", "waiting", func(i *Instance) { i.Tool, i.CodexSessionID = "codex", "thread-1" }, idleRefreshPaneView{Substate: SubstateUsageLimit, Raw: idleCodexComposer}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newIdleRefreshHarness(t, "")
+			h.timers["timer"] = "scheduled wake-up"
+			h.unprobed["unprobed"] = true
 			inst := idleClaude("s1", h.now.Add(-48*time.Hour))
 			if tc.mutate != nil {
 				tc.mutate(inst)
 			}
-			h.panes["s1"] = tc.pane
-			if got := h.run("p", time.Hour, []*Instance{inst}, map[string]string{"s1": tc.status}); len(got) != 0 {
+			h.panes[inst.ID] = tc.pane
+			if got := h.run("p", time.Hour, []*Instance{inst}, map[string]string{inst.ID: tc.status}); len(got) != 0 {
 				t.Fatalf("restarted a %s session: %v", tc.name, got)
 			}
 		})
@@ -202,10 +228,10 @@ func TestIdleBuildRefresh_RestartsIdleCodex(t *testing.T) {
 	}
 }
 
-func TestIdleBuildRefresh_ConductorWaitsTenMinutes(t *testing.T) {
-	h := newIdleRefreshHarness(t, "")
+func TestIdleBuildRefresh_OptedInConductorWaitsTenMinutes(t *testing.T) {
+	h := newIdleRefreshHarness(t, "[conductors.cond.sessions]\nauto_refresh_idle_builds = true\n")
 	inst := idleClaude("cond", h.now.Add(-72*time.Hour))
-	inst.IsConductor = true
+	inst.IsConductor, inst.ConductorName = true, "cond"
 	h.panes["cond"] = idlePane(idleClaudeComposer)
 	insts, statuses := []*Instance{inst}, map[string]string{"cond": "waiting"}
 	if got := h.run("p", idleRefreshConductorDwell-time.Minute, insts, statuses); len(got) != 0 {
@@ -354,5 +380,114 @@ func TestResolveToolBuild_FollowsSymlinkToInstalledFile(t *testing.T) {
 		if _, ok := defaultResolveToolBuild(cmd); ok {
 			t.Fatalf("%q must resolve to an unknown build", cmd)
 		}
+	}
+}
+
+// Conductor ruling (4): two failed restarts in a row stop the profile for the
+// day, across a daemon recycle; the next day it resumes.
+func TestIdleBuildRefresh_BreakerStopsAfterTwoFailures(t *testing.T) {
+	h := newIdleRefreshHarness(t, "")
+	h.fail = true
+	var insts []*Instance
+	statuses := map[string]string{}
+	for _, id := range []string{"a", "b", "c", "d"} {
+		insts = append(insts, idleClaude(id, h.now.Add(-48*time.Hour)))
+		h.panes[id] = idlePane(idleClaudeComposer)
+		statuses[id] = "waiting"
+	}
+	if got := h.run("p", time.Hour, insts, statuses); len(got) != 2 {
+		t.Fatalf("want the breaker to stop after 2 failed restarts, got %v", got)
+	}
+	h.d = &TransitionDaemon{}
+	if got := h.run("p", time.Hour, insts, statuses); len(got) != 2 {
+		t.Fatalf("a recycled daemon ignored today's breaker: %v", got)
+	}
+	data, _ := os.ReadFile(mustLogPath(t))
+	if !strings.Contains(string(data), "breaker") {
+		t.Fatalf("breaker trip not logged:\n%s", data)
+	}
+	h.fail = false
+	h.now = h.now.Add(24 * time.Hour)
+	if got := h.run("p", time.Hour, insts, statuses); len(got) != 4 {
+		t.Fatalf("the next day must resume with the untried sessions, got %v", got)
+	}
+}
+
+// A restart --if-idle refused (the session woke up) is not the build's one
+// attempt: a later dwell tries again.
+func TestIdleBuildRefresh_RefusedRestartIsRetried(t *testing.T) {
+	h := newIdleRefreshHarness(t, "")
+	h.skip = true
+	inst := idleClaude("s1", h.now.Add(-48*time.Hour))
+	h.panes["s1"] = idlePane(idleClaudeComposer)
+	insts, statuses := []*Instance{inst}, map[string]string{"s1": "waiting"}
+	if got := h.run("p", idleRefreshDwell+time.Minute, insts, statuses); len(got) != 1 {
+		t.Fatalf("want one attempt, got %v", got)
+	}
+	h.skip = false
+	if got := h.run("p", idleRefreshDwell+time.Minute, insts, statuses); len(got) != 2 {
+		t.Fatalf("a refused restart was not retried: %v", got)
+	}
+}
+
+func mustLogPath(t *testing.T) string {
+	t.Helper()
+	path, err := logDataPath("idle-build-refresh.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestTranscriptTimers(t *testing.T) {
+	now := time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
+	use := func(at time.Time, name, input string) string {
+		return `{"type":"assistant","timestamp":"` + at.Format(time.RFC3339) + `","message":{"content":[{"type":"tool_use","id":"t","name":"` + name + `","input":` + input + `}]}}`
+	}
+	text := `{"type":"user","timestamp":"` + now.Add(-time.Hour).Format(time.RFC3339) + `","message":{"content":"please call ScheduleWakeup and CronCreate"}}`
+	cases := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"none", []string{text}, ""},
+		{"cron armed", []string{use(now.Add(-48*time.Hour), "CronCreate", `{"cron":"*/5 * * * *"}`)}, "cron"},
+		{"cron deleted", []string{use(now.Add(-2*time.Hour), "CronCreate", `{}`), use(now.Add(-time.Hour), "CronDelete", `{"id":"x"}`)}, ""},
+		{"wake-up pending", []string{use(now.Add(-10*time.Minute), "ScheduleWakeup", `{"delaySeconds":1800}`)}, "scheduled wake-up"},
+		{"wake-up fired", []string{use(now.Add(-40*time.Minute), "ScheduleWakeup", `{"delaySeconds":1800}`)}, ""},
+		{"monitor live", []string{use(now.Add(-time.Minute), "Monitor", `{"timeout_ms":300000}`)}, "monitor"},
+		{"monitor expired", []string{use(now.Add(-time.Hour), "Monitor", `{"timeout_ms":300000}`)}, ""},
+		{"monitor persistent", []string{use(now.Add(-48*time.Hour), "Monitor", `{"persistent":true}`)}, "monitor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := transcriptTimers(strings.NewReader(strings.Join(tc.lines, "\n")+"\n"), now); got != tc.want {
+				t.Fatalf("transcriptTimers = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The --if-idle recheck refuses anything but an idle pane it can see.
+func TestIdleRefreshRecheck_RefusesBusyOrMissingPane(t *testing.T) {
+	inst := &Instance{ID: "s1", Tool: "claude", Status: StatusRunning}
+	if got := inst.IdleRefreshRecheck(); got != "status running" {
+		t.Fatalf("running session: recheck = %q", got)
+	}
+	inst.Status = StatusWaiting
+	if got := inst.IdleRefreshRecheck(); got == "" {
+		t.Fatal("a session without a pane passed the recheck")
+	}
+}
+
+// An --if-idle restart of a conductor sends no recovery turn.
+func TestSkipConductorRecoveryTurn(t *testing.T) {
+	inst := &Instance{ID: "cond", Tool: "claude", IsConductor: true}
+	if err := inst.wakeConductorAfterSpawn(); err == nil {
+		t.Fatal("control: a conductor without a pane must report the recovery as not sent")
+	}
+	inst.SkipConductorRecoveryTurn()
+	if err := inst.wakeConductorAfterSpawn(); err != nil {
+		t.Fatalf("skipped recovery turn still attempted: %v", err)
 	}
 }

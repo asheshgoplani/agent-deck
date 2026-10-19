@@ -276,6 +276,13 @@ agent-deck session restart my-project --env FOO=one --env BAR="two words"
 ```
 
 Supplying `--env` forces the requested restart past the recent-session guard.
+
+`--if-idle` restarts only a session that is still idle at an empty prompt. It
+takes the session's send lock, recaptures the pane, and otherwise reports
+`skipped` with a `not idle: <why>` reason (exit 0). The lock is held through
+the restart, so a send that arrives meanwhile goes to the new process instead
+of being lost. A conductor restarted this way gets no recovery turn. The idle
+build refresh (`[sessions] auto_refresh_idle_builds`) restarts with this flag.
 Use `--all --env KEY=VALUE` to inject the variable into every active session.
 Claude's existing protection that removes `TELEGRAM_*` variables from sessions
 that do not own a Telegram channel remains in effect.

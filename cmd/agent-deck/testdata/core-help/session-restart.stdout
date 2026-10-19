@@ -23,6 +23,8 @@ Options:
     	Environment variable in KEY=VALUE format for the restarted process (can be repeated)
   -force
     	Restart even if the session is already healthy and fresh (bypasses issue #30 guard)
+  -if-idle
+    	Restart only if the session is idle at an empty prompt, checked under the send lock (skipped otherwise); a conductor gets no recovery turn
   -json
     	Output as JSON
   -q	Minimal output (short)

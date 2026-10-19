@@ -54,6 +54,10 @@ func (i *Instance) wakeConductorAfterSpawn() error {
 	if !i.IsConductor {
 		return nil
 	}
+	if i.skipRecoveryTurn {
+		sessionLog.Info("conductor_recovery_skipped", slog.String("instance_id", i.ID), slog.String("reason", "idle build refresh"))
+		return nil
+	}
 	if !conductorRecoveryTurnEnabled() {
 		sessionLog.Info("conductor_recovery_disabled", slog.String("instance_id", i.ID))
 		return nil

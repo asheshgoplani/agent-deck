@@ -169,6 +169,41 @@ func TestSessionRestartSkipsFreshHealthySession(t *testing.T) {
 	}
 }
 
+// ASK-14: restart --if-idle refuses a session it cannot see idle, and one a
+// send holds, without restarting it.
+func TestSessionRestartIfIdleRefuses(t *testing.T) {
+	const profile = "_core_restart_ifidle"
+	inst := session.NewInstance("alpha", t.TempDir())
+	inst.Status = session.StatusRunning
+	started := time.Now().Add(-time.Hour).Truncate(time.Second)
+	inst.LastStartedAt = started
+	seedStore(t, profile, nil, inst)
+
+	out, res := Invoke[SessionRestartOut](context.Background(), testRegistry(t, Deps{}), IDSessionRestart, SessionRestartIn{Profile: profile, Session: "alpha", IfIdle: true})
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if !out.Skipped || out.Reason != "not idle: status running" {
+		t.Fatalf("out = %+v, want skipped: not idle", out)
+	}
+
+	lock, err := session.AcquireSendLock(inst.ID, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	orig := ifIdleSendLockWait
+	ifIdleSendLockWait = 100 * time.Millisecond
+	t.Cleanup(func() { ifIdleSendLockWait = orig })
+	out, res = Invoke[SessionRestartOut](context.Background(), testRegistry(t, Deps{}), IDSessionRestart, SessionRestartIn{Profile: profile, Session: "alpha", IfIdle: true})
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if !out.Skipped || out.Reason != "a send is in progress" {
+		t.Fatalf("out = %+v, want skipped while a send holds the lock", out)
+	}
+}
+
 func TestSessionListStaticRows(t *testing.T) {
 	const profile = "_core_list_static"
 	parent := session.NewInstanceWithGroup("parent", t.TempDir(), "work")
