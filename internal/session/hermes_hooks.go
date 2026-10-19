@@ -136,7 +136,7 @@ func GetHermesConfigDir() string {
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".hermes")
 	}
-	return filepath.Join(home, ".hermes")
+	return sandboxedToolDir("Hermes config dir", filepath.Join(home, ".hermes"))
 }
 
 // InjectHermesHooks injects agent-deck hook entries into Hermes's config.yaml.

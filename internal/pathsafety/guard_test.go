@@ -41,6 +41,9 @@ func runTestMain(m *testing.M) int {
 	// the user database, which IsolateHome does NOT touch).
 	cleanupHome := testutil.IsolateHome()
 	defer cleanupHome()
+	// The sandbox canary (sandbox_canary_test.go) also checks the tmux socket.
+	cleanupTmux := testutil.IsolateTmuxSocket()
+	defer cleanupTmux()
 	return m.Run()
 }
 

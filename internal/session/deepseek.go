@@ -263,6 +263,10 @@ func defaultDeepSeekHome() string {
 // This is the "no instance in hand" chain; per-instance resolution adds the
 // account/conductor/group levels on top (deepSeekHomeToExport).
 func getDeepSeekHomeDir() string {
+	return sandboxedToolDir("DeepSeek home", getDeepSeekHomeDirUnguarded())
+}
+
+func getDeepSeekHomeDirUnguarded() string {
 	if env := strings.TrimSpace(os.Getenv("DSH_HOME")); env != "" {
 		return ExpandPath(env)
 	}

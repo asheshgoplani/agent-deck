@@ -386,6 +386,11 @@ type resolveOpts struct {
 // group config_dir also beats env (#1508) so both chains agree that a
 // config.toml-scoped group override wins over a shell-wide CLAUDE_CONFIG_DIR.
 func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
+	path, source = resolveClaudeConfigDirUnguarded(opts)
+	return sandboxedToolDir("Claude config dir (source "+source+")", path), source
+}
+
+func resolveClaudeConfigDirUnguarded(opts resolveOpts) (path, source string) {
 	userConfig, _ := LoadUserConfig()
 
 	groupPath := opts.groupPath

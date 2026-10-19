@@ -15,13 +15,13 @@ import (
 // Respects COPILOT_CONFIG_DIR env var, falling back to ~/.copilot.
 func getCopilotHomeDir() string {
 	if dir := strings.TrimSpace(os.Getenv("COPILOT_CONFIG_DIR")); dir != "" {
-		return dir
+		return sandboxedToolDir("Copilot home", dir)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".copilot")
 	}
-	return filepath.Join(home, ".copilot")
+	return sandboxedToolDir("Copilot home", filepath.Join(home, ".copilot"))
 }
 
 // getCopilotSessionStateDir returns the session state directory.

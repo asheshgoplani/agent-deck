@@ -84,13 +84,13 @@ func GetOpenCodeConfigDir() string {
 		return opencodeMCPConfigDirOverride
 	}
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "opencode")
+		return sandboxedToolDir("OpenCode config dir", filepath.Join(dir, "opencode"))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "opencode")
+	return sandboxedToolDir("OpenCode config dir", filepath.Join(home, ".config", "opencode"))
 }
 
 // opencodeProjectMCPPath resolves <project>/opencode.json.

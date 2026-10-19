@@ -20,7 +20,7 @@ func GetCursorConfigDir() string {
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".cursor")
+	return sandboxedToolDir("Cursor config dir", filepath.Join(home, ".cursor"))
 }
 
 // cursorProjectMCPPath resolves <project>/.cursor/mcp.json from a session project directory.

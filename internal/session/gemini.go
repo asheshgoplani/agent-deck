@@ -24,7 +24,7 @@ func GetGeminiConfigDir() string {
 		return geminiConfigDirOverride
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".gemini")
+	return sandboxedToolDir("Gemini config dir", filepath.Join(home, ".gemini"))
 }
 
 // HashProjectPath generates SHA256 hash of absolute project path
