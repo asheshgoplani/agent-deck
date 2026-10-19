@@ -851,24 +851,30 @@ func TestMinimalMode_StartingCountsAsRunning(t *testing.T) {
 	assert.NotEqual(t, "", bar)
 }
 
-func TestNotificationManager_SkipsArchived(t *testing.T) {
+func TestNotificationManager_ShowAllSkipsArchivedAndDown(t *testing.T) {
 	instances := []*Instance{
-		{ID: "live", Title: "live", Status: StatusWaiting},
+		{ID: "live", Title: "live", Status: StatusIdle},
 		{ID: "archived-stopped", Title: "archived-stopped", Status: StatusStopped, ArchivedAt: testArchivedAt},
+		{ID: "archived-error", Title: "archived-error", Status: StatusError, ArchivedAt: testArchivedAt},
 		{ID: "archived-waiting", Title: "archived-waiting", Status: StatusWaiting, ArchivedAt: testArchivedAt},
+		{ID: "archived-running", Title: "archived-running", Status: StatusRunning, ArchivedAt: testArchivedAt},
 	}
 
-	for _, showAll := range []bool{false, true} {
-		nm := NewNotificationManager(6, showAll, false)
-		nm.SyncFromInstances(instances, "")
-
-		assert.True(t, nm.Has("live"), "showAll=%v", showAll)
-		assert.False(t, nm.Has("archived-stopped"), "showAll=%v", showAll)
-		assert.False(t, nm.Has("archived-waiting"), "showAll=%v", showAll)
-		assert.Equal(t, 1, nm.Count(), "showAll=%v", showAll)
-	}
-
-	nm := NewNotificationManager(6, false, true)
+	nm := NewNotificationManager(9, true, false)
 	nm.SyncFromInstances(instances, "")
-	assert.Equal(t, map[Status]int{StatusWaiting: 1}, nm.statusCounts)
+	assert.True(t, nm.Has("live"))
+	assert.False(t, nm.Has("archived-stopped"))
+	assert.False(t, nm.Has("archived-error"))
+	assert.True(t, nm.Has("archived-waiting"), "an archived session that is alive keeps its slot")
+	assert.True(t, nm.Has("archived-running"), "an archived session that is alive keeps its slot")
+
+	// Default mode and minimal-mode counts are unchanged: counts match the header pills.
+	nm = NewNotificationManager(9, false, false)
+	nm.SyncFromInstances(instances, "")
+	assert.True(t, nm.Has("archived-waiting"))
+	assert.Equal(t, 1, nm.Count())
+
+	nm = NewNotificationManager(9, false, true)
+	nm.SyncFromInstances(instances, "")
+	assert.Equal(t, map[Status]int{StatusIdle: 1, StatusStopped: 1, StatusError: 1, StatusWaiting: 1, StatusRunning: 1}, nm.statusCounts)
 }

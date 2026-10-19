@@ -250,19 +250,24 @@ func statusIcon(status Status) string {
 	}
 }
 
+// archivedAndDown reports an archived session with no live process. show_all
+// skips these; an archived session that is still alive keeps its slot.
+func archivedAndDown(inst *Instance) bool {
+	if !inst.IsArchived() {
+		return false
+	}
+	switch inst.GetStatusThreadSafe() {
+	case StatusStopped, StatusError:
+		return true
+	}
+	return false
+}
+
 // SyncFromInstances updates notifications based on current instance states
 // Call this periodically to sync with actual session statuses
 func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentSessionID string) (added, removed []string) {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
-
-	live := make([]*Instance, 0, len(instances))
-	for _, inst := range instances {
-		if !inst.IsArchived() {
-			live = append(live, inst)
-		}
-	}
-	instances = live
 
 	// Always compute per-status counts across all non-current sessions (used by minimal mode)
 	counts := make(map[Status]int)
@@ -284,7 +289,7 @@ func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentS
 		// Show all sessions (excluding current)
 		sessionSet = make(map[string]*Instance)
 		for _, inst := range instances {
-			if inst.ID != currentSessionID {
+			if inst.ID != currentSessionID && !archivedAndDown(inst) {
 				sessionSet[inst.ID] = inst
 			}
 		}
