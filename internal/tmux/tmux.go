@@ -6051,12 +6051,15 @@ func (s *Session) normalizeContent(content string) string {
 	// Strip other non-printing control characters
 	result = stripControlChars(result)
 
+	// Strip dynamic time/token counters that change every second. This must
+	// run before the spinner strip: the counter's "·" separators are in the
+	// spinner rune set, and once they are gone the pattern never matches, so
+	// every tick changed the hash.
+	result = dynamicStatusPattern.ReplaceAllString(result, "(STATUS)")
+
 	// Strip spinner characters that animate and cause hash changes
 	// Single-pass O(n) removal using map lookup instead of 16 sequential ReplaceAll calls
 	result = StripSpinnerRunes(result)
-
-	// Strip dynamic time/token counters that change every second
-	result = dynamicStatusPattern.ReplaceAllString(result, "(STATUS)")
 
 	// Use resolved combo patterns when available, otherwise fall back to package-level patterns
 	if s.resolvedPatterns != nil && s.resolvedPatterns.ThinkingPattern != nil {
