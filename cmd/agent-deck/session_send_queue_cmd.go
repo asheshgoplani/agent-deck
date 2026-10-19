@@ -750,7 +750,7 @@ func typeQueued(profile, dir string, rec *sendqueue.Record, inst *session.Instan
 			}); err != nil {
 				return false
 			}
-			publishBudgetExceeded(profile, rec.SessionID, "queue", budget)
+			session.PublishBudgetExceeded(profile, rec.SessionID, "queue", budget)
 			return true
 		}
 	}

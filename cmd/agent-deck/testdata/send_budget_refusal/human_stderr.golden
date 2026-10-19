@@ -1,0 +1,1 @@
+Error: budget exceeded: daily global limit exceeded ($5.00 used of $1.00); nothing was sent to 'budget-target'. Raise or remove the limit under [costs.budgets] in config.toml, or pass --ignore-budget

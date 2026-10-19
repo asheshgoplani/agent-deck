@@ -1,0 +1,11 @@
+{
+  "budget_reason": "daily global limit exceeded",
+  "code": "BUDGET_EXCEEDED",
+  "delivery": "budget_exceeded",
+  "error": "budget exceeded: daily global limit exceeded ($5.00 used of $1.00); nothing was sent to 'budget-target'. Raise or remove the limit under [costs.budgets] in config.toml, or pass --ignore-budget",
+  "limit_usd": 1,
+  "resets_at": "<RESETS_AT>",
+  "session_id": "<SESSION_ID>",
+  "success": false,
+  "used_usd": 5
+}

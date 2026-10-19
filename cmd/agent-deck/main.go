@@ -1173,7 +1173,7 @@ func main() {
 		// Set up budget checker
 		// An invalid costs timezone must not keep the TUI from starting:
 		// budgets then fall back to local time, as before.
-		budgetCfg, budgetErr := costBudgetConfig(userCfg)
+		budgetCfg, budgetErr := session.CostBudgetConfig(userCfg)
 		if budgetErr != nil {
 			slog.Warn("cost budgets use local time", "error", budgetErr)
 		}
