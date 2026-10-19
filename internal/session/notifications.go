@@ -256,6 +256,14 @@ func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentS
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
+	live := make([]*Instance, 0, len(instances))
+	for _, inst := range instances {
+		if !inst.IsArchived() {
+			live = append(live, inst)
+		}
+	}
+	instances = live
+
 	// Always compute per-status counts across all non-current sessions (used by minimal mode)
 	counts := make(map[Status]int)
 	for _, inst := range instances {

@@ -850,3 +850,26 @@ func TestMinimalMode_StartingCountsAsRunning(t *testing.T) {
 	assert.Contains(t, bar, "#9ece6a") // running/active color
 	assert.NotEqual(t, "", bar)
 }
+
+func TestNotificationManager_SkipsArchived(t *testing.T) {
+	archivedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	instances := []*Instance{
+		{ID: "live", Title: "live", Status: StatusWaiting},
+		{ID: "archived-stopped", Title: "archived-stopped", Status: StatusStopped, ArchivedAt: archivedAt},
+		{ID: "archived-waiting", Title: "archived-waiting", Status: StatusWaiting, ArchivedAt: archivedAt},
+	}
+
+	for _, showAll := range []bool{false, true} {
+		nm := NewNotificationManager(6, showAll, false)
+		nm.SyncFromInstances(instances, "")
+
+		assert.True(t, nm.Has("live"), "showAll=%v", showAll)
+		assert.False(t, nm.Has("archived-stopped"), "showAll=%v", showAll)
+		assert.False(t, nm.Has("archived-waiting"), "showAll=%v", showAll)
+		assert.Equal(t, 1, nm.Count(), "showAll=%v", showAll)
+	}
+
+	nm := NewNotificationManager(6, false, true)
+	nm.SyncFromInstances(instances, "")
+	assert.Equal(t, map[Status]int{StatusWaiting: 1}, nm.statusCounts)
+}
