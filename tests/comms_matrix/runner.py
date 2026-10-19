@@ -33,14 +33,16 @@ def read_json_line(process, timeout_s):
     reader = threading.Thread(target=lambda: box.append(process.stdout.readline()), daemon=True)
     reader.start()
     reader.join(timeout_s)
+    # Taken before the kill: killing the driver makes the reader thread append an EOF read to box.
+    silent = not box
     line = box[0] if box else ''
     if line.strip():
         return json.loads(line)
     # EOF is an empty read; a blank line from a live driver is neither exited nor silent.
-    exited = process.poll() is not None or line == '' and bool(box)
+    exited = process.poll() is not None or line == '' and not silent
     process.kill()
     process.wait()
-    reason = 'exited' if exited else f'silent for {timeout_s}s' if not box else 'sent a blank line'
+    reason = 'exited' if exited else f'silent for {timeout_s}s' if silent else 'sent a blank line'
     raise RuntimeError(f'pi driver {reason} before its next line: ' + process.stderr.read())
 
 
