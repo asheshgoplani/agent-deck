@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Profiles
+
+- Each profile's `state.db` now records the profile it belongs to, and agent-deck refuses to open a store that belongs to another profile (for example a state.db copied into another profile's directory) instead of mixing two profiles' sessions; nothing is written. Existing stores are stamped on their first open. If you renamed or copied a profile directory on purpose, the error prints the one command that clears the stamp.
+- Hook-driven session-id bindings, last-access times, Claude session links and `session set <id> tool-session-id` now write to the profile the session was loaded from. A process that had another profile's store open as its default wrote them there, the same mistake fixed for the restart outcome in #2206.
+
 ### Events
 
 - `agent-deck events publish` accepts only lowercase kind names: a kind with an uppercase letter, such as a third-party plugin's `macapp.myPlugin`, now gets exit 2. Rename such a kind to lowercase (`macapp.myplugin`).
