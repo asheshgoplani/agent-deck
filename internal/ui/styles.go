@@ -89,10 +89,17 @@ var themeMu sync.RWMutex
 // the user's [theme_colors.<theme>] overrides.
 // Must be called before any UI rendering
 func InitTheme(theme string) {
+	resolved := ThemeDark
+	if theme == "light" {
+		resolved = ThemeLight
+	}
+	// Load overrides before taking themeMu: a config cache miss parses config.toml.
+	overrides := session.ThemeColorOverrides(string(resolved))
+
 	themeMu.Lock()
 	defer themeMu.Unlock()
 	setPalette(theme)
-	applyColorOverrides(session.ThemeColorOverrides(string(currentTheme)))
+	applyColorOverrides(overrides)
 	initStyles()
 }
 
