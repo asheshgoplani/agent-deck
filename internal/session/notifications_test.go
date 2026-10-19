@@ -852,11 +852,10 @@ func TestMinimalMode_StartingCountsAsRunning(t *testing.T) {
 }
 
 func TestNotificationManager_SkipsArchived(t *testing.T) {
-	archivedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	instances := []*Instance{
 		{ID: "live", Title: "live", Status: StatusWaiting},
-		{ID: "archived-stopped", Title: "archived-stopped", Status: StatusStopped, ArchivedAt: archivedAt},
-		{ID: "archived-waiting", Title: "archived-waiting", Status: StatusWaiting, ArchivedAt: archivedAt},
+		{ID: "archived-stopped", Title: "archived-stopped", Status: StatusStopped, ArchivedAt: testArchivedAt},
+		{ID: "archived-waiting", Title: "archived-waiting", Status: StatusWaiting, ArchivedAt: testArchivedAt},
 	}
 
 	for _, showAll := range []bool{false, true} {
