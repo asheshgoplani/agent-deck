@@ -147,7 +147,7 @@ func TestIsDuplicateSession_EmptyInstances(t *testing.T) {
 	}
 }
 
-func TestIsDuplicateSession_CaseInsensitiveTitle(t *testing.T) {
+func TestIsDuplicateSession_TitleIsCaseSensitive(t *testing.T) {
 	// Setup: existing session with title "api work" (lowercase)
 	instances := []*session.Instance{
 		{
@@ -157,21 +157,17 @@ func TestIsDuplicateSession_CaseInsensitiveTitle(t *testing.T) {
 		},
 	}
 
-	// Test: adding session with "API Work" (different case) at same path
-	// This tests whether title comparison is case-sensitive or not
-	// The expected behavior depends on implementation - adjust if needed
-	isDup, _ := isDuplicateSession(instances, "API Work", "/home/user/project")
-
-	// Expect: This may or may not be a duplicate depending on implementation
-	// If case-insensitive: isDup = true
-	// If case-sensitive: isDup = false
-	// For now, we test case-SENSITIVE (different titles)
-	if isDup {
-		t.Logf("Note: Title comparison is case-insensitive (API Work == api work)")
-	} else {
-		t.Logf("Note: Title comparison is case-sensitive (API Work != api work)")
+	// Test: adding session with "API Work" (different case) at same path.
+	// Titles compare case-sensitively: "API Work" is a different session
+	// from "api work", so it must not be refused as a duplicate.
+	isDup, existing := isDuplicateSession(instances, "API Work", "/home/user/project")
+	if isDup || existing != nil {
+		t.Fatalf("isDuplicateSession(%q) = %v, %v; want false, nil (titles are case-sensitive)", "API Work", isDup, existing)
 	}
-	// This test documents the behavior, adjust assertion based on desired behavior
+	// The exact title at the same path still is a duplicate.
+	if isDup, existing := isDuplicateSession(instances, "api work", "/home/user/project"); !isDup || existing != instances[0] {
+		t.Fatalf("isDuplicateSession(%q) = %v, %v; want true, the existing session", "api work", isDup, existing)
+	}
 }
 
 func TestIsDuplicateSession_PathNormalization(t *testing.T) {
@@ -418,10 +414,10 @@ func TestGenerateUniqueTitle_EmptyBaseTitle(t *testing.T) {
 	// Test: generate title with empty base
 	title := generateUniqueTitle(instances, "", "/home/user/project")
 
-	// Expect: empty string (or implementation may provide a default)
-	// This documents edge case behavior
+	// Expect: an empty base title with nothing to collide with is returned
+	// as is (the caller picks a default title before this point).
 	if title != "" {
-		t.Logf("Note: Empty base title generates '%s'", title)
+		t.Fatalf("generateUniqueTitle(\"\") = %q, want \"\"", title)
 	}
 }
 
