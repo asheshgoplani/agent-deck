@@ -653,6 +653,27 @@ func TestGetTheme_Light(t *testing.T) {
 	}
 }
 
+func TestThemeColorOverrides(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	isolateConfigHomeXDG(t)
+
+	config := &UserConfig{ThemeColors: map[string]map[string]string{
+		"dark": {"text": "#f0f0f0"},
+	}}
+	if err := SaveUserConfig(config); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	if got := ThemeColorOverrides("dark")["text"]; got != "#f0f0f0" {
+		t.Errorf("ThemeColorOverrides(dark)[text] = %q, want #f0f0f0", got)
+	}
+	if got := ThemeColorOverrides("light"); got != nil {
+		t.Errorf("ThemeColorOverrides(light) = %v, want nil", got)
+	}
+}
+
 func TestResolveTheme_COLORFGBGOverridesOS(t *testing.T) {
 	// Setup: explicit "system" theme so ResolveTheme falls through to
 	// auto-detection where COLORFGBG should be checked.

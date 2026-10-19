@@ -2,6 +2,9 @@ package ui
 
 import (
 	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -82,11 +85,18 @@ var (
 // Write lock held by InitTheme; read lock held by GetToolStyle (map access).
 var themeMu sync.RWMutex
 
-// InitTheme sets the active color palette based on theme name
+// InitTheme sets the active color palette based on theme name, then applies
+// the user's [theme_colors.<theme>] overrides.
 // Must be called before any UI rendering
 func InitTheme(theme string) {
 	themeMu.Lock()
 	defer themeMu.Unlock()
+	setPalette(theme)
+	applyColorOverrides(session.ThemeColorOverrides(string(currentTheme)))
+	initStyles()
+}
+
+func setPalette(theme string) {
 	if theme == "light" {
 		currentTheme = ThemeLight
 		ColorBg = lightColors.Bg
@@ -118,8 +128,43 @@ func InitTheme(theme string) {
 		ColorRed = darkColors.Red
 		ColorComment = darkColors.Comment
 	}
-	// Reinitialize styles with new colors
-	initStyles()
+}
+
+// applyColorOverrides replaces the palette entries named in overrides.
+// Unknown keys and values that are not #rrggbb are skipped with a warning.
+func applyColorOverrides(overrides map[string]string) {
+	slots := map[string]*lipgloss.Color{
+		"bg":       &ColorBg,
+		"surface":  &ColorSurface,
+		"border":   &ColorBorder,
+		"text":     &ColorText,
+		"text_dim": &ColorTextDim,
+		"accent":   &ColorAccent,
+		"purple":   &ColorPurple,
+		"cyan":     &ColorCyan,
+		"green":    &ColorGreen,
+		"yellow":   &ColorYellow,
+		"orange":   &ColorOrange,
+		"red":      &ColorRed,
+		"comment":  &ColorComment,
+	}
+	for key, value := range overrides {
+		slot, ok := slots[strings.ToLower(strings.TrimSpace(key))]
+		value = strings.TrimSpace(value)
+		if !ok || !isHexColor(value) {
+			uiLog.Warn("theme_color_ignored", slog.String("key", key), slog.String("value", value))
+			continue
+		}
+		*slot = lipgloss.Color(value)
+	}
+}
+
+func isHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	_, err := strconv.ParseUint(s[1:], 16, 32)
+	return err == nil
 }
 
 // GetCurrentTheme returns the active theme
@@ -128,8 +173,10 @@ func GetCurrentTheme() Theme {
 }
 
 func init() {
-	// Default to dark theme at package init
-	InitTheme("dark")
+	// Default to dark theme at package init; user overrides are applied by the
+	// InitTheme call at startup, so package init never reads config.toml.
+	setPalette("dark")
+	initStyles()
 }
 
 // Base Styles

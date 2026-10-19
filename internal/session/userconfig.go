@@ -89,6 +89,11 @@ type UserConfig struct {
 	// Theme sets the color scheme: "dark" (default), "light", or "system"
 	Theme string `toml:"theme,omitempty"`
 
+	// ThemeColors overrides palette colors per resolved theme, e.g.
+	// [theme_colors.dark] text = "#f0f0f0". Keys: bg, surface, border, text,
+	// text_dim, accent, purple, cyan, green, yellow, orange, red, comment.
+	ThemeColors map[string]map[string]string `toml:"theme_colors,omitempty"`
+
 	// Tools defines custom AI tool configurations
 	Tools map[string]ToolDef `toml:"tools,omitempty"`
 
@@ -5135,6 +5140,16 @@ func GetTheme() string {
 	default:
 		return "dark"
 	}
+}
+
+// ThemeColorOverrides returns the [theme_colors.<theme>] table for a resolved
+// theme ("dark" or "light"), or nil when none is configured.
+func ThemeColorOverrides(theme string) map[string]string {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return nil
+	}
+	return config.ThemeColors[theme]
 }
 
 // ResolveTheme resolves the configured theme to "dark" or "light".

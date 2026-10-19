@@ -137,3 +137,31 @@ func TestToolStyleCache_ReinitializedOnThemeChange(t *testing.T) {
 	// Reset to dark for other tests
 	InitTheme("dark")
 }
+
+func TestApplyColorOverrides(t *testing.T) {
+	themeMu.Lock()
+	defer themeMu.Unlock()
+	t.Cleanup(func() { setPalette("dark"); initStyles() })
+
+	setPalette("dark")
+	applyColorOverrides(map[string]string{
+		"text":     "#f0f0f0",
+		" Green ":  " #85ff00 ",
+		"bogus":    "#123456",
+		"text_dim": "not-a-color",
+		"red":      "#12345",
+	})
+
+	if ColorText != "#f0f0f0" {
+		t.Errorf("ColorText = %q, want #f0f0f0", ColorText)
+	}
+	if ColorGreen != "#85ff00" {
+		t.Errorf("ColorGreen = %q, want #85ff00 (keys and values are trimmed, keys case-folded)", ColorGreen)
+	}
+	if ColorTextDim != darkColors.TextDim {
+		t.Errorf("ColorTextDim = %q, want built-in %q for an invalid value", ColorTextDim, darkColors.TextDim)
+	}
+	if ColorRed != darkColors.Red {
+		t.Errorf("ColorRed = %q, want built-in %q for a short hex value", ColorRed, darkColors.Red)
+	}
+}
