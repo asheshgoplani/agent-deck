@@ -9,3 +9,8 @@
 # when the test fails. It only labels the row "known flake" in the job summary
 # so a retry is an informed decision rather than a blind re-push. Remove an
 # entry as soon as the flake is fixed.
+
+# #2800: TempDir cleanup "directory not empty" (a writer outlived the test).
+# Fixed in the same PR; remove both entries after 7 green days.
+internal/tuitest TestIdleTUICPUBudget
+internal/session TestEnsureClaudeConfigDirEnv_SetsHostSideEnv

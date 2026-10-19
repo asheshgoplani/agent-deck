@@ -23,6 +23,9 @@ const (
 	idleCPUWarmup         = 15 * time.Second
 	idleCPUWindow         = 30 * time.Second
 	idleCPUBudgetPercent  = 5.0
+	// tuiExitDeadline bounds the wait for the TUI to exit after its tmux
+	// server is killed.
+	tuiExitDeadline = 20 * time.Second
 )
 
 // fakeClaude draws Claude Code's idle screen (banner, done line, composer
@@ -62,12 +65,31 @@ func TestIdleTUICPUBudget(t *testing.T) {
 	}
 
 	binary := buildBinary(t, "fswatchpoll")
-	// The fleet's tmux server and the TUI's share a private TMUX_TMPDIR that
-	// cleanup kills, so later tests in the package see no server.
-	socket, cleanup := testutil.ShortTmuxSocket()
-	t.Cleanup(cleanup)
 	home := t.TempDir()
+	// tuiPID is the TUI's pid once it runs. The TUI writes under home (health
+	// samples in logs/health, the session event journal) until it exits, so
+	// home must not be removed while it lives; this guard, registered right
+	// after home so it runs right before home's removal, fails the test if it
+	// does instead of letting RemoveAll race the writer.
+	var tuiPID string
+	t.Cleanup(func() {
+		if tuiPID != "" && processAlive(tuiPID) {
+			t.Errorf("TUI pid %s still running when its HOME is removed", tuiPID)
+		}
+	})
 	fakeBin := t.TempDir()
+	// The fleet's tmux server and the TUI's share a private TMUX_TMPDIR that
+	// cleanup kills, so later tests in the package see no server. Registered
+	// after the t.TempDir calls so it runs before them (cleanups run last-in,
+	// first-out), and it waits for the TUI to exit: kill-server only signals
+	// it.
+	socket, cleanup := testutil.ShortTmuxSocket()
+	t.Cleanup(func() {
+		cleanup()
+		if tuiPID != "" {
+			waitProcessExit(t, tuiPID, tuiExitDeadline)
+		}
+	})
 	for name, script := range map[string]string{"claude": fakeClaude, "ssh": fakeSSH} {
 		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
@@ -139,6 +161,7 @@ func TestIdleTUICPUBudget(t *testing.T) {
 		t.Fatalf("TUI pid: %v", err)
 	}
 	pid := strings.TrimSpace(string(out))
+	tuiPID = pid
 	screen := func() string {
 		out, _ := exec.Command("tmux", "-S", socket, "capture-pane", "-p", "-t", "tui").Output()
 		return string(out)
@@ -184,4 +207,27 @@ func processCPUTime(t *testing.T, pid string) time.Duration {
 		ticks += n
 	}
 	return time.Duration(ticks) * 10 * time.Millisecond
+}
+
+// processAlive reports whether pid is a live (non-zombie) process.
+func processAlive(pid string) bool {
+	data, err := os.ReadFile(filepath.Join("/proc", pid, "stat"))
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(data[strings.LastIndexByte(string(data), ')')+1:]))
+	return len(fields) > 0 && fields[0] != "Z" && fields[0] != "X"
+}
+
+// waitProcessExit waits until pid has exited, failing the test at deadline.
+func waitProcessExit(t *testing.T, pid string, deadline time.Duration) {
+	t.Helper()
+	end := time.Now().Add(deadline)
+	for processAlive(pid) {
+		if time.Now().After(end) {
+			t.Errorf("TUI pid %s still running %v after its tmux server was killed", pid, deadline)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

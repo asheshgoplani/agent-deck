@@ -38,7 +38,7 @@ func TestRestart_ShellSession_PostRestartIsHealthy(t *testing.T) {
 	if err := inst.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	t.Cleanup(func() { cleanupShellSessions(title) })
+	t.Cleanup(func() { stopShellTestInstance(t, inst, title) })
 
 	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
 		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
@@ -86,7 +86,7 @@ func TestRestart_ShellSession_AdoptsLiveTmuxOnNameMismatch(t *testing.T) {
 	if err := inst.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	t.Cleanup(func() { cleanupShellSessions(title) })
+	t.Cleanup(func() { stopShellTestInstance(t, inst, title) })
 
 	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
 		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
@@ -139,6 +139,36 @@ func sanitizeTitleForPrefix(title string) string { return title }
 func cleanupShellSessions(title string) {
 	for _, name := range listTmuxSessionsWithPrefix(tmux.SessionPrefix + sanitizeTitleForPrefix(title) + "_") {
 		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+	}
+}
+
+// shellTestJoinDeadline bounds how long stopShellTestInstance waits for a
+// spawn's goroutines. Once the generation is bumped they return at their next
+// wake; the spawn window itself is the outer bound of how long one can run.
+const shellTestJoinDeadline = spawnFastDeathWindow + 5*time.Second
+
+// stopShellTestInstance is the teardown for a test that started inst: it kills
+// the test's tmux sessions, then supersedes and JOINS every goroutine inst's
+// spawns started (fast-death watcher, ownership attribution). Those goroutines
+// write under the isolated HOME (runtime/ownership, the lifecycle log) for up
+// to spawnFastDeathWindow after Start, so killing the session alone left them
+// writing while t.TempDir's RemoveAll ran ("directory not empty").
+//
+// Register it with t.Cleanup AFTER the t.TempDir calls it must outlive, so it
+// runs before their removal (cleanups run last-in, first-out).
+func stopShellTestInstance(t *testing.T, inst *Instance, title string) {
+	t.Helper()
+	cleanupShellSessions(title)
+	inst.bumpSpawnGenAndBarrier()
+	joined := make(chan struct{})
+	go func() {
+		inst.waitForFastDeathWatchers()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(shellTestJoinDeadline):
+		t.Errorf("spawn goroutines of %q still running %v after teardown", title, shellTestJoinDeadline)
 	}
 }
 

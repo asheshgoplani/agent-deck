@@ -319,6 +319,10 @@ func (i *Instance) startFastDeathWatcher(command string, gen uint64, wake <-chan
 	}()
 }
 
+// waitForFastDeathWatchers blocks until every goroutine a spawn started and
+// tracks in spawnWatchers has returned: the fast-death watcher and the
+// ownership attribution pass. Bump the generation first (bumpSpawnGenAndBarrier)
+// so they stop at their next wake instead of running out their window.
 func (i *Instance) waitForFastDeathWatchers() {
 	i.spawnWatchers.Wait()
 }

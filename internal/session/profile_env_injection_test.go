@@ -96,7 +96,7 @@ func TestEnsureProfileEnv_SetsHostSideEnv(t *testing.T) {
 	if err := inst.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	t.Cleanup(func() { cleanupShellSessions(title) })
+	t.Cleanup(func() { stopShellTestInstance(t, inst, title) })
 
 	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
 		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)
@@ -142,7 +142,7 @@ func TestRestart_ShellSession_CarriesProfileEnv(t *testing.T) {
 	if err := inst.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	t.Cleanup(func() { cleanupShellSessions(title) })
+	t.Cleanup(func() { stopShellTestInstance(t, inst, title) })
 
 	if !waitForTmuxSession(inst.tmuxSession.Name, 1*time.Second) {
 		t.Fatalf("tmux session %q never appeared after Start", inst.tmuxSession.Name)

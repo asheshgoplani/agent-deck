@@ -615,7 +615,17 @@ func (i *Instance) claimOwnershipAtSpawn(command string, gen uint64, wake <-chan
 	// can still be running after the test that started it has finished and
 	// swapped those package variables out from under it. Reading them from the
 	// goroutine is a data race the race detector will (and did) catch.
-	go i.attributeOwnedTree(receipt, store, ownershipProber, sessionLog, gen, wake)
+	//
+	// It joins spawnWatchers with the fast-death watcher: it writes the receipt
+	// (and its .lock) under the data dir for up to the whole spawn window, so a
+	// caller that removes that dir (a test's t.TempDir cleanup) must be able to
+	// wait it out rather than race it ("directory not empty").
+	prober, logger := ownershipProber, sessionLog
+	i.spawnWatchers.Add(1)
+	go func() {
+		defer i.spawnWatchers.Done()
+		i.attributeOwnedTree(receipt, store, prober, logger, gen, wake)
+	}()
 }
 
 // probePanePIDForClaim reads the pane's initial pid, retrying a few times so a
