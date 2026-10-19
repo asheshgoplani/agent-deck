@@ -31,12 +31,11 @@ import (
 // swallows every Enter, the #2077 shape. Captures show what the composer
 // holds.
 type strandingClaudePane struct {
-	mu        sync.Mutex
-	composer  string
-	typed     int
-	enters    int
-	ctrlC     int
-	submitted int
+	mu       sync.Mutex
+	composer string
+	typed    int
+	enters   int
+	ctrlC    int
 }
 
 func (p *strandingClaudePane) typeBody(body string) {
