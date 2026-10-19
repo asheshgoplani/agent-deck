@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -18,30 +19,46 @@ import (
 // transcript while it boots.
 func fxResumeMeta() string { return `{"type":"permission-mode","permissionMode":"default"}` }
 
-// pidStub stands in for the child's pane pids.
+// pidStub stands in for the child's pane pids and hook file.
 type pidStub struct {
-	pane  int
-	alive map[int]bool
+	pane     int
+	alive    map[int]bool
+	hook     *HookStatus
+	substate string
 }
 
 func stubRestartPIDs(t *testing.T) *pidStub {
 	t.Helper()
 	st := &pidStub{pane: 100, alive: map[int]bool{100: true}}
-	oldPane, oldAlive := instancePanePID, restartPIDAlive
+	oldPane, oldAlive, oldHook, oldDelay := instancePanePID, restartPIDAlive, restartHookStatus, restartPIDRetryDelay
 	instancePanePID = func(*Instance) int { return st.pane }
 	restartPIDAlive = func(pid int) bool { return st.alive[pid] }
-	t.Cleanup(func() { instancePanePID, restartPIDAlive = oldPane, oldAlive })
+	restartHookStatus = func(string) *HookStatus { return st.hook }
+	oldSub := restartPaneSubstate
+	restartPaneSubstate = func(*Instance) string { return st.substate }
+	t.Cleanup(func() { restartPaneSubstate = oldSub })
+	restartPIDRetryDelay = time.Millisecond
+	t.Cleanup(func() {
+		instancePanePID, restartPIDAlive, restartHookStatus, restartPIDRetryDelay = oldPane, oldAlive, oldHook, oldDelay
+	})
 	return st
 }
 
 // restart does what restartRecorded does around a respawn: token, the old
-// process killed, the new one spawned and recorded.
+// process killed (its SessionEnd hook, whole seconds like the real file), the
+// new one spawned and recorded.
 func (st *pidStub) restart(f *turnTestFixture, at time.Time) {
 	noteRestartToken(f.child, at)
 	st.alive[st.pane] = false
+	st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: at.Truncate(time.Second)}
 	st.pane += 100
 	st.alive[st.pane] = true
 	markRestartSpawned(f.child, at)
+}
+
+// newHook is a hook the resumed process writes after the restart.
+func (st *pidStub) newHook(status, event string, at time.Time) {
+	st.hook = &HookStatus{Status: status, Event: event, UpdatedAt: at.Add(2 * time.Second).Truncate(time.Second)}
 }
 
 // bootSeen is the daemon pass that sees the restarted child running while it
@@ -223,6 +240,39 @@ func TestIssue2792_NewProcessErrorsAreNews(t *testing.T) {
 			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), observed)
 			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(5*time.Minute), observed)
 		},
+		// lander probe Q1: respawn is atomic, no old exit seen; the live resumed
+		// Claude shows an expired-login banner (pane status error)
+		"auth banner, no old exit seen": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			st.hook = nil
+			st.substate = "auth-401"
+			f.appendTurn(t, fxResumeMeta())
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
+		},
+		// the same while the hook file still holds the old process's SessionEnd
+		// (conductor ruling: an error state on a live pane is never the old exit)
+		"auth banner with the old SessionEnd on file": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			st.substate = "auth-401"
+			f.appendTurn(t, fxResumeMeta())
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
+		},
+		// model unavailable after the resumed Claude's SessionStart
+		"model unavailable after its SessionStart": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			st.newHook("waiting", "SessionStart", time.Now())
+			st.substate = "model-unavailable"
+			f.appendTurn(t, fxResumeMeta())
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(3*time.Second), observed)
+		},
+		// the old pid is still alive: its SessionEnd is not an exit yet, and the
+		// error cannot be told apart, so deliver it (conductor ruling)
+		"old process still alive": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			st.alive[st.pane-100] = true
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
+		},
+		// an error that brings no exit evidence cannot be attributed: deliver it
+		"error with no exit evidence": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			st.hook = nil
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
+		},
 		// a second error while the new process lives: only one exit is ours
 		"second error": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
 			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
@@ -242,6 +292,10 @@ func TestIssue2792_NewProcessErrorsAreNews(t *testing.T) {
 				if len(errs) == 0 || !errs[0].IsUrgent() || *f.sends == sends {
 					t.Fatalf("an error of the new process must reach the parent urgently: %+v", f.inboxRecords(t))
 				}
+				if !strings.Contains(name, "after boot") && !strings.Contains(name, "minutes later") &&
+					!strings.HasPrefix(errs[0].Text, "Restarted, but the resumed session") {
+					t.Fatalf("the error says what is wrong, not the old reply: %q", errs[0].Text)
+				}
 			})
 		}
 	}
@@ -254,6 +308,7 @@ func TestIssue2792_ErrorBeforeSpawnRecordedWaits(t *testing.T) {
 	f.finishedTurn(t)
 	noteRestartToken(f.child, time.Now())
 	st.alive[st.pane] = false
+	st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: time.Now().Truncate(time.Second)}
 	if _, ok := f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), false); ok {
 		t.Fatalf("an error while the restart runs must be retried, not decided")
 	}
@@ -318,10 +373,10 @@ func TestIssue2792_TokenIsUsedOnce(t *testing.T) {
 	stubRestartPIDs(t)
 	writeRestartFile(f.child.ID, ".json", restartToken{At: time.Now(), Signal: "sig-1", OldPID: 100})
 	writeRestartFile(f.child.ID, ".spawned.json", restartSpawned{NewPID: 100, At: time.Now()})
-	if _, v := f.d.judgeRestart(f.child.ID, "", "sig-1", "waiting", time.Now().Add(time.Second)); v != restartBoot {
+	if _, v, _ := f.d.judgeRestart(f.child.ID, "", "sig-1", func() string { return "" }, "waiting", time.Now().Add(time.Second)); v != restartBoot {
 		t.Fatalf("the first arrival at the prompt is the boot, got %v", v)
 	}
-	if _, v := f.d.judgeRestart(f.child.ID, "", "sig-1", "waiting", time.Now().Add(4*time.Minute)); v != restartNews {
+	if _, v, _ := f.d.judgeRestart(f.child.ID, "", "sig-1", func() string { return "" }, "waiting", time.Now().Add(4*time.Minute)); v != restartNews {
 		t.Fatalf("a later flip with the same signal is news, got %v", v)
 	}
 }
@@ -363,5 +418,153 @@ func TestIssue2792_SpawnedPIDSurvivesDaemonWork(t *testing.T) {
 	tok, ok := readRestartToken(f.child.ID)
 	if !ok || tok.NewPID != st.pane {
 		t.Fatalf("the recorded new pid must survive the daemon's judging: %+v ok=%v", tok, ok)
+	}
+}
+
+// Lander probe Q1b: an error the parent was not told about must not be
+// papered over by a later "conversation resumed" line.
+func TestIssue2792_AuthBannerThenPromptIsReported(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	f.finishedTurn(t)
+	st.restart(f, time.Now())
+	st.hook = nil
+	st.substate = "auth-401"
+	f.appendTurn(t, fxResumeMeta())
+	f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), true)
+	st.substate = ""
+	f.bootSeen()
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+	f.d.sweepRestartTokens("default", f.byID, map[string]string{f.child.ID: "waiting"}, time.Now().Add(10*time.Minute))
+	urgent := 0
+	for _, r := range f.inboxRecords(t) { // a later flip of the old turn reorders the inbox
+		if r.IsUrgent() && r.ToStatus == "error" {
+			urgent++
+		}
+		if strings.Contains(r.Text, "conversation resumed") {
+			t.Fatalf("a restart that showed an error must not be reported as a clean resume: %+v", r)
+		}
+	}
+	if urgent == 0 {
+		t.Fatalf("the error must reach the parent: %+v", f.inboxRecords(t))
+	}
+}
+
+// Lander probe Q2: a new pid that cannot be read holds nothing back and
+// raises no false alarm for a child at its prompt; a child that is down is
+// still reported.
+func TestIssue2792_UnreadableNewPID(t *testing.T) {
+	for _, c := range []struct {
+		status string
+		want   bool
+	}{{"waiting", false}, {"error", true}} {
+		t.Run(c.status, func(t *testing.T) {
+			t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
+			f := newTurnTestFixture(t)
+			st := stubRestartPIDs(t)
+			f.finishedTurn(t)
+			at := time.Now().Add(-3 * time.Minute)
+			noteRestartToken(f.child, at)
+			st.alive[st.pane] = false
+			st.pane = 0 // list-panes failed, or the pane is gone
+			markRestartSpawned(f.child, at)
+			if tok, ok := readRestartToken(f.child.ID); !ok || tok.NewPID != restartPIDUnknown {
+				t.Fatalf("an unreadable new pid is recorded as unknown: %+v ok=%v", tok, ok)
+			}
+			if _, ok := f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), true); !ok {
+				t.Fatalf("flips are decided, not left unsettled")
+			}
+			if errs := f.recordsTo(t, "error"); len(errs) != 1 {
+				t.Fatalf("an error with an unknown new pid is delivered: %+v", f.inboxRecords(t))
+			}
+			g := newTurnTestFixture(t)
+			st2 := stubRestartPIDs(t)
+			g.finishedTurn(t)
+			noteRestartToken(g.child, at)
+			st2.alive[st2.pane] = false
+			st2.pane = 0
+			markRestartSpawned(g.child, at)
+			g.d.sweepRestartTokens("default", g.byID, map[string]string{g.child.ID: c.status}, time.Now())
+			if got := len(g.recordsTo(t, "error")); (got == 1) != c.want {
+				t.Fatalf("sweep with status %s: %d reports, want report=%v", c.status, got, c.want)
+			}
+		})
+	}
+}
+
+// Lander probe Q3: the resumed Claude exits (its own SessionEnd) and the pane
+// falls back to a shell prompt: not a clean resume.
+func TestIssue2792_ResumedClaudeExitIsNotABoot(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	n := f.finishedTurn(t)
+	st.restart(f, time.Now())
+	st.newHook("dead", "SessionEnd", time.Now())
+	f.bootSeen()
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now().Add(3*time.Second), true)
+	for _, r := range f.inboxRecords(t)[n:] {
+		if strings.Contains(r.Text, "conversation resumed") {
+			t.Fatalf("an exited resume must not read as a clean one: %+v", r)
+		}
+	}
+}
+
+// Lander probe Q4: a daemon restart forgets what it held; the next real
+// error still reaches the parent, because it brings its own evidence.
+func TestIssue2792_DaemonRestartDoesNotRearmTheHold(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	f.finishedTurn(t)
+	st.restart(f, time.Now())
+	f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), true) // the old exit, held
+	f.d.restart = nil
+	f.d.restartOnce = sync.Once{}
+	st.newHook("waiting", "SessionStart", time.Now()) // the resumed Claude starts
+	st.substate = "auth-401"
+	f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(3*time.Second), true) // then shows an error
+	if len(f.recordsTo(t, "error")) == 0 {
+		t.Fatalf("the real error after a daemon restart must reach the parent")
+	}
+}
+
+// Conductor ruling: a resume that goes straight to an error banner (waiting ->
+// error, no running in between) reaches the parent at once, urgent, with what
+// the pane shows, not 2 minutes later.
+func TestIssue2792_BannerWithoutAFlipIsReportedAtOnce(t *testing.T) {
+	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1h")
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	f.finishedTurn(t)
+	st.restart(f, time.Now())
+	st.substate = "auth-401"
+	sends := *f.sends
+	statuses := map[string]string{f.child.ID: "error", f.parent.ID: "waiting"}
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now())
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now()) // once only
+	errs := f.recordsTo(t, "error")
+	if len(errs) != 1 || !errs[0].IsUrgent() || !strings.Contains(errs[0].Text, "login or connection error") || *f.sends == sends {
+		t.Fatalf("want one urgent record naming the banner, got %+v", f.inboxRecords(t))
+	}
+}
+
+// The resumed Claude's SessionStart says waiting while its pane shows the
+// login banner: not a clean resume, the error goes to the parent.
+func TestIssue2792_BannerAtPromptIsNotABoot(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	f.finishedTurn(t)
+	st.restart(f, time.Now())
+	st.newHook("waiting", "SessionStart", time.Now())
+	st.substate = "auth-401"
+	f.appendTurn(t, fxResumeMeta())
+	f.bootSeen()
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now().Add(3*time.Second), true)
+	for _, r := range f.inboxRecords(t) {
+		if strings.Contains(r.Text, "conversation resumed") {
+			t.Fatalf("a pane showing a login error is not a clean resume: %+v", r)
+		}
+	}
+	if errs := f.recordsTo(t, "error"); len(errs) != 1 || !strings.Contains(errs[0].Text, "login or connection error") {
+		t.Fatalf("want the login error, got %+v", f.inboxRecords(t))
 	}
 }

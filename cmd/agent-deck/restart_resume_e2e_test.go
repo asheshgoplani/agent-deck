@@ -54,6 +54,9 @@ fi
 trap 'hook SessionEnd; exit 0' HUP TERM INT
 if [ "$mode" = hang ]; then # it never reaches its prompt
   printf '{"id":"hang-%s","phase":"booting"}' "$$" > "$t.input-control.json"
+elif [ "$mode" = banner ]; then # it is up, but its login expired
+  printf '{"id":"banner-%s","phase":"banner"}' "$$" > "$t.input-control.json"
+  (sleep 4; hook SessionStart) &
 else
   (sleep 4; hook SessionStart) &
 fi
@@ -280,6 +283,45 @@ func TestRestartE2E_NeverBootsIsNotified(t *testing.T) {
 			e.mustRun("session", "restart", "--force", child.id)
 			e.waitPane(child, "child spinning", func(p string) bool { return strings.Contains(p, "Thundering") })
 			e.waitBootReport(parent, child, 40*time.Second, "a resume that never reached its prompt")
+		})
+	}
+}
+
+// A resume that is alive but shows an error banner (an expired login) is the
+// new process's error: the parent hears it at once, urgent, with what the pane
+// shows, and never a "conversation resumed" line (conductor ruling on #2802).
+func TestRestartE2E_ErrorBannerAfterRestartIsNotified(t *testing.T) {
+	t.Parallel()
+	for _, viaHooks := range []bool{true, false} {
+		t.Run(map[bool]string{true: "hook path", false: "snapshot path"}[viaHooks], func(t *testing.T) {
+			t.Parallel()
+			e := newRestartEnv(t)
+			parent, child := setupIdleChild(t, e)
+			writeFile(t, filepath.Join(child.project, ".fake-mode"), "banner", 0o600)
+			writeFile(t, filepath.Join(child.project, ".fake-phase"), "banner", 0o600)
+			if !viaHooks {
+				writeFile(t, filepath.Join(child.project, ".fake-nohooks"), "", 0o600)
+			}
+			e.mustRun("session", "restart", "--force", child.id)
+			e.waitPane(child, "child showing the login banner", func(p string) bool { return strings.Contains(p, "Please run /login") })
+			recs := e.waitRecords(parent, child, 20*time.Second, func(r []map[string]any) bool {
+				for _, rec := range r {
+					if rec["to_status"] == "error" && rec["tier"] != "info" && strings.Contains(recordText(rec), "login or connection error") {
+						return true
+					}
+				}
+				return false
+			})
+			found := false
+			for _, r := range recs {
+				found = found || (r["to_status"] == "error" && r["tier"] != "info" && strings.Contains(recordText(r), "login or connection error"))
+				if strings.Contains(recordText(r), "conversation resumed") {
+					t.Fatalf("a restart that shows an error must not read as a clean resume: %v", r)
+				}
+			}
+			if !found {
+				t.Fatalf("the parent must hear at once that the resumed session shows a login error, got %v", recs)
+			}
 		})
 	}
 }

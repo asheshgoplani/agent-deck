@@ -32,7 +32,9 @@ def screen():
     try: cols = os.get_terminal_size(sys.stdout.fileno()).columns
     except OSError: cols = 80
     div = '─' * cols
-    if phase in ('busy', 'stream', 'booting'):
+    if phase == 'banner':  # a resumed Claude whose login expired: alive, showing Claude's auth banner
+        head = ['Please run /login · API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}', '']
+    elif phase in ('busy', 'stream', 'booting'):
         head = ['⏺ Running the lanes.', '', '✽ Thundering… (%ds · ↓ 135 tokens)' % int(time.monotonic() - started), '']
     else:
         head = ['⏺ All four steps ran.', '', '✻ Sautéed for 45s · done 10:44 AM', '']
@@ -89,7 +91,7 @@ def poll_phase():
         append({'type': 'system', 'subtype': 'turn_duration', 'uuid': 'fixture-idle-' + str(phase_id), 'timestamp': now(), 'durationMs': 1000}
                if phase == 'idle' else
                {'type': 'system', 'subtype': 'informational', 'uuid': 'fixture-boot-' + str(phase_id), 'timestamp': now()}
-               if phase == 'booting' else
+               if phase in ('booting', 'banner') else
                {'type': 'user', 'uuid': 'fixture-busy-' + str(phase_id), 'timestamp': now(),
                 'message': {'role': 'user', 'content': 'Owned fixture work before queued input.'}})
         render()

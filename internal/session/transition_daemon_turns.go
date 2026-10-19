@@ -74,8 +74,10 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	if !classified || inst.GetJSONLPath() == "" {
 		signal = event.LastOutputHash
 	}
-	tok, verdict := d.judgeRestart(inst.ID, inst.GetJSONLPath(), signal, to, event.Timestamp)
+	tok, verdict, why := d.judgeRestart(inst.ID, inst.GetJSONLPath(), signal, func() string { return restartPaneSubstate(inst) }, to, event.Timestamp)
 	switch verdict {
+	case restartNewError:
+		return d.emitRestartError(inst, event, tok, why), true
 	case restartUnsettled:
 		return event, false // the next poll judges it once the restart recorded its new process
 	case restartOldExit:
