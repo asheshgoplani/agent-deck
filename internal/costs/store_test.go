@@ -414,3 +414,33 @@ func TestStore_TotalLastMonth_TwoMonthsAgoExcluded(t *testing.T) {
 		t.Errorf("two months ago: last-month total = %d, want 0", summary.TotalCostMicrodollars)
 	}
 }
+
+// TestStore_TotalThisWeek_HandlesMondayBoundary pins the clock to a Monday and
+// verifies "this week" starts at that Monday, not the previous one. SQLite's
+// `date('now', 'weekday 1', '-7 days')` is a no-op-then-minus-7 on Monday, so
+// it reached back to the prior Monday and also ignored the injected clock.
+func TestStore_TotalThisWeek_HandlesMondayBoundary(t *testing.T) {
+	s := testStore(t)
+	monday := time.Date(2025, 11, 10, 12, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return monday })
+
+	events := []costs.CostEvent{
+		// Previous Wednesday: last week, must be excluded.
+		{ID: "evt-prev-wed", SessionID: "s1", Timestamp: time.Date(2025, 11, 5, 12, 0, 0, 0, time.UTC), Model: "claude-sonnet-4-6", CostMicrodollars: 70000},
+		// This Monday morning: this week.
+		{ID: "evt-this-mon", SessionID: "s1", Timestamp: time.Date(2025, 11, 10, 9, 0, 0, 0, time.UTC), Model: "claude-sonnet-4-6", CostMicrodollars: 5000},
+	}
+	for _, ev := range events {
+		if err := s.WriteCostEvent(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	summary, err := s.TotalThisWeek()
+	if err != nil {
+		t.Fatalf("TotalThisWeek: %v", err)
+	}
+	if summary.TotalCostMicrodollars != 5000 || summary.EventCount != 1 {
+		t.Errorf("Monday UTC: this-week total = %d (%d events), want 5000 (1 event)", summary.TotalCostMicrodollars, summary.EventCount)
+	}
+}

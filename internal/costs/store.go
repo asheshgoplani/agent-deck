@@ -66,10 +66,10 @@ func (s *Store) TotalToday() (CostSummary, error) {
 	return s.querySum(string(where))
 }
 
-// TotalThisWeek returns this week's total costs (Monday start).
+// TotalThisWeek returns this week's total costs (Monday start), computed from
+// the injected clock like TotalLastWeek so the two windows meet at Monday.
 func (s *Store) TotalThisWeek() (CostSummary, error) {
-	where, _ := costPeriodWhere("week")
-	return s.querySum(string(where))
+	return s.querySum(`WHERE timestamp >= ?`, s.thisMonday().Format(time.RFC3339))
 }
 
 // TotalThisMonth returns this month's total costs.
@@ -91,13 +91,18 @@ func (s *Store) TotalYesterday() (CostSummary, error) {
 // is a no-op on Monday and shifts the window by 7 days, producing the
 // week-before-last instead of last week (#932).
 func (s *Store) TotalLastWeek() (CostSummary, error) {
-	now := s.now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	daysSinceMonday := (int(today.Weekday()) + 6) % 7 // Mon=0..Sun=6
-	thisMonday := today.AddDate(0, 0, -daysSinceMonday)
+	thisMonday := s.thisMonday()
 	lastMonday := thisMonday.AddDate(0, 0, -7)
 	return s.querySum(`WHERE timestamp >= ? AND timestamp < ?`,
 		lastMonday.Format(time.RFC3339), thisMonday.Format(time.RFC3339))
+}
+
+// thisMonday returns 00:00 UTC of the current ISO week's Monday.
+func (s *Store) thisMonday() time.Time {
+	now := s.now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	daysSinceMonday := (int(today.Weekday()) + 6) % 7 // Mon=0..Sun=6
+	return today.AddDate(0, 0, -daysSinceMonday)
 }
 
 // TotalLastMonth returns the prior calendar month's total costs.
