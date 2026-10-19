@@ -68,14 +68,15 @@ func (i *Instance) writeRestartOutcome() (statedb.WriteStamps, error) {
 		return statedb.WriteStamps{}, errors.New("restart left no tmux session name to record")
 	}
 
-	db := i.restartDB.Load()
-	if db == nil {
-		db = statedb.GetGlobal()
+	var stamps statedb.WriteStamps
+	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+		var werr error
+		stamps, werr = db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
+		return werr
+	})
+	if errors.Is(err, errNoStateDB) {
+		return statedb.WriteStamps{}, err
 	}
-	if db == nil {
-		return statedb.WriteStamps{}, errNoStateDB
-	}
-	stamps, err := db.WriteRestartOutcome(i.ID, name, string(i.Status), i.Tool)
 	if err != nil {
 		return statedb.WriteStamps{}, fmt.Errorf("record restart outcome for tmux session %q: %w", name, err)
 	}

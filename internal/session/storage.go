@@ -302,6 +302,13 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to migrate state database: %w", err)
 	}
 
+	// Identity check before any write: the store must belong to the profile
+	// this process resolved (see statedb.BindProfile).
+	if err := db.BindProfile(filepath.Base(profileDir)); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("profile %q: %w", effectiveProfile, err)
+	}
+
 	// Auto-migrate from sessions.json if state.db is empty
 	jsonPath := filepath.Join(profileDir, "sessions.json")
 	if _, jsonErr := os.Stat(jsonPath); jsonErr == nil {
@@ -364,6 +371,10 @@ func newReadOnlyStorageWithProfile(profile string, open func(string) (*statedb.S
 	db, err := open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state database read-only: %w", err)
+	}
+	if err := db.BindProfile(filepath.Base(filepath.Dir(dbPath))); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("profile %q: %w", effectiveProfile, err)
 	}
 	return &Storage{db: db, dbPath: dbPath, profile: effectiveProfile}, nil
 }

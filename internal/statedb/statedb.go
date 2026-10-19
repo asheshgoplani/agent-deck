@@ -120,6 +120,9 @@ type StateDB struct {
 	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
 	// incident). Empty for in-memory databases (no file to back up).
 	path string
+	// profile is the profile BindProfile confirmed this database belongs to;
+	// empty when the handle was never bound.
+	profile string
 }
 
 // newOwnerToken builds a claim-ownership token unique to this process

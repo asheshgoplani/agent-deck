@@ -12,6 +12,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -89,22 +90,12 @@ func ReadHermesSessionIDFromToolData(td json.RawMessage) string {
 // so a web mutator's short-lived Storage never drops the write and an
 // unrelated profile's global database is never written.
 func (i *Instance) persistHermesSessionBinding(sessionID string) {
-	db := i.restartDB.Load()
-	if db == nil {
-		db = statedb.GetGlobal()
-	}
-	if db == nil {
-		return
-	}
 	now := time.Now()
-	err := db.WriteHermesSessionBinding(i.ID, sessionID, now)
-	if err != nil && db.DB().Ping() != nil && i.storageSnapshot != nil && i.storageSnapshot.dbPath != "" {
-		var retryDB *statedb.StateDB
-		retryDB, err = statedb.Open(i.storageSnapshot.dbPath)
-		if err == nil {
-			err = retryDB.WriteHermesSessionBinding(i.ID, sessionID, now)
-			_ = retryDB.Close()
-		}
+	err := i.withOwningStateDB(func(db *statedb.StateDB) error {
+		return db.WriteHermesSessionBinding(i.ID, sessionID, now)
+	})
+	if errors.Is(err, errNoStateDB) {
+		return
 	}
 	if err != nil {
 		sessionLog.Warn("hermes_session_bind_persist_failed",

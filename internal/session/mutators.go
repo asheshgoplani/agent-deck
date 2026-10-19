@@ -412,10 +412,12 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		// genericSessionIDCleared flag above. A failure is recorded rather than
 		// dropped: the CLI reports it, and nothing else can tell an id that
 		// reached disk from one that only ever lived in this process.
-		if db := statedb.GetGlobal(); db != nil {
-			err := db.WriteGenericSessionBinding(
-				inst.ID, value, inst.GenericSessionTool, inst.GenericSessionCommand,
-				inst.GenericSessionLocation, inst.GenericDetectedAt)
+		if statedb.GetGlobal() != nil {
+			err := inst.withOwningStateDB(func(db *statedb.StateDB) error {
+				return db.WriteGenericSessionBinding(
+					inst.ID, value, inst.GenericSessionTool, inst.GenericSessionCommand,
+					inst.GenericSessionLocation, inst.GenericDetectedAt)
+			})
 			inst.setGenericSessionPersistError(err)
 			if err != nil {
 				return oldValue, nil, &MutationError{
