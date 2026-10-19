@@ -45,6 +45,9 @@ func TestMain(m *testing.M) {
 	cleanupHome := testutil.IsolateHome()
 	cleanup := testutil.IsolateTmuxSocket()
 	code := m.Run()
+	// Release the shared agent-deck build dir (agent-deck-eval-bin-*); it
+	// outlives every test, so t.Cleanup cannot own it.
+	harness.RemoveBuildArtifacts()
 	cleanup()
 	cleanupHome()
 	os.Exit(code)

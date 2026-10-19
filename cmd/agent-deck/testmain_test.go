@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
+	"github.com/asheshgoplani/agent-deck/tests/eval/harness"
 )
 
 // TestMain ensures all cmd tests use the _test profile to prevent
@@ -69,6 +70,10 @@ func runTestMain(m *testing.M) int {
 
 	// Run tests
 	code := m.Run()
+	// The subprocess tests share one agent-deck build in an
+	// agent-deck-eval-bin-* temp dir (~15 MB) that must outlive every test,
+	// so t.Cleanup cannot own it. Remove it here or it leaks on every run.
+	harness.RemoveBuildArtifacts()
 	if err := cleanupGoldensBinary(); err != nil {
 		fmt.Fprintf(os.Stderr, "cleanup goldens binary: %v\n", err)
 		code = 1

@@ -59,19 +59,31 @@ func removeSandbox(t *testing.T) *harness.Sandbox {
 	return sb
 }
 
-// runRemoveCLI runs the binary in the sandbox with a 60 s bound.
+// runRemoveCLI runs the binary in the sandbox with a 60 s bound. It goes
+// through harness.RunBounded so a timeout SIGKILLs the whole process group
+// (agent-deck plus any tmux or shell it forked), not only the direct child as
+// exec.CommandContext would. The error mirrors cmd.CombinedOutput: nil on a
+// zero exit, an *exec.ExitError otherwise.
 func runRemoveCLI(t *testing.T, sb *harness.Sandbox, args ...string) (string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, sb.BinPath, args...)
+	const timeout = 60 * time.Second
+	cmd := exec.Command(sb.BinPath, args...)
 	cmd.Env = sb.Env()
 	cmd.Dir = sb.Home
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("agent-deck %v did not finish in 60s:\n%s", args, out)
+	start := time.Now()
+	out := harness.RunBounded(cmd, timeout)
+	ps := cmd.ProcessState
+	if ps == nil {
+		// RunBounded appends the start error to the output.
+		return string(out), errors.New("agent-deck did not start")
 	}
-	return string(out), err
+	if !ps.Success() && time.Since(start) >= timeout {
+		t.Fatalf("agent-deck %v did not finish in %s:\n%s", args, timeout, out)
+	}
+	if !ps.Success() {
+		return string(out), &exec.ExitError{ProcessState: ps}
+	}
+	return string(out), nil
 }
 
 // startLiveShellSession registers a bash session, starts it, and returns
@@ -334,6 +346,12 @@ func TestSessionCleanup_SkipsSessionRevivedDuringPrompt(t *testing.T) {
 	cmd := exec.CommandContext(ctx, sb.BinPath, "session", "cleanup")
 	cmd.Env = sb.Env()
 	cmd.Dir = sb.Home
+	// This run needs a live stdin, so it cannot go through harness.RunBounded;
+	// give it the same process-group kill: on timeout, SIGKILL the whole group
+	// (a grandchild holding stdout would otherwise keep the read below blocked).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
