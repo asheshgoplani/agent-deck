@@ -21,7 +21,8 @@ const readinessNow = 1_800_000_000 // fixed "now" for the script (unix)
 type readinessRepo struct {
 	t      *testing.T
 	dir    string
-	runner string
+	runner string // RELEASE_READINESS_RUNNER; empty leaves it unset
+	path   string // PATH for the script; empty keeps the test's PATH
 }
 
 func newReadinessRepo(t *testing.T) *readinessRepo {
@@ -95,9 +96,20 @@ func (r *readinessRepo) run(args ...string) (int, string) {
 	}
 	cmd := exec.Command("bash", append([]string{filepath.Join(wd, "release-readiness.sh")}, args...)...)
 	cmd.Dir = r.dir
-	cmd.Env = append(os.Environ(),
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "RELEASE_READINESS_RUNNER=") && !(r.path != "" && strings.HasPrefix(kv, "PATH=")) {
+			env = append(env, kv)
+		}
+	}
+	if r.runner != "" {
+		env = append(env, "RELEASE_READINESS_RUNNER="+r.runner)
+	}
+	if r.path != "" {
+		env = append(env, "PATH="+r.path)
+	}
+	cmd.Env = append(env,
 		fmt.Sprintf("RELEASE_READINESS_NOW=%d", readinessNow),
-		"RELEASE_READINESS_RUNNER="+r.runner,
 		"TMPDIR="+r.t.TempDir(),
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	out, err := cmd.CombinedOutput()
@@ -209,5 +221,57 @@ func TestReleaseReadiness_RequiresTheUpdatePathTestToPass(t *testing.T) {
 			code, out := r.run()
 			requireExit(t, code, out, 1, "TestReleaseReadiness_UpdatePath did not pass")
 		})
+	}
+}
+
+// An untracked file is refused like a modified one: the end-to-end test
+// builds the whole checkout, so it would test code the tag does not hold.
+func TestReleaseReadiness_RefusesUntrackedFiles(t *testing.T) {
+	r := readyRepo(t)
+	if err := os.WriteFile(filepath.Join(r.dir, "cmd", "agent-deck", "extra.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := r.run()
+	requireExit(t, code, out, 1, "the checkout has uncommitted or untracked files")
+}
+
+// Without RELEASE_READINESS_RUNNER and without deck-test on PATH the script
+// runs `go test` itself, in the checkout root. A fake go on PATH records
+// where it ran and with which arguments.
+func TestReleaseReadiness_DefaultRunnerIsGoTestInTheCheckout(t *testing.T) {
+	r := readyRepo(t)
+	r.runner = ""
+	shim := t.TempDir()
+	record := filepath.Join(t.TempDir(), "go-call")
+	goShim := fmt.Sprintf("#!/bin/sh\n{ pwd; echo \"$@\"; } > '%s'\necho '--- PASS: TestReleaseReadiness_UpdatePath (1.00s)'\necho 'ok  \tx\t1.0s'\n", record)
+	if err := os.WriteFile(filepath.Join(shim, "go"), []byte(goShim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirs := []string{shim}
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		if _, err := os.Stat(filepath.Join(d, "deck-test")); err == nil {
+			continue // keep deck-test out of reach
+		}
+		dirs = append(dirs, d)
+	}
+	r.path = strings.Join(dirs, string(os.PathListSeparator))
+
+	code, out := r.run()
+	requireExit(t, code, out, 0, "READY: tag v1.0.1")
+	call, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the script did not run go: %v\n%s", err, out)
+	}
+	lines := strings.SplitN(strings.TrimSpace(string(call)), "\n", 2)
+	wantDir, err := filepath.EvalSymlinks(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDir, _ := filepath.EvalSymlinks(lines[0]); gotDir != wantDir {
+		t.Fatalf("go ran in %q, want the checkout %q", lines[0], wantDir)
+	}
+	wantArgs := "test -count=1 -v -run ^TestReleaseReadiness_UpdatePath$ ./internal/releasetests/"
+	if len(lines) < 2 || lines[1] != wantArgs {
+		t.Fatalf("go called with %q, want %q", lines[1:], wantArgs)
 	}
 }

@@ -72,8 +72,9 @@ fi
 
 head_sha=$(git rev-parse HEAD)
 echo "candidate: $head_sha"
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  refuse "the checkout has uncommitted changes; the check must run on the exact commit you tag"
+# Untracked files count too: the end-to-end test builds the whole checkout.
+if [ -n "$(git status --porcelain)" ]; then
+  refuse "the checkout has uncommitted or untracked files; the check must run on the exact commit you tag"
 fi
 
 last_tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)
@@ -144,8 +145,10 @@ fi
 
 # 4. Update and auto-install paths, end to end.
 echo "4. update path end to end ($E2E_TEST)"
+# run_go_test -C <dir> <go test args>: the runner used without deck-test.
 run_go_test() {
-  local dir=$1; shift
+  [ "${1:-}" = -C ] && [ $# -ge 2 ] || { echo "run_go_test: want -C <dir> <args>" >&2; return 2; }
+  local dir=$2; shift 2
   (cd "$dir" && go test "$@")
 }
 runner=${RELEASE_READINESS_RUNNER:-}

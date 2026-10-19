@@ -17,10 +17,10 @@
 //
 // After each run the binary on disk must be byte-identical to the candidate,
 // must run and report the candidate version, auto-update.log must carry the
-// install line, and nothing may change outside the temp HOME. Real network
-// access is routed to a local proxy that refuses every connection, so the
-// run never reaches GitHub. scripts/release-readiness.sh runs this test
-// before a tag; it also runs in the normal suite.
+// install line, and nothing the run writes may land outside the temp HOME.
+// Real network access is routed to a local proxy that refuses every
+// connection, so the run never reaches GitHub. scripts/release-readiness.sh
+// runs this test before a tag; it also runs in the normal suite.
 package releasetests
 
 import (
@@ -84,7 +84,7 @@ func TestReleaseReadiness_UpdatePath(t *testing.T) {
 		{"auto-install", "tui", runAutoInstall},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			before := fingerprintAgentDeckDirs(t, parentHome)
+			before := snapshotUpdateFiles(t, parentHome)
 			rel.resetRequests()
 			proxy.reset()
 
@@ -112,10 +112,18 @@ func TestReleaseReadiness_UpdatePath(t *testing.T) {
 					t.Errorf("the update tried to reach %s through the network", host)
 				}
 			}
-			// Nothing changed in the agent-deck dirs of the HOME the test
-			// started with (checked first: a leak also misplaces the log).
-			if after := fingerprintAgentDeckDirs(t, parentHome); after != before {
-				t.Errorf("the update changed files outside the temp HOME:\nbefore:\n%s\nafter:\n%s", before, after)
+			// Nothing this run wrote landed in the update files of the HOME
+			// the test started with or of the passwd home (checked first: a
+			// leak also misplaces the log). Only content naming this run
+			// counts, so a live deck on a developer box that rewrites its
+			// cache or appends to its own log meanwhile does not fail it.
+			markers := []string{
+				fmt.Sprintf(" install %s -> %s ok source=%s ", older, candidate, tc.source),
+				strings.TrimPrefix(rel.srv.URL, "http://"),
+				box,
+			}
+			if leaks := leakedWrites(before, snapshotUpdateFiles(t, parentHome), markers); len(leaks) > 0 {
+				t.Errorf("the update wrote outside the temp HOME:\n%s", strings.Join(leaks, "\n"))
 			}
 
 			// The binary on disk is now exactly the candidate.
@@ -519,18 +527,16 @@ var updateWrittenFiles = map[string]bool{
 	update.CacheFileName: true, update.UpdateLockFileName: true,
 }
 
-// fingerprintAgentDeckDirs lists path, size and mtime of the files an
-// update writes, in the agent-deck dirs (and the user timer and launch
-// agent dirs) of the HOME the test started with and of the passwd home.
-// It only reads. Only update files count, so a live deck on a developer
-// box writing its other logs does not make the test flaky.
-func fingerprintAgentDeckDirs(t *testing.T, home string) string {
+// snapshotUpdateFiles reads the files an update writes, in the agent-deck
+// dirs (and the user timer and launch agent dirs) of the HOME the test
+// started with and of the passwd home. It only reads.
+func snapshotUpdateFiles(t *testing.T, home string) map[string]string {
 	t.Helper()
 	homes := []string{home}
 	if u, err := user.Current(); err == nil && u.HomeDir != "" && u.HomeDir != home {
 		homes = append(homes, u.HomeDir)
 	}
-	var lines []string
+	files := map[string]string{}
 	for _, h := range homes {
 		if h == "" {
 			continue
@@ -544,18 +550,69 @@ func fingerprintAgentDeckDirs(t *testing.T, home string) string {
 				if !updateWrittenFiles[d.Name()] && !(units && strings.Contains(d.Name(), "agent")) {
 					return nil
 				}
-				if info, ierr := d.Info(); ierr == nil {
-					lines = append(lines, fmt.Sprintf("%s %d %d", p, info.Size(), info.ModTime().UnixNano()))
+				if data, rerr := os.ReadFile(p); rerr == nil { // #nosec G304 -- test reads its own HOME
+					files[p] = string(data)
 				}
 				return nil
 			})
 		}
 	}
-	sort.Strings(lines)
-	return strings.Join(lines, "\n")
+	return files
+}
+
+// leakedWrites lists the files whose new content (the appended part, or
+// all of it for a new or rewritten file) names this run: the install
+// line, the fake release address or the temp box path.
+func leakedWrites(before, after map[string]string, markers []string) []string {
+	var leaks []string
+	for p, now := range after {
+		added := now
+		if old, ok := before[p]; ok {
+			if old == now {
+				continue
+			}
+			if strings.HasPrefix(now, old) {
+				added = now[len(old):]
+			}
+		}
+		for _, m := range markers {
+			if m != "" && strings.Contains(added, m) {
+				leaks = append(leaks, fmt.Sprintf("%s: new content names %q", p, m))
+				break
+			}
+		}
+	}
+	sort.Strings(leaks)
+	return leaks
 }
 
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// A live deck on a developer box may rewrite its cache or append to its own
+// log while the update path test runs; only content naming this run counts.
+func TestReleaseReadiness_LeakCheckIgnoresUnrelatedWrites(t *testing.T) {
+	markers := []string{" install 1.0.0 -> 1.0.1 ok source=tui ", "127.0.0.1:4242", "/tmp/box"}
+	before := map[string]string{
+		"/h/auto-update.log":   "2026-10-18 check ok\n",
+		"/h/update-cache.json": `{"latest_version":"1.0.0"}`,
+	}
+	unrelated := map[string]string{
+		"/h/auto-update.log":   "2026-10-18 check ok\n2026-10-19 check ok\n",
+		"/h/update-cache.json": `{"latest_version":"1.0.2"}`,
+		"/h/update.lock":       "123 2026-10-19T00:00:00Z\n",
+	}
+	if leaks := leakedWrites(before, unrelated, markers); len(leaks) != 0 {
+		t.Fatalf("unrelated writes reported as leaks: %v", leaks)
+	}
+	leaked := map[string]string{
+		"/h/auto-update.log":   "2026-10-18 check ok\n2026-10-19 install 1.0.0 -> 1.0.1 ok source=tui pid=1\n",
+		"/h/update-cache.json": `{"download_url":"http://127.0.0.1:4242/x.tar.gz"}`,
+	}
+	leaks := leakedWrites(before, leaked, markers)
+	if len(leaks) != 2 {
+		t.Fatalf("want both leaked writes reported, got %v", leaks)
+	}
 }
