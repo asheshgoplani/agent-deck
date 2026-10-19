@@ -273,7 +273,7 @@ func TestCreationFreshRegistryReadOnly(t *testing.T) {
 }
 
 func TestCreationRegistryReadsLiveWAL(t *testing.T) {
-	profile := "creation-live-wal"
+	profile := freshTestProfile("creation-live-wal")
 	writer, err := session.NewStorageWithProfile(profile)
 	if err != nil {
 		t.Fatal(err)

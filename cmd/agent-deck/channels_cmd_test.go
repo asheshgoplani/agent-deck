@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -83,6 +84,12 @@ func linkOrCopyExecutable(src, dst string) error {
 	if err := os.Link(src, dst); err == nil {
 		return nil
 	}
+	// Copy with ForkLock held for reading, so no goroutine of this test
+	// binary forks while dst is open for writing. A child forked in that
+	// window inherits the write fd until it execs, and exec of dst then
+	// fails with ETXTBSY ("text file busy") under parallel tests.
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -180,10 +187,13 @@ func execAgentDeckEnv(bin, home, stdin string, extraEnv []string, args ...string
 func agentDeckTestEnv(home string, extraEnv []string) []string {
 	// Strip TMUX*/AGENTDECK_*/HOME from parent so the test isolation is
 	// total — same pattern used by TestLogCgroupIsolationDecision_*
-	// in cgroup_isolation_wiring_test.go:60-78.
+	// in cgroup_isolation_wiring_test.go:60-78. TMUX_TMPDIR stays: it is
+	// the isolated socket dir TestMain set (testutil.IsolateTmuxSocket), and
+	// without it a session the binary starts lands on the user's real tmux
+	// server under /tmp/tmux-UID/default. extraEnv may still override it.
 	var env []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "TMUX") {
+		if strings.HasPrefix(kv, "TMUX") && !strings.HasPrefix(kv, "TMUX_TMPDIR=") {
 			continue
 		}
 		if strings.HasPrefix(kv, "AGENTDECK_") {

@@ -475,9 +475,10 @@ func TestOpenCLIProfileAndWaitFlags(t *testing.T) {
 }
 
 // T1: --wait bounds the acknowledgment wait, both in publishOpenRequest and
-// through the CLI flag (no app answers here).
+// through the CLI flag (no app answers here). Serial on purpose: it asserts
+// wall-clock ceilings (2 s, openAckTimeout-500ms) that the package's parallel
+// process-spawning tests would eat into on a loaded CI runner.
 func TestOpenWaitBoundsTheAckWait(t *testing.T) {
-	parallelSubprocessTest(t)
 	bus, err := events.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

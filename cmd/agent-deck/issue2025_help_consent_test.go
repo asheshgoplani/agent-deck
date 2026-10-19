@@ -83,8 +83,10 @@ func mapKeyDiff(want, got map[string]bool) string {
 	return strings.Join(lines, "\n")
 }
 
+// Serial on purpose: every help call runs under a 2 s budget
+// (runIssue2025Helper), which must not overlap the package's parallel
+// process-spawning tests on a loaded CI runner.
 func TestEveryRegisteredCommandHelpIsReadOnly(t *testing.T) {
-	parallelSubprocessTest(t)
 	// These are protocol/version entry points, not human-facing command
 	// dispatchers, and intentionally define no nested help surface.
 	noHelpSurface := map[string]bool{

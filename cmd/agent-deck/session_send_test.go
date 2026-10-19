@@ -40,6 +40,8 @@ func (m *mockStatusChecker) GetStatus() (string, error) {
 // interval for the scripted-checker tests below. The checker is driven by
 // call count, not wall time, so every test still walks the same status and
 // error sequence; it just no longer sleeps 2s between scripted polls.
+// Never call it from a t.Parallel test: it mutates the package var
+// waitForCompletionTiming, which every waitForCompletion caller reads.
 func fastWaitForCompletion(t *testing.T) {
 	t.Helper()
 	saved := waitForCompletionTiming

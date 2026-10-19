@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -8,6 +10,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// freshProfileSeq numbers freshTestProfile's profiles across the whole test
+// binary, so -count=N runs never share one.
+var freshProfileSeq atomic.Int64
+
+// freshTestProfile returns base plus a suffix no earlier call in this test
+// binary returned. The package HOME is shared across -count=N runs, and
+// saves are upsert-only (#1551), so a fixed profile name hands run 2 the rows
+// run 1 left behind (fixed instance IDs then collide on insert).
+func freshTestProfile(base string) string {
+	return fmt.Sprintf("%s-%d", base, freshProfileSeq.Add(1))
+}
 
 // newReviveCLIStorage opens a real Storage in the isolated _test profile
 // (TestMain forces AGENTDECK_PROFILE=_test under an isolated HOME). Each call
@@ -61,7 +75,7 @@ func stubReviverHealingErrored(t *testing.T) *session.Reviver {
 func TestReviveCLI_PersistViaTargetedPath_DoesNotClobberConcurrentAdd(t *testing.T) {
 	// Own profile: saves are upsert-only (#1551), so rows written by other
 	// tests in the shared _test profile would leak into this test's snapshot.
-	t.Setenv("AGENTDECK_PROFILE", "_test_revive_clobber")
+	t.Setenv("AGENTDECK_PROFILE", freshTestProfile("_test_revive_clobber"))
 	reviveStorage := newReviveCLIStorage(t)
 
 	existing := &session.Instance{
@@ -126,7 +140,7 @@ func TestReviveCLI_PersistViaTargetedPath_DoesNotClobberConcurrentAdd(t *testing
 func TestReviveCLI_TargetedUpdate_PreservesConcurrentEditToRevivedRow(t *testing.T) {
 	// Own profile: saves are upsert-only (#1551), so rows written by other
 	// tests in the shared _test profile would leak into this test's snapshot.
-	t.Setenv("AGENTDECK_PROFILE", "_test_revive_edit")
+	t.Setenv("AGENTDECK_PROFILE", freshTestProfile("_test_revive_edit"))
 	reviveStorage := newReviveCLIStorage(t)
 
 	existing := &session.Instance{
