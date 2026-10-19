@@ -141,9 +141,9 @@ func TestToolStyleCache_ReinitializedOnThemeChange(t *testing.T) {
 func TestApplyColorOverrides(t *testing.T) {
 	themeMu.Lock()
 	defer themeMu.Unlock()
-	t.Cleanup(func() { setPalette("dark"); initStyles() })
+	t.Cleanup(func() { setPalette(ThemeDark); initStyles() })
 
-	setPalette("dark")
+	setPalette(ThemeDark)
 	applyColorOverrides(map[string]string{
 		"text":     "#f0f0f0",
 		" Green ":  " #85ff00 ",

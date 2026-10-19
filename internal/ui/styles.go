@@ -98,13 +98,13 @@ func InitTheme(theme string) {
 
 	themeMu.Lock()
 	defer themeMu.Unlock()
-	setPalette(theme)
+	setPalette(resolved)
 	applyColorOverrides(overrides)
 	initStyles()
 }
 
-func setPalette(theme string) {
-	if theme == "light" {
+func setPalette(theme Theme) {
+	if theme == ThemeLight {
 		currentTheme = ThemeLight
 		ColorBg = lightColors.Bg
 		ColorSurface = lightColors.Surface
@@ -182,7 +182,7 @@ func GetCurrentTheme() Theme {
 func init() {
 	// Default to dark theme at package init; user overrides are applied by the
 	// InitTheme call at startup, so package init never reads config.toml.
-	setPalette("dark")
+	setPalette(ThemeDark)
 	initStyles()
 }
 
