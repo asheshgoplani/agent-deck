@@ -1,0 +1,213 @@
+package scripts
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// The release-readiness script refuses a tag the release rules forbid: a
+// tag within 24 h of the previous one that does not fix it, a Version that
+// is not bumped, an update/auto-install/deploy change merged less than 12 h
+// ago, and a candidate whose update path end-to-end test did not pass.
+// Each case runs the real script against a throwaway git repo whose commit
+// and tag times are set relative to a fixed "now".
+
+const readinessNow = 1_800_000_000 // fixed "now" for the script (unix)
+
+type readinessRepo struct {
+	t      *testing.T
+	dir    string
+	runner string
+}
+
+func newReadinessRepo(t *testing.T) *readinessRepo {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	r := &readinessRepo{t: t, dir: dir}
+	r.git(0, "init", "-q", "-b", "main")
+	r.runner = r.stubRunner("--- PASS: TestReleaseReadiness_UpdatePath (1.00s)\nok  \tgithub.com/x/internal/releasetests\t1.0s", 0)
+	return r
+}
+
+// git runs git in the repo with author, committer and tagger time set to
+// hoursAgo before readinessNow.
+func (r *readinessRepo) git(hoursAgo int, args ...string) string {
+	r.t.Helper()
+	at := fmt.Sprintf("@%d +0000", readinessNow-hoursAgo*3600)
+	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"}, args...)...)
+	cmd.Dir = r.dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+at, "GIT_COMMITTER_DATE="+at, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		r.t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+// commit writes path (relative) and commits it hoursAgo.
+func (r *readinessRepo) commit(hoursAgo int, path, content, subject string) {
+	r.t.Helper()
+	full := filepath.Join(r.dir, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+	r.git(hoursAgo, "add", path)
+	r.git(hoursAgo, "commit", "-q", "-m", subject)
+}
+
+func (r *readinessRepo) setVersion(hoursAgo int, v string) {
+	r.t.Helper()
+	r.commit(hoursAgo, "cmd/agent-deck/main.go", "package main\n\nvar Version = \""+v+"\" // set at build time\n", "chore: release v"+v)
+}
+
+func (r *readinessRepo) tag(hoursAgo int, name string) {
+	r.t.Helper()
+	r.git(hoursAgo, "tag", "-a", "-m", name, name)
+}
+
+// stubRunner is a go test runner that prints out and exits with code.
+func (r *readinessRepo) stubRunner(out string, code int) string {
+	r.t.Helper()
+	p := filepath.Join(r.t.TempDir(), "runner.sh")
+	body := fmt.Sprintf("#!/bin/sh\ncat <<'EOF'\n%s\nEOF\nexit %d\n", out, code)
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	return p
+}
+
+// run runs the script and returns its exit code and output.
+func (r *readinessRepo) run(args ...string) (int, string) {
+	r.t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	cmd := exec.Command("bash", append([]string{filepath.Join(wd, "release-readiness.sh")}, args...)...)
+	cmd.Dir = r.dir
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("RELEASE_READINESS_NOW=%d", readinessNow),
+		"RELEASE_READINESS_RUNNER="+r.runner,
+		"TMPDIR="+r.t.TempDir(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.CombinedOutput()
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode(), string(out)
+	}
+	if err != nil {
+		r.t.Fatalf("run script: %v\n%s", err, out)
+	}
+	return 0, string(out)
+}
+
+// readyRepo has v1.0.0 tagged 48 h ago and v1.0.1 bumped after it, with no
+// update-path change: every check passes.
+func readyRepo(t *testing.T) *readinessRepo {
+	r := newReadinessRepo(t)
+	r.setVersion(60, "1.0.0")
+	r.tag(48, "v1.0.0")
+	r.commit(30, "internal/ui/view.go", "package ui\n", "feat(ui): a view")
+	r.setVersion(20, "1.0.1")
+	return r
+}
+
+func requireExit(t *testing.T, code int, out string, want int, contains ...string) {
+	t.Helper()
+	if code != want {
+		t.Fatalf("exit %d, want %d\n%s", code, want, out)
+	}
+	for _, c := range contains {
+		if !strings.Contains(out, c) {
+			t.Fatalf("output lacks %q:\n%s", c, out)
+		}
+	}
+}
+
+func TestReleaseReadiness_ReadyCandidatePasses(t *testing.T) {
+	r := readyRepo(t)
+	code, out := r.run()
+	requireExit(t, code, out, 0, "READY: tag v1.0.1", "none since v1.0.0")
+}
+
+func TestReleaseReadiness_RefusesTagWithin24hUnlessItFixesIt(t *testing.T) {
+	r := newReadinessRepo(t)
+	r.setVersion(10, "1.0.0")
+	r.tag(5, "v1.0.0")
+	r.setVersion(1, "1.0.1")
+
+	code, out := r.run()
+	requireExit(t, code, out, 1, "last tag v1.0.0 is 5h old (< 24 h)", "NOT READY: 1 problem(s)")
+
+	code, out = r.run("--fixes", "v1.0.0")
+	requireExit(t, code, out, 0, "allowed: this release fixes v1.0.0", "READY: tag v1.0.1")
+
+	code, out = r.run("--fixes", "v0.9.0")
+	requireExit(t, code, out, 1, "--fixes names v0.9.0 but the last tag is v1.0.0")
+}
+
+// A candidate already tagged locally (not pushed yet) is checked against
+// the tag before it, not against its own new tag.
+func TestReleaseReadiness_TaggedHeadComparesWithPreviousTag(t *testing.T) {
+	r := readyRepo(t)
+	r.tag(0, "v1.0.1")
+	code, out := r.run()
+	requireExit(t, code, out, 0, "HEAD is already tagged v1.0.1", "last tag v1.0.0", "READY: tag v1.0.1")
+}
+
+func TestReleaseReadiness_RefusesUnbumpedVersion(t *testing.T) {
+	r := newReadinessRepo(t)
+	r.setVersion(60, "1.0.0")
+	r.tag(48, "v1.0.0")
+	r.commit(30, "internal/ui/view.go", "package ui\n", "feat(ui): a view")
+
+	code, out := r.run()
+	requireExit(t, code, out, 1, "Version 1.0.0 in cmd/agent-deck/main.go is not above v1.0.0")
+}
+
+func TestReleaseReadiness_RefusesUnsoakedUpdateChangeUnlessOwnerOK(t *testing.T) {
+	r := readyRepo(t)
+	r.commit(30, "internal/update/old.go", "package update\n", "fix(update): soaked change")
+	r.commit(3, "internal/update/swap.go", "package update\n", "fix(update): swap the binary atomically")
+	r.commit(2, "internal/update/swap_test.go", "package update\n", "test(update): only a test")
+
+	code, out := r.run()
+	requireExit(t, code, out, 1,
+		"fix(update): swap the binary atomically  <- soaked 3h",
+		"(30h ago) fix(update): soaked change",
+		"1 update/auto-install/deploy change(s) merged less than 12 h ago")
+	if strings.Contains(out, "only a test") {
+		t.Fatalf("a test-only commit was listed as an update change:\n%s", out)
+	}
+
+	code, out = r.run("--owner-ok")
+	requireExit(t, code, out, 0, "allowed: 1 change(s) under 12 h, the owner agreed", "READY: tag v1.0.1")
+}
+
+func TestReleaseReadiness_RequiresTheUpdatePathTestToPass(t *testing.T) {
+	for _, tc := range []struct {
+		name, out string
+		code      int
+	}{
+		{"failed", "--- FAIL: TestReleaseReadiness_UpdatePath (1.00s)\nFAIL", 1},
+		{"skipped", "--- SKIP: TestReleaseReadiness_UpdatePath (0.00s)\nok  \tx\t0.1s", 0},
+		{"not run", "ok  \tx\t0.1s [no tests to run]", 0},
+		{"pass line but runner failed", "--- PASS: TestReleaseReadiness_UpdatePath (1.00s)\nFAIL", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := readyRepo(t)
+			r.runner = r.stubRunner(tc.out, tc.code)
+			code, out := r.run()
+			requireExit(t, code, out, 1, "TestReleaseReadiness_UpdatePath did not pass")
+		})
+	}
+}

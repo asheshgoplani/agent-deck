@@ -199,6 +199,10 @@ agent-deck/
 
 GitHub holds workflow runs from first-time fork contributors at "Approve and run". `scripts/maintainer/approve-fork-runs.sh` lists every held run on the current head of an open fork PR and marks PRs that touch CI plumbing (`.github/`, `Makefile`, lint and release config, `scripts/ci-*`, `tests/ci/`, `go.mod`, `go.sum`) as SENSITIVE. It is a dry run by default. `--approve` approves the safe PRs only; a SENSITIVE PR is approved only with `--include <pr>` after you have read its diff, and `--pr <n>` limits the run to one PR. Runs on superseded heads are never approved. Approved fork runs still get a read-only token and no repository secrets.
 
+## Cutting a release (maintainers)
+
+Before pushing a `v*` tag, run `make release-ready` (`scripts/release-readiness.sh`) on the exact commit you tag. It refuses a tag within 24 h of the previous one unless the release fixes it (`--fixes <that tag>`), an unbumped `Version`, an update, auto-install or deploy change merged less than 12 h ago (`--owner-ok` only with the owner's agreement), and a candidate whose update and auto-install paths fail end to end (`TestReleaseReadiness_UpdatePath`).
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.

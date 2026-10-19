@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
+.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-ready release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -189,6 +189,12 @@ verify-docker:
 ci:
 	@which lefthook > /dev/null || (echo "ERROR: lefthook not found. Run: brew install lefthook" && exit 1)
 	lefthook run pre-push --force --no-auto-install
+
+# Run before pushing a release tag: release gap, Version bump, soak of
+# update/deploy changes, and the update path end to end. Pass flags with
+# READY_ARGS, e.g. make release-ready READY_ARGS="--fixes v1.16.30".
+release-ready:
+	./scripts/release-readiness.sh $(READY_ARGS)
 
 # Local release using GoReleaser
 # Prerequisites: brew install goreleaser

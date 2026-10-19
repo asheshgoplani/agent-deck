@@ -1,5 +1,49 @@
 version: 1
 tests:
+- id: release-readiness-update-path
+  added: '2026-10-19'
+  task: release-readiness
+  file: internal/releasetests/release_readiness_update_test.go
+  test_name: TestReleaseReadiness_UpdatePath
+  purpose: "an older build updates itself to the candidate through 'agent-deck update' and the auto-install call, from a fake release in a throwaway HOME; the swapped binary is the candidate, reports its version, auto-update.log has the install line, nothing outside the temp HOME changes"
+  source: release-follow-ups
+  manual: false
+  run:
+    command: go test ./internal/releasetests/ -run TestReleaseReadiness_UpdatePath -count=1 -v
+    expected: pass
+- id: release-readiness-gap
+  added: '2026-10-19'
+  task: release-readiness
+  file: scripts/release_readiness_test.go
+  test_name: TestReleaseReadiness_RefusesTagWithin24hUnlessItFixesIt
+  purpose: "scripts/release-readiness.sh refuses a tag within 24 h of the last one unless --fixes names that tag"
+  source: release-follow-ups
+  manual: false
+  run:
+    command: go test ./scripts/ -run TestReleaseReadiness_RefusesTagWithin24hUnlessItFixesIt -count=1 -v
+    expected: pass
+- id: release-readiness-soak
+  added: '2026-10-19'
+  task: release-readiness
+  file: scripts/release_readiness_test.go
+  test_name: TestReleaseReadiness_RefusesUnsoakedUpdateChangeUnlessOwnerOK
+  purpose: "scripts/release-readiness.sh refuses an update/auto-install/deploy change merged less than 12 h ago unless --owner-ok"
+  source: release-follow-ups
+  manual: false
+  run:
+    command: go test ./scripts/ -run TestReleaseReadiness_RefusesUnsoakedUpdateChangeUnlessOwnerOK -count=1 -v
+    expected: pass
+- id: release-readiness-e2e-required
+  added: '2026-10-19'
+  task: release-readiness
+  file: scripts/release_readiness_test.go
+  test_name: TestReleaseReadiness_RequiresTheUpdatePathTestToPass
+  purpose: "scripts/release-readiness.sh refuses when the update path test fails, is skipped or did not run"
+  source: release-follow-ups
+  manual: false
+  run:
+    command: go test ./scripts/ -run TestReleaseReadiness_RequiresTheUpdatePathTestToPass -count=1 -v
+    expected: pass
 - id: issue2359-parse-latest-tag
   added: '2026-09-22'
   task: fix-2359
