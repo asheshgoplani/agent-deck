@@ -302,9 +302,11 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to migrate state database: %w", err)
 	}
 
-	// Identity check before any write: the store must belong to the profile
-	// this process resolved (see statedb.BindProfile).
-	if err := db.BindProfile(filepath.Base(profileDir)); err != nil {
+	// Identity check after the schema migration (which only creates or
+	// upgrades tables) and before any session row is read or written: the
+	// store must belong to the profile this process resolved (see
+	// statedb.BindProfile).
+	if err := db.BindProfile(statedb.ProfileNameForDir(profileDir)); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("profile %q: %w", effectiveProfile, err)
 	}
@@ -372,9 +374,14 @@ func newReadOnlyStorageWithProfile(profile string, open func(string) (*statedb.S
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state database read-only: %w", err)
 	}
-	if err := db.BindProfile(filepath.Base(filepath.Dir(dbPath))); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("profile %q: %w", effectiveProfile, err)
+	// A read-only handle cannot write to the wrong store, so a stamp it cannot
+	// confirm is a warning, never a refusal: the statusline, the remote
+	// catalog and other readers keep working while the writable open reports
+	// the mismatch.
+	if err := db.BindProfile(statedb.ProfileNameForDir(filepath.Dir(dbPath))); err != nil {
+		storageLog.Warn("profile_stamp_unconfirmed_read_only",
+			slog.String("profile", effectiveProfile),
+			slog.String("error", err.Error()))
 	}
 	return &Storage{db: db, dbPath: dbPath, profile: effectiveProfile}, nil
 }

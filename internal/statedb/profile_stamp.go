@@ -3,6 +3,7 @@ package statedb
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -37,10 +38,17 @@ func (e *ProfileMismatchError) Is(target error) bool { return target == ErrProfi
 // to the process-global database of another profile, a watcher and a remote
 // agent serving a different profile than -p named, an inbox export reading
 // every profile. Each was fixed where it happened. This is the check at the
-// store itself: a writable database records the profile it was first opened
-// for, and every later bind for a different profile is refused before
-// anything is written, so a path that resolves to the wrong store fails
-// loudly instead of mixing two profiles' sessions.
+// store itself: a writable database records the profile it was first bound
+// to, and every later bind for a different profile is refused before any
+// session row is read or written.
+//
+// What it catches is a store that moved: a state.db copied, restored or
+// renamed into another profile's directory. It does not catch a lookup that
+// resolved the wrong directory, because callers bind the name of the
+// directory the store is in, and a wrong directory's store matches its own
+// stamp. Writes that must reach a specific profile's store go through
+// session.Instance.withOwningStateDB, which carries the owning path and the
+// confirmed name with the instance.
 //
 // A database without a stamp (every store created before this check) is
 // stamped by its first writable bind. A read-only handle never writes; it is
@@ -60,11 +68,17 @@ func (s *StateDB) BindProfile(profile string) error {
 			return fmt.Errorf("statedb: stamp profile %q: %w", profile, err)
 		}
 	}
-	stamped, err := s.GetMeta(metaProfileKey)
+	var stamped string
+	err := withBusyRetry(func() error {
+		var gerr error
+		stamped, gerr = s.GetMeta(metaProfileKey)
+		return gerr
+	})
 	if err != nil {
-		if s.readOnly {
+		if s.readOnly && strings.Contains(err.Error(), "no such table") {
 			// A read-only store too old to have a metadata table carries no
-			// stamp to compare.
+			// stamp to compare. Any other error (busy, closed, corrupt) is
+			// reported: it says nothing about whose store this is.
 			s.profile = profile
 			return nil
 		}
@@ -75,6 +89,18 @@ func (s *StateDB) BindProfile(profile string) error {
 	}
 	s.profile = profile
 	return nil
+}
+
+// ProfileNameForDir returns the profile name a store in dir binds as: the base
+// name of dir with symlinks resolved. An alias of a profile directory
+// (profiles/alias -> profiles/work) is then the profile it points at, so
+// opening the alias first stamps the store "work" and the real name keeps
+// working. When dir cannot be resolved the plain base name is used.
+func ProfileNameForDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return filepath.Base(dir)
 }
 
 // Profile returns the profile BindProfile confirmed, or "" when the handle was

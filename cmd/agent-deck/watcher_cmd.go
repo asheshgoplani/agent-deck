@@ -144,7 +144,7 @@ func openWatcherDB(profile string) (*statedb.StateDB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate statedb: %w", err)
 	}
-	if err := db.BindProfile(filepath.Base(filepath.Dir(dbPath))); err != nil {
+	if err := db.BindProfile(statedb.ProfileNameForDir(filepath.Dir(dbPath))); err != nil {
 		db.Close()
 		return nil, err
 	}

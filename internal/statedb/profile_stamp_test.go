@@ -2,6 +2,7 @@ package statedb
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -91,5 +92,39 @@ func TestBindProfileReadOnlyNeverStamps(t *testing.T) {
 	defer rw.Close()
 	if stamp, _ := rw.GetMeta(metaProfileKey); stamp != "" {
 		t.Fatalf("read-only bind wrote stamp %q", stamp)
+	}
+}
+
+// TestBindProfileReadOnlyReportsUnreadableStamp: only a store too old to have
+// a metadata table counts as "no stamp" on a read-only handle. Any other
+// failure to read the stamp (here a closed handle; in the field a busy or
+// corrupt store) is reported, not mistaken for an unstamped store.
+func TestBindProfileReadOnlyReportsUnreadableStamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	bare, err := Open(path) // no Migrate: no metadata table
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := bare.DB().Exec(`CREATE TABLE placeholder (x INTEGER)`); err != nil {
+		t.Fatalf("create placeholder: %v", err)
+	}
+	_ = bare.Close()
+
+	ro, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	if err := ro.BindProfile("work"); err != nil {
+		t.Fatalf("read-only bind of a store without a metadata table: %v", err)
+	}
+	_ = ro.Close()
+
+	closed, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	_ = closed.Close()
+	if err := closed.BindProfile("work"); err == nil {
+		t.Fatal("read-only bind that could not read the stamp reported success")
 	}
 }

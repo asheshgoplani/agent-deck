@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -407,17 +408,17 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			inst.GenericSessionCommand = scope.Command
 			inst.GenericSessionLocation = scope.Location
 		}
-		// Optional write-through when TUI/long-lived process registered global DB.
-		// Full SaveWithGroups still works for CLI (GetGlobal nil) via the
-		// genericSessionIDCleared flag above. A failure is recorded rather than
+		// Write-through to the store the instance was loaded from (or the
+		// global one for an instance that has none; skipped when neither
+		// exists). A later full SaveWithGroups still applies the value via
+		// the genericSessionIDCleared flag above. A failure is recorded rather than
 		// dropped: the CLI reports it, and nothing else can tell an id that
 		// reached disk from one that only ever lived in this process.
-		if statedb.GetGlobal() != nil {
-			err := inst.withOwningStateDB(func(db *statedb.StateDB) error {
-				return db.WriteGenericSessionBinding(
-					inst.ID, value, inst.GenericSessionTool, inst.GenericSessionCommand,
-					inst.GenericSessionLocation, inst.GenericDetectedAt)
-			})
+		if err := inst.withOwningStateDB(func(db *statedb.StateDB) error {
+			return db.WriteGenericSessionBinding(
+				inst.ID, value, inst.GenericSessionTool, inst.GenericSessionCommand,
+				inst.GenericSessionLocation, inst.GenericDetectedAt)
+		}); !errors.Is(err, errNoStateDB) {
 			inst.setGenericSessionPersistError(err)
 			if err != nil {
 				return oldValue, nil, &MutationError{
