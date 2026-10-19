@@ -1020,6 +1020,7 @@ func handleSessionRestart(profile string, args []string) {
 			return
 		}
 		inst.SkipConductorRecoveryTurn()
+		inst.SetRestartReason(session.RestartReasonIdleBuildRefresh)
 	}
 
 	// Restart the session

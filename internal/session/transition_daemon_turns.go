@@ -68,6 +68,14 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	statsParent := statsParentFor(inst)
 	selfConductor := isSelfSuppressedConductor(inst)
 
+	// Issue #2792: the flip a restart's boot makes is not a turn; only an
+	// observed flip can be one (hook and recorded-turn paths see no boot).
+	if observedFlip {
+		if note, boot := takeRestartResume(inst, to, event.Timestamp); boot {
+			return d.emitRestartResumed(inst, event, note, selfConductor), true
+		}
+	}
+
 	if !classified {
 		if selfConductor {
 			// Issue #2481: no transcript, so no sender to answer; the notifier

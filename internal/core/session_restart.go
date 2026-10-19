@@ -108,6 +108,7 @@ func (deps Deps) sessionRestart(ctx context.Context, in SessionRestartIn) (Sessi
 			return out, nil
 		}
 		inst.SkipConductorRecoveryTurn()
+		inst.SetRestartReason(session.RestartReasonIdleBuildRefresh)
 	}
 
 	if err := inst.RestartWithEnv(in.Env); err != nil {

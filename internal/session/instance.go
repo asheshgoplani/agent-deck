@@ -655,6 +655,7 @@ type Instance struct {
 	hookLastUpdate              time.Time // When hook status was last received
 	linkedClaudeSessionID       string    // Last Claude id confirmClaudeSessionLink wrote a session_links row for
 	skipRecoveryTurn            bool      // SkipConductorRecoveryTurn: the next spawn sends no recovery turn
+	restartReason               string    // SetRestartReason: why the next restart happens, for its resume note
 	codexStartedGeneration      string
 	codexCompletedGeneration    string
 	codexStartedSessionID       string
@@ -10548,7 +10549,13 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 // restartRecorded restarts and records session.end(restart) from surface sf
 // on success.
 func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) error {
+	// The boot after a resume is not a turn: note the turn signal first, so
+	// the parent gets no false completion (#2792, restart_resume.go).
+	noteRestartResume(i, time.Now())
 	err := i.restart(env)
+	if err != nil {
+		clearRestartResumeNote(i.ID)
+	}
 	if err == nil {
 		// LastStartedAt covers restarts too (its contract), so the idle
 		// build refresh sees a TUI restart as already on the new build.
