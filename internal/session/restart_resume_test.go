@@ -568,3 +568,42 @@ func TestIssue2792_BannerAtPromptIsNotABoot(t *testing.T) {
 		t.Fatalf("want the login error, got %+v", f.inboxRecords(t))
 	}
 }
+
+// realRestart orders things as the real restart does (lander round 3): the
+// token, respawn-pane -k (which makes the OLD Claude exit), the spawn record
+// right after respawn returns, and the old Claude's async SessionEnd written
+// hookLag after the respawn, stamped in whole seconds.
+func (st *pidStub) realRestart(f *turnTestFixture, respawnAt time.Time, spawnRecordLag, hookLag time.Duration) {
+	noteRestartToken(f.child, respawnAt.Add(-50*time.Millisecond))
+	st.alive[st.pane] = false
+	st.pane += 100
+	st.alive[st.pane] = true
+	markRestartSpawned(f.child, respawnAt.Add(spawnRecordLag))
+	st.hook = &HookStatus{Status: "dead", Event: "SessionEnd", UpdatedAt: respawnAt.Add(hookLag).Truncate(time.Second)}
+}
+
+// Lander round 3: the old Claude's SessionEnd lands after the spawn record,
+// across a second boundary. A clean idle restart must not page the parent.
+func TestIssue2792_OldSessionEndAfterTheSpawnRecordIsHeld(t *testing.T) {
+	for _, base := range []time.Duration{900 * time.Millisecond, 100 * time.Millisecond} { // across a boundary, and within one second
+		for _, observed := range []bool{true, false} {
+			t.Run(fmt.Sprintf("x.%03d/observed=%v", base.Milliseconds(), observed), func(t *testing.T) {
+				f := newTurnTestFixture(t)
+				st := stubRestartPIDs(t)
+				f.finishedTurn(t)
+				sends := *f.sends
+				respawn := time.Now().Truncate(time.Second).Add(base)
+				st.realRestart(f, respawn, 20*time.Millisecond, 150*time.Millisecond)
+				f.d.emitTurn("default", f.child, f.byID, "running", "error", respawn.Add(time.Second), observed)
+				for _, r := range f.inboxRecords(t) {
+					if r.IsUrgent() {
+						t.Fatalf("false urgent on a clean idle restart: %q", r.Text)
+					}
+				}
+				if *f.sends != sends {
+					t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
+				}
+			})
+		}
+	}
+}

@@ -34,8 +34,9 @@ import (
 //
 // The daemon then holds back exactly two things. The exit of the old process,
 // and only an exit: an error while the old pid is gone, the hook file holds
-// its SessionEnd from no later than the restart recorded the new process, the
-// new process is alive and its pane shows no error (once). And the new process's first arrival at its
+// its SessionEnd (stamped no later than a second, the file's resolution, after
+// the restart recorded the new process), the new process is alive and its
+// pane shows no error (once). And the new process's first arrival at its
 // prompt with no new user or assistant record in the transcript (and no
 // SessionEnd of its own), which becomes one info-tier line instead and
 // spends the token. Any other error after the restart is the new process's
@@ -294,8 +295,13 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 	}
 	newAlive := restartPIDAlive(tok.NewPID)
 	hs := restartHookStatus(id)
-	oldEnd := hookSessionEnd(hs) && !hs.UpdatedAt.After(tok.SpawnedAt)
-	newEnd := hookSessionEnd(hs) && hs.UpdatedAt.After(tok.SpawnedAt)
+	// The restart's kill is what ends the old Claude, so its SessionEnd can be
+	// written just after the restart recorded the new process; the hook file
+	// stamps whole seconds. A SessionEnd up to its resolution later is the old
+	// one's (the other facts below still have to hold).
+	oldEndBy := tok.SpawnedAt.Add(time.Second)
+	oldEnd := hookSessionEnd(hs) && !hs.UpdatedAt.After(oldEndBy)
+	newEnd := hookSessionEnd(hs) && hs.UpdatedAt.After(oldEndBy)
 	rs := d.restarts()
 	switch normalizeStatusString(to) {
 	case string(StatusError):

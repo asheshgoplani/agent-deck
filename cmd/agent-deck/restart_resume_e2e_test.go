@@ -51,7 +51,8 @@ mode=$(cat "$cwd/.fake-mode" 2>/dev/null)
 if [ "$mode" = crash ]; then # the resume fails at once (bad build, auth, no conversation)
   hook SessionEnd; exit 3
 fi
-trap 'hook SessionEnd; exit 0' HUP TERM INT
+# .fake-slow-end: SessionEnd runs late, as real Claude's async node hook can
+trap '[ -e "$cwd/.fake-slow-end" ] && sleep 0.3; hook SessionEnd; exit 0' HUP TERM INT
 if [ "$mode" = hang ]; then # it never reaches its prompt
   printf '{"id":"hang-%s","phase":"booting"}' "$$" > "$t.input-control.json"
 elif [ "$mode" = banner ]; then # it is up, but its login expired
@@ -147,8 +148,12 @@ func recordText(r map[string]any) string { s, _ := r["text"].(string); return s 
 
 func TestRestartE2E_IdleRestartIsQuiet(t *testing.T) {
 	t.Parallel()
-	for _, viaHooks := range []bool{true, false} {
-		t.Run(map[bool]string{true: "hook path", false: "snapshot path"}[viaHooks], func(t *testing.T) {
+	for _, c := range []struct {
+		name               string
+		viaHooks, slowEnds bool
+	}{{"hook path", true, false}, {"hook path, slow SessionEnd", true, true}, {"snapshot path", false, false}} {
+		viaHooks := c.viaHooks
+		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			e := newRestartEnv(t)
 			parent := e.startFake("parent", "idle", "")
@@ -164,6 +169,9 @@ func TestRestartE2E_IdleRestartIsQuiet(t *testing.T) {
 			}
 			e.drainedFrom(parent.id, child.id)
 
+			if c.slowEnds {
+				writeFile(t, filepath.Join(child.project, ".fake-slow-end"), "", 0o600)
+			}
 			e.restartChild(child, viaHooks)
 			time.Sleep(8 * time.Second) // several daemon passes after the boot
 			recs = e.pendingFrom(parent.id, child.id)
