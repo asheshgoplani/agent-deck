@@ -141,8 +141,9 @@ not have it.
   (`169.254.0.0/16`, `fe80::/10`), this Mac's own addresses and networks,
   numeric IPv4 forms (such as `2130706433` or `127.1`) and IPv4-mapped IPv6
   forms. Loopback, link-local and this Mac's own addresses stay refused
-  whatever the allowlist says. The full list is in docs/macapp-browser.md,
-  "Policy".
+  whatever the allowlist says. On the Chrome panel engine only the first
+  address of an open is checked for now; redirects and later navigations
+  there are not. The full list is in docs/macapp-browser.md, "Policy".
 - **One scratch profile per session.** Each session's pages use a scratch
   profile of their own, keyed by host and session, so two sessions never
   share cookies. It is removed with the session. "Use My Logins" is a choice

@@ -231,6 +231,8 @@ not have it. Details are in docs/macapp-open.md, "App-side checks (Mac app)".
   (`169.254.0.0/16`, `fe80::/10`), this Mac's own addresses and networks,
   numeric IPv4 and IPv4-mapped IPv6 forms are refused. Loopback, link-local
   and this Mac's own addresses stay refused whatever the allowlist says.
+  On the Chrome panel engine only the first address of an open is checked
+  for now.
 - One scratch profile per session (host and session), removed with the
   session; "Use My Logins" is a per-session choice in the app.
 - The app reads `browser_profile`, and the old `profile` for one release
