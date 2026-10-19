@@ -16,6 +16,26 @@ from runner import check, decode_records, read_json_line
 HERE = Path(__file__).resolve().parent
 
 
+def process_is_gone(pid):
+    """Dead, or a zombie nobody has reaped yet. The CI container has no init, so python is PID 1 and an
+    orphaned grandchild stays a zombie for good: kill(pid, 0) still succeeds on it."""
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+    except FileNotFoundError:
+        if Path('/proc/self/stat').exists():
+            return True  # /proc works and has no entry for pid
+    except OSError:
+        pass
+    else:
+        # "<pid> (<comm>) <state> ...": comm may hold spaces and parentheses, so cut after the last ")".
+        return stat[stat.rindex(')') + 2] in 'ZX'
+    try:  # no /proc: signal 0 is all there is
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
 class ResultContractTests(unittest.TestCase):
     def test_expected_failure_only_accepts_enumerated_value(self):
         self.assertEqual(check('turns', 0, 1, [0])['status'], 'XFAIL')
@@ -244,16 +264,14 @@ class DriverFailurePathTests(unittest.TestCase):
         while not pid_file.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         grandchild = int(pid_file.read_text())
-        self.addCleanup(lambda: os.path.exists(f'/proc/{grandchild}') and os.kill(grandchild, 9))
+        self.addCleanup(lambda: not process_is_gone(grandchild) and os.kill(grandchild, 9))
         started = time.monotonic()
         with self.assertRaises(Exception):
             read_json_line(process, 0.5)
         self.assertLess(time.monotonic() - started, 4, 'a grandchild holding stderr must not extend the deadline')
         self.assertIsNotNone(process.returncode)
         for _ in range(100):
-            try:
-                os.kill(grandchild, 0)
-            except ProcessLookupError:
+            if process_is_gone(grandchild):
                 break
             time.sleep(0.02)
         else:
