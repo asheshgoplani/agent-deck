@@ -109,6 +109,10 @@ if [ "$mode" = trust ]; then
 elif [ "$mode" = permission ]; then
   # A tool-permission prompt whose command prints the theme picker text.
   printf ' Bash command\n\n   cat <<EOF\nChoose the text style that looks best with your terminal\n\n❯ 1. Dark mode ✔\n  2. Light mode\nSecurity notes:\nPress Enter to continue\nEOF\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n'
+elif [ "$mode" = decoy ]; then
+  # Earlier tool output holding the theme picker block, above a live
+  # project MCP-server dialog that carries no permission marker.
+  printf '⏺ Bash(cat notes.txt)\n  ⎿  hello\n     Choose the text style that looks best with your terminal\n     ❯ 1. Dark mode\n       2. Light mode\n\n New MCP server found in .mcp.json: demo\n\n ❯ 1. Use this and all future MCP servers in this project\n   2. Use this MCP server\n   3. Continue without using this MCP server\n\n   Enter to confirm · Esc to reject\n'
 elif [ "$mode" = closed ] && [ "$n" = 1 ]; then
   composer; printf '  plugin:telegram:telegram (CONNECTION_CLOSED) · /mcp\n'
 else
@@ -291,5 +295,22 @@ func TestSwitchSettle_FakeClaudePane_PermissionPromptWithThemeWordsUntouched(t *
 	time.Sleep(300 * time.Millisecond)
 	if got := p.keys(); got != "" || len(kicks) != 0 {
 		t.Fatalf("permission prompt read keys %q / kicked %d", got, len(kicks))
+	}
+}
+
+// Lander re-review: a theme-picker block in earlier tool output above a
+// live MCP-server dialog, on a real pane. The dialog reads no key.
+func TestSwitchSettle_FakeClaudePane_DecoyAboveLiveMenuUntouched(t *testing.T) {
+	project := t.TempDir()
+	p := startSettleFakePane(t, "swfb-decoy", "decoy", project)
+	var kicks []string
+	report, err := session.SettleSwitch(p.deps(t, &kicks), fakePaneOpts(project))
+	if !errors.Is(err, session.ErrSettleStopped) {
+		pane, _ := p.sess.CapturePrimaryPaneFresh()
+		t.Fatalf("err=%v receipt=%s\npane:\n%s", err, report.Receipt(), pane)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := p.keys(); got != "" || len(kicks) != 0 {
+		t.Fatalf("live MCP dialog read keys %q / kicked %d", got, len(kicks))
 	}
 }

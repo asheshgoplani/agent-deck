@@ -115,6 +115,10 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 		if shown == "" {
 			shown = "path not shown"
 		}
+		if own {
+			// The own path, but not as the only menu on screen.
+			return SettlePane{State: SettlePaneTrustOther, Detail: "folder trust for " + shown + " is not the only menu on screen"}
+		}
 		return SettlePane{State: SettlePaneTrustOther, Detail: "folder trust for " + shown}
 	}
 	if title := titleLine(lines, settleBypassTitles); title >= 0 {
@@ -146,6 +150,13 @@ func permissionPromptLine(lines []string) string {
 			if strings.Contains(text, marker) {
 				return text
 			}
+		}
+	}
+	// A narrow pane wraps a marker across lines.
+	flat := flattenPane(lines)
+	for _, marker := range settlePermissionMarkers {
+		if strings.Contains(flat, marker) {
+			return marker + " (wrapped)"
 		}
 	}
 	return ""
@@ -211,13 +222,54 @@ func optionBlockAfter(lines []string, after, maxGap int) ([]settleOptionRow, boo
 	return rows, true
 }
 
+// settleOptionLike matches a row that belongs to some menu: a cursor row
+// (❯ or ›) or a numbered option row, after the frame is stripped.
+var settleOptionLike = regexp.MustCompile(`^(❯|›)\s*\S|^\d+\.\s+\S`)
+
+// soleMenuBlock is the structural guard on every answer: the block must be
+// the only menu in the region (no cursor row or numbered option row
+// anywhere outside it) and the last thing on screen (only blank and hint
+// lines after it). A screen's block copied into earlier tool output above a
+// live menu, or a live menu under or around a decoy, therefore never gets a
+// key: any second menu means stop.
+func soleMenuBlock(lines []string, rows []settleOptionRow) bool {
+	if len(rows) == 0 {
+		return false
+	}
+	start, end := rows[0].idx, rows[len(rows)-1].idx
+	for i, line := range lines {
+		if i >= start && i <= end {
+			continue
+		}
+		text := strings.TrimSpace(strings.Trim(line, settleBoxChars))
+		if settleOptionLike.MatchString(text) {
+			return false
+		}
+		if i > end && text != "" && !settleHintLine(text) {
+			return false
+		}
+	}
+	return true
+}
+
+// settleHintLine is a key-hint footer line ("Enter to confirm · Esc to
+// cancel").
+func settleHintLine(text string) bool {
+	for _, h := range settleMenuHints {
+		if strings.Contains(text, h) {
+			return true
+		}
+	}
+	return false
+}
+
 // yesNoBlock checks that the option block under the title is exactly the
 // two rows of a Yes/No dialog, one each, with the cursor on one of them; it
 // returns the Yes row and the cursor row. Any other row, or a third row,
 // makes it not that dialog.
 func yesNoBlock(lines []string, title int, yes, no []string) (yesRow, cursorRow int, live bool) {
 	rows, ok := optionBlockAfter(lines, title, 16)
-	if !ok || len(rows) != 2 {
+	if !ok || len(rows) != 2 || !soleMenuBlock(lines, rows) {
 		return -1, -1, false
 	}
 	yesRow, cursorRow = -1, -1
@@ -246,7 +298,7 @@ func themeScreen(lines []string) bool {
 		return false
 	}
 	rows, ok := optionBlockAfter(lines, title, 4)
-	if !ok || len(rows) < 2 {
+	if !ok || len(rows) < 2 || !soleMenuBlock(lines, rows) {
 		return false
 	}
 	for _, row := range rows {
@@ -274,7 +326,17 @@ func securityNotesScreen(lines []string) bool {
 			cont = i
 		}
 	}
-	return title >= 0 && cont > title
+	if title < 0 || cont <= title {
+		return false
+	}
+	// The continue line ends the screen: nothing but blank or hint lines
+	// after it.
+	for i := cont + 1; i < len(lines); i++ {
+		if text := strings.TrimSpace(strings.Trim(lines[i], settleBoxChars)); text != "" && !settleHintLine(text) {
+			return false
+		}
+	}
+	return true
 }
 
 // liveDialogRegion returns the lines below the last composer on screen, or

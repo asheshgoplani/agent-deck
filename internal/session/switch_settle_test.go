@@ -1107,10 +1107,11 @@ func TestSettleSwitch_ThemeChangedBeforeEnterPressesNothing(t *testing.T) {
 // The same words on foreign layouts with no permission marker at all: each
 // layout check holds on its own (title at line start, exact option block).
 var foreignLayoutsWithScreenWords = map[string]string{
-	"theme title not at the start of its line":  "Run: Choose the text style that looks best with your terminal\n\n❯ 1. Dark mode\n  2. Light mode\n",
-	"bypass title not at the start of its line": "Note: WARNING: Claude Code running in Bypass Permissions mode\n\n❯ 1. No, exit\n  2. Yes, I accept\n\nEnter to confirm\n",
-	"bypass dialog with a third row":            "WARNING: Claude Code running in Bypass Permissions mode\n\n❯ 1. No, exit\n  2. Yes, I accept\n  3. Accept for this project\n\nEnter to confirm\n",
-	"trust dialog with a third row":             strings.Replace(trustScreen(settleProject, 0), "   Yes, I trust this folder", "   Yes, I trust this folder\n   Trust every folder under it", 1),
+	"theme title not at the start of its line":              "Run: Choose the text style that looks best with your terminal\n\n❯ 1. Dark mode\n  2. Light mode\n",
+	"bypass title not at the start of its line":             "Note: WARNING: Claude Code running in Bypass Permissions mode\n\n❯ 1. No, exit\n  2. Yes, I accept\n\nEnter to confirm\n",
+	"bypass dialog with a third row":                        "WARNING: Claude Code running in Bypass Permissions mode\n\n❯ 1. No, exit\n  2. Yes, I accept\n  3. Accept for this project\n\nEnter to confirm\n",
+	"onboarding notes with a menu before the continue line": "Security notes:\n\n❯ 1. Approve\n  2. Deny\n\nPress Enter to continue\n",
+	"trust dialog with a third row":                         strings.Replace(trustScreen(settleProject, 0), "   Yes, I trust this folder", "   Yes, I trust this folder\n   Trust every folder under it", 1),
 }
 
 func TestSettleSwitch_ForeignLayoutWithScreenWordsPressesNothing(t *testing.T) {
