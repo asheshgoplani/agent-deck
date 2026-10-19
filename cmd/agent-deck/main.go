@@ -1387,7 +1387,7 @@ func main() {
 			// coordinates before forwarding those events to the child tmux client.
 			tea.WithMouseAllMotion(),
 			tea.WithReportFocus(),
-			tea.WithInput(sessionInput),
+			tea.WithInput(ui.NewTUIRouterInput(sessionInput)),
 			tea.WithOutput(sessionOutput),
 		)
 	} else {
@@ -1397,7 +1397,7 @@ func main() {
 		programOptions = append(
 			programOptions,
 			tea.WithMouseCellMotion(),
-			tea.WithInput(ui.NewCSIuReader(os.Stdin)),
+			tea.WithInput(ui.NewTUIInput(os.Stdin)),
 		)
 	}
 	p := tea.NewProgram(homeModel, programOptions...)
