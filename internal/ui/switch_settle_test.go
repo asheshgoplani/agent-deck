@@ -39,6 +39,9 @@ func TestSwitchSettleCmd_RunsCLISettleOnlyForRestartedAccountChange(t *testing.T
 	if cmd := h.switchSettleCmd(accountSwitchedMsg{sessionID: "s1", nativeResult: &codex}); cmd != nil {
 		t.Fatal("settle for a codex session")
 	}
+	if cmd := h.switchSettleCmd(accountSwitchedMsg{sessionID: "s1", nativeResult: restarted, err: errors.New("journal write failed")}); cmd != nil {
+		t.Fatal("settle after a switch that reported an error (recovery required)")
+	}
 	cmd := h.switchSettleCmd(accountSwitchedMsg{sessionID: "s1", nativeResult: restarted, oldPIDs: []int{41, 42}})
 	if cmd == nil {
 		t.Fatal("no settle for a restarted account switch")

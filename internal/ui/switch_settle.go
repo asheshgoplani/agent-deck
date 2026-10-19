@@ -71,8 +71,11 @@ func lastSettleReceipt(output string) string {
 // switchSettleCmd returns the settle command for a committed native switch
 // that restarted a Claude session onto another account, or nil.
 func (h *Home) switchSettleCmd(msg accountSwitchedMsg) tea.Cmd {
+	// A switch that reported an error (even one committed, the
+	// recovery-required case) is left to the person reading its failure
+	// notice; settle never answers prompts or kicks it, like the CLI.
 	result := msg.nativeResult
-	if result == nil || !result.Restarted || result.OldAccount == result.NewAccount || !session.IsClaudeCompatible(result.NewTool) {
+	if msg.err != nil || result == nil || !result.Restarted || result.OldAccount == result.NewAccount || !session.IsClaudeCompatible(result.NewTool) {
 		return nil
 	}
 	profile, id, oldPIDs := h.profile, msg.sessionID, msg.oldPIDs

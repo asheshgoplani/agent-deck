@@ -103,7 +103,7 @@ func TestClassifySettlePane(t *testing.T) {
 		{"wrapped path", "Accessing workspace:\n\n/work/al\npha\n\nQuick safety check: Is this a project you created or one you trust?\n❯ No, exit\n  Yes, I trust this folder\n", SettlePaneTrustOwn},
 		{"trust question quoted in history above the composer", trustScreen(settleProject, 1) + "\n" + readyPane, SettlePaneReady},
 		{"trust question without option rows is not a live dialog", "Quick safety check: Is this a project you created or one you trust?\n" + settleProject + "\n", SettlePaneTrustOther},
-		{"question wrapped by a narrow pane", "│ Accessing workspace: │\n│ " + settleProject + " │\n│ Quick safety check: Is this a project you created │\n│ or one you trust? (Like your own code) │\n│ ❯ No, exit │\n│   Yes, I trust this folder │\n", SettlePaneTrustOwn},
+		{"question wrapped by a narrow pane", "│ Accessing workspace: │\n│ " + settleProject + " │\n│ Quick safety check: Is this a project you created │\n│ or one you trust? (Like your own code) │\n│ │\n│ ❯ No, exit │\n│   Yes, I trust this folder │\n", SettlePaneTrustOwn},
 		{"own path elsewhere on screen, dialog for another folder", " " + settleProject + "\n" + trustScreen("/work/beta", 0), SettlePaneTrustOther},
 		{"wrapped path that only starts with the own path", strings.Replace(trustScreen(settleProject+"-evil", 0), settleProject+"-evil", settleProject+"\n -evil", 1), SettlePaneTrustOther},
 		{"wrapped subdirectory of the own path", strings.Replace(trustScreen(settleProject+"/sub", 0), settleProject+"/sub", settleProject+"\n /sub", 1), SettlePaneTrustOther},
@@ -968,5 +968,167 @@ func TestSettleSwitch_SlowRepaintAfterEnterIsNotAnsweredAgain(t *testing.T) {
 	report, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
 	if err != nil || strings.Join(f.keys, ",") != "Enter" {
 		t.Fatalf("err=%v keys=%v receipt=%s", err, f.keys, report.Receipt())
+	}
+}
+
+// ASK-73: tool-permission prompts, laid out as Claude draws them, whose
+// content (the command, the diff) carries a first-start screen's words.
+// None of them may be answered: settle stops with nothing pressed.
+var permissionPanesWithScreenWords = map[string]string{
+	"bash prompt printing the theme picker": strings.Join([]string{
+		"╭──────────────────────────────────────────────────────────────────────╮",
+		"│ Bash command                                                         │",
+		"│                                                                      │",
+		"│   printf 'Choose the text style that looks best with your terminal\\n'  │",
+		"│   Show the theme picker text                                         │",
+		"│                                                                      │",
+		"│ Do you want to proceed?                                              │",
+		"│ ❯ 1. Yes                                                             │",
+		"│   2. Yes, and don't ask again for printf commands in /work/alpha     │",
+		"│   3. No, and tell Claude what to do differently (esc)                │",
+		"╰──────────────────────────────────────────────────────────────────────╯",
+	}, "\n"),
+	"bash heredoc whose lines are the whole theme picker": strings.Join([]string{
+		" Bash command",
+		"",
+		"   cat <<'EOF'",
+		"Choose the text style that looks best with your terminal",
+		"",
+		"❯ 1. Dark mode ✔",
+		"  2. Light mode",
+		"EOF",
+		"",
+		" Do you want to proceed?",
+		" ❯ 1. Yes",
+		"   2. No, and tell Claude what to do differently (esc)",
+	}, "\n"),
+	"edit prompt adding the onboarding notes": strings.Join([]string{
+		" Edit file",
+		" notes.md",
+		" ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+		"  1 +Security notes:",
+		"  2 +",
+		"  3 +1. Claude can make mistakes",
+		"  4 +Press Enter to continue…",
+		" ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+		"",
+		" Do you want to make this edit to notes.md?",
+		" ❯ 1. Yes",
+		"   2. Yes, allow all edits during this session (shift+tab)",
+		"   3. No, and tell Claude what to do differently (esc)",
+	}, "\n"),
+	"onboarding words in a prompt without a known marker": strings.Join([]string{
+		"Security notes:",
+		"Press Enter to continue",
+		"",
+		"Approve this tool call?",
+		"❯ 1. Approve",
+		"  2. Deny",
+	}, "\n"),
+	"theme title over a foreign option block": strings.Join([]string{
+		"Choose the text style that looks best with your terminal",
+		"",
+		"❯ 1. Approve",
+		"  2. Deny",
+	}, "\n"),
+	"mcp approval quoting the bypass warning": strings.Join([]string{
+		" New MCP server found in .mcp.json: demo",
+		" WARNING: Claude Code running in Bypass Permissions mode",
+		"",
+		" ❯ 1. No, exit",
+		"   2. Yes, I accept",
+		"   3. Use this and all future MCP servers in this project",
+		"",
+		" Allow this MCP server? Enter to confirm · Esc to reject",
+	}, "\n"),
+	"bash prompt quoting the trust dialog for the own path": strings.Join([]string{
+		" Bash command",
+		"",
+		"   echo 'Accessing workspace:'",
+		"Accessing workspace:",
+		"",
+		settleProject,
+		"",
+		"Quick safety check: Is this a project you created or one you trust?",
+		"",
+		"❯ No, exit",
+		"  Yes, I trust this folder",
+		"",
+		" Do you want to proceed?",
+		" ❯ 1. Yes",
+		"   2. No, and tell Claude what to do differently (esc)",
+	}, "\n"),
+}
+
+func TestClassifySettlePane_PermissionPromptsNeverLookLikeFirstStartScreens(t *testing.T) {
+	for name, pane := range permissionPanesWithScreenWords {
+		t.Run(name, func(t *testing.T) {
+			got := ClassifySettlePane(pane, []string{settleProject})
+			switch got.State {
+			case SettlePanePermission, SettlePaneUnknownMenu:
+			default:
+				t.Fatalf("state = %s (%s); a permission prompt must be permission-prompt or unknown-prompt", got.State, got.Detail)
+			}
+		})
+	}
+}
+
+func TestSettleSwitch_PermissionPromptWithScreenWordsPressesNothing(t *testing.T) {
+	for name, pane := range permissionPanesWithScreenWords {
+		t.Run(name, func(t *testing.T) {
+			cfgDir := t.TempDir()
+			f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+			f.set(pane)
+			opts := settleOpts(cfgDir)
+			opts.Bypass = true
+			report, err := SettleSwitch(f.deps(), opts)
+			if !errors.Is(err, ErrSettleStopped) {
+				t.Fatalf("err = %v, receipt %s", err, report.Receipt())
+			}
+			if len(f.keys) != 0 || len(f.kicks) != 0 {
+				t.Fatalf("pressed %v, kicked %d on a permission prompt", f.keys, len(f.kicks))
+			}
+		})
+	}
+}
+
+// Enter on the theme picker only when a fresh capture still shows it: a
+// screen that changed into a permission prompt in between gets no key.
+func TestSettleSwitch_ThemeChangedBeforeEnterPressesNothing(t *testing.T) {
+	cfgDir := t.TempDir()
+	f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+	f.set(themePane, permissionPanesWithScreenWords["bash prompt printing the theme picker"])
+	_, err := SettleSwitch(f.deps(), settleOpts(cfgDir))
+	if !errors.Is(err, ErrSettleStopped) || len(f.keys) != 0 {
+		t.Fatalf("err=%v keys=%v", err, f.keys)
+	}
+}
+
+// The same words on foreign layouts with no permission marker at all: each
+// layout check holds on its own (title at line start, exact option block).
+var foreignLayoutsWithScreenWords = map[string]string{
+	"theme title not at the start of its line":  "Run: Choose the text style that looks best with your terminal\n\n❯ 1. Dark mode\n  2. Light mode\n",
+	"bypass title not at the start of its line": "Note: WARNING: Claude Code running in Bypass Permissions mode\n\n❯ 1. No, exit\n  2. Yes, I accept\n\nEnter to confirm\n",
+	"bypass dialog with a third row":            "WARNING: Claude Code running in Bypass Permissions mode\n\n❯ 1. No, exit\n  2. Yes, I accept\n  3. Accept for this project\n\nEnter to confirm\n",
+	"trust dialog with a third row":             strings.Replace(trustScreen(settleProject, 0), "   Yes, I trust this folder", "   Yes, I trust this folder\n   Trust every folder under it", 1),
+}
+
+func TestSettleSwitch_ForeignLayoutWithScreenWordsPressesNothing(t *testing.T) {
+	for name, pane := range foreignLayoutsWithScreenWords {
+		t.Run(name, func(t *testing.T) {
+			got := ClassifySettlePane(pane, []string{settleProject})
+			switch got.State {
+			case SettlePaneTheme, SettlePaneBypass, SettlePaneOnboarding, SettlePaneTrustOwn, SettlePaneReady:
+				t.Fatalf("state = %s (%s) on a foreign layout", got.State, got.Detail)
+			}
+			cfgDir := t.TempDir()
+			f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+			f.set(pane)
+			opts := settleOpts(cfgDir)
+			opts.Bypass = true
+			if _, err := SettleSwitch(f.deps(), opts); !errors.Is(err, ErrSettleStopped) || len(f.keys) != 0 {
+				t.Fatalf("err=%v keys=%v", err, f.keys)
+			}
+		})
 	}
 }

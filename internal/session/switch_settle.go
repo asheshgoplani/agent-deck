@@ -41,30 +41,43 @@ const (
 	SettlePaneOnboarding   SettlePaneState = "onboarding-continue"
 	SettlePaneBypass       SettlePaneState = "bypass-ack"
 	SettlePaneUnknownMenu  SettlePaneState = "unknown-prompt"
+	SettlePanePermission   SettlePaneState = "permission-prompt"
 	SettlePaneLoginNeeded  SettlePaneState = "login-required"
 	SettlePaneShellOrEnded SettlePaneState = "exited"
 )
 
 var (
-	settleTrustQuestions = []string{
-		"Quick safety check: Is this a project you created or one you trust?",
-		"Is this a project you created or one you trust?",
-		"Do you trust the files in this folder?",
-	}
+	// Each first-start screen is recognised only by its own layout: its
+	// title at the start of a line, then an option block (the contiguous
+	// rows around the cursor) made only of that screen's own labels. Words
+	// of a screen anywhere else (a command in a permission prompt, a
+	// reply) never match one.
+	settleTrustTitles  = []string{"Quick safety check:", "Do you trust the files in this folder?"}
+	settleBypassTitles = []string{"WARNING: Claude Code running in Bypass Permissions mode"}
+	settleThemeTitles  = []string{"Choose the text style that looks best with your terminal"}
 	// Option rows, matched exactly after the cursor, a "N." number and the
 	// frame are stripped. A live capture of the trust dialog draws the
 	// cursor on "No, exit" first, so Enter alone would exit the session.
-	settleTrustYes      = []string{"Yes, I trust this folder", "Yes, proceed"}
-	settleBypassYes     = []string{"Yes, I accept"}
-	settleNoExit        = []string{"No, exit"}
-	settleThemeQuestion = "Choose the text style that looks best with your terminal"
-	settleBypassWarning = "Bypass Permissions mode"
+	settleTrustYes  = []string{"Yes, I trust this folder", "Yes, proceed"}
+	settleBypassYes = []string{"Yes, I accept"}
+	settleNoExit    = []string{"No, exit"}
+	settleThemeRow  = regexp.MustCompile(`^(Dark|Light) mode( \((colorblind-friendly|ANSI colors only)\))?$`)
+	// Onboarding notes: the title alone on its line, a continue line after
+	// it, and no option rows at all.
 	settleSecurityNotes = "Security notes:"
-	settleLoginMarkers  = []string{"Select login method", "Please run /login", "Invalid API key", "OAuth token has expired"}
-	settleMenuCursor    = regexp.MustCompile(`^[\s│]*❯\s*\d+\.\s+\S`)
-	settleOptionNumber  = regexp.MustCompile(`^\d+\.\s+`)
-	settleMenuHints     = []string{"Enter to confirm", "Enter to select", "Esc to cancel", "Use arrow keys to navigate", "Press Enter to continue"}
-	settleBoxChars      = "│╭╮╰╯─ \t"
+	settleContinueLine  = "Press Enter to continue"
+	// Tool-permission and approval prompts. Any of these on screen stops
+	// settle with nothing pressed, whatever else the screen shows.
+	settlePermissionMarkers = []string{
+		"Do you want to", "Would you like to", "Yes, and don't ask again", "No, and tell Claude what to do differently",
+		"Allow once", "Allow always", "Yes, allow", "Run this command?", "Allow this MCP server", "Allow execution of",
+		"Action Required", "Waiting for user confirmation",
+	}
+	settleLoginMarkers = []string{"Select login method", "Please run /login", "Invalid API key", "OAuth token has expired"}
+	settleMenuCursor   = regexp.MustCompile(`^[\s│]*❯\s*\d+\.\s+\S`)
+	settleOptionNumber = regexp.MustCompile(`^\d+\.\s+`)
+	settleMenuHints    = []string{"Enter to confirm", "Enter to select", "Esc to cancel", "Use arrow keys to navigate", "Press Enter to continue"}
+	settleBoxChars     = "│╭╮╰╯─ \t"
 )
 
 // SettlePane is one classification with the evidence behind it.
@@ -82,19 +95,19 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 	// dialog text above it is conversation history (a reply quoting the trust
 	// question), never a live prompt.
 	lines := liveDialogRegion(strings.Split(content, "\n"))
-	// Claude wraps its dialogs to the pane width; match the prose on the
-	// text with line breaks and frame characters folded away.
+	// A permission or approval prompt is never a first-start screen, even
+	// when what it shows (a command, a diff) carries a screen's words.
+	if marker := permissionPromptLine(lines); marker != "" {
+		return SettlePane{State: SettlePanePermission, Detail: marker}
+	}
 	flat := flattenPane(lines)
 	for _, marker := range settleLoginMarkers {
 		if strings.Contains(flat, marker) {
 			return SettlePane{State: SettlePaneLoginNeeded, Detail: marker}
 		}
 	}
-	for _, question := range settleTrustQuestions {
-		if !strings.Contains(flat, question) {
-			continue
-		}
-		_, _, live := dialogChoice(lines, settleTrustYes, settleNoExit)
+	if title := titleLine(lines, settleTrustTitles); title >= 0 {
+		_, _, live := yesNoBlock(lines, title, settleTrustYes, settleNoExit)
 		shown, own := trustDialogPath(lines, projectPaths)
 		if live && own {
 			return SettlePane{State: SettlePaneTrustOwn, Detail: shown}
@@ -104,15 +117,15 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 		}
 		return SettlePane{State: SettlePaneTrustOther, Detail: "folder trust for " + shown}
 	}
-	if strings.Contains(flat, settleThemeQuestion) {
-		return SettlePane{State: SettlePaneTheme, Detail: settleThemeQuestion}
-	}
-	if strings.Contains(flat, settleBypassWarning) {
-		if _, _, live := dialogChoice(lines, settleBypassYes, settleNoExit); live {
-			return SettlePane{State: SettlePaneBypass, Detail: settleBypassWarning}
+	if title := titleLine(lines, settleBypassTitles); title >= 0 {
+		if _, _, live := yesNoBlock(lines, title, settleBypassYes, settleNoExit); live {
+			return SettlePane{State: SettlePaneBypass, Detail: settleBypassTitles[0]}
 		}
 	}
-	if strings.Contains(flat, settleSecurityNotes) && strings.Contains(flat, "Press Enter to continue") {
+	if themeScreen(lines) {
+		return SettlePane{State: SettlePaneTheme, Detail: settleThemeTitles[0]}
+	}
+	if securityNotesScreen(lines) {
 		return SettlePane{State: SettlePaneOnboarding, Detail: settleSecurityNotes}
 	}
 	if menu := openMenuLine(lines); menu != "" {
@@ -122,6 +135,146 @@ func ClassifySettlePane(raw string, projectPaths []string) SettlePane {
 		return SettlePane{State: SettlePaneReady}
 	}
 	return SettlePane{State: SettlePaneStarting}
+}
+
+// permissionPromptLine returns the first line that carries a permission or
+// approval marker, or "".
+func permissionPromptLine(lines []string) string {
+	for _, line := range lines {
+		text := strings.Join(strings.Fields(strings.Trim(line, settleBoxChars)), " ")
+		for _, marker := range settlePermissionMarkers {
+			if strings.Contains(text, marker) {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+// titleLine is the index of the last line that starts with one of titles
+// (frame and indentation stripped), or -1.
+func titleLine(lines []string, titles []string) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		text := strings.Join(strings.Fields(strings.Trim(lines[i], settleBoxChars)), " ")
+		for _, title := range titles {
+			if strings.HasPrefix(text, title) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// settleOptionRow is one row of an option block.
+type settleOptionRow struct {
+	idx    int
+	text   string
+	cursor bool
+}
+
+// optionBlockAfter returns the first option block below line after: the
+// first row carrying the cursor and the contiguous non-blank rows around it
+// (never reaching back to line after), up to a hint line. ok is false when no
+// cursor row follows within maxGap lines.
+func optionBlockAfter(lines []string, after, maxGap int) ([]settleOptionRow, bool) {
+	cursor := -1
+	for i := after + 1; i < len(lines) && i <= after+maxGap; i++ {
+		if _, isCursor := optionText(lines[i]); isCursor {
+			cursor = i
+			break
+		}
+	}
+	if cursor < 0 {
+		return nil, false
+	}
+	blank := func(i int) bool { return strings.Trim(lines[i], settleBoxChars) == "" }
+	hint := func(i int) bool {
+		for _, h := range settleMenuHints {
+			if strings.Contains(lines[i], h) {
+				return true
+			}
+		}
+		return false
+	}
+	start, end := cursor, cursor
+	for start-1 > after && !blank(start-1) && !hint(start-1) {
+		start--
+	}
+	for end+1 < len(lines) && !blank(end+1) && !hint(end+1) {
+		end++
+	}
+	rows := make([]settleOptionRow, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		text, isCursor := optionText(lines[i])
+		rows = append(rows, settleOptionRow{idx: i, text: text, cursor: isCursor})
+	}
+	return rows, true
+}
+
+// yesNoBlock checks that the option block under the title is exactly the
+// two rows of a Yes/No dialog, one each, with the cursor on one of them; it
+// returns the Yes row and the cursor row. Any other row, or a third row,
+// makes it not that dialog.
+func yesNoBlock(lines []string, title int, yes, no []string) (yesRow, cursorRow int, live bool) {
+	rows, ok := optionBlockAfter(lines, title, 16)
+	if !ok || len(rows) != 2 {
+		return -1, -1, false
+	}
+	yesRow, cursorRow = -1, -1
+	noSeen := false
+	for _, row := range rows {
+		switch {
+		case containsString(yes, row.text):
+			yesRow = row.idx
+		case containsString(no, row.text):
+			noSeen = true
+		default:
+			return -1, -1, false
+		}
+		if row.cursor {
+			cursorRow = row.idx
+		}
+	}
+	return yesRow, cursorRow, yesRow >= 0 && noSeen && cursorRow >= 0
+}
+
+// themeScreen is the theme picker: its title at the start of a line, then
+// an option block of theme rows only, with the cursor on one.
+func themeScreen(lines []string) bool {
+	title := titleLine(lines, settleThemeTitles)
+	if title < 0 {
+		return false
+	}
+	rows, ok := optionBlockAfter(lines, title, 4)
+	if !ok || len(rows) < 2 {
+		return false
+	}
+	for _, row := range rows {
+		if !settleThemeRow.MatchString(row.text) {
+			return false
+		}
+	}
+	return true
+}
+
+// securityNotesScreen is the onboarding notes: "Security notes:" alone on
+// its line, a "Press Enter to continue" line after it, and no option rows
+// anywhere (a screen with a cursor row asks something else).
+func securityNotesScreen(lines []string) bool {
+	title, cont := -1, -1
+	for i, line := range lines {
+		text := strings.TrimSpace(strings.Trim(line, settleBoxChars))
+		if _, isCursor := optionText(line); isCursor {
+			return false
+		}
+		if text == settleSecurityNotes {
+			title = i
+		}
+		if title >= 0 && i > title && strings.HasPrefix(text, settleContinueLine) {
+			cont = i
+		}
+	}
+	return title >= 0 && cont > title
 }
 
 // liveDialogRegion returns the lines below the last composer on screen, or
@@ -174,28 +327,18 @@ func containsString(list []string, v string) bool {
 	return false
 }
 
-// dialogChoice finds a Yes/No dialog's rows: the row index of the Yes
-// option, the row the cursor is on, and whether both rows are present with
-// the cursor on one of them (a live dialog, not quoted text).
+// dialogChoice finds the live Yes/No dialog on screen: the title of one of
+// the known Yes/No screens, then its exact two-row block.
 func dialogChoice(lines []string, yes, no []string) (yesRow, cursorRow int, live bool) {
-	yesRow, cursorRow = -1, -1
-	noSeen := false
-	for i, line := range lines {
-		text, cursor := optionText(line)
-		isYes, isNo := containsString(yes, text), containsString(no, text)
-		if !isYes && !isNo {
-			continue
-		}
-		if isYes {
-			yesRow = i
-		} else {
-			noSeen = true
-		}
-		if cursor {
-			cursorRow = i
-		}
+	titles := settleTrustTitles
+	if containsString(yes, settleBypassYes[0]) {
+		titles = settleBypassTitles
 	}
-	return yesRow, cursorRow, yesRow >= 0 && noSeen && cursorRow >= 0
+	title := titleLine(lines, titles)
+	if title < 0 {
+		return -1, -1, false
+	}
+	return yesNoBlock(lines, title, yes, no)
 }
 
 // flattenPane joins the pane's lines with single spaces, frame characters
@@ -480,7 +623,7 @@ func (r *SettleReport) Receipt() string {
 		parts = append(parts, "answered="+strings.Join(r.Answered, ","))
 	}
 	if r.StoppedAt != "" {
-		parts = append(parts, fmt.Sprintf("stopped-at=%q (nothing pressed)", r.StoppedAt))
+		parts = append(parts, fmt.Sprintf("stopped-at=%q (no key sent to that screen)", r.StoppedAt))
 	}
 	if len(r.PluginFailures) > 0 {
 		parts = append(parts, "plugins=FAILED:"+strings.Join(r.PluginFailures, ","))
@@ -690,6 +833,13 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			if answered[pane.State] >= 2 {
 				report.StoppedAt = string(pane.State) + " keeps returning"
 				return ErrSettleStopped
+			}
+			// Enter only on a screen positively matched twice: re-read it
+			// right before the key.
+			again, err := deps.Capture()
+			if err != nil || ClassifySettlePane(again, paths).State != pane.State {
+				deps.Sleep(opts.PollEvery)
+				continue
 			}
 			answered[pane.State]++
 			deps.Log("answering %s (%s)", pane.State, pane.Detail)

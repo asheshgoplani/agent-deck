@@ -106,6 +106,9 @@ if [ "$mode" = trust ]; then
     esac
   done
   clear; composer
+elif [ "$mode" = permission ]; then
+  # A tool-permission prompt whose command prints the theme picker text.
+  printf ' Bash command\n\n   cat <<EOF\nChoose the text style that looks best with your terminal\n\n❯ 1. Dark mode ✔\n  2. Light mode\nSecurity notes:\nPress Enter to continue\nEOF\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do differently (esc)\n'
 elif [ "$mode" = closed ] && [ "$n" = 1 ]; then
   composer; printf '  plugin:telegram:telegram (CONNECTION_CLOSED) · /mcp\n'
 else
@@ -268,5 +271,25 @@ func TestSwitchSettle_FakeClaudePane_OtherWindowFocused(t *testing.T) {
 	}
 	if got := p.keys(); got != "key:[ESC[B]\nkey:[]" {
 		t.Fatalf("agent window read %q", got)
+	}
+}
+
+// ASK-73 end to end: a real pane showing a tool-permission prompt whose
+// command carries the theme and onboarding words. Settle stops; the pane
+// reads no key at all.
+func TestSwitchSettle_FakeClaudePane_PermissionPromptWithThemeWordsUntouched(t *testing.T) {
+	project := t.TempDir()
+	p := startSettleFakePane(t, "swfb-permission", "permission", project)
+	var kicks []string
+	opts := fakePaneOpts(project)
+	opts.Bypass = true
+	report, err := session.SettleSwitch(p.deps(t, &kicks), opts)
+	if !errors.Is(err, session.ErrSettleStopped) || !strings.Contains(report.StoppedAt, "permission-prompt") {
+		pane, _ := p.sess.CapturePrimaryPaneFresh()
+		t.Fatalf("err=%v receipt=%s\npane:\n%s", err, report.Receipt(), pane)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := p.keys(); got != "" || len(kicks) != 0 {
+		t.Fatalf("permission prompt read keys %q / kicked %d", got, len(kicks))
 	}
 }

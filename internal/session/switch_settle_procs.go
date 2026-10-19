@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,9 +111,12 @@ func (h hostProcReader) Env(pid int, key string) string {
 	// macOS: ps -E appends the environment to the command for processes
 	// of the same user. Values with spaces are ambiguous there, so only a
 	// whitespace-free value is trusted.
+	if pid <= 0 {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-Eww", "-o", "command=", "-p", fmt.Sprint(pid)).Output()
+	out, err := exec.CommandContext(ctx, "ps", "-Eww", "-o", "command=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // G204: fixed binary and flags, no shell; the only argument is a positive int pid
 	if err != nil {
 		return ""
 	}
@@ -216,7 +220,9 @@ func ClaudeAuthIdentity(configDir string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "auth", "status")
-	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+ExpandPath(configDir))
+	// The child env is built through childenv: it must not inherit this
+	// process's conductor CLAUDE_CONFIG_DIR or TELEGRAM_* (#1163).
+	cmd.Env = ChildLaunchEnv(nil, ExpandPath(configDir))
 	var buf cappedBuffer
 	buf.max = 64 << 10
 	cmd.Stdout, cmd.Stderr = &buf, &buf
