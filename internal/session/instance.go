@@ -5823,6 +5823,7 @@ func (i *Instance) Start() (startErr error) {
 	if err != nil {
 		return err
 	}
+	i.retireFastDeathWatchers() // #2805
 	if err := i.tmuxSession.Start(command); err != nil {
 		// #1580: persist the tmux-level failure so the preview / session show /
 		// lifecycle log can surface it instead of a bare "error".
@@ -6216,6 +6217,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 	if err != nil {
 		return err
 	}
+	i.retireFastDeathWatchers() // #2805
 	if err := i.tmuxSession.Start(command); err != nil {
 		// #1580: persist the tmux-level failure (sister path to Start()).
 		i.recordTmuxStartFailure(diagnosticCommand, err)
@@ -11151,6 +11153,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 		return err
 	}
 
+	i.retireFastDeathWatchers() // #2805
 	if err := i.tmuxSession.Start(command); err != nil {
 		mcpLog.Debug("restart_start_failed", slog.String("error", err.Error()))
 		// #1924: Start() and its sister path have recorded this since #1580,

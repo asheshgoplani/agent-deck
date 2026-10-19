@@ -323,6 +323,17 @@ func (i *Instance) waitForFastDeathWatchers() {
 	i.spawnWatchers.Wait()
 }
 
+// retireFastDeathWatchers supersedes the previous spawn's watcher and joins it
+// before tmux.Session.Start runs again on the same session (#2805). The watcher
+// reads sess.Name (Exists, IsPaneDead, CapturePane) with no lock, and Start
+// rewrites Name when the old tmux session still exists, so without the join a
+// restart races a watcher still holding the previous spawn. The bump closes the
+// watcher's wake channel, so it returns after at most the tmux call it is in.
+func (i *Instance) retireFastDeathWatchers() {
+	i.bumpSpawnGen(false)
+	i.waitForFastDeathWatchers()
+}
+
 func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan struct{}, sess *tmux.Session, id, tool string, logger *slog.Logger, lifecycleLogPath, failureDir string, probeTool, probeMarker, exitReceiptPath string) {
 	if sess == nil {
 		return
