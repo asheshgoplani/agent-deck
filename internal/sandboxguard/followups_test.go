@@ -1,6 +1,7 @@
 package sandboxguard
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,8 @@ func TestViolationError_NamesTheLeakedEnvVar(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			msg := violationError("Claude config dir", c.path, "/home/u", envMap(c.env)).Error()
+			env, val := leakSource(c.path, envMap(c.env))
+			msg := violationError("Claude config dir", c.path, "/home/u", env, val).Error()
 			for _, w := range c.want {
 				if !strings.Contains(msg, w) {
 					t.Errorf("message %q does not contain %q", msg, w)
@@ -139,4 +141,32 @@ func TestHomeJoin_RefusesTheRealHome(t *testing.T) {
 		}
 	}()
 	HomeJoin("Claude config dir", ".claude")
+}
+
+// TestHomeJoin_NamesHOMEWithClaudeConfigDirAtHomeClaude: a HomeJoin path
+// always comes from HOME. With CLAUDE_CONFIG_DIR=$HOME/.claude inherited from
+// the shell, a prefix guess would blame CLAUDE_CONFIG_DIR, and clearing it
+// would not stop the site. The refusal must name HOME.
+func TestHomeJoin_NamesHOMEWithClaudeConfigDirAtHomeClaude(t *testing.T) {
+	homes := RealHomes()
+	if len(homes) == 0 {
+		t.Skip("no guardable home in this environment")
+	}
+	t.Setenv("HOME", homes[0])
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(homes[0], ".claude"))
+	for name, fn := range map[string]func(){
+		"HomeJoin": func() { HomeJoin("Claude config dir", ".claude", "projects") },
+		"MustHome": func() { MustHome("Claude config dir", filepath.Join(homes[0], ".claude", "projects")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			msg := func() (msg string) {
+				defer func() { msg = fmt.Sprint(recover()) }()
+				fn()
+				return ""
+			}()
+			if !strings.Contains(msg, "through HOME=") || strings.Contains(msg, "CLAUDE_CONFIG_DIR") {
+				t.Fatalf("panic = %s, want one naming HOME and not CLAUDE_CONFIG_DIR", msg)
+			}
+		})
+	}
 }

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 )
 
 // FreshTargetLaunchOptions describes the target binding for a cross-harness
@@ -200,7 +202,7 @@ func BuildFreshTargetLaunchPlan(export *ContextExport, opts FreshTargetLaunchOpt
 		// Bind the actual local target home now. A literal ${HOME} expression
 		// would be re-resolved by a later shell and could launch another
 		// account/incarnation after the preview was accepted.
-		plan.SessionDir = filepath.Join(home, ".pi", "agent-deck", targetID)
+		plan.SessionDir = sandboxguard.MustHome("Pi instance session dir (~/.pi/agent-deck)", filepath.Join(home, ".pi", "agent-deck", targetID))
 		// Pi v0.85+ chooses a timestamped native JSONL filename under this
 		// instance-scoped directory. There is no safe predicted file path; the
 		// observer correlates a post-launch file against its durable directory

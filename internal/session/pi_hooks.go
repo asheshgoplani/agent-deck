@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 )
 
 // piHookExtensionSource is the pi extension agent-deck installs into pi's
@@ -48,13 +49,13 @@ func PiHookExtensionVersion() int { return piHookExtensionVersion }
 // live in the "extensions" subdirectory of it.
 func PiExtensionsDir() string {
 	if dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); dir != "" {
-		return filepath.Join(dir, "extensions")
+		return sandboxedToolDir("Pi extensions dir (PI_CODING_AGENT_DIR)", filepath.Join(dir, "extensions"))
 	}
-	home, err := os.UserHomeDir()
+	dir, err := sandboxguard.HomeJoin("Pi extensions dir (~/.pi/agent/extensions)", ".pi", "agent", "extensions")
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".pi", "agent", "extensions")
 	}
-	return filepath.Join(home, ".pi", "agent", "extensions")
+	return dir
 }
 
 // PiHookExtensionPath returns the full path of the installed extension file.

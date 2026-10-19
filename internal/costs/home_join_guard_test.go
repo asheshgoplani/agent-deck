@@ -19,6 +19,11 @@ func TestSyncFromTranscripts_RefusesTheRealHome(t *testing.T) {
 		t.Skip("no guardable home in this environment")
 	}
 	t.Setenv("HOME", homes[0])
+	// costs has no IsolateHome TestMain: clear the overrides a developer
+	// shell may carry, so the run does not depend on it.
+	for _, k := range sandboxguard.ToolConfigDirEnvs {
+		t.Setenv(k, "")
+	}
 	defer func() {
 		msg := fmt.Sprint(recover())
 		if !strings.Contains(msg, "sandboxguard:") || !strings.Contains(msg, "through HOME=") {

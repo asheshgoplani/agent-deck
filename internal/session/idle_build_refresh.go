@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
@@ -371,11 +372,14 @@ func idleRefreshCommand(inst *Instance) string {
 // runs with a PATH that lacks the user's install directories.
 func idleRefreshBinDirs() []string {
 	home, _ := os.UserHomeDir()
+	join := func(elem ...string) string {
+		return sandboxguard.MustHome("tool bin dir (~/"+filepath.Join(elem...)+")", filepath.Join(append([]string{home}, elem...)...))
+	}
 	return []string{
-		filepath.Join(home, ".local", "bin"),
-		filepath.Join(home, ".claude", "local"),
-		filepath.Join(home, ".npm-global", "bin"),
-		filepath.Join(home, ".bun", "bin"),
+		join(".local", "bin"),
+		join(".claude", "local"),
+		join(".npm-global", "bin"),
+		join(".bun", "bin"),
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
 	}

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 )
 
 // ContextExportOptions bounds a read-only context export. SessionID may be
@@ -418,7 +420,7 @@ func piInstanceSessionDir(instanceID string) (string, error) {
 	if err != nil || strings.TrimSpace(home) == "" {
 		return "", fmt.Errorf("resolve Pi home: %w", err)
 	}
-	dir := filepath.Join(home, ".pi", "agent-deck", instanceID)
+	dir := sandboxguard.MustHome("Pi instance session dir (~/.pi/agent-deck)", filepath.Join(home, ".pi", "agent-deck", instanceID))
 	if err := ensureNoSymlinkPath(dir); err != nil {
 		return "", fmt.Errorf("unsafe Pi instance session directory: %w", err)
 	}

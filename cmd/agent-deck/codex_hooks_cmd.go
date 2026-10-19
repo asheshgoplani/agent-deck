@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -264,11 +265,11 @@ func codexNotifyHome() string {
 	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
 		return session.ExpandPath(home)
 	}
-	home, err := os.UserHomeDir()
+	dir, err := sandboxguard.HomeJoin("Codex home (~/.codex)", ".codex")
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".codex")
+	return dir
 }
 
 func codexTurnEdge(event string) (started, completed bool) {
@@ -635,13 +636,13 @@ func codexHooksLine(state, configPath string) string {
 
 func getCodexConfigPath() string {
 	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
-		return filepath.Join(codexHome, "config.toml")
+		return sandboxguard.Must("Codex config (CODEX_HOME)", filepath.Join(codexHome, "config.toml"))
 	}
-	home, err := os.UserHomeDir()
+	p, err := sandboxguard.HomeJoin("Codex config (~/.codex/config.toml)", ".codex", "config.toml")
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".codex", "config.toml")
 	}
-	return filepath.Join(home, ".codex", "config.toml")
+	return p
 }
 
 func readFileOrEmpty(path string) (string, error) {

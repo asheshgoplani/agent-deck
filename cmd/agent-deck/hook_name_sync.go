@@ -2,8 +2,8 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -44,14 +44,14 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		return
 	}
 
-	home, err := os.UserHomeDir()
+	claudeDir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude")
 	if err != nil {
 		return
 	}
 	// Cheap pre-check: if Claude has no name for this session at all, skip the
 	// profile scan entirely (the common case for sessions started without
 	// --name). ReconcileTitleFromClaude re-reads it authoritatively below.
-	if findClaudeSessionName(filepath.Join(home, ".claude"), sessionID) == "" {
+	if findClaudeSessionName(claudeDir, sessionID) == "" {
 		return
 	}
 

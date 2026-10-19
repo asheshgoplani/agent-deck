@@ -50,6 +50,25 @@ func TestHomeDerivedToolPathsRefuseTheRealHome(t *testing.T) {
 		{"conversationConfigDirCandidates", nil, nil, "HOME", func() string { return fmt.Sprint(conversationConfigDirCandidates(nil)) }, ""},
 		{"claudeConfigDirRootsForInstance", map[string]string{"CLAUDE_CONFIG_DIR": filepath.Join(t.TempDir(), "claude")}, &UserConfig{}, "HOME",
 			func() string { return fmt.Sprint(claudeConfigDirRootsForInstance(&Instance{Tool: "claude"})) }, ""},
+		{"getPiLastResponse", nil, nil, "HOME",
+			func() string {
+				r, err := (&Instance{ID: "sgf-pi", Tool: "pi"}).getPiLastResponse()
+				return fmt.Sprint(r, err)
+			},
+			"Pi instance session dir (~/.pi/agent-deck)"},
+		{"hasLocalPiSessionFile", nil, nil, "HOME",
+			func() string { return fmt.Sprint((&Instance{ID: "sgf-pi", Tool: "pi"}).hasLocalPiSessionFile()) },
+			"Pi instance session dir (~/.pi/agent-deck)"},
+		{"piInstanceSessionDir", nil, nil, "HOME",
+			func() string { d, err := piInstanceSessionDir("sgf-pi"); return fmt.Sprint(d, err) },
+			"Pi instance session dir (~/.pi/agent-deck)"},
+		{"BuildFreshTargetLaunchPlan pi", nil, nil, "HOME",
+			func() string {
+				p, err := BuildFreshTargetLaunchPlan(syntheticTransferExport("claude"), FreshTargetLaunchOptions{TargetHarness: "pi"})
+				return fmt.Sprint(p, err)
+			}, "Pi instance session dir (~/.pi/agent-deck)"},
+		{"idleRefreshBinDirs", nil, nil, "HOME",
+			func() string { return fmt.Sprint(idleRefreshBinDirs()) }, "tool bin dir (~/.local/bin)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -75,6 +94,47 @@ func TestHomeDerivedToolPathsRefuseTheRealHome(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPiExtensionsDirRefusesTheRealHome: pi-hooks install and uninstall
+// write into PiExtensionsDir. Under go test with an unisolated real home, or a
+// PI_CODING_AGENT_DIR leaked in from the shell, resolving it must refuse
+// before anything is written. The test resolves only; it never runs the
+// installer against the real home.
+func TestPiExtensionsDirRefusesTheRealHome(t *testing.T) {
+	homes := sandboxguard.RealHomes()
+	if len(homes) == 0 {
+		t.Skip("no guardable home in this environment")
+	}
+	real := homes[0]
+	cases := []struct{ name, home, piDir, wantKind, wantEnv string }{
+		{"HOME", real, "", "Pi extensions dir (~/.pi/agent/extensions)", "HOME"},
+		{"leaked PI_CODING_AGENT_DIR", t.TempDir(), filepath.Join(real, ".pi", "agent"), "Pi extensions dir (PI_CODING_AGENT_DIR)", "PI_CODING_AGENT_DIR"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, k := range sandboxguard.ToolConfigDirEnvs {
+				t.Setenv(k, "")
+			}
+			t.Setenv("HOME", c.home)
+			t.Setenv("PI_CODING_AGENT_DIR", c.piDir)
+			got, msg := callRecover(PiExtensionsDir)
+			if msg == "" {
+				t.Fatalf("PiExtensionsDir() = %q under the real home, want a sandboxguard panic", got)
+			}
+			if !strings.Contains(msg, c.wantKind) || !strings.Contains(msg, "through "+c.wantEnv+"=") {
+				t.Fatalf("panic is not for %q through %s: %s", c.wantKind, c.wantEnv, msg)
+			}
+		})
+	}
+	t.Run("sandbox unchanged", func(t *testing.T) {
+		sandbox := t.TempDir()
+		t.Setenv("HOME", sandbox)
+		t.Setenv("PI_CODING_AGENT_DIR", "")
+		if got, want := PiExtensionsDir(), filepath.Join(sandbox, ".pi", "agent", "extensions"); got != want {
+			t.Fatalf("PiExtensionsDir() = %q, want %q", got, want)
+		}
+	})
 }
 
 // injectUserConfigForTest makes LoadUserConfig return cfg while HOME points

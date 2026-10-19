@@ -34,6 +34,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/procfd"
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
@@ -10110,11 +10111,10 @@ func (i *Instance) getPiLastResponse() (*ResponseOutput, error) {
 	if i.IsSSH() || i.IsSandboxed() {
 		return nil, fmt.Errorf("instance %s runs outside this host; its Pi transcript is not on this machine", i.ID)
 	}
-	home, err := os.UserHomeDir()
+	dir, err := sandboxguard.HomeJoin("Pi instance session dir (~/.pi/agent-deck)", ".pi", "agent-deck", i.ID)
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(home, ".pi", "agent-deck", i.ID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -11758,7 +11758,7 @@ func (i *Instance) hasLocalPiSessionFile() bool {
 	if err != nil || home == "" {
 		return false
 	}
-	sessionDir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	sessionDir := sandboxguard.MustHome("Pi instance session dir (~/.pi/agent-deck)", filepath.Join(home, ".pi", "agent-deck", i.ID))
 	found := false
 	_ = filepath.WalkDir(sessionDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d == nil || d.IsDir() {

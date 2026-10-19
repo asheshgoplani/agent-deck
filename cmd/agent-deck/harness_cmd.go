@@ -120,9 +120,10 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 	case "codex":
 		defHome := os.Getenv("CODEX_HOME")
 		if defHome == "" {
-			defHome = sandboxguard.Must("Codex home (~/.codex)", filepath.Join(home, ".codex"))
 			if cfg != nil && cfg.Codex.ConfigDir != "" {
 				defHome = session.ExpandPath(cfg.Codex.ConfigDir)
+			} else {
+				defHome = sandboxguard.MustHome("Codex home (~/.codex)", filepath.Join(home, ".codex"))
 			}
 		}
 		return accountLogins(cfg, name, defHome, codexLoggedIn)

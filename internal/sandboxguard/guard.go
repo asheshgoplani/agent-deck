@@ -227,7 +227,21 @@ func Check(kind, path string) error {
 	if h == "" {
 		return nil
 	}
-	return violationError(kind, path, h, os.Getenv)
+	env, val := leakSource(path, os.Getenv)
+	return violationError(kind, path, h, env, val)
+}
+
+// checkFrom is Check for a path whose source is known: env names the variable
+// the caller built it from, so the message does not have to guess from the
+// path prefix. A home-derived path with CLAUDE_CONFIG_DIR=$HOME/.claude
+// inherited would otherwise be blamed on CLAUDE_CONFIG_DIR, whose fix does
+// not stop that site.
+func checkFrom(kind, path, env string) error {
+	h := Violation(path)
+	if h == "" {
+		return nil
+	}
+	return violationError(kind, path, h, env, os.Getenv(env))
 }
 
 // homeRootEnvs are the env vars a home-derived path comes through when no
@@ -252,9 +266,8 @@ func leakSource(path string, getenv func(string) string) (env, val string) {
 	return "", ""
 }
 
-func violationError(kind, path, home string, getenv func(string) string) error {
+func violationError(kind, path, home, env, val string) error {
 	prefix := fmt.Sprintf("sandboxguard: %s resolved to %q, inside the real home %q, while running under go test", kind, path, home)
-	env, val := leakSource(path, getenv)
 	switch {
 	case env == "":
 		return fmt.Errorf("%s; the test is not sandboxed: call testutil.IsolateHome() in TestMain, or point HOME or the tool's "+
@@ -288,7 +301,17 @@ func HomeJoin(kind string, elem ...string) (string, error) {
 	if err != nil {
 		return home, err
 	}
-	return Must(kind, filepath.Join(append([]string{home}, elem...)...)), nil
+	return MustHome(kind, filepath.Join(append([]string{home}, elem...)...)), nil
+}
+
+// MustHome is Must for a path the caller joined onto os.UserHomeDir() itself:
+// the refusal is attributed to HOME, whatever tool override happens to share
+// the prefix. Outside a test binary it returns path unchanged.
+func MustHome(kind, path string) string {
+	if err := checkFrom(kind, path, "HOME"); err != nil {
+		panic(err.Error())
+	}
+	return path
 }
 
 // Must returns path, or panics when a test binary resolved it under a real
