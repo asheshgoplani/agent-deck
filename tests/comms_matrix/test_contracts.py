@@ -281,7 +281,7 @@ class DriverFailurePathTests(unittest.TestCase):
 class PiRunFailurePathTests(unittest.TestCase):
     """The same failures through Rig.pi_run, with a fake `node` standing in for the driver."""
 
-    def run_with_driver(self, driver_code):
+    def run_with_driver(self, driver_code, communicate_timeout=None):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         fake_bin = tmp / 'bin'
@@ -297,12 +297,17 @@ class PiRunFailurePathTests(unittest.TestCase):
             process = real_popen(*args, **kwargs)
             spawned.append(process)
             self.addCleanup(lambda: (process.kill(), process.wait()))
+            if communicate_timeout is not None:
+                real_communicate = process.communicate
+                # pi_run asks for 30 s; the test only needs it to expire.
+                process.communicate = lambda *a, timeout=None, **k: real_communicate(*a, timeout=communicate_timeout, **k)
             return process
 
         rig = runner.Rig(tmp / 'out', tmp / 'root')
         parts = [[{'event': 'input', 'payload': {}}], [{'event': 'turn_end', 'payload': {}}]]
         with mock.patch.object(runner, 'BINARY', str(fake_bin / 'agent-deck')), \
-                mock.patch.object(runner.subprocess, 'Popen', capturing):
+                mock.patch.object(runner.subprocess, 'Popen', capturing), \
+                mock.patch.object(rig, 'tick'):  # the daemon tick needs the real binary
             with self.assertRaises(Exception):
                 rig.pi_run('pi-identity', parts)
         self.assertEqual(len(spawned), 1, 'pi_run did not start the fake driver')
@@ -315,6 +320,29 @@ class PiRunFailurePathTests(unittest.TestCase):
     def test_non_object_json_from_the_driver_fails_and_reaps(self):
         process = self.run_with_driver('import time\nprint("[1]", flush=True)\ntime.sleep(60)\n')
         self.assertIsNotNone(process.returncode, 'pi_run must reap the driver on a non-object line')
+
+    def test_a_driver_that_acks_the_pause_then_hangs_is_reaped_when_communicate_times_out(self):
+        pid_file = Path(tempfile.mkdtemp()) / 'grandchild.pid'
+        self.addCleanup(shutil.rmtree, pid_file.parent, True)
+        # Acks the pause, then hangs with a grandchild holding the pipes open: only
+        # communicate's timeout can end the run.
+        code = ('import subprocess, time\n'
+                'print(\'{"paused": true}\', flush=True)\n'
+                'g = subprocess.Popen(["sleep", "60"])\n'
+                f'open({str(pid_file)!r}, "w").write(str(g.pid))\n'
+                'time.sleep(60)\n')
+        started = time.monotonic()
+        process = self.run_with_driver(code, communicate_timeout=1)
+        self.assertLess(time.monotonic() - started, 8, 'the communicate timeout must end the run')
+        self.assertIsNotNone(process.returncode, 'pi_run must reap the driver when communicate times out')
+        grandchild = int(pid_file.read_text())
+        self.addCleanup(lambda: not process_is_gone(grandchild) and os.kill(grandchild, 9))
+        for _ in range(100):
+            if process_is_gone(grandchild):
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("the driver's grandchild survived the communicate timeout")
 
 
 if __name__ == '__main__':
