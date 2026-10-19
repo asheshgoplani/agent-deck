@@ -195,12 +195,13 @@ func (s *Store) TotalByDateRange(from, to time.Time) ([]DailyCost, error) {
 }
 
 // ProjectedMonthly estimates monthly spend based on rolling 7-day average.
+// Stored timestamps are RFC3339; normalize before comparing with SQLite datetime.
 func (s *Store) ProjectedMonthly() (int64, error) {
 	var total sql.NullInt64
 	err := s.db.QueryRow(`
 		SELECT SUM(cost_microdollars)
 		FROM cost_events
-		WHERE timestamp >= datetime('now', '-7 days')`).Scan(&total)
+		WHERE datetime(timestamp) >= datetime('now', '-7 days')`).Scan(&total)
 	if err != nil {
 		return 0, err
 	}
@@ -212,10 +213,11 @@ func (s *Store) ProjectedMonthly() (int64, error) {
 }
 
 // PurgeOlderThan deletes events older than the given number of days. Returns count deleted.
+// Stored timestamps are RFC3339; normalize before comparing with SQLite datetime.
 func (s *Store) PurgeOlderThan(days int) (int64, error) {
 	result, err := s.db.Exec(`
 		DELETE FROM cost_events
-		WHERE timestamp < datetime('now', ? || ' days')`,
+		WHERE datetime(timestamp) < datetime('now', ? || ' days')`,
 		fmt.Sprintf("-%d", days))
 	if err != nil {
 		return 0, err
