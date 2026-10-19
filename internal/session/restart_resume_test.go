@@ -8,15 +8,41 @@ import (
 	"time"
 )
 
-// Issue #2792: the idle build refresh restarted a parented child onto a new
-// Claude build; the resumed Claude booted (running) and settled at its prompt
-// (waiting) with no new turn, and the parent got an urgent "waiting" record as
-// if a turn had finished. The observed flip over an unchanged transcript was
-// read as a real turn with a stale signal (#2184) and forced to urgent.
+// Issue #2792: a restart of a child idle at its prompt reached the parent as
+// news, through every path: the old process exiting (an urgent error) and the
+// new one at its prompt (the old reply again). The restart leaves a token
+// (old pid, new pid, transcript end); only the old process's exit and the
+// new one's first arrival at its prompt with no new turn are held back.
 
 // fxResumeMeta is the kind of non-turn record a resumed Claude appends to its
 // transcript while it boots.
 func fxResumeMeta() string { return `{"type":"permission-mode","permissionMode":"default"}` }
+
+// pidStub stands in for the child's pane pids.
+type pidStub struct {
+	pane  int
+	alive map[int]bool
+}
+
+func stubRestartPIDs(t *testing.T) *pidStub {
+	t.Helper()
+	st := &pidStub{pane: 100, alive: map[int]bool{100: true}}
+	oldPane, oldAlive := instancePanePID, restartPIDAlive
+	instancePanePID = func(*Instance) int { return st.pane }
+	restartPIDAlive = func(pid int) bool { return st.alive[pid] }
+	t.Cleanup(func() { instancePanePID, restartPIDAlive = oldPane, oldAlive })
+	return st
+}
+
+// restart does what restartRecorded does around a respawn: token, the old
+// process killed, the new one spawned and recorded.
+func (st *pidStub) restart(f *turnTestFixture, at time.Time) {
+	noteRestartToken(f.child, at)
+	st.alive[st.pane] = false
+	st.pane += 100
+	st.alive[st.pane] = true
+	markRestartSpawned(f.child, at)
+}
 
 // bootSeen is the daemon pass that sees the restarted child running while it
 // boots, which starts a new run for it.
@@ -24,221 +50,106 @@ func (f *turnTestFixture) bootSeen() {
 	f.d.forgetJournaledTurnsOfRunning("default", map[string]string{f.child.ID: "running", f.parent.ID: "waiting"})
 }
 
-// The idle refresh boot reaches the parent as at most one info line, never an
-// urgent record or a wake.
-func TestIssue2792_IdleRefreshRestartSendsNoCompletion(t *testing.T) {
-	f := newTurnTestFixture(t)
+// finishedTurn gives the child a real turn its parent has already received.
+func (f *turnTestFixture) finishedTurn(t *testing.T) int {
+	t.Helper()
 	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-	before := f.inboxRecords(t)
-	if len(before) != 1 {
-		t.Fatalf("precondition: the real turn is one record, got %+v", before)
+	n := len(f.inboxRecords(t))
+	if n != 1 {
+		t.Fatalf("precondition: the real turn is one record, got %d", n)
 	}
-	sendsBefore := *f.sends
+	return n
+}
 
-	// `session restart --if-idle` notes the turn, the daemon adds the build.
+func (f *turnTestFixture) recordsTo(t *testing.T, status string) []TransitionNotificationEvent {
+	var out []TransitionNotificationEvent
+	for _, r := range f.inboxRecords(t) {
+		if r.ToStatus == status {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// An idle restart, seen by either path: the old exit is held, the boot is one
+// info line, nothing is urgent, nothing wakes, the old reply is not re-sent.
+func TestIssue2792_IdleRestartIsOneInfoLine(t *testing.T) {
+	for _, observed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("observed=%v", observed), func(t *testing.T) {
+			f := newTurnTestFixture(t)
+			st := stubRestartPIDs(t)
+			n := f.finishedTurn(t)
+			sends := *f.sends
+
+			st.restart(f, time.Now())
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed) // the old process exits
+			f.appendTurn(t, fxResumeMeta())
+			f.bootSeen()
+			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), observed) // the new one at its prompt
+
+			added := f.inboxRecords(t)[n:]
+			if len(added) != 1 || added[0].IsUrgent() || added[0].Text != "Restarted while idle; conversation resumed, no new turn." {
+				t.Fatalf("want exactly the one info line, got %+v", added)
+			}
+			if *f.sends != sends {
+				t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
+			}
+			if _, left := readRestartToken(f.child.ID); left {
+				t.Fatalf("the boot spends the token")
+			}
+		})
+	}
+}
+
+// The idle build refresh names the build it moved the child onto.
+func TestIssue2792_IdleRefreshNamesTheBuild(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	n := f.finishedTurn(t)
 	f.child.SetRestartReason(RestartReasonIdleBuildRefresh)
-	noteRestartResume(f.child, time.Now())
-	annotateRestartResumeBuild(f.child.ID, "/opt/claude/versions/2.1.303")
-	f.appendTurn(t, fxResumeMeta())
-	f.bootSeen()
-	result, ok := f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-	if !ok {
-		t.Fatalf("the boot flip must be handled, not retried")
-	}
-
-	recs := f.inboxRecords(t)
-	var added []TransitionNotificationEvent
-	for _, r := range recs {
-		if r.TurnUUID == "a1" && r.Tier == TurnTierInfo && r.Text == "Index added; tests pass." {
-			continue // the real turn from before the restart
-		}
-		added = append(added, r)
-	}
-	if len(added) != 1 {
-		t.Fatalf("exactly one info line for the refresh, got %+v", added)
-	}
-	for _, r := range added {
-		if r.IsUrgent() {
-			t.Fatalf("the refresh boot must not be urgent: %+v (result %+v)", r, result)
-		}
-		if !strings.Contains(r.Text, "Refreshed onto claude 2.1.303") {
-			t.Fatalf("the info line names the build, got %q", r.Text)
-		}
-	}
-	if *f.sends != sendsBefore {
-		t.Fatalf("the refresh boot must not wake the parent, sends %d -> %d", sendsBefore, *f.sends)
-	}
-	// The hook path can see the same boot again: still nothing new.
-	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false)
-	if got := len(f.inboxRecords(t)); got != len(recs) {
-		t.Fatalf("a second sighting of the boot added a record: %d -> %d", len(recs), got)
-	}
-}
-
-// A plain `session restart` of an idle child gives one info line, never the
-// old reply again and never a wake.
-func TestIssue2792_ResumeOnlyRestartSendsOneInfoLine(t *testing.T) {
-	f := newTurnTestFixture(t)
-	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
-	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-	n := len(f.inboxRecords(t))
-	sends := *f.sends
-
-	noteRestartResume(f.child, time.Now())
+	st.restart(f, time.Now())
+	f.d.noteRestartBuild(f.child.ID, "/opt/claude/versions/2.1.303")
 	f.appendTurn(t, fxResumeMeta())
 	f.bootSeen()
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-
 	added := f.inboxRecords(t)[n:]
-	if len(added) != 1 || added[0].IsUrgent() || added[0].Text != "Restarted while idle; conversation resumed, no new turn." {
-		t.Fatalf("want one info line for the restart, got %+v", added)
-	}
-	if *f.sends != sends {
-		t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
+	if len(added) != 1 || !strings.Contains(added[0].Text, "Refreshed onto claude 2.1.303") {
+		t.Fatalf("want the refresh line naming the build, got %+v", added)
 	}
 }
 
-// The live #2792 follow-up: the hook path sees the old process die (SessionEnd,
-// an error) while the restart runs, then the boot (SessionStart). Neither is a
-// turn: no urgent record, no re-send of the old reply, at most one info line.
-func TestIssue2792_HookPathRestartIsQuiet(t *testing.T) {
+// The live case: a transcript ending in a compaction summary with no reply
+// has no turn identity and is keyed on its size, which the resume grows.
+func TestIssue2792_CompactedTranscriptRestartIsQuiet(t *testing.T) {
 	f := newTurnTestFixture(t)
-	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
-	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-	n := len(f.inboxRecords(t))
-	sends := *f.sends
-
-	noteRestartResume(f.child, time.Now())
-	f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), false) // the kill
-	markRestartResumed(f.child.ID, time.Now())
-	f.appendTurn(t, fxResumeMeta())
-	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false) // the boot
-
-	added := f.inboxRecords(t)[n:]
-	if len(added) > 1 {
-		t.Fatalf("at most one info line, got %+v", added)
-	}
-	for _, r := range added {
-		if r.IsUrgent() || r.ToStatus == "error" || strings.Contains(r.Text, "Index added") {
-			t.Fatalf("the restart must not reach the parent as a turn or an error: %+v", r)
-		}
-	}
-	if *f.sends != sends {
-		t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
-	}
-}
-
-// Any producer that reaches the notifier directly is held to the same rule.
-func TestIssue2792_NotifierDropsRestartBootRecords(t *testing.T) {
-	f := newTurnTestFixture(t)
-	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
-	noteRestartResume(f.child, time.Now())
-	f.appendTurn(t, fxResumeMeta())
-	ev := TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: f.child.Title, Profile: "default",
-		FromStatus: "running", ToStatus: "waiting", Timestamp: time.Now(), Text: "Index added; tests pass."}
-	if r := f.d.notifier.NotifyTransition(ev); r.DeliveryResult == transitionDeliveryCommitted {
-		t.Fatalf("the notifier delivered a restart boot: %+v", r)
-	}
-	ev.DoneStatus, ev.DoneSummary = "ok", "index added"
-	if r := f.d.notifier.NotifyFinished(ev); r.DeliveryResult == transitionDeliveryCommitted {
-		t.Fatalf("the notifier delivered a finished record for a restart boot: %+v", r)
-	}
-	if recs := f.inboxRecords(t); len(recs) != 0 {
-		t.Fatalf("want no records, got %+v", recs)
-	}
-}
-
-// A real turn after the restart, or an error, is delivered as before.
-func TestIssue2792_NewTurnOrErrorAfterRestartStillNotifies(t *testing.T) {
-	t.Run("new turn", func(t *testing.T) {
-		f := newTurnTestFixture(t)
-		f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
-		f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-		f.child.SetRestartReason(RestartReasonIdleBuildRefresh)
-		noteRestartResume(f.child, time.Now())
-		f.bootSeen()
-		f.appendTurn(t, fxResumeMeta(), fxHuman("u2", "status?"), fxAssistantText("a2", "Blocked on the schema. Should I drop the old column?"))
-		f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-		var found bool
-		for _, r := range f.inboxRecords(t) {
-			found = found || (r.TurnUUID == "a2" && r.IsUrgent())
-		}
-		if !found {
-			t.Fatalf("the question after the restart must reach the parent urgently: %+v", f.inboxRecords(t))
-		}
-	})
-	t.Run("error", func(t *testing.T) {
-		f := newTurnTestFixture(t)
-		f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
-		f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-		sends := *f.sends
-		noteRestartResume(f.child, time.Now())
-		markRestartResumed(f.child.ID, time.Now().Add(-restartResumeErrorSlack-time.Second))
-		f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), true)
-		var found bool
-		for _, r := range f.inboxRecords(t) {
-			found = found || (r.ToStatus == "error" && r.IsUrgent())
-		}
-		if !found || *f.sends == sends {
-			t.Fatalf("an error after a restart is urgent news: %+v", f.inboxRecords(t))
-		}
-	})
-	t.Run("stale note", func(t *testing.T) {
-		f := newTurnTestFixture(t)
-		f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
-		f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-		noteRestartResume(f.child, time.Now().Add(-restartResumeTTL-time.Minute))
-		f.appendTurn(t, fxResumeMeta())
-		f.bootSeen()
-		f.bootSeen()
-		_, _ = f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-		if _, left := readRestartResumeNote(f.child.ID); left {
-			t.Fatalf("an expired note is spent, not kept")
-		}
-	})
-}
-
-// The live case: the child's transcript ended in a compaction summary with no
-// reply, so it has no turn identity and the daemon keys it on the file size,
-// which the resume's metadata records grow. The refresh boot still must not
-// reach the parent as a completion.
-func TestIssue2792_CompactedTranscriptRefreshSendsNoCompletion(t *testing.T) {
-	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
 	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."),
 		`{"type":"system","subtype":"compact_boundary","isSidechain":false}`,
 		fxUser("u2", "This session is being continued from a previous conversation.", map[string]any{"isCompactSummary": true}))
-	settle := func() { // past the flush-race window, as on a session idle for days
+	settle := func() {
 		past := time.Now().Add(-time.Hour)
 		_ = os.Chtimes(f.transcript, past, past)
 	}
 	settle()
 	sends := *f.sends
-	n := len(f.inboxRecords(t))
-
-	f.child.SetRestartReason(RestartReasonIdleBuildRefresh)
-	noteRestartResume(f.child, time.Now())
+	st.restart(f, time.Now())
+	f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), false)
 	f.appendTurn(t, `{"type":"last-prompt"}`, `{"type":"custom-title","customTitle":"x"}`, fxResumeMeta(), `{"type":"cost-state"}`)
 	settle()
 	f.bootSeen()
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-
-	for _, r := range f.inboxRecords(t)[n:] {
-		if r.IsUrgent() {
-			t.Fatalf("the refresh boot of a compacted child must not be urgent: %+v", r)
-		}
-	}
-	if got := len(f.inboxRecords(t)) - n; got > 1 {
-		t.Fatalf("at most one info line, got %d", got)
+	recs := f.inboxRecords(t)
+	if len(recs) != 1 || recs[0].IsUrgent() {
+		t.Fatalf("want only the info line, got %+v", recs)
 	}
 	if *f.sends != sends {
 		t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
 	}
 }
 
-// Lander review of #2793: a restart that cuts a turn short (a plain `session
-// restart` while the child works) must still tell the parent the child
-// stopped, as main does: such a child gets no note.
+// A restart in the middle of a turn leaves no token: the parent hears that the
+// child stopped, on either path (lander review of #2793).
 func TestIssue2792_MidTurnRestartStillNotifies(t *testing.T) {
 	cases := map[string]func(f *turnTestFixture, t *testing.T){
 		"tool call after the text": func(f *turnTestFixture, t *testing.T) {
@@ -253,37 +164,204 @@ func TestIssue2792_MidTurnRestartStillNotifies(t *testing.T) {
 		for _, observed := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/observed=%v", name, observed), func(t *testing.T) {
 				f := newTurnTestFixture(t)
+				st := stubRestartPIDs(t)
 				setup(f, t)
-				noteRestartResume(f.child, time.Now())
-				if _, ok := readRestartResumeNote(f.child.ID); ok {
-					t.Fatalf("a child in the middle of a turn gets no note")
+				st.restart(f, time.Now())
+				if _, ok := readRestartToken(f.child.ID); ok {
+					t.Fatalf("a child in the middle of a turn gets no token")
 				}
 				f.child.Status = StatusWaiting
-				n := len(f.inboxRecords(t))
 				f.appendTurn(t, fxResumeMeta())
 				f.bootSeen()
 				f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), observed)
-				if got := len(f.inboxRecords(t)); got != n+1 {
-					t.Fatalf("the parent must hear the cut-short child stopped: records %d -> %d", n, got)
+				if got := len(f.inboxRecords(t)); got != 1 {
+					t.Fatalf("the parent must hear the cut-short child stopped: %d records", got)
 				}
 			})
 		}
 	}
 }
 
-// An annotation after the daemon spent the note does not bring it back.
-func TestIssue2792_AnnotateDoesNotResurrectSpentNote(t *testing.T) {
+// A real turn after the restart is delivered as before.
+func TestIssue2792_NewTurnAfterRestartNotifies(t *testing.T) {
 	f := newTurnTestFixture(t)
-	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
-	noteRestartResume(f.child, time.Now())
-	clearRestartResumeNote(f.child.ID)
-	annotateRestartResumeBuild(f.child.ID, "/opt/claude/versions/2.1.303")
-	if _, ok := readRestartResumeNote(f.child.ID); ok {
-		t.Fatalf("a spent note must stay spent")
+	st := stubRestartPIDs(t)
+	f.finishedTurn(t)
+	st.restart(f, time.Now())
+	f.bootSeen()
+	f.appendTurn(t, fxResumeMeta(), fxHuman("u2", "status?"), fxAssistantText("a2", "Blocked on the schema. Should I drop the old column?"))
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+	var found bool
+	for _, r := range f.inboxRecords(t) {
+		found = found || (r.TurnUUID == "a2" && r.IsUrgent())
 	}
-	// The note spent between the annotation's read and its write.
-	writeRestartResumeNoteIf(f.child.ID, restartResumeNote{At: time.Now(), Signal: "x", Build: "b"}, true)
-	if _, ok := readRestartResumeNote(f.child.ID); ok {
-		t.Fatalf("the annotation's write must not bring back a spent note")
+	if !found {
+		t.Fatalf("the question after the restart must reach the parent urgently: %+v", f.inboxRecords(t))
+	}
+}
+
+// Any error of the new process is news, at any time, on either path.
+func TestIssue2792_NewProcessErrorsAreNews(t *testing.T) {
+	cases := map[string]func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool){
+		// the resume dies before it reaches its prompt (bad build, auth, no conversation)
+		"crash after spawn": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			st.alive[st.pane] = false
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
+		},
+		// lander probe P1a: boot, then the resume dies a few seconds later
+		"crash soon after boot": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			f.appendTurn(t, fxResumeMeta())
+			f.bootSeen()
+			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), observed)
+			st.alive[st.pane] = false
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(3*time.Second), observed)
+		},
+		// lander probe P1b: much later, long after the restart
+		"error minutes later": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			f.appendTurn(t, fxResumeMeta())
+			f.bootSeen()
+			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), observed)
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(5*time.Minute), observed)
+		},
+		// a second error while the new process lives: only one exit is ours
+		"second error": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(time.Second), observed)
+		},
+	}
+	for name, run := range cases {
+		for _, observed := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/observed=%v", name, observed), func(t *testing.T) {
+				f := newTurnTestFixture(t)
+				st := stubRestartPIDs(t)
+				f.finishedTurn(t)
+				sends := *f.sends
+				st.restart(f, time.Now())
+				run(t, f, st, observed)
+				errs := f.recordsTo(t, "error")
+				if len(errs) == 0 || !errs[0].IsUrgent() || *f.sends == sends {
+					t.Fatalf("an error of the new process must reach the parent urgently: %+v", f.inboxRecords(t))
+				}
+			})
+		}
+	}
+}
+
+// An error before the restart recorded its new process waits for it.
+func TestIssue2792_ErrorBeforeSpawnRecordedWaits(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	f.finishedTurn(t)
+	noteRestartToken(f.child, time.Now())
+	st.alive[st.pane] = false
+	if _, ok := f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), false); ok {
+		t.Fatalf("an error while the restart runs must be retried, not decided")
+	}
+	if errs := f.recordsTo(t, "error"); len(errs) != 0 {
+		t.Fatalf("not delivered yet: %+v", errs)
+	}
+	st.pane += 100
+	st.alive[st.pane] = true
+	markRestartSpawned(f.child, time.Now())
+	if _, ok := f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), false); !ok {
+		t.Fatalf("once the new process is recorded the error is decided")
+	}
+	if errs := f.recordsTo(t, "error"); len(errs) != 0 {
+		t.Fatalf("the old process's exit is held: %+v", errs)
+	}
+}
+
+// A new process that does not reach its prompt within the boot timeout is
+// reported once; one that came back without a seen flip is not.
+func TestIssue2792_NeverBootsIsReported(t *testing.T) {
+	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
+	cases := []struct {
+		name     string
+		status   string
+		newAlive bool
+		want     bool
+	}{
+		{"new process died", "error", false, true},
+		{"still booting", "running", true, true},
+		{"stuck before its prompt", "starting", true, true},
+		{"came back unseen", "waiting", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newTurnTestFixture(t)
+			st := stubRestartPIDs(t)
+			f.finishedTurn(t)
+			at := time.Now().Add(-2 * time.Minute)
+			st.restart(f, at)
+			st.alive[st.pane] = c.newAlive
+			statuses := map[string]string{f.child.ID: c.status, f.parent.ID: "waiting"}
+			f.d.sweepRestartTokens("default", f.byID, statuses, time.Now())
+			f.d.sweepRestartTokens("default", f.byID, statuses, time.Now()) // once only
+			errs := f.recordsTo(t, "error")
+			if c.want && (len(errs) != 1 || !errs[0].IsUrgent() || !strings.Contains(errs[0].Text, "did not come back")) {
+				t.Fatalf("want one urgent report, got %+v", f.inboxRecords(t))
+			}
+			if !c.want && len(errs) != 0 {
+				t.Fatalf("a child that came back gets no report, got %+v", errs)
+			}
+			if _, left := readRestartToken(f.child.ID); left {
+				t.Fatalf("the sweep spends the token")
+			}
+		})
+	}
+}
+
+// Lander probe P3: the token is used once; a later flip with the same signal
+// (a Codex-like child with no transcript) is delivered.
+func TestIssue2792_TokenIsUsedOnce(t *testing.T) {
+	f := newTurnTestFixture(t)
+	stubRestartPIDs(t)
+	writeRestartFile(f.child.ID, ".json", restartToken{At: time.Now(), Signal: "sig-1", OldPID: 100})
+	writeRestartFile(f.child.ID, ".spawned.json", restartSpawned{NewPID: 100, At: time.Now()})
+	if _, v := f.d.judgeRestart(f.child.ID, "", "sig-1", "waiting", time.Now().Add(time.Second)); v != restartBoot {
+		t.Fatalf("the first arrival at the prompt is the boot, got %v", v)
+	}
+	if _, v := f.d.judgeRestart(f.child.ID, "", "sig-1", "waiting", time.Now().Add(4*time.Minute)); v != restartNews {
+		t.Fatalf("a later flip with the same signal is news, got %v", v)
+	}
+}
+
+// The notifier holds other producers to the boot rule; it never drops an
+// error or a finished record (lander probe P2).
+func TestIssue2792_NotifierBackstop(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
+	st.restart(f, time.Now())
+	f.appendTurn(t, fxResumeMeta())
+	ev := TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: f.child.Title, Profile: "default",
+		FromStatus: "running", ToStatus: "waiting", Timestamp: time.Now().Add(time.Second), Text: "Index added; tests pass."}
+	if r := f.d.notifier.NotifyTransition(ev); r.DeliveryResult == transitionDeliveryCommitted {
+		t.Fatalf("the notifier delivered a restart boot: %+v", r)
+	}
+	st.restart(f, time.Now())
+	done := TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: f.child.Title, Profile: "default",
+		Timestamp: time.Now().Add(time.Second), DoneStatus: "ok", DoneSummary: "external done"}
+	if r := f.d.notifier.NotifyFinished(done); r.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("a finished record is always delivered: %v", r.DeliveryResult)
+	}
+	errEv := ev
+	errEv.ToStatus, errEv.Timestamp = "error", time.Now().Add(2*time.Second)
+	if r := f.d.notifier.NotifyTransition(errEv); r.DeliveryResult != transitionDeliveryCommitted {
+		t.Fatalf("the notifier never drops an error: %v", r.DeliveryResult)
+	}
+}
+
+// Lander probe P4: the new pid is the restart's own file, so nothing the
+// daemon writes can erase it.
+func TestIssue2792_SpawnedPIDSurvivesDaemonWork(t *testing.T) {
+	f := newTurnTestFixture(t)
+	st := stubRestartPIDs(t)
+	f.finishedTurn(t)
+	st.restart(f, time.Now())
+	f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), false)
+	tok, ok := readRestartToken(f.child.ID)
+	if !ok || tok.NewPID != st.pane {
+		t.Fatalf("the recorded new pid must survive the daemon's judging: %+v ok=%v", tok, ok)
 	}
 }

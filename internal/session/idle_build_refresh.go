@@ -346,7 +346,7 @@ func (d *TransitionDaemon) idleRefreshRestart(profile, id, title, tool string, b
 		st.saveTried()
 	default:
 		st.failures[profile] = 0
-		annotateRestartResumeBuild(id, b.Path)
+		d.noteRestartBuild(id, b.Path)
 	}
 }
 

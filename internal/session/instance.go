@@ -10541,14 +10541,15 @@ func (i *Instance) RestartWithEnv(env map[string]string) error {
 // restartRecorded restarts and records session.end(restart) from surface sf
 // on success.
 func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) error {
-	// The boot after a resume is not a turn: note the turn signal first, so
-	// the parent gets no false completion (#2792, restart_resume.go).
-	noteRestartResume(i, time.Now())
+	// The old process's exit and the resumed one's boot are not turns: leave
+	// a token first, so the parent gets no false completion (#2792,
+	// restart_resume.go).
+	noteRestartToken(i, time.Now())
 	err := i.restart(env)
 	if err != nil {
-		clearRestartResumeNote(i.ID)
+		clearRestartToken(i.ID)
 	} else {
-		markRestartResumed(i.ID, time.Now())
+		markRestartSpawned(i, time.Now())
 	}
 	if err == nil {
 		// LastStartedAt covers restarts too (its contract), so the idle

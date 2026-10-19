@@ -47,12 +47,20 @@ hook() {
   printf '{"hook_event_name":"%s","session_id":"%s","cwd":"%s"}' "$1" "$sid" "$cwd" | "$here/agent-deck-bin" -p __PROFILE__ hook-handler >/dev/null 2>&1
   printf '%s\n' "$1" >> "$cwd/.fake/hooks-fired"
 }
+mode=$(cat "$cwd/.fake-mode" 2>/dev/null)
+if [ "$mode" = crash ]; then # the resume fails at once (bad build, auth, no conversation)
+  hook SessionEnd; exit 3
+fi
 trap 'hook SessionEnd; exit 0' HUP TERM INT
-(sleep 4; hook SessionStart) &
+if [ "$mode" = hang ]; then # it never reaches its prompt
+  printf '{"id":"hang-%s","phase":"booting"}' "$$" > "$t.input-control.json"
+else
+  (sleep 4; hook SessionStart) &
+fi
 python3 -I "$cwd/.fake/claude"
 `
 
-func newRestartEnv(t *testing.T) *deliveryEnv {
+func newRestartEnv(t *testing.T, daemonEnv ...string) *deliveryEnv {
 	t.Helper()
 	e := newDeliveryEnv(t)
 	bin := filepath.Join(e.root, "fakebin")
@@ -61,7 +69,7 @@ func newRestartEnv(t *testing.T) *deliveryEnv {
 	}
 	writeFile(t, filepath.Join(bin, "claude"), strings.ReplaceAll(restartFakeClaude, "__PROFILE__", deliveryE2EProfile), 0o700)
 	daemon := exec.Command(e.bin, "-p", deliveryE2EProfile, "notify-daemon")
-	daemon.Env = e.env
+	daemon.Env = append(append([]string{}, e.env...), daemonEnv...)
 	if err := daemon.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +207,79 @@ func TestRestartE2E_MidTurnRestartStillNotifies(t *testing.T) {
 			if !stopped {
 				t.Fatalf("a restart in the middle of a turn must tell the parent the child stopped, got %v", recs)
 			}
+		})
+	}
+}
+
+// setupIdleChild gives the parent a child whose finished turn it has drained.
+func setupIdleChild(t *testing.T, e *deliveryEnv) (parent, child *fakeTarget) {
+	t.Helper()
+	parent = e.startFake("parent", "idle", "")
+	child = e.startFake("child", "busy", parent.id)
+	e.setPhase(child, "busy")
+	time.Sleep(3 * time.Second)
+	child.reply(t, deliveryToken("CHILD_REPLY")+" the task is done")
+	e.setPhase(child, "idle")
+	if recs := e.waitRecords(parent, child, 20*time.Second, func(r []map[string]any) bool { return len(r) >= 1 }); len(recs) != 1 {
+		t.Fatalf("precondition: the real turn reaches the parent once, got %v", recs)
+	}
+	e.drainedFrom(parent.id, child.id)
+	return parent, child
+}
+
+// waitBootReport waits for the urgent report that the child's restart did
+// not come back to its prompt.
+func (e *deliveryEnv) waitBootReport(parent, child *fakeTarget, within time.Duration, why string) {
+	e.t.Helper()
+	report := func(r map[string]any) bool {
+		return r["to_status"] == "error" && r["tier"] != "info" && strings.Contains(recordText(r), "did not come back to its prompt")
+	}
+	recs := e.waitRecords(parent, child, within, func(r []map[string]any) bool {
+		for _, rec := range r {
+			if report(rec) {
+				return true
+			}
+		}
+		return false
+	})
+	for _, r := range recs {
+		if report(r) {
+			return
+		}
+	}
+	e.t.Fatalf("%s: the parent got no report, got %v", why, recs)
+}
+
+// A resume that fails at once (bad build, auth, no conversation) never
+// reaches its prompt: the parent is told once the boot timeout passes. Main
+// never reported it: the child went from waiting to error with no running
+// in between, which no path reports.
+func TestRestartE2E_CrashAfterSpawnIsNotified(t *testing.T) {
+	t.Parallel()
+	e := newRestartEnv(t, "AGENTDECK_RESTART_BOOT_TIMEOUT=15s")
+	parent, child := setupIdleChild(t, e)
+	writeFile(t, filepath.Join(child.project, ".fake-mode"), "crash", 0o600)
+	e.run("", nil, "session", "restart", "--force", child.id) // may report the dead pane
+	e.waitBootReport(parent, child, 40*time.Second, "a resume that crashed right after spawn")
+}
+
+// A resume that never reaches its prompt is reported once the boot timeout
+// passes, on either path.
+func TestRestartE2E_NeverBootsIsNotified(t *testing.T) {
+	t.Parallel()
+	for _, viaHooks := range []bool{true, false} {
+		t.Run(map[bool]string{true: "hook path", false: "snapshot path"}[viaHooks], func(t *testing.T) {
+			t.Parallel()
+			e := newRestartEnv(t, "AGENTDECK_RESTART_BOOT_TIMEOUT=15s")
+			parent, child := setupIdleChild(t, e)
+			writeFile(t, filepath.Join(child.project, ".fake-mode"), "hang", 0o600)
+			writeFile(t, filepath.Join(child.project, ".fake-phase"), "booting", 0o600)
+			if !viaHooks {
+				writeFile(t, filepath.Join(child.project, ".fake-nohooks"), "", 0o600)
+			}
+			e.mustRun("session", "restart", "--force", child.id)
+			e.waitPane(child, "child spinning", func(p string) bool { return strings.Contains(p, "Thundering") })
+			e.waitBootReport(parent, child, 40*time.Second, "a resume that never reached its prompt")
 		})
 	}
 }

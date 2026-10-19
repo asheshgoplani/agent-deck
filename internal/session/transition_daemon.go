@@ -114,6 +114,10 @@ type TransitionDaemon struct {
 	// idle_build_refresh.go. Lazily created.
 	idleRefresh *idleRefreshState
 
+	// restart is the memory of restart tokens (#2792, restart_resume.go).
+	restart     *restartState
+	restartOnce sync.Once
+
 	// lastProbeStall rate-limits the probe-stall breadcrumb per (profile|key)
 	// so a permanently wedged instance — which times out again on every poll —
 	// logs at most once per probeStallLogInterval instead of flooding the log
@@ -710,6 +714,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// outdated Claude/Codex build restart onto the new one ([sessions]
 	// auto_refresh_idle_builds, default on).
 	d.runIdleBuildRefreshPass(profile, instances, statuses, substates)
+	d.sweepRestartTokens(profile, byID, statuses, time.Now())
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)

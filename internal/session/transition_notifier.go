@@ -155,9 +155,10 @@ type TransitionNotificationEvent struct {
 	// at maxPendingTurnsPerChild, so a re-observed turn is not counted twice.
 	OverflowFolded []string `json:"overflow_folded,omitempty"`
 
-	// restartResumeLine marks emitTurn's one info line for a restart (#2792),
-	// which restartBootRecord lets through. Never serialized.
-	restartResumeLine bool
+	// restartJudged marks an event emitTurn already judged against the
+	// child's restart token (#2792), so restartBootRecord leaves it alone.
+	// Never serialized.
+	restartJudged bool
 }
 
 // IsUrgent reports whether a consumer must wake for this record: an explicit
@@ -474,7 +475,7 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) (
 		event.Timestamp = time.Now()
 	}
 
-	if event.ChildSessionID == "" || event.Profile == "" || restartBootRecord(event) {
+	if event.ChildSessionID == "" || event.Profile == "" {
 		event.DeliveryResult = transitionDeliveryDropped
 		return event
 	}
