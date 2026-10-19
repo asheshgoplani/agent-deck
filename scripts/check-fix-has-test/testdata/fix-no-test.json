@@ -1,0 +1,1 @@
+{"title":"fix(session): restart keeps the selected profile","body":"Restart wrote to the default profile.\n\nFixes #2206","closingIssuesReferences":[],"files":[{"path":"internal/session/restart.go","additions":12,"deletions":3,"changeType":"MODIFIED"},{"path":"CHANGELOG.md","additions":1,"deletions":0,"changeType":"MODIFIED"}]}

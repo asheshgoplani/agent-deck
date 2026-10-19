@@ -1,0 +1,1 @@
+{"title":"feat(web): group move from the web UI","body":"Resolves #2368","closingIssuesReferences":[],"files":[{"path":"internal/web/groups.go","additions":80,"deletions":0,"changeType":"ADDED"}]}

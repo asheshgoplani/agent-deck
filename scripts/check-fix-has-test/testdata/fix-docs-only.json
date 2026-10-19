@@ -1,0 +1,1 @@
+{"title":"fix(docs): correct the install path","body":"Fixes #2001","closingIssuesReferences":[],"files":[{"path":"docs/install.md","additions":1,"deletions":1,"changeType":"MODIFIED"},{"path":"README.md","additions":1,"deletions":1,"changeType":"MODIFIED"}]}

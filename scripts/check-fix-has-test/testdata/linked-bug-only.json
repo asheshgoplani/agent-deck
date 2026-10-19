@@ -1,0 +1,1 @@
+{"title":"status filter counts remote rows","body":"No keyword here; the issue is linked in the sidebar.","closingIssuesReferences":[{"number":2519}],"files":[{"path":"internal/ui/filter.go","additions":4,"deletions":2,"changeType":"MODIFIED"},{"path":"internal/ui/testdata/remote-rows.golden","additions":6,"deletions":0,"changeType":"ADDED"}]}
