@@ -1,1 +1,1 @@
-{"title":"feat(watcher): honour -p for the watcher","body":"Closes #2740\nAlso see other/repo#9 and closes #2741","closingIssuesReferences":[],"files":[{"path":"cmd/agent-deck/watcher.go","additions":9,"deletions":1,"changeType":"MODIFIED"}]}
+{"title":"feat(watcher): honour -p for the watcher","body":"Closes #2740\nAlso fixes other/repo#9 and closes #2741","closingIssuesReferences":[],"files":[{"path":"cmd/agent-deck/watcher.go","additions":9,"deletions":1,"changeType":"MODIFIED"}]}
