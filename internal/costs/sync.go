@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/google/uuid"
 )
 
@@ -41,7 +42,7 @@ type SyncSession struct {
 func SyncFromTranscripts(store *Store, pricer *Pricer, sessions []SyncSession) SyncResult {
 	var result SyncResult
 
-	home, err := os.UserHomeDir()
+	claudeDir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude")
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("get home dir: %v", err))
 		return result
@@ -57,7 +58,7 @@ func SyncFromTranscripts(store *Store, pricer *Pricer, sessions []SyncSession) S
 
 		// Derive transcript path: ~/.claude/projects/<slugified-path>/<session-id>.jsonl
 		sluggedPath := slugifyProjectPath(sess.ProjectPath)
-		transcriptPath := filepath.Join(home, ".claude", "projects", sluggedPath, sess.ClaudeSessionID+".jsonl")
+		transcriptPath := filepath.Join(claudeDir, "projects", sluggedPath, sess.ClaudeSessionID+".jsonl")
 
 		if _, err := os.Stat(transcriptPath); os.IsNotExist(err) {
 			continue

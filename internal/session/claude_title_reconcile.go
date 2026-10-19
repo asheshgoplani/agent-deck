@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -128,21 +129,21 @@ func claudeSessionNameAndCwdIn(claudeDir, sessionID string) (name, cwd string) {
 // ClaudeSessionName resolves the user's ~/.claude and returns the Claude
 // session name for sessionID. Empty string on any error or no match.
 func ClaudeSessionName(sessionID string) string {
-	home, err := os.UserHomeDir()
+	dir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude")
 	if err != nil {
 		return ""
 	}
-	return ClaudeSessionNameIn(filepath.Join(home, ".claude"), sessionID)
+	return ClaudeSessionNameIn(dir, sessionID)
 }
 
 // ClaudeSessionNameAndCwd resolves the user's ~/.claude and returns the Claude
 // session name for sessionID together with the cwd of the record it came from.
 func ClaudeSessionNameAndCwd(sessionID string) (name, cwd string) {
-	home, err := os.UserHomeDir()
+	dir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude")
 	if err != nil {
 		return "", ""
 	}
-	return claudeSessionNameAndCwdIn(filepath.Join(home, ".claude"), sessionID)
+	return claudeSessionNameAndCwdIn(dir, sessionID)
 }
 
 // ClaudeSessionRecord is the subset of ~/.claude/sessions/<pid>.json
@@ -239,11 +240,11 @@ func ClaudeConfigDirForSend(inst *Instance) string {
 // ClaudeSessionRecordFor resolves the user's ~/.claude and returns the
 // Claude session record for sessionID. Mirrors ClaudeSessionName.
 func ClaudeSessionRecordFor(sessionID string) (ClaudeSessionRecord, bool) {
-	home, err := os.UserHomeDir()
+	dir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude")
 	if err != nil {
 		return ClaudeSessionRecord{}, false
 	}
-	return ClaudeSessionRecordIn(filepath.Join(home, ".claude"), sessionID)
+	return ClaudeSessionRecordIn(dir, sessionID)
 }
 
 // ResolveTitleFromClaude is the pure decision half of ReconcileTitleFromClaude:

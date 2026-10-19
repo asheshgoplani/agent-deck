@@ -20,6 +20,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/harness"
 	"github.com/asheshgoplani/agent-deck/internal/quota"
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -82,7 +83,7 @@ func claudeLoggedIn(configDir string) *bool {
 	home, _ := os.UserHomeDir()
 	candidates := []string{filepath.Join(configDir, ".claude.json")}
 	if def := filepath.Join(home, ".claude"); filepath.Clean(configDir) == def || configDir == "" {
-		candidates = append(candidates, filepath.Join(home, ".claude.json"))
+		candidates = append(candidates, sandboxguard.Must("Claude root config (~/.claude.json)", filepath.Join(home, ".claude.json")))
 	}
 	for _, c := range candidates {
 		b, err := os.ReadFile(c)
@@ -119,7 +120,7 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 	case "codex":
 		defHome := os.Getenv("CODEX_HOME")
 		if defHome == "" {
-			defHome = filepath.Join(home, ".codex")
+			defHome = sandboxguard.Must("Codex home (~/.codex)", filepath.Join(home, ".codex"))
 			if cfg != nil && cfg.Codex.ConfigDir != "" {
 				defHome = session.ExpandPath(cfg.Codex.ConfigDir)
 			}
@@ -131,11 +132,11 @@ func loginFacts(name string, cfg *session.UserConfig) (*bool, []harnessAccountJS
 	case "opencode":
 		data := os.Getenv("XDG_DATA_HOME")
 		if data == "" {
-			data = filepath.Join(home, ".local", "share")
+			data = sandboxguard.Must("XDG data dir (~/.local/share)", filepath.Join(home, ".local", "share"))
 		}
 		return boolPtr(nonEmptyFile(filepath.Join(data, "opencode", "auth.json"))), accounts
 	case "pi":
-		return boolPtr(nonEmptyFile(filepath.Join(home, ".pi", "agent", "auth.json"))), accounts
+		return boolPtr(nonEmptyFile(sandboxguard.Must("Pi auth file (~/.pi)", filepath.Join(home, ".pi", "agent", "auth.json")))), accounts
 	case "hermes":
 		dir := session.GetHermesConfigDir()
 		return boolPtr(nonEmptyFile(filepath.Join(dir, ".env")) || nonEmptyFile(filepath.Join(dir, "auth.json"))), accounts
@@ -168,7 +169,7 @@ func hooksFacts(name string) *bool {
 	case "codex":
 		codexHome := os.Getenv("CODEX_HOME")
 		if codexHome == "" {
-			codexHome = filepath.Join(home, ".codex")
+			codexHome = sandboxguard.Must("Codex home (~/.codex)", filepath.Join(home, ".codex"))
 		}
 		return boolPtr(codexHooksStateForConfig(filepath.Join(codexHome, "config.toml")) == codexHooksInstalled)
 	case "gemini":
@@ -517,7 +518,7 @@ func codexLimits(cfg *session.UserConfig, now time.Time) []limitAccountJSON {
 	if env := os.Getenv("CODEX_HOME"); env != "" {
 		add("default", env)
 	}
-	add("default", filepath.Join(home, ".codex"))
+	add("default", sandboxguard.Must("Codex home (~/.codex)", filepath.Join(home, ".codex")))
 	var out []limitAccountJSON
 	for _, s := range slots {
 		if info, err := os.Stat(s.dir); err != nil || !info.IsDir() {

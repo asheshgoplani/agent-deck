@@ -18,6 +18,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/mcppool"
 	"github.com/asheshgoplani/agent-deck/internal/safeio"
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 )
 
 var mcpCatLog = logging.ForComponent(logging.CompMCP)
@@ -767,11 +768,11 @@ func clearProjectMCPsLocked(projectPath string) error {
 // This is the ROOT config that Claude ALWAYS reads, regardless of CLAUDE_CONFIG_DIR setting.
 // MCPs defined here apply to ALL Claude sessions globally.
 func GetUserMCPRootPath() string {
-	home, err := os.UserHomeDir()
+	p, err := sandboxguard.HomeJoin("Claude root config (~/.claude.json)", ".claude.json")
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".claude.json")
+	return p
 }
 
 // WriteUserMCP writes MCPs to ~/.claude.json (ROOT config)

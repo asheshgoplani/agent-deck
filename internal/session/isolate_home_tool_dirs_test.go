@@ -31,6 +31,7 @@ func TestIsolateHome_ToolConfigResolversStayInSandbox(t *testing.T) {
 		"GetClaudeConfigDir":       GetClaudeConfigDir(),
 		"getCodexHomeDir":          getCodexHomeDir(),
 		"getCopilotHomeDir":        getCopilotHomeDir(),
+		"getDeepSeekHomeDir":       getDeepSeekHomeDir(),
 		"geminiUserDir":            geminiUserDir(),
 		"geminiTrustedFoldersPath": geminiTrustedFoldersPath(),
 		"PiExtensionsDir":          PiExtensionsDir(),

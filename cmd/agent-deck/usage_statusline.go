@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/asheshgoplani/agent-deck/internal/events"
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
@@ -231,11 +232,11 @@ func statuslineAccount(feedProfile string) string {
 		}
 	}
 	if dir == "" {
-		home, err := os.UserHomeDir()
+		def, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude")
 		if err != nil {
 			return ""
 		}
-		dir = filepath.Join(home, ".claude")
+		dir = def
 	}
 	canonical := func(path string) string {
 		path = session.ExpandPath(path)

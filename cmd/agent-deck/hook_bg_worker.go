@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -46,11 +47,11 @@ func hookFromClaudeBackgroundWorker() bool {
 func nearestClaudeAncestorKind(pid int) (string, bool) {
 	claudeDir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
 	if claudeDir == "" {
-		home, err := os.UserHomeDir()
+		dir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude")
 		if err != nil {
 			return "", false
 		}
-		claudeDir = filepath.Join(home, ".claude")
+		claudeDir = dir
 	}
 	for hop := 0; hop < maxBgWorkerAncestorHops && pid > 1; hop++ {
 		data, err := os.ReadFile(filepath.Join(claudeDir, "sessions", strconv.Itoa(pid)+".json"))

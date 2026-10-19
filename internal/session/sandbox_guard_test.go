@@ -45,6 +45,14 @@ func TestToolDirResolversRefuseTheRealHome(t *testing.T) {
 			if !strings.Contains(msg, "IsolateHome") {
 				t.Fatalf("panic message does not say how to fix it: %s", msg)
 			}
+			// The message names the variable the path leaked through.
+			wantEnv := "HOME"
+			if !strings.Contains(c.name, " ") {
+				wantEnv = c.name
+			}
+			if !strings.Contains(msg, "through "+wantEnv+"=") {
+				t.Fatalf("panic message does not name the leaked %s: %s", wantEnv, msg)
+			}
 		})
 	}
 }

@@ -811,7 +811,7 @@ func (i *Instance) geminiIdentityFlag() (flag string, hint string) {
 // replaces $HOME as the parent of the .gemini directory.
 func geminiUserDir() string {
 	if home := strings.TrimSpace(os.Getenv("GEMINI_CLI_HOME")); home != "" {
-		return filepath.Join(home, ".gemini")
+		return sandboxedToolDir("Gemini config dir (GEMINI_CLI_HOME)", filepath.Join(home, ".gemini"))
 	}
 	return GetGeminiConfigDir()
 }

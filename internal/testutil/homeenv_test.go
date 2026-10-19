@@ -42,3 +42,16 @@ func TestIsolateHomeClearsToolConfigDirs(t *testing.T) {
 		}
 	}
 }
+
+// TestIsolateHomeClearsDSHHome: DSH_HOME beats ~/.dsh in getDeepSeekHomeDir
+// and agent-deck exports it into DeepSeek sessions, so a test run started
+// from one inherited the live DeepSeek home until IsolateHome cleared it.
+func TestIsolateHomeClearsDSHHome(t *testing.T) {
+	t.Setenv("DSH_HOME", filepath.Join(t.TempDir(), "live-dsh"))
+	cleanup := IsolateHome()
+	v, ok := os.LookupEnv("DSH_HOME")
+	cleanup()
+	if ok {
+		t.Fatalf("after IsolateHome DSH_HOME=%q is still set", v)
+	}
+}

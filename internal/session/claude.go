@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 )
 
 // claudeDirNameRegex matches any character that's not alphanumeric or hyphen
@@ -967,8 +969,8 @@ func claudeConfigDirRootsForInstance(inst *Instance) []string {
 		}
 	}
 
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".claude"))
+	if dir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude"); err == nil {
+		add(dir)
 	}
 
 	return roots

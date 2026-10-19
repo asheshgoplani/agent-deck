@@ -108,7 +108,7 @@ func transcriptRoots() []string {
 		seen[dir] = true
 		roots = append(roots, dir)
 	}
-	add(filepath.Join(home, ".claude"))
+	add(sandboxedToolDir("Claude config dir (~/.claude)", filepath.Join(home, ".claude")))
 	add(os.Getenv("CLAUDE_CONFIG_DIR"))
 	if cfg, _ := LoadUserConfig(); cfg != nil {
 		for _, name := range ConfiguredAccountNames(cfg) {

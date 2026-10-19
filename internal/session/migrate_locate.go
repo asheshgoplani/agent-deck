@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/sandboxguard"
 )
 
 // LocateConversationConfigDir finds the Claude config dir that actually holds
@@ -137,8 +139,8 @@ func conversationConfigDirCandidates(cfg *UserConfig, extras ...string) []string
 		}
 		add(cfg.Claude.ConfigDir)
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".claude"))
+	if dir, err := sandboxguard.HomeJoin("Claude config dir (~/.claude)", ".claude"); err == nil {
+		add(dir)
 	}
 	return out
 }
