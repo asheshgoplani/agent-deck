@@ -36,9 +36,11 @@ def read_json_line(process, timeout_s):
     line = box[0] if box else ''
     if line.strip():
         return json.loads(line)
+    # EOF is an empty read; a blank line from a live driver is neither exited nor silent.
+    exited = process.poll() is not None or line == '' and bool(box)
     process.kill()
     process.wait()
-    reason = 'exited' if box else f'silent for {timeout_s}s'
+    reason = 'exited' if exited else f'silent for {timeout_s}s' if not box else 'sent a blank line'
     raise RuntimeError(f'pi driver {reason} before its next line: ' + process.stderr.read())
 
 
