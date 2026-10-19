@@ -121,8 +121,9 @@ in docs/events.md, "Mac app checks".
 
 ## App-side checks (Mac app)
 
-These checks live in the Mac app, not in the CLI. They ship with the next Mac
-app build that includes them; older builds do not have them.
+These checks live in the Mac app, not in the CLI, and land in it in steps:
+each one applies from the Mac app build that includes it, and older builds do
+not have it.
 
 - **Per-session consent.** Before it acts on a `macapp.browser.request`, the
   app looks up the owner's answer for that host and session. With none, it

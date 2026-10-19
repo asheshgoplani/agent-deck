@@ -204,30 +204,6 @@ The app is the other half of the contract. It must:
 - publish its replies only with the reply kinds above, and forget a
   session's Browser state on `macapp.session.closed`.
 
-### App-side checks (Mac app)
-
-The Mac app also enforces these checks. They ship with the next Mac app build
-that includes them. Details are in docs/macapp-open.md, "App-side checks
-(Mac app)".
-
-- Per-session consent for `macapp.browser.request`, keyed by host and
-  session: allow once, allow for this session, or deny. No answer is a deny.
-  Grants are listed and revocable in Settings and dropped with the session.
-- Pages from Boxes is off by default. An upgrade that had it on reads it as
-  off until the owner confirms once.
-- Box and local sessions both go through the address policy and the
-  filtering proxy, with the same allowlist. Loopback, private (`10.0.0.0/8`,
-  `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), link-local
-  (`169.254.0.0/16`, `fe80::/10`), numeric IPv4 and IPv4-mapped IPv6 forms
-  are refused. Loopback and link-local stay refused whatever the allowlist
-  says.
-- One scratch profile per session (host and session), removed with the
-  session; "Use My Logins" is a per-session choice in the app.
-- The app reads `browser_profile`, and the old `profile` for one release
-  (`browser_profile` wins). A remote host naming either is refused.
-- The CLI opt-ins (`[browser] enabled`, `[macapp] plugins`) are not a
-  security boundary.
-
 `cursor` and `dropped` reflect the profile across processes. `published`,
 `written`, `synced` and queue occupancy describe the process running the
 command.
@@ -237,6 +213,30 @@ The slice-1 registry bundle and this branch now share `origin/main` at
 `3b41e36d`, and both bundles verify. Slice 1 remains a separate branch; its
 registry is absent from this branch. Integration belongs to the later branch
 that combines the two slices.
+
+### App-side checks (Mac app)
+
+These checks live in the Mac app, not in the CLI, and land in it in steps:
+each one applies from the Mac app build that includes it, and older builds do
+not have it. Details are in docs/macapp-open.md, "App-side checks (Mac app)".
+
+- Per-session consent for `macapp.browser.request`, keyed by host and
+  session: allow once, allow for this session, or deny. No answer is a deny.
+  Grants are listed and revocable in Settings and dropped with the session.
+- Pages from Boxes is off by default. An upgrade that had it on reads it as
+  off until the owner confirms once.
+- Box and local sessions both go through the address policy and the
+  filtering proxy, with the same allowlist. Loopback, private (`10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), link-local
+  (`169.254.0.0/16`, `fe80::/10`), this Mac's own addresses and networks,
+  numeric IPv4 and IPv4-mapped IPv6 forms are refused. Loopback, link-local
+  and this Mac's own addresses stay refused whatever the allowlist says.
+- One scratch profile per session (host and session), removed with the
+  session; "Use My Logins" is a per-session choice in the app.
+- The app reads `browser_profile`, and the old `profile` for one release
+  (`browser_profile` wins). A remote host naming either is refused.
+- The CLI opt-ins (`[browser] enabled`, `[macapp] plugins`) are not a
+  security boundary.
 
 Browser requests, acknowledgments, local launch fallback, and remote tar export are documented in [macapp-open.md](macapp-open.md).
 
