@@ -204,6 +204,30 @@ The app is the other half of the contract. It must:
 - publish its replies only with the reply kinds above, and forget a
   session's Browser state on `macapp.session.closed`.
 
+### App-side checks (Mac app)
+
+The Mac app also enforces these checks. They ship with the next Mac app build
+that includes them. Details are in docs/macapp-open.md, "App-side checks
+(Mac app)".
+
+- Per-session consent for `macapp.browser.request`, keyed by host and
+  session: allow once, allow for this session, or deny. No answer is a deny.
+  Grants are listed and revocable in Settings and dropped with the session.
+- Pages from Boxes is off by default. An upgrade that had it on reads it as
+  off until the owner confirms once.
+- Box and local sessions both go through the address policy and the
+  filtering proxy, with the same allowlist. Loopback, private (`10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), link-local
+  (`169.254.0.0/16`, `fe80::/10`), numeric IPv4 and IPv4-mapped IPv6 forms
+  are refused. Loopback and link-local stay refused whatever the allowlist
+  says.
+- One scratch profile per session (host and session), removed with the
+  session; "Use My Logins" is a per-session choice in the app.
+- The app reads `browser_profile`, and the old `profile` for one release
+  (`browser_profile` wins). A remote host naming either is refused.
+- The CLI opt-ins (`[browser] enabled`, `[macapp] plugins`) are not a
+  security boundary.
+
 `cursor` and `dropped` reflect the profile across processes. `published`,
 `written`, `synced` and queue occupancy describe the process running the
 command.

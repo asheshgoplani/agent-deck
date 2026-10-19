@@ -118,3 +118,40 @@ reported. It deduplicates by `event_id` (the key; `request_id` is optional and o
 and only then publishes `macapp.open.ack` on that same host and profile. It
 never acts on a frame that names a session of another host. The full list is
 in docs/events.md, "Mac app checks".
+
+## App-side checks (Mac app)
+
+These checks live in the Mac app, not in the CLI. They ship with the next Mac
+app build that includes them; older builds do not have them.
+
+- **Per-session consent.** Before it acts on a `macapp.browser.request`, the
+  app looks up the owner's answer for that host and session. With none, it
+  asks him, naming both: allow once, allow for this session, or deny. No
+  answer is a deny. Settings lists the grants and can revoke each one. A
+  grant is dropped when its session is removed.
+- **Pages from Boxes is off by default.** A new install starts with it off.
+  On an upgrade where it was on, it reads as off until the owner confirms it
+  once.
+- **Address policy and filtering proxy for every session.** Pages of box
+  sessions and of local sessions go through the same address check and the
+  same filtering proxy, with the same allowlist. Refused: loopback
+  (`127.0.0.0/8`, `::1`, `localhost`), private ranges (`10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`, IPv6 ULA `fc00::/7`), link-local
+  (`169.254.0.0/16`, `fe80::/10`), this Mac's own addresses and networks,
+  numeric IPv4 forms (such as `2130706433` or `127.1`) and IPv4-mapped IPv6
+  forms. Loopback, link-local and this Mac's own addresses stay refused
+  whatever the allowlist says. The full list is in docs/macapp-browser.md,
+  "Policy".
+- **One scratch profile per session.** Each session's pages use a scratch
+  profile of their own, keyed by host and session, so two sessions never
+  share cookies. It is removed with the session. "Use My Logins" is a choice
+  per session, made only in the app.
+- **`browser_profile`.** The app reads the panel profile from
+  `browser_profile` in `macapp.open` data and in `browser open` args. For one
+  release it still reads the old key `profile` when `browser_profile` is
+  absent; when both are present, `browser_profile` wins. A request from a
+  remote host that names either key is refused.
+- **The CLI opt-ins are not a security boundary.** `[browser] enabled` and
+  `[macapp] plugins` only gate the CLI on that host. An agent there can
+  change its config or write to its own events log, so the app's checks
+  above are what protect the owner.
