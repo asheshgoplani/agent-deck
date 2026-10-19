@@ -2,7 +2,9 @@
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -144,6 +146,41 @@ class PiFixtureTests(unittest.TestCase):
         self.assertEqual(fixture['message']['role'], 'assistant')
         v1 = json.loads((HERE / 'fixtures' / 'pi_turnend_v1.json').read_text())
         self.assertNotIn('messageEntryId', v1, 'v1 stays the payload without an entry id')
+
+
+class DriverReadDeadlineTests(unittest.TestCase):
+    """read_json_line(process, timeout_s): a live but silent driver must fail, not hang."""
+
+    def spawn(self, code):
+        process = subprocess.Popen([sys.executable, '-c', code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (process.kill(), process.wait()))
+        return process
+
+    def test_pause_ack_timeout_fails_loudly(self):
+        from runner import read_json_line
+        process = self.spawn('import sys, time; sys.stderr.write("driver diagnostics\\n"); sys.stderr.flush(); time.sleep(60)')
+        started = time.monotonic()
+        with self.assertRaises(Exception) as caught:
+            read_json_line(process, 0.5)
+        self.assertLess(time.monotonic() - started, 10, 'the read must give up at its deadline')
+        self.assertNotIsInstance(caught.exception, json.JSONDecodeError)
+        self.assertIn('driver diagnostics', str(caught.exception), 'the driver stderr must be in the failure')
+        self.assertIsNotNone(process.returncode, 'the silent driver must be killed and reaped, not left running')
+
+    def test_eof_raises_with_driver_stderr_not_a_bare_decode_error(self):
+        from runner import read_json_line
+        process = self.spawn('import sys; sys.stderr.write("exited early\\n")')
+        with self.assertRaises(Exception) as caught:
+            read_json_line(process, 5)
+        self.assertNotIsInstance(caught.exception, json.JSONDecodeError)
+        self.assertIn('exited early', str(caught.exception))
+
+    def test_a_line_that_arrives_in_time_is_returned_parsed(self):
+        from runner import read_json_line
+        process = self.spawn('import sys, time; print(\'{"paused": true}\', flush=True); time.sleep(60)')
+        self.assertEqual(read_json_line(process, 10), {'paused': True})
+        self.assertIsNone(process.poll(), 'a successful read leaves the driver running')
 
 
 if __name__ == '__main__':
