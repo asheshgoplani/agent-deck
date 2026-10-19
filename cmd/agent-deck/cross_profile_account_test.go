@@ -104,7 +104,9 @@ func TestCrossProfileLaunchUsesSelectedAccount(t *testing.T) {
 			if err := os.MkdirAll(configDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			config := "[profiles.it.claude]\nconfig_dir = \"~/.claude-it\"\n[profiles.work.claude]\nconfig_dir = \"~/.claude-work\"\n"
+			// auto_resume_summary off: the shim never draws Claude's "Resume
+			// from summary" picker, so launch would poll 3s for it per case.
+			config := "[claude]\nauto_resume_summary = false\n[profiles.it.claude]\nconfig_dir = \"~/.claude-it\"\n[profiles.work.claude]\nconfig_dir = \"~/.claude-work\"\n"
 			if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o600); err != nil {
 				t.Fatal(err)
 			}

@@ -319,6 +319,7 @@ func deliveryToken(name string) string {
 // recorded queued, is typed once by the worker and settles without failure
 // after the turn ends.
 func TestDeliveryE2E_SendToBusyClaudeIsQueuedAndLandsOnce(t *testing.T) {
+	parallelSubprocessTest(t)
 	e := newDeliveryEnv(t)
 	f := e.startFake("busy-target", "busy", "")
 	e.setPhase(f, "busy")
@@ -358,6 +359,7 @@ func TestDeliveryE2E_SendToBusyClaudeIsQueuedAndLandsOnce(t *testing.T) {
 // --queue send waits behind the draft, stays queued (not failed), and lands
 // once after the operator submits their own text.
 func TestDeliveryE2E_ForeignDraftIsNeverWiped(t *testing.T) {
+	parallelSubprocessTest(t)
 	e := newDeliveryEnv(t)
 	f := e.startFake("draft-target", "idle", "")
 	e.setPhase(f, "idle")
@@ -477,6 +479,7 @@ func (f *fakeTarget) reply(t *testing.T, text string) {
 // re-emitted on every restart; #2028 was reverted for losing replay after a
 // restart); the drain delivers it once and a second drain is empty.
 func TestDeliveryE2E_ChildTurnReachesParentInboxOnceAcrossRestarts(t *testing.T) {
+	parallelSubprocessTest(t)
 	e := newDeliveryEnv(t)
 	parent := e.startFake("parent", "idle", "")
 	child := e.startFake("child", "busy", parent.id)

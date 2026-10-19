@@ -202,6 +202,7 @@ func scrubEquivalence(s, home, tmuxDir string) string {
 // match byte for byte after scrubbing only time and randomness. It includes
 // `session restart <id> --json`, the golden named in CORE-PLAN.md.
 func TestCoreRegistryMatchesLegacyHandlers(t *testing.T) {
+	parallelSubprocessTest(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
@@ -254,10 +255,28 @@ func TestCoreRegistryMatchesLegacyHandlers(t *testing.T) {
 		"session start alpha":                  "Started session: alpha",
 		"session restart alpha --force --json": `"success": true`,
 	}
+	bin := channelsCLIBinary(t)
 	for _, args := range equivalenceScript {
 		// Stored paths point into the seed dir, identical in both clones.
-		lOut, lErr, lCode := runAgentDeckEnv(t, legacy.home, "", legacy.env, args...)
+		// The two sandboxes share nothing (own HOME, own tmux server), so each
+		// step runs in both at once: the script still runs in order in each
+		// sandbox, and the restart --all steps (a paced boot sweep, ~8s each)
+		// no longer add up twice.
+		var (
+			lOut, lErr string
+			lCode      int
+			lRunErr    error
+			done       = make(chan struct{})
+		)
+		go func() {
+			defer close(done)
+			lOut, lErr, lCode, lRunErr = execAgentDeckEnv(bin, legacy.home, "", legacy.env, args...)
+		}()
 		rOut, rErr, rCode := runAgentDeckEnv(t, registry.home, "", registry.env, args...)
+		<-done
+		if lRunErr != nil {
+			t.Fatalf("run binary (legacy) %v: %v\nstdout: %s\nstderr: %s", args, lRunErr, lOut, lErr)
+		}
 		lOut, lErr = scrubEquivalence(lOut, legacy.home, legacy.tmux), scrubEquivalence(lErr, legacy.home, legacy.tmux)
 		rOut, rErr = scrubEquivalence(rOut, registry.home, registry.tmux), scrubEquivalence(rErr, registry.home, registry.tmux)
 		key := strings.Join(args, " ")

@@ -61,6 +61,7 @@ var silentHelp = map[string]bool{"hook-handler": true, "codex-notify": true}
 // to stdout and the exit is 0. A caller that reads stdout on exit 0 (the app's
 // capability probes, `cmd --help | less`) must see all of it.
 func TestExplicitHelpPrintsToStdout(t *testing.T) {
+	parallelSubprocessTest(t)
 	probes := append([][]string{}, appHelpProbes...)
 	for _, spec := range helpSpecs() {
 		probes = append(probes, spec.args)
@@ -103,6 +104,7 @@ func TestUsageErrorStaysOnStderr(t *testing.T) {
 // The app probes a remote host through `remote <name> ...`: the remote's help
 // must arrive on the controller's stdout with exit 0.
 func TestRemoteForwardedHelpPrintsToStdout(t *testing.T) {
+	parallelSubprocessTest(t)
 	controller, remote, shim := t.TempDir(), t.TempDir(), t.TempDir()
 	configDir := filepath.Join(controller, ".config", "agent-deck")
 	if err := os.MkdirAll(configDir, 0700); err != nil {

@@ -84,6 +84,7 @@ func mapKeyDiff(want, got map[string]bool) string {
 }
 
 func TestEveryRegisteredCommandHelpIsReadOnly(t *testing.T) {
+	parallelSubprocessTest(t)
 	// These are protocol/version entry points, not human-facing command
 	// dispatchers, and intentionally define no nested help surface.
 	noHelpSurface := map[string]bool{

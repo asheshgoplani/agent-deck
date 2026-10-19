@@ -44,6 +44,7 @@ func TestReadonlyEventHelpSynopsis(t *testing.T) {
 }
 
 func TestReadonlyEventCommandsObserveWithoutWriting(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins=true\n")
 	out, stderr, code := runAgentDeck(t, home, "events", "publish",

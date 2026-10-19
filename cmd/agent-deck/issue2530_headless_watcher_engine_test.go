@@ -214,6 +214,7 @@ func (e *issue2530Env) waitRecorded(body string) {
 // which it finds in storage since no TUI loads the sessions; the conductor's
 // send worker types it into the pane (#2537).
 func TestIssue2530_HeadlessWebRunsTheWatcherEngine(t *testing.T) {
+	parallelSubprocessTest(t)
 	e := newIssue2530Env(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
@@ -248,6 +249,7 @@ func TestIssue2530_HeadlessWebRunsTheWatcherEngine(t *testing.T) {
 // watcher created and started afterwards runs without a restart (review on
 // #2638: a process with nothing to run must not keep the lock).
 func TestIssue2530_HeadlessPicksUpTheFirstWatcherStartedLater(t *testing.T) {
+	parallelSubprocessTest(t)
 	e := newIssue2530Env(t)
 	web := e.startWeb("web")
 	if pid := e.lockPID(); pid != 0 {
@@ -297,6 +299,7 @@ func TestIssue2530_HeadlessStopsTheEngineWhenTheWebServerFails(t *testing.T) {
 // waits. Once the owner exits, by signal or killed outright, the second takes
 // over, binds the port and handles events.
 func TestIssue2530_TwoProcessesRunOneEngineAndTheOtherTakesOver(t *testing.T) {
+	parallelSubprocessTest(t)
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
 		t.Run(sig.String(), func(t *testing.T) {
 			e := newIssue2530Env(t)

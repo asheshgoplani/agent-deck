@@ -29,11 +29,7 @@ func TestIssue1830_ResumeSessionRejectsNonUUID(t *testing.T) {
 		t.Skip("skipping subprocess integration test in short mode")
 	}
 
-	binPath := filepath.Join(t.TempDir(), "agent-deck-resume-validation")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\noutput: %s", err, out)
-	}
+	binPath := agentDeckBinaryAs(t, "agent-deck-resume-validation")
 
 	// Payloads that must never be vouched for. The command-substitution and
 	// metacharacter cases are the security core of the finding; the rest

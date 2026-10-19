@@ -8,6 +8,7 @@ import (
 )
 
 func TestNoOperandHelpPreservesExistingFiles(t *testing.T) {
+	parallelSubprocessTest(t)
 	var commands [][]string
 	for _, family := range []string{"hooks", "codex-hooks", "cursor-hooks", "gemini-hooks", "hermes-hooks", "tmux-hooks", "pi-hooks"} {
 		for _, action := range []string{"install", "uninstall", "status"} {

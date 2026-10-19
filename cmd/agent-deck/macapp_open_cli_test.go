@@ -57,6 +57,7 @@ func openTestBusDir(t *testing.T, home string) openTestStats {
 // the app to open a report folder. The frame lands on that host's own bus
 // with an absolute index.html path, and a correlated ack is reported.
 func TestMacappOpenCLIDirectoryFrameAndAck(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	id := addOpenTestSession(t, home, "Report writer")
 	stats := openTestBusDir(t, home)
@@ -122,6 +123,7 @@ func TestMacappOpenCLIDirectoryFrameAndAck(t *testing.T) {
 // Without an app the request is still committed and the CLI says so; bad
 // targets and missing sessions are refused and never queued.
 func TestMacappOpenCLIQueuedAndRefusals(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	id := addOpenTestSession(t, home, "Queue writer")
 	env := []string{"AGENTDECK_INSTANCE_ID=" + id, "SSH_CONNECTION=fake-remote 1 2 3"}

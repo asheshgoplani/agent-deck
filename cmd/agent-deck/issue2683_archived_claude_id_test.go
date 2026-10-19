@@ -2,7 +2,6 @@ package main
 
 import (
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,10 +15,7 @@ func TestIssue2683_ArchivedHolderOfClaudeIDIsAnExplicitError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping subprocess integration test in short mode")
 	}
-	binPath := filepath.Join(t.TempDir(), "agent-deck-2683")
-	if out, err := exec.Command("go", "build", "-o", binPath, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
-	}
+	binPath := agentDeckBinaryAs(t, "agent-deck-2683")
 	tmpHome := t.TempDir()
 	env := sandboxedCLIEnv(tmpHome)
 	run := func(args ...string) (string, error) {

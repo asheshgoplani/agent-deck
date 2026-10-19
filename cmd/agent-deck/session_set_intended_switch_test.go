@@ -195,6 +195,7 @@ func TestSessionSetIntended_FieldMarksCurrent(t *testing.T) {
 }
 
 func TestSessionSetIntended_ExpiredOmitted(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := intendedSwitchHome(t)
 	id := addTestSession(t, home, filepath.Join(home, "proj"), "worker")
 	runSetOK(t, home, id, "account", "work", "--intended", "short", "--intended-for", "1s")

@@ -63,6 +63,7 @@ func (e *issue2530Env) pane(tmuxSession string) string {
 // the process that routed them quits, the conductor comes back, and it gets
 // each event exactly once, in order.
 func TestIssue2537_EventsForAStoppedConductorAreDeliveredOnceAfterQuit(t *testing.T) {
+	parallelSubprocessTest(t)
 	e := newIssue2530Env(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")

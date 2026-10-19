@@ -6382,17 +6382,22 @@ type statusChecker interface {
 	GetStatus() (string, error)
 }
 
+// waitForCompletionTiming is waitForCompletion's initial grace period and
+// poll interval. Unit tests that drive a scripted statusChecker shrink both
+// so the poll sequence runs in milliseconds; production uses the defaults.
+var waitForCompletionTiming = struct{ grace, poll time.Duration }{grace: time.Second, poll: 2 * time.Second}
+
 // waitForCompletion polls until the agent finishes processing (status leaves "active").
 // Returns the final status string ("waiting", "idle", "inactive") or an error on timeout.
 func waitForCompletion(checker statusChecker, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	const pollInterval = 2 * time.Second
+	pollInterval := waitForCompletionTiming.poll
 
 	// Initial grace period: wait for the agent to start processing.
 	// sendWithRetry already checks for "active", but give a small buffer.
-	time.Sleep(1 * time.Second)
+	time.Sleep(waitForCompletionTiming.grace)
 
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 5

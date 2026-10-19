@@ -21,6 +21,7 @@ import (
 // T3/T4 through the binary: read and shot round trips, app refusals mapped
 // to exit codes, and no answer within --timeout.
 func TestMacappBrowserCLIRoundTripAndExitCodes(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = true\n\n[browser]\nenabled = true\n")
 	id := addOpenTestSession(t, home, "Browser driver")
@@ -97,6 +98,7 @@ func TestMacappBrowserCLIRoundTripAndExitCodes(t *testing.T) {
 // T5 and T2 through the binary: session selection, refused arguments and
 // unknown sessions never reach the log; help is advertised.
 func TestMacappBrowserCLISessionAndRefusals(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = true\n\n[browser]\nenabled = true\n")
 	id := addOpenTestSession(t, home, "Browser refusals")

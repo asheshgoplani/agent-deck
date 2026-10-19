@@ -585,6 +585,7 @@ func TestRecallContext_PrintsAndIntoCurrentNeedsASession(t *testing.T) {
 // that needs a live rollout identity the fixture cannot mint, and stays
 // open (docs/recall.md, "Context handoff"). Needs tmux (the Docker image).
 func TestRecallContext_IntoCurrent_ShellCallerEndToEnd(t *testing.T) {
+	parallelSubprocessTest(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}

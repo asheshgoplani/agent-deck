@@ -19,10 +19,7 @@ func TestTitleFormatIndependentCLI(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess integration")
 	}
-	bin := filepath.Join(t.TempDir(), "agent-deck")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v: %s", err, out)
-	}
+	bin := agentDeckBinaryAs(t, "agent-deck")
 	for _, tc := range []struct{ name, config, want string }{
 		{"custom", "title_format = \"{group}/{name}\"", "work/nested/renamed"},
 		{"no prefix", "include_cwd_prefix = false", "renamed"},

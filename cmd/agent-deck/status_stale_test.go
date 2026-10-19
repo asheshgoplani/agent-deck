@@ -234,11 +234,7 @@ func TestStatusStale_CLI_CandidateViewAndMutatesNothing(t *testing.T) {
 		}
 	}
 
-	binPath := filepath.Join(t.TempDir(), "agent-deck-stale-test")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\noutput: %s", err, out)
-	}
+	binPath := agentDeckBinaryAs(t, "agent-deck-stale-test")
 
 	var env []string
 	for _, kv := range os.Environ() {
@@ -377,11 +373,7 @@ func TestStatusStale_CLI_StartedSessionIsNotNeverStarted(t *testing.T) {
 		}
 	}
 
-	binPath := filepath.Join(t.TempDir(), "agent-deck-stale-started-test")
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\noutput: %s", err, out)
-	}
+	binPath := agentDeckBinaryAs(t, "agent-deck-stale-started-test")
 
 	var env []string
 	for _, kv := range os.Environ() {

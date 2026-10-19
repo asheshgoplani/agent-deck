@@ -92,6 +92,7 @@ func TestExitStatus1628_ZeroExitIsIdleWithCodeZero(t *testing.T) {
 // A slower failing command (it exits after the start has settled) reports
 // error + process-exited + its exit code in list and session show.
 func TestExitStatus1628_DelayedFailureReportsErrorAndCode(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	id := addExitStatusSession(t, home, "exit-late", "#!/bin/sh\nsleep 2\nexit 42\n")
 	_, _, _ = runAgentDeck(t, home, "-p", "_test", "session", "start", id)
@@ -104,6 +105,7 @@ func TestExitStatus1628_DelayedFailureReportsErrorAndCode(t *testing.T) {
 // #2453 must hold for tracked commands: a deliberate stop after the command
 // exited stays stopped and drops the exit code, across repeated refreshes.
 func TestExitStatus1628_StopAfterExitStaysStoppedWithoutCode(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	id := addExitStatusSession(t, home, "exit-stop", "#!/bin/sh\nexit 3\n")
 	_, _, _ = runAgentDeck(t, home, "-p", "_test", "session", "start", id)

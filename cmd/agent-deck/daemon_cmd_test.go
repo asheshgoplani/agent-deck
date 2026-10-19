@@ -125,6 +125,7 @@ func seedSessions(t *testing.T, home string, env []string, titles ...string) {
 // envelope. Mutating commands are paired on the same starting state (argv
 // first, then the socket after the state is put back).
 func TestDaemonEnvelopesMatchArgv(t *testing.T) {
+	parallelSubprocessTest(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
@@ -246,6 +247,7 @@ func TestDaemonEnvelopesMatchArgv(t *testing.T) {
 }
 
 func TestDaemonRestartAllReturnsCompletedResult(t *testing.T) {
+	parallelSubprocessTest(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
@@ -304,6 +306,7 @@ func writeCoreDaemonConfig(t *testing.T, home string) {
 // The real daemon and a direct argv writer must wait on the same profile
 // lock before either can load, decide, spawn, or save.
 func TestDaemonAndDirectCLIShareMutationLock(t *testing.T) {
+	parallelSubprocessTest(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
@@ -510,6 +513,7 @@ func stateDBPath(t *testing.T, home string) string {
 // envelope requests to a live daemon, and keeps answering in process, with
 // the same bytes, when the daemon was killed and left a stale socket.
 func TestDaemonDeadCLIStillWorks(t *testing.T) {
+	parallelSubprocessTest(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}

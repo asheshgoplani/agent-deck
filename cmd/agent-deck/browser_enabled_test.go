@@ -40,6 +40,7 @@ func profileRequestFrames(t *testing.T, home, profile string) uint64 {
 // on, and code BROWSER_DISABLED with --json. [macapp] plugins alone is not
 // enough.
 func TestBrowserOffByDefaultRefuses(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = true\n")
 	id := addOpenTestSession(t, home, "Browser off")
@@ -80,6 +81,7 @@ func TestBrowserOffByDefaultRefuses(t *testing.T) {
 // The opt-in is per profile: [profiles.<name>.browser] enabled overrides
 // [browser] enabled, both ways.
 func TestBrowserEnabledPerProfile(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	alpha := addProfileTestSession(t, home, "alpha", "Alpha")
 	beta := addProfileTestSession(t, home, "beta", "Beta")
@@ -114,6 +116,7 @@ func TestBrowserEnabledPerProfile(t *testing.T) {
 // events publish, one for another profile, and one that claims to come from
 // a remote. Exit 2, code BROWSER_DISABLED.
 func TestEventsPublishBrowserRequestNeedsBrowserEnabled(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	id := addOpenTestSession(t, home, "Publisher")
 	addProfileTestSession(t, home, "alpha", "Alpha")

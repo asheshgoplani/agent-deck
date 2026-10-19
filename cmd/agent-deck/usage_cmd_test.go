@@ -43,17 +43,21 @@ func runUsageCLIEnv(t *testing.T, home string, stdin string, env []string, args 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmdArgs := append([]string{"-test.run=^TestUsageHelperProcess$", "--"}, args...)
-	cmd := exec.CommandContext(ctx, os.Args[0], cmdArgs...)
+	// The package's prebuilt agent-deck (channelsCLIBinary), not a re-exec of
+	// this test binary into main(): under -race every re-exec cost about a
+	// second at exit, several seconds per usage test. The env keeps what the
+	// re-exec'd helper had: telemetry and the update check off, and the
+	// _test profile its TestMain forced (usageHelperProfile).
+	cmd := exec.CommandContext(ctx, channelsCLIBinary(t), args...)
 	cmd.Env = append(os.Environ(),
-		"AGENT_DECK_USAGE_HELPER=1",
-		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENTDECK_TELEMETRY=0",
+		"AGENTDECK_SKIP_UPDATE_CHECK=1",
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
 		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
 		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
-		"AGENTDECK_PROFILE=",
+		"AGENTDECK_PROFILE="+usageHelperProfile,
 		"CLAUDE_CONFIG_DIR=",
 		"ANTHROPIC_BASE_URL=",
 		"ANTHROPIC_AUTH_TOKEN="+usageSentinelToken,
@@ -86,29 +90,10 @@ func asExitError(err error, target **exec.ExitError) bool {
 	return ok
 }
 
-func TestUsageHelperProcess(t *testing.T) {
-	if os.Getenv("AGENT_DECK_USAGE_HELPER") != "1" {
-		return
-	}
-	separator := 0
-	for i, arg := range os.Args {
-		if arg == "--" {
-			separator = i
-			break
-		}
-	}
-	os.Args = append([]string{"agent-deck"}, os.Args[separator+1:]...)
-	main()
-	// Exit rather than return: letting the test framework resume would append
-	// its own "PASS" to stdout, and the passthrough assertions below compare
-	// the statusLine output byte for byte.
-	os.Exit(0)
-}
-
-// usageHelperProfile is the profile the helper subprocess resolves to. This
+// usageHelperProfile is the profile the usage subprocess resolves to. This
 // package's TestMain forces AGENTDECK_PROFILE=_test (2025-12-11 incident: tests
-// overwrote production sessions) and that runs inside the helper too, so the
-// cache lands under _test rather than default.
+// overwrote production sessions), and runUsageCLIEnv passes the same to the
+// CLI, so the cache lands under _test rather than default.
 const usageHelperProfile = "_test"
 
 // seedSnapshot writes a provider file straight into the profile's quota cache,

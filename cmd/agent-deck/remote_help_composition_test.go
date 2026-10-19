@@ -43,6 +43,7 @@ func TestRemoteCompositionManagementHelpIsLocal(t *testing.T) {
 }
 
 func TestRemoteCompositionForwardsCommandHelp(t *testing.T) {
+	parallelSubprocessTest(t)
 	controller, remote, shim := t.TempDir(), t.TempDir(), t.TempDir()
 	startParitySSH(t, remote, shim)
 	server := filepath.Join(shim, "record-argv")

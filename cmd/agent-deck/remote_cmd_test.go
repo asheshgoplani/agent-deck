@@ -148,6 +148,7 @@ func tempHomeWithConfig(t *testing.T, contents string) string {
 // degrades to "no rows" cleanly. `[]` was already the shape for
 // --with-errors's "sessions" field; this makes the bare-array form match.
 func TestRemoteSessionsPlainJSONStaysBareArray(t *testing.T) {
+	parallelSubprocessTest(t)
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")
 	}

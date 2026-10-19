@@ -93,6 +93,7 @@ var browserTestImage = []byte{0xff, 0xd8, 0xff, 0xdb, 'j', 'p', 'e', 'g'}
 // T3: one round trip per op through the fake app; only the matching first
 // response counts, and each op prints its result.
 func TestBrowserRoundTripPerOp(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, responder := browserTestBuses(t)
 	cases := []struct {
 		op     macapp.Op
@@ -153,6 +154,7 @@ func TestBrowserRoundTripPerOp(t *testing.T) {
 // T2: the request frame carries exactly the contract fields, and the CLI's
 // flags become the op's args.
 func TestBrowserRequestFrameShape(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, _ := browserTestBuses(t)
 	req, err := newBrowserRequest(macapp.OpType, browserFlags{selector: "#q", text: "hi", submit: true, tab: "t1"}, "", 120*time.Second)
 	if err != nil {
@@ -224,6 +226,7 @@ func TestBrowserRequestFrameShape(t *testing.T) {
 // T4: with no app the CLI waits its timeout and reports no answer; app
 // error codes map to the documented exit codes.
 func TestBrowserNoAnswerAndExitCodes(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, _ := browserTestBuses(t)
 	req, err := newBrowserRequest(macapp.OpRead, browserFlags{}, "", time.Second)
 	if err != nil {

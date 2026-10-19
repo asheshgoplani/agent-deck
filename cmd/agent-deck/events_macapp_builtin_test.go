@@ -18,6 +18,7 @@ import (
 // session.closed and the plugin kinds (including the local browser plugin
 // kinds).
 func TestEventsPublishBrowserKindsUngated(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = false\n")
 	for _, kind := range []string{events.KindMacappBrowserResponse, events.KindMacappAppFocus, events.KindMacappOpen, events.KindMacappOpenAck} {
@@ -45,6 +46,7 @@ func TestEventsPublishBrowserKindsUngated(t *testing.T) {
 // another existing profile's log on that host. A missing profile is refused
 // and never creates a bus.
 func TestEventsPublishAndFollowProfileFlag(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	stdout, stderr, code := runAgentDeck(t, home, "-p", "second", "add", t.TempDir(), "--title", "Second", "-c", "bash", "--no-parent", "--json")
 	if code != 0 {

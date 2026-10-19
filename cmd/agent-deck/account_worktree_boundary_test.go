@@ -18,6 +18,7 @@ import (
 // Exercise real Git branches, worktrees and setup scripts so a rejected
 // account cannot appear safe merely because the fixture never reached setup.
 func TestAccountWorktreeBoundary(t *testing.T) {
+	parallelSubprocessTest(t)
 	cases := []struct {
 		name, command, flagAccount, envAccount string
 		valid                                  bool

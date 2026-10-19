@@ -41,6 +41,7 @@ func TestEventsPublishGateAndNamespace(t *testing.T) {
 // reaches a running `events follow --kind macapp.` within the budget, with
 // its session id and data, and `events stats` counts it per kind.
 func TestEventsPublishFollowRoundTrip(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = true\n")
 	cmd := exec.Command(channelsCLIBinary(t), "events", "follow", "--json", "--kind", "macapp.")

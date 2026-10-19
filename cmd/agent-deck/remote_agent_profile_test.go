@@ -27,6 +27,7 @@ import (
 // changes under an agent started without -p, the agent exits for a reconnect;
 // one started with -p keeps serving its profile.
 func TestRemoteAgent_ChangeFeedWatchesTheProfileItServes(t *testing.T) {
+	parallelSubprocessTest(t)
 	if testing.Short() {
 		t.Skip("starts real agent-deck processes")
 	}

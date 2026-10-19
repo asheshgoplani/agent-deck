@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +58,58 @@ func channelsCLIBinary(t *testing.T) string {
 	if err := ensureChannelsCLIBinary(); err != nil {
 		t.Fatal(err)
 	}
+	// Read under the lock: ensureChannelsCLIBinary rewrites the path on
+	// every call, and tests (or their goroutines) call this concurrently.
+	channelsCLIBuildMu.Lock()
+	defer channelsCLIBuildMu.Unlock()
 	return channelsCLIBinPath
+}
+
+// agentDeckBinaryAs returns the package's prebuilt CLI (channelsCLIBinary)
+// under t.TempDir()/name, for tests that want their own binary path. It
+// hard-links the fixture (a copy when the link fails) instead of running
+// `go build` again: a per-test build relinks the whole CLI, about a second
+// locally and far more on a CI runner whose build cache is cold.
+func agentDeckBinaryAs(t *testing.T, name string) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), name)
+	if err := linkOrCopyExecutable(channelsCLIBinary(t), dst); err != nil {
+		t.Fatal(err)
+	}
+	return dst
+}
+
+func linkOrCopyExecutable(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// parallelSubprocessTest runs a slow test beside the other slow ones instead
+// of in the package's serial line. Only for tests that drive agent-deck as
+// subprocesses against their own HOME, tmux socket dir and ports (or run
+// in-process code only on their own temp dirs), and touch no process env
+// (t.Setenv panics under t.Parallel) and no package globals.
+// They wait on real processes (daemons, boot sweeps, ssh dials, ack
+// timeouts), so overlapping them keeps cmd/agent-deck far inside go test's
+// timeout without shortening any wait they assert on.
+func parallelSubprocessTest(t *testing.T) {
+	t.Helper()
+	t.Parallel()
 }
 
 // runAgentDeck invokes the built binary with isolated HOME so each test
@@ -93,7 +145,18 @@ func runAgentDeckEnv(
 ) (stdout, stderr string, exitCode int) {
 	t.Helper()
 
-	cmd := exec.Command(channelsCLIBinary(t), args...)
+	stdout, stderr, exitCode, err := execAgentDeckEnv(channelsCLIBinary(t), home, stdin, extraEnv, args...)
+	if err != nil {
+		t.Fatalf("run binary: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	return stdout, stderr, exitCode
+}
+
+// execAgentDeckEnv is runAgentDeckEnv without the *testing.T: it returns a
+// start failure instead of calling t.Fatalf, so a test may run it from a
+// goroutine of its own. A non-zero exit is an exitCode, not an error.
+func execAgentDeckEnv(bin, home, stdin string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int, err error) {
+	cmd := exec.Command(bin, args...)
 	cmd.Env = agentDeckTestEnv(home, extraEnv)
 
 	var outBuf, errBuf strings.Builder
@@ -101,14 +164,14 @@ func runAgentDeckEnv(
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+	if runErr := cmd.Run(); runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
-			t.Fatalf("run binary: %v\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
+			err = runErr
 		}
 	}
-	return outBuf.String(), errBuf.String(), exitCode
+	return outBuf.String(), errBuf.String(), exitCode, err
 }
 
 // agentDeckTestEnv is the environment runAgentDeckEnv gives the binary: the

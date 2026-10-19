@@ -121,6 +121,7 @@ func TestOpenEventAndAck(t *testing.T) {
 }
 
 func TestOpenQueuedAndNoFalseAck(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, err := events.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -176,6 +177,7 @@ func TestOpenLocalLaunchPolicy(t *testing.T) {
 }
 
 func TestOpenCLISelectionAndQueued(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	project := t.TempDir()
 	stdout, stderr, code := runAgentDeck(t, home, "add", project, "--title", "Open report", "-c", "bash", "--no-parent", "--json")
@@ -271,6 +273,7 @@ func TestOpenAppRejectionIsNotSuccess(t *testing.T) {
 }
 
 func TestOpenLinkMatchesPersistedEventID(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, err := events.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -321,6 +324,7 @@ func TestOpenLinkMatchesPersistedEventID(t *testing.T) {
 }
 
 func TestOpenPublishBuiltinsWithoutPluginGate(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = false\n")
 	for _, kind := range []string{"macapp.open", "macapp.open.ack"} {
@@ -341,6 +345,7 @@ func TestOpenPublishBuiltinsWithoutPluginGate(t *testing.T) {
 // optional Browser panel profile as browser_profile, and the ack still
 // matches on open_event_id alone.
 func TestOpenFrameRequestIDProfileAndAck(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, err := events.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -398,6 +403,7 @@ func TestOpenFrameRequestIDProfileAndAck(t *testing.T) {
 // T1 (CLI): --browser-profile lands in the frame as browser_profile, and a
 // bad --wait or --browser-profile is refused unqueued.
 func TestOpenCLIProfileAndWaitFlags(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	id := addOpenTestSession(t, home, "Profile writer")
 	env := []string{"AGENTDECK_INSTANCE_ID=" + id, "SSH_CONNECTION=fake-remote 1 2 3"}
@@ -471,6 +477,7 @@ func TestOpenCLIProfileAndWaitFlags(t *testing.T) {
 // T1: --wait bounds the acknowledgment wait, both in publishOpenRequest and
 // through the CLI flag (no app answers here).
 func TestOpenWaitBoundsTheAckWait(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, err := events.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

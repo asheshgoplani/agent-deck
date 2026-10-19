@@ -119,35 +119,18 @@ func TestResolveSSHAddPaths(t *testing.T) {
 	}
 }
 
-// buildAgentDeckBinaryForSSHTest builds the agent-deck binary once for the
-// subprocess tests below and returns its path. Fails (does not skip) on
-// build failure: a silent skip here would let this regression coverage
-// disappear without a trace whenever the build is broken, which is exactly
-// when a CI run most needs it to fail loudly instead.
+// buildAgentDeckBinaryForSSHTest returns the package's prebuilt agent-deck
+// binary (built once in TestMain) under the name agent-deck for the
+// subprocess tests below. Fails (does not skip) when it is unavailable: a
+// silent skip here would let this regression coverage disappear without a
+// trace whenever the build is broken, which is exactly when a CI run most
+// needs it to fail loudly instead.
 func buildAgentDeckBinaryForSSHTest(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell/ssh-flag fixture")
 	}
-	dir := t.TempDir()
-	binPath := filepath.Join(dir, "agent-deck")
-	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/agent-deck")
-	cmd.Dir = repoRootForSSHTest(t)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("could not build agent-deck binary for subprocess test: %v\n%s", err, out)
-	}
-	return binPath
-}
-
-func repoRootForSSHTest(t *testing.T) string {
-	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("os.Getwd: %v", err)
-	}
-	// This test file lives in cmd/agent-deck; the module root is two levels up.
-	return filepath.Join(wd, "..", "..")
+	return agentDeckBinaryAs(t, "agent-deck")
 }
 
 // TestSSHWorktreeCreationRefused proves that `add --ssh <host> --remote-path

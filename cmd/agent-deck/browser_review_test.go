@@ -137,6 +137,7 @@ func TestBrowserResultSpill(t *testing.T) {
 // End to end: the app's reply goes through `events publish`, the page text
 // never lands in the events log, and `agent-deck browser read` prints it.
 func TestMacappBrowserCLIKeepsLargeResultsOutOfTheLog(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	writeMacappConfig(t, home, "[macapp]\nplugins = true\n\n[browser]\nenabled = true\n")
 	id := addOpenTestSession(t, home, "Big page")
@@ -190,6 +191,7 @@ func TestMacappBrowserCLIKeepsLargeResultsOutOfTheLog(t *testing.T) {
 
 // A response in another protocol version is an error, not a result.
 func TestBrowserResponseVersionChecked(t *testing.T) {
+	parallelSubprocessTest(t)
 	bus, responder := browserTestBuses(t)
 	req, err := newBrowserRequest(macapp.OpTabs, browserFlags{}, "", time.Second)
 	if err != nil {

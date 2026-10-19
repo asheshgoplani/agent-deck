@@ -20,6 +20,7 @@ import (
 // Exercise the actual CLI boundary over an authenticated SSH connection.
 // The server runs each remote command under a separate HOME.
 func TestRemoteCommandParity(t *testing.T) {
+	parallelSubprocessTest(t)
 	bin := channelsCLIBinary(t)
 	controller, remote, shim := t.TempDir(), t.TempDir(), t.TempDir()
 	write := func(path, body string, mode os.FileMode) {

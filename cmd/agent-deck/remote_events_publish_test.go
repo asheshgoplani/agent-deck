@@ -241,6 +241,7 @@ func TestReadPublishDataCap(t *testing.T) {
 // on the box: only reply kinds, data on stdin, and only a session of this
 // host. A focus claim may carry no session.
 func TestEventsPublishFromRemoteBoxChecks(t *testing.T) {
+	parallelSubprocessTest(t)
 	home := t.TempDir()
 	id := addOpenTestSession(t, home, "Box session")
 	reply := `{"open_event_id":"e","opened":true}`

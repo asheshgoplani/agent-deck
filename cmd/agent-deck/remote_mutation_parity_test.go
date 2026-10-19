@@ -19,6 +19,7 @@ import (
 // Two independent registries receive equivalent local and SSH operations.
 // Compare successful JSON schemas and independently inspect each side effect.
 func TestRemoteSuccessfulMutationParity(t *testing.T) {
+	parallelSubprocessTest(t)
 	bin := channelsCLIBinary(t)
 	controller, server, local, shim := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
 	startParitySSH(t, server, shim)

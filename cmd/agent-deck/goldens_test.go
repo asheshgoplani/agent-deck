@@ -413,10 +413,10 @@ func goldensBinary(t *testing.T) string {
 			bin += ".exe"
 		}
 		goldensBinPath = bin
-		cmd := exec.Command("go", "build", "-o", bin, "./cmd/agent-deck")
-		cmd.Dir = goldensRepoRoot(t)
-		if out, buildErr := cmd.CombinedOutput(); buildErr != nil {
-			goldensBinErr = &buildFailure{err: buildErr, output: string(out)}
+		// The package's prebuilt CLI under the name the goldens expect,
+		// instead of a second `go build` of the same package.
+		if linkErr := linkOrCopyExecutable(channelsCLIBinary(t), bin); linkErr != nil {
+			goldensBinErr = &buildFailure{err: linkErr, output: "link prebuilt agent-deck"}
 			return
 		}
 	})
@@ -444,16 +444,6 @@ type buildFailure struct {
 }
 
 func (b *buildFailure) Error() string { return b.err.Error() + "\n" + b.output }
-
-func goldensRepoRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	// cmd/agent-deck -> repo root
-	return filepath.Clean(filepath.Join(dir, "..", ".."))
-}
 
 // --- sandbox ------------------------------------------------------------
 

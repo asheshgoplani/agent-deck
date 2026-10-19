@@ -35,6 +35,11 @@ func runTestMain(m *testing.M) int {
 	isHelperProcess := os.Getenv("AGENT_DECK_TASK6_HELPER_PROCESS") != ""
 
 	if !isHelperProcess {
+		// Pin the Go build and module caches before HOME moves: a test that
+		// runs `go build` itself (eval harness sandbox, goldens) would
+		// otherwise find an empty $HOME/.cache/go-build under the isolated
+		// HOME and recompile the whole module, about a minute per CI shard.
+		pinGoCaches()
 		// Build shared CLI fixture before HOME/XDG isolation so Go caches never
 		// become read-only debris inside a per-test directory.
 		if err := ensureChannelsCLIBinary(); err != nil {
@@ -118,6 +123,22 @@ func cleanupTestSessions() {
 	for _, sess := range sessions {
 		if strings.Contains(sess, "Test-Skip-Regen") {
 			_ = exec.Command("tmux", "kill-session", "-t", sess).Run()
+		}
+	}
+}
+
+// pinGoCaches exports GOCACHE and GOMODCACHE with the values the go command
+// resolves for the real HOME, unless the caller already set them.
+func pinGoCaches() {
+	names := []string{"GOCACHE", "GOMODCACHE"}
+	out, err := exec.Command("go", append([]string{"env"}, names...)...).Output()
+	if err != nil {
+		return
+	}
+	values := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	for i, name := range names {
+		if i < len(values) && os.Getenv(name) == "" && strings.TrimSpace(values[i]) != "" {
+			os.Setenv(name, strings.TrimSpace(values[i]))
 		}
 	}
 }

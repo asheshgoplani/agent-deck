@@ -69,6 +69,7 @@ func keyedTextHash(t *testing.T, home, s string) string {
 // attempt) and one final record with its terminal state; a quiet queued
 // send still says on stderr that it is not delivered yet.
 func TestSendJournalRecordCarriesSenderAndTextHash(t *testing.T) {
+	parallelSubprocessTest(t)
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}

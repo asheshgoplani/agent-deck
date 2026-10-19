@@ -76,11 +76,7 @@ func TestWebCommand_NoTuiFlag_SkipsBubbleteaBoot(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		binPath := filepath.Join(t.TempDir(), "agent-deck-no-tui-test")
-		build := exec.Command("go", "build", "-o", binPath, ".")
-		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("go build: %v\noutput: %s", err, out)
-		}
+		binPath := agentDeckBinaryAs(t, "agent-deck-no-tui-test")
 
 		// Strip TMUX*/AGENTDECK_*/HOME to dodge the nested-session guard,
 		// matching the pattern in cgroup_isolation_wiring_test.go.

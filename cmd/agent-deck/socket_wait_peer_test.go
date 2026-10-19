@@ -20,7 +20,18 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 		t.Skip("tmux unavailable")
 	}
 	for _, mode := range []string{"idle", "fast", "dropped", "busy", "partial", "next-turn", "short-fast", "short-partial", "late-turn"} {
+		budget := "5s"
+		if strings.HasPrefix(mode, "short-") || mode == "late-turn" {
+			budget = "300ms"
+		}
 		t.Run(mode, func(t *testing.T) {
+			if budget == "5s" {
+				// Each mode has its own HOME, tmux dir and fixture, and the
+				// 5s modes assert no elapsed time, so they run side by side
+				// once the loop ends (dropped and partial wait the whole 5s
+				// out). The 300ms modes stay serial: they time the wait.
+				t.Parallel()
+			}
 			// Short HOME keeps the Unix socket below the platform path limit.
 			home, err := os.MkdirTemp("", "socket-wait-")
 			if err != nil {
@@ -35,7 +46,11 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := os.WriteFile(filepath.Join(config, "config.toml"), []byte("send_transport = 'auto'\n"), 0o600); err != nil {
+			// The fixture never draws Claude's "Resume from summary" picker, so
+			// launch would poll 3s for it on every mode; this test is about
+			// the socket wait, not the picker (covered by its own tests).
+			cfg := "send_transport = 'auto'\n\n[claude]\nauto_resume_summary = false\n"
+			if err := os.WriteFile(filepath.Join(config, "config.toml"), []byte(cfg), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			shim := "#!/bin/sh\nexec \"$SOCKET_WAIT_TEST_BINARY\" -test.run=^TestSocketWaitClaudeFixture$ -- \"$@\" 2>\"$HOME/socket-wait-helper.stderr\"\n"
@@ -66,10 +81,6 @@ func TestSessionSendSocketWaitPeerReply(t *testing.T) {
 					t.Fatalf("fixture did not publish its verified socket record: helper stderr=%s", diagnostic)
 				}
 				time.Sleep(20 * time.Millisecond)
-			}
-			budget := "5s"
-			if strings.HasPrefix(mode, "short-") || mode == "late-turn" {
-				budget = "300ms"
 			}
 			out, stderr, code = runAgentDeckEnv(t, home, "", env, "session", "send", "socket-wait",
 				"--no-tag", "--no-wait", "--wait", "--timeout", budget, "--json", "reply ok")

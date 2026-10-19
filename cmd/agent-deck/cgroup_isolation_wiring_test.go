@@ -48,11 +48,7 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(xdgCacheHome, "agent-deck"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		binPath := filepath.Join(t.TempDir(), "agent-deck-test")
-		build := exec.Command("go", "build", "-o", binPath, ".")
-		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("go build: %v\noutput: %s", err, out)
-		}
+		binPath := agentDeckBinaryAs(t, "agent-deck-test")
 
 		// Strip TMUX* and AGENTDECK_* env from the parent process so the
 		// nested-session guard in main.go (isNestedSession → GetCurrentSessionID)
