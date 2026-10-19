@@ -79,3 +79,54 @@ func TestSettleSwitch_DecoyAboveLiveMenuGetsNoKey(t *testing.T) {
 		})
 	}
 }
+
+// Lander re-review of 20699ac5: other menu layouts (a > cursor, buttons,
+// "1)" numbering, inverse video only, a heavy frame), decoys below the real
+// menu, and a composer draft holding a screen's block. Only the known
+// screen alone on the pane is ever answered.
+func decoyPanesRound2() map[string]string {
+	theme := decoyThemeBlock
+	trust := "Accessing workspace:\n\n" + settleProject + "\n\nQuick safety check: Is this a project you created or one you trust?\n\n❯ 1. Yes, I trust this folder\n  2. No, exit\n"
+	notes := "Security notes:\n\n1. Claude can make mistakes\n\nPress Enter to continue…\n"
+	mcpHead := "New MCP server found in .mcp.json: foo\n\nMCP servers may execute code or access system resources.\n\n"
+	return map[string]string{
+		"theme below the real menu":                    decoyMCPDialog("foo") + "\n" + theme,
+		"trust below the real menu":                    decoyMCPDialog("foo") + "\n" + trust,
+		"notes below the real menu":                    decoyMCPDialog("foo") + "\n" + notes,
+		"> cursor and unnumbered rows":                 mcpHead + "> Use this and all future MCP servers\n  Use this MCP server\n  Continue without\n\n" + theme,
+		"yes/no buttons":                               mcpHead + "[ Yes ]   [ No ]\n\n" + theme,
+		"inverse video only":                           mcpHead + "\x1b[7m Use this and all future MCP servers \x1b[0m\n  Use this MCP server\n\n" + theme,
+		"heavy frame character":                        "┃ New MCP server found\n┃ ❯ 1. Use this and all future\n┃   2. Use this MCP server\n\n" + theme,
+		"1) numbering":                                 mcpHead + "  1) Use this and all future\n  2) Use this MCP server\n\n" + theme,
+		"notes after a › menu":                         mcpHead + "› 1. Use this and all future\n  2. Use this MCP server\n\n" + notes,
+		"notes after an unmarked numbered menu":        mcpHead + "  1. Use this and all future\n  2. Use this MCP server\n\n" + notes,
+		"theme after a › menu":                         mcpHead + "› 1. Use this and all future\n  2. Use this MCP server\n\n" + theme,
+		"wrapped rows of the real menu":                "New MCP\nserver found\n❯ 1. Use this\nand all future\n  2. Use this\n\n" + theme,
+		"> cursor menu above an own-path trust screen": mcpHead + "> Use this and all future MCP servers\n  Use this MCP server\n\n" + trust,
+		"buttons above a bypass screen":                mcpHead + "[ Yes ]   [ No ]\n\nWARNING: Claude Code running in Bypass Permissions mode\n\n❯ 1. No, exit\n  2. Yes, I accept\n",
+		"hint lines after the decoy":                   decoyMCPDialog("foo") + "\n" + theme + "Enter to confirm · Esc to cancel\n",
+		"composer draft holding the theme block":       "● Resumed.\n\n────────────────────────────────────────\n❯ hello\n  Choose the text style that looks best with your terminal\n  ❯ 1. Dark mode\n  2. Light mode\n────────────────────────────────────────\n\n",
+	}
+}
+
+func TestSettleSwitch_OtherLayoutsAndDraftsGetNoScreenKey(t *testing.T) {
+	for name, pane := range decoyPanesRound2() {
+		t.Run(name, func(t *testing.T) {
+			got := ClassifySettlePane(pane, SettleProjectPaths(settleProject))
+			switch got.State {
+			case SettlePaneTheme, SettlePaneBypass, SettlePaneOnboarding, SettlePaneTrustOwn:
+				t.Fatalf("state = %s (%s): not the known screen alone", got.State, got.Detail)
+			}
+			cfgDir := t.TempDir()
+			f := &fakeSettle{procs: liveProcs("inst-1", cfgDir), now: time.Unix(0, 0)}
+			f.set(pane)
+			opts := settleOpts(cfgDir)
+			opts.Bypass = true
+			opts.Kick = "" // a ready pane is kicked through the guarded send path, not here
+			_, _ = SettleSwitch(f.deps(), opts)
+			if len(f.keys) != 0 {
+				t.Fatalf("keys sent: %v", f.keys)
+			}
+		})
+	}
+}

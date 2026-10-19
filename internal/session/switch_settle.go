@@ -252,6 +252,43 @@ func soleMenuBlock(lines []string, rows []settleOptionRow) bool {
 	return true
 }
 
+// settleBodyMenuLike matches a row of any menu layout, Claude's or not: a
+// cursor glyph (❯ › > * •), a checkbox or radio, "N." or "N)" numbering, or
+// buttons. A screen's body (its prose between title and block) never has one.
+var settleBodyMenuLike = regexp.MustCompile(`^(❯|›|>|\*|•|\[.?\]|\(.?\))\s*\S|^\d+[.)]\s+\S|\[\s*[^\]]+\s*\]\s+\[`)
+
+// screenIsAlone is the allow-list guard: the pane holds the known screen and
+// nothing else. Before its first line (start) only blank or frame-only lines,
+// or a header the screen itself draws (header); between start and the
+// option block (or the end line) only the screen's own prose, never a
+// menu-like row of any layout (body may allow more); after it only blank or
+// hint lines. Any other line, in any layout, means it is not that screen.
+func screenIsAlone(lines []string, start, blockStart, blockEnd int, header, body func(string) bool) bool {
+	for i, line := range lines {
+		text := strings.Join(strings.Fields(strings.Trim(line, settleBoxChars)), " ")
+		switch {
+		case text == "":
+		case i < start:
+			if header == nil || !header(text) {
+				return false
+			}
+		case i > start && i < blockStart:
+			if body != nil {
+				if !body(text) {
+					return false
+				}
+			} else if settleBodyMenuLike.MatchString(text) {
+				return false
+			}
+		case i > blockEnd:
+			if !settleHintLine(text) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // settleHintLine is a key-hint footer line ("Enter to confirm · Esc to
 // cancel").
 func settleHintLine(text string) bool {
@@ -269,7 +306,8 @@ func settleHintLine(text string) bool {
 // makes it not that dialog.
 func yesNoBlock(lines []string, title int, yes, no []string) (yesRow, cursorRow int, live bool) {
 	rows, ok := optionBlockAfter(lines, title, 16)
-	if !ok || len(rows) != 2 || !soleMenuBlock(lines, rows) {
+	if !ok || len(rows) != 2 || !soleMenuBlock(lines, rows) ||
+		!screenIsAlone(lines, yesNoScreenStart(lines, title), rows[0].idx, rows[len(rows)-1].idx, nil, nil) {
 		return -1, -1, false
 	}
 	yesRow, cursorRow = -1, -1
@@ -290,6 +328,18 @@ func yesNoBlock(lines []string, title int, yes, no []string) (yesRow, cursorRow 
 	return yesRow, cursorRow, yesRow >= 0 && noSeen && cursorRow >= 0
 }
 
+// yesNoScreenStart is the first line of a Yes/No screen: for the trust
+// dialog its "Accessing workspace:" block just above the title, else the
+// title itself.
+func yesNoScreenStart(lines []string, title int) int {
+	for i := title - 1; i >= 0 && i >= title-8; i-- {
+		if strings.HasPrefix(strings.TrimSpace(strings.Trim(lines[i], settleBoxChars)), "Accessing workspace:") {
+			return i
+		}
+	}
+	return title
+}
+
 // themeScreen is the theme picker: its title at the start of a line, then
 // an option block of theme rows only, with the cursor on one.
 func themeScreen(lines []string) bool {
@@ -299,6 +349,11 @@ func themeScreen(lines []string) bool {
 	}
 	rows, ok := optionBlockAfter(lines, title, 4)
 	if !ok || len(rows) < 2 || !soleMenuBlock(lines, rows) {
+		return false
+	}
+	header := func(text string) bool { return text == "Let's get started." }
+	body := func(text string) bool { return text == "To change this later, run /theme" }
+	if !screenIsAlone(lines, title, rows[0].idx, rows[len(rows)-1].idx, header, body) {
 		return false
 	}
 	for _, row := range rows {
@@ -319,7 +374,7 @@ func securityNotesScreen(lines []string) bool {
 		if _, isCursor := optionText(line); isCursor {
 			return false
 		}
-		if text == settleSecurityNotes {
+		if text == settleSecurityNotes && title < 0 {
 			title = i
 		}
 		if title >= 0 && i > title && strings.HasPrefix(text, settleContinueLine) {
@@ -327,6 +382,15 @@ func securityNotesScreen(lines []string) bool {
 		}
 	}
 	if title < 0 || cont <= title {
+		return false
+	}
+	// The notes are numbered ("1. Claude can make mistakes"); any other
+	// menu-like row, and anything at all before the title, is not this
+	// screen.
+	notesBody := func(text string) bool {
+		return regexp.MustCompile(`^\d+\.\s+\S`).MatchString(text) || !settleBodyMenuLike.MatchString(text)
+	}
+	if !screenIsAlone(lines, title, cont, cont, nil, notesBody) {
 		return false
 	}
 	// The continue line ends the screen: nothing but blank or hint lines
@@ -352,8 +416,10 @@ func liveDialogRegion(lines []string) []string {
 	if top, bottom := send.ComposerBounds(lines); top >= 0 && bottom > top+1 {
 		for i := top + 1; i < bottom; i++ {
 			t := strings.TrimSpace(lines[i])
-			if (strings.HasPrefix(t, "❯") || strings.HasPrefix(t, "›")) && !isOptionRow(lines[i]) && i > last {
-				last = i
+			if (strings.HasPrefix(t, "❯") || strings.HasPrefix(t, "›")) && !isOptionRow(lines[i]) && bottom > last {
+				// The whole frame is the composer: a draft inside it
+				// (even one holding a screen's block) is never a dialog.
+				last = bottom
 			}
 		}
 	}
