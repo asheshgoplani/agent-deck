@@ -1,0 +1,7 @@
+❯ REAL-F1-BUSY-83d84ecb7a: Run exactly one Bash command: python3 -c "import time; time.sleep(240)". 
+  BUSY-DONE. For every later REAL-F1 message reply only its marker and OK. Do not read other files o
+✻ Orbiting…
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 4.5

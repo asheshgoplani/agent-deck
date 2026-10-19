@@ -1,0 +1,11 @@
+[
+  {"file": "claude/issue2502-pair-006-spinner-above-composer.txt", "tool": "claude", "expected": "active", "substate": "running", "source": "#2502", "note": "bare live spinner directly above the framed empty composer"},
+  {"file": "claude/issue2502-pair-066-spinner-tip-line.txt", "tool": "claude", "expected": "active", "substate": "running", "source": "#2502", "note": "live spinner with a Tip line between it and the composer"},
+  {"file": "claude/issue2502-pair-088-spinner-status-footer.txt", "tool": "claude", "expected": "active", "substate": "running", "source": "#2502", "note": "live spinner above the composer, context footer below"},
+  {"file": "claude/issue2473-workflow-running-under-footer.txt", "tool": "claude", "expected": "active", "substate": "background-work", "source": "#2473", "note": "turn handed to a background workflow, progress row under the footer"},
+  {"file": "claude/issue2473-workflow-finished-idle.txt", "tool": "claude", "expected": "waiting", "substate": "idle-at-empty-prompt", "source": "#2473", "note": "same workflow row left at 2/2 after the turn completed"},
+  {"file": "codex/issue2351-quoted-example-bare-prompt.txt", "tool": "codex", "expected": "waiting", "source": "#2351", "note": "assistant prose quotes the live status line above a bare prompt"},
+  {"file": "codex/issue2351-quoted-prose-composer.txt", "tool": "codex", "expected": "waiting", "source": "#2351", "note": "prose names esc to interrupt right above the composer"},
+  {"file": "opencode/issue2519-fresh-home-logo.txt", "tool": "opencode", "expected": "waiting", "source": "#2519", "note": "fresh home screen, block logo rows start with the pulse glyph"},
+  {"file": "opencode/issue2519-live-pulse-with-composer.txt", "tool": "opencode", "expected": "active", "source": "#2519", "note": "control from the fix: a live pulse keeps the composer placeholder visible"}
+]

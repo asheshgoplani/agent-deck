@@ -1,0 +1,3 @@
+Assistant result: Working (12s · esc to interrupt) was only an example.
+
+›
