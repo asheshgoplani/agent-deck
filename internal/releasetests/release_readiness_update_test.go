@@ -50,6 +50,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/procowner"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
@@ -101,6 +103,7 @@ func TestReleaseReadiness_UpdatePath(t *testing.T) {
 			copyExecutable(t, oldBin, bin)
 			env := readinessEnv(box, home, rel.srv.URL, proxy.url())
 
+			runStart := time.Now()
 			out := tc.run(t, bin, env)
 			t.Logf("%s v%s -> v%s output:\n%s", tc.name, older, candidate, out)
 			// The update went through the fake release only.
@@ -122,7 +125,7 @@ func TestReleaseReadiness_UpdatePath(t *testing.T) {
 				strings.TrimPrefix(rel.srv.URL, "http://"),
 				box,
 			}
-			if leaks := leakedWrites(before, snapshotUpdateFiles(t, parentHome), markers); len(leaks) > 0 {
+			if leaks := leakedWrites(before, snapshotUpdateFiles(t, parentHome), markers, runStart, procowner.Alive); len(leaks) > 0 {
 				t.Errorf("the update wrote outside the temp HOME:\n%s", strings.Join(leaks, "\n"))
 			}
 
@@ -562,8 +565,11 @@ func snapshotUpdateFiles(t *testing.T, home string) map[string]string {
 
 // leakedWrites lists the files whose new content (the appended part, or
 // all of it for a new or rewritten file) names this run: the install
-// line, the fake release address or the temp box path.
-func leakedWrites(before, after map[string]string, markers []string) []string {
+// line, the fake release address or the temp box path. update.lock holds
+// only "<pid> <time>", so it never names the run; a new or rewritten lock
+// counts when it was taken at or after since by a process that is gone (a
+// live deck's own install still holds its lock; this run's has exited).
+func leakedWrites(before, after map[string]string, markers []string, since time.Time, alive func(pid int) bool) []string {
 	var leaks []string
 	for p, now := range after {
 		added := now
@@ -574,6 +580,12 @@ func leakedWrites(before, after map[string]string, markers []string) []string {
 			if strings.HasPrefix(now, old) {
 				added = now[len(old):]
 			}
+		}
+		if filepath.Base(p) == update.UpdateLockFileName {
+			if pid, at, ok := parseUpdateLock(now); ok && !at.Before(since.Truncate(time.Second)) && !alive(pid) {
+				leaks = append(leaks, fmt.Sprintf("%s: lock taken during this run by pid %d and left behind", p, pid))
+			}
+			continue
 		}
 		for _, m := range markers {
 			if m != "" && strings.Contains(added, m) {
@@ -586,6 +598,24 @@ func leakedWrites(before, after map[string]string, markers []string) []string {
 	return leaks
 }
 
+// parseUpdateLock reads the "<pid> <RFC3339 time>" update.AcquireUpdateLock
+// writes.
+func parseUpdateLock(content string) (pid int, at time.Time, ok bool) {
+	f := strings.Fields(content)
+	if len(f) < 2 {
+		return 0, time.Time{}, false
+	}
+	pid, err := strconv.Atoi(f[0])
+	if err != nil || pid <= 0 {
+		return 0, time.Time{}, false
+	}
+	at, err = time.Parse(time.RFC3339, f[1])
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	return pid, at, true
+}
+
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -595,6 +625,8 @@ func sha256Hex(b []byte) string {
 // log while the update path test runs; only content naming this run counts.
 func TestReleaseReadiness_LeakCheckIgnoresUnrelatedWrites(t *testing.T) {
 	markers := []string{" install 1.0.0 -> 1.0.1 ok source=tui ", "127.0.0.1:4242", "/tmp/box"}
+	since := time.Date(2026, 10, 19, 12, 0, 0, 500, time.UTC)
+	alive := func(pid int) bool { return pid == 123 } // a live deck's install
 	before := map[string]string{
 		"/h/auto-update.log":   "2026-10-18 check ok\n",
 		"/h/update-cache.json": `{"latest_version":"1.0.0"}`,
@@ -602,17 +634,34 @@ func TestReleaseReadiness_LeakCheckIgnoresUnrelatedWrites(t *testing.T) {
 	unrelated := map[string]string{
 		"/h/auto-update.log":   "2026-10-18 check ok\n2026-10-19 check ok\n",
 		"/h/update-cache.json": `{"latest_version":"1.0.2"}`,
-		"/h/update.lock":       "123 2026-10-19T00:00:00Z\n",
+		"/h/update.lock":       "123 2026-10-19T12:00:05Z\n", // held by a live deck
+		"/i/update.lock":       "456 2026-10-19T00:00:00Z\n", // left before this run
 	}
-	if leaks := leakedWrites(before, unrelated, markers); len(leaks) != 0 {
+	if leaks := leakedWrites(before, unrelated, markers, since, alive); len(leaks) != 0 {
 		t.Fatalf("unrelated writes reported as leaks: %v", leaks)
 	}
 	leaked := map[string]string{
 		"/h/auto-update.log":   "2026-10-18 check ok\n2026-10-19 install 1.0.0 -> 1.0.1 ok source=tui pid=1\n",
 		"/h/update-cache.json": `{"download_url":"http://127.0.0.1:4242/x.tar.gz"}`,
+		"/h/update.lock":       "456 2026-10-19T12:00:00Z\n", // this run's, holder gone
 	}
-	leaks := leakedWrites(before, leaked, markers)
-	if len(leaks) != 2 {
-		t.Fatalf("want both leaked writes reported, got %v", leaks)
+	leaks := leakedWrites(before, leaked, markers, since, alive)
+	if len(leaks) != 3 {
+		t.Fatalf("want all three leaked writes reported, got %v", leaks)
+	}
+}
+
+// The package runs in a temp HOME and on an isolated tmux socket (see
+// testmain_test.go), so the update path test cannot write into the real
+// agent-deck dirs even when it regresses.
+func TestReleaseReadiness_PackageRunsInIsolatedHome(t *testing.T) {
+	if os.Getenv(testutil.HomeIsolationMarkerEnv) == "" {
+		t.Fatalf("%s is not set: the package does not run under testutil.IsolateHome", testutil.HomeIsolationMarkerEnv)
+	}
+	if os.Getenv(testutil.TestIsolationMarkerEnv) == "" {
+		t.Fatalf("%s is not set: the package does not run under testutil.IsolateTmuxSocket", testutil.TestIsolationMarkerEnv)
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "" && filepath.Clean(os.Getenv("HOME")) == filepath.Clean(u.HomeDir) {
+		t.Fatalf("HOME is the passwd home %s", u.HomeDir)
 	}
 }

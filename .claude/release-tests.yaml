@@ -33,6 +33,17 @@ tests:
   run:
     command: go test ./scripts/ -run TestReleaseReadiness_RefusesUnsoakedUpdateChangeUnlessOwnerOK -count=1 -v
     expected: pass
+- id: release-readiness-soak-paths
+  added: '2026-10-19'
+  task: release-readiness
+  file: scripts/release_readiness_test.go
+  test_name: TestReleaseReadiness_SoakCoversTheTUIAndRemoteUpdatePaths
+  purpose: "the soak covers the TUI auto-install trigger, binary watcher, restart, home.go, ssh/remote deploy and childenv files past update bugs lived in"
+  source: release-follow-ups
+  manual: false
+  run:
+    command: go test ./scripts/ -run TestReleaseReadiness_SoakCoversTheTUIAndRemoteUpdatePaths -count=1 -v
+    expected: pass
 - id: release-readiness-e2e-required
   added: '2026-10-19'
   task: release-readiness

@@ -149,6 +149,61 @@ func TestReleaseReadiness_ReadyCandidatePasses(t *testing.T) {
 	r := readyRepo(t)
 	code, out := r.run()
 	requireExit(t, code, out, 0, "READY: tag v1.0.1", "none since v1.0.0")
+
+	// Past 24 h the gap rule does not apply, so a --fixes naming another
+	// tag is not a reason to refuse.
+	code, out = r.run("--fixes", "v0.9.0")
+	requireExit(t, code, out, 0, "--fixes v0.9.0 not needed", "READY: tag v1.0.1")
+}
+
+// The gap and version checks see every v* tag, not only the ones on HEAD's
+// history: a hotfix tagged on a release branch 5 h ago still counts.
+func TestReleaseReadiness_SeesTagsOnOtherBranches(t *testing.T) {
+	r := newReadinessRepo(t)
+	r.setVersion(60, "1.0.0")
+	r.tag(48, "v1.0.0")
+	r.git(40, "checkout", "-q", "-b", "release-1.0")
+	r.setVersion(6, "1.0.1")
+	r.tag(5, "v1.0.1")
+	r.git(5, "checkout", "-q", "main")
+	r.setVersion(4, "1.0.1")
+
+	code, out := r.run()
+	requireExit(t, code, out, 1,
+		"last tag v1.0.1 is 5h old (< 24 h)",
+		"Version 1.0.1 in cmd/agent-deck/main.go is not above v1.0.1",
+		"NOT READY: 2 problem(s)")
+}
+
+// Without the remote's tags the gap check could miss one, so a failed
+// fetch refuses; a working remote does not.
+func TestReleaseReadiness_RefusesWhenTagFetchFails(t *testing.T) {
+	r := readyRepo(t)
+	r.git(0, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing.git"))
+	code, out := r.run()
+	requireExit(t, code, out, 1, "git fetch --tags origin failed", "NOT READY: 1 problem(s)")
+
+	r.git(0, "remote", "set-url", "origin", r.dir)
+	code, out = r.run()
+	requireExit(t, code, out, 0, "READY: tag v1.0.1")
+}
+
+// RELEASE_READINESS_RUNNER is one executable; a path with a space in it
+// still runs.
+func TestReleaseReadiness_RunnerPathWithSpaces(t *testing.T) {
+	r := readyRepo(t)
+	dir := filepath.Join(t.TempDir(), "my tools")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "runner.sh")
+	body := "#!/bin/sh\necho '--- PASS: TestReleaseReadiness_UpdatePath (1.00s)'\necho 'ok  \tx\t1.0s'\n"
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.runner = p
+	code, out := r.run()
+	requireExit(t, code, out, 0, "READY: tag v1.0.1")
 }
 
 func TestReleaseReadiness_RefusesTagWithin24hUnlessItFixesIt(t *testing.T) {
@@ -188,14 +243,14 @@ func TestReleaseReadiness_RefusesUnbumpedVersion(t *testing.T) {
 
 func TestReleaseReadiness_RefusesUnsoakedUpdateChangeUnlessOwnerOK(t *testing.T) {
 	r := readyRepo(t)
-	r.commit(30, "internal/update/old.go", "package update\n", "fix(update): soaked change")
+	r.commit(15, "internal/update/old.go", "package update\n", "fix(update): soaked change")
 	r.commit(3, "internal/update/swap.go", "package update\n", "fix(update): swap the binary atomically")
 	r.commit(2, "internal/update/swap_test.go", "package update\n", "test(update): only a test")
 
 	code, out := r.run()
 	requireExit(t, code, out, 1,
 		"fix(update): swap the binary atomically  <- soaked 3h",
-		"(30h ago) fix(update): soaked change",
+		"(15h ago) fix(update): soaked change",
 		"1 update/auto-install/deploy change(s) merged less than 12 h ago")
 	if strings.Contains(out, "only a test") {
 		t.Fatalf("a test-only commit was listed as an update change:\n%s", out)
@@ -203,6 +258,46 @@ func TestReleaseReadiness_RefusesUnsoakedUpdateChangeUnlessOwnerOK(t *testing.T)
 
 	code, out = r.run("--owner-ok")
 	requireExit(t, code, out, 0, "allowed: 1 change(s) under 12 h, the owner agreed", "READY: tag v1.0.1")
+}
+
+// The soak covers the files past update bugs lived in (#2245, #2252,
+// #2271): the TUI's auto-install trigger and nudge, the binary watcher and
+// self-restart, home.go, the ssh/remote deploy and the child environment.
+func TestReleaseReadiness_SoakCoversTheTUIAndRemoteUpdatePaths(t *testing.T) {
+	for _, path := range []string{
+		"internal/ui/update_auto.go",
+		"internal/ui/update_install.go",
+		"internal/ui/update_nudge.go",
+		"internal/ui/binary_watch.go",
+		"internal/ui/restart.go",
+		"internal/ui/home.go",
+		"internal/session/ssh.go",
+		"cmd/agent-deck/remote_cmd.go",
+		"internal/childenv/childenv.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			r := readyRepo(t)
+			r.commit(2, path, "package x\n", "fix: change "+path)
+			code, out := r.run()
+			requireExit(t, code, out, 1, "fix: change "+path+"  <- soaked 2h", "1 update/auto-install/deploy change(s)")
+		})
+	}
+	// Their tests are not update changes.
+	r := readyRepo(t)
+	r.commit(2, "internal/ui/update_auto_test.go", "package ui\n", "test(ui): only a test")
+	code, out := r.run()
+	requireExit(t, code, out, 0, "READY: tag v1.0.1")
+}
+
+// Soak age is when the change reached the branch: a commit dated 30 h ago
+// that sits on a commit made 3 h ago landed at most 3 h ago.
+func TestReleaseReadiness_SoakAgeIsWhenTheChangeReachedTheBranch(t *testing.T) {
+	r := readyRepo(t)
+	r.commit(3, "internal/ui/view2.go", "package ui\n", "feat(ui): another view")
+	r.commit(30, "internal/update/swap.go", "package update\n", "fix(update): old commit pushed late")
+
+	code, out := r.run()
+	requireExit(t, code, out, 1, "(3h ago) (commit dated ", "fix(update): old commit pushed late  <- soaked 3h")
 }
 
 func TestReleaseReadiness_RequiresTheUpdatePathTestToPass(t *testing.T) {
