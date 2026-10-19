@@ -12,8 +12,11 @@ import (
 	"testing"
 )
 
-// fakeGH answers `gh pr view N` from testdata/<fixture>.json, `gh api repos/R/issues/N`
-// from testdata/labels.json and `git diff --numstat` from numstat. No network, no git.
+// fakeGH answers `gh pr view N` from testdata/<fixture>.json (files cut at 100, as gh
+// does), `gh api --paginate
+// repos/R/pulls/N/files` with every file of that fixture (one JSON object per line, as
+// gh prints after --jq), `gh api repos/R/issues/N` from testdata/labels.json and
+// `git diff --numstat` from numstat. No network, no git.
 func fakeGH(t *testing.T, fixture, numstat string) (Runner, *[]string) {
 	t.Helper()
 	labels := map[string][]string{}
@@ -29,7 +32,39 @@ func fakeGH(t *testing.T, fixture, numstat string) (Runner, *[]string) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		switch {
 		case name == "gh" && len(args) > 1 && args[0] == "pr" && args[1] == "view":
-			return os.ReadFile(filepath.Join("testdata", fixture+".json"))
+			raw, err := os.ReadFile(filepath.Join("testdata", fixture+".json"))
+			if err != nil {
+				return nil, err
+			}
+			var pr map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &pr); err != nil {
+				return nil, err
+			}
+			var files []json.RawMessage
+			if err := json.Unmarshal(pr["files"], &files); err != nil {
+				return nil, err
+			}
+			if len(files) > 100 { // like gh pr view --json files
+				pr["files"], _ = json.Marshal(files[:100])
+			}
+			return json.Marshal(pr)
+		case name == "gh" && len(args) > 2 && args[0] == "api" && args[1] == "--paginate" && strings.HasSuffix(args[2], "/files"):
+			raw, err := os.ReadFile(filepath.Join("testdata", fixture+".json"))
+			if err != nil {
+				return nil, err
+			}
+			var pr struct {
+				Files []File `json:"files"`
+			}
+			if err := json.Unmarshal(raw, &pr); err != nil {
+				return nil, err
+			}
+			var b bytes.Buffer
+			for _, f := range pr.Files {
+				line, _ := json.Marshal(f)
+				b.Write(append(line, '\n'))
+			}
+			return b.Bytes(), nil
 		case name == "gh" && len(args) > 1 && args[0] == "api":
 			n := args[1][strings.LastIndex(args[1], "/")+1:]
 			l, ok := labels[n]
@@ -57,6 +92,16 @@ func TestCheckFixHasTest_PRFixtures(t *testing.T) {
 		{"feat-closes-enhancement", 0, "ok:"},
 		{"linked-bug-only", 0, "ok:"}, // testdata/ golden added: counts as the regression test
 		{"fix-docs-only", 0, "ok:"},
+		// 168 files, the test is file 160: gh pr view would stop at 100 and miss it.
+		{"fix-test-after-file-100", 0, "ok:"},
+		// Linked to #2206 of another repo; the local #2206 is a bug but is not the one closed.
+		{"linked-other-repo", 0, "ok:"},
+		// An embedded .md template is shipped behaviour, not docs.
+		{"fix-embedded-template-only", 1, "needs-regression-test: title is a fix but no test file"},
+		// The PR has 3 changed files but only 2 could be read: never a pass.
+		{"files-incomplete", 2, "list is incomplete"},
+		// GitHub drops line counts on a very large PR: the test file cannot be judged, never a pass or a flag.
+		{"large-pr-no-counts", 2, "no line counts for internal/ui/help_test.go"},
 	}
 	for _, c := range cases {
 		t.Run(c.fixture, func(t *testing.T) {

@@ -4,20 +4,24 @@
 // or when it closes an issue labelled bug (Closes/Fixes/Resolves #n, or GitHub's
 // linked issues). It has one when it adds lines to a test file: *_test.go, a file
 // under a tests/ or testdata/ directory, or a *.test.* / *.spec.* file. A PR that
-// changes only docs is not asked for a test.
+// changes only docs (docs/, documentation/, site/, top-level *.md and LICENSE) is
+// not asked for a test. Markdown elsewhere, such as embedded templates, is code.
 //
 // Usage:
 //
 //	check-fix-has-test --pr 123 [--repo owner/name] [--advisory]
 //	check-fix-has-test --range origin/main..HEAD --title "fix: ..." [--body-file f] [--advisory]
 //
-// --pr reads the PR through gh (read-only). --range reads the changed files from
+// --pr reads the PR through gh (read-only), with every changed file paged in from
+// the API (gh pr view stops at 100). --range reads the changed files from
 // git and the issue labels through gh. Exit 1 with a one-line reason when a test
 // is missing, 0 otherwise; --advisory prints the same line and exits 0. Exit 2
-// when the inputs cannot be read.
+// when the inputs cannot be read: a file list shorter than the PR's file count, an
+// issue whose labels fail to load, or test files GitHub sends without line counts.
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -36,6 +40,8 @@ import (
 type File struct {
 	Path      string `json:"path"`
 	Additions int    `json:"additions"`
+	Status    string `json:"status,omitempty"`   // GitHub's added/modified/removed/renamed; empty from git
+	NoCounts  bool   `json:"noCounts,omitempty"` // GitHub gave no line counts (it drops them on very large PRs)
 }
 
 // Input is everything the check looks at.
@@ -43,7 +49,7 @@ type Input struct {
 	Title  string
 	Body   string
 	Files  []File
-	Linked []int                       // issues GitHub links as closed by the PR
+	Linked []int                       // issues in the same repo GitHub links as closed by the PR
 	Labels func(int) ([]string, error) // labels of an issue (gh in main, a fixture in tests)
 }
 
@@ -95,11 +101,14 @@ func IsTestFile(p string) bool {
 	return false
 }
 
+// isDoc reports whether p is documentation only. A .md file outside the docs
+// trees and the repo root can ship in the binary (go:embed templates, skills),
+// so it is not a doc.
 func isDoc(p string) bool {
 	if strings.HasPrefix(p, "docs/") || strings.HasPrefix(p, "documentation/") || strings.HasPrefix(p, "site/") {
 		return true
 	}
-	return docExt[strings.ToLower(path.Ext(p))] || path.Base(p) == "LICENSE"
+	return !strings.Contains(p, "/") && (docExt[strings.ToLower(path.Ext(p))] || p == "LICENSE")
 }
 
 // IsBugLabel reports whether a label marks a bug report.
@@ -149,9 +158,13 @@ func Check(in Input, repo string) (string, error) {
 		return "", nil
 	}
 	docsOnly := len(in.Files) > 0
+	var uncounted []string
 	for _, f := range in.Files {
-		if f.Additions > 0 && IsTestFile(f.Path) {
+		if IsTestFile(f.Path) && (f.Additions > 0 || f.Status == "added") {
 			return "", nil
+		}
+		if IsTestFile(f.Path) && f.NoCounts && f.Status != "removed" {
+			uncounted = append(uncounted, f.Path)
 		}
 		if !isDoc(f.Path) {
 			docsOnly = false
@@ -159,6 +172,9 @@ func Check(in Input, repo string) (string, error) {
 	}
 	if docsOnly {
 		return "", nil
+	}
+	if len(uncounted) > 0 {
+		return "", fmt.Errorf("GitHub gives no line counts for %s (large PR): check by hand or use --range", strings.Join(uncounted, ", "))
 	}
 	return fmt.Sprintf("needs-regression-test: %s but no test file was added or changed (*_test.go, tests/, testdata/, *.test.*)",
 		strings.Join(why, " and ")), nil
@@ -186,24 +202,52 @@ func ghLabels(run Runner, repo string) func(int) ([]string, error) {
 }
 
 func fromPR(run Runner, repo string, pr int) (Input, error) {
-	out, err := run("gh", "pr", "view", strconv.Itoa(pr), "-R", repo, "--json", "title,body,files,closingIssuesReferences")
+	out, err := run("gh", "pr", "view", strconv.Itoa(pr), "-R", repo, "--json", "title,body,changedFiles,closingIssuesReferences")
 	if err != nil {
 		return Input{}, err
 	}
 	var v struct {
-		Title  string `json:"title"`
-		Body   string `json:"body"`
-		Files  []File `json:"files"`
-		Linked []struct {
-			Number int `json:"number"`
+		Title        string `json:"title"`
+		Body         string `json:"body"`
+		ChangedFiles int    `json:"changedFiles"`
+		Linked       []struct {
+			Number     int `json:"number"`
+			Repository struct {
+				Name  string `json:"name"`
+				Owner struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repository"`
 		} `json:"closingIssuesReferences"`
 	}
 	if err := json.Unmarshal(out, &v); err != nil {
 		return Input{}, fmt.Errorf("gh pr view: %w", err)
 	}
-	in := Input{Title: v.Title, Body: v.Body, Files: v.Files}
+	in := Input{Title: v.Title, Body: v.Body}
 	for _, l := range v.Linked {
+		if r := l.Repository; r.Name != "" && !strings.EqualFold(r.Owner.Login+"/"+r.Name, repo) {
+			continue // closes an issue in another repo: its number means something else here
+		}
 		in.Linked = append(in.Linked, l.Number)
+	}
+	// gh pr view lists at most 100 files; the REST endpoint pages through all of them.
+	out, err = run("gh", "api", "--paginate", fmt.Sprintf("repos/%s/pulls/%d/files", repo, pr),
+		"--jq", ".[] | {path: .filename, additions, status, noCounts: (.changes == 0 and .patch == null)}")
+	if err != nil {
+		return Input{}, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var f File
+		if err := dec.Decode(&f); err == io.EOF {
+			break
+		} else if err != nil {
+			return Input{}, fmt.Errorf("pull files: %w", err)
+		}
+		in.Files = append(in.Files, f)
+	}
+	if len(in.Files) != v.ChangedFiles {
+		return Input{}, fmt.Errorf("read %d changed files, the PR has %d: the list is incomplete", len(in.Files), v.ChangedFiles)
 	}
 	return in, nil
 }

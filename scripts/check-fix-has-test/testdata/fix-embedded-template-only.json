@@ -1,0 +1,1 @@
+{"title":"fix(watcher): policy template names the right command","body":"","changedFiles":1,"closingIssuesReferences":[],"files":[{"path":"internal/watcher/assets/watcher-templates/POLICY.md","additions":2,"deletions":2,"changeType":"MODIFIED"}]}

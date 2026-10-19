@@ -1,1 +1,1 @@
-{"title":"fix: drop the stale retry","body":"","closingIssuesReferences":[],"files":[{"path":"internal/send/retry.go","additions":2,"deletions":30,"changeType":"MODIFIED"},{"path":"internal/send/retry_test.go","additions":0,"deletions":55,"changeType":"DELETED"}]}
+{"title":"fix: drop the stale retry","body":"","changedFiles":2,"closingIssuesReferences":[],"files":[{"path":"internal/send/retry.go","additions":2,"deletions":30,"changeType":"MODIFIED"},{"path":"internal/send/retry_test.go","additions":0,"deletions":55,"changeType":"DELETED"}]}

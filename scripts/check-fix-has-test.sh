@@ -5,7 +5,7 @@
 # Exit 1 with a one-line reason when the test is missing, 0 otherwise (always 0 with --advisory), 2 on unreadable input.
 # Reads GitHub through gh, read-only. Logic and fixtures: scripts/check-fix-has-test/.
 set -euo pipefail
-cd "$(dirname "$0")/.."
 bin="${TMPDIR:-/tmp}/check-fix-has-test-$(id -u)"  # rebuilt every run, reused path: nothing to clean up
-go build -o "$bin" ./scripts/check-fix-has-test
+# Build from the repo root, run from the caller's directory so relative paths (--body-file) mean what they say.
+(cd "$(dirname "$0")/.." && go build -o "$bin" ./scripts/check-fix-has-test)
 exec "$bin" "$@"

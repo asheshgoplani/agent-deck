@@ -1,0 +1,1 @@
+{"title":"fix(session): restart keeps the profile","body":"","changedFiles":3,"closingIssuesReferences":[],"files":[{"path":"internal/session/restart.go","additions":12,"deletions":3,"changeType":"MODIFIED"},{"path":"README.md","additions":1,"deletions":0,"changeType":"MODIFIED"}]}

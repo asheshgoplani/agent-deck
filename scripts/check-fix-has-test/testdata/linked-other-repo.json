@@ -1,0 +1,1 @@
+{"title":"feat: sync upstream label names","body":"Linked in the sidebar to an issue in another repo.","changedFiles":1,"closingIssuesReferences":[{"number":2206,"repository":{"name":"other-repo","owner":{"login":"someone"}}}],"files":[{"path":"internal/ui/labels.go","additions":5,"deletions":1,"changeType":"MODIFIED"}]}
