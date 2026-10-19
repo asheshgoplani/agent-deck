@@ -24,6 +24,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[launch] Section](#launch-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
+- [[sessions] Section](#sessions-section)
 - [[interval_hooks.*] Section](#interval_hooks-section)
 - [[display] Section](#display-section)
 - [[ui] Section](#ui-section)
@@ -798,6 +799,22 @@ notify_in_cli = true          # Show in CLI commands
 **When the automatic paths stay quiet.** `auto_install` and `auto_restart` are for a person's deck. Neither fires, whatever the config says, when the process runs under `go test`, when `AGENTDECK_SKIP_UPDATE_CHECK` is set, when `CI` is truthy, when an `AGENTDECK_TEST_*` marker is in the environment, or (TUI only) when stdin or stdout is not a terminal. Headless daemons (`web --no-tui`, `remote-agent`) keep their idle-point restart for real deployments but honour the same environment markers. The reason is logged once at startup (`auto_update_suppressed`), the banner then offers the keys instead of promising a restart, and `ctrl+y` / `ctrl+t` and the explicit `agent-deck update` commands keep working. Scripts that drive `agent-deck` and must never see an unattended install set `AGENTDECK_SKIP_UPDATE_CHECK=1`; the repository's CI workflows do so once per workflow.
 
 **macOS launchd hygiene.** macOS ties a launch agent's code identity to the file at its program path, so any `com.agentdeck.*` agent that runs the agent-deck binary (for example `notify-daemon` or `web --no-tui`) crash-loops with `EX_CONFIG` after that file is replaced. Every install path therefore boots those agents out and bootstraps them again, then checks they are running; a failure exits 1 and prints the `launchctl` commands to run by hand. The timer's own plist runs `/bin/sh` and is never touched. The unattended flow refuses to install at all when `launchctl print gui/<uid>` does not work, so the binary is never replaced without the follow-up.
+
+## [sessions] Section
+
+Idle sessions move onto a newer Claude Code or Codex CLI build by themselves.
+
+```toml
+[sessions]
+auto_refresh_idle_builds = true   # default; false opts out
+
+[profiles.work.sessions]
+auto_refresh_idle_builds = false  # per-profile override (wins over [sessions])
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `auto_refresh_idle_builds` | bool | `true` | When the binary a session's tool command resolves to (symlinks followed) was installed after the session last started, the notify daemon restarts the session with `agent-deck session restart`, which resumes its conversation. Only a `claude` or `codex` session that is idle at an empty prompt qualifies: status waiting or idle, no open question or menu, no background work, an empty composer, no client attached, no auth hold, and a conversation id to resume. It must stay that way for 5 minutes (10 minutes for a conductor). One session restarts at a time per profile, 30 s apart; each session gets at most one attempt per build (remembered in `<data dir>/runtime/idle-build-refresh.json`), and every attempt writes one JSON line to `<data dir>/logs/idle-build-refresh.log`. A command that is not a plain executable (an alias, a wrapper with env assignments) is never refreshed. Stays off under `go test`, with `CI` truthy, `AGENTDECK_SKIP_UPDATE_CHECK` set or any `AGENTDECK_TEST_*` marker, like the other automatic update paths. |
 
 ## [interval_hooks.*] Section
 

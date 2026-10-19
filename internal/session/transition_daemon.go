@@ -110,6 +110,10 @@ type TransitionDaemon struct {
 	// stacking). nil until the first enabled pass.
 	selfheal *selfHealRegistry
 
+	// idleRefresh moves idle sessions onto newer tool builds (ASK-14); see
+	// idle_build_refresh.go. Lazily created.
+	idleRefresh *idleRefreshState
+
 	// lastProbeStall rate-limits the probe-stall breadcrumb per (profile|key)
 	// so a permanently wedged instance — which times out again on every poll —
 	// logs at most once per probeStallLogInterval instead of flooding the log
@@ -637,6 +641,10 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	// immediately. Reuses the instances/hookStatuses already loaded above — no
 	// extra capture, no new goroutine (F3). Disabled-by-config → cheap no-op.
 	d.runSelfHealObservePass(profile, instances, statuses, hookStatuses, db, time.Now().UTC())
+
+	// Idle sessions on an outdated Claude/Codex build restart onto the new
+	// one ([sessions] auto_refresh_idle_builds, default on).
+	d.runIdleBuildRefreshPass(profile, instances, statuses)
 
 	// Issue #2481: a child seen running starts a new run, so the next observed
 	// flip is a new turn unless a path journals one for it first.

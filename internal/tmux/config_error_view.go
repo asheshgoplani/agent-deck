@@ -60,6 +60,14 @@ func (s *Session) DismissConfigErrorView(ctx context.Context, window time.Durati
 	}
 }
 
+// ClientAttached reports whether any tmux client is attached to the session.
+func (s *Session) ClientAttached() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	attached, _, err := s.activePaneMode(ctx)
+	return attached, err
+}
+
 // activePaneMode reports whether a client is attached to the session and the
 // mode (empty when none) of the current window's active pane, which is the
 // pane tmux uses to display config causes.
