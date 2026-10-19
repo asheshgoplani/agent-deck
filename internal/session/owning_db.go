@@ -14,13 +14,13 @@ import (
 // then had its write land in the wrong store, or vanish as a zero-row UPDATE
 // (#2206 for the restart outcome). Every such write goes through here:
 //
-//   - the owning handle when it is open and writable;
-//   - otherwise the global handle only when it is the same file;
-//   - otherwise, when the owning handle was writable and has been closed (a
-//     short-lived Storage), the owning file reopened with its profile stamp
-//     checked, so a path that now holds another profile's store is refused.
-//
-// An instance loaded read-only from another profile's store gets no write.
+//   - the owning handle when it is open (a read-only owning handle is used
+//     as is, so its write fails instead of bypassing the read-only load);
+//   - when a short-lived Storage closed it, the global handle only if it is
+//     the same file, otherwise the instance's saved owning path reopened with
+//     its profile stamp checked, so a path that now holds another profile's
+//     store is refused;
+//   - with no saved owning path, the closed handle, so the write fails.
 //
 // An instance never loaded or saved through a Storage has no owner yet; it
 // keeps the old behaviour and uses the global handle.
@@ -33,19 +33,17 @@ func (i *Instance) withOwningStateDB(write func(*statedb.StateDB) error) error {
 		}
 		return write(db)
 	}
-	if !owner.ReadOnly() && owner.DB().Ping() == nil {
+	if owner.ReadOnly() || owner.DB().Ping() == nil {
 		return write(owner)
 	}
 	if g := statedb.GetGlobal(); g != nil && !g.ReadOnly() && owner.Path() != "" &&
 		g.Path() == owner.Path() && g.DB().Ping() == nil {
 		return write(g)
 	}
-	if owner.ReadOnly() || owner.Path() == "" {
-		// A read-only load promised not to touch the store, so it is not
-		// reopened for writing here.
-		return errNoStateDB
+	if i.storageSnapshot == nil || i.storageSnapshot.dbPath == "" {
+		return write(owner)
 	}
-	db, err := statedb.Open(owner.Path())
+	db, err := statedb.Open(i.storageSnapshot.dbPath)
 	if err != nil {
 		return err
 	}
