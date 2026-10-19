@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 
-from runner import check, decode_records
+from runner import check, decode_records, read_json_line
 
 HERE = Path(__file__).resolve().parent
 
@@ -120,7 +120,7 @@ class PiDriverSequenceTests(unittest.TestCase):
         process.stdin.flush()
         lines = []
         while True:
-            line = json.loads(process.stdout.readline())
+            line = read_json_line(process, 15)
             lines.append(line)
             if line.get('paused'):
                 break
