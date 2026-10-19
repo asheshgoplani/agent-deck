@@ -127,7 +127,7 @@ not have it.
 
 - **Per-session consent.** Before it acts on a `macapp.browser.request`, the
   app looks up the owner's answer for that host and session. With none, it
-  asks him, naming both: allow once, allow for this session, or deny. No
+  asks the owner, naming both: allow once, allow for this session, or deny. No
   answer is a deny. Settings lists the grants and can revoke each one. A
   grant is dropped when its session is removed.
 - **Pages from Boxes is off by default.** A new install starts with it off.
