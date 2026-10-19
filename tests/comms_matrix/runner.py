@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
 import time
 import uuid
@@ -24,6 +25,21 @@ BINARY = '/usr/local/bin/agent-deck'
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + '\n')
+
+
+def read_json_line(process, timeout_s):
+    """One JSON line from the driver's stdout; a silent or exited driver is killed and fails with its stderr."""
+    box = []
+    reader = threading.Thread(target=lambda: box.append(process.stdout.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout_s)
+    line = box[0] if box else ''
+    if line.strip():
+        return json.loads(line)
+    process.kill()
+    process.wait()
+    reason = 'exited' if box else f'silent for {timeout_s}s'
+    raise RuntimeError(f'pi driver {reason} before its next line: ' + process.stderr.read())
 
 
 def check(name, actual, target, baseline=None):
@@ -187,9 +203,8 @@ class Rig:
                 if number < len(parts) - 1:
                     process.stdin.write(json.dumps(dict(pause=True)) + '\n')
                     process.stdin.flush()
-                    while not json.loads(process.stdout.readline() or '{}').get('paused'):
-                        if process.poll() is not None:
-                            raise RuntimeError('pi driver exited before its pause: ' + process.stderr.read())
+                    while not read_json_line(process, 30).get('paused'):
+                        pass
                     self.tick()
             out, err = process.communicate(timeout=30)
         finally:
