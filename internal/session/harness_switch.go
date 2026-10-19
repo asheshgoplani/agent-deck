@@ -516,7 +516,16 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 	result.nativeJournalPath = journalPath
 	result.nativeStorageAcknowledgement = storageAcknowledged
 	if !opts.NoStart && wasRunning {
-		if err := startNativeSwitchInstance(inst); err != nil {
+		if err := startNativeSwitchInstance(inst); err != nil && nativeSwitchLiveOnAccount(inst, targetDir) {
+			// The start reported an error, yet this session's Claude is
+			// running on the target account (its pane came up anyway, e.g.
+			// re-created concurrently between stop and start). Rolling back
+			// now would record the source account while Claude keeps running
+			// on the target, the split seen in the field. Keep the switch.
+			result.Restarted = true
+			result.Warnings = append(result.Warnings, fmt.Sprintf("target start reported %v, but the session is running on account %q; switch kept", err, preview.TargetAccount))
+			result.Conversation = migrated + "; target start reported an error, but the session runs on the target account"
+		} else if err != nil {
 			result.Committed = false
 			inst.Account = oldAccount
 			if restoreErr := revertNativeSwitchStorage(opts.Storage, inst, storageAcknowledged, j.Target, j.Source, prevLimit); restoreErr != nil {
@@ -529,13 +538,14 @@ func executeNativeClaudeSwitch(cfg *UserConfig, inst *Instance, preview *SwitchP
 			j.State, j.UpdatedAt = switchFailed, time.Now()
 			_ = writeSwitchJournal(journalPath, j)
 			return result, fmt.Errorf("target Claude session failed to start: %w", err)
+		} else {
+			// Start only requests a tmux launch; it is not native readiness
+			// evidence. Native account switches have no observer wired into this
+			// transaction, so keep readiness explicitly pending rather than
+			// inferring it from mutable fields or Start success.
+			result.Restarted = true
+			result.Conversation = migrated + "; target start requested; native destination readiness remains pending"
 		}
-		// Start only requests a tmux launch; it is not native readiness
-		// evidence. Native account switches have no observer wired into this
-		// transaction, so keep readiness explicitly pending rather than
-		// inferring it from mutable fields or Start success.
-		result.Restarted = true
-		result.Conversation = migrated + "; target start requested; native destination readiness remains pending"
 	}
 	// The lifecycle journal remains committed until the caller's scoped storage
 	// CAS succeeds and completeNativeHarnessSwitchJournal durably acknowledges
@@ -841,6 +851,7 @@ func executeClaudeCodexSwitch(cfg *UserConfig, inst *Instance, preview *SwitchPr
 var (
 	nativeSwitchStart         = func(inst *Instance) error { return inst.Start() }
 	nativeSwitchRunning       = func(inst *Instance) bool { return inst.Exists() }
+	nativeSwitchLiveOnAccount = liveOnAccount
 	nativeSwitchStop          = func(inst *Instance) error { return inst.KillAndWait() }
 	harnessSwitchJournalWrite = writeSwitchJournal
 )
