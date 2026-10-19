@@ -332,15 +332,21 @@ func TestRemoteSubcommandHelpRoutesToSelectedCommand(t *testing.T) {
 	}
 }
 
+// runIssue2025Helper runs the agent-deck binary the package builds once
+// (channelsCLIBinary) under a scratch HOME. It used to re-exec this test
+// binary into main(); under -race every such start cost about a second,
+// which made the help matrices the slowest tests in CI (over two minutes
+// for TestEveryRegisteredCommandHelpIsReadOnly alone). The env keeps what
+// the test binary forced off: telemetry and the update check.
 func runIssue2025Helper(t *testing.T, home string, args []string) ([]byte, error) {
 	t.Helper()
+	bin := channelsCLIBinary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmdArgs := append([]string{"-test.run=^TestIssue2025HelperProcess$", "--"}, args...)
-	cmd := exec.CommandContext(ctx, os.Args[0], cmdArgs...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = append(os.Environ(),
-		"AGENT_DECK_ISSUE2025_HELPER=1",
-		"AGENT_DECK_TASK6_HELPER_PROCESS=1",
+		"AGENTDECK_TELEMETRY=0",
+		"AGENTDECK_SKIP_UPDATE_CHECK=1",
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
@@ -352,19 +358,4 @@ func runIssue2025Helper(t *testing.T, home string, args []string) ([]byte, error
 		t.Fatalf("help request did not return promptly (command started work):\n%s", out)
 	}
 	return out, err
-}
-
-func TestIssue2025HelperProcess(t *testing.T) {
-	if os.Getenv("AGENT_DECK_ISSUE2025_HELPER") != "1" {
-		return
-	}
-	separator := 0
-	for i, arg := range os.Args {
-		if arg == "--" {
-			separator = i
-			break
-		}
-	}
-	os.Args = append([]string{"agent-deck"}, os.Args[separator+1:]...)
-	main()
 }

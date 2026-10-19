@@ -59,6 +59,37 @@ func noSleep(ctx context.Context, _ time.Duration) error {
 	return ctx.Err()
 }
 
+// splitChunkBytes returns a per-chunk byte cap that makes the largest
+// transcript under roots span three chunks. The chunking tests need sources
+// that straddle chunk boundaries; a fixed cap of a few dozen bytes did that
+// too, but cost one full corpus walk per few dozen bytes (thousands of
+// chunks, minutes under -race). A cap sized from the corpus keeps every
+// boundary case with tens of chunks instead.
+func splitChunkBytes(t *testing.T, roots []reader.Root) int64 {
+	t.Helper()
+	var largest int64
+	for _, r := range roots {
+		err := filepath.WalkDir(r.Dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Ext(path) != ".jsonl" {
+				return err
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			largest = max(largest, info.Size())
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if largest < 3 {
+		t.Fatalf("largest transcript is %d bytes; the corpus is too small to split", largest)
+	}
+	return largest / 3
+}
+
 func TestShouldRunInitialBackfill_TriggerMatrix(t *testing.T) {
 	t.Run("empty index, no marker: pending", func(t *testing.T) {
 		f := newFixture(t, testcorpus.Options{Files: 0})
@@ -129,8 +160,8 @@ func TestRunThrottledBackfill_ChunksUntilCaughtUp(t *testing.T) {
 	var chunks int32
 	topts := ThrottleOptions{
 		LockPath:      f.st.Path + ".lock",
-		ChunkDeadline: time.Hour, // never the limiting factor here
-		ChunkBytes:    64,        // tiny: forces several chunks over 6 files
+		ChunkDeadline: time.Hour,                     // never the limiting factor here
+		ChunkBytes:    splitChunkBytes(t, f.roots()), // the largest file spans 3 chunks
 		Sleep:         noSleep,
 		OnChunk:       func(Result) { atomic.AddInt32(&chunks, 1) },
 	}
@@ -272,7 +303,7 @@ func TestRunInitialBackfill_ResumeAfterInterrupt(t *testing.T) {
 	topts := ThrottleOptions{
 		LockPath:      f.st.Path + ".lock",
 		ChunkDeadline: time.Hour,
-		ChunkBytes:    64, // tiny: several chunks, so cancelling after the first leaves real work behind
+		ChunkBytes:    splitChunkBytes(t, f.roots()), // several chunks, so cancelling after the first leaves real work behind
 		Sleep:         noSleep,
 		OnChunk: func(Result) {
 			if atomic.AddInt32(&chunks, 1) == 1 {
@@ -535,10 +566,11 @@ func TestRunInitialBackfill_BudgetExhaustionNeverFalselyDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var chunks int32
+	chunkBytes := splitChunkBytes(t, mf.roots) // every chunk's budget elapses well before the walk finishes
 	topts := ThrottleOptions{
 		LockPath:      mf.st.Path + ".lock",
 		ChunkDeadline: time.Hour,
-		ChunkBytes:    96, // tiny: every chunk's budget elapses well before the walk finishes
+		ChunkBytes:    chunkBytes,
 		Sleep:         noSleep,
 		OnChunk: func(res Result) {
 			n := atomic.AddInt32(&chunks, 1)
@@ -577,7 +609,7 @@ func TestRunInitialBackfill_BudgetExhaustionNeverFalselyDone(t *testing.T) {
 	// across every root, not just the one the first chunk happened to
 	// reach.
 	res, err := RunInitialBackfill(context.Background(), mf.st, Options{Roots: mf.roots}, ThrottleOptions{
-		LockPath: mf.st.Path + ".lock", ChunkDeadline: time.Hour, ChunkBytes: 96, Sleep: noSleep,
+		LockPath: mf.st.Path + ".lock", ChunkDeadline: time.Hour, ChunkBytes: chunkBytes, Sleep: noSleep,
 	})
 	if err != nil {
 		t.Fatalf("resume tick: %v", err)
