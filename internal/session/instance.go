@@ -10547,6 +10547,8 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 	err := i.restart(env)
 	if err != nil {
 		clearRestartResumeNote(i.ID)
+	} else {
+		markRestartResumed(i.ID, time.Now())
 	}
 	if err == nil {
 		// LastStartedAt covers restarts too (its contract), so the idle

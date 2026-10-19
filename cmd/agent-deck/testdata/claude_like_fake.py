@@ -32,7 +32,7 @@ def screen():
     try: cols = os.get_terminal_size(sys.stdout.fileno()).columns
     except OSError: cols = 80
     div = '─' * cols
-    if phase in ('busy', 'stream'):
+    if phase in ('busy', 'stream', 'booting'):
         head = ['⏺ Running the lanes.', '', '✽ Thundering… (%ds · ↓ 135 tokens)' % int(time.monotonic() - started), '']
     else:
         head = ['⏺ All four steps ran.', '', '✻ Sautéed for 45s · done 10:44 AM', '']
@@ -85,8 +85,11 @@ def poll_phase():
     except (OSError, ValueError): return
     if (c.get('id'), c.get('phase')) != (phase_id, phase):
         phase_id, phase = c.get('id'), c.get('phase')
+        # booting: a resumed Claude starting up, busy on screen with no new turn in the transcript
         append({'type': 'system', 'subtype': 'turn_duration', 'uuid': 'fixture-idle-' + str(phase_id), 'timestamp': now(), 'durationMs': 1000}
                if phase == 'idle' else
+               {'type': 'system', 'subtype': 'informational', 'uuid': 'fixture-boot-' + str(phase_id), 'timestamp': now()}
+               if phase == 'booting' else
                {'type': 'user', 'uuid': 'fixture-busy-' + str(phase_id), 'timestamp': now(),
                 'message': {'role': 'user', 'content': 'Owned fixture work before queued input.'}})
         render()
@@ -98,7 +101,7 @@ render()
 last_tick = 0
 while True:
     poll_phase(); absorb()
-    if phase in ('busy', 'stream') and time.monotonic() - last_tick > 1: render(); last_tick = time.monotonic()
+    if phase in ('busy', 'stream', 'booting') and time.monotonic() - last_tick > 1: render(); last_tick = time.monotonic()
     if not select.select([0], [], [], 0.05)[0]: continue
     chunk = ESC_RE.sub(b'', os.read(0, 65536))  # drops bracketed-paste 200~/201~ framing
     changed = False

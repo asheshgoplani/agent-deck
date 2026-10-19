@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -54,8 +55,8 @@ func TestIssue2792_IdleRefreshRestartSendsNoCompletion(t *testing.T) {
 		}
 		added = append(added, r)
 	}
-	if len(added) > 1 {
-		t.Fatalf("at most one record for the refresh, got %+v", added)
+	if len(added) != 1 {
+		t.Fatalf("exactly one info line for the refresh, got %+v", added)
 	}
 	for _, r := range added {
 		if r.IsUrgent() {
@@ -68,13 +69,16 @@ func TestIssue2792_IdleRefreshRestartSendsNoCompletion(t *testing.T) {
 	if *f.sends != sendsBefore {
 		t.Fatalf("the refresh boot must not wake the parent, sends %d -> %d", sendsBefore, *f.sends)
 	}
-	if _, left := readRestartResumeNote(f.child.ID); left {
-		t.Fatalf("the note is spent by the boot flip")
+	// The hook path can see the same boot again: still nothing new.
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false)
+	if got := len(f.inboxRecords(t)); got != len(recs) {
+		t.Fatalf("a second sighting of the boot added a record: %d -> %d", len(recs), got)
 	}
 }
 
-// A plain `session restart` (no refresh reason) of an idle child sends nothing.
-func TestIssue2792_ResumeOnlyRestartSendsNothing(t *testing.T) {
+// A plain `session restart` of an idle child gives one info line, never the
+// old reply again and never a wake.
+func TestIssue2792_ResumeOnlyRestartSendsOneInfoLine(t *testing.T) {
 	f := newTurnTestFixture(t)
 	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
@@ -86,11 +90,62 @@ func TestIssue2792_ResumeOnlyRestartSendsNothing(t *testing.T) {
 	f.bootSeen()
 	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
 
-	if got := len(f.inboxRecords(t)); got != n {
-		t.Fatalf("a resume-only restart must add no record: %d -> %d: %+v", n, got, f.inboxRecords(t))
+	added := f.inboxRecords(t)[n:]
+	if len(added) != 1 || added[0].IsUrgent() || added[0].Text != "Restarted while idle; conversation resumed, no new turn." {
+		t.Fatalf("want one info line for the restart, got %+v", added)
 	}
 	if *f.sends != sends {
 		t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
+	}
+}
+
+// The live #2792 follow-up: the hook path sees the old process die (SessionEnd,
+// an error) while the restart runs, then the boot (SessionStart). Neither is a
+// turn: no urgent record, no re-send of the old reply, at most one info line.
+func TestIssue2792_HookPathRestartIsQuiet(t *testing.T) {
+	f := newTurnTestFixture(t)
+	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+	n := len(f.inboxRecords(t))
+	sends := *f.sends
+
+	noteRestartResume(f.child, time.Now())
+	f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), false) // the kill
+	markRestartResumed(f.child.ID, time.Now())
+	f.appendTurn(t, fxResumeMeta())
+	f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), false) // the boot
+
+	added := f.inboxRecords(t)[n:]
+	if len(added) > 1 {
+		t.Fatalf("at most one info line, got %+v", added)
+	}
+	for _, r := range added {
+		if r.IsUrgent() || r.ToStatus == "error" || strings.Contains(r.Text, "Index added") {
+			t.Fatalf("the restart must not reach the parent as a turn or an error: %+v", r)
+		}
+	}
+	if *f.sends != sends {
+		t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
+	}
+}
+
+// Any producer that reaches the notifier directly is held to the same rule.
+func TestIssue2792_NotifierDropsRestartBootRecords(t *testing.T) {
+	f := newTurnTestFixture(t)
+	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
+	noteRestartResume(f.child, time.Now())
+	f.appendTurn(t, fxResumeMeta())
+	ev := TransitionNotificationEvent{ChildSessionID: f.child.ID, ChildTitle: f.child.Title, Profile: "default",
+		FromStatus: "running", ToStatus: "waiting", Timestamp: time.Now(), Text: "Index added; tests pass."}
+	if r := f.d.notifier.NotifyTransition(ev); r.DeliveryResult == transitionDeliveryCommitted {
+		t.Fatalf("the notifier delivered a restart boot: %+v", r)
+	}
+	ev.DoneStatus, ev.DoneSummary = "ok", "index added"
+	if r := f.d.notifier.NotifyFinished(ev); r.DeliveryResult == transitionDeliveryCommitted {
+		t.Fatalf("the notifier delivered a finished record for a restart boot: %+v", r)
+	}
+	if recs := f.inboxRecords(t); len(recs) != 0 {
+		t.Fatalf("want no records, got %+v", recs)
 	}
 }
 
@@ -119,6 +174,7 @@ func TestIssue2792_NewTurnOrErrorAfterRestartStillNotifies(t *testing.T) {
 		f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
 		sends := *f.sends
 		noteRestartResume(f.child, time.Now())
+		markRestartResumed(f.child.ID, time.Now().Add(-restartResumeErrorSlack-time.Second))
 		f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), true)
 		var found bool
 		for _, r := range f.inboxRecords(t) {
@@ -194,22 +250,24 @@ func TestIssue2792_MidTurnRestartStillNotifies(t *testing.T) {
 		},
 	}
 	for name, setup := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newTurnTestFixture(t)
-			setup(f, t)
-			noteRestartResume(f.child, time.Now())
-			if _, ok := readRestartResumeNote(f.child.ID); ok {
-				t.Fatalf("a child in the middle of a turn gets no note")
-			}
-			f.child.Status = StatusWaiting
-			n := len(f.inboxRecords(t))
-			f.appendTurn(t, fxResumeMeta())
-			f.bootSeen()
-			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
-			if got := len(f.inboxRecords(t)); got != n+1 {
-				t.Fatalf("the parent must hear the cut-short child stopped: records %d -> %d", n, got)
-			}
-		})
+		for _, observed := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/observed=%v", name, observed), func(t *testing.T) {
+				f := newTurnTestFixture(t)
+				setup(f, t)
+				noteRestartResume(f.child, time.Now())
+				if _, ok := readRestartResumeNote(f.child.ID); ok {
+					t.Fatalf("a child in the middle of a turn gets no note")
+				}
+				f.child.Status = StatusWaiting
+				n := len(f.inboxRecords(t))
+				f.appendTurn(t, fxResumeMeta())
+				f.bootSeen()
+				f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), observed)
+				if got := len(f.inboxRecords(t)); got != n+1 {
+					t.Fatalf("the parent must hear the cut-short child stopped: records %d -> %d", n, got)
+				}
+			})
+		}
 	}
 }
 

@@ -68,12 +68,10 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	statsParent := statsParentFor(inst)
 	selfConductor := isSelfSuppressedConductor(inst)
 
-	// Issue #2792: the flip a restart's boot makes is not a turn; only an
-	// observed flip can be one (hook and recorded-turn paths see no boot).
-	if observedFlip {
-		if note, boot := takeRestartResume(inst, to, event.Timestamp); boot {
-			return d.emitRestartResumed(inst, event, note, selfConductor), true
-		}
+	// Issue #2792: the flips a restart makes (the old process dying, the
+	// resumed one booting) are not turns, whichever path sees them.
+	if note, boot := takeRestartResume(inst, to, event.Timestamp); boot {
+		return d.emitRestartResumed(inst, event, note, selfConductor), true
 	}
 
 	if !classified {

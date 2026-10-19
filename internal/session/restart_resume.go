@@ -21,16 +21,26 @@ import (
 //
 // So a restart first notes where the child's transcript ends (or, with no
 // transcript, its turn signal: the Codex completion) in
-// runtime/restart-resume/<id>.json. The first observed flip after it whose
-// transcript gained no user or assistant record since then (a resume appends
-// only metadata), or whose signal is unchanged, is the boot: it reaches no
-// inbox, except one info-tier "refreshed onto <build>" line for an idle build
-// refresh. Any other flip (a new turn, an error) spends the note and is
-// delivered as before. The size, not the turn identity, is what a transcript
-// whose tail has no finished turn (a compaction summary, say) is keyed on.
+// runtime/restart-resume/<id>.json. Until a real turn shows up, every flip of
+// the child is checked against it, on every path (the snapshot edge and the
+// hook path both see the boot, and the hook path also sees the old process
+// die as an error): a flip whose transcript gained no user or assistant
+// record (a resume appends only metadata), or whose signal is unchanged, is
+// the boot and reaches no inbox. An error counts as the restart's own only
+// until shortly after the restart returned. An idle build refresh of a
+// parented child gives one info-tier "refreshed onto <build>" line instead.
+// The first flip that is not the boot (a new turn, a later error) spends the
+// note and is delivered as before. The size, not the turn identity, is what
+// a transcript whose tail has no finished turn (a compaction summary, say)
+// is keyed on.
 
 // restartResumeTTL bounds how long after a restart its boot flip may come.
 const restartResumeTTL = 10 * time.Minute
+
+// restartResumeErrorSlack is how long after a restart returned an error flip
+// still counts as the restart's teardown (the daemon observes it a poll or a
+// hook write later).
+const restartResumeErrorSlack = 15 * time.Second
 
 // restartResumeMaxScan caps the transcript bytes read past the note; a
 // boot appends a few hundred, so more is treated as new activity.
@@ -50,6 +60,10 @@ type restartResumeNote struct {
 	Transcript string `json:"transcript,omitempty"`
 	Offset     int64  `json:"offset,omitempty"`
 	Signal     string `json:"signal,omitempty"`
+	// RestartedAt is when the restart returned (zero while it runs);
+	// Announced marks the refresh info line as sent.
+	RestartedAt time.Time `json:"restarted_at,omitempty"`
+	Announced   bool      `json:"announced,omitempty"`
 }
 
 // SetRestartReason names why the next restart happens, for its resume note.
@@ -96,11 +110,22 @@ func noteRestartResume(i *Instance, now time.Time) {
 // annotateRestartResumeBuild adds the build an idle refresh restarted onto to
 // the child's note, for the info line.
 func annotateRestartResumeBuild(id, build string) {
+	updateRestartResumeNote(id, func(n *restartResumeNote) { n.Build = build })
+}
+
+// markRestartResumed stamps the note with the time the restart returned.
+func markRestartResumed(id string, at time.Time) {
+	updateRestartResumeNote(id, func(n *restartResumeNote) { n.RestartedAt = at })
+}
+
+// updateRestartResumeNote rewrites the child's note, never bringing back
+// one that was spent in the meantime.
+func updateRestartResumeNote(id string, edit func(*restartResumeNote)) {
 	note, ok := readRestartResumeNote(id)
 	if !ok {
 		return
 	}
-	note.Build = build
+	edit(&note)
 	writeRestartResumeNoteIf(id, note, true)
 }
 
@@ -152,27 +177,70 @@ func clearRestartResumeNote(id string) {
 	}
 }
 
-// takeRestartResume reports whether an observed flip of inst to `to` is the
-// boot of its last restart. Any note it finds is spent.
-func takeRestartResume(inst *Instance, to string, now time.Time) (restartResumeNote, bool) {
+// takeRestartResume reports whether a flip of inst to `to` at ts is part of
+// its last restart (the old process dying, the new one booting). A boot
+// keeps the note, since the snapshot and hook paths can each see it; any
+// other flip after the restart spends it.
+func takeRestartResume(inst *Instance, to string, ts time.Time) (restartResumeNote, bool) {
 	note, ok := readRestartResumeNote(inst.ID)
 	if !ok {
 		return note, false
 	}
-	clearRestartResumeNote(inst.ID)
-	if now.Sub(note.At) > restartResumeTTL || now.Before(note.At.Add(-time.Minute)) {
-		return note, false
+	signal := ""
+	if note.Transcript == "" {
+		signal = transitionEventOutputHash(inst)
 	}
+	return note, settleRestartResume(inst.ID, note, inst.GetJSONLPath(), signal, to, ts)
+}
+
+// restartBootRecord is the notifier's own check (#2792), for any producer
+// that reaches the inbox without emitTurn: a record of the child's restart
+// boot is dropped. emitTurn's info line passes by its restartResumeLine mark.
+func restartBootRecord(event TransitionNotificationEvent) bool {
+	if event.restartResumeLine || event.ChildSessionID == "" {
+		return false
+	}
+	note, ok := readRestartResumeNote(event.ChildSessionID)
+	if !ok {
+		return false
+	}
+	to := event.ToStatus
+	if event.Kind == transitionKindFinished {
+		to = string(StatusWaiting)
+	}
+	return settleRestartResume(event.ChildSessionID, note, note.Transcript, event.LastOutputHash, to, event.Timestamp)
+}
+
+// settleRestartResume decides a flip against the note (transcript is the
+// child's current transcript path, signal its turn signal when the note has
+// no transcript) and spends the note when the flip is not the boot.
+func settleRestartResume(id string, note restartResumeNote, transcript, signal, to string, ts time.Time) bool {
+	if ts.Before(note.At) {
+		return false // from before the restart: delivered as before
+	}
+	if ts.Sub(note.At) > restartResumeTTL {
+		clearRestartResumeNote(id)
+		return false
+	}
+	unchanged := false
+	if note.Transcript != "" {
+		unchanged = note.Transcript == transcript && noTurnSince(note.Transcript, note.Offset)
+	} else {
+		unchanged = signal != "" && signal == note.Signal
+	}
+	boot := false
 	switch normalizeStatusString(to) {
 	case string(StatusWaiting), string(StatusIdle):
-	default:
-		return note, false // an error after a restart is news
+		boot = unchanged
+	case string(StatusError):
+		// The old process dying mid-restart; an error once the restart is
+		// over (a resume that crashed) is news.
+		boot = unchanged && (note.RestartedAt.IsZero() || !ts.After(note.RestartedAt.Add(restartResumeErrorSlack)))
 	}
-	if note.Transcript != "" {
-		return note, note.Transcript == inst.GetJSONLPath() && noTurnSince(note.Transcript, note.Offset)
+	if !boot {
+		clearRestartResumeNote(id)
 	}
-	signal := transitionEventOutputHash(inst)
-	return note, signal != "" && signal == note.Signal
+	return boot
 }
 
 // noTurnSince reports whether the transcript at path gained no user or
@@ -209,25 +277,37 @@ func noTurnSince(path string, offset int64) bool {
 	return true
 }
 
-// emitRestartResumed is emitTurn's result for a boot flip: nothing, or one
-// info record when an idle build refresh moved a parented child to a new build.
+// emitRestartResumed is emitTurn's result for a restart's flips: one
+// info-tier line per restart for a parented child once it is back at its
+// prompt, never the old reply again, and nothing for the rest.
 func (d *TransitionDaemon) emitRestartResumed(inst *Instance, event TransitionNotificationEvent, note restartResumeNote, selfConductor bool) TransitionNotificationEvent {
 	event.DeliveryResult = transitionDeliveryDropped
-	if note.Reason != RestartReasonIdleBuildRefresh || selfConductor || strings.TrimSpace(inst.ParentSessionID) == "" {
+	if note.Announced || selfConductor || strings.TrimSpace(inst.ParentSessionID) == "" ||
+		normalizeStatusString(event.ToStatus) == string(StatusError) {
 		return event
 	}
 	tool := note.Tool
 	if tool == "" {
 		tool = inst.Tool
 	}
-	onto := "a newer " + tool + " build"
-	if note.Build != "" {
-		onto = tool + " " + filepath.Base(note.Build)
-	}
 	event.Tier = TurnTierInfo
 	event.Trigger = TurnTriggerSystem
-	event.Text = "Refreshed onto " + onto + " while idle; conversation resumed, no new turn."
+	event.Text = "Restarted while idle; conversation resumed, no new turn."
+	if note.Reason == RestartReasonIdleBuildRefresh {
+		onto := "a newer " + tool + " build"
+		if note.Build != "" {
+			onto = tool + " " + filepath.Base(note.Build)
+		}
+		event.Text = "Refreshed onto " + onto + " while idle; conversation resumed, no new turn."
+	}
+	event.restartResumeLine = true
+	// Its own identity: the old turn's hash would read as a duplicate of the
+	// record that turn already sent.
+	event.LastOutputHash = "restart:" + note.At.UTC().Format(time.RFC3339Nano)
 	result := d.notifier.NotifyTransition(event)
+	if result.DeliveryResult != transitionDeliveryFailed {
+		updateRestartResumeNote(inst.ID, func(n *restartResumeNote) { n.Announced = true })
+	}
 	if result.DeliveryResult == transitionDeliveryCommitted {
 		_ = BumpInboxStats(statsParentFor(inst), func(s *InboxStats) { s.RecordsInfo++ })
 	}
