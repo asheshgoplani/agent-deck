@@ -63,13 +63,20 @@ func restartResumePath(id string) (string, error) {
 }
 
 // noteRestartResume records where the child's turns stand before a restart.
-// Nothing to compare against (no transcript or signal, a reply still
-// flushing) means no note, so the boot flip is delivered as before.
+// Only a child idle at its prompt gets a note: a restart that cuts a turn
+// short (running, a tool call newer than the last text, a reply still
+// flushing) must still tell the parent the child stopped, and so must one
+// with nothing to compare against (no transcript or signal).
 func noteRestartResume(i *Instance, now time.Time) {
 	if i == nil {
 		return
 	}
-	if facts, ok := instanceTurnFacts(i); ok && facts.Pending {
+	switch i.GetStatusThreadSafe() {
+	case StatusWaiting, StatusIdle:
+	default:
+		return
+	}
+	if facts, ok := instanceTurnFacts(i); ok && (facts.Pending || facts.FinalTextPending) {
 		return
 	}
 	note := restartResumeNote{At: now, Reason: i.restartReason, Tool: i.Tool}
@@ -94,10 +101,16 @@ func annotateRestartResumeBuild(id, build string) {
 		return
 	}
 	note.Build = build
-	writeRestartResumeNote(id, note)
+	writeRestartResumeNoteIf(id, note, true)
 }
 
 func writeRestartResumeNote(id string, note restartResumeNote) {
+	writeRestartResumeNoteIf(id, note, false)
+}
+
+// writeRestartResumeNoteIf writes the note; with mustExist only over a note
+// still on disk, so an annotation never brings back one the daemon spent.
+func writeRestartResumeNoteIf(id string, note restartResumeNote, mustExist bool) {
 	path, err := restartResumePath(id)
 	if err != nil {
 		return
@@ -107,6 +120,10 @@ func writeRestartResumeNote(id string, note restartResumeNote) {
 		if err = os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
 			tmp := path + ".tmp"
 			if err = os.WriteFile(tmp, data, 0o600); err == nil {
+				if _, serr := os.Stat(path); mustExist && serr != nil {
+					_ = os.Remove(tmp)
+					return
+				}
 				err = os.Rename(tmp, path)
 			}
 		}

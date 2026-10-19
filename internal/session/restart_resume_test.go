@@ -179,3 +179,53 @@ func TestIssue2792_CompactedTranscriptRefreshSendsNoCompletion(t *testing.T) {
 		t.Fatalf("no wake, sends %d -> %d", sends, *f.sends)
 	}
 }
+
+// Lander review of #2793: a restart that cuts a turn short (a plain `session
+// restart` while the child works) must still tell the parent the child
+// stopped, as main does: such a child gets no note.
+func TestIssue2792_MidTurnRestartStillNotifies(t *testing.T) {
+	cases := map[string]func(f *turnTestFixture, t *testing.T){
+		"tool call after the text": func(f *turnTestFixture, t *testing.T) {
+			f.appendTurn(t, fxHuman("u1", "run it"), fxAssistantText("a1", "Running the migration now."), fxAssistantToolUse("a2"))
+		},
+		"running": func(f *turnTestFixture, t *testing.T) {
+			f.appendTurn(t, fxHuman("u1", "run it"), fxAssistantText("a1", "Running the migration now."))
+			f.child.Status = StatusRunning
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newTurnTestFixture(t)
+			setup(f, t)
+			noteRestartResume(f.child, time.Now())
+			if _, ok := readRestartResumeNote(f.child.ID); ok {
+				t.Fatalf("a child in the middle of a turn gets no note")
+			}
+			f.child.Status = StatusWaiting
+			n := len(f.inboxRecords(t))
+			f.appendTurn(t, fxResumeMeta())
+			f.bootSeen()
+			f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), true)
+			if got := len(f.inboxRecords(t)); got != n+1 {
+				t.Fatalf("the parent must hear the cut-short child stopped: records %d -> %d", n, got)
+			}
+		})
+	}
+}
+
+// An annotation after the daemon spent the note does not bring it back.
+func TestIssue2792_AnnotateDoesNotResurrectSpentNote(t *testing.T) {
+	f := newTurnTestFixture(t)
+	f.appendTurn(t, fxHuman("u1", "add the index"), fxAssistantText("a1", "Index added; tests pass."))
+	noteRestartResume(f.child, time.Now())
+	clearRestartResumeNote(f.child.ID)
+	annotateRestartResumeBuild(f.child.ID, "/opt/claude/versions/2.1.303")
+	if _, ok := readRestartResumeNote(f.child.ID); ok {
+		t.Fatalf("a spent note must stay spent")
+	}
+	// The note spent between the annotation's read and its write.
+	writeRestartResumeNoteIf(f.child.ID, restartResumeNote{At: time.Now(), Signal: "x", Build: "b"}, true)
+	if _, ok := readRestartResumeNote(f.child.ID); ok {
+		t.Fatalf("the annotation's write must not bring back a spent note")
+	}
+}
