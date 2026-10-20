@@ -19,6 +19,11 @@
 // turn. A run that ended without text (tool-only, aborted, failed) is reported
 // without it.
 //
+// turn_start, turn_end and agent_settled also carry `settles: true` (this
+// extension sends agent_settled, so a turn_end that has not settled is a status
+// edge only) and `run_id`, a token minted at agent_start, so a late settle can
+// never attach to a newer run's turn_end.
+//
 // It is a no-op outside agent-deck: without AGENTDECK_INSTANCE_ID in the
 // environment nothing is spawned and no handler is registered. pi awaits
 // extension handlers in order, and each emit is awaited too, so back-to-back
@@ -30,6 +35,7 @@
 // process wedges, so a stuck handler cannot hang pi indefinitely.
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const INSTANCE_ID = (process.env.AGENTDECK_INSTANCE_ID ?? "").trim();
@@ -89,17 +95,21 @@ export default function (pi: ExtensionAPI) {
   // reset on agent_start; the input is consumed when the run settles.
   let lastInput = "";
   let lastTurn: { entryId: string; text: string; outcome: string; stopReason: string } | undefined;
+  // The run token, minted at agent_start; carried with the settles capability bit.
+  let runId = "";
+  const runFields = () => ({ settles: true, run_id: runId || undefined });
 
   // Returning emit's promise (rather than firing and forgetting) is what makes
   // pi await delivery before it runs the next handler.
   pi.on("session_start", () => emit("session_start"));
   pi.on("agent_start", () => {
+    runId = randomUUID();
     lastTurn = undefined;
   });
   pi.on("input", (event?: any) => {
     if (typeof event?.text === "string") lastInput = event.text;
   });
-  pi.on("turn_start", () => emit("turn_start"));
+  pi.on("turn_start", () => emit("turn_start", runFields()));
   pi.on("turn_end", (event?: any) => {
     lastTurn = {
       entryId: typeof event?.messageEntryId === "string" ? event.messageEntryId : "",
@@ -107,7 +117,7 @@ export default function (pi: ExtensionAPI) {
       outcome: String(event?.outcome ?? ""),
       stopReason: String(event?.message?.stopReason ?? ""),
     };
-    return emit("turn_end");
+    return emit("turn_end", runFields());
   });
   pi.on("agent_settled", (event?: any, ctx?: any) => {
     const turn = lastTurn;
@@ -124,6 +134,7 @@ export default function (pi: ExtensionAPI) {
     const answered = turn?.outcome === "completed" && turn.stopReason !== "toolUse" && event?.aborted !== true;
     const reported = answered ? turn.text.trim() : "";
     return emit("agent_settled", {
+      ...runFields(),
       session_id: sessionId,
       turn_id: turn?.entryId || undefined,
       last_assistant_message: reported ? tailBytes(reported, MAX_TEXT_BYTES) : undefined,

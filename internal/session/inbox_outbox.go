@@ -133,7 +133,9 @@ func TurnFingerprint(e TransitionNotificationEvent) string {
 		if hash := strings.TrimSpace(e.LastOutputHash); hash != "" {
 			signal += "|" + hash
 		}
-	case e.OutputHashStale:
+	case e.OutputHashStale && !strings.HasPrefix(strings.TrimSpace(e.LastOutputHash), "pi-run:"):
+		// A pi-run signal names its run for good: the hash TTL never turns it into
+		// a timestamp, or an aborted run's identity would depend on one.
 		signal = "flip|" + flip + "|" + emitInstantSignal(e.Timestamp)
 	case strings.TrimSpace(e.LastOutputHash) != "":
 		signal = "turn|" + strings.TrimSpace(e.LastOutputHash)
