@@ -261,7 +261,10 @@ class DriverFailurePathTests(unittest.TestCase):
                 'time.sleep(60)\n')
         process = self.spawn(code)
         deadline = time.monotonic() + 5
-        while not pid_file.exists() and time.monotonic() < deadline:
+        # The file can exist before its content is written: wait for the pid itself.
+        while time.monotonic() < deadline:
+            if pid_file.exists() and pid_file.read_text().strip():
+                break
             time.sleep(0.02)
         grandchild = int(pid_file.read_text())
         self.addCleanup(lambda: not process_is_gone(grandchild) and os.kill(grandchild, 9))
