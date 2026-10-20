@@ -27,6 +27,29 @@ func TestSplit(t *testing.T) {
 	}
 }
 
+func TestCommands(t *testing.T) {
+	tests := []struct {
+		command string
+		want    []string
+		ok      bool
+	}{
+		{`cd -- /src && unset CLAUDE_JOB_DIR && pi --continue`, []string{"cd -- /src", "unset CLAUDE_JOB_DIR", "pi --continue"}, true},
+		{`a; b || c | d`, []string{"a", "b", "c", "d"}, true},
+		{"a\nb", []string{"a", "b"}, true},
+		{`export X='1;2' && echo "a && b"`, []string{`export X='1;2'`, `echo "a && b"`}, true},
+		{`printf '%s\n' "$code" > /x`, []string{`printf '%s\n' "$code" > /x`}, true},
+		{`echo a\;b; c`, []string{`echo a\;b`, "c"}, true},
+		{`"unterminated && x`, nil, false},
+		{``, nil, true},
+	}
+	for _, tt := range tests {
+		got, ok := Commands(tt.command)
+		if ok != tt.ok || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("Commands(%q) = (%q, %v), want (%q, %v)", tt.command, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
 func TestExecutableBase(t *testing.T) {
 	words, ok := Split(`env PROFILE='team dev' sudo "/opt/AI Tools/pi" --profile dev`)
 	if !ok {

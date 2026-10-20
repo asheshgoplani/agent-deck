@@ -75,6 +75,65 @@ func Split(command string) ([]string, bool) {
 	return words, true
 }
 
+// Commands separates a command line into its simple commands at unquoted
+// control operators (&&, ||, ;, |, and newlines), keeping each command's text,
+// quotes included, so it can be passed to Split. Like Split it performs no
+// expansion, and the boolean is false for an unterminated quote or trailing
+// escape.
+func Commands(command string) ([]string, bool) {
+	var commands []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+
+	flush := func() {
+		if text := strings.TrimSpace(current.String()); text != "" {
+			commands = append(commands, text)
+		}
+		current.Reset()
+	}
+
+	runes := []rune(command)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case escaped:
+			escaped = false
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+			}
+		case r == '\\':
+			escaped = true
+		case quote == '"':
+			if r == '"' {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == ';' || r == '\n':
+			flush()
+			continue
+		case r == '|':
+			flush()
+			if i+1 < len(runes) && runes[i+1] == '|' {
+				i++
+			}
+			continue
+		case r == '&' && i+1 < len(runes) && runes[i+1] == '&':
+			flush()
+			i++
+			continue
+		}
+		current.WriteRune(r)
+	}
+	if escaped || quote != 0 {
+		return nil, false
+	}
+	flush()
+	return commands, true
+}
+
 // ExecutableBase returns the basename of the command-position word. Leading
 // env/sudo wrappers and environment assignments are skipped. A trailing slash
 // denotes a directory and is not treated as an executable.
