@@ -2991,6 +2991,7 @@ type RemoteSessionInfo struct {
 	Path            string `json:"path"`
 	Group           string `json:"group"`
 	Tool            string `json:"tool"`
+	Command         string `json:"command,omitempty"`
 	Status          string `json:"status"`
 	CreatedAt       string `json:"created_at"`
 
@@ -3050,6 +3051,15 @@ type RemoteSessionInfo struct {
 
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
+}
+
+// DisplayTool preserves the remote OpenCode launcher label. Older remotes that
+// omit command retain their canonical tool label; Tool remains the dispatch key.
+func (r RemoteSessionInfo) DisplayTool() string {
+	if r.Tool == "opencode" && openCodeExecutableBase(r.Command) == "opencode2" {
+		return "opencode2"
+	}
+	return r.Tool
 }
 
 // ViewerList returns the remote session's viewers and whether the remote

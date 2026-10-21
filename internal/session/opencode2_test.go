@@ -103,6 +103,30 @@ func TestOpenCode2DisplayIdentity(t *testing.T) {
 	}
 }
 
+func TestOpenCode2RemoteDisplayIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		tool, command, want string
+	}{
+		{"opencode", "opencode2", "opencode2"},
+		{"opencode", "env FOO=bar '/opt/bin/opencode2'", "opencode2"},
+		{"opencode", "opencode", "opencode"},
+		{"opencode", "", "opencode"},
+		{"claude", "opencode2", "claude"},
+	} {
+		payload, err := json.Marshal(map[string]string{"tool": tc.tool, "command": tc.command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := parseRemoteSessions([]byte(fmt.Sprintf("[%s]", payload)))
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("remote payload failed: rows=%v err=%v", rows, err)
+		}
+		if got := rows[0].DisplayTool(); got != tc.want || rows[0].Tool != tc.tool {
+			t.Errorf("tool=%q command=%q: display=%q, canonical=%q, want %q/%q", tc.tool, tc.command, got, rows[0].Tool, tc.want, tc.tool)
+		}
+	}
+}
+
 // runOpenCode2Launch executes real shell command construction against a stub
 // launcher. API calls and the final TUI invocation are observed as argv, not
 // merely matched as substrings in the generated command.
