@@ -24241,7 +24241,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		Foreground(ColorBg).
 		Background(ColorPurple).
 		Padding(0, 1).
-		Render(selected.Tool)
+		Render(selected.DisplayToolThreadSafe())
 	groupBadge := lipgloss.NewStyle().
 		Foreground(ColorBg).
 		Background(ColorCyan).

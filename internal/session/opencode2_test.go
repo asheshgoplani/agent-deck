@@ -76,6 +76,33 @@ func TestOpenCode2RegistryVisibility(t *testing.T) {
 	}
 }
 
+func TestOpenCode2DisplayIdentity(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	inst := NewInstanceWithTool("v2", t.TempDir(), "opencode2")
+	for _, observed := range []string{"", "shell", "opencode", "claude"} {
+		inst.observedTool = observed
+		want := "opencode2"
+		if observed == "claude" {
+			want = observed
+		}
+		if got := inst.DisplayToolThreadSafe(); got != want {
+			t.Errorf("observed %q: display = %q, want %q", observed, got, want)
+		}
+	}
+	inst.observedTool = ""
+	payload, err := json.Marshal(inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Instance
+	if err := json.Unmarshal(payload, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.DisplayToolThreadSafe(); got != "opencode2" {
+		t.Fatalf("restored display = %q", got)
+	}
+}
+
 // runOpenCode2Launch executes real shell command construction against a stub
 // launcher. API calls and the final TUI invocation are observed as argv, not
 // merely matched as substrings in the generated command.
@@ -293,6 +320,10 @@ func TestOpenCode2DiscoveryUsesSelectedLauncherAndNestedAPITimes(t *testing.T) {
 	inst.OpenCodeSessionID = "ses_v2"
 	if got := inst.queryOpenCodeSession(); got != "ses_v2" {
 		t.Fatalf("v2 session binding = %q", got)
+	}
+	inst.setOpenCodeSession("ses_v2")
+	if !inst.CanFork() {
+		t.Fatal("discovered v2 session must enable fork and quick fork")
 	}
 	args, err := os.ReadFile(marker)
 	if err != nil || !strings.Contains(string(args), "session.list") || !strings.Contains(string(args), "directory="+project) {
