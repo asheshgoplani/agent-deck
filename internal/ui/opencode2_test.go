@@ -60,11 +60,18 @@ func TestOpenCode2RemoteDisplaySurfaces(t *testing.T) {
 				if !strings.Contains(stripAnsi(surface.frame), fixture.want) {
 					t.Errorf("%s lost launcher identity: %s", surface.name, stripAnsi(surface.frame))
 				}
+				if fixture.want == "opencode" && strings.Contains(stripAnsi(surface.frame), "opencode2") {
+					t.Errorf("%s incorrectly displays v2 for a legacy remote: %s", surface.name, stripAnsi(surface.frame))
+				}
 			}
 			h.embeddedMode = true
 			h.insertModeRemoteName, h.insertModeRemoteID = "lab", remote.ID
-			if frame := stripAnsi(h.renderPreviewPane(100, 40)); !strings.Contains(frame, fixture.want) {
+			frame := stripAnsi(h.renderPreviewPane(100, 40))
+			if !strings.Contains(frame, fixture.want) {
 				t.Errorf("embedded remote preview lost launcher identity: %s", frame)
+			}
+			if fixture.want == "opencode" && strings.Contains(frame, "opencode2") {
+				t.Errorf("embedded remote preview incorrectly displays v2 for a legacy remote: %s", frame)
 			}
 		})
 	}
