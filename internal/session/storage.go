@@ -1423,6 +1423,45 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 
 // LoadWithGroupsSnapshot carries the exact persisted snapshot for reload acknowledgement.
 func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.RegistrySnapshotResult, error) {
+	return s.loadWithGroupsSnapshot(nil)
+}
+
+// LoadStatusScan loads only the sessions a status pass can change (see
+// statusScanRows), for the notify daemon, which polls every 1-3 s.
+func (s *Storage) LoadStatusScan() ([]*Instance, error) {
+	instances, _, _, err := s.loadWithGroupsSnapshot(statusScanRows)
+	return instances, err
+}
+
+// statusScanRows drops archived sessions that are stopped or errored: their
+// pane is gone, so no status pass can change them, and converting hundreds of
+// them on every poll was most of the notify daemon's CPU. The ancestors of every
+// kept row stay, so a completion still reaches an archived parent's inbox.
+func statusScanRows(rows []*statedb.InstanceRow) []*statedb.InstanceRow {
+	byID := make(map[string]*statedb.InstanceRow, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	keep := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		down := Status(r.Status) == StatusStopped || Status(r.Status) == StatusError
+		if !r.ArchivedAt.IsZero() && down {
+			continue
+		}
+		for cur := r; cur != nil && !keep[cur.ID]; cur = byID[cur.ParentSessionID] {
+			keep[cur.ID] = true
+		}
+	}
+	kept := make([]*statedb.InstanceRow, 0, len(keep))
+	for _, r := range rows {
+		if keep[r.ID] {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
+func (s *Storage) loadWithGroupsSnapshot(selectRows func([]*statedb.InstanceRow) []*statedb.InstanceRow) ([]*Instance, []*GroupData, *statedb.RegistrySnapshotResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1439,6 +1478,9 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 		return nil, nil, nil, err
 	}
 	dbRows, dbGroups := snapshot.Instances, snapshot.Groups
+	if selectRows != nil {
+		dbRows = selectRows(dbRows)
+	}
 
 	// Convert to InstanceData for the existing convertToInstances pipeline
 	data := &StorageData{

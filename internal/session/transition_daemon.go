@@ -494,7 +494,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		return notifyPollSlow
 	}
 
-	instances, _, err := storage.LoadWithGroups()
+	instances, err := storage.LoadStatusScan()
 	if err != nil {
 		return notifyPollSlow
 	}
