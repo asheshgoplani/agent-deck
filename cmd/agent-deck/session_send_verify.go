@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -608,6 +609,8 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 	}
 
 	checks := opts.verificationChecks(false)
+	retryCodexSubmit := opts.tool == "codex" && os.Getenv("AGENTDECK_CODEX_SUBMIT_RETRY") == "1"
+	attrib := send.EnterAttribution{Message: message}
 
 	// obs is the reader of record for the verdict (issue #1793): it sees
 	// every frame this loop captures and decides what an exhausted budget
@@ -632,6 +635,13 @@ func verifyContentArrival(target sendRetryTarget, message string, opts sendRetry
 		if baseline.paneOK {
 			raw, captureErr := target.CapturePaneFresh()
 			obs.Observe(send.CaptureOutcome(raw, captureErr))
+			if retryCodexSubmit && captureErr == nil && i < checks-1 &&
+				send.ComposerHoldsUnsentMessage(raw, message, tmux.StripANSI) {
+				guard := &promptGuardTarget{sendRetryTarget: target, tool: "codex"}
+				if guard.check(raw, nil) == nil {
+					attrib.NudgeEnter(guard, send.Captured(raw), tmux.StripANSI)
+				}
+			}
 			if obs.TurnStarted() {
 				return deliverySubmitted, nil
 			}
