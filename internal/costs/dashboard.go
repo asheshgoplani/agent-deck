@@ -67,8 +67,10 @@ func costPeriodWhere(period string) (periodClause, error) {
 		return `WHERE datetime(timestamp) >= datetime('now', '-7 days')`, nil
 	case "30d":
 		return `WHERE datetime(timestamp) >= datetime('now', '-30 days')`, nil
+	// Back up 6 days first: 'weekday 1' is a no-op on Monday, so the old
+	// 'weekday 1', '-7 days' order started the week on the previous Monday.
 	case "week":
-		return `WHERE timestamp >= date('now', 'weekday 1', '-7 days')`, nil
+		return `WHERE timestamp >= date('now', '-6 days', 'weekday 1')`, nil
 	case "month":
 		return `WHERE timestamp >= date('now', 'start of month')`, nil
 	default:

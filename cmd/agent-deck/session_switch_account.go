@@ -75,6 +75,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	}
 	if fs.NArg() < 2 {
 		fs.Usage()
+		fmt.Fprintln(os.Stderr, "Error: session switch-account needs <id|title> and <account>")
 		exitCLI(1)
 	}
 
@@ -87,12 +88,12 @@ func handleSessionSwitchAccount(profile string, args []string) {
 
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
-		out.Error(err.Error(), ErrCodeNotFound)
+		switchAccountError(out, *jsonOutput, err.Error(), ErrCodeNotFound)
 		exitCLI(1)
 	}
 	inst, errMsg, errCode := ResolveSession(identifier, instances)
 	if inst == nil {
-		out.Error(errMsg, errCode)
+		switchAccountError(out, *jsonOutput, errMsg, errCode)
 		if errCode == ErrCodeNotFound {
 			exitCLI(2)
 		}
@@ -117,7 +118,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		if errors.Is(switchErr, session.ErrSwitchDestinationDivergent) {
 			message += "; re-run with --archive-destination to archive it and switch anyway"
 		}
-		out.Error(message, ErrCodeInvalidOperation)
+		switchAccountError(out, *jsonOutput, message, ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 	for _, warning := range result.Warnings {
@@ -125,7 +126,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	}
 
 	if err := session.CommitAccountSwitch(storage, inst, result); err != nil {
-		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
+		switchAccountError(out, *jsonOutput, fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}
 
@@ -133,10 +134,10 @@ func handleSessionSwitchAccount(profile string, args []string) {
 		// The account WAS switched and the conversation migrated (both now
 		// persisted); only the restart failed.
 		if errors.Is(switchErr, session.ErrAccountSwitchRestartFailed) {
-			out.Error(fmt.Sprintf("account switched to %q and conversation migrated, but %v", account, switchErr),
+			switchAccountError(out, *jsonOutput, fmt.Sprintf("account switched to %q and conversation migrated, but %v", account, switchErr),
 				ErrCodeInvalidOperation)
 		} else {
-			out.Error(switchErr.Error(), ErrCodeInvalidOperation)
+			switchAccountError(out, *jsonOutput, switchErr.Error(), ErrCodeInvalidOperation)
 		}
 		exitCLI(1)
 	}
@@ -152,6 +153,7 @@ func handleSessionSwitchAccount(profile string, args []string) {
 	}
 	defer func() {
 		if code := switchSettleExit(*settleStrict, settle, settleErr); code != 0 {
+			fmt.Fprintf(os.Stderr, "Error: switched, but the settle did not end healthy: %s\n", settle.Receipt())
 			exitCLI(code)
 		}
 	}()
@@ -169,4 +171,18 @@ func handleSessionSwitchAccount(profile string, args []string) {
 			"claude_session_id":    inst.ClaudeSessionID,
 			"restarted":            result.Restarted,
 		})
+}
+
+// switchAccountError reports a failure as the command's error output and,
+// in --json mode (where that output is JSON on stdout), also as one line on
+// stderr: every non-zero exit of switch-account leaves a readable reason on
+// stderr, which a caller filtering stdout (or a log of stderr) still keeps.
+func switchAccountError(out *CLIOutput, jsonMode bool, message, code string) {
+	// One line: a tmux or storage error can carry its tool's multi-line
+	// output.
+	message = strings.Join(strings.Fields(message), " ")
+	out.Error(message, code)
+	if jsonMode {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", message)
+	}
 }

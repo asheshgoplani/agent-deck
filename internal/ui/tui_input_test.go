@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,16 +23,28 @@ import (
 
 type keyModel struct {
 	started chan struct{}
+	sizes   chan struct{}
 	mu      *sync.Mutex
 	keys    *[]string
+	onKey   *func(string) tea.Cmd
 }
 
 func (m keyModel) Init() tea.Cmd { return func() tea.Msg { close(m.started); return nil } }
 func (m keyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(tea.WindowSizeMsg); ok {
+		select {
+		case m.sizes <- struct{}{}:
+		default:
+		}
+	}
 	if k, ok := msg.(tea.KeyMsg); ok {
 		m.mu.Lock()
 		*m.keys = append(*m.keys, k.String())
+		on := *m.onKey
 		m.mu.Unlock()
+		if on != nil {
+			return m, on(k.String())
+		}
 	}
 	return m, nil
 }
@@ -42,6 +55,8 @@ type tuiInputRig struct {
 	p         *tea.Program
 	mu        sync.Mutex
 	keys      []string
+	onKey     func(string) tea.Cmd
+	sizes     chan struct{}
 	done      chan struct{}
 }
 
@@ -54,8 +69,8 @@ func newTUIInputRig(t *testing.T, input func(*os.File) any) *tuiInputRig {
 	if err != nil {
 		t.Skipf("no pty: %v", err)
 	}
-	r := &tuiInputRig{ptmx: ptmx, tty: tty, done: make(chan struct{})}
-	m := keyModel{started: make(chan struct{}), mu: &r.mu, keys: &r.keys}
+	r := &tuiInputRig{ptmx: ptmx, tty: tty, sizes: make(chan struct{}, 64), done: make(chan struct{})}
+	m := keyModel{started: make(chan struct{}), sizes: r.sizes, mu: &r.mu, keys: &r.keys, onKey: &r.onKey}
 	in := input(tty)
 	r.p = tea.NewProgram(m, tea.WithInput(in.(interface{ Read([]byte) (int, error) })), tea.WithOutput(tty), tea.WithoutSignalHandler())
 	go func() { _, _ = r.p.Run(); close(r.done) }()
@@ -72,16 +87,40 @@ func newTUIInputRig(t *testing.T, input func(*os.File) any) *tuiInputRig {
 	case <-time.After(10 * time.Second):
 		t.Fatal("program did not start")
 	}
+	r.waitResizeCheck(t) // the start's own size check
 	t.Cleanup(func() {
 		r.p.Quit()
 		select {
 		case <-r.done:
 		case <-time.After(5 * time.Second):
+			t.Error("program did not exit; closing its terminal anyway")
 		}
 		_ = ptmx.Close()
 		_ = tty.Close()
 	})
 	return r
+}
+
+// Bubble Tea checks the terminal size on a goroutine of its own at the start
+// and after every RestoreTerminal, and Run does not wait for it. Its
+// WindowSizeMsg is the only sign it is done with the tty, so the test waits for
+// it before the next restore or the cleanup closes the tty (defect 303: a race
+// under -race otherwise).
+func (r *tuiInputRig) waitResizeCheck(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.sizes:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no size check after the start or restore")
+	}
+}
+
+func (r *tuiInputRig) restore(t *testing.T) {
+	t.Helper()
+	if err := r.p.RestoreTerminal(); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	r.waitResizeCheck(t)
 }
 
 func (r *tuiInputRig) sawKey(k string) bool {
@@ -132,9 +171,7 @@ func TestTUIInputAttachCyclesDoNotLeakPollDescriptors(t *testing.T) {
 		if err := r.p.ReleaseTerminal(); err != nil {
 			t.Fatalf("release: %v", err)
 		}
-		if err := r.p.RestoreTerminal(); err != nil {
-			t.Fatalf("restore: %v", err)
-		}
+		r.restore(t)
 	}
 	runtime.GC()
 	if after := tuiEpollCount(t); after-before > 1 {
@@ -199,9 +236,7 @@ func TestTUIInputReleasedTerminalLeavesInputAlone(t *testing.T) {
 		t.Fatalf("the attached program got %q of what was typed, want \"zq\" (the TUI took the rest)", got)
 	}
 
-	if err := r.p.RestoreTerminal(); err != nil {
-		t.Fatalf("restore: %v", err)
-	}
+	r.restore(t)
 	if _, err := r.ptmx.Write([]byte("b")); err != nil {
 		t.Fatal(err)
 	}
@@ -210,5 +245,126 @@ func TestTUIInputReleasedTerminalLeavesInputAlone(t *testing.T) {
 	defer r.mu.Unlock()
 	if strings.Contains(strings.Join(r.keys, ""), "z") {
 		t.Fatalf("the TUI read input typed while released: %v", r.keys)
+	}
+}
+
+// ttyReadCmd is an attached program: it reads the terminal until a newline.
+type ttyReadCmd struct {
+	tty *os.File
+	got chan string
+}
+
+func (c ttyReadCmd) SetStdin(io.Reader)  {}
+func (c ttyReadCmd) SetStdout(io.Writer) {}
+func (c ttyReadCmd) SetStderr(io.Writer) {}
+func (c ttyReadCmd) Run() error {
+	var b []byte
+	buf := make([]byte, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for !strings.Contains(string(b), "\n") {
+			n, err := c.tty.Read(buf)
+			if err != nil {
+				return
+			}
+			b = append(b, buf[:n]...)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+	c.got <- string(b)
+	return nil
+}
+
+// Lander review of #2815: a key typed while the release is under way (here 5
+// to 40 ms after the attach starts) must reach the attached program. The
+// fallback reader drops bytes read across a cancel, so the TUI must not read
+// once a release begins.
+func TestTUIInputKeysTypedAsTheAttachStartsReachTheAttachedProgram(t *testing.T) {
+	r := newTUIInputRig(t, tuiInputOnPTY)
+	got := make(chan string, 1)
+	r.mu.Lock()
+	r.onKey = func(k string) tea.Cmd {
+		if k != "x" {
+			return nil
+		}
+		return execHoldingInput(ttyReadCmd{tty: r.tty, got: got}, func(error) tea.Msg { return nil })
+	}
+	r.mu.Unlock()
+	for _, d := range []time.Duration{5, 10, 20, 30, 40, 5, 10, 20, 30, 40} {
+		if _, err := r.ptmx.Write([]byte("x")); err != nil { // attach
+			t.Fatal(err)
+		}
+		time.Sleep(d * time.Millisecond)
+		if _, err := r.ptmx.Write([]byte("zq\n")); err != nil { // typed into the attached program
+			t.Fatal(err)
+		}
+		select {
+		case s := <-got:
+			if !strings.HasPrefix(s, "zq") {
+				t.Fatalf("typed %d ms after the attach began: the attached program got %q, want \"zq\"", d, s)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("typed %d ms after the attach began: the attached program never finished", d)
+		}
+		r.waitResizeCheck(t) // the exec's restore
+	}
+	if tuiInputHeld.Load() != 0 {
+		t.Fatalf("the input hold must be released after every exec, held=%d", tuiInputHeld.Load())
+	}
+}
+
+// Lander review of #2815: an incomplete escape sequence in the translator
+// must not leave the read loop in a blocking stdin read when the terminal is
+// released, or the release waits 500 ms and the stale read takes the
+// attached program's first keystroke.
+func TestTUIInputIncompleteSequenceDoesNotBlockTheRelease(t *testing.T) {
+	r := newTUIInputRig(t, tuiInputOnPTY)
+	if _, err := r.ptmx.Write([]byte("\x1b[1;")); err != nil { // half a CSI sequence
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond) // the reader takes it and waits for the rest
+	start := time.Now()
+	if err := r.p.ReleaseTerminal(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if took := time.Since(start); took > 400*time.Millisecond {
+		t.Fatalf("release waited %s: the reader sat in a blocking stdin read", took)
+	}
+	got := make(chan string, 1)
+	go func() { _ = ttyReadCmd{tty: r.tty, got: got}.Run() }()
+	if _, err := r.ptmx.Write([]byte("zq\n")); err != nil {
+		t.Fatal(err)
+	}
+	if s := <-got; !strings.Contains(s, "zq") {
+		t.Fatalf("the attached program got %q, want \"zq\"", s)
+	}
+	r.restore(t)
+}
+
+// Every exec of the TUI goes through the input hold (#2692): a bare tea.Exec
+// or tea.ExecProcess would let the TUI read, and drop, keys meant for the
+// attached program while the terminal is handed over.
+func TestTUIExecsAllHoldTheInput(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || f == "tui_input.go" {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bare := range []string{"tea.Exec(", "tea.ExecProcess("} {
+			if strings.Contains(string(src), bare) {
+				t.Errorf("%s calls %s directly; use execHoldingInput / execProcessHoldingInput", f, bare)
+			}
+		}
 	}
 }

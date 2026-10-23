@@ -333,6 +333,11 @@ type csiuReader struct {
 	replyWindow uint64
 	// pollFn checks whether more bytes follow a lone ESC within a timeout.
 	pollFn func(time.Duration) bool
+	// yieldEmpty makes Read return (0, nil) when a chunk produced nothing
+	// (a swallowed terminal reply, an incomplete sequence) instead of reading
+	// the source again: the TUI's input polls before each read and must never
+	// sit in a blocking stdin read when the terminal is released (#2692).
+	yieldEmpty bool
 }
 
 // csiuFileReader wraps a *os.File and overrides Read with CSI u translation.
@@ -425,6 +430,10 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 				return 1, nil
 			}
 			// More bytes incoming — loop to bundle them with the ESC.
+			continue
+		}
+		if c.yieldEmpty {
+			return 0, nil
 		}
 	}
 }

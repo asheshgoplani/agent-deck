@@ -81,6 +81,49 @@ func SnapshotPaneProcesses(inst *Instance) []int {
 	return out
 }
 
+// liveOnAccount reports whether the session's own Claude is running on the
+// account config dir accountDir: its pane exists, and every top-level Claude
+// process under it carrying the session's id runs on that account (directly
+// or through a worker-scratch mirror). It waits briefly, since the pane's
+// shell needs a moment to exec Claude. Used to tell a start that failed from
+// one that reported an error while the session came up anyway.
+func liveOnAccount(inst *Instance, accountDir string) bool {
+	if inst == nil || accountDir == "" {
+		return false
+	}
+	procs := NewHostSettleProcReader()
+	if procs == nil {
+		return false
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		if attempt > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		pids := SnapshotPaneProcesses(inst)
+		if len(pids) == 0 {
+			continue
+		}
+		cmds, err := procs.Commands()
+		if err != nil {
+			return false
+		}
+		checked, agreed := 0, 0
+		for _, pid := range pids {
+			if procs.Env(pid, "AGENTDECK_INSTANCE_ID") != inst.ID || !settleClaudeCommand(cmds[pid].Args) || settleUnderClaude(cmds, pid, pids[0]) {
+				continue
+			}
+			checked++
+			if settleRunsOnAccount(procs.Env(pid, "CLAUDE_CONFIG_DIR"), accountDir) {
+				agreed++
+			}
+		}
+		if checked > 0 {
+			return agreed == checked
+		}
+	}
+	return false
+}
+
 // hostProcReader reads the live process table: /proc on Linux, ps on macOS.
 type hostProcReader struct {
 	cmds procowner.CommandReader

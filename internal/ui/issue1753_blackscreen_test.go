@@ -227,7 +227,7 @@ func TestIssue1753_AttachSessionNilReturnLeavesFlagClear(t *testing.T) {
 }
 
 // TestIssue1753_AllExecCommandsClearFlagInRun is the source-level guard for the
-// wiring: every tea.Exec call site in home.go that sets isAttaching must hand
+// wiring: every exec call site (execHoldingInput, #2692) in home.go that sets isAttaching must hand
 // the clear to the command's onExit (run while the loop is parked), not only to
 // the ExecCallback (run on its own goroutine after the loop resumed).
 func TestIssue1753_AllExecCommandsClearFlagInRun(t *testing.T) {
@@ -238,10 +238,10 @@ func TestIssue1753_AllExecCommandsClearFlagInRun(t *testing.T) {
 	text := string(src)
 
 	for _, cmdType := range []string{
-		"tea.Exec(attachCmd{",
-		"tea.Exec(attachWindowCmd{",
-		"tea.Exec(remoteAttachCmd{",
-		"tea.Exec(remoteCreateAndAttachCmd{",
+		"execHoldingInput(attachCmd{",
+		"execHoldingInput(attachWindowCmd{",
+		"execHoldingInput(remoteAttachCmd{",
+		"execHoldingInput(remoteCreateAndAttachCmd{",
 	} {
 		idx := 0
 		found := false

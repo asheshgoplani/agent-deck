@@ -12847,7 +12847,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			termSession := &tmux.Session{Name: tmuxName}
 			h.isAttaching.Store(true)
-			return h, tea.Exec(attachCmd{
+			return h, execHoldingInput(attachCmd{
 				session: termSession,
 				opts:    tmux.AttachOptions{DetachByte: h.detachByte()},
 				onExit:  func() { h.isAttaching.Store(false) },
@@ -13696,7 +13696,7 @@ func (h *Home) attachSelectedLegacy() tea.Cmd {
 			}
 		}
 		h.isAttaching.Store(true)
-		return tea.Exec(attachWindowCmd{
+		return execHoldingInput(attachWindowCmd{
 			session:     tmuxSess,
 			windowIndex: item.WindowIndex,
 			detachByte:  h.detachByte(),
@@ -18462,7 +18462,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			_ = session.WriteTUIAttach(db, session.TUIAttach{Socket: tmuxSess.SocketName, ClientPID: pid})
 		}
 	}
-	return tea.Exec(attachCmd{
+	return execHoldingInput(attachCmd{
 		session: tmuxSess,
 		opts:    opts,
 		result:  res,
@@ -18732,7 +18732,7 @@ func (h *Home) createRemoteSessionWithOptions(remoteName string, opts session.Re
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
 	var createdID string
-	return tea.Exec(remoteCreateAndAttachCmd{
+	return execHoldingInput(remoteCreateAndAttachCmd{
 		runner: runner, opts: opts, createCtx: h.ctx, created: &createdID,
 		// Clear the flag inside Run(), before Bubble Tea restores the terminal
 		// and resumes the loop (#1753); the callback below is only the belt for
@@ -19126,7 +19126,7 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 		}
 	}
 	h.isAttaching.Store(true)
-	return tea.Exec(remoteAttachCmd{
+	return execHoldingInput(remoteAttachCmd{
 		runner:    runner,
 		sessionID: sessionID,
 		// Clear the flag inside Run() (#1753) — see attachCmd.onExit. The

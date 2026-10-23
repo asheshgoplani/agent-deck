@@ -153,6 +153,48 @@ func TestStore_Retention(t *testing.T) {
 	}
 }
 
+// boundaryDayStart returns 00:00:00 UTC of the day that is `days` days before
+// now. It is older than the rolling cutoff datetime('now', '-<days> days') but
+// on the same calendar date, which is where an RFC3339 'T' separator compared
+// as text against SQLite's ' ' separator wrongly sorts it inside the window.
+func boundaryDayStart(t *testing.T, days int) time.Time {
+	t.Helper()
+	now := time.Now().UTC()
+	if now.Sub(todayStartUTC()) < 2*time.Second {
+		t.Skip("too close to UTC midnight for a same-date boundary event")
+	}
+	d := now.AddDate(0, 0, -days)
+	return time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func TestStore_PurgeOlderThan_DeletesBoundaryDayEvent(t *testing.T) {
+	s := testStore(t)
+	_ = s.WriteCostEvent(costs.CostEvent{ID: "edge", SessionID: "s1", Timestamp: boundaryDayStart(t, 90), Model: "m", CostMicrodollars: 10000})
+	_ = s.WriteCostEvent(costs.CostEvent{ID: "new", SessionID: "s1", Timestamp: time.Now(), Model: "m", CostMicrodollars: 20000})
+
+	deleted, err := s.PurgeOlderThan(90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1 (event older than 90 days on the boundary date kept)", deleted)
+	}
+}
+
+func TestStore_ProjectedMonthly_ExcludesBoundaryDayEvent(t *testing.T) {
+	s := testStore(t)
+	_ = s.WriteCostEvent(costs.CostEvent{ID: "edge", SessionID: "s1", Timestamp: boundaryDayStart(t, 7), Model: "m", CostMicrodollars: 7_000_000})
+	_ = s.WriteCostEvent(costs.CostEvent{ID: "new", SessionID: "s1", Timestamp: time.Now(), Model: "m", CostMicrodollars: 700_000})
+
+	got, err := s.ProjectedMonthly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(700_000 / 7 * 30); got != want {
+		t.Errorf("ProjectedMonthly = %d, want %d (event older than 7 days counted)", got, want)
+	}
+}
+
 func TestFormatUSD(t *testing.T) {
 	tests := []struct {
 		input int64
@@ -412,5 +454,35 @@ func TestStore_TotalLastMonth_TwoMonthsAgoExcluded(t *testing.T) {
 	summary, _ := s.TotalLastMonth()
 	if summary.TotalCostMicrodollars != 0 {
 		t.Errorf("two months ago: last-month total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+// TestStore_TotalThisWeek_HandlesMondayBoundary pins the clock to a Monday and
+// verifies "this week" starts at that Monday, not the previous one. SQLite's
+// `date('now', 'weekday 1', '-7 days')` is a no-op-then-minus-7 on Monday, so
+// it reached back to the prior Monday and also ignored the injected clock.
+func TestStore_TotalThisWeek_HandlesMondayBoundary(t *testing.T) {
+	s := testStore(t)
+	monday := time.Date(2025, 11, 10, 12, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return monday })
+
+	events := []costs.CostEvent{
+		// Previous Wednesday: last week, must be excluded.
+		{ID: "evt-prev-wed", SessionID: "s1", Timestamp: time.Date(2025, 11, 5, 12, 0, 0, 0, time.UTC), Model: "claude-sonnet-4-6", CostMicrodollars: 70000},
+		// This Monday morning: this week.
+		{ID: "evt-this-mon", SessionID: "s1", Timestamp: time.Date(2025, 11, 10, 9, 0, 0, 0, time.UTC), Model: "claude-sonnet-4-6", CostMicrodollars: 5000},
+	}
+	for _, ev := range events {
+		if err := s.WriteCostEvent(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	summary, err := s.TotalThisWeek()
+	if err != nil {
+		t.Fatalf("TotalThisWeek: %v", err)
+	}
+	if summary.TotalCostMicrodollars != 5000 || summary.EventCount != 1 {
+		t.Errorf("Monday UTC: this-week total = %d (%d events), want 5000 (1 event)", summary.TotalCostMicrodollars, summary.EventCount)
 	}
 }

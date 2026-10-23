@@ -66,10 +66,10 @@ func (s *Store) TotalToday() (CostSummary, error) {
 	return s.querySum(string(where))
 }
 
-// TotalThisWeek returns this week's total costs (Monday start).
+// TotalThisWeek returns this week's total costs (Monday start), computed from
+// the injected clock like TotalLastWeek so the two windows meet at Monday.
 func (s *Store) TotalThisWeek() (CostSummary, error) {
-	where, _ := costPeriodWhere("week")
-	return s.querySum(string(where))
+	return s.querySum(`WHERE timestamp >= ?`, s.thisMonday().Format(time.RFC3339))
 }
 
 // TotalThisMonth returns this month's total costs.
@@ -91,13 +91,18 @@ func (s *Store) TotalYesterday() (CostSummary, error) {
 // is a no-op on Monday and shifts the window by 7 days, producing the
 // week-before-last instead of last week (#932).
 func (s *Store) TotalLastWeek() (CostSummary, error) {
-	now := s.now().UTC()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	daysSinceMonday := (int(today.Weekday()) + 6) % 7 // Mon=0..Sun=6
-	thisMonday := today.AddDate(0, 0, -daysSinceMonday)
+	thisMonday := s.thisMonday()
 	lastMonday := thisMonday.AddDate(0, 0, -7)
 	return s.querySum(`WHERE timestamp >= ? AND timestamp < ?`,
 		lastMonday.Format(time.RFC3339), thisMonday.Format(time.RFC3339))
+}
+
+// thisMonday returns 00:00 UTC of the current ISO week's Monday.
+func (s *Store) thisMonday() time.Time {
+	now := s.now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	daysSinceMonday := (int(today.Weekday()) + 6) % 7 // Mon=0..Sun=6
+	return today.AddDate(0, 0, -daysSinceMonday)
 }
 
 // TotalLastMonth returns the prior calendar month's total costs.
@@ -195,12 +200,13 @@ func (s *Store) TotalByDateRange(from, to time.Time) ([]DailyCost, error) {
 }
 
 // ProjectedMonthly estimates monthly spend based on rolling 7-day average.
+// Stored timestamps are RFC3339; normalize before comparing with SQLite datetime.
 func (s *Store) ProjectedMonthly() (int64, error) {
 	var total sql.NullInt64
 	err := s.db.QueryRow(`
 		SELECT SUM(cost_microdollars)
 		FROM cost_events
-		WHERE timestamp >= datetime('now', '-7 days')`).Scan(&total)
+		WHERE datetime(timestamp) >= datetime('now', '-7 days')`).Scan(&total)
 	if err != nil {
 		return 0, err
 	}
@@ -212,10 +218,11 @@ func (s *Store) ProjectedMonthly() (int64, error) {
 }
 
 // PurgeOlderThan deletes events older than the given number of days. Returns count deleted.
+// Stored timestamps are RFC3339; normalize before comparing with SQLite datetime.
 func (s *Store) PurgeOlderThan(days int) (int64, error) {
 	result, err := s.db.Exec(`
 		DELETE FROM cost_events
-		WHERE timestamp < datetime('now', ? || ' days')`,
+		WHERE datetime(timestamp) < datetime('now', ? || ' days')`,
 		fmt.Sprintf("-%d", days))
 	if err != nil {
 		return 0, err
