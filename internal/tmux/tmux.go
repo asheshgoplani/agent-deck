@@ -821,37 +821,8 @@ func detectToolFromCommand(command string) string {
 
 	fields, valid := shellwords.Split(cmdLower)
 	if valid {
-		base := shellwords.ExecutableBase(fields)
-		switch base {
-		case "claude":
-			return "claude"
-		case "gemini":
-			return "gemini"
-		case "opencode", "opencode2", "open-code":
-			return "opencode"
-		case "codex":
-			return "codex"
-		case "copilot":
-			return "copilot"
-		case "crush":
-			return "crush"
-		case "muse":
-			return "muse"
-		case "cursor":
-			return "cursor"
-		case "agent":
-			// Standalone Cursor Agent CLI binary (~/.local/bin/agent).
-			return "cursor"
-		case "hermes":
-			return "hermes"
-		case "dsh":
-			// DeepSeek Harness. The binary is `dsh`; the agent-deck tool is
-			// named for the vendor.
-			return "deepseek"
-		case "pi":
-			return "pi"
-		case "omp", "oh-my-pi":
-			return "omp"
+		if tool := toolForExecutable(shellwords.ExecutableBase(fields)); tool != "" {
+			return tool
 		}
 		if isOMPCommand(fields) {
 			return "omp"
@@ -901,6 +872,43 @@ func detectToolFromCommand(command string) string {
 	}
 }
 
+// toolForExecutable returns the tool that an executable basename starts, or ""
+// when the basename names no tool.
+func toolForExecutable(base string) string {
+	switch base {
+	case "claude":
+		return "claude"
+	case "gemini":
+		return "gemini"
+	case "opencode", "opencode2", "open-code":
+		return "opencode"
+	case "codex":
+		return "codex"
+	case "copilot":
+		return "copilot"
+	case "crush":
+		return "crush"
+	case "muse":
+		return "muse"
+	case "cursor":
+		return "cursor"
+	case "agent":
+		// Standalone Cursor Agent CLI binary (~/.local/bin/agent).
+		return "cursor"
+	case "hermes":
+		return "hermes"
+	case "dsh":
+		// DeepSeek Harness. The binary is `dsh`; the agent-deck tool is
+		// named for the vendor.
+		return "deepseek"
+	case "pi":
+		return "pi"
+	case "omp", "oh-my-pi":
+		return "omp"
+	}
+	return ""
+}
+
 // setupCommands are what agent-deck runs around a tool launch: cd -- <project>,
 // env files ([ -f … ] && source …), unset and export of its variables, the
 // per-session directory (mkdir), and the exit-receipt trailer (umask, printf,
@@ -915,6 +923,9 @@ var setupCommands = map[string]bool{
 // tool. #2683 put `unset CLAUDE_JOB_DIR` into every hook-status tool's chain,
 // so the substring fallback in detectToolFromCommand read every pi, codex, and
 // gemini launch as claude. A command that does not parse is returned unchanged.
+//
+// A command whose own executable is a tool is that tool's launch, so a shell in
+// its arguments (`codex exec bash -c '...'`) is not expanded.
 func launchCommands(command string) string {
 	commands, ok := shellwords.Commands(command)
 	if !ok {
@@ -924,6 +935,10 @@ func launchCommands(command string) string {
 	for _, cmd := range commands {
 		words, valid := shellwords.Split(cmd)
 		if !valid {
+			kept = append(kept, cmd)
+			continue
+		}
+		if toolForExecutable(shellwords.ExecutableBase(words)) != "" {
 			kept = append(kept, cmd)
 			continue
 		}
@@ -942,7 +957,9 @@ func launchCommands(command string) string {
 
 // shellScript returns the script of a `<shell> -c <script>` command wherever
 // the shell appears in it: the exit-receipt wrapper runs the launch chain as
-// `bash -c '<chain>'; code=$?; …`, and an exec prefix may come before it.
+// `bash -c '<chain>'; code=$?; …`, an exec prefix may come before it, and a
+// wrapper that puts a program in front of {command} receives the chain as
+// `<program> bash -c '<chain>'` (substituteWrapperCommand).
 func shellScript(words []string) (string, bool) {
 	for i := 0; i+2 < len(words); i++ {
 		switch filepath.Base(words[i]) {

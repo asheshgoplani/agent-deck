@@ -50,6 +50,42 @@ func TestDetectToolFromCommand_LaunchChain(t *testing.T) {
 			command: `cd -- /src/claude && unset CLAUDE_JOB_DIR`,
 			want:    "",
 		},
+		{
+			name:    "exec-prefixed exit-receipt wrapper",
+			command: `exec bash -c 'cd -- /src && unset CLAUDE_JOB_DIR && pi --continue'; code=$?; exit "$code"`,
+			want:    "pi",
+		},
+		// A wrapper that puts a program in front of {command} receives the
+		// chain as `<program> bash -c '<chain>'` (substituteWrapperCommand), and
+		// that shell is still expanded.
+		{
+			name:    "program-prefix wrapper around the chain",
+			command: `nice bash -c 'cd -- /src && unset CLAUDE_JOB_DIR && pi --continue'`,
+			want:    "pi",
+		},
+		// A shell named in the tool's own arguments is not a wrapper around it.
+		{
+			name:    "codex running bash -c in its arguments",
+			command: launchChainSetup + `export AGENTDECK_IDENTITY_FILE=/rt/identity.md && codex exec bash -c 'echo claude'`,
+			want:    "codex",
+		},
+		// A command-replacing --wrapper can put exec, env and its options in
+		// front of the tool; they are not the tool.
+		{
+			name:    "codex through an exec env wrapper",
+			command: launchChainSetup + `export AGENTDECK_IDENTITY_FILE=/rt/identity.md && exec env -u TELEGRAM_STATE_DIR -u CLAUDE_JOB_DIR codex --yolo -c 'developer_instructions="spawn a child with -c claude; see CLAUDE.md"'`,
+			want:    "codex",
+		},
+		{
+			name:    "codex through env options",
+			command: `env -u CLAUDE_JOB_DIR -i PATH=/bin codex --yolo -c 'developer_instructions="see CLAUDE.md"'`,
+			want:    "codex",
+		},
+		{
+			name:    "codex through command",
+			command: `command codex --yolo -c 'developer_instructions="see CLAUDE.md"'`,
+			want:    "codex",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

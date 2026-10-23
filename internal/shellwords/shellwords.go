@@ -134,20 +134,73 @@ func Commands(command string) ([]string, bool) {
 	return commands, true
 }
 
-// ExecutableBase returns the basename of the command-position word. Leading
-// env/sudo wrappers and environment assignments are skipped. A trailing slash
-// denotes a directory and is not treated as an executable.
-func ExecutableBase(words []string) string {
-	for _, word := range words {
-		if word == "env" || word == "sudo" || isAssignment(word) {
-			continue
+// CommandWords returns the words from the command-position word on. It skips
+// environment assignments and the prefixes that run the program after them,
+// together with their options: exec (-a NAME), env (-i, -u NAME, --unset NAME,
+// -C DIR, ...), command (-p), and sudo. So `exec env -u NAME codex --yolo`
+// yields [codex --yolo]. It returns nil when no command word remains.
+func CommandWords(words []string) []string {
+	for i := 0; i < len(words); {
+		switch word := words[i]; {
+		case isAssignment(word):
+			i++
+		case word == "exec":
+			i = afterOptions(words, i+1, "a", nil)
+		case word == "env":
+			i = afterOptions(words, i+1, "uCS", envLongOptionsWithValue)
+		case word == "command":
+			i = afterOptions(words, i+1, "", nil)
+		case word == "sudo":
+			i++
+		default:
+			return words[i:]
 		}
-		if strings.HasSuffix(word, "/") {
-			return ""
-		}
-		return filepath.Base(word)
 	}
-	return ""
+	return nil
+}
+
+// envLongOptionsWithValue are env's long options whose value may be the next
+// word ("--unset NAME") rather than attached ("--unset=NAME").
+var envLongOptionsWithValue = map[string]bool{"--unset": true, "--chdir": true, "--split-string": true}
+
+// afterOptions returns the index of the first word after the options that
+// start at words[i]. A short option ending in one of shortWithValue, or a long
+// option in longWithValue, takes the next word as its value. "--" ends the
+// options, and a lone "-" (env's spelling of -i) is itself an option.
+func afterOptions(words []string, i int, shortWithValue string, longWithValue map[string]bool) int {
+	for i < len(words) {
+		word := words[i]
+		switch {
+		case word == "--":
+			return i + 1
+		case word == "-":
+			i++
+		case strings.HasPrefix(word, "--"):
+			i++
+			if longWithValue[word] {
+				i++
+			}
+		case strings.HasPrefix(word, "-"):
+			i++
+			if strings.ContainsRune(shortWithValue, rune(word[len(word)-1])) {
+				i++
+			}
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// ExecutableBase returns the basename of the command-position word that
+// CommandWords finds. A trailing slash denotes a directory and is not treated
+// as an executable.
+func ExecutableBase(words []string) string {
+	words = CommandWords(words)
+	if len(words) == 0 || strings.HasSuffix(words[0], "/") {
+		return ""
+	}
+	return filepath.Base(words[0])
 }
 
 func isAssignment(word string) bool {
