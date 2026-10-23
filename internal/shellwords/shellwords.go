@@ -137,8 +137,9 @@ func Commands(command string) ([]string, bool) {
 // CommandWords returns the words from the command-position word on. It skips
 // environment assignments and the prefixes that run the program after them,
 // together with their options: exec (-a NAME), env (-i, -u NAME, --unset NAME,
-// -C DIR, ...), command (-p), and sudo. So `exec env -u NAME codex --yolo`
-// yields [codex --yolo]. It returns nil when no command word remains.
+// -C DIR, ...), command (-p), nice (-n N, -N, --adjustment N), and sudo. So
+// `exec env -u NAME codex --yolo` yields [codex --yolo]. It returns nil when no
+// command word remains.
 func CommandWords(words []string) []string {
 	for i := 0; i < len(words); {
 		switch word := words[i]; {
@@ -150,6 +151,8 @@ func CommandWords(words []string) []string {
 			i = afterOptions(words, i+1, "uCS", envLongOptionsWithValue)
 		case word == "command":
 			i = afterOptions(words, i+1, "", nil)
+		case word == "nice":
+			i = afterOptions(words, i+1, "n", niceLongOptionsWithValue)
 		case word == "sudo":
 			i++
 		default:
@@ -162,6 +165,10 @@ func CommandWords(words []string) []string {
 // envLongOptionsWithValue are env's long options whose value may be the next
 // word ("--unset NAME") rather than attached ("--unset=NAME").
 var envLongOptionsWithValue = map[string]bool{"--unset": true, "--chdir": true, "--split-string": true}
+
+// niceLongOptionsWithValue is nice's long option whose value may be the next
+// word ("--adjustment 10") rather than attached ("--adjustment=10").
+var niceLongOptionsWithValue = map[string]bool{"--adjustment": true}
 
 // afterOptions returns the index of the first word after the options that
 // start at words[i]. A short option ending in one of shortWithValue, or a long

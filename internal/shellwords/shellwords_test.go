@@ -76,8 +76,15 @@ func TestExecutableBaseSkipsLaunchPrefixes(t *testing.T) {
 		{`env - PATH=/bin pi`, "pi"},
 		{`env -- codex`, "codex"},
 		{`command -p pi --continue`, "pi"},
+		{`nice codex`, "codex"},
+		{`nice -n 10 codex`, "codex"},
+		{`nice -10 codex`, "codex"},
+		{`nice --adjustment=5 pi`, "pi"},
+		{`nice --adjustment 5 pi`, "pi"},
+		{`env -u FOO nice -n 5 codex`, "codex"},
 		{`exec`, ""},
 		{`env -u`, ""},
+		{`nice -n`, ""},
 	}
 	for _, tt := range tests {
 		words, ok := Split(tt.command)

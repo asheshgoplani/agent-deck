@@ -86,6 +86,18 @@ func TestDetectToolFromCommand_LaunchChain(t *testing.T) {
 			command: `command codex --yolo -c 'developer_instructions="see CLAUDE.md"'`,
 			want:    "codex",
 		},
+		// The documented `nice {command}` and `nice -n 10 {command}` wrappers
+		// put a program in front of the tool itself.
+		{
+			name:    "codex through nice",
+			command: `nice codex --yolo -c 'developer_instructions="see CLAUDE.md"'`,
+			want:    "codex",
+		},
+		{
+			name:    "codex through nice with an adjustment",
+			command: `nice -n 10 codex --yolo -c 'developer_instructions="see CLAUDE.md"'`,
+			want:    "codex",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
