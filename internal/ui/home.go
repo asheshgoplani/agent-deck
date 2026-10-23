@@ -16376,7 +16376,7 @@ func createSessionTool(command string) (string, string) {
 		tool = "aider"
 	case "codex":
 		tool = "codex"
-	case "opencode":
+	case "opencode", "opencode2":
 		tool = "opencode"
 	case "pi":
 		tool = "pi"

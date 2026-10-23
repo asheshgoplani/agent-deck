@@ -7,6 +7,24 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+func TestCreateSessionToolOpenCode2(t *testing.T) {
+	for _, launcher := range []string{"opencode", "opencode2"} {
+		t.Run(launcher, func(t *testing.T) {
+			tool, command := createSessionTool(launcher)
+			if tool != "opencode" || command != launcher {
+				t.Fatalf("createSessionTool(%q) = (%q, %q), want (opencode, %s)", launcher, tool, command, launcher)
+			}
+			// Follow the new-session path: canonical feature identity, selected
+			// launcher retained, correct label before the first live status poll.
+			inst := session.NewInstanceWithTool("new", t.TempDir(), tool)
+			inst.Command = command
+			if inst.DisplayToolThreadSafe() != launcher || inst.OpenCodeCommandName() != launcher {
+				t.Fatalf("new session lost launcher: display=%q picker=%q", inst.DisplayToolThreadSafe(), inst.OpenCodeCommandName())
+			}
+		})
+	}
+}
+
 func TestOpenCode2PickerModelAndEditParity(t *testing.T) {
 	d := NewNewDialog()
 	d.SetDefaultTool("opencode2")

@@ -47,6 +47,28 @@ func TestOpenCode2ConstructorAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestOpenCode2LiveDisplayRetainsLauncher(t *testing.T) {
+	isolateOpenCodeConfig(t, "opencode")
+	for _, command := range []string{"opencode2", "/nix/store/example/bin/opencode2", "env FOO=bar opencode2"} {
+		t.Run(command, func(t *testing.T) {
+			inst := NewInstanceWithTool("live", t.TempDir(), "opencode2")
+			inst.Command = command
+			// Startup and tool calls can report a shell; normal live detection
+			// returns the canonical OpenCode identity. Neither may hide the
+			// explicitly selected launcher or alter restart/status behavior.
+			for _, observed := range []string{"", "shell", "opencode", "shell", "opencode"} {
+				inst.noteObservedRuntimeLocked(observed)
+				if got := inst.DisplayToolThreadSafe(); got != "opencode2" {
+					t.Fatalf("display after observation %q = %q, want opencode2", observed, got)
+				}
+				if inst.Tool != "opencode" || inst.Command != command || inst.runtimePatternToolLocked() != "opencode" {
+					t.Fatal("live observation changed launch identity or status patterns")
+				}
+			}
+		})
+	}
+}
+
 func TestOpenCode2RegistryVisibility(t *testing.T) {
 	isolateOpenCodeConfig(t, "opencode")
 	previous := lookPathFn

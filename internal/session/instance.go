@@ -1115,10 +1115,14 @@ func (inst *Instance) ObservedTool() string {
 func (inst *Instance) DisplayToolThreadSafe() string {
 	inst.mu.RLock()
 	defer inst.mu.RUnlock()
+	tool := inst.Tool
 	if inst.observedTool != "" && inst.observedTool != "shell" {
-		return inst.observedTool
+		tool = inst.observedTool
 	}
-	return inst.Tool
+	if tool == "opencode" && inst.Tool == "opencode" && openCodeExecutableBase(inst.Command) == "opencode2" {
+		return "opencode2"
+	}
+	return tool
 }
 
 // GetAccountThreadSafe returns the stored slot, not a resolved login identity.
