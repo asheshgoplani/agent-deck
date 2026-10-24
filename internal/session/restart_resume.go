@@ -322,7 +322,7 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 		}
 		return tok, restartNewError, "Restarted, but the resumed session reports an error."
 	case string(StatusWaiting), string(StatusIdle):
-		if newAlive && !newEnd && restartTranscriptUnchanged(tok, transcript, signal) {
+		if newAlive && !newEnd && restartTurnUnchanged(tok, transcript, signal, hs) {
 			d.spendRestartToken(id)
 			return tok, restartBoot, ""
 		}
@@ -344,6 +344,23 @@ func restartTranscriptUnchanged(tok restartToken, transcript, signal string) boo
 		return tok.Transcript == transcript && noTurnSince(tok.Transcript, tok.Offset)
 	}
 	return signal != "" && signal == tok.Signal
+}
+
+// restartTurnUnchanged is restartTranscriptUnchanged with the child's hook file.
+// A settles-capable pi child's token holds its last run's key, and pi's
+// session_shutdown and the resumed pi's session_start rebuild the file with no
+// run: the flip carries no signal, and the file names the runs before it only in
+// the list it carries forward. The newest entry being the token's run is the
+// same "no new turn".
+func restartTurnUnchanged(tok restartToken, transcript, signal string, hs *HookStatus) bool {
+	if restartTranscriptUnchanged(tok, transcript, signal) {
+		return true
+	}
+	if signal != "" || tok.Transcript != "" || !strings.HasPrefix(tok.Signal, "pi-run:") ||
+		hs == nil || (hs.Settles && hs.PiRunID != "") || hs.PiOrphanCount == 0 {
+		return false
+	}
+	return piRunSignal(hs.PiOrphanRuns[hs.PiOrphanCount-1].RunID) == tok.Signal
 }
 
 // restartBootRecord is the notifier's own check (#2792) for a producer that
@@ -549,7 +566,7 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 			case string(StatusWaiting), string(StatusIdle):
 				continue // back at its prompt
 			case string(StatusRunning):
-				if !restartTranscriptUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst)) {
+				if !restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), restartHookStatus(id)) {
 					continue // back, and already on a new turn
 				}
 			}
