@@ -1,7 +1,6 @@
 package session
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -9,10 +8,11 @@ import (
 
 // A settles-capable pi child idle at its prompt has a turn signal (its last run's
 // pi-run: key), so a restart now leaves it a token (#2792), as it does a Claude or
-// Codex child. pi spells the lifecycle its own way: the old process writes
-// session_shutdown (status dead), the resumed one session_start (waiting). Both
-// rebuild the status file with no run, carrying the last run forward in
-// pi_orphan_runs, so the boot flip and the sweep must find the token's run there.
+// Codex child. The kill writes nothing (real pi 1.4.0 writes no session_shutdown
+// under respawn-pane -k); the resumed pi's session_start (waiting) is the only
+// lifecycle write. It rebuilds the status file with no run, carrying the last run
+// forward in pi_orphan_runs, so the boot flip and the sweep must find the token's
+// run there.
 
 // usePiHookFile makes the restart judge read the hook file the piWriter writes,
 // in place of pidStub's hand-made one.
@@ -23,70 +23,79 @@ func usePiHookFile(t *testing.T) {
 	t.Cleanup(func() { restartHookStatus = old })
 }
 
-// piRestart is pidStub.restart for a pi child: the token, the old pi killed (its
-// session_shutdown, stamped after the token), the new one spawned and recorded.
-// The writer's next event (the resumed pi's) comes after the spawn record.
+// piRestart is pidStub.restart for a pi child: the token, the old pi killed (it
+// writes nothing), the new one spawned and recorded. The writer's next event (the
+// resumed pi's) comes after the spawn record.
 func (st *pidStub) piRestart(f *turnTestFixture, w *piWriter, at time.Time) {
 	noteRestartToken(f.child, at)
 	st.alive[st.pane] = false
-	w.at = at
-	w.SessionShutdown()
 	st.pane += 100
 	st.alive[st.pane] = true
 	markRestartSpawned(f.child, at.Add(10*time.Millisecond))
 	w.at = at.Add(20 * time.Millisecond)
 }
 
-// An idle restart of a settles-capable pi child: the old exit is held, the resumed
-// pi's session_start at its prompt is the one info line, nothing wakes, and the
-// next run rings the parent as before.
+// An idle restart of a settles-capable pi child, through the daemon's poll: the
+// resumed pi's session_start changes the poll's key (waiting|pi-run:<A> to
+// waiting|), and that flip is the one info line; nothing wakes. A second idle
+// restart with no run between writes only another session_start, which is no
+// status edge (the key stays waiting|): no line, no wake, and the sweep retires
+// the token at the boot timeout, as an unseen boot is on main. The next run rings
+// the parent as before.
 func TestPiRestart_IdleRestartIsOneInfoLine(t *testing.T) {
-	for _, observed := range []bool{true, false} {
-		t.Run(fmt.Sprintf("observed=%v", observed), func(t *testing.T) {
-			f := newTurnTestFixture(t)
-			piChild(f)
-			st := stubRestartPIDs(t)
-			usePiHookFile(t)
-			w := newPiWriter(t, f.child.ID, true)
-			w.TurnStart("run-A")
-			f.piPoll()
-			w.TurnEnd("run-A").Settle("run-A", "entry-1")
-			f.piPoll()
-			f.wantRecords(t, "the run before the restart", 1, 1)
+	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
+	f := newTurnTestFixture(t)
+	piChild(f)
+	st := stubRestartPIDs(t)
+	usePiHookFile(t)
+	w := newPiWriter(t, f.child.ID, true)
+	w.TurnStart("run-A")
+	f.piPoll()
+	w.TurnEnd("run-A").Settle("run-A", "entry-1")
+	f.piPoll()
+	f.wantRecords(t, "the run before the restart", 1, 1)
 
-			// Each restart: the old pi exits (held), the resumed pi's session_start at
-			// its prompt is one info line, nothing wakes, the token is spent. The second
-			// restart comes before any new run, so the file it starts from is the first
-			// restart's session_start, which names no run.
-			for restart := 1; restart <= 2; restart++ {
-				st.piRestart(f, w, time.Now())
-				if _, ok := readRestartToken(f.child.ID); !ok {
-					t.Fatalf("restart %d: a settles-capable pi child idle at its prompt gets a restart token", restart)
-				}
-				f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed) // the old pi exits
-				w.SessionStart()                                                                   // the resumed pi at its prompt
-				f.bootSeen()
-				f.d.emitTurn("default", f.child, f.byID, "running", "waiting", time.Now(), observed)
-
-				added := f.inboxRecords(t)[restart:]
-				if len(added) != 1 || added[0].IsUrgent() || added[0].Text != "Restarted while idle; conversation resumed, no new turn." {
-					t.Fatalf("restart %d: want exactly the one info line, got %+v", restart, added)
-				}
-				if *f.sends != 1 {
-					t.Fatalf("restart %d: the restart wakes nobody, sends %d", restart, *f.sends)
-				}
-				if _, left := readRestartToken(f.child.ID); left {
-					t.Fatalf("restart %d: the boot spends the token", restart)
-				}
-			}
-
-			w.TurnStart("run-B")
-			f.piPoll()
-			w.TurnEnd("run-B").Settle("run-B", "entry-2")
-			f.piPoll()
-			f.wantRecords(t, "the first run after the restarts", 4, 2)
-		})
+	st.piRestart(f, w, time.Now())
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("restart 1: a settles-capable pi child idle at its prompt gets a restart token")
 	}
+	w.SessionStart() // the resumed pi at its prompt
+	f.piPoll()
+	added := f.inboxRecords(t)[1:]
+	if len(added) != 1 || added[0].IsUrgent() || added[0].Text != "Restarted while idle; conversation resumed, no new turn." {
+		t.Fatalf("restart 1: want exactly the one info line, got %+v", added)
+	}
+	if *f.sends != 1 {
+		t.Fatalf("restart 1: the restart wakes nobody, sends %d", *f.sends)
+	}
+	if _, left := readRestartToken(f.child.ID); left {
+		t.Fatalf("restart 1: the boot spends the token")
+	}
+
+	st.piRestart(f, w, time.Now())
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("restart 2: a pi child idle at a session_start gets a token from the carried run")
+	}
+	w.SessionStart()
+	f.piPoll()
+	f.wantRecords(t, "restart 2: a second session_start is no status edge", 2, 1)
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("restart 2: no flip, so the token waits for the sweep")
+	}
+	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now().Add(2*time.Minute))
+	if errs := f.recordsTo(t, "error"); len(errs) != 0 {
+		t.Fatalf("restart 2: a pi child back at its prompt gets no report, got %+v", errs)
+	}
+	if _, left := readRestartToken(f.child.ID); left {
+		t.Fatalf("restart 2: the sweep retires the token past the boot timeout")
+	}
+
+	w.TurnStart("run-B")
+	f.piPoll()
+	w.TurnEnd("run-B").Settle("run-B", "entry-2")
+	f.piPoll()
+	f.wantRecords(t, "the first run after the restarts", 3, 2)
 }
 
 // The sweep past the boot timeout: a resumed pi back at its prompt (its
@@ -178,9 +187,8 @@ func TestPiRestart_AnOrphanReplayDoesNotSpendTheToken(t *testing.T) {
 
 // The resumed pi can write its session_start before the restart records the new
 // process (the restart's post-launch tmux work and DB write come after the
-// launch). The old pi's only write after the token is its session_shutdown, so a
-// session_start after the token is the resumed pi's: back at its prompt, even
-// while the status reads running.
+// launch). The kill writes nothing, so a session_start after the token is the
+// resumed pi's: back at its prompt, even while the status reads running.
 func TestPiRestart_ASessionStartBeforeTheSpawnRecordIsBack(t *testing.T) {
 	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
 	f := newTurnTestFixture(t)
@@ -191,9 +199,8 @@ func TestPiRestart_ASessionStartBeforeTheSpawnRecordIsBack(t *testing.T) {
 	w.Run("run-A", "entry-1")
 	at := time.Now().Add(-2 * time.Minute)
 	noteRestartToken(f.child, at)
-	st.alive[st.pane] = false
+	st.alive[st.pane] = false // the kill writes nothing
 	w.at = at
-	w.SessionShutdown()
 	st.pane += 100
 	st.alive[st.pane] = true
 	w.SessionStart() // the resumed pi, before the spawn record
@@ -227,5 +234,57 @@ func TestPiRestart_ADowngradedWritersTurnEndIsNotTheBoot(t *testing.T) {
 	w.SessionStart().TurnStart("").TurnEnd("")
 	if _, v, _ := f.d.judgeRestart(f.child.ID, "", "", func() string { return "" }, "waiting", time.Now()); v == restartBoot {
 		t.Fatalf("a v3 turn_end with a carried list was judged the boot")
+	}
+}
+
+// A run that finishes in the window between the token and the kill (the
+// restarting process read a cached waiting status while pi was mid-run, so the
+// token holds that run's key), with the daemon down across its settle. Once the
+// resumed pi's session_start rebuilds the file, the run is carried and replayed
+// stamped at its turn_end, after the token. The parent never received it: it is a
+// real turn (news, one wake), not the restart's "no new turn", whichever the
+// daemon sees first.
+func TestPiRestart_ARunTheDaemonNeverSawIsDeliveredAcrossARestart(t *testing.T) {
+	for name, resumedFirst := range map[string]bool{"session_start before the daemon": true, "daemon before the session_start": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newTurnTestFixture(t)
+			piChild(f)
+			st := stubRestartPIDs(t)
+			usePiHookFile(t)
+			w := newPiWriter(t, f.child.ID, true).Age(time.Second)
+			w.TurnStart("run-A")
+			f.piPoll()
+			f.wantRecords(t, "run A running", 0, 0)
+			at := time.Now()
+			noteRestartToken(f.child, at) // the cached status reads waiting
+			if tok, ok := readRestartToken(f.child.ID); !ok || tok.Signal != piRunSignal("run-A") {
+				t.Fatalf("want a token on run A, got %+v (ok=%v)", tok, ok)
+			}
+			w.at = at
+			w.TurnEnd("run-A").Settle("run-A", "entry-1") // before the kill; the daemon is down
+			st.alive[st.pane] = false                     // the kill writes nothing
+			st.pane += 100
+			st.alive[st.pane] = true
+			markRestartSpawned(f.child, at.Add(10*time.Millisecond))
+			w.at = at.Add(20 * time.Millisecond)
+			if resumedFirst {
+				w.SessionStart()
+			}
+			f.restartDaemon()
+			f.piPoll()
+			if !resumedFirst {
+				w.SessionStart()
+				f.piPoll()
+			}
+			var runA int
+			for _, r := range f.inboxRecords(t) {
+				if r.LastOutputHash == piRunSignal("run-A") {
+					runA++
+				}
+			}
+			if runA != 1 || *f.sends != 1 {
+				t.Fatalf("run A delivered %d times (want 1), sends %d (want 1): %+v", runA, *f.sends, f.inboxRecords(t))
+			}
+		})
 	}
 }

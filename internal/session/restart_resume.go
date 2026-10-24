@@ -355,10 +355,11 @@ func restartTranscriptUnchanged(tok restartToken, transcript, signal string) boo
 }
 
 // restartTurnUnchanged is restartTranscriptUnchanged with the child's hook file.
-// A settles-capable pi child's token holds its last run's key, and pi's
-// session_shutdown and the resumed pi's session_start rebuild the file with no
-// run: the flip carries no signal, and the file names the runs before it only in
-// the list it carries forward. The newest entry being the token's run is the
+// A settles-capable pi child's token holds its last run's key. The kill writes
+// nothing (pi writes no session_shutdown under respawn-pane -k), and the resumed
+// pi's session_start, the only lifecycle write, rebuilds the file with no run:
+// the flip carries no signal, and the file names the runs before it only in the
+// list it carries forward. The newest entry being the token's run is the
 // same "no new turn".
 func restartTurnUnchanged(tok restartToken, transcript, signal string, hs *HookStatus) bool {
 	if restartTranscriptUnchanged(tok, transcript, signal) {
