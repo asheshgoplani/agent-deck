@@ -746,6 +746,42 @@ func IsValidEnvKey(key string) bool {
 	return true
 }
 
+// envKeyDisplayMax bounds how much of a rejected env name is ever shown.
+const envKeyDisplayMax = 32
+
+// EnvKeyForDisplay returns a form of an env name that is safe to put in a log
+// line or an error message even when the name is malformed. A rejected "name"
+// is often a whole KEY=VALUE or "KEY value" entry typed or parsed wrongly
+// ('API_KEY sk-…', 'export=secret'), so only the leading run of identifier
+// characters is kept, capped at envKeyDisplayMax, and everything from the
+// first other character on (an '=', a space, a quote, the value) is dropped.
+// A cut or truncated name ends in "…"; a name with no identifier prefix is
+// shown as "(invalid)". The result never contains '=' or whitespace.
+func EnvKeyForDisplay(key string) string {
+	end := 0
+	for end < len(key) {
+		c := key[end]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' {
+			end++
+			continue
+		}
+		break
+	}
+	cut := end < len(key)
+	if end > envKeyDisplayMax {
+		end = envKeyDisplayMax
+		cut = true
+	}
+	shown := key[:end]
+	if shown == "" {
+		return "(invalid)"
+	}
+	if cut {
+		shown += "…"
+	}
+	return shown
+}
+
 // telegramEnvVarsToStrip lists every TELEGRAM_* env var that the
 // Claude Code telegram plugin reads. #680 / #955 / S8 only stripped
 // TELEGRAM_STATE_DIR; #1133 broadens this to include TELEGRAM_BOT_TOKEN

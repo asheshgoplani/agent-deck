@@ -33,7 +33,11 @@ func addProjectMCPGitExclude(mcpFile string) error {
 	if _, err := exec.LookPath("git"); err != nil {
 		return nil
 	}
-	dir, err := filepath.EvalSymlinks(filepath.Dir(mcpFile))
+	absFile, err := filepath.Abs(mcpFile)
+	if err != nil {
+		return err
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(absFile))
 	if err != nil {
 		return err
 	}
@@ -44,7 +48,7 @@ func addProjectMCPGitExclude(mcpFile string) error {
 	if real, err := filepath.EvalSymlinks(top); err == nil {
 		top = real
 	}
-	rel, err := filepath.Rel(top, filepath.Join(dir, filepath.Base(mcpFile)))
+	rel, err := filepath.Rel(top, filepath.Join(dir, filepath.Base(absFile)))
 	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
 		return nil
 	}
@@ -105,15 +109,47 @@ const projectGitTimeout = 5 * time.Second
 // projectGit runs git in dir and returns its trimmed stdout. The project may
 // be a cloned or unpacked repo whose .git/config names commands, so the
 // config keys that run a program for these read-only calls are switched off.
+//
+// dir is validated (validProjectGitDir) and becomes the child's working
+// directory instead of a `-C <dir>` argument, so no caller-derived path is an
+// argv element git could parse as an option; the one repo-relative path the
+// callers pass goes only after "--".
 func projectGit(dir string, args ...string) (string, error) {
+	workDir, err := validProjectGitDir(dir)
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), projectGitTimeout)
 	defer cancel()
-	base := []string{"-C", dir, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}
-	// #nosec G204 -- "git" is a fixed binary run with an argv (no shell); dir is
-	// the session's project path; args are literal subcommands, with the one
-	// repo-relative path passed only after "--".
-	out, err := exec.CommandContext(ctx, "git", append(base, args...)...).Output()
+	argv := append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}, args...)
+	// #nosec G204 -- "git" is a fixed binary run with an argv (no shell); the
+	// working directory is a validated absolute directory; args are literal
+	// subcommands, with the one repo-relative path passed only after "--".
+	cmd := exec.CommandContext(ctx, "git", argv...)
+	cmd.Dir = workDir
+	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+// validProjectGitDir returns dir cleaned when it is an absolute path to an
+// existing directory, and an error otherwise. A relative or option-shaped
+// ("-…") value, or one holding a NUL or a line break, is never handed to git.
+func validProjectGitDir(dir string) (string, error) {
+	if dir == "" || strings.HasPrefix(dir, "-") || strings.ContainsAny(dir, "\x00\n\r") {
+		return "", fmt.Errorf("project git: unusable directory")
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("project git: directory is not absolute")
+	}
+	clean := filepath.Clean(dir)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return "", fmt.Errorf("project git: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("project git: not a directory")
+	}
+	return clean, nil
 }
 
 // gitExcludeEscape backslash-escapes characters that gitignore treats as

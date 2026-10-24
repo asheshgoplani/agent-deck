@@ -70,13 +70,13 @@ func (i *Instance) offloadInlineEnv(kind, exports string) string {
 	path, err := writeLaunchEnvFile(i.ID, kind, exports)
 	if err != nil {
 		sessionLog.Warn("launch_env_file_write_failed; inline env stays in the command line",
-			slog.String("instance_id", logging.SanitizeValue(i.ID)),
-			slog.String("error", logging.SanitizeValue(err.Error())))
+			slog.String("instance_id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(i.ID), "\n", ""), "\r", "")),
+			slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		return exports
 	}
 	launchEnvNoticeOnce.Do(func() {
 		sessionLog.Info("launch_env_offloaded: inline env values are now passed via a private 0600 file instead of the command line",
-			slog.String("dir", logging.SanitizeValue(filepath.Dir(path))))
+			slog.String("dir", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(filepath.Dir(path)), "\n", ""), "\r", "")))
 	})
 	return launchEnvSourceCommand(path)
 }
@@ -272,8 +272,8 @@ func removeLaunchEnvFilesMatching(dir, prefix, keep string, cutoff time.Time) {
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			sessionLog.Warn("launch_env_file_remove_failed",
-				slog.String("file", logging.SanitizeValue(name)),
-				slog.String("error", logging.SanitizeValue(err.Error())))
+				slog.String("file", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(name), "\n", ""), "\r", "")),
+				slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		}
 	}
 }
@@ -299,8 +299,14 @@ func launchEnvFileStem(id string) string {
 // warnInvalidEnvKey reports an env name that was dropped because it is not a
 // valid shell identifier (^[A-Za-z_][A-Za-z0-9_]*$). Such a name would be
 // spliced unquoted into `export <name>=…`, so it is never emitted.
+//
+// A rejected name can be a mis-parsed entry that still carries its value
+// ('API_KEY sk-…', 'TOKEN=…'), so only EnvKeyForDisplay's identifier prefix
+// is logged, never anything after it. Line breaks are stripped in the form
+// CodeQL models (go/log-injection).
 func warnInvalidEnvKey(source, key string) {
 	sessionLog.Warn("invalid_env_key_skipped: env names must match ^[A-Za-z_][A-Za-z0-9_]*$",
-		slog.String("source", logging.SanitizeValue(source)),
-		slog.String("key", logging.SanitizeValue(key)))
+		slog.String("source", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(source), "\n", ""), "\r", "")),
+		slog.String("key", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(EnvKeyForDisplay(key)), "\n", ""), "\r", "")),
+		slog.Int("key_len", len(key)))
 }

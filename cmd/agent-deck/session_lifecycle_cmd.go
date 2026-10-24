@@ -667,8 +667,8 @@ func handleSessionRestart(profile string, args []string) {
 	force := fs.Bool("force", false, "Restart even if the session is already healthy and fresh (bypasses issue #30 guard)")
 	all := fs.Bool("all", false, "Restart all active sessions")
 	ifIdle := fs.Bool("if-idle", false, "Restart only if the session is idle at an empty prompt, checked under the send lock (skipped otherwise); a conductor gets no recovery turn")
-	envFlags := make(envVarFlags)
-	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
+	envFlags := newEnvVarFlags()
+	fs.Var(envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session restart [id|title] [options]")
@@ -702,6 +702,7 @@ func handleSessionRestart(profile string, args []string) {
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
+	exitOnEnvFlagError(fs, envFlags)
 
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
@@ -714,7 +715,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	if *all {
-		restartAllSessions(profile, out, storage, instances, groups, envFlags)
+		restartAllSessions(profile, out, storage, instances, groups, envFlags.Map())
 		return
 	}
 
@@ -740,7 +741,7 @@ func handleSessionRestart(profile string, args []string) {
 	// scope intact) when the session is healthy and was started very
 	// recently. A watchdog racing `start` → `restart` on the same session
 	// must not tear down the fresh scope.
-	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force || len(envFlags) > 0); skip {
+	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force || len(envFlags.Map()) > 0); skip {
 		data := map[string]interface{}{
 			"success": true,
 			"skipped": true,
@@ -778,7 +779,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	// Restart the session
-	if err := inst.RestartWithEnv(envFlags); err != nil {
+	if err := inst.RestartWithEnv(envFlags.Map()); err != nil {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
 	}

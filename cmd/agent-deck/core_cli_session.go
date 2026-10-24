@@ -201,8 +201,8 @@ func cliSessionRestart(profile string, args []string) {
 	force := fs.Bool("force", false, "Restart even if the session is already healthy and fresh (bypasses issue #30 guard)")
 	all := fs.Bool("all", false, "Restart all active sessions")
 	ifIdle := fs.Bool("if-idle", false, "Restart only if the session is idle at an empty prompt, checked under the send lock (skipped otherwise); a conductor gets no recovery turn")
-	envFlags := make(envVarFlags)
-	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
+	envFlags := newEnvVarFlags()
+	fs.Var(envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session restart [id|title] [options]")
@@ -236,6 +236,7 @@ func cliSessionRestart(profile string, args []string) {
 	if err := parseCLIFlags(fs, normalizeArgs(fs, args)); err != nil {
 		exitCLI(1)
 	}
+	exitOnEnvFlagError(fs, envFlags)
 
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(jsonOutput.enabled(), quietMode)
@@ -246,7 +247,7 @@ func cliSessionRestart(profile string, args []string) {
 		Session: fs.Arg(0),
 		All:     *all,
 		Force:   *force,
-		Env:     envFlags,
+		Env:     envFlags.Map(),
 		IfIdle:  *ifIdle,
 	}, func(ev core.Event) {
 		if !human {

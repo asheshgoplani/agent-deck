@@ -20,20 +20,59 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
-// envVarFlags implements flag.Value for repeatable -env KEY=VALUE flags
-type envVarFlags map[string]string
+// envVarFlags implements flag.Value for repeatable -env KEY=VALUE flags.
+//
+// The flag package prints a rejected value verbatim ("invalid value %q for
+// flag -env"), and a malformed entry ('API_KEY sk-…' with no '=') is the
+// secret itself. So Set never rejects: it records the first problem, with no
+// value in it, and the caller reports it after parsing (exitOnEnvFlagError).
+type envVarFlags struct {
+	vals map[string]string
+	err  error
+}
+
+func newEnvVarFlags() *envVarFlags { return &envVarFlags{vals: make(map[string]string)} }
 
 func (e *envVarFlags) String() string { return "" }
+
 func (e *envVarFlags) Set(val string) error {
-	parts := strings.SplitN(val, "=", 2)
-	if len(parts) != 2 || parts[0] == "" {
-		return fmt.Errorf("invalid env format %q, expected KEY=VALUE", val)
+	if err := e.add(val); err != nil && e.err == nil {
+		e.err = err
 	}
-	if !session.IsValidEnvKey(parts[0]) {
-		return fmt.Errorf("invalid environment variable name %q", parts[0])
-	}
-	(*e)[parts[0]] = parts[1]
 	return nil
+}
+
+// add validates and stores one KEY=VALUE. Its errors name at most the key's
+// identifier prefix (session.EnvKeyForDisplay), never the value.
+func (e *envVarFlags) add(val string) error {
+	key, value, ok := strings.Cut(val, "=")
+	if !ok || key == "" {
+		return fmt.Errorf("invalid env format (key %q), expected KEY=VALUE", session.EnvKeyForDisplay(key))
+	}
+	if !session.IsValidEnvKey(key) {
+		return fmt.Errorf("invalid environment variable name %q", session.EnvKeyForDisplay(key))
+	}
+	e.vals[key] = value
+	return nil
+}
+
+// Err reports the first rejected -env entry, or nil.
+func (e *envVarFlags) Err() error { return e.err }
+
+// Map returns the accepted KEY=VALUE pairs.
+func (e *envVarFlags) Map() map[string]string { return e.vals }
+
+// exitOnEnvFlagError reports a rejected -env entry the way a flag parse error
+// is reported (message, usage, exit 2) but without echoing the value.
+func exitOnEnvFlagError(fs *flag.FlagSet, e *envVarFlags) {
+	if e == nil || e.Err() == nil {
+		return
+	}
+	fmt.Fprintf(fs.Output(), "invalid value for flag -env: %v\n", e.Err())
+	if fs.Usage != nil {
+		fs.Usage()
+	}
+	exitCLI(2)
 }
 
 // handleConductor dispatches conductor subcommands
@@ -184,8 +223,8 @@ func handleConductorSetup(profile string, args []string) {
 	sharedClaudeMD := fs.String("shared-claude-md", "", "Custom path for shared CLAUDE.md (e.g., ~/docs/conductor-shared.md)")
 	sharedPolicyMD := fs.String("shared-policy-md", "", "Custom path for shared POLICY.md (e.g., ~/docs/conductor-policy.md)")
 	envFile := fs.String("env-file", "", "Path to .env file to source before conductor starts (e.g., ~/.conductor.env)")
-	envFlags := make(envVarFlags)
-	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format (can be repeated)")
+	envFlags := newEnvVarFlags()
+	fs.Var(envFlags, "env", "Environment variable in KEY=VALUE format (can be repeated)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
@@ -245,6 +284,7 @@ func handleConductorSetup(profile string, args []string) {
 
 	name, extras, err := parseConductorSetupArgs(fs, args)
 	exitOnFlagError(err)
+	exitOnEnvFlagError(fs, envFlags)
 
 	if name == "" {
 		fmt.Fprintln(os.Stderr, "Error: conductor name is required")
@@ -591,8 +631,8 @@ func handleConductorSetup(profile string, args []string) {
 		clearOnCompact = false
 	}
 	var envMap map[string]string
-	if len(envFlags) > 0 {
-		envMap = map[string]string(envFlags)
+	if len(envFlags.Map()) > 0 {
+		envMap = envFlags.Map()
 	}
 	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, *heartbeatRulesMD, envMap, *envFile, *heartbeatIdleMinutes); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
