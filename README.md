@@ -755,17 +755,17 @@ Watchers listen for inbound events (webhooks, push notifications, GitHub events,
 
 | Type | Use case | Required flags |
 |------|----------|----------------|
-| `webhook` | Generic HTTP POST listener for any service that can fire a webhook | `--port` |
+| `webhook` | Generic HTTP POST listener for any service that can fire a webhook; requests are signed with a shared secret | `--port` (secret: generated, or `$WEBHOOK_SECRET` / `--secret-file`) |
 | `github` | GitHub repository webhooks (issues, PRs, pushes) with HMAC-SHA256 verification | `$GITHUB_WEBHOOK_SECRET` or `--secret-file` (inline `--secret` is refused) |
-| `ntfy` | [ntfy.sh](https://ntfy.sh) push-notification topics (phone / browser → conductor) | `--topic` |
-| `slack` | Slack messages via a Cloudflare Worker bridge into an ntfy topic | `--topic` |
+| `ntfy` | [ntfy.sh](https://ntfy.sh) push-notification topics (phone / browser → conductor) | `--topic` or `--random-topic` |
+| `slack` | Slack messages via a Cloudflare Worker bridge into an ntfy topic | `--topic` or `--random-topic` |
 
 ```bash
 # Create, start, test — mirrors the four examples from `agent-deck watcher --help`
 agent-deck watcher create webhook  --name my-webhook  --port 9000
 agent-deck watcher create github   --name gh-alerts   --secret-file ~/.gh-webhook-secret  # chmod 600
-agent-deck watcher create ntfy     --name phone       --topic my-private-topic
-agent-deck watcher create slack    --name team-slack  --topic my-slack-topic
+agent-deck watcher create ntfy     --name phone       --random-topic
+agent-deck watcher create slack    --name team-slack  --random-topic
 
 agent-deck watcher start  <name>
 agent-deck watcher list                # health + events/hour per watcher
@@ -785,6 +785,8 @@ Then, inside a Claude Code session started by agent-deck, ask: *"Use the watcher
 
 Safety notes:
 - The GitHub adapter enforces HMAC-SHA256 signature verification on every webhook — a missing/invalid signature drops the event.
+- `watcher create webhook` generates a random secret (or takes `$WEBHOOK_SECRET` / `--secret-file`, chmod 600), stores it in the watcher's `watcher.toml` `[source]`, and prints a signing example. Each request must carry `X-Webhook-Timestamp` (unix seconds, within 5 minutes) and `X-Webhook-Signature-256: sha256=<HMAC-SHA256 of timestamp, X-Webhook-Sender and body, joined by newlines>`, or it gets 401; the signature covers the sender that picks the routed conductor, and a replayed signature gets 409. On a loopback bind `X-Webhook-Token: <secret>` is accepted instead (replayable by local processes); on any other bind it is refused. The secret must be at least 16 bytes, and a `watcher.toml` that does not parse stops the watcher from starting. Requests with an `Origin` header (browser pages) get 403, and on a loopback bind with no secret so does any `Host` other than `localhost` / `127.0.0.1` / `[::1]`. A webhook watcher without a secret only starts on a loopback bind, and logs a WARNING.
+- On the public `https://ntfy.sh` (the default server for `ntfy` and `slack`), anyone who knows a topic can read it and post fake events to it. Use `--random-topic`, or run your own ntfy server (see [ntfy self-hosting](https://docs.ntfy.sh/install/)) with access control and pass `--server https://ntfy.example.com` plus an access token from `$NTFY_TOKEN` or `--token-file <path>` (chmod 600). The token is stored in the 0600 `watcher.toml` and sent as `Authorization: Bearer`. `watcher create` and watcher startup print a warning for a guessable topic (shorter than 16 characters, or no digit in it) on ntfy.sh without a token.
 - Events are deduplicated in SQLite by `(watcher_name, event_id)`, so retries from the sender do not double-fire the conductor.
 - Watchers keep per-adapter health in `<effective watcher data dir>/<name>/state.json`; the TUI watcher panel (press `w`) surfaces this in real time.
 

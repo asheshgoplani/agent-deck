@@ -364,9 +364,14 @@ type SlackSettings struct {
 	ListenMode string `toml:"listen_mode,omitempty"`
 
 	// AllowedUserIDs is a list of Slack user IDs authorized to use the bot.
-	// If empty, all users are allowed (backward compatible).
+	// If empty, every Slack user is refused unless AllowAllUsers is set.
 	// Get user ID from Slack: Right-click user → View profile → More → Copy member ID
 	AllowedUserIDs []string `toml:"allowed_user_ids,omitempty"`
+
+	// AllowAllUsers lets every member of the bot's Slack workspace use it when
+	// AllowedUserIDs is empty. Mentions and slash commands are then accepted
+	// only in ChannelID.
+	AllowAllUsers bool `toml:"allow_all_users,omitempty"`
 
 	// DefaultConductor controls where an unprefixed message routes (#2547).
 	//   explicit name -> that conductor is the default target

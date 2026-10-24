@@ -508,48 +508,6 @@ func TestDiscordSettings_TOML(t *testing.T) {
 
 // --- Python bridge template tests ---
 
-func TestBridgeTemplate_ContainsSlackAuthorization(t *testing.T) {
-	// Verify that the Python bridge template contains the Slack authorization code
-	template := conductorBridgePy
-
-	// Check for authorization function definition
-	if !strings.Contains(template, "def is_slack_authorized(user_id: str) -> bool:") {
-		t.Error("template should contain is_slack_authorized function definition")
-	}
-
-	// Check for allowed_users setup
-	if !strings.Contains(template, `allowed_users = config["slack"]["allowed_user_ids"]`) {
-		t.Error("template should load allowed_user_ids from config")
-	}
-
-	// Check for authorization logic
-	if !strings.Contains(template, "if not allowed_users:") {
-		t.Error("template should check if allowed_users is empty")
-	}
-	if !strings.Contains(template, "if user_id not in allowed_users:") {
-		t.Error("template should check if user_id is in allowed_users")
-	}
-
-	// Check for warning log
-	if !strings.Contains(template, `log.warning("Unauthorized Slack message from user %s", user_id)`) {
-		t.Error("template should log warning for unauthorized users")
-	}
-
-	// Check for authorization checks in handlers
-	authCheckPatterns := []string{
-		"user_id = event.get(\"user\", \"\")",                            // message/mention handlers
-		"user_id = command.get(\"user_id\", \"\")",                       // slash command handlers
-		"if not is_slack_authorized(user_id):",                           // authorization check
-		"await respond(\"⛔ Unauthorized. Contact your administrator.\")", // slash command error
-	}
-
-	for _, pattern := range authCheckPatterns {
-		if !strings.Contains(template, pattern) {
-			t.Errorf("template should contain authorization pattern: %q", pattern)
-		}
-	}
-}
-
 func TestBridgeTemplate_SlackHandlersHaveAuthorization(t *testing.T) {
 	// Verify all Slack handlers have authorization checks
 	template := conductorBridgePy
@@ -569,22 +527,6 @@ func TestBridgeTemplate_SlackHandlersHaveAuthorization(t *testing.T) {
 	for _, h := range handlers {
 		if !strings.Contains(template, h.pattern) {
 			t.Errorf("template should contain %s: %q", h.name, h.pattern)
-		}
-	}
-}
-
-func TestBridgeTemplate_ConfigLoadsAllowedUserIDs(t *testing.T) {
-	// Verify the config loading includes allowed_user_ids
-	template := conductorBridgePy
-
-	configPatterns := []string{
-		`sl_allowed_users = sl.get("allowed_user_ids", [])`,
-		`"allowed_user_ids": sl_allowed_users,`,
-	}
-
-	for _, pattern := range configPatterns {
-		if !strings.Contains(template, pattern) {
-			t.Errorf("template should contain config pattern: %q", pattern)
 		}
 	}
 }
@@ -610,7 +552,7 @@ func TestBridgeTemplate_HeartbeatScopesToConductorGroups(t *testing.T) {
 func TestBridgeTemplate_SendToConductorSupportsSingleCallWait(t *testing.T) {
 	template := conductorBridgePy
 	waitPattern := `"--wait", "--timeout", f"{response_timeout}s", "--json",`
-	noWaitPattern := `"session", "send", session, message, "--no-wait",`
+	noWaitPattern := `"session", "send", "--no-wait",`
 	oldPattern := `"session", "send", session, message, profile=profile, timeout=120`
 
 	if !strings.Contains(template, waitPattern) {
@@ -3486,7 +3428,7 @@ func TestConductorHeartbeatScript_TagsSource(t *testing.T) {
 // budget never blocks it, on the --no-wait and on the --wait send.
 func TestBridgeTemplate_ChatSendsIgnoreTheBudget(t *testing.T) {
 	for _, pattern := range []string{
-		`"session", "send", session, message, "--no-wait", "--ignore-budget",`,
+		`"session", "send", "--no-wait", "--ignore-budget",`,
 		`"--wait", "--timeout", f"{response_timeout}s", "--json", "--ignore-budget",`,
 	} {
 		if !strings.Contains(conductorBridgePy, pattern) {

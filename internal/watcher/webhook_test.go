@@ -545,10 +545,11 @@ func TestWebhook_Listen_NonJSON_RawPayload(t *testing.T) {
 
 func TestWebhook_Setup_CustomBind(t *testing.T) {
 	a := &WebhookAdapter{}
+	// A non-loopback bind needs a secret (see webhook_auth_test.go).
 	err := a.Setup(context.Background(), AdapterConfig{
 		Type:     "webhook",
 		Name:     "test",
-		Settings: map[string]string{"bind": "0.0.0.0", "port": "18461"},
+		Settings: map[string]string{"bind": "0.0.0.0", "port": "18461", "secret": webhookTestSecret},
 	})
 	if err != nil {
 		t.Fatalf("Setup: %v", err)

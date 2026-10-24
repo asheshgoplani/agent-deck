@@ -92,14 +92,29 @@ The webhook adapter runs a local HTTP server. Any service that can POST to an HT
 **Required settings:**
 - `port` (string): TCP port to listen on. Default is `"18460"`. Must be available on the local machine.
 
-**Optional settings:**
-- `bind` (string): Bind address. Default is `"127.0.0.1"` (loopback only, per security policy T-14-04). Use `"0.0.0.0"` only if the sender is remote and you understand the exposure.
+**Secret:** `secret` (string) in `[source]`. `watcher create webhook` generates one and stores it in `watcher.toml` (chmod 600), or takes it from `$WEBHOOK_SECRET` or `--secret-file <path>` (chmod 600). Never put it on the command line. The secret must be at least 16 bytes. Every request must carry `X-Webhook-Timestamp: <unix seconds>` (within 5 minutes of the watcher's clock) and `X-Webhook-Signature-256: sha256=<hex HMAC-SHA256 of timestamp + "\n" + X-Webhook-Sender + "\n" + raw body>` (sender `""` when the header is absent), or it gets 401; each signature is accepted once and a replay gets 409. On a loopback bind only, `X-Webhook-Token: <secret>` is accepted instead (it is the secret in clear and replayable by local processes; refused with 401 on any other bind). Requests with an `Origin` header get 403.
 
-**Sender key in clients.json:** Set the `X-Webhook-Sender` header from the sending service, or use the remote IP if the header is absent.
+**Optional settings:**
+- `bind` (string): Bind address. Default is `"127.0.0.1"` (loopback only). On loopback, requests must address it as `localhost`, `127.0.0.1` or `[::1]`. A non-loopback bind such as `"0.0.0.0"` only starts with a secret.
+
+**Sender key in clients.json:** Set the `X-Webhook-Sender` header from the sending service, or use the remote IP if the header is absent. The header is only trusted when the signature covers it, on a loopback token request, or from a local process when the watcher has no secret.
 
 **Create command:**
 ```
 agent-deck watcher create webhook --name <name> --port <port>
+```
+Tell the user to sign with the secret read from the `watcher.toml` path create prints, never passing it as a command argument (other local users can read process arguments), like this:
+```bash
+python3 - <<'EOF'
+import hashlib, hmac, re, time, urllib.request
+toml = open("<watcher dir>/watcher.toml").read()
+secret = re.search(r'^secret = "(.*)"$', toml, re.M).group(1).encode()
+body, sender, ts = b'{"text":"hello"}', 'my-service', str(int(time.time()))
+sig = hmac.new(secret, (ts + '\n' + sender + '\n').encode() + body, hashlib.sha256).hexdigest()
+req = urllib.request.Request('http://127.0.0.1:9000/webhook', data=body, headers={
+    'X-Webhook-Timestamp': ts, 'X-Webhook-Sender': sender, 'X-Webhook-Signature-256': 'sha256=' + sig})
+print(urllib.request.urlopen(req).status)
+EOF
 ```
 
 ### ntfy
@@ -136,7 +151,8 @@ The GitHub adapter runs a local HTTP server that receives GitHub webhook POST re
 
 **Create command:**
 ```
-agent-deck watcher create github --name <name> --secret <secret>
+GITHUB_WEBHOOK_SECRET=<secret> agent-deck watcher create github --name <name>
+# or: agent-deck watcher create github --name <name> --secret-file <chmod-600 file>
 ```
 
 ### slack
@@ -241,7 +257,7 @@ Add this entry to `${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clien
 
 Now run:
 ```
-agent-deck watcher create github --name github-myrepo --secret mysecret
+GITHUB_WEBHOOK_SECRET=mysecret agent-deck watcher create github --name github-myrepo
 ```
 
 Then start the watcher:

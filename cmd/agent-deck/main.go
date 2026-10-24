@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1644,14 +1645,19 @@ func extractAllowRepoScriptsFlag(args []string) (allow, trust bool, remaining []
 		}
 		return false, false
 	}
+	// Arguments after "--" are data (a message, say), never global flags.
+	flagArgs, rest := args, []string(nil)
+	if i := slices.Index(args, "--"); i >= 0 {
+		flagArgs, rest = args[:i], args[i:]
+	}
 	present := false
-	for _, a := range args {
+	for _, a := range flagArgs {
 		if ok, _ := isRunHooks(a); ok {
 			present = true
 		}
 	}
 	remaining = make([]string, 0, len(args))
-	for _, a := range args {
+	for _, a := range flagArgs {
 		if ok, v := isRunHooks(a); ok {
 			allow = v
 			continue
@@ -1662,7 +1668,7 @@ func extractAllowRepoScriptsFlag(args []string) (allow, trust bool, remaining []
 		}
 		remaining = append(remaining, a)
 	}
-	return allow, trust, remaining
+	return allow, trust, append(remaining, rest...)
 }
 
 // extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.

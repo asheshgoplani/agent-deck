@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -598,10 +599,20 @@ func startEngine(host HostConfig, log *slog.Logger) *Engine {
 			continue
 		}
 
+		settings, err := loadSourceSettings(row.Name)
+		if err != nil {
+			// Default settings could start a webhook unsigned: fail this
+			// watcher's Setup instead, as a reload would.
+			log.Warn("watcher_settings_invalid",
+				slog.String("watcher", row.Name),
+				slog.String("error", err.Error()))
+			adapter = settingsErrorAdapter{WatcherAdapter: adapter, err: err}
+			settings = map[string]string{}
+		}
 		adapterCfg := AdapterConfig{
 			Type:     row.Type,
 			Name:     row.Name,
-			Settings: loadSourceSettings(row.Name),
+			Settings: settings,
 		}
 		eng.RegisterAdapter(row.ID, adapter, adapterCfg, maxSilenceMinutes)
 	}
@@ -696,23 +707,36 @@ func readSourceSettings(name string) (map[string]string, error) {
 
 // loadSourceSettings reads the [source] table from
 // ~/.agent-deck/watcher/<name>/watcher.toml into a map[string]string suitable for
-// AdapterConfig.Settings. Returns an empty (non-nil) map on any error so the engine
-// falls back to per-adapter defaults instead of failing to register.
-func loadSourceSettings(name string) map[string]string {
+// AdapterConfig.Settings. A missing file or [source] table is an empty (non-nil)
+// map, so the adapter uses its defaults; a file that cannot be read or parsed
+// is an error naming it.
+func loadSourceSettings(name string) (map[string]string, error) {
 	out := map[string]string{}
 	dir, err := session.WatcherNameDir(name)
 	if err != nil {
-		return out
+		return out, nil
 	}
 	path := filepath.Join(dir, "watcher.toml")
 	var cfg struct {
 		Source map[string]string `toml:"source"`
 	}
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return out
+		if errors.Is(err, os.ErrNotExist) {
+			return out, nil
+		}
+		return nil, fmt.Errorf("cannot load %s: %w; fix the file and run: agent-deck watcher reload", path, err)
 	}
 	for k, v := range cfg.Source {
 		out[k] = v
 	}
-	return out
+	return out, nil
 }
+
+// settingsErrorAdapter is an adapter whose watcher.toml did not load: its
+// Setup fails with that error, so the watcher is listed as not running.
+type settingsErrorAdapter struct {
+	WatcherAdapter
+	err error
+}
+
+func (a settingsErrorAdapter) Setup(context.Context, AdapterConfig) error { return a.err }

@@ -1104,6 +1104,11 @@ type OpenClawSettings struct {
 	// Falls back to OPENCLAW_PASSWORD env var if not set.
 	Password string `toml:"password,omitempty"`
 
+	// AllowInsecure lets a plain ws:// GatewayURL point at a host that is not
+	// loopback or tailnet, sending the password unencrypted (same as passing
+	// --insecure to the openclaw commands). Prefer wss:// instead.
+	AllowInsecure bool `toml:"allow_insecure,omitempty"`
+
 	// AutoSync syncs OpenClaw agents as agent-deck sessions on TUI startup
 	AutoSync bool `toml:"auto_sync,omitempty"`
 

@@ -19,6 +19,7 @@ import (
 type NtfyAdapter struct {
 	server string       // ntfy server URL (e.g., "https://ntfy.sh")
 	topic  string       // topic name
+	token  string       // optional ntfy access token, sent as a Bearer header
 	client *http.Client // HTTP client for requests
 
 	lastID string     // `since` for the next subscription: last handed-on message ID or the persisted resume position
@@ -47,6 +48,7 @@ type ntfyMessage struct {
 // Settings:
 //   - "topic": required ntfy topic name
 //   - "server": ntfy server URL (default "https://ntfy.sh")
+//   - "token": optional ntfy access token for a protected topic
 func (a *NtfyAdapter) Setup(_ context.Context, config AdapterConfig) error {
 	a.topic = config.Settings["topic"]
 	if a.topic == "" {
@@ -58,6 +60,8 @@ func (a *NtfyAdapter) Setup(_ context.Context, config AdapterConfig) error {
 		a.server = "https://ntfy.sh"
 	}
 	a.server = strings.TrimRight(a.server, "/")
+	a.token = config.Settings["token"]
+	warnPublicNtfyTopic("ntfy", a.server, a.topic, a.token)
 
 	// Streaming client: no timeout on body reads (context handles cancellation).
 	a.client = &http.Client{Timeout: 0}
@@ -128,6 +132,9 @@ func (a *NtfyAdapter) streamOnce(ctx context.Context, events chan<- Event) (time
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
 	if err != nil {
 		return 0, err
+	}
+	if a.token != "" {
+		req.Header.Set("Authorization", "Bearer "+a.token)
 	}
 
 	resp, err := a.client.Do(req)
