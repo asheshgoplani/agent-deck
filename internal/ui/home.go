@@ -23214,7 +23214,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(dimStyle.Render("Remote:  ") + item.RemoteName + "\n")
 	b.WriteString(dimStyle.Render("Path:    ") + rs.Path + "\n")
 	if rs.Tool != "" {
-		b.WriteString(dimStyle.Render("Tool:    ") + rs.Tool + "\n")
+		b.WriteString(dimStyle.Render("Tool:    ") + rs.DisplayTool() + "\n")
 	}
 	if rs.Group != "" {
 		b.WriteString(dimStyle.Render("Group:   ") + rs.Group + "\n")
@@ -23533,7 +23533,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 			secondText = "idle"
 		}
 		if rs.Tool != "" {
-			secondText += " · " + strings.ToLower(rs.Tool)
+			secondText += " · " + strings.ToLower(rs.DisplayTool())
 		}
 		if !h.compactSidebar {
 			secondText += " · " + item.RemoteName
@@ -23582,7 +23582,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if selected {
 			tStyle = SessionStatusSelStyle
 		}
-		toolStr = tStyle.Render(" " + rs.Tool)
+		toolStr = tStyle.Render(" " + rs.DisplayTool())
 	}
 
 	treeConnector := "├─"
@@ -24071,7 +24071,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			return renderEmbeddedTerminal(
 				item.RemoteSession.Title,
 				item.RemoteSession.Status,
-				item.RemoteSession.Tool+" · "+item.RemoteName,
+				item.RemoteSession.DisplayTool()+" · "+item.RemoteName,
 				preview,
 				width,
 				height,
@@ -24144,7 +24144,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		return renderEmbeddedTerminal(
 			selected.Title,
 			string(selected.GetStatusThreadSafe()),
-			selected.Tool,
+			selected.DisplayToolThreadSafe(),
 			preview,
 			width,
 			height,
@@ -24241,7 +24241,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		Foreground(ColorBg).
 		Background(ColorPurple).
 		Padding(0, 1).
-		Render(selected.Tool)
+		Render(selected.DisplayToolThreadSafe())
 	groupBadge := lipgloss.NewStyle().
 		Foreground(ColorBg).
 		Background(ColorCyan).

@@ -155,8 +155,8 @@ func isExecutableFile(path string) bool {
 }
 
 // openCodeRejectsV1LaunchFlags reports whether this session's OpenCode is 2.x
-// or newer. Sandboxed and SSH sessions run a binary this host cannot see, so
-// they keep the 1.x flags.
+// or newer. The explicit opencode2 launcher is always v2, even when it cannot
+// be probed locally. Other sandboxed and SSH launchers keep the 1.x flags.
 func (i *Instance) openCodeRejectsV1LaunchFlags() bool {
 	if openCodeExecutableBase(i.openCodeForkBinary()) == "opencode2" {
 		return true

@@ -1111,7 +1111,8 @@ func (inst *Instance) ObservedTool() string {
 // DisplayToolThreadSafe is the tool to show. A foreground agent
 // wins over the configured shell so the list matches what is actually running;
 // a shell observation does not hide a configured agent, and neither value is
-// what Restart launches.
+// what Restart launches. OpenCode observations preserve the configured
+// opencode2 launcher label without changing the canonical dispatch identity.
 func (inst *Instance) DisplayToolThreadSafe() string {
 	inst.mu.RLock()
 	defer inst.mu.RUnlock()
