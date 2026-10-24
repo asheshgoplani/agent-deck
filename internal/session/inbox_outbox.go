@@ -182,7 +182,7 @@ func commitToInbox(parentSessionID string, event TransitionNotificationEvent) (s
 	}
 
 	path := InboxPathFor(parentSessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return event, inboxCommitAdded, err
 	}
 	fileLock, err := AcquireConfigFileLock(path)
@@ -435,7 +435,7 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 	if reason == "" {
 		reason = deadLetterReasonUnresolvable
 	}
-	if err := os.MkdirAll(filepath.Dir(s.missedPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.missedPath), 0o700); err != nil {
 		commsLog.Warn("dead_letter_missed_log_mkdir_failed",
 			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
@@ -466,7 +466,7 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 // across daemon processes. appended is true only for a newly installed record.
 func writeDeadLetter(event TransitionNotificationEvent) (appended bool, err error) {
 	path := DeadLetterPathFor(event.ChildSessionID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return false, err
 	}
 	fileLock, err := AcquireConfigFileLock(path)
@@ -488,7 +488,7 @@ func writeDeadLetter(event TransitionNotificationEvent) (appended bool, err erro
 	if err != nil {
 		return false, err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return false, err
 	}

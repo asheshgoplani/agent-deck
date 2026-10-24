@@ -4345,13 +4345,18 @@ func LoadUserConfig() (*UserConfig, error) {
 		return userConfigCache, nil
 	}
 
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+	info, statErr := os.Stat(configPath)
+	if os.IsNotExist(statErr) {
 		fresh := cloneDefaultUserConfig()
 		userConfigCache = &fresh
 		userConfigCacheMtime = time.Time{}
 		SetGroupSortMode(fresh.GetGroupSort())
 		userConfigCacheErr = nil
 		return userConfigCache, nil
+	}
+	if statErr == nil {
+		// LOC-8: warn (never refuse) when someone else could have written it.
+		warnUserConfigPerms(configPath, info)
 	}
 
 	var config UserConfig

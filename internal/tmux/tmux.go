@@ -1934,7 +1934,9 @@ func (s *Session) RespawnPane(command string) error {
 	// for a different process generation.
 	s.mu.Lock()
 
-	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
+	// LOC-4: the respawn command carries the session's env prelude; log the
+	// variable names only, never their values.
+	mcpLog.Debug("respawn_pane_executing", slog.Any("args", logging.RedactCommandEnvArgs(args)))
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxMutationTimeout)
 	cmd := s.tmuxCmdContext(ctx, args...)
 	output, err := commandCombinedOutput(cmd)

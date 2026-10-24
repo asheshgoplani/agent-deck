@@ -635,7 +635,7 @@ func SaveRemoteCursor(remote, parent string, c RemoteCursor) error {
 		return err
 	}
 	path := RemoteCursorPath(remote, parent)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	lock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
@@ -643,7 +643,7 @@ func SaveRemoteCursor(remote, parent string, c RemoteCursor) error {
 		return fmt.Errorf("lock cursor %s: %w", filepath.Base(path), err)
 	}
 	defer lock.Release()
-	return writeFileDurable(path, append(data, '\n'), 0o644)
+	return writeFileDurable(path, append(data, '\n'), 0o600)
 }
 
 // ListRemoteCursors returns every saved cursor, or those of one remote,

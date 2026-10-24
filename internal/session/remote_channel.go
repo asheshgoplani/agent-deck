@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 )
 
 // RemoteChannel is the local end of one persistent ssh session per remote
@@ -470,7 +472,7 @@ func (r *SSHRunner) dialRemoteAgent(ctx context.Context) (io.WriteCloser, io.Rea
 	if r.cleanChannelSocketsFn != nil {
 		r.cleanChannelSocketsFn()
 	} else {
-		_ = os.MkdirAll(sshControlDir, 0700)
+		_ = sshcontrol.Dir()
 		CleanStaleSSHSockets()
 	}
 	// Same argv construction as every other ssh exec in this file (host

@@ -662,7 +662,7 @@ func TestBuildEnvExports_SortsQuotesAndSkipsInvalidKeys(t *testing.T) {
 
 func TestBuildRestartEnvPrefix(t *testing.T) {
 	inst := &Instance{restartEnv: map[string]string{"RESTART_ONLY": "value"}}
-	if got, want := inst.buildRestartEnvPrefix(), "export RESTART_ONLY='value' && "; got != want {
+	if got, want := expandLaunchEnvSources(inst.buildRestartEnvPrefix()), "export RESTART_ONLY='value' && "; got != want {
 		t.Fatalf("buildRestartEnvPrefix() = %q, want %q", got, want)
 	}
 	inst.restartEnv = nil

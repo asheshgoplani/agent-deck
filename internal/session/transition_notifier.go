@@ -759,7 +759,7 @@ func (n *TransitionNotifier) loadState() {
 }
 
 func (n *TransitionNotifier) saveStateLocked() error {
-	if err := os.MkdirAll(filepath.Dir(n.statePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(n.statePath), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(n.state, "", "  ")
@@ -767,14 +767,14 @@ func (n *TransitionNotifier) saveStateLocked() error {
 		return err
 	}
 	tmp := n.statePath + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, n.statePath)
 }
 
 func (n *TransitionNotifier) logEvent(event TransitionNotificationEvent) {
-	if err := os.MkdirAll(filepath.Dir(n.logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(n.logPath), 0o700); err != nil {
 		return
 	}
 	line, err := json.Marshal(event)
@@ -789,7 +789,7 @@ func (n *TransitionNotifier) logEvent(event TransitionNotificationEvent) {
 // appendLogLine appends line plus a newline to the log at path, reporting
 // open, write and close failures alike.
 func appendLogLine(path string, line []byte) (err error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -815,7 +815,7 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 	n.missedSeen[key] = true
 	n.missedMu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(n.missedPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(n.missedPath), 0o700); err != nil {
 		return
 	}
 	entry := map[string]any{
@@ -892,7 +892,7 @@ func (n *TransitionNotifier) logOrphanOnce(event TransitionNotificationEvent, ch
 	if path == "" {
 		path = transitionNotifierOrphanLogPath()
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
 	entry := map[string]any{

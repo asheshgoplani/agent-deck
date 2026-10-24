@@ -38,12 +38,12 @@ func WriteHookSessionAnchor(instanceID, sessionID string) {
 		return
 	}
 	hooksDir := GetHooksDir()
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
 		return
 	}
 	path := HookSessionAnchorPath(instanceID)
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(sessionID), 0644); err != nil {
+	if err := os.WriteFile(tmpPath, []byte(sessionID), 0o600); err != nil {
 		return
 	}
 	_ = os.Rename(tmpPath, path)

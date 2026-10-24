@@ -703,6 +703,7 @@ func (s *Storage) DeleteInstanceDeferredCleanup(id string) (func(), error) {
 		if err := pruneHookArtifacts(id); err != nil {
 			storageLog.Warn("hook_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
 		}
+		removeLaunchEnvFiles(id)
 	}, nil
 }
 

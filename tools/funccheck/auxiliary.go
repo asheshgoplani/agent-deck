@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -317,14 +318,17 @@ func (s *suite) auxAccountsAndMCP() {
 }
 
 func (s *suite) auxRemote() {
-	// The CLI currently sweeps a fixed SSH control directory, outside HOME.
-	// Refuse the entire lane if any preexisting socket could be touched.
-	entries, err := os.ReadDir("/tmp/agent-deck-ssh")
-	if (err != nil && !os.IsNotExist(err)) || len(entries) > 0 {
-		for _, name := range []string{"Remote list", "Remote create", "Remote sessions", "Remote switch", "Remote cleanup"} {
-			s.unknown(name, "Exercise the synthetic SSH endpoint", "Existing or unreadable /tmp/agent-deck-ssh prevents an isolated remote check; run in the disposable Docker container")
+	// The CLI sweeps the per-user SSH control directory (and the legacy shared
+	// one when it is ours), outside HOME. Refuse the entire lane if any
+	// preexisting socket could be touched.
+	for _, dir := range []string{"/tmp/agent-deck-ssh-" + strconv.Itoa(os.Getuid()), "/tmp/agent-deck-ssh"} {
+		entries, err := os.ReadDir(dir)
+		if (err != nil && !os.IsNotExist(err)) || len(entries) > 0 {
+			for _, name := range []string{"Remote list", "Remote create", "Remote sessions", "Remote switch", "Remote cleanup"} {
+				s.unknown(name, "Exercise the synthetic SSH endpoint", "Existing or unreadable "+dir+" prevents an isolated remote check; run in the disposable Docker container")
+			}
+			return
 		}
-		return
 	}
 	const name = "funccheck-remote"
 	const profile = "funccheck_remote"

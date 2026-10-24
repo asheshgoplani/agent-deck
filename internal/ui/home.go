@@ -7376,6 +7376,11 @@ func (h *Home) forkSessionCmdWithOptions(
 					); err != nil {
 						return sessionForkedMsg{err: err, sourceID: sourceID}
 					}
+					// The jj path has no setup result to carry it, so report a
+					// skipped untrusted dir-local config here.
+					if _, notice, err := session.GetWorktreeSettingsForDirWithNotice(source.ProjectPath); err == nil && notice != "" {
+						setupWarning = formatSetupWarning(&dirLocalNoticeError{notice: notice})
+					}
 					// gitignored files are copied via git's exclude machinery; a jj
 					// repo with no git worktree root (pure jj, or a linked workspace)
 					// can't enumerate them, so tell the user instead of dropping them

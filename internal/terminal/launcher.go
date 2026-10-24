@@ -16,6 +16,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 )
 
 // ErrUnsupported is returned by OpenSessionInNewWindow on platforms that have
@@ -131,7 +133,7 @@ func MoshServerProbe(moshServer string) string {
 func MoshArgs(host, moshServer string, argv []string) []string {
 	args := []string{
 		"--experimental-remote-ip=remote",
-		"--ssh=ssh -o ControlMaster=auto -o ControlPath=" + SSHControlPath + " -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes",
+		"--ssh=ssh -o ControlMaster=auto -o ControlPath=" + sshcontrol.ControlPath() + " -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes",
 	}
 	if server := strings.TrimSpace(moshServer); server != "" {
 		args = append(args, "--server="+server)
@@ -140,20 +142,11 @@ func MoshArgs(host, moshServer string, argv []string) []string {
 	return append(args, argv...)
 }
 
-// SSHControlDir is the directory the launcher tells SSH to keep its
-// ControlMaster sockets in. internal/session aliases this as sshControlDir so
-// a remote attach launched via Shift+Enter shares the same multiplexed
-// connection as a normal in-TUI remote attach.
-const SSHControlDir = "/tmp/agent-deck-ssh"
-
-// SSHControlPath is the ControlPath template handed to ssh. It uses %C, a hex
-// SHA1 (40 chars, OpenSSH 6.7+) of the local host, remote host, port, user and,
-// on recent OpenSSH, the ProxyJump host. A template built from user, host and
-// port grows with the host name, and OpenSSH binds the master at
-// "<ControlPath>.<16 random chars>"; a socket path longer than sun_path (104
-// bytes on macOS, 108 on Linux) makes ssh exit 255. With %C the path is 60
-// bytes (77 with the bind suffix) for any host length (#2837).
-const SSHControlPath = SSHControlDir + "/%C"
+// The launcher's ControlPath comes from internal/sshcontrol, the same helper
+// internal/session uses, so a remote attach launched via Shift+Enter shares
+// the same multiplexed connection as a normal in-TUI remote attach. Its socket
+// name is %C, a fixed-length hash, so a long user@host cannot push the path
+// past the unix socket limit (#2837).
 
 // BuildAttachCommand returns the shell command string that, when executed
 // inside a fresh terminal window, attaches to the requested session.
@@ -225,7 +218,7 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 	// A remote without mosh-server attaches over ssh instead of failing with
 	// mosh's bootstrap errors. The probe reuses the ControlMaster, and both
 	// branches exec so the attach keeps the shell's pid (signals reach it).
-	probe := "ssh -n -o ControlMaster=auto -o ControlPath=" + shellQuote(SSHControlPath) +
+	probe := "ssh -n -o ControlMaster=auto -o ControlPath=" + shellQuote(sshcontrol.ControlPath()) +
 		" -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes " + shellQuote(host) + " " +
 		shellQuote(MoshServerProbe(r.MoshServer))
 	script := "if " + probe + " >/dev/null 2>&1; then exec " + strings.Join(parts, " ") + "; else exec " + sshCmd + "; fi"
@@ -241,7 +234,7 @@ func buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName string
 	b.WriteString("ssh -tt")
 	b.WriteString(" -o ControlMaster=auto")
 	b.WriteString(" -o ControlPath=")
-	b.WriteString(shellQuote(SSHControlPath))
+	b.WriteString(shellQuote(sshcontrol.ControlPath()))
 	b.WriteString(" -o ControlPersist=600")
 	b.WriteString(" ")
 	b.WriteString(shellQuote(host))

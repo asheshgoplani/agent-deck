@@ -212,7 +212,7 @@ func removeDeadLetterEntry(entry deadLetterEntry) error {
 		return nil
 	}
 	data := []byte(strings.Join(kept, "\n") + "\n")
-	if err := writeFileDurable(entry.path, data, 0o644); err != nil {
+	if err := writeFileDurable(entry.path, data, 0o600); err != nil {
 		return err
 	}
 	if managesInboxCache {

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/asheshgoplani/agent-deck/internal/termtext"
@@ -45,8 +46,9 @@ const sshWaitDelay = 100 * time.Millisecond
 // few seconds even on a saturated master, and racing it only adds a login.
 const sshMuxFallbackGrace = 8 * time.Second
 
-// sshControlDir is the directory for SSH ControlMaster sockets.
-const sshControlDir = terminal.SSHControlDir
+// SSH ControlMaster sockets live in the per-user directory owned by
+// internal/sshcontrol (/tmp/agent-deck-ssh-<uid>, verified private on every
+// use) rather than the old shared /tmp/agent-deck-ssh.
 
 // staleSocketProbeTimeout bounds the per-socket liveness dial in
 // CleanStaleSSHSockets. It is deliberately short: a healthy master answers a
@@ -54,8 +56,8 @@ const sshControlDir = terminal.SSHControlDir
 // that does not connect within this window is treated as unreachable.
 const staleSocketProbeTimeout = 250 * time.Millisecond
 
-// CleanStaleSSHSockets removes orphaned SSH ControlMaster sockets from
-// sshControlDir (#1421). When an SSH master process dies unexpectedly (remote
+// CleanStaleSSHSockets removes orphaned SSH ControlMaster sockets from the
+// control directory (#1421). When an SSH master process dies unexpectedly (remote
 // agent-deck update restarts sshd, network drop, remote reboot), its
 // ControlPath socket file is left behind on disk with no process listening on
 // it. Because agent-deck uses ControlMaster=auto, the NEXT ssh invocation tries
@@ -74,13 +76,20 @@ const staleSocketProbeTimeout = 250 * time.Millisecond
 // leaving a socket in place is strictly better than blocking the caller.
 // Non-socket files in the directory are ignored.
 func CleanStaleSSHSockets() {
-	cleanStaleSSHSocketsIn(sshControlDir)
+	if dir := sshcontrol.Dir(); dir != "" {
+		cleanStaleSSHSocketsIn(dir)
+	}
+	// Masters started by an older release still sit in the shared legacy
+	// directory. Sweep their stale sockets only when that directory is ours:
+	// another user's directory is never read or written.
+	if sshcontrol.OwnedByCurrentUser(sshcontrol.LegacyDir) {
+		cleanStaleSSHSocketsIn(sshcontrol.LegacyDir)
+	}
 }
 
 // cleanStaleSSHSocketsIn is the dir-parameterized core of CleanStaleSSHSockets,
 // split out so tests can exercise the probe/remove logic against a temp dir
-// instead of the process-global /tmp/agent-deck-ssh (which a live agent-deck
-// shares).
+// instead of the per-user control directory (which a live agent-deck shares).
 func cleanStaleSSHSocketsIn(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -265,7 +274,7 @@ func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteClo
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	remoteCmd := r.buildRemoteCommand(args...)
 	sshArgs := r.sshBaseArgs(remoteCmd)
@@ -322,7 +331,7 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	readOnly := remoteVerbReadOnly(args)
 	remoteCmd := r.buildRemoteCommand(args...)
@@ -648,7 +657,7 @@ func (r *SSHRunner) attachCommand(args ...string) (*exec.Cmd, string, error) {
 	default:
 		return nil, "", fmt.Errorf("remote %q has unknown transport %q (use \"ssh\" or \"mosh\")", r.name, r.transport)
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 	// #nosec G204 -- fixed binary; the host was validated above and the
 	// remote command is built from shellQuote'd operands.
 	return exec.Command("ssh", r.sshAttachArgs(args...)...), RemoteTransportSSH, nil
@@ -1873,7 +1882,7 @@ func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, er
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return "", "", err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	// Run uname on the remote to detect OS and machine architecture
 	sshArgs := r.sshBaseArgs("uname -s -m")
@@ -1929,7 +1938,7 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 
 	sshArgs := r.sshBaseArgs(remoteCmd)
 	cmd := newSSHCommand(ctx, sshArgs...)
@@ -1986,7 +1995,7 @@ func (r *SSHRunner) runWithStdinFor(ctx context.Context, timeout time.Duration, 
 	if err := ValidateSSHHost(r.Host); err != nil {
 		return nil, err
 	}
-	_ = os.MkdirAll(sshControlDir, 0700)
+	_ = sshcontrol.Dir()
 	return r.runExec(timeoutCtx, remoteCmd, stdin, remoteVerbReadOnly(args))
 }
 

@@ -58,7 +58,9 @@ func (i *Instance) buildEnvSourceCommand() string {
 	}
 	if config == nil {
 		if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
-			sources = append(sources, restartEnv)
+			sources = append(sources, i.offloadInlineEnv(launchEnvKindRestart, restartEnv))
+		} else {
+			pruneLaunchEnvKind(i.ID, launchEnvKindRestart)
 		}
 		sources = append(sources, i.telegramStripSources()...)
 		if stripExpr := claudeJobDirStripExpr(i); stripExpr != "" {
@@ -146,24 +148,26 @@ func (i *Instance) buildEnvSourceCommand() string {
 	//    would.
 	if instInvokesClaudeBinary(i) {
 		if claudeEnv := i.getClaudeInlineEnv(config); claudeEnv != "" {
-			sources = append(sources, claudeEnv)
+			sources = append(sources, i.offloadInlineEnv(launchEnvKindClaude, claudeEnv))
 		}
 	}
 
 	// 6. Inline env vars from [tools.X].env
 	if inlineEnv := i.getToolInlineEnv(); inlineEnv != "" {
-		sources = append(sources, inlineEnv)
+		sources = append(sources, i.offloadInlineEnv(launchEnvKindTool, inlineEnv))
 	}
 
 	// 7. Conductor-specific env (highest priority, overrides tool env)
 	if conductorEnv := i.getConductorEnv(ignoreMissing); conductorEnv != "" {
-		sources = append(sources, conductorEnv)
+		sources = append(sources, i.offloadInlineEnv(launchEnvKindConductor, conductorEnv))
 	}
 
 	// 8. Explicit restart overrides are applied after every configured source,
 	//    so the command-line value wins for this replacement process.
 	if restartEnv := buildEnvExports(i.restartEnv); restartEnv != "" {
-		sources = append(sources, restartEnv)
+		sources = append(sources, i.offloadInlineEnv(launchEnvKindRestart, restartEnv))
+	} else {
+		pruneLaunchEnvKind(i.ID, launchEnvKindRestart)
 	}
 
 	// 9. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
@@ -506,6 +510,12 @@ func (i *Instance) getToolInlineEnv() string {
 	// Build export statements with single-quote escaping
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
+		if !IsValidEnvKey(k) {
+			// LOC-4: the key is spliced into `export <key>=…` unquoted, so a
+			// name like "A=1; cmd; B" would run cmd. Never emit it.
+			warnInvalidEnvKey("tools."+i.Tool+".env", k)
+			continue
+		}
 		v := def.Env[k]
 		// Escape single quotes: replace ' with '\'' (end quote, escaped quote, start quote)
 		escaped := strings.ReplaceAll(v, "'", "'\\''")
@@ -531,6 +541,7 @@ func buildEnvExports(env map[string]string) string {
 	exports := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if !IsValidEnvKey(key) {
+			warnInvalidEnvKey("restart env", key)
 			continue
 		}
 		escaped := strings.ReplaceAll(env[key], "'", "'\\''")
@@ -544,7 +555,7 @@ func (i *Instance) buildRestartEnvPrefix() string {
 	if exports == "" {
 		return ""
 	}
-	return exports + " && "
+	return i.offloadInlineEnv(launchEnvKindRestart, exports) + " && "
 }
 
 // getClaudeInlineEnv returns shell export statements for the merged
@@ -582,6 +593,7 @@ func (i *Instance) getClaudeInlineEnv(config *UserConfig) string {
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
 		if !IsValidEnvKey(k) {
+			warnInvalidEnvKey("groups/conductors claude env", k)
 			continue // skip invalid env var names
 		}
 		escaped := strings.ReplaceAll(merged[k], "'", "'\\''")
@@ -706,6 +718,7 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 		sort.Strings(keys)
 		for _, k := range keys {
 			if !IsValidEnvKey(k) {
+				warnInvalidEnvKey("conductor "+name+" meta.json env", k)
 				continue // skip invalid env var names
 			}
 			parts = append(parts, fmt.Sprintf("export %s='%s'", k, strings.ReplaceAll(meta.Env[k], "'", "'\\''")))

@@ -67,7 +67,7 @@ var inboxLockWait = 10 * time.Second
 // the bounded wait. Callers must not hold consumedTurnsMu or inboxWriteMu.
 func acquireInboxLock(parentID string) (*ConfigFileLock, error) {
 	path := InboxPathFor(parentID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	lock, err := AcquireConfigFileLockTimeout(path, inboxLockWait)
@@ -126,7 +126,7 @@ func saveInboxConsumeMarker(parentID string, generation uint64) error {
 	if err != nil {
 		return err
 	}
-	return writeFileDurable(inboxConsumeMarkerPathFor(parentID), raw, 0o644)
+	return writeFileDurable(inboxConsumeMarkerPathFor(parentID), raw, 0o600)
 }
 
 func consumedLedgerGeneration(consumed map[string]int64) uint64 {
@@ -273,7 +273,7 @@ func saveConsumedTurnsLocked(parentID string, m map[string]int64) error {
 	// Audit B1: the consumed ledger is the exactly-once dedup table; it MUST be
 	// durably on disk (fsync) before the WAL is dropped, or a crash could both
 	// forget the record was consumed AND lose the staged copy.
-	return writeFileDurable(path, data, 0o644)
+	return writeFileDurable(path, data, 0o600)
 }
 
 // DrainInboxForParent drains the parent's durable outbox and returns the
@@ -505,7 +505,7 @@ func writeInflightLocked(parentID string, events []TransitionNotificationEvent) 
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
-	return writeFileDurable(inboxInflightPathFor(parentID), []byte(buf.String()), 0o644)
+	return writeFileDurable(inboxInflightPathFor(parentID), []byte(buf.String()), 0o600)
 }
 
 // removeInflightLocked drops the in-flight WAL after a drain is fully finalized.

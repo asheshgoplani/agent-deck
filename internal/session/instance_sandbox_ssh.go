@@ -17,7 +17,7 @@ import (
 	"al.essio.dev/pkg/shellescape"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
-	"github.com/asheshgoplani/agent-deck/internal/terminal"
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -93,8 +93,8 @@ func (i *Instance) wrapForSSH(command string) string {
 		return command
 	}
 
-	// Ensure ControlMaster socket directory exists
-	_ = os.MkdirAll(sshControlDir, 0700)
+	// Ensure the per-user ControlMaster socket directory exists and is private.
+	controlPath := sshcontrol.ControlPath()
 
 	// remoteCmd is the shell program the REMOTE shell will run. It is quoted
 	// exactly once, by shellQuote below, when it becomes ssh's final argument.
@@ -117,7 +117,7 @@ func (i *Instance) wrapForSSH(command string) string {
 
 	return fmt.Sprintf(
 		"ssh -t -o ControlMaster=auto -o ControlPath=%s -o ControlPersist=600 %s %s",
-		terminal.SSHControlPath,
+		shellQuote(controlPath),
 		shellQuote(i.SSHHost),
 		shellQuote(remoteCmd),
 	)

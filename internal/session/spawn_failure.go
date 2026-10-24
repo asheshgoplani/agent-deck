@@ -481,7 +481,7 @@ func (i *Instance) watchForFastDeath(command string, gen uint64, wake <-chan str
 		logger.Error("spawn_died_fast",
 			slog.String("instance_id", logging.SanitizeValue(id)),
 			slog.String("tool", logging.SanitizeValue(tool)),
-			slog.String("command", logging.SanitizeValue(redactSpawnFailureDiagnostic(command))),
+			slog.String("command", logging.RedactCommandEnv(redactSpawnFailureDiagnostic(command))),
 			slog.Int64("elapsed_ms", elapsed),
 			slog.String("dying_output", logging.SanitizeValue(redactSpawnFailureDiagnostic(lastSnapshot))))
 		return

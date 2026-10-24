@@ -212,7 +212,7 @@ func (s *HTTPServer) Start() error {
 	// Create log file
 	logDir, err := agentpaths.EffectiveDataPath(filepath.Join("logs", "http-servers"), "logs")
 	if err != nil {
-		logDir = filepath.Join(os.TempDir(), "agent-deck", "logs", "http-servers")
+		logDir = fallbackLogDir("http-servers")
 	}
 	_ = os.MkdirAll(logDir, 0700)
 	s.logFile = filepath.Join(logDir, fmt.Sprintf("%s.log", s.name))

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/sshcontrol"
 )
 
 // Issue #2837: OpenSSH binds a ControlMaster at "<ControlPath>.<16 random
@@ -81,7 +83,7 @@ func assertControlPathsFit(t *testing.T, label, emitted string, wantCount int) {
 }
 
 func TestIssue2837_ExpanderDetectsOldPattern(t *testing.T) {
-	old := SSHControlDir + "/%r@%h:%p"
+	old := sshcontrol.LegacyDir + "/%r@%h:%p"
 	got, err := expandControlPath(old, "alice", strings.Repeat("h", 62), "22")
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +113,8 @@ var (
 
 // TestIssue2837_NoHandBuiltControlPath flags any non-test Go source line that
 // builds a ControlPath from the socket directory or a %-token template instead
-// of SSHControlPath. ControlPath=none and SSHControlPath are allowed. The value
+// of sshcontrol.ControlPath(). ControlPath=none and sshcontrol.ControlPath()
+// are allowed. The value
 // may sit on the line after "ControlPath=", so the next code line is checked too.
 func TestIssue2837_NoHandBuiltControlPath(t *testing.T) {
 	for _, root := range []string{"../../internal", "../../cmd"} {
@@ -144,7 +147,7 @@ func TestIssue2837_NoHandBuiltControlPath(t *testing.T) {
 					val += " " + code[i+1]
 				}
 				if handBuiltControlPathRe.MatchString(val) {
-					t.Errorf("%s:%d builds a ControlPath by hand: %q; use SSHControlPath (#2837)", path, i+1, strings.TrimSpace(l))
+					t.Errorf("%s:%d builds a ControlPath by hand: %q; use sshcontrol.ControlPath() (#2837)", path, i+1, strings.TrimSpace(l))
 				}
 			}
 			return nil

@@ -33,7 +33,7 @@ func GetEventsDir() string {
 // Uses tmp file + rename to avoid partial reads by watchers.
 func WriteStatusEvent(event StatusEvent) error {
 	eventsDir := GetEventsDir()
-	if err := os.MkdirAll(eventsDir, 0755); err != nil {
+	if err := os.MkdirAll(eventsDir, 0o700); err != nil {
 		return fmt.Errorf("create events dir: %w", err)
 	}
 
@@ -44,7 +44,7 @@ func WriteStatusEvent(event StatusEvent) error {
 
 	filePath := filepath.Join(eventsDir, event.InstanceID+".json")
 	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, jsonData, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, jsonData, 0o600); err != nil {
 		return fmt.Errorf("write tmp event: %w", err)
 	}
 	if err := os.Rename(tmpPath, filePath); err != nil {

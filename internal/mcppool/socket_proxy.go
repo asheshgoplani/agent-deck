@@ -155,12 +155,103 @@ var dangerousEnvVars = map[string]bool{
 }
 
 // mcpSocketDir returns a user-private directory for MCP sockets instead of /tmp.
+//
+// When the data dir cannot be resolved it falls back to
+// "<TempDir>/agentdeck-<uid>" (the same path as before, so a TUI and CLI of
+// one user still meet there), but only after checking that directory is a
+// real 0700 directory we own; a planted symlink or foreign-owned directory is
+// refused in favour of a fresh private one (agentpaths.SecureTempDir).
 func mcpSocketDir() string {
 	dir, err := agentpaths.EffectiveDataPath("sockets", "sockets")
 	if err != nil {
-		return filepath.Join(os.TempDir(), fmt.Sprintf("agentdeck-%d", os.Getuid()))
+		return privateTempFallback("agentdeck")
 	}
 	return dir
+}
+
+// privateTempFallback returns agentpaths.SecureTempDir(prefix) and logs its
+// one-time notice (mode tightened, unsafe path refused).
+func privateTempFallback(prefix string) string {
+	dir, note := agentpaths.SecureTempDir(prefix)
+	if note != "" {
+		proxyLog.Warn("private_temp_dir_notice", slog.String("dir", dir), slog.String("detail", note))
+	}
+	return dir
+}
+
+// fallbackLogDir is the log directory used when the data dir is unresolvable:
+// a subdirectory of the per-user private temp dir, never a shared
+// "<TempDir>/agent-deck" another user could pre-create or symlink.
+func fallbackLogDir(sub string) string {
+	return filepath.Join(privateTempFallback("agentdeck"), "logs", sub)
+}
+
+// socketFileName is the on-disk name of an MCP's pool socket.
+func socketFileName(name string) string {
+	return fmt.Sprintf("mcp-%s.sock", name)
+}
+
+// verifyOwnedSocket checks that path is a unix socket (not a symlink) owned by
+// the current uid, inside a directory owned by the current uid that grants no
+// write access to group or other. Only such sockets are adopted: anything else
+// could be a socket another local user planted to intercept MCP traffic.
+func verifyOwnedSocket(path string) error {
+	uid := os.Getuid()
+	dir := filepath.Dir(path)
+	dfi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !dfi.IsDir() {
+		return fmt.Errorf("socket dir %s is not a directory", dir)
+	}
+	dst, ok := dfi.Sys().(*syscall.Stat_t)
+	if !ok || int(dst.Uid) != uid {
+		return fmt.Errorf("socket dir %s is not owned by uid %d", dir, uid)
+	}
+	if dfi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("socket dir %s is writable by group/other (%v)", dir, dfi.Mode().Perm())
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("%s is not a unix socket (%v)", path, fi.Mode().Type())
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != uid {
+		return fmt.Errorf("socket %s is not owned by uid %d", path, uid)
+	}
+	return nil
+}
+
+// removeStaleOwnSocket removes path only when it is this user's own socket
+// in the private dir and nothing answers on it: a live socket belongs to the
+// process serving it (a proxy adopted from another agent-deck), and one that
+// fails verification is not ours to remove.
+func removeStaleOwnSocket(path string) {
+	if verifyOwnedSocket(path) == nil && !isSocketAlive(path) {
+		_ = os.Remove(path)
+	}
+}
+
+// ExternalSocketPath returns the pool socket for mcpName when another
+// agent-deck process of this user (normally the TUI) is serving it: the socket
+// must sit in this user's private pool socket dir, be owned by this uid, and
+// accept connections. Otherwise it returns "".
+func ExternalSocketPath(mcpName string) string {
+	socketPath := filepath.Join(mcpSocketDir(), socketFileName(mcpName))
+	if err := verifyOwnedSocket(socketPath); err != nil {
+		if !os.IsNotExist(err) {
+			proxyLog.Warn("external_socket_rejected", slog.String("mcp", mcpName), slog.String("error", err.Error()))
+		}
+		return ""
+	}
+	if !isSocketAlive(socketPath) {
+		return ""
+	}
+	return socketPath
 }
 
 func NewSocketProxy(ctx context.Context, name, command string, args []string, env map[string]string) (*SocketProxy, error) {
@@ -168,10 +259,18 @@ func NewSocketProxy(ctx context.Context, name, command string, args []string, en
 
 	sockDir := mcpSocketDir()
 	_ = os.MkdirAll(sockDir, 0700)
-	socketPath := filepath.Join(sockDir, fmt.Sprintf("mcp-%s.sock", name))
+	socketPath := filepath.Join(sockDir, socketFileName(name))
 
-	// Check if socket already exists and is alive (another agent-deck instance owns it)
-	if isSocketAlive(socketPath) {
+	// Check if socket already exists and is alive (another agent-deck
+	// instance of this user owns it). A socket we do not own, or one in a
+	// directory others can write, is never reused and never unlinked: it is
+	// refused, so a live socket of this user is not removed from under it.
+	verifyErr := verifyOwnedSocket(socketPath)
+	if verifyErr != nil && !os.IsNotExist(verifyErr) {
+		cancel()
+		return nil, fmt.Errorf("refusing pool socket %s: %w", socketPath, verifyErr)
+	}
+	if verifyErr == nil && isSocketAlive(socketPath) {
 		proxyLog.Info("socket_reuse_external", slog.String("mcp", name))
 		// Return a proxy that just points to the existing socket (no process to manage).
 		// nextID and idMap zero values are ready to use without explicit initialization.
@@ -188,8 +287,10 @@ func NewSocketProxy(ctx context.Context, name, command string, args []string, en
 		}, nil
 	}
 
-	// Socket doesn't exist or is stale - remove and create fresh
-	os.Remove(socketPath)
+	// Socket doesn't exist or is our own stale one - remove and create fresh
+	if verifyErr == nil {
+		removeStaleOwnSocket(socketPath)
+	}
 
 	return &SocketProxy{
 		name:       name,
@@ -223,7 +324,7 @@ func (p *SocketProxy) Start() error {
 
 	logDir, err := agentpaths.EffectiveDataPath(filepath.Join("logs", "mcppool"), "logs")
 	if err != nil {
-		logDir = filepath.Join(os.TempDir(), "agent-deck", "logs", "mcppool")
+		logDir = fallbackLogDir("mcppool")
 	}
 	_ = os.MkdirAll(logDir, 0700)
 	p.logFile = filepath.Join(logDir, fmt.Sprintf("%s_socket.log", p.name))
@@ -605,8 +706,9 @@ func (p *SocketProxy) Stop() error {
 		os.Remove(p.socketPath)
 		proxyLog.Info("proxy_stopped", slog.String("mcp", p.name))
 	} else {
-		// Clean up external socket files on shutdown to prevent stale sockets
-		os.Remove(p.socketPath)
+		// Clean up a stale external socket file on shutdown; a live one still
+		// belongs to the agent-deck process serving it.
+		removeStaleOwnSocket(p.socketPath)
 		proxyLog.Info("external_socket_disconnected", slog.String("mcp", p.name))
 	}
 

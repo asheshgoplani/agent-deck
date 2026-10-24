@@ -46,7 +46,13 @@ func (p *Pool) Start(name, command string, args []string, env map[string]string)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if _, exists := p.proxies[name]; exists {
+	if existing, exists := p.proxies[name]; exists {
+		// A socket adopted by DiscoverExistingSockets carries no command.
+		// Record it now so RestartProxy can respawn the MCP locally if the
+		// instance that served the socket goes away.
+		if existing.command == "" && existing.mcpProcess == nil {
+			existing.command, existing.args, existing.env = command, args, env
+		}
 		return nil
 	}
 
@@ -139,7 +145,7 @@ func (p *Pool) RestartProxy(name string) error {
 	delete(p.proxies, name)
 
 	// Remove stale socket
-	os.Remove(proxy.socketPath)
+	removeStaleOwnSocket(proxy.socketPath)
 
 	// Create and start new proxy
 	newProxy, err := NewSocketProxy(p.ctx, name, proxy.command, proxy.args, proxy.env)
@@ -313,7 +319,7 @@ func (p *Pool) RestartProxyWithRateLimit(name string) error {
 	// Stop and remove old proxy
 	_ = proxy.Stop()
 	delete(p.proxies, name)
-	os.Remove(proxy.socketPath)
+	removeStaleOwnSocket(proxy.socketPath)
 
 	// Create and start new proxy
 	newProxy, err := NewSocketProxy(p.ctx, name, command, args, env)
@@ -389,11 +395,21 @@ type ProxyInfo struct {
 	Clients    int
 }
 
-// DiscoverExistingSockets scans for existing pool sockets owned by another agent-deck instance
-// and registers them so this instance can use them too. Returns count of discovered sockets.
+// legacyTmpSocketNotice fires once per process when old world-shared
+// /tmp/agentdeck-mcp-*.sock files are present: they are no longer adopted.
+var legacyTmpSocketNotice sync.Once
+
+// DiscoverExistingSockets scans this user's private pool socket dir (the one
+// NewSocketProxy creates sockets in) for live sockets served by another
+// agent-deck instance of the same user and registers them so this instance can
+// use them too. Only sockets that pass verifyOwnedSocket are adopted; the old
+// world-writable /tmp/agentdeck-mcp-*.sock locations are never trusted.
+// Returns count of discovered sockets.
 func (p *Pool) DiscoverExistingSockets() int {
-	pattern := filepath.Join("/tmp", "agentdeck-mcp-*.sock")
-	matches, err := filepath.Glob(pattern)
+	warnLegacyTmpSockets()
+
+	sockDir := mcpSocketDir()
+	matches, err := filepath.Glob(filepath.Join(sockDir, "mcp-*.sock"))
 	if err != nil {
 		poolLog.Warn("socket_scan_failed", slog.String("error", err.Error()))
 		return 0
@@ -401,19 +417,23 @@ func (p *Pool) DiscoverExistingSockets() int {
 
 	discovered := 0
 	for _, socketPath := range matches {
-		// Extract MCP name from socket path: /tmp/agentdeck-mcp-{name}.sock
+		// Extract MCP name from socket path: <sockDir>/mcp-{name}.sock
 		base := filepath.Base(socketPath)
-		if !strings.HasPrefix(base, "agentdeck-mcp-") || !strings.HasSuffix(base, ".sock") {
+		name := strings.TrimSuffix(strings.TrimPrefix(base, "mcp-"), ".sock")
+		if name == "" {
 			continue
 		}
-		name := strings.TrimPrefix(base, "agentdeck-mcp-")
-		name = strings.TrimSuffix(name, ".sock")
 
 		// Skip if we already have this MCP
 		p.mu.RLock()
 		_, exists := p.proxies[name]
 		p.mu.RUnlock()
 		if exists {
+			continue
+		}
+
+		if err := verifyOwnedSocket(socketPath); err != nil {
+			poolLog.Warn("external_socket_rejected", slog.String("mcp", name), slog.String("error", err.Error()))
 			continue
 		}
 
@@ -438,6 +458,20 @@ func (p *Pool) DiscoverExistingSockets() int {
 		poolLog.Info("discovery_complete", slog.Int("count", discovered))
 	}
 	return discovered
+}
+
+// warnLegacyTmpSockets logs, once, that legacy shared-/tmp pool sockets exist
+// and are ignored. It never connects to or removes them.
+func warnLegacyTmpSockets() {
+	legacyTmpSocketNotice.Do(func() {
+		matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "agentdeck-mcp-*.sock"))
+		if len(matches) > 0 {
+			poolLog.Warn("legacy_tmp_sockets_ignored",
+				slog.Int("count", len(matches)),
+				slog.String("detail", "shared temp-dir pool sockets are no longer adopted; pool sockets live in the per-user socket dir"),
+				slog.String("dir", mcpSocketDir()))
+		}
+	})
 }
 
 // isSocketAliveCheck checks if a Unix socket exists and is accepting connections

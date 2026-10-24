@@ -378,6 +378,9 @@ func printCredsRefreshRemoved() {
 }
 
 func main() {
+	// Must run before the first config load (initUpdateSettings below).
+	configurePermissionWarnings(os.Args[1:])
+
 	// Make bare `tmux` invocations resolve even when launched from a minimal
 	// environment (notably a `terminal-notifier -execute` notification click,
 	// whose launchd PATH omits Homebrew's /opt/homebrew/bin). Must run before any
@@ -467,6 +470,13 @@ func main() {
 	// paths print the same information themselves.
 	if len(args) > 0 && !storeRootQuietCommands[args[0]] {
 		session.WarnStoreRootDivergence(os.Stderr)
+	}
+	// LOC-8: tighten a group/other-accessible state root to 0700 once, with
+	// a stderr notice. Quiet commands (hook handlers, completion) skip it so
+	// the notice is printed by the next ordinary command instead of being
+	// swallowed.
+	if len(args) == 0 || !storeRootQuietCommands[args[0]] {
+		session.EnsureStateRootPrivate(os.Stderr)
 	}
 
 	var webEnabled bool
@@ -1533,6 +1543,17 @@ func newHeadlessAutoInstaller(exe string, homebrewManaged func() bool) *update.I
 		Interval:       session.GetUpdateSettings().GetCheckInterval(),
 		Enabled:        func() bool { return session.GetUpdateSettings().GetAutoInstall() },
 		Log:            webLog,
+	}
+}
+
+// configurePermissionWarnings sends config-file permission warnings (an
+// unsafe config.toml, a skipped dir-local config) to stderr for plain CLI
+// commands. The TUI (no subcommand, or `web`) must not write over the screen
+// and quiet commands feed other programs; both keep them in the debug log.
+func configurePermissionWarnings(rawArgs []string) {
+	_, args := extractProfileFlag(rawArgs)
+	if len(args) > 0 && !storeRootQuietCommands[args[0]] && args[0] != "web" {
+		session.SetPermissionWarningWriter(os.Stderr)
 	}
 }
 
