@@ -884,6 +884,9 @@ func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, output
 	case <-outputDone:
 	case <-time.After(50 * time.Millisecond):
 	}
+	// The terminal goes back to the TUI now: a Ctrl+V upload still in flight
+	// (remoteImagePaste.send) must not draw its notice over the dashboard.
+	output.discard()
 	return false
 }
 

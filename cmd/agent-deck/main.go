@@ -4825,15 +4825,9 @@ func mergeFlags(long, short string) string {
 	return short
 }
 
-// truncate shortens a string to max length with ellipsis
+// truncate shortens a string to max display columns with ellipsis
 func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	if max <= 3 {
-		return s[:max]
-	}
-	return s[:max-3] + "..."
+	return truncateWidth(s, max)
 }
 
 // detectTool determines the tool type from a command string.

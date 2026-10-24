@@ -953,6 +953,8 @@ func StatusString(status session.Status) string {
 		return "idle"
 	case session.StatusError:
 		return "error"
+	case session.StatusStarting:
+		return "starting"
 	case session.StatusStopped:
 		return "stopped"
 	case session.StatusQueued:

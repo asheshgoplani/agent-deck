@@ -677,6 +677,13 @@ func (m *WebMutator) CreateGroup(name, parentPath string) (string, error) {
 		return "", err
 	}
 	defer unlock()
+	// Refuse an unknown parent like the CLI does; CreateSubgroup would
+	// otherwise store an orphan "<parent>/<name>" row with no parent group.
+	if parentPath != "" {
+		if _, ok := m.h.groupTree.Groups[parentPath]; !ok {
+			return "", fmt.Errorf("parent group %q: %w", parentPath, web.ErrGroupNotFound)
+		}
+	}
 	// Seed the new-group default from [group_defaults].max_concurrent.
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
 		m.h.groupTree.DefaultMaxConcurrent = cfg.GroupDefaults.MaxConcurrent

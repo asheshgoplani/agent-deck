@@ -152,6 +152,7 @@ type SessionMutator interface {
 	// whether any updated field requires a restart to take effect. Validation
 	// errors (unknown field, invalid value) leave the session unchanged.
 	UpdateSession(sessionID string, updates map[string]string) (updatedFields []string, restartRequired bool, err error)
+	// CreateGroup returns ErrGroupNotFound when parentPath names no group.
 	CreateGroup(name, parentPath string) (string, error)
 	// RenameGroup renames the group at groupPath and returns the path the
 	// group lives at afterwards. A rename can move the group (and its

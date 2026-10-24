@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -902,13 +903,20 @@ func (s *SettingsPanel) handleTextEdit(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd,
 
 	case "backspace":
 		if len(s.textBuffer) > 0 {
-			s.textBuffer = s.textBuffer[:len(s.textBuffer)-1]
+			// Drop the whole last rune, not one byte, so non-ASCII paths stay valid UTF-8.
+			_, size := utf8.DecodeLastRuneInString(s.textBuffer)
+			s.textBuffer = s.textBuffer[:len(s.textBuffer)-size]
 		}
 
 	default:
-		// Add character
-		if len(key) == 1 {
-			s.textBuffer += key
+		// Add typed characters. msg.String() is longer than one byte for
+		// non-ASCII runes, so append the runes themselves. Alt-chords and
+		// bracketed pastes stay ignored, as before.
+		switch {
+		case msg.Type == tea.KeyRunes && !msg.Alt && !msg.Paste:
+			s.textBuffer += string(msg.Runes)
+		case msg.Type == tea.KeySpace && !msg.Alt:
+			s.textBuffer += " "
 		}
 	}
 
