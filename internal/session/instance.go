@@ -1813,9 +1813,9 @@ func resolvedProcessProfile() string {
 	return resolved
 }
 
-// ensureInteractiveShellEnv updates the already-running shell as well as
-// tmux's environment. Setting a tmux option cannot change that shell's env,
-// so the exports are typed into it.
+// interactiveShellEnv returns the NAME=value pairs (raw, unquoted) a shell
+// session's interactive shell must start with, or nil when the pane's shell
+// is not agent-deck's to set up.
 //
 // A plain shell session (tool "shell", no command) is the one kind of
 // session whose pane process gets no command prefix at all: every other
@@ -1824,39 +1824,77 @@ func resolvedProcessProfile() string {
 // AGENTDECK` in such a session was empty, on a remote and locally alike
 // (remote parity walk on g14, 2026-09-18), so a bare `agent-deck` run there
 // could not tell which session it was in, and the identity block never
-// reached it. One export line gives it the same environment; the identity
-// file is written by the agent-deck that spawns the pane, so on a remote it
-// is the remote's own. A shell session running a custom command keeps its
-// pre-existing account export only: the command already owns the pane's
-// input, and its environment comes from its own command line. A wrapper
-// (`--wrapper`, or the tool's) owns the pane the same way and already
-// carries the account export inside its `bash -c` (prepareCommand), so
-// nothing is typed at all: the line, or its Enter, would land in whatever
-// the wrapper runs (TestNativeSSHAttachLifecycle saw a receipt for an empty
-// line before it had sent anything).
-func (i *Instance) ensureInteractiveShellEnv() {
+// reached it. These pairs give it the same environment; the identity file is
+// written by the agent-deck that spawns the pane, so on a remote it is the
+// remote's own. A shell session running a custom command gets its account
+// only: its environment otherwise comes from its own command line. A wrapper
+// (`--wrapper`, or the tool's) owns the pane and already carries the account
+// export inside its `bash -c` (prepareCommand), so it gets nothing here.
+func (i *Instance) interactiveShellEnv() []string {
 	if i.Tool != "shell" || i.tmuxSession == nil || i.tmuxSession.RunCommandAsInitialProcess || i.hasEffectiveWrapper() {
-		return
+		return nil
 	}
 	plainShell := strings.TrimSpace(i.Command) == ""
-	var exports []string
+	var env []string
 	if plainShell {
-		exports = append(exports,
-			"AGENTDECK_INSTANCE_ID="+shellescape.Quote(i.ID),
-			"AGENTDECK_PROFILE="+shellescape.Quote(sessionProfileEnvValue()),
-			"AGENTDECK_TOOL="+shellescape.Quote(i.Tool),
-			"AGENTDECK_TITLE="+shellescape.Quote(identityOneLine(i.Title)))
+		env = append(env,
+			"AGENTDECK_INSTANCE_ID="+i.ID,
+			"AGENTDECK_PROFILE="+sessionProfileEnvValue(),
+			"AGENTDECK_TOOL="+i.Tool,
+			"AGENTDECK_TITLE="+identityOneLine(i.Title))
 	}
 	if i.Account != "" {
-		exports = append(exports, "AGENTDECK_ACCOUNT="+shellescape.Quote(i.Account))
+		env = append(env, "AGENTDECK_ACCOUNT="+i.Account)
 	}
 	if plainShell {
-		if identityExport := i.identityEnvExport(); identityExport != "" {
-			exports = append(exports, strings.TrimPrefix(identityExport, "export "))
+		if _, file, ok := i.ensureIdentityFile(); ok {
+			env = append(env, IdentityFileEnv+"="+file)
 		}
 	}
-	if len(exports) == 0 {
+	return env
+}
+
+// setInteractiveShellLaunchEnv hands interactiveShellEnv to tmux so the
+// pane's shell is born with it (new-session -e) and nothing is typed into
+// the pane (#2817: every new shell visibly ran a long ` export AGENTDECK_*`
+// line). It must run right before each tmuxSession.Start, after
+// RunCommandAsInitialProcess is decided; it also clears a previous spawn's
+// pairs so a restart never reuses stale ones.
+func (i *Instance) setInteractiveShellLaunchEnv() {
+	if i.tmuxSession == nil {
 		return
+	}
+	i.tmuxSession.LaunchEnv = nil
+	if i.shellEnvAtLaunch() {
+		i.tmuxSession.LaunchEnv = i.interactiveShellEnv()
+	}
+}
+
+// shellEnvAtLaunch reports whether the pane's interactive shell can be given
+// interactiveShellEnv at launch. Not on a tmux without new-session -e
+// (< 3.2), and not for an --ssh session: there the shell the user works in
+// is the remote one behind the ssh client, which a local launch environment
+// never reaches (ssh forwards no AGENTDECK_* variables).
+func (i *Instance) shellEnvAtLaunch() bool {
+	return !i.IsSSH() && tmux.SupportsLaunchEnv()
+}
+
+// ensureInteractiveShellEnv is the fallback for a shell that
+// setInteractiveShellLaunchEnv cannot reach (see shellEnvAtLaunch). A tmux
+// option cannot change a running shell's env, so the exports are typed into
+// it. Everywhere else it does nothing.
+func (i *Instance) ensureInteractiveShellEnv() {
+	if i.shellEnvAtLaunch() {
+		return
+	}
+	env := i.interactiveShellEnv()
+	if len(env) == 0 {
+		return
+	}
+	exports := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, value, _ := strings.Cut(kv, "=")
+		exports = append(exports, name+"="+shellescape.Quote(value))
 	}
 	// The leading space keeps the line out of a history that ignores
 	// space-prefixed commands (bash HISTCONTROL=ignorespace, zsh
@@ -5824,6 +5862,7 @@ func (i *Instance) Start() (startErr error) {
 		return err
 	}
 	i.retireFastDeathWatchers() // #2805
+	i.setInteractiveShellLaunchEnv()
 	if err := i.tmuxSession.Start(command); err != nil {
 		// #1580: persist the tmux-level failure so the preview / session show /
 		// lifecycle log can surface it instead of a bare "error".
@@ -6218,6 +6257,7 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		return err
 	}
 	i.retireFastDeathWatchers() // #2805
+	i.setInteractiveShellLaunchEnv()
 	if err := i.tmuxSession.Start(command); err != nil {
 		// #1580: persist the tmux-level failure (sister path to Start()).
 		i.recordTmuxStartFailure(diagnosticCommand, err)
@@ -11157,6 +11197,7 @@ func (i *Instance) restart(env map[string]string) (err error) {
 	}
 
 	i.retireFastDeathWatchers() // #2805
+	i.setInteractiveShellLaunchEnv()
 	if err := i.tmuxSession.Start(command); err != nil {
 		mcpLog.Debug("restart_start_failed", slog.String("error", err.Error()))
 		// #1924: Start() and its sister path have recorded this since #1580,

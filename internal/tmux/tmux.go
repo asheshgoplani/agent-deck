@@ -1231,6 +1231,12 @@ type Session struct {
 	// Sandbox sessions enable this so pane-dead detection can restart exited tools.
 	RunCommandAsInitialProcess bool
 
+	// LaunchEnv is NAME=value pairs Start puts in the environment of the new
+	// session and its first pane process (new-session -e, tmux >= 3.2; see
+	// SupportsLaunchEnv). The pane's shell starts with them set, so nothing
+	// has to be typed into it (#2817).
+	LaunchEnv []string
+
 	// VimMode guarantees the inner agent's input composer is in insert mode
 	// before any text/Enter is delivered. When the inner tool (Claude Code with
 	// `"editorMode": "vim"`) leaves its prompt in vim NORMAL mode — the default
@@ -1492,6 +1498,7 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	cols, rows := InitialWindowSize()
 	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+	tmuxArgs = append(tmuxArgs, launchEnvArgs(s.LaunchEnv)...)
 	if startWithInitialProcess {
 		// Deliver the pane command as SEPARATE argv tokens (bash, -c, command)
 		// rather than a single shell-quoted string. This is the crux of the
