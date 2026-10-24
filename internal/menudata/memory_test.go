@@ -1,4 +1,4 @@
-package web
+package menudata
 
 import (
 	"sync"
@@ -24,7 +24,7 @@ type revisionedMenuLoader struct {
 	hasLiveState      bool
 }
 
-func (r *revisionedMenuLoader) refreshesLiveState() bool { return r.hasLiveState }
+func (r *revisionedMenuLoader) RefreshesLiveState() bool { return r.hasLiveState }
 
 func (r *revisionedMenuLoader) MenuDataRevision() (int64, error) {
 	r.mu.Lock()
@@ -355,5 +355,54 @@ func TestMemoryMenuData_UpdateSessionStates(t *testing.T) {
 	}
 	if !snapshot.GeneratedAt.Equal(ts) {
 		t.Fatalf("generatedAt = %s, want %s", snapshot.GeneratedAt, ts)
+	}
+}
+
+func menuSnapshotHasSession(snapshot *MenuSnapshot, id string) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, item := range snapshot.Items {
+		if item.Session != nil && item.Session.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMemoryMenuDataCachedSnapshotDoesNotTakeLock(t *testing.T) {
+	menu := NewMemoryMenuData(nil)
+	if got := menu.CachedMenuSnapshot(); got != nil {
+		t.Fatalf("expected nil cached snapshot before publish, got %+v", got)
+	}
+	menu.SetSnapshot(&MenuSnapshot{Items: []MenuItem{
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "sess-1"}},
+	}})
+
+	menu.mu.Lock()
+	defer menu.mu.Unlock()
+	done := make(chan *MenuSnapshot, 1)
+	go func() { done <- menu.CachedMenuSnapshot() }()
+	select {
+	case got := <-done:
+		if !menuSnapshotHasSession(got, "sess-1") {
+			t.Fatalf("cached snapshot missing sess-1: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CachedMenuSnapshot blocked on the menu-data lock")
+	}
+}
+
+// TestMemoryMenuDataInvalidateCacheClearsCachedSnapshot guards the #2663
+// follow-up: after a mutation the published snapshot may name a tmux session
+// that no longer exists, so InvalidateCache must drop it.
+func TestMemoryMenuDataInvalidateCacheClearsCachedSnapshot(t *testing.T) {
+	menu := NewMemoryMenuData(nil)
+	menu.SetSnapshot(&MenuSnapshot{Items: []MenuItem{
+		{Type: MenuItemTypeSession, Session: &MenuSession{ID: "sess-1", TmuxSession: "old"}},
+	}})
+	menu.InvalidateCache()
+	if got := menu.CachedMenuSnapshot(); got != nil {
+		t.Fatalf("expected InvalidateCache to clear the cached snapshot, got %+v", got)
 	}
 }

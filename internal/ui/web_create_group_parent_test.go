@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/asheshgoplani/agent-deck/internal/web"
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 )
 
 // TestWebCreateGroup_UnknownParentRejected: POST /api/groups with a parentPath
@@ -20,7 +20,7 @@ func TestWebCreateGroup_UnknownParentRejected(t *testing.T) {
 	}
 
 	_, err := m.CreateGroup("x", "nope")
-	if !errors.Is(err, web.ErrGroupNotFound) {
+	if !errors.Is(err, menudata.ErrGroupNotFound) {
 		t.Fatalf("CreateGroup with unknown parent: want ErrGroupNotFound, got %v", err)
 	}
 	if _, ok := h.groupTree.Groups["nope/x"]; ok {

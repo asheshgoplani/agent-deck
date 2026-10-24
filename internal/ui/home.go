@@ -40,6 +40,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/intervalhook"
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/recall/query"
 	"github.com/asheshgoplani/agent-deck/internal/recall/reader"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
@@ -55,7 +56,6 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
-	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
 // Version is set by main.go for update checking
@@ -532,7 +532,7 @@ type Home struct {
 	sessionLoadSequence uint64 // issued only by the UI event loop
 
 	// Optional in-memory web menu data sink for web mode.
-	webMenuData   *web.MemoryMenuData
+	webMenuData   *menudata.MemoryMenuData
 	webMenuDataMu sync.RWMutex
 
 	// System theme watcher (active when theme="system"; nil otherwise)
@@ -2500,7 +2500,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 }
 
 // SetWebMenuData configures an optional in-memory menu sink for web mode.
-func (h *Home) SetWebMenuData(menuData *web.MemoryMenuData) {
+func (h *Home) SetWebMenuData(menuData *menudata.MemoryMenuData) {
 	h.webMenuDataMu.Lock()
 	h.webMenuData = menuData
 	h.webMenuDataMu.Unlock()
@@ -2509,7 +2509,7 @@ func (h *Home) SetWebMenuData(menuData *web.MemoryMenuData) {
 	}
 }
 
-func (h *Home) getWebMenuData() *web.MemoryMenuData {
+func (h *Home) getWebMenuData() *menudata.MemoryMenuData {
 	h.webMenuDataMu.RLock()
 	defer h.webMenuDataMu.RUnlock()
 	return h.webMenuData
@@ -3072,7 +3072,7 @@ func (h *Home) publishWebMenuSnapshot() {
 		})
 	}
 
-	menuData.SetSnapshot(web.BuildMenuSnapshot(h.profile, instancesCopy, groupsData, time.Now()))
+	menuData.SetSnapshot(menudata.BuildMenuSnapshot(h.profile, instancesCopy, groupsData, time.Now()))
 }
 
 func (h *Home) publishWebSessionStates(instances []*session.Instance) {
@@ -3081,12 +3081,12 @@ func (h *Home) publishWebSessionStates(instances []*session.Instance) {
 		return
 	}
 
-	states := make(map[string]web.MenuSessionState, len(instances))
+	states := make(map[string]menudata.MenuSessionState, len(instances))
 	for _, inst := range instances {
 		if inst == nil {
 			continue
 		}
-		states[inst.ID] = web.MenuSessionState{
+		states[inst.ID] = menudata.MenuSessionState{
 			Status: inst.GetStatusThreadSafe(),
 			Tool:   inst.GetToolThreadSafe(),
 		}

@@ -1,4 +1,4 @@
-package web
+package menudata
 
 import (
 	"fmt"
@@ -43,16 +43,21 @@ const (
 	memoryMenuConsistentLoadAttempts = 3
 )
 
-// menuDataRevisionLoader gives the revision of persisted menu data.
-// Each persisted menu change must update this revision.
-type menuDataRevisionLoader interface {
+// MenuDataRevisionLoader gives the revision of persisted menu data.
+// Each persisted menu change must update this revision. MemoryMenuData
+// detects it on its fallback with a type assertion, so implementers should
+// assert it at compile time (var _ MenuDataRevisionLoader = ...).
+type MenuDataRevisionLoader interface {
 	MenuDataRevision() (int64, error)
 }
 
-// liveStateMenuDataLoader marks fallbacks whose snapshots include process state
-// that can change without a persisted menu-data revision.
-type liveStateMenuDataLoader interface {
-	refreshesLiveState() bool
+// LiveStateMenuDataLoader marks fallbacks whose snapshots include process state
+// that can change without a persisted menu-data revision. MemoryMenuData
+// detects it on its fallback with a type assertion; if an implementer's method
+// stops matching, live refresh silently turns off, so implementers should
+// assert it at compile time (var _ LiveStateMenuDataLoader = ...).
+type LiveStateMenuDataLoader interface {
+	RefreshesLiveState() bool
 }
 
 // NewMemoryMenuData creates an in-memory menu data store.
@@ -92,11 +97,11 @@ func (m *MemoryMenuData) LoadMenuSnapshot() (snapshot *MenuSnapshot, err error) 
 		return cloneMenuSnapshot(m.snapshot), nil
 	}
 
-	revisionLoader, ok := m.fallback.(menuDataRevisionLoader)
+	revisionLoader, ok := m.fallback.(MenuDataRevisionLoader)
 	if !ok || time.Since(m.lastRevisionCheck) < memoryMenuRevisionCheckInterval {
 		return cloneMenuSnapshot(m.snapshot), nil
 	}
-	if liveState, ok := m.fallback.(liveStateMenuDataLoader); ok && liveState.refreshesLiveState() {
+	if liveState, ok := m.fallback.(LiveStateMenuDataLoader); ok && liveState.RefreshesLiveState() {
 		return m.loadFallbackSnapshotLocked()
 	}
 
@@ -119,7 +124,7 @@ func (m *MemoryMenuData) loadFallbackSnapshotLocked() (*MenuSnapshot, error) {
 		return nil, fmt.Errorf("menu snapshot is unavailable")
 	}
 
-	revisionLoader, versioned := m.fallback.(menuDataRevisionLoader)
+	revisionLoader, versioned := m.fallback.(MenuDataRevisionLoader)
 	if !versioned {
 		snapshot, err := m.fallback.LoadMenuSnapshot()
 		if err != nil {

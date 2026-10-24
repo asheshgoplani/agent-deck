@@ -1,4 +1,4 @@
-package web
+package menudata
 
 import (
 	"errors"

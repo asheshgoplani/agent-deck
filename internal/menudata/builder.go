@@ -1,4 +1,4 @@
-package web
+package menudata
 
 import (
 	"time"
@@ -67,7 +67,7 @@ func BuildMenuSnapshot(profile string, instances []*session.Instance, groupsData
 				IsSubSession:        item.IsSubSession,
 				IsLastSubSession:    item.IsLastSubSession,
 				ParentIsLastInGroup: item.ParentIsLastInGroup,
-				Session:             toMenuSession(item.Session),
+				Session:             ToMenuSession(item.Session),
 			})
 		}
 	}
