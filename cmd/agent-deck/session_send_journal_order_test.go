@@ -228,19 +228,10 @@ func TestSessionSendVerdictNotDelayedByBlockedJournal(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			runSendJournalOrderCase(t, tc)
-		})
-	}
-}
-
-func runSendJournalOrderCase(t *testing.T, tc sendJournalOrderCase) {
-	profile := "_test_send_journal_order_" + tc.name
-	const title = "send-journal-order-target"
-	const message = "hello from the blocked-journal regression test"
-
+	// One HOME for all cases, set before the subtests start: each case has
+	// its own profile (its own journal), its own helper process and its own
+	// tmux session (same tmux server), so the cases run side by side instead
+	// of paying their ~8 s turn-identity timeouts one after another (#2797).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -248,6 +239,20 @@ func runSendJournalOrderCase(t *testing.T, tc sendJournalOrderCase) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	session.ClearUserConfigCache()
 	t.Cleanup(session.ClearUserConfigCache)
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runSendJournalOrderCase(t, home, tc)
+		})
+	}
+}
+
+func runSendJournalOrderCase(t *testing.T, home string, tc sendJournalOrderCase) {
+	profile := "_test_send_journal_order_" + tc.name
+	const title = "send-journal-order-target"
+	const message = "hello from the blocked-journal regression test"
 
 	releaseFile := filepath.Join(t.TempDir(), "release")
 

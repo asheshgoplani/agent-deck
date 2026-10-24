@@ -130,6 +130,9 @@ func TestEngineHost_StartsAWatcherStartedWhileItRuns_2739(t *testing.T) {
 	h.Start()
 	keepAlive := &http.Client{Timeout: 2 * time.Second}
 	defer keepAlive.CloseIdleConnections()
+	// Start returns before the webhook's Listen goroutine binds its port, and
+	// postFrom makes one attempt: wait for the port first.
+	eventually(t, "the webhook watcher listens", env.listening)
 	postFrom(t, keepAlive, env.port, "alice@example.com", "first")
 	waitDelivered(t, got, "first")
 	if listeningOn(port2) {
