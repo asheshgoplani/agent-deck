@@ -18,7 +18,7 @@ import (
 var projectGitLiteralArgs = map[string]bool{
 	"-c": true, "core.fsmonitor=false": true, "core.hooksPath=/dev/null": true,
 	"rev-parse": true, "--is-inside-work-tree": true, "--show-prefix": true,
-	"ls-files": true, "--error-unmatch": true, "--": true, ".mcp.json": true, "mcp.json": true, "opencode.json": true,
+	"ls-files": true, "--sparse": true, "--error-unmatch": true, "--": true, ".mcp.json": true, "mcp.json": true, "opencode.json": true,
 	"check-ignore": true, "-q": true, "--no-index": true, "--stdin": true, "-z": true,
 	"--path-format=absolute": true, "--git-common-dir": true, "--git-path": true, "info/exclude": true,
 }
@@ -41,6 +41,9 @@ func installFakeGit(t *testing.T, fakeExclude string) (calls func() [][]string, 
 	script := `#!/bin/sh
 for a in "$@"; do printf '%s\0' "$a" >> "$FAKE_GIT_LOG"; done
 printf '\n' >> "$FAKE_GIT_LOG"
+if [ -n "$FAKE_GIT_NOT_IGNORED" ]; then
+  case "$*" in *check-ignore*) exit 1 ;; esac
+fi
 if [ -n "$FAKE_GIT_EXCLUDE" ]; then
   case "$*" in *--git-path*)
     case "$*" in *--git-common-dir*) "$FAKE_GIT_REAL" rev-parse --path-format=absolute --git-common-dir ;; esac
@@ -272,7 +275,7 @@ func TestProjectMCPGitExclude_TrackedCheckNeverLazyFetches(t *testing.T) {
 		if strings.Contains(joined, "cat-file") {
 			t.Fatalf("cat-file invoked: %q", argv)
 		}
-		if strings.HasSuffix(joined, "ls-files --error-unmatch -- .mcp.json") {
+		if strings.HasSuffix(joined, "ls-files --sparse --error-unmatch -- .mcp.json") {
 			sawLsFiles = true
 		}
 	}
@@ -386,4 +389,89 @@ func writeProjectMCPFile(t *testing.T, proj string) string {
 		t.Fatal(err)
 	}
 	return f
+}
+
+// With a sparse index, expanding it reads tree objects; in a crafted partial
+// clone a missing tree would lazily fetch and run the repo's own
+// core.sshCommand. --sparse avoids the expansion and GIT_NO_LAZY_FETCH=1
+// refuses the fetch, so the marker command never runs.
+func TestProjectMCPGitExclude_SparseIndexMissingTreeNeverLazyFetches(t *testing.T) {
+	proj := hygieneSetup(t, map[string]string{"TOKEN": "s3cr3t"})
+	hygieneGit(t, proj, "init", "-q")
+	for _, f := range []string{"a/x", "b/y"} {
+		p := filepath.Join(proj, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(f), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hygieneGit(t, proj, "add", "a", "b")
+	hygieneGit(t, proj, "commit", "-q", "-m", "init")
+	hygieneGit(t, proj, "sparse-checkout", "set", "--cone", "--sparse-index", "a")
+	if st := hygieneGit(t, proj, "ls-files", "--sparse"); countLine(st, "b/") != 1 {
+		t.Fatalf("expected a sparse directory entry for b/:\n%s", st)
+	}
+	tree := hygieneGit(t, proj, "rev-parse", "HEAD:b")
+	if err := os.Remove(filepath.Join(proj, ".git", "objects", tree[:2], tree[2:])); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "PWNED")
+	hygieneGit(t, proj, "config", "core.repositoryformatversion", "1")
+	hygieneGit(t, proj, "config", "extensions.partialClone", "origin")
+	hygieneGit(t, proj, "remote", "add", "origin", "ssh://example.invalid/repo.git")
+	hygieneGit(t, proj, "config", "remote.origin.promisor", "true")
+	hygieneGit(t, proj, "config", "core.sshCommand", "touch '"+marker+"'; false")
+
+	excludeProjectMCPFromGit(proj, writeProjectMCPFile(t, proj))
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("a lazy fetch ran the repo's core.sshCommand: %v", err)
+	}
+	if got := countLine(readExclude(t, proj), "/.mcp.json"); got != 1 {
+		t.Fatalf("untracked file not excluded in a sparse-index repo:\n%s", readExclude(t, proj))
+	}
+}
+
+// Inherited repo-local git variables (GIT_DIR, GIT_INDEX_FILE, ...) never
+// redirect the calls or the info/exclude write to another repository.
+func TestProjectMCPGitExclude_InheritedGitDirIgnored(t *testing.T) {
+	proj := hygieneSetup(t, map[string]string{"TOKEN": "s3cr3t"})
+	hygieneGit(t, proj, "init", "-q")
+	other := filepath.Join(t.TempDir(), "other")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hygieneGit(t, other, "init", "-q")
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(other, ".git", "index"))
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.excludesFile")
+	t.Setenv("GIT_CONFIG_VALUE_0", filepath.Join(other, "ignore-all"))
+	if err := os.WriteFile(filepath.Join(other, "ignore-all"), []byte("*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := readFileString(t, filepath.Join(other, ".git", "info", "exclude"))
+	excludeProjectMCPFromGit(proj, writeProjectMCPFile(t, proj))
+	if after := readFileString(t, filepath.Join(other, ".git", "info", "exclude")); after != before {
+		t.Fatalf("exclude write redirected by inherited GIT_DIR:\n%s", after)
+	}
+	if got := countLine(readFileString(t, filepath.Join(proj, ".git", "info", "exclude")), "/.mcp.json"); got != 1 {
+		t.Fatalf("project exclude missing entry:\n%s", readFileString(t, filepath.Join(proj, ".git", "info", "exclude")))
+	}
+	env := projectGitEnv([]string{"GIT_DIR=x", "GIT_CONFIG_KEY_3=k", "GIT_CONFIG_VALUE_3=v", "GIT_NO_LAZY_FETCH=0", "PATH=/bin", "GIT_AUTHOR_NAME=a"})
+	want := []string{"PATH=/bin", "GIT_AUTHOR_NAME=a", "GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0"}
+	if strings.Join(env, "|") != strings.Join(want, "|") {
+		t.Fatalf("projectGitEnv = %q, want %q", env, want)
+	}
+}
+
+func readFileString(t *testing.T, p string) string {
+	t.Helper()
+	data, err := os.ReadFile(p)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(data)
 }
