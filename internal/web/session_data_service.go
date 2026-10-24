@@ -14,6 +14,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"golang.org/x/sync/errgroup"
 )
 
 var hookStatusLog = logging.ForComponent(logging.CompWeb)
@@ -195,6 +196,10 @@ type SessionDataService struct {
 	now              func() time.Time
 	refreshLiveState bool
 	loadHookStatuses func() map[string]*session.HookStatus
+	// Test seams for the menu status pass; zero values mean the defaults
+	// (refreshMenuTmuxCaches, menuCacheRefreshAge).
+	refreshTmuxCaches func()
+	cacheRefreshAge   time.Duration
 }
 
 // NewSessionDataService creates a SessionDataService for a profile.
@@ -507,40 +512,81 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 	return hooksByInstance
 }
 
-func (s *SessionDataService) refreshStatuses(instances []*session.Instance) {
-	// Keep tmux caches warm so per-instance status checks reflect current pane state.
+// menuStatusWorkers bounds the concurrent per-session status checks in one
+// menu load. Same pool size as the TUI sweep (ui/home.go): the tmux server
+// serializes commands, so more workers do not help.
+const menuStatusWorkers = 10
+
+// menuCacheRefreshAge re-lists tmux sessions and panes during a long pass, well
+// inside their TTL (2 s for sessions), so late rows still read the shared
+// cache instead of probing tmux one session at a time.
+const menuCacheRefreshAge = time.Second
+
+// refreshMenuTmuxCaches re-lists tmux sessions and panes into the shared
+// caches that per-session status checks read.
+func refreshMenuTmuxCaches() {
 	tmux.RefreshExistingSessions()
 	tmux.RefreshPaneInfoCache()
+}
+
+func (s *SessionDataService) refreshStatuses(instances []*session.Instance) {
+	// Keep tmux caches warm so per-instance status checks reflect current pane state.
+	refreshCaches := refreshMenuTmuxCaches
+	if s.refreshTmuxCaches != nil {
+		refreshCaches = s.refreshTmuxCaches
+	}
+	refreshAge := menuCacheRefreshAge
+	if s.cacheRefreshAge > 0 {
+		refreshAge = s.cacheRefreshAge
+	}
+	refreshCaches()
+	cachesAt := time.Now()
 
 	var hooksByInstance map[string]*session.HookStatus
 	if s.loadHookStatuses != nil {
 		hooksByInstance = s.loadHookStatuses()
 	}
 
+	// Each check spawns tmux/ps subprocesses and waits on them. Run them on a
+	// bounded pool like the TUI sweep does, instead of one after another: a
+	// serial pass over hundreds of sessions took seconds, and once it outlived
+	// the tmux session cache TTL (2 s) every later row fell back to its own
+	// has-session/display-message probes, so the cost grew faster than N.
+	// Each instance is touched by exactly one worker, and StatusUpdatePass is
+	// safe for concurrent workers.
 	var statusPass session.StatusUpdatePass
+	var g errgroup.Group
+	g.SetLimit(menuStatusWorkers)
 	for _, inst := range instances {
 		if inst == nil {
 			continue
 		}
-
-		haveHookStatus := false
-		if hooksByInstance != nil {
-			if hs := hooksByInstance[inst.ID]; hs != nil {
-				inst.UpdateHookStatus(hs)
-				haveHookStatus = true
+		if time.Since(cachesAt) >= refreshAge {
+			refreshCaches()
+			cachesAt = time.Now()
+		}
+		g.Go(func() error {
+			haveHookStatus := false
+			if hooksByInstance != nil {
+				if hs := hooksByInstance[inst.ID]; hs != nil {
+					inst.UpdateHookStatus(hs)
+					haveHookStatus = true
+				}
 			}
-		}
 
-		// Without fresh hook data, force a full tmux status check for Claude
-		// sessions. This avoids staying in stale idle state when hooks are not
-		// emitting for an existing long-running session.
-		if inst.GetToolThreadSafe() == "claude" && !haveHookStatus {
-			inst.ForceNextStatusCheck()
-		}
+			// Without fresh hook data, force a full tmux status check for Claude
+			// sessions. This avoids staying in stale idle state when hooks are not
+			// emitting for an existing long-running session.
+			if inst.GetToolThreadSafe() == "claude" && !haveHookStatus {
+				inst.ForceNextStatusCheck()
+			}
 
-		if inst.GetTmuxSession() == nil {
-			continue
-		}
-		_ = statusPass.UpdateStatus(inst)
+			if inst.GetTmuxSession() == nil {
+				return nil
+			}
+			_ = statusPass.UpdateStatus(inst)
+			return nil
+		})
 	}
+	_ = g.Wait()
 }
