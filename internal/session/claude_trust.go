@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,39 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 		projects[parentDir] = entry
 		cfg["projects"] = projects
 	})
+}
+
+// ClaudeTrustJSONPaths returns every .claude.json a trust seed for inst must
+// reach: the home root, plus <dir>/.claude.json when inst runs on an explicit
+// config root (account, conductor, group, env, profile or global config_dir),
+// since Claude then runs with CLAUDE_CONFIG_DIR=<dir> and reads trust there
+// (#2673).
+func ClaudeTrustJSONPaths(inst *Instance) []string {
+	var out []string
+	root := GetUserMCPRootPath()
+	if root != "" {
+		out = append(out, root)
+	}
+	if inst != nil && IsClaudeConfigDirExplicitForInstance(inst) {
+		if dir := GetClaudeConfigDirForInstance(inst); dir != "" {
+			if p := filepath.Join(dir, ".claude.json"); p != root {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// preAcceptClaudeTrustForInstance seeds trust for dir in every file
+// ClaudeTrustJSONPaths(inst) names and returns the joined failures.
+func preAcceptClaudeTrustForInstance(inst *Instance, dir string) error {
+	var errs []error
+	for _, p := range ClaudeTrustJSONPaths(inst) {
+		if err := PreAcceptClaudeTrust(p, dir); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // WriteMultiRepoParentClaudeMD writes a .claude/CLAUDE.md to parentDir telling

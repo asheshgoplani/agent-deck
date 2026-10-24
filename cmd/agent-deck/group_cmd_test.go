@@ -284,8 +284,7 @@ func TestGroupCreate_DefaultMaxConcurrent_ConfigN(t *testing.T) {
 
 // TestGroupCreate_FlagOverridesConfigDefault: --max-concurrent beats the config
 // default (precedence: flag > config > built-in 1). Uses the --flag=value form;
-// the space-separated form is mishandled by reorderGroupArgs (a pre-existing
-// arg-parsing issue unrelated to [group_defaults]).
+// the space-separated form is covered by TestGroupArgs_SpaceSeparatedValueFlags.
 func TestGroupCreate_FlagOverridesConfigDefault(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping CLI subprocess test in -short mode")
@@ -294,6 +293,52 @@ func TestGroupCreate_FlagOverridesConfigDefault(t *testing.T) {
 	writeGroupDefaultsConfig(t, home, "[group_defaults]\nmax_concurrent = 5\n")
 	if got := runGroupCreate(t, home, "g", "--max-concurrent=2"); got != 2 {
 		t.Errorf("flag override: expected max_concurrent=2, got %d", got)
+	}
+}
+
+// TestGroupArgs_SpaceSeparatedValueFlags: value flags written after the group
+// name in the space-separated form ("wide --max-concurrent 4", "ios -parent
+// mobile") must bind their value, not the group name. The usage text documents
+// these forms; before the fix the old hard-coded reorder list dropped them and
+// the commands exited 2 or created the group under the wrong name.
+func TestGroupArgs_SpaceSeparatedValueFlags(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI subprocess test in -short mode")
+	}
+	home := t.TempDir()
+
+	if got := runGroupCreate(t, home, "wide", "--max-concurrent", "4"); got != 4 {
+		t.Errorf("group create wide --max-concurrent 4: expected max_concurrent=4, got %d", got)
+	}
+
+	stdout, stderr, code := runAgentDeck(t, home, "group", "update", "wide", "--max-concurrent", "2", "--json")
+	if code != 0 {
+		t.Fatalf("group update wide --max-concurrent 2 failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var upd struct {
+		MaxConcurrent int `json:"max_concurrent"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &upd); err != nil {
+		t.Fatalf("parse group update JSON: %v\nstdout: %s", err, stdout)
+	}
+	if upd.MaxConcurrent != 2 {
+		t.Errorf("group update wide --max-concurrent 2: expected max_concurrent=2, got %d", upd.MaxConcurrent)
+	}
+
+	runGroupCreate(t, home, "mobile")
+	stdout, stderr, code = runAgentDeck(t, home, "group", "create", "ios", "-parent", "mobile", "--json")
+	if code != 0 {
+		t.Fatalf("group create ios -parent mobile failed (exit %d)\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	var created struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &created); err != nil {
+		t.Fatalf("parse group create JSON: %v\nstdout: %s", err, stdout)
+	}
+	if created.Name != "ios" || created.Path != "mobile/ios" {
+		t.Errorf("group create ios -parent mobile: got name=%q path=%q, want name=\"ios\" path=\"mobile/ios\"", created.Name, created.Path)
 	}
 }
 

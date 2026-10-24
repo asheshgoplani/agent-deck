@@ -1145,11 +1145,15 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	// files in this folder?" and the conductor would stall there, defeating
 	// autonomous/heartbeat operation. This reuses the same mechanism added
 	// for multi-repo worktree parents in #1149: seed
-	// projects[dir].hasTrustDialogAccepted = true in the user's root
-	// ~/.claude.json (where Claude keys trust, regardless of profile).
+	// projects[dir].hasTrustDialogAccepted = true in ~/.claude.json and, when
+	// the conductor runs on an explicit config root (conductor, profile or
+	// global config_dir), in <config_dir>/.claude.json, which is the file
+	// Claude reads under CLAUDE_CONFIG_DIR (#2673). The stub mirrors the
+	// instance the CLI registers (group "conductor", stable ConductorName).
 	// Claude-only; failures are logged but non-fatal so setup still succeeds.
 	if spec.Agent == ConductorAgentClaude {
-		if err := PreAcceptClaudeTrust(GetUserMCPRootPath(), dir); err != nil {
+		stub := &Instance{Title: ConductorSessionTitle(name), ProjectPath: dir, GroupPath: "conductor", Tool: "claude", IsConductor: true, ConductorName: name}
+		if err := preAcceptClaudeTrustForInstance(stub, dir); err != nil {
 			sessionLog.Warn("conductor_preaccept_trust_failed",
 				slog.String("conductor", name),
 				slog.String("dir", dir),

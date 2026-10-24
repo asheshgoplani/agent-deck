@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,9 @@ type cursorHookDef struct {
 	Matcher string `json:"matcher,omitempty"`
 }
 
+// cursorHooksConfig is the read-only view used for the installed check; the
+// rewrite goes through raw JSON (cursorHooksRaw) so fields this struct does
+// not model survive install and uninstall (ASK-102).
 type cursorHooksConfig struct {
 	Version int                        `json:"version"`
 	Hooks   map[string][]cursorHookDef `json:"hooks"`
@@ -39,24 +43,19 @@ func InjectCursorHooks(configDir string) (bool, error) {
 	hooksPath := filepath.Join(configDir, "hooks.json")
 
 	var cfg cursorHooksConfig
+	var top jsonObject
+	var hooks map[string][]json.RawMessage
 	data, err := os.ReadFile(hooksPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return false, fmt.Errorf("read hooks.json: %w", err)
 		}
-		cfg = cursorHooksConfig{
-			Version: 1,
-			Hooks:   make(map[string][]cursorHookDef),
-		}
 	} else {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return false, fmt.Errorf("parse hooks.json: %w", err)
 		}
-		if cfg.Version == 0 {
-			cfg.Version = 1
-		}
-		if cfg.Hooks == nil {
-			cfg.Hooks = make(map[string][]cursorHookDef)
+		if top, hooks, err = cursorHooksRaw(data); err != nil {
+			return false, fmt.Errorf("parse hooks.json: %w", err)
 		}
 	}
 
@@ -64,11 +63,18 @@ func InjectCursorHooks(configDir string) (bool, error) {
 		return false, nil
 	}
 
-	for _, event := range cursorHookEventNames {
-		cfg.Hooks[event] = mergeCursorHookEvent(cfg.Hooks[event])
+	if hooks == nil {
+		hooks = make(map[string][]json.RawMessage)
 	}
+	for _, event := range cursorHookEventNames {
+		hooks[event] = mergeCursorHookEvent(hooks[event])
+	}
+	if cfg.Version == 0 {
+		top.set("version", json.RawMessage("1"))
+	}
+	top.set("hooks", mustMarshal(hooks))
 
-	finalData, err := json.MarshalIndent(cfg, "", "  ")
+	finalData, err := indentSettings(top)
 	if err != nil {
 		return false, fmt.Errorf("marshal hooks.json: %w", err)
 	}
@@ -137,23 +143,23 @@ func RemoveCursorHooks(configDir string) (bool, error) {
 		return false, fmt.Errorf("read hooks.json: %w", err)
 	}
 
-	var cfg cursorHooksConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	top, hooks, err := cursorHooksRaw(data)
+	if err != nil {
 		return false, fmt.Errorf("parse hooks.json: %w", err)
 	}
-	if cfg.Hooks == nil {
+	if hooks == nil {
 		return false, nil
 	}
 
 	removed := false
 	for _, event := range cursorHookEventNames {
-		cleaned, didRemove := removeAgentDeckFromCursorEvent(cfg.Hooks[event])
+		cleaned, didRemove := removeAgentDeckFromCursorEvent(hooks[event])
 		if didRemove {
 			removed = true
 			if len(cleaned) == 0 {
-				delete(cfg.Hooks, event)
+				delete(hooks, event)
 			} else {
-				cfg.Hooks[event] = cleaned
+				hooks[event] = cleaned
 			}
 		}
 	}
@@ -161,8 +167,9 @@ func RemoveCursorHooks(configDir string) (bool, error) {
 	if !removed {
 		return false, nil
 	}
+	top.set("hooks", mustMarshal(hooks))
 
-	finalData, err := json.MarshalIndent(cfg, "", "  ")
+	finalData, err := indentSettings(top)
 	if err != nil {
 		return false, fmt.Errorf("marshal hooks.json: %w", err)
 	}
@@ -207,20 +214,40 @@ func cursorEventHasAgentDeckHook(defs []cursorHookDef) bool {
 	return false
 }
 
-func mergeCursorHookEvent(existing []cursorHookDef) []cursorHookDef {
+// cursorHooksRaw decodes hooks.json keeping the top-level keys and every hook
+// entry as raw JSON, so the rewrite changes only agent-deck's own entries. A
+// JSON null root reads as an empty object, as the typed decode always did.
+func cursorHooksRaw(data []byte) (jsonObject, map[string][]json.RawMessage, error) {
+	var top jsonObject
+	if string(bytes.TrimSpace(data)) == "null" {
+		return top, nil, nil
+	}
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil, nil, err
+	}
+	var hooks map[string][]json.RawMessage
+	if raw, ok := top.get("hooks"); ok {
+		if err := json.Unmarshal(raw, &hooks); err != nil {
+			return nil, nil, err
+		}
+	}
+	return top, hooks, nil
+}
+
+func mergeCursorHookEvent(existing []json.RawMessage) []json.RawMessage {
 	for _, d := range existing {
-		if strings.Contains(d.Command, agentDeckCursorHookCommand) {
+		if rawHookCommandContains(d, agentDeckCursorHookCommand) {
 			return existing
 		}
 	}
-	return append(existing, cursorHookDef{Command: agentDeckCursorHookCommand})
+	return append(existing, mustMarshal(cursorHookDef{Command: agentDeckCursorHookCommand}))
 }
 
-func removeAgentDeckFromCursorEvent(defs []cursorHookDef) ([]cursorHookDef, bool) {
+func removeAgentDeckFromCursorEvent(defs []json.RawMessage) ([]json.RawMessage, bool) {
 	removed := false
-	var cleaned []cursorHookDef
+	var cleaned []json.RawMessage
 	for _, d := range defs {
-		if strings.Contains(d.Command, agentDeckCursorHookCommand) {
+		if rawHookCommandContains(d, agentDeckCursorHookCommand) {
 			removed = true
 			continue
 		}

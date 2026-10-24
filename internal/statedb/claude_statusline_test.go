@@ -87,3 +87,24 @@ func TestClaudeStatuslineLimitsMarkExpired(t *testing.T) {
 	var none *ClaudeStatuslineLimits
 	none.MarkExpired(now)
 }
+
+// TestClaudeStatuslineCustomClaudeTool pins ownership for Claude-compatible
+// custom tools: their rows carry the custom tool name, not "claude".
+func TestClaudeStatuslineCustomClaudeTool(t *testing.T) {
+	db := newTestDB(t)
+	old := ClaudeCompatibleTools
+	ClaudeCompatibleTools = func() []string { return []string{"claude", "my-claude"} }
+	t.Cleanup(func() { ClaudeCompatibleTools = old })
+	require.NoError(t, db.SaveInstance(&InstanceRow{ID: "s1", Title: "s1", Tool: "my-claude", ToolData: json.RawMessage(`{"claude_session_id":"abc"}`)}))
+	owner, err := db.SaveClaudeStatusline(ClaudeStatusline{ClaudeSessionID: "abc"})
+	require.NoError(t, err)
+	require.Equal(t, "s1", owner)
+	rec, err := db.ClaudeStatuslineForSession("s1")
+	require.NoError(t, err)
+	require.Equal(t, "abc", rec.ClaudeSessionID)
+	// A non-compatible tool carrying a stale id must not become an owner.
+	require.NoError(t, db.SaveInstance(&InstanceRow{ID: "s2", Title: "s2", Tool: "codex", ToolData: json.RawMessage(`{"claude_session_id":"abc"}`)}))
+	owner, err = db.SaveClaudeStatusline(ClaudeStatusline{ClaudeSessionID: "abc"})
+	require.NoError(t, err)
+	require.Equal(t, "s1", owner)
+}

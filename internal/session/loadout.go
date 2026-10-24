@@ -149,7 +149,7 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		if real, err := filepath.EvalSymlinks(trustDir); err == nil {
 			trustDir = real
 		}
-		if err := PreAcceptClaudeTrust(GetUserMCPRootPath(), trustDir); err != nil {
+		if err := preAcceptClaudeTrustForInstance(inst, trustDir); err != nil {
 			warn("workspace trust seed for %q failed (plugins may not load): %v", trustDir, err)
 		} else {
 			sessionLog.Info("loadout_trust_seeded",

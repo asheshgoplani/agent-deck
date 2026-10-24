@@ -125,7 +125,8 @@ func statuslineOwnerProfile(feedProfile, nativeID string) (string, bool, error) 
 			continue
 		}
 		var count int
-		err = storage.GetDB().DB().QueryRow(`SELECT count(*) FROM instances WHERE tool = 'claude' AND json_extract(tool_data, '$.claude_session_id') = ?`, nativeID).Scan(&count)
+		toolCond, toolArgs := statedb.ClaudeToolPredicate()
+		err = storage.GetDB().DB().QueryRow(`SELECT count(*) FROM instances WHERE `+toolCond+` AND json_extract(tool_data, '$.claude_session_id') = ?`, append(toolArgs, nativeID)...).Scan(&count)
 		storage.Close()
 		if err != nil || count == 0 {
 			continue
