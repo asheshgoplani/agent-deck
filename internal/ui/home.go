@@ -387,6 +387,9 @@ type Home struct {
 	reloadMu            sync.Mutex // Protects reloadVersion, isReloading, and lastLoadMtime for thread-safe access
 	lastLoadMtime       time.Time  // File mtime when we last loaded (for external change detection)
 
+	// Session reference pick/drop (ASK-111, session_ref_pick.go).
+	sessionRef sessionRefState
+
 	// Earliest eligible membership expiry; ordinary ticks only compare clocks.
 	nextTimeFilterExpiry time.Time
 
@@ -4450,6 +4453,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case sessionRefResultMsg:
+		h.handleSessionRefResult(msg)
+		return h, nil
+
 	case sendOutputResultMsg:
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to send to %s: %v", msg.targetTitle, msg.err))
@@ -5257,6 +5264,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.navHintActive = false
 		if h.maintenanceMsg == navHintText {
 			h.maintenanceMsg = ""
+		}
+	}
+
+	// Session reference pick (ASK-111): while A is picked only movement,
+	// drop (Enter / the pick key) and Esc do anything.
+	if h.sessionRefPicking() {
+		if handled, cmd := h.handleSessionRefPickKey(key); handled {
+			return h, cmd
 		}
 	}
 
@@ -6076,6 +6091,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.deadLetterPanel.Show()
 		h.deadLetterPanel.SetSize(h.width, h.height)
+		return h, nil
+
+	case defaultHotkeyBindings[hotkeySessionRef]:
+		// Pick the selected session as a reference source (ASK-111); the
+		// drop runs from handleSessionRefPickKey.
+		h.startSessionRefPick()
 		return h, nil
 
 	case defaultHotkeyBindings[hotkeyTriggers]:

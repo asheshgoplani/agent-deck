@@ -133,7 +133,7 @@ var completionTree = []completionNode{
 			"start", "stop", "remove", "cleanup", "prune", "archive", "unarchive",
 			"restart", "revive", "fork", "handoff", "attach", "focus", "show",
 			"viewers", "current", "primer", "set-parent", "unset-parent", "update", "set-transition-notify",
-			"set-title-lock", "set", "switch-account", "switch-settle", "move", "send", "approve",
+			"set-title-lock", "set", "switch-account", "switch-settle", "move", "send", "ref", "approve",
 			"send-keys", "command", "commands", "output", "children", "search",
 		},
 		args: map[string][]argKind{
@@ -160,6 +160,7 @@ var completionTree = []completionNode{
 			"switch-settle":         {argSession},
 			"move":                  {argSession},
 			"send":                  {argSession},
+			"ref":                   {argSession, argSession},
 			"approve":               {argSession},
 			"send-keys":             {argSession},
 			"command":               {argSession},

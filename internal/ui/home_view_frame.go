@@ -933,6 +933,18 @@ func (h *Home) renderFrame() string {
 	if warning := h.renderHealthWarning(); warning != "" {
 		helpBar = warning
 	}
+	// A live session-reference pick (ASK-111) owns the bar: its hint line is
+	// the only place that says what Enter will do.
+	if !h.insertMode && h.sessionRefPicking() {
+		helpBar = h.renderSessionRefPickBar()
+	}
+	// The session-reference toast (ASK-111) takes the help bar's key row: the
+	// frame is exactly the viewport, so a line drawn below the help bar is
+	// clipped.
+	refToast := h.sessionRefToastActive()
+	if refToast {
+		helpBar = h.renderSessionRefToastOverHelpBar(helpBar)
+	}
 	b.WriteString(helpBar)
 
 	// Debug performance overlay (AGENTDECK_DEBUG=1 only)
@@ -942,7 +954,7 @@ func (h *Home) renderFrame() string {
 	}
 
 	// Error and warning messages are displayed but may be truncated by final height constraint
-	if h.err != nil {
+	if h.err != nil && !refToast {
 		remaining := 5*time.Second - time.Since(h.errTime)
 		if remaining < 0 {
 			remaining = 0

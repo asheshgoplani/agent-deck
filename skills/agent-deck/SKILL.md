@@ -31,6 +31,7 @@ Plugin installs resolve to `~/.claude/plugins/cache/agent-deck/agent-deck/<hash>
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session send <name> --message-file <file>` | Send message from file (`-` = stdin); no shell quoting. Also on `launch`/`session start` |
 | `agent-deck session command --json <name> "/compact"` | Run a Claude Code slash command or skill (`/model`, `/compact`, `/clear`, `/exit`) safely and verify it; never via `session send`. `session commands --json <name>` lists them |
+| `agent-deck session ref <source> <target>` | Type a short reference to `<source>` (title, id, path, status, how to read it) into `<target>`'s composer, not sent; `--print` only prints it |
 | `agent-deck session output <name>` | Get bounded, ANSI-clean last response (JSON/quiet/copy preserve full source) |
 | `agent-deck session children --json` | Child sessions' live status + asserted completions (non-blocking, read-only) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |

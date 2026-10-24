@@ -759,3 +759,38 @@ func (s *Session) IsClaudeRunning() bool {
 func (s *Session) SendCommand(command string) error {
 	return s.SendKeysAndEnter(command)
 }
+
+// ErrInsertHasLineBreak is returned by InsertTextToPrimaryWindow for text
+// that carries a CR or LF: either one is a submit key to a shell or to a
+// composer without bracketed paste, so it could send the draft.
+var ErrInsertHasLineBreak = errors.New("insert text must be a single line (no CR/LF)")
+
+// InsertTextToPrimaryWindow types one line of literal text into the managed
+// agent window's composer and never presses Enter: the text stays in the
+// composer for the user to edit and submit (session ref, ASK-111). A
+// vim-mode composer is first put in insert mode, as session send does.
+func (s *Session) InsertTextToPrimaryWindow(text string) error {
+	return s.InsertTextToPrimaryWindowChecked(text, nil)
+}
+
+// InsertTextToPrimaryWindowChecked is InsertTextToPrimaryWindow with a guard:
+// before runs right before every key batch (the vim-mode Escape and i, and
+// the text). A non-nil error from it stops the insert there and is returned
+// as is, so a guard that refuses before the first batch types nothing.
+// session ref uses it to refuse a pane that shows a menu (ASK-111).
+func (s *Session) InsertTextToPrimaryWindowChecked(text string, before func() error) error {
+	if strings.ContainsAny(text, "\r\n") {
+		return ErrInsertHasLineBreak
+	}
+	if text == "" {
+		return nil
+	}
+	target := s.primaryWindowTarget()
+	if err := s.ensureInsertModeOnTargetChecked(target, before); err != nil {
+		return err
+	}
+	if err := beforeKeyBatch(before); err != nil {
+		return err
+	}
+	return s.sendKeysToTarget(target, text)
+}
