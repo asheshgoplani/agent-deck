@@ -103,6 +103,8 @@ func handleSession(profile string, args []string) {
 		handleSessionImageUpload(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
+	case "ref":
+		handleSessionRef(profile, args[1:])
 	case "send-status":
 		handleSessionSendStatus(profile, args[1:])
 	case "queue":
@@ -173,6 +175,7 @@ func printSessionHelp() {
 	fmt.Println("  switch-settle <id>             Finish a switch hands-free: ready, prompts, plugins, kick, verify")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session (--queue: never silently lost, see send-status; --image <path>)")
+	fmt.Println("  ref <source> <target>   Type a short reference to <source> into <target>'s composer, not sent (--print: only print it)")
 	fmt.Println("  image-upload <id>       Stage an attachment from stdin (--name <uuid>.png --json; max 20 MiB)")
 	fmt.Println("  command [id] \"/cmd ...\"  Run a Claude slash command (/model, /compact, /clear, /exit, skills) and verify the outcome")
 	fmt.Println("  commands [id]           List the slash commands and skills a Claude session can run (--json)")
@@ -218,6 +221,7 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session set-title-lock SCRUM-351 off        # Re-enable title sync")
 	fmt.Println("  agent-deck session output my-project                 # Get last response from session")
 	fmt.Println("  agent-deck session output my-project --json          # Get response as JSON")
+	fmt.Println("  agent-deck session ref auth-fix reviewer             # Hand reviewer a reference to auth-fix (not sent)")
 	fmt.Println("  agent-deck session context my-project                # What is in the agent's context")
 	fmt.Println("  agent-deck session context my-project --tab breakdown # Ranked by token cost")
 	fmt.Println("  agent-deck session context my-project --json         # Full report with provenance")

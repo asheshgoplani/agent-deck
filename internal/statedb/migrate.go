@@ -125,6 +125,11 @@ type toolDataBlob struct {
 	// (internal/session/limit_verdict_reset.go), listed for the same reason as
 	// ContextLevel: clearing it must not be undone by MergeToolDataExtras.
 	LimitVerdictResetAt json.RawMessage `json:"limit_verdict_reset_at,omitempty"`
+	// QueuedMessage is a queued session's pending -m prompt
+	// (internal/session/queued_start.go), listed for the same reason as
+	// ContextLevel: clearing it once delivered must not be undone by
+	// MergeToolDataExtras, or a later save would resurrect it.
+	QueuedMessage string `json:"queued_message,omitempty"`
 }
 
 // multiRepoWorktreeBlob is the JSON representation of a multi-repo worktree in tool_data.

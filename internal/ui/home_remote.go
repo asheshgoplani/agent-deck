@@ -14,6 +14,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/health"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -843,6 +844,7 @@ func (h *Home) fetchOneRemote(gen uint64, name string, rc session.RemoteConfig, 
 			statusPassMS, tmuxCalls, statCount = listStats.StatusPassMS, listStats.TmuxCalls, listStats.Sessions
 		}
 		health.RecordRemote(name, time.Since(remoteStarted), remoteOutcome, statusPassMS, tmuxCalls, statCount)
+		optiming.Since("remote.list", remoteStarted)
 	}()
 	sessions, listStats, err := runner.FetchSessions(ctx)
 	pollErr = err

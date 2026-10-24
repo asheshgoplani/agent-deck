@@ -245,12 +245,13 @@ type sessionRenderState struct {
 	title          string // Instance.Title at snapshot time
 	autoName       bool   // session may show a captured/live task description as a suffix
 	autoNameDesc   string // last persisted auto-name description (fallback when paneTitle empty)
-	// archivedSuperseded mirrors session.VisibleInstances' exclusion: true
-	// for an archived cross-harness source still superseded by a "Restart
-	// with new session ID" target. Zero value (false) means "counted" —
-	// callers that build a fake snapshot without touching this field (many
-	// tests do) get the pre-finding-1 behavior of counting everything.
-	archivedSuperseded bool
+	// archived is true for any archived session, including an archived
+	// cross-harness source superseded by a "Restart with new session ID"
+	// target. The header pill skips these so it matches `agent-deck status`
+	// and the web menu, which both drop archived sessions. Zero value (false)
+	// means "counted": callers that build a fake snapshot without touching
+	// this field (many tests do) count everything.
+	archived bool
 }
 
 // shouldPersistAutoNameDesc decides whether the background status loop should
@@ -399,10 +400,10 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			continue
 		}
 		state := sessionRenderState{
-			status:             inst.GetStatusThreadSafe(),
-			substate:           inst.CachedSubstate(),
-			tool:               inst.DisplayToolThreadSafe(),
-			archivedSuperseded: inst.IsArchived() && inst.SupersededBy != "",
+			status:   inst.GetStatusThreadSafe(),
+			substate: inst.CachedSubstate(),
+			tool:     inst.DisplayToolThreadSafe(),
+			archived: inst.IsArchived(),
 			// Label fields: read here, on the refresher's goroutine, so the
 			// render path never takes Instance.mu per row (#1753). Title goes
 			// through GetTitleThreadSafe because SetField/ReconcileTitleFromClaude/

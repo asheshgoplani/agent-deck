@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,6 +194,13 @@ type Engine struct {
 	// (WatcherState.ReplayFrom) stays. Only writerLoop uses it.
 	unstored map[string]bool
 
+	// refusalLogInterval is the least time between two
+	// watcher_delivery_queue_full warnings for one watcher and conductor
+	// (defaultRefusalLogInterval); refusalLogs is when each pair last logged
+	// one. Only writerLoop uses them.
+	refusalLogInterval time.Duration
+	refusalLogs        map[string]refusalLog
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -255,6 +263,9 @@ func NewEngine(cfg EngineConfig) *Engine {
 		ctx:           ctx,
 		cancel:        cancel,
 		log:           logger,
+
+		refusalLogInterval: defaultRefusalLogInterval,
+		refusalLogs:        map[string]refusalLog{},
 	}
 }
 
@@ -993,7 +1004,8 @@ func (e *Engine) keepReplayPosition(env eventEnvelope) error {
 //
 // It reports whether the outbox failed in a way a retry can fix, for the
 // caller to keep the event unstored. A conductor with no session cannot be
-// queued for until one is created, so that event is stored as before.
+// queued for until one is created, so that event is stored as before, and
+// so is an event for a conductor whose queue is full (ErrDeliveryQueueFull).
 func (e *Engine) queueDelivery(env *eventEnvelope, conductor string) (retry bool) {
 	name := env.tracker.Check().WatcherName
 	stored, err := e.cfg.DB.HasWatcherEvent(env.watcherID, env.event.DedupKey())
@@ -1020,6 +1032,12 @@ func (e *Engine) queueDelivery(env *eventEnvelope, conductor string) (retry bool
 		}
 		return false
 	}
+	if errors.Is(err, ErrDeliveryQueueFull) {
+		// The event is stored as before but never delivered: count it in
+		// state.db, where `watcher status` and the health loop read it.
+		e.recordRefusal(env.watcherID, name, conductor, err)
+		return false
+	}
 	env.queueFailures++
 	if !errors.Is(err, ErrNoConductorSession) {
 		if env.queueFailures == 1 {
@@ -1040,6 +1058,51 @@ func (e *Engine) queueDelivery(env *eventEnvelope, conductor string) (retry bool
 		slog.String("error", err.Error()),
 	)
 	return false
+}
+
+// defaultRefusalLogInterval is the least time between two
+// watcher_delivery_queue_full warnings for one watcher and conductor. Each
+// warning carries the running total, so a flood logs a line a minute, not
+// one per event, and the log still shows it is going on.
+const defaultRefusalLogInterval = time.Minute
+
+// refusalLog is when a watcher and conductor pair last logged a refusal, and
+// how many refusals it has not logged since.
+type refusalLog struct {
+	at         time.Time
+	suppressed int
+}
+
+// recordRefusal counts a routed event the outbox refused as queue full in
+// state.db (per watcher and conductor, with the first and last refusal
+// time) and logs watcher_delivery_queue_full at most once per
+// refusalLogInterval per pair, with the running total.
+func (e *Engine) recordRefusal(watcherID, watcherName, conductor string, cause error) {
+	now := time.Now()
+	total, dbErr := 0, errors.New("no state database")
+	if e.cfg.DB != nil {
+		total, dbErr = e.cfg.DB.RecordWatcherDeliveryRefusal(watcherID, conductor, now)
+	}
+	key := watcherID + "\x00" + conductor
+	last, seen := e.refusalLogs[key]
+	if seen && now.Sub(last.at) < e.refusalLogInterval && dbErr == nil {
+		last.suppressed++
+		e.refusalLogs[key] = last
+		return
+	}
+	e.refusalLogs[key] = refusalLog{at: now}
+	attrs := []any{
+		slog.String("watcher", watcherName),
+		slog.String("conductor", conductor),
+		slog.Int("refused_total", total),
+		slog.Int("refused_since_last_warning", last.suppressed+1),
+		slog.String("error", cause.Error()),
+		slog.String("action", "the event is stored in watcher_events but not delivered; see agent-deck watcher status"),
+	}
+	if dbErr != nil {
+		attrs = append(attrs, slog.String("count_error", dbErr.Error()))
+	}
+	e.log.Warn("watcher_delivery_queue_full", attrs...)
 }
 
 // DefaultResumeMaxAge bounds how far back a restarted ntfy or slack watcher
@@ -1235,6 +1298,7 @@ func (e *Engine) healthLoop() {
 		select {
 		case <-ticker.C:
 			pending, pendingErr := e.pendingDeliveries()
+			refused := e.deliveryRefusals()
 			e.adaptersMu.Lock()
 			entries := append([]*adapterEntry(nil), e.adapters...)
 			e.adaptersMu.Unlock()
@@ -1264,6 +1328,7 @@ func (e *Engine) healthLoop() {
 				if pendingErr != nil {
 					state.UndeliveredError = pendingErr.Error()
 				}
+				applyRefusals(&state, refused[entry.watcherID], time.Now())
 
 				// Slice 4 (CORE-PLAN): additive tap onto the event bus —
 				// this is the "health journal" producer named in the plan.
@@ -1283,6 +1348,51 @@ func (e *Engine) healthLoop() {
 			return
 		}
 	}
+}
+
+// deliveryRefusals reads the persisted refusal counts, per watcher id; nil
+// without a state database.
+func (e *Engine) deliveryRefusals() map[string][]DeliveryRefusal {
+	if e.cfg.DB == nil {
+		return nil
+	}
+	rows, err := e.cfg.DB.LoadWatcherDeliveryRefusals("")
+	if err != nil {
+		e.log.Warn("watcher_delivery_refusals_unreadable", slog.String("error", err.Error()))
+		return nil
+	}
+	out := map[string][]DeliveryRefusal{}
+	for _, r := range rows {
+		out[r.WatcherID] = append(out[r.WatcherID], DeliveryRefusal{
+			Conductor: r.Conductor, Count: r.Count,
+			FirstRefusedAt: r.FirstRefusedAt, LastRefusedAt: r.LastRefusedAt,
+		})
+	}
+	return out
+}
+
+// applyRefusals puts a watcher's refusals in its health state and, for each
+// conductor with a refusal newer than RefusalWarningWindow, says so in the
+// message, moving a healthy watcher to warning so the health alert fires.
+func applyRefusals(state *HealthState, refused []DeliveryRefusal, now time.Time) {
+	state.Refused = refused
+	var recent []string
+	for _, r := range refused {
+		if now.Sub(r.LastRefusedAt) < RefusalWarningWindow {
+			recent = append(recent, fmt.Sprintf("%d routed events for conductor %s refused since %s, last at %s (delivery queue full; stored but not delivered)",
+				r.Count, r.Conductor, r.FirstRefusedAt.UTC().Format(time.RFC3339), r.LastRefusedAt.UTC().Format(time.RFC3339)))
+		}
+	}
+	if len(recent) == 0 {
+		return
+	}
+	msg := strings.Join(recent, "; ")
+	if state.Status == HealthStatusHealthy {
+		state.Status = HealthStatusWarning
+		state.Message = msg
+		return
+	}
+	state.Message += "; " + msg
 }
 
 // pendingDeliveries reads the outbox's undelivered events, per watcher id;

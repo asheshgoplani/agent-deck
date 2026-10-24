@@ -5,6 +5,8 @@
 > per-developer file, this content was relocated here so it stays
 > version-controlled and shared across contributors.
 
+For the full operation catalogue, targets and live timings (`agent-deck perf`), see [performance.md](performance.md).
+
 Agent-deck has a recurring complaint that lifecycle operations (cold start, group create/delete) drift slower release-over-release. **As of v1.7.x, hot-path walltime is permanently test-gated.**
 
 ## Required tests

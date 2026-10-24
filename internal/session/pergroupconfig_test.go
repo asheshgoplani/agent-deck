@@ -295,7 +295,7 @@ env_file = "%s"
 	}
 	ClearUserConfigCache()
 
-	wantSource := `source "` + envrcPath + `"`
+	wantSource := "source " + shellQuote(envrcPath)
 
 	// Assertion A (normal-claude branch at instance.go:478):
 	// Build via the normal-claude path. Expected GREEN on first run.

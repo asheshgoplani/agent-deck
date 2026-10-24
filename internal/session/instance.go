@@ -491,6 +491,14 @@ type Instance struct {
 	// `session set <id> context-level <none|primer|full>` (empty clears).
 	ContextLevel string `json:"context_level,omitempty"`
 
+	// QueuedMessage is the -m prompt of a session queued at its group's
+	// max_concurrent cap. Every path off the queue (Storage.StartQueued, a
+	// direct or TUI start, a restart) takes it off the row in the same write
+	// as the status change (StateDB.TakeQueued) and only then hands it to the
+	// send queue, so it is delivered once and never lingers here.
+	// Persisted in the tool_data extras zone (queued_start.go).
+	QueuedMessage string `json:"queued_message,omitempty"`
+
 	// PromptSuggestions is the per-session override for Claude Code prompt
 	// suggestions: "children-off", "on" or "off"; empty means unset (profile,
 	// then [launch] config, then children-off). See prompt_suggestions.go.
@@ -1456,6 +1464,13 @@ func extractGroupPath(projectPath string) string {
 // checks Start()'s body for the #745 IsForkAwaitingStart guard.
 func (i *Instance) Start() (startErr error) {
 	defer func() { i.recordTelemetryStartError(startErr) }()
+	if i.leftQueue() {
+		defer func() {
+			if startErr == nil {
+				i.takeOffQueueAfterStart()
+			}
+		}()
+	}
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -1843,6 +1858,13 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		return i.Start()
 	}
 	defer func() { i.recordTelemetryStartError(startErr) }()
+	if i.leftQueue() {
+		defer func() {
+			if startErr == nil {
+				i.takeOffQueueAfterStart()
+			}
+		}()
+	}
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -2204,7 +2226,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			return nil
 		}
 		var current bool
-		exists, current = i.probeTmuxExists()
+		exists, _, current = i.probeTmuxExists(nil)
 		if !current || !exists {
 			return nil
 		}
@@ -2219,7 +2241,7 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 			return nil
 		}
 		var current bool
-		exists, current = i.probeTmuxExists()
+		exists, _, current = i.probeTmuxExists(nil)
 		if !current {
 			return nil
 		}
@@ -2269,11 +2291,21 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	}
 
 	// Check if tmux session exists
+	var listedAbsent bool
 	if !checkedExists {
 		var current bool
-		exists, current = i.probeTmuxExists()
+		exists, listedAbsent, current = i.probeTmuxExists(pass)
 		if !current {
 			return nil
+		}
+		if listedAbsent && !i.listingAloneProvesDead() {
+			// A row last seen live: confirm with its own has-session before
+			// a terminated status (the listing may predate a restart).
+			exists, _, current = i.probeTmuxExists(nil)
+			if !current {
+				return nil
+			}
+			listedAbsent = !exists
 		}
 	}
 	if !exists {
@@ -2291,8 +2323,13 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		} else {
 			// tmux session is non-nil here, so the exit-status probe can block;
 			// applyTerminatedPaneStatus drops i.mu for the query and keeps the
-			// stopped-state guard on write.
-			i.applyTerminatedPaneStatus()
+			// stopped-state guard on write. A session the pass listing proved
+			// gone has no pane to ask.
+			if listedAbsent {
+				i.applyTerminatedPaneStatusOf(nil)
+			} else {
+				i.applyTerminatedPaneStatus()
+			}
 			// Attribute the death to authentication when the pane's last live
 			// sample showed a credential banner: the fleet-death case, which no
 			// restart can fix (see auth_hold.go). Runs regardless of the
@@ -2364,6 +2401,15 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 	if IsCodexCompatible(i.Tool) && i.hookSessionID != "" &&
 		(i.shouldRejectCodexSubagentRebind(i.hookSessionID) ||
 			i.shouldRejectCodexUnbackedTurnEnd(i.hookSessionID, i.hookEvent)) {
+		i.hookStatus, i.hookEvent, i.hookSessionID = "", "", ""
+		i.hookLastUpdate = time.Time{}
+	}
+
+	// Issue #2853: the pane exists here, so a "dead" hook (SessionEnd) from
+	// before the newest spawn began is the previous process's exit, not this
+	// one's (HookDeadFromEarlierSpawn).
+	// Read as fresh, it turned every start after a stop into error.
+	if HookDeadFromEarlierSpawn(i.ID, i.hookStatus, i.hookLastUpdate) {
 		i.hookStatus, i.hookEvent, i.hookSessionID = "", "", ""
 		i.hookLastUpdate = time.Time{}
 	}

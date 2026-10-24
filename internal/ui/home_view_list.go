@@ -108,6 +108,7 @@ func (h *Home) renderSessionList(width, height int) string {
 
 	nextItem := h.viewOffset
 	rowLines := h.sidebarRowLines()
+	refSrcID := h.sessionRef.srcID
 	for i := h.viewOffset; i < len(h.flatItems); i++ {
 		item := h.flatItems[i]
 		rowHeight := h.sidebarItemRenderHeightAtWidthLines(item, width, rowLines)
@@ -139,6 +140,18 @@ func (h *Home) renderSessionList(width, height int) string {
 			} else {
 				// Non-matching: render normally (no dimming to preserve layout)
 				b.WriteString(raw)
+			}
+		} else if refSrcID != "" && i != h.cursor && item.Type == session.ItemTypeSession &&
+			item.Session != nil && item.Session.ID == refSrcID {
+			// The picked reference source A (ASK-111): ◆ in the gutter.
+			var itemBuf strings.Builder
+			h.renderItem(&itemBuf, item, false, i, groupStats, snapshot, width)
+			raw := itemBuf.String()
+			if idx := strings.Index(raw, "\n"); idx >= 0 {
+				b.WriteString(overlaySessionRefMark(raw[:idx]))
+				b.WriteString(raw[idx:])
+			} else {
+				b.WriteString(overlaySessionRefMark(raw))
 			}
 		} else {
 			h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot, width)

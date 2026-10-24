@@ -19,7 +19,7 @@ func stubCodexPaneProcessPIDs(t *testing.T, pids []int, err error) {
 	t.Helper()
 	restore := codexPaneProcessPIDs
 	t.Cleanup(func() { codexPaneProcessPIDs = restore })
-	codexPaneProcessPIDs = func(*Instance) ([]int, error) { return pids, err }
+	codexPaneProcessPIDs = func(*Instance, *StatusUpdatePass) ([]int, error) { return pids, err }
 }
 
 // seedProjectRollout writes a user rollout whose session_meta cwd is project.

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -133,6 +134,12 @@ const pageUpSeq = "\x1b[5~"
 type AttachOptions struct {
 	// DetachByte is the raw control byte that detaches (0 => default Ctrl+Q).
 	DetachByte byte
+	// TimingStart, when non-zero, is when the user asked for this attach: the
+	// first pane byte then records tui.attach (internal/optiming). DetachedAt,
+	// when non-nil, receives the moment the attach ended (tui.detach). Both
+	// are set only while timings are on.
+	TimingStart time.Time
+	DetachedAt  *time.Time
 	// SwitchKeyByte is the control byte (e.g. Ctrl+S, 0x13) that hands control
 	// back to the caller to open the in-attach session switcher. 0 disables it.
 	//
@@ -701,7 +708,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	go func() {
 		defer wg.Done()
 		defer close(outputDone)
-		_, err := io.Copy(os.Stdout, ptmx)
+		var src io.Reader = ptmx
+		if !opts.TimingStart.IsZero() {
+			src = &firstByteTimer{r: ptmx, op: "tui.attach", start: opts.TimingStart}
+		}
+		_, err := io.Copy(os.Stdout, src)
 		if err != nil && err != io.EOF {
 			// Only report non-EOF errors (EOF is normal on PTY close)
 			select {
@@ -821,8 +832,29 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		attachErr = nil
 	}
 
+	if opts.DetachedAt != nil {
+		*opts.DetachedAt = time.Now()
+	}
 	cleanupAttach()
 	return SwitchIntent(switchOutcome.Load()), attachErr
+}
+
+// firstByteTimer records op (from start) on the first non-empty read of r,
+// then passes reads through untouched. Used only while timings are on.
+type firstByteTimer struct {
+	r     io.Reader
+	op    string
+	start time.Time
+	done  bool
+}
+
+func (f *firstByteTimer) Read(p []byte) (int, error) {
+	n, err := f.r.Read(p)
+	if n > 0 && !f.done {
+		f.done = true
+		optiming.Since(f.op, f.start)
+	}
+	return n, err
 }
 
 // AttachWindow attaches to a specific window within this tmux session.

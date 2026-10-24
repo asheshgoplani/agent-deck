@@ -1255,21 +1255,29 @@ func (s *Session) killAfterPaneCwdFailure(cwdErr error) error {
 // and reported as errors. Callers deciding whether a session's process tree
 // may be treated as absent (#1873) depend on that distinction.
 func (s *Session) ProbeExists() (bool, error) {
+	return ProbeSessionOnSocket(s.SocketName, s.TmuxName())
+}
+
+// ProbeSessionOnSocket is ProbeExists for a session known only by its tmux
+// name and socket (Instance.TmuxSocketName verbatim; "" is the default
+// server): an exact-name, uncached has-session whose false is proven absence
+// and whose error is indeterminate.
+func ProbeSessionOnSocket(socketName, name string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	_, err := commandOutput(s.tmuxCmdContext(ctx, "has-session", "-t", "="+s.TmuxName()))
+	_, err := commandOutput(tmuxExecContext(ctx, socketName, "has-session", "-t", "="+name))
 	if err == nil {
 		return true, nil
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		return false, fmt.Errorf("tmux has-session probe for %q timed out after %s", s.TmuxName(), hasSessionProbeTimeout)
+		return false, fmt.Errorf("tmux has-session probe for %q timed out after %s", name, hasSessionProbeTimeout)
 	}
-	if socketHasProtocolMismatch(s.SocketName) {
-		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", s.SocketName)
+	if socketHasProtocolMismatch(socketName) {
+		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", socketName)
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || !exitErr.Exited() {
-		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", s.TmuxName(), err)
+		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", name, err)
 	}
 	stderr := strings.TrimSpace(string(exitErr.Stderr))
 	if strings.HasPrefix(stderr, "can't find session:") ||
@@ -1277,7 +1285,7 @@ func (s *Session) ProbeExists() (bool, error) {
 		(strings.Contains(stderr, "error connecting to") && strings.Contains(stderr, "No such file or directory")) {
 		return false, nil
 	}
-	return false, fmt.Errorf("tmux has-session probe for %q was inconclusive: %w", s.TmuxName(), err)
+	return false, fmt.Errorf("tmux has-session probe for %q was inconclusive: %w", name, err)
 }
 
 // Exists checks if the tmux session exists
@@ -1298,19 +1306,15 @@ func (s *Session) Exists() bool {
 	// hit flipped live sessions on a second socket to StatusError/tmux_missing
 	// (multi-socket cache aliasing), after which restart machinery could kill
 	// the still-running pane.
-	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
-		if exists, cacheValid := sessionExistsFromCache(s.TmuxName()); cacheValid && exists {
-			return true
-		}
+	if s.existsInProcess() {
+		return true
 	}
+	return s.existsProbe()
+}
 
-	// If PipeManager has a live control connection, the session definitely exists.
-	if pm := GetPipeManager(); pm != nil {
-		if pm.IsConnected(s.TmuxName()) {
-			return true
-		}
-	}
-
+// existsProbe is the subprocess half of Exists: a bounded has-session on the
+// session's own socket.
+func (s *Session) existsProbe() bool {
 	// Cache is stale (or skipped for an isolated socket): fall back to a
 	// direct tmux check on the session's own socket. Bound it: a server that
 	// is briefly busy can make the probe hang, and a probe that never answers
@@ -1356,6 +1360,65 @@ func (s *Session) AbsentFromCache() bool {
 	}
 	if pm := GetPipeManager(); pm != nil && pm.IsConnected(s.Name) {
 		return false
+	}
+	return true
+}
+
+// existsInProcess is the positive half of Exists that needs no subprocess: a
+// positive hit in the default-socket cache (#755 guard) or a live PipeManager
+// control connection.
+func (s *Session) existsInProcess() bool {
+	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
+		if exists, cacheValid := sessionExistsFromCache(s.TmuxName()); cacheValid && exists {
+			return true
+		}
+	}
+	// If PipeManager has a live control connection, the session definitely exists.
+	if pm := GetPipeManager(); pm != nil {
+		if pm.IsConnected(s.TmuxName()) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExistsListed is Exists for a status pass that lists this session's socket
+// with ListSessionNamesOnSocket. listed is called only when Exists would probe
+// tmux (no in-process positive). When its listing proves the session absent,
+// ExistsListed answers (false, true) without a has-session of its own, so a
+// dead row costs no tmux subprocess. Without such proof (nil listing, or a
+// name tmux could resolve another way) it answers exactly like Exists, with
+// listedAbsent false.
+//
+// A listing that names the session is not used as a positive: such a row
+// still runs its own has-session, as Exists would. So a live row with no
+// in-process positive (another socket without a PipeManager connection, or
+// a stale default-socket cache) costs that has-session plus its share of
+// one list-sessions per socket per listing age.
+func (s *Session) ExistsListed(listed func() map[string]struct{}) (exists, listedAbsent bool) {
+	if s.existsInProcess() {
+		return true, false
+	}
+	if listingProvesAbsent(listed(), s.TmuxName()) {
+		return false, true
+	}
+	return s.existsProbe(), false
+}
+
+// listingProvesAbsent reports whether a complete list-sessions result proves
+// that `has-session -t name` would fail. tmux resolves a session target by
+// exact name, then as a glob, then by unique prefix, and reads ':' '.' and a
+// leading '$' '@' '%' as other target syntax and a leading '=' as an exact
+// match of the rest, so absence is proven only for a plain name that no listed
+// session starts with.
+func listingProvesAbsent(listed map[string]struct{}, name string) bool {
+	if listed == nil || name == "" || strings.ContainsAny(name, ":.*?[\\$@%=") {
+		return false
+	}
+	for n := range listed {
+		if strings.HasPrefix(n, name) {
+			return false
+		}
 	}
 	return true
 }

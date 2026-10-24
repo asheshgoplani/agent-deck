@@ -100,7 +100,7 @@ Four adapter types ship in the box:
 | Type | Source | Required flag |
 |---|---|---|
 | `webhook` | Any service that can POST to a local HTTP listener | `--port <int>` |
-| `github` | GitHub repository / org webhooks (HMAC-verified) | `--secret <hmac-secret>` |
+| `github` | GitHub repository / org webhooks (HMAC-verified) | `$GITHUB_WEBHOOK_SECRET` or `--secret-file <path>` (chmod 600) |
 | `ntfy` | [ntfy.sh](https://ntfy.sh) push notifications (phone → conductor) | `--topic <name>` |
 | `slack` | Slack messages via a Cloudflare Worker bridge → ntfy | `--topic <name>` |
 
@@ -108,8 +108,7 @@ Four adapter types ship in the box:
 
 ```bash
 # 1. Create the watcher (writes ${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/gh-alerts/ on new installs).
-agent-deck watcher create github --name gh-alerts \
-  --secret "$GITHUB_WEBHOOK_SECRET"
+GITHUB_WEBHOOK_SECRET=... agent-deck watcher create github --name gh-alerts
 
 # 2. Activate it (the engine picks it up on the next tick).
 agent-deck watcher start gh-alerts
@@ -121,7 +120,7 @@ agent-deck watcher test gh-alerts
 Then on the GitHub side: settings → webhooks → add webhook, point at
 your watcher's URL (the `--port` for `webhook`, or whatever your reverse
 proxy fronts), content type `application/json`, secret = the same value
-you passed `--secret`. Save. Send a test delivery from the GitHub UI.
+you gave it. Save. Send a test delivery from the GitHub UI.
 
 You should see the event in:
 
@@ -140,14 +139,23 @@ receive a message like:
 ### The other three adapter types
 
 ```bash
-# Generic HTTP webhook on port 9000 (any service that can POST JSON).
+# Generic HTTP webhook on 127.0.0.1:9000 (any service that can POST JSON).
+# A secret is generated and stored in its watcher.toml (or pass
+# $WEBHOOK_SECRET / --secret-file, chmod 600, at least 16 bytes); create prints
+# a signing example. Requests are signed over X-Webhook-Timestamp (within 5
+# minutes), X-Webhook-Sender and the body, and a replayed signature gets 409.
 agent-deck watcher create webhook --name my-webhook --port 9000
 
 # ntfy.sh push notifications — easiest way to pipe phone events into the fleet.
-agent-deck watcher create ntfy --name phone-alerts --topic <random-long-string>
+agent-deck watcher create ntfy --name phone-alerts --random-topic
+
+# Or a self-hosted ntfy server with an access-protected topic; the token comes
+# from $NTFY_TOKEN or a chmod-600 --token-file, never a CLI arg.
+NTFY_TOKEN=... agent-deck watcher create ntfy --name phone-alerts \
+    --server https://ntfy.example.com --topic phone-alerts
 
 # Slack-bridged via ntfy (see watcher-creator skill for the Cloudflare Worker).
-agent-deck watcher create slack --name team-slack --topic <random-long-string>
+agent-deck watcher create slack --name team-slack --random-topic
 ```
 
 > **`create` never edits an existing watcher.** The settings you pass live in
@@ -327,13 +335,20 @@ wedges too. Cascading failure. Always use `--no-wait` in a polling loop.
 
 ### 4. "ntfy topic leaked into a public config"
 
-ntfy has no auth beyond topic-secrecy. Keep topic names in
+On the public `https://ntfy.sh` a topic has no auth beyond its secrecy:
+anyone who knows it can read events and post fake ones. Keep topic names in
 `<effective watcher data dir>/<name>/watcher.toml` or env vars — never in
-tracked files.
+tracked files — and make them hard to guess (`--random-topic`). For real
+access control, self-host ntfy (https://docs.ntfy.sh/install/) with
+`auth-default-access: deny-all`, create an access token, and pass
+`--server https://ntfy.example.com` with the token in `$NTFY_TOKEN` or a
+chmod-600 `--token-file`; it is stored as `token` under `[source]` and sent as
+`Authorization: Bearer <token>`. An existing watcher can add `server = "..."`
+and `token = "..."` under `[source]` in its `watcher.toml`.
 
 ### 5. "GitHub watcher silently drops events"
 
-The HMAC check is non-negotiable. If your `--secret` doesn't match what
+The HMAC check is non-negotiable. If your secret doesn't match what
 GitHub is signing with, every event is dropped (with the error counter
 incremented). Check `agent-deck watcher status <name>` — the
 `error_count` will give it away.
@@ -353,7 +368,7 @@ session name is wrong.
 ```bash
 # Create + activate (4 adapter types)
 agent-deck watcher create webhook --name my-webhook --port 9000
-agent-deck watcher create github  --name gh-alerts  --secret "$SECRET"
+agent-deck watcher create github  --name gh-alerts  --secret-file ~/.gh-webhook-secret
 agent-deck watcher create ntfy    --name phone-alerts --topic <random>
 agent-deck watcher create slack   --name team-slack   --topic <random>
 agent-deck watcher start <name>

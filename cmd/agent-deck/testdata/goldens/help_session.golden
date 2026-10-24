@@ -27,6 +27,7 @@ Commands:
   switch-settle <id>             Finish a switch hands-free: ready, prompts, plugins, kick, verify
   move <id> <path>        Move session to a new path (migrates Claude history)
   send <id> <message>     Send a message to a running session (--queue: never silently lost, see send-status; --image <path>)
+  ref <source> <target>   Type a short reference to <source> into <target>'s composer, not sent (--print: only print it)
   image-upload <id>       Stage an attachment from stdin (--name <uuid>.png --json; max 20 MiB)
   command [id] "/cmd ..."  Run a Claude slash command (/model, /compact, /clear, /exit, skills) and verify the outcome
   commands [id]           List the slash commands and skills a Claude session can run (--json)
@@ -72,6 +73,7 @@ Examples:
   agent-deck session set-title-lock SCRUM-351 off        # Re-enable title sync
   agent-deck session output my-project                 # Get last response from session
   agent-deck session output my-project --json          # Get response as JSON
+  agent-deck session ref auth-fix reviewer             # Hand reviewer a reference to auth-fix (not sent)
   agent-deck session context my-project                # What is in the agent's context
   agent-deck session context my-project --tab breakdown # Ranked by token cost
   agent-deck session context my-project --json         # Full report with provenance

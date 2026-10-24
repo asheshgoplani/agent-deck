@@ -114,13 +114,13 @@ func TestBuildSourceCmd(t *testing.T) {
 			name:          "ignore missing",
 			path:          "/path/.env",
 			ignoreMissing: true,
-			wantContains:  []string{`[ -f "/path/.env" ]`, `source "/path/.env"`},
+			wantContains:  []string{`[ -f '/path/.env' ]`, `source '/path/.env'`},
 		},
 		{
 			name:          "strict mode",
 			path:          "/path/.env",
 			ignoreMissing: false,
-			wantContains:  []string{`source "/path/.env"`},
+			wantContains:  []string{`source '/path/.env'`},
 		},
 	}
 

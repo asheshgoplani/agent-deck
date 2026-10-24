@@ -15,6 +15,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 	"github.com/asheshgoplani/agent-deck/internal/health"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -257,6 +258,7 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 	if len(profiles) == 0 {
 		return notifyPollSlow
 	}
+	defer optiming.Start("daemon.pass")()
 
 	// Stamp liveness BEFORE the work: the question a drain asks is "is a writer
 	// alive", and a daemon wedged inside a probe should still look alive for one
@@ -1654,6 +1656,13 @@ func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatu
 	// Honour the per-session opt-out the parent path already respects, so one
 	// noisy session can be silenced without disabling notifications globally.
 	if inst.NoTransitionNotify {
+		return
+	}
+	// An archived session is one the operator filed away, so it never raises
+	// a banner. Only this operator alert is gated: the parent-inbox path in
+	// the poll loop still records the child's turn, because a conductor
+	// archives a finished worker and still needs its completion record.
+	if inst.IsArchived() {
 		return
 	}
 	// Edge-trigger: notify once per entry into a status, not once per poll

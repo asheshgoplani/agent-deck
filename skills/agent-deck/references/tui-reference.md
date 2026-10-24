@@ -82,6 +82,7 @@ panes are untouched: they receive the raw bytes exactly as typed.
 | `,` | Pin (cycles off -> top -> bottom -> off) |
 | `f` / `F` | Quick fork / fork with options (Claude/OpenCode/Pi/Codex/Oh My Pi) (**rebindable**) |
 | `x` | Send output to another session (**rebindable**) |
+| `alt+l` | Hand a reference to another session: pick this one, move to the target, `Enter` (or `alt+l`) drops, `Esc` cancels. Types a one-line pointer to the picked session (title, id, path, status, `agent-deck session output <id> -q`) into the target's composer and never presses Enter. Group rows, the same session and remote sessions are refused in place; nothing moves (**rebindable**: `[hotkeys].session_ref`) |
 | `E` | Exec shell in sandbox container (**rebindable**) |
 | `H` | Open shell in session's worktree, split pane / window (**rebindable**) |
 | `p` | Edit multi-repo paths (**rebindable**) |
@@ -171,6 +172,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
 | `Ctrl+E` | Open feedback dialog |
+| `Z` | Report a problem or idea: a short form, then the full GitHub issue text, filed only after you press `y` (`report_problem`, **rebindable**) |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
 
 ### Worktree Shortcuts

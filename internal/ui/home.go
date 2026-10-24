@@ -31,6 +31,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/menudata"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -288,6 +289,7 @@ type Home struct {
 	contextPager         *ContextPager         // Full-context inspector overlay (what the agent is being sent)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
+	reportDialog         *ReportDialog         // "Report a problem" form: bug/idea -> GitHub issue (internal/issuereport)
 	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
 	tel                  homeTelemetry         // Opt-in telemetry sampler and TUI lifetime (home_telemetry.go)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
@@ -366,6 +368,8 @@ type Home struct {
 	previewScrollOffset int                    // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
 	isAttaching         atomic.Bool            // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
 	lastRenderedFrame   string                 // Last non-empty frame View produced; re-served while isAttaching so no frame is ever black (#1753). Event-loop goroutine only.
+	pendingFrameOp      string                 // optiming span (tui.first_frame, tui.detach) that ends at the next list frame; set only while timings are on. Event-loop goroutine only.
+	pendingFrameStart   time.Time              // start of pendingFrameOp
 	statusFilter        session.Status         // Filter sessions by status ("" = all, or specific status)
 	groupScope          string                 // Limit TUI to a specific group path ("" = all groups)
 	initialSelect       string                 // Session ID or title to preselect on first load (#709). Does NOT scope groups.
@@ -386,6 +390,9 @@ type Home struct {
 	reloadVersion       uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu            sync.Mutex // Protects reloadVersion, isReloading, and lastLoadMtime for thread-safe access
 	lastLoadMtime       time.Time  // File mtime when we last loaded (for external change detection)
+
+	// Session reference pick/drop (ASK-111, session_ref_pick.go).
+	sessionRef sessionRefState
 
 	// Earliest eligible membership expiry; ordinary ticks only compare clocks.
 	nextTimeFilterExpiry time.Time
@@ -1608,6 +1615,7 @@ func (h *Home) backgroundStatusUpdate() {
 		// health/doctor sample even though status/list already agree.
 		visibleCount := len(session.VisibleInstances(instances))
 		health.RecordStatusPass(elapsed, visibleCount, calls)
+		optiming.Since("tui.status_pass", totalStart)
 		if health.Enabled() {
 			h.queueHealthWarning(elapsed, visibleCount, calls)
 		}
@@ -2411,6 +2419,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.reloadMu.Unlock()
 		firstLoad := h.initialLoading
 		h.initialLoading = false // First load complete, hide splash
+		if firstLoad && !processStart.IsZero() && optiming.Enabled() {
+			h.pendingFrameOp, h.pendingFrameStart = "tui.first_frame", processStart
+		}
 		h.reloadHotkeysFromConfig()
 
 		// Show hooks installation prompt (after splash screen is gone)
@@ -2435,7 +2446,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Show feedback popup if user has a new version and hasn't rated yet (D-11/D-12).
 		// v1.7.38: also skip when the user's config.toml has [feedback].disabled=true,
 		// so a user who opts out via config edit (not just state.json) is honoured.
-		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() && (h.telemetryDialog == nil || !h.telemetryDialog.IsVisible()) {
+		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() && !h.reportDialog.IsVisible() && (h.telemetryDialog == nil || !h.telemetryDialog.IsVisible()) {
 			fbState, _ := feedback.LoadState()
 			cfg, _ := session.LoadUserConfig()
 			configDisabled := cfg != nil && cfg.Feedback.Disabled
@@ -3799,6 +3810,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.syncEmbeddedTerminalGeometry()
 		return h, nil
 
+	case reportPreviewMsg:
+		if h.reportDialog != nil {
+			h.reportDialog.OnPreview(msg)
+		}
+		return h, nil
+
+	case reportFiledMsg:
+		if h.reportDialog != nil {
+			h.reportDialog.OnFiled(msg)
+		}
+		return h, nil
+
+	case reportCopiedMsg:
+		if h.reportDialog != nil {
+			h.reportDialog.OnCopied(msg)
+		}
+		return h, nil
+
 	case feedbackSentMsg:
 		// Route the result into the dialog so stepSent renders success or an explicit
 		// error line (v1.7.37, #679 TUI follow-up). Auto-dismiss still fires via timer.
@@ -3945,6 +3974,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusUpdateMsg:
 		// Clear attach flag - we've returned from the attached session
 		h.isAttaching.Store(false) // Atomic store for thread safety
+		if !msg.detachedAt.IsZero() {
+			h.pendingFrameOp, h.pendingFrameStart = "tui.detach", msg.detachedAt
+		}
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
 		// Reconcile the session we just left on its own goroutine (#1753). It used
@@ -4280,6 +4312,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case previewFetchedMsg:
+		optiming.Since("tui.preview", msg.started)
 		// Async preview content received - always advance the TTL so failures
 		// and empty responses don't trigger a fetch on every tick.
 		// Protect both previewFetchingID and previewCache with the same mutex
@@ -4448,6 +4481,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			h.setError(fmt.Errorf("Copied visible terminal text to clipboard (%d lines, %s)", msg.lineCount, msg.sessionTitle))
 		}
+		return h, nil
+
+	case sessionRefResultMsg:
+		h.handleSessionRefResult(msg)
 		return h, nil
 
 	case sendOutputResultMsg:
@@ -4973,6 +5010,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.worktreeFinishDialog.IsVisible() {
 			return h.handleWorktreeFinishDialogKey(msg)
 		}
+		if h.reportDialog.IsVisible() {
+			d, cmd := h.reportDialog.Update(msg)
+			h.reportDialog = d
+			return h, cmd
+		}
 		if h.feedbackDialog.IsVisible() {
 			d, cmd := h.feedbackDialog.Update(msg)
 			h.feedbackDialog = d
@@ -5047,51 +5089,7 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		userConfig, _ := session.LoadUserConfig()
 		opts := session.NewClaudeOptions(userConfig)
 
-		// Build command - only set CLAUDE_CONFIG_DIR if explicitly configured
-		// If not explicit, let the tmux shell's environment handle it
-		// This is critical for WSL and other environments where users have
-		// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc
-		var cmdBuilder strings.Builder
-		if session.IsClaudeConfigDirExplicitForGroup(inst.GroupPath) {
-			configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
-			// #1815 (Codex review on #1830): quote exactly as
-			// Instance.buildBashExportPrefix does (instance.go, audit F2) —
-			// this string is baked into inst.Command and ends up in a
-			// `bash -c` payload, so an unquoted config_dir containing
-			// whitespace, ;, or $(...) breaks the command or injects.
-			cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir)))
-		}
-		// #1815: the TUI picker builds a resume command too, so it routes
-		// through the same resume-time identity guard as restart / start /
-		// fork. The id was just recorded onto inst above (the user picked
-		// this conversation FOR this session), so the check passes by
-		// construction today — it is here so a future change that reuses an
-		// existing instance here cannot resume a conversation that instance
-		// does not own. Only the identity half applies: the user's explicit
-		// pick must not be downgraded to a fresh session by the
-		// conversation-data heuristics.
-		//
-		// exec so the agent replaces the wrapper shell and leads the pane,
-		// matching buildClaudeResumeCommand and the fresh-start path
-		if allowed, _ := session.ResumeIdentityAllowed(inst, result.SessionID); allowed {
-			cmdBuilder.WriteString("exec claude --resume ")
-			cmdBuilder.WriteString(result.SessionID)
-		} else {
-			freshID := session.NewClaudeSessionUUID()
-			inst.ClaudeSessionID = freshID
-			// #1815: a freshly minted id is vouched ownership, same as every
-			// other minted-id writer (Instance.replaceRefusedClaudeSessionID,
-			// buildClaudeCommandWithMessage's own mint path).
-			session.MarkClaudeSessionIDVerified(inst)
-			cmdBuilder.WriteString("exec claude --session-id ")
-			cmdBuilder.WriteString(freshID)
-		}
-		if opts.SkipPermissions {
-			cmdBuilder.WriteString(" --dangerously-skip-permissions")
-		} else if opts.AllowSkipPermissions {
-			cmdBuilder.WriteString(" --allow-dangerously-skip-permissions")
-		}
-		inst.Command = cmdBuilder.String()
+		inst.Command = globalSearchClaudeCommand(inst, result.SessionID, opts)
 
 		// Persist options so restarts use per-session settings
 		_ = inst.SetClaudeOptions(opts)
@@ -5104,6 +5102,58 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 
 		return sessionCreatedMsg{instance: inst}
 	}
+}
+
+// globalSearchClaudeCommand builds the claude resume command for a global
+// search hit. sessionID comes from an indexed transcript's "sessionId" field
+// (recall NativeID), i.e. file data, so it is shell-quoted like every other
+// claude resume id; ordinary UUIDs are left byte-identical.
+func globalSearchClaudeCommand(inst *session.Instance, sessionID string, opts *session.ClaudeOptions) string {
+	// Build command - only set CLAUDE_CONFIG_DIR if explicitly configured
+	// If not explicit, let the tmux shell's environment handle it
+	// This is critical for WSL and other environments where users have
+	// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc
+	var cmdBuilder strings.Builder
+	if session.IsClaudeConfigDirExplicitForGroup(inst.GroupPath) {
+		configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
+		// #1815 (Codex review on #1830): quote exactly as
+		// Instance.buildBashExportPrefix does (instance.go, audit F2) —
+		// this string is baked into inst.Command and ends up in a
+		// `bash -c` payload, so an unquoted config_dir containing
+		// whitespace, ;, or $(...) breaks the command or injects.
+		cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir)))
+	}
+	// #1815: the TUI picker builds a resume command too, so it routes
+	// through the same resume-time identity guard as restart / start /
+	// fork. The id was just recorded onto inst above (the user picked
+	// this conversation FOR this session), so the check passes by
+	// construction today — it is here so a future change that reuses an
+	// existing instance here cannot resume a conversation that instance
+	// does not own. Only the identity half applies: the user's explicit
+	// pick must not be downgraded to a fresh session by the
+	// conversation-data heuristics.
+	//
+	// exec so the agent replaces the wrapper shell and leads the pane,
+	// matching buildClaudeResumeCommand and the fresh-start path
+	if allowed, _ := session.ResumeIdentityAllowed(inst, sessionID); allowed {
+		cmdBuilder.WriteString("exec claude --resume ")
+		cmdBuilder.WriteString(shellescape.Quote(sessionID))
+	} else {
+		freshID := session.NewClaudeSessionUUID()
+		inst.ClaudeSessionID = freshID
+		// #1815: a freshly minted id is vouched ownership, same as every
+		// other minted-id writer (Instance.replaceRefusedClaudeSessionID,
+		// buildClaudeCommandWithMessage's own mint path).
+		session.MarkClaudeSessionIDVerified(inst)
+		cmdBuilder.WriteString("exec claude --session-id ")
+		cmdBuilder.WriteString(freshID)
+	}
+	if opts.SkipPermissions {
+		cmdBuilder.WriteString(" --dangerously-skip-permissions")
+	} else if opts.AllowSkipPermissions {
+		cmdBuilder.WriteString(" --allow-dangerously-skip-permissions")
+	}
+	return cmdBuilder.String()
 }
 
 // handleMouse handles mouse events (click to select, double-click to activate)
@@ -5257,6 +5307,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.navHintActive = false
 		if h.maintenanceMsg == navHintText {
 			h.maintenanceMsg = ""
+		}
+	}
+
+	// Session reference pick (ASK-111): while A is picked only movement,
+	// drop (Enter / the pick key) and Esc do anything.
+	if h.sessionRefPicking() {
+		if handled, cmd := h.handleSessionRefPickKey(key); handled {
+			return h, cmd
 		}
 	}
 
@@ -6078,6 +6136,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.deadLetterPanel.SetSize(h.width, h.height)
 		return h, nil
 
+	case defaultHotkeyBindings[hotkeySessionRef]:
+		// Pick the selected session as a reference source (ASK-111); the
+		// drop runs from handleSessionRefPickKey.
+		h.startSessionRefPick()
+		return h, nil
+
 	case defaultHotkeyBindings[hotkeyTriggers]:
 		// What wakes sessions (#2702). On a session a trigger wakes (its row
 		// shows ⚡N) this opens that session's reverse view; esc widens it to
@@ -6813,6 +6877,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// MRU walk forward (#2058): redo — step to the next session in visit order.
 		return h.handleMRUWalk(true)
 
+	case defaultHotkeyBindings[hotkeyReportProblem]:
+		// "Report a problem": form -> full preview -> explicit confirm -> file
+		// through internal/issuereport (gh when logged in, else the browser).
+		if h.reportDialog != nil {
+			tool := ""
+			if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+				if inst := h.flatItems[h.cursor].Session; inst != nil {
+					tool = inst.Tool
+				}
+			}
+			h.reportDialog.Show(tool)
+			h.reportDialog.SetSize(h.width, h.height)
+		}
+		return h, nil
+
 	case "ctrl+e":
 		// Open feedback dialog on demand (per D-11: bypasses ShouldShow -- user-initiated)
 		if h.feedbackDialog != nil {
@@ -7424,6 +7503,10 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	if tmuxSess == nil {
 		return nil
 	}
+	var attachStart, detachedAt time.Time // tui.attach / tui.detach stamps, only while timings are on
+	if optiming.Enabled() {
+		attachStart = time.Now()
+	}
 	// Keys typed while the setup below runs belong to the pane (see holdInputForExec).
 	defer holdInputForExec()()
 
@@ -7487,6 +7570,9 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
 	opts := h.attachOptions(tmuxSess)
+	if !attachStart.IsZero() {
+		opts.TimingStart, opts.DetachedAt = attachStart, &detachedAt
+	}
 	// #2704: record the client this attach runs in, so `session focus
 	// --remote --attach` can detach exactly it to bring the TUI back. Both
 	// callbacks run inside attachCmd.Run, on one goroutine.
@@ -7592,7 +7678,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			}
 		}
 
-		return statusUpdateMsg{attachedSessionID: inst.ID, attachedWorkDir: currentWorkDir}
+		return statusUpdateMsg{attachedSessionID: inst.ID, attachedWorkDir: currentWorkDir, detachedAt: detachedAt}
 	})
 }
 

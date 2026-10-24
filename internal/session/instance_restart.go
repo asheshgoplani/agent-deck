@@ -432,6 +432,7 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 	// a token first, so the parent gets no false completion (#2792,
 	// restart_resume.go).
 	noteRestartToken(i, time.Now())
+	queued := i.leftQueue()
 	err := i.restart(env)
 	if err != nil {
 		clearRestartToken(i.ID)
@@ -443,6 +444,12 @@ func (i *Instance) restartRecorded(env map[string]string, sf telemetry.Surface) 
 		// build refresh sees a TUI restart as already on the new build.
 		i.markStarted()
 		i.RecordTelemetryEndFrom(telemetry.EndRestart, sf)
+		// A restart of a queued session takes it off the queue: its brief is
+		// delivered now, not left for a later start to type into a
+		// conversation that has moved on.
+		if queued {
+			i.takeOffQueueAfterStart()
+		}
 	}
 	return err
 }

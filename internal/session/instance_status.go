@@ -297,7 +297,13 @@ func (i *Instance) terminatedPaneStatus() Status {
 // Stop()), so the stopped-state guard is re-evaluated after reacquiring: a
 // session the user stopped mid-query must not be clobbered with error/stopped.
 func (i *Instance) applyTerminatedPaneStatus() {
-	tmuxSession := i.tmuxSession
+	i.applyTerminatedPaneStatusOf(i.tmuxSession)
+}
+
+// applyTerminatedPaneStatusOf is applyTerminatedPaneStatus with the tmux
+// session to ask for the exit status; nil skips that probe, for a session a
+// listing already proved gone (no pane left to hold an exit status).
+func (i *Instance) applyTerminatedPaneStatusOf(tmuxSession *tmux.Session) {
 	tool := i.Tool
 	receiptPath := i.trackedCommandExitReceiptPath()
 	paneDeadExitStatus := i.paneDeadExitStatusForTest
@@ -417,13 +423,96 @@ func (i *Instance) UpdateStatus() error {
 
 // probeTmuxExists is called with i.mu held and returns with it held. tmux can
 // wait for a busy server, so status readers must not wait behind this probe.
-func (i *Instance) probeTmuxExists() (exists, current bool) {
+// With a pass, the pass's listing of the session's socket can prove the
+// session absent without a has-session per row (listedAbsent).
+//
+// Start() keeps the same tmux.Session and stopRevision, so its lastStartTime
+// is part of 'current' too: a probe that answered from before Start's
+// new-session (a listing, or a has-session) must not overwrite 'starting'.
+func (i *Instance) probeTmuxExists(pass *StatusUpdatePass) (exists, listedAbsent, current bool) {
 	s := i.tmuxSession
 	stopRevision := i.stopRevision
+	started := i.lastStartTime
 	i.mu.Unlock()
-	exists = s.Exists()
+	exists, listedAbsent = s.ExistsListed(func() map[string]struct{} { return pass.listedSessions(s.SocketName) })
 	i.mu.Lock()
-	return exists, i.tmuxSession == s && i.stopRevision == stopRevision
+	return exists, listedAbsent, i.tmuxSession == s && i.stopRevision == stopRevision && i.lastStartTime.Equal(started)
+}
+
+// listingAloneProvesDead reports whether a pass listing's absence may stand
+// for this row without its own has-session (i.mu held). Only a row already
+// recorded dead (error, stopped) or never started: a listing is up to
+// passSessionListMaxAge old, and a row last seen in any other status (running,
+// waiting, idle, starting, queued) written error from it would page its
+// parent if another process had just (re)created the session.
+func (i *Instance) listingAloneProvesDead() bool {
+	return i.Status == StatusError || i.Status == StatusStopped || i.neverStarted()
+}
+
+// passSessionListMaxAge bounds how long a pass trusts one listing of a socket.
+// A long pass re-lists rather than judging late rows against an old listing.
+//
+// A listing is a snapshot (aged from before list-sessions ran): a session
+// created after it reads as absent until the listing ages out, where a
+// per-row has-session would have seen it. So only a row already recorded dead
+// takes the listing's word (listingAloneProvesDead); a row last seen live
+// confirms with its own has-session, and a Start() during the probe makes it
+// stale (probeTmuxExists). For a dead row the window is this age, under the
+// 1.5 s start grace.
+// A long pass pays one more list-sessions per socket per age, not per row.
+const passSessionListMaxAge = 250 * time.Millisecond
+
+// passListSessionNames lists one socket's sessions for a pass; a variable so
+// tests can interleave a start or a slow listing with it.
+var passListSessionNames = tmux.ListSessionNamesOnSocket
+
+type passSessionListing struct {
+	at    time.Time
+	names map[string]struct{} // nil: the listing failed; rows probe on their own
+}
+
+// listedSessions returns the session names on socket, listed at most once per
+// passSessionListMaxAge for the whole pass (one list-sessions per socket
+// instead of a has-session and a list-panes per dead row). Concurrent workers
+// share one listing. Nil for a nil pass or a failed listing.
+func (p *StatusUpdatePass) listedSessions(socket string) map[string]struct{} {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	for {
+		if l, ok := p.listed[socket]; ok && time.Since(l.at) < passSessionListMaxAge {
+			p.mu.Unlock()
+			return l.names
+		}
+		ready := p.listing[socket]
+		if ready == nil {
+			break
+		}
+		p.mu.Unlock()
+		<-ready
+		p.mu.Lock()
+	}
+	if p.listing == nil {
+		p.listing = make(map[string]chan struct{})
+	}
+	ready := make(chan struct{})
+	p.listing[socket] = ready
+	p.mu.Unlock()
+	at := time.Now() // before listing: a session created while it runs is missing
+	names, err := passListSessionNames(socket)
+	if err != nil {
+		names = nil
+	}
+	p.mu.Lock()
+	if p.listed == nil {
+		p.listed = make(map[string]passSessionListing)
+	}
+	p.listed[socket] = passSessionListing{at: at, names: names}
+	delete(p.listing, socket)
+	close(ready)
+	p.mu.Unlock()
+	return names
 }
 
 // ForceNextStatusCheck clears the idle polling optimization so the next

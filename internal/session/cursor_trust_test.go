@@ -118,10 +118,10 @@ func TestWriteCursorTrustFileExclusive_ExistingFile(t *testing.T) {
 	trustPath := filepath.Join(dir, "projects", "key", ".workspace-trusted")
 	content := []byte("original\n")
 
-	if err := writeCursorTrustFileExclusive(trustPath, content); err != nil {
+	if _, err := writeCursorTrustFileExclusive(trustPath, content); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := writeCursorTrustFileExclusive(trustPath, []byte("overwrite\n")); err != nil {
+	if _, err := writeCursorTrustFileExclusive(trustPath, []byte("overwrite\n")); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	got, err := os.ReadFile(trustPath)
@@ -147,7 +147,7 @@ func TestWriteCursorTrustFileExclusive_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = writeCursorTrustFileExclusive(trustPath, content)
+			_, _ = writeCursorTrustFileExclusive(trustPath, content)
 		}()
 	}
 	wg.Wait()

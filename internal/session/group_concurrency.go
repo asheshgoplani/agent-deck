@@ -40,6 +40,22 @@ func CountRunningInGroup(instances []*Instance, groupPath string) int {
 	return n
 }
 
+// CountOccupiedInGroup counts the sessions in the group that hold a slot for a
+// queue drain: running ones and starting ones (claimed and still booting).
+// Drains carry the cost of a row left at starting with no status detector to
+// move it on: it holds a drain slot until it is sampled again. Launches do
+// not: ShouldQueue keeps CountRunningInGroup, so such a row never blocks a
+// new launch.
+func CountOccupiedInGroup(instances []*Instance, groupPath string) int {
+	n := 0
+	for _, inst := range instances {
+		if inst != nil && inst.GroupPath == groupPath && (inst.Status == StatusRunning || inst.Status == StatusStarting) {
+			n++
+		}
+	}
+	return n
+}
+
 // ShouldQueue reports whether a new launch into groupPath must be queued
 // because the group is at its MaxConcurrent cap.
 func ShouldQueue(instances []*Instance, groupPath string, maxConcurrent int) bool {

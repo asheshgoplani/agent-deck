@@ -489,6 +489,24 @@ With `--wait` or `--stream` on a Claude target, the reply is bound to the transc
 
 Claude conversation identity (additive; Claude-compatible targets only, other tools' receipts are unchanged): `--json` receipts carry `claude_session_id`, the native Claude conversation the message went to (the same value `session show --json` and `session output --json` report), omitted while it is not known yet (a fresh session before Claude writes its transcript). The queued `--json` receipt and `session send-status --json` carry it too; once the send has `landed` it names the conversation whose transcript holds `landed_row_id`. A `--json --wait` reply bound to its transcript record also carries `claude_turn_uuid`, the uuid of that user record, and `claude_session_id` from the same record; it is the Claude counterpart of Codex's `accepted_turn.codex_session_id` + `codex_turn_generation`.
 
+### session ref
+
+```bash
+agent-deck session ref <source> <target> [--print] [--json] [-q]
+```
+
+Hands `<target>` a reference to `<source>`; nothing moves and `<source>`'s output is never pasted. The reference names the source's title, id, project path and status, the command that reads it, and its transcript path when it is known locally:
+
+```
+[ref] session "auth fix" (a1b2c3d4-1700000000) · /work/auth · status idle
+read it with: agent-deck -p work session output a1b2c3d4-1700000000 -q
+transcript: ~/.claude/projects/-work-auth/<id>.jsonl
+```
+
+By default the same content is typed into the target's composer (its first, managed window) as one line, with a trailing space, and Enter is never pressed: you or the agent's operator submit it. A vim-mode composer is put into insert mode first. `--print` types nothing and prints the text; the target need not be running. The TUI's pick/drop and the macOS app's drag use the same path.
+
+Refused, with nothing typed: the same session twice (`same_session`), sessions in different profiles (`cross_profile`), remote SSH sessions on either side (`source_remote`, `target_remote`), a target that is not running (`target_not_running`, insert only), has no tmux pane or a pane that cannot be read (`target_no_pane`), or shows a menu or permission prompt (`target_menu_open`, insert only: typed digits, y/n/a or a vim-mode Escape would answer it, so answer it first; the check runs before every keystroke batch, the same rule `session send` uses), or has a vim-mode composer and is working (`target_busy_vim`, insert only: the pane or the status reads running, and the Escape that enters insert mode would interrupt the turn; drop again when it is waiting). Menu detection covers Claude and Codex menus (permission dialogs, AskUserQuestion pickers, Codex approvals) plus, for any tool, a numbered `❯ N.` selection line or an "Enter to confirm" / "Esc to cancel" footer. A prompt drawn another way (for example a Gemini or OpenCode approval with a different marker) is not recognised, so check such a target before dropping. The pane is read right before each batch; a dialog that opens in the few milliseconds between that read and the keys is not caught. A failed insert is `insert_failed`. `--json`: `{"ok":true,"source":{"id","title","path","status","tool","transcript","profile"},"target":{"id","title"},"text":"...","line":"...","inserted":true}`; on refusal `{"ok":false,"error_code":"same_session","code":"INVALID_OPERATION","error":"..."}` with exit 1 (exit 2 when a session is not found).
+
 ### session image-upload
 
 ```bash

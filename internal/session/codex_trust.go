@@ -103,6 +103,7 @@ func PreAcceptCodexTrust(codexConfigPath, projectDir string) error {
 	if err := atomicfile.WriteFile(codexConfigPath, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", codexConfigPath, err)
 	}
+	logFolderTrustGranted("codex", projectDir, "config", codexConfigPath)
 	return nil
 }
 

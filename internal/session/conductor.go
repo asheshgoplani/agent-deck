@@ -364,9 +364,14 @@ type SlackSettings struct {
 	ListenMode string `toml:"listen_mode,omitempty"`
 
 	// AllowedUserIDs is a list of Slack user IDs authorized to use the bot.
-	// If empty, all users are allowed (backward compatible).
+	// If empty, every Slack user is refused unless AllowAllUsers is set.
 	// Get user ID from Slack: Right-click user → View profile → More → Copy member ID
 	AllowedUserIDs []string `toml:"allowed_user_ids,omitempty"`
+
+	// AllowAllUsers lets every member of the bot's Slack workspace use it when
+	// AllowedUserIDs is empty. Mentions and slash commands are then accepted
+	// only in ChannelID.
+	AllowAllUsers bool `toml:"allow_all_users,omitempty"`
 
 	// DefaultConductor controls where an unprefixed message routes (#2547).
 	//   explicit name -> that conductor is the default target
@@ -1736,12 +1741,19 @@ func createSymlinkWithExpansion(target, source string) error {
 // watcher.writeIfAbsent. A pre-existing path (regular file or symlink) is left
 // untouched and reported as success.
 func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
+	_, err := createFileIfAbsent(path, content, perm)
+	return err
+}
+
+// createFileIfAbsent is writeFileIfAbsent that also reports whether this call
+// created path (false when it already existed).
+func createFileIfAbsent(path string, content []byte, perm os.FileMode) (bool, error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		if os.IsExist(err) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	// Surface both the write and the close error: a buffered write only fully
 	// commits on a successful Close, so a swallowed Close() error can mask data
@@ -1749,9 +1761,9 @@ func writeFileIfAbsent(path string, content []byte, perm os.FileMode) error {
 	_, writeErr := f.Write(content)
 	closeErr := f.Close()
 	if writeErr != nil {
-		return writeErr
+		return true, writeErr
 	}
-	return closeErr
+	return true, closeErr
 }
 
 // exchangeGeneratedFiles atomically swaps two pathnames. After the exchange,

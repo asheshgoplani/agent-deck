@@ -368,6 +368,7 @@ agent-deck session output "Project"
 | `agent-deck session start/stop/restart <name>` | Control session |
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session output <name>` | Get last response |
+| `agent-deck session ref <source> <target>` | Hand `<target>` a short reference to `<source>` in its composer (not sent; `--print` only prints) |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck mcp list` | List available MCPs |

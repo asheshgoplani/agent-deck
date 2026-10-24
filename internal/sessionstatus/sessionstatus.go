@@ -75,6 +75,12 @@ type Input struct {
 	// "waiting" hook overrides any non-stopped PriorStatus regardless of
 	// freshness. When false, stale hooks fall through. See package doc.
 	AllowStaleWaiting bool
+
+	// InstanceID, when set, lets a fresh "dead" hook from a process older
+	// than the instance's newest spawn be ignored, as Instance.UpdateStatus
+	// does (session.HookDeadFromEarlierSpawn, issue #2853). Empty: the dead
+	// hook is taken at face value.
+	InstanceID string
 }
 
 // Decision is the result of Derive. Status is the post-hook visible status;
@@ -149,7 +155,7 @@ func Derive(in Input) Decision {
 		return Decision{Status: session.StatusWaiting, Applied: true}
 
 	case "dead":
-		if !fresh {
+		if !fresh || session.HookDeadFromEarlierSpawn(in.InstanceID, in.Hook.Status, in.Hook.UpdatedAt) {
 			return keep
 		}
 		return Decision{Status: session.StatusError, Applied: true}

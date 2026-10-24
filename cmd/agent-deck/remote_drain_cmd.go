@@ -92,6 +92,10 @@ func lookupSessionAnyProfile(id string) (*session.Instance, string) {
 	if err != nil {
 		return nil, ""
 	}
+	return lookupSessionInProfiles(id, profiles)
+}
+
+func lookupSessionInProfiles(id string, profiles []string) (*session.Instance, string) {
 	for _, profile := range profiles {
 		_, instances, _, err := loadSessionData(profile)
 		if err != nil {
@@ -190,7 +194,8 @@ func printRemoteDrainUsage(w io.Writer) {
 	fmt.Fprintln(w, "Each (remote, conductor) keeps a cursor (`agent-deck inbox cursor`), so a")
 	fmt.Fprintln(w, "drain ships only what is new; it advances only once every record landed.")
 	fmt.Fprintln(w, "An ingested urgent record wakes the conductor like a local one. Set")
-	fmt.Fprintln(w, "[remotes.<name>] talkback_interval_secs to let the notify-daemon drain on its own.")
+	fmt.Fprintln(w, "[remotes.<name>] talkback_interval_secs to let the notify-daemon drain on its own,")
+	fmt.Fprintln(w, "and require_same_profile = true to accept only a conductor of the remote's profile.")
 }
 
 func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordFetcher) (exitCode int) {
@@ -240,7 +245,24 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-	targetID, err = resolveInboxDrainSession(targetID)
+	parent := func() (*session.Instance, string) { return lookupSessionAnyProfile(targetID) }
+	if rc.RequireSameProfile {
+		// #2831: a full id of another profile must not resolve here.
+		profile, perr := session.ResolveProfileForStorage("")
+		if perr != nil {
+			fmt.Fprintf(stderr, "Error: resolve effective profile: %v\n", perr)
+			return 1
+		}
+		targetID, err = resolveInboxDrainSessionInProfile(targetID, "")
+		if err == nil {
+			if inst, _ := lookupSessionInProfiles(targetID, []string{profile}); inst == nil {
+				err = &inboxTargetNotFoundError{identifier: targetID}
+			}
+		}
+		parent = func() (*session.Instance, string) { return lookupSessionInProfiles(targetID, []string{profile}) }
+	} else {
+		targetID, err = resolveInboxDrainSession(targetID)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return inboxExitCode(err)
@@ -248,7 +270,8 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 
 	ctx := context.Background()
 	res, err := session.RunRemoteTalkback(ctx, name, targetID, session.RemoteTalkbackDeps{
-		RemoteProfile: rc.GetProfile(),
+		RemoteProfile:      rc.GetProfile(),
+		RequireSameProfile: rc.RequireSameProfile,
 		FetchAfter: func(ctx context.Context, cursor session.RemoteCursor) (session.RemoteExport, error) {
 			return remoteCursorFetch(ctx, name, rc, cursor)
 		},
@@ -258,7 +281,7 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 		WriterProbe: func(ctx context.Context) (session.WriterStatus, error) {
 			return remoteWriterProbe(ctx, rc, name)
 		},
-		Parent: func() (*session.Instance, string) { return lookupSessionAnyProfile(targetID) },
+		Parent: parent,
 		Wake:   remoteDrainWake,
 	})
 	if err != nil {
@@ -277,6 +300,10 @@ func runRemoteDrain(stdout, stderr io.Writer, args []string, fetch remoteRecordF
 			fmt.Fprintf(stderr, "%s\n", te.Writer.Detail)
 			fmt.Fprintln(stderr, "No fetched record was classified as finished or written locally.")
 			return drainExitUnreachable
+		case session.RemoteTalkbackStageProfile:
+			fmt.Fprintf(stderr, "Error: %v\n", te.Err)
+			fmt.Fprintln(stderr, "Nothing was pulled. Drain into a conductor of the remote's profile, or unset require_same_profile.")
+			return 1
 		case session.RemoteTalkbackStageIngest:
 			fmt.Fprintf(stderr, "Error: writing to local inbox %s: %v\n", targetID, te.Err)
 			if !res.Legacy {

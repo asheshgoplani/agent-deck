@@ -32,7 +32,8 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 	}
 	// Locked and verified: parallel callers on one account must not lose
 	// each other's entries (SWFB1018).
-	return updateClaudeJSONLocked(claudeJSONPath, func(cfg map[string]any) {
+	granted := false
+	err := updateClaudeJSONLocked(claudeJSONPath, func(cfg map[string]any) {
 		projects, _ := cfg["projects"].(map[string]any)
 		if projects == nil {
 			projects = map[string]any{}
@@ -41,10 +42,17 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 		if entry == nil {
 			entry = map[string]any{}
 		}
+		if accepted, _ := entry["hasTrustDialogAccepted"].(bool); !accepted {
+			granted = true
+		}
 		entry["hasTrustDialogAccepted"] = true
 		projects[parentDir] = entry
 		cfg["projects"] = projects
 	})
+	if err == nil && granted {
+		logFolderTrustGranted("claude", parentDir, "config", claudeJSONPath)
+	}
+	return err
 }
 
 // ClaudeTrustJSONPaths returns every .claude.json a trust seed for inst must

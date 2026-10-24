@@ -126,6 +126,8 @@ func TestCompletionRules_KnownCases(t *testing.T) {
 		{"rename", "", 0, argSession},
 		{"session", "set-parent", 0, argSession},
 		{"session", "set-parent", 1, argSession},
+		{"session", "ref", 0, argSession},
+		{"session", "ref", 1, argSession},
 		{"profile", "delete", 0, argProfile},
 		{"group", "move", 0, argSession},
 		{"group", "move", 1, argGroup},

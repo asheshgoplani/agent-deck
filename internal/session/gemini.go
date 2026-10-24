@@ -347,9 +347,16 @@ func GetAvailableGeminiModels() ([]string, error) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	// #nosec G704 -- URL is a hardcoded Google API endpoint; only the API key
-	// query param is interpolated, sourced from the local GOOGLE_API_KEY env.
-	resp, err := client.Get("https://generativelanguage.googleapis.com/v1beta/models?key=" + apiKey)
+	// The key goes in the x-goog-api-key header, not the URL: a URL is what
+	// proxies, access logs and *url.Error messages record.
+	req, err := http.NewRequest(http.MethodGet, "https://generativelanguage.googleapis.com/v1beta/models", nil)
+	if err != nil {
+		return geminiModelFallback, fmt.Errorf("API request failed: %w", err)
+	}
+	req.Header.Set("x-goog-api-key", apiKey)
+	// #nosec G704 -- URL is a hardcoded Google API endpoint; the API key
+	// travels only in a header, sourced from the local GOOGLE_API_KEY env.
+	resp, err := client.Do(req)
 	if err != nil {
 		return geminiModelFallback, fmt.Errorf("API request failed: %w", err)
 	}

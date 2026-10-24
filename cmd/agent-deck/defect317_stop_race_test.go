@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -68,8 +69,38 @@ func TestDefect317_StopWithoutARaceSavesStopped(t *testing.T) {
 	require.Equal(t, string(session.StatusStopped), issue2806RowStatus(t, id))
 }
 
-// A concurrent starting is a restart, newer than the stop's view: the stop
-// does not overwrite it, and its save still conflicts.
+// The field failure (deckbox, rc.3): running committed inside the kill
+// window (a child waking, or the dying process's own hooks), with no pane left
+// alive. That is not a restart: the stop must succeed and save stopped.
+func TestDefect317_StopWinsOverAConcurrentRunningSampleOfADeadPane(t *testing.T) {
+	_, id := defect317StartedSession(t, "stop317-running")
+	err := defect317Stop(t, id, func(storage *session.Storage, id string) {
+		require.NoError(t, storage.GetDB().WriteStatus(id, string(session.StatusRunning), "shell"))
+	})
+	require.NoError(t, err, "a running sample of the stop's own dead pane must not refuse the stop")
+	require.Equal(t, string(session.StatusStopped), issue2806RowStatus(t, id))
+}
+
+// defect317RespawnPane starts a live tmux session under the row's tmux name
+// and socket (the test's isolated server), as a restart would.
+func defect317RespawnPane(t *testing.T, storage *session.Storage, id string) {
+	t.Helper()
+	row, err := storage.GetDB().LoadInstanceByID(id)
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.NotEmpty(t, row.TmuxSession)
+	var args []string
+	if row.TmuxSocketName != "" {
+		args = append(args, "-L", row.TmuxSocketName)
+	}
+	out, err := exec.Command("tmux", append(args, "new-session", "-d", "-s", row.TmuxSession, "sleep 600")...).CombinedOutput()
+	require.NoError(t, err, "respawn tmux session %q: %s", row.TmuxSession, out)
+	t.Cleanup(func() { _ = exec.Command("tmux", append(args, "kill-session", "-t", "="+row.TmuxSession)...).Run() })
+}
+
+// A restart is a live pane for the session after the kill, newer than the
+// stop's view: the stop does not overwrite its status, and its save still
+// conflicts.
 func TestDefect317_StopDoesNotOverwriteAConcurrentRestart(t *testing.T) {
 	_, id := defect317StartedSession(t, "stop317-restart")
 	// The restart's status must differ from the one the stop loaded (a fresh
@@ -79,6 +110,7 @@ func TestDefect317_StopDoesNotOverwriteAConcurrentRestart(t *testing.T) {
 		restart = string(session.StatusRunning)
 	}
 	err := defect317Stop(t, id, func(storage *session.Storage, id string) {
+		defect317RespawnPane(t, storage, id)
 		require.NoError(t, storage.GetDB().WriteStatus(id, restart, "shell"))
 	})
 	require.ErrorContains(t, err, "stale concurrent Status conflict")

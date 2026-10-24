@@ -190,7 +190,7 @@ func (m *WebMutator) StopSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
-	loaded := session.SavedRowStatus(m.h.storage, id)
+	loaded := session.BeforeStopKill(m.h.storage, id)
 	if err := inst.Kill(); err != nil {
 		return err
 	}

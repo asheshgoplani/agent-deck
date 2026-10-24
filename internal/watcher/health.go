@@ -49,7 +49,31 @@ type HealthState struct {
 	// UndeliveredError says why the send queue could not be read, when it
 	// could not: Undelivered is then unknown, not empty.
 	UndeliveredError string `json:",omitempty"`
+
+	// Refused is the routed events of this watcher the outbox refused
+	// because the watcher's queue for a conductor was full, per conductor,
+	// as persisted in state.db. A refused event is stored in watcher_events
+	// but never delivered. Set by the engine's health loop, which also moves
+	// a healthy watcher to warning while a refusal is newer than
+	// RefusalWarningWindow.
+	Refused []DeliveryRefusal `json:",omitempty"`
 }
+
+// DeliveryRefusal is the routed events of one watcher refused for one
+// conductor: how many, and when the first and the last were refused.
+type DeliveryRefusal struct {
+	Conductor      string    `json:"conductor"`
+	Count          int       `json:"count"`
+	FirstRefusedAt time.Time `json:"first_refused_at"`
+	LastRefusedAt  time.Time `json:"last_refused_at"`
+}
+
+// RefusalWarningWindow is how long after its last refused routed event a
+// watcher stays in warning. Long enough that a flood which keeps the queue
+// at its cap does not flap between alert and recovery as single slots free
+// up, short enough that the watcher reports healthy again once the flood
+// is over. The count itself stays in state.db and in `watcher status`.
+const RefusalWarningWindow = time.Hour
 
 // HealthTracker is a passive (no goroutine) health monitor for a single watcher.
 // It is called from the engine's health check loop via Check(), and updated

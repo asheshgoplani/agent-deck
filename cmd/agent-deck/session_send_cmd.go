@@ -134,6 +134,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send parent \"child done\" --defer-if-busy --defer-timeout 30m")
 		fmt.Println("  agent-deck session send my-project --message-file - --json   # returns send_id at once")
 		fmt.Println("  agent-deck session send my-project \"what is this?\" --image shot.png")
+		fmt.Println("  agent-deck session send my-project --no-wait -- \"-v is the message\"   # text after -- is never a flag")
 		fmt.Println()
 		fmt.Println("--json (without --wait/--stream/--draft/--no-wait) and --queue return a durable")
 		fmt.Println("  send_id with verdict queued. Claude accepts input while busy; other harnesses wait")

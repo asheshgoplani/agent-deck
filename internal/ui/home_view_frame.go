@@ -12,6 +12,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 )
@@ -139,13 +140,14 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		h.refreshSessionRenderSnapshot(nil)
 		snapshot = h.getSessionRenderSnapshot()
 	}
-	// Skip archived cross-harness sources superseded by a "Restart with new
-	// session ID": their old tmux session can still be alive, but they are
-	// hidden from list --json and must not inflate this header pill either
-	// (issue: header/status totals exceeded list --json's by the number of
-	// superseded sources still holding a live tmux process).
+	// Skip every archived session, so this pill agrees with `agent-deck
+	// status` and the web menu, which both drop archived sessions. This
+	// covers archived cross-harness sources superseded by a "Restart with new
+	// session ID" (their old tmux session can still be alive) and archived
+	// workers left in "waiting": the background sweep skips archived rows,
+	// so their status would never clear and they would count forever.
 	for _, state := range snapshot {
-		if state.archivedSuperseded {
+		if state.archived {
 			continue
 		}
 		switch statusBucket(state.status) {
@@ -442,6 +444,7 @@ func (h *Home) updateSizes() {
 	if h.feedbackDialog != nil {
 		h.feedbackDialog.SetSize(h.width, h.height)
 	}
+	h.reportDialog.SetSize(h.width, h.height)
 	if h.telemetryDialog != nil {
 		h.telemetryDialog.SetSize(h.width, h.height)
 	}
@@ -471,6 +474,10 @@ func (h *Home) View() string {
 	frame := h.renderFrame()
 	if frame != "" {
 		h.lastRenderedFrame = frame
+	}
+	if h.pendingFrameOp != "" && h.width > 0 && !h.initialLoading {
+		optiming.Since(h.pendingFrameOp, h.pendingFrameStart)
+		h.pendingFrameOp = ""
 	}
 	return frame
 }
@@ -604,6 +611,9 @@ func (h *Home) renderFrame() string {
 	}
 	if h.worktreeFinishDialog.IsVisible() {
 		return h.worktreeFinishDialog.View()
+	}
+	if h.reportDialog.IsVisible() {
+		return h.reportDialog.View()
 	}
 	if h.feedbackDialog.IsVisible() {
 		return h.feedbackDialog.View()
@@ -933,6 +943,18 @@ func (h *Home) renderFrame() string {
 	if warning := h.renderHealthWarning(); warning != "" {
 		helpBar = warning
 	}
+	// A live session-reference pick (ASK-111) owns the bar: its hint line is
+	// the only place that says what Enter will do.
+	if !h.insertMode && h.sessionRefPicking() {
+		helpBar = h.renderSessionRefPickBar()
+	}
+	// The session-reference toast (ASK-111) takes the help bar's key row: the
+	// frame is exactly the viewport, so a line drawn below the help bar is
+	// clipped.
+	refToast := h.sessionRefToastActive()
+	if refToast {
+		helpBar = h.renderSessionRefToastOverHelpBar(helpBar)
+	}
 	b.WriteString(helpBar)
 
 	// Debug performance overlay (AGENTDECK_DEBUG=1 only)
@@ -942,7 +964,7 @@ func (h *Home) renderFrame() string {
 	}
 
 	// Error and warning messages are displayed but may be truncated by final height constraint
-	if h.err != nil {
+	if h.err != nil && !refToast {
 		remaining := 5*time.Second - time.Since(h.errTime)
 		if remaining < 0 {
 			remaining = 0
@@ -2327,8 +2349,16 @@ func (h *Home) renderHelpBarFull() string {
 		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Settings"))
 	}
 	helpKey := h.actionKey(hotkeyHelp)
+	helpIdx := -1
 	if helpKey != "" {
+		helpIdx = len(droppableGlobal)
 		droppableGlobal = append(droppableGlobal, globalStyle.Render(helpKey+" Help"))
+	}
+	// "Report a problem" is the lowest-priority global hint: it shows on
+	// roomy terminals and is the first to go when space is tight. The help
+	// overlay always lists it.
+	if key := h.actionKey(hotkeyReportProblem); key != "" {
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Report"))
 	}
 
 	leftPrefix := contextLabel
@@ -2361,8 +2391,9 @@ func (h *Home) renderHelpBarFull() string {
 		}
 		shorten(primaryHints)
 		shorten(secondaryHints)
-		parts.nav += sep + droppableGlobal[len(droppableGlobal)-1]
-		parts.droppable = droppableGlobal[:len(droppableGlobal)-1]
+		// Pin Help next to Nav; the rest (Report included) stay droppable.
+		parts.nav += sep + droppableGlobal[helpIdx]
+		parts.droppable = append(append([]string{}, droppableGlobal[:helpIdx]...), droppableGlobal[helpIdx+1:]...)
 		parts.primary = primaryHints
 		parts.secondary = secondaryHints
 		helpContent = h.fitFullFooter(parts)

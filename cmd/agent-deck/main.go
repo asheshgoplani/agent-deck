@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -378,6 +379,7 @@ func printCredsRefreshRemoved() {
 }
 
 func main() {
+	processStart := time.Now() // tui.first_frame start (optiming); one clock read
 	// Must run before the first config load (initUpdateSettings below).
 	configurePermissionWarnings(os.Args[1:])
 
@@ -424,6 +426,8 @@ func main() {
 	// Remote arguments belong to the server, including its script-consent flag.
 	if len(args) > 0 && args[0] == "remote" {
 		beginCLITelemetry(args[0], args[1:])
+		enableTimingsFromConfig() // remote dispatches before the config block below
+		beginCLITiming(args[0], args[1:])
 		defer settleCLITelemetry()
 		handleRemote(profile, args[1:])
 		return
@@ -456,6 +460,7 @@ func main() {
 	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
 		session.ConfigureTmuxDisplay(cfg.Display)
 	}
+	enableTimingsFromConfig()
 
 	// Nudge macOS users whose tmux predates the upstream fix for the
 	// control-mode NULL-deref (tmux #4980, issue #737). Once per process,
@@ -488,6 +493,7 @@ func main() {
 	// Handle subcommands
 	if len(args) > 0 {
 		beginCLITelemetry(args[0], args[1:])
+		beginCLITiming(args[0], args[1:])
 		defer settleCLITelemetry()
 		switch args[0] {
 		case "telemetry":
@@ -570,6 +576,9 @@ func main() {
 			return
 		case "doctor":
 			handleDoctor(args[1:])
+			return
+		case "perf":
+			handlePerf(args[1:])
 			return
 		case "accounts":
 			handleAccounts(args[1:])
@@ -1124,6 +1133,7 @@ func main() {
 	}
 
 	// Start TUI with the specified profile
+	ui.SetProcessStart(processStart)
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
 	setTelemetrySignalClose(homeModel.CloseTelemetry)
 	setWatcherEngineSignalStop(homeModel.StopWatcherEngine)
@@ -1566,6 +1576,7 @@ var storeRootQuietCommands = map[string]bool{
 	"completion":    true,
 	"doctor":        true,
 	"health":        true,
+	"perf":          true,
 	"migrate-paths": true,
 	"telemetry":     true,
 	"version":       true,
@@ -1582,7 +1593,7 @@ var storeRootQuietCommands = map[string]bool{
 // (launch/add --parent, group move --position) is not shadowed by the global
 // profile flag. KEEP IN SYNC with the switch in main().
 var commandRegistry = map[string]bool{
-	"add": true, "accounts": true, "harness": true, "limits": true, "doctor": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
+	"add": true, "accounts": true, "harness": true, "limits": true, "doctor": true, "perf": true, "health": true, "list": true, "ls": true, "remove": true, "rm": true,
 	"rename": true, "mv": true, "status": true, "profile": true, "update": true,
 	"session": true, "fleet": true, "mcp": true, "plugin": true, "skill": true, "mcp-proxy": true,
 	"group": true, "try": true, "launch": true, "conductor": true,
@@ -1665,14 +1676,19 @@ func extractAllowRepoScriptsFlag(args []string) (allow, trust bool, remaining []
 		}
 		return false, false
 	}
+	// Arguments after "--" are data (a message, say), never global flags.
+	flagArgs, rest := args, []string(nil)
+	if i := slices.Index(args, "--"); i >= 0 {
+		flagArgs, rest = args[:i], args[i:]
+	}
 	present := false
-	for _, a := range args {
+	for _, a := range flagArgs {
 		if ok, _ := isRunHooks(a); ok {
 			present = true
 		}
 	}
 	remaining = make([]string, 0, len(args))
-	for _, a := range args {
+	for _, a := range flagArgs {
 		if ok, v := isRunHooks(a); ok {
 			allow = v
 			continue
@@ -1683,7 +1699,7 @@ func extractAllowRepoScriptsFlag(args []string) (allow, trust bool, remaining []
 		}
 		remaining = append(remaining, a)
 	}
-	return allow, trust, remaining
+	return allow, trust, append(remaining, rest...)
 }
 
 // extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.
@@ -3662,16 +3678,23 @@ type statusCounts struct {
 	total   int
 }
 
+// statusInstances is the set `status` reports on: sessions that are not
+// archived. An archived session can keep a live tmux process (a conductor
+// archives finished workers; a superseded cross-harness source keeps its old
+// pane), but the operator filed it away, so it must not show up as waiting,
+// running or idle. This is stricter than `list --json`, which keeps normal
+// archives and flags them with "archived": true.
+func statusInstances(instances []*session.Instance) []*session.Instance {
+	return session.FilterInstancesByArchive(instances, false)
+}
+
 // countByStatus counts sessions by their status
 func countByStatus(instances []*session.Instance) statusCounts {
+	instances = statusInstances(instances)
 	// Warm tmux pane-title cache + load hook statuses so `status`/`status --json`
-	// reports the same counts the TUI and /api/menu do (issue #610).
+	// reports the same counts the TUI header and /api/menu do (issue #610).
+	// All three leave archived sessions out.
 	session.RefreshInstancesForCLIStatus(instances)
-	// Superseded/archived source rows (from cross-harness "Restart with new
-	// session ID") stay in storage with their old tmux session still
-	// reachable, but `list --json` hides them. Without this filter `status`
-	// counts them anyway, so its total silently exceeds `list --json`'s.
-	instances = session.VisibleInstances(instances)
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
@@ -3765,10 +3788,8 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		exitCLI(1)
 	}
-	// Same tracked set as `list --json`: hide archived cross-harness sources
-	// superseded by a "Restart with new session ID" so status totals never
-	// exceed the enumerable session list.
-	instances = session.VisibleInstances(instances)
+	// Archived sessions are not counted or listed; see statusInstances.
+	instances = statusInstances(instances)
 
 	if len(instances) == 0 {
 		if *jsonOutput {
@@ -4637,6 +4658,7 @@ func printHelp() {
 	fmt.Println("  limits           Claude 5h/7d and Codex weekly usage per account [--json] ([macapp] plugins)")
 	fmt.Println("  doctor           Check accounts and runtime health")
 	fmt.Println("  health           Runtime health snapshots and budgets [--json] [--since 1h]")
+	fmt.Println("  perf             Operation timings vs targets (record with AGENTDECK_TIMINGS=1) [--json] [--since 24h]")
 	fmt.Println("  try <name>       Quick experiment (create/find dated folder + session)")
 	fmt.Println("  list, ls         List all sessions")
 	fmt.Println("  remove, rm       Remove a session")

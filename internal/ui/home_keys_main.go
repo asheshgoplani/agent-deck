@@ -467,6 +467,7 @@ func (h *Home) hasModalVisible() bool {
 		h.editSessionDialog.IsVisible() ||
 		(h.telemetryDialog != nil && h.telemetryDialog.IsVisible()) ||
 		(h.feedbackDialog != nil && h.feedbackDialog.IsVisible()) ||
+		h.reportDialog.IsVisible() ||
 		h.zoxidePicker.IsVisible()
 }
 

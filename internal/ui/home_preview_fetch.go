@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -238,6 +239,10 @@ func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int)
 		return nil
 	}
 	return func() tea.Msg {
+		var started time.Time
+		if optiming.Enabled() {
+			started = time.Now()
+		}
 		var content string
 		var err error
 		if windowIndex >= 0 {
@@ -249,6 +254,7 @@ func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int)
 			previewKey: key,
 			content:    content,
 			err:        err,
+			started:    started,
 		}
 	}
 }

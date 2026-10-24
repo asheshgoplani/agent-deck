@@ -231,11 +231,15 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	target.ClaudeSessionID = forkUUID
 	// #1815: minted for the fork target — vouched ownership.
 	target.markClaudeSessionIDVerified()
+	// LOC-7: workDir (a project or branch-derived worktree path) and the parent
+	// id are quoted, not spliced into the shell: a single quote in either used
+	// to break out and run shell. shellQuote keeps the `cd '<path>'` form for
+	// ordinary paths; shellescape leaves an ordinary id bare.
 	cmd := fmt.Sprintf(
-		`cd '%s' && `+
+		`cd %s && `+
 			`%sexec claude --session-id "%s" --resume %s --fork-session%s`,
-		workDir,
-		bashExportPrefix, forkUUID, i.ClaudeSessionID, extraFlags)
+		shellQuote(workDir),
+		bashExportPrefix, forkUUID, shellescape.Quote(i.ClaudeSessionID), extraFlags)
 	cmd, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", err

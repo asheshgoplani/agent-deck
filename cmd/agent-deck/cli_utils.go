@@ -164,9 +164,11 @@ func normalizeArgs(fs *flag.FlagSet, args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 
-		// "--" terminates flag processing
+		// "--" terminates flag processing. It is kept in front of the
+		// positionals so fs.Parse also stops there, and a positional that
+		// starts with "-" (a chat message, say) stays a positional.
 		if arg == "--" {
-			positional = append(positional, args[i+1:]...)
+			positional = append(append([]string{"--"}, positional...), args[i+1:]...)
 			break
 		}
 
