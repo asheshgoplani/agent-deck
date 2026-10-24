@@ -36,8 +36,10 @@ import (
 // and only an exit: an error while the old pid is gone, the hook file holds
 // its SessionEnd (stamped no later than a second, the file's resolution, after
 // the restart recorded the new process), the new process is alive and its
-// pane shows no error (once). And the new process's first arrival at its
-// prompt with no new user or assistant record in the transcript (and no
+// pane shows no error (that one SessionEnd, however often the daemon sees
+// it; the hold lasts per token, so the next restart's token holds its own
+// old SessionEnd). And the new process's first arrival at its prompt with no new user
+// or assistant record in the transcript (and no
 // SessionEnd of its own), which becomes one info-tier line instead and
 // spends the token. Any other error after the restart is the new process's
 // and goes to the parent at once, urgent, with what is wrong instead of the
@@ -263,13 +265,27 @@ func paneErrorText(substate string) string {
 // restartState is the daemon's memory of its tokens: which old exits were
 // held back already, and the build an idle refresh restarted onto.
 type restartState struct {
-	mu       sync.Mutex
-	exitHeld map[string]bool
+	mu sync.Mutex
+	// exitHeld is the old process's SessionEnd held back per child, with the
+	// token it was held under. The same SessionEnd seen again under the same
+	// token (one pass judges a flip on two paths, and a later pass re-reads
+	// the light while it is still on file) is the same exit, held again; an
+	// error with any other evidence is news. A hold under another token is
+	// stale: the token can be removed by paths that never reach
+	// spendRestartToken (the notifier, the sweep, the restart process).
+	exitHeld map[string]restartExitHold
 	build    map[string]string
 	// banner holds resumed children whose token the unseen-boot info line
 	// spent (#2813): the sweep still checks their pane for an error banner
 	// until the boot timeout, as it did while the token lived.
 	banner map[string]restartBannerWatch
+}
+
+// restartExitHold is one held exit: the token's At (which token) and the
+// UpdatedAt of the SessionEnd it held (which exit).
+type restartExitHold struct {
+	tokenAt time.Time
+	stamp   time.Time
 }
 
 type restartBannerWatch struct {
@@ -280,7 +296,7 @@ type restartBannerWatch struct {
 
 func (d *TransitionDaemon) restarts() *restartState {
 	d.restartOnce.Do(func() {
-		d.restart = &restartState{exitHeld: map[string]bool{}, build: map[string]string{}, banner: map[string]restartBannerWatch{}}
+		d.restart = &restartState{exitHeld: map[string]restartExitHold{}, build: map[string]string{}, banner: map[string]restartBannerWatch{}}
 	})
 	return d.restart
 }
@@ -319,10 +335,15 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 	case string(StatusError):
 		// Only the old process's exit event: its pid gone, its own SessionEnd,
 		// the new process alive. Anything else is the new process's error.
+		// One exit is ours, seen as often as the light shows it: a hold
+		// already spent on another SessionEnd does not cover this one.
 		rs.mu.Lock()
-		ours := newAlive && oldEnd && tok.OldPID > 0 && tok.OldPID != tok.NewPID && !restartPIDAlive(tok.OldPID) && !rs.exitHeld[id]
+		ours := newAlive && oldEnd && tok.OldPID > 0 && tok.OldPID != tok.NewPID && !restartPIDAlive(tok.OldPID)
+		if held, seen := rs.exitHeld[id]; ours && seen && held.tokenAt.Equal(tok.At) && !held.stamp.Equal(hs.UpdatedAt) {
+			ours = false
+		}
 		if ours {
-			rs.exitHeld[id] = true
+			rs.exitHeld[id] = restartExitHold{tokenAt: tok.At, stamp: hs.UpdatedAt}
 		}
 		rs.mu.Unlock()
 		if ours {
@@ -685,6 +706,67 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 			d.markIdleExitTold(profile, id)
 		}
 	}
+}
+
+// restartResumeEcho reports whether an unclassified flip of inst to `to` at
+// ts is the resumed process at the prompt the unseen-boot info line (#2813)
+// already reported: the banner watch is live and the transcript gained no
+// user or assistant record since the restart. An error, a banner, a
+// permission or elicitation prompt, or anything after the watch expires is
+// still news. An observed flip on a transcript the resumed process never
+// wrote (it may be writing a new session file the instance does not resolve
+// yet, #2184) is news too: noTurnSince cannot see that turn.
+func (d *TransitionDaemon) restartResumeEcho(inst *Instance, to string, ts time.Time, observedFlip bool) bool {
+	switch normalizeStatusString(to) {
+	case string(StatusWaiting), string(StatusIdle):
+	default:
+		return false
+	}
+	rs := d.restarts()
+	rs.mu.Lock()
+	w, ok := rs.banner[inst.ID]
+	rs.mu.Unlock()
+	if !ok || ts.After(w.until) || ts.Before(w.tok.At) {
+		return false
+	}
+	if w.tok.Transcript == "" || w.tok.Transcript != inst.GetJSONLPath() || !noTurnSince(w.tok.Transcript, w.tok.Offset) {
+		return false
+	}
+	if observedFlip {
+		info, err := os.Stat(w.tok.Transcript)
+		if err != nil || info.ModTime().Before(w.tok.At) {
+			return false
+		}
+	}
+	// A permission request or elicitation dialog after the restart blocks the
+	// child on input; its parent must hear it.
+	if hs := restartHookStatus(inst.ID); hs != nil && hookEventBlocksTurn(hs.Event) && !hs.UpdatedAt.Before(w.tok.At.Truncate(time.Second)) {
+		return false
+	}
+	sub := restartPaneSubstate(inst)
+	return sub != string(tmux.SubstateInteractiveMenu) && paneErrorText(sub) == ""
+}
+
+// dropStaleBannerWatch forgets child id's banner watch once a newer restart
+// left a token: the watch's own token was spent when the info line went out,
+// so a token under another At is the next restart's, which judges its own
+// boot (sweepRestartBanners does the same, but only on its own pass).
+func (d *TransitionDaemon) dropStaleBannerWatch(id string) {
+	rs := d.restarts()
+	rs.mu.Lock()
+	w, ok := rs.banner[id]
+	rs.mu.Unlock()
+	if !ok {
+		return
+	}
+	if tok, live := readRestartToken(id); !live || tok.At.Equal(w.tok.At) {
+		return
+	}
+	rs.mu.Lock()
+	if cur, ok := rs.banner[id]; ok && cur.tok.At.Equal(w.tok.At) {
+		delete(rs.banner, id)
+	}
+	rs.mu.Unlock()
 }
 
 // sweepRestartBanners reports an error banner on a resumed child whose token

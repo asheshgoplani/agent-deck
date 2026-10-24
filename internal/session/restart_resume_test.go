@@ -274,10 +274,13 @@ func TestIssue2792_NewProcessErrorsAreNews(t *testing.T) {
 			st.hook = nil
 			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
 		},
-		// a second error while the new process lives: only one exit is ours
+		// a second error while the new process lives: only one exit is ours.
+		// The same old SessionEnd seen again is that exit (STALEERR1019); an
+		// error after the new process wrote its own hook is not.
 		"second error": func(t *testing.T, f *turnTestFixture, st *pidStub, observed bool) {
 			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now(), observed)
-			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(time.Second), observed)
+			st.newHook("waiting", "SessionStart", time.Now())
+			f.d.emitTurn("default", f.child, f.byID, "running", "error", time.Now().Add(3*time.Second), observed)
 		},
 	}
 	for name, run := range cases {
