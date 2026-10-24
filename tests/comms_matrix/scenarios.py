@@ -152,10 +152,28 @@ def sibling_reply(rig, tool):
                     'reply_fixture_scope': 'producer-boundary reply; actual send delivery asserted separately'}
 
 
+def pi_child_two_turns(rig):
+    """A pi child's second run must ring its parent again: the inbox identity of a
+    run is its agent_settled turn id, not the constant running-to-waiting flip."""
+    rig.setup('pi', 'ready')
+    first = rig.emit('pi', 'urgent', turn='pi-turn-1', text='First run finished.\n===AGENTDECK_DONE=== status=ok summary=first')
+    rig.tick()
+    rig.tick()
+    second = rig.emit('pi', 'urgent', turn='pi-turn-2', text='Second run finished.\n===AGENTDECK_DONE=== status=ok summary=second')
+    rig.tick()
+    rig.tick()
+    records, turns = tool_turns(rig, rig.child)
+    stats = json.loads(rig.cli('inbox', 'stats', '--json', '--all').stdout)
+    wakes = sum(s.get('wakeups_urgent', 0) for s in stats if s.get('parent') == rig.parent)
+    return [check('two_turns', [row.get('text') for row in turns], [first, second]),
+            check('urgent_woken_twice', wakes, 2)], {'records': records, 'stats': stats}
+
+
 def run_scenarios(output):
     if not Path('/.dockerenv').exists():
         raise RuntimeError('scenarios run only in disposable Docker containers')
-    probes = [('codex-subagent-filter', codex_subagent), ('codex-unchanged-generation-flap', codex_flapping)]
+    probes = [('codex-subagent-filter', codex_subagent), ('codex-unchanged-generation-flap', codex_flapping),
+              ('pi-child-two-turns', pi_child_two_turns)]
     for tool in ('claude', 'codex'):
         probes.append((tool + '-conductor-self', lambda rig, tool=tool: conductor_self(rig, tool)))
         probes.append((tool + '-sibling-reply', lambda rig, tool=tool: sibling_reply(rig, tool)))
@@ -175,7 +193,8 @@ def run_scenarios(output):
         print(name, [(row['name'], row['status']) for row in result['checks']], flush=True)
     write_json(Path(output) / 'coverage.json', {
         'local': ['Codex subagent filtering', 'Codex unchanged generation flapping',
-                  'Claude/Codex conductor self', 'Claude/Codex sibling send and reply boundaries'],
+                  'Claude/Codex conductor self', 'Claude/Codex sibling send and reply boundaries',
+                  'Pi child: a second run rings the parent again'],
         'not_exercised': ['remote variants of these focused scenarios', 'other harness conductor self',
                           'orphan integrator hierarchy', 'plain-shell and Codex-error status-only matrix']})
     write_json(Path(output) / 'scenarios.json', results)

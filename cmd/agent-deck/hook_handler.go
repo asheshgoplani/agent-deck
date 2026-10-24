@@ -63,6 +63,8 @@ type hookPayload struct {
 	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
 	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
+	Settles              json.RawMessage `json:"settles"`                // pi: the writer sends agent_settled (a v3+ extension)
+	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
 	// forwards {hook_event_name, tool_name, tool_input, session_id, cwd,
@@ -195,7 +197,23 @@ type hookStatusFile struct {
 	CodexCompletedSequence   uint64 `json:"codex_completed_sequence,omitempty"`
 	HookGeneration           string `json:"hook_generation,omitempty"`
 	Sequence                 uint64 `json:"sequence,omitempty"`
-	InitialMessagePending    bool   `json:"initial_message_pending,omitempty"`
+	// Settles is the writer's capability bit (it sends agent_settled) and PiRunID
+	// the run token the extension minted at agent_start, both from the turn_start
+	// and turn_end payloads; an old extension sends neither. PiSettle* are a run's
+	// identity, merged in by its agent_settled; every other write rebuilds the
+	// file, so the next turn_start erases them.
+	Settles bool   `json:"settles,omitempty"`
+	PiRunID string `json:"pi_run_id,omitempty"`
+	// PiOrphanRuns lists settles-capable runs that never settled (aborted, or
+	// ended unsettled) and were overwritten by a newer run's status, oldest first,
+	// at most piOrphanRunsMax. Every pi write carries it forward, so no write can
+	// erase an entry; the daemon emits each run once under its own run key.
+	PiOrphanRuns          []piOrphanRun `json:"pi_orphan_runs,omitempty"`
+	piSource              bool          // set by the writer: a pi-sourced write, run fields or not
+	PiSettleTurnID        string        `json:"pi_settle_turn_id,omitempty"`
+	PiSettleSessionID     string        `json:"pi_settle_session_id,omitempty"`
+	PiSettledAt           int64         `json:"pi_settled_at,omitempty"`
+	InitialMessagePending bool          `json:"initial_message_pending,omitempty"`
 	// DoneStatus/DoneSummary carry a worker-printed completion sentinel
 	// detected on the Stop edge (issue #1186). omitempty so ordinary Stops
 	// (no sentinel) leave the fields absent, which the daemon reads as
@@ -403,7 +421,10 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	}
 
 	if status == "" {
-		// Unknown or unhandled event, nothing to write
+		if payload.Source == "pi" && normalizeHookEventKey(payload.HookEventName) == "agentsettled" {
+			mergePiSettle(instanceID, payload)
+		}
+		// Unknown or unhandled event, nothing else to write
 		return
 	}
 
@@ -426,7 +447,11 @@ func handleHookHandlerReceivedAt(receivedAt time.Time) {
 	if isStopHookEvent(payload.HookEventName) {
 		scan = detectDoneSentinel(data)
 	}
-	writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt)
+	var pi piRunInfo
+	if payload.Source == "pi" {
+		pi = piRunInfo{Settles: rawBool(payload.Settles), RunID: strings.TrimSpace(rawString(payload.RunID)), Source: true}
+	}
+	writeHookStatusFull(instanceID, status, sessionID, payload.HookEventName, payload.Cwd, hookPayloadPlatform(payload), scan, receivedAt, pi)
 	if payload.HookEventName == "PreToolUse" {
 		// This high-frequency edge only publishes activity. Lifecycle hooks
 		// still own metadata reconciliation, costs, and Recall indexing.
@@ -620,6 +645,24 @@ func writeHookStatusReceivedAt(instanceID, status, sessionID, event, cwd string,
 // writeHookStatusReceivedAtPlatform also records the payload's platform
 // (Hermes extra.platform), used to keep delegate events from binding.
 func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time) {
+	writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform, scan, receivedAt, piRunInfo{})
+}
+
+// piRunInfo is what a pi extension's turn_start and turn_end say about their
+// writer and run: the capability bit and the run token.
+type piRunInfo struct {
+	Settles bool
+	RunID   string
+	Source  bool // the write comes from the pi extension, lifecycle writes included
+}
+
+// rawBool reads a leniently decoded field as a bool (false for anything else).
+func rawBool(raw json.RawMessage) bool {
+	var b bool
+	return json.Unmarshal(raw, &b) == nil && b
+}
+
+func writeHookStatusFull(instanceID, status, sessionID, event, cwd, platform string, scan doneScanResult, receivedAt time.Time, pi piRunInfo) {
 	if instanceID == "" || status == "" {
 		return
 	}
@@ -643,6 +686,9 @@ func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd
 		Timestamp: time.Now().Unix(),
 		Cwd:       strings.TrimSpace(cwd),
 		Platform:  platform,
+		Settles:   pi.Settles,
+		PiRunID:   pi.RunID,
+		piSource:  pi.Source,
 	}
 	if os.Getenv("AGENTDECK_TOOL") == "hermes" && session.HermesHookRecordsOwnSession(event, platform, sessionID) {
 		statusFile.hermesOwnedSessionID = sessionID
@@ -659,10 +705,133 @@ func writeHookStatusReceivedAtPlatform(instanceID, status, sessionID, event, cwd
 	writeHookStatusFile(instanceID, statusFile, true)
 }
 
+// mergePiSettle records a pi run's identity in the status file its turn_end
+// wrote. The settle is no status edge: status, event and timestamps stay as they
+// were, so the v2 turn_end contract is intact, and only the identity fields are
+// added. The next turn_start rebuilds the file and erases them. Without a status
+// file (the settle came first) there is nothing to merge into.
+func mergePiSettle(instanceID string, p hookPayload) {
+	hooksDir := getHooksDir()
+	if err := os.MkdirAll(hooksDir, 0700); err != nil {
+		return
+	}
+	// The status lock is held from the read through the write: a turn_start
+	// that lands in between would otherwise be overwritten by this stale copy.
+	lock, err := os.OpenFile(filepath.Join(hooksDir, filepath.Base(instanceID)+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return
+	}
+	defer closeChecked(lock)
+	if err := lockHookStatus(lock, false); err != nil {
+		return
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+
+	data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json"))
+	if err != nil {
+		return
+	}
+	var current hookStatusFile
+	if json.Unmarshal(data, &current) != nil || current.Status == "" {
+		return
+	}
+	// Merge only into the turn_end this settle belongs to: a newer run's file
+	// (a turn_start or a session_start won), another session's or another run's
+	// is left alone.
+	sessionID := strings.TrimSpace(p.SessionID)
+	runID := strings.TrimSpace(rawString(p.RunID))
+	if current.Event != "turn_end" || (current.SessionID != "" && sessionID != "" && current.SessionID != sessionID) ||
+		(current.PiRunID != "" && runID != "" && current.PiRunID != runID) {
+		return
+	}
+	current.PiSettleTurnID = strings.TrimSpace(rawString(p.TurnID))
+	current.PiSettleSessionID = sessionID
+	current.PiSettledAt = time.Now().UnixMilli()
+	writeHookStatusFileLocked(instanceID, current, false, true)
+}
+
+// piOrphanRunsMax bounds the list: a fifth unsettled run drops the oldest.
+const piOrphanRunsMax = session.PiOrphanRunsMax
+
+// piOrphanRun is one carried run; TurnEndNS is its turn_end's received time when
+// it had one, and Settled whether its settle had merged (the daemon may not have
+// polled it yet).
+type piOrphanRun struct {
+	RunID     string `json:"run_id"`
+	TurnEndNS int64  `json:"turn_end_ns,omitempty"`
+	Settled   bool   `json:"settled,omitempty"`
+	AtNS      int64  `json:"at_ns,omitempty"` // when it was first carried
+}
+
+// carryOrphanedPiRuns gives a pi write the list of previous runs the old file held,
+// plus the old file's run itself when this write starts a different run or a
+// lifecycle (turn_start, session_start, session_shutdown), settled or not: the
+// daemon cannot emit a run the file no longer names, and it may not have polled a
+// settle yet. The run being written is never its own entry; the persisted pi-run
+// key keeps a carried run from being emitted twice.
+func carryOrphanedPiRuns(hooksDir, instanceID string, statusFile *hookStatusFile) {
+	data, err := readHookFileBounded(filepath.Join(hooksDir, filepath.Base(instanceID)+".json"))
+	if err != nil {
+		return
+	}
+	var prev hookStatusFile
+	if json.Unmarshal(data, &prev) != nil {
+		return
+	}
+	list := append([]piOrphanRun(nil), prev.PiOrphanRuns...)
+	for _, o := range statusFile.PiOrphanRuns { // a settle merge already holds the list it read
+		dup := false
+		for _, e := range list {
+			dup = dup || e.RunID == o.RunID
+		}
+		if !dup {
+			list = append(list, o)
+		}
+	}
+	switch statusFile.Event {
+	case "turn_start", "session_start", "session_shutdown":
+	default:
+		prev.Settles = false // only these writes can overwrite a run
+	}
+	if prev.Settles && prev.PiRunID != "" && prev.PiRunID != statusFile.PiRunID {
+		entry := piOrphanRun{RunID: prev.PiRunID, Settled: prev.PiSettleTurnID != "" || prev.PiSettledAt != 0}
+		if prev.Event == "turn_end" {
+			entry.TurnEndNS = prev.ReceivedAt
+		}
+		list = append(list, entry)
+	}
+	now := time.Now()
+	kept := list[:0]
+	for _, e := range list {
+		if e.AtNS == 0 {
+			e.AtNS = now.UnixNano()
+		}
+		ref := e.AtNS
+		if e.TurnEndNS > 0 {
+			ref = e.TurnEndNS
+		}
+		// Older than the consumed-key retention: its key may be pruned, so it
+		// would re-emit; drop it.
+		if e.RunID != statusFile.PiRunID && now.Sub(time.Unix(0, ref)) <= session.ConsumedTurnsRetention {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) > piOrphanRunsMax {
+		kept = kept[len(kept)-piOrphanRunsMax:]
+	}
+	statusFile.PiOrphanRuns = kept
+}
+
 func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnchor bool) bool {
+	return writeHookStatusFileLocked(instanceID, statusFile, mutateAnchor, false)
+}
+
+// writeHookStatusFileLocked is writeHookStatusFile for a caller that already
+// holds the instance's status lock (held true).
+func writeHookStatusFileLocked(instanceID string, statusFile hookStatusFile, mutateAnchor, held bool) bool {
 	hooksDir := getHooksDir()
 	generation := strings.TrimSpace(os.Getenv("AGENTDECK_HOOK_GENERATION"))
-	if generation != "" || statusFile.ReceivedAt != 0 {
+	if !held && (generation != "" || statusFile.ReceivedAt != 0) {
 		lockPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".lock")
 		lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
@@ -673,6 +842,9 @@ func writeHookStatusFile(instanceID string, statusFile hookStatusFile, mutateAnc
 			return false
 		}
 		defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	}
+	if statusFile.piSource || (statusFile.Settles && statusFile.PiRunID != "") {
+		carryOrphanedPiRuns(hooksDir, instanceID, &statusFile)
 	}
 	// Compare under the same lock as publication, including when no launch
 	// generation is present. A delayed tool must not erase a newer lifecycle

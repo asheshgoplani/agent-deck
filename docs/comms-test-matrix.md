@@ -40,7 +40,7 @@ Timing: `latency_ms` (signal to commit) is on every record; P2 adds
 | Cursor | local | urgent | **status-only in P1** (text producer specified: beforeSubmitPrompt, afterAgentResponse `text`, which needs one more event in the installed hooks.json and a lossless merge; deferred) | stop `followup_message` / typed nudge (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
 | Cursor | local | info | n/a until the producer is enabled | | deferred | |
 | Cursor | remote | urgent, info | as local + import | as local | P3 | matrix row only |
-| Pi | local | urgent | extension v3: the last `input` is the prompt, `agent_settled` carries the run's last `turn_end` text; a run without text is one status edge | extension `pi.sendUserMessage()` (P2) | **auto** | `TestHookHandler_PiSettleSpoolsOneTurnEnd`, `TestHookHandler_PiNoTextSettleSpoolsOneStatusEdge`, `TestPiHookExtension_*`, `TestCommsIngest_Pi*`; matrix pi cells |
+| Pi | local | urgent | extension v3: the last `input` is the prompt, `agent_settled` carries the run's last `turn_end` text; a run without text is one status edge | extension `pi.sendUserMessage()` (P2) | **auto** | `TestHookHandler_PiSettleSpoolsOneTurnEnd`, `TestHookHandler_PiNoTextSettleSpoolsOneStatusEdge`, `TestPiHookExtension_*`, `TestCommsIngest_Pi*`; matrix pi cells (single-turn: `one_turn`, `urgent_woken_once`); the second-turn wake is the `pi-child-two-turns` scenario (`urgent_woken_twice`)[^pi-turn] |
 | Pi | local | info | as urgent; `<task-notification>` prompt is tier info | | **auto** | `TestCommsIngest_PiTurnTiersFromThePromptAndSentinel` |
 | Pi | remote | urgent, info | as local + import | as local | P3 | matrix row only |
 | Hermes | local | urgent | **status-only in P1** (text producer specified: pre_llm_call `user_message`, post_llm_call `assistant_response`; the shell-hook payload shape is unverified) | pre_llm_call `{context}` / typed nudge (P2) | **auto** (status record) / deferred | `TestHookHandler_OnlyClaudeSpoolsInP1` |
@@ -101,3 +101,5 @@ set, a second pull adds nothing.
 
 Consume and ack rows are filled by the P2 PR (`agent-deck msg read|ack`,
 `t_pushed`, `t_seen`, `msg stats`).
+
+[^pi-turn]: The pi cells above drive one child turn, so they cannot see the inbox producer's per-run identity. Until the pi turn-fingerprint fix, a pi child's fingerprint fell back to the constant running-to-waiting flip and every run after the first was skipped as a known turn (no inbox record, no wake). The `pi-child-two-turns` scenario asserts both turns are recorded and the parent is rung twice.

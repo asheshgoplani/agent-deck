@@ -74,6 +74,13 @@ type TransitionDaemon struct {
 	// happened to observe the session mid-`running`: see recordTerminalTurns.
 	lastTurn map[string]map[string]string
 
+	// passStatus is the pass's one read of each instance's hook status file
+	// (see statusSnapshot); nil outside SyncOnce.
+	passStatus map[string]*HookStatus
+	// orphansEmitted: per instance, the carried pi runs already emitted (see
+	// recordOrphanedPiRuns).
+	orphansEmitted map[string]map[string]bool
+
 	// journaledRun maps (profile, child) to the turn uuid emitTurn journaled
 	// for it since this daemon last saw the child running (issue #2481). The
 	// snapshot edge that follows a hook-path record of the same run is that
@@ -253,6 +260,8 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 	// staleness window rather than flipping to "absent" the moment it stalls.
 	WriteNotifyHeartbeat()
 
+	d.passStatus = map[string]*HookStatus{}
+	defer func() { d.passStatus = nil }()
 	nextInterval := notifyPollSlow
 	for _, profile := range profiles {
 		interval := d.syncProfile(profile)
@@ -809,6 +818,7 @@ func (d *TransitionDaemon) journalStatusChanges(profile string, byID map[string]
 	for id := range seen {
 		if _, ok := statuses[id]; !ok {
 			delete(seen, id)
+			delete(d.orphansEmitted, id)
 		}
 	}
 }
@@ -890,7 +900,7 @@ func (d *TransitionDaemon) seedTurnBaseline(profile string, byID map[string]*Ins
 		if _, known := seen[id]; known {
 			continue
 		}
-		signal := transitionEventOutputHash(inst)
+		signal := d.turnSignal(inst)
 		if lastTo, lastHash, ok := d.notifier.lastNotifiedTurn(id); ok && (lastTo != to || lastHash != signal) {
 			continue // changed while down: recordTerminalTurns notifies it once
 		}
@@ -961,6 +971,11 @@ func (d *TransitionDaemon) recordTerminalTurns(
 	seen := d.turnBaseline(profile)
 
 	for id, to := range statuses {
+		var snap *HookStatus
+		if pinst := byID[id]; pinst != nil && strings.EqualFold(strings.TrimSpace(pinst.Tool), "pi") {
+			snap = d.statusSnapshot(id) // the one read of this candidate, orphan and verdict alike
+			d.recordOrphanedPiRuns(profile, pinst, byID, snap, notifyEnabled)
+		}
 		if !isRecordableTurnStatus(to) {
 			if notifyEnabled {
 				d.rememberHeldSendFromPoll(byID[id], to)
@@ -971,7 +986,17 @@ func (d *TransitionDaemon) recordTerminalTurns(
 		if inst == nil {
 			continue
 		}
-		signal := transitionEventOutputHash(inst)
+		var signal string
+		var pi *piTurnVerdict
+		if strings.EqualFold(strings.TrimSpace(inst.Tool), "pi") {
+			v := piVerdict(inst, snap, to, time.Now())
+			if v.Awaiting {
+				continue // an unsettled turn_end is a status edge, not an inbox turn
+			}
+			pi, signal = &v, v.Signal
+		} else {
+			signal = transitionEventOutputHash(inst)
+		}
 		key := to + "|" + signal
 		previous, known := seen[id]
 		if known && previous == key {
@@ -1013,7 +1038,13 @@ func (d *TransitionDaemon) recordTerminalTurns(
 		// turn (assistant record not flushed yet) leaves the key uncommitted so
 		// this exact observation retries next poll instead of being recorded
 		// under the size signal and then again under the turn signal.
-		if _, ok := d.emitTurn(profile, inst, byID, string(StatusRunning), to, time.Now(), false); !ok {
+		var ok bool
+		if pi != nil {
+			_, ok = d.emitTurnWith(profile, inst, byID, string(StatusRunning), to, time.Now(), false, pi)
+		} else {
+			_, ok = d.emitTurn(profile, inst, byID, string(StatusRunning), to, time.Now(), false)
+		}
+		if !ok {
 			continue
 		}
 		// Commit the dedup key only after the observation is eligible. A registry
@@ -1030,6 +1061,49 @@ func (d *TransitionDaemon) recordTerminalTurns(
 			delete(seen, id)
 		}
 	}
+}
+
+// recordOrphanedPiRuns emits each run a pi child's status file carries forward
+// because newer runs overwrote it unsettled (hook-handler's carryOrphanedPiRuns),
+// once, as a waiting turn under that run's own key, whatever the child is doing
+// now. The notifier's persisted pi-run fingerprint is the durable dedupe; the
+// per-instance set here only spares the following polls the work, and keeps just
+// the runs the file still lists.
+func (d *TransitionDaemon) recordOrphanedPiRuns(profile string, inst *Instance, byID map[string]*Instance, hs *HookStatus, notifyEnabled bool) {
+	if hs == nil || hs.PiOrphanCount == 0 {
+		delete(d.orphansEmitted, inst.ID)
+		return
+	}
+	done := d.orphansEmitted[inst.ID]
+	next := map[string]bool{}
+	for _, o := range hs.PiOrphanRuns[:hs.PiOrphanCount] {
+		if o.expired(time.Now()) {
+			continue // its consumed key may be pruned: it must not come back
+		}
+		signal := piRunSignal(o.RunID)
+		if done[signal] {
+			next[signal] = true
+			continue
+		}
+		if d.turnLiveCheck != nil && !d.turnLiveCheck(inst) {
+			continue
+		}
+		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+			continue
+		}
+		at := time.Now()
+		if o.TurnEndNS > 0 {
+			at = time.Unix(0, o.TurnEndNS)
+		}
+		v := &piTurnVerdict{Signal: signal}
+		if _, ok := d.emitTurnWith(profile, inst, byID, string(StatusRunning), string(StatusWaiting), at, false, v); ok {
+			next[signal] = true
+		}
+	}
+	if d.orphansEmitted == nil {
+		d.orphansEmitted = map[string]map[string]bool{}
+	}
+	d.orphansEmitted[inst.ID] = next
 }
 
 // emitDoneSignals turns a worker-printed completion sentinel (persisted into
@@ -1277,6 +1351,31 @@ func copyStatusMap(in map[string]string) map[string]string {
 	return out
 }
 
+// statusSnapshot reads an instance's hook status file once per SyncOnce and
+// shares that snapshot with every consumer in the pass (the hook status lookup,
+// recordTerminalTurns and emitTurn), so a file that changes mid-pass cannot give
+// one candidate two different verdicts. Outside a pass it reads directly.
+func (d *TransitionDaemon) statusSnapshot(instanceID string) *HookStatus {
+	if d.passStatus == nil {
+		return readHookStatusForPass(instanceID)
+	}
+	hs, ok := d.passStatus[instanceID]
+	if !ok {
+		hs = readHookStatusForPass(instanceID)
+		d.passStatus[instanceID] = hs
+	}
+	return hs
+}
+
+// turnSignal is transitionEventOutputHash for a pass: a pi child's run key comes
+// from the pass's one status snapshot, never a read of its own.
+func (d *TransitionDaemon) turnSignal(inst *Instance) string {
+	if strings.EqualFold(strings.TrimSpace(inst.Tool), "pi") {
+		return piVerdict(inst, d.statusSnapshot(inst.ID), "", time.Now()).Signal
+	}
+	return transitionEventOutputHash(inst)
+}
+
 func (d *TransitionDaemon) hookStatusForInstance(instanceID string) *HookStatus {
 	var best *HookStatus
 	if d.hookWatcher != nil {
@@ -1284,7 +1383,7 @@ func (d *TransitionDaemon) hookStatusForInstance(instanceID string) *HookStatus 
 			best = hs
 		}
 	}
-	if hs := readHookStatusFile(instanceID); hs != nil {
+	if hs := d.statusSnapshot(instanceID); hs != nil {
 		if best == nil || hs.UpdatedAt.After(best.UpdatedAt) {
 			best = hs
 		}
@@ -1326,23 +1425,30 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		return nil
 	}
 	var raw struct {
-		Status                   string `json:"status"`
-		SessionID                string `json:"session_id"`
-		Event                    string `json:"event"`
-		Timestamp                int64  `json:"ts"`
-		DoneStatus               string `json:"done_status"`
-		DoneSummary              string `json:"done_summary"`
-		TranscriptPath           string `json:"transcript_path"`
-		Cwd                      string `json:"cwd"`
-		Platform                 string `json:"platform"`
-		CodexStartedGeneration   string `json:"codex_started_generation"`
-		CodexCompletedGeneration string `json:"codex_completed_generation"`
-		CodexStartedSessionID    string `json:"codex_started_session_id"`
-		CodexCompletedSessionID  string `json:"codex_completed_session_id"`
-		CodexStartedSequence     uint64 `json:"codex_started_sequence"`
-		CodexCompletedSequence   uint64 `json:"codex_completed_sequence"`
-		HookGeneration           string `json:"hook_generation"`
-		Sequence                 uint64 `json:"sequence"`
+		Status                   string        `json:"status"`
+		SessionID                string        `json:"session_id"`
+		Event                    string        `json:"event"`
+		Timestamp                int64         `json:"ts"`
+		DoneStatus               string        `json:"done_status"`
+		DoneSummary              string        `json:"done_summary"`
+		TranscriptPath           string        `json:"transcript_path"`
+		Cwd                      string        `json:"cwd"`
+		Platform                 string        `json:"platform"`
+		CodexStartedGeneration   string        `json:"codex_started_generation"`
+		CodexCompletedGeneration string        `json:"codex_completed_generation"`
+		CodexStartedSessionID    string        `json:"codex_started_session_id"`
+		CodexCompletedSessionID  string        `json:"codex_completed_session_id"`
+		CodexStartedSequence     uint64        `json:"codex_started_sequence"`
+		CodexCompletedSequence   uint64        `json:"codex_completed_sequence"`
+		HookGeneration           string        `json:"hook_generation"`
+		Sequence                 uint64        `json:"sequence"`
+		PiSettleTurnID           string        `json:"pi_settle_turn_id"`
+		PiSettleSessionID        string        `json:"pi_settle_session_id"`
+		PiSettledAt              int64         `json:"pi_settled_at"`
+		Settles                  bool          `json:"settles"`
+		PiRunID                  string        `json:"pi_run_id"`
+		PiOrphanRuns             []PiOrphanRun `json:"pi_orphan_runs"`
+		ReceivedAtNS             int64         `json:"received_at_ns"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -1375,6 +1481,13 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		CodexCompletedSequence:   raw.CodexCompletedSequence,
 		HookGeneration:           raw.HookGeneration,
 		Sequence:                 raw.Sequence,
+		PiSettleTurnID:           raw.PiSettleTurnID,
+		PiSettleSessionID:        raw.PiSettleSessionID,
+		PiSettledAt:              raw.PiSettledAt,
+		Settles:                  raw.Settles,
+		PiRunID:                  raw.PiRunID,
+		PiOrphanRuns:             orphanArray(raw.PiOrphanRuns), PiOrphanCount: min(len(raw.PiOrphanRuns), PiOrphanRunsMax),
+		ReceivedAt: receivedAtFromNS(raw.ReceivedAtNS),
 	}
 	maskConsumedCodexCompletion(instanceID, hookStatus)
 	return hookStatus

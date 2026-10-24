@@ -104,7 +104,17 @@ A Codex `Stop` hook pointed at `hook-handler` is recognised by its
 `turn_id` and never spooled, so notify and Stop cannot produce one turn
 twice (`codex_stop_v1.json`). A pi run that settles without text (tool-only,
 aborted or failed) spools one `status` edge instead (`pi_agentsettled_notext_v3.json`);
-a v2 extension spools nothing. Every other harness (Gemini, Cursor,
+a v2 extension spools nothing. A pi child's inbox record is keyed by its run
+(`pi-run:` plus a hash of the per-run `run_id` the extension sends with `settles: true`), so
+each run rings the parent once: on its `agent_settled`, or, if none arrives within 10 s of the
+`turn_end`, on a fallback under the same persisted key. A `turn_start` never followed by a
+`turn_end` is released after the 2-minute hook-running window at the latest. Every pi write
+carries the previous runs in `pi_orphan_runs` (at most four, the oldest dropped; entries older than
+the 14-day consumed-key retention are dropped), so a quick follow-up or `/new` cannot erase a
+run; a `pi-run:` fingerprint never becomes a timestamp. A late settle for an overwritten run
+is rejected by the run-id guard and the run keeps its grace record. A writer without the
+`settles` bit behaves exactly as on main. Residual: the cross-process `notify-daemon --once`
+race against the service (inbox_outbox.go) exists for every tool and is out of scope. Every other harness (Gemini, Cursor,
 Hermes, OpenCode, shell) is **status-only** in P1: the daemon commits a
 `status` record on the observed edge, with no text, and the inbox's legacy
 record is unchanged. Their text producers are specified in the test

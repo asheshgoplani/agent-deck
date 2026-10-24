@@ -58,6 +58,11 @@ import (
 // this same acceptance window before a pruned fingerprint can become "new".
 const consumedTurnsTTL = 14 * 24 * time.Hour
 
+// ConsumedTurnsRetention is consumedTurnsTTL for the hook handler: a carried pi
+// orphan older than it is dropped, since its consumed key may be pruned and a
+// record for it would come back.
+const ConsumedTurnsRetention = consumedTurnsTTL
+
 // inboxLockWait bounds how long a consumer or sweep waits for the inbox flock.
 // Producers hold it for one append, so a wait this long means a holder is
 // stuck; the caller reports ErrConfigLockBusy and retries on its next turn.
