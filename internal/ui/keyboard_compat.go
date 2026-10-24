@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	tea "github.com/charmbracelet/bubbletea"
@@ -390,9 +391,12 @@ func newCSIuReader(r io.Reader) *csiuReader {
 // Read implements io.Reader. It reads from the underlying source, translates
 // CSI u sequences, and returns the result.
 func (c *csiuReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
 	// Drain any previously translated bytes first.
 	if len(c.outBuf) > 0 {
-		n := copy(p, c.outBuf)
+		n := copy(p, c.outBuf[:inputTokenPrefix(c.outBuf, len(p))])
 		c.outBuf = c.outBuf[n:]
 		return n, nil
 	}
@@ -407,7 +411,11 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 		n, err := c.src.Read(tmp)
 		processed := c.consume(tmp[:n], err == io.EOF)
 		if len(processed) > 0 {
-			copied := copy(p, processed)
+			// Bytes held from an earlier chunk can make processed longer than
+			// p. Bubble Tea decodes each Read on its own, so cutting a mouse
+			// report here turns its tail into keys: '<' of ESC[<65;166;31M
+			// shrinks the preview (#2826). Return whole tokens only.
+			copied := copy(p, processed[:inputTokenPrefix(processed, len(p))])
 			if copied < len(processed) {
 				c.outBuf = append(c.outBuf, processed[copied:]...)
 			}
@@ -436,6 +444,58 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 			return 0, nil
 		}
 	}
+}
+
+// inputTokenPrefix returns the longest prefix of b, at most limit bytes, that
+// ends on an input token boundary: a whole CSI or SS3 sequence, ESC plus the
+// key it modifies, or a whole UTF-8 rune. If the first token alone is longer
+// than limit, it returns limit, as cutting is then unavoidable.
+func inputTokenPrefix(b []byte, limit int) int {
+	if len(b) <= limit {
+		return len(b)
+	}
+	end := 0
+	for end < len(b) {
+		next := end + inputTokenLen(b[end:])
+		if next > limit {
+			break
+		}
+		end = next
+	}
+	if end == 0 {
+		return limit
+	}
+	return end
+}
+
+// inputTokenLen is the length of the input token at the start of b.
+func inputTokenLen(b []byte) int {
+	if len(b) > 2 && b[0] == 0x1b && b[1] == 0x1b && (b[2] == '[' || b[2] == 'O') {
+		return 1 + escapeTokenLen(b[1:]) // alt + an escape sequence
+	}
+	return escapeTokenLen(b)
+}
+
+func escapeTokenLen(b []byte) int {
+	if b[0] != 0x1b {
+		_, w := utf8.DecodeRune(b)
+		return w
+	}
+	if len(b) == 1 {
+		return 1
+	}
+	switch b[1] {
+	case '[':
+		j := 2
+		for j < len(b) && (b[j] < 0x40 || b[j] > 0x7E) {
+			j++
+		}
+		return min(j+1, len(b))
+	case 'O':
+		return min(3, len(b))
+	}
+	_, w := utf8.DecodeRune(b[1:])
+	return 1 + w // alt + a key (alt+esc for ESC ESC)
 }
 
 // consume applies dashboard-only terminal-reply filtering and extended-key
