@@ -237,17 +237,12 @@ func openCodeStorageDir(home string) string {
 	return sandboxedToolDir("OpenCode storage dir (~/.local/share/opencode)", filepath.Join(home, ".local", "share", "opencode", "storage"))
 }
 
-// RecallContainedPath is the recall containment check for any harness: a
+// recallContainedIn is the recall containment check for any harness: a
 // transcript path a hook or journal reports is accepted only when a
-// registered reader locates it under one of the recall roots (lexically
-// and after symlink resolution, the same fail-closed shape as
-// ValidateTranscriptPath). It returns the resolved path and the harness.
-func RecallContainedPath(path string) (string, string, bool) {
-	return recallContainedIn(path, RecallRoots())
-}
-
-// recallContainedIn is RecallContainedPath against roots resolved by the
-// caller, so a batch of notifies walks the roots once.
+// registered reader locates it under one of roots (lexically and after
+// symlink resolution, the same fail-closed shape as ValidateTranscriptPath).
+// It returns the resolved path and the harness. The caller resolves roots,
+// so a batch of notifies walks them once.
 func recallContainedIn(path string, roots []reader.Root) (string, string, bool) {
 	if strings.TrimSpace(path) == "" {
 		return "", "", false

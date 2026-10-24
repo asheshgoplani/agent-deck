@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // StatusEvent represents a session status change event.
@@ -76,27 +75,4 @@ func ReadPrevEventStatus(instanceID string) string {
 		return ""
 	}
 	return event.Status
-}
-
-// CleanStaleEventFiles removes event files older than 24 hours.
-func CleanStaleEventFiles() {
-	eventsDir := GetEventsDir()
-	entries, err := os.ReadDir(eventsDir)
-	if err != nil {
-		return
-	}
-
-	cutoff := time.Now().Add(-24 * time.Hour)
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(eventsDir, entry.Name()))
-		}
-	}
 }

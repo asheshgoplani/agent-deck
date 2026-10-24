@@ -201,19 +201,6 @@ func ClearAllOpenCodeMCPInfoCache() {
 	clear(opencodeMcpCacheTimes)
 }
 
-// PruneOpenCodeMCPCache removes stale OpenCode MCP cache entries (TTL).
-func PruneOpenCodeMCPCache(maxAge time.Duration) {
-	opencodeMcpInfoCacheMu.Lock()
-	defer opencodeMcpInfoCacheMu.Unlock()
-	now := time.Now()
-	for path, t := range opencodeMcpCacheTimes {
-		if now.Sub(t) > maxAge {
-			delete(opencodeMcpInfoCache, path)
-			delete(opencodeMcpCacheTimes, path)
-		}
-	}
-}
-
 // buildOpenCodeMCPServers constructs the mcp map for an opencode.json write.
 func buildOpenCodeMCPServers(enabledNames []string) map[string]opencodeMCPServer {
 	availableMCPs := GetAvailableMCPs()

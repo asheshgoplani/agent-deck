@@ -5651,7 +5651,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// The composer positively HOLDING this message at some point, combined
 	// with it being clear at the end of the budget (held-then-cleared), is
 	// genuine submission evidence: the agent took the message out of the
-	// composer. That latch lives in obs (send.Observer.ComposerHeld); body
+	// composer. That latch lives in obs (send.Observer.NoteComposerHeld); body
 	// text merely being visible is not the same thing.
 	// Snippet of the message body to look for in captured pane content. Some
 	// TUI frameworks (and non-Claude tools) won't render a "[Pasted text …]"

@@ -9,15 +9,14 @@ import (
 //
 // profileFromClaudeConfigDir is the inference layer that bridges the user's
 // shell context (CLAUDE_CONFIG_DIR=~/.claude-work, set by the cdw alias) and
-// agent-deck's profile namespace. Before #881 this logic existed only in
-// internal/profile and the web/storage path skipped it entirely — same user,
-// two different sessions lists. After #881 it is consolidated here and the
-// TUI's profile.DetectCurrentProfile delegates to GetEffectiveProfile, but
-// the helper itself has zero direct tests. A subtle change to the parsing
-// rules (e.g. swapping the dash to an underscore, lowercasing the suffix,
-// or accidentally returning "claude" for ~/.claude) would silently route
-// users to the wrong profile dir without breaking either parity_test.go or
-// the existing GetEffectiveProfile precedence test.
+// agent-deck's profile namespace. Before #881 this logic existed only in the
+// TUI's profile lookup and the web/storage path skipped it entirely — same
+// user, two different sessions lists. After #881 it is consolidated here and
+// every caller goes through GetEffectiveProfile. A subtle change to the
+// parsing rules (e.g. swapping the dash to an underscore, lowercasing the
+// suffix, or accidentally returning "claude" for ~/.claude) would silently
+// route users to the wrong profile dir without necessarily breaking the
+// end-to-end GetEffectiveProfile ladder in profile_precedence_test.go.
 //
 // This table covers every documented variant from the function comment plus
 // the negative cases that must NOT match (path traversal, Windows-style
@@ -52,7 +51,7 @@ func TestProfileFromClaudeConfigDir_DocumentedVariants(t *testing.T) {
 		{name: "no dash, no dot → no inference", in: "/opt/claude", want: ""},
 		{name: "trailing-dash on plain dir → no inference", in: "/opt/profile-", want: ""},
 
-		// The TUI's profile resolution test (prof-002) hits the .claude branch
+		// TestProfileResolution_PrecedenceLadder hits the .claude branch
 		// expecting "" so config.json default takes over. Lock that branch
 		// here directly so that case can never regress to "claude" silently.
 		{name: "/.claude (root install) → no inference", in: "/.claude", want: ""},

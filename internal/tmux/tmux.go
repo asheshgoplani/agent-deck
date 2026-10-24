@@ -411,21 +411,6 @@ func RefreshExistingSessions() {
 	RefreshSessionCache()
 }
 
-// HasSession is a lightweight public probe for session presence on the
-// user's default tmux server. Exported so packages outside internal/tmux
-// (e.g., the reviver) can answer "does this tmux session exist right now?"
-// without reaching into unexported helpers. Runs a direct
-// `tmux has-session -t <name>` — skips the cache on purpose because the
-// reviver's purpose is to detect a mismatch between our cached view and
-// ground truth.
-//
-// Use HasSessionOnSocket when the caller knows the session's stored
-// TmuxSocketName — critical for the reviver, which must not ask the default
-// server about sessions that live on an isolated socket.
-func HasSession(name string) bool {
-	return HasSessionOnSocket(DefaultSocketName(), name)
-}
-
 // HasSessionOnSocket probes for a session on an explicit tmux server. Pass
 // Instance.TmuxSocketName (or Session.SocketName) verbatim; empty means the
 // user's default server.
@@ -812,11 +797,6 @@ func GetTerminalInfo() TerminalInfo {
 	}
 
 	return info
-}
-
-// SupportsHyperlinks returns true if the current terminal supports OSC 8 hyperlinks
-func SupportsHyperlinks() bool {
-	return GetTerminalInfo().SupportsOSC8
 }
 
 func detectToolFromCommand(command string) string {
@@ -2181,53 +2161,6 @@ func (s *Session) IsConfigured() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.configured
-}
-
-// AnyAgentDeckSessionWithEnvValue reports whether any agentdeck-prefixed
-// tmux session carries envKey=envValue. Returns the matching session name
-// (or "") and a bool. Issue #1040: the spawn-guard's in-lock "already
-// alive" gate uses this to detect that a sibling Restart has already
-// produced a live session before this caller does so again. The probe is
-// read-only — no kill. envValue == "" short-circuits to false because
-// matching every session with an unset variable is never the intent.
-func AnyAgentDeckSessionWithEnvValue(envKey, envValue string) (string, bool) {
-	if envValue == "" {
-		return "", false
-	}
-
-	socket := DefaultSocketName()
-	// Bounded — see tmuxPollTimeout.
-	//
-	// CAUTION before wiring this to SpawnAttempt.AlreadyAlive (it has no
-	// production caller today): the bool return conflates "probed, found
-	// nothing" with "probe failed or timed out". A timeout therefore reads as
-	// "no live session", which is the permissive answer — the opposite of what
-	// a spawn guard wants, and the opposite of what Exists() does, where an
-	// indeterminate probe is deliberately treated as "still alive" so a live
-	// session is never flipped to error. Give this a three-state result
-	// (found / not-found / indeterminate) before making a spawn decision
-	// depend on it.
-	out, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}")
-	if err != nil {
-		return "", false
-	}
-
-	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if name == "" || !strings.HasPrefix(name, SessionPrefix) {
-			continue
-		}
-		val, err := runBoundedOutput(socket, "show-environment", "-t", name, envKey)
-		if err != nil {
-			continue
-		}
-		line := strings.TrimSpace(string(val))
-		if idx := strings.IndexByte(line, '='); idx >= 0 {
-			if line[idx+1:] == envValue {
-				return name, true
-			}
-		}
-	}
-	return "", false
 }
 
 // KillSessionsWithEnvValue kills agentdeck tmux sessions that have the given
@@ -7430,15 +7363,9 @@ func RunLogMaintenance(maxSizeMB int, maxLines int, removeOrphans bool) {
 // Notification Bar Helper Functions
 // ═══════════════════════════════════════════════════════════════════════════
 
-// ListAgentDeckSessions returns the names of all agentdeck tmux sessions.
-// This is used to update notification bars across ALL sessions, not just
-// those in the current profile. This ensures consistent notification bars
-// when users switch between sessions.
-func ListAgentDeckSessions() ([]string, error) {
-	return ListAgentDeckSessionsOnSocket(DefaultSocketName())
-}
-
 // ListAgentDeckSessionsOnSocket lists managed sessions on the specified server.
+// No prod caller: scripts/runtime-health/red/codex_exclusion_cache.go.txt
+// (the performance.sh red-side overlay) builds against it.
 func ListAgentDeckSessionsOnSocket(socket string) ([]string, error) {
 	// Bounded — see tmuxPollTimeout. Drives the cross-profile notification-bar
 	// refresh, i.e. it runs on a timer for every session.
