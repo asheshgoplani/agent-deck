@@ -1854,7 +1854,8 @@ func resolveAutoParentInstanceChecked(instances []*session.Instance) (*session.I
 		}
 	}
 	// The tmux probe runs last, only when the environment named no session.
-	if inst := resolve(strings.TrimSpace(GetCurrentSessionID())); inst != nil {
+	// The tmux name ends in a random suffix, so it is matched whole.
+	if inst := instanceOwningTmuxName(currentAgentDeckTmuxName(), instances); inst != nil {
 		return inst, ""
 	}
 	return nil, authoritative

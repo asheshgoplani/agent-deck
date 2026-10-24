@@ -879,8 +879,10 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 	return nil, fmt.Sprintf("session '%s' not found", identifier), ErrCodeNotFound
 }
 
-// GetCurrentSessionID detects the current agent-deck session from tmux environment
-// Returns session ID or empty string if not in an agent-deck session
+// GetCurrentSessionID returns the last part of the calling agent-deck tmux
+// session name, or "" outside one. That part is a random suffix, not the
+// session ID: use it only as an "inside agent-deck" signal, and resolve the
+// session itself with instanceOwningTmuxName.
 func GetCurrentSessionID() string {
 	sessionName := currentAgentDeckTmuxName()
 	if sessionName == "" {
@@ -933,12 +935,25 @@ func ResolveSessionOrCurrent(identifier string, instances []*session.Instance) (
 	if name == "" {
 		return nil, "no session specified and not inside an agent-deck session", ErrCodeNotFound
 	}
-	for _, inst := range instances {
-		if ts := inst.GetTmuxSession(); ts != nil && ts.Name == name {
-			return inst, "", ""
-		}
+	if inst := instanceOwningTmuxName(name, instances); inst != nil {
+		return inst, "", ""
 	}
 	return nil, fmt.Sprintf("no session owns the current tmux session %q", name), ErrCodeNotFound
+}
+
+// instanceOwningTmuxName returns the instance whose tmux session is named
+// exactly name, or nil. The name ends in a random suffix, not the session ID,
+// so callers that only know the tmux name must match it whole.
+func instanceOwningTmuxName(name string, instances []*session.Instance) *session.Instance {
+	if name == "" {
+		return nil
+	}
+	for _, inst := range instances {
+		if ts := inst.GetTmuxSession(); ts != nil && ts.Name == name {
+			return inst
+		}
+	}
+	return nil
 }
 
 // StatusSymbol returns the symbol for a status

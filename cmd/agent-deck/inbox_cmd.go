@@ -572,11 +572,40 @@ func resolveSelfSessionID() (string, error) {
 			return s, nil
 		}
 	}
-	if s := strings.TrimSpace(GetCurrentSessionID()); s != "" {
-		return s, nil
+	if inst := selfInstanceByTmuxName(currentAgentDeckTmuxName()); inst != nil {
+		return inst.ID, nil
 	}
 	return "", fmt.Errorf("no session id given and could not resolve the current session " +
 		"(set AGENTDECK_INSTANCE_ID, run inside an agent-deck tmux session, or pass an explicit id)")
+}
+
+// selfInstanceByTmuxName finds the session that owns the tmux session name,
+// looking in the effective profile first and then the others. The name ends in
+// a random suffix, not the session ID, so it is matched whole.
+func selfInstanceByTmuxName(name string) *session.Instance {
+	if name == "" {
+		return nil
+	}
+	effective := session.GetEffectiveProfile("")
+	profiles := []string{effective}
+	if all, err := session.ListProfiles(); err == nil {
+		for _, p := range all {
+			if p != effective {
+				profiles = append(profiles, p)
+			}
+		}
+	}
+	for _, profile := range profiles {
+		storage, instances, _, err := loadSessionData(profile)
+		if err != nil {
+			continue
+		}
+		_ = storage.Close()
+		if inst := instanceOwningTmuxName(name, instances); inst != nil {
+			return inst
+		}
+	}
+	return nil
 }
 
 // runInboxExport is the issue #1948 remote-side READ: it prints this host's
