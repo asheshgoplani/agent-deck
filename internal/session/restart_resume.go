@@ -386,7 +386,8 @@ func piCarriedRunSignal(hs *HookStatus) string {
 // forward (recordOrphanedPiRuns replaying it): a run from before the boot, so it
 // is not the boot and must not spend the token. That holds for the token's own
 // run too: a replay of it is that run's own record, which the parent has not had
-// yet (a run that finished after the token, the daemon down across its settle).
+// yet (a run whose replay is stamped after the token: finished between the
+// token and the kill, or cut short by it, with the daemon down across its end).
 func piRunReplay(signal string, hs *HookStatus) bool {
 	if !strings.HasPrefix(signal, "pi-run:") || hs == nil {
 		return false
@@ -401,9 +402,9 @@ func piRunReplay(signal string, hs *HookStatus) bool {
 
 // piBackAtPrompt reports whether the resumed pi wrote its session_start after
 // the token: it is at its prompt, whatever the status reads (past the hook
-// window the status comes from the pane). The old pi's only write after the
-// token is its session_shutdown, and the resumed pi can write before the
-// restart records it, so the bound is the token, not the spawn record.
+// window the status comes from the pane). Under the kill the old pi writes
+// nothing after the token (no session_shutdown), and the resumed pi can write
+// before the restart records it, so the bound is the token, not the spawn record.
 func piBackAtPrompt(tok restartToken, hs *HookStatus) bool {
 	if hs == nil || hs.Event != "session_start" {
 		return false

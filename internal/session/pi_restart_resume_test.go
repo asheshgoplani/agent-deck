@@ -237,16 +237,24 @@ func TestPiRestart_ADowngradedWritersTurnEndIsNotTheBoot(t *testing.T) {
 	}
 }
 
-// A run that finishes in the window between the token and the kill (the
-// restarting process read a cached waiting status while pi was mid-run, so the
-// token holds that run's key), with the daemon down across its settle. Once the
-// resumed pi's session_start rebuilds the file, the run is carried and replayed
-// stamped at its turn_end, after the token. The parent never received it: it is a
-// real turn (news, one wake), not the restart's "no new turn", whichever the
-// daemon sees first.
+// A run whose replay is stamped after the token: finished between the token and
+// the kill, or cut short by it. The restarting process read a cached waiting
+// status while pi was mid-run, so the token holds that run's key, and the daemon
+// is down across the run's end. Once the resumed pi's session_start rebuilds the
+// file, the run is carried and replayed: stamped at its turn_end when it had one,
+// at the replay when the kill cut it short, after the token either way. The
+// parent never received it: it is a real turn (one record, one wake), not the
+// restart's "no new turn", and the boot is still the info line.
 func TestPiRestart_ARunTheDaemonNeverSawIsDeliveredAcrossARestart(t *testing.T) {
-	for name, resumedFirst := range map[string]bool{"session_start before the daemon": true, "daemon before the session_start": false} {
-		t.Run(name, func(t *testing.T) {
+	for _, c := range []struct {
+		name                   string
+		finished, resumedFirst bool
+	}{
+		{"session_start before the daemon", true, true},
+		{"daemon before the session_start", true, false},
+		{"cut short by the kill", false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
 			f := newTurnTestFixture(t)
 			piChild(f)
 			st := stubRestartPIDs(t)
@@ -261,29 +269,37 @@ func TestPiRestart_ARunTheDaemonNeverSawIsDeliveredAcrossARestart(t *testing.T) 
 				t.Fatalf("want a token on run A, got %+v (ok=%v)", tok, ok)
 			}
 			w.at = at
-			w.TurnEnd("run-A").Settle("run-A", "entry-1") // before the kill; the daemon is down
-			st.alive[st.pane] = false                     // the kill writes nothing
+			if c.finished {
+				w.TurnEnd("run-A").Settle("run-A", "entry-1") // before the kill; the daemon is down
+			}
+			st.alive[st.pane] = false // the kill writes nothing
 			st.pane += 100
 			st.alive[st.pane] = true
 			markRestartSpawned(f.child, at.Add(10*time.Millisecond))
 			w.at = at.Add(20 * time.Millisecond)
-			if resumedFirst {
+			if c.resumedFirst {
 				w.SessionStart()
 			}
 			f.restartDaemon()
 			f.piPoll()
-			if !resumedFirst {
+			if !c.resumedFirst {
 				w.SessionStart()
 				f.piPoll()
 			}
-			var runA int
+			var runA, info int
 			for _, r := range f.inboxRecords(t) {
-				if r.LastOutputHash == piRunSignal("run-A") {
+				switch {
+				case r.LastOutputHash == piRunSignal("run-A"):
 					runA++
+				case r.Text == "Restarted while idle; conversation resumed, no new turn.":
+					info++
 				}
 			}
 			if runA != 1 || *f.sends != 1 {
 				t.Fatalf("run A delivered %d times (want 1), sends %d (want 1): %+v", runA, *f.sends, f.inboxRecords(t))
+			}
+			if c.resumedFirst && info != 1 {
+				t.Fatalf("the boot is the one info line, got %d: %+v", info, f.inboxRecords(t))
 			}
 		})
 	}
