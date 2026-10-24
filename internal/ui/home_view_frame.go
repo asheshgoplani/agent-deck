@@ -12,6 +12,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 )
@@ -471,6 +472,10 @@ func (h *Home) View() string {
 	frame := h.renderFrame()
 	if frame != "" {
 		h.lastRenderedFrame = frame
+	}
+	if h.pendingFrameOp != "" && h.width > 0 && !h.initialLoading {
+		optiming.Since(h.pendingFrameOp, h.pendingFrameStart)
+		h.pendingFrameOp = ""
 	}
 	return frame
 }

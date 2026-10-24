@@ -1584,6 +1584,11 @@ type LogSettings struct {
 	// AggregateIntervalS is the event aggregation flush interval in seconds
 	// Default: 30
 	AggregateIntervalS int `toml:"aggregate_interval_secs,omitzero"`
+
+	// Timings records how long each operation takes in <cache>/timings.jsonl
+	// for `agent-deck perf` (same as AGENTDECK_TIMINGS=1). Local only.
+	// Default: false
+	Timings bool `toml:"timings,omitempty"`
 }
 
 // UpdateSettings defines auto-update configuration

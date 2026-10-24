@@ -109,6 +109,7 @@ var completionTree = []completionNode{
 	{name: "accounts"},
 	{name: "web"},
 	{name: "debug-dump"},
+	{name: "perf"},
 	{name: "migrate-paths"},
 	{name: "uninstall"},
 	{name: "run-task"},

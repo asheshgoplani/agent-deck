@@ -15,6 +15,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/comms"
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 	"github.com/asheshgoplani/agent-deck/internal/health"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -257,6 +258,7 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 	if len(profiles) == 0 {
 		return notifyPollSlow
 	}
+	defer optiming.Start("daemon.pass")()
 
 	// Stamp liveness BEFORE the work: the question a drain asks is "is a writer
 	// alive", and a daemon wedged inside a probe should still look alive for one

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
 )
 
@@ -34,6 +35,7 @@ func (s *Server) handleMenu(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
+	defer optiming.Start("web.menu")()
 
 	snapshot, err := s.menuData.LoadMenuSnapshot()
 	if err != nil {

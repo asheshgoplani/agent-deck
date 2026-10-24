@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/asheshgoplani/agent-deck/internal/termtext"
@@ -576,11 +577,15 @@ func (r *SSHRunner) consumeLastStderr() []byte {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
+	done := optiming.StartResult("remote.attach")
 	cmd, transport, err := r.attachCommand("session", "attach", sessionID)
 	if err != nil {
+		done(true)
 		return err
 	}
-	return runRemoteAttach(cmd, transport, r.imagePaste(sessionID))
+	err = runRemoteAttach(cmd, transport, r.imagePaste(sessionID))
+	done(err != nil)
+	return err
 }
 
 // imagePaste is the Ctrl+V image route for one attached remote session

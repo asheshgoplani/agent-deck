@@ -54,8 +54,9 @@ type refreshMsg struct{}
 type importReloadMsg struct{}
 
 type statusUpdateMsg struct {
-	attachedSessionID string // Session that just returned from attach (if local attach)
-	attachedWorkDir   string // pane_current_path captured after attach returns
+	attachedSessionID string    // Session that just returned from attach (if local attach)
+	attachedWorkDir   string    // pane_current_path captured after attach returns
+	detachedAt        time.Time // tui.detach stamp; zero unless timings are on
 } // Triggers immediate status update without reloading
 
 // storageChangedMsg signals that state.db was modified externally
@@ -84,6 +85,7 @@ type previewFetchedMsg struct {
 	previewKey string // cache key: sessionID or sessionID:windowIndex
 	content    string
 	err        error
+	started    time.Time // tui.preview stamp; zero unless timings are on
 }
 
 // remotePaneWatchTarget names the remote session whose pane the TUI asked

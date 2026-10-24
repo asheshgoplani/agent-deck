@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 )
 
 const (
@@ -374,6 +375,8 @@ func fetchLatestRelease() (*Release, error) {
 // should keep using its cached copy. newETag is the response's ETag, to
 // remember for the next call regardless of whether it was a 200 or a 304.
 func fetchLatestReleaseConditional(etag string) (release *Release, newETag string, notModified bool, err error) {
+	done := optiming.StartResult("update.check")
+	defer func() { done(err != nil) }()
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", apiBaseURL, GitHubRepo)
 
 	resp, authed, err := githubAPIGetConditional(url, etag)
@@ -760,7 +763,9 @@ func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error)
 // binary for the requested platform. It fails closed: checksum download,
 // missing-entry, or hash mismatch errors occur before the installed binary is
 // touched.
-func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
+func PerformVerifiedUpdate(release *Release, goos, goarch string) (err error) {
+	done := optiming.StartResult("update.install")
+	defer func() { done(err != nil) }()
 	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
 	if err != nil {
 		return fmt.Errorf("failed to detect install type: %w", err)

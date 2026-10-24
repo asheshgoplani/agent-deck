@@ -1281,6 +1281,7 @@ there as markdown.
 | [TUI Reference](skills/agent-deck/references/tui-reference.md) | Keyboard shortcuts, status indicators, navigation |
 | [Troubleshooting](skills/agent-deck/references/troubleshooting.md) | Common issues, debugging, recovery, uninstalling |
 | [Capability Checklist](docs/verification/README.md) | User-level verification matrix: every capability exercised against the real binary, per surface |
+| [Performance](docs/performance.md) | How fast each operation is, targets, how it is measured, `agent-deck perf` |
 | [Architecture Diagrams](docs/conductor/assets/) | D2 sources + rendered SVGs for the conductor, channels and fleet diagrams (session lifecycle: [docs/diagrams/](docs/diagrams/)) |
 
 Additional resources:

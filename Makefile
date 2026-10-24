@@ -1,4 +1,4 @@
-.PHONY: bench-fleet build run install install-user uninstall uninstall-user clean dev release-ready release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
+.PHONY: bench-fleet bench-ops build run install install-user uninstall uninstall-user clean dev release-ready release-local dist-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install goldens-update verify-docker
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -165,6 +165,14 @@ test-perf:
 bench:
 	go test -run '^$$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
 		./cmd/agent-deck/... ./internal/tmux/...
+
+# Operation benchmarks (BenchmarkOp_*) on a ref, recorded in bench/ops/results
+# and rendered into docs/performance.md. BENCH_REF=. means this checkout.
+#   make bench-ops BENCH_LABEL=1.16.31 BENCH_REF=release/1.16.31
+BENCH_LABEL ?= local
+BENCH_REF ?= .
+bench-ops:
+	./bench/ops/run.sh $(BENCH_LABEL) $(BENCH_REF) $(BENCH_OPS_ARGS)
 
 # Isolated synthetic fleet suite, including a private tmux server (Docker only).
 bench-fleet:

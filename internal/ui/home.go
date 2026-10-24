@@ -31,6 +31,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/menudata"
+	"github.com/asheshgoplani/agent-deck/internal/optiming"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -366,6 +367,8 @@ type Home struct {
 	previewScrollOffset int                    // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
 	isAttaching         atomic.Bool            // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
 	lastRenderedFrame   string                 // Last non-empty frame View produced; re-served while isAttaching so no frame is ever black (#1753). Event-loop goroutine only.
+	pendingFrameOp      string                 // optiming span (tui.first_frame, tui.detach) that ends at the next list frame; set only while timings are on. Event-loop goroutine only.
+	pendingFrameStart   time.Time              // start of pendingFrameOp
 	statusFilter        session.Status         // Filter sessions by status ("" = all, or specific status)
 	groupScope          string                 // Limit TUI to a specific group path ("" = all groups)
 	initialSelect       string                 // Session ID or title to preselect on first load (#709). Does NOT scope groups.
@@ -1608,6 +1611,7 @@ func (h *Home) backgroundStatusUpdate() {
 		// health/doctor sample even though status/list already agree.
 		visibleCount := len(session.VisibleInstances(instances))
 		health.RecordStatusPass(elapsed, visibleCount, calls)
+		optiming.Since("tui.status_pass", totalStart)
 		if health.Enabled() {
 			h.queueHealthWarning(elapsed, visibleCount, calls)
 		}
@@ -2411,6 +2415,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.reloadMu.Unlock()
 		firstLoad := h.initialLoading
 		h.initialLoading = false // First load complete, hide splash
+		if firstLoad && !processStart.IsZero() && optiming.Enabled() {
+			h.pendingFrameOp, h.pendingFrameStart = "tui.first_frame", processStart
+		}
 		h.reloadHotkeysFromConfig()
 
 		// Show hooks installation prompt (after splash screen is gone)
@@ -3945,6 +3952,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusUpdateMsg:
 		// Clear attach flag - we've returned from the attached session
 		h.isAttaching.Store(false) // Atomic store for thread safety
+		if !msg.detachedAt.IsZero() {
+			h.pendingFrameOp, h.pendingFrameStart = "tui.detach", msg.detachedAt
+		}
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
 		// Reconcile the session we just left on its own goroutine (#1753). It used
@@ -4280,6 +4290,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case previewFetchedMsg:
+		optiming.Since("tui.preview", msg.started)
 		// Async preview content received - always advance the TTL so failures
 		// and empty responses don't trigger a fetch on every tick.
 		// Protect both previewFetchingID and previewCache with the same mutex
@@ -7419,6 +7430,10 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	if tmuxSess == nil {
 		return nil
 	}
+	var attachStart, detachedAt time.Time // tui.attach / tui.detach stamps, only while timings are on
+	if optiming.Enabled() {
+		attachStart = time.Now()
+	}
 	// Keys typed while the setup below runs belong to the pane (see holdInputForExec).
 	defer holdInputForExec()()
 
@@ -7482,6 +7497,9 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	h.isAttaching.Store(true) // Prevent View() output only during actual attach transition
 	res := &attachResult{}
 	opts := h.attachOptions(tmuxSess)
+	if !attachStart.IsZero() {
+		opts.TimingStart, opts.DetachedAt = attachStart, &detachedAt
+	}
 	// #2704: record the client this attach runs in, so `session focus
 	// --remote --attach` can detach exactly it to bring the TUI back. Both
 	// callbacks run inside attachCmd.Run, on one goroutine.
@@ -7587,7 +7605,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			}
 		}
 
-		return statusUpdateMsg{attachedSessionID: inst.ID, attachedWorkDir: currentWorkDir}
+		return statusUpdateMsg{attachedSessionID: inst.ID, attachedWorkDir: currentWorkDir, detachedAt: detachedAt}
 	})
 }
 
