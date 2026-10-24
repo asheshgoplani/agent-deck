@@ -299,6 +299,9 @@ func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string, nativeV2
 		if jsonErr := json.Unmarshal(data, &rawConfig); jsonErr != nil {
 			return fmt.Errorf("refusing to overwrite unparseable opencode project config %s: %w", mcpFile, jsonErr)
 		}
+		if rawConfig == nil { // a JSON null root decodes to a nil map
+			rawConfig = make(map[string]interface{})
+		}
 	} else if os.IsNotExist(readErr) {
 		rawConfig = make(map[string]interface{})
 	} else {
@@ -340,6 +343,9 @@ func WriteOpenCodeGlobalMCP(enabledNames []string, nativeV2 ...bool) error {
 	if data, readErr := os.ReadFile(configFile); readErr == nil {
 		if jsonErr := json.Unmarshal(data, &rawConfig); jsonErr != nil {
 			return fmt.Errorf("refusing to overwrite unparseable opencode global config %s: %w", configFile, jsonErr)
+		}
+		if rawConfig == nil { // a JSON null root decodes to a nil map
+			rawConfig = make(map[string]interface{})
 		}
 	} else if os.IsNotExist(readErr) {
 		rawConfig = make(map[string]interface{})

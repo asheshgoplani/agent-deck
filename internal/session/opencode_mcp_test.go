@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -357,5 +358,63 @@ func TestOpenCodeRoundTrip(t *testing.T) {
 	}
 	if !names["alpha"] || !names["beta"] {
 		t.Fatalf("round-trip: got %v, want alpha and beta", info.LocalMCPs)
+	}
+}
+
+// ASK-102: an opencode.json whose root is JSON null decodes to a nil map; the
+// writer must treat it as an empty object instead of panicking.
+func TestWriteOpenCodeProjectMCP_NullRootTreatedAsEmpty(t *testing.T) {
+	tmp := t.TempDir()
+	proj := filepath.Join(tmp, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opencodeMCPConfigDirOverride = tmp
+	defer func() { opencodeMCPConfigDirOverride = "" }()
+	t.Cleanup(resetUserConfigCache(t, &UserConfig{MCPs: map[string]MCPDef{"cat": {Command: "echo"}}}))
+	mcpFile := filepath.Join(proj, "opencode.json")
+	for _, v2 := range []bool{false, true} {
+		if err := os.WriteFile(mcpFile, []byte("null"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("v2=%v: panicked: %v", v2, r)
+				}
+			}()
+			if err := WriteOpenCodeProjectMCP(proj, []string{"cat"}, v2); err != nil {
+				t.Fatalf("v2=%v: %v", v2, err)
+			}
+		}()
+		if data, _ := os.ReadFile(mcpFile); !strings.Contains(string(data), `"cat"`) {
+			t.Errorf("v2=%v: expected cat in written config, got %s", v2, data)
+		}
+	}
+}
+
+func TestWriteOpenCodeGlobalMCP_NullRootTreatedAsEmpty(t *testing.T) {
+	tmp := t.TempDir()
+	opencodeMCPConfigDirOverride = tmp
+	defer func() { opencodeMCPConfigDirOverride = "" }()
+	t.Cleanup(resetUserConfigCache(t, &UserConfig{MCPs: map[string]MCPDef{"cat": {Command: "echo"}}}))
+	path := filepath.Join(tmp, "opencode.json")
+	for _, v2 := range []bool{false, true} {
+		if err := os.WriteFile(path, []byte("null"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("v2=%v: panicked: %v", v2, r)
+				}
+			}()
+			if err := WriteOpenCodeGlobalMCP([]string{"cat"}, v2); err != nil {
+				t.Fatalf("v2=%v: %v", v2, err)
+			}
+		}()
+		if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"cat"`) {
+			t.Errorf("v2=%v: expected cat in written config, got %s", v2, data)
+		}
 	}
 }

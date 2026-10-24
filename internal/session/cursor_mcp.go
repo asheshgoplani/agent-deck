@@ -180,13 +180,21 @@ func WriteCursorGlobalMCP(enabledNames []string) error {
 		return fmt.Errorf("create cursor config dir: %w", err)
 	}
 
-	var rawConfig map[string]interface{}
-	if data, err := os.ReadFile(configFile); err == nil {
-		if err := json.Unmarshal(data, &rawConfig); err != nil {
-			rawConfig = make(map[string]interface{})
-		}
-	} else {
-		rawConfig = make(map[string]interface{})
+	lock, err := AcquireConfigFileLock(configFile)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	// A read or parse failure aborts: writing an empty map back would wipe
+	// the user's mcp.json.
+	rawConfig, err := readJSONObjectConfig(configFile)
+	if err != nil {
+		return err
+	}
+	existing, err := objectFieldForUpdate(rawConfig, "mcpServers", configFile+" mcpServers")
+	if err != nil {
+		return err
 	}
 
 	availableMCPs := GetAvailableMCPs()
@@ -236,7 +244,17 @@ func WriteCursorGlobalMCP(enabledNames []string) error {
 		}
 	}
 
-	rawConfig["mcpServers"] = mcpServers
+	// Keep servers the user added outside the agent-deck catalog (#146).
+	merged := make(map[string]interface{}, len(existing)+len(mcpServers))
+	for name, cfg := range existing {
+		if _, managed := availableMCPs[name]; !managed {
+			merged[name] = cfg
+		}
+	}
+	for name, cfg := range mcpServers {
+		merged[name] = cfg
+	}
+	rawConfig["mcpServers"] = merged
 
 	newData, err := json.MarshalIndent(rawConfig, "", "  ")
 	if err != nil {

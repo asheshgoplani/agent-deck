@@ -656,3 +656,71 @@ func TestRequireProfileExists_RejectsBareDir(t *testing.T) {
 		t.Errorf("want nil, got %v", err)
 	}
 }
+
+// seedSourceDeleteFixture seeds session s1 in src with one watcher_event, one
+// cost_event and one claude_statuslines row, then installs a trigger that makes
+// DELETEs on blockTable fail, simulating a source-delete error mid-move.
+func seedSourceDeleteFixture(t *testing.T, src *statedb.StateDB, blockTable string) {
+	t.Helper()
+	seedSession(t, src, makeRow("s1", "S", DefaultGroupPath))
+	if err := src.SaveWatcher(&statedb.WatcherRow{
+		ID: "w1", Name: "w", Type: "github", ConfigPath: "/tmp/w.toml",
+		Status: "running", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed watcher: %v", err)
+	}
+	if err := src.InsertWatcherEventRow(&statedb.WatcherEventRow{WatcherID: "w1", DedupKey: "d1", SessionID: "s1", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("seed watcher event: %v", err)
+	}
+	if err := src.InsertCostEventRow(&statedb.CostEventRow{ID: "c1", SessionID: "s1", Timestamp: time.Now().UTC().Format(time.RFC3339), Model: "m", CostMicrodollars: 1}); err != nil {
+		t.Fatalf("seed cost event: %v", err)
+	}
+	if _, err := src.DB().Exec(`INSERT INTO claude_statuslines (claude_session_id, session_id, captured_at, record) VALUES ('cs1', 's1', 1, '{}')`); err != nil {
+		t.Fatalf("seed statusline: %v", err)
+	}
+	if _, err := src.DB().Exec(`CREATE TRIGGER block_delete BEFORE DELETE ON ` + blockTable + ` BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+}
+
+// A failure in a later source delete must not lose rows that an earlier
+// source delete already removed: either src keeps them or dst does.
+func TestMigrateOneSession_SourceDeleteFailureKeepsWatcherEvents(t *testing.T) {
+	src, dst := migrateTestSetup(t, "src", "dst")
+	seedSourceDeleteFixture(t, src.GetDB(), "cost_events")
+
+	err := migrateOneSession(src.GetDB(), dst.GetDB(), "s1", ProfileMigrateOptions{Force: true}, &ProfileMigrateResult{})
+	if err == nil {
+		t.Fatal("expected error from blocked source delete")
+	}
+	sw, _ := src.GetDB().LoadWatcherEventsForSession("s1")
+	dw, _ := dst.GetDB().LoadWatcherEventsForSession("s1")
+	if len(sw)+len(dw) < 1 {
+		t.Fatalf("watcher_event lost from both DBs (src=%d dst=%d)", len(sw), len(dw))
+	}
+	si, _ := src.GetDB().LoadInstanceByID("s1")
+	di, _ := dst.GetDB().LoadInstanceByID("s1")
+	if si == nil && di == nil {
+		t.Fatal("instance lost from both DBs")
+	}
+}
+
+func TestMigrateOneSession_SourceDeleteFailureKeepsInstance(t *testing.T) {
+	src, dst := migrateTestSetup(t, "src", "dst")
+	seedSourceDeleteFixture(t, src.GetDB(), "claude_statuslines")
+
+	err := migrateOneSession(src.GetDB(), dst.GetDB(), "s1", ProfileMigrateOptions{Force: true}, &ProfileMigrateResult{})
+	if err == nil {
+		t.Fatal("expected error from blocked source delete")
+	}
+	si, _ := src.GetDB().LoadInstanceByID("s1")
+	di, _ := dst.GetDB().LoadInstanceByID("s1")
+	if si == nil && di == nil {
+		t.Fatal("instance lost from both DBs")
+	}
+	sc, _ := src.GetDB().LoadCostEventsForSession("s1")
+	dc, _ := dst.GetDB().LoadCostEventsForSession("s1")
+	if len(sc)+len(dc) < 1 {
+		t.Fatalf("cost_event lost from both DBs (src=%d dst=%d)", len(sc), len(dc))
+	}
+}
