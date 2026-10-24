@@ -1303,7 +1303,7 @@ func (h *Home) openPromptInput(inst *session.Instance) {
 	if inst == nil {
 		return
 	}
-	if ts := inst.GetTmuxSession(); ts == nil || ts.Name == "" {
+	if ts := inst.GetTmuxSession(); ts == nil || ts.TmuxName() == "" {
 		h.setError(fmt.Errorf("session %q is not running; start it before prompting", inst.Title))
 		return
 	}
@@ -3200,7 +3200,7 @@ func (h *Home) sessionHasWindows(item session.Item) bool {
 	if tmuxSess == nil {
 		return false
 	}
-	return len(tmux.GetCachedWindows(tmuxSess.Name)) >= 2
+	return len(tmux.GetCachedWindows(tmuxSess.TmuxName())) >= 2
 }
 
 // sessionHasChildren reports whether the row's session is a parent with
@@ -3759,7 +3759,7 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 			if tmuxSess == nil {
 				continue
 			}
-			wins := tmux.GetCachedWindows(tmuxSess.Name)
+			wins := tmux.GetCachedWindows(tmuxSess.TmuxName())
 			if len(wins) < 2 || h.windowsCollapsed[item.Session.ID] {
 				continue
 			}
@@ -4064,7 +4064,7 @@ func (h *Home) getAttachedSessionID() string {
 	// Find the first attached agentdeck session
 	for _, sessName := range attachedSessions {
 		for _, inst := range h.instances {
-			if ts := inst.GetTmuxSession(); ts != nil && ts.Name == sessName {
+			if ts := inst.GetTmuxSession(); ts != nil && ts.TmuxName() == sessName {
 				return inst.ID
 			}
 		}
@@ -4079,7 +4079,7 @@ func (h *Home) recordFocusedSession() {
 	name := ""
 	if s := h.getSelectedSession(); s != nil {
 		if ts := s.GetTmuxSession(); ts != nil {
-			name = ts.Name
+			name = ts.TmuxName()
 		}
 	}
 	h.focusMu.Lock()
@@ -4120,9 +4120,9 @@ func (h *Home) reconcileLivePipes() {
 	socketSeen := make(map[string]bool, len(h.instances))
 	for _, inst := range h.instances {
 		if ts := inst.GetTmuxSession(); ts != nil {
-			socketByName[ts.Name] = inst.TmuxSocketName
+			socketByName[ts.TmuxName()] = inst.TmuxSocketName
 			if nameToID != nil {
-				nameToID[ts.Name] = inst.ID
+				nameToID[ts.TmuxName()] = inst.ID
 			}
 			if !socketSeen[inst.TmuxSocketName] {
 				socketSeen[inst.TmuxSocketName] = true
@@ -6150,7 +6150,7 @@ func displaySessionTitleFromState(state sessionRenderState) string {
 func sessionDisplayLabels(inst *session.Instance, paneTitle string) (title, subtitle string) {
 	title = displaySessionTitle(inst, paneTitle)
 	subtitle = paneTitle
-	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && subtitle == tmuxSess.Name {
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && subtitle == tmuxSess.TmuxName() {
 		subtitle = ""
 	}
 	if inst.GetAutoName() && subtitle == "" {
@@ -6290,9 +6290,9 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		// instances slice, the fallback uses that value instead of stamping
 		// an even-older one back into the snapshot.
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.TmuxName()); ok {
 				state.paneTitle = cleanPaneTitle(paneInfo.Title)
-				if state.paneTitle == tmuxSess.Name {
+				if state.paneTitle == tmuxSess.TmuxName() {
 					state.paneTitle = ""
 				}
 			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
@@ -6714,7 +6714,7 @@ func (h *Home) sweepPriorityRows(instances []*session.Instance) (map[int]sweepRo
 			continue
 		}
 		if focused != "" {
-			if ts := inst.GetTmuxSession(); ts != nil && ts.Name == focused {
+			if ts := inst.GetTmuxSession(); ts != nil && ts.TmuxName() == focused {
 				forced[idx] = sweepRowVisible
 			}
 		}
@@ -6940,10 +6940,10 @@ func (h *Home) backgroundStatusUpdate() {
 			return false
 		}
 		ts := inst.GetTmuxSession()
-		if ts == nil || !pm.IsConnected(ts.Name) {
+		if ts == nil || !pm.IsConnected(ts.TmuxName()) {
 			return false
 		}
-		lastOut := pm.LastOutputTime(ts.Name)
+		lastOut := pm.LastOutputTime(ts.TmuxName())
 		return !lastOut.IsZero() && time.Since(lastOut) > 5*time.Second
 	}
 	poll := func(inst *session.Instance) {
@@ -7331,7 +7331,7 @@ func (h *Home) updateKeyBindings() {
 		currentTmuxName := e.TmuxName
 		if inst, ok := h.instanceByID[e.SessionID]; ok {
 			if ts := inst.GetTmuxSession(); ts != nil {
-				currentTmuxName = ts.Name
+				currentTmuxName = ts.TmuxName()
 			}
 		}
 
@@ -9566,7 +9566,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 		ts := inst.GetTmuxSession()
-		if ts == nil || ts.Name == "" {
+		if ts == nil || ts.TmuxName() == "" {
 			h.setError(fmt.Errorf("session %q is not running; start it before prompting", inst.Title))
 			return h, nil
 		}
@@ -10322,7 +10322,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if ts == nil {
 						continue
 					}
-					if !h.liveSet.want(ts.Name) || pm.IsConnected(ts.Name) {
+					if !h.liveSet.want(ts.TmuxName()) || pm.IsConnected(ts.TmuxName()) {
 						continue
 					}
 					targets = append(targets, reconnectTarget{ts: ts, socket: inst.TmuxSocketName})
@@ -10334,9 +10334,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if !t.ts.Exists() {
 							return
 						}
-						if err := pm.Connect(t.ts.Name, t.socket); err != nil {
+						if err := pm.Connect(t.ts.TmuxName(), t.socket); err != nil {
 							uiLog.Debug("pipe_reconnect_failed",
-								slog.String("session", t.ts.Name),
+								slog.String("session", t.ts.TmuxName()),
 								slog.String("socket", t.socket),
 								slog.String("error", err.Error()))
 						}
@@ -14539,7 +14539,7 @@ func findConductorPane(instances []*session.Instance, conductorName string) (str
 		if !inst.IsConductorNamed(conductorName, inst.GetTitleThreadSafe()) || inst.IsArchived() {
 			continue
 		}
-		if ts := inst.GetTmuxSession(); ts != nil && ts.Name != "" {
+		if ts := inst.GetTmuxSession(); ts != nil && ts.TmuxName() != "" {
 			return inst.ID, ts
 		}
 		return "", nil
@@ -17619,7 +17619,7 @@ func (h *Home) captureAutoNameBeforeStop(inst *session.Instance) {
 	live := ""
 	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 		tmux.RefreshPaneInfoCache()
-		if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+		if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.TmuxName()); ok {
 			live = cleanPaneTitle(paneInfo.Title)
 		}
 	}

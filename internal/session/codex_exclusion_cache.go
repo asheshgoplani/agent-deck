@@ -137,7 +137,7 @@ func (i *Instance) codexExclusions(p *StatusUpdatePass) map[string]bool {
 	ownName := ""
 	if i.tmuxSession != nil {
 		socket = i.tmuxSession.SocketName
-		ownName = i.tmuxSession.Name
+		ownName = i.tmuxSession.TmuxName()
 	}
 	snapshot := p.codexOwnership(socket)
 	snapshot.claims.Lock()
@@ -169,9 +169,9 @@ func (i *Instance) recordCodexOwnership(id string) {
 	claims.Lock()
 	defer claims.Unlock()
 	if claims.updates != nil {
-		claims.updates[i.tmuxSession.Name] = id
+		claims.updates[i.tmuxSession.TmuxName()] = id
 	}
 	if claims.bySession != nil {
-		claims.bySession[i.tmuxSession.Name] = id
+		claims.bySession[i.tmuxSession.TmuxName()] = id
 	}
 }

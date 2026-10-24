@@ -6520,7 +6520,7 @@ func (i *Instance) shellForegroundRunning() bool {
 	if cfg == nil || !cfg.Status.ShellRunningIndicator {
 		return false
 	}
-	paneInfo, snapshotAt, ok := tmux.GetCachedPaneInfoSnapshot(i.tmuxSession.Name)
+	paneInfo, snapshotAt, ok := tmux.GetCachedPaneInfoSnapshot(i.tmuxSession.TmuxName())
 	if !ok || paneInfo.Dead || paneInfo.CurrentCommand == "" {
 		return false
 	}

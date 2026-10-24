@@ -65,7 +65,7 @@ func (nm *NotificationManager) Add(inst *Instance) error {
 	// Create entry
 	tmuxName := ""
 	if ts := inst.GetTmuxSession(); ts != nil {
-		tmuxName = ts.Name
+		tmuxName = ts.TmuxName()
 	}
 	entry := &NotificationEntry{
 		SessionID:    inst.ID,
@@ -308,7 +308,7 @@ func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentS
 	for _, inst := range sessionSet {
 		tmuxName := ""
 		if ts := inst.GetTmuxSession(); ts != nil {
-			tmuxName = ts.Name
+			tmuxName = ts.TmuxName()
 		}
 		entry := &NotificationEntry{
 			SessionID:    inst.ID,

@@ -356,7 +356,7 @@ func (s *SessionDataService) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
 func toMenuSession(inst *session.Instance) *MenuSession {
 	tmuxName := ""
 	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-		tmuxName = tmuxSess.Name
+		tmuxName = tmuxSess.TmuxName()
 	}
 	modelInfo := inst.LaunchModelInfo()
 

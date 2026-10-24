@@ -14,7 +14,7 @@ import (
 // running count, instead of one DEBUG per occurrence buried in 80k lines.
 func (s *Session) recordPipeDegraded() {
 	logging.Aggregate(logging.CompStatus, "pipe_degraded",
-		slog.String("session", s.Name),
+		slog.String("session", s.TmuxName()),
 	)
 }
 
@@ -27,7 +27,7 @@ func (s *Session) recordPipeDegraded() {
 func (s *Session) recordHashFallbackUsed() {
 	s.hashFallbackOnce.Do(func() {
 		statusLog.Warn("hash_fallback_used",
-			slog.String("session", s.Name),
+			slog.String("session", s.TmuxName()),
 		)
 	})
 }

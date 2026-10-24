@@ -1106,7 +1106,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	}
 	tmuxName := ""
 	if inst.tmuxSession != nil {
-		tmuxName = inst.tmuxSession.Name
+		tmuxName = inst.tmuxSession.TmuxName()
 	}
 	var sandboxJSON json.RawMessage
 	if inst.Sandbox != nil {

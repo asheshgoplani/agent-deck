@@ -365,7 +365,7 @@ func (r *Reviver) reviveOneInternal(inst *Instance, class RevivalClass, firstRev
 // without NewInstance).
 func instanceTmuxName(inst *Instance) string {
 	if ts := inst.GetTmuxSession(); ts != nil {
-		return ts.Name
+		return ts.TmuxName()
 	}
 	return inst.Title
 }
