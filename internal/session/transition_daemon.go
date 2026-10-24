@@ -91,6 +91,16 @@ type TransitionDaemon struct {
 	// field failure that a passing suite failed to catch.
 	turnLiveCheck func(inst *Instance) bool
 
+	// idleExitPending holds, per (profile, child), the idle status a child
+	// flipped to error from and since when its pane is gone, until a later
+	// pass confirms the death (#2806). idleExitAlive is the pane liveness
+	// seam; nil means idleChildProcessAlive. idleExitTold holds children
+	// the restart sweep already reported failed, so that is not reported
+	// twice (#2813).
+	idleExitPending map[string]map[string]idleExitEntry
+	idleExitAlive   func(inst *Instance) bool
+	idleExitTold    map[string]map[string]bool
+
 	// lastDoneScan tracks, per (profile, instance), the hook-status timestamp
 	// whose pending transcript rescan (issue #1186 flush race) reached a
 	// conclusive answer — assistant record flushed, sentinel present or not.
@@ -706,6 +716,8 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		// next poll, so skipping the edge here loses nothing.
 		_, _ = d.emitTurn(profile, inst, byID, from, to, time.Now(), true)
 	}
+	// Issue #2806: an idle child whose process died; no turn, so not emitTurn.
+	d.confirmIdleExits(profile, byID, prev, statuses, notifyEnabled, time.Now())
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
 	d.emitDoneSignals(profile, byID, hookStatuses)
 	d.wakeForInfoDigests(profile, byID, statuses)
