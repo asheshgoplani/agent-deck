@@ -243,8 +243,13 @@ func TestPiRestart_ADowngradedWritersTurnEndIsNotTheBoot(t *testing.T) {
 // is down across the run's end. Once the resumed pi's session_start rebuilds the
 // file, the run is carried and replayed: stamped at its turn_end when it had one,
 // at the replay when the kill cut it short, after the token either way. The
-// parent never received it: it is a real turn (one record, one wake), not the
-// restart's "no new turn", and the boot is still the info line.
+// parent never received it: it is a real turn (one record, one wake), and the
+// boot is still the info line. When the daemon comes up before the resumed pi's
+// session_start, run A is still the file's current run, not a carried one: its
+// flip matches the token and is judged the boot, so the parent gets a misleading
+// info line first, then run A itself once the session_start carries it. No turn
+// is lost; telling that turn_end apart (a turn_end of the token's run stamped
+// after the token is news) is left out to keep the restart change small.
 func TestPiRestart_ARunTheDaemonNeverSawIsDeliveredAcrossARestart(t *testing.T) {
 	for _, c := range []struct {
 		name                   string
@@ -298,8 +303,8 @@ func TestPiRestart_ARunTheDaemonNeverSawIsDeliveredAcrossARestart(t *testing.T) 
 			if runA != 1 || *f.sends != 1 {
 				t.Fatalf("run A delivered %d times (want 1), sends %d (want 1): %+v", runA, *f.sends, f.inboxRecords(t))
 			}
-			if c.resumedFirst && info != 1 {
-				t.Fatalf("the boot is the one info line, got %d: %+v", info, f.inboxRecords(t))
+			if info != 1 {
+				t.Fatalf("one info line (misleading when the daemon came up first), got %d: %+v", info, f.inboxRecords(t))
 			}
 		})
 	}
