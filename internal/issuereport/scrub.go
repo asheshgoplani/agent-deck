@@ -51,8 +51,14 @@ var (
 	// = form is secretAssignPattern's). The value must not be a flag or
 	// a placeholder.
 	flagSecretPattern = regexp.MustCompile(`(^|\s)(--?[A-Za-z0-9-]*(?:passw(?:or)?d|passwd|pwd|token|secret|api-?key))([ \t]+)("[^"\n]*"|'[^'\n]*'|[^\s<'"-][^\s]*)`)
-	// Slack / Discord webhook URLs: the path is the secret.
-	webhookPattern = regexp.MustCompile(`(?i)\b(hooks\.slack\.com/(?:services|workflows|triggers)/|(?:discord(?:app)?\.com)/api/webhooks/)[A-Za-z0-9/_-]+`)
+	// Slack / Discord webhook URLs: the path is the secret. The host is
+	// bounded on both sides: on the left by the start of the text or a
+	// character that cannot be part of a host label (any subdomain in
+	// front, such as canary.discord.com, is part of the match), on the
+	// right by an optional :port and then the path, so the dots are
+	// literal and a webhook path behind a port or a versioned Discord
+	// API (/api/v10/webhooks/) is still scrubbed.
+	webhookPattern = regexp.MustCompile(`(?i)(^|[^a-z0-9_])((?:[a-z0-9-]+\.)*(?:hooks\.slack(?:-gov)?\.com(?::[0-9]{1,5})?/(?:services|workflows|triggers)/|discord(?:app)?\.com(?::[0-9]{1,5})?/api/(?:v[0-9]+/)?webhooks/))[A-Za-z0-9/_-]+`)
 	// A plain lowercase hex commit sha (40) or sha256 digest (64): an
 	// identifier, not a secret.
 	hexDigestPattern = regexp.MustCompile(`^[0-9a-f]{40}$|^[0-9a-f]{64}$`)
@@ -530,7 +536,7 @@ func scrubOnce(s, home string) string {
 	s = absorbKeyTails(s)
 	s = keyRunPattern.ReplaceAllString(s, PlaceholderKey)
 	s = urlCredPattern.ReplaceAllString(s, "${1}"+PlaceholderToken+"@")
-	s = webhookPattern.ReplaceAllString(s, "${1}"+PlaceholderToken)
+	s = webhookPattern.ReplaceAllString(s, "${1}${2}"+PlaceholderToken)
 	s = curlUserPattern.ReplaceAllString(s, "${1}${2}"+PlaceholderToken)
 	s = flagSecretPattern.ReplaceAllString(s, "${1}${2}${3}"+PlaceholderToken)
 	for _, p := range tokenPatterns {
