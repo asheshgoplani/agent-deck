@@ -622,7 +622,7 @@ const restartBootSettle = 5 * time.Second
 
 // restartBootUnseen reports a token holder back at its prompt whose boot flip
 // was never seen (#2813): its new process alive for restartBootSettle, its own
-// SessionStart after the restart, no new SessionEnd and no new turn in the
+// SessionStart (pi: session_start) after the restart, no new SessionEnd and no new turn in the
 // transcript. The hook file keeps only the last event, and the old process's
 // SessionEnd can land after the new SessionStart (the kill fires it
 // asynchronously); then the file holds that old SessionEnd (judgeRestart's
@@ -643,6 +643,12 @@ func restartBootUnseen(inst *Instance, tok restartToken, status string, now time
 		if !atPrompt || hs.UpdatedAt.Before(tok.SpawnedAt.Truncate(time.Second)) {
 			return false
 		}
+	case strings.EqualFold(strings.TrimSpace(inst.Tool), "pi") && hs.Event == "session_start":
+		// pi's spelling; the kill writes nothing, so a session_start after
+		// the token is the resumed pi's.
+		if !atPrompt || !piBackAtPrompt(tok, hs) {
+			return false
+		}
 	case hookSessionEnd(hs):
 		oldEnd := !hs.UpdatedAt.After(tok.SpawnedAt.Add(time.Second)) && tok.OldPID > 0 && tok.OldPID != tok.NewPID && !restartPIDAlive(tok.OldPID)
 		if !oldEnd || !(atPrompt || st == string(StatusError)) || !restartSessionStartSince(inst.ID, tok.At) {
@@ -651,7 +657,7 @@ func restartBootUnseen(inst *Instance, tok restartToken, status string, now time
 	default:
 		return false
 	}
-	return restartTranscriptUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst))
+	return restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs)
 }
 
 // restartSessionStartSince reports whether the hook event history
