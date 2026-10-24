@@ -89,6 +89,11 @@ type SessionRow struct {
 	// IntendedSwitch marks the current account/model as switched on purpose
 	// (`session set ... --intended`); omitted when none or expired.
 	IntendedSwitch *session.IntendedSwitchJSON `json:"intended_switch,omitempty" doc:"intended account/model switch: the switch is intended while account and model equal it and now < expires_at; absent when none or expired"`
+
+	// ConductorName is the stable conductor key of a conductor session, so
+	// a consumer finds a renamed or decorated conductor without parsing its
+	// title. Absent for any other session.
+	ConductorName string `json:"conductor_name,omitempty" doc:"stable conductor name of a conductor session (survives renames); absent for other sessions"`
 }
 
 func sessionList(ctx context.Context, in SessionListIn) (SessionListOut, error) {
@@ -154,6 +159,7 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 		TranscriptPath:    transcripts[inst],
 		ResolvedCodexHome: inst.ResolvedCodexHome(),
 		IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
+		ConductorName:     inst.ListedConductorName(),
 	}
 }
 

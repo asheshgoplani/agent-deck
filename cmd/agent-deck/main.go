@@ -3163,6 +3163,9 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 
 		// IntendedSwitch: see core.SessionRow (omitted when none or expired).
 		IntendedSwitch *session.IntendedSwitchJSON `json:"intended_switch,omitempty"`
+
+		// ConductorName: see core.SessionRow (absent for non-conductors).
+		ConductorName string `json:"conductor_name,omitempty"`
 	}
 	sessions := make([]sessionJSON, len(instances))
 	transcripts := session.ListedTranscriptPaths(instances)
@@ -3218,6 +3221,7 @@ func buildListJSON(profileName string, instances []*session.Instance, cachedStat
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
 			IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),
+			ConductorName:     inst.ListedConductorName(),
 		}
 		if cached[inst] {
 			sj.StatusSource = "cached"

@@ -937,12 +937,27 @@ def _record_withdrawn(record: dict, reads: dict) -> bool:
     return isinstance(read_at, int) and read_at >= stamp_ms
 
 
+def _find_conductor_row(sessions: list[dict], name: str) -> dict | None:
+    """The named conductor's row in a `list --json` listing. The stable
+    conductor_name wins, so a renamed or decorated conductor is still found;
+    the exact title is the fallback for an agent-deck that predates the
+    field. A row named as a different conductor never matches by title."""
+    for s in sessions:
+        if isinstance(s, dict) and s.get("conductor_name") == name:
+            return s
+    title = conductor_session_title(name)
+    for s in sessions:
+        if isinstance(s, dict) and not s.get("conductor_name") and s.get("title") == title:
+            return s
+    return None
+
+
 def _conductor_inbox_snapshot(sessions: list[dict], name: str) -> tuple[int, str, bool]:
     """Count durable records still to be delivered and identify replacement
     records at the same count. A record the conductor already read the
     result of with `session output` is withdrawn at the next drain and is not
     counted, the same way the Go heartbeat counts (InboxSnapshot)."""
-    conductor = next((s for s in sessions if s.get("title") == conductor_session_title(name)), None)
+    conductor = _find_conductor_row(sessions, name)
     if not conductor or not conductor.get("id"):
         return 0, "", False
     session_id = str(conductor["id"]).strip().replace("/", "_").replace("..", "_").replace(" ", "_")
