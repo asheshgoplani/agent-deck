@@ -1,4 +1,4 @@
-// AGENTDECK PI HOOK EXTENSION v3
+// AGENTDECK PI HOOK EXTENSION v4
 //
 // Managed by `agent-deck pi-hooks install`. Local edits are overwritten on the
 // next install/upgrade, and `agent-deck pi-hooks uninstall` deletes this file.

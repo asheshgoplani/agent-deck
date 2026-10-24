@@ -199,7 +199,7 @@ type HookStatus struct {
 	PiSettleTurnID    string
 	PiSettleSessionID string
 	PiSettledAt       int64 // Unix ms
-	// Settles is the writer's capability bit: it sends agent_settled (a v3+
+	// Settles is the writer's capability bit: it sends agent_settled (a v4+
 	// extension). PiRunID is the run token the extension minted at agent_start.
 	Settles bool
 	PiRunID string

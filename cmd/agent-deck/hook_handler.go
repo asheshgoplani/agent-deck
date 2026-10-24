@@ -63,7 +63,7 @@ type hookPayload struct {
 	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
 	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
-	Settles              json.RawMessage `json:"settles"`                // pi: the writer sends agent_settled (a v3+ extension)
+	Settles              json.RawMessage `json:"settles"`                // pi: the writer sends agent_settled (a v4+ extension)
 	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py

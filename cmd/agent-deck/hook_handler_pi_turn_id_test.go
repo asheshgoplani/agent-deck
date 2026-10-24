@@ -20,7 +20,7 @@ import (
 //
 // Every sequence below is one pi produces: session_start, then per LLM response
 // turn_start (running) and turn_end (waiting), and agent_settled after the run's
-// last turn_end. The v3+ extension also sends a capability bit (`settles`) and a
+// last turn_end. The v4+ extension also sends a capability bit (`settles`) and a
 // run token (`run_id`, minted at agent_start) on turn_start, turn_end and
 // agent_settled; the handler persists them as `settles` and `pi_run_id`.
 
@@ -44,7 +44,7 @@ func piHookEnv(t *testing.T, instance string) {
 	t.Setenv("AGENTDECK_INSTANCE_ID", instance)
 }
 
-// piEdge is one extension emit of a v3+ extension. run "" is an old extension
+// piEdge is one extension emit of a v4+ extension. run "" is an old extension
 // (no capability bit, no run token).
 func piEdge(event, run string) string {
 	if run == "" {

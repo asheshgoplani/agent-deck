@@ -27,7 +27,7 @@ import (
 // A pi inbox turn (as in PR-A's ledger): the extension's
 // agent_settled MERGES the run's identity into the status file turn_end wrote
 // (pi_settle_turn_id, pi_settle_session_id, pi_settled_at), with no status edge.
-// For a writer known to settle (the capability bit `settles`, sent by v3+
+// For a writer known to settle (the capability bit `settles`, sent by v4+
 // extensions on turn_start and turn_end) a turn_end that has not settled is a
 // status edge only: it commits nothing, however old, and each settle identity is
 // one record. For a writer without the bit (an old extension, a pre-upgrade file)

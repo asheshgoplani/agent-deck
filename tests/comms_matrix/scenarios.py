@@ -154,7 +154,8 @@ def sibling_reply(rig, tool):
 
 def pi_child_two_turns(rig):
     """A pi child's second run must ring its parent again: the inbox identity of a
-    run is its agent_settled turn id, not the constant running-to-waiting flip."""
+    run is its run id (minted by the extension at agent_start), not the constant
+    running-to-waiting flip."""
     rig.setup('pi', 'ready')
     first = rig.emit('pi', 'urgent', turn='pi-turn-1', text='First run finished.\n===AGENTDECK_DONE=== status=ok summary=first')
     rig.tick()
