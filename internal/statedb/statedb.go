@@ -631,6 +631,11 @@ func (s *StateDB) Migrate() error {
 		return err
 	}
 
+	// Watcher delivery refusals: additive table, SchemaVersion unchanged.
+	if err := migrateWatcherDeliveryRefusals(tx); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(claudeStatuslineSchema); err != nil {
 		return fmt.Errorf("statedb: create Claude statusline cache: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -323,7 +324,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 //
 // setupErr is the non-fatal setup-script failure (nil on success): the worktree
 // is created regardless, but the caller surfaces setupErr to the user. err is
-// the fatal worktree-creation error. The full setup output is logged here; only
+// the fatal worktree-creation error. The setup output's tail is logged here; only
 // the concise setupErr is returned for display (see formatSetupWarning).
 // sourceDir is the directory the session was created/forked from; when
 // `[worktree] sparse_checkout = "inherit"` is set, the new worktree inherits
@@ -346,14 +347,15 @@ func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch, sourceDi
 		return nil, err
 	}
 	if setupErr != nil {
-		uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", buf.String()))
+		uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", setupOutputForLog(buf.String())))
 		setupErr = withSetupOutputTail(setupErr, buf.String())
 	}
 	return setupErr, nil
 }
 
 // setupWarningMaxLen bounds the setup-script failure text shown in the footer,
-// which is height-constrained and auto-dismisses. The full output is in uiLog.
+// which is height-constrained and auto-dismisses. More of the output (its last
+// setupLogMaxLines lines, setupLogMaxBytes at most) is in uiLog.
 const setupWarningMaxLen = 300
 
 // formatSetupWarning turns a non-fatal setup-script error into a single bounded,
@@ -435,6 +437,51 @@ func setupOutputTail(output string, maxLines int) string {
 		lines = lines[len(lines)-maxLines:]
 	}
 	return strings.Join(lines, " | ")
+}
+
+// A failed setup script's output is logged as its tail only: the last
+// setupLogMaxLines lines and at most setupLogMaxBytes bytes. A setup script
+// that runs npm install or a build can print megabytes, and the log is
+// rotated by size, so logging all of it at Warn pushes everything else out
+// (and copies whatever the script printed into the log for good). The
+// error is almost always in the last lines.
+const (
+	setupLogMaxLines = 40
+	setupLogMaxBytes = 4 << 10
+)
+
+// setupOutputForLog returns the tail of setup-script output for the log,
+// prefixed with a note of how much was cut. Output within both caps is
+// returned as is.
+func setupOutputForLog(output string) string {
+	tail := output
+	cutLines := 0
+	// The last setupLogMaxLines lines; a trailing newline ends the last line
+	// and does not start another.
+	body := strings.TrimSuffix(tail, "\n")
+	if n := strings.Count(body, "\n") + 1; n > setupLogMaxLines {
+		idx := len(body)
+		for i := 0; i < setupLogMaxLines; i++ {
+			idx = strings.LastIndexByte(body[:idx], '\n')
+		}
+		tail = tail[idx+1:]
+		cutLines = n - setupLogMaxLines
+	}
+	if len(tail) > setupLogMaxBytes {
+		start := len(tail) - setupLogMaxBytes
+		for start < len(tail) && !utf8.RuneStart(tail[start]) {
+			start++
+		}
+		tail = tail[start:]
+	}
+	if len(tail) == len(output) {
+		return output
+	}
+	note := fmt.Sprintf("[setup output truncated: last %d of %d bytes", len(tail), len(output))
+	if cutLines > 0 {
+		note += fmt.Sprintf(", %d lines cut", cutLines)
+	}
+	return note + "]\n" + tail
 }
 
 // createSessionTool maps a free-form command to (tool, command). Built-in
@@ -1299,9 +1346,9 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 	if scriptErr := deps.runSetup(repoRoot, worktreePath, &setupBuf, &setupBuf, session.GetWorktreeSettings().SetupTimeout()); scriptErr != nil {
 		// Non-fatal: the worktree and parent state are already created. Mirror
 		// #1263's CLI, which warns on a failed setup script rather than failing
-		// the whole fork. The full output is logged; the concise error is
-		// returned so the caller can surface it in the UI.
-		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", scriptErr.Error()), slog.String("output", setupBuf.String()))
+		// the whole fork. The output's tail is logged (setupOutputForLog); the
+		// concise error is returned so the caller can surface it in the UI.
+		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", scriptErr.Error()), slog.String("output", setupOutputForLog(setupBuf.String())))
 		return withSetupOutputTail(scriptErr, setupBuf.String()), nil
 	}
 	return nil, nil

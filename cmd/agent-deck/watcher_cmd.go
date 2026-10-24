@@ -859,6 +859,7 @@ func handleWatcherStatus(profile string, args []string) {
 	meta, _ := session.LoadWatcherMeta(name)
 	events, _ := db.LoadWatcherEvents(w.ID, 10)
 	undelivered, undeliveredErr := watcherUndelivered(profile, w.ID)
+	refused, refusedErr := db.LoadWatcherDeliveryRefusals(w.ID)
 	now := time.Now()
 
 	if *jsonOutput {
@@ -873,6 +874,12 @@ func handleWatcherStatus(profile string, args []string) {
 			Count            int    `json:"count"`
 			OldestQueuedAt   string `json:"oldest_queued_at"`
 			OldestAgeSeconds int64  `json:"oldest_age_seconds"`
+		}
+		type refusedOut struct {
+			Conductor      string `json:"conductor"`
+			Count          int    `json:"count"`
+			FirstRefusedAt string `json:"first_refused_at"`
+			LastRefusedAt  string `json:"last_refused_at"`
 		}
 		type output struct {
 			ID         string     `json:"id"`
@@ -890,6 +897,12 @@ func handleWatcherStatus(profile string, args []string) {
 			// a monitor does not read that as nothing waiting.
 			Undelivered      []undeliveredOut `json:"undelivered"`
 			UndeliveredError string           `json:"undelivered_error,omitempty"`
+			// Refused: routed events refused because this watcher's queue
+			// for a conductor was full, per conductor. They are stored in
+			// recent_events like the others but were never delivered. Null
+			// with RefusedError when the count could not be read.
+			Refused      []refusedOut `json:"refused"`
+			RefusedError string       `json:"refused_error,omitempty"`
 		}
 		out := output{
 			ID:          w.ID,
@@ -901,6 +914,18 @@ func handleWatcherStatus(profile string, args []string) {
 			CreatedAt:   w.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:   w.UpdatedAt.Format(time.RFC3339),
 			Undelivered: []undeliveredOut{},
+			Refused:     []refusedOut{},
+		}
+		if refusedErr != nil {
+			out.Refused, out.RefusedError = nil, refusedErr.Error()
+		}
+		for _, r := range refused {
+			out.Refused = append(out.Refused, refusedOut{
+				Conductor:      r.Conductor,
+				Count:          r.Count,
+				FirstRefusedAt: r.FirstRefusedAt.UTC().Format(time.RFC3339),
+				LastRefusedAt:  r.LastRefusedAt.UTC().Format(time.RFC3339),
+			})
 		}
 		if undeliveredErr != nil {
 			out.Undelivered, out.UndeliveredError = nil, undeliveredErr.Error()
@@ -946,6 +971,13 @@ func handleWatcherStatus(profile string, args []string) {
 			fmt.Printf("  Undelivered: %d for %s, oldest queued %s ago\n",
 				p.Count, p.Conductor, now.Sub(p.Oldest).Round(time.Second))
 		}
+	}
+	if refusedErr != nil {
+		fmt.Printf("  Refused: unknown (%v)\n", refusedErr)
+	}
+	for _, r := range refused {
+		fmt.Printf("  Refused: %d for %s (delivery queue full, not delivered), first %s, last %s\n",
+			r.Count, r.Conductor, r.FirstRefusedAt.Format("2006-01-02 15:04:05"), r.LastRefusedAt.Format("2006-01-02 15:04:05"))
 	}
 	fmt.Println()
 

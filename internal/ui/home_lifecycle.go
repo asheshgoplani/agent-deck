@@ -934,7 +934,7 @@ func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
 		// same trust check as the automatic run at worktree-creation time.
 		err := git.GateAndRunWorktreeSetupScript(repoRoot, wtPath, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
 		if err != nil {
-			uiLog.Warn("worktree_setup_rerun_failed", slog.String("error", err.Error()), slog.String("output", buf.String()))
+			uiLog.Warn("worktree_setup_rerun_failed", slog.String("error", err.Error()), slog.String("output", setupOutputForLog(buf.String())))
 			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: withSetupOutputTail(err, buf.String())}
 		}
 		return worktreeSetupResultMsg{sessionID: id, sessionTitle: title}
