@@ -6737,6 +6737,14 @@ func (h *Home) backgroundStatusUpdate() {
 		}
 	}()
 
+	// Heartbeat first, before any early return below (navigation hot window,
+	// tmux server down, no sessions): it is how other instances see this one
+	// as alive, and a primary whose heartbeat goes stale for 30s loses the
+	// allow_multiple=false gate to a second TUI. One UPDATE per tick.
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.Heartbeat()
+	}
+
 	totalStart := time.Now()
 	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
 		return
@@ -7094,11 +7102,9 @@ func (h *Home) backgroundStatusUpdate() {
 	}
 	h.refreshSessionRenderSnapshot(instances)
 
-	// SQLite writes: heartbeat, status writes (enables multi-instance coordination)
+	// SQLite writes: dead-instance cleanup, status writes (enables
+	// multi-instance coordination). The heartbeat runs at the top of the sweep.
 	if db := statedb.GetGlobal(); db != nil {
-		// Heartbeat: mark this process as alive
-		_ = db.Heartbeat()
-
 		// Clean dead instances every ~20s (not every tick)
 		if time.Since(h.lastDeadInstanceCleanup) > 20*time.Second {
 			_ = db.CleanDeadInstances(30 * time.Second)

@@ -260,8 +260,21 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
+	// -g means what it means for add: a unique group name resolves to its
+	// stored path and an ambiguous one is an error, before anything is created.
+	sessionGroup := mergeFlags(*group, *groupShort)
+	explicitGroupProvided := strings.TrimSpace(sessionGroup) != ""
+	if explicitGroupProvided {
+		resolvedGroup, groupErr := resolveLaunchGroup(profile, sessionGroup)
+		if groupErr != nil {
+			out.Error(groupErr.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		sessionGroup = resolvedGroup
+	}
+
 	// Resolve path
-	path, err := resolveLaunchPath(strings.Trim(fs.Arg(0), "'\""), mergeFlags(*group, *groupShort), profile)
+	path, err := resolveLaunchPath(strings.Trim(fs.Arg(0), "'\""), sessionGroup, profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to resolve path: %v", err), ErrCodeInvalidOperation)
 		exitCLI(1)
@@ -269,8 +282,6 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 
 	// Merge flags
 	sessionTitle := mergeFlags(*title, *titleShort)
-	sessionGroup := mergeFlags(*group, *groupShort)
-	explicitGroupProvided := strings.TrimSpace(sessionGroup) != ""
 	sessionCommandInput := mergeFlags(*command, *commandShort)
 	sessionCommandTool, sessionCommandResolved, sessionWrapperResolved, sessionCommandNote, sessionCommandIsPassthrough, cmdErr := resolveSessionCommand(sessionCommandInput, *wrapper)
 	if cmdErr != nil {
@@ -1044,6 +1055,24 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		}
 	}
 	out.Success(msg, jsonData)
+}
+
+// resolveLaunchGroup resolves launch's -g selector the way handleAdd does:
+// against the stored groups plus those declared in config.toml, through
+// resolveGroupPathForAdd. A name matching no group is kept as given, so the
+// group is created, as with add. A registry that cannot be read keeps the
+// selector too; the load further down reports that error.
+func resolveLaunchGroup(profile, groupSelector string) (string, error) {
+	storage, instances, groups, err := loadSessionData(profile)
+	if err != nil {
+		return groupSelector, nil
+	}
+	_ = storage.Close()
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
+		session.ReconcileDeclarativeGroups(groupTree, cfg)
+	}
+	return resolveGroupPathForAdd(groupTree, groupSelector)
 }
 
 // resolveLaunchPath resolves the project path for `agent-deck launch`.

@@ -1283,6 +1283,22 @@ func handleSessionFork(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
+	// -g means what it means for add and launch: a unique group name resolves
+	// to its stored path and an ambiguous one is an error, before any worktree
+	// or session is created.
+	if forkGroup != "" {
+		groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+		if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg != nil {
+			session.ReconcileDeclarativeGroups(groupTree, cfg)
+		}
+		resolvedGroup, groupErr := resolveGroupPathForAdd(groupTree, forkGroup)
+		if groupErr != nil {
+			out.Error(groupErr.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
+		forkGroup = resolvedGroup
+	}
+
 	// Verify this tool has a session-fork implementation.
 	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
 	if !session.SupportsNativeFork(inst.Tool) {

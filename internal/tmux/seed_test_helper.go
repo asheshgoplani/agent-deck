@@ -153,3 +153,21 @@ func StaleSocketForTest(t testing.TB) string {
 	_ = l.Close()
 	return name
 }
+
+// SetServerAliveForTest pins the cached IsServerAlive verdict for the next
+// 5s cache window, so packages outside internal/tmux can drive the
+// tmux-server-down path without killing a real server. Cleanup clears the
+// cache so the next caller probes again.
+func SetServerAliveForTest(t testing.TB, alive bool) {
+	t.Helper()
+	serverAliveMu.Lock()
+	serverAliveVal = alive
+	serverAliveTime = time.Now()
+	serverAliveMu.Unlock()
+	t.Cleanup(func() {
+		serverAliveMu.Lock()
+		serverAliveVal = true
+		serverAliveTime = time.Time{}
+		serverAliveMu.Unlock()
+	})
+}
