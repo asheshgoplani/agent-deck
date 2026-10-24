@@ -747,11 +747,16 @@ func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) e
 	if paste != nil {
 		paste.write = func(p []byte) error { _, err := ptmx.Write(p); return err }
 		paste.bracketed = output.bracketed.enabled
-		paste.notice = func(text string) { output.notice(text, terminalRows()) }
+		paste.notice = output.progress
+		paste.alert = output.alert
 		input.paste = paste
 	}
-	// Notices from the local TUI (tmux.ShowAttachNotice) take the same line.
-	defer tmux.SetAttachNoticeSink(func(text string) { output.notice(text, terminalRows()) })()
+	// Every exit puts the owner's title back (stopRemoteAttach does it on
+	// the normal paths; this covers a panic). Registered before the sink so
+	// the sink is cleared first.
+	defer output.endNotices()
+	// Notices from the local TUI (tmux.ShowAttachNotice) take the same title.
+	defer tmux.SetAttachNoticeSink(output.notice)()
 
 	// Copy PTY output to stdout.
 	wg.Add(1)
@@ -881,6 +886,7 @@ func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, output
 		// network round trip, so finish it in the background with the output
 		// discarded and hand the terminal back now.
 		output.discard()
+		output.endNotices()
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		go func() {
 			select {
@@ -901,14 +907,17 @@ func stopRemoteAttach(cmd *exec.Cmd, ptmx *os.File, cmdDone <-chan error, output
 	case <-time.After(50 * time.Millisecond):
 	}
 	// The terminal goes back to the TUI now: a Ctrl+V upload still in flight
-	// (remoteImagePaste.send) must not draw its notice over the dashboard.
+	// (remoteImagePaste.send) must not draw its notice over the dashboard,
+	// and the owner's title comes back.
 	output.discard()
+	output.endNotices()
 	return false
 }
 
 // attachOutput forwards attach output to the terminal until discard is
 // called, after which it swallows it so a transport winding down in the
-// background cannot draw over the dashboard.
+// background cannot draw over the dashboard. It also shows the attach's
+// notices in the terminal title (notice, progress, alert).
 type attachOutput struct {
 	mu        sync.Mutex
 	w         io.Writer
@@ -916,7 +925,34 @@ type attachOutput struct {
 	// bracketed follows the remote program's bracketed-paste mode (an image
 	// path typed by a Ctrl+V paste is wrapped like a paste when it is on).
 	bracketed *bracketedPasteTracker
+
+	// hold is how long a notice or an alert stays (0: attachNoticeHold).
+	hold time.Duration
+	// titleSaved: the owner's title was pushed (titlePush) and is popped
+	// when the notice clears, expires or the attach ends.
+	titleSaved bool
+	// noticeGen counts notices, so an older notice's timer leaves a newer
+	// one alone.
+	noticeGen uint64
+	// ended: the attach is over (endNotices); no notice is shown after it.
+	ended bool
+	// expiry restores the title after hold; stopped by each newer notice and
+	// by endNotices.
+	expiry *time.Timer
 }
+
+// attachNoticeHold is how long a notice stays in the title, the same 15 s a
+// local attach's notice stays on the tmux status line.
+const attachNoticeHold = 15 * time.Second
+
+// The owner's title is saved on the terminal's title stack before the first
+// notice (XTWINOPS 22;2) and put back after it (23;2). The pop is preceded
+// by an empty title: a terminal without a title stack (tmux among them) then
+// shows its default title instead of a stale notice.
+const (
+	titlePush = "\x1b[22;2t"
+	titlePop  = "\x1b]2;\x07\x1b[23;2t"
+)
 
 func (o *attachOutput) Write(p []byte) (int, error) {
 	o.mu.Lock()
@@ -930,31 +966,89 @@ func (o *attachOutput) Write(p []byte) (int, error) {
 	return o.w.Write(p)
 }
 
-// notice draws one line on the terminal's last row (tmux's status line in an
-// attach, which tmux repaints on its next status update); "" clears it.
-func (o *attachOutput) notice(text string, rows int) {
-	if rows < 1 {
-		return
-	}
+// notice shows one line in the terminal's title (OSC 2) for attachNoticeHold,
+// then puts the owner's title back; "" puts it back at once. The title is
+// used because no program in the attach draws over it and it leaves the
+// screen and its saved cursor alone. The local TUI's notices (the update
+// notice through tmux.SetAttachNoticeSink) come here.
+func (o *attachOutput) notice(text string) { o.show(text, false, true) }
+
+// progress is a notice that stays until the next notice replaces it (an
+// upload's "uploading…" line, replaced by its result).
+func (o *attachOutput) progress(text string) { o.show(text, false, false) }
+
+// alert is a notice that also rings the bell: where the title is not shown
+// (a local tmux pane, a terminal that hides it) the bell still says that
+// Ctrl+V did something.
+func (o *attachOutput) alert(text string) { o.show(text, true, true) }
+
+func (o *attachOutput) show(text string, bell, expire bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.discarded {
+	if o.discarded || o.ended {
 		return
 	}
-	line := fmt.Sprintf("\x1b7\x1b[%d;1H\x1b[2K", rows)
-	if text != "" {
-		line += "\x1b[7m " + text + " \x1b[0m"
+	o.noticeGen++
+	o.stopExpiryLocked()
+	if text == "" {
+		o.restoreTitleLocked()
+		return
 	}
-	_, _ = o.w.Write([]byte(line + "\x1b8"))
+	// Every notice is cleaned here: a BEL or ESC in it would end the OSC
+	// early and the rest would act in the owner's terminal.
+	seq := "\x1b]2;" + stripControls(text) + "\x07"
+	if !o.titleSaved {
+		seq = titlePush + seq
+		o.titleSaved = true
+	}
+	if bell {
+		seq += "\a"
+	}
+	_, _ = o.w.Write([]byte(seq))
+	if !expire {
+		return
+	}
+	hold := o.hold
+	if hold <= 0 {
+		hold = attachNoticeHold
+	}
+	// The timer is stopped by the next notice and by endNotices; a callback
+	// already running only takes the lock and, once the attach has ended or
+	// a newer notice came, does nothing.
+	gen := o.noticeGen
+	o.expiry = time.AfterFunc(hold, func() {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if o.noticeGen == gen && !o.discarded && !o.ended {
+			o.restoreTitleLocked()
+		}
+	})
 }
 
-// terminalRows is the owner's terminal height (0 when it cannot be read).
-func terminalRows() int {
-	_, rows, err := term.GetSize(int(os.Stdout.Fd())) // #nosec G115 -- fd is a small positive int
-	if err != nil {
-		return 0
+func (o *attachOutput) stopExpiryLocked() {
+	if o.expiry != nil {
+		o.expiry.Stop()
+		o.expiry = nil
 	}
-	return rows
+}
+
+func (o *attachOutput) restoreTitleLocked() {
+	if !o.titleSaved {
+		return
+	}
+	o.titleSaved = false
+	_, _ = o.w.Write([]byte(titlePop))
+}
+
+// endNotices puts the owner's title back when the attach ends, discarded
+// output or not, and turns every later notice into a no-op. Idempotent.
+func (o *attachOutput) endNotices() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ended = true
+	o.noticeGen++
+	o.stopExpiryLocked()
+	o.restoreTitleLocked()
 }
 
 func (o *attachOutput) discard() {
@@ -1868,18 +1962,23 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 // a saturated ControlMaster is retried on a dedicated connection as Run's
 // are (#2355).
 func (r *SSHRunner) runWithStdin(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
-	if r.runStdinFn != nil {
-		return r.runStdinFn(ctx, stdin, args...)
-	}
-	if r.runFn != nil {
-		return r.runFn(ctx, args...)
-	}
-	timeout := r.commandTimeout
+	return r.runWithStdinFor(ctx, r.commandTimeout, stdin, args...)
+}
+
+// runWithStdinFor is runWithStdin under its own deadline (an image upload
+// gets longer than the command timeout); 0 means the 30 s default.
+func (r *SSHRunner) runWithStdinFor(ctx context.Context, timeout time.Duration, stdin []byte, args ...string) ([]byte, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if r.runStdinFn != nil {
+		return r.runStdinFn(timeoutCtx, stdin, args...)
+	}
+	if r.runFn != nil {
+		return r.runFn(timeoutCtx, args...)
+	}
 	remoteCmd := r.buildRemoteCommand(args...)
 	if r.remoteExecFn != nil {
 		return r.remoteExecFn(timeoutCtx, remoteCmd, stdin)

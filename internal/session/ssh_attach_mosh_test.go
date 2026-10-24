@@ -218,8 +218,8 @@ func TestStopRemoteAttachSilencesLateNotices(t *testing.T) {
 			if stopRemoteAttach(&exec.Cmd{}, r, make(chan error, 1), outputDone, out, tc.transport, tc.exited, time.Second) {
 				t.Fatal("non-handoff stop handed off the PTY")
 			}
-			out.notice("agent-deck: the image could not reach host: boom", 24)
-			out.notice("", 24)
+			out.notice("agent-deck: the image could not reach host: boom")
+			out.notice("")
 			if buf.Len() != 0 {
 				t.Fatalf("notice after the attach ended reached the terminal: %q", buf.String())
 			}

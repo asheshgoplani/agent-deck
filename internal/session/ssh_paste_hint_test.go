@@ -37,7 +37,7 @@ func overSSH(key string) string {
 }
 
 func newTestHint(rec *hintRecorder, getenv func(string) string, image []byte, tool, pane string) *SSHPasteHint {
-	return newSSHPasteHint(getenv, func() ([]byte, string) { return image, "png" }, tool,
+	return newSSHPasteHint(getenv, func() clipboardRead { return clipboardRead{data: image, ext: "png"} }, tool,
 		func() string { return pane }, rec.notice)
 }
 
@@ -101,7 +101,7 @@ func TestSSHPasteHint_NoHintWhenItWouldBeWrong(t *testing.T) {
 func TestSSHPasteHint_CtrlVNeverWaitsForTheCheck(t *testing.T) {
 	rec := &hintRecorder{}
 	release := make(chan struct{})
-	hint := newSSHPasteHint(overSSH, func() ([]byte, string) { <-release; return nil, "" }, "claude",
+	hint := newSSHPasteHint(overSSH, func() clipboardRead { <-release; return clipboardRead{} }, "claude",
 		func() string { return claudeComposerPane }, rec.notice)
 	done := make(chan struct{})
 	go func() { hint.CtrlV(); close(done) }()

@@ -27,7 +27,7 @@ func sshPasteHintNotice() string {
 // Ctrl+V over the agent's composer when this box's clipboard holds no image.
 type SSHPasteHint struct {
 	agent     string
-	readImage func() ([]byte, string)
+	readImage func() clipboardRead
 	pane      func() string
 	notice    func(string)
 
@@ -44,7 +44,7 @@ func NewSSHPasteHint(tool string, pane func() string, notice func(string)) *SSHP
 	return newSSHPasteHint(os.Getenv, clipboardImage, tool, pane, notice)
 }
 
-func newSSHPasteHint(getenv func(string) string, readImage func() ([]byte, string), tool string, pane func() string, notice func(string)) *SSHPasteHint {
+func newSSHPasteHint(getenv func(string) string, readImage func() clipboardRead, tool string, pane func() string, notice func(string)) *SSHPasteHint {
 	agent := pasteAgent(tool)
 	if getenv("SSH_CONNECTION") == "" || agent == "" {
 		return nil
@@ -75,8 +75,8 @@ func (h *SSHPasteHint) check() {
 		h.shown = h.shown || shown
 		h.mu.Unlock()
 	}()
-	if image, _ := h.readImage(); len(image) > 0 {
-		return // Claude on this box pastes it
+	if clip := h.readImage(); len(clip.data) > 0 || clip.tooLarge || clip.timedOut {
+		return // an image is (or most likely is) on this box's clipboard: Claude here reads it
 	}
 	if !tmux.AgentComposerVisible(h.agent, h.pane()) {
 		return // an editor, a shell or a dialog: Ctrl+V was not an image paste

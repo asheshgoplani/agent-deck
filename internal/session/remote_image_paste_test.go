@@ -3,12 +3,14 @@ package session
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 )
@@ -38,6 +40,7 @@ type pasteRecorder struct {
 	mu      sync.Mutex
 	typed   bytes.Buffer
 	notices []string
+	alerts  []string
 	uploads [][]byte
 	exts    []string
 	targets int
@@ -55,6 +58,12 @@ func (r *pasteRecorder) snapshot() (string, []string, int) {
 	return r.typed.String(), append([]string(nil), r.notices...), len(r.uploads)
 }
 
+func (r *pasteRecorder) alertsSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.alerts...)
+}
+
 func newTestPaste(rec *pasteRecorder, image []byte, uploadErr error, tool string, bracketed bool) *remoteImagePaste {
 	return newTestPasteOn(rec, image, uploadErr, tool, claudeComposerPane, nil, bracketed)
 }
@@ -62,7 +71,7 @@ func newTestPaste(rec *pasteRecorder, image []byte, uploadErr error, tool string
 func newTestPasteOn(rec *pasteRecorder, image []byte, uploadErr error, tool, pane string, targetErr error, bracketed bool) *remoteImagePaste {
 	return &remoteImagePaste{
 		remote:    "deckbox",
-		readImage: func() ([]byte, string) { return image, "png" },
+		readImage: func() clipboardRead { return clipboardRead{data: image, ext: "png"} },
 		upload: func(_ context.Context, data []byte, ext string) (string, error) {
 			rec.mu.Lock()
 			rec.uploads = append(rec.uploads, data)
@@ -79,8 +88,14 @@ func newTestPasteOn(rec *pasteRecorder, image []byte, uploadErr error, tool, pan
 			rec.mu.Unlock()
 			return tool, pane, targetErr
 		},
-		write:     func(p []byte) error { _, err := rec.Write(p); return err },
-		notice:    func(text string) { rec.mu.Lock(); rec.notices = append(rec.notices, text); rec.mu.Unlock() },
+		write:  func(p []byte) error { _, err := rec.Write(p); return err },
+		notice: func(text string) { rec.mu.Lock(); rec.notices = append(rec.notices, text); rec.mu.Unlock() },
+		alert: func(text string) {
+			rec.mu.Lock()
+			rec.notices = append(rec.notices, text)
+			rec.alerts = append(rec.alerts, text)
+			rec.mu.Unlock()
+		},
 		bracketed: func() bool { return bracketed },
 	}
 }
@@ -321,16 +336,169 @@ func TestBracketedPasteTrackerFollowsTheRemoteAcrossReads(t *testing.T) {
 	}
 }
 
-func TestAttachOutputNoticeDrawsOnTheLastRowAndRestoresTheCursor(t *testing.T) {
+// Lander follow-up (7): the notice drew on the last row between DECSC/DECRC and clobbered the remote program's saved
+// cursor. It is the terminal's title now: no cursor or screen sequence at all.
+func TestAttachOutputNoticeIsTheTitleAndNeverMovesTheCursor(t *testing.T) {
 	var buf bytes.Buffer
 	o := &attachOutput{w: &buf}
-	o.notice("agent-deck: hi", 40)
-	if got := buf.String(); got != "\x1b7\x1b[40;1H\x1b[2K\x1b[7m agent-deck: hi \x1b[0m\x1b8" {
+	o.progress(pasteUploadingNotice("deckbox"))
+	if got := buf.String(); got != titlePush+"\x1b]2;"+pasteUploadingNotice("deckbox")+"\x07" {
 		t.Fatalf("%q", got)
 	}
-	buf.Reset()
-	o.notice("", 40)
-	if got := buf.String(); got != "\x1b7\x1b[40;1H\x1b[2K\x1b8" {
+	o.alert(pasteFailedNotice("deckbox", errors.New("boom")))
+	if got := buf.String(); !strings.HasSuffix(got, "\x07\a") {
+		t.Fatalf("a failure also rings the bell: %q", got)
+	}
+	o.notice("")
+	if got := buf.String(); !strings.HasSuffix(got, titlePop) {
 		t.Fatalf("%q", got)
+	}
+	for _, seq := range []string{"\x1b7", "\x1b8", "\x1b[s", "\x1b[u", "H"} {
+		if strings.Contains(buf.String(), seq) && seq != "H" {
+			t.Fatalf("no cursor save, restore or move: %q", buf.String())
+		}
+	}
+	if strings.ContainsAny(pasteFailedNotice("deckbox", errors.New("bad\x1b]2;x\x07\nmore")), "\x1b\x07\n") {
+		t.Fatal("an error text cannot carry control characters into the title")
+	}
+}
+
+// Lander follow-up (B2): a Ctrl+V while an upload runs was dropped.
+func TestRemoteImagePaste_CtrlVDuringAnUploadIsForwarded(t *testing.T) {
+	rec := &pasteRecorder{}
+	release := make(chan struct{})
+	p := newTestPaste(rec, pngBytes, nil, "claude", false)
+	upload := p.upload
+	p.upload = func(ctx context.Context, data []byte, ext string) (string, error) {
+		<-release
+		return upload(ctx, data, ext)
+	}
+	input := sshAttachInput{writer: rec, paste: p}
+	_, _ = input.forward([]byte{0x16})
+	_, _ = input.forward([]byte{0x16}) // while the first is uploading
+	typed, _, _ := rec.snapshot()
+	if typed != "\x16" {
+		t.Fatalf("the second Ctrl+V reaches the program as typed: %q", typed)
+	}
+	close(release)
+	waitFor(t, func() bool { typed, _, _ := rec.snapshot(); return strings.Contains(typed, "@/") })
+}
+
+// Lander follow-up (4): an image over the cap was taken for "no image" on macOS and forwarded silently.
+func TestRemoteImagePaste_ClipboardOverTheCapSaysSoOnlyOverTheComposer(t *testing.T) {
+	for _, tc := range []struct {
+		pane       string
+		wantNotice bool
+	}{{claudeComposerPane, true}, {vimPane, false}} {
+		rec := &pasteRecorder{}
+		p := newTestPasteOn(rec, nil, nil, "claude", tc.pane, nil, false)
+		p.readImage = func() clipboardRead { return clipboardRead{tooLarge: true} }
+		input := sshAttachInput{writer: rec, paste: p}
+		_, _ = input.forward([]byte{0x16})
+		typed, notices, uploads := rec.snapshot()
+		if tc.wantNotice && (typed != "" || uploads != 0 || len(notices) != 1 || notices[0] != pasteTooLargeNotice()) {
+			t.Fatalf("over an agent's composer: the too-large line, nothing sent: %q %d %q", typed, uploads, notices)
+		}
+		if !tc.wantNotice && (typed != "\x16" || len(notices) != 0) {
+			t.Fatalf("in vim the key goes on as typed: %q %q", typed, notices)
+		}
+	}
+}
+
+func TestBoundedOutputReportsAnAnswerOverTheCap(t *testing.T) {
+	data, status := boundedOutput(5*time.Second, 1000, "sh", "-c", "head -c 100 /dev/zero")
+	if status != clipRead || len(data) != 100 {
+		t.Fatalf("under the cap: %d bytes, status %v", len(data), status)
+	}
+	start := time.Now()
+	data, status = boundedOutput(5*time.Second, 10, "sh", "-c", "yes")
+	over := status == clipOverCap
+	if !over || data != nil || time.Since(start) > 3*time.Second {
+		t.Fatalf("over the cap: over=%v, %d bytes, %v (the reader is stopped at once)", over, len(data), time.Since(start))
+	}
+}
+
+// Lander follow-up (5): the upload had the 30 s command timeout.
+func TestSSHRunnerUploadImageHasItsOwnDeadline(t *testing.T) {
+	r := NewSSHRunner("deckbox", RemoteConfig{Host: "u@box", CommandTimeoutSeconds: 1})
+	var left time.Duration
+	r.runStdinFn = func(ctx context.Context, _ []byte, _ ...string) ([]byte, error) {
+		if deadline, ok := ctx.Deadline(); ok {
+			left = time.Until(deadline)
+		}
+		return []byte(`{"path":"/p/x.png"}`), nil
+	}
+	if _, err := r.UploadImage(context.Background(), "s1", pngBytes, "png"); err != nil {
+		t.Fatal(err)
+	}
+	if left < 100*time.Second {
+		t.Fatalf("the upload deadline is its own 120 s, not the 1 s command timeout: %v", left)
+	}
+}
+
+// Lander follow-up (6): only \n and NUL were refused in the host path that gets typed.
+func TestSSHRunnerUploadImageRefusesAPathThatCannotBeTypedSafely(t *testing.T) {
+	for _, bad := range []string{"/p/a\x1b[2Jb.png", "/p/a\tb.png", "/p/a b.png", "/p/a\rb.png", "/p/a\u0085b.png", "/p/a\x7fb.png"} {
+		r := NewSSHRunner("deckbox", RemoteConfig{Host: "u@box"})
+		answer, _ := json.Marshal(map[string]string{"path": bad})
+		r.runStdinFn = func(context.Context, []byte, ...string) ([]byte, error) { return answer, nil }
+		if path, err := r.UploadImage(context.Background(), "s1", pngBytes, "png"); err == nil {
+			t.Fatalf("%q was accepted as %q", bad, path)
+		}
+	}
+}
+
+// Lander follow-up (3): a keystroke could stall up to ~7 s (two osascript reads of 2 s and a 3 s pane call). One
+// clipboard read per Ctrl+V, and the pane check gets at most 2 s.
+func TestRemoteImagePaste_TheProbeIsOneReadAndABoundedCheck(t *testing.T) {
+	rec := &pasteRecorder{}
+	p := newTestPaste(rec, pngBytes, nil, "claude", false)
+	reads := 0
+	p.readImage = func() clipboardRead { reads++; return clipboardRead{data: pngBytes, ext: "png"} }
+	var left time.Duration
+	p.target = func(ctx context.Context) (string, string, error) {
+		if deadline, ok := ctx.Deadline(); ok {
+			left = time.Until(deadline)
+		}
+		return "claude", claudeComposerPane, nil
+	}
+	input := sshAttachInput{writer: rec, paste: p}
+	_, _ = input.forward([]byte{0x16})
+	if reads != 1 || left <= 0 || left > 2*time.Second {
+		t.Fatalf("one clipboard read (%d) and a pane check bounded to 2 s (%v)", reads, left)
+	}
+	if clipboardReadTimeout+pasteTargetTimeout > 4*time.Second {
+		t.Fatalf("worst-case hold %v", clipboardReadTimeout+pasteTargetTimeout)
+	}
+}
+
+// Port review: the path check also refuses invisible format characters (a bidi
+// override or a zero-width character shows the owner a different path than
+// the one typed) and invalid UTF-8, and still takes an ordinary host path.
+func TestTypeablePathRefusesInvisibleAndInvalidText(t *testing.T) {
+	for _, bad := range []string{"", "/p/a‮b.png", "/p/a​b.png", "/p/a\ufeffb.png", "/p/a\x9bb.png", "/p/a\xc2\x9b.png", "/p/a b.png", "/p/a\x00b.png"} {
+		if typeablePath(bad) {
+			t.Fatalf("%q was taken as typeable", bad)
+		}
+	}
+	for _, good := range []string{"/home/u/.agent-deck/macapp-uploads/s1/3f2a.png", "/Users/ü/日本/x-y_z.(1).png", "/p/it's;$(x).png"} {
+		if !typeablePath(good) {
+			t.Fatalf("%q was refused", good)
+		}
+	}
+}
+
+// Port review: every notice goes into an OSC 2 title, including the local
+// TUI's own notices through tmux.SetAttachNoticeSink. A BEL or ESC in any of
+// them would end the title early and the rest would act in the owner's
+// terminal, so notice cleans the text itself.
+func TestAttachOutputNoticeCannotEndTheTitleEarly(t *testing.T) {
+	var buf bytes.Buffer
+	o := &attachOutput{w: &buf}
+	o.notice("agent-deck v1.2.3\x07\x1b[2J\x1b]0;owned\x9c\xff is installed: detach to restart")
+	got := strings.TrimPrefix(buf.String(), titlePush)
+	body := strings.TrimSuffix(strings.TrimPrefix(got, "\x1b]2;"), "\x07")
+	if !strings.HasPrefix(got, "\x1b]2;") || strings.ContainsAny(body, "\x07\x1b\u009c") || !utf8.ValidString(body) {
+		t.Fatalf("the title carries a terminator or an escape: %q", got)
 	}
 }
