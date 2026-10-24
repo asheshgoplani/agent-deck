@@ -1097,6 +1097,27 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 - **Nothing is sent until you explicitly type `y` at the confirmation prompt.** Before the prompt, the CLI shows (1) the public URL the comment will land on, (2) that it posts via the `gh` CLI using your account, (3) your GitHub username as it will appear, and (4) the exact body that will be posted. Default answer is **N** — pressing Enter declines.
 - If `gh` fails (auth required, not installed, network), the CLI prints an error and exits non-zero. No clipboard or browser fallback is triggered on the CLI path.
 
+#### Report a bug or an idea
+
+`agent-deck feedback bug` and `agent-deck feedback idea` turn a report into a GitHub issue on this repo, laid out like the bug and feature forms, so it can be filed in under a minute without leaving the terminal:
+
+```bash
+agent-deck feedback bug                       # asks what happened, what you expected, steps
+agent-deck feedback bug --dry-run \
+  --title "Typed letters doubled in a session" \
+  --what "each key I type shows up twice" \
+  --expected "each key once" --steps "1. open a session 2. type abc"
+agent-deck feedback idea --title "Report a problem from the menu bar"
+```
+
+- A bug report carries the agent-deck version, OS, arch, terminal and the last lines of the agent-deck debug log. Paths under your home become `~`; tokens (also bare vendor keys such as GitLab, Hugging Face, Stripe, Shopify and SendGrid ones), key=value secrets, emails, hostnames and IP addresses are replaced with `<token>`, `<email>`, `<host>`, `<ip>`. Host names from agent-deck's `[remotes]` and your ssh config are replaced wherever a host goes (`ssh x`, `x:/path`, `lookup x`), and as plain words (also next to a dot, as in `x.sock`) only when they are distinctive (a `-`, `.` or digit, or 6+ letters, and not a common word such as `dev` or `mac`); a letters-only ssh `Host` alias that points at another `HostName` (`Host backup office`) is replaced only where a host goes. Logins of `[remotes]` and ssh-config `User` values are replaced as plain words too, except shared ones such as `git` or `root`, which are replaced only in `user@host` and `ssh -l`. Commit shas, sha256 digests and test names stay readable. What you type is scrubbed the same way.
+- The issue body stays under 60000 bytes, so every preview can be sent: a very long field is cut and ends with `… (trimmed)`, and the log keeps its newest lines.
+- **You see the full issue text before anything is sent**, and it is filed only when you answer `y` (default N). `--dry-run` prints the exact issue and sends nothing.
+- With `gh` installed and logged in it files with `gh issue create` under your account. Otherwise your browser opens a prefilled new-issue page (the URL stays under 8000 characters; the log is trimmed first) and you press Submit there. `--no-open` prints that URL instead.
+- In the TUI, press `Z` on the main screen (rebind with `[hotkeys].report_problem`). Pick bug or idea, fill in what happened, what you expected and optional steps, then press `Ctrl+P` (or Enter on the last field) to see the full issue. `y` files it the same way as the CLI; `e` goes back to edit; `Esc` cancels before `y` and nothing is sent. Once sending has started it cannot be cancelled (gh may already have filed it), so the dialog waits for the result.
+- `--json` is for apps (the Mac app uses it): it never prompts, `--dry-run --json` returns the issue and the prefilled URL, and sending also needs `--yes`. To send exactly what was shown, pipe that JSON back: `agent-deck feedback bug --yes --json --issue -` (or `--issue FILE`) files its `title`, `labels` and `body` as they are, with no rebuild and no new log read. The handed-back issue is scrubbed again, must keep the form's sections and a title of at most 256 characters, and with `--yes` anything the scrubber would change is refused, so only a real preview goes through; `--issue` cannot be combined with `--surface` or the text flags. Errors come back as `error_code` (`invalid_input`, `confirm_required`, `gh_failed`, `browser_failed`).
+- When the browser fallback has to trim the text to fit the URL (`url_trimmed: true`), every preview says so before you confirm.
+
 **Feedback prompt frequency** (v1.7.41+): the TUI's auto-prompt is paced so brand-new users aren't asked on their first few launches. The first prompt appears only after **7 launches or 3 days** of use, whichever comes later. If you dismiss it, agent-deck waits **14 days** before asking again. You'll see at most **3 prompts per version**, and pressing `n` at any step opts you out permanently — use `agent-deck feedback` or `Ctrl+E` to re-enable on demand. Opt-out always wins over every pacing gate.
 
 ### Usage telemetry (opt-in, off by default)

@@ -288,6 +288,7 @@ type Home struct {
 	contextPager         *ContextPager         // Full-context inspector overlay (what the agent is being sent)
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
+	reportDialog         *ReportDialog         // "Report a problem" form: bug/idea -> GitHub issue (internal/issuereport)
 	telemetryDialog      *TelemetryDialog      // One-time opt-in telemetry consent prompt (TELEMETRY.md)
 	tel                  homeTelemetry         // Opt-in telemetry sampler and TUI lifetime (home_telemetry.go)
 	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
@@ -2435,7 +2436,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Show feedback popup if user has a new version and hasn't rated yet (D-11/D-12).
 		// v1.7.38: also skip when the user's config.toml has [feedback].disabled=true,
 		// so a user who opts out via config edit (not just state.json) is honoured.
-		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() && (h.telemetryDialog == nil || !h.telemetryDialog.IsVisible()) {
+		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() && !h.reportDialog.IsVisible() && (h.telemetryDialog == nil || !h.telemetryDialog.IsVisible()) {
 			fbState, _ := feedback.LoadState()
 			cfg, _ := session.LoadUserConfig()
 			configDisabled := cfg != nil && cfg.Feedback.Disabled
@@ -3799,6 +3800,24 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.syncEmbeddedTerminalGeometry()
 		return h, nil
 
+	case reportPreviewMsg:
+		if h.reportDialog != nil {
+			h.reportDialog.OnPreview(msg)
+		}
+		return h, nil
+
+	case reportFiledMsg:
+		if h.reportDialog != nil {
+			h.reportDialog.OnFiled(msg)
+		}
+		return h, nil
+
+	case reportCopiedMsg:
+		if h.reportDialog != nil {
+			h.reportDialog.OnCopied(msg)
+		}
+		return h, nil
+
 	case feedbackSentMsg:
 		// Route the result into the dialog so stepSent renders success or an explicit
 		// error line (v1.7.37, #679 TUI follow-up). Auto-dismiss still fires via timer.
@@ -4972,6 +4991,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if h.worktreeFinishDialog.IsVisible() {
 			return h.handleWorktreeFinishDialogKey(msg)
+		}
+		if h.reportDialog.IsVisible() {
+			d, cmd := h.reportDialog.Update(msg)
+			h.reportDialog = d
+			return h, cmd
 		}
 		if h.feedbackDialog.IsVisible() {
 			d, cmd := h.feedbackDialog.Update(msg)
@@ -6812,6 +6836,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "alt+right":
 		// MRU walk forward (#2058): redo — step to the next session in visit order.
 		return h.handleMRUWalk(true)
+
+	case defaultHotkeyBindings[hotkeyReportProblem]:
+		// "Report a problem": form -> full preview -> explicit confirm -> file
+		// through internal/issuereport (gh when logged in, else the browser).
+		if h.reportDialog != nil {
+			tool := ""
+			if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+				if inst := h.flatItems[h.cursor].Session; inst != nil {
+					tool = inst.Tool
+				}
+			}
+			h.reportDialog.Show(tool)
+			h.reportDialog.SetSize(h.width, h.height)
+		}
+		return h, nil
 
 	case "ctrl+e":
 		// Open feedback dialog on demand (per D-11: bypasses ShouldShow -- user-initiated)

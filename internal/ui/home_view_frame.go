@@ -442,6 +442,7 @@ func (h *Home) updateSizes() {
 	if h.feedbackDialog != nil {
 		h.feedbackDialog.SetSize(h.width, h.height)
 	}
+	h.reportDialog.SetSize(h.width, h.height)
 	if h.telemetryDialog != nil {
 		h.telemetryDialog.SetSize(h.width, h.height)
 	}
@@ -604,6 +605,9 @@ func (h *Home) renderFrame() string {
 	}
 	if h.worktreeFinishDialog.IsVisible() {
 		return h.worktreeFinishDialog.View()
+	}
+	if h.reportDialog.IsVisible() {
+		return h.reportDialog.View()
 	}
 	if h.feedbackDialog.IsVisible() {
 		return h.feedbackDialog.View()
@@ -2327,8 +2331,16 @@ func (h *Home) renderHelpBarFull() string {
 		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Settings"))
 	}
 	helpKey := h.actionKey(hotkeyHelp)
+	helpIdx := -1
 	if helpKey != "" {
+		helpIdx = len(droppableGlobal)
 		droppableGlobal = append(droppableGlobal, globalStyle.Render(helpKey+" Help"))
+	}
+	// "Report a problem" is the lowest-priority global hint: it shows on
+	// roomy terminals and is the first to go when space is tight. The help
+	// overlay always lists it.
+	if key := h.actionKey(hotkeyReportProblem); key != "" {
+		droppableGlobal = append(droppableGlobal, globalStyle.Render(key+" Report"))
 	}
 
 	leftPrefix := contextLabel
@@ -2361,8 +2373,9 @@ func (h *Home) renderHelpBarFull() string {
 		}
 		shorten(primaryHints)
 		shorten(secondaryHints)
-		parts.nav += sep + droppableGlobal[len(droppableGlobal)-1]
-		parts.droppable = droppableGlobal[:len(droppableGlobal)-1]
+		// Pin Help next to Nav; the rest (Report included) stay droppable.
+		parts.nav += sep + droppableGlobal[helpIdx]
+		parts.droppable = append(append([]string{}, droppableGlobal[:helpIdx]...), droppableGlobal[helpIdx+1:]...)
 		parts.primary = primaryHints
 		parts.secondary = secondaryHints
 		helpContent = h.fitFullFooter(parts)

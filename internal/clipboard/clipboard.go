@@ -60,6 +60,16 @@ func CopyContext(ctx context.Context, text string, supportsOSC52 bool) (*CopyRes
 	return nil, fmt.Errorf("no clipboard method available (install pbcopy, xclip, xsel, or wl-copy)")
 }
 
+// CopyOSC52 copies text only through the OSC 52 escape sequence, i.e. to the
+// clipboard of the terminal the user is looking at (also over SSH). The
+// terminal may ignore the sequence, so success means "sent", not "stored".
+func CopyOSC52(text string) error {
+	if text == "" {
+		return fmt.Errorf("no content to copy")
+	}
+	return copyOSC52(text)
+}
+
 // copyNative attempts to copy using a platform-native clipboard command.
 // Returns the method name on success.
 func copyNative(ctx context.Context, text string) (string, error) {

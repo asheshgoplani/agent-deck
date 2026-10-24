@@ -112,7 +112,7 @@ var completionTree = []completionNode{
 	{name: "migrate-paths"},
 	{name: "uninstall"},
 	{name: "run-task"},
-	{name: "feedback"},
+	{name: "feedback", subs: []string{"bug", "idea"}},
 	{name: "telegram-doctor"},
 	{name: "version"},
 	{name: "help"},

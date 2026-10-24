@@ -273,6 +273,7 @@ func (h *HelpOverlay) View() string {
 	deadLettersKey := h.key(hotkeyDeadLetters, "alt+d")
 	triggersKey := h.key(hotkeyTriggers, "alt+t")
 	agentsPanelKey := h.key(hotkeyAgentsPanel, "alt+a")
+	reportKey := h.key(hotkeyReportProblem, "Z")
 	groupKey := h.key(hotkeyCreateGroup, "g")
 	undoKey := h.key(hotkeyUndoDelete, "Ctrl+Z")
 	archiveKey := h.key(hotkeyArchiveSession, "A")
@@ -445,6 +446,7 @@ func (h *HelpOverlay) View() string {
 				{importKey, "Import tmux sessions"},
 				{switchKey, "Switch session (here or attached)"},
 				{scrollbackKey, "Scrollback pager (while attached)"},
+				{reportKey, "Report a problem or idea (GitHub issue; you see it in full and confirm first)"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
 			},

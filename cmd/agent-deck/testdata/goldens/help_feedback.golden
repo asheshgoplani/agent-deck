@@ -1,4 +1,5 @@
 Usage: agent-deck feedback
+       agent-deck feedback bug|idea [flags]   (report a problem; see 'agent-deck feedback bug --help')
 
 Rate agent-deck and optionally leave a comment.
 

@@ -37,6 +37,14 @@ _agent_deck_completion() {
     arg_index=$((cword - start - 1))
 
     case "$cmd" in
+        feedback)
+            if ((cword == start + 1)); then
+                COMPREPLY=($(compgen -W 'bug idea' -- "$cur"))
+                return 0
+            fi
+            sub=${words[start+1]}
+            arg_index=$((cword - start - 2))
+            ;;
         completion)
             if ((cword == start + 1)); then
                 COMPREPLY=($(compgen -W 'bash zsh fish' -- "$cur"))

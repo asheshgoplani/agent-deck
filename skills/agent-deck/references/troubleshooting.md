@@ -364,6 +364,10 @@ Prepare clear answers to:
 
 ### Step 3: Create GitHub Issue
 
+Fastest route: `agent-deck feedback bug` asks for what happened, what you expected and the steps, fills the bug form below with version, OS, terminal and a scrubbed log tail, shows you the full text and files it after you answer `y` (`--dry-run` only prints it). Ideas go through `agent-deck feedback idea`.
+
+By hand:
+
 Go to: **https://github.com/asheshgoplani/agent-deck/issues/new**
 
 Use this template:
@@ -425,7 +429,7 @@ Use this template:
 - Test any suggested fixes
 - Update issue with results
 - Join [Discord](https://discord.gg/e4xSs6NBN8) for quick help and community support
-- Run `agent-deck feedback` to submit a rating and optional comment
+- Run `agent-deck feedback` to submit a rating and optional comment, or `agent-deck feedback bug` / `agent-deck feedback idea` to file an issue
 
 ## Recovery
 

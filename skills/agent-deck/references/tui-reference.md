@@ -171,6 +171,7 @@ Inside the search prompt, `/waiting`, `/running` and `/idle` filter by status.
 | `Ctrl+T` | Restart agent-deck in place now (`restart_deck`; the new build starts with the same args, env and selection) |
 | `Alt+D` | Dead-letter events (list, inspect, retry, confirmed selected purge) |
 | `Ctrl+E` | Open feedback dialog |
+| `Z` | Report a problem or idea: a short form, then the full GitHub issue text, filed only after you press `y` (`report_problem`, **rebindable**) |
 | `q` / `Ctrl+C` | Quit (**rebindable**) |
 
 ### Worktree Shortcuts

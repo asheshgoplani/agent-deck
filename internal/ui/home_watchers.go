@@ -18,6 +18,7 @@ func (h *Home) Init() tea.Cmd {
 	// Check for first run (no config.toml exists)
 	configPath, _ := session.GetUserConfigPath()
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		h.setupWizard.SetReportKey(h.actionKey(hotkeyReportProblem))
 		h.setupWizard.Show()
 		h.setupWizard.SetSize(h.width, h.height)
 	}
