@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -43,6 +46,10 @@ func addProjectMCPGitExclude(projectRoot, mcpFile string) error {
 		return err
 	}
 	base := filepath.Base(mcpFile)
+	trackedOp, ok := projectMCPTrackedOp(base)
+	if !ok {
+		return nil // not a project MCP config name agent-deck writes
+	}
 
 	// Repo-relative path: git reports dir's prefix inside its work tree, so
 	// the top-level (which may be an ancestor of the project root, e.g. a
@@ -60,20 +67,15 @@ func addProjectMCPGitExclude(projectRoot, mcpFile string) error {
 		return nil // an exclude line cannot hold a newline; never split it into patterns
 	}
 
-	// Tracked? Look the path up in the index (any stage), the path going to
-	// git on stdin, relative to the working directory.
-	var lookup strings.Builder
-	for _, stage := range []string{"0", "1", "2", "3"} {
-		lookup.WriteString(":" + stage + ":./" + base + "\n")
-	}
-	out, err = projectGit(root, dir, []byte(lookup.String()), gitOpIndexLookup)
-	if err != nil {
-		return fmt.Errorf("index lookup: %w", err)
-	}
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if line != "" && !strings.HasSuffix(line, " missing") {
-			return nil // tracked: the user chose to commit it
-		}
+	// Tracked (any index entry: staged, conflicted or intent-to-add)? The
+	// file name is a literal in the argv and resolves in the working
+	// directory. ls-files reads only the index, never the object store, so a
+	// partial clone's lazy fetch (which would obey the repo's own config) is
+	// never reached. Exit 0 means tracked, 1 untracked.
+	if _, err := projectGit(root, dir, nil, trackedOp); err == nil {
+		return nil // tracked: the user chose to commit it
+	} else if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
+		return fmt.Errorf("ls-files: %w", err)
 	}
 
 	// Already ignored (.gitignore, global excludes, info/exclude)? Exit 0
@@ -110,13 +112,23 @@ func addProjectMCPGitExclude(projectRoot, mcpFile string) error {
 	if _, ok := pathWithin(commonDir, realInfo); !ok {
 		return fmt.Errorf("info/exclude resolves outside the git directory")
 	}
-	existing, err := os.ReadFile(excludePath)
-	if err != nil && !os.IsNotExist(err) {
-		return err
+	// O_NOFOLLOW: a symlinked info/exclude is refused, never followed out of
+	// the git directory, for the read as well as the append.
+	f, err := os.OpenFile(excludePath, os.O_RDWR|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("open info/exclude: %w", err)
+	}
+	existing, err := io.ReadAll(io.LimitReader(f, maxGitExcludeBytes+1))
+	if err == nil && len(existing) > maxGitExcludeBytes {
+		err = fmt.Errorf("larger than %d bytes", maxGitExcludeBytes)
+	}
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("read info/exclude: %w", err)
 	}
 	for _, line := range strings.Split(string(existing), "\n") {
 		if strings.TrimRight(line, "\r") == pattern {
-			return nil
+			return f.Close()
 		}
 	}
 	var buf bytes.Buffer
@@ -125,10 +137,6 @@ func addProjectMCPGitExclude(projectRoot, mcpFile string) error {
 	}
 	buf.WriteString("# agent-deck: project MCP config may hold secrets\n")
 	buf.WriteString(pattern + "\n")
-	f, err := os.OpenFile(excludePath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
 	if _, err := f.Write(buf.Bytes()); err != nil {
 		_ = f.Close()
 		return err
@@ -223,11 +231,30 @@ const projectGitTimeout = 5 * time.Second
 type projectGitOp int
 
 const (
-	gitOpWorkTreePrefix projectGitOp = iota
-	gitOpIndexLookup
+	gitOpWorkTreePrefix  projectGitOp = iota
+	gitOpTrackedClaude                // .mcp.json
+	gitOpTrackedCursor                // mcp.json (in .cursor/)
+	gitOpTrackedOpenCode              // opencode.json
 	gitOpCheckIgnore
 	gitOpExcludePath
 )
+
+// maxGitExcludeBytes bounds how much of info/exclude is read.
+const maxGitExcludeBytes = 4 << 20
+
+// projectMCPTrackedOp maps the base name of a project MCP config agent-deck
+// writes to the ls-files operation naming it literally.
+func projectMCPTrackedOp(base string) (projectGitOp, bool) {
+	switch base {
+	case ".mcp.json":
+		return gitOpTrackedClaude, true
+	case "mcp.json":
+		return gitOpTrackedCursor, true
+	case "opencode.json":
+		return gitOpTrackedOpenCode, true
+	}
+	return 0, false
+}
 
 func projectGitArgv(op projectGitOp) ([]string, bool) {
 	// The project may be a cloned or unpacked repo whose .git/config names
@@ -236,8 +263,12 @@ func projectGitArgv(op projectGitOp) ([]string, bool) {
 	switch op {
 	case gitOpWorkTreePrefix:
 		return []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "rev-parse", "--is-inside-work-tree", "--show-prefix"}, true
-	case gitOpIndexLookup:
-		return []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "cat-file", "--batch-check"}, true
+	case gitOpTrackedClaude:
+		return []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "ls-files", "--error-unmatch", "--", ".mcp.json"}, true
+	case gitOpTrackedCursor:
+		return []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "ls-files", "--error-unmatch", "--", "mcp.json"}, true
+	case gitOpTrackedOpenCode:
+		return []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "ls-files", "--error-unmatch", "--", "opencode.json"}, true
 	case gitOpCheckIgnore:
 		return []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "check-ignore", "-q", "--no-index", "--stdin", "-z"}, true
 	case gitOpExcludePath:
@@ -262,17 +293,20 @@ func projectGit(root, dir string, stdin []byte, op projectGitOp) (string, error)
 	defer cancel()
 	// #nosec G204 -- "git" is a fixed binary run with a literal argv (no
 	// shell); the working directory is validated to lie inside the project
-	// root; caller-derived paths go only on stdin.
+	// root; caller-derived paths go only on stdin; file names are literals.
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = workDir
 	cmd.Stdin = bytes.NewReader(stdin)
+	// Belt and braces: never lazily fetch missing objects (git >= 2.44) and
+	// never prompt for credentials.
+	cmd.Env = append(childenv.ForLaunch(""), "GIT_NO_LAZY_FETCH=1", "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.Output()
 	return strings.TrimSuffix(string(out), "\n"), err
 }
 
 // validProjectGitDir returns dir cleaned when it is an absolute path inside
-// the absolute root and names an existing directory, and an error otherwise.
-// Containment is checked before the directory is stat'ed. A relative or
+// the absolute root, and an error otherwise. It is purely lexical: whether the
+// directory exists is left to the chdir when git starts. A relative or
 // option-shaped ("-…") value, or one holding a NUL or a line break, is never
 // handed to git.
 func validProjectGitDir(root, dir string) (string, error) {
@@ -288,13 +322,8 @@ func validProjectGitDir(root, dir string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("project git: directory is outside the project root")
 	}
-	info, err := os.Stat(clean)
-	if err != nil {
-		return "", fmt.Errorf("project git: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("project git: not a directory")
-	}
+	// No stat here: a missing or non-directory path already fails when the
+	// child changes into it, and projectGit returns that error.
 	return clean, nil
 }
 

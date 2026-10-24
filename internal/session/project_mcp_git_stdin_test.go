@@ -18,7 +18,7 @@ import (
 var projectGitLiteralArgs = map[string]bool{
 	"-c": true, "core.fsmonitor=false": true, "core.hooksPath=/dev/null": true,
 	"rev-parse": true, "--is-inside-work-tree": true, "--show-prefix": true,
-	"cat-file": true, "--batch-check": true,
+	"ls-files": true, "--error-unmatch": true, "--": true, ".mcp.json": true, "mcp.json": true, "opencode.json": true,
 	"check-ignore": true, "-q": true, "--no-index": true, "--stdin": true, "-z": true,
 	"--path-format=absolute": true, "--git-common-dir": true, "--git-path": true, "info/exclude": true,
 }
@@ -112,7 +112,7 @@ func TestProjectMCPGitExclude_DashDirPathNeverInArgv(t *testing.T) {
 	if err := WriteMCPJsonFromConfig(proj, []string{"tok"}); err != nil {
 		t.Fatal(err)
 	}
-	assertLiteralArgv(t, calls(), "-x", "upload-pack", ".mcp.json")
+	assertLiteralArgv(t, calls(), "-x", "upload-pack", "pwned")
 	want := "/-x/--upload-pack=touch pwned/.mcp.json"
 	if got := countLine(readExclude(t, repo), want); got != 1 {
 		t.Fatalf("exclude has %d lines for %s, want 1:\n%s", got, want, readExclude(t, repo))
@@ -130,28 +130,35 @@ func TestProjectMCPGitExclude_DashDirPathNeverInArgv(t *testing.T) {
 	if err := WriteMCPJsonFromConfig(tracked, []string{"tok"}); err != nil {
 		t.Fatal(err)
 	}
-	assertLiteralArgv(t, calls(), "-y", ".mcp.json")
+	assertLiteralArgv(t, calls(), "-y")
 	if ex := readExclude(t, repo); strings.Contains(ex, "-y") {
 		t.Fatalf("tracked file must not be excluded:\n%s", ex)
 	}
 }
 
-// A file name holding a newline is skipped safely: never in argv, never split
-// into exclude patterns.
-func TestProjectMCPGitExclude_NewlineNameNeverInArgv(t *testing.T) {
+// A folder holding a newline, or a file name agent-deck never writes, is
+// skipped before any git call: never in argv, never an exclude pattern.
+func TestProjectMCPGitExclude_NewlineOrUnknownNameNeverInArgv(t *testing.T) {
 	root := hygieneSetup(t, map[string]string{"TOKEN": "s3cr3t"})
 	hygieneGit(t, root, "init", "-q")
 	calls, reset := installFakeGit(t, "")
-	mcpFile := filepath.Join(root, "a\n*.json")
-	if err := os.WriteFile(mcpFile, []byte("{}\n"), 0o600); err != nil {
+	nl := filepath.Join(root, "a\nb")
+	if err := os.MkdirAll(nl, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	before := readExclude(t, root)
-	reset()
-	excludeProjectMCPFromGit(root, mcpFile)
-	assertLiteralArgv(t, calls(), "a\n", "*.json")
-	if after := readExclude(t, root); after != before {
-		t.Fatalf("exclude changed:\n%s", after)
+	for _, f := range []string{filepath.Join(nl, ".mcp.json"), filepath.Join(root, "a\n*.json"), filepath.Join(root, "--output=x")} {
+		if err := os.WriteFile(f, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := readExclude(t, root)
+		reset()
+		excludeProjectMCPFromGit(root, f)
+		if c := calls(); len(c) != 0 {
+			t.Fatalf("git ran for %q: %q", f, c)
+		}
+		if after := readExclude(t, root); after != before {
+			t.Fatalf("exclude changed for %q:\n%s", f, after)
+		}
 	}
 }
 
@@ -231,4 +238,152 @@ func TestProjectMCPGitExclude_ExcludeOutsideGitDirRefused(t *testing.T) {
 	if _, _, err := checkExcludeWithinGitDir(filepath.Join(proj, ".git"), filepath.Join(proj, ".git", "..", "x")); err == nil {
 		t.Fatal("exclude path escaping the git dir via .. accepted")
 	}
+}
+
+// The tracked check reads only the index: in a partial clone whose promisor
+// remote would run the repo's own core.sshCommand on a lazy fetch, a tracked
+// entry whose blob is missing is recognised without git ever reaching the
+// object store. The argv is the literal ls-files form; cat-file never runs.
+func TestProjectMCPGitExclude_TrackedCheckNeverLazyFetches(t *testing.T) {
+	proj := hygieneSetup(t, map[string]string{"TOKEN": "s3cr3t"})
+	hygieneGit(t, proj, "init", "-q")
+	marker := filepath.Join(t.TempDir(), "PWNED")
+	hygieneGit(t, proj, "config", "core.repositoryformatversion", "1")
+	hygieneGit(t, proj, "config", "extensions.partialClone", "origin")
+	hygieneGit(t, proj, "remote", "add", "origin", "ssh://example.invalid/repo.git")
+	hygieneGit(t, proj, "config", "remote.origin.promisor", "true")
+	hygieneGit(t, proj, "config", "core.sshCommand", "touch '"+marker+"'; false")
+	hygieneGit(t, proj, "update-index", "--add", "--info-only", "--cacheinfo", "100644,1234567890123456789012345678901234567890,.mcp.json")
+	mcpFile := filepath.Join(proj, ".mcp.json")
+	if err := os.WriteFile(mcpFile, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls, reset := installFakeGit(t, "")
+	reset()
+	excludeProjectMCPFromGit(proj, mcpFile)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("a lazy fetch ran the repo's core.sshCommand: %v", err)
+	}
+	got := calls()
+	assertLiteralArgv(t, got)
+	sawLsFiles := false
+	for _, argv := range got {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "cat-file") {
+			t.Fatalf("cat-file invoked: %q", argv)
+		}
+		if strings.HasSuffix(joined, "ls-files --error-unmatch -- .mcp.json") {
+			sawLsFiles = true
+		}
+	}
+	if !sawLsFiles {
+		t.Fatalf("tracked check is not the literal ls-files form: %q", got)
+	}
+	if ex := readExclude(t, proj); strings.Contains(ex, ".mcp.json") {
+		t.Fatalf("tracked file must not be excluded:\n%s", ex)
+	}
+}
+
+// Any index entry counts as tracked: intent-to-add and conflicted entries
+// are left alone, for each project MCP file name agent-deck writes.
+func TestProjectMCPGitExclude_IntentToAddAndConflictCountAsTracked(t *testing.T) {
+	for _, rel := range []string{".mcp.json", ".cursor/mcp.json", "opencode.json"} {
+		for _, mode := range []string{"intent-to-add", "conflict"} {
+			t.Run(rel+"/"+mode, func(t *testing.T) {
+				proj := hygieneSetup(t, map[string]string{"TOKEN": "s3cr3t"})
+				hygieneGit(t, proj, "init", "-q")
+				mcpFile := filepath.Join(proj, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(mcpFile), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(mcpFile, []byte("{}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "intent-to-add" {
+					hygieneGit(t, proj, "add", "-N", "--", rel)
+				} else {
+					blob := hygieneGit(t, proj, "hash-object", "-w", "--", rel)
+					info := ""
+					for _, stage := range []string{"1", "2", "3"} {
+						info += "100644 " + blob + " " + stage + "\t" + rel + "\n"
+					}
+					cmd := exec.Command("git", "-C", proj, "update-index", "--index-info")
+					cmd.Stdin = strings.NewReader(info)
+					if out, err := cmd.CombinedOutput(); err != nil {
+						t.Fatalf("update-index: %v\n%s", err, out)
+					}
+					if st := hygieneGit(t, proj, "ls-files", "--stage", "--", rel); strings.Count(st, "\n") != 2 {
+						t.Fatalf("expected three conflict stages:\n%s", st)
+					}
+				}
+				excludeProjectMCPFromGit(filepath.Dir(mcpFile), mcpFile)
+				if ex := readExclude(t, proj); strings.Contains(ex, rel) {
+					t.Fatalf("%s entry must not be excluded:\n%s", mode, ex)
+				}
+			})
+		}
+	}
+}
+
+// info/ symlinked out of the git dir: the realInfo re-check refuses it even
+// though the path git reported is lexically inside.
+func TestProjectMCPGitExclude_SymlinkedInfoDirRefusedByRealInfoCheck(t *testing.T) {
+	proj := hygieneSetup(t, map[string]string{"TOKEN": "s3cr3t"})
+	hygieneGit(t, proj, "init", "-q")
+	info := filepath.Join(proj, ".git", "info")
+	outside := t.TempDir()
+	if err := os.Rename(info, info+".orig"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, info); err != nil {
+		t.Fatal(err)
+	}
+	// git canonicalises --git-path through the symlink (refused by the
+	// git-dir containment check); answer with the lexical path so the realInfo
+	// re-check is what refuses it.
+	installFakeGit(t, filepath.Join(info, "exclude"))
+	if err := addProjectMCPGitExclude(proj, writeProjectMCPFile(t, proj)); err == nil || !strings.Contains(err.Error(), "outside the git directory") {
+		t.Fatalf("symlinked info/ not refused by the realInfo check: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "exclude")); !os.IsNotExist(err) {
+		t.Fatalf("wrote exclude through the info/ symlink: %v", err)
+	}
+}
+
+// A symlinked info/exclude is never followed (O_NOFOLLOW), even when the path
+// reported for it is lexically inside the git dir: its target is neither read
+// nor appended to.
+func TestProjectMCPGitExclude_SymlinkedExcludeFileNotFollowed(t *testing.T) {
+	proj := hygieneSetup(t, map[string]string{"TOKEN": "s3cr3t"})
+	hygieneGit(t, proj, "init", "-q")
+	exclude := filepath.Join(proj, ".git", "info", "exclude")
+	target := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(target, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(exclude, exclude+".orig"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, exclude); err != nil {
+		t.Fatal(err)
+	}
+	// git itself canonicalises --git-path through the symlink (which the
+	// git-dir containment check already refuses); answer with the lexical
+	// path instead so only O_NOFOLLOW stands between the append and the target.
+	installFakeGit(t, exclude)
+	if err := addProjectMCPGitExclude(proj, writeProjectMCPFile(t, proj)); err == nil || !strings.Contains(err.Error(), "open info/exclude") {
+		t.Fatalf("symlinked info/exclude was not refused at open: %v", err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "keep\n" {
+		t.Fatalf("symlink target changed: %q, %v", data, err)
+	}
+}
+
+func writeProjectMCPFile(t *testing.T, proj string) string {
+	t.Helper()
+	f := filepath.Join(proj, ".mcp.json")
+	if err := os.WriteFile(f, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
