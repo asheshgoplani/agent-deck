@@ -33,14 +33,21 @@ var codexOwnershipCache = struct {
 	bySocket map[string]codexOwnershipSnapshot
 }{bySocket: make(map[string]codexOwnershipSnapshot)}
 
-// StatusUpdatePass pins lazy Codex ownership evidence for an entire sweep,
-// even if that sweep outlives the TTL. Its zero value is ready for concurrent
-// workers. New bindings and refreshes by other passes remain visible. Create a
-// new pass for each sweep; do not retain it between sweeps.
+// StatusUpdatePass pins lazy Codex ownership evidence and one process-table
+// snapshot for an entire sweep, even if that sweep outlives the TTL. Its zero
+// value is ready for concurrent workers. New bindings and refreshes by other
+// passes remain visible. Create a new pass for each sweep; do not retain it
+// between sweeps.
 type StatusUpdatePass struct {
 	mu       sync.Mutex
 	bySocket map[string]codexOwnershipSnapshot
 	loading  map[string]chan struct{}
+	// tmux session listings per socket (see listedSessions).
+	listed  map[string]passSessionListing
+	listing map[string]chan struct{}
+
+	procsOnce sync.Once
+	procs     processSnapshot // read on first use; see processes
 }
 
 // UpdateStatus refreshes one instance using this pass's shared evidence.
