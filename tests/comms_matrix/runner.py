@@ -20,6 +20,8 @@ import uuid
 HERE = Path(__file__).resolve().parent
 TOOLS = ('claude', 'codex', 'gemini', 'pi', 'hermes', 'opencode', 'cursor')
 BINARY = '/usr/local/bin/agent-deck'
+# How long a pi driver may stay silent before its pause ack counts as lost.
+PAUSE_ACK_TIMEOUT_S = 30
 
 
 def write_json(path, data):
@@ -238,7 +240,7 @@ class Rig:
                 if number < len(parts) - 1:
                     process.stdin.write(json.dumps(dict(pause=True)) + '\n')
                     process.stdin.flush()
-                    while not read_json_line(process, 30).get('paused'):
+                    while not read_json_line(process, PAUSE_ACK_TIMEOUT_S).get('paused'):
                         pass
                     self.tick()
             out, err = process.communicate(timeout=30)
