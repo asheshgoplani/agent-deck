@@ -35,7 +35,8 @@ import (
 // The daemon then holds back exactly two things. The exit of the old process,
 // and only an exit: an error while the old pid is gone, the hook file holds
 // its SessionEnd (stamped no later than a second, the file's resolution, after
-// the restart recorded the new process), the new process is alive and its
+// the restart recorded the new process; or, once the new process's
+// SessionStart replaced it, the hook event history does), the new process is alive and its
 // pane shows no error (that one SessionEnd, however often the daemon sees
 // it; the hold lasts per token, so the next restart's token holds its own
 // old SessionEnd). And the new process's first arrival at its prompt with no new user
@@ -330,6 +331,19 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 	oldEndBy := tok.SpawnedAt.Add(time.Second)
 	oldEnd := hookSessionEnd(hs) && !hs.UpdatedAt.After(oldEndBy)
 	newEnd := hookSessionEnd(hs) && hs.UpdatedAt.After(oldEndBy)
+	newStart := hs != nil && strings.EqualFold(strings.TrimSpace(hs.Event), "SessionStart") && !hs.UpdatedAt.Before(tok.SpawnedAt.Truncate(time.Second))
+	var endStamp time.Time
+	fromHistory := false
+	if oldEnd {
+		endStamp = hs.UpdatedAt
+	} else if newStart {
+		// The pass read the light from the old SessionEnd, and the new
+		// process's SessionStart replaced it in the hook file before this
+		// judgement: that SessionEnd is in the hook event history.
+		if at, ok := restartSessionEndIn(id, tok.At, oldEndBy); ok {
+			oldEnd, endStamp, fromHistory = true, at.Truncate(time.Second), true
+		}
+	}
 	rs := d.restarts()
 	switch normalizeStatusString(to) {
 	case string(StatusError):
@@ -339,11 +353,13 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 		// already spent on another SessionEnd does not cover this one.
 		rs.mu.Lock()
 		ours := newAlive && oldEnd && tok.OldPID > 0 && tok.OldPID != tok.NewPID && !restartPIDAlive(tok.OldPID)
-		if held, seen := rs.exitHeld[id]; ours && seen && held.tokenAt.Equal(tok.At) && !held.stamp.Equal(hs.UpdatedAt) {
-			ours = false
+		if held, seen := rs.exitHeld[id]; ours && seen && held.tokenAt.Equal(tok.At) && !held.stamp.Equal(endStamp) {
+			// The history line takes its own clock read after the hook
+			// file's: the same SessionEnd can read one second later there.
+			ours = fromHistory && held.stamp.Equal(endStamp.Add(-time.Second))
 		}
 		if ours {
-			rs.exitHeld[id] = restartExitHold{tokenAt: tok.At, stamp: hs.UpdatedAt}
+			rs.exitHeld[id] = restartExitHold{tokenAt: tok.At, stamp: endStamp}
 		}
 		rs.mu.Unlock()
 		if ours {
@@ -562,29 +578,68 @@ func restartBootUnseen(inst *Instance, tok restartToken, status string, now time
 // holds a SessionStart at or after since. With the history off ([health]
 // enabled = false) or missing, nothing is proven.
 var restartSessionStartSince = func(id string, since time.Time) bool {
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(hookStatusFilePath(id)), id+".events.jsonl"), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	// The newest events are at the tail; a cut first line does not parse.
-	if info, err := f.Stat(); err == nil && info.Size() > maxHookStatusFileSize {
-		_, _ = f.Seek(info.Size()-maxHookStatusFileSize, io.SeekStart)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxHookStatusFileSize))
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		var ev struct {
-			At    time.Time `json:"at"`
-			Event string    `json:"event"`
-		}
-		if json.Unmarshal([]byte(line), &ev) == nil && strings.EqualFold(strings.TrimSpace(ev.Event), "SessionStart") && !ev.At.Before(since) {
+	for _, ev := range restartHookHistory(id) {
+		if strings.EqualFold(strings.TrimSpace(ev.Event), "SessionStart") && !ev.At.Before(since) {
 			return true
 		}
 	}
 	return false
+}
+
+// restartHistoryClockLag bounds how much later the hook handler's history
+// line reads the clock than the hook file's ts (it loads the config and
+// writes the status file first): the same event can cross a second there.
+const restartHistoryClockLag = 500 * time.Millisecond
+
+// restartSessionEndIn returns the last SessionEnd in the hook event history
+// stamped at or after since and, in whole seconds like the hook file, no
+// later than by, allowing for the history's later clock read.
+func restartSessionEndIn(id string, since, by time.Time) (time.Time, bool) {
+	var at time.Time
+	found := false
+	for _, ev := range restartHookHistory(id) {
+		if strings.EqualFold(strings.TrimSpace(ev.Event), "SessionEnd") && !ev.At.Before(since) && !ev.At.Add(-restartHistoryClockLag).Truncate(time.Second).After(by) {
+			at, found = ev.At, true
+		}
+	}
+	return at, found
+}
+
+type restartHookEvent struct {
+	At    time.Time `json:"at"`
+	Event string    `json:"event"`
+}
+
+// restartHookHistory reads the tail of child id's hook event history
+// (<id>.events.jsonl, written by the hook handler next to the hook file).
+func restartHookHistory(id string) []restartHookEvent {
+	// Non-blocking and regular files only: judgeRestart reads this inside
+	// emitTurn, so a FIFO planted at the path must not stall the daemon.
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(hookStatusFilePath(id)), filepath.Base(id)+".events.jsonl"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil
+	}
+	// The newest events are at the tail; a cut first line does not parse.
+	if info.Size() > maxHookStatusFileSize {
+		_, _ = f.Seek(info.Size()-maxHookStatusFileSize, io.SeekStart)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxHookStatusFileSize))
+	if err != nil {
+		return nil
+	}
+	var events []restartHookEvent
+	for _, line := range strings.Split(string(data), "\n") {
+		var ev restartHookEvent
+		if json.Unmarshal([]byte(line), &ev) == nil {
+			events = append(events, ev)
+		}
+	}
+	return events
 }
 
 // sweepRestartTokens reports a resumed child whose pane shows an error banner
