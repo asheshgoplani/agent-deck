@@ -159,16 +159,18 @@ AGENTDECK_DEBUG=1 agent-deck
 
 ## Local-only files (per-developer)
 
-A few files are intentionally not tracked so each developer can keep their own copy:
+The root `AGENTS.md` and `CLAUDE.md` are tracked: they are the shared instructions for
+contributors' coding agents. Keep personal notes out of them. A few paths are left for
+each developer's own copy:
 
-- `CLAUDE.md` — contributor-specific Claude Code guidance
+- `CLAUDE.local.md` — your own Claude Code notes (Claude Code reads it next to `CLAUDE.md`)
 - `.planning/` — local scratch directory for design docs and drafts
 
 If you use these locally, add them to your own per-clone exclude list:
 
 ```bash
 cat >> .git/info/exclude <<'EOF'
-CLAUDE.md
+CLAUDE.local.md
 .planning/
 EOF
 ```

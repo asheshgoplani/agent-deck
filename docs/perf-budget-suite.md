@@ -66,7 +66,7 @@ When adding a TUI-flow or persistence-touching test, write the Tier 1 walltime g
 
 ## Budget changes require an RFC
 
-- Loosening any `TestPerf_*` budget (i.e. raising the `base`) by more than 25% requires an RFC at `docs/rfc/PERF_BUDGETS.md` documenting the cause and the upper bound.
+- Loosening any `TestPerf_*` budget (i.e. raising the `base`) by more than 25% requires an RFC in `docs/rfc/` (for example a new `docs/rfc/PERF_BUDGETS.md`; none exists yet) documenting the cause and the upper bound.
 - Removing a `TestPerf_*` test is forbidden without an RFC.
 - Adding a budget MUST cite the local median and use the matching ColdBudget/WarmBudget helper.
 

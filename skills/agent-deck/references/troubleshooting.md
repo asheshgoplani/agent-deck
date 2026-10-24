@@ -144,13 +144,14 @@ max_lines = 2000
 
 ### Global Search Not Working
 
-Check config:
+`G` searches the Recall index (`recall.db`). It is off unless Recall is on:
 ```toml
-[global_search]
+[recall]
 enabled = true
 ```
 
-Also verify `~/.claude/projects/` exists and has content.
+Then check the index with `agent-deck recall status`. With Recall off, `G`
+falls back to the local title search. See `docs/recall.md`.
 
 ### Shift+Enter Submits Instead of Inserting a Newline (Kitty)
 

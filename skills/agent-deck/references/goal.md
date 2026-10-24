@@ -368,7 +368,9 @@ Worker output: agent-deck session output {worker_session_title} -q
 
 Options:
   - Resume: agent-deck session send {worker_session_title} "<your hint>"
-  - Kill:   agent-deck goal cancel {id}
+  - Cancel: set "state.status" to "stopped_by_user" in the goal JSON
+            (default ~/.agent-deck/goals/{id}.json; goal.sh honours GOALS_DIR),
+            then agent-deck session stop {worker_session_title}
   - Take over manually
 ```
 
@@ -425,7 +427,13 @@ Done-conditions must be:
 | Conductor's `state.json` / `task-log.md` | Goal reuses task-log.md as the receipt store. The conductor's own state stays separate. |
 | Telegram bot per conductor | Manager uses the same channel for escalations |
 
-## CLI surface
+## CLI surface (proposed, not built)
+
+**None of the `agent-deck goal ...` commands below exist.** There is no `goal`
+command in `agent-deck` today. The working entry point is
+`skills/agent-deck/scripts/goal/goal.sh` (start a goal) plus
+`skills/agent-deck/scripts/goal/manager.py` (advance it; `--id`, `--dry-run`,
+`--verbose`). This section is a design sketch for a later phase.
 
 The full command (proposed):
 
@@ -444,7 +452,7 @@ agent-deck goal \
     [--dry-run]                      # just print what would happen
 ```
 
-Companion commands:
+Companion commands (proposed, not built):
 
 ```bash
 agent-deck goal list                  # show active goals + their state

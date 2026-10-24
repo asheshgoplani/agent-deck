@@ -314,18 +314,17 @@ A harness or account change is saved on its own (not together with other edits) 
 
 ### Global Search (`G`)
 
-- Full content search across `~/.claude/projects/`
-- Regex + fuzzy matching
+- Full-text search of the Recall index (`recall.db`): Claude transcripts plus the other harnesses Recall reads (see `docs/recall.md`)
+- Same query as `agent-deck recall search`
 - Recency ranking
 - Split view: results + preview
 - `[/]` scroll preview
 - `Enter` create/jump to session
 
-**Config:**
+**Config:** `G` is off unless Recall is on (with Recall off it falls back to the local title search; see `docs/recall.md`):
 ```toml
-[global_search]
+[recall]
 enabled = true
-recent_days = 30
 ```
 
 ## Preview Pane

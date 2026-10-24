@@ -36,11 +36,9 @@ To get started:
 3. Comment on an issue before starting work so we can tell you if someone (human or agent) is already on it.
 4. Look for issues labeled [`good first issue`](https://github.com/asheshgoplani/agent-deck/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22): curated to be small and self-contained.
 
-If you've had a couple of PRs land here and want to help steer, open an issue titled "maintainer: your area". We'd love the help.
-
 Looking for something specific to work on? [docs/ROADMAP.md](docs/ROADMAP.md) lists ideas and follow-ups that are real but not yet scheduled.
 
-If you've had a couple of PRs land here and want to help steer, say so on #1650 or open an issue titled "maintainer: your area". We'd love the help.
+If you've had a couple of PRs land here and want to help steer, open an issue titled "maintainer: your area". We'd love the help.
 
 ## Installation
 
@@ -151,7 +149,8 @@ The main-menu composer currently supports local sessions only, not remote-sessio
 | `d` | Delete |
 | `b` | Re-run worktree setup script |
 | `E` | Container shell (sandboxed sessions) |
-| `c` / `C` | Copy last AI response / session info (repo, path, branch) |
+| `c` / `B` | Copy last AI response / session info (repo, path, branch) |
+| `C` | Context inspector (what the session is sent, ranked by cost) |
 | `V` / `Y` | Copy visible terminal text / a fenced code block |
 | `Shift+drag` | Select text natively (`Option+drag` in iTerm2) — see below |
 | `?` | Full help |
@@ -159,7 +158,7 @@ The main-menu composer currently supports local sessions only, not remote-sessio
 > **Why can't I drag-select text?** The TUI holds the terminal in mouse
 > reporting mode so clicks, wheel scrolling and the divider drag work, which
 > means your terminal never sees a drag as a selection. Hold `Shift` while
-> dragging (`Option` in iTerm2) to bypass it, or use the `c` / `C` / `V` / `Y`
+> dragging (`Option` in iTerm2) to bypass it, or use the `c` / `B` / `V` / `Y`
 > copy keys above. Full detail in
 > [Terminal shortcuts](docs/terminal-shortcuts.md#text-selection-and-copying).
 
@@ -191,14 +190,6 @@ Two short guides to read next:
 ![Fleet topology: phone → conductor → child sessions, with watchers on the side](docs/conductor/fleet-topology.svg)
 
 ## Features
-
-### Fork Sessions
-
-Try different approaches without losing context. Fork Claude, OpenCode, Pi, Codex, and Oh My Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
-
-- Press `f` for quick fork, `F` to customize name/group
-- Fork your forks to explore as many branches as you need
-- Codex forking requires a codex CLI with `codex fork <session-id>` support (verified with `codex-cli 0.137.0`)
 
 ### MCP Manager
 
@@ -243,7 +234,7 @@ config_dir = "~/.claude-team"
 env_file = "~/git/work/.envrc"
 ```
 
-Lookup priority: `env > group > profile > global > default`. The `env_file` is `source`d into the tmux pane before `claude` (or the custom command) execs, so any exports it contains become part of the session environment.
+Lookup priority: `account > conductor > group > env > profile > global > default`. The `env_file` is `source`d into the tmux pane before `claude` (or the custom command) execs, so any exports it contains become part of the session environment.
 
 Human-watchable verification: `bash scripts/verify-per-group-claude-config.sh`. The harness creates two throwaway groups, launches one normal and one custom-command session, and prints a pass/fail table.
 
@@ -261,18 +252,17 @@ The conductor name is the string you passed to `agent-deck conductor setup <name
 
 **Precedence chain** (most-specific → least-specific):
 
-1. `CLAUDE_CONFIG_DIR` env var
+1. The session's account (`--account <name>` → `[profiles.<name>.claude]`)
 2. `[conductors.<name>.claude]` (when the session is a conductor session, i.e. Title starts with `conductor-`)
-3. `[groups."<group>".claude]` (PR #578)
-4. `[profiles.<profile>.claude]`
-5. `[claude]` (global)
-6. `~/.claude` (default)
+3. `[groups."<group>".claude]`
+4. `CLAUDE_CONFIG_DIR` env var
+5. `[profiles.<profile>.claude]`
+6. `[claude]` (global)
+7. `~/.claude` (default)
 
 This means a single `[conductors.gsd-v154.claude]` line replaces the need to duplicate the config into `[groups."conductor".claude]` — the conductor block scopes to exactly that conductor, not to every conductor that shares the `conductor` group.
 
-Backward compat: sessions in the `conductor` group with NO matching `[conductors.<name>.claude]` block continue to resolve via `[groups."conductor".claude]` as they did in v1.5.4 Phase 1–3.
-
-Closes [issue #602](https://github.com/asheshgoplani/agent-deck/issues/602).
+Backward compat: sessions in the `conductor` group with NO matching `[conductors.<name>.claude]` block continue to resolve via `[groups."conductor".claude]`.
 
 #### Context window and the proactive `/clear`
 
@@ -332,11 +322,11 @@ There's no automated warning or enforcement for group sprawl yet — this is a d
 
 ### MCP Socket Pool
 
-Running many sessions? Socket pooling shares MCP processes across all sessions via Unix sockets, reducing MCP memory usage by 85-90%. Connections auto-recover from MCP crashes in ~3 seconds via a reconnecting proxy. Enable with `pool_all = true` in [config.toml](skills/agent-deck/references/config-reference.md).
+Running many sessions? Socket pooling shares MCP processes across all sessions via Unix sockets, so each server runs once instead of once per session. A health check every 3 seconds restarts a crashed MCP behind a reconnecting proxy. Enable with `pool_all = true` in [config.toml](skills/agent-deck/references/config-reference.md).
 
 ### Search
 
-Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `&` (error). Press `$` for the Cost Dashboard and `G` for global search across all Claude conversations.
+Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `&` (error). Press `0` to clear the filter. Press `$` for the Cost Dashboard and `G` for Recall search across every conversation on this machine.
 
 ### Keyboard navigation (v1.7.60)
 
@@ -345,8 +335,8 @@ Two tiers of keybindings move the cursor around the session list. The global tie
 | Scope | Keys | What it does |
 |---|---|---|
 | **Global (flat list)** | `j` / `k` or `↓` / `↑` | Move cursor down / up through every item |
-| Global | `gg` | Jump to top of list |
-| Global | `G` | Open global search across all Claude conversations |
+| Global | `Home` / `End` | Jump to top / bottom of list |
+| Global | `G` | Open Recall search across every conversation on this machine |
 | Global | `1`–`9` | Jump to Nth root group header |
 | Global | `/` | Open fuzzy search across all sessions |
 | **Group (current group only)** | `Alt+j` / `Alt+k` | Next / previous session in current group (skips group boundaries) |
@@ -549,8 +539,8 @@ Common gotchas:
 Run sessions inside isolated Docker containers. The project directory is bind-mounted read-write, so agents work on your code while the rest of the system stays protected.
 
 - Check "Run in Docker sandbox" when creating a session, or set `default_enabled = true` in config
-- Press `T` on a sandboxed session to open a container shell
-- `agent-deck try "task description"` runs a one-shot sandboxed session
+- Press `E` on a sandboxed session to open a container shell
+- `agent-deck try <name> --sandbox` starts a quick experiment session (dated folder) in a sandbox
 
 Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. The exception is the Claude Code login on macOS, which lives in the Keychain: copying it would fork the host's OAuth refresh chain and log the host out, so the sandbox keeps a login of its own. Run `/login` once in your first sandbox session (or pass a `claude setup-token` credential as `CLAUDE_CODE_OAUTH_TOKEN` via `environment`); see the single-owner rule in the sandbox reference.
 
@@ -599,13 +589,13 @@ Done with a session but not ready to delete it? Archive it. Archiving stops the 
 - `R` on an archived session restores it to the active list and restarts its process
 - `^` filters the TUI to archived sessions; the web UI has a dedicated **Archived** tab
 - Search and filters work across archived sessions
-- Deleting (`d`) is the destructive cousin — it removes the session from the registry (with a 30-second `Ctrl+Z` undo window)
+- Deleting (`d`) is the destructive cousin — it removes the session from the registry (`Ctrl+Z` undoes recent deletes while the TUI stays open; the web UI gives 30 seconds)
 
 ![Session lifecycle: create → run → stop, with archive/unarchive, fork, and worktree branches](docs/diagrams/session-lifecycle.svg)
 
 ### Conductor
 
-Conductors are persistent agent sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram** and/or **Slack** for remote control.
+Conductors are persistent agent sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram**, **Slack**, **Discord** or **Mattermost** for remote control (see [docs/conductor/](docs/conductor/)).
 
 Create as many conductors as you need per profile:
 
@@ -720,7 +710,7 @@ Suppression only affects dispatch — the parent link itself is unchanged. Defer
 
 **Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
 
-**Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session via `--channels plugin:telegram@claude-plugins-official` and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/references/gotchas.md#telegram-conductor-topology-v1722).
+**Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session with the session's `channels` field (`agent-deck add --channel plugin:telegram@claude-plugins-official`, or `session set <id> channels ...`; agent-deck passes it to Claude as `--channels`) and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/references/gotchas.md#telegram-conductor-topology-v1722).
 
 **Permission prompts during automation**: if a conductor keeps pausing on permission requests, set `[claude].allow_dangerous_mode = true` (or `dangerous_mode = true`) in `$XDG_CONFIG_HOME/agent-deck/config.toml`, then run `agent-deck session restart conductor-<name>`. See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#conductor-keeps-asking-for-permissions).
 
@@ -766,14 +756,14 @@ Watchers listen for inbound events (webhooks, push notifications, GitHub events,
 | Type | Use case | Required flags |
 |------|----------|----------------|
 | `webhook` | Generic HTTP POST listener for any service that can fire a webhook | `--port` |
-| `github` | GitHub repository webhooks (issues, PRs, pushes) with HMAC-SHA256 verification | `--secret` |
+| `github` | GitHub repository webhooks (issues, PRs, pushes) with HMAC-SHA256 verification | `$GITHUB_WEBHOOK_SECRET` or `--secret-file` (inline `--secret` is refused) |
 | `ntfy` | [ntfy.sh](https://ntfy.sh) push-notification topics (phone / browser → conductor) | `--topic` |
 | `slack` | Slack messages via a Cloudflare Worker bridge into an ntfy topic | `--topic` |
 
 ```bash
 # Create, start, test — mirrors the four examples from `agent-deck watcher --help`
 agent-deck watcher create webhook  --name my-webhook  --port 9000
-agent-deck watcher create github   --name gh-alerts   --secret $GITHUB_WEBHOOK_SECRET
+agent-deck watcher create github   --name gh-alerts   --secret-file ~/.gh-webhook-secret  # chmod 600
 agent-deck watcher create ntfy     --name phone       --topic my-private-topic
 agent-deck watcher create slack    --name team-slack  --topic my-slack-topic
 
@@ -812,14 +802,14 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
-| **OpenCode** | Status detection, organization, fork |
+| **OpenCode** | Status detection, MCP, organization, fork |
 | **OpenCode 2** (`opencode2`) | Status detection, MCP, model/agent selection, launch, resume, fork |
 | **Codex** | Status detection, MCP, organization, conductor, fork |
-| **Copilot** | Organization, launch |
+| **Copilot** | Status detection, organization, launch |
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
 | **Muse Code** (`muse`) | Status detection, organization, launch, resume |
-| **Cursor** (terminal) | Status detection, organization |
-| **Hermes Agent** | Organization, launch |
+| **Cursor** (terminal) | Status detection (hook-driven), MCP, organization |
+| **Hermes Agent** | Status detection (hook-driven, `agent-deck hermes-hooks install`), organization, launch |
 | **pi** (`pi-coding-agent`) | Status detection (hook-driven), organization, launch, resume, fork |
 | **DeepSeek Harness** (`dsh`) | Status detection, organization, launch, restart, per-account `DSH_HOME` |
 | **Oh My Pi** (`omp`) | Status detection, organization, launch, restart, resume, fork, project skills |
@@ -1094,8 +1084,6 @@ Precedence at session creation: `--tmux-socket` flag > `[tmux].socket_name` > em
    then restart agent-deck. Subsequent starts will spawn on `tmux -L agent-deck`.
 4. Easier: delete the old session with `agent-deck rm <name>` and re-create it with `agent-deck add` — the new row picks up the config-wide default.
 
-A proper `session migrate-socket` subcommand is tracked for phase 2.
-
 **`TMUX_TMPDIR` is honored.** Socket path resolution follows tmux's standard rules: if you set `TMUX_TMPDIR=/custom/dir`, agent-deck's socket lives at `/custom/dir/tmux-<uid>/agent-deck`. No extra config needed.
 
 ### Feedback
@@ -1293,10 +1281,10 @@ there as markdown.
 | [TUI Reference](skills/agent-deck/references/tui-reference.md) | Keyboard shortcuts, status indicators, navigation |
 | [Troubleshooting](skills/agent-deck/references/troubleshooting.md) | Common issues, debugging, recovery, uninstalling |
 | [Capability Checklist](docs/verification/README.md) | User-level verification matrix: every capability exercised against the real binary, per surface |
-| [Architecture Diagrams](docs/conductor/) | D2 sources + rendered SVGs for the conductor, channels, fleet, and session-lifecycle diagrams |
+| [Architecture Diagrams](docs/conductor/assets/) | D2 sources + rendered SVGs for the conductor, channels and fleet diagrams (session lifecycle: [docs/diagrams/](docs/diagrams/)) |
 
 Additional resources:
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute; [Architecture](docs/architecture.md) — where the code lives; [AGENTS.md](AGENTS.md) — contributing with an agent
 - [CHANGELOG.md](CHANGELOG.md) — release history
 - [llms-full.txt](llms-full.txt) — full context for LLMs
 
@@ -1399,12 +1387,12 @@ No. Agent Deck creates its own tmux sessions with the prefix `agentdeck_*`. Your
 ## Development
 
 ```bash
-make build    # Build
-make test     # Test
-make lint     # Lint
+make build          # Build
+make lint           # Lint
+make verify-docker  # CI Go checks (gofmt, build, vet, lint, race tests) in Docker
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Tests start real tmux servers and processes: never run `go test` on your host. See [CONTRIBUTING.md](CONTRIBUTING.md) for the sandboxed self-check.
 
 ## Star History
 

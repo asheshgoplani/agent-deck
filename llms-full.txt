@@ -1,6 +1,11 @@
 # Agent Deck - Complete Documentation for AI Assistants
 
-This file contains complete documentation for AI/LLM consumption.
+This file contains documentation for AI/LLM consumption.
+
+It is a hand-assembled snapshot of README.md, skills/agent-deck/SKILL.md and
+skills/agent-deck/references/ (cli, config, troubleshooting, tui). It is not
+generated and can lag behind those files; when they disagree, the files in the
+repo are right. Run `agent-deck --version` for the installed version.
 
 **Discord:** https://discord.gg/e4xSs6NBN8
 
@@ -100,7 +105,7 @@ Running many sessions? Socket pooling shares MCP processes across all sessions v
 
 ### Search
 
-Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `$` (error). Press `G` for global search across all Claude conversations.
+Press `/` to fuzzy-search across all sessions. Filter by status with `!` (running), `@` (waiting), `#` (idle), `&` (error). Press `$` for the Cost Dashboard and `G` for global search of the Recall index (needs `[recall] enabled`).
 
 ### Status Detection
 
@@ -314,7 +319,7 @@ compatibility: claude, codex, opencode
 
 Terminal session manager for AI coding agents. Built with Go + Bubble Tea.
 
-**Version:** 0.8.98 | **Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck)
+**Repo:** [github.com/asheshgoplani/agent-deck](https://github.com/asheshgoplani/agent-deck)
 
 ## Script Path Resolution (IMPORTANT)
 
@@ -495,7 +500,7 @@ agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
 | Key | Action |
 |-----|--------|
 | `/` | Local search |
-| `G` | Global search (all Claude conversations) |
+| `G` | Global search (Recall index, needs `[recall] enabled`) |
 | `!@#$` | Filter by status (running/waiting/idle/error) |
 
 ### Global
@@ -1055,7 +1060,7 @@ notify_in_cli = true          # Show in CLI commands
 
 ## [global_search] Section
 
-Search across all Claude conversations.
+Settings for the old in-memory global search index. The TUI `G` key no longer reads this section: it searches the Recall index and is gated by `[recall] enabled` (see the `[recall]` section). The keys are still parsed and shown in the Settings panel.
 
 ```toml
 [global_search]
@@ -1068,7 +1073,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable `G` key global search. |
+| `enabled` | bool | `true` | Old global search switch. Does not gate `G` (use `[recall] enabled`). |
 | `tier` | string | `"auto"` | Strategy: `instant` (fast, more RAM), `balanced` (LRU cache). |
 | `memory_limit_mb` | int | `100` | Max memory for balanced tier. |
 | `recent_days` | int | `90` | Only search recent conversations. |
@@ -1346,13 +1351,14 @@ max_lines = 2000
 
 ### Global Search Not Working
 
-Check config:
+`G` searches the Recall index (`recall.db`). It is off unless Recall is on:
 ```toml
-[global_search]
+[recall]
 enabled = true
 ```
 
-Also verify `~/.claude/projects/` exists and has content.
+Then check the index with `agent-deck recall status`. With Recall off, `G`
+falls back to the local title search. See `docs/recall.md`.
 
 ## Debugging
 
@@ -1584,13 +1590,13 @@ Complete reference for agent-deck Terminal UI features.
 | Key | Action |
 |-----|--------|
 | `/` | Local search (fuzzy) |
-| `G` | Global search (all Claude conversations) |
+| `G` | Global search (Recall index, needs `[recall] enabled`) |
 | `Tab` | Switch between local/global search |
 | `0` | Clear filter (show all) |
 | `!` | Filter: running only (toggle) |
 | `@` | Filter: waiting only (toggle) |
 | `#` | Filter: idle only (toggle) |
-| `$` | Filter: error only (toggle) |
+| `&` | Filter: error only (toggle) |
 
 ### Global
 
@@ -1672,18 +1678,17 @@ Complete reference for agent-deck Terminal UI features.
 
 ### Global Search (`G`)
 
-- Full content search across `~/.claude/projects/`
-- Regex + fuzzy matching
+- Full-text search of the Recall index (`recall.db`): Claude transcripts plus the other harnesses Recall reads (see `docs/recall.md`)
+- Same query as `agent-deck recall search`
 - Recency ranking
 - Split view: results + preview
 - `[/]` scroll preview
 - `Enter` create/jump to session
 
-**Config:**
+**Config:** `G` is off unless Recall is on (with Recall off it falls back to the local title search; see `docs/recall.md`):
 ```toml
-[global_search]
+[recall]
 enabled = true
-recent_days = 30
 ```
 
 ## Preview Pane

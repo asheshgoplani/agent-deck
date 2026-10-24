@@ -996,7 +996,7 @@ All link keys are read at server start and served to the browser by `GET /api/se
 
 ## [global_search] Section
 
-Search across all Claude conversations.
+Settings for the old in-memory global search index. The TUI `G` key no longer reads this section: it searches the Recall index and is gated by `[recall] enabled` (see the `[recall]` section). The keys are still parsed and shown in the Settings panel.
 
 ```toml
 [global_search]
@@ -1009,7 +1009,7 @@ index_rate_limit = 20       # Files/second for indexing
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable `G` key global search. |
+| `enabled` | bool | `true` | Old global search switch. Does not gate `G` (use `[recall] enabled`). |
 | `tier` | string | `"auto"` | Strategy: `instant` (fast, more RAM), `balanced` (LRU cache). |
 | `memory_limit_mb` | int | `100` | Max memory for balanced tier. |
 | `recent_days` | int | `90` | Only search recent conversations. |
@@ -1294,7 +1294,7 @@ options = { "history-limit" = "50000" }   # raw tmux options, applied after agen
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `socket_name` | string | `""` | tmux `-L <name>` selector for every agent-deck spawn. Empty shares the user's default server at `$TMUX_TMPDIR/tmux-<uid>/default`. Set it to isolate agent-deck onto its own tmux server, so its global option and key-binding writes never touch the user's interactive tmux, and a `tmux kill-server` in a shell cannot take managed sessions down. Captured per session at creation time — changing it later does **not** migrate existing sessions. CLI `--tmux-socket <name>` wins over this value. See `docs/SOCKET_ISOLATION.md`. |
+| `socket_name` | string | `""` | tmux `-L <name>` selector for every agent-deck spawn. Empty shares the user's default server at `$TMUX_TMPDIR/tmux-<uid>/default`. Set it to isolate agent-deck onto its own tmux server, so its global option and key-binding writes never touch the user's interactive tmux, and a `tmux kill-server` in a shell cannot take managed sessions down. Captured per session at creation time — changing it later does **not** migrate existing sessions. CLI `--tmux-socket <name>` wins over this value. See "Socket Isolation" in the repo README.md. |
 | `mouse` | bool | `true` | `false` never sets tmux `mouse on`, so the terminal emulator keeps raw control of mouse events — required by the VS Code Linux integrated terminal for click-drag selection. Applies both at session creation and on the reconnect configuration pass. |
 | `inject_status_line` | bool | `true` | `false` leaves the tmux status bar alone, and also disables agent-deck's global tmux notification bar and key bindings, so the runtime stops mutating global tmux options. |
 | `clear_on_restart` | bool | `false` | `true` wipes the scrollback buffer on session restart (`respawn-pane`) instead of preserving the previous run's output. |

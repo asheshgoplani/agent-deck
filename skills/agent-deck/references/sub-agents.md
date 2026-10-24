@@ -148,7 +148,7 @@ $SKILL_DIR/scripts/launch-subagent.sh "Title" "Prompt" \
 
 ```bash
 # Code review from Codex
-$SKILL_DIR/scripts/launch-subagent.sh "Codex Review" "Read cmd/main.go and suggest improvements" --tool codex --wait --timeout 180
+$SKILL_DIR/scripts/launch-subagent.sh "Codex Review" "Read cmd/agent-deck/main.go and suggest improvements" --tool codex --wait --timeout 180
 
 # Architecture feedback from Gemini
 $SKILL_DIR/scripts/launch-subagent.sh "Gemini Arch" "Review the project structure and suggest better patterns" --tool gemini --wait --timeout 180
