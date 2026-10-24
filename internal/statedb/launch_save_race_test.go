@@ -94,6 +94,21 @@ func TestLaunchPostStartSaveMergesStatusVariant(t *testing.T) {
 	require.Equal(t, "agentdeck_worker_c5322ee1", committed[0].TmuxSession)
 }
 
+// A stopped saved from an idle baseline over a restart's committed starting
+// still conflicts: the restart is newer than the stop's view.
+func TestLivenessMergeStoppedOverConcurrentStartingConflicts(t *testing.T) {
+	db, _ := launchRaceFixture(t)
+	require.NoError(t, db.WriteStatus("sess", "waiting", "claude"))
+	base, err := db.LoadInstanceByID("sess")
+	require.NoError(t, err)
+	require.NoError(t, db.WriteStatus("sess", "starting", "claude"))
+	desired := CloneInstanceRow(base)
+	desired.Status = "stopped"
+	_, err = db.MergeInstanceSnapshots(
+		[]InstanceSnapshot{{Original: base, Stored: base, Desired: desired}}, nil)
+	require.ErrorContains(t, err, "stale concurrent Status conflict")
+}
+
 func TestLivenessMergeLastAccessedKeepsLater(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -129,6 +144,26 @@ func TestLivenessMergeStillConflictsOnIntent(t *testing.T) {
 			"stopped is intent, not observation",
 			func(t *testing.T, db *StateDB) { require.NoError(t, db.WriteStatus("sess", "stopped", "claude")) },
 			func(d *InstanceRow) { d.Status = "running" },
+			"stale concurrent Status conflict",
+		},
+		{
+			// Defect 317 is fixed on the stop path, not here: a stopped in a
+			// TUI save can be an observation (classifyTerminatedPane).
+			"an observed stopped does not beat a concurrent error",
+			func(t *testing.T, db *StateDB) { require.NoError(t, db.WriteStatus("sess", "error", "claude")) },
+			func(d *InstanceRow) { d.Status = "stopped" },
+			"stale concurrent Status conflict",
+		},
+		{
+			"error saved over a committed stopped conflicts",
+			func(t *testing.T, db *StateDB) { require.NoError(t, db.WriteStatus("sess", "stopped", "claude")) },
+			func(d *InstanceRow) { d.Status = "error" },
+			"stale concurrent Status conflict",
+		},
+		{
+			"a stopped saved over a committed running conflicts",
+			func(t *testing.T, db *StateDB) { require.NoError(t, db.WriteStatus("sess", "running", "claude")) },
+			func(d *InstanceRow) { d.Status = "stopped" },
 			"stale concurrent Status conflict",
 		},
 		{

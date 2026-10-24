@@ -39,9 +39,13 @@ func (deps Deps) sessionStop(ctx context.Context, in SessionStopIn) (SessionStop
 	// Capture tool conversation ids before Kill: show-environment fails on
 	// a dead tmux session.
 	inst.SyncSessionIDsFromTmux()
+	loaded := session.SavedRowStatus(d.storage, inst.ID)
 	if err := inst.Kill(); err != nil {
 		return SessionStopOut{}, &Error{Code: CodeInvalid, Message: fmt.Sprintf("failed to stop session: %v", err), Cause: err}
 	}
+	// Defect 317: write stopped now, so another process's error sample of
+	// this kill cannot refuse the save below.
+	session.WriteStoppedAfterKill(d.storage, inst, loaded)
 
 	drained := drainGroupQueue(ctx, inst.GroupPath, d.instances, d.groups)
 	if err := d.saveOr("failed to save session state"); err != nil {

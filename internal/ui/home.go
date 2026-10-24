@@ -17642,8 +17642,16 @@ func (h *Home) captureAutoNameBeforeStop(inst *session.Instance) {
 // closeSession stops a session process but keeps metadata in list/storage.
 func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
+	storage := h.storage
 	return func() tea.Msg {
+		// Defect 317: write stopped right after the kill; the daemon's error
+		// sample of it would otherwise refuse the full save below, leaving the
+		// row in error for the idle-death watch (#2806).
+		loaded := session.SavedRowStatus(storage, id)
 		killErr := inst.Kill()
+		if killErr == nil {
+			session.WriteStoppedAfterKill(storage, inst, loaded)
+		}
 		inst.RecordTelemetryEnd(telemetry.EndStop)
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
 	}
@@ -17671,10 +17679,15 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 	// background Kill tears down the pane that title comes from.
 	h.captureAutoNameBeforeStop(inst)
 	id := inst.ID
+	storage := h.storage
 	return func() tea.Msg {
+		loaded := session.SavedRowStatus(storage, id)
 		if killErr := inst.Kill(); killErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: killErr}
 		}
+		// Defect 317: the row reads stopped, not the daemon's error sample of
+		// this kill (archived_at alone already keeps #2806 quiet).
+		session.WriteStoppedAfterKill(storage, inst, loaded)
 		inst.SetArchivedAtThreadSafe(time.Now().UTC())
 		return sessionArchivedMsg{sessionID: id}
 	}

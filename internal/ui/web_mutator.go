@@ -190,9 +190,13 @@ func (m *WebMutator) StopSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	loaded := session.SavedRowStatus(m.h.storage, id)
 	if err := inst.Kill(); err != nil {
 		return err
 	}
+	// Defect 317: the stop's own verdict lands now, so the daemon's error
+	// sample of this kill cannot refuse the later full save.
+	session.WriteStoppedAfterKill(m.h.storage, inst, loaded)
 	inst.RecordTelemetryEndFrom(telemetry.EndStop, telemetry.SurfaceWeb)
 	return nil
 }

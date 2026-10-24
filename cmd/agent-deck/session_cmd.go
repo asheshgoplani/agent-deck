@@ -587,11 +587,13 @@ func stopInstanceAndSave(storage *session.Storage, inst *session.Instance, insta
 	// Must happen before Kill() because tmux show-environment fails on dead sessions.
 	inst.SyncSessionIDsFromTmux()
 	adoptLiveCodexIdentity(storage, inst)
+	loaded := session.SavedRowStatus(storage, inst.ID)
 
 	// Stop the session by killing the tmux session
 	if err := inst.Kill(); err != nil {
 		return nil, fmt.Errorf("failed to stop session: %w", err)
 	}
+	session.WriteStoppedAfterKill(storage, inst, loaded) // defect 317
 	inst.RecordTelemetryEnd(telemetry.EndStop)
 
 	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
