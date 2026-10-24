@@ -64,7 +64,7 @@ func (deps Deps) sessionStart(ctx context.Context, in SessionStartIn) (SessionSt
 	tree := session.NewGroupTreeWithGroups(d.instances, d.groups)
 	max := session.GroupMaxConcurrent(tree, inst.GroupPath)
 	if session.ShouldQueue(d.instances, inst.GroupPath, max) {
-		inst.Status = session.StatusQueued
+		inst.MarkQueued(in.Message)
 		if err := d.saveOr("failed to save queued state"); err != nil {
 			return SessionStartOut{}, err
 		}

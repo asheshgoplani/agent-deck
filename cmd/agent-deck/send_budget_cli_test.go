@@ -25,16 +25,7 @@ func budgetHome(t *testing.T, configTOML string, spentUSD float64) (home, id str
 	t.Helper()
 	home = t.TempDir()
 	id = addSessionJSON(t, home, "budget-target", "claude")
-	var dbPath string
-	_ = filepath.WalkDir(home, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && d.Name() == "state.db" && strings.Contains(p, "ch_support_test") {
-			dbPath = p
-		}
-		return nil
-	})
-	if dbPath == "" {
-		t.Fatal("profile state.db not found")
-	}
+	dbPath := budgetStateDB(t, home)
 	if spentUSD > 0 {
 		db, err := statedb.Open(dbPath)
 		if err != nil {
@@ -58,6 +49,22 @@ func budgetHome(t *testing.T, configTOML string, spentUSD float64) (home, id str
 		}
 	}
 	return home, id
+}
+
+// budgetStateDB is the state.db of the profile budgetHome's sessions live in.
+func budgetStateDB(t *testing.T, home string) string {
+	t.Helper()
+	var dbPath string
+	_ = filepath.WalkDir(home, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == "state.db" && strings.Contains(p, "ch_support_test") {
+			dbPath = p
+		}
+		return nil
+	})
+	if dbPath == "" {
+		t.Fatal("profile state.db not found")
+	}
+	return dbPath
 }
 
 func budgetEventWritten(t *testing.T, home string) bool {

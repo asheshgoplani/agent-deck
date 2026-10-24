@@ -33,44 +33,6 @@ func applyAssertDone(message string, enabled bool) string {
 	return message + assertDoneInstruction
 }
 
-// preAcceptLaunchTrust seeds Claude Code's per-directory trust flag
-// (projects[dir].hasTrustDialogAccepted) before the launch spawn, for
-// claude-tool instances only — no other tool shows this prompt. Keyed by
-// realpath, matching the loadout trust seed (#1149), since Claude resolves
-// the cwd through symlinks. Best-effort: a failure is reported to stderr and
-// never blocks launch, matching every other PreAcceptClaudeTrust call site.
-//
-// The flag is written to the .claude.json Claude will actually read. With
-// an explicit config root (-account, conductor, group, env or profile
-// config_dir) the session runs with CLAUDE_CONFIG_DIR=<dir> and reads
-// <dir>/.claude.json, so seeding only ~/.claude.json left it stuck on the
-// trust prompt (#2673). The home root is still seeded too, as before.
-func preAcceptLaunchTrust(inst *session.Instance) {
-	if inst.Tool != "claude" {
-		return
-	}
-	trustDir := inst.EffectiveWorkingDir()
-	if real, err := filepath.EvalSymlinks(trustDir); err == nil {
-		trustDir = real
-	}
-	targets := []string{session.GetUserMCPRootPath()}
-	if session.IsClaudeConfigDirExplicitForInstance(inst) {
-		if dir := session.GetClaudeConfigDirForInstance(inst); dir != "" {
-			if p := filepath.Join(dir, ".claude.json"); p != targets[0] {
-				targets = append(targets, p)
-			}
-		}
-	}
-	for _, claudeJSON := range targets {
-		if claudeJSON == "" {
-			continue
-		}
-		if err := session.PreAcceptClaudeTrust(claudeJSON, trustDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for %q in %s failed (Claude launch may stall on the trust prompt): %v\n", trustDir, claudeJSON, err)
-		}
-	}
-}
-
 // handleLaunch combines add + start + optional send into a single command.
 // It creates a new session, starts it, and optionally sends an initial message.
 func handleLaunch(profile string, args []string) {
@@ -836,7 +798,9 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 			exitCLI(1)
 		}
 
-		newInstance.Status = session.StatusQueued
+		// The queued start delivers -m and seeds folder trust like the
+		// direct start below (session.Storage.StartQueued).
+		newInstance.MarkQueued(initialMessage)
 		// v1.9.x issue #1031: same targeted single-row pattern as the
 		// initial insert above — saveSessionData → SaveWithGroups is
 		// the load-modify-write rewrite that loses sibling launches'
@@ -878,7 +842,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// success. This mirrors the same pre-seed already used for conductor
 	// dirs (#1359) and worktree parents (#1149) — best-effort, never
 	// blocks the launch.
-	preAcceptLaunchTrust(newInstance)
+	session.PreAcceptLaunchTrust(newInstance)
 
 	// Start the session.
 	// - default: StartWithMessage waits for readiness and delivers initial prompt

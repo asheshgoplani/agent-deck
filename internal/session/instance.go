@@ -491,6 +491,14 @@ type Instance struct {
 	// `session set <id> context-level <none|primer|full>` (empty clears).
 	ContextLevel string `json:"context_level,omitempty"`
 
+	// QueuedMessage is the -m prompt of a session queued at its group's
+	// max_concurrent cap. Every path off the queue (Storage.StartQueued, a
+	// direct or TUI start, a restart) takes it off the row in the same write
+	// as the status change (StateDB.TakeQueued) and only then hands it to the
+	// send queue, so it is delivered once and never lingers here.
+	// Persisted in the tool_data extras zone (queued_start.go).
+	QueuedMessage string `json:"queued_message,omitempty"`
+
 	// PromptSuggestions is the per-session override for Claude Code prompt
 	// suggestions: "children-off", "on" or "off"; empty means unset (profile,
 	// then [launch] config, then children-off). See prompt_suggestions.go.
@@ -1456,6 +1464,13 @@ func extractGroupPath(projectPath string) string {
 // checks Start()'s body for the #745 IsForkAwaitingStart guard.
 func (i *Instance) Start() (startErr error) {
 	defer func() { i.recordTelemetryStartError(startErr) }()
+	if i.leftQueue() {
+		defer func() {
+			if startErr == nil {
+				i.takeOffQueueAfterStart()
+			}
+		}()
+	}
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}
@@ -1843,6 +1858,13 @@ func (i *Instance) StartWithMessage(message string) (startErr error) {
 		return i.Start()
 	}
 	defer func() { i.recordTelemetryStartError(startErr) }()
+	if i.leftQueue() {
+		defer func() {
+			if startErr == nil {
+				i.takeOffQueueAfterStart()
+			}
+		}()
+	}
 	if err := i.ValidateAccount(); err != nil {
 		return err
 	}

@@ -194,6 +194,10 @@ type InstanceData struct {
 	// tool_data extras zone (context_level_persist.go).
 	ContextLevel string `json:"context_level,omitempty"`
 
+	// QueuedMessage mirrors Instance.QueuedMessage (tool_data extras zone,
+	// queued_start.go).
+	QueuedMessage string `json:"queued_message,omitempty"`
+
 	// PromptSuggestions mirrors Instance.PromptSuggestions (tool_data extras
 	// zone, prompt_suggestions.go).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
@@ -510,6 +514,7 @@ func (s *Storage) saveWithGroups(instances []*Instance, groupTree *GroupTree) ([
 // can still hold stale unedited fields, which must not become future edit intent.
 type instanceStorageSnapshot struct {
 	dbPath   string
+	profile  string // the Storage's profile: where a queued message is sent
 	original *statedb.InstanceRow
 	stored   *statedb.InstanceRow
 }
@@ -528,6 +533,7 @@ func (s *Storage) rememberInstanceSnapshot(inst *Instance, original, stored *sta
 	inst.restartDB.Store(s.db)
 	inst.storageSnapshot = &instanceStorageSnapshot{
 		dbPath:   s.dbPath,
+		profile:  s.profile,
 		original: statedb.CloneInstanceRow(original),
 		stored:   statedb.CloneInstanceRow(stored),
 	}
@@ -1165,6 +1171,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	// #2260: the per-session context-level override lives in the same extras
 	// zone so a restart from any process honours `session set ... context-level`.
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
+	toolData = WriteQueuedMessageToToolData(toolData, inst.QueuedMessage)
 	toolData = WritePromptSuggestionsToToolData(toolData, inst.PromptSuggestions)
 	toolData = WriteIntendedSwitchToToolData(toolData, inst.IntendedSwitch)
 	toolData = WriteLimitVerdictResetToToolData(toolData, inst.LimitVerdictResetAt)
@@ -1379,6 +1386,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
+			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
 			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
@@ -1525,6 +1533,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			IdentityInjectionDisabled: ReadIdentityInjectionDisabledFromToolData(r.ToolData),
 			ConductorName:             ReadConductorNameFromToolData(r.ToolData),
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
+			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
 			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
@@ -1847,6 +1856,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			IdentityInjectionDisabled:    instData.IdentityInjectionDisabled,
 			ConductorName:                instData.ConductorName,
 			ContextLevel:                 instData.ContextLevel,
+			QueuedMessage:                instData.QueuedMessage,
 			PromptSuggestions:            instData.PromptSuggestions,
 			IntendedSwitch:               instData.IntendedSwitch,
 			LimitVerdictResetAt:          instData.LimitVerdictResetAt,

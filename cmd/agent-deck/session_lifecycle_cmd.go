@@ -90,6 +90,14 @@ func handleSessionStart(profile string, args []string) {
 		exitCLI(1)
 	}
 
+	// An initial message is a send: an enforced cost budget refuses it before
+	// the start, and before it is queued at the group cap (as launch and the
+	// registry path do). The send worker checks again when it types a queued
+	// message.
+	if initialMessage != "" && !*ignoreBudget {
+		enforceSendBudget(profile, "start", storage, inst, instances, out, quietMode, nil)
+	}
+
 	// v1.9.1 group concurrency cap: if the target group is at its
 	// max_concurrent cap, mark this session queued instead of starting.
 	// The queue drains in handleSessionStop. Groups with max_concurrent<=0
@@ -97,7 +105,7 @@ func handleSessionStart(profile string, args []string) {
 	tree := session.NewGroupTreeWithGroups(instances, groups)
 	max := session.GroupMaxConcurrent(tree, inst.GroupPath)
 	if session.ShouldQueue(instances, inst.GroupPath, max) {
-		inst.Status = session.StatusQueued
+		inst.MarkQueued(initialMessage)
 		if err := saveSessionData(storage, instances, groups); err != nil {
 			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
 			exitCLI(1)
@@ -116,11 +124,7 @@ func handleSessionStart(profile string, args []string) {
 		return
 	}
 
-	// Start the session (with or without initial message). An initial
-	// message is a send: an enforced cost budget refuses it before the start.
-	if initialMessage != "" && !*ignoreBudget {
-		enforceSendBudget(profile, "start", storage, inst, instances, out, quietMode, nil)
-	}
+	// Start the session (with or without initial message).
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
@@ -345,17 +349,17 @@ func stopInstanceAndSave(storage *session.Storage, inst *session.Instance, insta
 	session.WriteStoppedAfterKill(storage, inst, loaded) // defect 317
 	inst.RecordTelemetryEnd(telemetry.EndStop)
 
+	// Save updated state before the drain: a drained start waits for its
+	// agent to be ready, and this full-list save must not run after that wait.
+	if err := saveSessionData(storage, instances, groups); err != nil {
+		return nil, fmt.Errorf("failed to save session state: %w", err)
+	}
+
 	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
 	// queued sibling is waiting, start the oldest one. Only one drain per
 	// stop: if max_concurrent>=2 and multiple slots are now free, the next
-	// stop drains the next entry.
-	drained := drainGroupQueue(inst.GroupPath, instances, groups)
-
-	// Save updated state
-	if err := saveSessionData(storage, instances, groups); err != nil {
-		return drained, fmt.Errorf("failed to save session state: %w", err)
-	}
-	return drained, nil
+	// stop drains the next entry. The drain persists only its own row.
+	return drainGroupQueue(storage, inst.GroupPath, instances, groups), nil
 }
 
 // handleSessionArchive stops a session and marks it archived so it is hidden
@@ -638,24 +642,38 @@ func persistArchivedCLI(storage *session.Storage, inst *session.Instance, persis
 
 // drainGroupQueue starts the oldest queued instance in groupPath when a slot
 // is available. Returns the drained instance (or nil if nothing to drain).
-// The caller is responsible for persisting state afterward.
-func drainGroupQueue(groupPath string, instances []*session.Instance, groups []*session.GroupData) *session.Instance {
+// It persists only the drained instance's row (session.Storage.StartQueued),
+// which also puts its queued message on the send queue without waiting for
+// the agent. A session another drainer claimed first is left to it, and the
+// next queued one is tried while the group is below its cap.
+func drainGroupQueue(storage *session.Storage, groupPath string, instances []*session.Instance, groups []*session.GroupData) *session.Instance {
 	tree := session.NewGroupTreeWithGroups(instances, groups)
 	max := session.GroupMaxConcurrent(tree, groupPath)
-	if session.IsAtCap(session.CountRunningInGroup(instances, groupPath), max) {
-		return nil
+	// The cap is checked on every pass, counting starting sessions too: a
+	// claim lost to another drainer (or to a direct start) means that session
+	// now holds a slot, and its stale copy here is marked starting.
+	for !session.IsAtCap(session.CountOccupiedInGroup(instances, groupPath), max) {
+		next := session.FindNextQueued(instances, groupPath)
+		if next == nil {
+			return nil
+		}
+		started, err := storage.StartQueued(next)
+		if started.Warning != "" {
+			fmt.Fprintf(os.Stderr, "Warning: %s\n", started.Warning)
+		}
+		if err != nil {
+			// Drain is best-effort. StartQueued persisted the outcome; log it
+			// and don't fail the stop.
+			fmt.Fprintf(os.Stderr, "queue drain failed to start %s: %v\n", next.Title, err)
+			return nil
+		}
+		if started.Started {
+			return next
+		}
+		// Claimed by another drainer: this copy is stale.
+		next.Status = session.StatusStarting
 	}
-	next := session.FindNextQueued(instances, groupPath)
-	if next == nil {
-		return nil
-	}
-	if err := next.Start(); err != nil {
-		// Drain is best-effort. Surface as queued + log; don't fail the stop.
-		next.Status = session.StatusError
-		fmt.Fprintf(os.Stderr, "queue drain failed to start %s: %v\n", next.Title, err)
-		return nil
-	}
-	return next
+	return nil
 }
 
 // handleSessionRestart restarts a session (or all active sessions with --all)
