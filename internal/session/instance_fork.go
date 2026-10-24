@@ -205,6 +205,22 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 		launchName = ""
 	}
 	extraFlags := i.buildClaudeExtraFlagsWithName(opts, launchName)
+	// The flags above are the parent's; the fork must carry its OWN identity
+	// block (its id, title and parent), not the parent's, and an SSH or
+	// sandboxed parent's inline flag means nothing in the local fork.
+	if parentFlag := i.claudeIdentityFlag(); parentFlag != "" {
+		extraFlags = strings.Replace(extraFlags, " "+parentFlag, "", 1)
+	}
+	if targetFlag := target.claudeIdentityFlag(); targetFlag != "" {
+		extraFlags += " " + targetFlag
+	}
+	// An SSH/sandboxed fork's inline flag expands the block variable that
+	// its env export sets; the fork command has no env prefix of its own.
+	if target.identityRunsElsewhere() {
+		if export := target.identityEnvExport(); export != "" {
+			bashExportPrefix = export + " && " + bashExportPrefix
+		}
+	}
 
 	// Pre-generate UUID for forked session to avoid shell uuidgen dependency.
 	// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.

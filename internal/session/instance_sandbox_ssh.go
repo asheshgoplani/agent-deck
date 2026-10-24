@@ -333,7 +333,13 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	if i.Account != "" {
 		wrapped = "export AGENTDECK_ACCOUNT=" + shellescape.Quote(i.Account) + "; " + wrapped
 	}
-	if i.hasEffectiveWrapper() || i.Account != "" || (i.Tool == "shell" && i.SubcommandPassthrough) {
+	//
+	// An SSH payload gets the same wrap for the reason the shell case does:
+	// it runs in the remote user's LOGIN shell, which may be fish or csh, and
+	// the payload is POSIX/bash syntax (spawn PATH prelude, env exports, the
+	// identity prefix's ${X:-} / { ...; } / $$). Only an Account or wrapper
+	// used to put it under bash; now every SSH payload is.
+	if i.hasEffectiveWrapper() || i.Account != "" || (i.Tool == "shell" && i.SubcommandPassthrough) || i.IsSSH() {
 		escaped := strings.ReplaceAll(wrapped, "'", "'\"'\"'")
 		wrapped = fmt.Sprintf("bash -c '%s'", escaped)
 	}

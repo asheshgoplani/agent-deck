@@ -444,12 +444,7 @@ func handleSessionPrimer(profileArg string, args []string) {
 	active := inst.ContextInjectionActive()
 
 	skipReason := ""
-	switch {
-	case inst.IsSSH():
-		skipReason = "ssh session: injection never runs (the file would live on the controller host, not where the harness runs)"
-	case inst.IsSandboxed():
-		skipReason = "sandboxed session: injection never runs (the file would not be visible inside the container)"
-	case level == session.ContextLevelNone:
+	if level == session.ContextLevelNone {
 		skipReason = "context level is none: no text is generated"
 	}
 
@@ -459,6 +454,13 @@ func handleSessionPrimer(profileArg string, args []string) {
 	}
 
 	identityFile, _ := inst.IdentityFilePath()
+	delivery := "file"
+	if inst.IdentityRunsElsewhere() {
+		// SSH/sandbox: the block rides inline in the launch command and the
+		// file is written where the harness runs, so no path on this host.
+		identityFile = ""
+		delivery = "inline (file written where the harness runs: $XDG_RUNTIME_DIR/agent-deck/identity/<id>/identity.md, else ~/.local/share/agent-deck/identity/<id>/identity.md)"
+	}
 
 	jsonData := map[string]interface{}{
 		"id":            inst.ID,
@@ -467,6 +469,7 @@ func handleSessionPrimer(profileArg string, args []string) {
 		"source":        source,
 		"active":        active,
 		"identity_file": identityFile,
+		"delivery":      delivery,
 		"text":          text,
 	}
 	if skipReason != "" {
@@ -478,6 +481,7 @@ func handleSessionPrimer(profileArg string, args []string) {
 	fmt.Fprintf(&sb, "Context level: %s\n", level)
 	fmt.Fprintf(&sb, "Source:        %s\n", source)
 	fmt.Fprintf(&sb, "Identity file: %s\n", identityFile)
+	fmt.Fprintf(&sb, "Delivery:      %s\n", delivery)
 	if skipReason != "" {
 		fmt.Fprintf(&sb, "Skipped:       %s\n", skipReason)
 	}
