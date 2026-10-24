@@ -254,7 +254,9 @@ func acquireCodexAcceptanceGuard(inst *session.Instance, timeout time.Duration) 
 		lock.Release()
 		return nil, errCodexGenerationUnavailable
 	}
-	if _, err := session.ReconcileCodexSubmissionMarker(inst.ID, inst.CodexSessionID, fence.priorTurnGeneration); err != nil {
+	if _, err := session.ReconcileCodexSubmissionMarker(
+		inst.ID, inst.CodexSessionID, fence.priorTurnGeneration, inst.CodexTurnTookInputSince,
+	); err != nil {
 		lock.Release()
 		return nil, err
 	}

@@ -62,6 +62,9 @@ type codexRolloutRecord struct {
 		Type             string  `json:"type"`
 		TurnID           string  `json:"turn_id"`
 		LastAgentMessage *string `json:"last_agent_message"`
+		Item             struct {
+			Type string `json:"type"`
+		} `json:"item"`
 	} `json:"payload"`
 }
 
@@ -98,27 +101,32 @@ func (i *Instance) codexRolloutTail() ([]string, error) {
 	return TranscriptTailLines(path, 50)
 }
 
-func latestCodexTurnIDFromRollout(path string) (string, error) {
+// scanCodexRolloutBackward offers the rollout's records to visit, newest
+// first, until visit reports it is done. The byte window widens up to
+// codexTurnGenerationScanMaxBytes; each wider pass starts again from the
+// newest record, so newVisit returns a fresh visitor for every pass. It
+// reports whether a visitor finished.
+func scanCodexRolloutBackward(path string, newVisit func() func(codexRolloutRecord) bool) (bool, error) {
 	f, err := os.Open(path) // #nosec G304 -- codexRolloutPath resolves one exact, non-symlink rollout
 	if err != nil {
-		return "", err
+		return false, err
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return "", err
+		return false, err
 	}
 	size := info.Size()
 	if size == 0 {
-		return "", nil
+		return false, nil
 	}
 	scanBytes := min(size, codexTurnGenerationInitialScanBytes)
 	for {
 		offset := size - scanBytes
 		data := make([]byte, int(scanBytes))
 		if _, err := f.ReadAt(data, offset); err != nil {
-			return "", err
+			return false, err
 		}
 
 		// When the byte window lands mid-record, discard that incomplete
@@ -127,7 +135,7 @@ func latestCodexTurnIDFromRollout(path string) (string, error) {
 		if offset > 0 {
 			var previous [1]byte
 			if _, err := f.ReadAt(previous[:], offset-1); err != nil {
-				return "", err
+				return false, err
 			}
 			if previous[0] != '\n' {
 				newline := bytes.IndexByte(data, '\n')
@@ -139,6 +147,7 @@ func latestCodexTurnIDFromRollout(path string) (string, error) {
 			}
 		}
 
+		visit := newVisit()
 		for end := len(data); end > 0; {
 			newline := bytes.LastIndexByte(data[:end], '\n')
 			line := bytes.TrimSpace(data[newline+1 : end])
@@ -150,19 +159,93 @@ func latestCodexTurnIDFromRollout(path string) (string, error) {
 				continue
 			}
 			var record codexRolloutRecord
-			if json.Unmarshal(line, &record) != nil || record.Type != "event_msg" ||
-				(record.Payload.Type != "task_started" && record.Payload.Type != "turn_started") ||
-				record.Payload.TurnID == "" {
+			if json.Unmarshal(line, &record) != nil {
 				continue
 			}
-			return record.Payload.TurnID, nil
+			if visit(record) {
+				return true, nil
+			}
 		}
 
 		if offset == 0 || scanBytes == codexTurnGenerationScanMaxBytes {
-			return "", nil
+			return false, nil
 		}
 		scanBytes = min(size, min(scanBytes*2, codexTurnGenerationScanMaxBytes))
 	}
+}
+
+func isCodexTurnStart(record codexRolloutRecord) bool {
+	return record.Type == "event_msg" && record.Payload.TurnID != "" &&
+		(record.Payload.Type == "task_started" || record.Payload.Type == "turn_started")
+}
+
+func latestCodexTurnIDFromRollout(path string) (string, error) {
+	turnID := ""
+	_, err := scanCodexRolloutBackward(path, func() func(codexRolloutRecord) bool {
+		return func(record codexRolloutRecord) bool {
+			if !isCodexTurnStart(record) {
+				return false
+			}
+			turnID = record.Payload.TurnID
+			return true
+		}
+	})
+	return turnID, err
+}
+
+// codexUserInputEncoding names how a rollout record carries user input, or
+// returns "" when it carries none. Current Codex writes an item_completed
+// UserMessage item; older releases wrote a user_message event.
+func codexUserInputEncoding(record codexRolloutRecord) string {
+	if record.Type != "event_msg" {
+		return ""
+	}
+	switch {
+	case record.Payload.Type == "item_completed" && record.Payload.Item.Type == "UserMessage":
+		return "item"
+	case record.Payload.Type == "user_message":
+		return "event"
+	}
+	return ""
+}
+
+// codexTurnTookInputSinceFromRollout reports whether turnID is the newest turn
+// in the rollout and took up user input recorded at or after since, beyond
+// the input that opened it (issue #2836). Codex starts no turn for input sent
+// while a turn runs; the running turn records it as one more user input. The
+// earliest input of each encoding in the turn is its opening input. Only
+// record types, turn ids and timestamps are read. A turn start beyond the
+// scan window, or a newer turn, reports false.
+func codexTurnTookInputSinceFromRollout(path, turnID string, since time.Time) (bool, error) {
+	took := false
+	_, err := scanCodexRolloutBackward(path, func() func(codexRolloutRecord) bool {
+		// Newest first: the last time kept per encoding is the opening input.
+		inputs := map[string][]time.Time{}
+		return func(record codexRolloutRecord) bool {
+			if isCodexTurnStart(record) {
+				if record.Payload.TurnID == turnID {
+					for _, times := range inputs {
+						for _, at := range times[:len(times)-1] {
+							if !at.Before(since) {
+								took = true
+							}
+						}
+					}
+				}
+				return true
+			}
+			encoding := codexUserInputEncoding(record)
+			if encoding == "" || (record.Payload.TurnID != "" && record.Payload.TurnID != turnID) {
+				return false
+			}
+			// An unreadable timestamp keeps its place as an input but is
+			// the zero time, so it never counts as later.
+			at, _ := time.Parse(time.RFC3339Nano, record.Timestamp)
+			inputs[encoding] = append(inputs[encoding], at)
+			return false
+		}
+	})
+	return took, err
 }
 
 func (i *Instance) getCodexLastResponse() (*ResponseOutput, error) {
@@ -216,6 +299,22 @@ func (i *Instance) LatestCodexTurnGeneration() (string, error) {
 		return "", err
 	}
 	return i.CodexSessionID + ":" + turnID, nil
+}
+
+// CodexTurnTookInputSince reports whether generation still names the newest
+// turn in the exact rollout bound to this instance and that turn took up user
+// input recorded at or after since, beyond its opening input. Like
+// LatestCodexTurnGeneration it never reads prompt or response content.
+func (i *Instance) CodexTurnTookInputSince(generation string, since time.Time) (bool, error) {
+	turnID, found := strings.CutPrefix(generation, i.CodexSessionID+":")
+	if i.CodexSessionID == "" || !found || turnID == "" {
+		return false, nil
+	}
+	path, err := i.codexRolloutPath()
+	if err != nil {
+		return false, err
+	}
+	return codexTurnTookInputSinceFromRollout(path, turnID, since)
 }
 
 // GetLastResponseBestEffortChecked is the collision-aware variant of

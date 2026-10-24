@@ -91,7 +91,7 @@ func TestCodexSubmissionMarkerReconciliationFailsClosedThenClearsOnGeneration(t 
 		t.Fatal(err)
 	}
 	accepted, err := ReconcileCodexSubmissionMarker(
-		marker.InstanceID, marker.CodexSessionID, marker.PriorTurnGeneration,
+		marker.InstanceID, marker.CodexSessionID, marker.PriorTurnGeneration, nil,
 	)
 	if err == nil || accepted != "" || !strings.Contains(err.Error(), path) ||
 		!strings.Contains(err.Error(), "manually remove") {
@@ -101,7 +101,7 @@ func TestCodexSubmissionMarkerReconciliationFailsClosedThenClearsOnGeneration(t 
 		t.Fatalf("unresolved marker was removed: %v", statErr)
 	}
 	accepted, err = ReconcileCodexSubmissionMarker(
-		marker.InstanceID, marker.CodexSessionID, "thread-reconcile:turn-new",
+		marker.InstanceID, marker.CodexSessionID, "thread-reconcile:turn-new", nil,
 	)
 	if err != nil || accepted != "thread-reconcile:turn-new" {
 		t.Fatalf("new generation was not reconciled: accepted=%q err=%v", accepted, err)
@@ -123,7 +123,7 @@ func TestCodexSubmissionMarkerRejectsMalformedAndWrongOwner(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"version":1,"codex_session_id":"thread-malformed"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReconcileCodexSubmissionMarker("instance-malformed", "thread-malformed", ""); err == nil {
+	if _, err := ReconcileCodexSubmissionMarker("instance-malformed", "thread-malformed", "", nil); err == nil {
 		t.Fatal("malformed marker was accepted")
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -137,7 +137,7 @@ func TestCodexSubmissionMarkerRejectsMalformedAndWrongOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReconcileCodexSubmissionMarker("different-instance", marker.CodexSessionID, ""); err == nil {
+	if _, err := ReconcileCodexSubmissionMarker("different-instance", marker.CodexSessionID, "", nil); err == nil {
 		t.Fatal("marker owned by another instance was accepted")
 	}
 	if _, err := os.Stat(path); err != nil {

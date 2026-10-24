@@ -524,7 +524,7 @@ func validateConditionalArchive(inst *session.Instance, peers []*session.Instanc
 			response.CodexTurnGeneration != latestTurn {
 			return fmt.Errorf("conditional archive refused: latest Codex turn is not the completed response")
 		}
-		if _, err := session.ReconcileCodexSubmissionMarker(inst.ID, inst.CodexSessionID, latestTurn); err != nil {
+		if _, err := session.ReconcileCodexSubmissionMarker(inst.ID, inst.CodexSessionID, latestTurn, inst.CodexTurnTookInputSince); err != nil {
 			return fmt.Errorf("conditional archive refused: %w", err)
 		}
 	} else if session.IsClaudeCompatible(inst.Tool) {
