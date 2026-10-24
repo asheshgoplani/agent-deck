@@ -9427,6 +9427,7 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 		}
 		candidateDirs = append(candidateDirs, path)
 	}
+	var candidates []string
 	for _, candidateDir := range candidateDirs {
 		if candidateDir == "" {
 			continue
@@ -9435,16 +9436,36 @@ func resolveClaudeTranscriptPath(configDir, projectPath, sessionID string, addit
 		if !ok {
 			continue
 		}
-		candidate := filepath.Join(projectDir, fileName)
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
+		candidates = append(candidates, filepath.Join(projectDir, fileName))
+	}
+	if candidate := newestTranscriptCopy(candidates); candidate != "" {
+		return candidate
 	}
 
 	// Fallback: the transcript may live under a differently-encoded directory name
 	// (notably WSL Linux path vs. Windows/UNC cwd). Locate it by its unique
 	// session-id filename. A UUID contains no glob metacharacters.
 	return globClaudeTranscript(projectsDir, sessionID)
+}
+
+// newestTranscriptCopy returns the most recently written regular file among
+// paths, or "" when none exists. Ties keep the earlier path. After
+// switch-account the destination holds the conversation under every project
+// key, and the restarted Claude appends to one of them: the first key that
+// exists can be a copy frozen at the switch (LGFALSE1019).
+func newestTranscriptCopy(paths []string) string {
+	best := ""
+	var bestMod time.Time
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if best == "" || info.ModTime().After(bestMod) {
+			best, bestMod = path, info.ModTime()
+		}
+	}
+	return best
 }
 
 // transcriptGlob is filepath.Glob; tests count its calls.
@@ -13061,21 +13082,14 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 	if inst != nil {
 		projectPath = inst.EffectiveWorkingDir()
 	}
-	resolvedPath := projectPath
-	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
-		resolvedPath = resolved
-	}
-	encodedPath := ConvertToClaudeDirName(resolvedPath)
-	if encodedPath == "" {
-		encodedPath = "-"
-	}
 	fileName, err := conversationPathComponent(sessionID + ".jsonl")
 	if err != nil {
 		return 0
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
-	if info, err := os.Stat(sessionFile); err == nil {
-		return info.Size()
+	if sessionFile := newestTranscriptCopy(conversationKeyPaths(configDir, projectPath, fileName)); sessionFile != "" {
+		if info, err := os.Stat(sessionFile); err == nil {
+			return info.Size()
+		}
 	}
 	if fallback := findSessionFileInAllProjects(inst, sessionID); fallback != "" {
 		if info, err := os.Stat(fallback); err == nil {
@@ -13083,6 +13097,26 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 		}
 	}
 	return 0
+}
+
+// conversationKeyPaths lists fileName under the realpath key and the typed
+// key of projectPath in configDir. After switch-account both can hold the
+// conversation and only one is still written, so callers take the newest
+// (newestTranscriptCopy); the realpath key wins a tie, as before.
+func conversationKeyPaths(configDir, projectPath, fileName string) []string {
+	var paths []string
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	for _, path := range []string{resolvedPath, projectPath} {
+		encodedPath := ConvertToClaudeDirName(path)
+		if encodedPath == "" {
+			encodedPath = "-"
+		}
+		paths = append(paths, filepath.Join(configDir, "projects", encodedPath, fileName))
+	}
+	return paths
 }
 
 // sessionConversationMtime returns the modification time of the Claude
@@ -13110,21 +13144,14 @@ func sessionConversationMtime(inst *Instance, sessionID string) time.Time {
 	if inst != nil {
 		projectPath = inst.EffectiveWorkingDir()
 	}
-	resolvedPath := projectPath
-	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
-		resolvedPath = resolved
-	}
-	encodedPath := ConvertToClaudeDirName(resolvedPath)
-	if encodedPath == "" {
-		encodedPath = "-"
-	}
 	fileName, err := conversationPathComponent(sessionID + ".jsonl")
 	if err != nil {
 		return time.Time{}
 	}
-	sessionFile := filepath.Join(configDir, "projects", encodedPath, fileName)
-	if info, err := os.Stat(sessionFile); err == nil {
-		return info.ModTime()
+	if sessionFile := newestTranscriptCopy(conversationKeyPaths(configDir, projectPath, fileName)); sessionFile != "" {
+		if info, err := os.Stat(sessionFile); err == nil {
+			return info.ModTime()
+		}
 	}
 	if fallback := findSessionFileInAllProjects(inst, sessionID); fallback != "" {
 		if info, err := os.Stat(fallback); err == nil {

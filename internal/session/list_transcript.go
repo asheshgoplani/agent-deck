@@ -2,7 +2,6 @@ package session
 
 import (
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -120,15 +119,13 @@ func listedClaudeTranscriptPath(inst *Instance) string {
 	if resolved, err := filepath.EvalSymlinks(project); err == nil && resolved != project {
 		projects = append([]string{resolved}, projects...)
 	}
+	paths := make([]string, 0, len(projects))
 	for _, project := range projects {
 		encoded := ConvertToClaudeDirName(project)
 		if encoded == "" {
 			encoded = "-"
 		}
-		path := filepath.Join(dir, "projects", encoded, inst.ClaudeSessionID+".jsonl")
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			return path
-		}
+		paths = append(paths, filepath.Join(dir, "projects", encoded, inst.ClaudeSessionID+".jsonl"))
 	}
-	return ""
+	return newestTranscriptCopy(paths)
 }
