@@ -556,11 +556,14 @@ func main() {
 				fmt.Println("Usage: agent-deck mcp-proxy <socket-path>")
 				return
 			}
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "Usage: agent-deck mcp-proxy <socket-path>")
-				exitCLI(1)
+			// Bound the index explicitly: CodeQL does not model exitCLI as
+			// non-returning (go/index-out-of-bounds).
+			if socketPath, ok := mcpProxySocketArg(args); ok {
+				runMCPProxy(socketPath)
+				return
 			}
-			runMCPProxy(args[1])
+			fmt.Fprintln(os.Stderr, "Usage: agent-deck mcp-proxy <socket-path>")
+			exitCLI(1)
 			return
 		case "group":
 			handleGroup(profile, args[1:])

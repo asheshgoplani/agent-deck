@@ -35,11 +35,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 // agentDeckDirOverride lets tests redirect ~/.agent-deck without colliding
@@ -136,11 +139,17 @@ const instanceSpawnStampSkewTolerance = 2 * time.Second
 // spawnStampClockAnomalyLogFn is a test seam for the clock anomaly warning.
 var spawnStampClockAnomalyLogFn = func(instanceID string, mtime, now time.Time) {
 	slog.Warn("spawn_stamp_future_dated",
-		slog.String("instance", instanceID),
+		slog.String("instance", spawnGuardLogValue(instanceID)),
 		slog.Time("stamp_mtime", mtime),
 		slog.Time("now", now),
 		slog.String("hint", "clock was corrected backwards after a spawn; stamp mtime ignored"),
 	)
+}
+
+// spawnGuardLogValue strips line breaks from a logged instance id
+// (go/log-injection): the id can come from the command line.
+func spawnGuardLogValue(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(s), "\n", ""), "\r", "")
 }
 
 // spawnStampClockAnomalySeen dedupes the warning per stamp (path + mtime),
@@ -298,14 +307,44 @@ func MarkInstanceSpawnedForTest(instanceID string, began time.Time) {
 // instanceSpawnStampPath sits next to the lock file. Same dir, "-stamp"
 // suffix so an `ls` triages spawn activity per instance.
 func instanceSpawnStampPath(instanceID string) (string, error) {
+	return spawnGuardFilePath(instanceID, ".stamp")
+}
+
+// spawnGuardIDPattern is the allow-list for the instance component of a
+// spawn-guard file name. spawnLockSafeID already maps every other rune to
+// '_', so a valid id never fails it; the check is what keeps a crafted id
+// (path separators, "..") from ever reaching a filesystem call.
+var spawnGuardIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// validateSpawnGuardID refuses an id component that is not a single safe
+// file-name segment.
+func validateSpawnGuardID(id string) error {
+	if !spawnGuardIDPattern.MatchString(id) || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid spawn guard instance id %q", spawnGuardLogValue(id))
+	}
+	return nil
+}
+
+// spawnGuardFilePath builds <locks>/instance-spawn-<safeID><suffix> from a
+// validated id and checks the result stays directly under the locks dir.
+func spawnGuardFilePath(instanceID, suffix string) (string, error) {
 	locks, err := resolveLocksDirForSpawnLock()
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(locks, 0o700); err != nil {
+	safeID := spawnLockSafeID(instanceID)
+	if err := validateSpawnGuardID(safeID); err != nil {
 		return "", err
 	}
-	return filepath.Join(locks, fmt.Sprintf("instance-spawn-%s.stamp", spawnLockSafeID(instanceID))), nil
+	base := filepath.Clean(locks)
+	path := filepath.Clean(filepath.Join(base, "instance-spawn-"+safeID+suffix))
+	if !strings.HasPrefix(path, base+string(os.PathSeparator)) || filepath.Dir(path) != base {
+		return "", fmt.Errorf("spawn guard path escapes %s", base)
+	}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // Tunables match the plugin-install lock budget (#735) so an unrelated
@@ -357,14 +396,7 @@ func defaultAcquireInstanceSpawnLock(instanceID string) (func(), error) {
 // The directory is created with 0700 (same permission as plugin_install
 // uses for the same locks/ dir).
 func instanceSpawnLockPath(instanceID string) (string, error) {
-	locks, err := resolveLocksDirForSpawnLock()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(locks, 0o700); err != nil {
-		return "", err
-	}
-	return filepath.Join(locks, fmt.Sprintf("instance-spawn-%s.lock", spawnLockSafeID(instanceID))), nil
+	return spawnGuardFilePath(instanceID, ".lock")
 }
 
 // spawnLockSafeID strips characters that would break a single-segment

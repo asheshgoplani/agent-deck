@@ -1062,3 +1062,13 @@ func FormatPath(path string) string {
 	}
 	return path
 }
+
+// mcpProxySocketArg returns the socket path of `agent-deck mcp-proxy
+// <socket-path>` (args[0] is the subcommand). ok is false when the path is
+// missing, so a short argument list never reaches the index.
+func mcpProxySocketArg(args []string) (string, bool) {
+	if len(args) >= 2 {
+		return args[1], true
+	}
+	return "", false
+}
