@@ -704,10 +704,10 @@ func (s *Storage) DeleteInstanceDeferredCleanup(id string) (func(), error) {
 	profileDir := filepath.Dir(s.dbPath)
 	return func() {
 		if err := cleanupImageUploads(profileDir, id); err != nil {
-			storageLog.Warn("image_upload_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+			storageLog.Warn("image_upload_cleanup_failed", slog.String("id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(id), "\n", ""), "\r", "")), slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		}
 		if err := pruneHookArtifacts(id); err != nil {
-			storageLog.Warn("hook_cleanup_failed", slog.String("id", id), slog.String("error", err.Error()))
+			storageLog.Warn("hook_cleanup_failed", slog.String("id", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(id), "\n", ""), "\r", "")), slog.String("error", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(err.Error()), "\n", ""), "\r", "")))
 		}
 		removeLaunchEnvFiles(id)
 	}, nil
