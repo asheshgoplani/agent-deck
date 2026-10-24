@@ -98,9 +98,10 @@ type CommsSpoolEntry struct {
 	Prompt         string `json:"prompt,omitempty"` // user prompt prefix (either edge)
 	TranscriptPath string `json:"transcript_path,omitempty"`
 	Cwd            string `json:"cwd,omitempty"`
-	Via            string `json:"via,omitempty"` // wake: tmux | stop
-	Ref            string `json:"ref,omitempty"` // call: the session read; wake: the record it was for
-	TSignal        int64  `json:"t_signal"`      // Unix ms the harness signal was received
+	Via            string `json:"via,omitempty"`     // wake: tmux | stop
+	Ref            string `json:"ref,omitempty"`     // call: the session read; wake: the record it was for
+	TSignal        int64  `json:"t_signal"`          // Unix ms the harness signal was received
+	TWrite         int64  `json:"t_write,omitempty"` // Unix ns the producer wrote the entry: orders one millisecond
 
 	// path is where the entry sits on disk (set by ReadCommsSpool).
 	path string
@@ -196,6 +197,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		commsLog.Warn("comms_spool_full", slog.String("instance", e.Instance), slog.String("edge", e.Edge), slog.Int("cap", limit))
 		return errors.New("comms spool: instance spool full; is the notify daemon running?")
 	}
+	e.TWrite = time.Now().UnixNano()
 	data, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -265,6 +267,16 @@ func ReadCommsSpool(instanceID string) ([]CommsSpoolEntry, error) {
 		e.path = path
 		out = append(out, e)
 	}
+	// The name orders entries by millisecond only: within one, the random
+	// part of a ULID minted by another process (two hook-handler runs) sorts
+	// either way (#2823). The write time orders them as they were spooled;
+	// an entry without one (an older producer) keeps the name order.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TSignal != out[j].TSignal {
+			return out[i].TSignal < out[j].TSignal
+		}
+		return out[i].TWrite < out[j].TWrite
+	})
 	return out, nil
 }
 
