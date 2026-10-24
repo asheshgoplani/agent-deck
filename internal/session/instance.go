@@ -38,6 +38,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/telemetry"
+	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/termtext"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -13608,8 +13609,7 @@ func (i *Instance) wrapForSSH(command string) string {
 	}
 
 	// Ensure ControlMaster socket directory exists
-	sshDir := "/tmp/agent-deck-ssh"
-	_ = os.MkdirAll(sshDir, 0700)
+	_ = os.MkdirAll(sshControlDir, 0700)
 
 	// remoteCmd is the shell program the REMOTE shell will run. It is quoted
 	// exactly once, by shellQuote below, when it becomes ssh's final argument.
@@ -13631,7 +13631,8 @@ func (i *Instance) wrapForSSH(command string) string {
 	remoteCmd := RemoteCDPrefix(i.SSHRemotePath) + command
 
 	return fmt.Sprintf(
-		"ssh -t -o ControlMaster=auto -o ControlPath=/tmp/agent-deck-ssh/%%r@%%h:%%p -o ControlPersist=600 %s %s",
+		"ssh -t -o ControlMaster=auto -o ControlPath=%s -o ControlPersist=600 %s %s",
+		terminal.SSHControlPath,
 		shellQuote(i.SSHHost),
 		shellQuote(remoteCmd),
 	)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
+	"github.com/asheshgoplani/agent-deck/internal/terminal"
 )
 
 // cursorSandboxHome and cursorSandboxWorkDir match internal/docker/config.go
@@ -277,7 +278,7 @@ func PreAcceptCursorTrustInContainer(containerName, workspacePath string) error 
 func sessionSSHConnOpts() []string {
 	return []string{
 		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
+		"-o", "ControlPath=" + terminal.SSHControlPath,
 		"-o", "ControlPersist=600",
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",

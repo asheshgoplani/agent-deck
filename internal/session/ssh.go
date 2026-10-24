@@ -46,7 +46,7 @@ const sshWaitDelay = 100 * time.Millisecond
 const sshMuxFallbackGrace = 8 * time.Second
 
 // sshControlDir is the directory for SSH ControlMaster sockets.
-const sshControlDir = "/tmp/agent-deck-ssh"
+const sshControlDir = terminal.SSHControlDir
 
 // staleSocketProbeTimeout bounds the per-socket liveness dial in
 // CleanStaleSSHSockets. It is deliberately short: a healthy master answers a
