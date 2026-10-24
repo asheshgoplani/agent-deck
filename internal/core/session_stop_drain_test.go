@@ -25,6 +25,7 @@ func TestSessionStopDrainPersistsBeforeSpawnAndKeepsConcurrentWrites(t *testing.
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_stop_drain_%d", time.Now().UnixNano())
 
 	busy := session.NewInstanceWithGroup(fmt.Sprintf("busy-%d", time.Now().UnixNano()), t.TempDir(), "serial")

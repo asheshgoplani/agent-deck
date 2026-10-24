@@ -14,6 +14,7 @@ import (
 func seedQueued(t *testing.T, message string) string {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_drain_claim_%d", time.Now().UnixNano())
 	next := session.NewInstanceWithGroup("next", t.TempDir(), "serial")
 	next.MarkQueued(message)

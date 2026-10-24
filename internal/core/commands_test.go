@@ -421,6 +421,7 @@ func TestQueuedStartKeepsMessageAndDrainDeliversOnce(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_start_queue_msg_%d", time.Now().UnixNano())
 	dir := t.TempDir()
 	running := session.NewInstanceWithGroup("busy", dir, "serial")

@@ -15,6 +15,22 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// quiesceBackgroundWriters keeps the writers a queued start leaves running
+// out of t.TempDir's cleanup ("TempDir RemoveAll cleanup: ... directory not
+// empty"). Call it right after HOME is set to a t.TempDir: its cleanup then
+// runs after every cleanup registered later (the tmux kills) and before HOME
+// is removed. It joins the spawn goroutines of every session the test started
+// (ownership attribution and the fast-death watcher write under the data dir
+// for up to the spawn window, and the instance that spawned is often one the
+// test never holds), and turns the events bus off, as the sendqueue tests do:
+// the send-queue enqueue publishes to it, and its writer appends from a
+// background goroutine after the test returns.
+func quiesceBackgroundWriters(t *testing.T) {
+	t.Helper()
+	t.Setenv("AGENTDECK_EVENTS_BUS", "off")
+	t.Cleanup(session.RetireSpawnWatchersForTest)
+}
+
 // stubSendWorkers records the send workers started instead of spawning them.
 func stubSendWorkers(t *testing.T) *[]string {
 	t.Helper()
@@ -97,6 +113,7 @@ func TestDrainUnqueueableMessageWarnsNotDelivered(t *testing.T) {
 // drainer moves on to the next queued one: its stop freed a slot too.
 func TestDrainClaimLoserStartsTheNextQueued(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_drain_next_%d", time.Now().UnixNano())
 	groups := []*session.GroupData{{Name: "serial", Path: "serial", MaxConcurrent: 2}}
 	older := session.NewInstanceWithGroup("older", t.TempDir(), "serial")
@@ -134,6 +151,7 @@ func TestSessionStartOfQueuedSessionDeliversQueuedMessage(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_start_queued_msg_%d", time.Now().UnixNano())
 	inst := session.NewInstanceWithGroup(fmt.Sprintf("queued-%d", time.Now().UnixNano()), t.TempDir(), "serial")
 	inst.Command = ""
@@ -163,6 +181,7 @@ func TestSessionStartOfQueuedSessionDeliversQueuedMessage(t *testing.T) {
 // the only slot of a max_concurrent=1 group with the session it started.
 func TestDrainClaimLoserRespectsTheCap(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_drain_cap_%d", time.Now().UnixNano())
 	groups := []*session.GroupData{{Name: "serial", Path: "serial", MaxConcurrent: 1}}
 	older := session.NewInstanceWithGroup("older", t.TempDir(), "serial")
@@ -198,6 +217,7 @@ func TestDrainClaimLoserRespectsTheCap(t *testing.T) {
 // queues it exactly once (a failed start used to queue one copy per attempt).
 func TestFailedDirectStartThenDrainQueuesTheBriefOnce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_failed_start_%d", time.Now().UnixNano())
 	groups := []*session.GroupData{{Name: "serial", Path: "serial", MaxConcurrent: 1}}
 	next := session.NewInstanceWithGroup("next", t.TempDir(), "serial")
@@ -238,6 +258,7 @@ func TestRestartOfQueuedSessionDeliversTheBriefOnce(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	quiesceBackgroundWriters(t)
 	profile := fmt.Sprintf("_core_restart_queued_%d", time.Now().UnixNano())
 	inst := session.NewInstanceWithGroup(fmt.Sprintf("queued-%d", time.Now().UnixNano()), t.TempDir(), "serial")
 	inst.Command = ""

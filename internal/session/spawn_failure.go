@@ -312,11 +312,9 @@ func (i *Instance) startFastDeathWatcher(command string, gen uint64, wake <-chan
 	lifecycleLogPath := GetSessionIDLifecycleLogPath()
 	failureDir := spawnFailureDir()
 	exitReceiptPath := i.trackedCommandExitReceiptPath()
-	i.spawnWatchers.Add(1)
-	go func() {
-		defer i.spawnWatchers.Done()
+	i.goSpawnWatcher(func() {
 		i.watchForFastDeath(command, gen, wake, sess, id, tool, logger, lifecycleLogPath, failureDir, probeTool, probeMarker, exitReceiptPath)
-	}()
+	})
 }
 
 // waitForFastDeathWatchers blocks until every goroutine a spawn started and
