@@ -227,22 +227,23 @@ func TestProjectMCPConfig_EnvVarReferencesWrittenVerbatim(t *testing.T) {
 	}
 }
 
-// projectGit only ever runs git in a validated absolute directory, never one
-// that is relative, option-shaped, missing, a file, or holds a line break.
+// projectGit only ever runs git in a validated absolute directory inside the
+// project root, never one that is relative, option-shaped, missing, a file,
+// outside the root, or holds a line break.
 func TestProjectGitDir_Validated(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "f")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := validProjectGitDir(dir + "/./"); err != nil || got != filepath.Clean(dir) {
+	if got, err := validProjectGitDir(dir, dir+"/./"); err != nil || got != filepath.Clean(dir) {
 		t.Fatalf("validProjectGitDir(%q) = %q, %v; want %q", dir, got, err, filepath.Clean(dir))
 	}
-	for _, bad := range []string{"", "relative/dir", "-c", "--upload-pack=touch x", filepath.Join(dir, "missing"), file, dir + "\nx", dir + "\x00"} {
-		if got, err := validProjectGitDir(bad); err == nil {
+	for _, bad := range []string{"", "relative/dir", "-c", "--upload-pack=touch x", filepath.Join(dir, "missing"), file, dir + "\nx", dir + "\x00", filepath.Dir(dir), filepath.Join(dir, "..", "x")} {
+		if got, err := validProjectGitDir(dir, bad); err == nil {
 			t.Errorf("validProjectGitDir(%q) = %q, want an error", bad, got)
 		}
-		if _, err := projectGit(bad, "rev-parse", "--show-toplevel"); err == nil {
+		if _, err := projectGit(dir, bad, nil, gitOpWorkTreePrefix); err == nil {
 			t.Errorf("projectGit ran git in unvalidated dir %q", bad)
 		}
 	}

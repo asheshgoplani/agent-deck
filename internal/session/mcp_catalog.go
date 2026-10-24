@@ -328,7 +328,7 @@ func writeMergedMcpJSONFileWithin(projectRoot, mcpFile string, enabledNames []st
 	if err := writeJSONFileAtomic(projectRoot, mcpFile, data, 0o600); err != nil {
 		return fmt.Errorf("failed to save mcp json: %w", err)
 	}
-	excludeProjectMCPFromGit(mcpFile)
+	excludeProjectMCPFromGit(projectRoot, mcpFile)
 
 	return nil
 }

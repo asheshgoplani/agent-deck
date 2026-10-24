@@ -304,7 +304,7 @@ func WriteOpenCodeProjectMCP(projectPath string, enabledNames []string, nativeV2
 	if err := atomicfile.WriteFileWithin(filepath.Dir(mcpFile), mcpFile, newData, 0o600); err != nil {
 		return fmt.Errorf("save opencode project mcp: %w", withProjectMCPOptOut(err))
 	}
-	excludeProjectMCPFromGit(mcpFile)
+	excludeProjectMCPFromGit(projectPath, mcpFile)
 
 	ClearOpenCodeMCPCache(projectPath)
 	return nil

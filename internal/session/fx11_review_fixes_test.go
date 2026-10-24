@@ -263,7 +263,7 @@ func TestProjectMCPGitExclude_NewlineInPathNotSplitIntoPatterns(t *testing.T) {
 	mcpFile := filepath.Join(sub, ".mcp.json")
 	require.NoError(t, os.WriteFile(mcpFile, []byte("{}\n"), 0o600))
 
-	excludeProjectMCPFromGit(mcpFile)
+	excludeProjectMCPFromGit(root, mcpFile)
 	for _, line := range []string{"*", "*/.mcp.json", "/a"} {
 		require.Zero(t, countLine(readExclude(t, root), line), "exclude gained pattern %q:\n%s", line, readExclude(t, root))
 	}
