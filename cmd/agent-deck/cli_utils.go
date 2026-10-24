@@ -1013,13 +1013,15 @@ func TruncateID(id string) string {
 	return id
 }
 
-// FormatPath shortens a path by replacing home directory with ~
+// FormatPath shortens a path by replacing home directory with ~.
+// Only HOME itself or paths under HOME/ are shortened: with HOME=/home/ash,
+// /home/ashesh/repo must not become ~esh/repo.
 func FormatPath(path string) string {
 	home, err := os.UserHomeDir()
-	if err != nil {
+	if err != nil || home == "" {
 		return path
 	}
-	if strings.HasPrefix(path, home) {
+	if path == home || strings.HasPrefix(path, home+string(os.PathSeparator)) {
 		return "~" + path[len(home):]
 	}
 	return path

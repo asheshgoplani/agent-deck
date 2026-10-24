@@ -1065,7 +1065,7 @@ func resolveLaunchPath(rawPathArg, groupSelector, profile string) (string, error
 	if grp := strings.TrimSpace(groupSelector); grp != "" {
 		if storage, instances, groups, err := loadSessionData(profile); err == nil {
 			groupTree := session.NewGroupTreeWithGroups(instances, groups)
-			resolvedGroup := resolveGroupPathForAdd(groupTree, grp)
+			resolvedGroup, _ := resolveGroupPathForAdd(groupTree, grp)
 			explicitPath, hasExplicit := groupTree.ExplicitDefaultPathForGroup(resolvedGroup)
 			recentSessionPath = groupTree.RecentSessionPathForGroup(resolvedGroup)
 			_ = storage.Close()

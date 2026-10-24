@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1861,27 +1862,39 @@ func resolveAutoParentInstanceChecked(instances []*session.Instance) (*session.I
 
 // resolveGroupPathForAdd resolves a user-provided group selector to a stored group path.
 // It accepts exact paths, normalized paths, and case-insensitive group display names.
-func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) string {
+// A display name shared by several groups is an error listing the candidate
+// paths; the selector is still returned so callers that ignore it keep it as is.
+func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) (string, error) {
 	if groupTree == nil || groupSelector == "" {
-		return groupSelector
+		return groupSelector, nil
 	}
 
 	if _, exists := groupTree.Groups[groupSelector]; exists {
-		return groupSelector
+		return groupSelector, nil
 	}
 
 	normalized := strings.ToLower(strings.ReplaceAll(groupSelector, " ", "-"))
 	if _, exists := groupTree.Groups[normalized]; exists {
-		return normalized
+		return normalized, nil
 	}
 
+	// Groups is a map: taking the first name match would pick a random group
+	// when the same name exists under several parents.
+	var matches []string
 	for path, group := range groupTree.Groups {
 		if strings.EqualFold(group.Name, groupSelector) {
-			return path
+			matches = append(matches, path)
 		}
 	}
-
-	return groupSelector
+	switch len(matches) {
+	case 0:
+		return groupSelector, nil
+	case 1:
+		return matches[0], nil
+	default:
+		sort.Strings(matches)
+		return groupSelector, fmt.Errorf("group %q is ambiguous: %s; use the full path", groupSelector, strings.Join(matches, ", "))
+	}
 }
 
 // shouldLockTitle is the #1615-class chokepoint deciding whether a new CLI
@@ -2245,7 +2258,11 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 
 	// Resolve group selector to a canonical path when possible.
 	if sessionGroup != "" {
-		sessionGroup = resolveGroupPathForAdd(groupTree, sessionGroup)
+		sessionGroup, err = resolveGroupPathForAdd(groupTree, sessionGroup)
+		if err != nil {
+			NewCLIOutput(*jsonOutput, false).Error(err.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
 	}
 
 	if explicitPathProvided {
@@ -3824,11 +3841,7 @@ func handleStatus(profile string, args []string) {
 			}
 			fmt.Printf("%s (%d):\n", label, len(matching))
 			for _, inst := range matching {
-				path := inst.ProjectPath
-				home, _ := os.UserHomeDir()
-				if strings.HasPrefix(path, home) {
-					path = "~" + path[len(home):]
-				}
+				path := FormatPath(inst.ProjectPath)
 				suffix := ""
 				sub := inst.Substate()
 				if lbl := SubstateLabel(sub); lbl != "" {
