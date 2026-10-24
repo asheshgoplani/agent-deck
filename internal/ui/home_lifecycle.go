@@ -161,7 +161,7 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 		// Defect 317: write stopped right after the kill; the daemon's error
 		// sample of it would otherwise refuse the full save below, leaving the
 		// row in error for the idle-death watch (#2806).
-		loaded := session.SavedRowStatus(storage, id)
+		loaded := session.BeforeStopKill(storage, id)
 		killErr := inst.Kill()
 		if killErr == nil {
 			session.WriteStoppedAfterKill(storage, inst, loaded)
@@ -195,7 +195,7 @@ func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
 	storage := h.storage
 	return func() tea.Msg {
-		loaded := session.SavedRowStatus(storage, id)
+		loaded := session.BeforeStopKill(storage, id)
 		if killErr := inst.Kill(); killErr != nil {
 			return sessionArchivedMsg{sessionID: id, killErr: killErr}
 		}

@@ -357,6 +357,37 @@ func reclaimStaleInstanceSpawnLock(path string) bool {
 	return false
 }
 
+// instanceSpawnLockHeld reports, without taking or reclaiming it, whether
+// a live holder has the instance's spawn lock: the marker exists and is
+// neither older than the stale TTL nor owned by a dead pid. An unreadable or
+// unparseable marker counts as held (a holder may be mid-write).
+func instanceSpawnLockHeld(instanceID string) bool {
+	path, err := instanceSpawnLockPath(instanceID)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if time.Since(info.ModTime()) > instanceSpawnLockLegacyStaleTTL {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	pid, err := parseInstanceSpawnLockPID(string(data))
+	if err != nil {
+		return true
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
 func parseInstanceSpawnLockPID(content string) (int, error) {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {

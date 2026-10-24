@@ -1255,21 +1255,29 @@ func (s *Session) killAfterPaneCwdFailure(cwdErr error) error {
 // and reported as errors. Callers deciding whether a session's process tree
 // may be treated as absent (#1873) depend on that distinction.
 func (s *Session) ProbeExists() (bool, error) {
+	return ProbeSessionOnSocket(s.SocketName, s.TmuxName())
+}
+
+// ProbeSessionOnSocket is ProbeExists for a session known only by its tmux
+// name and socket (Instance.TmuxSocketName verbatim; "" is the default
+// server): an exact-name, uncached has-session whose false is proven absence
+// and whose error is indeterminate.
+func ProbeSessionOnSocket(socketName, name string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
 	defer cancel()
-	_, err := commandOutput(s.tmuxCmdContext(ctx, "has-session", "-t", "="+s.TmuxName()))
+	_, err := commandOutput(tmuxExecContext(ctx, socketName, "has-session", "-t", "="+name))
 	if err == nil {
 		return true, nil
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		return false, fmt.Errorf("tmux has-session probe for %q timed out after %s", s.TmuxName(), hasSessionProbeTimeout)
+		return false, fmt.Errorf("tmux has-session probe for %q timed out after %s", name, hasSessionProbeTimeout)
 	}
-	if socketHasProtocolMismatch(s.SocketName) {
-		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", s.SocketName)
+	if socketHasProtocolMismatch(socketName) {
+		return false, fmt.Errorf("tmux client/server protocol version mismatch on socket %q", socketName)
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || !exitErr.Exited() {
-		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", s.TmuxName(), err)
+		return false, fmt.Errorf("tmux has-session probe for %q did not complete: %w", name, err)
 	}
 	stderr := strings.TrimSpace(string(exitErr.Stderr))
 	if strings.HasPrefix(stderr, "can't find session:") ||
@@ -1277,7 +1285,7 @@ func (s *Session) ProbeExists() (bool, error) {
 		(strings.Contains(stderr, "error connecting to") && strings.Contains(stderr, "No such file or directory")) {
 		return false, nil
 	}
-	return false, fmt.Errorf("tmux has-session probe for %q was inconclusive: %w", s.TmuxName(), err)
+	return false, fmt.Errorf("tmux has-session probe for %q was inconclusive: %w", name, err)
 }
 
 // Exists checks if the tmux session exists

@@ -17,6 +17,12 @@ import (
 // stop's own write, against a real tmux session.
 
 func defect317UIHome(t *testing.T, profile string) (*Home, *session.Storage, *session.Instance) {
+	return defect317UIHomeWithSample(t, profile, session.StatusError)
+}
+
+// defect317UIHomeWithSample commits sample between the kill and the stop's
+// write.
+func defect317UIHomeWithSample(t *testing.T, profile string, sample session.Status) (*Home, *session.Storage, *session.Instance) {
 	t.Helper()
 	skipIfNoTmuxBinaryUI(t)
 	home := t.TempDir()
@@ -39,8 +45,8 @@ func defect317UIHome(t *testing.T, profile string) (*Home, *session.Storage, *se
 		t.Fatalf("baseline row status = %q, want idle", got)
 	}
 	session.StopAfterKillHook = func(id string) {
-		if err := storage.GetDB().WriteStatus(id, string(session.StatusError), "shell"); err != nil {
-			t.Errorf("concurrent error write: %v", err)
+		if err := storage.GetDB().WriteStatus(id, string(sample), "shell"); err != nil {
+			t.Errorf("concurrent %s write: %v", sample, err)
 		}
 	}
 	t.Cleanup(func() { session.StopAfterKillHook = nil })
@@ -76,6 +82,18 @@ func TestDefect317_TUIArchiveSavesStoppedOverAConcurrentErrorSample(t *testing.T
 
 func TestDefect317_WebStopSavesStoppedOverAConcurrentErrorSample(t *testing.T) {
 	h, storage, target := defect317UIHome(t, "_defect317_webstop")
+	if err := (&WebMutator{h: h}).StopSession(target.ID); err != nil {
+		t.Fatalf("web StopSession: %v", err)
+	}
+	if got := defect317RowStatus(t, storage, target.ID); got != string(session.StatusStopped) {
+		t.Fatalf("row status after web stop = %q, want stopped", got)
+	}
+}
+
+// The field failure (deckbox, rc.3): running committed inside the kill window
+// with no pane left alive is not a restart; the web stop still saves stopped.
+func TestDefect317_WebStopSavesStoppedOverAConcurrentRunningSampleOfADeadPane(t *testing.T) {
+	h, storage, target := defect317UIHomeWithSample(t, "_defect317_webstop_running", session.StatusRunning)
 	if err := (&WebMutator{h: h}).StopSession(target.ID); err != nil {
 		t.Fatalf("web StopSession: %v", err)
 	}

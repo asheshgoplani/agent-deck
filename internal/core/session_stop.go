@@ -39,7 +39,7 @@ func (deps Deps) sessionStop(ctx context.Context, in SessionStopIn) (SessionStop
 	// Capture tool conversation ids before Kill: show-environment fails on
 	// a dead tmux session.
 	inst.SyncSessionIDsFromTmux()
-	loaded := session.SavedRowStatus(d.storage, inst.ID)
+	loaded := session.BeforeStopKill(d.storage, inst.ID)
 	if err := inst.Kill(); err != nil {
 		return SessionStopOut{}, &Error{Code: CodeInvalid, Message: fmt.Sprintf("failed to stop session: %v", err), Cause: err}
 	}
