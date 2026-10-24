@@ -175,3 +175,57 @@ func TestPiRestart_AnOrphanReplayDoesNotSpendTheToken(t *testing.T) {
 		t.Fatalf("the boot spends the token")
 	}
 }
+
+// The resumed pi can write its session_start before the restart records the new
+// process (the restart's post-launch tmux work and DB write come after the
+// launch). The old pi's only write after the token is its session_shutdown, so a
+// session_start after the token is the resumed pi's: back at its prompt, even
+// while the status reads running.
+func TestPiRestart_ASessionStartBeforeTheSpawnRecordIsBack(t *testing.T) {
+	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
+	f := newTurnTestFixture(t)
+	piChild(f)
+	st := stubRestartPIDs(t)
+	usePiHookFile(t)
+	w := newPiWriter(t, f.child.ID, true).Age(3 * time.Minute)
+	w.Run("run-A", "entry-1")
+	at := time.Now().Add(-2 * time.Minute)
+	noteRestartToken(f.child, at)
+	st.alive[st.pane] = false
+	w.at = at
+	w.SessionShutdown()
+	st.pane += 100
+	st.alive[st.pane] = true
+	w.SessionStart() // the resumed pi, before the spawn record
+	markRestartSpawned(f.child, at.Add(time.Second))
+	statuses := map[string]string{f.child.ID: "running", f.parent.ID: "waiting"}
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now())
+	if errs := f.recordsTo(t, "error"); len(errs) != 0 {
+		t.Fatalf("a pi child back at its prompt gets no report, got %+v", errs)
+	}
+	if _, left := readRestartToken(f.child.ID); left {
+		t.Fatalf("the sweep spends the token")
+	}
+}
+
+// Only a lifecycle write (session_start, session_shutdown) names no run because it
+// rebuilt the file. A turn_end with no run but a carried list (an extension
+// downgraded to v3 under this binary: every write copies the list) is a real
+// completion, not the boot.
+func TestPiRestart_ADowngradedWritersTurnEndIsNotTheBoot(t *testing.T) {
+	f := newTurnTestFixture(t)
+	piChild(f)
+	st := stubRestartPIDs(t)
+	usePiHookFile(t)
+	w := newPiWriter(t, f.child.ID, true)
+	w.Run("run-A", "entry-1")
+	st.piRestart(f, w, time.Now())
+	if _, ok := readRestartToken(f.child.ID); !ok {
+		t.Fatalf("a settles-capable pi child idle at its prompt gets a restart token")
+	}
+	w.settles = false // the resumed pi runs a v3 extension
+	w.SessionStart().TurnStart("").TurnEnd("")
+	if _, v, _ := f.d.judgeRestart(f.child.ID, "", "", func() string { return "" }, "waiting", time.Now()); v == restartBoot {
+		t.Fatalf("a v3 turn_end with a carried list was judged the boot")
+	}
+}
