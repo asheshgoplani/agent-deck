@@ -191,9 +191,9 @@ func TestGolangciLintVersionAgreement(t *testing.T) {
 }
 
 func TestGotestsumVersionAgreement(t *testing.T) {
+	// release.yml installs no gotestsum: it runs go-test.yml's shards.
 	problems, err := gotestsumVersionProblems(filepath.Clean(".."), []string{
 		".github/workflows/go-test.yml",
-		".github/workflows/release.yml",
 	})
 	if err != nil {
 		t.Fatal(err)

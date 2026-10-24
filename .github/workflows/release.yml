@@ -11,8 +11,9 @@ on:
   # Manual escape hatch. A standalone tag re-push does not reliably re-fire
   # the tag-push event when the ref->SHA mapping is unchanged (GitHub
   # suppresses the duplicate event), which left v1.9.36 tagged but never
-  # published. Dispatch this against `main` with the tag to publish, e.g.
-  # `gh workflow run release.yml --ref main -f tag=v1.9.36`.
+  # published. Dispatch this with the tag to publish, e.g.
+  # `gh workflow run release.yml --ref v1.9.36 -f tag=v1.9.36`. The ref must be
+  # the tag itself: the test shards check out the ref the run was started on.
   workflow_dispatch:
     inputs:
       tag:
@@ -43,7 +44,35 @@ permissions:
   attestations: write
 
 jobs:
+  # The test shards check out github.ref, so a dispatch must run on the tag
+  # it publishes; from any other ref it would test a different commit.
+  ref-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Require the dispatch ref to be the tag
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ -n "$TAG" ] && [ "$REF" != "refs/tags/$TAG" ]; then
+            echo "::error::This run is on $REF. Dispatch with --ref $TAG -f tag=$TAG."
+            exit 1
+          fi
+
+  # The same parallel shards that gate PRs (go-test.yml), without the jobs PRs
+  # don't require.
+  tests:
+    needs: ref-check
+    permissions:
+      contents: read
+    uses: ./.github/workflows/go-test.yml
+    with:
+      shards_only: true
+
   release:
+    needs: tests
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # Tag-push runs use the pushed tag; manual dispatch supplies it explicitly.
@@ -158,29 +187,6 @@ jobs:
           fi
           echo "Version: $CODE"
 
-      # zoxide backs the quick-open picker tests (#693, v1.7.54). Not on
-      # ubuntu-latest by default; install here so `go test ./...` doesn't
-      # false-fail on the non-title-lock zoxide_picker_test suite.
-      - name: Install zoxide
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y zoxide
-          zoxide --version
-
-      - name: Install gotestsum
-        timeout-minutes: 5
-        run: go install gotest.tools/gotestsum@v1.13.0
-
-      - name: Run tests
-        timeout-minutes: 50
-        env:
-          PERF_BUDGET_MULTIPLIER: '2.0'
-        run: |
-          go install gotest.tools/gotestsum@v1.13.0
-          PACKAGES=$(go list ./... | grep -v -E 'internal/(tmux|integration|tuitest)$')
-          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="$PACKAGES" -- -race -timeout 20m
-
       - name: Run integration tests (informational)
         timeout-minutes: 15
         continue-on-error: true
@@ -196,7 +202,7 @@ jobs:
         env:
           GOTOOLCHAIN: go1.26.10
         # internal/ui is scoped to its eval cases (TestEval_*); the whole
-        # internal/ui suite already ran in "Run tests" and under -race it
+        # internal/ui suite already ran in the test shards and under -race it
         # alone can outlast this step's 6m package timeout.
         run: |
           go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/...
@@ -560,12 +566,20 @@ jobs:
           fi
           echo "Homebrew tap updated: ${TAP_REPO}/${TAP_FORMULA_PATH} is now ${VERSION}."
 
+  # Its own job so a failed ref check or test shard alerts too, not only a
+  # failed release step.
+  notify-failure:
+    needs: [ref-check, tests, release]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
       - name: Notify on failure
-        if: failure()
         timeout-minutes: 2
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          REF_NAME: ${{ env.REF_NAME }}
+          REF_NAME: ${{ inputs.tag || github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           curl --fail --show-error --silent \

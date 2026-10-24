@@ -16,7 +16,7 @@ it from the gate; keep the ruleset and this table in lockstep.
 | Context | Workflow (job) | What it gates |
 |---|---|---|
 | `intake` | `pr-intake.yml` (`intake`) | PR description format against the contract in `.github/INTAKE.md`: required headings, one AI-disclosure box, a real "What actually bothered you" section. Labels `intake:clean` or `needs-info` and posts one comment; it never closes or requests changes. The job itself exits green in both outcomes, so what the ruleset enforces today is that `intake` has reported on the current tip; a `needs-info` body is surfaced by label and comment for the human merger. |
-| `Full test suite (PR gate)` | `go-test.yml` (`full-test-suite`) | The exact release-gate test step (`gotestsum`, `-race ./...`) on every PR, no path filter, short-circuiting when the diff touches nothing Go-related. |
+| `Full test suite (PR gate)` | `go-test.yml` (`full-test-suite`) | The full race suite (`gotestsum`, `-race ./...`, in parallel shards) on every PR; `release.yml` calls the same workflow, no path filter, short-circuiting when the diff touches nothing Go-related. |
 | `golangci` | `golangci-lint.yml` (`golangci`) | `golangci-lint` over the whole module. |
 | `analyze` | `codeql.yml` (`analyze`) | CodeQL security analysis of the Go code. |
 
@@ -61,7 +61,7 @@ The narrowly path-filtered suites (`eval-smoke`, `session-persistence`,
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, runs `go test -race ./...`, runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256, signs SLSA build provenance — and only then publishes the release. Finally it pushes the Homebrew formula, best-effort. Replaces the pre-#332 manual `make release-local` step. |
+| `release.yml` | push tag `v*` | Validates the tag matches `cmd/agent-deck/main.go`'s `Version`, runs the `go-test.yml` shards as its `tests` job, runs `goreleaser --clean` to build Darwin/Linux × amd64/arm64 tarballs into a **draft** release, asserts the four tarballs + `checksums.txt` landed, verifies every tarball against its published SHA-256, signs SLSA build provenance — and only then publishes the release. Finally it pushes the Homebrew formula, best-effort. Replaces the pre-#332 manual `make release-local` step. |
 | `homebrew-verify.yml` | `workflow_run` after `release.yml` completes successfully (plus weekly cron, `workflow_dispatch`, and PRs touching install docs) | Probes the live tap: formula exists, its version matches `/releases/latest`, and every URL in it resolves. Moved off the tag-push trigger in #1759 because it used to race the release it was verifying. |
 
 ### The release is published last, and only once (#1759)
