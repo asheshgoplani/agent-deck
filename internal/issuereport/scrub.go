@@ -803,7 +803,12 @@ func redactKeeping(w string) string {
 	var kept []string
 	masked := backstopKeep.ReplaceAllStringFunc(w, func(m string) string {
 		kept = append(kept, m)
-		return "\x00" + string(rune('A'+len(kept)-1)) + "\x00"
+		const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		i := len(kept) - 1
+		if i >= len(letters) {
+			return m // more than 26 kept words: the whole mask is dropped below
+		}
+		return "\x00" + letters[i:i+1] + "\x00"
 	})
 	if len(kept) > 26 {
 		kept, masked = nil, w
