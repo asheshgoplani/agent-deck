@@ -1,18 +1,20 @@
 # Running these evals
 
-Written per Anthropic's skill-creator method (`~/.claude/plugins/marketplaces/anthropic-agent-skills/skills/skill-creator/SKILL.md`).
+Written per Anthropic's skill-creator method. One skill, one file: `evals.json` holds the evals for every area of the agent-deck skill, tagged with `area` (core, fleet, session-share, recall, retro, repro; plus `agent_friendliness_evals`). Fleet, session-share, recall, retro and repro were separate skills until 2026-10-20; their evals moved here with them.
 
-## Trigger evals (`trigger_evals` in evals.json)
+Never use `claude -p` (or the skill-creator's `run_loop.py`, which shells out to it). `cmd/agent-deck/skill_layout_docs_test.go` keeps the file well formed: unique ids, prompt and expected_output on each eval, at least two evals per area.
 
-The skill-creator's own optimizer (`scripts/run_loop.py`) shells out to `claude -p`, which is banned for this task (see PROMPT.md SAFETY/DELIVERABLE). Two offline alternatives, in order of preference:
+## Task evals (`evals`, `agent_friendliness_evals`)
 
-1. **`claude plugin eval`** (if this checkout is loaded as a plugin): point it at this skill and `evals/evals.json`'s `trigger_evals` block; it does not require `claude -p`.
-2. **Manual inline judgment** (what this refresh actually did): for each `should_trigger`/`should_not_trigger` query, compare it against the skill's frontmatter `description` and judge whether a reasonable triggering policy would consult this skill. This is weaker evidence than a real subagent run (no held-out test, no repeated sampling) but catches an obviously miscalibrated description without spawning processes.
+Score them as a with/without pair, fresh agents per run (Workflow or Agent sub-agents):
 
-## Task evals (`evals` in evals.json)
+1. **With skill:** the agent reads `SKILL.md` first, then the references it points to for the task.
+2. **Without skill:** the agent may not read `SKILL.md`, `skills/`, plugin caches, repo docs or source; only `agent-deck <cmd> --help`.
+3. Both are answer-only: they write the commands they would run, never run state-changing commands.
+4. A separate grader sees both answers blinded (labels swapped between batches) and grades each against `expected_output`: pass only when every key element is there and nothing wrong is recommended.
 
-Each has a `prompt` and a checkable `expected_output`. To score them for real: spawn a with-skill subagent per eval (Task/Agent tool, not `claude -p`) pointed at this skill directory, save its transcript, and grade the transcript against `expected_output` — same procedure as skill-creator's "Running and evaluating test cases" section, minus the `claude -p`-based description optimizer. This refresh authored the prompts and assertions and reasoned through expected behavior against the verified CLI truth table, but did not spawn the full with-skill/baseline subagent matrix (out of scope for a docs-and-evals-authoring pass at this budget) — see RESULTS.md for exactly what ran.
+An area whose with-skill pass rate does not beat its without-skill rate gets fixed or dropped. Record each run's numbers and date with the change that ran them.
 
-## Agent-friendliness evals (`agent_friendliness_evals` in evals.json, agent-deck skill only)
+## Trigger evals (`trigger_evals`)
 
-Added per maintainer request. These check structured-output discipline (reads `confirmation`, not text), non-TTY safety (`--verify` needs `--yes` off a TTY), and the performance-budget claims in `agent-deck health`. Score the same way as task evals: run the prompt with the skill loaded, check the transcript against `expected_output`.
+A judge agent sees only the frontmatter `description` and decides for each query whether to load the skill; compare with `should_trigger`. This is weaker than sampling a real triggering policy, but catches a description that misses an area. `claude plugin eval` is the stronger option when this checkout is loaded as a plugin.

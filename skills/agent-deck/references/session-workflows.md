@@ -109,13 +109,14 @@ agent-deck remote update dev --from-build /path/to/local/dist   # push a verifie
 ```
 
 - `health` reports against budgets (`status_pass_ms_exclusive`, `open_fds_exclusive` plus `open_fds_per_session` for each managed session, `tmux_calls_per_session`, `remote_poll_ms_exclusive`); use `--since` to widen the history window when a regression is intermittent.
+- `list --json` should stay well under 1 s at ~100 sessions (bench/baseline/github-ubuntu-latest.md: ~0.48 s at 100, ~0.06 s at 10); much slower means run `agent-deck health --json`.
 - `inbox dead-letter list|show` is diagnostic-only in this release — there is no `retry` or `purge` subcommand (both are explicitly rejected). Recovering a dead-lettered record means fixing the underlying routing issue and re-draining, not resubmitting the record itself.
 - `remote update --from-build <dir>` is for shipping a verified local three-platform build (darwin/arm64, linux/amd64, linux/arm64) to a remote before it's published as a release — same checksum/version verification and downgrade guard as a normal `remote update`.
 - `[ui.remote_preview]`/`[ui.header]` share one field vocabulary: `version`, `sessions_by_status`, `harnesses`, `load`, `memory`, `disk`, `last_poll`, and the opt-in `accounts` (named Claude account slots with live 5h/7d usage, one aligned row per slot in the preview, read from each slot's local quota cache — `agent-deck hooks install` wires the feed) and `ssh` (who is connected to the host over SSH right now, per user) — see [config-reference.md](config-reference.md).
 
 ## Recall (hints, and the cross-harness transcript index)
 
-**Use when:** you want a session to remember what it was for, you are finishing a task and want the outcome findable later, or you need to find what an earlier conversation (Claude, Codex, pi, Gemini, OpenCode or Hermes) did. Details: [recall skill](../recall/SKILL.md), `docs/recall.md`.
+**Use when:** you want a session to remember what it was for, you are finishing a task and want the outcome findable later, or you need to find what an earlier conversation (Claude, Codex, pi, Gemini, OpenCode or Hermes) did. Details: [recall.md](recall.md), `docs/recall.md`.
 
 ```bash
 agent-deck add . -c claude --hint purpose="fix flaky auth test" --ticket SB-412 --tag auth   # also on launch
@@ -140,14 +141,14 @@ Share Claude sessions between developers for collaboration or handoff.
 
 ```bash
 # Export current session to file (session-share is a sibling skill)
-$SKILL_DIR/../session-share/scripts/export.sh
+$SKILL_DIR/scripts/session-share/export.sh
 # Output: ~/session-shares/session-<date>-<title>.json
 
 # Import received session
-$SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
+$SKILL_DIR/scripts/session-share/import.sh ~/Downloads/session-file.json
 ```
 
-**See:** [session-share skill](../../session-share/SKILL.md) for full documentation.
+**See:** [session-share.md](session-share.md) for full documentation.
 
 ## Switch a Session to Another Claude Account
 

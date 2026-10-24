@@ -133,7 +133,7 @@ func TestCLIReferenceWebFlagsMatchCode(t *testing.T) {
 // TestUserDocsRelativeLinksResolve fails when a user-facing doc links a
 // repo-relative path that does not exist. llms-full.txt is assembled by hand
 // from README.md and SKILL.md, and once kept SKILL.md's skill-relative links
-// (references/cli-reference.md, ../session-share/SKILL.md), which point
+// (references/cli-reference.md and a sibling skill's SKILL.md), which point
 // nowhere from the repo root.
 func TestUserDocsRelativeLinksResolve(t *testing.T) {
 	t.Parallel()

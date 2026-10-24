@@ -1,9 +1,9 @@
-# security-self-scan.md — the maintainer's security sweeps, author-side
+# contributing-security-self-scan.md — the maintainer's security sweeps, author-side
 
 > Before a merge wave, the maintainer's pipeline runs a hidden-logic sweep and a
 > set of red-flag checks over community diffs. This file is the same sweep
 > rewritten as greps you run on your own branch before opening the PR, so
-> nothing in your diff surprises the security lens. `scripts/self-check.sh`
+> nothing in your diff surprises the security lens. `scripts/contributing/self-check.sh`
 > automates most of these; this is the full manual list with the reasoning.
 >
 > All commands assume: `MB=$(git merge-base HEAD origin/main)`.

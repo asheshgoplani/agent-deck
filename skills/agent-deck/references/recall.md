@@ -1,11 +1,6 @@
----
-name: agent-deck-recall
-description: Record and later find what an agent-deck session was for, across harnesses, and hand a past conversation to the current one. Use when the user says "remember what this session was for", "tag this session", "annotate", "mark the outcome", "ticket for this session", "find the session where we...", "what did we decide about", "which Codex/pi/Gemini session did X", "bring that conversation into this session", "search the other machine's sessions", or wants to search past conversations. Available: hints and tags (add/launch --hint, session annotate, remote annotate), the transcript index over Claude, Codex, pi, Gemini, OpenCode and Hermes (recall search/sessions/show/open/backfill/sweep/status/gc/rebuild, the TUI G key, hook-driven freshness), recall context --into current, the derived artifacts (recall enrich; lost_time, session_kind, outcome), federated remote search (--remote/--all-remotes), opt-in card sync (export/pull/import) and the MCP server (recall mcp); all behind [recall] enabled = true.
-metadata:
-  compatibility: "claude, codex, pi, gemini, opencode, hermes"
----
-
 # Recall
+
+> Part of the agent-deck skill. Record and later find what an agent-deck session was for, across harnesses, and hand a past conversation to the current one. Use when the user says "remember what this session was for", "tag this session", "annotate", "mark the outcome", "ticket for this session", "find the session where we...", "what did we decide about", "which Codex/pi/Gemini session did X", "bring that conversation into this session", "search the other machine's sessions", or wants to search past conversations. Available: hints and tags (add/launch --hint, session annotate, remote annotate), the transcript index over Claude, Codex, pi, Gemini, OpenCode and Hermes (recall search/sessions/show/open/backfill/sweep/status/gc/rebuild, the TUI G key, hook-driven freshness), recall context --into current, the derived artifacts (recall enrich; lost_time, session_kind, outcome), federated remote search (--remote/--all-remotes), opt-in card sync (export/pull/import) and the MCP server (recall mcp); all behind [recall] enabled = true.
 
 Recall is agent-deck's memory of what every session was for and what
 happened in it. Human intent (hints, tags) lives in the profile's state.db
@@ -138,7 +133,7 @@ supersedes the messages before it (they stay readable and searchable).
 ### Continue one: `recall open`
 
 ```bash
-agent-deck recall open <session> [--dry-run]   # start the bound deck session (any harness), or re-register a Claude transcript (add --resume-session)
+agent-deck recall open <session> [--title T] [--dry-run]   # start the bound deck session (any harness), or register a new session resuming the Claude conversation
 ```
 
 Codex, pi, Gemini, OpenCode and Hermes conversations that no registered

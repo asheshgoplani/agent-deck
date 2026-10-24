@@ -1,11 +1,6 @@
----
-name: fleet
-description: Fan out a fleet of independent agent-deck child sessions from inside a session and check their progress non-blockingly. Use when the user wants to "launch several/N sessions", "fan out", "run agents in parallel", "spin up a fleet", "kick off background agents", or "check progress from the main session" without blocking — covers launching parented children, polling status + completion via `session children`, and collecting results via `session output`.
-metadata:
-  compatibility: "claude, codex, opencode"
----
-
 # Fleet
+
+> Part of the agent-deck skill. Fan out a fleet of independent agent-deck child sessions from inside a session and check their progress non-blockingly. Use when the user wants to "launch several/N sessions", "fan out", "run agents in parallel", "spin up a fleet", "kick off background agents", or "check progress from the main session" without blocking — covers launching parented children, polling status + completion via `session children`, and collecting results via `session output`.
 
 Fan out several independent agent-deck child sessions from inside your current
 session, keep working, and check their progress on demand — **without blocking**
@@ -20,7 +15,7 @@ Use this when the user wants more than one agent working at once and wants to
 supervise from the parent session — e.g. "launch 5 sessions to each tackle a
 file", "fan out these tasks", "spin up a fleet and tell me when they're done".
 
-This differs from the single sub-agent pattern in the `agent-deck` skill (one
+This differs from the single sub-agent pattern in [sub-agents.md](sub-agents.md) (one
 child + fire-&-forget / on-demand / blocking retrieval). Fleet is **many
 children + a non-blocking peek** across all of them.
 
@@ -32,8 +27,8 @@ still launch but won't be grouped under a parent.)
 **Need a *specific* parent?** Auto-parenting picks the launching session. To
 parent a child to a different session — e.g. fanning out under a named conductor,
 or launching from outside that session — pass `--parent <session-id-or-title>`.
-Spell out the long form: **never use the short `-p` to set a parent** (see the
-`-p` pitfall in Notes).
+Spell out the long form: current builds also accept `launch -p <parent>`, but
+older ones misread `-p` as the global `--profile` (see the `-p` pitfall in Notes).
 
 ## Before you fan out
 
@@ -84,8 +79,8 @@ Useful flags:
   children already inherit automatically).
 - `-t "<title>"` — give each child a readable title (otherwise auto-named).
 - `--parent <id|title>` — explicitly parent the child to a specific session
-  instead of the auto-detected one. One step, no follow-up needed. **Long form
-  only** — see the `-p` pitfall in Notes.
+  instead of the auto-detected one. One step, no follow-up needed. **Prefer the
+  long form** — see the `-p` pitfall in Notes.
 - `--no-assert-done` — skip the completion-sentinel instruction.
 - `--no-parent` — launch a standalone top-level session you supervise directly,
   not nested under you (you lose completion routing). **Set `-g` explicitly** for
@@ -119,7 +114,7 @@ re-running the check yourself, let the fleet notify you:
 # One-shot "wake me when the whole fleet is finished" — run this in the
 # BACKGROUND (e.g. Claude Code's run_in_background Bash): it streams JSONL
 # events and exits 0 once every child either needs input or is terminal
-# (waiting, done sentinel, error, or stopped). The harness notifies you when
+# (waiting, idle with completion history, error, or stopped). The harness notifies you when
 # it exits, so answer waiting children before starting another wait.
 agent-deck session children --follow --until-done
 
@@ -133,7 +128,7 @@ child), `added`, `status` (from/to transition — including `running → waiting
 so you see a child stall on a question), `done` (completion sentinel, ok or
 fail), `removed`, `error`, plus a periodic `heartbeat` (default 60s,
 `--heartbeat 0` disables) so silence always means "nothing changed", never
-"the watcher died". `--interval` tunes the poll cadence (default 2s). Failure
+"the watcher died"; `--until-done` ends with a final `complete` line. `--interval` tunes the poll cadence (default 2s). Failure
 states are on the stream too — filter for `done` alone and you'll miss
 crashed children; key off `.event` instead.
 
@@ -256,7 +251,8 @@ All read-only / on-demand — none of them block your session:
 - `agent-deck status -q` — global count of sessions currently `waiting`; a cheap
   coarse heartbeat across everything, not just your children.
 - `agent-deck inbox drain --json <your-session-id>` — **consumes** the pushed
-  completion events from your durable inbox (last-wins per child, deduped).
+  completion events from your durable inbox (distinct turns per child kept,
+  re-deliveries deduped).
   Optional: `session children` already surfaces the same `done_status` without
   consuming anything, so only drain if you specifically want to clear the queue.
 - `agent-deck session stop <id>` / `agent-deck session remove <id>` — teardown.
@@ -280,9 +276,9 @@ it with `AGENTDECK_NO_CHILDREN_CONTEXT=1` in its environment.
   `===AGENTDECK_DONE=== status=<ok|fail> summary=<one line>` as its last line.
   `--assert-done` (default-on for Claude) bakes this into the child's prompt; a
   child that never prints it shows live status but no `done_status`.
-- **Non-blocking by design:** there is intentionally no "wait until all finish"
-  command — checking is a cheap, repeatable query so a parent's other chats are
-  never frozen.
+- **Non-blocking by design:** checking is a cheap, repeatable query, and the
+  one waiting form (`session children --follow --until-done`) is meant to run in
+  the background, so a parent's other chats are never frozen.
 - **Grouping:** worktree children inherit the parent's group automatically;
   for non-worktree paths add `--inherit-group`. Never pass a custom `-g` for a
   fleet child — it overrides inheritance and detaches the child into its own
@@ -291,10 +287,11 @@ it with `AGENTDECK_NO_CHILDREN_CONTEXT=1` in its environment.
   then `agent-deck group delete <stray-group>` once it's empty. (This "never pass
   `-g`" rule is for *parented* children; for `--no-parent` standalone sessions it
   inverts — you *must* set `-g`. See "Independent (un-parented) sessions".)
-- **The `-p` pitfall — use `--parent`, never `-p`, for a parent.** `-p` is the
-  *global* `--profile` shorthand, parsed before the subcommand. On older builds it
-  swallows your intended parent id as a profile name and routes the child into a
-  phantom `~/.agent-deck/profiles/<id>/state.db` — the child runs in tmux but is
+- **The `-p` pitfall — prefer `--parent` over `-p` for a parent.** Before the
+  subcommand, `-p` is the *global* `--profile` shorthand. Since v1.10.9 a `-p`
+  after `launch` is launch's own parent flag, but on older builds the global
+  parser grabs it anywhere: it swallows your intended parent id as a profile
+  name and routes the child into a phantom `~/.agent-deck/profiles/<id>/state.db` — the child runs in tmux but is
   invisible to the TUI / `ls` / `session children` (which read the default
   profile), and a retry then fails with "session already exists". The long-form
   `--parent <id>` is never affected and is the one-step way to set an explicit
@@ -308,4 +305,4 @@ it with `AGENTDECK_NO_CHILDREN_CONTEXT=1` in its environment.
 
 ## Backward Compatibility
 
-Verified against v1.16.11-rc.2. `agent-deck session children` and `launch --assert-done` (the two hard requirements this skill states up front) have been stable for several releases — if `agent-deck session children --help` succeeds, you have them. `--follow`/`--until-done` are the newer, push-style additions: on a deck without them, fall back to the until-loop already shown above (`until agent-deck session children --json | jq -e '...'; do sleep 15; done`). `session send`'s finer-grained `--json` delivery values (`queued`, `delivered`, `unverified`) are recent (see the [agent-deck skill](../agent-deck/references/gotchas.md#backward-compatibility)); on an older deck, treat any exit-0 send as "delivered, confirm separately" rather than branching on a `confirmation` field that may not exist yet.
+Verified against v1.16.11-rc.2. `agent-deck session children` and `launch --assert-done` (the two hard requirements this reference states up front) have been stable for several releases — if `agent-deck session children --help` succeeds, you have them. `--follow`/`--until-done` are the newer, push-style additions: on a deck without them, fall back to the until-loop already shown above (`until agent-deck session children --json | jq -e '...'; do sleep 15; done`). `session send`'s finer-grained `--json` delivery values (`queued`, `delivered`, `unverified`) are recent (see [gotchas.md](gotchas.md#backward-compatibility)); on an older deck, treat any exit-0 send as "delivered, confirm separately" rather than branching on a `confirmation` field that may not exist yet.

@@ -19,9 +19,9 @@ decode_path() {
     echo "$encoded" | sed 's|^-|/|' | sed 's|-|/|g'
 }
 
-# Get Claude projects directory
+# Get Claude projects directory (Claude Code honors CLAUDE_CONFIG_DIR, e.g. per-account profiles)
 get_claude_projects_dir() {
-    echo "$HOME/.claude/projects"
+    echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
 }
 
 # Find JSONL file for a session ID in a project

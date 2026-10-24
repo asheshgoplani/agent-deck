@@ -1,11 +1,6 @@
----
-name: session-share
-description: Share Claude Code sessions between developers. Use when user mentions "share session", "export session", "import session", "send session to", "continue from colleague", or needs to (1) export current session to file, (2) import session from another developer, (3) hand off work context. Enables private, secure session transfer via direct file sharing.
-metadata:
-  compatibility: "claude, opencode"
----
-
 # Session Share
+
+> Part of the agent-deck skill. Share Claude Code sessions between developers. Use when user mentions "share session", "export session", "import session", "send session to", "continue from colleague", or needs to (1) export current session to file, (2) import session from another developer, (3) hand off work context. Enables private, secure session transfer via direct file sharing.
 
 Share Claude Code sessions between developers through portable file export/import.
 
@@ -13,10 +8,10 @@ Share Claude Code sessions between developers through portable file export/impor
 
 ## Script Path Resolution (IMPORTANT)
 
-This skill includes helper scripts in its `scripts/` subdirectory. When Claude Code loads this skill, it shows a line like:
+The helper scripts live in the agent-deck skill's `scripts/session-share/` folder. When Claude Code loads this skill, it shows a line like:
 
 ```
-Base directory for this skill: /path/to/.../skills/session-share
+Base directory for this skill: /path/to/.../skills/agent-deck
 ```
 
 **You MUST use that base directory path to resolve all script references.** Store it as `SKILL_DIR`:
@@ -26,21 +21,21 @@ Base directory for this skill: /path/to/.../skills/session-share
 SKILL_DIR="/path/shown/in/base-directory-line"
 
 # Then run scripts as:
-$SKILL_DIR/scripts/export.sh
-$SKILL_DIR/scripts/import.sh ~/Downloads/session-file.json
+$SKILL_DIR/scripts/session-share/export.sh
+$SKILL_DIR/scripts/session-share/import.sh ~/Downloads/session-file.json
 ```
 
 ## Quick Start
 
 ```bash
 # Export current session
-$SKILL_DIR/scripts/export.sh
+$SKILL_DIR/scripts/session-share/export.sh
 # Output: ~/session-shares/session-2024-01-20-my-feature.json
 
 # Share the file via Slack, email, AirDrop, etc.
 
 # Other developer imports
-$SKILL_DIR/scripts/import.sh ~/Downloads/session-2024-01-20-my-feature.json
+$SKILL_DIR/scripts/session-share/import.sh ~/Downloads/session-2024-01-20-my-feature.json
 # Session appears in agent-deck, ready to continue
 ```
 
@@ -51,7 +46,7 @@ $SKILL_DIR/scripts/import.sh ~/Downloads/session-2024-01-20-my-feature.json
 Export the current Claude session to a portable file:
 
 ```bash
-$SKILL_DIR/scripts/export.sh [options]
+$SKILL_DIR/scripts/session-share/export.sh [options]
 ```
 
 **Options:**
@@ -65,13 +60,13 @@ $SKILL_DIR/scripts/export.sh [options]
 **Examples:**
 ```bash
 # Export current session
-$SKILL_DIR/scripts/export.sh
+$SKILL_DIR/scripts/session-share/export.sh
 
 # Export to specific location
-$SKILL_DIR/scripts/export.sh --output /tmp/handoff.json
+$SKILL_DIR/scripts/session-share/export.sh --output /tmp/handoff.json
 
 # Export specific session with thinking blocks
-$SKILL_DIR/scripts/export.sh --session abc123 --include-thinking
+$SKILL_DIR/scripts/session-share/export.sh --session abc123 --include-thinking
 ```
 
 **What gets exported:**
@@ -82,7 +77,7 @@ $SKILL_DIR/scripts/export.sh --session abc123 --include-thinking
 
 **What gets redacted (by default):**
 - API keys and tokens
-- Absolute paths (converted to relative)
+- Home-directory paths (converted to `~`)
 - Thinking blocks (Claude's internal reasoning)
 
 ### Import Session
@@ -90,7 +85,7 @@ $SKILL_DIR/scripts/export.sh --session abc123 --include-thinking
 Import a shared session file and create an agent-deck session:
 
 ```bash
-$SKILL_DIR/scripts/import.sh <file-path> [options]
+$SKILL_DIR/scripts/session-share/import.sh <file-path> [options]
 ```
 
 **Options:**
@@ -103,13 +98,13 @@ $SKILL_DIR/scripts/import.sh <file-path> [options]
 **Examples:**
 ```bash
 # Import and start
-$SKILL_DIR/scripts/import.sh ~/Downloads/session-feature.json
+$SKILL_DIR/scripts/session-share/import.sh ~/Downloads/session-feature.json
 
 # Import with custom title
-$SKILL_DIR/scripts/import.sh session.json --title "Feature Work from Alice"
+$SKILL_DIR/scripts/session-share/import.sh session.json --title "Feature Work from Alice"
 
 # Import without starting
-$SKILL_DIR/scripts/import.sh session.json --no-start
+$SKILL_DIR/scripts/session-share/import.sh session.json --no-start
 ```
 
 ## Workflow: Sharing a Session
@@ -118,14 +113,14 @@ $SKILL_DIR/scripts/import.sh session.json --no-start
 
 1. Working in agent-deck session on a feature
 2. Needs to hand off to Developer B
-3. Runs: `$SKILL_DIR/scripts/export.sh`
+3. Runs: `$SKILL_DIR/scripts/session-share/export.sh`
 4. Gets file: `~/session-shares/session-2024-01-20-feature.json`
 5. Sends file to Developer B via Slack DM, email, or AirDrop
 
 ### Developer B (Importer)
 
 1. Receives the session file
-2. Runs: `$SKILL_DIR/scripts/import.sh ~/Downloads/session-2024-01-20-feature.json`
+2. Runs: `$SKILL_DIR/scripts/session-share/import.sh ~/Downloads/session-2024-01-20-feature.json`
 3. Session appears in agent-deck as "Imported: feature"
 4. Starts session - Claude has full context from Developer A's work
 5. Continues where Developer A left off

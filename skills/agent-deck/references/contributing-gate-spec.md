@@ -1,6 +1,6 @@
-# gate-spec.md — every check your PR will face, and the exact fix
+# contributing-gate-spec.md — every check your PR will face, and the exact fix
 
-> Machine-readable companion to [`.github/INTAKE.md`](../../../INTAKE.md). Copy
+> Machine-readable companion to [`.github/INTAKE.md`](../../../.github/INTAKE.md). Copy
 > field names and heading strings exactly; that is the safe path. The intake
 > Action matches each required heading as a `#`, `##` or `###` heading at the
 > start of a line, case-insensitively with punctuation and emoji ignored, and
@@ -53,14 +53,14 @@ genuine no-human-behind-it submissions).
 | **Revert-check (centerpiece)** | reverts your non-test hunks and re-runs your tests; a test that still passes proves nothing | write the test first, watch it fail, then fix; `self-check.sh` automates this and put the result in `## Evidence` |
 | Diff-coverage spot-check | which changed hunks are exercised by ANY test; untested hunks become named flags | every changed hunk behind at least one test, or say in the body why a hunk is untestable |
 
-For bug fixes, use [deck-repro](../../../../skills/deck-repro/SKILL.md) before implementation.
+For bug fixes, use [the repro workflow](repro.md) before implementation.
 Its evidence complements the revert-check: record the original reproduction on
 the affected real binary, a test-first behavioral failure, then the unchanged
 reproduction and regression test passing on the fixed build. `not reproduced`
 is an honest result, not permission to label an unverified change `fixed`.
 An infrastructure failure, compile failure, or unrelated red test does not prove
 the reported symptom. Keep the environment isolated and redact public receipts.
-Set `REPRO_REPORT` when running `self-check.sh` to validate the deck-repro
+Set `REPRO_REPORT` when running `self-check.sh` to validate the repro
 manifest, require its `fixed` verdict, and check its local artifacts. An omitted manifest is reported as skipped;
 it does not establish reproduction or fixed status.
 
@@ -70,7 +70,7 @@ it does not establish reproduction or fixed status.
 |---|---|---|
 | Dependency vet (Gate 1) | go.mod/go.sum touched by a community PR; any `replace` directive or GOPROXY override (automatic stop) | avoid new deps when stdlib suffices; if truly needed: canonical upstream, pinned version, justify in body, expect a human gate |
 | `.github/` human gate (Gate 2) | any change under `.github/` | never auto-merges — keep out of unrelated PRs and expect the maintainer personally |
-| Hidden-logic sweep (Gate 3) | network calls, constructed exec, non-ASCII/homoglyph/invisible chars, env exfil, broad file perms, time-bombs, weak crypto in added lines | run `references/security-self-scan.md` on your own diff before opening |
+| Hidden-logic sweep (Gate 3) | network calls, constructed exec, non-ASCII/homoglyph/invisible chars, env exfil, broad file perms, time-bombs, weak crypto in added lines | run [contributing-security-self-scan.md](contributing-security-self-scan.md) on your own diff before opening |
 
 ### Fit lens
 
