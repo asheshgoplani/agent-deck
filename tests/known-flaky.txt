@@ -14,3 +14,7 @@
 # Fixed in the same PR; remove both entries after 7 green days.
 internal/tuitest TestIdleTUICPUBudget
 internal/session TestEnsureClaudeConfigDirEnv_SetsHostSideEnv
+
+# #2893: switch settle can stop at a half-drawn trust prompt under load (fails safe).
+cmd/agent-deck TestSwitchSettle_FakeClaudePane_OwnTrustPromptAnswered
+cmd/agent-deck TestSwitchSettle_FakeClaudePane_DecoyAboveLiveMenuUntouched
