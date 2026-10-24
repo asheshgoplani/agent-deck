@@ -140,12 +140,14 @@ func getWorkspacePath(repoDir, workspaceName string) (string, error) {
 		return GetRepoRoot(repoDir)
 	}
 
-	cmd := exec.Command("jj", "workspace", "root", "--name", workspaceName, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
+	cmd := exec.Command("jj", "workspace", "root", "--name", workspaceName, "-R", repoDir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get workspace path: %w", err)
 	}
-	return string(output), nil
+	// jj ends the path with a newline; untrimmed, os.Stat reports a live
+	// workspace as missing and PruneWorktrees forgets it.
+	return strings.TrimSpace(string(output)), nil
 }
 
 // IsDefaultWorkspace returns true if the given directory is the default workspace.
@@ -229,7 +231,7 @@ func (b *JJBackend) PruneWorktrees() error {
 		return err
 	}
 	for _, ws := range workspaces {
-		if ws.Path == "default" {
+		if ws.Branch == "default" {
 			continue
 		}
 		path, pathErr := getWorkspacePath(b.repoDir, ws.Branch)
@@ -326,7 +328,8 @@ func (b *JJBackend) GetWorktreeForBranch(branchName string) (string, error) {
 
 	for _, wt := range worktrees {
 		if wt.Branch == branchName {
-			return wt.Path, nil
+			// parseWorkspacesList leaves Path empty; resolve it here.
+			return getWorkspacePath(b.repoDir, wt.Branch)
 		}
 	}
 

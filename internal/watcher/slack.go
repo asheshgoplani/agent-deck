@@ -93,9 +93,15 @@ func (a *SlackAdapter) Listen(ctx context.Context, events chan<- Event) error {
 	backoff := a.initialBackoff
 
 	for {
-		err := a.streamOnce(ctx, events)
+		uptime, err := a.streamOnce(ctx, events)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		// A stream that stayed up at least the cap was healthy: the drop
+		// starts a fresh backoff instead of staying at the cap from earlier
+		// failures. One that drops at once keeps backing off.
+		if uptime >= a.maxBackoff {
+			backoff = a.initialBackoff
 		}
 		_ = err // logged by engine's runAdapter
 		select {
@@ -111,8 +117,9 @@ func (a *SlackAdapter) Listen(ctx context.Context, events chan<- Event) error {
 }
 
 // streamOnce opens a single NDJSON streaming connection and reads events until
-// the connection closes or the context is cancelled.
-func (a *SlackAdapter) streamOnce(ctx context.Context, events chan<- Event) error {
+// the connection closes or the context is cancelled. It returns how long the
+// stream stayed up after the server accepted it (0 if it never did).
+func (a *SlackAdapter) streamOnce(ctx context.Context, events chan<- Event) (time.Duration, error) {
 	a.mu.Lock()
 	lastID := a.lastID
 	a.mu.Unlock()
@@ -124,19 +131,20 @@ func (a *SlackAdapter) streamOnce(ctx context.Context, events chan<- Event) erro
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("ntfy server returned status %d", resp.StatusCode)
+		return 0, fmt.Errorf("ntfy server returned status %d", resp.StatusCode)
 	}
 
+	connected := time.Now()
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		var msg ntfyMessage
@@ -158,14 +166,14 @@ func (a *SlackAdapter) streamOnce(ctx context.Context, events chan<- Event) erro
 		select {
 		case events <- evt:
 		case <-ctx.Done():
-			return ctx.Err()
+			return time.Since(connected), ctx.Err()
 		}
 		a.mu.Lock()
 		a.lastID = msg.ID
 		a.mu.Unlock()
 	}
 
-	return scanner.Err()
+	return time.Since(connected), scanner.Err()
 }
 
 // normalizeSlackEvent converts an ntfy message into a normalized Event.

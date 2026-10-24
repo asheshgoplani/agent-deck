@@ -1082,6 +1082,36 @@ func listRefShortNames(repoDir string, refs ...string) ([]string, error) {
 	return names, nil
 }
 
+// remoteBranchRefFormat prints each remote ref with its symref target, tab
+// separated, so remote HEAD pointers can be told apart from branches.
+const remoteBranchRefFormat = "%(refname:short)%09%(symref)"
+
+func listRemoteBranches(repoDir, remote string) ([]string, error) {
+	cmd := exec.Command("git", "-C", repoDir, "for-each-ref", "--format="+remoteBranchRefFormat, "refs/remotes/"+remote)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list refs: %w", err)
+	}
+	return parseRemoteBranchRefs(remote, string(output)), nil
+}
+
+// parseRemoteBranchRefs turns remoteBranchRefFormat output for one remote into
+// branch names, keeping the remote prefix. Symrefs are skipped: newer git (seen
+// on 2.43, not 2.39) shortens refs/remotes/<remote>/HEAD to just "<remote>",
+// so matching on "<remote>/HEAD" alone lists a fake branch.
+func parseRemoteBranchRefs(remote, output string) []string {
+	var names []string
+	for _, line := range strings.Split(output, "\n") {
+		name, symref, _ := strings.Cut(line, "\t")
+		name = strings.TrimSpace(name)
+		if name == "" || name == remote+"/HEAD" || strings.TrimSpace(symref) != "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
 // ListBranchCandidates returns unique branch names from local branches and the
 // default remote, normalized to plain branch names without a remote prefix.
 func ListBranchCandidates(repoDir string) ([]string, error) {
@@ -1110,17 +1140,11 @@ func ListBranchCandidates(repoDir string) ([]string, error) {
 	remotes, err := listRemotes(repoDir)
 	if err == nil {
 		for _, remote := range remotes {
-			remoteBranches, err := listRefShortNames(repoDir, "refs/remotes/"+remote)
+			remoteBranches, err := listRemoteBranches(repoDir, remote)
 			if err != nil {
 				continue
 			}
 			for _, branch := range remoteBranches {
-				if branch == remote+"/HEAD" {
-					continue
-				}
-				if branch == "" {
-					continue
-				}
 				seen[branch] = struct{}{}
 			}
 		}

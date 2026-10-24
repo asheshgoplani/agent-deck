@@ -164,3 +164,47 @@ func TestRouter_LoadClientsJSON(t *testing.T) {
 		t.Errorf("expected Conductor 'test-conductor', got %q", entry.Conductor)
 	}
 }
+
+// TestRouter_MatchCaseInsensitive verifies that sender addresses and
+// clients.json keys match regardless of letter case, for both exact and
+// wildcard rules, through NewRouter and Reload alike. Gmail hands the From
+// address through as written, so "Bob@Example.COM" must hit "*@example.com".
+func TestRouter_MatchCaseInsensitive(t *testing.T) {
+	clients := map[string]watcher.ClientEntry{
+		"contact@clienta.com": {Conductor: "client-a"},
+		"*@clienta.com":       {Conductor: "client-a-domain"},
+		"Boss@ClientC.com":    {Conductor: "client-c"},
+		"*@ClientD.COM":       {Conductor: "client-d-domain"},
+	}
+	cases := []struct {
+		sender, conductor, matchType string
+	}{
+		{"Contact@ClientA.com", "client-a", "exact"},
+		{"CONTACT@CLIENTA.COM", "client-a", "exact"},
+		{"Bob@Example.ClientA.com", "", ""},
+		{"Bob@ClientA.COM", "client-a-domain", "wildcard"},
+		{"bob@clienta.com", "client-a-domain", "wildcard"},
+		{"boss@clientc.com", "client-c", "exact"},
+		{"carol@clientd.com", "client-d-domain", "wildcard"},
+	}
+	reloaded := watcher.NewRouter(nil)
+	reloaded.Reload(clients)
+	for name, r := range map[string]*watcher.Router{"NewRouter": watcher.NewRouter(clients), "Reload": reloaded} {
+		for _, tc := range cases {
+			got := r.Match(tc.sender)
+			if tc.conductor == "" {
+				if got != nil {
+					t.Errorf("%s: Match(%q) = %+v, want nil", name, tc.sender, got)
+				}
+				continue
+			}
+			if got == nil {
+				t.Errorf("%s: Match(%q) = nil, want %s match to %q", name, tc.sender, tc.matchType, tc.conductor)
+				continue
+			}
+			if got.Conductor != tc.conductor || got.MatchType != tc.matchType {
+				t.Errorf("%s: Match(%q) = %s/%q, want %s/%q", name, tc.sender, got.MatchType, got.Conductor, tc.matchType, tc.conductor)
+			}
+		}
+	}
+}

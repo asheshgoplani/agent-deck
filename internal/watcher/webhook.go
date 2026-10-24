@@ -187,25 +187,26 @@ func (a *WebhookAdapter) HealthCheck() error {
 }
 
 // firstLine returns the first line of s, truncated to maxLen bytes.
-// When the cap lands inside a multi-byte UTF-8 sequence, the partial
-// codepoint is trimmed off so the result is always valid UTF-8. This
-// prevents downstream consumers (SQLite readers, JSON encoders, logs)
-// from choking on bytes stored to watcher_events.subject — a single
-// poisoned row can wedge an entire watcher pipeline.
+// Invalid UTF-8 in the input becomes U+FFFD, and when the cap lands
+// inside a multi-byte sequence the partial codepoint is trimmed off, so
+// the result is always valid UTF-8. This prevents downstream consumers
+// (SQLite readers, JSON encoders, logs) from choking on bytes stored to
+// watcher_events.subject — a single poisoned row can wedge an entire
+// watcher pipeline.
 func firstLine(s string, maxLen int) string {
 	line := s
 	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
 		line = s[:idx]
 	}
+	line = strings.ToValidUTF8(line, "\uFFFD")
 	if len(line) > maxLen {
-		line = line[:maxLen]
-		// UTF-8 sequences are at most 4 bytes, so at most 3 trailing
-		// bytes are stripped here. ValidString runs in O(len(line))
-		// but only on suffix bytes after the first valid read; in
-		// practice this is a handful of iterations.
-		for len(line) > 0 && !utf8.ValidString(line) {
-			line = line[:len(line)-1]
+		// line is valid UTF-8 here, so backing up to a rune start
+		// strips at most 3 bytes of a split codepoint.
+		cut := maxLen
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
+			cut--
 		}
+		line = line[:cut]
 	}
 	return line
 }
