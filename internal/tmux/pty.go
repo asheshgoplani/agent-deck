@@ -484,6 +484,18 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		detach = opts.DetachByte
 	}
 
+	// Put the terminal in raw mode before anything else, and above all before
+	// the tmux client starts. Bubble Tea hands the terminal over in cooked
+	// mode, where IXON makes the tty itself swallow Ctrl+Q (0x11 is START):
+	// a Ctrl+Q pressed after the client is up but before raw mode (the
+	// OnClientStarted callback writes the state DB in between) never reached
+	// the stdin pump, so the attach stayed put.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return SwitchNone, fmt.Errorf("failed to set raw mode: %w", err)
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
+
 	if !s.Exists() {
 		return SwitchNone, fmt.Errorf("session %s does not exist", s.Name)
 	}
@@ -574,41 +586,46 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		return SwitchNone, fmt.Errorf("failed to set pty raw mode: %w", err)
 	}
 
-	// Save original terminal state and set raw mode
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return SwitchNone, fmt.Errorf("failed to set raw mode: %w", err)
-	}
-	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
-
 	// Handle window resize signals
 	sigwinch := make(chan os.Signal, 1)
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	sigwinchDone := make(chan struct{}) // Signal for SIGWINCH goroutine to exit
-	defer func() {
-		signal.Stop(sigwinch)
-		close(sigwinchDone) // Signal goroutine to exit
-		// Don't close sigwinch - signal.Stop() handles cleanup
-	}()
+	resizeDone := make(chan struct{})   // Closed when the SIGWINCH goroutine has exited
+	// stopResize stops the SIGWINCH goroutine and waits for it to exit.
+	// cleanupAttach calls it before closing the PTY: a resize still running
+	// would ioctl a closed (or already reused) fd and read os.Stdin after the
+	// attach handed it back. The wait is bounded: the goroutine only blocks in
+	// its select, and GetsizeFull/Setsize are non-blocking ioctls. The defer
+	// covers any path that skips cleanupAttach.
+	var stopResizeOnce sync.Once
+	stopResize := func() {
+		stopResizeOnce.Do(func() {
+			signal.Stop(sigwinch) // Don't close sigwinch - signal.Stop() handles cleanup
+			close(sigwinchDone)
+			<-resizeDone
+		})
+	}
+	defer stopResize()
 
 	// WaitGroup to track ALL goroutines (including SIGWINCH handler).
 	//
-	// Deliberately never Wait()ed on, and it cannot be: the SIGWINCH handler
-	// only exits when the deferred close(sigwinchDone) runs, which is AFTER
-	// cleanupAttach, and the cmd.Wait() goroutine can outlive a detach by
-	// however long the tmux client takes to go away. Waiting here would
-	// deadlock the first and stall the second.
+	// Deliberately never Wait()ed on, and it cannot be: the cmd.Wait()
+	// goroutine can outlive a detach by however long the tmux client takes to
+	// go away, and the stdin and output goroutines have bounded waits of their
+	// own. Waiting here would stall the attach.
 	//
-	// The join that actually matters for correctness is stdinReaderDone, which
-	// cleanupAttach waits on individually — that is the goroutine that must not
-	// outlive the attach (see QuiesceAttachInput). The WaitGroup stays as
-	// documentation of goroutine ownership.
+	// The joins that matter for correctness are taken individually:
+	// stopResize waits on resizeDone, and cleanupAttach waits on
+	// stdinReaderDone — the goroutine that must not outlive the attach (see
+	// QuiesceAttachInput). The WaitGroup stays as documentation of goroutine
+	// ownership.
 	var wg sync.WaitGroup
 
 	// SIGWINCH handler goroutine - properly tracked in WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(resizeDone)
 		for {
 			select {
 			case <-sigwinchDone:
@@ -724,6 +741,7 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 		// process if needed after the attach session ends.
 		signal.Reset(syscall.SIGINT)
 		cancel()
+		stopResize()
 		_ = ptmx.Close()
 		_, _ = waitForAttachOutputDrain(outputDone, attachOutputDrainTimeout)
 		// Hand stdin back: stop the reader, then flush the input queue and arm

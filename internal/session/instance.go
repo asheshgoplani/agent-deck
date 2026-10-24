@@ -13145,10 +13145,12 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 	if err != nil {
 		return 0
 	}
-	if sessionFile := newestTranscriptCopy(conversationKeyPaths(configDir, projectPath, fileName)); sessionFile != "" {
-		if info, err := os.Stat(sessionFile); err == nil {
-			return info.Size()
-		}
+	// The transcript is append-only, so the largest copy holds the most
+	// history. Taking the size of the newest copy instead would let a touch
+	// of a stale short copy shrink the bound conversation and flip the gate
+	// from reject to rebind.
+	if size, ok := largestTranscriptSize(conversationKeyPaths(configDir, projectPath, fileName)); ok {
+		return size
 	}
 	if fallback := findSessionFileInAllProjects(inst, sessionID); fallback != "" {
 		if info, err := os.Stat(fallback); err == nil {
@@ -13158,24 +13160,43 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 	return 0
 }
 
-// conversationKeyPaths lists fileName under the realpath key and the typed
-// key of projectPath in configDir. After switch-account both can hold the
-// conversation and only one is still written, so callers take the newest
-// (newestTranscriptCopy); the realpath key wins a tie, as before.
+// conversationKeyPaths lists fileName under every project key of projectPath
+// in configDir: the path as typed, its macOS /private form and its realpath
+// (claudeProjectKeyCandidates). After switch-account several can hold the
+// conversation and only one is still written, so the rebind gate takes the
+// size from the largest copy (largestTranscriptSize) and the mtime from the
+// newest (newestTranscriptCopy).
 func conversationKeyPaths(configDir, projectPath, fileName string) []string {
-	var paths []string
-	resolvedPath := projectPath
-	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
-		resolvedPath = resolved
+	return conversationKeyPathsWith(configDir, projectPath, fileName, runtime.GOOS, filepath.EvalSymlinks)
+}
+
+// conversationKeyPathsWith is the testable form of conversationKeyPaths; goos
+// and resolve are passed to claudeProjectKeyCandidatesWith.
+func conversationKeyPathsWith(configDir, projectPath, fileName, goos string, resolve func(string) (string, error)) []string {
+	keys := claudeProjectKeyCandidatesWith(projectPath, goos, resolve)
+	if len(keys) == 0 {
+		keys = []string{"-"}
 	}
-	for _, path := range []string{resolvedPath, projectPath} {
-		encodedPath := ConvertToClaudeDirName(path)
-		if encodedPath == "" {
-			encodedPath = "-"
-		}
-		paths = append(paths, filepath.Join(configDir, "projects", encodedPath, fileName))
+	paths := make([]string, 0, len(keys))
+	for _, key := range keys {
+		paths = append(paths, filepath.Join(configDir, "projects", key, fileName))
 	}
 	return paths
+}
+
+// largestTranscriptSize returns the size of the largest regular file among
+// paths; ok is false when none exists.
+func largestTranscriptSize(paths []string) (size int64, ok bool) {
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if !ok || info.Size() > size {
+			size, ok = info.Size(), true
+		}
+	}
+	return size, ok
 }
 
 // sessionConversationMtime returns the modification time of the Claude

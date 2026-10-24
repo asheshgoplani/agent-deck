@@ -665,6 +665,16 @@ func (r *SSHRunner) remoteHasMoshServer() bool {
 // runRemoteAttach runs an interactive transport command (ssh or mosh) in a
 // local PTY until it exits or the user detaches.
 func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) error {
+	// Save original terminal state and set raw mode before the transport
+	// starts. Bubble Tea hands the terminal over in cooked mode, where IXON
+	// makes the tty swallow Ctrl+Q (0x11 is START) before any reader sees it;
+	// same order as AttachWithOptions in internal/tmux/pty.go.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return fmt.Errorf("failed to set raw mode: %w", err)
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
+
 	// Start SSH with a local PTY pre-sized to the controlling terminal so the
 	// remote tmux client connects full-width from frame one (#1167). A bare
 	// pty.Start creates the PTY at the 80x24 default, which can size the remote
@@ -688,27 +698,30 @@ func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) e
 		return fmt.Errorf("failed to set pty raw mode: %w", err)
 	}
 
-	// Save original terminal state and set raw mode.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return fmt.Errorf("failed to set raw mode: %w", err)
-	}
-	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
-
 	// Handle SIGWINCH to resize the PTY when the local terminal is resized.
 	sigwinch := make(chan os.Signal, 1)
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	sigwinchDone := make(chan struct{})
-	defer func() {
-		signal.Stop(sigwinch)
-		close(sigwinchDone)
-	}()
+	resizeDone := make(chan struct{})
+	// stopResize stops the resize goroutine and waits for it, so no resize
+	// touches the PTY after it is closed or handed off, or os.Stdin after the
+	// attach returns. Bounded: the goroutine only blocks in its select.
+	var stopResizeOnce sync.Once
+	stopResize := func() {
+		stopResizeOnce.Do(func() {
+			signal.Stop(sigwinch)
+			close(sigwinchDone)
+			<-resizeDone
+		})
+	}
+	defer stopResize()
 
 	var wg sync.WaitGroup
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(resizeDone)
 		for {
 			select {
 			case <-sigwinchDone:
@@ -827,6 +840,7 @@ func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) e
 	// closed PTY, losing it. Mirrors cleanupAttach in internal/tmux/pty.go,
 	// which cancels the pump before closing the PTY.
 	close(stdinReaderStop)
+	stopResize()
 	ptyHandedOff = stopRemoteAttach(cmd, ptmx, cmdDone, outputDone, output, transport, exited, terminal.MoshQuitTimeout)
 	// Hand stdin back to the TUI: drop whatever the remote's teardown left in
 	// the input queue and arm the reply quarantine. The join-before-flush

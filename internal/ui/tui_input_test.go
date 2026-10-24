@@ -12,6 +12,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/creack/pty"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // #2692: a user's TUI held 2,822 kqueue descriptors after days of attaching.
@@ -367,4 +369,108 @@ func TestTUIExecsAllHoldTheInput(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ASK-92: an attach does synchronous setup (tmux calls) before it returns its
+// exec. A key typed during that setup, here 5 ms after the attach key while
+// the setup takes 40 ms, must reach the attached program, not the TUI.
+func TestTUIInputKeysTypedDuringAttachSetupReachTheAttachedProgram(t *testing.T) {
+	r := newTUIInputRig(t, tuiInputOnPTY)
+	got := make(chan string, 1)
+	r.mu.Lock()
+	r.onKey = func(k string) tea.Cmd {
+		if k != "x" {
+			return nil
+		}
+		defer holdInputForExec()()
+		time.Sleep(40 * time.Millisecond) // the attach's tmux setup
+		return execHoldingInput(ttyReadCmd{tty: r.tty, got: got}, func(error) tea.Msg { return nil })
+	}
+	r.mu.Unlock()
+	for round := 0; round < 3; round++ {
+		if _, err := r.ptmx.Write([]byte("x")); err != nil { // attach
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+		if _, err := r.ptmx.Write([]byte("zq\n")); err != nil { // typed during the setup
+			t.Fatal(err)
+		}
+		select {
+		case s := <-got:
+			if !strings.HasPrefix(s, "zq") {
+				t.Fatalf("round %d: the attached program got %q, want \"zq\" (the TUI took the rest)", round, s)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: the attached program never finished", round)
+		}
+		time.Sleep(150 * time.Millisecond) // the restore
+	}
+	r.mu.Lock()
+	keys := strings.Join(r.keys, "")
+	r.mu.Unlock()
+	if strings.ContainsAny(keys, "zq") {
+		t.Fatalf("the TUI read keys typed during the attach setup: %q", keys)
+	}
+	if n := tuiInputHeld.Load(); n != 0 {
+		t.Fatalf("the input hold must be released after every exec, held=%d", n)
+	}
+}
+
+// ASK-92: a hold taken for an attach that builds no exec (a restart instead,
+// an error) is given back at once, nested holds are one hold, and an exec
+// that is built but never run gives its hold back after the timeout.
+func TestHoldInputForExecAlwaysGivesTheInputBack(t *testing.T) {
+	if n := tuiInputHeld.Load(); n != 0 {
+		t.Fatalf("held=%d before the test", n)
+	}
+	func() {
+		defer holdInputForExec()()
+		defer holdInputForExec()() // nested: attachSelectedLegacy -> attachSession
+		if n := tuiInputHeld.Load(); n != 1 {
+			t.Fatalf("held=%d while preparing, want 1", n)
+		}
+	}()
+	if n := tuiInputHeld.Load(); n != 0 {
+		t.Fatalf("no exec was built: held=%d, want 0", n)
+	}
+
+	old := tuiInputPreHoldTimeout
+	tuiInputPreHoldTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { tuiInputPreHoldTimeout = old })
+	func() {
+		defer holdInputForExec()()
+		_ = execHoldingInput(ttyReadCmd{}, nil) // built, then dropped
+	}()
+	if n := tuiInputHeld.Load(); n != 1 {
+		t.Fatalf("the exec took the hold over: held=%d, want 1", n)
+	}
+	tuiWaitFor(t, "the dropped exec to give the input back", func() bool { return tuiInputHeld.Load() == 0 })
+}
+
+// ASK-92 review round: createRemoteSessionWithOptions loads the user config
+// before it builds its exec, so it takes the input hold first and the built
+// exec takes that hold over. The input is held as soon as the exec is built,
+// before Bubble Tea runs it; without the early hold it would stay free until
+// then and keys typed meanwhile would become TUI keys.
+func TestRemoteCreateAttachHoldsTheInputDuringSetup(t *testing.T) {
+	withTempAgentDeckHome(t, `
+[remotes.lab]
+host = "alice@lab.example"
+agent_deck_path = "/usr/local/bin/agent-deck"
+`)
+	if n := tuiInputHeld.Load(); n != 0 {
+		t.Fatalf("held=%d before the test", n)
+	}
+	old := tuiInputPreHoldTimeout
+	tuiInputPreHoldTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { tuiInputPreHoldTimeout = old })
+
+	h := NewHome()
+	if cmd := h.createRemoteSessionWithOptions("lab", session.RemoteAddOptions{}); cmd == nil {
+		t.Fatal("no command returned")
+	}
+	if n := tuiInputHeld.Load(); n != 1 {
+		t.Fatalf("held=%d once the remote create built its exec, want 1 (hold taken during setup)", n)
+	}
+	tuiWaitFor(t, "the unrun exec to give the input back", func() bool { return tuiInputHeld.Load() == 0 })
 }

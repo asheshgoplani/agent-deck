@@ -88,13 +88,48 @@ func NewTUIRouterInput(r *SessionInputRouter) io.Reader {
 	return &tuiInput{f: r.File, r: r}
 }
 
+// tuiInputPreHeld is set while the Update goroutine builds an exec with the
+// input already held (holdInputForExec). The next execHoldingInput takes that
+// hold over instead of taking its own once its command runs.
+var tuiInputPreHeld atomic.Bool
+
+// tuiInputPreHoldTimeout gives a taken-over hold back if Bubble Tea never runs
+// the exec built on it, so a dropped command cannot leave the TUI deaf.
+var tuiInputPreHoldTimeout = 2 * time.Second
+
+// holdInputForExec stops the TUI's input from reading now, on the Update
+// goroutine, for an exec the caller is about to build. Attaching does
+// synchronous work first (tmux calls: has-session, set-environment, ...), and
+// keys typed during it would otherwise become TUI keys instead of reaching the
+// pane: the hold execHoldingInput takes only starts when its command runs.
+// With the hold, they stay in the terminal for the attached program. The
+// caller defers the returned func: it gives the input back unless an
+// execHoldingInput built meanwhile took the hold over.
+func holdInputForExec() (done func()) {
+	if !tuiInputPreHeld.CompareAndSwap(false, true) {
+		return func() {} // an outer caller holds it already
+	}
+	tuiInputHeld.Add(1)
+	return func() {
+		if tuiInputPreHeld.Swap(false) {
+			tuiInputHeld.Add(-1) // no exec was built: read again
+		}
+	}
+}
+
 // execHoldingInput is tea.Exec for the TUI: the TUI's input stops reading
 // before Bubble Tea releases the terminal, and reads again once the program
 // returns (or the exec fails before it runs). Every tea.Exec of the TUI goes
-// through it.
+// through it. Built under holdInputForExec, it keeps the hold already taken.
 func execHoldingInput(c tea.ExecCommand, fn tea.ExecCallback) tea.Cmd {
+	var preHold *time.Timer
+	if tuiInputPreHeld.Swap(false) {
+		preHold = time.AfterFunc(tuiInputPreHoldTimeout, func() { tuiInputHeld.Add(-1) })
+	}
 	return func() tea.Msg {
-		tuiInputHeld.Add(1)
+		if preHold == nil || !preHold.Stop() {
+			tuiInputHeld.Add(1)
+		}
 		var once atomic.Bool
 		release := func() {
 			if once.CompareAndSwap(false, true) {
