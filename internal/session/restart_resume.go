@@ -374,7 +374,8 @@ func restartTurnUnchanged(tok restartToken, transcript, signal string, hs *HookS
 // file carries forward when the file itself names no run (a session_start or
 // session_shutdown rebuilt it).
 func piCarriedRunSignal(hs *HookStatus) string {
-	if hs == nil || (hs.Settles && hs.PiRunID != "") || hs.PiOrphanCount == 0 {
+	if hs == nil || (hs.Event != "session_start" && hs.Event != "session_shutdown") ||
+		(hs.Settles && hs.PiRunID != "") || hs.PiOrphanCount == 0 {
 		return ""
 	}
 	return piRunSignal(hs.PiOrphanRuns[hs.PiOrphanCount-1].RunID)
@@ -396,17 +397,19 @@ func piRunReplay(tok restartToken, signal string, hs *HookStatus) bool {
 }
 
 // piBackAtPrompt reports whether the resumed pi wrote its session_start after
-// the restart recorded it: it is at its prompt, whatever the status reads (past
-// the hook window the status comes from the pane).
+// the token: it is at its prompt, whatever the status reads (past the hook
+// window the status comes from the pane). The old pi's only write after the
+// token is its session_shutdown, and the resumed pi can write before the
+// restart records it, so the bound is the token, not the spawn record.
 func piBackAtPrompt(tok restartToken, hs *HookStatus) bool {
-	if hs == nil || hs.Event != "session_start" || tok.SpawnedAt.IsZero() {
+	if hs == nil || hs.Event != "session_start" {
 		return false
 	}
 	at := hs.ReceivedAt
 	if at.IsZero() {
-		at = hs.UpdatedAt.Add(time.Second) // whole seconds: no earlier than this
+		at = hs.UpdatedAt.Add(time.Second) // whole seconds: written no later than this
 	}
-	return at.After(tok.SpawnedAt)
+	return at.After(tok.At)
 }
 
 // restartBootRecord is the notifier's own check (#2792) for a producer that
