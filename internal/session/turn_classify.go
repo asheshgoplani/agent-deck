@@ -116,6 +116,11 @@ type TurnFacts struct {
 	// Pending means the Stop hook outran the transcript flush: the newest
 	// main-chain record is a user record with no assistant reply yet.
 	Pending bool
+	// Compaction means nothing but a context compaction follows the last
+	// turn (Claude Code's idle auto-compaction: a compact_boundary and an
+	// isCompactSummary user record, no prompt, no reply). It is not a turn
+	// and carries nothing for the parent.
+	Compaction bool
 	// FinalTextPending means a tool call or tool result is newer than the
 	// assistant text found (text X, then a tool call, then the final text Y
 	// not yet flushed, #1186): Text and UUID name interim text, not the
@@ -148,10 +153,12 @@ func (f TurnFacts) Signal() string {
 // for builds that omit them.
 type transcriptTurnRecord struct {
 	Type        string          `json:"type"`
+	Subtype     string          `json:"subtype"`
 	UUID        string          `json:"uuid"`
 	Timestamp   json.RawMessage `json:"timestamp"` // decoded leniently: a non-string value never drops the record
 	IsSidechain bool            `json:"isSidechain"`
 	IsMeta      bool            `json:"isMeta"`
+	IsCompact   bool            `json:"isCompactSummary"`
 	TurnOrigin  string          `json:"turnOrigin"`
 	Origin      struct {
 		Kind string `json:"kind"`
@@ -229,7 +236,20 @@ func classifyTranscriptTail(lines []string) TurnFacts {
 			facts.TextHash = turnTextHash(text)
 			facts.Question = textAsksParent(text)
 			facts.Done, facts.HasDone = ScanDoneSentinel(text)
+		case "system":
+			if rec.Subtype == "compact_boundary" && !foundAssistant && !facts.FinalTextPending {
+				facts.Compaction = true
+				return facts
+			}
 		case "user":
+			if rec.IsCompact && !foundAssistant && !facts.FinalTextPending {
+				// The compaction summary, not a prompt: no reply is coming.
+				// Tool records after it mean a turn ran on past a mid-turn
+				// compaction (it may be blocked on a permission prompt), so
+				// that tail is classified as before.
+				facts.Compaction = true
+				return facts
+			}
 			if userRecordIsToolResult(rec.Message.Content) {
 				if !foundAssistant {
 					facts.FinalTextPending = true

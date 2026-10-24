@@ -558,6 +558,9 @@ type Home struct {
 	// newer release while the TUI runs (see binary_watch.go). Nil when the
 	// executable could not be resolved at startup.
 	binaryWatch *binaryWatch
+	// attachUpdate is the binary watch as the attach worker sees it, so an
+	// attached deck can say an update waits (attached_update.go).
+	attachUpdate attachUpdate
 	// homebrewManaged is cached once at startup: a Homebrew binary is never
 	// installed over by the TUI (brew owns it). See update_auto.go.
 	homebrewManaged bool
@@ -1215,6 +1218,18 @@ func (h *Home) attachOptions(sess *tmux.Session) tmux.AttachOptions {
 	// per PageUp press (see AttachOptions.ScrollbackGate).
 	if scroll.OnPageUp && sess != nil {
 		opts.ScrollbackGate = func() bool { return openScrollbackOnPageUp(sess.IsAltScreen()) }
+	}
+	return opts
+}
+
+// withSSHPasteHint arms the TUI attach's image-paste hint (ASK-92): over
+// plain ssh, Ctrl+V with no image here says once where images can be pasted
+// from, through the live attach's notice sink (tmux.ShowAttachNotice). Only
+// this attach sets OnCtrlV; the CLI attach a remote attach runs on the box
+// (#2775) never does.
+func withSSHPasteHint(opts tmux.AttachOptions, tool string, pane func() string, notice func(string)) tmux.AttachOptions {
+	if hint := session.NewSSHPasteHint(tool, pane, notice); hint != nil {
+		opts.OnCtrlV = hint.CtrlV
 	}
 	return opts
 }
@@ -9635,6 +9650,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// repaint of the list — behind O(fleet) tmux round-trips. attachReturnSyncCmd
 		// carries the rationale; attachReturnSyncedMsg repaints when it lands.
 		syncCmd := tea.Batch(h.attachReturnSyncCmd(msg.attachedSessionID), h.telemetryAttachEnd())
+		// Back on the home screen: a newer build waiting restarts now, not a
+		// tick later that a quick re-attach would beat (defect 310).
+		syncCmd = tea.Batch(syncCmd, h.restartOnDetach())
 
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -18462,6 +18480,9 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			_ = session.WriteTUIAttach(db, session.TUIAttach{Socket: tmuxSess.SocketName, ClientPID: pid})
 		}
 	}
+	opts = withSSHPasteHint(opts, inst.Tool,
+		func() string { pane, _ := tmuxSess.CapturePane(); return pane },
+		func(msg string) { tmux.ShowAttachNotice(msg) })
 	return execHoldingInput(attachCmd{
 		session: tmuxSess,
 		opts:    opts,

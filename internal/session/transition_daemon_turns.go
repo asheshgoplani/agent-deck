@@ -57,7 +57,11 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 	if classified && facts.Pending {
 		return event, false
 	}
-	if classified && facts.UUID == "" && facts.TextHash == "" {
+	// ASK-92: an idle auto-compaction grows the transcript and may flip the
+	// pane, but no one started a turn and the child said nothing. A flip into
+	// error still reaches the parent the legacy way.
+	compaction := classified && facts.Compaction && attentionClass(to) != "error"
+	if classified && !compaction && facts.UUID == "" && facts.TextHash == "" {
 		// No turn identity (an interrupted turn, a reply with no text): the
 		// noise rule cannot recognise it next poll, so journaling it would add
 		// one line per observation. Treat it as unclassified: legacy signal,
@@ -87,6 +91,12 @@ func (d *TransitionDaemon) emitTurn(profile string, inst *Instance, byID map[str
 		return d.emitRestartBoot(inst, event, tok, selfConductor), true
 	}
 	event.restartJudged = true
+
+	if compaction {
+		_ = BumpInboxStats(statsParent, func(s *InboxStats) { s.NoiseSuppressed++ })
+		event.DeliveryResult = transitionDeliveryDropped
+		return event, true
+	}
 
 	if !classified {
 		if selfConductor {

@@ -737,6 +737,8 @@ func runRemoteAttach(cmd *exec.Cmd, transport string, paste *remoteImagePaste) e
 		paste.notice = func(text string) { output.notice(text, terminalRows()) }
 		input.paste = paste
 	}
+	// Notices from the local TUI (tmux.ShowAttachNotice) take the same line.
+	defer tmux.SetAttachNoticeSink(func(text string) { output.notice(text, terminalRows()) })()
 
 	// Copy PTY output to stdout.
 	wg.Add(1)

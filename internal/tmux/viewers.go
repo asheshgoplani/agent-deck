@@ -262,12 +262,18 @@ func firstUnknownViewer(viewers []Viewer, known map[string]bool) (Viewer, bool) 
 // showViewerNotice puts msg on the status line of client v for
 // viewerNoticeDelay.
 func (s *Session) showViewerNotice(ctx context.Context, v Viewer, msg string) {
-	delay := strconv.Itoa(int(viewerNoticeDelay / time.Millisecond))
+	s.showNoticeFor(ctx, v, msg, viewerNoticeDelay, "shared_view_notice")
+}
+
+// showNoticeFor puts msg on the status line of client v for delay and logs
+// it as event.
+func (s *Session) showNoticeFor(ctx context.Context, v Viewer, msg string, d time.Duration, event string) {
+	delay := strconv.Itoa(int(d / time.Millisecond))
 	msg = FormatLiteral(msg) // display-message expands formats; msg is plain text
 	if err := commandRun(s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, "-d", delay, msg)); err != nil {
 		// tmux < 3.2 has no -d; show it for the default display-time.
 		_ = commandRun(s.tmuxCmdContext(ctx, "display-message", "-c", v.Name, msg))
 	}
-	statusLog.Debug("shared_view_notice", slog.String("session", s.Name),
+	statusLog.Debug(event, slog.String("session", s.Name),
 		slog.String("client", v.Name), slog.String("message", msg))
 }

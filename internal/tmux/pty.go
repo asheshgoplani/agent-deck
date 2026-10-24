@@ -166,6 +166,11 @@ type AttachOptions struct {
 	// (#2704: `session focus --remote --attach` detaches it to bring a paused
 	// TUI back, and no other client).
 	OnClientStarted func(pid int)
+	// OnCtrlV, when non-nil, is called after a lone Ctrl+V (any encoding,
+	// see isLoneCtrlV) has been forwarded
+	// (the TUI's image-paste hint over plain ssh, ASK-92). It runs on the
+	// stdin goroutine and must not block.
+	OnCtrlV func()
 }
 
 // indexSwitchKey returns the index of the switch key in data and
@@ -360,7 +365,21 @@ func (p *attachStdinPump) run(ctx context.Context) (SwitchIntent, bool) {
 			reportErr(fmt.Errorf("PTY write error: %w", err))
 			return SwitchNone, false
 		}
+		if p.opts.OnCtrlV != nil && isLoneCtrlV(chunk) {
+			p.opts.OnCtrlV()
+		}
 	}
+}
+
+// isLoneCtrlV reports whether chunk is one Ctrl+V and nothing else: the raw
+// byte, or the modifyOtherKeys and CSI u forms terminals send once tmux
+// turns on extended-keys.
+func isLoneCtrlV(chunk []byte) bool {
+	switch string(chunk) {
+	case "\x16", "\x1b[27;5;118~", "\x1b[118;5u":
+		return true
+	}
+	return false
 }
 
 // QuiesceAttachInput ends the attach's ownership of stdin: it waits for the
@@ -564,6 +583,11 @@ func (s *Session) AttachWithOptions(ctx context.Context, opts AttachOptions) (Sw
 	defer ptmx.Close()
 	if opts.OnClientStarted != nil && cmd.Process != nil {
 		opts.OnClientStarted(cmd.Process.Pid)
+	}
+	// Attach notices (attach_notice.go) go to this client's status line.
+	if cmd.Process != nil {
+		pid := cmd.Process.Pid
+		defer SetAttachNoticeSink(func(text string) { s.showClientNotice(ctx, pid, text) })()
 	}
 
 	// Set the PTY to raw mode so all bytes pass through transparently.
