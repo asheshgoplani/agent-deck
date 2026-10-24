@@ -371,3 +371,65 @@ func TestListInstanceAnnotations_GroupsByInstance(t *testing.T) {
 		t.Fatalf("i3 = %+v; want ticket=ENG-1 and no tags", i3)
 	}
 }
+
+// Unsetting a hint is a change the recall sweep must see, the same as
+// removing a tag: otherwise the card keeps the removed hint until some
+// other write touches that conversation.
+func TestRecallChangedRefs_HintUnset(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.UpsertSessionLink("inst-1", "claude", "conv-1", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSessionHint(HintScopeInstance, "inst-1", "ticket", "SB-1", HintSourceAnnotate, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSessionHint(HintScopeHarnessSession, "conv-9", "why", "x", HintSourceAnnotate, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Age every write so only the unsets below fall at or after since.
+	if _, err := db.DB().Exec(`UPDATE session_links SET first_seen = first_seen - 100, last_seen = last_seen - 100`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB().Exec(`UPDATE session_hints SET created_at = created_at - 100`); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Now().Unix()
+	if refs, _ := db.RecallChangedRefs(since); len(refs) != 0 {
+		t.Fatalf("before unset: refs = %v; want none", refs)
+	}
+	for _, u := range [][2]string{{HintScopeInstance, "inst-1"}, {HintScopeHarnessSession, "conv-9"}} {
+		key := map[string]string{"inst-1": "ticket", "conv-9": "why"}[u[1]]
+		if ok, err := db.UnsetSessionHint(u[0], u[1], key); err != nil || !ok {
+			t.Fatalf("unset %v: ok=%v err=%v", u, ok, err)
+		}
+	}
+	refs, err := db.RecallChangedRefs(since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[HarnessRef]bool{}
+	for _, r := range refs {
+		got[r] = true
+	}
+	if len(got) != 2 || !got[HarnessRef{"claude", "conv-1"}] || !got[HarnessRef{"", "conv-9"}] {
+		t.Fatalf("after unset: refs = %v; want claude/conv-1 and /conv-9", refs)
+	}
+
+	// The unset hint is gone from every read, and unsetting again is a no-op.
+	if hs, _ := db.ListSessionHints(HintScopeInstance, "inst-1"); len(hs) != 0 {
+		t.Fatalf("ListSessionHints after unset = %v", hs)
+	}
+	if ann, _ := db.ListInstanceAnnotations(); ann["inst-1"] != nil {
+		t.Fatalf("ListInstanceAnnotations after unset = %+v", ann["inst-1"])
+	}
+	if ok, _ := db.UnsetSessionHint(HintScopeInstance, "inst-1", "ticket"); ok {
+		t.Fatal("second unset reported a removal")
+	}
+	// Setting it again revives the key with the new value.
+	if err := db.SetSessionHint(HintScopeInstance, "inst-1", "ticket", "SB-2", HintSourceAnnotate, ""); err != nil {
+		t.Fatal(err)
+	}
+	if hs, _ := db.ListSessionHints(HintScopeInstance, "inst-1"); len(hs) != 1 || hs[0].Value != "SB-2" {
+		t.Fatalf("ListSessionHints after re-set = %v", hs)
+	}
+}

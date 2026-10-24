@@ -293,8 +293,7 @@ func classifyTrigger(rec transcriptTurnRecord) (trigger, fromID string) {
 			return TurnTriggerSend, strings.TrimSpace(rest[:end])
 		}
 		return TurnTriggerSend, ""
-	case strings.HasPrefix(text, "[INBOX"), strings.HasPrefix(text, "Stop hook feedback:"),
-		strings.HasPrefix(text, "[HEARTBEAT]"), strings.HasPrefix(text, "[agent-deck inbox]"):
+	case hasInboxWakePrefix(text), strings.HasPrefix(text, "Stop hook feedback:"):
 		return TurnTriggerInbox, ""
 	case rec.IsMeta, strings.HasPrefix(text, "<system-reminder>"), strings.HasPrefix(text, "<local-command"),
 		strings.HasPrefix(text, "<command-name>"):

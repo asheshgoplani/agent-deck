@@ -920,18 +920,24 @@ func StripANSI(content string) string {
 				i = j
 				continue
 			}
-			// OSC sequence: ESC ] ... BEL
+			// OSC sequence: ESC ] ... BEL or ST (ESC \), whichever comes first.
+			// Preferring a later BEL over an earlier ST would swallow the
+			// visible text between them.
 			if i+1 < len(content) && content[i+1] == ']' {
-				// Find BEL terminator
-				bellPos := strings.Index(content[i:], "\x07")
+				rest := content[i:]
+				bellPos := strings.IndexByte(rest, '\x07')
+				// Look for ST only before the BEL so a BEL-terminated
+				// sequence never rescans the rest of the content.
+				stScope := rest
 				if bellPos != -1 {
-					i += bellPos + 1
+					stScope = rest[:bellPos]
+				}
+				if stPos := strings.Index(stScope, "\x1b\\"); stPos != -1 {
+					i += stPos + 2
 					continue
 				}
-				// No BEL found - find ST (ESC \) as alternative terminator
-				stPos := strings.Index(content[i:], "\x1b\\")
-				if stPos != -1 {
-					i += stPos + 2
+				if bellPos != -1 {
+					i += bellPos + 1
 					continue
 				}
 			}

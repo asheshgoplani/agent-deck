@@ -882,21 +882,8 @@ func ResolveSession(identifier string, instances []*session.Instance) (*session.
 // GetCurrentSessionID detects the current agent-deck session from tmux environment
 // Returns session ID or empty string if not in an agent-deck session
 func GetCurrentSessionID() string {
-	// Check if we're in tmux
-	if os.Getenv("TMUX") == "" {
-		return ""
-	}
-
-	// Get current tmux session name (bounded — see tmuxProbeTimeout)
-	output, err := tmuxProbeBounded("display-message", "-p", "#S")
-	if err != nil {
-		return ""
-	}
-
-	sessionName := strings.TrimSpace(string(output))
-
-	// Parse agent-deck session name: agentdeck_<title>_<id>
-	if !strings.HasPrefix(sessionName, "agentdeck_") {
+	sessionName := currentAgentDeckTmuxName()
+	if sessionName == "" {
 		return ""
 	}
 
@@ -910,18 +897,48 @@ func GetCurrentSessionID() string {
 	return parts[len(parts)-1]
 }
 
-// ResolveSessionOrCurrent resolves a session by identifier, or uses current session if empty
-func ResolveSessionOrCurrent(identifier string, instances []*session.Instance) (*session.Instance, string, string) {
-	if identifier == "" {
-		// Try to detect current session
-		currentID := GetCurrentSessionID()
-		if currentID == "" {
-			return nil, "no session specified and not inside an agent-deck session", ErrCodeNotFound
-		}
-		identifier = currentID
+// currentAgentDeckTmuxName returns the calling tmux session's name when it is
+// an agent-deck one (agentdeck_<title>_<suffix>), else "".
+func currentAgentDeckTmuxName() string {
+	// Check if we're in tmux
+	if os.Getenv("TMUX") == "" {
+		return ""
 	}
 
-	return ResolveSession(identifier, instances)
+	// Get current tmux session name (bounded — see tmuxProbeTimeout)
+	output, err := tmuxProbeBounded("display-message", "-p", "#S")
+	if err != nil {
+		return ""
+	}
+
+	sessionName := strings.TrimSpace(string(output))
+	if !strings.HasPrefix(sessionName, "agentdeck_") {
+		return ""
+	}
+	return sessionName
+}
+
+// ResolveSessionOrCurrent resolves a session by identifier, or uses current session if empty.
+// The current session is $AGENTDECK_INSTANCE_ID, else the instance that owns the
+// calling tmux session. The tmux name ends in a random suffix, not the session
+// ID, so it is matched whole rather than parsed.
+func ResolveSessionOrCurrent(identifier string, instances []*session.Instance) (*session.Instance, string, string) {
+	if identifier != "" {
+		return ResolveSession(identifier, instances)
+	}
+	if id := strings.TrimSpace(os.Getenv("AGENTDECK_INSTANCE_ID")); id != "" {
+		return ResolveSession(id, instances)
+	}
+	name := currentAgentDeckTmuxName()
+	if name == "" {
+		return nil, "no session specified and not inside an agent-deck session", ErrCodeNotFound
+	}
+	for _, inst := range instances {
+		if ts := inst.GetTmuxSession(); ts != nil && ts.Name == name {
+			return inst, "", ""
+		}
+	}
+	return nil, fmt.Sprintf("no session owns the current tmux session %q", name), ErrCodeNotFound
 }
 
 // StatusSymbol returns the symbol for a status

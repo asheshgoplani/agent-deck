@@ -25488,7 +25488,7 @@ func truncatePath(path string, maxLen int) string {
 		maxLen = 10
 	}
 	// Show beginning and end: /Users/.../project
-	// Use rune-based slicing for proper Unicode handling
+	// Both ends are cut by display width, so wide runes (CJK) keep fewer runes.
 	runes := []rune(path)
 	startLen := maxLen / 3
 	endLen := maxLen*2/3 - 3
@@ -25496,7 +25496,7 @@ func truncatePath(path string, maxLen int) string {
 		// Path is short in runes but wide in display - use width-aware truncation
 		return cellTruncate(path, maxLen-3, "...")
 	}
-	return string(runes[:startLen]) + "..." + string(runes[len(runes)-endLen:])
+	return cellTruncate(path, startLen, "") + "..." + cellTruncateLeft(path, endLen)
 }
 
 // pickBadgeTime returns the most recent of the five signals the session-row

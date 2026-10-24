@@ -521,8 +521,8 @@ func (s *Searcher) filterSQL(f Filters) (string, []any) {
 	// through the conversation id.
 	for k, v := range f.Hints {
 		sb.WriteString(` AND (s.native_id IN (SELECT l.native_id FROM reg.session_links l JOIN reg.session_hints h ON h.scope_kind='instance' AND h.scope_id=l.session_id
-				WHERE l.authoritative=1 AND l.harness=s.harness AND h.key=? AND h.value=?)
-			OR s.native_id IN (SELECT scope_id FROM reg.session_hints WHERE scope_kind='harness_session' AND key=? AND value=?))`)
+				WHERE l.authoritative=1 AND l.harness=s.harness AND h.key=? AND h.value=? AND h.superseded_at=0)
+			OR s.native_id IN (SELECT scope_id FROM reg.session_hints WHERE scope_kind='harness_session' AND key=? AND value=? AND superseded_at=0))`)
 		args = append(args, k, v, k, v)
 	}
 	for _, tag := range f.Tags {

@@ -383,6 +383,19 @@ func PruneCommsSpool(now time.Time) {
 	}
 }
 
+// inboxWakePrefixes open a prompt that agent-deck typed to wake a session
+// (inbox, heartbeat, comms ledger). Both trigger classifiers share them.
+var inboxWakePrefixes = []string{"[INBOX", "[HEARTBEAT]", "[agent-deck inbox]", comms.WakePrefix}
+
+func hasInboxWakePrefix(text string) bool {
+	for _, p := range inboxWakePrefixes {
+		if strings.HasPrefix(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // commsPromptTrigger maps the prompt that started a turn to a trigger kind,
 // for harnesses whose transcript the daemon cannot read. The prefixes are
 // the ones the Claude classifier recognises, so a tagged send, an inbox or
@@ -400,8 +413,7 @@ func commsPromptTrigger(prompt string) (trigger, fromID string) {
 			return TurnTriggerSend, strings.TrimSpace(rest[:end])
 		}
 		return TurnTriggerSend, ""
-	case strings.HasPrefix(text, "[INBOX"), strings.HasPrefix(text, "[HEARTBEAT]"),
-		strings.HasPrefix(text, "[agent-deck inbox]"), strings.HasPrefix(text, "[agent-deck msg]"):
+	case hasInboxWakePrefix(text):
 		return TurnTriggerInbox, ""
 	case strings.HasPrefix(text, "<task-notification>"):
 		return TurnTriggerTask, ""
