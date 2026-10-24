@@ -39,9 +39,9 @@ func (st *pidStub) piRestart(f *turnTestFixture, w *piWriter, at time.Time) {
 // resumed pi's session_start changes the poll's key (waiting|pi-run:<A> to
 // waiting|), and that flip is the one info line; nothing wakes. A second idle
 // restart with no run between writes only another session_start, which is no
-// status edge (the key stays waiting|): no line, no wake, and the sweep retires
-// the token at the boot timeout, as an unseen boot is on main. The next run rings
-// the parent as before.
+// status edge (the key stays waiting|), so its boot goes unseen: the sweep sends
+// the info line for it (#2813), as for Claude, and nothing wakes. The next run
+// rings the parent as before.
 func TestPiRestart_IdleRestartIsOneInfoLine(t *testing.T) {
 	t.Setenv("AGENTDECK_RESTART_BOOT_TIMEOUT", "1m")
 	f := newTurnTestFixture(t)
@@ -83,19 +83,23 @@ func TestPiRestart_IdleRestartIsOneInfoLine(t *testing.T) {
 		t.Fatalf("restart 2: no flip, so the token waits for the sweep")
 	}
 	statuses := map[string]string{f.child.ID: "waiting", f.parent.ID: "waiting"}
-	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now().Add(2*time.Minute))
-	if errs := f.recordsTo(t, "error"); len(errs) != 0 {
-		t.Fatalf("restart 2: a pi child back at its prompt gets no report, got %+v", errs)
+	f.d.sweepRestartTokens("default", f.byID, statuses, time.Now().Add(10*time.Second)) // past restartBootSettle
+	added = f.inboxRecords(t)[2:]
+	if len(added) != 1 || added[0].IsUrgent() || added[0].Text != "Restarted while idle; conversation resumed, no new turn." {
+		t.Fatalf("restart 2: the sweep sends the unseen boot's info line, got %+v", added)
+	}
+	if *f.sends != 1 {
+		t.Fatalf("restart 2: the restart wakes nobody, sends %d", *f.sends)
 	}
 	if _, left := readRestartToken(f.child.ID); left {
-		t.Fatalf("restart 2: the sweep retires the token past the boot timeout")
+		t.Fatalf("restart 2: the info line spends the token")
 	}
 
 	w.TurnStart("run-B")
 	f.piPoll()
 	w.TurnEnd("run-B").Settle("run-B", "entry-2")
 	f.piPoll()
-	f.wantRecords(t, "the first run after the restarts", 3, 2)
+	f.wantRecords(t, "the first run after the restarts", 4, 2)
 }
 
 // The sweep past the boot timeout: a resumed pi back at its prompt (its
