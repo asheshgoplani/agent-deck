@@ -126,7 +126,12 @@ func noteRestartToken(i *Instance, now time.Time) {
 		}
 	}
 	if tok.Transcript == "" {
-		if tok.Signal = transitionEventOutputHash(i); tok.Signal == "" {
+		if tok.Signal = transitionEventOutputHash(i); tok.Signal == "" && strings.EqualFold(strings.TrimSpace(i.Tool), "pi") {
+			// A pi child restarted again before any new run: its file is the last
+			// restart's session_start, which names no run.
+			tok.Signal = piCarriedRunSignal(restartHookStatus(i.ID))
+		}
+		if tok.Signal == "" {
 			return
 		}
 	}
@@ -282,6 +287,10 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 	if !ok || ts.Before(tok.At) {
 		return tok, restartNews, ""
 	}
+	hs := restartHookStatus(id)
+	if piRunReplay(tok, signal, hs) {
+		return tok, restartNews, "" // a carried run replayed, not the boot: the token stays
+	}
 	substate := pane()
 	isError := normalizeStatusString(to) == string(StatusError)
 	if banner := paneErrorText(substate); banner != "" && (isError || normalizeStatusString(to) == string(StatusWaiting) || normalizeStatusString(to) == string(StatusIdle)) {
@@ -294,7 +303,6 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 		return tok, restartUnsettled, "" // the restart is still running; the boot timeout bounds this
 	}
 	newAlive := restartPIDAlive(tok.NewPID)
-	hs := restartHookStatus(id)
 	// The restart's kill is what ends the old Claude, so its SessionEnd can be
 	// written just after the restart recorded the new process; the hook file
 	// stamps whole seconds. A SessionEnd up to its resolution later is the old
@@ -356,11 +364,49 @@ func restartTurnUnchanged(tok restartToken, transcript, signal string, hs *HookS
 	if restartTranscriptUnchanged(tok, transcript, signal) {
 		return true
 	}
-	if signal != "" || tok.Transcript != "" || !strings.HasPrefix(tok.Signal, "pi-run:") ||
-		hs == nil || (hs.Settles && hs.PiRunID != "") || hs.PiOrphanCount == 0 {
+	if signal != "" || tok.Transcript != "" || !strings.HasPrefix(tok.Signal, "pi-run:") {
 		return false
 	}
-	return piRunSignal(hs.PiOrphanRuns[hs.PiOrphanCount-1].RunID) == tok.Signal
+	return piCarriedRunSignal(hs) == tok.Signal
+}
+
+// piCarriedRunSignal is the key of the newest run a settles-capable pi child's
+// file carries forward when the file itself names no run (a session_start or
+// session_shutdown rebuilt it).
+func piCarriedRunSignal(hs *HookStatus) string {
+	if hs == nil || (hs.Settles && hs.PiRunID != "") || hs.PiOrphanCount == 0 {
+		return ""
+	}
+	return piRunSignal(hs.PiOrphanRuns[hs.PiOrphanCount-1].RunID)
+}
+
+// piRunReplay reports whether signal is a run the pi child's file carries
+// forward (recordOrphanedPiRuns replaying it), not the token's run: a run from
+// before the boot, so it is not the boot and must not spend the token.
+func piRunReplay(tok restartToken, signal string, hs *HookStatus) bool {
+	if !strings.HasPrefix(signal, "pi-run:") || signal == tok.Signal || hs == nil {
+		return false
+	}
+	for _, o := range hs.PiOrphanRuns[:hs.PiOrphanCount] {
+		if piRunSignal(o.RunID) == signal {
+			return true
+		}
+	}
+	return false
+}
+
+// piBackAtPrompt reports whether the resumed pi wrote its session_start after
+// the restart recorded it: it is at its prompt, whatever the status reads (past
+// the hook window the status comes from the pane).
+func piBackAtPrompt(tok restartToken, hs *HookStatus) bool {
+	if hs == nil || hs.Event != "session_start" || tok.SpawnedAt.IsZero() {
+		return false
+	}
+	at := hs.ReceivedAt
+	if at.IsZero() {
+		at = hs.UpdatedAt.Add(time.Second) // whole seconds: no earlier than this
+	}
+	return at.After(tok.SpawnedAt)
 }
 
 // restartBootRecord is the notifier's own check (#2792) for a producer that
@@ -566,7 +612,8 @@ func (d *TransitionDaemon) sweepRestartTokens(profile string, byID map[string]*I
 			case string(StatusWaiting), string(StatusIdle):
 				continue // back at its prompt
 			case string(StatusRunning):
-				if !restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), restartHookStatus(id)) {
+				if hs := restartHookStatus(id); piBackAtPrompt(tok, hs) ||
+					!restartTurnUnchanged(tok, inst.GetJSONLPath(), transitionEventOutputHash(inst), hs) {
 					continue // back, and already on a new turn
 				}
 			}

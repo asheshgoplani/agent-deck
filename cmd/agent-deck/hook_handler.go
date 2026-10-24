@@ -63,7 +63,7 @@ type hookPayload struct {
 	TurnID               json.RawMessage `json:"turn_id"`                // Codex hooks only; Claude's Stop has none
 	LastAssistantMessage json.RawMessage `json:"last_assistant_message"` // Claude Stop
 	Prompt               json.RawMessage `json:"prompt"`                 // Claude UserPromptSubmit
-	Settles              json.RawMessage `json:"settles"`                // pi: the writer sends agent_settled (a v4+ extension)
+	Settles              json.RawMessage `json:"settles"`                // pi: the capability bit, sent with run_id by a v4+ extension (agent_settled itself is v3+)
 	RunID                json.RawMessage `json:"run_id"`                 // pi: the run token minted at agent_start
 
 	// Extra is Hermes' bag of non-top-level hook kwargs (shell_hooks.py
@@ -197,9 +197,10 @@ type hookStatusFile struct {
 	CodexCompletedSequence   uint64 `json:"codex_completed_sequence,omitempty"`
 	HookGeneration           string `json:"hook_generation,omitempty"`
 	Sequence                 uint64 `json:"sequence,omitempty"`
-	// Settles is the writer's capability bit (it sends agent_settled) and PiRunID
-	// the run token the extension minted at agent_start, both from the turn_start
-	// and turn_end payloads; an old extension sends neither. PiSettle* are a run's
+	// Settles is the writer's capability bit (a v4+ extension: it sends
+	// agent_settled keyed by run; v3 sends agent_settled without the bit) and
+	// PiRunID the run token the extension minted at agent_start, both from the
+	// turn_start and turn_end payloads; an older extension sends neither. PiSettle* are a run's
 	// identity, merged in by its agent_settled; every other write rebuilds the
 	// file, so the next turn_start erases them.
 	Settles bool   `json:"settles,omitempty"`
