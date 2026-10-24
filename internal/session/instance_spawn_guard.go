@@ -199,8 +199,13 @@ func readSpawnGeneration(instanceID string) (uint64, error) {
 }
 
 // recordInstanceSpawn bumps the stamp's generation and sets its mtime to
-// now. Best-effort: stamp errors are silent; they just turn the gate into
-// a no-op for the next storm sibling (no worse than current behavior).
+// when this spawn began: the acquisition time of the spawn lock this process
+// holds (its file's mtime), else now. Not the time Start returns:
+// StartWithMessage keeps the lock through message delivery (up to the agent
+// ready timeout), and HookDeadFromEarlierSpawn must not count the new
+// process's own exit in that window as an earlier one's (issue #2853).
+// Best-effort: stamp errors are silent; they just turn the gate into a no-op
+// for the next storm sibling (no worse than current behavior).
 // The body is written to a sibling temp file and renamed so a pre-lock
 // snapshot never observes a half-written generation.
 func recordInstanceSpawn(instanceID string) {
@@ -217,8 +222,77 @@ func recordInstanceSpawn(instanceID string) {
 		_ = os.Remove(tmp)
 		return
 	}
-	now := nowFn()
-	_ = os.Chtimes(stamp, now, now)
+	began := nowFn()
+	if acquired, ok := ownSpawnLockAcquiredAt(instanceID); ok && acquired.Before(began) {
+		began = acquired
+	}
+	_ = os.Chtimes(stamp, began, began)
+}
+
+// ownSpawnLockAcquiredAt is the mtime of the instance's spawn lock when this
+// process holds it (the marker carries our pid): when the spawn began.
+func ownSpawnLockAcquiredAt(instanceID string) (time.Time, bool) {
+	path, err := instanceSpawnLockPath(instanceID)
+	if err != nil {
+		return time.Time{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if pid, err := parseInstanceSpawnLockPID(string(data)); err != nil || pid != os.Getpid() {
+		return time.Time{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// spawnBeganAt is when the instance's newest spawn began, from any process:
+// the spawn lock's mtime (its acquisition) while a live holder has it, else
+// the stamp's mtime (recordInstanceSpawn dates it to the same moment). False
+// when neither is known or the time is ahead of now (a clock stepped back):
+// no evidence either way.
+func spawnBeganAt(instanceID string) (time.Time, bool) {
+	path, err := instanceSpawnStampPath(instanceID)
+	if instanceSpawnLockHeld(instanceID) {
+		path, err = instanceSpawnLockPath(instanceID)
+	}
+	if err != nil {
+		return time.Time{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.ModTime().After(nowFn().Add(instanceSpawnStampSkewTolerance)) {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
+}
+
+// HookDeadFromEarlierSpawn reports whether a "dead" hook record (Claude's
+// SessionEnd, written when a stop kills the agent) belongs to a process of
+// the instance older than its newest spawn (issue #2853): the record is from
+// a second before that spawn began (spawnBeganAt). A record from after the
+// spawn began is the new process's own exit and is kept, including one
+// written while a slow start still holds the lock. The hook ts has
+// whole-second resolution, so a record from the same second as the spawn's
+// start is kept too: a stop and start inside one second reads as before.
+func HookDeadFromEarlierSpawn(instanceID, hookStatus string, hookAt time.Time) bool {
+	if hookStatus != "dead" || hookAt.IsZero() || instanceID == "" {
+		return false
+	}
+	began, ok := spawnBeganAt(instanceID)
+	return ok && hookAt.Unix() < began.Unix()
+}
+
+// MarkInstanceSpawnedForTest records a finished spawn of instanceID that
+// began at began, as recordInstanceSpawn does (tests in other packages only).
+func MarkInstanceSpawnedForTest(instanceID string, began time.Time) {
+	recordInstanceSpawn(instanceID)
+	if stamp, err := instanceSpawnStampPath(instanceID); err == nil {
+		_ = os.Chtimes(stamp, began, began)
+	}
 }
 
 // instanceSpawnStampPath sits next to the lock file. Same dir, "-stamp"

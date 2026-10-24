@@ -2368,6 +2368,15 @@ func (i *Instance) updateStatus(pass *StatusUpdatePass, syncMetadata bool) error
 		i.hookLastUpdate = time.Time{}
 	}
 
+	// Issue #2853: the pane exists here, so a "dead" hook (SessionEnd) from
+	// before the newest spawn began is the previous process's exit, not this
+	// one's (HookDeadFromEarlierSpawn).
+	// Read as fresh, it turned every start after a stop into error.
+	if HookDeadFromEarlierSpawn(i.ID, i.hookStatus, i.hookLastUpdate) {
+		i.hookStatus, i.hookEvent, i.hookSessionID = "", "", ""
+		i.hookLastUpdate = time.Time{}
+	}
+
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
