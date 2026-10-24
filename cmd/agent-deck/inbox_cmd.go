@@ -353,6 +353,16 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 		printInboxEvents(stdout, events)
 	}
 	reportWithdrawnRecords(os.Stderr, withdrawn, *asJSON)
+	// Issue #2834: only the notify-daemon writes these records. With none
+	// running, an empty drain is not "nothing finished", so say so. Text mode
+	// prints it with the drain; --json keeps stdout the bare array.
+	if note := noNotifyDaemonNote(session.ReadWriterStatus()); note != "" {
+		if *asJSON {
+			fmt.Fprintln(os.Stderr, "WARNING: "+note)
+		} else {
+			fmt.Fprintln(stdout, "WARNING: "+note)
+		}
+	}
 
 	// Messaging audit P1-4 (#2101): a dead letter is parked, not pending
 	// delivery, and nothing can ack it yet, so it must not turn every
@@ -372,6 +382,16 @@ func runInboxDrain(stdout io.Writer, args []string, explicitProfile string) erro
 		}
 	}
 	return nil
+}
+
+// noNotifyDaemonNote is the one sentence the parent-facing surfaces (inbox
+// drain, the fleet line) print when no notify-daemon is writing completion
+// records on this host (#2834), or "" when one is.
+func noNotifyDaemonNote(ws session.WriterStatus) string {
+	if ws.Running {
+		return ""
+	}
+	return "no notify-daemon running; completions are not being recorded, so an empty drain or 0 done does not mean nothing finished. Start one with `agent-deck notify-daemon` (`agent-deck conductor setup` installs it as a service)."
 }
 
 // reportWithdrawnRecords logs the records a drain retired unshown because

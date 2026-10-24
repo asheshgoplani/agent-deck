@@ -158,5 +158,21 @@ func renderChildrenContextSummary(instanceID string) string {
 	// No pane capture here: this runs inside the parent's hook handler on
 	// every prompt (review round 4 P2). The hook-lag sample is taken by the
 	// polling surfaces (`session children --json` / `--follow`).
-	return formatChildrenContext(buildChildRows(kids, cachedChildStatus))
+	return withNotifyDaemonNote(formatChildrenContext(buildChildRows(kids, cachedChildStatus)), session.ReadWriterStatus())
+}
+
+// withNotifyDaemonNote appends the #2834 warning to the fleet header line when
+// no notify-daemon is running: the "done" count comes from records only the
+// daemon writes, so without one "0 done" says nothing.
+func withNotifyDaemonNote(summary string, ws session.WriterStatus) string {
+	note := noNotifyDaemonNote(ws)
+	if summary == "" || note == "" {
+		return summary
+	}
+	header, rest, found := strings.Cut(summary, "\n")
+	header += " (" + note + ")"
+	if !found {
+		return header
+	}
+	return header + "\n" + rest
 }
