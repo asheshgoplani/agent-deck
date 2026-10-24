@@ -139,13 +139,14 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, stopped, errored 
 		h.refreshSessionRenderSnapshot(nil)
 		snapshot = h.getSessionRenderSnapshot()
 	}
-	// Skip archived cross-harness sources superseded by a "Restart with new
-	// session ID": their old tmux session can still be alive, but they are
-	// hidden from list --json and must not inflate this header pill either
-	// (issue: header/status totals exceeded list --json's by the number of
-	// superseded sources still holding a live tmux process).
+	// Skip every archived session, so this pill agrees with `agent-deck
+	// status` and the web menu, which both drop archived sessions. This
+	// covers archived cross-harness sources superseded by a "Restart with new
+	// session ID" (their old tmux session can still be alive) and archived
+	// workers left in "waiting": the background sweep skips archived rows,
+	// so their status would never clear and they would count forever.
 	for _, state := range snapshot {
-		if state.archivedSuperseded {
+		if state.archived {
 			continue
 		}
 		switch statusBucket(state.status) {

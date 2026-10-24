@@ -3641,16 +3641,23 @@ type statusCounts struct {
 	total   int
 }
 
+// statusInstances is the set `status` reports on: sessions that are not
+// archived. An archived session can keep a live tmux process (a conductor
+// archives finished workers; a superseded cross-harness source keeps its old
+// pane), but the operator filed it away, so it must not show up as waiting,
+// running or idle. This is stricter than `list --json`, which keeps normal
+// archives and flags them with "archived": true.
+func statusInstances(instances []*session.Instance) []*session.Instance {
+	return session.FilterInstancesByArchive(instances, false)
+}
+
 // countByStatus counts sessions by their status
 func countByStatus(instances []*session.Instance) statusCounts {
+	instances = statusInstances(instances)
 	// Warm tmux pane-title cache + load hook statuses so `status`/`status --json`
-	// reports the same counts the TUI and /api/menu do (issue #610).
+	// reports the same counts the TUI header and /api/menu do (issue #610).
+	// All three leave archived sessions out.
 	session.RefreshInstancesForCLIStatus(instances)
-	// Superseded/archived source rows (from cross-harness "Restart with new
-	// session ID") stay in storage with their old tmux session still
-	// reachable, but `list --json` hides them. Without this filter `status`
-	// counts them anyway, so its total silently exceeds `list --json`'s.
-	instances = session.VisibleInstances(instances)
 	var counts statusCounts
 	for _, inst := range instances {
 		_ = inst.UpdateStatus() // Refresh status from tmux
@@ -3744,10 +3751,8 @@ func handleStatus(profile string, args []string) {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		exitCLI(1)
 	}
-	// Same tracked set as `list --json`: hide archived cross-harness sources
-	// superseded by a "Restart with new session ID" so status totals never
-	// exceed the enumerable session list.
-	instances = session.VisibleInstances(instances)
+	// Archived sessions are not counted or listed; see statusInstances.
+	instances = statusInstances(instances)
 
 	if len(instances) == 0 {
 		if *jsonOutput {

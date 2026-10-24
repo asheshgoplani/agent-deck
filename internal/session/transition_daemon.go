@@ -1656,6 +1656,13 @@ func (d *TransitionDaemon) notifyDesktop(profile string, inst *Instance, toStatu
 	if inst.NoTransitionNotify {
 		return
 	}
+	// An archived session is one the operator filed away, so it never raises
+	// a banner. Only this operator alert is gated: the parent-inbox path in
+	// the poll loop still records the child's turn, because a conductor
+	// archives a finished worker and still needs its completion record.
+	if inst.IsArchived() {
+		return
+	}
 	// Edge-trigger: notify once per entry into a status, not once per poll
 	// while the session sits in it. Required because the hook-candidate call
 	// site re-derives a candidate for the whole 45s hookFreshWindow. Keyed on

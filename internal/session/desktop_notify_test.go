@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/desknotify"
 )
@@ -347,4 +348,33 @@ func TestNotifyDesktop_NilSafe(t *testing.T) {
 	var nilDaemon *TransitionDaemon
 	nilDaemon.notifyDesktop("default", &Instance{ID: "a"}, string(StatusWaiting))
 	d.waitDesktopNotifications()
+}
+
+// An archived session must not raise a banner: the operator filed it away,
+// and a conductor archiving a finished worker would otherwise alert for a
+// session nobody is looking at.
+func TestNotifyDesktop_SkipsArchivedSession(t *testing.T) {
+	writeDesktopNotifyConfig(t, "desktop = true")
+
+	rec := &recordingBackend{}
+	d := &TransitionDaemon{
+		deskNotifier:      desknotify.NewWithBackends(rec),
+		lastDesktopNotify: map[string]string{},
+	}
+	archived := &Instance{ID: "a", Title: "filed-away", ArchivedAt: time.Now()}
+	d.notifyDesktop("default", archived, string(StatusWaiting))
+	d.notifyDesktop("default", archived, string(StatusError))
+	d.waitDesktopNotifications()
+
+	if len(rec.titles) != 0 {
+		t.Fatalf("delivered %d notifications for an archived session, want 0", len(rec.titles))
+	}
+
+	// Unarchiving restores alerts for the same session.
+	archived.SetArchivedAtThreadSafe(time.Time{})
+	d.notifyDesktop("default", archived, string(StatusWaiting))
+	d.waitDesktopNotifications()
+	if len(rec.titles) != 1 {
+		t.Fatalf("delivered %d notifications after unarchive, want 1", len(rec.titles))
+	}
 }
