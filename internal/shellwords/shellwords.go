@@ -148,7 +148,10 @@ func CommandWords(words []string) []string {
 		case word == "exec":
 			i = afterOptions(words, i+1, "a", nil)
 		case word == "env":
-			i = afterOptions(words, i+1, "uCS", envLongOptionsWithValue)
+			// env has no -c or -s of its own, so -C DIR and -S STR are matched in
+			// either case: a caller that lowercases the command line first
+			// (detectToolFromCommand) still skips their values.
+			i = afterOptions(words, i+1, "uCScs", envLongOptionsWithValue)
 		case word == "command":
 			i = afterOptions(words, i+1, "", nil)
 		case word == "nice":

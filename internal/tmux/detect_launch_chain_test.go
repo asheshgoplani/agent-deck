@@ -81,6 +81,13 @@ func TestDetectToolFromCommand_LaunchChain(t *testing.T) {
 			command: `env -u CLAUDE_JOB_DIR -i PATH=/bin codex --yolo -c 'developer_instructions="see CLAUDE.md"'`,
 			want:    "codex",
 		},
+		// detectToolFromCommand lowercases the line before splitting it, so
+		// env's -C DIR arrives as -c and must still take its value.
+		{
+			name:    "codex through env -C",
+			command: `env -C /src codex -c 'developer_instructions="see CLAUDE.md"'`,
+			want:    "codex",
+		},
 		{
 			name:    "codex through command",
 			command: `command codex --yolo -c 'developer_instructions="see CLAUDE.md"'`,
