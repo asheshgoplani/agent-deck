@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -699,6 +700,13 @@ func preseedClaudeJSON(source map[string]any, targetJSON, projectPath string, by
 			changed = append(changed, "bypass-ack")
 		}
 	})
+	if err == nil {
+		for _, note := range notes {
+			if dir, ok := strings.CutPrefix(note, "trust:"); ok {
+				logFolderTrustGranted("claude", dir, "config", targetJSON)
+			}
+		}
+	}
 	return notes, err
 }
 
@@ -953,6 +961,8 @@ func settleToReady(deps SettleDeps, opts SettleOptions, report *SettleReport) er
 			}
 			answeredAt[pane.State] = deps.Now()
 			report.Answered = appendOnce(report.Answered, string(pane.State))
+			logFolderTrustGranted("claude", opts.ProjectPath, "config_dir", opts.ConfigDir,
+				slog.String("via", "dialog_keypress"))
 			deps.Sleep(time.Second)
 		case SettlePaneTheme, SettlePaneOnboarding:
 			// Any theme is acceptable and the notes only continue, so

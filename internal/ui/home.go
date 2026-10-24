@@ -5047,51 +5047,7 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		userConfig, _ := session.LoadUserConfig()
 		opts := session.NewClaudeOptions(userConfig)
 
-		// Build command - only set CLAUDE_CONFIG_DIR if explicitly configured
-		// If not explicit, let the tmux shell's environment handle it
-		// This is critical for WSL and other environments where users have
-		// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc
-		var cmdBuilder strings.Builder
-		if session.IsClaudeConfigDirExplicitForGroup(inst.GroupPath) {
-			configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
-			// #1815 (Codex review on #1830): quote exactly as
-			// Instance.buildBashExportPrefix does (instance.go, audit F2) —
-			// this string is baked into inst.Command and ends up in a
-			// `bash -c` payload, so an unquoted config_dir containing
-			// whitespace, ;, or $(...) breaks the command or injects.
-			cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir)))
-		}
-		// #1815: the TUI picker builds a resume command too, so it routes
-		// through the same resume-time identity guard as restart / start /
-		// fork. The id was just recorded onto inst above (the user picked
-		// this conversation FOR this session), so the check passes by
-		// construction today — it is here so a future change that reuses an
-		// existing instance here cannot resume a conversation that instance
-		// does not own. Only the identity half applies: the user's explicit
-		// pick must not be downgraded to a fresh session by the
-		// conversation-data heuristics.
-		//
-		// exec so the agent replaces the wrapper shell and leads the pane,
-		// matching buildClaudeResumeCommand and the fresh-start path
-		if allowed, _ := session.ResumeIdentityAllowed(inst, result.SessionID); allowed {
-			cmdBuilder.WriteString("exec claude --resume ")
-			cmdBuilder.WriteString(result.SessionID)
-		} else {
-			freshID := session.NewClaudeSessionUUID()
-			inst.ClaudeSessionID = freshID
-			// #1815: a freshly minted id is vouched ownership, same as every
-			// other minted-id writer (Instance.replaceRefusedClaudeSessionID,
-			// buildClaudeCommandWithMessage's own mint path).
-			session.MarkClaudeSessionIDVerified(inst)
-			cmdBuilder.WriteString("exec claude --session-id ")
-			cmdBuilder.WriteString(freshID)
-		}
-		if opts.SkipPermissions {
-			cmdBuilder.WriteString(" --dangerously-skip-permissions")
-		} else if opts.AllowSkipPermissions {
-			cmdBuilder.WriteString(" --allow-dangerously-skip-permissions")
-		}
-		inst.Command = cmdBuilder.String()
+		inst.Command = globalSearchClaudeCommand(inst, result.SessionID, opts)
 
 		// Persist options so restarts use per-session settings
 		_ = inst.SetClaudeOptions(opts)
@@ -5104,6 +5060,58 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 
 		return sessionCreatedMsg{instance: inst}
 	}
+}
+
+// globalSearchClaudeCommand builds the claude resume command for a global
+// search hit. sessionID comes from an indexed transcript's "sessionId" field
+// (recall NativeID), i.e. file data, so it is shell-quoted like every other
+// claude resume id; ordinary UUIDs are left byte-identical.
+func globalSearchClaudeCommand(inst *session.Instance, sessionID string, opts *session.ClaudeOptions) string {
+	// Build command - only set CLAUDE_CONFIG_DIR if explicitly configured
+	// If not explicit, let the tmux shell's environment handle it
+	// This is critical for WSL and other environments where users have
+	// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc
+	var cmdBuilder strings.Builder
+	if session.IsClaudeConfigDirExplicitForGroup(inst.GroupPath) {
+		configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
+		// #1815 (Codex review on #1830): quote exactly as
+		// Instance.buildBashExportPrefix does (instance.go, audit F2) —
+		// this string is baked into inst.Command and ends up in a
+		// `bash -c` payload, so an unquoted config_dir containing
+		// whitespace, ;, or $(...) breaks the command or injects.
+		cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", shellescape.Quote(configDir)))
+	}
+	// #1815: the TUI picker builds a resume command too, so it routes
+	// through the same resume-time identity guard as restart / start /
+	// fork. The id was just recorded onto inst above (the user picked
+	// this conversation FOR this session), so the check passes by
+	// construction today — it is here so a future change that reuses an
+	// existing instance here cannot resume a conversation that instance
+	// does not own. Only the identity half applies: the user's explicit
+	// pick must not be downgraded to a fresh session by the
+	// conversation-data heuristics.
+	//
+	// exec so the agent replaces the wrapper shell and leads the pane,
+	// matching buildClaudeResumeCommand and the fresh-start path
+	if allowed, _ := session.ResumeIdentityAllowed(inst, sessionID); allowed {
+		cmdBuilder.WriteString("exec claude --resume ")
+		cmdBuilder.WriteString(shellescape.Quote(sessionID))
+	} else {
+		freshID := session.NewClaudeSessionUUID()
+		inst.ClaudeSessionID = freshID
+		// #1815: a freshly minted id is vouched ownership, same as every
+		// other minted-id writer (Instance.replaceRefusedClaudeSessionID,
+		// buildClaudeCommandWithMessage's own mint path).
+		session.MarkClaudeSessionIDVerified(inst)
+		cmdBuilder.WriteString("exec claude --session-id ")
+		cmdBuilder.WriteString(freshID)
+	}
+	if opts.SkipPermissions {
+		cmdBuilder.WriteString(" --dangerously-skip-permissions")
+	} else if opts.AllowSkipPermissions {
+		cmdBuilder.WriteString(" --allow-dangerously-skip-permissions")
+	}
+	return cmdBuilder.String()
 }
 
 // handleMouse handles mouse events (click to select, double-click to activate)

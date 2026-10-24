@@ -222,7 +222,8 @@ func themeEnvExport() string {
 		}
 	}
 
-	return fmt.Sprintf("export COLORFGBG='%s'", colorfgbg)
+	// Quoted: an inherited COLORFGBG is propagated verbatim.
+	return "export COLORFGBG=" + shellQuote(colorfgbg)
 }
 
 // ThemeColorFGBG returns the COLORFGBG value for the current resolved theme.
@@ -268,12 +269,15 @@ func paneWarning(msg string) string {
 
 // buildSourceCmd creates a shell command to source a file.
 // If ignoreMissing is true, wraps in a file existence check.
+// The path is single-quoted so $(...), backticks or quotes in it (from
+// config, env expansion or the project dir) stay literal.
 func buildSourceCmd(path string, ignoreMissing bool) string {
+	quoted := shellQuote(path)
 	if ignoreMissing {
 		// Use [ -f file ] && source file pattern for safe sourcing
-		return fmt.Sprintf(`[ -f "%s" ] && source "%s"`, path, path)
+		return fmt.Sprintf(`[ -f %s ] && source %s`, quoted, quoted)
 	}
-	return fmt.Sprintf(`source "%s"`, path)
+	return "source " + quoted
 }
 
 // resolvePath resolves a user-specified config file path:
@@ -489,7 +493,8 @@ func isFilePath(s string) bool {
 
 // getToolInlineEnv returns shell export commands for inline env vars from [tools.X].env.
 // Returns empty string if the tool has no inline env vars defined.
-// Keys are sorted for deterministic output. Single quotes in values are escaped.
+// Keys are sorted for deterministic output; invalid env names are skipped and
+// single quotes in values are escaped.
 func (i *Instance) getToolInlineEnv() string {
 	def := GetToolDef(i.Tool)
 	if def == nil || len(def.Env) == 0 {
@@ -506,6 +511,9 @@ func (i *Instance) getToolInlineEnv() string {
 	// Build export statements with single-quote escaping
 	exports := make([]string, 0, len(keys))
 	for _, k := range keys {
+		if !IsValidEnvKey(k) {
+			continue // skip invalid env var names
+		}
 		v := def.Env[k]
 		// Escape single quotes: replace ' with '\'' (end quote, escaped quote, start quote)
 		escaped := strings.ReplaceAll(v, "'", "'\\''")

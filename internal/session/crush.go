@@ -62,11 +62,8 @@ func (i *Instance) buildCrushCommand(baseCommand string) string {
 	// override is present.
 	if len(i.ToolOptionsJSON) > 0 {
 		if opts, err := UnmarshalCrushOptions(i.ToolOptionsJSON); err == nil && opts != nil {
-			args := opts.ToArgs()
-			if len(args) > 0 {
-				cmd += " " + strings.Join(args, " ")
-			}
-			return envPrefix + cmd
+			// Quoted: ResumeSessionID comes from stored ToolOptionsJSON.
+			return envPrefix + cmd + ompArgsSuffix(opts.ToArgs())
 		}
 	}
 

@@ -224,7 +224,7 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 	switch matched {
 	case "claude":
 		instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_PROFILE=%s ",
-			i.ID, shellescape.Quote(sessionProfileEnvValue()))
+			shellescape.Quote(i.ID), shellescape.Quote(sessionProfileEnvValue()))
 		// claudeCmd/hasCustomClaudeCommand mirrors buildClaudeCommandWithMessage's
 		// own gate exactly (instance.go, "the alias handles it"): when a
 		// configured [claude].command (conductor/group/global, e.g. "cdw") is
@@ -301,7 +301,7 @@ func (i *Instance) buildShellPassthroughCommand(baseCommand string) string {
 		// substitution inside the double quotes it produces — a title like
 		// `x$(touch /tmp/pwned)` would execute at every spawn otherwise.
 		agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s AGENTDECK_PROFILE=%s ",
-			i.ID, shellescape.Quote(i.Title), matched, shellescape.Quote(sessionProfileEnvValue()))
+			shellescape.Quote(i.ID), shellescape.Quote(i.Title), matched, shellescape.Quote(sessionProfileEnvValue()))
 		// CODEX_HOME selects which account's Codex config/credentials the
 		// spawned process reads — injecting it ahead of an explicitly
 		// configured non-canonical binary (e.g. "codex-nightly", itself

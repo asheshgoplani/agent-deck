@@ -697,7 +697,7 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 		// Launch through the selected launcher, as a restart does
 		// (buildOpenCodeCommand): a bare `opencode` may be missing from PATH or
 		// be a 1.x binary that does not know the 2.x child session.
-		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), childID), childID, nil
+		return fmt.Sprintf("cd %s && %s -s %s", shellescape.Quote(workDir), quoteOpenCodeArg(i.openCodeForkBinary()), shellescape.Quote(childID)), childID, nil
 	}
 
 	// Build extra flags from options (for fork, exclude session mode flags).

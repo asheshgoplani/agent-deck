@@ -164,7 +164,7 @@ env = { AGENT_ROLE = "inline-wins" }
 	inst := NewInstanceWithGroupAndTool("s1", "/tmp/p", "personal", "claude")
 	cmd := inst.buildEnvSourceCommand()
 
-	sourceIdx := strings.Index(cmd, `source "`+envPath+`"`)
+	sourceIdx := strings.Index(cmd, "source "+shellQuote(envPath))
 	exportIdx := strings.Index(cmd, "export AGENT_ROLE='inline-wins'")
 	if sourceIdx == -1 || exportIdx == -1 {
 		t.Fatalf("missing env_file source (%d) or inline export (%d) in:\n%s", sourceIdx, exportIdx, cmd)
