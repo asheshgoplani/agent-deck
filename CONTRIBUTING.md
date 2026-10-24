@@ -4,7 +4,7 @@ Thanks for being here. agent-deck ships community fixes in nearly every release,
 
 This page tells you how the project actually works, what makes a PR land fast, and where to start. If you are an AI agent contributing on a human's behalf, read [.github/INTAKE.md](.github/INTAKE.md): it is the field-level contract, and following it means you pass intake on the first try.
 
-**Contributing with an AI agent?** Point it at the [agent-deck contributor skill](.github/skills/agent-deck-contributor/SKILL.md). It packages this whole page, the intake contract, and the review criteria as an agent skill, including a `self-check.sh` that runs every gate check locally before you open the PR. It runs `go test` only inside a container; on a host it prints the Docker command to use. An agent that follows it opens a PR we can merge on the first try.
+**Contributing with an AI agent?** Point it at the [contributor workflow](skills/agent-deck/references/contributing.md) in the agent-deck skill. It packages this whole page, the intake contract, and the review criteria for an agent, including a `self-check.sh` that runs every gate check locally before you open the PR. It runs `go test` only inside a container; on a host it prints the Docker command to use. An agent that follows it opens a PR we can merge on the first try.
 
 ## Start here
 
@@ -26,7 +26,7 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 1. **A targeted diff.** One problem per PR. Small diffs validate in one pass; a 3k-line diff without prior discussion gets flagged for a conversation first.
 2. **Tests.** New behavior needs a test. Run the suite sandboxed and only inside a container. This matters: agent-deck tests start real tmux servers and processes, so never run `go test` on your host. Run the contributor self-check, which refuses to run `go test` outside a container and prints the exact `docker run` command that reruns it, sandboxed tests included, inside a throwaway container:
    ```bash
-   FULL_TESTS=1 .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
+   FULL_TESTS=1 skills/agent-deck/scripts/contributing/self-check.sh pr-body.md
    ```
 3. **Evidence.** For behavior changes, show real output: a terminal capture, logs, or before/after behavior. Mock-only proof is not enough for changes users will feel.
 4. **The human need behind the diff.** The single highest-signal thing you can write is one real sentence about what you were doing when you hit this. It is what separates a real fix from a speculative one, and it is the first thing a reviewer reads.
@@ -35,7 +35,7 @@ agent-deck has one human maintainer and a fleet of AI agents that do the heavy l
 
 ## Find issues in your own usage
 
-Run [deck-retro](skills/deck-retro/SKILL.md) with a local time window and the
+Run [deck-retro](skills/agent-deck/references/retro.md) with a local time window and the
 transcripts or logs you choose. It can inspect local Recall data too. The public
 workflow has no configured remote hosts and performs no uploads or GitHub writes.
 It keeps source evidence private and builds separate issue drafts in our
@@ -54,7 +54,7 @@ Both entry points use the same fix, verification, and contributor-credit flow.
 
 ## Reproduce and fix a bug
 
-Use [deck-repro](skills/deck-repro/SKILL.md) with an issue, transcript
+Use [deck-repro](skills/agent-deck/references/repro.md) with an issue, transcript
 excerpt, or description. It is usable by any agent or human contributor and
 requires no personal profiles or remote hosts.
 
@@ -67,7 +67,7 @@ requires no personal profiles or remote hosts.
    Report `fixed` only when both pass on the fixed build and the test has a
    recorded behavioral failure on the affected build.
 4. Open a PR under your own contributor identity using the existing
-   [PR body template](.github/skills/agent-deck-contributor/references/pr-body-template.md).
+   [PR body template](skills/agent-deck/references/contributing-pr-body-template.md).
    Use a capable coding model if helpful, disclose it, and retain contributor
    authorship and credit. Include the evidence with sensitive data removed. If the original
    symptom cannot be exercised, state the remaining gap instead of claiming it

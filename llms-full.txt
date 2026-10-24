@@ -631,15 +631,15 @@ Share Claude sessions between developers for collaboration or handoff.
 **Use when:** User says "share session", "export session", "send to colleague", "import session"
 
 ```bash
-# Export current session to file (session-share is a sibling skill)
-$SKILL_DIR/../session-share/scripts/export.sh
+# Export current session to file (scripts ship in the agent-deck skill)
+$SKILL_DIR/scripts/session-share/export.sh
 # Output: ~/session-shares/session-<date>-<title>.json
 
 # Import received session
-$SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
+$SKILL_DIR/scripts/session-share/import.sh ~/Downloads/session-file.json
 ```
 
-**See:** [session-share skill](../session-share/SKILL.md) for full documentation.
+**See:** [session-share.md](references/session-share.md) for full documentation.
 
 ## Critical Rules
 
@@ -653,7 +653,7 @@ $SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
 - [config-reference.md](references/config-reference.md) - All config.toml options
 - [tui-reference.md](references/tui-reference.md) - TUI features and shortcuts
 - [troubleshooting.md](references/troubleshooting.md) - Common issues and bug reporting
-- [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
+- [session-share.md](references/session-share.md) - Export/import sessions for collaboration
 
 
 ---

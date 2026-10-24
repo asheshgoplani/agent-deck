@@ -1,6 +1,6 @@
 ---
 name: agent-deck
-description: agent-deck, the terminal session manager for AI coding agents. Use when the user mentions "agent-deck", "session", "sub-agent", "MCP attach", or "git worktree", or needs to create, start, message, read, fork, restart, or supervise agent-deck sessions; launch child sessions or consult another CLI through agent-deck; attach MCPs to a session; manage groups, profiles, accounts, or worktree sessions; set up conductors or watchers; configure config.toml; or troubleshoot agent-deck. Not for in-conversation subagents, plain git worktrees, or plain tmux.
+description: agent-deck, the terminal session manager for AI coding agents. Use when the user mentions "agent-deck", "session", "sub-agent", "MCP attach", or "git worktree", or needs to create, start, message, read, fork, restart, or supervise agent-deck sessions; launch child sessions or consult another CLI through agent-deck; attach MCPs to a session; manage groups, profiles, accounts, or worktree sessions; fan out a fleet of child sessions and check them non-blockingly; export or import a session for a teammate ("share session"); tag sessions and find past conversations (recall); run a local retrospective over their own transcripts, or reproduce an agent-deck bug and prove its fix; set up conductors or watchers; configure config.toml; troubleshoot agent-deck; or work on the agent-deck repo itself (fix, add or review its code or docs, open or fix a PR). Not for in-conversation subagents, plain git worktrees, or plain tmux.
 metadata:
   compatibility: "claude, codex, opencode"
 ---
@@ -47,7 +47,7 @@ Every other command and flag is in [cli-reference.md](references/cli-reference.m
 
 ## Rules
 
-1. **Flags before arguments:** `session start -m "Hello" name`, not `name -m "Hello"`. A flag that seems ignored is almost always in the wrong position.
+1. **Flags before arguments:** `session start -m "Hello" name`. `session`, `add`, `launch` and most other subcommands now accept flags after the positional too, but a few still stop parsing at the first positional, so a flag that seems ignored is almost always in the wrong position.
 2. **MCPs on request only:** attach one when the user asks, then `session restart` it; attaching alone does not load it. `--global` writes Claude's config for every project; the default writes the session's `.mcp.json`.
 3. **Leave other sessions to work:** read another session with a single `session output` or `session children` call rather than a polling loop, which can interfere with the target.
 4. **State only the task in a child's prompt.** Every session agent-deck launches already carries its identity (session id, title, parent, core commands, completion sentinel; `$AGENTDECK_IDENTITY_FILE` for custom `--cmd`), so a prompt need not explain who the child is or how to reach its parent. Opt out with `--no-identity` or `[launch] inject_identity = false`; gemini also needs its identity folder trusted (`documentation/HARNESS_IDENTITY.md`).
@@ -65,7 +65,7 @@ Read the matching reference before acting on anything beyond the commands above.
 | What agent-deck and each session's CLI (claude, codex, gemini) can do; choosing the `-c` tool for a child | [capabilities.md](references/capabilities.md) |
 | Sessions messaging each other, `send` delivery guarantees, `output`, `children`, `inbox drain`, `handoff`, send pitfalls | [session-communication.md](references/session-communication.md) |
 | Launching a sub-agent (`launch-subagent.sh`), retrieval modes, worker prompt conventions, the `===AGENTDECK_DONE===` completion sentinel, consulting Codex or Gemini, root-level peers (`-no-parent`) | [sub-agents.md](references/sub-agents.md) |
-| Fanning out several children and supervising them non-blockingly | [fleet skill](../fleet/SKILL.md) |
+| Fanning out several children and supervising them non-blockingly | [fleet.md](references/fleet.md) |
 | Conductors (`conductor setup`), Telegram/Slack channels, watchers (webhook, GitHub, ntfy, Slack) | [conductors.md](references/conductors.md), then [documentation/WATCHERS.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/WATCHERS.md) for custom watchers |
 | Context inspection (`session context`), worktrees, scratch sessions (`try`), runtime health (`health`, dead letters, `remote update --from-build`), recall hints and search, session sharing, switching a session to another Claude account | [session-workflows.md](references/session-workflows.md) |
 | Self-improvement (transcript mining), goals (goal-driven worker autonomy), trust-but-verify for completion claims | [autonomy.md](references/autonomy.md), then [self-improvement.md](references/self-improvement.md) or [goal.md](references/goal.md) for the deep dive |
@@ -73,7 +73,9 @@ Read the matching reference before acting on anything beyond the commands above.
 | TUI keys, dialogs, search, and layout | [tui-reference.md](references/tui-reference.md) |
 | A session in error, MCPs not loading, diagnostics, getting help, or filing a bug | [troubleshooting.md](references/troubleshooting.md) |
 | Docker sandboxed sessions | [sandbox.md](references/sandbox.md) |
-| Durable session hints and tags, the cross-harness transcript index, `recall context --into current`, federated search, the recall MCP server | [recall skill](recall/SKILL.md) |
-| Exporting or importing a session for another developer | [session-share skill](../session-share/SKILL.md) |
+| Durable session hints and tags, the cross-harness transcript index, `recall context --into current`, federated search, the recall MCP server | [recall.md](references/recall.md) |
+| Exporting or importing a session for another developer | [session-share.md](references/session-share.md) |
+| A local retrospective over the user's own transcripts, Recall index and logs (repeated failures, retries, stuck sessions); privacy rules and the pause-for-the-user-to-file handoff | [retro.md](references/retro.md), metrics in [retro-metrics.md](references/retro-metrics.md) |
+| Reproducing an agent-deck bug in isolation and proving a fix (reproduced / not reproduced / fixed verdicts, receipts, the result contract) | [repro.md](references/repro.md), then [repro-contract.md](references/repro-contract.md) |
 | User-level vs pool skills, attaching and detaching skills | [documentation/SKILLS.md](https://github.com/asheshgoplani/agent-deck/blob/main/documentation/SKILLS.md) |
-| Fixing agent-deck itself and opening a PR | `.github/skills/agent-deck-contributor/SKILL.md` in an agent-deck checkout; it mirrors the PR intake gate and runs tests sandboxed |
+| Working on the agent-deck repo itself: fix, add or review something in its code or docs, open a PR, answer an intake or review verdict | [contributing.md](references/contributing.md); it mirrors the PR intake gate and runs `scripts/contributing/self-check.sh` (tests only in a container) |

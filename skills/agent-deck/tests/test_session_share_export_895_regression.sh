@@ -10,7 +10,7 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXPORT_SH="$SCRIPT_DIR/../scripts/export.sh"
+EXPORT_SH="$SCRIPT_DIR/../scripts/session-share/export.sh"
 
 if [ ! -x "$EXPORT_SH" ] && [ ! -f "$EXPORT_SH" ]; then
     echo "FAIL: cannot locate $EXPORT_SH" >&2
@@ -66,7 +66,7 @@ test_export_handles_string_content() {
     output="$home_dir/out.json"
 
     rc=0
-    ( cd "$project_dir" && HOME="$home_dir" bash "$EXPORT_SH" \
+    ( cd "$project_dir" && HOME="$home_dir" env -u CLAUDE_CONFIG_DIR bash "$EXPORT_SH" \
         --session "$uuid" --no-sanitize --output "$output" >/dev/null 2>&1 ) \
         || rc=$?
 
@@ -83,12 +83,12 @@ test_export_handles_string_content() {
 # Sourced helper test; doesn't run the full export.
 test_encode_path_handles_dot() {
     local result
-    # shellcheck source=../scripts/utils.sh
+    # shellcheck source=../scripts/session-share/utils.sh
     result=$(bash -c '
         set -e
         source "$1"
         encode_path "/Users/first.last/Projects/my-app"
-    ' _ "$SCRIPT_DIR/../scripts/utils.sh")
+    ' _ "$SCRIPT_DIR/../scripts/session-share/utils.sh")
 
     local expected="-Users-first-last-Projects-my-app"
     if [ "$result" != "$expected" ]; then
@@ -98,10 +98,31 @@ test_encode_path_handles_dot() {
     return 0
 }
 
+# --- Test 3: projects dir follows CLAUDE_CONFIG_DIR (per-account Claude profiles) ---
+test_export_honors_claude_config_dir() {
+    local fx home_dir project_dir uuid output rc config_dir
+    fx=$(make_fixture "skills-ccd-XXXXXX")
+    read -r home_dir project_dir uuid <<<"$fx"
+    config_dir="$home_dir/profile-work"
+    mv "$home_dir/.claude" "$config_dir"
+    output="$home_dir/out.json"
+
+    rc=0
+    ( cd "$project_dir" && HOME="$home_dir" CLAUDE_CONFIG_DIR="$config_dir" bash "$EXPORT_SH" \
+        --session "$uuid" --no-sanitize --output "$output" >/dev/null 2>&1 ) || rc=$?
+    if [ "$rc" -ne 0 ] || [ ! -s "$output" ]; then
+        echo "  export.sh exited $rc and did not read $config_dir/projects" >&2
+        return 1
+    fi
+    return 0
+}
+
 run_case "export.sh exits 0 when message.content is a string (#895 bug 2)" \
     test_export_handles_string_content
 run_case "encode_path converts '.' to '-' to match Claude Code (#895 bug 1)" \
     test_encode_path_handles_dot
+run_case "export.sh reads sessions under CLAUDE_CONFIG_DIR" \
+    test_export_honors_claude_config_dir
 
 echo "---"
 echo "passed: $pass_count, failed: $fail_count"

@@ -9,7 +9,7 @@
 # Usage:   scripts/self-check.sh [pr-body.md]
 #          (run from anywhere inside the agent-deck repo)
 # Env:     BASE_REF=origin/main   comparison base
-#          REPRO_REPORT=<json>   validate a deck-repro evidence manifest for a bug fix
+#          REPRO_REPORT=<json>   validate a repro evidence manifest (references/repro-contract.md) for a bug fix
 #          FULL_TESTS=1           run the whole suite, not just touched packages
 #          LINKED_ISSUE=<n|url>   set when a >3000-line diff has an agreed issue/Discussion
 #          SKIP_REVERT_CHECK=1    skip the revert-check (e.g. pure test-infra PRs)
@@ -54,7 +54,7 @@ ADDED_LINES=$(git diff "$MB" HEAD | grep '^+' | grep -v '^+++' | sed 's/^+//')
 # quotes the very patterns this sweep hunts, and this script necessarily
 # contains its own regexes — both are excluded. The invisible-chars check
 # still covers every file, and .github/ changes are human-gated regardless.
-SELF_REL=".github/skills/agent-deck-contributor/scripts/self-check.sh"
+SELF_REL="skills/agent-deck/scripts/contributing/self-check.sh"
 ADDED_CODE=$(git diff "$MB" HEAD -- . ':!*.md' ":!$SELF_REL" | grep '^+' | grep -v '^+++' | sed 's/^+//')
 
 HAVE_GO=1
@@ -199,14 +199,14 @@ fi
 # The validator checks local evidence; it never executes receipt commands.
 if [ -n "${REPRO_REPORT:-}" ]; then
   if ! command -v python3 >/dev/null 2>&1; then
-    FAIL deck-repro "python3 is required to validate REPRO_REPORT"
-  elif OUT=$(python3 "$ROOT/skills/deck-repro/scripts/validate.py" "$REPRO_REPORT" --require-status fixed 2>&1); then
-    PASS deck-repro "$OUT"
+    FAIL repro-report "python3 is required to validate REPRO_REPORT"
+  elif OUT=$(python3 "$ROOT/skills/agent-deck/scripts/repro/validate.py" "$REPRO_REPORT" --require-status fixed 2>&1); then
+    PASS repro-report "$OUT"
   else
-    FAIL deck-repro "$OUT"
+    FAIL repro-report "$OUT"
   fi
 else
-  SKIP deck-repro "no REPRO_REPORT provided; bug fixes need reproduction and test-first evidence"
+  SKIP repro-report "no REPRO_REPORT provided; bug fixes need reproduction and test-first evidence"
 fi
 
 # ------------------------------------------------------------- diff hygiene
@@ -248,7 +248,7 @@ fi
 
 # --------------------------------------------------- hidden-logic self-scan
 # Author-side version of the maintainer's hidden-logic sweep (see
-# references/security-self-scan.md for the full manual list). ADDED_LINES and
+# skills/agent-deck/references/contributing-security-self-scan.md for the full manual list). ADDED_LINES and
 # ADDED_CODE are defined near the top of the script.
 scan_hits() { printf '%s\n' "$ADDED_CODE" | grep -nE "$1" | head -3; }
 
@@ -276,7 +276,7 @@ if [ -n "$HITS" ]; then WARN constructed-exec "exec of a constructed string — 
 # --------------------------------------------------------------- PR-body lint
 # Mirrors .github/workflows/pr-intake.yml checks 1-3 + the INTAKE.md marker contract.
 if [ ! -f "$BODY_FILE" ]; then
-  WARN pr-body "no PR body draft at '$BODY_FILE' — write one from references/pr-body-template.md, then re-run: self-check.sh $BODY_FILE"
+  WARN pr-body "no PR body draft at '$BODY_FILE' — write one from skills/agent-deck/references/contributing-pr-body-template.md, then re-run: self-check.sh $BODY_FILE"
 else
   BODY=$(cat "$BODY_FILE")
   section() {  # text of "## <h>" up to next "## "
@@ -356,7 +356,7 @@ fi
 echo
 echo "== summary: $pass PASS, $fail FAIL, $warn WARN, $skip skipped =="
 if [ "$fail" -gt 0 ]; then
-  echo "Fix every FAIL before opening the PR (exact fixes: references/gate-spec.md)."
+  echo "Fix every FAIL before opening the PR (exact fixes: skills/agent-deck/references/contributing-gate-spec.md)."
   exit 1
 fi
 if [ "$warn" -gt 0 ]; then

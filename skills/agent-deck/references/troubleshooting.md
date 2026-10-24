@@ -89,12 +89,9 @@ Then restart the conductor:
 agent-deck session restart conductor-<name>
 ```
 
-If you use multiple profiles, set the same under the profile override:
-
-```toml
-[profiles.work.claude]
-allow_dangerous_mode = true
-```
+`[claude]` applies to every profile. There is no per-profile copy of these keys:
+`[profiles.<name>.claude]` takes only `config_dir` and `prompt_suggestions`, so
+`allow_dangerous_mode` or `dangerous_mode` there has no effect.
 
 ### Atuin Pty-Proxy Incompatibility
 
@@ -364,60 +361,19 @@ Prepare clear answers to:
 
 ### Step 3: Create GitHub Issue
 
-Go to: **https://github.com/asheshgoplani/agent-deck/issues/new**
+Blank issues are off in this repo, so use the **Bug report** form:
+**https://github.com/asheshgoplani/agent-deck/issues/new?template=bug.yml**
 
-Use this template:
+Its fields, filled from Steps 1 and 2:
 
-```markdown
-## Description
+- **agent-deck version**: output of `agent-deck version`
+- **OS and terminal**: OS, terminal, and `tmux -V`
+- **Steps to reproduce**: exact commands or TUI actions
+- **Expected vs actual**
+- **Logs (redacted)**: relevant log lines, `agent-deck status --json`, and a sanitized config
+- **Was this written with AI help?** and, if so, **which model**
 
-[Brief description of the issue]
-
-## Steps to Reproduce
-
-1. [First step]
-2. [Second step]
-3. [What happened]
-
-## Expected Behavior
-
-[What should have happened]
-
-## Environment
-
-- agent-deck version: [output of `agent-deck version`]
-- OS: [macOS/Linux/WSL]
-- tmux version: [output of `tmux -V`]
-
-## Debug Output
-
-<details>
-<summary>Status JSON</summary>
-
-```json
-[paste agent-deck status --json]
-```
-
-</details>
-
-<details>
-<summary>Config (sanitized)</summary>
-
-```toml
-[paste sanitized config]
-```
-
-</details>
-
-<details>
-<summary>Logs</summary>
-
-```
-[paste relevant log lines]
-```
-
-</details>
-```
+Questions and setup help go to [Discussions](https://github.com/asheshgoplani/agent-deck/discussions), not issues.
 
 ### Step 4: Follow Up
 

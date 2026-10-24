@@ -1,4 +1,4 @@
-# pr-body-template.md — one complete passing PR body
+# contributing-pr-body-template.md — one complete passing PR body
 
 > Copy the structure and headings exactly; that is the safe path. The intake
 > gate matches each heading at line start, case-insensitively with punctuation
@@ -60,7 +60,7 @@ they finish — can you fix the status so I stop attaching to dead sessions?"
 
 - [x] Targeted diff: one problem, no unrelated changes
 - [x] Tests added or updated for new behavior
-- [x] Test suite passes sandboxed, inside a container: run `.github/skills/agent-deck-contributor/scripts/self-check.sh`, which prints the Docker command (never `go test` on your host)
+- [x] Test suite passes sandboxed, inside a container: run `skills/agent-deck/scripts/contributing/self-check.sh`, which prints the Docker command (never `go test` on your host)
 - [x] If this touches a hot path (list, status, session output, startup, tmux layer): before/after timing evidence included
 - [x] CHANGELOG.md untouched (entries are added at landing)
 - [x] AI-assisted? Disclosed above, with validation evidence, and I can answer questions about the code

@@ -17,7 +17,7 @@ The tests start real tmux servers and processes and write agent-deck state. Run
 
 ```bash
 # Gates, PR body checks and tests. On a host it skips go test and prints the docker run command.
-FULL_TESTS=1 .github/skills/agent-deck-contributor/scripts/self-check.sh pr-body.md
+FULL_TESTS=1 skills/agent-deck/scripts/contributing/self-check.sh pr-body.md
 # CI's Go checks (gofmt, build, vet, golangci-lint, race tests) in throwaway containers.
 make verify-docker
 make verify-docker VERIFY_ARGS="--stages test --pkgs ./internal/session/..."
@@ -42,7 +42,7 @@ These guards are the last line of defence, not permission to run tests on a host
 guard panic aborts the package's test binary; fix the isolation, never the guard.
 Do not export a real `HOME`, `CLAUDE_CONFIG_DIR` or `TMUX` into a test. Do not run
 `claude`, `claude -p` or other agent CLIs against your real config to check a change;
-reproduce in a container as [deck-repro](skills/deck-repro/SKILL.md) says.
+reproduce in a container as [the repro workflow](skills/agent-deck/references/repro.md) says.
 
 ## Build and check exactly as CI does
 
@@ -70,8 +70,9 @@ Map of packages and data flow: [docs/architecture.md](docs/architecture.md). Sho
 - `internal/session/`: sessions, groups, profiles, tool presets, user config.
 - `internal/tmux/`: tmux layer, status detection. `internal/ui/`: TUI. `internal/web/`: web UI.
 - `internal/testutil/`: test isolation helpers. `tests/`: e2e, eval and CI script tests.
-- `skills/`: the product's agent skills. `.github/skills/agent-deck-contributor/`: the
-  contributor skill (read its `SKILL.md`; it is not auto-loaded by any agent).
+- `skills/`: the product's agent skill. Its contributor workflow is
+  [skills/agent-deck/references/contributing.md](skills/agent-deck/references/contributing.md)
+  (not auto-loaded by any agent; read it before opening a PR).
 - User docs, all hand-edited (nothing generates them): `README.md`, `llms.txt`,
   `llms-full.txt`, `site/index.html` (deployed by `pages.yml`), `docs/`,
   `skills/agent-deck/references/`. A docs fact usually has copies in several of these.
@@ -92,7 +93,7 @@ Map of packages and data flow: [docs/architecture.md](docs/architecture.md). Sho
   `skills/agent-deck/references/config-reference.md`.
 - Tests fail first: write the regression test, watch it fail on the unfixed code, then
   fix. `self-check.sh` runs a revert-check (your tests must fail without your change).
-  Bug fixes also need a reproduction: run [deck-repro](skills/deck-repro/SKILL.md), put its
+  Bug fixes also need a reproduction: run [the repro workflow](skills/agent-deck/references/repro.md), put its
   verdict in `## Evidence` and pass its `result.json` as `REPRO_REPORT=<path>` to `self-check.sh`.
   Match the neighbours: table-driven tests, existing helpers before new ones.
 - Goldens under `cmd/agent-deck/testdata/goldens/`: run `make goldens-update` only for an
@@ -137,7 +138,7 @@ Map of packages and data flow: [docs/architecture.md](docs/architecture.md). Sho
 
 Use `.github/PULL_REQUEST_TEMPLATE.md` verbatim; [.github/INTAKE.md](.github/INTAKE.md) is
 the field contract and the intake bot (`.github/workflows/pr-intake.yml`) checks it.
-A filled example: `.github/skills/agent-deck-contributor/references/pr-body-template.md`.
+A filled example: [contributing-pr-body-template.md](skills/agent-deck/references/contributing-pr-body-template.md).
 
 - Required headings with content, exactly as written (`self-check.sh` matches `^## Heading`):
   `## What problem does this solve?`, `## Why this change`, `## User impact`,

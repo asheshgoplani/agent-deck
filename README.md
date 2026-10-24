@@ -32,7 +32,7 @@ Beyond one-off PRs, we're looking for 1-2 regular co-maintainers: people who wan
 To get started:
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md): how the pipeline works, what makes a PR land fast, and the house rules.
-2. Contributing with an AI agent? Point it at [.github/INTAKE.md](.github/INTAKE.md), the machine-readable intake spec — or the [agent-deck-contributor skill](.github/skills/agent-deck-contributor), which walks an agent (or you) through building, testing, and shaping a clean PR.
+2. Contributing with an AI agent? Point it at [.github/INTAKE.md](.github/INTAKE.md), the machine-readable intake spec — or the [contributor workflow](skills/agent-deck/references/contributing.md) in the agent-deck skill, which walks an agent (or you) through building, testing, and shaping a clean PR.
 3. Comment on an issue before starting work so we can tell you if someone (human or agent) is already on it.
 4. Look for issues labeled [`good first issue`](https://github.com/asheshgoplani/agent-deck/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22): curated to be small and self-contained.
 
@@ -1303,17 +1303,15 @@ Then ask: *"How do I set up MCP pooling?"*
 **Option 2: OpenCode** (has built-in Claude skill compatibility)
 ```bash
 # Create skill directory
-mkdir -p ~/.claude/skills/agent-deck/references ~/.claude/skills/agent-deck/recall
+mkdir -p ~/.claude/skills/agent-deck/references
 
 # Download skill and references
 curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/SKILL.md \
   > ~/.claude/skills/agent-deck/SKILL.md
-for f in cli-reference config-reference tui-reference troubleshooting capabilities session-communication sub-agents conductors session-workflows autonomy gotchas goal sandbox self-improvement; do
+for f in cli-reference config-reference tui-reference troubleshooting capabilities session-communication sub-agents conductors session-workflows autonomy gotchas goal sandbox self-improvement fleet session-share recall retro retro-metrics repro repro-contract; do
   curl -sL "https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/references/${f}.md" \
     > ~/.claude/skills/agent-deck/references/${f}.md
 done
-curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/recall/SKILL.md \
-  > ~/.claude/skills/agent-deck/recall/SKILL.md
 ```
 OpenCode will auto-discover the skill from `~/.claude/skills/`.
 

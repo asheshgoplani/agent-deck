@@ -116,11 +116,10 @@ Common structure:
 
 ## agent-deck's own shipped skills
 
-The repo ships a small set of skills inside `skills/`:
+The repo ships one skill, `skills/agent-deck/`:
 
-- `skills/agent-deck/SKILL.md`: the canonical orchestration skill. Covers session lifecycle, MCP attach/detach, groups, profiles, worktree sessions, and sub-agent launching. Every installation gets a curl-one-liner in the README that drops it straight into `~/.claude/skills/agent-deck/`.
-- `skills/watcher-creator/`: guides the creation of watcher processes under the watcher framework.
-- `skills/session-share/`: helpers for exporting and importing sessions between developers.
+- `skills/agent-deck/SKILL.md`: the canonical orchestration skill. Covers session lifecycle, MCP attach/detach, groups, profiles, worktree sessions, and sub-agent launching. Everything else (fleet fan-out, session sharing, recall, retro, repro) is a reference file under `skills/agent-deck/references/`, triggered from that one `SKILL.md`; helper scripts live under `skills/agent-deck/scripts/<name>/` and evals in `skills/agent-deck/evals/evals.json`. Every installation gets a curl-one-liner in the README that drops it straight into `~/.claude/skills/agent-deck/`.
+- `cmd/agent-deck/assets/skills/watcher-creator/`: embedded in the binary, installed on demand; guides the creation of watcher processes under the watcher framework.
 
 These are shipped as reference implementations: you can read them to understand how a well-shaped skill is written.
 

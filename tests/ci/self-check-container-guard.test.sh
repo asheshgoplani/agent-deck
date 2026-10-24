@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # self-check-container-guard.test.sh: regression test for the container guard in
-# .github/skills/agent-deck-contributor/scripts/self-check.sh.
+# skills/agent-deck/scripts/contributing/self-check.sh.
 #
 # agent-deck tests start real tmux servers and processes, so the contributor
 # self-check must never run go test on a host. Outside a container it has to
@@ -21,7 +21,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SCRIPT="$ROOT/.github/skills/agent-deck-contributor/scripts/self-check.sh"
+SCRIPT="$ROOT/skills/agent-deck/scripts/contributing/self-check.sh"
 
 failures=0
 pass() { echo "PASS: $1"; }
@@ -95,7 +95,7 @@ has '^PASS  (sandboxed-tests|revert-check)' && fail "no container: a gated check
 has '^PASS  go-build' && pass "no container: go build still runs" || fail "no container: go build did not run"
 has '^Not ready yet: go test has not run' && pass "no container: not reported ready" || fail "no container: summary still says ready"
 has '^  docker run --rm' && pass "no container: Docker command printed" || fail "no container: Docker command missing"
-for want in 'dst=/src,readonly' '-e AGENTDECK_TEST_CONTAINER=1' '-e HOME=/tmp/home' '-e BASE_REF=base' 'golang:1\.22' 'cp -R /src /tmp/src' 'scripts/self-check\.sh'; do
+for want in 'dst=/src,readonly' '-e AGENTDECK_TEST_CONTAINER=1' '-e HOME=/tmp/home' '-e BASE_REF=base' 'golang:1\.22' 'cp -R /src /tmp/src' 'skills/agent-deck/scripts/contributing/self-check\.sh'; do
   has "$want" && pass "Docker command has $want" || fail "Docker command lacks $want"
 done
 

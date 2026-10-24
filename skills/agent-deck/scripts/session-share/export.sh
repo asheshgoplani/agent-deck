@@ -54,9 +54,14 @@ done
 if [ -z "$SESSION_ID" ]; then
     echo "Detecting current session..."
     CURRENT_JSON=$(agent-deck session current --json 2>/dev/null | grep -v '^20' || echo "{}")
-    SESSION_ID=$(echo "$CURRENT_JSON" | jq -r '.claudeSessionId // empty')
-    PROJECT_PATH=$(echo "$CURRENT_JSON" | jq -r '.projectPath // empty')
+    DECK_ID=$(echo "$CURRENT_JSON" | jq -r '.id // empty')
+    PROJECT_PATH=$(echo "$CURRENT_JSON" | jq -r '.path // empty')
     SESSION_TITLE=$(echo "$CURRENT_JSON" | jq -r '.session // "exported"')
+    # session current carries no Claude conversation id; session show does.
+    SESSION_ID=""
+    if [ -n "$DECK_ID" ]; then
+        SESSION_ID=$(agent-deck session show "$DECK_ID" --json 2>/dev/null | jq -r '.claude_session_id // empty' 2>/dev/null || true)
+    fi
 
     if [ -z "$SESSION_ID" ] || [ "$SESSION_ID" = "null" ]; then
         echo "Error: Could not detect current Claude session." >&2
@@ -204,5 +209,5 @@ echo ""
 echo "To share: Send this file to another developer via Slack, email, AirDrop, etc."
 echo ""
 echo "They can import it with:"
-echo "  /session-share:import $OUTPUT_PATH"
+echo "  $SCRIPT_DIR/import.sh $OUTPUT_PATH"
 echo ""

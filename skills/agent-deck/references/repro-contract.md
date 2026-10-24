@@ -5,7 +5,7 @@
 Prepare a Linux executable binary and a POSIX shell reproduction script. The script receives the absolute binary location as `$1`. Define its exit codes: 0 means the expected behavior holds, 1 means the **specific** defect was observed, 2 or greater means setup/harness error. Check every setup operation. Do not convert arbitrary nonzero exits into 1. Use explicit output assertions and save the observed output.
 
 ```
-python3 "$SKILL_DIR/scripts/run.py" --image IMAGE_DIGEST --binary BUILD/agent-deck \
+python3 "$SKILL_DIR/scripts/repro/run.py" --image IMAGE_DIGEST --binary BUILD/agent-deck \
   --script CASE/repro.sh --fixtures CASE/fixtures --out RECEIPT --timeout 120
 ```
 
@@ -42,6 +42,6 @@ Use only for a reviewed, trusted repro when Docker is unavailable. Create a new 
 
 ## Validation
 
-After reviewing each receipt log against the declared oracle, add `oracle_matched: true` and `oracle_evidence` containing the exact relevant output excerpt. The runner records `output_sha256`; retain it. Run `python3 "$SKILL_DIR/scripts/validate.py" PATH/result.json`. The validator rejects incomplete fixed claims and changed reproduction inputs. It validates structure and hashes, not whether an investigator's interpretation is correct; independent review remains necessary. Contributor self-check invokes it with `--require-status fixed` through `REPRO_REPORT=PATH/result.json`; blocked observations cannot satisfy a bug-fix gate.
+After reviewing each receipt log against the declared oracle, add `oracle_matched: true` and `oracle_evidence` containing the exact relevant output excerpt. The runner records `output_sha256`; retain it. Run `python3 "$SKILL_DIR/scripts/repro/validate.py" PATH/result.json`. The validator rejects incomplete fixed claims and changed reproduction inputs. It validates structure and hashes, not whether an investigator's interpretation is correct; independent review remains necessary. Contributor self-check invokes it with `--require-status fixed` through `REPRO_REPORT=PATH/result.json`; blocked observations cannot satisfy a bug-fix gate.
 
 For `blocked` or `not reproduced`, include nonempty `attempts`: each entry has a concrete `reason` describing the attempted investigation and its limit, and a `receipt` path whenever a command was run. A missing execution receipt is not a completed reproduction attempt. The caller must label preparatory investigation separately.

@@ -224,8 +224,13 @@ agent-deck web [options]
 | `--listen` | Listen address (default: `127.0.0.1:8420`) |
 | `--read-only` | Disable terminal input, stream output only |
 | `--token` | Require bearer token for API and WS access |
+| `--token-file` | Read the bearer token from a `chmod 600` file instead of argv |
+| `--allowed-host` | Extra exact HTTP `Host` value to accept (repeatable; optional `:port`) |
+| `--insecure-bind` | Allow a non-loopback `--listen` with no `--token`/`--token-file` (unsafe) |
 | `--push` | Enable browser push notifications (turn them on in the web UI's Tweaks panel → Notifications) |
-| `--open` | Reserved placeholder (currently no-op) |
+| `--push-vapid-subject` | VAPID subject for push (default: `mailto:agentdeck@localhost`) |
+| `--push-test-every` | Send a test push at this interval (e.g. `10s`; `0` disables) |
+| `--no-tui` | Headless: run only the HTTP server, no TUI |
 
 ```bash
 agent-deck web

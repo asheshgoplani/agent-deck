@@ -107,7 +107,7 @@ agent-deck -p personal session restart my-bot
 
 The `channels` field persists and every `session start` / `session restart` rebuilds the claude invocation with `--channels`. Do NOT rely on `.mcp.json` telegram entries — those load the plugin as a regular MCP (tools only), not a channel (inbound delivery).
 
-**Note — v1.7.0 display bug:** `agent-deck session show --json <id>` currently omits the `channels` field (fix pending). `agent-deck list --json | jq '.[] | select(.id==<id>)'` shows it correctly. Data is persisted fine regardless.
+**Note — `channels` in JSON:** `agent-deck session show --json <id>` includes `channels` for a Claude session when it has any (v1.7.0 omitted it). `agent-deck list --json | jq '.[] | select(.id==<id>)'` shows it too.
 
 ### Many competing telegram pollers after multiple session starts
 
@@ -140,7 +140,7 @@ Telegram's Bot API `getUpdates` is single-consumer per bot token. If N Claude se
 | Anti-pattern | Code | Why it breaks |
 |---|---|---|
 | `enabledPlugins."telegram@claude-plugins-official" = true` in profile settings | `GLOBAL_ANTIPATTERN` | Every claude process loads the plugin, including every child agent the conductor spawns. Each one starts a `bun telegram` poller. |
-| Global enablement **AND** `--channels plugin:telegram@...` on the same session | `DOUBLE_LOAD` | The plugin loads twice in one claude process. Two bun pollers race on one bot token and Telegram rejects with 409 Conflict. |
+| Global enablement **AND** `--channels plugin:telegram@...` on the same session | `DOUBLE_LOAD` | Plain claude loads the plugin twice: two bun pollers race on one bot token and Telegram rejects with 409 Conflict. agent-deck now gives such a session its own scratch config dir with telegram pinned off, so only `--channels` loads it (#941). |
 | `session set wrapper "TELEGRAM_STATE_DIR=... {command}"` | `WRAPPER_DEPRECATED` | Works on the resume path; silently fails on fresh-start due to `bash -c` argv splitting. The env var never reaches claude, so the plugin falls back to the default state dir and two conductors collide. Use `env_file` instead. |
 | Relying on `.mcp.json` telegram entries for inbound delivery | — | `.mcp.json` loads the plugin as an MCP server (tool-use only). Inbound message → conversation-turn delivery requires `--channels`. |
 | Using the same bot token for multiple concurrent sessions | — | `getUpdates` is single-consumer per token. |
