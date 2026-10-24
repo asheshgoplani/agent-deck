@@ -746,40 +746,34 @@ func IsValidEnvKey(key string) bool {
 	return true
 }
 
-// envKeyDisplayMax bounds how much of a rejected env name is ever shown.
-const envKeyDisplayMax = 32
-
-// EnvKeyForDisplay returns a form of an env name that is safe to put in a log
-// line or an error message even when the name is malformed. A rejected "name"
-// is often a whole KEY=VALUE or "KEY value" entry typed or parsed wrongly
-// ('API_KEY sk-…', 'export=secret'), so only the leading run of identifier
-// characters is kept, capped at envKeyDisplayMax, and everything from the
-// first other character on (an '=', a space, a quote, the value) is dropped.
-// A cut or truncated name ends in "…"; a name with no identifier prefix is
-// shown as "(invalid)". The result never contains '=' or whitespace.
-func EnvKeyForDisplay(key string) string {
-	end := 0
-	for end < len(key) {
-		c := key[end]
-		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' {
-			end++
-			continue
-		}
-		break
+// EnvKeyRejectReason says why key is not a valid env name, without quoting
+// any part of it, or returns "" for a valid name. A rejected "name" is often a
+// whole entry typed or parsed wrongly, or a bare token ('ghp_…', 'AKIA…',
+// 'API_KEY sk-…'), and such tokens are made of exactly the identifier
+// characters, so no prefix of a rejected name is ever safe to show. Log lines
+// and errors about a rejected name carry this reason and the name's length
+// only.
+func EnvKeyRejectReason(key string) string {
+	if key == "" {
+		return "empty name"
 	}
-	cut := end < len(key)
-	if end > envKeyDisplayMax {
-		end = envKeyDisplayMax
-		cut = true
+	if IsValidEnvKey(key) {
+		return ""
 	}
-	shown := key[:end]
-	if shown == "" {
-		return "(invalid)"
+	if key[0] >= '0' && key[0] <= '9' {
+		return "starts with a digit"
 	}
-	if cut {
-		shown += "…"
+	switch {
+	case strings.ContainsAny(key, " \t\r\n"):
+		return "contains whitespace"
+	case strings.Contains(key, "="):
+		return "contains '='"
+	case strings.Contains(key, "-"):
+		return "contains '-'"
+	case strings.Contains(key, "."):
+		return "contains '.'"
 	}
-	return shown
+	return "contains a character outside [A-Za-z0-9_]"
 }
 
 // telegramEnvVarsToStrip lists every TELEGRAM_* env var that the

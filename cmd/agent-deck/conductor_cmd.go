@@ -42,15 +42,16 @@ func (e *envVarFlags) Set(val string) error {
 	return nil
 }
 
-// add validates and stores one KEY=VALUE. Its errors name at most the key's
-// identifier prefix (session.EnvKeyForDisplay), never the value.
+// add validates and stores one KEY=VALUE. Its errors never quote any part of
+// the entry: without an '=' the whole entry may be a bare token ('ghp_…'), and
+// a rejected name may be one too, so they carry only a reason.
 func (e *envVarFlags) add(val string) error {
 	key, value, ok := strings.Cut(val, "=")
-	if !ok || key == "" {
-		return fmt.Errorf("invalid env format (key %q), expected KEY=VALUE", session.EnvKeyForDisplay(key))
+	if !ok {
+		return fmt.Errorf("invalid env format: missing '=' (expected KEY=VALUE)")
 	}
-	if !session.IsValidEnvKey(key) {
-		return fmt.Errorf("invalid environment variable name %q", session.EnvKeyForDisplay(key))
+	if reason := session.EnvKeyRejectReason(key); reason != "" {
+		return fmt.Errorf("invalid environment variable name (%s, %d bytes), expected KEY=VALUE", reason, len(key))
 	}
 	e.vals[key] = value
 	return nil

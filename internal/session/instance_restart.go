@@ -419,7 +419,7 @@ func (i *Instance) RestartFrom(sf telemetry.Surface) error {
 func (i *Instance) RestartWithEnv(env map[string]string) error {
 	for key := range env {
 		if !IsValidEnvKey(key) {
-			return fmt.Errorf("invalid environment variable name %q", EnvKeyForDisplay(key))
+			return fmt.Errorf("invalid environment variable name (%s, %d bytes)", EnvKeyRejectReason(key), len(key))
 		}
 	}
 	return i.restartRecorded(env, "")

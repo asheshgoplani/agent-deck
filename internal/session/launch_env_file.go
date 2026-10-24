@@ -300,13 +300,13 @@ func launchEnvFileStem(id string) string {
 // valid shell identifier (^[A-Za-z_][A-Za-z0-9_]*$). Such a name would be
 // spliced unquoted into `export <name>=…`, so it is never emitted.
 //
-// A rejected name can be a mis-parsed entry that still carries its value
-// ('API_KEY sk-…', 'TOKEN=…'), so only EnvKeyForDisplay's identifier prefix
-// is logged, never anything after it. Line breaks are stripped in the form
-// CodeQL models (go/log-injection).
+// A rejected name can be a mis-parsed entry or a bare token that IS the
+// secret ('ghp_…', 'API_KEY sk-…'), so no part of it is logged: only why it
+// was rejected and its length. Line breaks are stripped in the form CodeQL
+// models (go/log-injection).
 func warnInvalidEnvKey(source, key string) {
 	sessionLog.Warn("invalid_env_key_skipped: env names must match ^[A-Za-z_][A-Za-z0-9_]*$",
 		slog.String("source", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(source), "\n", ""), "\r", "")),
-		slog.String("key", strings.ReplaceAll(strings.ReplaceAll(logging.SanitizeValue(EnvKeyForDisplay(key)), "\n", ""), "\r", "")),
+		slog.String("reason", EnvKeyRejectReason(key)),
 		slog.Int("key_len", len(key)))
 }
