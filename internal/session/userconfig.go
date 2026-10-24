@@ -1160,6 +1160,14 @@ type RemoteConfig struct {
 	// enrolled once it has drained the remote (`remote drain`), which leaves a
 	// cursor behind.
 	TalkbackIntervalSecs int `toml:"talkback_interval_secs,omitempty"`
+
+	// RequireSameProfile lets this remote's records reach only a local
+	// conductor whose profile equals Profile (#2831): `remote drain` refuses
+	// any other receiving inbox, --into resolves within the effective profile
+	// only, and scheduled talkback enrolls only that profile's conductors.
+	// Off by default, because single-user setups often name profiles
+	// differently on each machine.
+	RequireSameProfile bool `toml:"require_same_profile,omitempty"`
 }
 
 // Remote attach transports accepted by RemoteConfig.Transport.
