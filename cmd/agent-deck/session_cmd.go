@@ -5737,7 +5737,10 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 			if !hookBusyBeforeSend {
 				return deliverySubmitted, nil
 			}
-			if queueAcknowledged {
+			// The hint must have appeared for THIS send. One left from
+			// earlier queued input proves nothing, so the frames are read
+			// as if no hint were shown (ASK-95 lander review).
+			if queueAcknowledged && !arrivalBaseline.queueHint {
 				return deliveryQueued, nil
 			}
 		}
@@ -5938,6 +5941,10 @@ type sendArrivalBaseline struct {
 	// a failed read defaulting to "was not active" would turn a
 	// continuously-busy agent into a fake not-active-to-active transition.
 	statusOK bool
+	// queueHint reports that the composer already showed Claude's
+	// queued-messages hint before the send (earlier queued input, ASK-95).
+	// A hint that was already there acknowledges nothing about this send.
+	queueHint bool
 }
 
 // captureArrivalBaseline snapshots the pane and status before a send. Each
@@ -5951,6 +5958,7 @@ func captureArrivalBaseline(target sendRetryTarget, message string) sendArrivalB
 	if raw, err := target.CapturePaneFresh(); err == nil {
 		base.raw, base.paneOK = raw, true
 		base.occurrences, base.pasteMarkers, _ = paneArrivalCounts(raw, message)
+		base.queueHint = claudeQueueAcknowledged(tmux.StripANSI(raw))
 	}
 	if status, err := target.GetStatus(); err == nil {
 		base.wasActive, base.statusOK = status == "active", true
@@ -6197,14 +6205,17 @@ func maxDeliverableLineBytes(target sendRetryTarget) int {
 
 // claudeQueuePlaceholder is the composer placeholder Claude Code renders
 // while it holds input behind the running turn.
-const claudeQueuePlaceholder = "Press up to edit queued messages"
+const claudeQueuePlaceholder = send.ClaudeQueuedHint
 
 // claudeQueueAcknowledged reports whether the captured pane's COMPOSER — the
 // block between the last two divider lines, parsed the same way the unsent
 // prompt checks parse it — holds exactly Claude Code's queued-messages
 // placeholder. That element is the harness's own acknowledgement that a
 // message is queued, and the only thing the queued verdict is allowed to
-// rest on (issue #1978). The words appearing anywhere else in the pane (a
+// rest on (issue #1978). On a second send the hint may already be on screen
+// from earlier queued input (ASK-95), so it never stands alone: the queued
+// verdict also needs a new copy of the body and a composer that does not hold
+// our message. The words appearing anywhere else in the pane (a
 // prompt or an assistant reply that mentions queued messages) do not count,
 // and neither does a pane without a divider-framed composer.
 func claudeQueueAcknowledged(content string) bool {

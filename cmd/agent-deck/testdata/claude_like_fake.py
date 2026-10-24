@@ -8,7 +8,8 @@
 #  3. typed bytes go into the composer draft and are redrawn there; b'\r' submits and CLEARS the draft;
 #  4. idle submit appends a main-chain user record (what session.TurnAdvanced looks for);
 #     busy submit queues: queue-operation enqueue, composer shows 'Press up to edit queued messages',
-#     then after 1s remove(absorbed_mid_turn) + queued_command attachment (unchanged mailbox receipt).
+#     then after 1s remove(absorbed_mid_turn) + queued_command attachment (unchanged mailbox receipt);
+#     a control file with "hold_queue": true keeps queued input (and the hint) until the turn ends, like a long turn.
 import datetime, json, os, re, select, sys, termios, time, uuid
 here = os.path.dirname(os.path.abspath(__file__))
 path = json.load(open(os.path.join(here, 'fake-running.json')))[os.path.realpath(os.getcwd())]
@@ -23,6 +24,7 @@ attrs[6][termios.VMIN], attrs[6][termios.VTIME] = 1, 0
 termios.tcsetattr(0, termios.TCSANOW, attrs)
 sys.stdout.write('\033[?2004h'); sys.stdout.flush()  # Claude enables bracketed paste
 phase, phase_id, draft, queued, pending, submits = None, None, '', [], [], 0
+hold_queue = False
 started = time.monotonic()
 rendered_rows = 0
 def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -68,6 +70,7 @@ def submit(text):
         append(rec)
         if rid and rid in text: receipt(rid, [rec], 'turn')
 def absorb():
+    if hold_queue and phase in ('busy', 'stream'): return
     for item in list(pending):
         due, rid, enq = item
         if time.monotonic() < due: continue
@@ -82,9 +85,10 @@ def absorb():
         if rid and rid in enq['content']: receipt(rid, [enq, removed, att], 'queued')
         pending.remove(item); queued.remove(enq['content']); render()
 def poll_phase():
-    global phase, phase_id
+    global phase, phase_id, hold_queue
     try: c = json.load(open(control_path))
     except (OSError, ValueError): return
+    hold_queue = bool(c.get('hold_queue'))
     if (c.get('id'), c.get('phase')) != (phase_id, phase):
         phase_id, phase = c.get('id'), c.get('phase')
         # booting: a resumed Claude starting up, busy on screen with no new turn in the transcript
