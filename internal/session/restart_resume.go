@@ -288,7 +288,7 @@ func (d *TransitionDaemon) judgeRestart(id, transcript, signal string, pane func
 		return tok, restartNews, ""
 	}
 	hs := restartHookStatus(id)
-	if piRunReplay(tok, signal, hs) {
+	if piRunReplay(signal, hs) {
 		return tok, restartNews, "" // a carried run replayed, not the boot: the token stays
 	}
 	substate := pane()
@@ -383,10 +383,12 @@ func piCarriedRunSignal(hs *HookStatus) string {
 }
 
 // piRunReplay reports whether signal is a run the pi child's file carries
-// forward (recordOrphanedPiRuns replaying it), not the token's run: a run from
-// before the boot, so it is not the boot and must not spend the token.
-func piRunReplay(tok restartToken, signal string, hs *HookStatus) bool {
-	if !strings.HasPrefix(signal, "pi-run:") || signal == tok.Signal || hs == nil {
+// forward (recordOrphanedPiRuns replaying it): a run from before the boot, so it
+// is not the boot and must not spend the token. That holds for the token's own
+// run too: a replay of it is that run's own record, which the parent has not had
+// yet (a run that finished after the token, the daemon down across its settle).
+func piRunReplay(signal string, hs *HookStatus) bool {
+	if !strings.HasPrefix(signal, "pi-run:") || hs == nil {
 		return false
 	}
 	for _, o := range hs.PiOrphanRuns[:hs.PiOrphanCount] {
