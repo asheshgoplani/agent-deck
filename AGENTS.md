@@ -130,8 +130,6 @@ Map of packages and data flow: [docs/architecture.md](docs/architecture.md). Sho
   `uninstall.sh`, `scripts/release-readiness.sh`, the `Version` variable in
   `cmd/agent-deck/main.go`, `.claude/release-tests.yaml`.
 - `go.mod` / `go.sum`: new or bumped modules get extra scrutiny; no `replace` or `GOPROXY`.
-- `.claude/plans/` and `.claude/commands/`: leftover session notes carried in by an earlier
-  PR (mostly February 2026), not instructions for this repo. Do not follow or update them.
 
 ## Pull request
 

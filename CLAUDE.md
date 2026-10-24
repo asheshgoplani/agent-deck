@@ -4,8 +4,5 @@
 
 - The contributor skill lives at `.github/skills/agent-deck-contributor/`, which Claude Code
   does not load on its own. Read its `SKILL.md` before opening a PR.
-- `.claude/commands/` (`/catchup`, `/restart`) and `.claude/plans/` are leftover session
-  notes carried in by an earlier PR. Do not run them: `/restart` commits everything with
-  `git add -A` and pushes.
 - `.claude/release-tests.yaml` is the maintainer's release-test manifest. Its `go test`
   commands follow the container rule in AGENTS.md like any other test run.
