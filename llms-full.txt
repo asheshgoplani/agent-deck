@@ -982,7 +982,7 @@ config_dir = "~/.claude-work"   # Optional override for profile "work"
 |-----|------|---------|-------------|
 | `config_dir` | string | `~/.claude` | Claude config directory. Override with `CLAUDE_CONFIG_DIR` env. |
 | `profiles.<name>.claude.config_dir` | string | none | Profile-specific Claude config directory. Takes precedence over `[claude].config_dir` when that profile is active. |
-| `dangerous_mode` | bool | `false` | Skip Claude permission dialogs. Required for automation. |
+| `dangerous_mode` | bool | `false` on new installs; `true` on installs from before v1.16.34 | Skip Claude permission dialogs. Required for automation. Unset, an install that predates v1.16.34 keeps `true` (written into its config.toml once, with a one-time notice). |
 
 Config resolution order for Claude config dir:
 1. `CLAUDE_CONFIG_DIR` env var
