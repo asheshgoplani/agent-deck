@@ -849,6 +849,39 @@ The session must stay like that for 5 minutes. An opted-in conductor must stay l
 - Every attempt writes one JSON line to `<data dir>/logs/idle-build-refresh.log`.
 - The pass stays off under `go test`, when `CI` is truthy, when `AGENTDECK_SKIP_UPDATE_CHECK` is set, or when any `AGENTDECK_TEST_*` marker is present, like the other automatic update paths.
 
+### Wait timer (`wait_timeout`)
+
+A Claude session that has waited on you longer than its wait timeout takes the recommended option of the question on screen. Off by default.
+
+```toml
+[sessions]
+wait_timeout = "5m"   # Go duration, at least 1m; empty, "0" or "off" = off (default)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `wait_timeout` | duration string | off | Default for every session without its own value. Per session: `agent-deck session set <id> wait-timeout 5m` (`off` disables it for that session, `""` falls back to this key), or the "Wait timer" row of Edit Session (`Shift+P`). An invalid or sub-minute value here counts as off. |
+
+**What it answers.** Only a numbered Claude question picker (`AskUserQuestion`) that:
+- passes the same guard as the hands-free account-switch settle first (`ClassifySettlePane`): a tool permission or approval prompt, folder trust, the bypass-permissions warning, a login screen or any first-start screen is never answered
+- is the only menu and the last thing on screen, single-select, one question (not a multi-question form)
+- has exactly one option ending in `(Recommended)`, and the cursor is already on it
+- does not mention permissions, trust, credentials (password, token, API key, login) or a destructive or outward action (delete, remove, force, reset, push, deploy, publish, release, merge, commit, install, kill, truncate, migrate, prod/production, revert, rollback, send, email, upload, shutdown, disable, revoke, rotate, chmod, terminate, format, purge, payment) anywhere in the question or options
+
+Anything else is left alone: nothing is sent.
+
+**When.** The session must be in the waiting status, with no terminal client attached (an attached client means a person is at the prompt; agent-deck's own control-mode clients do not count), checked again right before the key, showing the same prompt (question, options and cursor) for the whole timeout. The session leaving waiting, the prompt changing (you answered it, a new question, the cursor moved) or a client attaching resets the timer. At the timeout the pane is read again, and only when it still shows the same prompt with the dialog owning the keyboard does agent-deck send one `Enter`; it never sends arrows, and never a bare `Enter` to a composer. Each prompt is answered at most once.
+
+**Not timed.** A question you already looked at: once you open or acknowledge the session, its status is idle rather than waiting, so that question is never answered for you. A question with a background task or workflow progress line below it (the picker is then not the last thing on screen). Both fail safe: nothing is sent.
+
+**Mind auto modes.** The answer goes to the model, not to a permission prompt; in a session started with skip-permissions or an auto permission mode, the model can then act on it without asking. The deny list above keeps destructive and outward-facing questions out, but turn the timer on only for sessions whose questions you would let go to the recommended option anyway.
+
+The key is `[sessions] wait_timeout` (the existing `[sessions]` section, next to `auto_refresh_idle_builds`); a `[session]` table is not read.
+
+**Where it runs.** In the TUI's status sweep, only in the primary TUI (one process per host answers, so a prompt never gets two keys); a headless `web --no-tui` does not run it, so close-the-laptop setups need a TUI open.
+
+**Log.** Every choice writes one line to `<data dir>/logs/session-lifecycle.jsonl` with action `wait-timeout-default-chosen` and a reason such as `kind=recommended-option option="1. SQLite (Recommended)" question="Which storage backend?" waited=5m2s timeout=5m0s`, and a `wait_timer_chose_default` record (instance id, title, prompt kind, question, option, waited, timeout) to the debug log.
+
 ## [interval_hooks.*] Section
 
 Run shell commands on a wall-clock interval while the TUI is running,

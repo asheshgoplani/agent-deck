@@ -7,17 +7,17 @@
          │      same-harness resume                                   │         
          │                                                            │         
          │    ▲ more above                                            │         
-         │      Harness (choose destination first):                   │         
-         │        shell     claude     gemini     opencode            │         
-         │        opencode2     codex     pi     copilot              │         
-         │        crush     muse     cursor agent     hermes          │         
-         │        deepseek     omp                                    │         
+         │                                                            │         
+         │                                                            │         
+         │                                                            │         
          │      Pin position:                                         │         
          │        Off     Top     Bottom                              │         
          │      [x] Skip permissions (restart, claude)                │         
          │      [ ] Auto mode (restart, claude)                       │         
-         │    ▶ Extra args (restart, claude) — space-separated:       │         
+         │      Extra args (restart, claude) — space-separated:       │         
          │      > --model opus                                        │         
+         │    ▶ Wait timer (claude) — 5m, off, empty = config:        │         
+         │      > e.g. 5m                                             │         
          │                                                            │         
          │                                                            │         
          │    Type to edit │ Enter save │ Tab next │ Esc cancel       │         

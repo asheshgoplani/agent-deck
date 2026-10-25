@@ -464,6 +464,11 @@ type Home struct {
 	idleTimeoutWatcher  *session.IdleTimeoutWatcher
 	idleTimeoutLastTick atomic.Int64 // UnixNano
 
+	// waitTimer answers prompts that waited past their session's wait
+	// timeout (ASK-119); ticked once per status sweep by the primary TUI
+	// (tickWaitTimer).
+	waitTimer *session.WaitTimer
+
 	// PERFORMANCE: Worker pool for output-driven status updates (Priority 2)
 	// Caps the number of goroutines spawned for %output events from control pipes
 	logUpdateChan chan *session.Instance // Buffers status update requests from PipeManager
@@ -2012,6 +2017,11 @@ func (h *Home) backgroundStatusUpdate() {
 			}
 		}
 	}
+
+	// ASK-119: prompts that waited past their session's wait timeout take
+	// their recommended option. After the status loop, so it reads this
+	// sweep's statuses.
+	h.tickWaitTimer(instances)
 
 	// Always sync notification bar - must check for signal file (Ctrl+b N acknowledgments)
 	// even when no status changes occurred

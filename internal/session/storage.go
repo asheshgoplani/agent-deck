@@ -202,6 +202,10 @@ type InstanceData struct {
 	// zone, prompt_suggestions.go).
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
 
+	// WaitTimeout mirrors Instance.WaitTimeout (tool_data extras zone,
+	// wait_timer.go).
+	WaitTimeout string `json:"wait_timeout,omitempty"`
+
 	// IntendedSwitch mirrors Instance.IntendedSwitch (tool_data extras zone,
 	// intended_switch.go).
 	IntendedSwitch *IntendedSwitch `json:"intended_switch,omitempty"`
@@ -1174,6 +1178,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 	toolData = WriteContextLevelToToolData(toolData, inst.ContextLevel)
 	toolData = WriteQueuedMessageToToolData(toolData, inst.QueuedMessage)
 	toolData = WritePromptSuggestionsToToolData(toolData, inst.PromptSuggestions)
+	toolData = WriteWaitTimeoutToToolData(toolData, inst.WaitTimeout)
 	toolData = WriteIntendedSwitchToToolData(toolData, inst.IntendedSwitch)
 	toolData = WriteLimitVerdictResetToToolData(toolData, inst.LimitVerdictResetAt)
 	// #1815: the resume-identity taint travels with the id it describes, so a
@@ -1389,6 +1394,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			WaitTimeout:               ReadWaitTimeoutFromToolData(r.ToolData),
 			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1536,6 +1542,7 @@ func (s *Storage) LoadWithGroupsSnapshot() ([]*Instance, []*GroupData, *statedb.
 			ContextLevel:              ReadContextLevelFromToolData(r.ToolData),
 			QueuedMessage:             ReadQueuedMessageFromToolData(r.ToolData),
 			PromptSuggestions:         ReadPromptSuggestionsFromToolData(r.ToolData),
+			WaitTimeout:               ReadWaitTimeoutFromToolData(r.ToolData),
 			IntendedSwitch:            ReadIntendedSwitchFromToolData(r.ToolData),
 			LimitVerdictResetAt:       ReadLimitVerdictResetFromToolData(r.ToolData),
 			ClaudeSessionIDUnverified: ReadClaudeSessionUnverifiedFromToolData(r.ToolData),
@@ -1859,6 +1866,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			ContextLevel:                 instData.ContextLevel,
 			QueuedMessage:                instData.QueuedMessage,
 			PromptSuggestions:            instData.PromptSuggestions,
+			WaitTimeout:                  instData.WaitTimeout,
 			IntendedSwitch:               instData.IntendedSwitch,
 			LimitVerdictResetAt:          instData.LimitVerdictResetAt,
 			LastStartedAt:                instData.LastStartedAt,

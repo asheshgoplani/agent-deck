@@ -117,6 +117,10 @@ type toolDataBlob struct {
 	// (internal/session/prompt_suggestions.go), listed for the same reason as
 	// ContextLevel: clearing it must not be undone by MergeToolDataExtras.
 	PromptSuggestions string `json:"prompt_suggestions,omitempty"`
+	// WaitTimeout is the per-session wait timer (internal/session/
+	// wait_timer.go), listed for the same reason as ContextLevel: clearing it
+	// must not be undone by MergeToolDataExtras.
+	WaitTimeout string `json:"wait_timeout,omitempty"`
 	// IntendedSwitch is the per-session intended account/model switch record
 	// (internal/session/intended_switch.go), listed for the same reason as
 	// ContextLevel: clearing it must not be undone by MergeToolDataExtras.

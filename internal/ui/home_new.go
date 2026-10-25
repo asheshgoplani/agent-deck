@@ -241,6 +241,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:          statusWorkerDone,
 		idleTimeoutWatcher:        session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
+		waitTimer:                 session.NewWaitTimer(session.WaitTimerConfig{}),
 		lastPersistedStatus:       make(map[string]string),
 		lastPersistedAutoNameDesc: make(map[string]string),
 		logUpdateChan:             make(chan *session.Instance, 100), // Buffered to absorb bursts

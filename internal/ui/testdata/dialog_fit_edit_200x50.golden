@@ -7,7 +7,6 @@
                                                                                                                                                                                                         
                                                                                                                                                                                                         
                                                                                                                                                                                                         
-                                                                                                                                                                                                        
                                                                      ╭────────────────────────────────────────────────────────────╮                                                                     
                                                                      │                                                            │                                                                     
                                                                      │                                                            │                                                                     
@@ -31,13 +30,14 @@
                                                                      │      [ ] Auto mode (restart, claude)                       │                                                                     
                                                                      │      Extra args (restart, claude) — space-separated:       │                                                                     
                                                                      │      > --model opus                                        │                                                                     
+                                                                     │      Wait timer (claude) — 5m, off, empty = config:        │                                                                     
+                                                                     │      > e.g. 5m                                             │                                                                     
                                                                      │                                                            │                                                                     
                                                                      │                                                            │                                                                     
                                                                      │    Type to edit │ Enter save │ Tab next │ Esc cancel       │                                                                     
                                                                      │                                                            │                                                                     
                                                                      │                                                            │                                                                     
                                                                      ╰────────────────────────────────────────────────────────────╯                                                                     
-                                                                                                                                                                                                        
                                                                                                                                                                                                         
                                                                                                                                                                                                         
                                                                                                                                                                                                         

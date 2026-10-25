@@ -1271,6 +1271,15 @@ type SessionsSettings struct {
 	// resuming its conversation (see idle_build_refresh.go).
 	// Default: true (nil = true); the profile value wins over the global one.
 	AutoRefreshIdleBuilds *bool `toml:"auto_refresh_idle_builds,omitempty"`
+
+	// WaitTimeout turns on the wait timer for every session without its own
+	// value: a session that has waited on a human this long at a numbered
+	// question with a "(Recommended)" option under the cursor takes that
+	// option. Never answers permission, trust or security prompts (see
+	// wait_timer.go). A Go duration of at least 1m ("5m"); empty, "0" or
+	// "off" is off. Default: off. Per session: `session set <id>
+	// wait-timeout`.
+	WaitTimeout string `toml:"wait_timeout,omitempty"`
 }
 
 // ConductorAutoRefreshIdleBuilds reports whether conductor name opted into

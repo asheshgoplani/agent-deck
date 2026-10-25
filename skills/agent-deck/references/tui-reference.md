@@ -235,7 +235,7 @@ Claude New Session defaults are remembered in `$XDG_CONFIG_HOME/agent-deck/confi
 
 ### Edit Session (`Shift+P`)
 
-Edits the fields a session iterates on at runtime: Title, Harness (tool), Pin position, the account row (shown when `[profiles.<name>.*].config_dir` slots are configured for a supported harness), and for claude sessions Skip permissions, Auto mode, Extra args, Plugins.
+Edits the fields a session iterates on at runtime: Title, Harness (tool), Pin position, the account row (shown when `[profiles.<name>.*].config_dir` slots are configured for a supported harness), and for claude sessions Skip permissions, Auto mode, Extra args, Wait timer (take the recommended option after this long: `5m`, `off`, or empty for `[sessions] wait_timeout`; applies live), Plugins.
 
 **Controls:** `Tab`/`↓` `Shift+Tab`/`↑` move rows | `←`/`→` choose (pills) | `Space` toggle (checkboxes) | `Enter` save | `Esc` cancel. The footer says what the keys do on the focused row; on a changed harness or account row it reads "Enter switch (asks first)".
 

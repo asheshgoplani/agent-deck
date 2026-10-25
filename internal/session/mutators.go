@@ -58,6 +58,10 @@ const (
 	// Code prompt suggestions: children-off, on or off. Empty clears it (back
 	// to the profile/[launch] config). See prompt_suggestions.go.
 	FieldPromptSuggestions = "prompt-suggestions"
+	// FieldWaitTimeout sets the per-session wait timer (ASK-119): a Go
+	// duration of at least 1m, "off" (or 0) to disable it for this session,
+	// or empty to use [sessions] wait_timeout. Live. See wait_timer.go.
+	FieldWaitTimeout = "wait-timeout"
 	// FieldFavorite marks a session as a favourite (true/false). Live.
 	FieldFavorite = "favorite"
 	// FieldIntendedSwitch marks the session's current account+model as
@@ -92,6 +96,7 @@ var ValidMutableFields = []string{
 	FieldModel,
 	FieldContextLevel,
 	FieldPromptSuggestions,
+	FieldWaitTimeout,
 	FieldFavorite,
 	FieldIntendedSwitch,
 }
@@ -492,6 +497,15 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
 		}
 		inst.IdleTimeoutSecs = secs
+
+	case FieldWaitTimeout:
+		// ASK-119: live; the wait timer's next tick reads the new value.
+		oldValue = inst.WaitTimeout
+		norm, perr := normalizeWaitTimeout(value)
+		if perr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
+		}
+		inst.WaitTimeout = norm
 
 	case FieldContextLevel:
 		// #2260: empty clears the override (inherit group/global); anything

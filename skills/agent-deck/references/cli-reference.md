@@ -425,7 +425,7 @@ agent-deck session primer my-project --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level, prompt-suggestions
+**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account, context-level, prompt-suggestions, wait-timeout
 
 Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
@@ -441,6 +441,14 @@ agent-deck session set my-project context-level ""       # clear: inherit group/
 ```bash
 agent-deck session set my-worker prompt-suggestions on   # keep suggestions in a parented session
 agent-deck session set my-worker prompt-suggestions ""   # clear: follow profile, then [launch]
+```
+
+`wait-timeout` sets the session's wait timer (Claude sessions): after a numbered question whose `(Recommended)` option is under the cursor has waited this long with nobody attached, agent-deck takes that option. It never answers permission, trust, login or security prompts, or a question about a destructive action. A Go duration of at least `1m`; `off` (or `0`) disables it for this session; an empty value falls back to `[sessions] wait_timeout` (default off). Applies live. See `config-reference.md` ("Wait timer").
+
+```bash
+agent-deck session set my-project wait-timeout 5m   # take the recommended option after 5 minutes
+agent-deck session set my-project wait-timeout off  # never, even with [sessions] wait_timeout set
+agent-deck session set my-project wait-timeout ""   # follow [sessions] wait_timeout
 ```
 
 ### session send-keys
