@@ -281,6 +281,9 @@ func (s *Storage) StartQueued(inst *Instance) (QueuedStart, error) {
 // config_dir) the session runs with CLAUDE_CONFIG_DIR=<dir> and reads
 // <dir>/.claude.json, so seeding only ~/.claude.json left it stuck on the
 // trust prompt (#2673). The home root is still seeded too, as before.
+//
+// Only a folder the FX-8 rule allows is seeded (folderTrustAllowed); for any
+// other a stderr note says how to allow it.
 func PreAcceptLaunchTrust(inst *Instance) {
 	if inst.Tool != "claude" {
 		return
@@ -288,6 +291,11 @@ func PreAcceptLaunchTrust(inst *Instance) {
 	trustDir := inst.EffectiveWorkingDir()
 	if real, err := filepath.EvalSymlinks(trustDir); err == nil {
 		trustDir = real
+	}
+	if folderTrustAllowed(inst, trustDir) == "" {
+		folderTrustSkipped("claude", inst, trustDir)
+		fmt.Fprintln(os.Stderr, folderTrustHint(trustDir))
+		return
 	}
 	targets := []string{GetUserMCPRootPath()}
 	if IsClaudeConfigDirExplicitForInstance(inst) {

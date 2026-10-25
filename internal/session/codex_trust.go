@@ -128,6 +128,10 @@ func (i *Instance) preAcceptCodexWorkspaceTrust() {
 		return
 	}
 	projectDir := i.EffectiveWorkingDir()
+	if folderTrustAllowed(i, projectDir) == "" {
+		folderTrustSkipped("codex", i, projectDir)
+		return
+	}
 	configPath := GetCodexConfigPath(i.getCodexHomeDir())
 	if err := PreAcceptCodexTrust(configPath, projectDir); err != nil {
 		sessionLog.Warn("codex_preaccept_trust_failed",

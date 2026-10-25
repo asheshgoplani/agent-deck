@@ -20,6 +20,9 @@ func TestIssue2102_PreAcceptLaunchTrustSeedsUnopenedDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	// An install from before the FX-8 safe defaults (auto_trust_folders on);
+	// the new-install side is in internal/session/folder_trust_policy_test.go.
+	defer session.SetInstallKindForTest(session.InstallKindExisting)()
 
 	projectDir := t.TempDir()
 	inst := &session.Instance{Tool: "claude", ProjectPath: projectDir}

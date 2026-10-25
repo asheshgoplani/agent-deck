@@ -149,7 +149,10 @@ func ApplyConfiguredLoadout(inst *Instance) []string {
 		if real, err := filepath.EvalSymlinks(trustDir); err == nil {
 			trustDir = real
 		}
-		if err := preAcceptClaudeTrustForInstance(inst, trustDir); err != nil {
+		if folderTrustAllowed(inst, trustDir) == "" {
+			folderTrustSkipped("claude", inst, trustDir)
+			warn("workspace %q is not trusted by agent-deck ([security] trusted_folders), so project plugins load only after you accept Claude's trust prompt", trustDir)
+		} else if err := preAcceptClaudeTrustForInstance(inst, trustDir); err != nil {
 			warn("workspace trust seed for %q failed (plugins may not load): %v", trustDir, err)
 		} else {
 			sessionLog.Info("loadout_trust_seeded",

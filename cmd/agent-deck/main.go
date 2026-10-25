@@ -2049,6 +2049,7 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 	// the user confirms creating a missing directory on the server; the local
 	// dialog asks the same question and calls os.MkdirAll itself.
 	createDir := fs.Bool("create-dir", false, "Create the project directory when it does not exist (like mkdir -p)")
+	trustFolder := fs.Bool("trust-folder", false, "Let agent-deck mark this folder trusted for the tool (adds it to [security] trusted_folders in config.toml)")
 
 	// Sandbox flags
 	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
@@ -2418,6 +2419,12 @@ func handleAddCommand(profile string, args []string, inspectFlags func(*flag.Fla
 		}
 		if !info.IsDir() {
 			fmt.Printf("Error: path is not a directory: %s\n", path)
+			exitCLI(1)
+		}
+	}
+	if *trustFolder && *sshHost == "" {
+		if err := session.AddTrustedFolder(path); err != nil {
+			fmt.Printf("Error: %v\n", err)
 			exitCLI(1)
 		}
 	}

@@ -152,6 +152,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	idleTimeout := fs.String("idle-timeout", "", "Auto-stop session after this duration of no tmux output (Go duration: 30m, 1h, 24h). 0 or unset = disabled")
 
 	createDir := fs.Bool("create-dir", false, "Create the project directory when it does not exist")
+	trustFolder := fs.Bool("trust-folder", false, "Let agent-deck mark this folder trusted for the tool (adds it to [security] trusted_folders in config.toml)")
 	capabilities := fs.Bool("capabilities", false, "Report authoritative creation fields and host catalogs (requires --json)")
 	startupQuery := fs.String("startup-query", "", "Claude startup query, delivered once on initial start")
 	var additionalPaths []string
@@ -371,6 +372,12 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if !info.IsDir() {
 		out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
 		exitCLI(1)
+	}
+	if *trustFolder {
+		if err := session.AddTrustedFolder(path); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			exitCLI(1)
+		}
 	}
 
 	// Handle worktree creation

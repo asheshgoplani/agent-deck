@@ -48,6 +48,9 @@ func claudeTrusted(t *testing.T, claudeJSON, dir string) bool {
 func TestQueuedStart_SeedsClaudeTrustBeforeSpawn(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// An install from before the FX-8 safe defaults (auto_trust_folders on);
+	// the new-install side is in folder_trust_policy_test.go.
+	defer SetInstallKindForTest(InstallKindExisting)()
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	projectDir := t.TempDir()
 	inst := NewInstanceWithGroup("worker", projectDir, "workers")

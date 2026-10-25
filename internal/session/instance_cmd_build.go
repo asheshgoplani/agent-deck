@@ -1392,6 +1392,12 @@ func (i *Instance) preAcceptCursorWorkspaceTrust() {
 	if dir == "" {
 		return
 	}
+	// The container's /workspace is agent-deck's own; any other folder
+	// follows the FX-8 folder-trust rule.
+	if !i.IsSandboxed() && folderTrustAllowed(i, dir) == "" {
+		folderTrustSkipped("cursor", i, dir)
+		return
+	}
 	var err error
 	switch {
 	case i.IsSandboxed() && i.SandboxContainer != "":

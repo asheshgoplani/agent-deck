@@ -89,6 +89,10 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// 2. Global env_files from [shell] section
 	for _, envFile := range config.Shell.EnvFiles {
 		resolved := resolvePath(envFile, i.ProjectPath)
+		if warning := i.untrustedProjectEnvFile(envFile, resolved); warning != "" {
+			sources = append(sources, warning)
+			continue
+		}
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
 	}
 
@@ -106,6 +110,10 @@ func (i *Instance) buildEnvSourceCommand() string {
 
 	// 4. Tool-specific env_file
 	toolEnvFile := i.getToolEnvFile()
+	if warning := i.untrustedProjectEnvFile(toolEnvFile, resolvePath(toolEnvFile, i.ProjectPath)); toolEnvFile != "" && warning != "" {
+		sources = append(sources, warning)
+		toolEnvFile = ""
+	}
 	if toolEnvFile != "" {
 		resolved := resolvePath(toolEnvFile, i.ProjectPath)
 		// CodeQL go/path-injection (uncontrolled data in path expression):
@@ -259,6 +267,23 @@ func colorfgbgMatchesTheme(colorfgbg, theme string) (bool, bool) {
 	}
 	isLight := bg >= 8
 	return (theme == "light") == isLight, true
+}
+
+// untrustedProjectEnvFile is the FX-8 env_file rule (LOC-5 part 2): an
+// env_file is sourced as shell, so a relative one, which resolves into the
+// session's project folder, is only sourced when that folder is trusted under
+// folderTrustAllowed (on an existing install auto_trust_folders keeps that
+// true). For a skipped file it returns the pane warning to emit instead; ""
+// means source it. Absolute and ~ paths are the user's own and unchanged.
+func (i *Instance) untrustedProjectEnvFile(configured, resolved string) string {
+	if configured == "" || filepath.IsAbs(ExpandPath(configured)) {
+		return ""
+	}
+	if folderTrustAllowed(i, i.ProjectPath) != "" {
+		return ""
+	}
+	folderTrustSkipped("env_file", i, i.ProjectPath)
+	return paneWarning(fmt.Sprintf("env_file %s not sourced: it is inside %s, which agent-deck does not trust; add the folder to [security] trusted_folders in config.toml to source it", resolved, i.ProjectPath))
 }
 
 // paneWarning returns a shell command that prints an agent-deck warning to
@@ -711,7 +736,11 @@ func (i *Instance) getConductorEnv(ignoreMissing bool) string {
 	// Conductor env_file
 	if meta.EnvFile != "" {
 		resolved := resolvePath(meta.EnvFile, i.ProjectPath)
-		parts = append(parts, buildSourceCmd(resolved, ignoreMissing))
+		if warning := i.untrustedProjectEnvFile(meta.EnvFile, resolved); warning != "" {
+			parts = append(parts, warning)
+		} else {
+			parts = append(parts, buildSourceCmd(resolved, ignoreMissing))
+		}
 	}
 
 	// Conductor inline env vars
