@@ -3,8 +3,14 @@ package session
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
@@ -100,6 +106,61 @@ func folderTrustHint(dir string) string {
 		"To let agent-deck trust it: launch with --trust-folder, or add it to [security] trusted_folders in config.toml.", dir)
 }
 
+// trustedFoldersLine matches a one-line trusted_folders array.
+var trustedFoldersLine = regexp.MustCompile(`(?m)^([ \t]*trusted_folders[ \t]*=[ \t]*\[)([^\]\n]*)\]`)
+
+// appendTrustedFolderText adds dir to [security] trusted_folders as a text
+// edit: into a one-line array under [security], as a new key under the
+// header, or as a new [security] table at the end. The result must decode to
+// the old document with exactly dir appended; otherwise it reports false.
+func appendTrustedFolderText(content []byte, dir string) ([]byte, bool) {
+	quoted := strconv.Quote(dir)
+	var out []byte
+	if loc := tomlTableHeader("security").FindIndex(content); loc != nil {
+		section := content[loc[1]:]
+		if next := regexp.MustCompile(`(?m)^[ \t]*\[`).FindIndex(section); next != nil {
+			section = section[:next[0]]
+		}
+		if m := trustedFoldersLine.FindSubmatchIndex(section); m != nil {
+			inner := strings.TrimSpace(string(section[m[4]:m[5]]))
+			repl := quoted
+			if inner != "" {
+				repl = strings.TrimRight(inner, ", \t") + ", " + quoted
+			}
+			start := loc[1] + m[4]
+			end := loc[1] + m[5]
+			out = append(append(append([]byte(nil), content[:start]...), repl...), content[end:]...)
+		} else if edited, ok := insertAfterTableHeader(content, "security", "trusted_folders = ["+quoted+"]\n"); ok {
+			out = edited
+		}
+	} else {
+		out = append([]byte(nil), content...)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			out = append(out, '\n')
+		}
+		out = append(out, "\n[security]\ntrusted_folders = ["+quoted+"]\n"...)
+	}
+	if out == nil {
+		return nil, false
+	}
+	var before, after UserConfig
+	if _, err := toml.Decode(string(content), &before); err != nil {
+		return nil, false
+	}
+	if _, err := toml.Decode(string(out), &after); err != nil {
+		return nil, false
+	}
+	want := append(append([]string(nil), before.Security.TrustedFolders...), dir)
+	if !reflect.DeepEqual(after.Security.TrustedFolders, want) {
+		return nil, false
+	}
+	after.Security.TrustedFolders = before.Security.TrustedFolders
+	if !reflect.DeepEqual(before, after) {
+		return nil, false
+	}
+	return out, true
+}
+
 // AddTrustedFolder adds dir to [security] trusted_folders (once) through the
 // regular config writer. Used by `launch --trust-folder` / `add --trust-folder`.
 func AddTrustedFolder(dir string) error {
@@ -123,6 +184,19 @@ func AddTrustedFolder(dir string) error {
 			return nil
 		}
 	}
+	// An existing config.toml is edited in place (comments and layout kept),
+	// the same way as the one-time install-defaults write; only a layout the
+	// edit cannot handle safely goes through the full rewrite.
+	if path, err := GetUserConfigPath(); err == nil && pathPresent(path) {
+		if content, err := os.ReadFile(path); err == nil {
+			if edited, ok := appendTrustedFolderText(content, abs); ok {
+				if err := writeConfigInPlace(path, edited); err != nil {
+					return fmt.Errorf("add %s to [security] trusted_folders: %w", abs, err)
+				}
+				return nil
+			}
+		}
+	}
 	updated := *cfg
 	updated.Security.TrustedFolders = append(append([]string(nil), cfg.Security.TrustedFolders...), abs)
 	if err := SaveUserConfig(&updated); err != nil {
@@ -130,4 +204,24 @@ func AddTrustedFolder(dir string) error {
 	}
 	ClearUserConfigCache()
 	return nil
+}
+
+// WarningFolderNotTrusted is the code of a LaunchWarning for a launch into a
+// folder agent-deck did not mark trusted.
+const WarningFolderNotTrusted = "FOLDER_NOT_TRUSTED"
+
+// LaunchWarning is a machine-readable warning in a launch result.
+type LaunchWarning struct {
+	Code   string `json:"code"`
+	Folder string `json:"folder,omitempty"`
+	Hint   string `json:"hint"`
+}
+
+// folderNotTrustedWarning is the FOLDER_NOT_TRUSTED warning for dir.
+func folderNotTrustedWarning(dir string) *LaunchWarning {
+	return &LaunchWarning{
+		Code:   WarningFolderNotTrusted,
+		Folder: dir,
+		Hint:   fmt.Sprintf("the tool may ask \"trust this folder?\" before it starts; run agent-deck launch --trust-folder %s, or add it to [security] trusted_folders in config.toml", shellQuote(dir)),
+	}
 }

@@ -854,7 +854,10 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	// success. This mirrors the same pre-seed already used for conductor
 	// dirs (#1359) and worktree parents (#1149) — best-effort, never
 	// blocks the launch.
-	session.PreAcceptLaunchTrust(newInstance)
+	// On a new install a folder outside the FX-8 trust rule is not seeded:
+	// the result says so (stderr note, and FOLDER_NOT_TRUSTED in --json)
+	// instead of reading as a clean success.
+	trustWarning := session.PreAcceptLaunchTrust(newInstance)
 
 	// Start the session.
 	// - default: StartWithMessage waits for readiness and delivers initial prompt
@@ -1009,6 +1012,9 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 	if worktreePath != "" {
 		jsonData["worktree_path"] = worktreePath
 		jsonData["worktree_branch"] = wtBranch
+	}
+	if trustWarning != nil {
+		jsonData["warnings"] = []*session.LaunchWarning{trustWarning}
 	}
 	addModelInfoJSON(jsonData, newInstance.LaunchModelInfo())
 	addEffortJSON(jsonData, newInstance)

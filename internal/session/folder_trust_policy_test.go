@@ -196,3 +196,99 @@ func TestEnvFilePolicy_RelativeEnvFileNeedsTrustedFolder(t *testing.T) {
 		})
 	}
 }
+
+// Review M2: on a new install, a launch into a folder agent-deck may not
+// trust reports a machine-readable warning; an existing install reports none.
+func TestPreAcceptLaunchTrust_ReturnsFolderNotTrustedWarning(t *testing.T) {
+	home := newInstallWithConfig(t, nil)
+	dir := projectDir(t, home)
+	w := PreAcceptLaunchTrust(&Instance{Tool: "claude", ProjectPath: dir})
+	if w == nil {
+		t.Fatal("new install, untrusted folder: no warning")
+	}
+	real, _ := filepath.EvalSymlinks(dir)
+	if w.Code != WarningFolderNotTrusted || w.Folder != real || !strings.Contains(w.Hint, "--trust-folder") || !strings.Contains(w.Hint, "trusted_folders") {
+		t.Errorf("warning = %+v", w)
+	}
+
+	home2 := installKindHome(t)
+	writeTestFile(t, xdgConfigTOML(home2), "theme = \"dark\"\n")
+	if w := PreAcceptLaunchTrust(&Instance{Tool: "claude", ProjectPath: projectDir(t, home2)}); w != nil {
+		t.Errorf("existing install: unexpected warning %+v", w)
+	}
+}
+
+// Review M2: the queued drain (a daemon, its stderr is lost) logs the same
+// warning code and returns it.
+func TestQueuedStart_NewInstallUntrustedFolderWarns(t *testing.T) {
+	home := newInstallWithConfig(t, nil)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	dir := projectDir(t, home)
+	inst := NewInstanceWithGroup("worker", dir, "workers")
+	inst.Tool = "claude"
+	inst.MarkQueued("")
+	storage := newTestStorage(t)
+	if err := storage.SaveWithGroups([]*Instance{inst}, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(SetQueuedSpawnForTest(func(i *Instance, _ string) error { return nil }))
+	buf := captureSessionLogJSON(t)
+	out, err := storage.StartQueued(inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TrustWarning == nil || out.TrustWarning.Code != WarningFolderNotTrusted {
+		t.Fatalf("queued start TrustWarning = %+v, want %s", out.TrustWarning, WarningFolderNotTrusted)
+	}
+	if !strings.Contains(buf.String(), `"msg":"queued_start_folder_not_trusted"`) || !strings.Contains(buf.String(), `"code":"FOLDER_NOT_TRUSTED"`) {
+		t.Errorf("queued drain did not log the warning code:\n%s", buf.String())
+	}
+}
+
+// Review LOW: --trust-folder edits config.toml in place, keeping comments.
+func TestAddTrustedFolder_KeepsComments(t *testing.T) {
+	for name, content := range map[string]string{
+		"no security table": "# keep me\ntheme = \"dark\" # and me\n",
+		"empty list":        "# keep me\n[security]\n# list\ntrusted_folders = []\n",
+		"one entry":         "# keep me\n[security]\ntrusted_folders = [\"/srv/a\"] # mine\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := installKindHome(t)
+			path := xdgConfigTOML(home)
+			writeTestFile(t, path, content)
+			dir := projectDir(t, home)
+			if err := AddTrustedFolder(dir); err != nil {
+				t.Fatal(err)
+			}
+			after := readTestFile(t, path)
+			for _, comment := range []string{"# keep me", "# and me", "# list", "# mine"} {
+				if strings.Contains(content, comment) && !strings.Contains(after, comment) {
+					t.Errorf("comment %q lost:\n%s", comment, after)
+				}
+			}
+			ClearUserConfigCache()
+			cfg, err := LoadUserConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			real, _ := filepath.EvalSymlinks(dir)
+			found := false
+			for _, f := range cfg.Security.TrustedFolders {
+				found = found || f == real
+			}
+			if !found {
+				t.Errorf("trusted_folders = %v, want %s added", cfg.Security.TrustedFolders, real)
+			}
+			if name == "one entry" && (len(cfg.Security.TrustedFolders) != 2 || !strings.Contains(after, "# mine")) {
+				t.Errorf("existing entry or its comment lost:\n%s", after)
+			}
+			// Idempotent.
+			if err := AddTrustedFolder(dir); err != nil {
+				t.Fatal(err)
+			}
+			if again := readTestFile(t, path); again != after {
+				t.Errorf("second add changed the file:\n%s", again)
+			}
+		})
+	}
+}

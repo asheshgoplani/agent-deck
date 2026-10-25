@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -83,6 +84,8 @@ type QueuedStart struct {
 	// simply be delivered (held for a session that failed to start, or not
 	// queued at all), or that the final status could not be saved.
 	Warning string
+	// TrustWarning is set when the session's folder was not marked trusted.
+	TrustWarning *LaunchWarning
 }
 
 // queuedMessageSink puts a queued -m message on the durable send queue of the
@@ -246,7 +249,15 @@ func (s *Storage) StartQueued(inst *Instance) (QueuedStart, error) {
 	if message != "" {
 		queued, out.Warning = deliverQueuedMessage(s.Profile(), filepath.Dir(s.Path()), inst, message)
 	}
-	PreAcceptLaunchTrust(inst)
+	if w := PreAcceptLaunchTrust(inst); w != nil {
+		// The drain runs in a daemon whose stderr nobody reads: log the code.
+		sessionLog.Warn("queued_start_folder_not_trusted",
+			slog.String("code", w.Code),
+			slog.String("instance_id", inst.ID),
+			slog.String("folder", trustLogValue(w.Folder)),
+			slog.String("hint", w.Hint))
+		out.TrustWarning = w
+	}
 	spawnErr := queuedSpawn(inst, "")
 	if spawnErr != nil {
 		inst.Status = StatusError
@@ -283,10 +294,12 @@ func (s *Storage) StartQueued(inst *Instance) (QueuedStart, error) {
 // trust prompt (#2673). The home root is still seeded too, as before.
 //
 // Only a folder the FX-8 rule allows is seeded (folderTrustAllowed); for any
-// other a stderr note says how to allow it.
-func PreAcceptLaunchTrust(inst *Instance) {
+// other a stderr note says how to allow it, and the FOLDER_NOT_TRUSTED
+// warning is returned for machine-readable results (launch --json, the
+// queued drain's log). nil means nothing to report.
+func PreAcceptLaunchTrust(inst *Instance) *LaunchWarning {
 	if inst.Tool != "claude" {
-		return
+		return nil
 	}
 	trustDir := inst.EffectiveWorkingDir()
 	if real, err := filepath.EvalSymlinks(trustDir); err == nil {
@@ -295,7 +308,7 @@ func PreAcceptLaunchTrust(inst *Instance) {
 	if folderTrustAllowed(inst, trustDir) == "" {
 		folderTrustSkipped("claude", inst, trustDir)
 		fmt.Fprintln(os.Stderr, folderTrustHint(trustDir))
-		return
+		return folderNotTrustedWarning(trustDir)
 	}
 	targets := []string{GetUserMCPRootPath()}
 	if IsClaudeConfigDirExplicitForInstance(inst) {
@@ -313,4 +326,5 @@ func PreAcceptLaunchTrust(inst *Instance) {
 			fmt.Fprintf(os.Stderr, "Warning: folder trust pre-seed for %q in %s failed (Claude launch may stall on the trust prompt): %v\n", trustDir, claudeJSON, err)
 		}
 	}
+	return nil
 }
