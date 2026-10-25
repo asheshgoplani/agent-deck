@@ -420,13 +420,16 @@ func TestCtrlS_NewDialogOpen_DoesNotOpenSwitcher(t *testing.T) {
 	}
 	h.instanceByID = map[string]*session.Instance{"a": h.instances[0], "b": h.instances[1]}
 	h.newDialog.Show() // the new-session dialog is now the active modal
+	// An empty name is taken from the folder (ASK-110); an empty path is
+	// still invalid, so the submit below is a validation no-op.
+	h.newDialog.pathInput.SetValue("")
 
 	if _, _ = h.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); h.sessionSwitcher.IsVisible() {
 		t.Fatal("Ctrl+S while the new-session dialog is open must NOT open the session switcher (dialog submit takes precedence)")
 	}
-	// The dialog stays open: an empty-name submit is a validation no-op, proving
+	// The dialog stays open: an empty-path submit is a validation no-op, proving
 	// Ctrl+S was routed to the dialog rather than the switcher.
-	if !h.newDialog.IsVisible() {
-		t.Fatal("the new-session dialog should remain open after an empty-name Ctrl+S submit")
+	if !h.newDialog.IsVisible() || h.newDialog.validationErr == "" {
+		t.Fatal("the new-session dialog should remain open with an error after an empty-path Ctrl+S submit")
 	}
 }

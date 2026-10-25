@@ -216,7 +216,7 @@ completion content are never rendered.
 ### New Session (`n`)
 
 **Fields (order: Name → Tool → Model → Reasoning effort → Path):**
-- Session name (required)
+- Session name (optional: left empty, it is the folder name, made unique; the empty field previews it)
 - Command (claude/gemini/opencode/codex/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
 - Model ID (claude/codex/gemini/opencode): empty means the tool default; `↓` or `Space` opens the list of known IDs, or type any ID (CLI: `--model`)
 - Reasoning effort (claude/codex): `←`/`→` or `Space` cycles the levels (CLI: `--effort`)
@@ -225,9 +225,9 @@ completion content are never rendered.
 - Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, start query, and the account row (CLI: `--account`; hidden when no named accounts are configured)
 - `[ Create session ]` button (last row)
 
-**Controls:** `Enter` next field on every row (inside the Claude options it steps row by row) | `Tab`/`Shift+Tab` and `↓`/`↑` move fields the same way | `Enter` on `[ Create session ]` or `Ctrl+S` anywhere creates | `Esc` back out of a list, then cancel
+**Controls:** `Enter` creates from any row with what is filled in | `Tab`/`Shift+Tab` and `↓`/`↑` move between rows (inside the Claude options row by row) | `↓`/`Space` open the model list, `Space`/`→` browse paths; while a list is open `Enter` picks | `Ctrl+S` creates too | `Esc` back out of a list, then cancel
 
-Enter-advances is the default (`[ui].new_session_enter_advances = true`): Enter never creates the session until you reach the Create button, so typing a name and pressing Enter through the form no longer launches a session before you have chosen the model, path, or options. The footer on every row says what Enter does there. Set `[ui].new_session_enter_advances = false` to restore the legacy behavior where Enter creates from any row; `Ctrl+S` creates in both modes.
+The common case is two keys: `n`, then `Enter` (this folder, the remembered tool, the selected group, the folder name as title). `N` on the home screen creates with the group's defaults without opening the dialog. If a required field is wrong (empty path, worktree without a valid branch, multi-repo with fewer than 2 paths), `Enter` moves to that field and shows why. Set `[ui].new_session_enter_advances = true` to walk the form instead: Enter moves to the next row and only the `[ Create session ]` button or `Ctrl+S` creates.
 
 Pressing `n` on a remote group/session opens a remote-aware dialog (remote paths and group pre-filled); the session is created over SSH on the remote, never on localhost.
 

@@ -2868,18 +2868,23 @@ func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {
 	}
 }
 
-// --- Default behavior (UX top-3 #1: Enter-advances is now the DEFAULT) ---
+// --- Enter-advances walk (default from UX top-3 #1 until ASK-110; now opt-in) ---
 
-// DEFAULT (Enter-advances ON): Enter on the Name field is handled locally and
-// advances focus instead of submitting — typing a name + Enter no longer
-// silently creates a session with all defaults. This is the behavior flip.
-func TestNewDialog_DefaultEnterOnNameAdvances(t *testing.T) {
+// The default is Enter-creates since ASK-110 (no config →
+// newSessionEnterAdvancesFromConfig returns false); pinned here so the flip is
+// load-bearing.
+func TestNewDialog_DefaultEnterCreates(t *testing.T) {
 	d := NewNewDialog()
-	// enterAdvances now defaults to true (no config → newSessionEnterAdvancesFromConfig
-	// returns true). Assert it explicitly so the new default is load-bearing here.
-	if !d.enterAdvances {
-		t.Fatal("enterAdvances default = false, want true (Enter-advances is now the default)")
+	if d.enterAdvances {
+		t.Fatal("enterAdvances default = true, want false (Enter creates by default since ASK-110)")
 	}
+}
+
+// OPT-IN (Enter-advances ON): Enter on the Name field is handled locally and
+// advances focus instead of submitting.
+func TestNewDialog_OptInEnterOnNameAdvances(t *testing.T) {
+	d := NewNewDialog()
+	d.enterAdvances = true // simulate [ui].new_session_enter_advances = true
 	d.SetSize(100, 50)
 	d.Show()
 
@@ -2888,12 +2893,12 @@ func TestNewDialog_DefaultEnterOnNameAdvances(t *testing.T) {
 	}
 	// shouldHandleEnterLocally must be true on Name so the dialog advances focus.
 	if !d.shouldHandleEnterLocally() {
-		t.Fatal("default mode: shouldHandleEnterLocally on Name = false, want true (Enter must advance, not submit)")
+		t.Fatal("opt-in mode: shouldHandleEnterLocally on Name = false, want true (Enter must advance, not submit)")
 	}
 	before := d.currentTarget()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if d.currentTarget() == before {
-		t.Fatalf("default mode: Enter on Name did not advance focus (still %v)", before)
+		t.Fatalf("opt-in mode: Enter on Name did not advance focus (still %v)", before)
 	}
 }
 
@@ -2918,12 +2923,10 @@ func TestNewDialog_OptOutEnterOnNameSubmits(t *testing.T) {
 	}
 }
 
-// DEFAULT (Enter-advances ON): Enter on the Branch field advances focus.
-func TestNewDialog_DefaultEnterOnBranchAdvances(t *testing.T) {
+// OPT-IN (Enter-advances ON): Enter on the Branch field advances focus.
+func TestNewDialog_OptInEnterOnBranchAdvances(t *testing.T) {
 	d := NewNewDialog()
-	if !d.enterAdvances {
-		t.Fatal("enterAdvances default = false, want true")
-	}
+	d.enterAdvances = true // simulate [ui].new_session_enter_advances = true
 	d.SetSize(100, 50)
 	d.Show()
 	d.nameInput.SetValue("demo")
@@ -2937,12 +2940,12 @@ func TestNewDialog_DefaultEnterOnBranchAdvances(t *testing.T) {
 	d.updateFocus()
 
 	if !d.shouldHandleEnterLocally() {
-		t.Fatal("default mode: shouldHandleEnterLocally on Branch = false, want true (Enter must advance)")
+		t.Fatal("opt-in mode: shouldHandleEnterLocally on Branch = false, want true (Enter must advance)")
 	}
 	before := d.currentTarget()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if d.currentTarget() == before {
-		t.Fatalf("default mode: Enter on Branch did not advance focus (still %v)", before)
+		t.Fatalf("opt-in mode: Enter on Branch did not advance focus (still %v)", before)
 	}
 }
 

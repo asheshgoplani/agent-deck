@@ -238,7 +238,8 @@ func TestNewDialog_LightThemeSurfaceFillIsUniform_Issue2449(t *testing.T) {
 			sawName, sawPath := false, false
 			for i, row := range strings.Split(view, "\n") {
 				plain := stripAnsi(row)
-				if strings.Contains(plain, "> session-name") {
+				// The empty name previews the folder name (ASK-110).
+				if strings.Contains(plain, "> project") {
 					sawName = true
 				}
 				if strings.Contains(plain, "> /work/project") {

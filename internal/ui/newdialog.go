@@ -140,7 +140,7 @@ const (
 	focusBranch                      // branch input (conditional — only when worktree enabled).
 	focusOptions                     // tool-specific options panel (conditional).
 	focusRemoteMCPs                  // MCPs defined on the target remote (conditional, remote targets only).
-	focusCreate                      // explicit "[ Create session ]" button; the one row where Enter submits.
+	focusCreate                      // explicit "[ Create session ]" button; the one row where Enter submits in walk mode.
 )
 
 // New session dialog: outer box and textinput widths stay in sync so long
@@ -225,9 +225,9 @@ type NewDialog struct {
 	conductorCursor   int                 // 0 = "None", 1..N index into conductorSessions
 
 	// enterAdvances mirrors config.toml [ui] new_session_enter_advances (PR
-	// #1295). False (default) preserves today's behavior: Enter on the free-text
-	// Name/Branch fields submits the form. True makes Enter advance focus
-	// instead, with Ctrl+S as the explicit submit. Ctrl+S submits in both modes.
+	// #1295). False (default since ASK-110): Enter creates from any row. True
+	// makes Enter walk to the next row, with the Create button or Ctrl+S as the
+	// submit. Ctrl+S submits in both modes.
 	enterAdvances bool
 
 	// remoteMCPs lists the MCP names defined on the target remote (its
@@ -434,15 +434,14 @@ func (d *NewDialog) RefreshPresetCommands() {
 }
 
 // newSessionEnterAdvancesFromConfig reads config.toml [ui]
-// new_session_enter_advances. Enter-advances is the default (mechanism from PR
-// #1295): when the config is missing or the key is unset, this returns true so
-// Enter advances between fields and Ctrl+S submits. A literal `= false` opts
-// out. Defaulting to true on load error keeps the safer behavior even when the
-// config can't be read.
+// new_session_enter_advances. Enter-creates is the default (ASK-110): when the
+// config is missing, unreadable or the key is unset, this returns false so
+// Enter creates from any row. A literal `= true` opts into the walk where
+// Enter advances and only the Create button or Ctrl+S submits.
 func newSessionEnterAdvancesFromConfig() bool {
 	cfg, err := session.LoadUserConfig()
 	if err != nil || cfg == nil {
-		return true
+		return false
 	}
 	return cfg.UI.GetNewSessionEnterAdvances()
 }
@@ -820,22 +819,19 @@ func (d *NewDialog) shouldHandleEnterLocally() bool {
 	// The Create button is the one row where Enter means "create now".
 	case focusCreate:
 		return false
-	// Path opens its own browse dropdown (or advances on a usable path).
-	case focusPath:
-		return true
 	case focusMultiRepo:
+		// Enter edits / commits the highlighted path of the list.
 		if d.multiRepoEnabled {
 			return true
 		}
 	}
-	// Every other row follows the [ui].new_session_enter_advances contract
-	// (on by default): Enter moves to the next field and only the Create
-	// button or Ctrl+S submits. Before this, Enter on the Model row toggled
-	// its dropdown open/closed forever, and Enter on any non-text row
-	// (tool, reasoning effort, checkboxes, Claude options) created the
-	// session on the spot — the "stuck on the model step, then it launches
-	// by itself" report. With the toggle explicitly off, Enter submits from
-	// every row, as before.
+	// ASK-110 ("it is hard; we have to go to the end to do it"): by default
+	// Enter creates from every row, Path included, with the defaults already
+	// filled in; Tab/↓ walk the optional rows and Space/→ browse paths. The
+	// model list no longer opens on Enter, so the #2239 loop (Enter toggling
+	// the list forever) cannot come back. With [ui].new_session_enter_advances
+	// = true Enter walks to the next row (Path: advance or browse) and only the
+	// Create button or Ctrl+S submits.
 	return d.enterAdvances
 }
 
@@ -1746,23 +1742,46 @@ func (d *NewDialog) isClaudeSelected() bool {
 
 // Validate checks if the dialog values are valid and returns an error message if not
 func (d *NewDialog) Validate() string {
+	msg, _ := d.validate()
+	return msg
+}
+
+// ShowValidationError shows why the form cannot be created and moves focus to
+// the field at fault (ASK-110: Enter creates from any row, so the reason must
+// land where the user can fix it).
+func (d *NewDialog) ShowValidationError() string {
+	msg, target := d.validate()
+	if msg == "" {
+		return ""
+	}
+	d.SetError(msg)
+	if idx := d.indexOf(target); idx >= 0 {
+		d.focusIndex = idx
+		d.updateFocus()
+	}
+	return msg
+}
+
+// validate returns the first validation error and the row it belongs to.
+func (d *NewDialog) validate() (string, focusTarget) {
 	name := strings.TrimSpace(d.nameInput.Value())
 	// Fix: sanitize input to remove surrounding quotes that cause path issues
 	path := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
 
-	// Check for empty name
-	if name == "" {
-		return "Session name cannot be empty"
+	// An empty local name is taken from the folder on submit (ASK-110); a
+	// remote create still needs one, its own add command names nothing.
+	if name == "" && d.remoteTarget {
+		return "Session name cannot be empty", focusName
 	}
 
 	// Check name length
 	if len(name) > MaxNameLength {
-		return fmt.Sprintf("Session name too long (max %d characters)", MaxNameLength)
+		return fmt.Sprintf("Session name too long (max %d characters)", MaxNameLength), focusName
 	}
 
 	// Check for empty path
 	if path == "" && !d.multiRepoEnabled {
-		return "Project path cannot be empty"
+		return "Project path cannot be empty", focusPath
 	}
 
 	// Validate multi-repo paths
@@ -1786,13 +1805,13 @@ func (d *NewDialog) Validate() string {
 				expanded = abs
 			}
 			if seen[expanded] {
-				return "Duplicate paths in multi-repo mode"
+				return "Duplicate paths in multi-repo mode", focusMultiRepo
 			}
 			seen[expanded] = true
 			nonEmpty++
 		}
 		if nonEmpty < 2 {
-			return "Multi-repo mode requires at least 2 paths"
+			return "Multi-repo mode requires at least 2 paths", focusMultiRepo
 		}
 	}
 
@@ -1800,14 +1819,29 @@ func (d *NewDialog) Validate() string {
 	if d.worktreeEnabled {
 		branch := strings.TrimSpace(d.branchInput.Value())
 		if branch == "" {
-			return "Branch name required for worktree"
+			return "Branch name required for worktree", focusBranch
 		}
 		if err := git.ValidateBranchName(branch); err != nil {
-			return err.Error()
+			return err.Error(), focusBranch
 		}
 	}
 
-	return "" // Valid
+	return "", focusName // Valid
+}
+
+// folderName is the session name an empty local Name field gets on submit:
+// the folder's base name (the first path in multi-repo mode), or "" when the
+// path has none.
+func (d *NewDialog) folderName() string {
+	path := d.pathInput.Value()
+	if d.multiRepoEnabled && len(d.multiRepoPaths) > 0 {
+		path = d.multiRepoPaths[0]
+	}
+	base := filepath.Base(strings.Trim(strings.TrimSpace(path), "'\""))
+	if base == "" || base == "." || base == "/" {
+		return ""
+	}
+	return base
 }
 
 // SetError sets an inline validation error displayed inside the dialog
@@ -3194,6 +3228,12 @@ func (d *NewDialog) View() string {
 	}
 	content.WriteString("\n")
 	content.WriteString("  ")
+	// ASK-110: an empty local name is taken from the folder on submit; show
+	// that name so Enter is not a guess.
+	d.nameInput.Placeholder = "session-name"
+	if base := d.folderName(); base != "" && !d.remoteTarget {
+		d.nameInput.Placeholder = base
+	}
 	content.WriteString(d.nameInput.View())
 	content.WriteString("\n\n")
 
@@ -3379,9 +3419,9 @@ func (d *NewDialog) View() string {
 	if len(d.recentSessions) > 0 {
 		recentPrefix = "^R recent │ "
 	}
-	// Every row's footer says what Enter does there. In Enter-advances mode
-	// (default) Enter steps to the next field and only the Create button or
-	// Ctrl+S creates; with the toggle explicitly off, Enter creates from any row.
+	// Every row's footer says what Enter does there. By default (ASK-110)
+	// Enter creates from any row; in the opt-in Enter-advances mode Enter
+	// steps to the next field and only the Create button or Ctrl+S creates.
 	rowHint := "Enter next │ ^S create"
 	if !d.enterAdvances {
 		rowHint = "Enter create"
@@ -3390,6 +3430,12 @@ func (d *NewDialog) View() string {
 	if cur == focusPath {
 		if d.suggestionsActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Tab next │ Esc back"
+		} else if !d.enterAdvances {
+			if d.pathSoftSelected {
+				helpText = "Type to replace │ Enter create │ Space/→ browse │ ← edit │ Esc cancel"
+			} else {
+				helpText = "Tab autocomplete │ Enter create │ Esc cancel"
+			}
 		} else if d.pathSoftSelected {
 			helpText = "Type to replace │ Enter next │ Space/→ browse │ ← edit │ Esc cancel"
 		} else {

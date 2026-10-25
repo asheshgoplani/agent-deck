@@ -42,7 +42,7 @@
        │      [ Create session ]                                                            │       
        │                                                                                    │       
        │                                                                                    │       
-       │    ←→/Space choose effort │ Tab next │ Enter next │ ^S create │ Esc cancel         │       
+       │    ←→/Space choose effort │ Tab next │ Enter create │ Esc cancel                   │       
        │                                                                                    │       
        │                                                                                    │       
        ╰────────────────────────────────────────────────────────────────────────────────────╯       

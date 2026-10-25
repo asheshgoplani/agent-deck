@@ -42,7 +42,7 @@
        │      [ Create session ]                                                            │       
        │                                                                                    │       
        │                                                                                    │       
-       │    Type an ID │ ↓/Space browse IDs │ Enter next │ ^S create │ Esc back             │       
+       │    Type an ID │ ↓/Space browse IDs │ Enter create │ Esc back                       │       
        │                                                                                    │       
        │                                                                                    │       
        ╰────────────────────────────────────────────────────────────────────────────────────╯       

@@ -587,16 +587,14 @@ type UISettings struct {
 	// action remains reachable by its key and is fully listed under help (?).
 	Footer string `toml:"footer,omitempty"`
 
-	// NewSessionEnterAdvances controls what Enter does on the free-text
-	// Name/Branch fields of the new-session dialog. As of the UX top-3 pass this
-	// is ON BY DEFAULT (the mechanism shipped opt-in in PR #1295): Enter advances
-	// focus to the next field, so typing a name and pressing Enter no longer
-	// silently creates a session with all defaults — the #1 reported new-session
-	// trap. Ctrl+S is the explicit submit shortcut and submits in BOTH modes;
-	// Enter still submits from non-text rows (tool/checkboxes). The pointer lets
-	// us distinguish "unset" (nil → default true) from an explicit opt-OUT
-	// (`new_session_enter_advances = false` → restores the legacy Enter-submits
-	// behavior). Set `= true` (or leave unset) to keep the new default.
+	// NewSessionEnterAdvances controls what Enter does in the new-session
+	// dialog. Unset or false (the default since ASK-110, 2026-10-24): Enter
+	// creates the session from any row with the defaults already filled in,
+	// an empty name is taken from the folder, and Tab/↓ walk the optional
+	// rows. Owner report: "it is hard; we have to go to the end to do it" —
+	// Enter used to walk every row to a trailing Create button. `= true` opts
+	// back into that walk (mechanism from PR #1295, default from the UX
+	// top-3 pass to ASK-110). Ctrl+S creates in both modes.
 	NewSessionEnterAdvances *bool `toml:"new_session_enter_advances"`
 
 	// AttachOnCreate controls whether creating a session in the TUI (the `n`
@@ -988,15 +986,14 @@ func (u UISettings) GetRemoteSessionRefreshSecs() int {
 	return val
 }
 
-// GetNewSessionEnterAdvances reports whether Enter on the new-session dialog's
-// free-text Name/Branch fields should advance focus (true) instead of
-// submitting the form (false). Defaults to true when unset: Enter-advances is
-// the default so typing a name + Enter no longer silently submits with all
-// defaults. A literal `new_session_enter_advances = false` opts out and
-// restores the legacy Enter-submits behavior. Ctrl+S submits in both modes.
+// GetNewSessionEnterAdvances reports whether Enter in the new-session dialog
+// advances to the next row (true) instead of creating the session (false).
+// Defaults to false when unset (ASK-110): Enter creates from any row. A
+// literal `new_session_enter_advances = true` opts into the walk. Ctrl+S
+// creates in both modes.
 func (u UISettings) GetNewSessionEnterAdvances() bool {
 	if u.NewSessionEnterAdvances == nil {
-		return true // Default: ON (Enter advances; Ctrl+S submits).
+		return false // Default: Enter creates; Tab walks.
 	}
 	return *u.NewSessionEnterAdvances
 }

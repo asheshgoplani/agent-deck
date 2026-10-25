@@ -116,7 +116,7 @@ agent-deck skill attach my-proj docs --source pool --restart # Attach skill + re
 agent-deck web                    # Start web UI on http://127.0.0.1:8420
 ```
 
-> **⚠️ Changed in v1.9.55, extended after v1.16.5:** in the new-session dialog (`n`), **Enter advances to the next field** on every row — Name, Tool, Model, Reasoning effort, Path, checkboxes and each Claude Options row — and only the trailing **`[ Create session ]`** button (or **Ctrl+S from any field**) creates the session, so walking the form with Enter never launches a session before you have chosen the model, path or options. `↓`/`Space` open the model list. The dialog also remembers your last-used tool. Restore the old Enter-creates-from-any-row behavior with `[ui].new_session_enter_advances = false`.
+> **⚠️ Changed again after v1.16.32:** in the new-session dialog (`n`), **Enter creates the session from any row** with what is filled in: this folder, your last-used tool, the selected group, and the folder name when Name is empty. `n` then `Enter` is the whole common case; `N` on the home screen creates without the dialog. Tab/↓ reach the optional rows, `↓`/`Space` open the model list, and a wrong required field takes focus with the reason. To walk the form with Enter down to the **`[ Create session ]`** button instead, set `[ui].new_session_enter_advances = true`; **Ctrl+S** creates from any field in both modes.
 
 ### Key Shortcuts
 

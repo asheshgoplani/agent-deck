@@ -42,7 +42,7 @@
        │      [ Create session ]                                                            │       
        │                                                                                    │       
        │                                                                                    │       
-       │    Space/y toggle │ Tab/↑↓ navigate │ Enter next │ ^S create │ Esc cancel          │       
+       │    Space/y toggle │ Tab/↑↓ navigate │ Enter create │ Esc cancel                    │       
        │                                                                                    │       
        │                                                                                    │       
        ╰────────────────────────────────────────────────────────────────────────────────────╯       
