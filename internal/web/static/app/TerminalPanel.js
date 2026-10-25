@@ -65,8 +65,8 @@ export function installTouchScroll(container, xtermEl, terminal, controller) {
       moved = true
     }
     lastY = y
+    event.preventDefault()
     if (xtermEl && delta !== 0) {
-      event.preventDefault()
       xtermEl.dispatchEvent(
         new WheelEvent('wheel', {
           deltaY: delta,
@@ -83,8 +83,9 @@ export function installTouchScroll(container, xtermEl, terminal, controller) {
     // (brings up on-screen keyboard on iOS/Android; issue #2680).
     // Only focus when all touches have ended (event.touches.length === 0)
     // to prevent two-finger gestures (e.g. pinch) from focusing when lifting one finger.
+    // Skip focus when session is read-only so keyboard does not pop up.
     const touchCount = event && event.touches ? event.touches.length : 0
-    if (active && !moved && touchCount === 0 && terminal && typeof terminal.focus === 'function') {
+    if (active && !moved && touchCount === 0 && !readOnlySignal.value && terminal && typeof terminal.focus === 'function') {
       terminal.focus()
     }
     if (touchCount === 0) {
