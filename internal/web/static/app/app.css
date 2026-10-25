@@ -429,6 +429,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 
 .work-head .spacer { flex: 0 0 10px; }
 .work-head .actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+.mob-back-btn { display: none; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1078,6 +1079,14 @@ body[data-rail="hidden"] .rightrail { display: none; }
   .work-head {
     flex-wrap: wrap; gap: 6px; padding: 8px 10px; min-height: 0;
   }
+  .mob-back-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; padding: 0;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--card); color: var(--text);
+    cursor: pointer; flex-shrink: 0;
+  }
+  .mob-back-btn:active { background: var(--card-hi); }
   .work-head .actions .btn { padding: 6px 8px; font-size: 12px; }
   .work-head .actions .btn .kbd { display: none; }
 

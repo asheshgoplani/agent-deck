@@ -157,4 +157,93 @@ test.describe('mobile phone layout', () => {
     expect(m.appBottom).toBeLessThanOrEqual(m.innerHeight)
     expect(m.barBottom).toBeLessThanOrEqual(m.innerHeight)
   })
+
+  test('back-to-list button in work-head returns to Fleet list on mobile (#2680)', async ({ page }) => {
+    // Open a session from Fleet
+    const tile = page.locator('[data-testid="fleet-session-tile"][data-session-id="sess-001"]')
+    await expect(tile).toBeVisible()
+    await tile.click()
+    await expect(page.locator('[data-testid="mobile-tab-terminal"]')).toHaveClass(/\bon\b/)
+    await expect(page.locator('.term-wrap')).toBeVisible()
+
+    // The back-to-list button should be visible in the work-head on phone
+    const backBtn = page.locator('[data-testid="work-head-back-btn"]')
+    await expect(backBtn).toBeVisible()
+
+    // Clicking it deselects the session and returns to Fleet
+    await backBtn.click()
+    await expect(page.locator('[data-testid="mobile-tab-fleet"]')).toHaveClass(/\bon\b/)
+    await expect(page.locator('[data-testid="fleet-pane"]')).toBeVisible()
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/')
+
+    // When no session is selected (navigated back to Fleet), back button is not rendered (#2680)
+    await expect(page.locator('[data-testid="work-head-back-btn"]')).toHaveCount(0)
+  })
+
+  test.describe('tap-to-focus on mobile terminal', () => {
+    test.use({ hasTouch: true })
+
+    test('tap-to-focus on mobile terminal focuses .xterm-helper-textarea and drag does not (#2680)', async ({ page }) => {
+      // Open a session from Fleet
+      const tile = page.locator('[data-testid="fleet-session-tile"][data-session-id="sess-001"]')
+      await expect(tile).toBeVisible()
+      await tile.click()
+      await expect(page.locator('[data-testid="mobile-tab-terminal"]')).toHaveClass(/\bon\b/)
+      await expect(page.locator('.term-wrap')).toBeVisible()
+
+      const termWrap = page.locator('.term-wrap')
+      await expect(termWrap).toBeVisible()
+      const textarea = page.locator('.xterm-helper-textarea')
+      await expect(textarea).toBeAttached()
+
+      // 1. Stationary single-finger tap focuses the terminal
+      // Tap on the terminal area
+      const box = await termWrap.boundingBox()
+      expect(box).not.toBeNull()
+      const centerX = box.x + box.width / 2
+      const centerY = box.y + box.height / 2
+
+      // Dispatch a stationary touch sequence (touchstart + touchend at same coordinates)
+      await page.touchscreen.tap(centerX, centerY)
+
+      // Assert that xterm helper textarea is document.activeElement
+      await expect(textarea).toBeFocused()
+
+      // Blur to reset focus state before testing drag
+      await textarea.evaluate(el => el.blur())
+      await expect(textarea).not.toBeFocused()
+
+      // 2. Short drag/scroll does not focus the terminal
+      // Simulate touch drag: touchstart, move past 6px threshold, touchend
+      await page.evaluate(({ cx, cy }) => {
+        const el = document.querySelector('.term-wrap')
+        if (!el) return
+        const t1 = new Touch({ identifier: 1, target: el, clientX: cx, clientY: cy })
+        const t2 = new Touch({ identifier: 1, target: el, clientX: cx, clientY: cy + 30 })
+
+        el.dispatchEvent(new TouchEvent('touchstart', { touches: [t1], bubbles: true, cancelable: true }))
+        el.dispatchEvent(new TouchEvent('touchmove', { touches: [t2], bubbles: true, cancelable: true }))
+        el.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true, cancelable: true }))
+      }, { cx: centerX, cy: centerY })
+
+      await expect(textarea).not.toBeFocused()
+
+      // 3. Two-finger gesture (pinch/multitouch) does not focus the terminal
+      await page.evaluate(({ cx, cy }) => {
+        const el = document.querySelector('.term-wrap')
+        if (!el) return
+        const f1 = new Touch({ identifier: 1, target: el, clientX: cx, clientY: cy })
+        const f2 = new Touch({ identifier: 2, target: el, clientX: cx + 20, clientY: cy + 20 })
+
+        // Start with two touches
+        el.dispatchEvent(new TouchEvent('touchstart', { touches: [f1, f2], bubbles: true, cancelable: true }))
+        // Lift one touch (first finger remains)
+        el.dispatchEvent(new TouchEvent('touchend', { touches: [f1], bubbles: true, cancelable: true }))
+        // Lift final touch
+        el.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true, cancelable: true }))
+      }, { cx: centerX, cy: centerY })
+
+      await expect(textarea).not.toBeFocused()
+    })
+  })
 })
