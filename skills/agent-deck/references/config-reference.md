@@ -38,6 +38,7 @@ All options for `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/ag
 - [[send] Section](#send-section)
 - [[costs.budgets] and [costs.run_budget]](#costsbudgets-and-costsrun_budget)
 - [[remotes.<name>] Talkback](#remotesname-talkback)
+- [[providers.<name>] Sandbox providers](#providersname-sandbox-providers)
 - [[health] Section](#health-section)
 - [[status] Section](#status-section)
 - [[performance] Section](#performance-section)
@@ -1193,6 +1194,35 @@ talkback_interval_secs = 30   # 0 / unset = off
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `talkback_interval_secs` | int | `0` (off) | Every N seconds the notify-daemon runs the same incremental drain as `agent-deck remote drain <name> --into <conductor>` for every local `conductor-*` session enrolled with that remote (it has a cursor for it, i.e. it drained it once, or it holds a pending record from it). 30 is a good value. The drain runs off the poll loop, bounded at 60 s, and a remote with a drain in flight is skipped. A failure backs off from 1 min to 10 min; after 3 consecutive failures each enrolled conductor gets ONE urgent record (`remote <name>: talkback failing for N min: <last error>`), and a success clears the streak. An ingested urgent record wakes an idle conductor exactly like a local one; info records ride its next turn. |
+
+## [providers.<name>] Sandbox providers
+
+A sandbox provider is a command that creates, lists, inspects and destroys sandboxes for agent-deck (protocol 1). `agent-deck remote add --provider <name> [--name x]` and `agent-deck launch --provider <name> [--name x] <path> [launch flags]` create a sandbox and register it as a remote; `agent-deck remote destroy <name> [--yes] [--force]` stops its sessions, destroys it and removes the remote; `agent-deck provider list [--json]` and `agent-deck provider test <name> [--create]` check a provider.
+
+```toml
+[providers.docker]
+command = "/path/to/examples/providers/docker/provider"
+create_timeout_seconds = 600
+timeout_seconds = 60
+agent_deck_path = ""
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | (required) | The provider executable: an absolute path, or a bare name looked up in `PATH` (a relative path with a `/` is refused). It runs directly, never through a shell, in its own process group, with exactly one argument: the action (`create`, `list`, `status` or `destroy`). The request is one JSON object on stdin, the answer one JSON object on stdout (at most 1 MiB), so remote names, sandbox ids and labels never appear on a command line. Its environment is agent-deck's own (filtered like every child process) plus `AGENTDECK_PROVIDER_PROTOCOL=1` and `AGENTDECK_PROVIDER_NAME=<name>`. Its stderr (up to 64 KiB, control characters stripped) is shown only in the error when the call fails and is never logged. A helper the provider leaves running (a port forward, say) survives a successful call; on a timeout the whole process group is killed. |
+| `create_timeout_seconds` | int | `600` | Time limit for a `create` call. Cold VMs can take several minutes. |
+| `timeout_seconds` | int | `60` | Time limit for `list`, `status` and `destroy` calls. |
+| `agent_deck_path` | string | `"agent-deck"` | agent-deck path on this provider's sandboxes, copied into each remote it creates as `agent_deck_path`. |
+
+Provider output is untrusted and validated before use: sandbox id, host (DNS name or IP literal only), port, user, auth (`key` with a private key file that is a regular file, not a symlink, owned by you and mode `0600`/`0400`; or `agent`), labels, state and pinned host keys. A sandbox the provider created but agent-deck cannot use (invalid answer, ssh never answers, agent-deck cannot be installed) is destroyed again and the remote is not kept.
+
+A sandbox remote is an ordinary `[remotes.<name>]` entry with three more keys, all written by agent-deck:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `provider` | string | The `[providers.<name>]` that created the sandbox. `remote destroy` only works on remotes that have it; `remote list` shows them as `sandbox (provider <name>)`. |
+| `sandbox_id` | string | The provider's id for the sandbox. |
+| `ssh_config` | string | Path of the sandbox's own ssh config, `<agent-deck data dir>/sandboxes/<remote>/ssh_config` (directory `0700`, files `0600`, beside `known_hosts` and `sandbox.json`). Every ssh and mosh call for the remote passes it with `-F`, so your `~/.ssh/config` and `~/.ssh/known_hosts` are not used for it. Host keys the provider pins are checked strictly; without them the first key seen is trusted into the sandbox's own `known_hosts`. `host` is the alias `agentdeck-sb-<remote>`. |
 
 ## [health] Section
 

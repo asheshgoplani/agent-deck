@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/provider"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
@@ -79,7 +80,13 @@ func handleRemote(profile string, args []string) {
 
 	switch args[0] {
 	case "add":
+		if remoteAddProviderRequested(args[1:]) {
+			handleRemoteAddProvider(profile, args[1:])
+			return
+		}
 		handleRemoteAdd(args[1:])
+	case "destroy":
+		handleRemoteDestroy(args[1:])
 	case "remove", "rm":
 		handleRemoteRemove(args[1:])
 	case "list", "ls":
@@ -127,7 +134,7 @@ func installRemoteSignalCleanup() {
 
 func isRemoteManagementCommand(name string) bool {
 	switch name {
-	case "add", "remove", "rm", "list", "ls", "sessions", "drain", "attach", "rename", "update", "exec":
+	case "add", "remove", "rm", "destroy", "list", "ls", "sessions", "drain", "attach", "rename", "update", "exec":
 		return true
 	}
 	return false
@@ -139,13 +146,27 @@ func printRemoteSubcommandUsage(command string) {
 		fmt.Println("Usage: agent-deck remote exec <name> <command> [arguments]")
 	case "add":
 		fmt.Println("Usage: agent-deck remote add <name> <user@host> [options]")
+		fmt.Println("       agent-deck remote add --provider <name> [--name <remote>]")
 		fmt.Println("\nOptions:")
 		fmt.Println("  --agent-deck-path string")
 		fmt.Println("        Path to agent-deck on the remote (default: agent-deck)")
 		fmt.Println("  --profile string")
 		fmt.Println("        Remote profile to use (default: default)")
+		fmt.Println("  --provider string")
+		fmt.Println("        Create a sandbox with this [providers.<name>] and register it (no <user@host>)")
+		fmt.Println("  --name string")
+		fmt.Println("        With --provider: remote name (default: <provider>-<random suffix>)")
 	case "remove", "rm":
 		fmt.Println("Usage: agent-deck remote remove <name>")
+	case "destroy":
+		fmt.Println("Usage: agent-deck remote destroy <name> [--yes] [--force]")
+		fmt.Println("\nStops the remote's sessions, destroys its provider sandbox and removes the remote.")
+		fmt.Println("Only for remotes added with --provider; use 'remote remove' for a plain remote.")
+		fmt.Println("\nOptions:")
+		fmt.Println("  --yes")
+		fmt.Println("        Stop the remote's sessions without asking (required when not on a terminal)")
+		fmt.Println("  --force")
+		fmt.Println("        Destroy even when the remote's sessions cannot be listed")
 	case "list", "ls":
 		fmt.Println("Usage: agent-deck remote list [options]")
 		fmt.Println("\nOptions:")
@@ -217,7 +238,10 @@ func printRemoteUsage() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  add <name> <user@host>    Add a remote agent-deck instance")
+	fmt.Println("  add --provider <name> [--name x]")
+	fmt.Println("                            Create a provider sandbox and register it as a remote")
 	fmt.Println("  remove <name>             Remove a remote")
+	fmt.Println("  destroy <name> [--yes]    Stop a sandbox remote's sessions, destroy it, remove it")
 	fmt.Println("  list                      List configured remotes")
 	fmt.Println("  sessions [name] [--json] [--with-errors|--json-envelope]")
 	fmt.Println("                            Fetch sessions from remote(s); --json is a bare array,")
@@ -233,6 +257,8 @@ func printRemoteUsage() {
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck remote add dev user@dev-box")
 	fmt.Println("  agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck")
+	fmt.Println("  agent-deck remote add --provider docker --name sb1")
+	fmt.Println("  agent-deck remote destroy sb1 --yes")
 	fmt.Println("  agent-deck remote list")
 	fmt.Println("  agent-deck remote sessions dev --json")
 	fmt.Println("  agent-deck remote dev recall timeline SESSION --json --tail 100")
@@ -459,6 +485,11 @@ func handleRemoteList(args []string) {
 			// for a remote too old to say (#2472). Omitted when never read.
 			Timer          *update.TimerStatus `json:"timer,omitempty"`
 			TimerCheckedAt string              `json:"timer_checked_at,omitempty"`
+			// Kind, Provider and SandboxID describe a provider sandbox
+			// remote ("sandbox (provider docker)"); omitted for plain ones.
+			Kind      string `json:"kind,omitempty"`
+			Provider  string `json:"provider,omitempty"`
+			SandboxID string `json:"sandbox_id,omitempty"`
 		}
 
 		var remotes []remoteJSON
@@ -468,6 +499,9 @@ func handleRemoteList(args []string) {
 				Host:          rc.Host,
 				AgentDeckPath: rc.GetAgentDeckPath(),
 				Profile:       rc.GetProfile(),
+				Kind:          provider.DisplayKind(rc),
+				Provider:      rc.Provider,
+				SandboxID:     rc.SandboxID,
 			}
 			state := versions[name]
 			row.VersionState = state.Compare(Version).String()
@@ -506,7 +540,11 @@ func handleRemoteList(args []string) {
 		if timer := versions[name].Timer; timer != nil {
 			status += " / " + remoteTimerColumn(timer)
 		}
-		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile(), status)
+		host := rc.Host
+		if kind := provider.DisplayKind(rc); kind != "" {
+			host = kind
+		}
+		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, host, rc.GetAgentDeckPath(), rc.GetProfile(), status)
 	}
 	fmt.Printf("\nTotal: %d remotes (controller v%s)\n", len(config.Remotes), Version)
 }

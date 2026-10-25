@@ -36,6 +36,11 @@ func applyAssertDone(message string, enabled bool) string {
 // handleLaunch combines add + start + optional send into a single command.
 // It creates a new session, starts it, and optionally sends an initial message.
 func handleLaunch(profile string, args []string) {
+	// launch --provider creates a sandbox remote and launches there.
+	if !helpRequested(args) && launchProviderRequested(args) {
+		handleLaunchProvider(profile, args)
+		return
+	}
 	handleLaunchCommand(profile, args, nil)
 }
 
@@ -179,6 +184,7 @@ func handleLaunchCommand(profile string, args []string, inspectFlags func(*flag.
 		fmt.Println("  agent-deck launch . -c codex --model gpt-5.5")
 		fmt.Println("  agent-deck launch . -c claude --model claude-opus-5 --effort high")
 		fmt.Println("  agent-deck launch . -c claude --skip-permissions --chrome --continue   # the dialog's Claude Options rows")
+		fmt.Println("  agent-deck launch --provider docker /home/dev -c claude   # on a new sandbox (see 'agent-deck provider')")
 		fmt.Println("  agent-deck launch . -c gemini --yolo --sandbox")
 		fmt.Println("  agent-deck launch . -c gemini --model gemini-3.1-pro-preview")
 		fmt.Println("  agent-deck launch . -c claude -m \"Explain this codebase\"")

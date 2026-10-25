@@ -128,6 +128,7 @@ Examples:
   agent-deck launch . -c codex --model gpt-5.5
   agent-deck launch . -c claude --model claude-opus-5 --effort high
   agent-deck launch . -c claude --skip-permissions --chrome --continue   # the dialog's Claude Options rows
+  agent-deck launch --provider docker /home/dev -c claude   # on a new sandbox (see 'agent-deck provider')
   agent-deck launch . -c gemini --yolo --sandbox
   agent-deck launch . -c gemini --model gemini-3.1-pro-preview
   agent-deck launch . -c claude -m "Explain this codebase"

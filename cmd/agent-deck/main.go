@@ -616,6 +616,9 @@ func main() {
 		case "remote-agent":
 			handleRemoteAgent(profile, args[1:])
 			return
+		case "provider":
+			handleProvider(profile, args[1:])
+			return
 		case "system":
 			handleSystem(args[1:])
 			return
@@ -1605,7 +1608,7 @@ var commandRegistry = map[string]bool{
 	"group": true, "try": true, "launch": true, "conductor": true,
 	"agents": true, "agent": true,
 	"telegram-doctor": true, "watcher": true, "openclaw": true, "oc": true,
-	"remote": true, "remote-agent": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
+	"remote": true, "remote-agent": true, "provider": true, "system": true, "worktree": true, "wt": true, "costs": true, "open": true, "ask": true, "browser": true, "file": true, "events": true, "triggers": true, "daemon": true, "usage": true, "web": true, "config": true, "recall": true,
 	"uninstall": true, "migrate-paths": true, "hook-handler": true,
 	"codex-notify": true, "hooks": true, "codex-hooks": true, "gemini-hooks": true,
 	"hermes-hooks": true, "cursor-hooks": true, "tmux-hooks": true, "pi-hooks": true, "deepseek": true, "notify-daemon": true,
@@ -4698,6 +4701,7 @@ func printHelp() {
 	fmt.Println("  recall           Search every Claude conversation on this machine (docs/recall.md)")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
 	fmt.Println("  remote           Manage remote agent-deck instances")
+	fmt.Println("  provider         List and test sandbox providers (remote add --provider)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
 	fmt.Println("  triggers         What wakes each session: jobs, heartbeats, channels (docs/triggers.md)")
 	fmt.Println("  agents           List adopted agents, grouped by machine")
@@ -4779,12 +4783,17 @@ func printHelp() {
 	fmt.Println("  remote add <name> <user@host>             Register a remote agent-deck instance")
 	fmt.Println("    --agent-deck-path <path>                Path to agent-deck binary on remote (default: agent-deck)")
 	fmt.Println("    --profile <name>                        Remote profile to use (default: default)")
+	fmt.Println("  remote add --provider <name> [--name x]   Create a provider sandbox and register it")
 	fmt.Println("  remote remove, rm <name>                  Remove a remote")
+	fmt.Println("  remote destroy <name> [--yes] [--force]   Stop a sandbox remote's sessions and destroy it")
 	fmt.Println("  remote list, ls [--json]                  List configured remotes")
 	fmt.Println("  remote sessions [name] [--json]           Show sessions on remote(s)")
 	fmt.Println("  remote attach <name> <session>            Attach to a remote session")
 	fmt.Println("  remote rename <name> <session> <title>    Rename a remote session")
 	fmt.Println("  remote update [name]                      Install/upgrade agent-deck on remote(s)")
+	fmt.Println("  provider list [--json]                    List sandbox providers and whether they answer")
+	fmt.Println("  provider test <name> [--create]           Check a provider (create round trip with --create)")
+	fmt.Println("  launch --provider <name> [--name x] <path> [flags]  Create a sandbox remote and launch there")
 	fmt.Println()
 	fmt.Println("Worktree Commands:")
 	fmt.Println("  worktree list             List worktrees with session associations")

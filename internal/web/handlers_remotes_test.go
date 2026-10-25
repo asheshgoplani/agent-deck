@@ -95,3 +95,41 @@ func TestServerStartCancelsRemoteFleetWhenListenFails(t *testing.T) {
 		t.Fatal("remote fleet did not start")
 	}
 }
+
+func TestRemotesAPILabelsSandboxRemotes(t *testing.T) {
+	prev := loadRemoteKinds
+	loadRemoteKinds = func() map[string]string {
+		return remoteKindsFromConfig(&session.UserConfig{Remotes: map[string]session.RemoteConfig{
+			"build": {Host: "b"},
+			"sb1":   {Host: "agentdeck-sb-sb1", Provider: "docker", SandboxID: "c0ffee"},
+		}})
+	}
+	t.Cleanup(func() { loadRemoteKinds = prev })
+	srv := NewServer(Config{RemoteFleet: &fakeRemoteFleetLoader{snapshot: session.RemoteFleetSnapshot{
+		Remotes: []session.RemoteFleetRemote{{Name: "build", Online: true}, {Name: "sb1", Online: true}},
+	}}})
+	req := newLocalRequest(http.MethodGet, "/api/remotes", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Remotes []struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"remotes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	want := map[string]string{"build": "", "sb1": "sandbox (provider docker)"}
+	if len(body.Remotes) != 2 {
+		t.Fatalf("remotes = %+v", body.Remotes)
+	}
+	for _, r := range body.Remotes {
+		if r.Kind != want[r.Name] {
+			t.Fatalf("remote %q kind = %q, want %q", r.Name, r.Kind, want[r.Name])
+		}
+	}
+}

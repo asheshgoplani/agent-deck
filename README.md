@@ -1306,6 +1306,7 @@ there as markdown.
 | [Skills](documentation/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
 | [Watchdog](documentation/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
 | [Watchers](documentation/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |
+| [Plug in any machine](docs/PLUG-IN-ANY-MACHINE.md) | Sandbox providers: make a fresh machine (Docker, your VMs) per session, the JSON contract, security |
 
 **References** — drill into specifics:
 

@@ -32,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/menudata"
 	"github.com/asheshgoplani/agent-deck/internal/optiming"
+	"github.com/asheshgoplani/agent-deck/internal/provider"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
@@ -1037,6 +1038,9 @@ type Home struct {
 	// pendingRemoteCreate holds the remote create whose path the server
 	// reported missing, while the create-directory confirmation is open.
 	pendingRemoteCreate *remoteCreateDirNeededMsg
+	// sandboxProvisioner replaces provider.Provision for a "new sandbox"
+	// Where pick (tests stub it); nil uses defaultSandboxProvisioner.
+	sandboxProvisioner func(ctx context.Context, opts provider.ProvisionOptions) (*provider.Provisioned, error)
 	// insertKeySender is the persistent dispatch path opened on
 	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
 	// remote support). Local sessions get a tmux.KeySender (control-mode
@@ -1442,6 +1446,7 @@ func buildRemoteAttachRequest(remoteName, sessionID, openAs string) (terminal.At
 			Profile:       rc.GetProfile(),
 			Transport:     rc.GetTransport(),
 			MoshServer:    rc.MoshServer,
+			SSHConfig:     rc.SSHConfig,
 		},
 	}, true
 }
@@ -3587,6 +3592,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return h, nil
+
+	case sandboxProgressMsg:
+		return h, h.handleSandboxProgress(msg)
+
+	case sandboxProvisionedMsg:
+		return h, h.handleSandboxProvisioned(msg)
 
 	case remoteCreateDirNeededMsg:
 		// The server refused the path; ask before retrying with --create-dir
@@ -6308,6 +6319,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		conductors := h.activeConductorSessions()
 		suggestedParentID := h.suggestConductorParent()
 		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, conductors, suggestedParentID)
+		h.newDialog.SetWhereChoices(newDialogWhereChoicesFromConfig())
 		return h, nil
 
 	case "N":

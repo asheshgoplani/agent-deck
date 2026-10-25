@@ -22,6 +22,8 @@
 package sshcontrol
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -184,6 +186,43 @@ func ControlPath() string {
 		return "none"
 	}
 	return dir + socketSuffix
+}
+
+// ControlPathFor is ControlPath for a remote with its own ssh_config (a
+// provider sandbox). Such a remote gets its own socket name instead of the
+// shared %C: %C hashes only the resolved host, port and user, not the -F file,
+// so a sandbox resolving to the same endpoint as another remote would attach
+// to that remote's live master and never apply its own pinned host keys,
+// known_hosts or IdentityFile. The name hashes the ssh_config path and
+// content, so a reprovisioned sandbox (new endpoint in the same file) does
+// not reuse a master opened to the old one. It is a fixed length, so the
+// socket path still fits the unix socket limit (#2837). An empty sshConfig
+// returns ControlPath().
+func ControlPathFor(sshConfig string) string {
+	if sshConfig == "" {
+		return ControlPath()
+	}
+	dir := Dir()
+	if dir == "" {
+		return "none"
+	}
+	return dir + sandboxSocketName(sshConfig)
+}
+
+// sandboxSocketName is "/sb-<32 hex>" from the ssh_config path and, when it
+// can be read, its content.
+func sandboxSocketName(sshConfig string) string {
+	h := sha256.New()
+	path := sshConfig
+	if abs, err := filepath.Abs(sshConfig); err == nil {
+		path = abs
+	}
+	h.Write([]byte(path))
+	h.Write([]byte{0})
+	if content, err := os.ReadFile(sshConfig); err == nil {
+		h.Write(content)
+	}
+	return "/sb-" + hex.EncodeToString(h.Sum(nil))[:32]
 }
 
 // PreferredDir is the per-user directory path without creating or checking

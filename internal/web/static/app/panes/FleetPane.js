@@ -48,6 +48,7 @@ function RemoteCard({ remote }) {
       data-testid="fleet-remote-card" data-remote-name=${remote.name}>
       <div class="gc-head">
         <span class="t">${remote.name}</span>
+        ${remote.kind ? html`<span class="fleet-remote-kind" data-testid="fleet-remote-kind">${remote.kind}</span>` : null}
         <span class="health"><span class=${`d ${health}`}/></span>
         <span class=${`fleet-remote-state ${remote.online ? 'online' : 'offline'}`}>
           ${remote.stale ? 'stale' : remote.online ? (remote.latencyMs ? `${remote.latencyMs}ms` : 'online') : 'offline'}

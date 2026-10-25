@@ -232,9 +232,10 @@ var completionTree = []completionNode{
 	{name: "oc", subs: []string{"sync", "bridge", "status", "list", "send"}},
 	{
 		name: "remote",
-		subs: []string{"add", "remove", "list", "sessions", "drain", "attach", "rename", "update"},
+		subs: []string{"add", "remove", "destroy", "list", "sessions", "drain", "attach", "rename", "update"},
 		args: map[string][]argKind{
 			"remove":   {argRemote},
+			"destroy":  {argRemote},
 			"sessions": {argRemote},
 			"attach":   {argRemote, argRemoteSession},
 			"rename":   {argRemote, argRemoteSession},
@@ -257,6 +258,7 @@ var completionTree = []completionNode{
 			"finish": {argSession},
 		},
 	},
+	{name: "provider", subs: []string{"list", "test"}},
 	{name: "open"},
 	{name: "file", subs: []string{"bundle", "read", "roots"}},
 	{name: "costs", subs: []string{"sync", "summary", "recompute", "daily", "sessions", "models", "groups", "budgets"}},

@@ -97,6 +97,10 @@ type RemoteAttach struct {
 	// MoshServer is the remote's mosh_server command; empty uses mosh's
 	// default.
 	MoshServer string
+
+	// SSHConfig is the remote's per-sandbox ssh_config (provider sandbox
+	// remotes); when set every ssh in the attach command passes it with -F.
+	SSHConfig string
 }
 
 // UsesMosh reports whether the attach runs over mosh rather than ssh.
@@ -131,9 +135,28 @@ func MoshServerProbe(moshServer string) string {
 // ControlPath=none. argv is passed unquoted: mosh quotes it for the remote
 // shell and mosh-server execs it directly.
 func MoshArgs(host, moshServer string, argv []string) []string {
+	return MoshArgsWithSSHConfig(host, moshServer, "", argv)
+}
+
+// moshPlainPathChars are the characters a --ssh word may carry unquoted.
+const moshPlainPathChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+@"
+
+// MoshArgsWithSSHConfig is MoshArgs for a remote with its own ssh_config
+// (a provider sandbox): mosh's bootstrap ssh passes it with -F. mosh splits
+// --ssh into words the way a shell does, so a path with anything but plain
+// path characters is single-quoted.
+func MoshArgsWithSSHConfig(host, moshServer, sshConfig string, argv []string) []string {
+	ssh := "--ssh=ssh"
+	sshConfig = strings.TrimSpace(sshConfig)
+	if cfg := sshConfig; cfg != "" {
+		if strings.ContainsFunc(cfg, func(r rune) bool { return !strings.ContainsRune(moshPlainPathChars, r) }) {
+			cfg = shellQuote(cfg)
+		}
+		ssh += " -F " + cfg
+	}
 	args := []string{
 		"--experimental-remote-ip=remote",
-		"--ssh=ssh -o ControlMaster=auto -o ControlPath=" + sshcontrol.ControlPath() + " -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes",
+		ssh + " -o ControlMaster=auto -o ControlPath=" + sshcontrol.ControlPathFor(sshConfig) + " -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes",
 	}
 	if server := strings.TrimSpace(moshServer); server != "" {
 		args = append(args, "--server="+server)
@@ -146,7 +169,9 @@ func MoshArgs(host, moshServer string, argv []string) []string {
 // internal/session uses, so a remote attach launched via Shift+Enter shares
 // the same multiplexed connection as a normal in-TUI remote attach. Its socket
 // name is %C, a fixed-length hash, so a long user@host cannot push the path
-// past the unix socket limit (#2837).
+// past the unix socket limit (#2837). A sandbox remote (SSHConfig set) uses
+// sshcontrol.ControlPathFor, its own fixed-length socket, so it never rides
+// another remote's master that %C would match.
 
 // BuildAttachCommand returns the shell command string that, when executed
 // inside a fresh terminal window, attaches to the requested session.
@@ -201,7 +226,8 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 	}
 	profile := strings.TrimSpace(r.Profile)
 
-	sshCmd := buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName)
+	sshConfig := strings.TrimSpace(r.SSHConfig)
+	sshCmd := buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName, sshConfig)
 	if !r.UsesMosh() {
 		return sshCmd
 	}
@@ -212,13 +238,13 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 	}
 	argv = append(argv, "session", "attach", remoteName)
 	parts := []string{"mosh"}
-	for _, arg := range MoshArgs(host, r.MoshServer, argv) {
+	for _, arg := range MoshArgsWithSSHConfig(host, r.MoshServer, sshConfig, argv) {
 		parts = append(parts, shellQuote(arg))
 	}
 	// A remote without mosh-server attaches over ssh instead of failing with
 	// mosh's bootstrap errors. The probe reuses the ControlMaster, and both
 	// branches exec so the attach keeps the shell's pid (signals reach it).
-	probe := "ssh -n -o ControlMaster=auto -o ControlPath=" + shellQuote(sshcontrol.ControlPath()) +
+	probe := "ssh -n" + sshConfigFlag(sshConfig) + " -o ControlMaster=auto -o ControlPath=" + shellQuote(sshcontrol.ControlPathFor(sshConfig)) +
 		" -o ControlPersist=600 -o ConnectTimeout=10 -o BatchMode=yes " + shellQuote(host) + " " +
 		shellQuote(MoshServerProbe(r.MoshServer))
 	script := "if " + probe + " >/dev/null 2>&1; then exec " + strings.Join(parts, " ") + "; else exec " + sshCmd + "; fi"
@@ -226,15 +252,16 @@ func buildRemoteAttachCommand(remoteName string, r *RemoteAttach) string {
 }
 
 // buildRemoteSSHAttachCommand is the ssh command line for a remote attach.
-func buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName string) string {
+func buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName, sshConfig string) string {
 	// ssh with -tt (force remote PTY) and the same ControlMaster flags
 	// as the in-TUI remote attach, so the multiplexed connection is
 	// reused.
 	var b strings.Builder
 	b.WriteString("ssh -tt")
+	b.WriteString(sshConfigFlag(sshConfig))
 	b.WriteString(" -o ControlMaster=auto")
 	b.WriteString(" -o ControlPath=")
-	b.WriteString(shellQuote(sshcontrol.ControlPath()))
+	b.WriteString(shellQuote(sshcontrol.ControlPathFor(sshConfig)))
 	b.WriteString(" -o ControlPersist=600")
 	b.WriteString(" ")
 	b.WriteString(shellQuote(host))
@@ -247,6 +274,15 @@ func buildRemoteSSHAttachCommand(host, agentDeckPath, profile, remoteName string
 	b.WriteString(" session attach ")
 	b.WriteString(shellQuote(remoteName))
 	return b.String()
+}
+
+// sshConfigFlag is " -F '<path>'" for a remote with its own ssh_config,
+// else "".
+func sshConfigFlag(sshConfig string) string {
+	if sshConfig == "" {
+		return ""
+	}
+	return " -F " + shellQuote(sshConfig)
 }
 
 // shellQuote single-quotes s for safe use in a /bin/sh command. It is

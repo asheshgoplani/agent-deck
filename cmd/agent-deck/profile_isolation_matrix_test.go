@@ -146,9 +146,19 @@ func TestProfileIsolation_StateWritingCommandsUseTheSelectedProfile(t *testing.T
 				t.Fatal(err)
 			}
 
+			// A sandbox provider: `provider test --create` labels the sandbox
+			// it creates with the effective profile.
+			providerState := t.TempDir()
+			if err := session.SaveUserConfig(&session.UserConfig{Providers: map[string]session.ProviderConfig{
+				"fake": {Command: fakeProviderScript(t)},
+			}}); err != nil {
+				t.Fatal(err)
+			}
 			env := append(append([]string{}, xdg...),
 				"AGENTDECK_PROFILE="+tt.env, // overrides the helper's ch_support_test
 				"AGENTDECK_EVENTS_BUS=off",
+				"FAKE_PROVIDER_STATE="+providerState,
+				"FAKE_PROVIDER_MODE=ok",
 			)
 			run := func(args ...string) string {
 				t.Helper()
@@ -164,6 +174,11 @@ func TestProfileIsolation_StateWritingCommandsUseTheSelectedProfile(t *testing.T
 			run("add", "-t", title, "-c", "shell", "--no-parent", "--json", project)
 			run("group", "create", group)
 			run("watcher", "create", "webhook", "--name", watcher, "--port", "18791")
+			run("provider", "test", "fake", "--create")
+			if reqs, err := os.ReadFile(filepath.Join(providerState, "requests.log")); err != nil ||
+				!strings.Contains(string(reqs), `"agent-deck/profile":"`+target+`"`) {
+				t.Errorf("provider create should carry the selected profile label %q: %s (%v)", target, reqs, err)
+			}
 
 			if s, g, w := profileIsolationRows(t, target, title, group, watcher); !s || !g || !w {
 				t.Errorf("profile %q: session=%v group=%v watcher=%v; want all three written to the selected profile",

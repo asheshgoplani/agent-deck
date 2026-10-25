@@ -248,7 +248,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 		host := item.RemoteName
 		if config != nil && config.Remotes != nil {
 			if rc, ok := config.Remotes[item.RemoteName]; ok {
-				host = rc.Host
+				host = remoteHostLabel(rc)
 			}
 		}
 

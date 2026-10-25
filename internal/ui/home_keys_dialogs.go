@@ -130,6 +130,12 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, create(remoteName, opts)
 		}
 
+		// A local opening whose Where row picked a remote or a new sandbox
+		// creates there; "this machine" falls through unchanged.
+		if where := h.newDialog.GetWhere(); where.kind != whereLocal {
+			return h, h.submitNewDialogWhere(where)
+		}
+
 		// Get values including worktree settings.
 		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
 		// #1706: a relative entry must be anchored to this process's cwd here,

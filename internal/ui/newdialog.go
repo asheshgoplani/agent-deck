@@ -140,6 +140,7 @@ const (
 	focusBranch                      // branch input (conditional — only when worktree enabled).
 	focusOptions                     // tool-specific options panel (conditional).
 	focusRemoteMCPs                  // MCPs defined on the target remote (conditional, remote targets only).
+	focusWhere                       // where the session runs: this machine, a remote, a new sandbox (conditional, local openings only).
 	focusCreate                      // explicit "[ Create session ]" button; the one row where Enter submits in walk mode.
 )
 
@@ -242,6 +243,11 @@ type NewDialog struct {
 	remoteMCPs          []string
 	remoteMCPChecked    map[string]bool
 	remoteMCPCursor     int
+	// whereChoices feeds the "Where" row of a local opening (this machine,
+	// configured remotes, new sandbox per provider); whereCursor is the
+	// pick. Cleared on every opening; see newdialog_where.go.
+	whereChoices []whereChoice
+	whereCursor  int
 }
 
 // viewportDialogContent keeps the dialog's identity and primary action pinned
@@ -549,6 +555,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.remoteTarget = false
 	d.remoteName = ""
 	d.remoteCatalog = nil
+	d.clearWhere()
 	if groupPath == "" {
 		groupPath = "default"
 		groupName = "default"
@@ -1775,8 +1782,9 @@ func (d *NewDialog) validate() (string, focusTarget) {
 	path := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
 
 	// An empty local name is taken from the folder on submit (ASK-110); a
-	// remote create still needs one, its own add command names nothing.
-	if name == "" && d.remoteTarget {
+	// remote create (a remote row, or a remote/sandbox picked in the Where
+	// row) still needs one, its own add command names nothing.
+	if name == "" && d.createsOffMachine() {
 		return "Session name cannot be empty", focusName
 	}
 
@@ -1897,6 +1905,9 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if !d.multiRepoEnabled {
 		targets = append(targets, focusPath)
 	}
+	if d.hasWhereRow() {
+		targets = append(targets, focusWhere)
+	}
 	targets = append(targets, focusWorktree, focusSandbox)
 	if len(d.conductorSessions) > 0 {
 		targets = append(targets, focusConductor)
@@ -1994,7 +2005,7 @@ func (d *NewDialog) updateFocus() {
 		}
 	case focusModel:
 		d.modelInput.Focus()
-	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusCreate:
+	case focusReasoningEffort, focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusWhere, focusCreate:
 		// Checkbox/toggle rows, conductor dropdown and Create button — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
@@ -2628,6 +2639,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.cycleReasoningEffort(-1)
 				return d, nil
 			}
+			if cur == focusWhere {
+				d.cycleWhere(-1)
+				return d, nil
+			}
 			if cur == focusRemoteMCPs {
 				d.moveRemoteMCPCursor(-1)
 				return d, nil
@@ -2649,6 +2664,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 			if cur == focusReasoningEffort {
 				d.cycleReasoningEffort(1)
+				return d, nil
+			}
+			if cur == focusWhere {
+				d.cycleWhere(1)
 				return d, nil
 			}
 			if cur == focusRemoteMCPs {
@@ -2759,6 +2778,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.cycleReasoningEffort(1)
 				return d, nil
 			}
+			if cur == focusWhere {
+				d.cycleWhere(1)
+				return d, nil
+			}
 			if cur == focusWorktree {
 				d.ToggleWorktree()
 				d.rebuildFocusTargets()
@@ -2843,7 +2866,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.filterPathSuggestions()
 			}
 		}
-	case focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs:
+	case focusWorktree, focusSandbox, focusConductor, focusInherited, focusRemoteMCPs, focusWhere:
 		// Checkbox/toggle rows and conductor dropdown — no text input to update.
 	case focusBranch:
 		oldBranch := d.branchInput.Value()
@@ -3241,7 +3264,7 @@ func (d *NewDialog) View() string {
 	// ASK-110: an empty local name is taken from the folder on submit; show
 	// that name so Enter is not a guess.
 	d.nameInput.Placeholder = "session-name"
-	if base := d.folderName(); base != "" && !d.remoteTarget {
+	if base := d.folderName(); base != "" && !d.createsOffMachine() {
 		d.nameInput.Placeholder = base
 	}
 	content.WriteString(d.nameInput.View())
@@ -3261,6 +3284,9 @@ func (d *NewDialog) View() string {
 		markFocusedRow(focusPath)
 		d.renderSinglePathSection(&content, cur, dialogWidth)
 	}
+
+	markFocusedRow(focusWhere)
+	d.renderWhereSection(&content, cur)
 
 	// (Tool, Model, and the single Path field render above, right after Name —
 	// see renderCommandSection / renderModelSection / renderSinglePathSection.)
@@ -3479,6 +3505,8 @@ func (d *NewDialog) View() string {
 		}
 	} else if cur == focusReasoningEffort {
 		helpText = "←→/Space choose effort │ Tab next │ " + rowHint + " │ Esc cancel"
+	} else if cur == focusWhere {
+		helpText = "←→/Space choose where │ Tab next │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusConductor {
 		helpText = "↑↓ select parent │ Tab next │ " + rowHint + " │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {

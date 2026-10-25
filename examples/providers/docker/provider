@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+# Example agent-deck sandbox provider: one local Docker container per sandbox.
+#
+# Protocol 1 (see docs/PLUG-IN-ANY-MACHINE.md):
+#   argv:   provider <create|list|status|destroy>
+#   stdin:  one JSON request object
+#   stdout: one JSON response object (exit 0)
+#   errors: message on stderr, non-zero exit
+#
+# Needs: docker, ssh-keygen, python3 (JSON only), coreutils timeout.
+#
+# Optional env:
+#   AGENTDECK_SANDBOX_IMAGE   image tag (default agent-deck-sandbox:p1-<hash of the build files>,
+#                             so an edited Dockerfile is rebuilt on the next create)
+#   AGENTDECK_SANDBOX_WAIT    seconds to wait for sshd after start (default 60)
+#   TMPDIR                    where per-sandbox key dirs are made (default /tmp)
+set -euo pipefail
+umask 077
+
+IMAGE="${AGENTDECK_SANDBOX_IMAGE:-}"
+WAIT_SECONDS="${AGENTDECK_SANDBOX_WAIT:-60}"
+LABEL=agent-deck.provider=docker
+self="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+HERE="$(cd "$(dirname "$self")" && pwd -P)"
+
+die() {
+	printf 'docker provider: %s\n' "$*" >&2
+	exit 1
+}
+
+need() {
+	command -v "$1" >/dev/null 2>&1 || die "$1 not found in PATH"
+}
+
+# All JSON work happens here. python3 -I: isolated mode, ignores the cwd and
+# PYTHON* env, so nothing in the caller's directory can be imported.
+PY='
+import json, os, re, sys
+
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+LABEL_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$")
+
+def die(msg):
+    sys.stderr.write("docker provider: " + msg + "\n")
+    sys.exit(1)
+
+def printable(v):
+    return isinstance(v, str) and len(v) <= 256 and all(c.isprintable() for c in v)
+
+def read_request(action):
+    raw = sys.stdin.read(1 << 20)
+    try:
+        req = json.loads(raw)
+    except ValueError as e:
+        die("request is not valid JSON: %s" % e)
+    if not isinstance(req, dict):
+        die("request must be a JSON object")
+    if req.get("protocol") != 1:
+        die("request speaks protocol %r, this provider speaks 1" % (req.get("protocol"),))
+    if req.get("action") != action:
+        die("request action %r does not match argv action %r" % (req.get("action"), action))
+    return req
+
+def cmd_request(action, out_path=""):
+    req = read_request(action)
+    if action in ("status", "destroy"):
+        sid = req.get("id")
+        if not isinstance(sid, str) or not ID_RE.match(sid):
+            die("invalid sandbox id")
+        print(sid)
+    elif action == "create":
+        labels = req.get("labels") or {}
+        if not isinstance(labels, dict) or len(labels) > 30:
+            die("labels must be an object with at most 30 entries")
+        name = req.get("name") or ""
+        if not printable(name):
+            die("invalid name")
+        lines = []
+        for k, v in sorted(labels.items()):
+            if not LABEL_KEY_RE.match(k) or not printable(v):
+                die("invalid label %r" % (k,))
+            lines.append("agent-deck.label.%s=%s" % (k, v))
+        if name:
+            lines.append("agent-deck.name=%s" % name)
+        with open(out_path, "a") as f:
+            f.write("".join(l + "\n" for l in lines))
+
+def state_of(st):
+    s = (st or {}).get("Status", "")
+    if s == "running":
+        return "running"
+    if s in ("created", "restarting"):
+        return "starting"
+    if s in ("exited", "paused", "dead", "removing"):
+        return "stopped"
+    return "unknown"
+
+def host_port(c):
+    ports = ((c.get("NetworkSettings") or {}).get("Ports") or {}).get("22/tcp") or []
+    for p in ports:
+        if p.get("HostIp") in ("127.0.0.1", "") and str(p.get("HostPort", "")).isdigit():
+            return int(p["HostPort"])
+    hc = ((c.get("HostConfig") or {}).get("PortBindings") or {}).get("22/tcp") or []
+    for p in hc:
+        if str(p.get("HostPort", "")).isdigit():
+            return int(p["HostPort"])
+    return 0
+
+def sandbox(c):
+    labels = (c.get("Config") or {}).get("Labels") or {}
+    keydir = labels.get("agent-deck.keydir", "")
+    key = os.path.join(keydir, "id_ed25519") if keydir else ""
+    out_labels = {"provider": "docker"}
+    for k, v in labels.items():
+        if k.startswith("agent-deck.label."):
+            out_labels[k[len("agent-deck.label."):]] = v
+    if key and os.path.isfile(key) and not os.path.islink(key):
+        auth = {"type": "key", "key_path": key}
+    else:
+        # Key dir is gone (for example /tmp was cleared). Still list the
+        # container so it can be destroyed.
+        auth = {"type": "agent"}
+        out_labels["key-missing"] = "true"
+    sb = {
+        "id": c["Id"][:12],
+        "host": "127.0.0.1",
+        "port": host_port(c),
+        "user": "dev",
+        "auth": auth,
+        "labels": out_labels,
+        "state": state_of(c.get("State")),
+    }
+    try:
+        with open(os.path.join(keydir, "host_key.pub")) as f:
+            hk = f.read().split()
+        if len(hk) >= 2:
+            sb["host_keys"] = [hk[0] + " " + hk[1]]
+    except OSError:
+        pass
+    return sb
+
+def load_inspect():
+    try:
+        data = json.load(sys.stdin)
+    except ValueError as e:
+        die("cannot parse docker inspect output: %s" % e)
+    return [c for c in data if ((c.get("Config") or {}).get("Labels") or {}).get("agent-deck.provider") == "docker"]
+
+def cmd_one():
+    cs = load_inspect()
+    if not cs:
+        die("no such sandbox")
+    print(json.dumps({"protocol": 1, "sandbox": sandbox(cs[0])}))
+
+def cmd_list():
+    print(json.dumps({"protocol": 1, "sandboxes": [sandbox(c) for c in load_inspect()]}))
+
+def cmd_field(name):
+    cs = load_inspect()
+    if not cs:
+        sys.exit(2)  # not ours; the caller reports it
+    c = cs[0]
+    if name == "port":
+        print(host_port(c))
+    elif name == "keydir":
+        print(((c.get("Config") or {}).get("Labels") or {}).get("agent-deck.keydir", ""))
+
+cmd = sys.argv[1]
+if cmd == "request":
+    cmd_request(*sys.argv[2:])
+elif cmd == "one":
+    cmd_one()
+elif cmd == "list":
+    cmd_list()
+elif cmd == "field":
+    cmd_field(sys.argv[2])
+'
+
+py() {
+	python3 -I -c "$PY" "$@"
+}
+
+valid_id() {
+	[[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+}
+
+# inspect_labelled <id>: docker inspect JSON on stdout. Exit 3 when the
+# container does not exist, 1 on any other docker error.
+inspect_labelled() {
+	local id="$1" out err
+	valid_id "$id" || die "invalid sandbox id"
+	err="$(mktemp)"
+	if out="$(docker container inspect -- "$id" 2>"$err")"; then
+		rm -f -- "$err"
+		printf '%s' "$out"
+		return 0
+	fi
+	if grep -qi 'no such' "$err"; then
+		rm -f -- "$err"
+		return 3
+	fi
+	sed 's/^/docker: /' "$err" >&2
+	rm -f -- "$err"
+	return 1
+}
+
+ensure_image() {
+	if [ -z "${IMAGE:-}" ]; then
+		IMAGE="agent-deck-sandbox:p1-$(cat -- "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/sshd_config" | sha256sum | cut -c1-12)"
+	fi
+	if docker image inspect -- "$IMAGE" >/dev/null 2>&1; then
+		return 0
+	fi
+	printf 'docker provider: building %s (first run only)\n' "$IMAGE" >&2
+	docker build --tag "$IMAGE" -- "$HERE" >&2 || die "docker build failed"
+}
+
+# remove_keydir <dir>: delete only a key dir this provider made.
+remove_keydir() {
+	local dir="$1" f
+	[ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || return 0
+	case "$(basename -- "$dir")" in
+	agent-deck-docker-*) ;;
+	*) return 0 ;;
+	esac
+	for f in id_ed25519 id_ed25519.pub host_key.pub labels; do
+		rm -f -- "$dir/$f"
+	done
+	rmdir -- "$dir" 2>/dev/null || true
+}
+
+wait_ssh() {
+	local port="$1" i=0
+	while [ "$i" -lt "$WAIT_SECONDS" ]; do
+		# Docker's port proxy accepts TCP before sshd is up, so wait for the
+		# SSH banner, not just a connect.
+		if timeout 3 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" && IFS= read -r -t 2 line <&3 && case "$line" in SSH-*) exit 0 ;; *) exit 1 ;; esac' _ "$port" 2>/dev/null; then
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+
+cleanup_create() {
+	if [ -n "${CREATE_CID:-}" ]; then
+		docker rm -f -- "$CREATE_CID" >/dev/null 2>&1 || true
+	fi
+	remove_keydir "${CREATE_KEYDIR:-}"
+}
+
+do_create() {
+	local req="$1" root port
+	# Globals, not locals: the EXIT trap runs after the function unwinds.
+	CREATE_KEYDIR=""
+	CREATE_CID=""
+	need ssh-keygen
+	need timeout
+	root="${TMPDIR:-/tmp}"
+	root="${root%/}"
+	[ -n "$root" ] || root=/tmp
+	CREATE_KEYDIR="$(mktemp -d "$root/agent-deck-docker-XXXXXXXX")" || die "cannot make key dir"
+	local keydir="$CREATE_KEYDIR"
+	chmod 0700 "$keydir"
+	trap 'cleanup_create' EXIT
+
+	printf '%s\n' "$LABEL" "agent-deck.keydir=$keydir" >"$keydir/labels"
+	printf '%s' "$req" | py request create "$keydir/labels"
+
+	ensure_image
+
+	ssh-keygen -q -t ed25519 -N '' -C agent-deck-sandbox -f "$keydir/id_ed25519" </dev/null >/dev/null ||
+		die "ssh-keygen failed"
+	chmod 0600 "$keydir/id_ed25519" "$keydir/id_ed25519.pub"
+
+	CREATE_CID="$(docker create --label-file "$keydir/labels" --publish 127.0.0.1::22 \
+		--hostname agent-deck-sandbox "$IMAGE")" || die "docker create failed"
+	local cid="$CREATE_CID"
+	docker cp "$keydir/id_ed25519.pub" "$cid:/etc/agent-deck/authorized_keys" >/dev/null ||
+		die "cannot copy public key into container"
+	docker start "$cid" >/dev/null || die "docker start failed"
+
+	port="$(docker container inspect -- "$cid" | py field port)"
+	[[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -gt 0 ] || die "no published ssh port"
+	wait_ssh "$port" || die "sshd did not answer on 127.0.0.1:$port within ${WAIT_SECONDS}s"
+
+	docker exec "$cid" cat /etc/ssh/ssh_host_ed25519_key.pub >"$keydir/host_key.pub" ||
+		die "cannot read container host key"
+	chmod 0600 "$keydir/host_key.pub"
+
+	docker container inspect -- "$cid" | py one
+	trap - EXIT
+}
+
+do_list() {
+	local ids
+	ids="$(docker ps --all --quiet --no-trunc --filter "label=$LABEL")" || die "docker ps failed"
+	if [ -z "$ids" ]; then
+		printf '{"protocol":1,"sandboxes":[]}\n'
+		return 0
+	fi
+	# ids are hex container ids from docker itself.
+	# shellcheck disable=SC2086
+	docker container inspect -- $ids | py list
+}
+
+do_status() {
+	local id="$1" out rc=0
+	out="$(inspect_labelled "$id")" || rc=$?
+	[ "$rc" -eq 3 ] && die "no such sandbox: $id"
+	[ "$rc" -eq 0 ] || die "docker inspect failed"
+	printf '%s' "$out" | py one
+}
+
+do_destroy() {
+	local id="$1" out rc=0 keydir
+	out="$(inspect_labelled "$id")" || rc=$?
+	if [ "$rc" -eq 3 ]; then
+		# Already gone: destroy is idempotent.
+		printf '{"protocol":1,"ok":true}\n'
+		return 0
+	fi
+	[ "$rc" -eq 0 ] || die "docker inspect failed"
+	# py field fails when the container does not carry our label.
+	keydir="$(printf '%s' "$out" | py field keydir)" || die "refusing to remove $id: not an agent-deck docker sandbox"
+	docker rm -f -- "$id" >/dev/null || die "docker rm failed"
+	remove_keydir "$keydir"
+	printf '{"protocol":1,"ok":true}\n'
+}
+
+main() {
+	local action="${1:-}" req id
+	case "$action" in
+	create | list | status | destroy) ;;
+	"") die "usage: provider <create|list|status|destroy> < request.json" ;;
+	*) die "unknown action: $action" ;;
+	esac
+	need python3
+	req="$(head -c 1048576)"
+
+	case "$action" in
+	create)
+		need docker
+		do_create "$req"
+		;;
+	list)
+		printf '%s' "$req" | py request list
+		need docker
+		do_list
+		;;
+	status | destroy)
+		id="$(printf '%s' "$req" | py request "$action")"
+		valid_id "$id" || die "invalid sandbox id"
+		need docker
+		"do_$action" "$id"
+		;;
+	esac
+}
+
+main "$@"

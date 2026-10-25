@@ -1,7 +1,12 @@
 Usage: agent-deck remote add <name> <user@host> [options]
+       agent-deck remote add --provider <name> [--name <remote>]
 
 Options:
   --agent-deck-path string
         Path to agent-deck on the remote (default: agent-deck)
   --profile string
         Remote profile to use (default: default)
+  --provider string
+        Create a sandbox with this [providers.<name>] and register it (no <user@host>)
+  --name string
+        With --provider: remote name (default: <provider>-<random suffix>)

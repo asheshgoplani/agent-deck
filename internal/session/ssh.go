@@ -232,6 +232,10 @@ type SSHRunner struct {
 	// host (see RemoteConfig.Transport). Empty transport means SSH.
 	transport  string
 	moshServer string
+
+	// sshConfig is the remote's per-sandbox ssh_config (RemoteConfig.SSHConfig);
+	// when set every ssh and mosh argv passes it with -F.
+	sshConfig string
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
@@ -246,6 +250,7 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 		lastStderr:     &lastStderrBox{},
 		transport:      rc.GetTransport(),
 		moshServer:     strings.TrimSpace(rc.MoshServer),
+		sshConfig:      strings.TrimSpace(rc.SSHConfig),
 	}
 }
 
@@ -2583,7 +2588,19 @@ func (r *SSHRunner) LastInstallReport() string { return r.installReport }
 //
 // See the README "Remote Instances" section for the documented assumption.
 func (r *SSHRunner) sshConnOpts() []string {
-	return sessionSSHConnOpts()
+	opts := sessionSSHConnOpts()
+	if r.sshConfig != "" {
+		// A provider sandbox's own ssh_config (HostName, Port, key,
+		// known_hosts), with its own mux socket so it never rides another
+		// remote's master that %C would match (see sshcontrol.ControlPathFor).
+		for i := range opts {
+			if strings.HasPrefix(opts[i], "ControlPath=") {
+				opts[i] = "ControlPath=" + sshcontrol.ControlPathFor(r.sshConfig)
+			}
+		}
+		opts = append([]string{"-F", r.sshConfig}, opts...)
+	}
+	return opts
 }
 
 // ValidateSSHHost rejects host strings ssh would misinterpret as options rather
@@ -2688,7 +2705,7 @@ func (r *SSHRunner) sshAttachArgs(args ...string) []string {
 // remote. TERM is left to mosh-server, which names the terminal mosh emulates
 // rather than whatever the local one is.
 func (r *SSHRunner) moshAttachArgs(args ...string) []string {
-	return terminal.MoshArgs(r.Host, r.moshServer, r.remoteArgv(args...))
+	return terminal.MoshArgsWithSSHConfig(r.Host, r.moshServer, r.sshConfig, r.remoteArgv(args...))
 }
 
 // Modern local terminals may name terminfo entries absent on the SSH host.

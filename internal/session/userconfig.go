@@ -269,6 +269,11 @@ type UserConfig struct {
 	// Remotes defines named SSH remote agent-deck instances
 	Remotes map[string]RemoteConfig `toml:"remotes,omitempty"`
 
+	// Providers defines named sandbox providers ([providers.<name>]): commands
+	// speaking the agent-deck provider protocol that create, list, inspect and
+	// destroy sandboxes, which `remote add --provider` registers as remotes.
+	Providers map[string]ProviderConfig `toml:"providers,omitempty"`
+
 	// Remote holds settings for every remote attach ([remote]).
 	Remote RemoteAttachSettings `toml:"remote,omitempty"`
 
@@ -1202,6 +1207,55 @@ type RemoteConfig struct {
 	// Off by default, because single-user setups often name profiles
 	// differently on each machine.
 	RequireSameProfile bool `toml:"require_same_profile,omitempty"`
+
+	// Provider names the [providers.<name>] entry that created this remote's
+	// sandbox. Empty for a plain SSH remote. Set by `remote add --provider`.
+	Provider string `toml:"provider,omitempty"`
+
+	// SandboxID is the provider's id for this remote's sandbox, used by
+	// `remote destroy`. Empty for a plain SSH remote.
+	SandboxID string `toml:"sandbox_id,omitempty"`
+
+	// SSHConfig is the path of the per-sandbox ssh_config agent-deck wrote
+	// (HostName, Port, User, IdentityFile, known_hosts). When set, every ssh
+	// and mosh call for this remote passes it with -F. Empty uses the user's
+	// own ssh configuration.
+	SSHConfig string `toml:"ssh_config,omitempty"`
+}
+
+// ProviderConfig defines one sandbox provider ([providers.<name>]).
+type ProviderConfig struct {
+	// Command is the provider executable: an absolute path, or a bare name
+	// resolved via PATH. It is run directly (never through a shell) with one
+	// argument, the action (create, list, status or destroy).
+	Command string `toml:"command,omitempty"`
+
+	// CreateTimeoutSeconds bounds a create call (default 600: cold VMs can
+	// take several minutes).
+	CreateTimeoutSeconds int `toml:"create_timeout_seconds,omitempty"`
+
+	// TimeoutSeconds bounds list, status and destroy calls (default 60).
+	TimeoutSeconds int `toml:"timeout_seconds,omitempty"`
+
+	// AgentDeckPath is the agent-deck path on this provider's sandboxes
+	// (default "agent-deck"), copied into each registered remote.
+	AgentDeckPath string `toml:"agent_deck_path,omitempty"`
+}
+
+// GetCreateTimeout returns the create timeout, defaulting to 600s.
+func (pc ProviderConfig) GetCreateTimeout() time.Duration {
+	if pc.CreateTimeoutSeconds > 0 {
+		return time.Duration(pc.CreateTimeoutSeconds) * time.Second
+	}
+	return 600 * time.Second
+}
+
+// GetTimeout returns the list/status/destroy timeout, defaulting to 60s.
+func (pc ProviderConfig) GetTimeout() time.Duration {
+	if pc.TimeoutSeconds > 0 {
+		return time.Duration(pc.TimeoutSeconds) * time.Second
+	}
+	return 60 * time.Second
 }
 
 // Remote attach transports accepted by RemoteConfig.Transport.
