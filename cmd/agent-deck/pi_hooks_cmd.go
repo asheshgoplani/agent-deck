@@ -145,4 +145,9 @@ func handlePiHooksStatus(args []string) {
 	default:
 		fmt.Println("Socket: on")
 	}
+	// A permanent refusal stops socket wakes for a parent's records; its records
+	// still arrive at its next run start, but nothing else says why no doorbell rings.
+	for _, w := range session.PiSocketWakesStopped() {
+		fmt.Printf("Socket wakes stopped: %s (%s)\n", w.Reason, w.Parent)
+	}
 }

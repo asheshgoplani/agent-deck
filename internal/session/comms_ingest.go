@@ -234,7 +234,17 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 		d.commsPrompts[inst.ID] = e
 		// An enrolled parent's prompt confirms the records a wake line
 		// showed it (how a Codex parent's wake is acknowledged).
-		d.commsAckPrompt(l, inst, e.Prompt)
+		d.commsAckPrompt(l, inst, e.Prompt, e.WakeNonce)
+		return true
+	case CommsEdgeInjected:
+		// pi's receipt: the extension returned the context named by this token.
+		if commsDeliversTo(inst.ID) {
+			if err := finalizeInjection(l.Reader(), inst.ID, e.InjectedToken); err != nil {
+				commsLog.Warn("comms_injection_receipt_failed", slog.String("parent", inst.ID), slog.String("error", err.Error()))
+				return false
+			}
+		}
+		RemoveCommsSpoolEntry(e)
 		return true
 	case CommsEdgeStatus:
 		return d.commitCommsStatus(l, profile, inst, e)
@@ -252,7 +262,7 @@ func (d *TransitionDaemon) ingestCommsEntry(l *comms.Ledger, profile string, ins
 	// the turn (codex-notify): for an enrolled parent it confirms the records
 	// a wake line showed it.
 	if e.Prompt != "" {
-		d.commsAckPrompt(l, inst, e.Prompt)
+		d.commsAckPrompt(l, inst, e.Prompt, "")
 	}
 	rec := comms.Record{
 		Kind:    comms.KindTurn,
@@ -557,7 +567,7 @@ func (d *TransitionDaemon) commitCommsStatus(l *comms.Ledger, profile string, in
 // duplicate. A wake is addressed to the parent it woke (To) and comes from
 // agent-deck itself; a call comes from the session that ran it.
 func commitCommsMeasure(l *comms.Ledger, profile string, inst *Instance, e CommsSpoolEntry) bool {
-	rec := comms.Record{Profile: profile, TSignal: e.TSignal, Ref: e.Ref, Via: e.Via}
+	rec := comms.Record{Profile: profile, TSignal: e.TSignal, Ref: e.Ref, Via: e.Via, Err: e.Err, AfterWrite: e.AfterWrite, Refs: e.Refs}
 	switch e.Edge {
 	case CommsEdgeWake:
 		rec.Kind, rec.From, rec.To = comms.KindWake, "agent-deck", []string{inst.ID}
@@ -565,6 +575,9 @@ func commitCommsMeasure(l *comms.Ledger, profile string, inst *Instance, e Comms
 		rec.State = comms.StateTyped
 		if e.Via == "stop" {
 			rec.State = comms.StateInjected
+		}
+		if e.State != "" {
+			rec.State = e.State // the pi send leg's outcome (landed, queued, pushed)
 		}
 	default:
 		rec.Kind, rec.From, rec.State = comms.KindCall, inst.ID, e.Event

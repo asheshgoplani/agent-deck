@@ -62,6 +62,9 @@ const (
 	// "async" when the sender did not get the outcome on its own stdout (a
 	// queued send), which addresses the record back to it.
 	CommsEdgeDelivery = "delivery"
+	// CommsEdgeInjected is pi's receipt that a prompt injection reached the
+	// model: the extension echoes the delivery token the hook printed.
+	CommsEdgeInjected = "injected"
 )
 
 // Spool caps. Text is capped well above the record ceiling (the daemon
@@ -100,10 +103,20 @@ type CommsSpoolEntry struct {
 	Prompt         string `json:"prompt,omitempty"` // user prompt prefix (either edge)
 	TranscriptPath string `json:"transcript_path,omitempty"`
 	Cwd            string `json:"cwd,omitempty"`
-	Via            string `json:"via,omitempty"`     // wake: tmux | stop
-	Ref            string `json:"ref,omitempty"`     // call: the session read; wake: the record it was for
-	TSignal        int64  `json:"t_signal"`          // Unix ms the harness signal was received
-	TWrite         int64  `json:"t_write,omitempty"` // Unix ns the producer wrote the entry: orders one millisecond
+	Via            string `json:"via,omitempty"` // wake: tmux | stop
+	Ref            string `json:"ref,omitempty"` // call: the session read; wake: the record it was for (a socket wake: its nonce)
+	// WakeNonce is the doorbell nonce a pi run carried (prompt_start edge).
+	WakeNonce string `json:"wake_nonce,omitempty"`
+	// InjectedToken is the delivery token of an "injected" edge.
+	InjectedToken string `json:"injected_token,omitempty"`
+	// Refs are the record ids a wake carried.
+	Refs []string `json:"refs,omitempty"`
+	// Err and AfterWrite qualify a wake the send leg typed after the socket
+	// refused it: the extension's word, and that the frame had been written.
+	Err        string `json:"err,omitempty"`
+	AfterWrite bool   `json:"after_write,omitempty"`
+	TSignal    int64  `json:"t_signal"`          // Unix ms the harness signal was received
+	TWrite     int64  `json:"t_write,omitempty"` // Unix ns the producer wrote the entry: orders one millisecond
 
 	// path is where the entry sits on disk (set by ReadCommsSpool).
 	path string
@@ -159,7 +172,7 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 		return errors.New("comms spool: empty instance id")
 	}
 	switch e.Edge {
-	case CommsEdgeTurnEnd, CommsEdgePromptStart, CommsEdgeStatus, CommsEdgeWake, CommsEdgeCall, CommsEdgeSend, CommsEdgeDelivery:
+	case CommsEdgeTurnEnd, CommsEdgePromptStart, CommsEdgeStatus, CommsEdgeWake, CommsEdgeCall, CommsEdgeSend, CommsEdgeDelivery, CommsEdgeInjected:
 	default:
 		return errors.New("comms spool: unknown edge " + e.Edge)
 	}
@@ -184,6 +197,9 @@ func WriteCommsSpool(e CommsSpoolEntry) error {
 	e.Cwd = capBytes(e.Cwd, commsSpoolCwdBytes)
 	e.Via = capBytes(e.Via, commsSpoolIDBytes)
 	e.Ref = capBytes(e.Ref, commsSpoolIDBytes)
+	e.WakeNonce = capBytes(e.WakeNonce, commsSpoolIDBytes)
+	e.InjectedToken = capBytes(e.InjectedToken, commsSpoolIDBytes)
+	e.Err = capBytes(e.Err, commsSpoolIDBytes)
 	if (e.Edge == CommsEdgeTurnEnd || e.Edge == CommsEdgeSend) && e.Text == "" {
 		// Nothing to carry: the status edge is already in the hook file. An
 		// empty turn would only become a text-less record.
@@ -454,6 +470,20 @@ func SpoolCommsWake(parentID, path, via, line, ref string) {
 	}
 	if err := WriteCommsSpool(CommsSpoolEntry{Harness: "agent-deck", Event: path, Edge: CommsEdgeWake,
 		Instance: parentID, Via: via, Text: line, Ref: ref}); err != nil {
+		commsLog.Warn("comms_wake_spool_failed", slog.String("parent", parentID), slog.String("error", err.Error()))
+	}
+}
+
+// SpoolCommsWakeOutcome is SpoolCommsWake for a doorbell the pi send leg rang:
+// via and state are the leg's outcome (socket landed, queued or pushed; tmux
+// typed), ref the doorbell's nonce, errWord and afterWrite the refusal a typed
+// fallback followed.
+func SpoolCommsWakeOutcome(parentID, path, via, state, line, ref, errWord string, afterWrite bool, refs []string) {
+	if strings.TrimSpace(parentID) == "" || !CommsLedgerEnabled() {
+		return
+	}
+	if err := WriteCommsSpool(CommsSpoolEntry{Harness: "agent-deck", Event: path, Edge: CommsEdgeWake,
+		Instance: parentID, Via: via, State: state, Text: line, Ref: ref, Err: errWord, AfterWrite: afterWrite, Refs: refs}); err != nil {
 		commsLog.Warn("comms_wake_spool_failed", slog.String("parent", parentID), slog.String("error", err.Error()))
 	}
 }
