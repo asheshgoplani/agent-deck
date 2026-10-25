@@ -186,6 +186,8 @@ func TestSessionSwitchAccount_SelfTargetHandsOffBeforeTheSwitch(t *testing.T) {
 					handleSessionRestart("ch_support_test", rest)
 				case "core-restart":
 					cliSessionRestart("ch_support_test", rest)
+				case "switch":
+					handleSessionSwitch("ch_support_test", rest)
 				}
 				os.Exit(0)
 			}
@@ -223,6 +225,15 @@ func TestSessionSwitchAccount_SelfTargetHandsOffBeforeTheSwitch(t *testing.T) {
 		out := run(t, "switch-account", "some-other-session", id, "work")
 		if strings.Contains(out, "HANDOFF") || !strings.Contains(out, "SWITCH-IN-PLACE") {
 			t.Fatalf("a call from outside the target must switch in place:\n%s", out)
+		}
+	})
+	// session switch restarts the pane on a native switch the same way
+	// (#2897, reported for switch too in #2919); --no-start keeps the
+	// unfixed path from starting anything here.
+	t.Run("switch from inside the target", func(t *testing.T) {
+		out := run(t, "switch", id, id, "--to-harness", "claude", "--no-start")
+		if !strings.Contains(out, "HANDOFF session switch "+id+" --to-harness claude --no-start") {
+			t.Fatalf("no handoff to a detached child:\n%s", out)
 		}
 	})
 	// --if-idle keeps the unfixed path harmless here: the stopped session is

@@ -36,6 +36,9 @@ func handleSessionSwitch(profile string, args []string) {
 		fmt.Println("Same-harness native switches are supported where verified; cross-harness directions create fresh targets and wait for native readiness evidence.")
 		fmt.Println("Configured account presence is reported; OAuth authentication is never verified here.")
 		fmt.Println("Pi cross-harness plans use the default account only; named Pi accounts fail explicitly.")
+		fmt.Println("Run from inside the session it targets, the switch is handed to a detached")
+		fmt.Println("agent-deck (the restart ends the calling pane): the command prints that")
+		fmt.Println("process's pid and log file and exits 0; the switch's own result is in the log.")
 		fmt.Println()
 		fs.PrintDefaults()
 	}
@@ -56,6 +59,11 @@ func handleSessionSwitch(profile string, args []string) {
 	if inst == nil {
 		out.Error(errMsg, errCode)
 		exitCLI(1)
+	}
+	// #2897: a native switch stops the pane this process runs in when it
+	// targets the calling session; hand it to a detached child.
+	if handOffIfSelfTarget(out, profile, "switch", args, inst) {
+		return
 	}
 	cfg, cfgErr := session.LoadUserConfig()
 	if cfgErr != nil {
