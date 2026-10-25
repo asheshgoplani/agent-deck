@@ -186,7 +186,9 @@ func lockDir(dir string) (func(), error) {
 	muAny, _ := dirMu.LoadOrStore(dir, &sync.Mutex{})
 	mu := muAny.(*sync.Mutex)
 	mu.Lock()
-	f, err := os.OpenFile(filepath.Join(dir, lockFileName), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	// Read-only: the lock file is never written, and flock needs no write
+	// access, so no writable handle is left whose Close could lose data.
+	f, err := os.OpenFile(filepath.Join(dir, lockFileName), os.O_RDONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		mu.Unlock()
 		return nil, fmt.Errorf("open ask lock: %w", err)
